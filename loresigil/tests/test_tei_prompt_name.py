@@ -51,6 +51,7 @@ from loresigil.factory import EmbeddingConfig, make_embedder
 from loresigil.tei import TEIEmbedder
 from loresigil.tokens import VoyageTokenCounter
 from loresigil.voyage_cloud import VoyageCloudEmbedder
+from pydantic import SecretStr
 
 # ---------------------------------------------------------------------------
 # Shared constants — values taken from the verified live deployment config.
@@ -83,8 +84,9 @@ CLOUD_API_KEY: str = "voyage-test-key-cafebabe"
 CLOUD_MODEL: str = "voyage-4-large"
 CLOUD_DIM: int = 2048
 
-# Factory env var for tests.
-_TEI_KEY_ENV: str = "LORE_TEI_PROMPT_TEST_KEY"
+# The factory credential for tests. It is a VALUE, not an env-var name: packet 42
+# moved resolution up to the consumer's composition root, so loresigil's config
+# carries an already-resolved SecretStr.
 _TEI_KEY_VALUE: str = "tei-secret-prompt-tests"
 
 # Shared tokenizer — the same pinned voyage-4 tokenizer the production probe uses
@@ -203,7 +205,7 @@ def _make_tei_embedder(
     return TEIEmbedder(
         base_url=BASE_URL,
         endpoint=EMBED_ENDPOINT,
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         dim=TEI_DIM,
         max_input_tokens=TEI_MAX_INPUT_TOKENS,
         concurrency=2,
@@ -217,7 +219,7 @@ def _make_cloud_embedder(transport: httpx.MockTransport) -> VoyageCloudEmbedder:
     """Construct a VoyageCloudEmbedder backed by an offline transport."""
     return VoyageCloudEmbedder(
         api_url=CLOUD_API_URL,
-        api_key=CLOUD_API_KEY,
+        api_key=SecretStr(CLOUD_API_KEY),
         model=CLOUD_MODEL,
         dim=CLOUD_DIM,
         output_dimension=CLOUD_DIM,
@@ -443,9 +445,8 @@ class TestFactoryPromptNameWiring:
     through to the TEIEmbedder constructor.
     """
 
-    @pytest.fixture(autouse=True)
-    def _set_tei_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(_TEI_KEY_ENV, _TEI_KEY_VALUE)
+    # The env-var fixture that used to live here is gone with the env-ref: the
+    # credential is carried ON the config now, so there is no environment to set.
 
     def test_embedding_config_accepts_query_prompt_name(self) -> None:
         """EmbeddingConfig(extra='forbid') must accept query_prompt_name without error."""
@@ -456,7 +457,7 @@ class TestFactoryPromptNameWiring:
             endpoint="/embed",
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
-            api_key_env=_TEI_KEY_ENV,
+            api_key=SecretStr(_TEI_KEY_VALUE),
             query_prompt_name=QUERY_PROMPT_NAME,
         )
         assert config.query_prompt_name == QUERY_PROMPT_NAME
@@ -469,7 +470,7 @@ class TestFactoryPromptNameWiring:
             endpoint="/embed",
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
-            api_key_env=_TEI_KEY_ENV,
+            api_key=SecretStr(_TEI_KEY_VALUE),
             document_prompt_name=DOCUMENT_PROMPT_NAME,
         )
         assert config.document_prompt_name == DOCUMENT_PROMPT_NAME
@@ -479,7 +480,7 @@ class TestFactoryPromptNameWiring:
         config = EmbeddingConfig(
             backend="tei",
             base_url="http://tei.example:8080",
-            api_key_env=_TEI_KEY_ENV,
+            api_key=SecretStr(_TEI_KEY_VALUE),
         )
         # None means "don't send prompt_name" — preserving the current no-prompt behavior.
         assert config.query_prompt_name is None
@@ -503,7 +504,7 @@ class TestFactoryPromptNameWiring:
             endpoint=EMBED_ENDPOINT,
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
-            api_key_env=_TEI_KEY_ENV,
+            api_key=SecretStr(_TEI_KEY_VALUE),
             query_prompt_name=QUERY_PROMPT_NAME,
             document_prompt_name=DOCUMENT_PROMPT_NAME,
         )
@@ -613,7 +614,7 @@ class TestTEIBackwardCompatGuard:
         embedder = TEIEmbedder(
             base_url=BASE_URL,
             endpoint=EMBED_ENDPOINT,
-            api_key=API_KEY,
+            api_key=SecretStr(API_KEY),
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             concurrency=2,
@@ -641,7 +642,7 @@ class TestTEIBackwardCompatGuard:
         embedder = TEIEmbedder(
             base_url=BASE_URL,
             endpoint=EMBED_ENDPOINT,
-            api_key=API_KEY,
+            api_key=SecretStr(API_KEY),
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             concurrency=2,

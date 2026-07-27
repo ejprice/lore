@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from loremaster.config import resolve_secret
+from loremaster.config import resolve_config_value, resolve_secret
 from loremaster.diff import DiffEngine, SnapshotSummary
 from loremaster.index.snapshots import SnapshotStamper
 from loremaster.index.surreal_manifest import SurrealManifest
@@ -326,10 +326,17 @@ async def run_gc(args: argparse.Namespace) -> int:
     :class:`KeyError`, :class:`ValueError`) for :func:`main` to launder.
     """
     epoch = parse_epoch(args.epoch)
-    # The USERNAME is deliberately not carried as a secret (#211): it is a public
-    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
-    # the password stays a SecretStr all the way to the SDK seam.
-    user = resolve_secret(args.user_env).get_secret_value()
+    # The USERNAME is not a secret (#211/#226): it is a public default named by
+    # SURREAL_DEFAULT_USER_ENV, so it is read as a plain config value while the
+    # password stays a SecretStr all the way to the SDK seam.
+    #
+    # ⚠ ``resolve_config_value`` raises a NAMING ``KeyError`` rather than returning
+    # ``None``, and that is load-bearing HERE specifically: this is the only one of
+    # the five former round-trip sites whose ``KeyError`` is CAUGHT — ``main``
+    # launders it into a clean ``_EXIT_ERROR`` message naming the variable. An
+    # inline ``os.environ.get`` would degrade that diagnostic to a ``NoneType``
+    # failure further down.
+    user = resolve_config_value(args.user_env)
     password = resolve_secret(args.password_env)
 
     summaries = await _list_snapshots(

@@ -33,24 +33,29 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 # ``conformance_provenance`` lives in ``scripts/`` (not a package) — make it importable
 # exactly as ``scripts/test_scratch_copy.py`` makes ``scratch_provenance`` importable.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import conformance_provenance  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
+import conformance_provenance  # noqa: E402  (scripts/ is not a package)
 import pytest  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Independent expected values (from the spec / design doc — never the impl).
 # ---------------------------------------------------------------------------
 
-# The three uv-workspace members whose code the conformance run must prove it is
-# actually running. From the design doc §A, NOT read back from the module (that would
-# be tautological — the point of this constant is to catch a build that ships a
-# different / shorter member list, e.g. "only loremaster").
-EXPECTED_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe")
+# The uv-workspace members whose code the conformance run must prove it is actually
+# running. From the design doc §A + ``[tool.uv.workspace] members``, NOT read back from
+# the module (that would be tautological — the point of this constant is to catch a build
+# that ships a different / shorter member list, e.g. "only loremaster").
+#
+# ``lorerunes`` joined in packet 42. Stated without a count, deliberately: a member count
+# in prose — or in a test NAME — is the stale-natural-language class this repo pays for
+# most often, and this file carried it in both places.
+EXPECTED_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe", "lorerunes")
 
 # The deploy topology binds the project tree read-only at /workspace (design doc
 # "In-container run topology"). A member resolving UNDER here = grading the MOUNT = #139.
@@ -99,7 +104,7 @@ NONCANONICAL_MOUNT_FILE = "/app/../workspace/loremaster/loremaster/__init__.py"
 SIBLING_PREFIX_FILE = "/workspace-decoy/loremaster/loremaster/__init__.py"
 
 
-def _baked(name: str) -> object:
+def _baked(name: str) -> conformance_provenance.MemberProvenance:
     """A MemberProvenance whose ``__file__`` is the member's baked /app editable path."""
     return conformance_provenance.MemberProvenance(
         name=name, module_file=f"/app/{name}/{name}/__init__.py"
@@ -259,13 +264,17 @@ class TestAudit:
     """``audit`` evaluates ALL members even after a failure, and accounts for each input."""
 
     def test_audit_evaluates_every_member_and_accounts_for_each_one(self) -> None:
-        """One resolver forces all three fates at once: honest (loresigil, baked),
-        mount-rejected (loremaster), and namespace-rejected (lorescribe).
+        """One resolver forces every fate at once: honest (loresigil and lorerunes,
+        baked), mount-rejected (loremaster), and namespace-rejected (lorescribe).
 
         The totality assertion (failures + receipts == every member) is the input
         accounting: a build that stops at the first failure, or drops a member, leaves the
         counts short and goes RED. Fate coverage: the honest fate and BOTH reject fates
         each have a member forcing them here.
+
+        The honest fate deliberately carries TWO members rather than one: with a single
+        honest member, ``len(receipts)`` and "the honest member" are indistinguishable, so
+        a build that returned only the FIRST receipt would pass.
         """
         guard = conformance_provenance.ConformanceGuard(MOUNT_ROOT)
         observed = {
@@ -276,14 +285,15 @@ class TestAudit:
             "lorescribe": conformance_provenance.MemberProvenance(
                 name="lorescribe", module_file=None
             ),  # namespace package -> reject
+            "lorerunes": _baked("lorerunes"),  # baked -> honest
         }
 
         failures, receipts = guard.audit(lambda name: observed[name])
 
         # Totality: every input member has exactly one accounted fate (honest OR rejected).
         assert len(failures) + len(receipts) == len(EXPECTED_MEMBERS)
-        assert [receipt.name for receipt in receipts] == ["loresigil"], (
-            "only the baked member is honest"
+        assert [receipt.name for receipt in receipts] == ["loresigil", "lorerunes"], (
+            "exactly the baked members are honest, in member order"
         )
         # Each rejected member is NAMED in a failure — no input vanishes silently.
         assert any("loremaster" in reason for reason in failures), (
@@ -294,8 +304,8 @@ class TestAudit:
             "only the FIRST failure and stops leaves lorescribe unaccounted"
         )
 
-    def test_audit_default_members_cover_all_three_workspace_members(self) -> None:
-        """With no explicit ``members``, audit must evaluate ALL three (not just loremaster).
+    def test_audit_default_members_cover_every_workspace_member(self) -> None:
+        """With no explicit ``members``, audit must evaluate EVERY one (not just loremaster).
 
         The resolver records every name it is asked for; a build whose default member set
         is short (or is "loremaster only") asks for fewer names and is caught here.
@@ -303,7 +313,7 @@ class TestAudit:
         guard = conformance_provenance.ConformanceGuard(MOUNT_ROOT)
         asked: list[str] = []
 
-        def _resolver(name: str) -> object:
+        def _resolver(name: str) -> conformance_provenance.MemberProvenance:
             asked.append(name)
             return _baked(name)
 
@@ -320,12 +330,17 @@ class TestAudit:
 class TestModuleSurface:
     """The exported member list and the real import seam."""
 
-    def test_workspace_members_are_the_three_uv_workspace_members(self) -> None:
-        """The guard must check ALL THREE members — mirrors [tool.uv.workspace] members.
+    def test_workspace_members_are_the_uv_workspace_members(self) -> None:
+        """The guard must check EVERY member — mirrors [tool.uv.workspace] members.
 
-        Kills a build that only ever looks at ``loremaster`` and ignores
-        ``loresigil`` / ``lorescribe`` (either of which could resolve to the mount
-        independently).
+        Kills a build that only ever looks at ``loremaster`` and ignores its siblings
+        (any of which could resolve to the mount independently).
+
+        ⚠ This test and the one above used to carry the member COUNT in their NAMES
+        (``..._are_the_three_uv_workspace_members``). Packet 42 added a fourth member and
+        the names silently became false while the assertions still passed — a member count
+        baked into a test name is the stale-natural-language class this repo pays for most
+        often, one layer harder to see than prose. They are count-free now.
         """
         assert tuple(conformance_provenance.WORKSPACE_MEMBERS) == EXPECTED_MEMBERS
 
@@ -350,7 +365,9 @@ class TestCli:
     0 when every member is baked, non-zero + loud when one grades the mount."""
 
     @staticmethod
-    def _inject(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, object]) -> None:
+    def _inject(
+        monkeypatch: pytest.MonkeyPatch, mapping: Mapping[str, object]
+    ) -> None:
         """Drive the CLI with a fake resolver (no real container / interpreter in the loop)."""
         monkeypatch.setattr(
             conformance_provenance, "import_member", lambda name: mapping[name]

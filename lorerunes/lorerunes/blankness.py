@@ -39,4 +39,8 @@ def is_blank(value: str) -> bool:
         ``False`` otherwise, including for a value with real content surrounded by
         whitespace.
     """
-    raise NotImplementedError("Not yet implemented")
+    # ``str.strip()`` with no argument removes every character ``str.isspace``
+    # recognises, so the Unicode claim above is the stdlib's rather than an
+    # assumption of ours. The empty arm is kept explicit even though ``"".strip()``
+    # is falsy too: "empty counts as blank" is a stated rule, not a derivation.
+    return not value or not value.strip()

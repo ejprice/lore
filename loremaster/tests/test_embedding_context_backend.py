@@ -48,7 +48,6 @@ from loremaster.config import EmbeddingConfig, LoreConfig
 from loremaster.embedding import make_embedder_from_config, to_loresigil_config
 from loremaster.index.schema import embedding_schema_fingerprint
 from loresigil.base import Embedder
-from loresigil.factory import MissingApiKeyError
 from loresigil.tei import DEFAULT_DIM as _LORESIGIL_FACTORY_DEFAULT_DIM
 from loresigil.voyage_context import VoyageContextEmbedder
 from pydantic import ValidationError
@@ -175,10 +174,14 @@ class TestMakeEmbedderFromConfigVoyageContextBackend:
         assert embedder.dim == _CONTEXT_EMBEDDING_FIELDS["dim"]
 
     def test_missing_api_key_env_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Packet 42 moved the failure EARLIER — to config translation — and with it
+        # the exception type: ``resolve_secret``'s ``KeyError``, naming the
+        # variable, replaces the retired ``loresigil.factory.MissingApiKeyError``.
         monkeypatch.delenv(_CONTEXT_KEY_ENV, raising=False)
         config = EmbeddingConfig(**_CONTEXT_EMBEDDING_FIELDS)
-        with pytest.raises(MissingApiKeyError):
+        with pytest.raises(KeyError) as excinfo:
             make_embedder_from_config(config)
+        assert _CONTEXT_KEY_ENV in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #

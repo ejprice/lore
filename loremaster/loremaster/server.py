@@ -6705,7 +6705,7 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
     """
     from loremaster.agents import AgentRegistry
     from loremaster.briefs import BriefLedger
-    from loremaster.config import resolve_secret
+    from loremaster.config import resolve_config_value, resolve_secret
     from loremaster.diff import DiffEngine
     from loremaster.findings import FindingLedger
     from loremaster.graph_surreal import SurrealCodeGraph
@@ -6746,10 +6746,12 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
     # holds chunks + file_text + manifest + code graph — the same database a
     # cold `python -m loremaster.index` populates. Credentials resolve by
     # env-var NAME (never inlined), failing loudly when unset.
-    # The USERNAME is deliberately not carried as a secret (#211): it is a public
-    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
-    # the password stays a SecretStr all the way to the SDK seam.
-    surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
+    # The USERNAME is not a secret (#211/#226): it is a public default named by
+    # SURREAL_DEFAULT_USER_ENV, so it is read as a plain config value while the
+    # password stays a SecretStr all the way to the SDK seam. It used to be
+    # wrapped and unwrapped again in the same expression — a round-trip that
+    # protected nothing and put a non-credential on the audited unwrap surface.
+    surreal_user = resolve_config_value(config.surreal.user_env)
     surreal_password = resolve_secret(config.surreal.password_env)
     surreal_database = config.effective_surreal_database
     write_store = SurrealStore(

@@ -31,7 +31,13 @@ set -uo pipefail
 # session before anyone noticed, so cwd is no longer allowed to change the verdict.
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.."
 
-MEMBERS=(lorerunes lorescribe loresigil loremaster)
+# ``skills`` is not a workspace member — it is the deploy skill's script tree, and it
+# is ungated ground in every other respect (outside ``testpaths``, outside the
+# packages). Ruling R9 brought it under this gate anyway, because packet 42 audits
+# a resolver that LIVES there: an AST pin covers its SHAPE, nothing covered its
+# TYPES. It is its own iteration, like every other entry — never merged into one
+# ``mypy`` call (see the header).
+MEMBERS=(lorerunes lorescribe loresigil loremaster skills)
 status=0
 
 for member in "${MEMBERS[@]}"; do

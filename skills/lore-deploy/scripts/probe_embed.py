@@ -79,11 +79,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_key(api_key_env: str) -> str:
-    """Read the bearer key from the named env var, failing loud if unset/empty."""
+    """Read the bearer key from the named env var, failing loud if unset or blank.
+
+    ⚠ **A LEDGERED DUPLICATE OF ``loremaster.config.resolve_secret``, AND THE
+    DUPLICATION IS THE RULING** (R14, 2026-07-26). Packet 42 consolidated every
+    other hand-rolled resolver onto that one function; this one stays, because
+    this script is deliberately stdlib-only: it runs under ``sys.executable``
+    while loremaster code in the same skill runs under a separate
+    ``_loremaster_python()``, and ``lore_deploy.py`` shells out to it and BRANCHES
+    ON ITS EXIT CODES. Importing ``loremaster.config`` here would trade a clean
+    ``exit 4`` for a ``KeyError`` traceback read as ``exit 1``.
+    **RE-OPEN TRIGGER: the day this script runs under ``_loremaster_python()``.**
+
+    What DID travel from the consolidation is the blankness rule. The old check
+    was ``if not key``, which accepted a whitespace-only value — inventory bug B3,
+    alive in a second home. The shared resolver rejects it, so this one does too;
+    the exit contract is untouched.
+    """
     key = os.environ.get(api_key_env)
-    if not key:
+    if not key or not key.strip():
         print(
-            f"probe_embed: secret env var {api_key_env!r} is unset or empty; "
+            f"probe_embed: secret env var {api_key_env!r} is unset, empty or blank; "
             f"export it (via the deploy --env-file) before probing.",
             file=sys.stderr,
         )

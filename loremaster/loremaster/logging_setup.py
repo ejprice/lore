@@ -12,12 +12,23 @@ this module owns only the *sinks* and the *secret backstop*:
   (``args``, ``levelno``, ``pathname``, …) are deliberately NOT serialised.
 * :class:`KeyValueFormatter` renders a human ``ts level logger event k=v`` line
   for local development, with any traceback appended below it.
-* :class:`RedactingFilter` is the CRITICAL secret backstop: it scrubs an
-  ``Authorization: Bearer …`` header, an ``api_key``-style assignment, and any
-  long high-entropy token — in the rendered message, the ``extra`` values, AND
-  the rendered exception/stack — to :data:`REDACTED`. The discipline is that
-  callers never log a secret in the first place (counts/statuses only); this
-  filter is the last line of defence if one ever slips through.
+* :class:`RedactingFilter` is the secret backstop: it scrubs an
+  ``Authorization`` header and an ``api_key``-style assignment — in the rendered
+  message, the ``extra`` values, AND the rendered exception/stack — to
+  :data:`REDACTED`. The discipline is that callers never log a secret in the
+  first place (counts/statuses only); this filter is defence in depth beneath
+  the real control, which is the ``SecretStr`` TYPE at every resolution seam
+  (#211): a value that cannot render itself cannot reach a log line at all.
+
+  ⚠ **It matches only LABELLED shapes, deliberately (packet 42).** An earlier
+  version also swept any long unlabelled run that "looked random". That guess
+  lost four rounds running — it mangled path components (#227), then function
+  names (12.4% of every traceback frame), then rendered source lines — while
+  never catching the credential class it was aimed at: a realistic operator
+  password scores BELOW the bar it used. The trade is stated once, here, and
+  pinned in ``test_secret_leak_vectors.py``: an UNLABELLED credential in free
+  text is no longer redacted, and the replacement control is that a typed secret
+  is never in the text.
 
   ⚠ Until #211 (2026-07-25) the last two of those were FALSE in both
   directions: the filter never touched ``exc_info``/``exc_text``, and the two
@@ -38,11 +49,9 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 import sys
 import traceback
-from collections import Counter
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Any
@@ -99,211 +108,93 @@ _LOGRECORD_RESERVED: frozenset[str] = frozenset(
 
 # Explicit secret patterns (the common, named shapes). Each capturing group's
 # secret span is replaced with REDACTED; surrounding label text is preserved.
+#
+# THESE ARE THE WHOLE MECHANISM (packet 42). A pattern here fires on a STRUCTURE
+# — a label, a separator, a scheme word — never on a guess about what a run of
+# characters looks like. That is why they do not false-positive on paths,
+# identifiers or rendered source lines, and it is why the third pattern that once
+# sat beside them was deleted rather than tuned.
 _BEARER_RE = re.compile(r"(Bearer\s+)(\S+)", re.IGNORECASE)
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|token|secret|password|authorization)\b(\s*[=:]\s*)(\S+)"
+    r"(?i)\b(api[_-]?key|apikey|token|secret|password)\b(\s*[=:]\s*)(\S+)"
 )
 
-# A bare high-entropy token (no label) is the catch-all backstop: any UNBROKEN
-# run of >= this many base64/JWT-style characters whose Shannon entropy clears
-# the threshold is scrubbed. The charset excludes ``/`` and ``.`` so a dotted
-# module name (``loremaster.index.indexer``) splits into short, sub-threshold
-# segments and is NOT matched.
+# The auth schemes whose NAME is preserved in a redacted ``Authorization`` header.
 #
-# ⚠ THAT IS NOT SUFFICIENT FOR FILE PATHS, and the comment here used to claim it
-# was (#211 cold-audit Defect D). The charset INCLUDES ``-`` and ``_``, so a
-# single path COMPONENT that is a UUID, a git SHA, a container overlay id or a
-# nix store hash is one unbroken high-entropy run and was redacted — turning
-# ``/tmp/ci/090685cb-2064-498d-8479-e141e4fd4ea5/app.py`` into
-# ``/tmp/ci/***REDACTED***/app.py``. Measured false positives: UUID temp dirs,
-# 64-hex container overlay paths, nix store paths. Tracebacks are DENSE in
-# absolute paths, so the surface that most needs to stay readable was the one
-# most affected — and the environments with hashy paths (CI runners, containers,
-# ephemeral checkouts) are exactly the ones where a traceback matters most.
-# :func:`_is_safe_high_entropy_run` is the guard; see its docstring for the
-# threat model that makes its exemptions sound.
-_TOKEN_RE = re.compile(r"[A-Za-z0-9+=_\-]{24,}")
-_ENTROPY_BITS_THRESHOLD = 3.5
-
-# The filesystem path separator. A high-entropy run ADJACENT to one is a path
-# COMPONENT, not a credential (see :func:`_is_safe_high_entropy_run`).
-_PATH_SEPARATOR = "/"
-
-# The canonical RFC-4122 UUID form. Verified against an independent
-# implementation rather than invented here: ``detect_secrets.filters.heuristic.
-# _get_uuid_regex`` (detect-secrets 1.5.0) uses the identical pattern to decide
-# that a high-entropy string is an id and not a secret. The FORMAT is a spec, so
-# expressing it here is not a duplicated policy — the policy (what lore exempts)
-# lives in the function below, once.
-_UUID_RE = re.compile(
-    r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}", re.IGNORECASE
-)
-
-
-def _shannon_entropy_bits(text: str) -> float:
-    """Return the Shannon entropy (bits/char) of ``text`` — a randomness proxy.
-
-    A high-entropy run of characters (a random key/token) scores well above a
-    repetitive English word or a structured path, so it discriminates a secret
-    from ordinary log text without a label.
-    """
-    if not text:
-        return 0.0
-    counts = Counter(text)
-    length = len(text)
-    return -sum((n / length) * math.log2(n / length) for n in counts.values())
-
-
-# The scan window for finding the maximal blob around a candidate run. It
-# deliberately INCLUDES the base64-distinctive ``+`` and ``=`` even though a real
-# path never contains them — because the blob is what gets INTERROGATED, and a
-# window that excluded them could never observe them.
+# ⚠ AN ALLOWLIST OF THE SAFE, AND THE DIRECTION IS THE WHOLE POINT (ruling R8).
+# The set of HTTP auth schemes is OPEN — RFC 7235 registers Negotiate, HOBA,
+# Mutual, SCRAM…, and vendors invent their own — so a list can never be complete.
+# It does not have to be: **a scheme we fail to recognise costs a diagnostic word,
+# while a credential we fail to recognise costs a credential.** An unrecognised
+# leading word is therefore redacted ALONG WITH the rest of the header value,
+# because we cannot tell whether it is a scheme (credential follows) or the
+# credential itself.
 #
-# ⚠ That is not hypothetical: the first version of this constant excluded ``+``
-# and ``=``, which made the "blob contains no ``+``/``=``" test below DEAD CODE —
-# it could never fire, because the scan had already stopped at those characters.
-# An encoded credential containing a ``+`` simply had its blob truncated to the
-# slash-delimited tail, which then looked exactly like an absolute path. A check
-# whose window excludes what it checks for is the same defect class this whole
-# wave has been finding; it is recorded here so the coupling is not quietly
-# re-broken.
-_PATH_BLOB_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-~+="
+# The scheme word is worth preserving at all because it tells an operator WHICH
+# auth mechanism failed — exactly the diagnostic-data argument that motivated
+# deleting the guess above.
+_KNOWN_AUTH_SCHEMES: tuple[str, ...] = ("Bearer", "Basic", "Digest", "Token", "ApiKey")
+
+# An ``Authorization`` header, in every shape one reaches a log line in: a real
+# header line, a lowercased HTTP/2 one, an ``authorization=…`` assignment, and a
+# quoted one inside a rendered ``curl`` command in an exception message.
+#
+# ⚠ IT IS A SEPARATE PATTERN FROM :data:`_ASSIGNMENT_RE` BECAUSE THE TWO CANNOT
+# COEXIST IN ONE (ruling R8, and this was a live LEAK, not a cosmetic). While
+# ``authorization`` was one of the assignment labels, that pattern's ``(\S+)``
+# consumed the SCHEME WORD as though it were the value: ``Authorization: Token
+# <credential>`` rendered as ``Authorization: ***REDACTED*** <credential>`` — the
+# non-secret word redacted and the credential left in the log.
+#
+# Groups: 1 label+separator, 2 a known scheme, 3 the gap after it, 4 the first
+# value token, 5 the rest of the LINE (never across a newline — a traceback is
+# scrubbed as one string, and the header value ends where the line does).
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(\bauthorization\b\s*[=:]\s*)"
+    r"(?:(" + "|".join(_KNOWN_AUTH_SCHEMES) + r")(\s+))?"
+    r"(\S+)([^\n]*)"
 )
 
 
-def _is_absolute_path_component(text: str, start: int, end: int) -> bool:
-    """Is the run at ``text[start:end]`` a component of an ABSOLUTE filesystem path?
-
-    NARROW BY NECESSITY (cold-audit R1). The first version of this guard asked only
-    whether the run was ADJACENT to a ``/`` — and standard base64's alphabet
-    INCLUDES ``/``, so every base64 credential containing one split into
-    slash-adjacent fragments and was exempted wholesale. Measured against the
-    shipped guard: **200 of 200** random base64 secrets containing a ``/`` survived
-    scrubbing intact. A backstop weakened to cure false positives is worse than the
-    bug it cured, so the exemption is now the narrowest thing that still covers
-    every false-positive class it exists for.
-
-    Two conditions, both required:
-
-    1. The maximal path-like blob containing the run **starts with ``/``** — i.e.
-       it is an ABSOLUTE path. Every false positive this guard exists for
-       (UUID workspace dirs, container overlay ids, nix store hashes, traceback
-       ``File "…"`` lines) is an absolute path; a credential in running prose is
-       not, and neither is one in a URL query.
-    2. The blob contains **no ``+`` or ``=``** — see :data:`_PATH_BLOB_CHARS`.
-       Padded base64 always ends in ``=``, so this alone disqualifies most encoded
-       credentials even when one begins with a slash.
-
-    **The residual bound, measured rather than asserted** (see the module's tests):
-    a base64 credential that BEGINS a blob with ``/`` and happens to contain
-    neither ``+`` nor ``=`` is still exempt. That is a small fraction of encoded
-    secrets, it is pinned as a known bound, and the real defence for it is the
-    ``SecretStr`` TYPE at the boundary (#211 Half A) — which stops the value
-    reaching a log line at all.
+def _redact_auth_header(match: re.Match[str]) -> str:
+    """Redact an ``Authorization`` header's value, preserving a known scheme word.
 
     Args:
-        text: The full string being scrubbed.
-        start: Start offset of the candidate run.
-        end: End offset (exclusive) of the candidate run.
+        match: A :data:`_AUTH_HEADER_RE` match.
 
     Returns:
-        ``True`` when the run is part of an absolute filesystem path.
+        The header with its credential replaced by :data:`REDACTED`: the scheme
+        word and the rest of the line survive when the scheme is recognised;
+        everything after the separator goes when it is not.
     """
-    blob_start = start
-    while blob_start > 0 and text[blob_start - 1] in _PATH_BLOB_CHARS:
-        blob_start -= 1
-    blob_end = end
-    while blob_end < len(text) and text[blob_end] in _PATH_BLOB_CHARS:
-        blob_end += 1
-    blob = text[blob_start:blob_end]
-    if not blob.startswith(_PATH_SEPARATOR):
-        return False
-    if "+" in blob or "=" in blob:
-        return False
-    # 3. The run must not be the FIRST component of the blob — a real hashy path
-    # component always sits under at least one directory (``/tmp/ci/<uuid>``,
-    # ``/nix/store/<hash>``), whereas a base64 credential that merely happens to
-    # begin with ``/`` has its high-entropy run immediately after that slash.
-    if _PATH_SEPARATOR not in blob[1 : start - blob_start]:
-        return False
-    # 4. The run must not be MIXED CASE. Every hashy path component this exemption
-    # exists for is single-case — a UUID, a git SHA, a container overlay id and a
-    # nix store hash are all lowercase — whereas standard base64 mixes cases by
-    # construction. This is the last condition that separates a real path
-    # component from an encoded credential that survived (1)-(3), and it errs the
-    # SAFE way: a mixed-case hashy directory would be redacted again, which is a
-    # false positive, not a leak.
-    run = text[start:end]
-    return not (any(c.isupper() for c in run) and any(c.islower() for c in run))
-
-
-def _is_safe_high_entropy_run(text: str, start: int, end: int) -> bool:
-    """Is the high-entropy run at ``text[start:end]`` a known-safe non-secret?
-
-    An ALLOWLIST of the safe, never a denylist of the forbidden — the forbidden
-    set (what a credential can look like) is unbounded; the safe set is small,
-    enumerable and stated here in full:
-
-    1. **A filesystem path component** — the run is adjacent to a ``/``. This is
-       what fixes Defect D: UUID workspace dirs, 64-hex container overlay ids and
-       nix store hashes are all single path components that clear the entropy bar.
-    2. **A canonical RFC-4122 UUID**, anywhere — a correlation/trace/run id, not a
-       credential.
-
-    **THE THREAT MODEL, stated here because the exemptions are only sound under
-    it** (CLAUDE.md: a gate needs a threat model, written IN the instrument). This
-    filter catches the HONEST developer or dependency that lets a credential reach
-    a log line — an ``Authorization`` header echoed back by a client, a connection
-    string, a config repr. It is **NOT** a boundary against an author deliberately
-    smuggling a secret out: anyone who can write log statements here can log
-    anything in any encoding, and no regex changes that.
-
-    Under that model these exemptions cost little: an honest credential leak does
-    not arrive as ``/…/<secret>/…`` or wearing exact UUID punctuation, while the
-    false positives they remove are constant, and land on tracebacks — the surface
-    whose whole value is being readable.
-
-    **The known bound they buy, met deliberately rather than discovered:** a
-    secret embedded in a URL *path segment* (``https://host/<secret>/x``), or one
-    that is itself a canonical UUID (some services do issue UUID API keys), is not
-    caught by this backstop. The labelled patterns (:data:`_BEARER_RE`,
-    :data:`_ASSIGNMENT_RE`) still catch either when it carries a label, and the
-    real defence is the ``SecretStr`` TYPE at the boundary (#211 Half A), which
-    prevents the value from reaching a log line at all.
-
-    Args:
-        text: The full string being scrubbed.
-        start: Start offset of the candidate run within ``text``.
-        end: End offset (exclusive) of the candidate run within ``text``.
-
-    Returns:
-        ``True`` when the run must be left intact.
-    """
-    if _is_absolute_path_component(text, start, end):
-        return True
-    return _UUID_RE.fullmatch(text[start:end]) is not None
+    label, scheme, gap, first_token, rest_of_line = match.groups()
+    if scheme:
+        return f"{label}{scheme}{gap}{REDACTED}{rest_of_line}"
+    return f"{label}{REDACTED}"
 
 
 def _scrub_text(value: str) -> str:
-    """Redact secrets from a single string: bearer, labelled assignment, entropy.
+    """Redact secrets from a single string: auth header, bearer, labelled assignment.
 
-    Applied in order so the most specific (label-preserving) patterns run before
-    the bare-token entropy sweep. The output keeps non-secret structure intact so
-    a redacted log line is still readable (``Authorization: Bearer ***REDACTED***``).
+    Applied most-specific first. :data:`_AUTH_HEADER_RE` understands the whole
+    ``Authorization`` header including its scheme word, so it runs before the
+    two patterns that see only a label and a token — otherwise the assignment
+    pass would eat ``Bearer`` as if it were the credential (ruling R8).
+
+    Every byte the three patterns do not match is COPIED THROUGH. That is the
+    contract packet 42 restored: paths, identifiers, git SHAs, UUIDs and rendered
+    source lines reach the log exactly as they were written.
+
+    Args:
+        value: The text to scrub.
+
+    Returns:
+        The text with every labelled credential replaced by :data:`REDACTED`,
+        each pattern's label preserved so the line stays diagnosable.
     """
-    scrubbed = _BEARER_RE.sub(rf"\1{REDACTED}", value)
-    scrubbed = _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
-
-    def _maybe_redact_token(match: re.Match[str]) -> str:
-        token = match.group(0)
-        if _is_safe_high_entropy_run(match.string, match.start(), match.end()):
-            return token
-        if _shannon_entropy_bits(token) >= _ENTROPY_BITS_THRESHOLD:
-            return REDACTED
-        return token
-
-    return _TOKEN_RE.sub(_maybe_redact_token, scrubbed)
+    scrubbed = _AUTH_HEADER_RE.sub(_redact_auth_header, value)
+    scrubbed = _BEARER_RE.sub(rf"\1{REDACTED}", scrubbed)
+    return _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
 
 
 def _scrub_value(value: Any) -> Any:

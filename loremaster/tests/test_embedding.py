@@ -19,8 +19,9 @@ The contract these tests pin:
 * **Backend dispatch.** A ``tei`` config yields a TEI embedder; the translation
   does not hard-code a backend.
 * **Secret indirection preserved.** The API key is read from the env var NAMED by
-  ``api_key_env`` (never inlined); a missing key fails LOUD via the factory's
-  :class:`~loresigil.factory.MissingApiKeyError`, surfaced through this layer.
+  ``api_key_env`` — which stays on the LOREMASTER config — and this layer is the
+  composition root that resolves it (packet 42 / #222): a missing key fails LOUD
+  here, as a ``KeyError`` naming the variable, before any embedder exists.
 
 These run fully offline: ``make_embedder`` does not touch the network at
 construction (only ``probe()`` does), so the constructed embedder's reported
@@ -32,7 +33,6 @@ from __future__ import annotations
 import pytest
 from loremaster.config import EmbeddingConfig
 from loresigil.base import Embedder
-from loresigil.factory import MissingApiKeyError
 from loresigil.tei import TEIEmbedder
 
 # A distinctive, NON-default dim/token cap so a test can prove the values came
@@ -88,10 +88,14 @@ class TestMakeEmbedderFromConfig:
     def test_missing_api_key_env_fails_loud(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The secret is an env-ref; an unset env var must raise the factory's
-        # MissingApiKeyError through this layer, never build a keyless embedder.
+        # The secret is an env-ref; an unset env var must fail loud through this
+        # layer, never build a keyless embedder. Packet 42 moved the failure
+        # EARLIER — to the translation step — and with it the exception type:
+        # ``resolve_secret``'s ``KeyError``, which names the variable, replaces the
+        # retired ``loresigil.factory.MissingApiKeyError``.
         from loremaster.embedding import make_embedder_from_config
 
         monkeypatch.delenv(_KEY_ENV, raising=False)
-        with pytest.raises(MissingApiKeyError):
+        with pytest.raises(KeyError) as excinfo:
             make_embedder_from_config(_embedding_config())
+        assert _KEY_ENV in str(excinfo.value)

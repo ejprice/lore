@@ -16,6 +16,7 @@ shared :class:`~loresigil.resilient.ResilientEmbedder`. The cloud wire contract:
 from __future__ import annotations
 
 import httpx
+from pydantic import SecretStr
 
 from loresigil.base import Embedder, EmbedResult
 from loresigil.batching import build_batches, run_in_windows
@@ -58,7 +59,7 @@ class VoyageCloudEmbedder(Embedder):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: SecretStr,
         api_url: str = DEFAULT_API_URL,
         model: str = DEFAULT_MODEL,
         dim: int = DEFAULT_DIM,
@@ -72,7 +73,8 @@ class VoyageCloudEmbedder(Embedder):
         """Configure the cloud embedder.
 
         Args:
-            api_key: Bearer token sent on every request.
+            api_key: Bearer credential sent on every request. It arrives
+                already resolved and still wrapped (#222).
             api_url: Full embeddings endpoint URL.
             model: Voyage model name.
             dim: Embedding dimensionality (must match ``output_dimension``).

@@ -31,6 +31,12 @@ from pydantic import ValidationError
 QUERY_PROMPT_NAME: str = "query"
 DOCUMENT_PROMPT_NAME: str = "document"
 
+# The env var the translated credential is resolved from, and its value. The NAME
+# still lives on the loremaster config (it belongs in ``lore.yaml``); what changed
+# in packet 42 is that translation resolves it instead of copying it across.
+_TEI_KEY_ENV: str = "LORE_TEI_KEY"
+_TEI_KEY_VALUE: str = "tei-secret-prompt-name-tests"
+
 # A valid base loremaster EmbeddingConfig payload (mirrors _CANONICAL_CONFIG in
 # test_config.py so it stays aligned with the real schema).
 _BASE_EMBEDDING_FIELDS: dict[str, Any] = {
@@ -43,7 +49,7 @@ _BASE_EMBEDDING_FIELDS: dict[str, Any] = {
     "max_batch_texts": 32,
     "concurrency": 2,
     "connect_timeout_s": 5.0,
-    "api_key_env": "LORE_TEI_KEY",
+    "api_key_env": _TEI_KEY_ENV,
     "tokenizer": "voyage-4-nano",
     "truncate": False,
 }
@@ -52,6 +58,19 @@ _BASE_EMBEDDING_FIELDS: dict[str, Any] = {
 def _make_base_config(**overrides: Any) -> EmbeddingConfig:
     """Construct a valid base loremaster EmbeddingConfig with optional overrides."""
     return EmbeddingConfig(**{**_BASE_EMBEDDING_FIELDS, **overrides})
+
+
+@pytest.fixture(autouse=True)
+def _export_the_embedding_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Export the credential ``to_loresigil_config`` now resolves.
+
+    Packet 42 made translation the COMPOSITION ROOT (#222): it reads the variable
+    named by ``api_key_env`` and hands the loresigil config an already-resolved
+    ``SecretStr``, so every translation in this module performs IO where none did
+    before. The variable is set here rather than per test because it is
+    infrastructure for the prompt-name property under test, not part of it.
+    """
+    monkeypatch.setenv(_TEI_KEY_ENV, _TEI_KEY_VALUE)
 
 
 # ---------------------------------------------------------------------------
@@ -172,4 +191,7 @@ class TestToLoresigilConfigCarriesPromptNames:
         assert loresigil_config.endpoint == "/embed"
         assert loresigil_config.dim == 2048
         assert loresigil_config.max_input_tokens == 8192
-        assert loresigil_config.api_key_env == "LORE_TEI_KEY"
+        # The env-var NAME stays on the LOREMASTER config; what crosses is the
+        # resolved credential, byte-exact and still wrapped.
+        assert loremaster_config.api_key_env == _TEI_KEY_ENV
+        assert loresigil_config.api_key.get_secret_value() == _TEI_KEY_VALUE

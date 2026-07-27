@@ -5,6 +5,7 @@ requires-python = ">=3.14"
 license = "GPL-3.0-or-later"
 description = "Orchestration layer: MCP server backed by SurrealDB for the lore project."
 dependencies = [
+    "lorerunes",
     "lorescribe",
     "loresigil",
     # DIRECT, not inherited: the trace seam shields its emission with
@@ -17,12 +18,18 @@ dependencies = [
     "pydantic>=2.13",
     "pydantic-settings>=2.14",
     "pyyaml>=6.0.2",
+    # DECLARED, not inherited (ruling R2): ``config.resolve_secret`` imports
+    # ``dotenv_values`` to parse an operator ``.env``. It currently resolves only
+    # as a TRANSITIVE dependency of pydantic-settings, and a transitive pin is
+    # somebody else's promise to keep.
+    "python-dotenv>=1.2",
     "surrealdb>=2.0",
     "httpx>=0.28",
     "python-ulid>=4.0.1",
 ]
 
 [tool.uv.sources]
+lorerunes = { workspace = true }
 lorescribe = { workspace = true }
 loresigil = { workspace = true }
 

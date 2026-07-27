@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
+from dotenv import dotenv_values
 from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
 from pydantic import (
     BaseModel,
@@ -47,6 +48,8 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+
+from lorerunes import is_blank
 
 # Sweep-level batch-embedding dispatch modes (ledger #14 Part 2). "realtime"
 # forces the per-file embed path; "batch" forces the two-pass bulk-sweep path
@@ -714,41 +717,108 @@ def load_config(path: str | Path) -> LoreConfig:
     return config
 
 
-def resolve_secret(env_var_name: str) -> SecretStr:
-    """Resolve a secret value from the environment by variable name.
+def resolve_secret(env_var_name: str, env_file: Path | None = None) -> SecretStr:
+    """Resolve a SECRET from the environment, optionally falling back to a file.
+
+    THE ONE SECRET-RESOLUTION ENTRY POINT for the whole workspace (packet 42 Scope
+    IN #2, ruling R2). Three hand-rolled resolvers used to disagree about
+    precedence, about stripping and about whether a blank value was fatal; this is
+    the single place each of those is decided.
 
     Returns a :class:`pydantic.SecretStr`, not a bare ``str`` — the type is the
     protection (#211). A bare credential renders verbatim through every
     accidental path: an f-string, a container ``repr`` in an exception message,
     a frame local in a traceback. ``SecretStr`` renders ``**********`` in all of
     them BY CONSTRUCTION, so the value can only escape where a caller
-    *deliberately* unwraps it with ``get_secret_value()``. That makes every
-    unwrap a visible, greppable, type-checked decision instead of the default.
-    The redaction filter in :mod:`loremaster.logging_setup` remains the
-    defence-in-depth backstop underneath this; a type that cannot render its
-    value is strictly stronger than a filter that must catch every path.
+    *deliberately* unwraps it. That makes every unwrap a visible, greppable,
+    type-checked decision instead of the default. The redaction filter in
+    :mod:`loremaster.logging_setup` remains the defence-in-depth backstop
+    underneath this; a type that cannot render its value is strictly stronger
+    than a filter that must catch every path.
 
-    The wrapped value is never stripped or otherwise mutated — a secret whose
-    real content happens to include leading/trailing whitespace passes through
-    byte-exact. Only the *emptiness check* looks past whitespace, to catch a
-    variable that was set to nothing but spaces/tabs.
+    **Lookup order (ruling R2).** The environment first; then, ONLY when the
+    caller opted into a file, ``dotenv.dotenv_values(env_file)``. A blank exported
+    variable falls THROUGH to the file (ruling R5 — an operator blanking a
+    variable to force the file is a real calibration workflow), so emptiness is
+    fatal at the END of resolution rather than at each source.
+
+    **The file is OPT-IN, and that is a security property, not a convenience**
+    (ruling R3). ``server.py``, ``scout.py`` and ``index/cli.py`` pass no
+    ``env_file``, so a stray ``.env`` in a container's working directory can never
+    become a production credential source. Nothing is discovered implicitly:
+    ``dotenv_values`` is called with an explicit path and never
+    ``load_dotenv``, which would EXPORT every key in the file into ``os.environ``
+    and silently arm the server path for the rest of the process.
+
+    **``interpolate=False`` is load-bearing (ruling R12).** ``dotenv_values``
+    defaults to interpolating ``${...}`` references, which REWRITES a credential
+    containing a dollar sign — and an unset ``${VAR}`` SHORTENS it
+    (``pw${NOPE}tail`` resolves to ``pwtail``). A credential must arrive
+    byte-exact or it authenticates as a different string.
+
+    The value is never stripped or otherwise mutated — a secret whose real
+    content happens to include leading/trailing whitespace passes through
+    byte-exact. Only the *blankness test* looks past whitespace
+    (:func:`lorerunes.is_blank`, the ONE implementation of that rule, shared with
+    ``loresigil``'s ``api_key`` validator so the two cannot disagree).
 
     Args:
         env_var_name: The name of the environment variable to read.
+        env_file: An operator-authored ``.env`` consulted only when the
+            environment does not supply a usable value. ``None`` (the default)
+            means the environment is the only source.
 
     Returns:
-        The variable's value, unmodified, wrapped in a :class:`SecretStr`.
+        The resolved value, unmodified, wrapped in a :class:`SecretStr`.
 
     Raises:
-        KeyError: If the variable is unset, set to an empty string, or set to
-            a whitespace-only string — an empty or blank API key is effectively
-            missing. The message names the variable so the operator can
-            remediate immediately.
+        KeyError: If resolution ends with no usable value — unset everywhere, or
+            empty/whitespace-only wherever it was found. The message names the
+            variable so the operator can remediate immediately.
     """
     value = os.environ.get(env_var_name)
-    if not value or not value.strip():
+    if (value is None or is_blank(value)) and env_file is not None:
+        value = dotenv_values(env_file, interpolate=False).get(env_var_name)
+    if value is None or is_blank(value):
         raise KeyError(
             f"Required secret environment variable {env_var_name!r} is unset, empty, "
             f"or whitespace-only; export it before starting lore."
         )
     return SecretStr(value)
+
+
+def resolve_config_value(env_var_name: str) -> str:
+    """Resolve a NON-SECRET operational value from the environment by name.
+
+    The sibling of :func:`resolve_secret`, and the reason it exists is ruling R17
+    (#226): ``resolve_secret`` was being used on the SurrealDB *username* at five
+    sites, every one of which immediately unwrapped it again. A round-trip through
+    a secret type is not protection — it is noise that inflates the audited unwrap
+    surface with entries whose justification is *"this is not actually a secret"*.
+    So a non-secret config read gets a plain read, and the unwrap allowlist stays
+    a list of real credential handling.
+
+    It is deliberately a SHARED function rather than five inline
+    ``os.environ[...]`` reads: the ONE-ENTRY-POINT gate permits environment access
+    from this module alone, and — the caveat that decides the design —
+    ``scripts/snapshot_gc.py`` CATCHES the ``KeyError`` and renders it as a clean
+    CLI error, so the failure must stay a ``KeyError`` that NAMES the variable.
+
+    Args:
+        env_var_name: The name of the environment variable to read.
+
+    Returns:
+        The variable's value, unmodified.
+
+    Raises:
+        KeyError: If the variable is unset, empty, or whitespace-only. Same
+            blankness rule as :func:`resolve_secret` (:func:`lorerunes.is_blank`),
+            because "configured to nothing" is not configured either way.
+    """
+    value = os.environ.get(env_var_name)
+    if value is None or is_blank(value):
+        raise KeyError(
+            f"Required environment variable {env_var_name!r} is unset, empty, "
+            f"or whitespace-only; export it before starting lore."
+        )
+    return value

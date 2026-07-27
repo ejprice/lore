@@ -51,6 +51,7 @@ from surrealdb import AsyncSurreal
 from loremaster.config import (
     LoreConfig,
     load_config,
+    resolve_config_value,
     resolve_secret,
 )
 from loremaster.embedding import make_embedder_from_config
@@ -719,13 +720,17 @@ class Scout:
         from loremaster.index.cli import _source_providers
         from loremaster.server import LoreServer
 
-        # The USERNAME is deliberately not carried as a secret (#211): it is a public
+        # The USERNAME is not a secret (#211/#226): it is a public default named
 
-        # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
+        # by SURREAL_DEFAULT_USER_ENV, so it is read as a plain config value while
 
-        # the password stays a SecretStr all the way to the SDK seam.
+        # the password stays a SecretStr all the way to the SDK seam. It used to be
 
-        surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
+        # wrapped and unwrapped again in the same expression — a round-trip that
+
+        # protected nothing and put a non-credential on the audited unwrap surface.
+
+        surreal_user = resolve_config_value(config.surreal.user_env)
         surreal_password = resolve_secret(config.surreal.password_env)
         database = config.effective_surreal_database
         project_root = Path(config.project.root)

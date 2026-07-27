@@ -64,7 +64,7 @@ import socket
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -760,14 +760,24 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         monkeypatch.setattr(lore_deploy, "_read_config_field", lambda c, e: "0")
 
         ran: list[str] = []
-        monkeypatch.setattr(
-            lore_deploy, "_probe_container_binaries",
-            lambda *a, **k: (ran.append("binaries"), lore_deploy._EXIT_OK)[1],
-        )
-        monkeypatch.setattr(
-            lore_deploy, "_probe_workspace_honesty",
-            lambda *a, **k: (ran.append("honesty"), lore_deploy._EXIT_OK)[1],
-        )
+
+        def _record(step: str) -> Callable[..., int]:
+            """A stub probe that records it ran and reports success.
+
+            Written as a closure rather than a ``(list.append(...), value)[1]``
+            tuple trick: ``list.append`` returns ``None``, so the tuple form reads
+            as though it yields a value and only works by index. The closure says
+            what it does.
+            """
+
+            def _stub(*_args: object, **_kwargs: object) -> int:
+                ran.append(step)
+                return int(lore_deploy._EXIT_OK)
+
+            return _stub
+
+        monkeypatch.setattr(lore_deploy, "_probe_container_binaries", _record("binaries"))
+        monkeypatch.setattr(lore_deploy, "_probe_workspace_honesty", _record("honesty"))
         return project, env_file, ran
 
     @pytest.mark.parametrize(

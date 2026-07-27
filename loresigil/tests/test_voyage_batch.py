@@ -235,6 +235,7 @@ from loresigil.voyage_context import DEFAULT_API_URL as CONTEXT_API_URL
 from loresigil.voyage_context import DEFAULT_DIM as CONTEXT_DIM
 from loresigil.voyage_context import DEFAULT_MODEL as CONTEXT_MODEL
 from loresigil.voyage_context import VoyageContextEmbedder
+from pydantic import SecretStr
 
 # --- The brand-new loresigil.voyage_batch module (RED-guarded so collection
 # never explodes; see the module docstring's RED STRATEGY section). ----------
@@ -810,7 +811,7 @@ class _ContextBatchServer:
 def _make_cloud_batch_embedder(transport: httpx.MockTransport, **overrides: Any) -> VoyageCloudEmbedder:
     """Construct the cloud embedder under test — this call IS the constructor contract."""
     kwargs: dict[str, Any] = {
-        "api_key": API_KEY,
+        "api_key": SecretStr(API_KEY),
         "api_url": CLOUD_API_URL,
         "model": CLOUD_MODEL,
         "dim": CLOUD_DIM,
@@ -827,7 +828,7 @@ def _make_cloud_batch_embedder(transport: httpx.MockTransport, **overrides: Any)
 def _make_context_batch_embedder(transport: httpx.MockTransport, **overrides: Any) -> VoyageContextEmbedder:
     """Construct the context embedder under test — this call IS the constructor contract."""
     kwargs: dict[str, Any] = {
-        "api_key": API_KEY,
+        "api_key": SecretStr(API_KEY),
         "api_url": CONTEXT_API_URL,
         "model": CONTEXT_MODEL,
         "output_dimension": CONTEXT_DIM,
@@ -1140,26 +1141,19 @@ class TestFactoryBatchCapabilitySurvivesConfig:
     def test_factory_built_voyage_cloud_embedder_advertises_batch_support(self) -> None:
         from loresigil.factory import EmbeddingConfig, make_embedder
 
-        env_name = "LORE_VOYAGE_BATCH_CLOUD_KEY_TEST"
-        os.environ[env_name] = API_KEY
-        try:
-            config = EmbeddingConfig(backend="voyage-cloud", api_key_env=env_name)
-            embedder = make_embedder(config)
-            assert embedder.supports_batch is True
-        finally:
-            del os.environ[env_name]
+        # The credential arrives ON the config now (packet 42): loresigil reads
+        # no environment variable, so the env-var round-trip this test used to do
+        # has nothing left to exercise.
+        config = EmbeddingConfig(backend="voyage-cloud", api_key=SecretStr(API_KEY))
+        embedder = make_embedder(config)
+        assert embedder.supports_batch is True
 
     def test_factory_built_voyage_context_embedder_advertises_batch_support(self) -> None:
         from loresigil.factory import EmbeddingConfig, make_embedder
 
-        env_name = "LORE_VOYAGE_BATCH_CONTEXT_KEY_TEST"
-        os.environ[env_name] = API_KEY
-        try:
-            config = EmbeddingConfig(backend="voyage-context", api_key_env=env_name)
-            embedder = make_embedder(config)
-            assert embedder.supports_batch is True
-        finally:
-            del os.environ[env_name]
+        config = EmbeddingConfig(backend="voyage-context", api_key=SecretStr(API_KEY))
+        embedder = make_embedder(config)
+        assert embedder.supports_batch is True
 
 
 # ── 5/6. Lifecycle, partial/whole failure, usage conservation ───────────────
@@ -1419,7 +1413,7 @@ class TestBatchRealtimeLiveParitySmoke:
         reason="requires a real VOYAGE_API_KEY in the environment; never runs in CI",
     )
     async def test_live_batch_and_realtime_vectors_agree(self) -> None:
-        api_key = os.environ["VOYAGE_API_KEY"]
+        api_key = SecretStr(os.environ["VOYAGE_API_KEY"])
         embedder = VoyageCloudEmbedder(api_key=api_key)
         text = DOC_POLICY[1]
         doc_id = _stable_id(f"live-parity-smoke:{text}")

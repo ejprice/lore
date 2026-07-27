@@ -45,6 +45,15 @@ from pathlib import Path
 from threading import Lock
 
 import httpx
+
+# The counting seam is IMPORTED, not re-implemented. ``load_api_key`` used to be a
+# byte-divergent twin of loremaster's (inventory C10) and ``build_auth_headers``
+# would be a second copy of the unwrap-and-send policy — two functions that merely
+# agree today are two functions that diverge tomorrow (#102). Importing them also
+# keeps this survey's wire shape identical to the async counter's BY CONSTRUCTION,
+# which is what ``test_calibration_counting.py::TestRequestShapeParity`` exists to
+# guarantee.
+from loremaster.calibration.counting import build_auth_headers, load_api_key
 from loresigil.tokens import VoyageTokenCounter
 from pydantic import SecretStr
 
@@ -717,30 +726,6 @@ def load_baseline_claude_counts(jsonl_path: Path) -> dict[str, int] | None:
 # --------------------------------------------------------------------------- #
 # Live token counting (network surface — test-exempt)
 # --------------------------------------------------------------------------- #
-def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> SecretStr:
-    """Resolve the Anthropic API key from the environment or the operator env file.
-
-    The key is never logged, printed, or copied.  Prefers an already-exported
-    ``ANTHROPIC_API_KEY``; otherwise parses it out of ``env_file``.
-
-    Raises:
-        RuntimeError: If no key can be found.
-    """
-    from_env = os.environ.get(ANTHROPIC_API_KEY_ENV)
-    if from_env:
-        return SecretStr(from_env.strip())
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith(f"{ANTHROPIC_API_KEY_ENV}="):
-                value = stripped.split("=", 1)[1].strip().strip("'\"")
-                if value:
-                    return SecretStr(value)
-    raise RuntimeError(
-        f"{ANTHROPIC_API_KEY_ENV} not set and not found in {env_file}"
-    )
-
-
 class ClaudeTokenCounter:
     """Counts Claude tokens for a text via the Anthropic ``count_tokens`` endpoint.
 
@@ -759,12 +744,17 @@ class ClaudeTokenCounter:
     ) -> None:
         self._model = model
         self._max_retries = max_retries
-        self._headers = {
-            # The ONE unwrap on this path (#211) — the header needs real bytes.
-            "x-api-key": api_key.get_secret_value(),
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        }
+        # SHAPE B, MANDATED BY RULING R19, and this class is why the mandate is
+        # workspace-wide rather than per-class: a build that authenticated only the
+        # ASYNC twin scored zero failures against the contract while this one posted
+        # with no auth header at all. The credential stays WRAPPED here and the
+        # headers are built per request in :meth:`count`.
+        #
+        # It matters doubly for ``MultiModelClaudeCounter``, which builds N of these
+        # over ONE shared ``httpx.Client``: baking headers into that client would be
+        # N writers to one header map, where the last writer wins and the others
+        # silently authenticate as somebody else. Per-request headers are inert.
+        self._api_key = api_key
         # Track ownership so a client shared across several per-model counters
         # (see MultiModelClaudeCounter) is only closed once, by its owner.
         self._owns_client = client is None
@@ -788,7 +778,9 @@ class ClaudeTokenCounter:
         for attempt in range(self._max_retries):
             try:
                 response = self._client.post(
-                    ANTHROPIC_COUNT_TOKENS_URL, headers=self._headers, json=payload
+                    ANTHROPIC_COUNT_TOKENS_URL,
+                    headers=build_auth_headers(self._api_key),
+                    json=payload,
                 )
             except httpx.HTTPError as exc:
                 last_error = f"transport:{type(exc).__name__}"

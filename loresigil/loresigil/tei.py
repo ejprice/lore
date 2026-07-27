@@ -26,6 +26,7 @@ import logging
 import re
 
 import httpx
+from pydantic import SecretStr
 
 from loresigil.base import Embedder, EmbedResult
 from loresigil.batching import build_batches, run_in_windows
@@ -37,6 +38,7 @@ from loresigil.resilient import (
     split_to_fit,
 )
 from loresigil.tokens import VoyageTokenCounter
+from loresigil.voyage_http import build_auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ class TEIEmbedder(Embedder):
     def __init__(
         self,
         base_url: str,
-        api_key: str,
+        api_key: SecretStr,
         endpoint: str = DEFAULT_ENDPOINT,
         dim: int = DEFAULT_DIM,
         max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS,
@@ -86,7 +88,9 @@ class TEIEmbedder(Embedder):
 
         Args:
             base_url: Scheme+host(+port) of the TEI server.
-            api_key: Bearer token sent on every request.
+            api_key: Bearer credential sent on every request. It arrives
+                already resolved and still wrapped; the env-var seam belongs to
+                the consumer's composition root (#222).
             endpoint: Path of the native embed endpoint (default ``/embed``).
             dim: Embedding dimensionality the model produces.
             max_input_tokens: Hard per-input token cap the server enforces.
@@ -112,13 +116,17 @@ class TEIEmbedder(Embedder):
         self._token_counter = VoyageTokenCounter()
         # Reserve is 0 before probe() runs; probe() sets the measured value.
         self._prompt_reserve: int = 0
-        # The bearer token is baked into the client headers below; it is not
-        # retained on the instance (needless secret surface).
+        # The bearer credential is unwrapped inside the shared auth seam and baked
+        # into the client headers below; it is not retained on the instance
+        # (needless secret surface). This backend builds its own client — it needs a
+        # ``base_url`` and a different timeout budget from the cloud arms — but it
+        # takes its HEADERS from the same seam, because the header string is where
+        # the unwrap decision lives and a second copy is a second place it can drift.
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=_REQUEST_TIMEOUT_S,
             transport=transport,
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers=build_auth_headers(api_key),
         )
         # Document and query paths use the same resilience strategy but different
         # prompt names, so each gets its own request function — mirroring the

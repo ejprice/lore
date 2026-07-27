@@ -4,9 +4,9 @@ v0.4 adds one dispatch arm to the config-only backend seam:
 
 * ``backend == "voyage-context"`` -> a :class:`VoyageContextEmbedder` built from
   the config (api_url, model, output_dimension, concurrency), with the bearer
-  key resolved from the env var named by ``api_key_env`` — secrets are env-refs,
-  NEVER inline, and a missing/empty variable is a loud
-  :class:`~loresigil.factory.MissingApiKeyError` at construction.
+  credential carried on the config as an already-resolved ``SecretStr`` (packet
+  42: ``loresigil`` resolves nothing, and a blank credential is rejected at the
+  config boundary — see ``test_factory_secret_resolution.py``).
 * The embedder's ``dim`` follows ``output_dimension`` (the single Matryoshka
   knob for this backend).
 * Unknown-backend behaviour is UNCHANGED: a typo'd key is still rejected by the
@@ -26,14 +26,14 @@ from typing import Any
 
 import pytest
 from loresigil.base import Embedder
-from loresigil.factory import EmbeddingConfig, MissingApiKeyError, make_embedder
+from loresigil.factory import EmbeddingConfig, make_embedder
 from loresigil.voyage_context import DEFAULT_API_URL as CONTEXT_DEFAULT_API_URL
 from loresigil.voyage_context import DEFAULT_DIM as CONTEXT_DEFAULT_DIM
 from loresigil.voyage_context import DEFAULT_MAX_INPUT_TOKENS as CONTEXT_DEFAULT_MAX_INPUT_TOKENS
 from loresigil.voyage_context import DEFAULT_MODEL as CONTEXT_DEFAULT_MODEL
 from loresigil.voyage_context import VoyageContextEmbedder
+from pydantic import SecretStr
 
-CONTEXT_KEY_ENV: str = "LORE_VOYAGE_CONTEXT_KEY_TEST"
 CONTEXT_KEY_VALUE: str = "voyage-context-secret-13579"
 
 # Mirrors a realistic lore.yaml embedding block for the contextualized backend
@@ -47,15 +47,11 @@ CONTEXT_CONFIG_FIELDS: dict[str, Any] = {
     "dim": 2048,
     "output_dimension": 2048,
     "concurrency": 4,
-    "api_key_env": CONTEXT_KEY_ENV,
+    "api_key": SecretStr(CONTEXT_KEY_VALUE),
 }
 
-
-@pytest.fixture(autouse=True)
-def _set_context_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Provide the context-backend key for every test; isolate the real env."""
-    monkeypatch.setenv(CONTEXT_KEY_ENV, CONTEXT_KEY_VALUE)
-
+# The env-var fixture that used to live here is gone with the env-ref: the
+# credential now arrives ON the config, so there is no environment to isolate.
 
 class TestFactoryVoyageContextDispatch:
     """``backend == "voyage-context"`` constructs a VoyageContextEmbedder."""
@@ -84,12 +80,12 @@ class TestFactoryVoyageContextDispatch:
         # underscore lookalike of the canonical hyphenated key is a loud
         # rejection, never a silent alias.
         with pytest.raises(ValueError):
-            EmbeddingConfig(backend="voyage_context", api_key_env=CONTEXT_KEY_ENV)  # type: ignore[arg-type]
+            EmbeddingConfig(backend="voyage_context", api_key=SecretStr(CONTEXT_KEY_VALUE))  # type: ignore[arg-type]
 
     def test_unrelated_unknown_backend_still_rejected(self) -> None:
         # The pre-existing unknown-key behaviour is unchanged by the new arm.
         with pytest.raises(ValueError):
-            EmbeddingConfig(backend="qdrant-magic", api_key_env=CONTEXT_KEY_ENV)  # type: ignore[arg-type]
+            EmbeddingConfig(backend="qdrant-magic", api_key=SecretStr(CONTEXT_KEY_VALUE))  # type: ignore[arg-type]
 
 
 class TestFactoryVoyageContextEndpointResolution:
@@ -183,24 +179,11 @@ class TestFactoryVoyageContextSharedDefaultGuards:
         assert embedder.max_input_tokens == CONTEXT_DEFAULT_MAX_INPUT_TOKENS
 
 
-class TestFactoryVoyageContextKeyResolution:
-    """The bearer key is an env-ref; missing or empty fails loud at construction."""
-
-    def test_missing_env_var_raises_naming_the_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DEFINITELY_UNSET_CONTEXT_KEY_ENV", raising=False)
-        config_fields = {**CONTEXT_CONFIG_FIELDS, "api_key_env": "DEFINITELY_UNSET_CONTEXT_KEY_ENV"}
-        config = EmbeddingConfig(**config_fields)
-        # Pinned to the SPECIFIC failure (missing key), not "any exception" —
-        # otherwise a stub's NotImplementedError would pass this.
-        with pytest.raises(MissingApiKeyError) as exc_info:
-            make_embedder(config)
-        # The error names the offending env var so the operator can fix it.
-        assert "DEFINITELY_UNSET_CONTEXT_KEY_ENV" in str(exc_info.value)
-
-    def test_empty_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An empty string is as useless as an unset variable — same loud failure
-        # (an ``export KEY=`` typo must not build a client with a blank bearer).
-        monkeypatch.setenv(CONTEXT_KEY_ENV, "")
-        config = EmbeddingConfig(**CONTEXT_CONFIG_FIELDS)
-        with pytest.raises(MissingApiKeyError):
-            make_embedder(config)
+# ``TestFactoryVoyageContextKeyResolution`` was DELETED by packet 42, not
+# weakened. It pinned ``make_embedder`` raising ``MissingApiKeyError`` for an
+# unset or empty ``api_key_env``; both the field and the exception are retired
+# (inventory B1/B6/B8) because ``loresigil`` no longer resolves anything. The
+# PROPERTY — a missing or blank credential fails loud and never builds a keyless
+# embedder — is re-established one layer earlier, at the config boundary, and is
+# pinned for all three backends in
+# ``test_factory_secret_resolution.py::TestAnAbsentCredentialFailsLoudAndNeverBuildsAKeylessEmbedder``.

@@ -36,8 +36,16 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
 
     Every field the loresigil factory consumes is carried across verbatim so the
     constructed embedder reports the project config's values (NOT factory
-    defaults). Secrets stay indirected: only ``api_key_env`` (the env-var name)
-    crosses, never a key value.
+    defaults).
+
+    **THIS IS THE COMPOSITION ROOT FOR THE EMBEDDING CREDENTIAL** (#222, operator
+    ruling 2026-07-26). ``lore.yaml`` carries the env-var NAME (``api_key_env``,
+    which stays on the loremaster model); this function is the only production
+    translator, so it is where the name becomes a value — via the shared
+    :func:`loremaster.config.resolve_secret` — and ``loresigil`` reads no
+    environment variable at all. The value crosses as a ``SecretStr``, never as a
+    bare string, and failure moves EARLIER than it used to: an unset or blank
+    variable raises here rather than at ``make_embedder()`` time.
 
     Loremaster exposes a SINGLE ``dim`` knob regardless of backend (no
     duplicate ``output_dimension`` key on ``lore.yaml``). The loresigil factory,
@@ -59,12 +67,16 @@ def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:
 
     Returns:
         The equivalent loresigil :class:`~loresigil.factory.EmbeddingConfig`.
+
+    Raises:
+        KeyError: If the variable named by ``api_key_env`` is unset, empty or
+            whitespace-only. The message names the variable.
     """
     return LoresigilEmbeddingConfig(
         backend=config.backend,
         base_url=config.base_url,
         endpoint=config.endpoint,
-        api_key_env=config.api_key_env,
+        api_key=resolve_secret(config.api_key_env),
         dim=config.dim,
         output_dimension=config.dim,
         max_input_tokens=config.max_input_tokens,
@@ -90,7 +102,8 @@ def make_embedder_from_config(config: EmbeddingConfig) -> Embedder:
         The concrete embedder for the configured backend.
 
     Raises:
-        loresigil.factory.MissingApiKeyError: If the env var named by
-            ``api_key_env`` is unset or empty (loud failure, no keyless embedder).
+        KeyError: If the env var named by ``api_key_env`` is unset, empty or
+            whitespace-only (loud failure, no keyless embedder). It is raised by
+            the translation step, before any embedder object exists.
     """
     return make_embedder(to_loresigil_config(config))

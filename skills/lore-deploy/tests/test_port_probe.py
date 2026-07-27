@@ -41,7 +41,11 @@ def _free_port() -> int:
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+        # ``getsockname`` is typed as returning ``Any``; the AF_INET form is
+        # ``(host, port)``, so the port is narrowed explicitly rather than
+        # returned as an unchecked ``Any``.
+        port: int = probe.getsockname()[1]
+        return port
 
 
 class _StubMCPHandler(http.server.BaseHTTPRequestHandler):

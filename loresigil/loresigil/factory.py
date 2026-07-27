@@ -9,18 +9,20 @@ is therefore a config edit, not a code change.
 * ``backend == "voyage-context"`` → :class:`~loresigil.voyage_context.VoyageContextEmbedder`
   (the contextualized, document-grouped endpoint).
 
-Secrets are env-refs: the bearer key is read from the environment variable named by
-``api_key_env`` (never inlined in the config). A missing/empty key raises
-:class:`MissingApiKeyError` — loud failure, no half-built client.
+Secrets ARRIVE RESOLVED. ``loresigil`` reads no environment variable and owns no
+dotenv workflow (#222, operator ruling 2026-07-26): the consumer's composition root
+resolves the credential and hands it over as a :class:`~pydantic.SecretStr`, so there
+is exactly one place in a process where a secret enters. A blank credential is
+rejected at config construction — loud failure, no half-built client.
 """
 
 from __future__ import annotations
 
-import os
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 
+from lorerunes import is_blank
 from loresigil.base import Embedder
 from loresigil.tei import DEFAULT_DIM as TEI_DEFAULT_DIM
 from loresigil.tei import DEFAULT_ENDPOINT, DEFAULT_MAX_INPUT_TOKENS, TEIEmbedder
@@ -41,31 +43,24 @@ BACKEND_VOYAGE_CONTEXT: str = "voyage-context"
 _TEI_DEFAULT_CONCURRENCY: int = 2
 
 
-class MissingApiKeyError(RuntimeError):
-    """Raised when the env var named by ``api_key_env`` is unset or empty."""
-
-
 class EmbeddingConfig(BaseModel):
     """Typed embedding configuration (the ``embedding:`` block of ``lore.yaml``).
 
-    Secrets are never inlined — ``api_key_env`` names the environment variable that
-    holds the bearer key. Fields not relevant to the selected backend are ignored
-    by that backend's constructor.
+    The credential ARRIVES RESOLVED — the consumer's composition root reads the
+    environment and hands over a :class:`SecretStr`. The env-var NAME still belongs
+    in the consumer's own config (``loremaster.config.EmbeddingConfig.api_key_env``);
+    what changed is that ``loresigil`` no longer reads it. Fields not relevant to the
+    selected backend are ignored by that backend's constructor.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     backend: Literal["tei", "voyage-cloud", "voyage-context"]
-    #: The bearer credential, ALREADY RESOLVED by the caller. loresigil resolves
-    #: nothing: it reads no environment variable and owns no dotenv workflow, so a
-    #: consumer's composition root is the single place a secret enters the process.
-    #: ``SecretStr`` is the protection rather than a convention — the value cannot
-    #: render through a ``repr``, an f-string or a traceback frame, only through a
-    #: deliberate ``get_secret_value()`` at the client seam. ``min_length=1`` makes a
-    #: blank credential a construction-time rejection, so no keyless embedder is ever
-    #: half-built.
-    api_key: Annotated[SecretStr, Field(min_length=1)]
-    api_key_env: str
+    #: The bearer credential, ALREADY RESOLVED by the caller. ``SecretStr`` is the
+    #: protection rather than a convention — the value cannot render through a
+    #: ``repr``, an f-string or a traceback frame, only through the deliberate unwrap
+    #: at the client seam (:func:`loresigil.voyage_http.build_auth_headers`).
+    api_key: SecretStr
 
     # TEI fields (with verified defaults).
     base_url: str | None = None
@@ -91,25 +86,44 @@ class EmbeddingConfig(BaseModel):
     query_prompt_name: str | None = None
     document_prompt_name: str | None = None
 
+    @field_validator("api_key")
+    @classmethod
+    def _reject_a_blank_credential(cls, credential: SecretStr) -> SecretStr:
+        """Reject a credential that is empty or nothing but whitespace.
 
-def _resolve_api_key(api_key_env: str) -> str:
-    """Read the bearer key from the named env var, failing loud if unset/empty.
+        This preserves the deleted ``_resolve_api_key``'s virtue — *a missing or
+        empty key fails loud and never builds a keyless embedder* — at the boundary
+        the value now enters through. It fires strictly EARLIER than the old check,
+        which ran at ``make_embedder()`` time, and it covers every construction path
+        rather than only the consumer's translator: ``scripts/search_score_survey.py``
+        builds this model directly.
 
-    Args:
-        api_key_env: Name of the environment variable holding the key.
+        ⚠ **``lorerunes.is_blank`` is called, never re-implemented (ruling R29).**
+        ``loremaster.config.resolve_secret`` asks the same question at the
+        composition root, and two copies of "what counts as blank" are two answers
+        that can drift. A ``Field(min_length=1)`` was measured and rejected for this:
+        it constrains LENGTH, so a single space (length 1) is accepted.
 
-    Returns:
-        The non-empty key value.
+        The old resolver ACCEPTED a whitespace-only value (inventory B3). That was a
+        bug, and it is deliberately not preserved.
 
-    Raises:
-        MissingApiKeyError: If the variable is unset or empty.
-    """
-    key = os.environ.get(api_key_env)
-    if not key:
-        raise MissingApiKeyError(
-            f"embedding api_key_env {api_key_env!r} is unset or empty in the environment"
-        )
-    return key
+        Args:
+            credential: The candidate credential, already wrapped.
+
+        Returns:
+            The credential, unchanged and byte-exact — a key whose real bytes carry
+            leading or trailing whitespace is NOT blank and must survive intact.
+
+        Raises:
+            ValueError: If the credential carries no real content. pydantic renders
+                it as a ``ValidationError`` located at ``api_key``.
+        """
+        if is_blank(credential.get_secret_value()):
+            raise ValueError(
+                "api_key is empty or whitespace-only; the composition root must resolve a "
+                "real credential before building an embedding config"
+            )
+        return credential
 
 
 def make_embedder(config: EmbeddingConfig) -> Embedder:
@@ -118,15 +132,12 @@ def make_embedder(config: EmbeddingConfig) -> Embedder:
     Construction does not touch the network — only ``probe()`` reaches the endpoint.
 
     Args:
-        config: The embedding configuration.
+        config: The embedding configuration, carrying an already-resolved credential.
 
     Returns:
         A concrete :class:`Embedder` for the selected backend.
-
-    Raises:
-        MissingApiKeyError: If the configured ``api_key_env`` is unset or empty.
     """
-    api_key = _resolve_api_key(config.api_key_env)
+    api_key = config.api_key
 
     if config.backend == BACKEND_TEI:
         if config.base_url is None:

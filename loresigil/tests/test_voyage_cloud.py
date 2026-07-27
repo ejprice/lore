@@ -24,6 +24,7 @@ import httpx
 import pytest
 from loresigil.base import Embedder, EmbedResult
 from loresigil.voyage_cloud import VoyageCloudEmbedder
+from pydantic import SecretStr
 
 API_URL: str = "https://api.voyageai.com/v1/embeddings"
 API_KEY: str = "voyage-test-key-cafebabe"
@@ -63,7 +64,7 @@ class _RecordingTransport:
 def _make_embedder(transport: httpx.MockTransport) -> VoyageCloudEmbedder:
     return VoyageCloudEmbedder(
         api_url=API_URL,
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         model=MODEL,
         dim=CLOUD_DIM,
         output_dimension=CLOUD_DIM,

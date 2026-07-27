@@ -18,7 +18,6 @@ the constants, and the parity test is what guarantees they stay in lock-step.
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -67,27 +66,80 @@ class TerminalCountError(RuntimeError):
     """
 
 
+def build_auth_headers(credential: SecretStr) -> dict[str, str]:
+    """Build the authenticated ``count_tokens`` request headers (ruling R26).
+
+    **THE TYPED SEAM, and the type IS the instrument.** Three earlier gates all
+    keyed on parameter NAMES (``api_key``/``password``, a ``.get_secret_value()``
+    call, an ``"api_key" in parameters`` sweep) and a class holding a bare ``str``
+    under some other name walked past all three. The name set is unbounded; the
+    TYPE is not — so a bare ``str`` reaching an outgoing auth header is a mypy
+    error at every call site regardless of what the caller called its variable,
+    and an ``AttributeError`` at runtime if one is forced through anyway.
+
+    It returns the FULL header set for the request rather than the auth header
+    alone, because the auth header is not separable in practice: a caller that
+    merged a seam-built ``x-api-key`` into a locally-built dict would be building
+    outgoing headers outside the seam again, which is the shape being closed.
+    Returning the whole set also keeps the wire shape of the two counters
+    (this one and ``scripts/token_survey.ClaudeTokenCounter``, which imports this
+    function) identical BY CONSTRUCTION rather than by the parity test noticing
+    later.
+
+    ⚠ **The unwrapped value must not outlive the returned mapping.** Under ruling
+    R19's shape B the result is built per request, handed straight to
+    ``httpx``, and never stored on an instance — see
+    :meth:`AsyncClaudeTokenCounter.count`.
+
+    Args:
+        credential: The Anthropic API key, still wrapped.
+
+    Returns:
+        The request headers, with the credential's real bytes in ``x-api-key``.
+    """
+    return {
+        "x-api-key": credential.get_secret_value(),
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
+
+
 def load_api_key(env_file: Path = DEFAULT_ENV_FILE) -> SecretStr:
     """Resolve the Anthropic API key from the environment or the operator env file.
 
-    The key is never logged, printed, or copied. Prefers an already-exported
-    ``ANTHROPIC_API_KEY``; otherwise parses ``KEY=value`` out of ``env_file``. Mirrors
-    :func:`token_survey.load_api_key`.
+    A THIN CALLER of the shared resolver, not a lookup of its own (ruling R2). It
+    owns exactly two decisions: that this path opts into the operator ``.env``
+    workflow — the ONLY call site in the workspace permitted to pass an
+    ``env_file`` (ruling R3, so a stray ``.env`` can never become a *server*
+    credential source) — and that the failure is reported as a ``RuntimeError``
+    naming BOTH the variable and the file, because the shared resolver's
+    ``KeyError`` names only the variable and the operator has to be able to fix
+    the environment and the file in one step. That translation mirrors
+    :func:`loremaster.config.load_config`, which turns the same ``KeyError`` into
+    a ``ValueError`` naming the yaml field.
+
+    ``scripts/token_survey.py`` imports this function rather than owning a twin:
+    the two used to be byte-divergent copies of one parser (inventory C10), and
+    two functions that merely agree today are two functions that diverge tomorrow.
+
+    The key is never logged, printed, or copied.
+
+    Args:
+        env_file: The operator ``.env`` consulted when the environment does not
+            already export the key.
+
+    Returns:
+        The resolved key, wrapped.
 
     Raises:
-        RuntimeError: If no key can be found.
+        RuntimeError: If no usable key can be found in either source.
     """
-    from_env = os.environ.get(ANTHROPIC_API_KEY_ENV)
-    if from_env:
-        return SecretStr(from_env.strip())
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith(f"{ANTHROPIC_API_KEY_ENV}="):
-                value = stripped.split("=", 1)[1].strip().strip("'\"")
-                if value:
-                    return SecretStr(value)
-    raise RuntimeError(f"{ANTHROPIC_API_KEY_ENV} not set and not found in {env_file}")
+    try:
+        return resolve_secret(ANTHROPIC_API_KEY_ENV, env_file)
+    except KeyError as error:
+        raise RuntimeError(
+            f"{ANTHROPIC_API_KEY_ENV} not set and not found in {env_file}"
+        ) from error
 
 
 class AsyncClaudeTokenCounter:
@@ -110,15 +162,18 @@ class AsyncClaudeTokenCounter:
     ) -> None:
         self._model = model
         self._max_retries = max_retries
-        # The ONE unwrap on this path (#211): the header needs the real bytes, and
-        # the key exists nowhere else on this object. A bare ``str`` here would
-        # render verbatim in any repr of ``self._headers`` — which is precisely
-        # what an httpx error or a debug log would carry.
-        self._headers = {
-            "x-api-key": api_key.get_secret_value(),
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        }
+        # SHAPE B, MANDATED BY RULING R19: no auth headers are built here at all —
+        # the credential stays WRAPPED on the instance and the headers are built
+        # per request in :meth:`count`.
+        #
+        # The alternative (bake the headers into the client at construction) has
+        # TWO arms — an owned client and an injected one — and a build that fixed
+        # only one produced a failure set byte-identical to the correct build while
+        # leaving every production caller unauthenticated. That is #107's shape:
+        # green everywhere, 100% broken in production. One code path has no arm to
+        # forget. It also means this counter never rewrites the headers of a client
+        # its caller owns.
+        self._api_key = api_key
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=_HTTP_CLIENT_TIMEOUT_S)
         self._sleep: AsyncSleep = sleep or asyncio.sleep
@@ -146,7 +201,9 @@ class AsyncClaudeTokenCounter:
         for attempt in range(self._max_retries):
             try:
                 response = await self._client.post(
-                    ANTHROPIC_COUNT_TOKENS_URL, headers=self._headers, json=payload
+                    ANTHROPIC_COUNT_TOKENS_URL,
+                    headers=build_auth_headers(self._api_key),
+                    json=payload,
                 )
             except httpx.HTTPError as exc:
                 last_error = f"transport:{type(exc).__name__}"

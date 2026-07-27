@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -1880,7 +1881,7 @@ class TestConformVerbDispatch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`main(["conform"])` dispatches to `_run_conformance` — no --project required."""
-        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
         received: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
         def _stub_run_conformance(*args: object, **kwargs: object) -> int:
@@ -1905,7 +1906,7 @@ class TestConformVerbDispatch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failing conformance run must surface through main as a non-zero exit."""
-        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
         monkeypatch.setattr(
             lore_deploy,
             "_run_conformance",
@@ -1924,7 +1925,7 @@ class TestConformVerbDispatch:
         CONTRACT DECISION: `--image` is the chosen override-flag name (the design doc says
         the image is "overridable" but does not name the flag). Flagged in the report.
         """
-        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
         received: dict[str, object] = {}
 
         def _stub_run_conformance(*args: object, **kwargs: object) -> int:
@@ -1958,7 +1959,7 @@ class TestConformVerbDispatch:
         existing pins while conforming the wrong artifact. The function-level default is pinned
         (TestRunConformance) — this pins the CLI->function default WIRING.
         """
-        monkeypatch.setattr(lore_deploy.shutil, "which", lambda name: "/usr/bin/podman")
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/podman")
         received: dict[str, object] = {}
 
         def _stub_run_conformance(*args: object, **kwargs: object) -> int:

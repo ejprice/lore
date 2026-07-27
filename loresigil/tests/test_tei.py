@@ -32,6 +32,7 @@ import pytest
 from loresigil.base import Embedder, EmbedResult
 from loresigil.tei import TEIEmbedder
 from loresigil.tokens import VoyageTokenCounter
+from pydantic import SecretStr
 
 # The dotted logger name the TEI embedder emits under (module ``__name__``).
 TEI_LOGGER = "loresigil.tei"
@@ -89,7 +90,7 @@ def _make_embedder(transport: httpx.MockTransport) -> TEIEmbedder:
     return TEIEmbedder(
         base_url=BASE_URL,
         endpoint=EMBED_ENDPOINT,
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         dim=TEI_DIM,
         max_input_tokens=TEI_MAX_INPUT_TOKENS,
         concurrency=2,

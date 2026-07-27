@@ -72,7 +72,6 @@ import argparse
 import asyncio
 import inspect
 import json
-import os
 import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -2363,9 +2362,22 @@ async def _amain(argv: Sequence[str] | None = None) -> int:
         _print_dry_run(surfaces, battery)
         return EXIT_OK
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    # Imported HERE rather than at module scope, matching this script's standing
+    # idiom for every loremaster import (see the surface provider below): a missing
+    # or half-built workspace becomes ONE loud failure at the point of use.
+    from loremaster.calibration.counting import ANTHROPIC_API_KEY_ENV
+    from loremaster.config import resolve_secret
+
+    # Routed through the ONE resolver (ruling R7) rather than reading the
+    # environment here: this presence check was the fourth hand-rolled
+    # environment read of a CREDENTIAL, and an exemption for it would have made
+    # the entry-point allowlist carry two justification shapes instead of one.
+    # The exit code and the operator-facing message are unchanged.
+    try:
+        resolve_secret(ANTHROPIC_API_KEY_ENV)
+    except KeyError:
         print(
-            "ANTHROPIC_API_KEY is unset; export it from /home/ejprice/docker/mcp/.env",
+            f"{ANTHROPIC_API_KEY_ENV} is unset; export it from /home/ejprice/docker/mcp/.env",
             file=sys.stderr,
         )
         return EXIT_NO_KEY

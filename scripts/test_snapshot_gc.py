@@ -168,10 +168,14 @@ def _wire_fakes(
     summaries: list[SnapshotSummary],
     stamper: _FakeStamper,
 ) -> None:
-    """Stub out the two store-touching seams so ``run_gc`` is hermetic."""
-    # Must return what the REAL ``resolve_secret`` returns — a ``SecretStr`` (#211).
-    # A fake that hands back a bare ``str`` tests a seam production does not have.
+    """Stub out the environment and store seams so ``run_gc`` is hermetic."""
+    # Each fake must return what the REAL function returns, or it tests a seam
+    # production does not have: ``resolve_secret`` hands back a ``SecretStr``
+    # (#211), and its non-secret sibling ``resolve_config_value`` — which packet 42
+    # introduced for the SurrealDB username (#226, retiring a wrap-then-unwrap
+    # round-trip) — hands back a plain ``str``.
     monkeypatch.setattr(gc, "resolve_secret", lambda name: SecretStr(f"dummy-{name}"))
+    monkeypatch.setattr(gc, "resolve_config_value", lambda name: f"dummy-{name}")
 
     async def _fake_list(**_kwargs: Any) -> list[SnapshotSummary]:
         return summaries

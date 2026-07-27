@@ -60,7 +60,7 @@ from loresigil.tei import TEIEmbedder
 from loresigil.testing import FakeEmbedder
 from loresigil.voyage_cloud import VoyageCloudEmbedder
 from loresigil.voyage_context import VoyageContextEmbedder
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 # ── Contextualized backend parameters (S8-verified, as pinned in
 #    test_voyage_context.py) ───────────────────────────────────────────────────
@@ -138,7 +138,7 @@ class _UsageContextTransport:
 
 def _make_context_embedder(transport: httpx.MockTransport) -> VoyageContextEmbedder:
     return VoyageContextEmbedder(
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         api_url=CONTEXT_API_URL,
         model=CONTEXT_MODEL,
         output_dimension=CONTEXT_DIM,
@@ -417,7 +417,7 @@ class TestNonReportingBackendsDefaultNone:
 
         embedder = VoyageCloudEmbedder(
             api_url=CLOUD_API_URL,
-            api_key=API_KEY,
+            api_key=SecretStr(API_KEY),
             model=CLOUD_MODEL,
             dim=CLOUD_DIM,
             output_dimension=CLOUD_DIM,
@@ -441,7 +441,7 @@ class TestNonReportingBackendsDefaultNone:
         embedder = TEIEmbedder(
             base_url=TEI_BASE_URL,
             endpoint=TEI_ENDPOINT,
-            api_key=API_KEY,
+            api_key=SecretStr(API_KEY),
             dim=TEI_DIM,
             max_input_tokens=TEI_MAX_INPUT_TOKENS,
             concurrency=2,

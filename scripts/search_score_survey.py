@@ -72,7 +72,7 @@ from typing import Literal
 
 # The percentile math is committed, unit-tested and pinned in token_survey.py;
 # it lives beside this script in scripts/, not an installed package.
-from loremaster.config import resolve_secret
+from loremaster.config import resolve_config_value, resolve_secret
 
 # S4b audit finding #1 (REPORT-slate-audit-searchstore.md §Concern 6): the
 # tokenizer, the verbatim-identifier-anchor detector, and the verdict-firing
@@ -691,17 +691,23 @@ def _make_store() -> SurrealStore:
         # The USERNAME is not a secret and the SDK needs a real ``str`` on the
         # wire: a ``SecretStr`` here raises ``BufferError: no encoder for type
         # SecretStr`` at signin (#211 / cold-audit Defect A). ``signin_credentials``
-        # deliberately unwraps only the password, so the username is unwrapped here
-        # exactly as at the other four ``resolve_secret`` user sites.
-        user=resolve_secret(DEFAULT_SURREAL_USER_ENV).get_secret_value(),
+        # deliberately unwraps only the password, so the username is read as a plain
+        # config value (#226) at this and the other four former round-trip sites.
+        user=resolve_config_value(DEFAULT_SURREAL_USER_ENV),
         password=resolve_secret(DEFAULT_SURREAL_PASSWORD_ENV),
     )
 
 
 def _make_embedder():  # type: ignore[no-untyped-def]
+    # ⚠ THIS IS A COMPOSITION ROOT (#233 / ruling R31). It builds the loresigil
+    # config DIRECTLY rather than through ``loremaster.embedding.to_loresigil_config``,
+    # so it is one of only two production construction sites of that model — and the
+    # one no type gate can see, because ``scripts/`` is not a typecheck member. The
+    # credential is therefore resolved HERE, by the shared resolver, and arrives
+    # already wrapped: ``loresigil`` reads no environment variable (#222).
     config = EmbeddingConfig(
         backend=BACKEND_TEI,
-        api_key_env=DEFAULT_TEI_API_KEY_ENV,
+        api_key=resolve_secret(DEFAULT_TEI_API_KEY_ENV),
         base_url=DEFAULT_TEI_BASE_URL,
         model=DEFAULT_TEI_MODEL,
         dim=DEFAULT_EMBEDDING_DIM,

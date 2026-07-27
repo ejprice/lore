@@ -115,6 +115,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from pydantic import SecretStr
 
 from loresigil.base import Embedder, EmbedResult, EmbedUsage
 from loresigil.batching import build_batches, run_in_windows
@@ -215,7 +216,7 @@ class VoyageContextEmbedder(Embedder):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: SecretStr,
         api_url: str = DEFAULT_API_URL,
         model: str = DEFAULT_MODEL,
         output_dimension: int = DEFAULT_DIM,
@@ -228,8 +229,9 @@ class VoyageContextEmbedder(Embedder):
         """Configure the contextualized cloud embedder.
 
         Args:
-            api_key: Bearer token sent on every request (arrives resolved; the
-                env-var seam is the factory's responsibility).
+            api_key: Bearer credential sent on every request. It arrives
+                already resolved and still wrapped; the env-var seam belongs to
+                the consumer's composition root (#222).
             api_url: Full contextualized-embeddings endpoint URL.
             model: Voyage contextualized model name.
             output_dimension: The single Matryoshka dimensionality knob —

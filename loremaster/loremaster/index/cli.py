@@ -29,7 +29,13 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from loremaster.config import WATCH_STATIC, LoreConfig, load_config, resolve_secret
+from loremaster.config import (
+    WATCH_STATIC,
+    LoreConfig,
+    load_config,
+    resolve_config_value,
+    resolve_secret,
+)
 from loremaster.embedding import make_embedder_from_config
 from loremaster.extension import SourceProvider
 from loremaster.graph_surreal import SurrealCodeGraph
@@ -106,10 +112,12 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
     # server reads — shared state by shared database, not shared files) holding
     # chunks + file_text + manifest + code graph, per SurrealConfig. Credentials
     # are resolved by env-var NAME (never inlined), failing loudly when unset.
-    # The USERNAME is deliberately not carried as a secret (#211): it is a public
-    # default named by SURREAL_DEFAULT_USER_ENV, so it is unwrapped here while
-    # the password stays a SecretStr all the way to the SDK seam.
-    surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
+    # The USERNAME is not a secret (#211/#226): it is a public default named by
+    # SURREAL_DEFAULT_USER_ENV, so it is read as a plain config value while the
+    # password stays a SecretStr all the way to the SDK seam. It used to be
+    # wrapped and unwrapped again in the same expression — a round-trip that
+    # protected nothing and put a non-credential on the audited unwrap surface.
+    surreal_user = resolve_config_value(config.surreal.user_env)
     surreal_password = resolve_secret(config.surreal.password_env)
     database = config.effective_surreal_database
 

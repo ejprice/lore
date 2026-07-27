@@ -52,9 +52,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-# The three uv-workspace members whose code the conformance run must prove it is actually
+# The uv-workspace members whose code the conformance run must prove it is actually
 # running. Mirrors ``[tool.uv.workspace] members`` in the root pyproject.toml.
-WORKSPACE_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe")
+#
+# ⚠ **A MEMBER MISSING HERE IS A MEMBER WHOSE ABSENCE FROM THE IMAGE IS INVISIBLE UNTIL
+# PRODUCTION** — this guard is the #139 instrument, so a gap in it is #131/#139 occurring
+# inside the thing built to prevent them. ``lorerunes`` was added by packet 42 and reached
+# the image (the Containerfile COPYs it); until it was named here, nothing PROVED that.
+# The count is deliberately not stated in prose: a fifth member must not have to remember
+# to update a sentence. ``test_secret_typing.py::TestTheInImageGuardCoversEveryWorkspaceMember``
+# derives the expected set from ``pyproject.toml`` and reddens if this list falls behind.
+WORKSPACE_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe", "lorerunes")
 
 # The deploy topology binds the project tree read-only at /workspace (design doc
 # "In-container run topology"). A parameter, not a hardcoded literal, so the guard is

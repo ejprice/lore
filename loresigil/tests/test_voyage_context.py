@@ -90,6 +90,7 @@ from loresigil.voyage_context import (
     DEFAULT_MODEL,
     VoyageContextEmbedder,
 )
+from pydantic import SecretStr
 
 # S8-verified endpoint/model parameters (spec ground truth, independent of the
 # implementation — the defaults test pins the module constants against these).
@@ -209,7 +210,7 @@ def _make_embedder(
     pinned in ``test_factory_voyage_context.py``).
     """
     return VoyageContextEmbedder(
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         api_url=API_URL,
         model=MODEL,
         output_dimension=output_dimension,
@@ -230,7 +231,7 @@ def _make_embedder_with_sleep(
     instead of paying real backoff sleeps.
     """
     return VoyageContextEmbedder(
-        api_key=API_KEY,
+        api_key=SecretStr(API_KEY),
         api_url=API_URL,
         model=MODEL,
         output_dimension=CONTEXT_DIM,
