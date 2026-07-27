@@ -10,12 +10,26 @@
 #   - the COLLECTED TEST COUNT is asserted identical to run 1's. A moving count
 #     is exactly how take 1 lied, so it is a checked variable, not an assumption.
 # Full per-run output is kept; the store's log window is captured on failure.
+#
+# USAGE:  scripts/contention_hunt.sh [ITERATIONS] [OUTPUT_DIR]
+#   ITERATIONS  default 30. Twenty is this repo's floor for clearing a
+#               concurrency test; thirty leaves margin.
+#   OUTPUT_DIR  default `$(mktemp -d)`, printed on the first line so the run is
+#               findable. Pass a path to keep the evidence somewhere durable.
+#
+# The repo root is derived from THIS SCRIPT'S OWN LOCATION, never hardcoded, so
+# the instrument works in any worktree — including the sibling worktrees this
+# defect was found in. (The first version of this file hardcoded one absolute
+# worktree path and one session-specific /tmp path, which would have made it a
+# script that only ever worked once, for one agent. A committed instrument that
+# only its author can run is not an instrument.)
 set -u
-WT=/home/ejprice/PycharmProjects/lore-pkt11ia
-SP=/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/e4e297f5-9586-443e-8d86-3bcd266fa8fb/scratchpad
-OUT=$SP/e3hunt-frozen
-rm -rf "$OUT"; mkdir -p "$OUT"
+ITERS="${1:-30}"
+WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${2:-$(mktemp -d -t contention-hunt-XXXXXX)}"
+mkdir -p "$OUT"
 TL="$OUT/00-timeline.txt"
+echo "contention_hunt: repo=$WT  iterations=$ITERS  output=$OUT"
 
 cd "$WT" || exit 1
 HEAD0=$(git rev-parse HEAD)
@@ -34,7 +48,7 @@ tail -2 "$OUT/00-fullsuite.txt" >> "$TL"
 
 BASE_COLLECTED=""
 fails=0
-for i in $(seq 1 30); do
+for i in $(seq 1 "$ITERS"); do
     RUN="$OUT/run-$(printf '%02d' "$i").txt"
     { echo "=== run $i start $(date -Is) ==="
       uv run --no-sync pytest -n auto -q --tb=long -rf $CONTRACT 2>&1
@@ -60,5 +74,5 @@ for i in $(seq 1 30); do
         echo "run $i: green   $(grep -E '^[0-9]+ passed' "$RUN" | tail -1)  [collected=$N]" >> "$TL"
     fi
 done
-echo "TOTAL FAILING RUNS: $fails / 30   (freeze held: head and worktree unchanged throughout)" >> "$TL"
+echo "TOTAL FAILING RUNS: $fails / $ITERS   (freeze held: head and worktree unchanged throughout)" >> "$TL"
 echo "done $(date -Is)" >> "$TL"
