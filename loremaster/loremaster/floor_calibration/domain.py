@@ -1,8 +1,8 @@
-"""STUB SURFACE (packet 11-i-a) — the pure domain of floor calibration.
+"""The pure domain of floor calibration (packet 11-i-a).
 
-WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER. Every
-``NotImplementedError`` is a hole the 11-i-a builder fills; the names and
-signatures are the FROZEN interface packet 11-i-b cites.
+The names and signatures were FROZEN by the contract author (`contract-11ia-1`)
+and are the interface packet 11-i-b cites; the bodies were built by
+`builder-11ia-1` against that contract.
 
 Everything in this module is a PURE FUNCTION or a pre-registered CONSTANT — no
 store, no clock, no I/O. That is deliberate: the head identity and the corpus
@@ -31,7 +31,12 @@ dependency happens to resolve.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import Any
+
+import orjson
+
+from loremaster.index.records import sha512_hex
 
 # --- F6: the head identity axis registry -------------------------------------
 #
@@ -44,11 +49,22 @@ from typing import Any
 # ``query_shape`` is registered NOW at default ``"any"`` (F6, from the client
 # consult) precisely so the axis costs zero migration when it is first used.
 
-FLOOR_HEAD_ALWAYS_SERIALISED_AXES: tuple[str, ...] = ()
+FLOOR_HEAD_ALWAYS_SERIALISED_AXES: tuple[str, ...] = ("scope", "statistic")
 """The axes that serialize unconditionally — CLOSED, exact-set-pinned."""
 
-FLOOR_HEAD_DEFAULTED_AXES: Mapping[str, str] = {}
-"""Axis name -> registered default. Serialized only when the value differs."""
+FLOOR_HEAD_DEFAULTED_AXES: Mapping[str, str] = MappingProxyType({"query_shape": "any"})
+"""Axis name -> registered default. Serialized only when the value differs.
+
+A :class:`~types.MappingProxyType`, not a bare ``dict``, for the same reason the
+always-serialised axes are a tuple: a closed registry a caller can mutate at run
+time is not closed, and this one keys a RECORD IDENTITY.
+"""
+
+# The pre-image encoding, in ONE place (operator ruling O1). ``OPT_SORT_KEYS``
+# makes the pre-image independent of the caller's mapping order, and JSON escapes
+# every separator a value could otherwise splice into — so the forgery the
+# retired ``\x00``-join needed a REFUSAL guard for is impossible by construction.
+_PREIMAGE_OPTIONS = orjson.OPT_SORT_KEYS
 
 
 # --- F4.2: the validity floors (``insufficient_corpus``'s predicate) ---------
@@ -58,15 +74,15 @@ FLOOR_HEAD_DEFAULTED_AXES: Mapping[str, str] = {}
 # The values are pre-registered and adversary-attackable, which is why they are
 # named constants and not literals at a call site.
 
-MIN_ANSWERED_PROBES = 0
-MIN_IDENTIFIER_PROBES = 0
-MIN_ABSENT_SAMPLES = 0
+MIN_ANSWERED_PROBES = 30
+MIN_IDENTIFIER_PROBES = 15
+MIN_ABSENT_SAMPLES = 30
 
 
 def corpus_meets_validity_floors(
     *, answered_probes: int, identifier_probes: int, absent_samples: int
 ) -> bool:
-    """STUB (packet 11-i-a). F4.2's ``insufficient_corpus`` predicate.
+    """F4.2's ``insufficient_corpus`` predicate.
 
     ⚠ THE CONSTANTS MUST BE READ, NOT RE-TYPED. Before this function existed the
     three floors were pinned as VALUES that nothing consumed — a build could
@@ -84,11 +100,18 @@ def corpus_meets_validity_floors(
         ``False`` is what puts the engine in ``insufficient_corpus``; it gates
         VALIDITY only — adopted N is chosen solely by F1.
     """
-    raise NotImplementedError("packet 11-i-a: corpus_meets_validity_floors")
+    # The three floors are READ off the module here, at CALL time — never
+    # re-typed as literals. That is what makes them ONE implementation: raise
+    # ``MIN_ANSWERED_PROBES`` and this predicate's verdict moves with it.
+    return (
+        answered_probes >= MIN_ANSWERED_PROBES
+        and identifier_probes >= MIN_IDENTIFIER_PROBES
+        and absent_samples >= MIN_ABSENT_SAMPLES
+    )
 
 
 def head_identity(axes: Mapping[str, str]) -> str:
-    """STUB (packet 11-i-a). The ONE head-identity function (F6).
+    """The ONE head-identity function (F6).
 
     ``records.sha512_hex`` over the sorted ``(axis_name, value)`` pairs.
 
@@ -107,11 +130,61 @@ def head_identity(axes: Mapping[str, str]) -> str:
             JSON pre-image escapes NUL, so the forgery the old guard existed to
             stop is impossible by construction rather than by a check (O1).
     """
-    raise NotImplementedError("packet 11-i-a: head_identity")
+    return sha512_hex(orjson.dumps(_serialised_axes(axes), option=_PREIMAGE_OPTIONS))
+
+
+def _serialised_axes(axes: Mapping[str, str]) -> dict[str, str]:
+    """The CLOSED, validated axis mapping :func:`head_identity` hashes.
+
+    Every always-serialised axis is REQUIRED and every other key must be a
+    registered defaulted axis; a registered axis sitting AT its default is
+    ELIDED, which is what makes registering ``query_shape`` today cost zero
+    migration (F6) — and what makes a non-default value mint a new head.
+
+    Args:
+        axes: The caller's axis mapping.
+
+    Returns:
+        The mapping that becomes the pre-image, with defaults elided.
+
+    Raises:
+        ValueError: A required axis is missing, an unregistered axis name was
+            supplied, or a value is not a ``str``.
+    """
+    registered = set(FLOOR_HEAD_ALWAYS_SERIALISED_AXES) | set(FLOOR_HEAD_DEFAULTED_AXES)
+    unregistered = sorted(set(axes) - registered)
+    if unregistered:
+        raise ValueError(
+            f"unregistered head axis name(s) {unregistered}: the F6 registry is CLOSED "
+            f"(always-serialised {list(FLOOR_HEAD_ALWAYS_SERIALISED_AXES)}, defaulted "
+            f"{sorted(FLOOR_HEAD_DEFAULTED_AXES)}) — an unknown axis would mint a head "
+            f"nothing can ever resolve again"
+        )
+    missing = [axis for axis in FLOOR_HEAD_ALWAYS_SERIALISED_AXES if axis not in axes]
+    if missing:
+        raise ValueError(
+            f"head axis mapping is missing required axis/axes {missing} — a head is "
+            f"identified by ALL of {list(FLOOR_HEAD_ALWAYS_SERIALISED_AXES)}"
+        )
+    for name, value in axes.items():
+        if not isinstance(value, str):
+            raise ValueError(
+                f"head axis {name!r} has a non-string value {value!r} ({type(value).__name__}): "
+                f"coercing it would make 1 and '1' the same head"
+            )
+    serialised = {axis: axes[axis] for axis in FLOOR_HEAD_ALWAYS_SERIALISED_AXES}
+    serialised.update(
+        {
+            axis: axes[axis]
+            for axis, default in FLOOR_HEAD_DEFAULTED_AXES.items()
+            if axis in axes and axes[axis] != default
+        }
+    )
+    return serialised
 
 
 def corpus_content_digest(rows: Iterable[Mapping[str, Any]]) -> str:
-    """STUB (packet 11-i-a). The C10 exact-skip change-detection datum.
+    """The C10 exact-skip change-detection datum.
 
     A ``sha512_hex`` over the ASCENDING-ID walk of every chunk's
     ``(point_id, content_hash)``, computed from the run's own exhaustive scroll
@@ -142,4 +215,10 @@ def corpus_content_digest(rows: Iterable[Mapping[str, Any]]) -> str:
     Raises:
         KeyError: A row is missing ``point_id`` or ``content_hash``.
     """
-    raise NotImplementedError("packet 11-i-a: corpus_content_digest")
+    # A LIST OF PAIRS, not a concatenation: JSON delimits both fields and both
+    # ends of every row, so no character can move across a boundary unnoticed and
+    # no row can be spliced into its neighbour. Subscripting (never ``.get``) is
+    # what makes a row missing either field a loud ``KeyError`` instead of an
+    # empty-string substitution that would digest-equal a corpus without the row.
+    pairs = [[row["point_id"], row["content_hash"]] for row in rows]
+    return sha512_hex(orjson.dumps(pairs))

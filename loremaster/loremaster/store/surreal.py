@@ -1656,7 +1656,7 @@ class SurrealStore:
         return text
 
     # =========================================================================
-    # ⚠ PACKET 11-i-a STUB — the C8 narrowed calibration-pool projection.
+    # ⚠ PACKET 11-i-a — the C8 narrowed calibration-pool projection.
     #
     # WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER.
     # RULED DECISION 8 authorises this as an 11-i-a addition: a new UNSERVED
@@ -1664,7 +1664,7 @@ class SurrealStore:
     # =========================================================================
 
     async def enumerate_calibration_pool(self) -> CalibrationPool:
-        """STUB (packet 11-i-a). The EXHAUSTIVE, PROVEN chunk enumeration (C8).
+        """The EXHAUSTIVE, PROVEN chunk enumeration (C8).
 
         Reads the live chunk count, scrolls with a limit STRICTLY GREATER than
         that count, and refuses to hand back a silently truncated set. The
@@ -1696,11 +1696,43 @@ class SurrealStore:
                 settled-index gate, NOT ``measurement_failed`` (F8-C8's
                 modification), and the two must never be one type.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealStore.enumerate_calibration_pool")
+        counted_total = await self.count()
+        # STRICTLY greater, by exactly one: at ``limit == count`` a full result is
+        # INDISTINGUISHABLE from a truncated one, so the truncation check below
+        # could never fire. ⚠ The margin is a TRADE, disclosed rather than tuned:
+        # a corpus that GREW between the count and the walk returns ``limit`` rows
+        # and is therefore reported as a truncation (``measurement_failed``)
+        # rather than as the gentler count mismatch (discard-requeue). A wider
+        # margin would route small growth to the mismatch branch — see
+        # ``REPORT-builder-11ia-1.md``; nothing in the contract decides it, and
+        # widening it to fit a fixture is not a derivation.
+        limit = counted_total + _CALIBRATION_POOL_LIMIT_MARGIN
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_calibration_pool_projection()} FROM {CHUNK_TABLE} "
+                f"ORDER BY {_CALIBRATION_POOL_ORDER_COLUMN} LIMIT ${_LIMIT_PARAM}",
+                {_LIMIT_PARAM: limit},
+            )
+        )
+        if len(rows) == limit:
+            raise CalibrationPoolTruncatedError(
+                f"the calibration-pool scroll returned exactly its limit ({limit}) rows "
+                f"against a counted total of {counted_total}: the walk is TRUNCATED, so "
+                f"'pool size' cannot be trusted and the measurement must fail loudly rather "
+                f"than measure a quasi-uniform subsample"
+            )
+        if len(rows) != counted_total:
+            raise CalibrationPoolCountMismatchError(
+                f"the calibration-pool scroll returned {len(rows)} rows against a counted "
+                f"total of {counted_total} WITHOUT hitting its limit ({limit}): the corpus "
+                f"moved under the walk. Discard and requeue through the settled-index gate — "
+                f"this is NOT a measurement failure"
+            )
+        return CalibrationPool(rows=tuple(rows), counted_total=counted_total, limit=limit)
 
 
 # =============================================================================
-# ⚠ PACKET 11-i-a STUB SURFACE (continued) — the calibration pool's types.
+# ⚠ PACKET 11-i-a (continued) — the calibration pool's types.
 # =============================================================================
 
 # The NARROWED projection the calibration pool reads: the digest inputs
@@ -1710,7 +1742,45 @@ class SurrealStore:
 # the other way for an explicit projection: a missing column reads ``None``
 # silently, so the pool declares exactly what it needs). 11-i-b extends THIS
 # constant rather than issuing a second read.
-CALIBRATION_POOL_COLUMNS: tuple[str, ...] = ()
+#
+# ⚠ IT SHIPS AS THE C10 DIGEST INPUTS AND NOTHING ELSE, by ruling E6: "membership
+# beyond ``point_id`` + ``content_hash`` is 11-i-b's to fix, because the
+# probe-derivation columns are its requirement". Adding a column here is all it
+# takes — the projection below is DERIVED from this tuple, so the constant and the
+# statement cannot drift, and the returned row keys equal it by construction.
+CALIBRATION_POOL_COLUMNS: tuple[str, ...] = ("point_id", "content_hash")
+
+# The chunk's record id IS its point id, and a RecordID's string component cannot
+# be indexed or prefix-matched (store reference §2), so the pool projects the BARE
+# id under the name every consumer already uses.
+_CALIBRATION_POOL_POINT_ID_COLUMN = "point_id"
+# The column the walk is ORDERED by — the ALIAS, not ``id``. Probed 2026-07-26 on
+# the 3.2.1 test store: ``ORDER BY id`` under an EXPLICIT projection that does not
+# select ``id`` is a PARSE ERROR (*"Missing order idiom `id` in statement
+# selection"*, store reference §7), while ordering by the projected alias works and
+# is the same order — the table prefix is constant across every chunk.
+_CALIBRATION_POOL_ORDER_COLUMN = _CALIBRATION_POOL_POINT_ID_COLUMN
+# How far the issued limit exceeds the counted total. ONE is the minimum that
+# makes a truncation detectable at all (see ``enumerate_calibration_pool``).
+_CALIBRATION_POOL_LIMIT_MARGIN = 1
+# The bound limit parameter (probed: ``LIMIT $param`` is legal on 3.2.1).
+_LIMIT_PARAM = "limit"
+
+
+def _calibration_pool_projection() -> str:
+    """The C8 walk's SELECT list, DERIVED from :data:`CALIBRATION_POOL_COLUMNS`.
+
+    Every declared column is projected by name except the point id, which is the
+    record id's bare string component. Deriving the statement from the constant is
+    what makes ``set(row) == set(CALIBRATION_POOL_COLUMNS)`` true by construction
+    rather than by a reviewer noticing that two lists still agree.
+    """
+    return ", ".join(
+        f"record::id({_ID_KEY}) AS {column}"
+        if column == _CALIBRATION_POOL_POINT_ID_COLUMN
+        else column
+        for column in CALIBRATION_POOL_COLUMNS
+    )
 
 
 class CalibrationPoolError(SurrealStoreError):

@@ -1,8 +1,8 @@
-"""STUB SURFACE (packet 11-i-a) — leader election on the SurrealDB store.
+"""Leader election on the SurrealDB store (packet 11-i-a).
 
-WRITTEN BY THE CONTRACT AUTHOR (`contract-11ia-1`), NOT BY A BUILDER. Every
-``NotImplementedError`` is a hole the 11-i-a builder fills; the names and
-signatures are the FROZEN interface packet 11-i-b and 11-ii cite.
+The names and signatures were FROZEN by the contract author (`contract-11ia-1`)
+and are the interface packets 11-i-b and 11-ii cite; the bodies were built by
+`builder-11ia-1` against that contract.
 
 **THE ALGORITHM IS NOT OURS AND MUST NOT BECOME OURS** (ruled decision 13,
 Addendum F-r2 §R10; operator directive P1). ``kubernetes.leaderelection``
@@ -39,13 +39,71 @@ legs.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import concurrent.futures
+import json
+import logging
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any
 
+from kubernetes.leaderelection import electionconfig
+from kubernetes.leaderelection.leaderelectionrecord import LeaderElectionRecord
 from pydantic import SecretStr
+from surrealdb import AsyncSurreal
 
-from loremaster.store._txn import SurrealStoreError
+from loremaster.store._txn import (
+    _CONNECTION_ERRORS,
+    SurrealConnectionError,
+    SurrealStoreError,
+    TxnContentionExhaustedError,
+    _SurrealConnection,
+    bootstrap_session,
+    execute_transaction,
+    run_query,
+    signin_credentials,
+)
+from loremaster.store.surreal_schema import (
+    LEASE_FENCE_EPOCH_COLUMN,
+    LEASE_HOLDER_IDENTITY_COLUMN,
+    LEASE_REVISION_COLUMN,
+    LEASE_SINGLETON_ID,
+    LEASE_TABLE,
+    generate_lease_ddl,
+)
+
+logger = logging.getLogger(__name__)
+
+# This seam's OWN canonical rejection event and raised-message noun. FROZEN by
+# ruling O2 — ``test_retry_seam.py`` compares the observed values against two
+# hand-written dicts as EXACT SETS, so a different spelling reddens node ids no
+# production change can fix.
+_QUERY_LABEL = "lease.query.rejected"
+_QUERY_NOUN = "lease query"
+
+# The lease row's address, bound (never interpolated) at every call site.
+_ROW_PARAM = "lease_row_id"
+_HOLDER_PARAM = "lease_holder"
+_DURATION_PARAM = "lease_duration"
+_ACQUIRE_PARAM = "lease_acquire_time"
+_RENEW_PARAM = "lease_renew_time"
+_OBSERVED_REVISION_PARAM = "lease_observed_revision"
+_FENCE_EPOCH_PARAM = "lease_fence_epoch"
+
+# The columns one read of the lease row projects — EXPLICIT, never ``SELECT *``:
+# store reference §2 records that ``SELECT *`` OMITS a ``NONE``-valued column
+# entirely (so a released holder would raise ``KeyError``), while an explicit
+# projection reads a missing column as ``None``, which is exactly the shape
+# :class:`LeaseObservation` declares.
+_OBSERVATION_COLUMNS: tuple[str, ...] = (
+    LEASE_HOLDER_IDENTITY_COLUMN,
+    "lease_duration",
+    "acquire_time",
+    "renew_time",
+    LEASE_REVISION_COLUMN,
+    LEASE_FENCE_EPOCH_COLUMN,
+)
 
 # --- L2: the lease tunables, OPERATOR-CONFIRMED 2026-07-25 -------------------
 #
@@ -107,8 +165,43 @@ class LeaseObservation:
     fence_epoch: int
 
 
+def _as_rows(result: Any) -> list[dict[str, Any]]:
+    """Narrow a statement result to its list of dict rows.
+
+    The guarded ``CREATE`` returns ``None`` when its guard elides the write, and
+    a CAS whose ``WHERE`` fails returns ``[]``; both are DEFINED empty results
+    with a meaning (a lost race), never errors, so they collapse to ``[]`` here.
+    """
+    if not isinstance(result, list):
+        return []
+    return [row for row in result if isinstance(row, dict)]
+
+
+def _optional_text(value: Any) -> str | None:
+    """Coerce one projected record field to ``str | None`` (never ``"None"``)."""
+    return None if value is None else str(value)
+
+
+def _observation(row: dict[str, Any]) -> LeaseObservation:
+    """Build a :class:`LeaseObservation` from one projected lease row.
+
+    The two counters are read as ``int`` with a 0 floor rather than defensively
+    defaulted to ``None``: the schema declares both ``int DEFAULT 0``, and a
+    reader that tolerated a missing ``fence_epoch`` would silently turn every
+    fenced commit UNGUARDED instead of loud.
+    """
+    return LeaseObservation(
+        holder_identity=_optional_text(row.get(LEASE_HOLDER_IDENTITY_COLUMN)),
+        lease_duration=_optional_text(row.get("lease_duration")),
+        acquire_time=_optional_text(row.get("acquire_time")),
+        renew_time=_optional_text(row.get("renew_time")),
+        revision=int(row.get(LEASE_REVISION_COLUMN) or 0),
+        fence_epoch=int(row.get(LEASE_FENCE_EPOCH_COLUMN) or 0),
+    )
+
+
 class SurrealLeaseStore:
-    """STUB (packet 11-i-a). The conventional ``_query``-owning seam under the lock.
+    """The conventional ``_query``-owning seam under the lock.
 
     Split out from :class:`SurrealLeaderLock` on purpose: the lock's surface is
     SYNCHRONOUS (the library calls it from its own thread), while every store
@@ -129,45 +222,146 @@ class SurrealLeaseStore:
     ) -> None:
         """Store the wiring. Does not open any connection yet.
 
-        ⚠ REAL EVEN IN THE STUB: ``test_retry_seam.py`` CONSTRUCTS every
-        discovered ``_query``-owning seam, and a raising constructor would
-        redden that shared pin for a reason unrelated to this contract.
+        ⚠ IT OPENS NOTHING: ``test_retry_seam.py`` CONSTRUCTS every discovered
+        ``_query``-owning seam, and a constructor that dialed (or raised) would
+        redden that shared pin for a reason unrelated to this store. The socket is
+        opened lazily, under a double-checked lock, by :meth:`_ensure_connection`.
         """
         self._url = url
         self._namespace = namespace
         self._database = database
         self._user = user
         self._password = password
-        self._connection: Any | None = None
+        self._connection: _SurrealConnection | None = None
+        # Guards the connect-time check-then-set so N concurrent first-callers
+        # never each open their own socket (the double-checked lock every
+        # connection owner in this package holds — pinned by
+        # ``TestEveryConnectionOwnerOpensExactlyOneSocket``).
+        self._connect_lock = asyncio.Lock()
 
-    async def _ensure_connection(self) -> Any:
-        """STUB. The lazily-opened, double-checked-locked connection."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore._ensure_connection")
+    async def _ensure_connection(self) -> _SurrealConnection:
+        """Return the live connection, opening + signing in on first use.
 
-    async def _drop_connection(self, connection: Any) -> None:
-        """STUB. The compare-and-swap self-heal."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore._drop_connection")
+        The session bootstrap is :func:`~loremaster.store._txn.bootstrap_session`
+        — the ONE shared implementation every connection owner calls. This
+        method's own job is DISPOSITION (the F4 ruling): any bootstrap failure,
+        transport fault OR exhausted contention alike, is wrapped as
+        :class:`SurrealConnectionError` after the half-open socket is closed,
+        because the connection never became usable whatever the reason.
+
+        Raises:
+            SurrealConnectionError: The server is unreachable, rejected auth, or
+                the session bootstrap exhausted its retry budget.
+        """
+        if self._connection is not None:
+            return self._connection
+        async with self._connect_lock:
+            if self._connection is not None:
+                # A concurrent caller connected while this one waited; mypy cannot
+                # model the cross-coroutine mutation across the ``await`` above.
+                return self._connection  # type: ignore[unreachable]
+            connection = AsyncSurreal(self._url)
+            credentials = signin_credentials(user=self._user, password=self._password)
+            try:
+                await connection.signin(credentials)
+                await bootstrap_session(connection, self._namespace, self._database, url=self._url)
+            except TxnContentionExhaustedError as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): "
+                    f"the session bootstrap exhausted its retry budget"
+                ) from error
+            except _CONNECTION_ERRORS as error:
+                await self._safe_close(connection)
+                raise SurrealConnectionError(
+                    f"could not connect to SurrealDB at {self._url!r} "
+                    f"(namespace={self._namespace!r}, database={self._database!r}): {error}"
+                ) from error
+            self._connection = connection
+            logger.debug(
+                "lease.connected",
+                extra={"namespace": self._namespace, "database": self._database},
+            )
+            return connection
+
+    async def _drop_connection(self, connection: _SurrealConnection) -> None:
+        """Drop the cached handle so the NEXT call reconnects (the self-heal).
+
+        A compare-and-swap: the cached handle is cleared only while ``connection``
+        is STILL the cached one, so a late caller holding a stale reference can
+        never wipe out a freshly-reconnected socket.
+        """
+        if self._connection is connection:
+            self._connection = None
+        await self._safe_close(connection)
+
+    @staticmethod
+    async def _safe_close(connection: _SurrealConnection) -> None:
+        """Close ``connection``, swallowing an already-dead-socket failure."""
+        try:
+            await connection.close()
+        except _CONNECTION_ERRORS:
+            logger.debug("lease.close.already_closed")
 
     async def _query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
-        """STUB. Delegates to ``store._txn.run_query`` — the ONE shared attempt body.
+        """Run a single statement on the (lazily opened) connection, self-healing.
+
+        Delegates to :func:`~loremaster.store._txn.run_query` — the ONE shared
+        attempt body: classify, signal, self-heal, log. No private retry, no
+        private backoff, no private classification.
 
         ⚠ FROZEN VALUES (lead ruling O2): ``label="lease.query.rejected"`` and
         ``noun="lease query"``. ``test_retry_seam.py`` compares observed events
         and nouns against two hand-written dicts as exact sets.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore._query")
+        return await run_query(
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+            noun=_QUERY_NOUN,
+            label=_QUERY_LABEL,
+            statement=statement,
+            params=params or {},
+            logger=logger,
+        )
 
     async def close(self) -> None:
-        """STUB. Close the live connection (if any); tolerant of never-connected."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.close")
+        """Close the live connection (if any); tolerant of never-connected."""
+        if self._connection is not None:
+            await self._safe_close(self._connection)
+            self._connection = None
 
     async def ensure_ready(self) -> None:
-        """STUB. Apply the lease schema slice — idempotent, re-runnable."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.ensure_ready")
+        """Apply the lease schema slice — idempotent and safe to re-run.
+
+        The multi-statement DDL rides
+        :func:`~loremaster.store._txn.execute_transaction`, which verifies EVERY
+        statement's status; the SDK's plain ``query()`` validates statement[0]
+        only, which is how a silent partial schema apply happens (store
+        reference §3).
+        """
+        await self._ensure_connection()
+        ddl = generate_lease_ddl()
+        await execute_transaction(
+            f"BEGIN;\n{ddl}COMMIT;\n",
+            {},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
+        logger.debug("lease.schema.ready", extra={"database": self._database})
 
     async def read(self) -> LeaseObservation | None:
-        """STUB. Read the lease row; ``None`` when it does not exist yet."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.read")
+        """Read the lease row; ``None`` when it does not exist yet."""
+        rows = _as_rows(
+            await self._query(
+                f"SELECT {', '.join(_OBSERVATION_COLUMNS)} FROM "
+                f"type::record('{LEASE_TABLE}', ${_ROW_PARAM})",
+                {_ROW_PARAM: LEASE_SINGLETON_ID},
+            )
+        )
+        return _observation(rows[0]) if rows else None
 
     async def create_if_absent(
         self,
@@ -177,7 +371,7 @@ class SurrealLeaseStore:
         acquire_time: str,
         renew_time: str,
     ) -> LeaseObservation | None:
-        """STUB. Create the lease row iff it does not exist.
+        """Create the lease row iff it does not exist.
 
         Returns:
             The new observation, or ``None`` when the row already existed —
@@ -190,8 +384,41 @@ class SurrealLeaseStore:
                 one passed the whole contract at 143/0 (adversary W26) — and a
                 run that silently "never leads" because its table is missing is
                 indistinguishable from a run that legitimately lost.
+
+        ⚠ **HOW "ONLY A DUPLICATE IS A LOST RACE" IS BUILT WITHOUT READING AN
+        ENGINE MESSAGE** (F8-C6 bars matching engine text, and #118 is the
+        receipt: a classifier greps for "assert" while the engine says "must
+        conform to"). A bare ``CREATE`` on an existing row RAISES, which would
+        force exactly that forbidden text match to tell a duplicate from a real
+        rejection. So the existence test is a GUARD INSIDE the statement — ONE
+        statement, therefore one implicit transaction, therefore atomic: an
+        already-present row yields an EMPTY result (a value, never an error),
+        while any genuine rejection of the CREATE still raises. A concurrent
+        first-writer either loses the guard (empty) or collides retryably, and
+        the ONE shared driver retries it (probed 2026-07-26 on the 3.2.1 test
+        store: the guarded CREATE returns the row when absent and ``None`` when
+        present).
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.create_if_absent")
+        rows = _as_rows(
+            await self._query(
+                f"IF array::len((SELECT VALUE id FROM "
+                f"type::record('{LEASE_TABLE}', ${_ROW_PARAM}))) = 0 "
+                f"{{ CREATE type::record('{LEASE_TABLE}', ${_ROW_PARAM}) CONTENT {{ "
+                f"{LEASE_HOLDER_IDENTITY_COLUMN}: ${_HOLDER_PARAM}, "
+                f"lease_duration: ${_DURATION_PARAM}, "
+                f"acquire_time: ${_ACQUIRE_PARAM}, "
+                f"renew_time: ${_RENEW_PARAM}, "
+                f"{LEASE_REVISION_COLUMN}: 0, {LEASE_FENCE_EPOCH_COLUMN}: 0 }} }}",
+                {
+                    _ROW_PARAM: LEASE_SINGLETON_ID,
+                    _HOLDER_PARAM: holder_identity,
+                    _DURATION_PARAM: lease_duration,
+                    _ACQUIRE_PARAM: acquire_time,
+                    _RENEW_PARAM: renew_time,
+                },
+            )
+        )
+        return _observation(rows[0]) if rows else None
 
     async def compare_and_set(
         self,
@@ -202,7 +429,7 @@ class SurrealLeaseStore:
         acquire_time: str,
         renew_time: str,
     ) -> LeaseObservation | None:
-        """STUB. The CAS: ``WHERE revision = $observed_revision``, in ONE update.
+        """The CAS: ``WHERE revision = $observed_revision``, in ONE update.
 
         Bumps ``revision`` always and ``fence_epoch`` ONLY when
         ``holder_identity`` differs from the stored one — both store-side, in
@@ -215,11 +442,41 @@ class SurrealLeaseStore:
             that harmless BY CONSTRUCTION: empty ⇒ status ``False``, never
             retried, never diagnosed in line — the algorithm's own next-tick
             ``get`` re-observes ground truth (R10.2).
+
+        ⚠ **THE FENCE CLAUSE READS THE *STORED* HOLDER, AND THAT IS PROBED, NOT
+        ASSUMED.** Every ``SET`` right-hand side evaluates against the row's
+        BEFORE state regardless of clause order — probed 2026-07-26 on the 3.2.1
+        test store with the ``holder_identity`` assignment placed FIRST: the
+        fence still bumped, so the ``IF`` saw the OLD holder. The fence clause is
+        nevertheless written first, because a build whose correctness depended on
+        the opposite reading would be silently wrong in exactly one direction (a
+        fence that never bumps hands a zombie a valid token forever).
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.compare_and_set")
+        rows = _as_rows(
+            await self._query(
+                f"UPDATE type::record('{LEASE_TABLE}', ${_ROW_PARAM}) SET "
+                f"{LEASE_FENCE_EPOCH_COLUMN} = {LEASE_FENCE_EPOCH_COLUMN} + "
+                f"(IF {LEASE_HOLDER_IDENTITY_COLUMN} = ${_HOLDER_PARAM} {{ 0 }} ELSE {{ 1 }}), "
+                f"{LEASE_HOLDER_IDENTITY_COLUMN} = ${_HOLDER_PARAM}, "
+                f"lease_duration = ${_DURATION_PARAM}, "
+                f"acquire_time = ${_ACQUIRE_PARAM}, "
+                f"renew_time = ${_RENEW_PARAM}, "
+                f"{LEASE_REVISION_COLUMN} = {LEASE_REVISION_COLUMN} + 1 "
+                f"WHERE {LEASE_REVISION_COLUMN} = ${_OBSERVED_REVISION_PARAM} RETURN AFTER",
+                {
+                    _ROW_PARAM: LEASE_SINGLETON_ID,
+                    _HOLDER_PARAM: holder_identity,
+                    _DURATION_PARAM: lease_duration,
+                    _ACQUIRE_PARAM: acquire_time,
+                    _RENEW_PARAM: renew_time,
+                    _OBSERVED_REVISION_PARAM: observed_revision,
+                },
+            )
+        )
+        return _observation(rows[0]) if rows else None
 
     async def release_if_held(self, *, holder_identity: str, fence_epoch: int) -> bool:
-        """STUB. Clear the holder iff ``(holder_identity, fence_epoch)`` still match.
+        """Clear the holder iff ``(holder_identity, fence_epoch)`` still match.
 
         RULED DECISION 23. This port of the algorithm has NO ``release``
         (client-go does), so without it every rolling update waits out a full
@@ -228,12 +485,33 @@ class SurrealLeaseStore:
         Returns:
             ``True`` when the holder was cleared; ``False`` when it was not
             ours to clear (the row is then left EXACTLY as it was).
+
+        The guard carries the FENCE as well as the identity, which is what makes
+        a zombie's ``finally`` harmless: a pod that held the lease, lost it and
+        re-acquired under a NEW epoch must not clear the lease it no longer holds
+        under the OLD one. ``revision`` advances (every successful write does);
+        ``fence_epoch`` does NOT — releasing is not a holder CHANGE, and the next
+        acquirer's own CAS is what bumps the fence.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaseStore.release_if_held")
+        rows = _as_rows(
+            await self._query(
+                f"UPDATE type::record('{LEASE_TABLE}', ${_ROW_PARAM}) SET "
+                f"{LEASE_HOLDER_IDENTITY_COLUMN} = NONE, "
+                f"{LEASE_REVISION_COLUMN} = {LEASE_REVISION_COLUMN} + 1 "
+                f"WHERE {LEASE_HOLDER_IDENTITY_COLUMN} = ${_HOLDER_PARAM} "
+                f"AND {LEASE_FENCE_EPOCH_COLUMN} = ${_FENCE_EPOCH_PARAM} RETURN AFTER",
+                {
+                    _ROW_PARAM: LEASE_SINGLETON_ID,
+                    _HOLDER_PARAM: holder_identity,
+                    _FENCE_EPOCH_PARAM: fence_epoch,
+                },
+            )
+        )
+        return bool(rows)
 
 
 class SurrealLeaderLock:
-    """STUB (packet 11-i-a). The six-member resource lock the algorithm drives.
+    """The six-member resource lock the algorithm drives.
 
     Bridges the library's SYNCHRONOUS lock surface onto :class:`SurrealLeaseStore`
     by submitting each coroutine to ``loop`` from the calling thread — the
@@ -265,60 +543,218 @@ class SurrealLeaderLock:
         self.identity = identity
         self.name = name
         self.namespace = namespace
+        # The optimistic-concurrency token THIS lock observed at its last
+        # :meth:`get` — the CAS predicate, never re-read inside :meth:`update`
+        # (an adapter that re-reads can never LOSE its CAS, which deletes the
+        # token and re-opens the two-leaders window between get and update).
+        self._observed_revision: int | None = None
+        # The fence epoch of the last SUCCESSFUL WRITE (create, renew or seize).
+        self._observed_fence_epoch: int | None = None
+        # The cooperative poison (R10.3). The library ships no stop mechanism, so
+        # a stopped lock makes its writes FAIL, which is what ends ``renew_loop``.
+        self._stopped = False
+
+    def _call(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        """Run ``coroutine`` on the adapter's loop FROM the calling thread.
+
+        The library drives the lock synchronously from its own thread, while every
+        store call here is async — so each one is submitted to the loop that owns
+        the store's connection and waited on with the renew deadline as its
+        timeout. That is what makes "no serving-path frame ever touches the
+        lease" true BY CONSTRUCTION (R10.3): the election owns its own thread and
+        its own store instance.
+        """
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result(
+            timeout=self._call_timeout_seconds
+        )
 
     def get(self, name: str, namespace: str) -> tuple[bool, Any]:
-        """STUB. ``(True, LeaderElectionRecord)`` when present; ``(False, LockAbsent)``.
+        """``(True, LeaderElectionRecord)`` when present; ``(False, LockAbsent)``.
 
         The record returned on the TRUE branch carries EXACTLY the library's
         four fields and nothing else — see the contract for why an extra
         attribute is a liveness bug rather than a cosmetic one.
+
+        A row that EXISTS but names no holder (decision 23's released lease) is
+        still ``(True, record)``: the algorithm's own next branch sees a ``None``
+        field and goes straight to ``update_lock``, which is precisely the
+        immediate handoff decision 23 exists to buy. Reporting it as ABSENT would
+        send the candidate down the create path against a row that is already
+        there, and nobody would ever acquire it.
+
+        A store FAILURE is reported as a non-404 ``LockAbsent``, which is the
+        library's own "error retrieving resource lock" channel: it logs and
+        returns ``False`` for this tick WITHOUT attempting a create, and the
+        election's own ``retry_period`` loop tries again. The election thread must
+        survive a transient store fault — a raise here would end maintenance for
+        the process's lifetime — and the swallow is LOUD in the log, never silent.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.get")
+        try:
+            observation = self._call(self._store.read())
+        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+            logger.warning(
+                "lease.lock.read_failed",
+                extra={"lock_identity": self.identity, "error": str(error)},
+            )
+            return False, _lock_unavailable(f"the lease row could not be read: {error}")
+        if observation is None:
+            return False, _lock_absent()
+        self._observed_revision = observation.revision
+        return True, LeaderElectionRecord(
+            observation.holder_identity,
+            observation.lease_duration,
+            observation.acquire_time,
+            observation.renew_time,
+        )
 
     def create(self, name: str, namespace: str, election_record: Any) -> bool:
-        """STUB. Create-if-absent. ⚠ The algorithm calls this with the KEYWORD
+        """Create-if-absent. ⚠ The algorithm calls this with the KEYWORD
         ``election_record`` — the parameter name is part of the interface."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.create")
+        if self._stopped:
+            return False
+        try:
+            observation = self._call(
+                self._store.create_if_absent(
+                    holder_identity=election_record.holder_identity,
+                    lease_duration=election_record.lease_duration,
+                    acquire_time=election_record.acquire_time,
+                    renew_time=election_record.renew_time,
+                )
+            )
+        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+            logger.warning(
+                "lease.lock.create_failed",
+                extra={"lock_identity": self.identity, "error": str(error)},
+            )
+            return False
+        return self._record_write(observation)
 
     def update(self, name: str, namespace: str, updated_record: Any) -> bool:
-        """STUB. The CAS against the revision observed by the last :meth:`get`.
+        """The CAS against the revision observed by the last :meth:`get`.
 
         ⚠ It must CAS on the revision THIS lock observed at its last
         :meth:`get`, never on a freshly re-read one. An adapter that re-reads
         can never lose its CAS, which deletes the optimistic-concurrency token
         entirely and re-opens the two-leaders window between get and update —
         and it passed the whole contract at 143/0 (adversary W18).
+
+        A lock that has never observed the row has no token to CAS against and so
+        cannot write: that is ``False`` (this tick did not win), not an error.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.update")
+        if self._stopped:
+            return False
+        observed_revision = self._observed_revision
+        if observed_revision is None:
+            return False
+        try:
+            observation = self._call(
+                self._store.compare_and_set(
+                    observed_revision=observed_revision,
+                    holder_identity=updated_record.holder_identity,
+                    lease_duration=updated_record.lease_duration,
+                    acquire_time=updated_record.acquire_time,
+                    renew_time=updated_record.renew_time,
+                )
+            )
+        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+            logger.warning(
+                "lease.lock.update_failed",
+                extra={"lock_identity": self.identity, "error": str(error)},
+            )
+            return False
+        return self._record_write(observation)
+
+    def _record_write(self, observation: LeaseObservation | None) -> bool:
+        """Absorb a write's outcome: remember its counters, report its status.
+
+        ``None`` is the DEFINED empty result — a lost race — and is never retried
+        and never diagnosed in line: the algorithm's own next-tick ``get``
+        re-observes ground truth. Both counters are refreshed on EVERY successful
+        write, not only the first, because the fenced commit reads the epoch on
+        every run and a stale one fences against an epoch nobody holds.
+        """
+        if observation is None:
+            return False
+        self._observed_revision = observation.revision
+        self._observed_fence_epoch = observation.fence_epoch
+        return True
 
     # -- the adapter-owned extras (NOT part of the library's surface) -------
 
     @property
     def fence_epoch(self) -> int | None:
-        """STUB. The fence epoch observed at the last successful write, or ``None``.
+        """The fence epoch observed at the last successful write, or ``None``.
 
         Updated after EVERY successful write — the first create, each renewal,
         and a seize — not only the first (adversary residual 7). The engine's
         fenced commit reads this on every run.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.fence_epoch")
+        return self._observed_fence_epoch
 
     def release_if_held(self) -> bool:
-        """STUB. Ruled decision 23's graceful handoff, from the election thread.
+        """Ruled decision 23's graceful handoff, from the election thread.
 
         ⚠ It must ACTUALLY release. A build returning ``False`` unconditionally
         passed the entire contract at 143/0 (adversary W29) while making
         decision 23 a no-op — and the symptom is invisible in tests and costs a
         full ``lease_duration`` of stalled maintenance on every rolling update.
+
+        A lock that never wrote holds no fence, so it has nothing to release and
+        reports ``False`` without touching the store.
         """
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.release_if_held")
+        fence_epoch = self._observed_fence_epoch
+        if fence_epoch is None:
+            return False
+        try:
+            released = self._call(
+                self._store.release_if_held(
+                    holder_identity=self.identity, fence_epoch=fence_epoch
+                )
+            )
+        except (SurrealStoreError, concurrent.futures.TimeoutError, TimeoutError) as error:
+            logger.warning(
+                "lease.lock.release_failed",
+                extra={"lock_identity": self.identity, "error": str(error)},
+            )
+            return False
+        return bool(released)
 
     def stop(self) -> None:
-        """STUB. The cooperative poison: after this, ``create``/``update`` return
+        """The cooperative poison: after this, ``create``/``update`` return
         ``False``, which ends the library's ``renew_loop`` within
         ``renew_deadline`` and fires ``onstopped_leading``. The library ships no
         stop mechanism of its own (R10.3)."""
-        raise NotImplementedError("packet 11-i-a: SurrealLeaderLock.stop")
+        self._stopped = True
+
+
+def _lock_absent() -> LockAbsent:
+    """The ``404``-shaped FALSE-``get`` response that licenses a CREATE.
+
+    The algorithm reads ``json.loads(record.body)['code']`` and compares it
+    against :data:`~http.HTTPStatus.NOT_FOUND` BEFORE it will try to create the
+    lock, so the code inside the body is the load-bearing part — see this
+    module's docstring for the measured failure of both obvious alternatives.
+    """
+    return LockAbsent(
+        body=json.dumps({"code": int(HTTPStatus.NOT_FOUND), "message": "lease row absent"}),
+        reason="Not Found",
+        status=int(HTTPStatus.NOT_FOUND),
+    )
+
+
+def _lock_unavailable(message: str) -> LockAbsent:
+    """A NON-404 FALSE-``get`` response: the row's state is UNKNOWN this tick.
+
+    Deliberately not 404: the algorithm treats any other code as "error
+    retrieving resource lock", logs it and returns ``False`` WITHOUT creating —
+    which is the correct disposition for a store we could not read. Reporting
+    404 instead would invite a create against a row that may well exist.
+    """
+    return LockAbsent(
+        body=json.dumps({"code": int(HTTPStatus.SERVICE_UNAVAILABLE), "message": message}),
+        reason="Service Unavailable",
+        status=int(HTTPStatus.SERVICE_UNAVAILABLE),
+    )
 
 
 def lease_election_config(
@@ -327,11 +763,27 @@ def lease_election_config(
     on_started_leading: Callable[[], None],
     on_stopped_leading: Callable[[], None],
 ) -> Any:
-    """STUB (packet 11-i-a). Build the library ``Config`` at the L2 tunables.
+    """Build the library ``Config`` at the L2 tunables.
+
+    All three tunables are passed EXPLICITLY: ``Config`` has NO defaults (every
+    one is a required positional), so "use the upstream defaults" means naming
+    client-go's documented 15/10/2 — and it VALIDATES them by calling
+    ``sys.exit``, i.e. an illegal triple raises ``SystemExit`` at construction,
+    not ``ValueError``. Both callbacks are passed explicitly too: ``Config``
+    silently substitutes its own no-op ``onstopped_leading`` for ``None``, so a
+    build that forgot to wire abdication would look identical and the run would
+    never learn it had lost the lease.
 
     Returns:
         ``kubernetes.leaderelection.electionconfig.Config`` carrying
         :data:`LEASE_DURATION_SECONDS` / :data:`LEASE_RENEW_DEADLINE_SECONDS` /
         :data:`LEASE_RETRY_PERIOD_SECONDS`, all passed EXPLICITLY.
     """
-    raise NotImplementedError("packet 11-i-a: lease_election_config")
+    return electionconfig.Config(
+        lock,
+        LEASE_DURATION_SECONDS,
+        LEASE_RENEW_DEADLINE_SECONDS,
+        LEASE_RETRY_PERIOD_SECONDS,
+        on_started_leading,
+        on_stopped_leading,
+    )
