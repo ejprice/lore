@@ -210,6 +210,137 @@ operator WHICH auth mechanism failed — exactly the diagnostic-data-is-worth-pr
 that justifies this entire packet. This is a labelled-pattern behavior and packet 42 already owns
 that surface, so it is in scope rather than a follow-on.
 
+---
+
+## Third ruling wave — 2026-07-26, on `REPORT-adversary-pkt42-1.md` (verdict: CONTRACT INSUFFICIENT)
+
+The adversary broke the contract: **two wrong builds scored 204 passed / 0 failed and shipped a
+leak.** Its diagnosis of the root cause is accepted verbatim and is the most important sentence in
+this file: **A18's frame was too narrow.** The bound was written as *"an **unlabelled** secret in
+free text"*, so every pin and carrier was built around unlabelled text — while the credential that
+actually exists as a bare `str` in this codebase is **labelled**, sitting in a **header map**, at
+the very sites the `UNWRAP_ALLOWLIST` blesses.
+
+**R10 — MP1, the 6-path leak. RULED: FIX IT AT THE SOURCE, not in the redactor.**
+`calibration/counting.py::__init__` and `scripts/token_survey.py::__init__` must **stop retaining
+the unwrapped header dict on the instance**. Bake the headers into the `httpx` client at
+construction, exactly as `loresigil/tei.py` already does (*"the bearer token is baked into the
+client headers below; it is not retained on the instance (needless secret surface)"*). Then the
+bare-`str` credential object does not exist and there is nothing for a `repr` to leak.
+
+⚠ **The code comment above the defect already named the hazard and shipped it anyway:** *"A bare
+`str` here would render verbatim in any repr of `self._headers` — which is precisely what an httpx
+error or a debug log would carry."* It was true; only the entropy catch-all was hiding it, and this
+packet deletes the catch-all. **Design detail the contract author must resolve:** `counting.py`
+accepts an INJECTED client, so headers may need to move to per-request rather than client-level.
+That is a design decision — surface it rather than guessing.
+
+The widened-pattern option was declined: it treats the symptom, leaves the bare-`str` object alive,
+and returns us to pattern-matching arbitrary text, which is the practice this packet exists to end.
+
+**R11 — MP2, `_scrub_value` container recursion (inventory A19). PIN IT.** Not a fork — a missing
+pin. A build replacing the dict/list/tuple recursion with `return value` scores 204/0 and leaks a
+labelled bearer token out of an `extra=` map. The existing carriers cannot catch it: the
+`SecretStr` leg is masked by the TYPE and the bare-`str` leg is an accepted bound *asserted to
+leak*, so both pass either way.
+
+**R12 — MP3. CORRECTS R2's SNIPPET, which was WRONG as written.** `dotenv_values` defaults to
+`interpolate=True`, so a secret containing `${…}` is silently rewritten and an unset `${VAR}`
+**shortens** the credential (`pw${NOPE}tail` → `pwtail`). Measured by the lead. **The ruled call is
+`dotenv_values(env_file, interpolate=False)`**, pinned byte-exact over every quoting form including
+the unset-var case. Any agent that copied R2's earlier snippet must re-read it here.
+
+**R13 — MP4. §9 SCOPE CORRECTION.** `test_embedding_prompt_name.py` is not a field rename: it has
+no `monkeypatch.setenv`, `LORE_TEI_KEY` is in no conftest, and 5 tests raise `KeyError` once
+`to_loresigil_config` performs IO. §9 must say *"add an env fixture; `to_loresigil_config` now
+performs IO"* so the builder is authorised rather than trapped (the C-DEF class). The adversary
+independently verified §9's FILE list is otherwise complete: 39 failures across exactly 8 files,
+all 8 named.
+
+**R14 — R6 IS AMENDED. The MIGRATION half is REVERSED; the GATE half stands.**
+The adversary found `probe_embed.py` is **deliberately stdlib-only** (`argparse/json/os/sys/time/
+urllib`) with a structured exit-code contract (`_EXIT_BAD_USAGE = 4`) that `lore_deploy.py` shells
+out to and **branches on** — and it runs under `sys.executable`, whereas loremaster code in the same
+file runs under a separate `_loremaster_python()`. R6 as originally ruled would have imported
+`loremaster.config` into a script whose interpreter may not have loremaster, and replaced a clean
+exit 4 with a `KeyError` traceback read as exit 1. **That was my error, not the contract's.**
+
+So: **fix B3's bug IN PLACE and stdlib-only** — `if not key` → `if not key or not key.strip()` —
+leaving the exit contract untouched. **Ledger the duplicate resolver as a DESIGN decision** with
+the stdlib-only deploy boundary as its documented reason, a pin that `probe_embed.py` imports
+nothing outside the stdlib, and a **named re-open trigger: the day `probe_embed.py` runs under
+`_loremaster_python()`.** This is what ONE IMPLEMENTATION actually prescribes — *"duplication is a
+DESIGN decision, not a coding one; escalate it"*. We escalated; the boundary is real.
+**R6's gate half is UNCHANGED and already proven** (the adversary reproduced the receipt: 93 files
+scanned, `probe_embed.py` present). R9's typecheck extension also stands.
+
+**R15 — residual R7, the real-then-blank duplicate key. FOLLOWS FROM R1, recorded not re-asked.**
+`KEY=real` then `KEY=` in one file: the hand-rolled parser yields `"real"`, dotenv is LAST-WINS and
+yields `""` → fatal. That is fail-open → fail-closed on a credential path, and **fail-closed is the
+direction R1 already chose** (blank is operator error, and a duplicate key in a `.env` is operator
+error twice over). Accepted as a deliberate behaviour change, pinned, not left to taste.
+⚠ Operator: this one I ruled by extension rather than asking — say so if you want it the other way.
+
+**Routed to the contract author as small closures (each one line, none a fork):** residual R1 —
+name the **bound-method alias** (`g = s.get_secret_value; g()`) in the gate's known-bound paragraph;
+residual R2 — name the **laundering helper** (an allowlisted wrapper launders every caller; entries
+must be LEAF call sites); residual R6 — note `EmbeddingConfig.model_dump()`'s shape change under
+`SecretStr`; residual R9 — **fix the inventory's own C4/C11 contradiction** (the contract already
+resolves it correctly); residual R3/R4 — both dissolved by R14.
+
+### Riders slotted onto the packet AFTER kickoff (operator sweep, INDEX Log 2026-07-26)
+
+The packet spec gained three riders at `61c8964`/`e4cfc6e`, landed after this packet's Phase 0.
+**The worktree copy of the spec is now current with them.** ⚠ The worktree is otherwise still
+based on `6a21fb6` and is DELIBERATELY not merged forward: primary `feat/surreal-unification` has
+advanced to `48537c3`, which lands packet 04a's contract with **26 deliberately-RED tests**.
+Merging that would give this packet a red baseline it does not own and make every gate reading
+ambiguous. Merge forward at close-out, not before.
+
+**R16 — the #235 rider. SAME-COMMIT REQUIREMENT, and it binds.** *"Fix the labelled pattern in the
+same commit that deletes the catch-all."* Our R8 already ruled the fix and the contract already
+pins the non-Bearer leak, so the SUBSTANCE is covered — but the rider's other half is the commit
+boundary, and **a rider dropped is the failure mode this repo names most often**. The deletion of
+`_TOKEN_RE` and the labelled-pattern fix are **ONE commit**. A commit that deletes the catch-all
+without the fix is a strictly-worse tree that must never exist, even transiently, because that is
+the tree a bisect or a revert can land on. The `Authorization: Basic <cred>` pin **is** the
+mutation proof for this rider — name it as such.
+*(Provenance: #235 is this packet's own finding, filed by the lead at 2026-07-26 and picked up by
+the sweep. The rider and our R8 are the same conclusion reached twice, independently.)*
+
+**R17 — the #226 rider FOLDS INTO STEP 2, and it SHRINKS the allowlist.** Re-derived by the lead:
+`resolve_secret` wraps the SurrealDB **username** — not a secret — at five sites, each of which
+immediately unwraps it again:
+
+```
+index/cli.py:112  · server.py:6752 · scout.py:728
+scripts/search_score_survey.py:696 · scripts/snapshot_gc.py:332
+    surreal_user = resolve_secret(config.surreal.user_env).get_secret_value()
+    surreal_password = resolve_secret(config.surreal.password_env)   # <- correct: stays wrapped
+```
+
+**Five of the ten step-3 allowlist entries are that pointless round-trip.** The consolidated seam
+wraps ONLY secrets; a non-secret config read gets a plain read. **The allowlist therefore goes
+10 → 5, not 10 → 12.** ⚠ The rider notes *"its own author got 1 of 5 sites wrong"* — the contract
+must **re-derive which site that is** rather than inherit the claim (this file's own standing law),
+and the password sites must be verified to STAY wrapped: the failure direction that matters is
+un-wrapping a real secret while tidying away a fake one.
+
+**R18 — the #221 rider is a VALIDATION RULE on every pin in this packet.** *"The mypy gate is
+BLIND through `dict[str, Any]` — the SecretStr migration passed the type gate at ZERO DELTA while
+119 tests were runtime-broken."* Therefore: **every contract pin needs a RUNTIME red, never a
+type-gate red.** A pin demonstrated only by a mypy error is not demonstrated. This applies
+retroactively to the satisfiability receipts already taken — they used live pytest runs, so they
+appear to comply, but the contract must **state the compliance explicitly per pin** rather than
+leave it inferred. Where a `dict[str, Any]` config seam can be narrowed to a typed model in
+passing, do it; #221 stays open for the general instrument if not fully closed here.
+
+**Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
+mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
+`(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
+
+---
+
 **NOT A RULING — MANDATORY BUILDER SCOPE, no choice involved:**
 `scripts/search_score_survey.py::_make_embedder` is a THIRD production-tree consumer of
 `loresigil.factory.EmbeddingConfig` that `lore_impact` did not report (filed as lore finding
