@@ -556,6 +556,88 @@ claimed); **R27.2 the floor is replaced by a totality check** (`assert not skipp
 unbuilt holder); the mint gate has **no production false positives** and excludes tests by
 construction; triggers on S2/S7/S9 are present.
 
+---
+
+## Eighth ruling wave — 2026-07-27, from the STUB phase (lead rulings, operator may overturn)
+
+The stub agent implemented the annotation this file cited as binding, **measured that it cannot
+satisfy the frozen contract**, and escalated rather than settling it. Both items below are ruled by
+the LEAD from rules already in force, not re-escalated.
+
+**R29 — `Field(min_length=1)` IS WRONG AND THIS FILE WAS ITS SOURCE. Use a `field_validator`.**
+Probed live against pydantic 2.13 in this tree:
+
+| `api_key` | under `Field(min_length=1)` |
+|---|---|
+| `''` | rejected ✅ |
+| `' '` | **ACCEPTED** ❌ |
+| `' \t '` | **ACCEPTED** ❌ |
+
+`min_length` measures **length**; a single space has length 1. The contract's
+`test_a_blank_credential_is_rejected_AT_THE_API_KEY_FIELD` is parametrised over
+`["empty", "single space", "whitespace-only"]` and requires an error at `('api_key',)` for all
+three, so **two legs can never pass**. This is the **fourth** rationale in this file falsified by
+measurement (after R2's `interpolate`, R10's "only object", R20's "would be scrubbed").
+
+**RULED BY THE OPERATOR 2026-07-27, overturning the lead's proposal: MINT A SHARED UTILITIES
+PACKAGE.** *"Just make a separate package for shared utilities."* The lead had ruled a local
+`field_validator` in `loresigil` with a drift pin, arguing the two blankness checks answer different
+questions at different layers. The operator overruled it, and the ruling is better: **it dissolves
+the objection instead of managing it.** A drift pin is a mechanism for detecting that two copies
+disagree; one implementation cannot disagree with itself.
+
+**The shape:**
+- A **new workspace member** — proposed name **`lorecommon`** (plain and obvious to a newcomer;
+  the lead chose clarity over the evocative `lore<noun>` pattern of `loremaster`/`loresigil`/
+  `lorescribe`). ⚠ **The name is free to change NOW and expensive later — operator, say so if you
+  want a different one before the builder starts.**
+- It holds the **blankness predicate** and nothing else today. Both `loremaster.config.resolve_secret`
+  and `loresigil`'s `api_key` validator call it. **ONE implementation of "what counts as blank",
+  provable by mutation** — change the predicate and BOTH callers' pins must move.
+- `loremaster` and `loresigil` both depend on it. It depends on nothing but the stdlib.
+
+⚠ **THE RESOLVER DOES NOT MOVE.** A shared package makes it *possible* for `loresigil` to resolve
+again, and it must not. R3 (the server may not read a `.env`), the composition-root ruling, and the
+`test_no_loresigil_module_reads_an_environment_variable` pin all stand unchanged. **The shared
+package holds the PREDICATE, not the ENTRY POINT** — `loresigil` still resolves nothing.
+
+⚠ **A NEW WORKSPACE MEMBER HAS FIVE CONSEQUENCES, and forgetting the last one is #131/#139
+verbatim** (the deployed artifact differing from the test environment):
+1. `pyproject.toml` `[tool.uv.workspace] members` gains it.
+2. `scripts/typecheck.sh` `MEMBERS=(…)` gains it — **as its own iteration**, never a merged
+   `mypy` invocation (see R9: a combined run reported 3 errors where the truth was 55).
+3. `_SCANNED_MEMBERS` in `test_secret_typing.py` gains it, or **both AST gates silently do not
+   cover it** — a package outside the scan is a package exempt from every ∀ pin in this packet.
+   That is a CONTRACT change and routes to `tdd-contract`.
+4. `testpaths` must reach its tests, or its guards are hopes with filenames.
+5. **THE CONTAINERFILE / IMAGE BUILD MUST INSTALL IT.** A workspace member that is not in the
+   image is an `ImportError` at boot, in production only, invisible to every test on this host.
+   **Packet 01a's in-image conformance run (#139) is the instrument** — the deploy is not clean
+   until the artifact has been proven to import it.
+
+**R30 — THE CONTRACT PIN CANNOT DISCRIMINATE. Route it back to `tdd-contract`.**
+Before the stub, that pin was **GREEN FOR THE WRONG REASON**: `api_key` was an unknown field, so
+`extra="forbid"` raised `extra_forbidden` — whose `loc` is **also** `('api_key',)` — and the
+assertion inspects only `loc`, never `type`. It was passing on a rejection that had nothing to do
+with blankness.
+⚠ **Its own SIBLING pin already carries the `error["type"]` leg**, and the contract author's comment
+there names this exact class. One pin got the guard; its neighbour did not.
+⚠ **Five adversary passes did not catch it** — not a failure of the adversary, but a real bound on
+the method: **the contract was never graded against a tree where the stub existed**, and this pin's
+false pass was only visible after the field was added. *A contract graded against the OLD world can
+hold a pin that only the NEW world falsifies.*
+**RULED:** add the `error["type"]` leg. **Contract fixes go to `tdd-contract` — never the builder,
+never the lead.** Repo law: fixtures must discriminate; a pin that passed on an unrelated rejection
+is decoration.
+
+**R31 — the stub's second escalation, recorded as builder scope (not a fork).**
+`scripts/search_score_survey.py` constructs the loresigil `EmbeddingConfig` **directly**, bypassing
+`to_loresigil_config` — 1 of only 2 production construction sites, and **not in the scoped contract
+run**, so no packet-42 suite would notice it breaking. This is lore finding **#233** surfacing a
+third time (`lore_impact` missed it; the contract author caught it; the stub caught it again). It is
+already mandatory scope in §9; the builder must migrate it, and the GREEN gate must include a run
+that actually covers it.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
