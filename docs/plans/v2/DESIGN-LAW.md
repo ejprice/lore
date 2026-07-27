@@ -6,6 +6,27 @@ packet session reads only the sections its packet lists. Receipts point at the s
 documents — cite, don't re-derive. Changing anything here requires a fresh operator
 ruling (and for §2/§3, a fresh model consult).
 
+## 0. Where shared code LIVES — `lorerunes` (operator, 2026-07-27)
+Source: packet 42 / finding #222; the law itself is repo CLAUDE.md "ONE IMPLEMENTATION".
+- **`lorerunes` is the fourth workspace member and the home for any rule two packages must
+  agree on** — validation predicates, error classification, normalisation, formatting.
+  It depends on **the stdlib alone and on no sibling**; `lorescribe`, `loresigil` and
+  `loremaster` all may import it.
+- **This section exists because "escalate rather than clone" had no address.** #222 was
+  escalated correctly and still could not be resolved: the canonical resolver lived in
+  `loremaster`, `loresigil` cannot import `loremaster`, so "consolidate" had no valid
+  direction and the duplication survived the escalation. A shared home is what makes the
+  DRY law actionable rather than aspirational.
+- **PREDICATES, not ENTRY POINTS.** The blankness rule moved there; secret RESOLUTION
+  deliberately did **not**, because only a composition root may read the environment
+  (packet 42 R3/R29). A shared home makes the wrong thing newly possible — siting a
+  capability there is a design decision needing a ruling, never a tidying.
+- **`lorerunes` importing a sibling is a design defect, not a lint error**: the moment it
+  does, the packages that depend on it can no longer import it, and it stops being an
+  address at all.
+- Adding any workspace member touches **six** registration sites — see repo CLAUDE.md
+  (`lorerunes` section) for the enumerated list and which one reaches production.
+
 ## 1. Client design law (three-model consult, 2026-07-06 — binds ALL surface work)
 Source: docs/design/2026-07-06-client-needs-consult.md:449-473,490-495.
 1. Context/attention is the dominant client cost; **call count is not the bottleneck**.

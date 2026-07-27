@@ -31,6 +31,7 @@ A [`uv`](https://docs.astral.sh/uv/)-workspace monorepo (Python 3.14+):
 
 | Package | Role |
 |---|---|
+| **`lorerunes`** | Shared primitives every other package may import — validation predicates and other rules that must agree everywhere. Depends on the stdlib alone, and on no sibling. A rune is the atomic mark a sigil is composed from, so the name states the dependency direction. |
 | **`lorescribe`** | Language-aware chunkers (Python AST, Markdown, SQL, XML, JavaScript, CSS, text) emitting identity-stamped chunks. |
 | **`loresigil`** | A swappable embedder abstraction — self-hosted [TEI](https://github.com/huggingface/text-embeddings-inference) `voyage-4-nano` (dim 2048) is the reference backend; hosted Voyage AI backends (`voyage-cloud`, `voyage-context`) are also config-selectable — with local token counting and resilient batching. |
 | **`loremaster`** | The MCP server + extension framework — orchestrates chunkers + embedder into a [Qdrant](https://qdrant.tech) index, a SQLite manifest, and a code-graph; serves the MCP. |

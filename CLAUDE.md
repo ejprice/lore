@@ -356,6 +356,57 @@ Therefore, standing law:
   distinguishes DRY from looks-DRY, and it caught builds nothing else could.
 - **Duplication is a DESIGN decision. ESCALATE it; never quietly write copy #2.**
 
+### `lorerunes` — THE HOME FOR SHARED CODE (operator, 2026-07-27)
+The law above says *escalate rather than write copy #2*, and for four years it never said where
+copy #1 should LIVE. That gap is why duplication kept winning: when the only shared home was a
+package the other side could not import, "share it" had no address, and the honest engineer wrote
+the second copy because there was nowhere else to put it.
+
+**`lorerunes` is that address.** A fourth workspace member, depending on **nothing but the
+stdlib**, that every other member may import:
+
+```
+lorerunes/     shared primitives   (stdlib only — depends on no sibling)
+lorescribe/    the transcriber     -> lorerunes
+loresigil/     the symbol          -> lorerunes
+loremaster/    the keeper          -> all three
+```
+
+A rune is the atomic mark a sigil is composed from, so the name states the dependency direction.
+
+- **If two members need the same POLICY, it goes in `lorerunes` — not cloned, not "escalated"
+  into a fork.** Policy = validation predicates, error classification, retry/backoff budgets,
+  sanitisation, normalisation, formatting rules. Anything whose *rules must agree everywhere*.
+- **`lorerunes` depends on NO sibling, ever.** The moment it imports `loremaster` or `loresigil`
+  it stops being importable by them, and it is back to being nowhere. That is the whole
+  constraint; guard it with a pin, not a habit.
+- **It holds PREDICATES, not ENTRY POINTS.** Origin case (packet 42, #222): the blankness rule
+  `not value or not value.strip()` moved there so `loremaster.config.resolve_secret` and
+  `loresigil`'s `api_key` validator share one answer to *"what counts as blank?"* — while
+  **secret RESOLUTION deliberately did NOT move**, because only a composition root may read the
+  environment. A shared home makes the wrong thing newly possible; putting a capability there is
+  a design decision, not a tidying.
+- **Still prove sharing by MUTATION.** A shared package is an address, not a guarantee — routing
+  is not sharing (see above). Change the predicate; **every** member's pins must redden.
+- **THE SIX PLACES A NEW WORKSPACE MEMBER MUST BE REGISTERED.** Five are enumerable by grep; the
+  sixth is not, and it is the one that reaches production:
+  1. `pyproject.toml` `[tool.uv.workspace] members`
+  2. `pyproject.toml` `mypy_path` — a member absent here still type-checks, just against the
+     wrong resolution, so the failure is a *wrong answer* rather than an error
+  3. `scripts/typecheck.sh` `MEMBERS` — as its **own iteration**, never a merged `mypy`
+     invocation (a combined run reported **3** errors where the truth was **55**, a false
+     all-clear for two readers)
+  4. the AST scans' `_SCANNED_MEMBERS` — **a package outside the scan is silently exempt from
+     every ∀ pin in the repo**
+  5. `testpaths` — or its own guards are hopes with filenames
+  6. **the CONTAINERFILE.** A member missing from the image is an `ImportError` at boot, **in
+     production only, invisible to every test on this host** — #131/#139 verbatim. Packet 01a's
+     in-image conformance run is the instrument that proves it.
+
+  ⚠ **This list was written with five entries and `mypy_path` was the one missed** — by the lead,
+  in the same hour, while writing the law about registering members. Grep for the *existing*
+  members by name before trusting any list of registration sites, including this one.
+
 ### The instrument lesson (six defeats, one shape — the most expensive thing we learned)
 | instrument | keyed on | defeated by |
 |---|---|---|

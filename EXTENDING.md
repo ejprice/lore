@@ -15,6 +15,14 @@ guarantee; treat it as "true as of this commit."
 For the *lower* layer — writing the `Chunker` / `SchemaProfile` / `JsProfile`
 the seams contribute — see `lorescribe/EXTENDING.md`.
 
+**Shared helpers go in `lorerunes`.** If your extension needs a rule that must
+agree with loremaster's — a validation predicate, an error classification, a
+normalisation — it belongs in `lorerunes` (stdlib-only, importable by every
+package) rather than copied into the extension. A cloned rule is a rule that
+will drift, and drift on a shared rule is a defect that reaches one copy and
+not the other. `lorerunes` may never import a sibling package: the moment it
+does, the packages that depend on it can no longer import it.
+
 ## The composition model
 
 ```python
