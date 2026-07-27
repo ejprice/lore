@@ -722,8 +722,17 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
 - **[SAME CLASS] `DEFINE INDEX IF NOT EXISTS`** carries the identical silent-no-op hazard for any
   index change that is *not* the embedding dim (fields, analyzer, UNIQUE-ness). The dim case is
   covered by the fingerprint rebuild; **the others are covered by nothing.**
-- **[#102, OPEN] The shared `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered**
-  (§5). Blocks `-n auto` as the full-suite checkpoint gate.
+- **[#102, ~~OPEN~~ → FIXED 2026-07-14 at `9d29111`; corrected here 2026-07-26]** ~~The shared
+  `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered (§5). Blocks `-n auto` as
+  the full-suite checkpoint gate.~~ **BOTH HALVES ARE NOW FALSE.** §5 of *this file* records the
+  fix: `retry_on_conflict` draws **fresh full jitter per attempt**, and `-n auto` is this repo's
+  **standard** gate (`CLAUDE.md`: measured 846s → 88s, identical pass count). Left visible rather
+  than deleted because the correction is the lesson: **§5 and §8 of one document contradicted each
+  other for twelve days**, and a retrieval chunk arrives without its neighbours (#160) — so a reader
+  landing here alone was taught a mechanism that no longer exists, in the file this repo makes a
+  REQUIRED FIRST READ. Found by `builder-11ia-1` during packet 11-i-a, which is to say: found by
+  someone obeying the instruction to read this file first, which is the only reason it was found at
+  all.
 - **[#105, OPEN — and NO LONGER LATENT] Dangling `RELATE` edges, on BOTH endpoints** (§4). Goes live
   the moment any verb accepts a recipient/endpoint identity from a caller rather than resolving it
   from the store. An application-level existence check is the only guard; a typed
