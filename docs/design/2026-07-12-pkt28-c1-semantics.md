@@ -518,6 +518,15 @@ legitimate law; the warn line teaches the doc+pointer idiom instead.
 - **Roster plumbing (v4-precise):** the roster is ALWAYS read from the agent
   registry and HANDED to `BriefLedger.coverage(active_agents=…)` — the brief
   ledger never queries the agent table itself (one roster definition, one owner).
+  > ⚠ **SUPERSEDED IN PART, 2026-07-27 (packet 04a).** The clause "the brief ledger never
+  > queries the agent table itself" described the world before the `ENFORCED` sweep. It is
+  > **no longer true for existence checks**: `BriefLedger.publish`/`ack` now route through the
+  > shared `loremaster.agent_existence.reject_unknown_agents`, which reads the `agent` table,
+  > because `ENFORCED` reports one bad endpoint as untyped prose only after the write and the
+  > seam withholds it — so the app check is the only layer that can TEACH.
+  > **The ROSTER half above still stands**: coverage/skew rosters are still handed in, still
+  > one owner, still row-unlimited. Only the existence read is new, and it is deliberately a
+  > shared function rather than a ledger-owned one. See `BriefLedger.ack`'s docstring.
   The source is **`AgentRegistry.roster(session=None) -> FleetRoster`** — a NEW,
   explicitly **row-UNLIMITED** read returning a lightweight projection, never the
   display-capped fleet row query: `members` (the COMPLETE non-retired membership

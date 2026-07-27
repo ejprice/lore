@@ -4444,6 +4444,87 @@ class TestUnregisteredRecipientIsTheEXISTINGTeachingError:
         assert message_ledger.db.edges == {}, "a rejected send wrote a delivery edge"
 
 
+class TestBriefPublishTeachesWhenTheAUTHORNamesNoAgentRow:
+    """**MP-6 (packet 04a, 2026-07-27) — the packet's EXIT CRITERION, at the SERVED surface.**
+
+    *"a bogus-recipient publish/send teaches instead of dangling"* is a claim about what an
+    AGENT receives, and ``send`` has two tool-seam pins for it
+    (:class:`TestUnregisteredRecipientIsTheEXISTINGTeachingError`,
+    :class:`TestEveryBadRecipientIsNamedInONEReject`).  ``brief_publish`` had **none** across
+    its ~90 tool-seam call sites — no unknown/bogus/ghost agent case anywhere — and the fake
+    every one of them runs on modelled no ``agent`` table at all (adversary §MISSING-PINS
+    MP-6 / §P5).  So the ledger could refuse perfectly while the seam swallowed or re-wrapped
+    the teaching error, and nothing here would say so.  TRUST DOCTRINE: the served surface is
+    the contract.
+
+    THE FIXTURE, and why it is shaped this way: the acting agent is registered in the
+    REGISTRY (so ``agent="lead"`` resolves and the seam reaches the ledger at all) while the
+    LEDGER's ``agent`` table is modelled and does NOT contain that row — the "the agent row
+    was never written / no longer exists" world, which is the only one in which the seam's
+    behaviour is observable.  A fixture where every id resolves everywhere cannot
+    discriminate.
+
+    RED at `369db57`: the shared unknown-agent policy does not exist yet, so the fake's
+    derivation of its error base fails closed.
+    """
+
+    @staticmethod
+    def _harness_whose_ledger_does_not_know_the_author() -> tuple[Any, FakeAgentRegistry, FakeBriefLedger]:
+        registry = FakeAgentRegistry(db=FakeAgentDatabase())
+        brief_ledger = FakeBriefLedger(db=FakeBriefDatabase())
+        # The table is MODELLED — it holds a DIFFERENT agent, so "unknown" means
+        # unknown, never "this suite does not model agents" (the fake's declared bound).
+        brief_ledger.register_agent(agent_id="some-other-agent-row", name="someone-else")
+        return _harness(agent_registry=registry, brief_ledger=brief_ledger), registry, brief_ledger
+
+    async def test_a_publish_whose_author_names_no_agent_row_TEACHES_and_writes_NOTHING(
+        self,
+    ) -> None:
+        harness, registry, brief_ledger = self._harness_whose_ledger_does_not_know_the_author()
+        await _register(harness, name="lead", role="lead")
+        author = await registry.get_agent("lead", session="wave7")
+
+        with pytest.raises(Exception) as excinfo:  # noqa: B017 - the TYPE is 04a's contract
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name="project",
+                body="the standing law",
+            )
+        assert author.id in str(excinfo.value), (
+            f"the SERVED refusal must NAME the agent id that resolved to no agent row — an "
+            f"agent that is told only 'rejected' cannot act on it: {str(excinfo.value)!r}"
+        )
+        assert brief_ledger.db.briefs == {}, "a refused brief_publish wrote a brief row"
+        assert brief_ledger.db.edges == {}, "a refused brief_publish wrote a briefed edge"
+
+    async def test_POSITIVE_CONTROL_an_author_the_ledger_KNOWS_publishes_through_the_same_seam(
+        self,
+    ) -> None:
+        """Without this, the pin above passes on a seam that refuses EVERY publish."""
+        harness, registry, brief_ledger = self._harness_whose_ledger_does_not_know_the_author()
+        await _register(harness, name="lead", role="lead")
+        author = await registry.get_agent("lead", session="wave7")
+        brief_ledger.register_agent(agent_id=author.id, name=author.name)
+
+        rendered = str(
+            await AppContext.comms(
+                harness,
+                action="brief_publish",
+                agent="lead",
+                session="wave7",
+                name="project",
+                body="the standing law",
+            )
+        )
+
+        assert "v1" in rendered
+        assert len(brief_ledger.db.briefs) == 1
+        assert len(brief_ledger.db.edges) == 1, "the author's self-ack edge must still be written"
+
+
 class TestDrainAndAckAtTheDispatcher:
     @staticmethod
     async def _ready() -> tuple[Any, Any]:

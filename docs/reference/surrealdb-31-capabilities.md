@@ -723,6 +723,7 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | A **per-entry ASSERT** on an array column [PROBED 2026-07-25, 3.2.1] | TWO field rows — the array and its element path: `DEFINE FIELD refs … TYPE array<string> DEFAULT [] ASSERT array::len($value) <= 20` **plus** `DEFINE FIELD OVERWRITE refs[*] … TYPE string ASSERT string::len($value) <= 256`. The composed `DEFAULT [] ASSERT` clause works; count and per-entry asserts fire independently, and the element error names **`refs.*`** and the offending VALUE. | ⚠ **The element row without `OVERWRITE` → `"The field 'refs.*' already exists"`.** `DEFINE FIELD … TYPE array<T>` **IMPLICITLY DEFINES `<field>.*`**, so the element definition is always a RE-definition — §1.1's `OVERWRITE`-for-fields rule applies to it with no exception. A whole-array `$value.all(\|$x\| …)` closure also works and is a known-good fallback, but loses per-element error ergonomics (it dumps the whole array). |
 | An ASSERT on an **`option<>`** field, when the value is absent [PROBED 2026-07-25, 3.2.1] | write the assert BARE: `TYPE option<string> ASSERT string::len($value) <= 256`. **The ASSERT is NOT evaluated when the field is NONE** — an omitted field is accepted, and the assert still fires on a supplied over-length value. | `ASSERT $value = NONE OR …` — harmless but **pure cruft**, and it teaches the next author that the guard is required. Do not copy the guard onto new `option<>` fields. |
 | Compare `INFO FOR TABLE` output against the DDL you emitted [PROBED 2026-07-25, 3.2.1] | pin the **EMITTED** statement (house idiom) | the stored echo is **NORMALISED and will not match**: a closure `\|$r\|` comes back `\|$r: any\|`, and `option<array<string>>` comes back `none \| array<string>`. Any pin diffing the echo against emitted DDL mismatches on closure- or `option<>`-bearing definitions. |
+| Put a `RecordID` in a `set` or use it as a dict key [PROBED 2026-07-27, SDK 2.0.0] | decode first — `str(record.id)` (the SDK's own rendering) and key on the `str` | **`RecordID` is UNHASHABLE** — `__hash__ is None` on SDK 2.0.0, so a `set()` / dict key raises `TypeError` at runtime. **Two independent agents hit this within one packet** (a probe script raised mid-body; a builder measured it deliberately), which is why it is here. ⚠ And decode with **`str(record.id)`, never `str(row["id"]).split(":", 1)[-1]`** — the split is right for `agent:abc` and **WRONG for a uuid-shaped id**, which the SDK renders `agent:⟨0199c4f1-7d2a-…⟩`. That exact guess cost **130 red pins** across two suites (finding #248: seven hand-rolled copies of this parse exist package-wide). |
 
 ---
 
@@ -749,10 +750,21 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   REQUIRED FIRST READ. Found by `builder-11ia-1` during packet 11-i-a, which is to say: found by
   someone obeying the instruction to read this file first, which is the only reason it was found at
   all.
-- **[#105, OPEN — and NO LONGER LATENT] Dangling `RELATE` edges, on BOTH endpoints** (§4). Goes live
-  the moment any verb accepts a recipient/endpoint identity from a caller rather than resolving it
-  from the store. An application-level existence check is the only guard; a typed
-  `TYPE RELATION IN a OUT b` catches only wrong-*table* endpoints.
+- **[#105, GUARDED on `to` + `briefed`; OPEN elsewhere] Dangling `RELATE` edges, on BOTH endpoints**
+  (§4). Goes live the moment any verb accepts a recipient/endpoint identity from a caller rather than
+  resolving it from the store. **The engine's `ENFORCED` clause guards BOTH endpoints (§4) and is now
+  live on `to` (`df59f76`) and `briefed` (`6f0e03a`); `refers`/`answers_to` remain unguarded pending
+  packet 43.** `ENFORCED` is a **BACKSTOP, not a replacement**: it reports ONE bad endpoint, as
+  untyped prose, only AFTER the write is attempted, aborting the txn — and the seam's error hygiene
+  withholds even that from the caller — **so an application-level check remains the only layer that
+  can TEACH.** A typed `TYPE RELATION IN a OUT b` alone catches only wrong-*table* endpoints.
+  ⚠ **This bullet read *"an application-level existence check is the only guard"* until 2026-07-27** —
+  the very sentence **§6.3 of this file records as FALSE** (*"this one would have made us hand-roll a
+  guard the vendor already ships"*), surviving in the open-hazards summary twelve sections below its
+  own correction. Caught by packet 04a's fix wave, not by any gate. **If you are adding a hazard
+  bullet here, check whether §4 or §6 already settles it** — a summary that contradicts its own
+  authority is worse than no summary, because this is the file every store brief is told to read
+  FIRST.
 - **[UNVERIFIED] Does an edge-table LIVE SELECT fire on `RELATE`?** Never probed. The
   contentless-wake design makes an empty payload harmless (so #5014 cannot bite), but the *firing*
   itself is an assumption.
