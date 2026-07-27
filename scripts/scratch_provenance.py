@@ -34,7 +34,22 @@ from pathlib import Path
 
 # The workspace members whose code a scratch copy must actually be running.  Mirrors
 # ``[tool.uv.workspace] members`` in pyproject.toml.
-WORKSPACE_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe")
+#
+# ⚠ **A MEMBER MISSING HERE IS A MEMBER THE GUARD SILENTLY DOES NOT CHECK** — and this is
+# the #140 guard itself, run by ``scripts/scratch_copy.sh``, which CLAUDE.md mandates for
+# every scratch mutation proof and reference build.  A stale list means the copy can
+# resolve that member from the ORIGINAL checkout while this script prints a clean
+# per-member receipt for the others: #140's poison mode, in the instrument built to
+# prevent #140.  ``lorerunes`` was missed here when packet 42 minted it (lore finding
+# **#251**) even though its SIBLING guard
+# (``skills/lore-deploy/scripts/conformance_provenance.py``) was updated — two guards,
+# one job, nothing relating them.
+#
+# It stays a fixed constant rather than being read out of ``pyproject.toml`` at run time,
+# deliberately: this guard's whole job is to GRADE a tree, and an oracle derived from the
+# tree under test cannot see a truncated or wrong copy of that file.  What relates the
+# mirror to the workspace is an INVARIANT TEST, not a comment — see finding #251.
+WORKSPACE_MEMBERS: tuple[str, ...] = ("loremaster", "loresigil", "lorescribe", "lorerunes")
 
 # Printed on ANY failure.  The wording is load-bearing: an agent that sees this must
 # understand that the tree it just "isolated" is grading the original.

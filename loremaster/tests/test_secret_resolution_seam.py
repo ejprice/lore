@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _logging_fixtures import production_sources
 from loremaster.config import EmbeddingConfig, resolve_secret
 from pydantic import SecretStr
 
@@ -1071,29 +1072,11 @@ def _scanned_python_sources() -> list[tuple[str, Path]]:
     the directory ever stops being reached. A guard nobody runs is a hope with a
     filename, and both of packet 03b's instruments were victims of exactly that.
     """
-    package_file = loremaster.__file__
-    assert package_file is not None, "loremaster imported as an empty namespace package"
-    package_root = Path(package_file).resolve().parent
-    workspace_root = package_root.parent.parent
-    roots = [
-        ("loremaster", package_root),
-        ("loresigil", workspace_root / "loresigil" / "loresigil"),
-        ("lorescribe", workspace_root / "lorescribe" / "lorescribe"),
-        ("scripts", workspace_root / "scripts"),
-        # Ruling R6: the deploy skill's scripts are in scope. Its ``tests/`` and its
-        # inline ``test_*.py`` files are excluded by the same rule as everywhere else.
-        ("skills", workspace_root / "skills"),
-    ]
-    sources: list[tuple[str, Path]] = []
-    for label, root in roots:
-        if not root.is_dir():
-            continue
-        sources += [
-            (f"{label}/{path.relative_to(root)}", path)
-            for path in sorted(root.rglob("*.py"))
-            if "tests" not in path.parts and not path.name.startswith("test_")
-        ]
-    return sources
+    # ⚠ REWIRED to the ONE shared root list (see ``_logging_fixtures``). This
+    # carried a private copy that did NOT include ``lorerunes`` — so the gate whose
+    # property is "ONE secret-resolution entry point in the workspace" was not
+    # looking at a workspace member. Property right, reach short.
+    return production_sources()
 
 
 def _environment_reads() -> list[str]:

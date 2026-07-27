@@ -89,7 +89,9 @@ import pytest
 from _logging_fixtures import (
     emit_through_configured_logger,
     make_record,
+    production_sources,
     restored_lore_logger_state,
+    workspace_roots,
 )
 from loremaster.logging_setup import (
     _ASSIGNMENT_RE,
@@ -707,24 +709,15 @@ def _production_function_names() -> list[str]:
     measured against, and regenerating it is how the "recovered data" receipt the
     packet's Exit clause asks for stays honest as the tree changes.
     """
-    package_file = loremaster.__file__
-    assert package_file is not None, "loremaster imported as an empty namespace package"
-    package_root = Path(package_file).resolve().parent
-    workspace_root = package_root.parent.parent
-    roots = [
-        package_root,
-        workspace_root / "loresigil" / "loresigil",
-        workspace_root / "lorescribe" / "lorescribe",
-    ]
+    # ⚠ REWIRED to the ONE shared root list — the corpus was missing
+    # ``lorerunes``, so the recovered-data pin did not cover a workspace member's
+    # function names.
     names: set[str] = set()
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for source_path in sorted(root.rglob("*.py")):
-            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    names.add(node.name)
+    for _label, source_path in production_sources(include_scripts=False, include_skills=False):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.add(node.name)
     return sorted(names)
 
 
@@ -1030,33 +1023,14 @@ def _render_through_bound_excepthook(credential: str) -> str:
 
 
 def _workspace_python_sources() -> list[tuple[str, Path]]:
-    """Every production ``.py`` file in the workspace packages plus ``scripts/``.
+    """Every production ``.py`` file this packet governs.
 
-    Shares the discovery convention with ``test_secret_typing._python_sources``
-    but stays independent of it on purpose: this scan governs a different
-    property, and coupling them would mean an exemption added for one silently
-    widening the other.
+    ⚠ REWIRED to the ONE shared root list. This carried a private copy missing
+    BOTH ``lorerunes`` and ``skills`` — so the M4 locals gate, whose property is
+    "no production code renders frame locals", was not looking at two trees of
+    production code.
     """
-    package_file = loremaster.__file__
-    assert package_file is not None, "loremaster imported as an empty namespace package"
-    package_root = Path(package_file).resolve().parent
-    workspace_root = package_root.parent.parent
-    roots = [
-        ("loremaster", package_root),
-        ("loresigil", workspace_root / "loresigil" / "loresigil"),
-        ("lorescribe", workspace_root / "lorescribe" / "lorescribe"),
-        ("scripts", workspace_root / "scripts"),
-    ]
-    sources: list[tuple[str, Path]] = []
-    for label, root in roots:
-        if not root.is_dir():
-            continue
-        sources += [
-            (f"{label}/{path.relative_to(root)}", path)
-            for path in sorted(root.rglob("*.py"))
-            if "tests" not in path.parts
-        ]
-    return sources
+    return production_sources()
 
 
 class TestTheDeletionsResidualBoundsArePinned:
@@ -1229,24 +1203,83 @@ class TestTheEntropyMachineryIsGone:
         for kept in ("_BEARER_RE", "_ASSIGNMENT_RE", "_scrub_text", "REDACTED", "RedactingFilter"):
             assert hasattr(logging_setup, kept), f"{kept} is missing — packet 42 keeps it"
 
-    def test_the_module_prose_no_longer_teaches_a_mechanism_it_does_not_run(self) -> None:
-        # This repo's most expensive defect class: served English promising a
-        # mechanism that no longer exists. The module docstring and comments are
-        # read by the next engineer (and, per the consumer law, by agents) as the
-        # contract. A BARE, anchor-free scan — prose carries no structural
-        # anchors, which is exactly why anchored greps miss these sites.
-        from loremaster import logging_setup
+    # The phrases that name the DELETED mechanism. Kept as one list so both legs
+    # below read from the same source of truth.
+    CORPSE_PROSE = ["Shannon entropy", "high-entropy token", "entropy threshold", "catch-all backstop"]
 
-        source = Path(logging_setup.__file__).read_text(encoding="utf-8")
-        # Strip the code that legitimately survives; what is left is prose plus
-        # the kept patterns, and none of it may teach the deleted mechanism.
-        forbidden_prose = ["Shannon entropy", "high-entropy token", "entropy threshold", "catch-all backstop"]
-        found = [phrase for phrase in forbidden_prose if phrase.lower() in source.lower()]
-        assert not found, (
-            "logging_setup's prose still teaches the deleted entropy heuristic: "
-            f"{found}. A doc that describes a mechanism the code does not run is how this "
-            "repo ships green-at-gate defects (CLAUDE.md, rename/reshape sweeps)."
+    # Words that make a mention HISTORICAL rather than a live claim. A test module
+    # explaining what was removed is doing its job; one asserting the mechanism
+    # still runs is teaching a corpse.
+    DELETION_MARKERS = [
+        "delet", "retir", "no longer", "used to", "was ", "were ", "packet 42",
+        "dissolv", "former", "pre-r", "at base", "before ",
+    ]
+
+    def test_no_PRODUCTION_prose_teaches_a_mechanism_it_does_not_run(self) -> None:
+        # ⚠ **REACH WIDENED (REFACTOR §4.D).** This read ONE file —
+        # ``logging_setup.__file__`` — and that narrow reach is *why three corpse-prose
+        # sites survived the deletion*, one of them a class docstring stating outright
+        # that high-entropy tokens are scrubbed. The refactorer fixed those three by
+        # hand; nothing stopped the fourth. Per CLAUDE.md — *"every audit-caught defect
+        # class becomes a repo-local invariant test"* — the property is now quantified
+        # over every production source this packet governs, via the ONE shared root list.
+        offenders = [
+            f"{display}: {phrase}"
+            for display, source_path in _workspace_python_sources()
+            for phrase in self.CORPSE_PROSE
+            if phrase.lower() in source_path.read_text(encoding="utf-8").lower()
+        ]
+        assert not offenders, (
+            "production prose still teaches the deleted entropy heuristic. A doc that describes "
+            "a mechanism the code does not run is how this repo ships green-at-gate defects "
+            "(CLAUDE.md, rename/reshape sweeps):\n  " + "\n  ".join(offenders)
         )
+
+    def test_no_PACKET_TEST_prose_claims_the_mechanism_still_RUNS(self) -> None:
+        # The second half of the reach, and it needs a different predicate. These
+        # test modules legitimately NARRATE the deleted mechanism — explaining what
+        # was removed and why is most of their value — so a flat blocklist here
+        # would be a false gate that gets switched off.
+        #
+        # The distinction that matters is TENSE: "the catch-all used to redact this"
+        # is documentation; "high-entropy tokens are scrubbed" is a corpse. So a
+        # mention is allowed only in the presence of a deletion marker within its
+        # own comment/docstring neighbourhood. Measured 2026-07-27: every existing
+        # mention in these five modules passes, so this costs nothing today and
+        # catches the fourth site tomorrow.
+        packet_modules = [
+            Path(__file__).with_name(name)
+            for name in (
+                "test_secret_leak_vectors.py",
+                "test_logging_setup.py",
+                "test_secret_typing.py",
+                "test_secret_resolution_seam.py",
+            )
+        ]
+        offenders: list[str] = []
+        for module_path in packet_modules:
+            lines = module_path.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(lines):
+                if not any(phrase.lower() in line.lower() for phrase in self.CORPSE_PROSE):
+                    continue
+                neighbourhood = " ".join(lines[max(0, index - 6) : index + 7]).lower()
+                if not any(marker in neighbourhood for marker in self.DELETION_MARKERS):
+                    offenders.append(f"{module_path.name}:{index + 1} {line.strip()[:70]}")
+        assert not offenders, (
+            "these test-module mentions of the deleted entropy heuristic read as LIVE claims "
+            "rather than history. Say what was removed, in the past tense, or the next reader "
+            "learns a mechanism that does not exist:\n  " + "\n  ".join(offenders)
+        )
+
+    def test_the_prose_gate_can_actually_fire(self) -> None:
+        # POSITIVE CONTROL for both legs, which assert absences. Hand each
+        # predicate a string it must reject, so a broken scan is not mistaken for
+        # a clean tree.
+        live_claim = "any long high-entropy token is scrubbed to REDACTED"
+        assert any(phrase.lower() in live_claim.lower() for phrase in self.CORPSE_PROSE)
+        assert not any(marker in live_claim.lower() for marker in self.DELETION_MARKERS)
+        historical = "the high-entropy token sweep was deleted by packet 42"
+        assert any(marker in historical.lower() for marker in self.DELETION_MARKERS)
 
 
 class TestTheScrubbedSurfacesAreUnchanged:
@@ -1593,12 +1626,19 @@ def _auth_holder_classes() -> list[tuple[str, type]]:
     import importlib
     import pkgutil
 
-    import loresigil
-
     found: list[tuple[str, type]] = []
     seen: set[type] = set()
+    # ⚠ REWIRED to the ONE shared root list — this hand-listed two packages and
+    # missed ``lorerunes`` and ``lorescribe``, so an auth holder landing in either
+    # would never be swept. The sweep's whole point is that a sibling nobody
+    # thought of is covered; a hand-list of packages re-created the defect one
+    # level up.
     modules: list[str] = []
-    for package in (loremaster, loresigil):
+    for label, _root in workspace_roots(include_scripts=False, include_skills=False):
+        try:
+            package = importlib.import_module(label)
+        except Exception:  # pragma: no cover - a member with no importable package
+            continue
         modules += [
             info.name
             for info in pkgutil.walk_packages(package.__path__, prefix=f"{package.__name__}.")

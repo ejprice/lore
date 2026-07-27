@@ -1459,3 +1459,101 @@ class TestTheInImageGuardCoversEveryWorkspaceMember:
             f"the Containerfile does not copy these workspace members: {missing}. They would be "
             "an ImportError at boot, in production only, invisible to every test on this host."
         )
+
+
+class TestEveryScannerSharesOneRootList:
+    """**THE EIGHTH — and it is a CLASS, not an instance.**
+
+    Asked *"what is each instrument's REACH, and is the reach as wide as its
+    property?"*, I found four scanners across three contract modules each carrying
+    a **private copy** of "which roots does this packet govern":
+
+    | scanner | property | reach before |
+    |---|---|---|
+    | ONE-ENTRY-POINT env gate | *one secret resolver in the workspace* | missing ``lorerunes`` |
+    | M4 locals gate | *no production code renders frame locals* | missing ``lorerunes`` **and** ``skills`` |
+    | R2 function-name corpus | *no production name is mangled* | missing ``lorerunes`` |
+    | auth-holder sibling sweep | *every auth holder is swept* | missing ``lorerunes``, ``lorescribe`` |
+
+    When ``lorerunes`` was minted, ``_SCANNED_MEMBERS`` was widened and **the other
+    four were not** — so three gates and a corpus silently stopped covering a
+    workspace member, exactly the way R32's six defects went stale. **That is #102
+    in my own instruments**: four call sites needing one POLICY, each cloning it.
+
+    The fix is not to widen four lists — it is that they **call one**, and that one
+    is **derived from ``pyproject.toml``** so a fifth member is covered without
+    anyone remembering. `_logging_fixtures.workspace_roots` is that function.
+
+    This class is the guard that keeps it true.
+    """
+
+    @staticmethod
+    def _scanner_labels() -> dict[str, set[str]]:
+        """The root labels each scanner actually reaches, measured not declared."""
+        import importlib.util
+
+        package_file = loremaster.__file__
+        assert package_file is not None
+        tests_dir = Path(package_file).resolve().parent.parent / "tests"
+        labels: dict[str, set[str]] = {
+            "secret_typing": {display.split("/")[0] for display, _ in _python_sources()}
+        }
+        for module_name, function_name in (
+            ("test_secret_resolution_seam", "_scanned_python_sources"),
+            ("test_secret_leak_vectors", "_workspace_python_sources"),
+        ):
+            spec = importlib.util.spec_from_file_location(
+                module_name, tests_dir / f"{module_name}.py"
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            labels[module_name] = {
+                display.split("/")[0] for display, _ in getattr(module, function_name)()
+            }
+        return labels
+
+    def test_every_scanner_reaches_every_declared_workspace_member(self) -> None:
+        import tomllib
+
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        manifest = tomllib.loads((workspace_root / "pyproject.toml").read_text(encoding="utf-8"))
+        declared = set(manifest["tool"]["uv"]["workspace"]["members"])
+
+        shortfalls = {
+            scanner: sorted(declared - reached)
+            for scanner, reached in self._scanner_labels().items()
+            if declared - reached
+        }
+        assert not shortfalls, (
+            "these scanners do not reach every declared workspace member, so their ∀ pins are "
+            "silently exempting a package — the eighth instance of property-right/reach-short "
+            f"in this packet: {shortfalls}"
+        )
+
+    def test_all_the_scanners_agree_with_each_other(self) -> None:
+        # The DRY property stated directly: they share one list, so they cannot
+        # disagree. Two scanners reaching different root sets means one has grown
+        # a private copy again, which is how this defect class starts.
+        labels = self._scanner_labels()
+        distinct = {frozenset(reached) for reached in labels.values()}
+        assert len(distinct) == 1, (
+            f"the scanners no longer agree on what this packet governs: "
+            f"{ {name: sorted(reached) for name, reached in labels.items()} }"
+        )
+
+    def test_the_shared_list_is_DERIVED_and_not_a_hand_list(self) -> None:
+        # The claim in ``workspace_roots``' own docstring, checked. A future author
+        # who "simplifies" it back into a literal tuple reddens here — which is the
+        # only thing that stops the class recurring a ninth time.
+        from _logging_fixtures import workspace_roots
+
+        source = inspect.getsource(workspace_roots)
+        assert "tomllib" in source and "pyproject.toml" in source, (
+            "workspace_roots no longer derives the member list from pyproject.toml. A hand-list "
+            "is how lorerunes was missed by four scanners at once."
+        )
+        labels = [label for label, _ in workspace_roots()]
+        assert "lorerunes" in labels, "the derived list does not include the newest member"

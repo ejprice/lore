@@ -26,6 +26,7 @@ import io
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from loremaster.logging_setup import LORE_NAMESPACES, configure_logging
 
@@ -136,3 +137,74 @@ def emit_through_configured_logger(
     handler.setStream(buffer)
     action(logging.getLogger(f"{EMITTING_NAMESPACE}.{child}"))
     return buffer.getvalue()
+
+
+# --------------------------------------------------------------------------- #
+# THE ONE ROOT LIST THIS PACKET GOVERNS — derived, never hand-written
+# --------------------------------------------------------------------------- #
+# ⚠ **WHY THIS EXISTS, and it is this packet's EIGHTH instance of one shape.**
+# Four scanners across three contract modules each carried a PRIVATE copy of
+# "which roots do we govern": the ONE-ENTRY-POINT env gate, the M4 locals gate,
+# the R2 function-name corpus, and the auth-holder sibling sweep. When ``lorerunes``
+# was minted, ``_SCANNED_MEMBERS`` was widened and **the other four were not** —
+# so three gates and one corpus silently stopped covering a workspace member,
+# exactly the way the six R32 defects went stale.
+#
+# That is #102 in my own instruments: four call sites needing the same POLICY
+# ("what does this packet govern?") each cloning it. The fix is not to widen four
+# lists — it is that they CALL one, and that one is DERIVED from
+# ``pyproject.toml`` so a fifth member is covered without anyone remembering.
+#
+# Proven by mutation: add a member to ``[tool.uv.workspace] members`` and every
+# scanner must see it. See ``test_secret_typing`` /
+# ``TestEveryScannerSharesOneRootList``.
+
+
+def workspace_roots(*, include_scripts: bool = True, include_skills: bool = True) -> list[tuple[str, Path]]:
+    """Every root this packet's ∀ scanners govern, as ``(label, path)``.
+
+    Workspace members come from ``pyproject.toml``; ``scripts/`` and ``skills/``
+    are non-package trees that carry production code and are opted in explicitly
+    (``skills/`` is R14's stdlib-only deploy boundary — in scope for scanning,
+    exempt from the typed-seam gate, which is a different question).
+
+    A root that does not exist on disk is skipped: in the deployed image
+    ``loremaster`` lives in site-packages with no siblings, and the scan simply
+    covers less. The receipt that this does not degrade silently in a CHECKOUT is
+    ``test_the_scan_reaches_every_workspace_member``.
+    """
+    import tomllib
+
+    import loremaster
+
+    package_file = loremaster.__file__
+    assert package_file is not None, "loremaster imported as an empty namespace package"
+    workspace_root = Path(package_file).resolve().parent.parent.parent
+    manifest = tomllib.loads((workspace_root / "pyproject.toml").read_text(encoding="utf-8"))
+    members: list[str] = manifest["tool"]["uv"]["workspace"]["members"]
+    roots: list[tuple[str, Path]] = [
+        (member, workspace_root / member / member) for member in sorted(members)
+    ]
+    if include_scripts:
+        roots.append(("scripts", workspace_root / "scripts"))
+    if include_skills:
+        roots.append(("skills", workspace_root / "skills"))
+    return [(label, path) for label, path in roots if path.is_dir()]
+
+
+def production_sources(
+    *, include_scripts: bool = True, include_skills: bool = True
+) -> list[tuple[str, Path]]:
+    """Every production ``.py`` file under :func:`workspace_roots`.
+
+    Test files and ``tests/`` directories are excluded everywhere — they are not
+    production sources, and ``scripts/``/``skills/`` carry theirs inline.
+    """
+    sources: list[tuple[str, Path]] = []
+    for label, root in workspace_roots(include_scripts=include_scripts, include_skills=include_skills):
+        sources += [
+            (f"{label}/{path.relative_to(root)}", path)
+            for path in sorted(root.rglob("*.py"))
+            if "tests" not in path.parts and not path.name.startswith("test_")
+        ]
+    return sources
