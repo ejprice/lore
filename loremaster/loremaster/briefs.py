@@ -102,6 +102,8 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.agent_existence import UnknownAgentRowError, reject_unknown_agents
+from loremaster.agent_ref import AgentRef
 from loremaster.agent_ref import AgentRefLike as AgentRefLike  # noqa: PLC0414 (re-export)
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -351,6 +353,22 @@ class UnknownBriefVersionError(BriefLedgerError):
     """Raised when a brief ``name`` exists but not at the requested ``version``."""
 
 
+class UnknownBriefAgentError(BriefLedgerError, UnknownAgentRowError):
+    """Raised when a publishing or acking ``agent_id`` names no ``agent`` ROW.
+
+    TWO bases on purpose (packet 04a): a :class:`BriefLedgerError`, so a caller keeps
+    ONE ``except`` for this ledger's whole vocabulary; and a
+    :class:`~loremaster.agent_existence.UnknownAgentRowError`, so a caller who wants
+    *"this id names no agent"* across BOTH the brief and message verbs can write ONE
+    ``except`` for that instead. The shared base belongs to the shared policy module
+    rather than to either ledger — a base owned by a LEDGER would make its sibling
+    import it, which is the coupling :mod:`loremaster.agent_existence` exists to prevent.
+
+    ⚠ Its sibling :class:`loremaster.agents.UnknownAgentError` is a DIFFERENT error
+    about a different failure: *this display NAME resolves to no agent at the REGISTRY*.
+    This one is *this row ID names no ``agent`` row at the LEDGER*."""
+
+
 class BriefLedger:
     """Durable, versioned brief ledger over a single SurrealDB database.
 
@@ -570,17 +588,32 @@ class BriefLedger:
                 statements ride ONE :func:`~loremaster.store._txn.execute_transaction`
                 call and roll back together on rejection — never a second,
                 separately-failable write. ``None`` (a ledger-level caller with
-                no agent row in play) writes no edge.
+                no agent row in play) writes no edge — and is NOT refused: it is
+                the third input class, legal and edge-free.
 
         Returns:
             The :class:`BriefPublishResult` of this call.
 
         Raises:
+            UnknownBriefAgentError: ``agent_id`` names no ``agent`` row. Raised
+                BEFORE anything is minted or written.
             SurrealConnectionError: A transport fault.
             SurrealStoreError: The engine rejected the write (e.g. the blank-body
                 ASSERT). Such a rejection is NEVER retried — only a classified
                 retryable conflict on the counter row is (:meth:`_mint_version`).
         """
+        # BEFORE the mint, not merely before the CREATE (packet 04a). The mint is a
+        # hot-row UPSERT: a build that mints first and lets the write be rejected
+        # takes the BEST-EFFORT :meth:`_release_version` path, which swallows its own
+        # failures — the difference between "refused" and "rolled back, we think".
+        # And ``briefed``'s ``ENFORCED`` clause would refuse the ack RELATE anyway,
+        # but only as ``statement N of M was rejected (unspecified rejection)``, which
+        # teaches the caller nothing. This is the layer that names the bad id.
+        await reject_unknown_agents(
+            self._query,
+            () if agent_id is None else (AgentRef(agent_id, created_by),),
+            error=UnknownBriefAgentError,
+        )
         version = await self._mint_version(name)
         brief_id = self._brief_id(name, version)
         fragment = self._publish_fragment(
@@ -830,10 +863,16 @@ class BriefLedger:
         the FIRST-recorded ``via`` (first-write-wins).
 
         Args:
-            agent_id: The acking agent's opaque id (caller-resolved — this
-                ledger never queries the ``agent`` table itself).
-            agent_name: The acking agent's name (carried through only for
-                symmetry with the caller's roster; not stored on the edge).
+            agent_id: The acking agent's opaque row id. ⚠ Packet 04a: the
+                ledger now RESOLVES it against the ``agent`` table before it
+                writes anything (:func:`~loremaster.agent_existence.reject_unknown_agents`)
+                — the sentence this docstring used to carry, *"this ledger never
+                queries the agent table itself"*, described the world in which
+                an ack for a ghost agent wrote a permanent dangling receipt.
+            agent_name: The acking agent's name — carried for the caller's own
+                vocabulary and NOT stored on the edge, but used to name the
+                identity in the refusal above, because an id alone teaches an
+                agent less than the label it thought it was acting under.
             name: The brief name.
             version: The version being acked.
             via: How this ack is being recorded (``"register"`` or
@@ -845,10 +884,18 @@ class BriefLedger:
             The :class:`BriefAckResult` of this call.
 
         Raises:
+            UnknownBriefAgentError: ``agent_id`` names no ``agent`` row. Raised
+                UPSTREAM of everything below, which is the point rather than a
+                detail: an ``ENFORCED`` rejection on the RELATE would arrive in
+                :meth:`_relate_briefed`'s ``except SurrealStoreError`` — the
+                IDEMPOTENT-RE-ACK signal — leaving two distinct failure modes
+                sharing one catch, separated only by a follow-up read.
             UnknownBriefError: ``name`` has no published version at all.
             UnknownBriefVersionError: ``name`` exists but not at ``version``.
         """
-        del agent_name  # carried for API symmetry; not persisted on the edge.
+        await reject_unknown_agents(
+            self._query, (AgentRef(agent_id, agent_name),), error=UnknownBriefAgentError
+        )
         versions = self._as_rows(
             await self._query(
                 f"SELECT * FROM {BRIEF_TABLE} WHERE {_COL_NAME} = ${_NAME_LOOKUP_PARAM}",

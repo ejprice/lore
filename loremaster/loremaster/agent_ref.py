@@ -17,6 +17,7 @@ the "the ledger never imports its neighbours" decoupling law
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 
@@ -39,3 +40,26 @@ class AgentRefLike(Protocol):
 
     @property
     def name(self) -> str: ...
+
+
+@dataclass(frozen=True)
+class AgentRef:
+    """The minimal concrete :class:`AgentRefLike` — a row id and the display label it was
+    resolved under.
+
+    Added by packet 04a for a specific reason, stated so it is not mistaken for a general
+    invitation to build agent objects here: the shared unknown-agent policy
+    (:func:`loremaster.agent_existence.reject_unknown_agents`) resolves a SEQUENCE of
+    identities, which is the shape ``MessageLedger.send`` already holds — while
+    ``BriefLedger.publish``/``ack`` hold a bare ``agent_id`` string plus the label their
+    caller resolved it under. Without a concrete ref the brief ledger could only reach the
+    shared policy through a SECOND, id-only entry point, and a policy with two doors is a
+    policy with two futures.
+
+    Frozen, so it structurally satisfies :class:`AgentRefLike`'s read-only properties
+    (see that Protocol's own docstring for why they are properties and not attributes) and
+    cannot be mutated between the check and the write it guards.
+    """
+
+    id: str
+    name: str

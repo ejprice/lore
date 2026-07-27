@@ -1332,6 +1332,25 @@ def _brief_statements() -> list[str]:
 def _briefed_statements() -> list[str]:
     """The ``briefed`` relation edge table: fields + the UNIQUE ``(in, out)`` index.
 
+    ``ENFORCED`` since packet 04a (#105): ``DEFINE TABLE OVERWRITE briefed TYPE
+    RELATION IN agent OUT brief ENFORCED SCHEMAFULL``. The clause validates that
+    BOTH endpoints reference EXISTING records and guards the TABLE — including
+    the ``INSERT RELATION`` door an app-level check on one verb can never reach
+    (store reference §4). It is the STRUCTURAL half only: the engine reports ONE
+    bad endpoint, as untyped prose, after the write is attempted, and the seam's
+    error hygiene withholds even that — so
+    :func:`loremaster.agent_existence.reject_unknown_agents` stays the layer that
+    TEACHES. Neither is redundant; do not delete one for the other.
+    ⚠ This clause lands on an EXISTING table in every long-lived store, which is
+    why :func:`_define_relation_table` emits ``OVERWRITE``: ``IF NOT EXISTS``
+    would be a MEASURED silent no-op and the guard would never reach production
+    (#107's shape, invisible to every virgin-DB fixture).
+    ⚠ Consequence: this slice is now ORDER-DEPENDENT on
+    :func:`generate_agent_ddl` — an ``IN agent`` edge needs the ``agent`` table
+    to exist. Every consumer already applies the agent slice first
+    (``server.py``: ``agent_registry`` -> ``brief_ledger`` -> ``message_ledger``),
+    exactly as ``_message_statements`` records for ``to``.
+
     Mirrors ``_refers_statements``/``_answers_to_statements``'s shape: define
     the relation table (:func:`_define_relation_table` — ``in``/``out`` are
     auto-defined, never hand-declared), emit the edge-local metadata fields
@@ -1344,7 +1363,7 @@ def _briefed_statements() -> list[str]:
     field-spec comment for the live-probed safety confirmation).
     """
     statements: list[str] = [
-        _define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE)
+        _define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE, enforced=True)
     ]
     statements += [
         _define_field(BRIEFED_RELATION, name, type_expr, constraint=constraint)
