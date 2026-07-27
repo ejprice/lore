@@ -438,6 +438,75 @@ the author's handling of R20 part 2 *"the best work in this packet"* and confirm
 — handed a false rationale, it **measured** it, said so in the pin's own docstring, and pinned what
 is true rather than what it was told.
 
+---
+
+## Sixth ruling wave — 2026-07-27, adversary FOURTH pass — THE NAME-LIST, SEVENTH ADDRESS
+
+Every round-3 finding is closed and independently verified. The surviving blocker is **the class
+CLAUDE.md already has six receipts for**, and the operator ruled the DESIGN rather than a seventh
+patch.
+
+**R26 — MP14, BLOCKER. RULED: ONE TYPED AUTH-HEADER SEAM. Stop detecting; make it a TYPE ERROR.**
+
+The defect: `W-PARAMNAME-BARE` — a class holding a bare-`str` credential under the parameter name
+`bearer_token` — leaks into a rendered log line in **both** formats and adds **ZERO** failures.
+Base leaks 0/2, post-deletion 2/2: a strict regression. **Nothing sees it because THREE
+independent instruments all key on NAMES** — the sibling sweep on `"api_key" in parameters`,
+`SECRET_PARAM_NAMES` on `{"password", "api_key"}`, and `UNWRAP_ALLOWLIST` on a
+`.get_secret_value()` call a bare `str` never makes.
+⚠ **NOT a live defect.** The lead verified `bearer_token` exists in the tree only as
+`auth.py::_bearer_token` (an INCOMING client token), that `auth.py` contains **zero** logger calls,
+and that per M1 the local renders as `self._verifier.verify(token)` with no value. The wrong build
+is constructed. **The GAP is real; the leak is not.** State it that way in the pins.
+
+**The ruled shape — this packet's own thesis, applied to its own instrument:**
+
+```python
+def build_auth_headers(credential: SecretStr) -> dict[str, str]: ...
+```
+
+Every outgoing auth header is built through a typed seam. **mypy then rejects a bare `str` at every
+call site regardless of what the parameter is named**, which is the whole point: the parameter-name
+set is unbounded, the type is not. The residual AST check becomes small and *structural* — flag
+auth-header construction OUTSIDE the seam — because HTTP auth header **names** are a bounded set
+(we use two: `authorization`, `x-api-key`) where parameter names are not. **That is "allowlist the
+safe" with a safe set that is genuinely enumerable.**
+
+⚠ **THREE constraints the author must respect, all of which have already bitten this packet:**
+1. **This is the #222 boundary again.** `loresigil` cannot import `loremaster`. Do NOT re-open that
+   ruling — **the enforcement is the TYPE SIGNATURE, not a shared implementation.** A per-package
+   typed seam in each is correct and sufficient; `loresigil.voyage_http.build_bearer_client` is
+   already nine-tenths of one. Two typed seams are not a DRY violation when the shared thing is a
+   type, not a policy.
+2. **Scope is OUTGOING credentials only** — ones we hold and send. The INCOMING token in `auth.py`
+   is the other direction, is never logged, and is not in this seam. Do not over-build.
+3. **#221 applies: the pin needs a RUNTIME red, not only a mypy red.** mypy is the prevention;
+   a type-gate red is not a demonstrated pin. Pin the behaviour too.
+
+**Per repo law this is a property to INVENT, not a spec to IMPLEMENT** — so the author must
+**adversarially attack its own design before shipping it**, and report what it broke and fixed.
+Packet 01's three-scanner chain is the precedent: v1 and v2 both failed because nobody required
+their authors to attack them; v3 held because the operator reframed it and its author was made to
+build AND break its own shape.
+
+**R27 — MP13, instrument honesty. FIX BOTH HALVES.** The sibling sweep is good work with two
+dishonest edges, neither a hole (a companion instrument covers both deterministically) but both
+the served-English class:
+1. Its docstring says the module list is *"DERIVED from the live tree, never a hand-list"* — **it
+   is a hand-list of 6.** Either derive it or delete the claim; a docstring that overstates its own
+   instrument is exactly what this repo keeps paying for.
+2. **`CalibrationEngine` is in the asserted roster but SKIPPED at construction** (`missing 3
+   required keyword-only`), so the ∀ pin never interrogates it — and `constructed=6` clears the
+   floor of 4, **making the skip invisible**. The sweep must assert that **every rostered holder
+   was actually constructed**, not merely that some floor was cleared. A count that passes while a
+   member is silently skipped is the vacuity this instrument exists to prevent.
+
+**Verified and closed:** anti-vacuity control **provably fires** (`constructed=[]` →
+`AssertionError: vacuous: []`); the sweep's class derivation is real and follows inheritance; the
+two-model and sync legs **do** catch last-writer-wins (2 RED); R24/R25 are now executable
+(`resolve_config_value` named, co-run named); and the §9 self-audit **holds** — no stale
+instruction survives, and the R10 row is superseded in place rather than silently edited.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
