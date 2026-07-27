@@ -587,10 +587,17 @@ the objection instead of managing it.** A drift pin is a mechanism for detecting
 disagree; one implementation cannot disagree with itself.
 
 **The shape:**
-- A **new workspace member** — proposed name **`lorecommon`** (plain and obvious to a newcomer;
-  the lead chose clarity over the evocative `lore<noun>` pattern of `loremaster`/`loresigil`/
-  `lorescribe`). ⚠ **The name is free to change NOW and expensive later — operator, say so if you
-  want a different one before the builder starts.**
+- A **new workspace member: `lorerunes`** — NAME RULED BY THE OPERATOR 2026-07-27, **plural, and
+  the plural is the ruling.** Write it `lorerunes` everywhere: package dir, import name, workspace
+  member, typecheck `MEMBERS`, `_SCANNED_MEMBERS`, Containerfile. (The lead proposed the singular
+  `lorerune`; the operator chose the plural. Per the naming convention in the global CLAUDE.md —
+  *"once a name is chosen for a concept, use that exact name everywhere"* — a stray singular is a
+  bug, not a typo.)
+  **Why it fits the theme:** a rune is the atomic mark from which sigils are composed, so
+  `lorerunes` is literally *the primitives `loresigil` is built from* — which is the dependency
+  direction. It also stays honest as the package grows: any shared primitive is a rune, where a
+  function-specific name (`loreward`, "the guard") would have misled the first time a non-guard
+  utility landed there.
 - It holds the **blankness predicate** and nothing else today. Both `loremaster.config.resolve_secret`
   and `loresigil`'s `api_key` validator call it. **ONE implementation of "what counts as blank",
   provable by mutation** — change the predicate and BOTH callers' pins must move.
