@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "lore-workspace",
     "loremaster",
+    "lorerunes",
     "lorescribe",
     "loresigil",
 ]
@@ -731,6 +732,11 @@ requires-dist = [
     { name = "surrealdb", specifier = ">=2.0" },
     { name = "watchdog", specifier = ">=6.0" },
 ]
+
+[[package]]
+name = "lorerunes"
+version = "0.1.0"
+source = { editable = "lorerunes" }
 
 [[package]]
 name = "lorescribe"

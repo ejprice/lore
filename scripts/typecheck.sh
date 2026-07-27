@@ -3,11 +3,11 @@
 # Canonical type-check for the lore workspace.
 #
 # Why per-member, not a single combined invocation:
-#   Each workspace member (lorescribe, loresigil, loremaster) owns its own
+#   Each workspace member (lorerunes, lorescribe, loresigil, loremaster) owns its own
 #   ``tests/`` directory.  Under mypy's ``explicit_package_bases`` mode (set in
-#   pyproject.toml so the members resolve each other's sources), all three
-#   ``tests/`` dirs map to the SAME ``tests.*`` module namespace.  Passing all
-#   three members to ONE ``mypy`` invocation therefore trips a spurious
+#   pyproject.toml so the members resolve each other's sources), EVERY member's
+#   ``tests/`` dir maps to the SAME ``tests.*`` module namespace.  Passing the
+#   members to ONE ``mypy`` invocation therefore trips a spurious
 #   "Duplicate module named tests.conftest" error before any real checking runs.
 #
 #   Issuing one invocation PER member keeps a single ``tests/`` in scope at a
@@ -23,7 +23,7 @@ set -uo pipefail
 #
 # The member arguments below are RELATIVE paths.  Run from anywhere but the repo
 # root they resolve to nothing, and mypy answers "Cannot read file 'lorescribe'"
-# — ONE error per member, three total.  The exit code stays 1 (so a gate keyed on
+# — ONE error per member.  The exit code stays 1 (so a gate keyed on
 # exit status is safe), but the OUTPUT lies: the real error count never appears,
 # and a grep asking "are there errors in MY files?" comes back empty and reads as
 # a pass.  Measured 2026-07-20: 3 errors reported from ``loremaster/`` vs the true
@@ -31,7 +31,7 @@ set -uo pipefail
 # session before anyone noticed, so cwd is no longer allowed to change the verdict.
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.."
 
-MEMBERS=(lorescribe loresigil loremaster)
+MEMBERS=(lorerunes lorescribe loresigil loremaster)
 status=0
 
 for member in "${MEMBERS[@]}"; do

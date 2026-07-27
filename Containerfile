@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # lore — single shared image, N config-driven containers (one per project).
 #
-# The image bundles the three uv-workspace members (lorescribe, loresigil,
+# The image bundles every uv-workspace member (lorerunes, lorescribe, loresigil,
 # loremaster) and runs the loremaster MCP server. A project supplies its
 # identity entirely at RUN time: a read-only bind of the project tree at
 # /workspace, an optional read-only snapshot of static tiers at /source,
@@ -38,7 +38,7 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # ---------------------------------------------------------------------------
-# Install the three workspace members from the build context (NOT a host
+# Install every workspace member from the build context (NOT a host
 # editable path — the image must be self-contained and reproducible).
 #
 # The workspace ROOT pyproject.toml + uv.lock are copied alongside the members:
@@ -59,6 +59,7 @@ WORKDIR /app
 # ---------------------------------------------------------------------------
 COPY pyproject.toml /app/pyproject.toml
 COPY uv.lock        /app/uv.lock
+COPY lorerunes/  /app/lorerunes/
 COPY lorescribe/ /app/lorescribe/
 COPY loresigil/  /app/loresigil/
 COPY loremaster/ /app/loremaster/
@@ -75,8 +76,9 @@ COPY loremaster/ /app/loremaster/
 #   2. CONFORMANCE (#139 / packet 01a): baking the pinned test runner makes the
 #      deployed image itself runnable by the in-image conformance suite — no
 #      run-time dependency install, and conformance tests the LITERAL artifact.
-# --all-packages installs every workspace member (loremaster depends on the other
-# two via `workspace = true`; this documents + guarantees all three are present).
+# --all-packages installs every workspace member (loremaster depends on its
+# siblings via `workspace = true`; this documents + guarantees ALL members are
+# present, including any that no sibling declares a dependency on yet).
 RUN uv sync --locked --all-packages
 
 # The sync installs into /app/.venv; put it first on PATH so `python`, `pytest`
