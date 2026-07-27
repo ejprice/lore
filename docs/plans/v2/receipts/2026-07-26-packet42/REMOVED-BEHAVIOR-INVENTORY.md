@@ -758,6 +758,72 @@ as though it might. Correct the prose; do not treat it as a compatibility constr
 **F4 — the deleted `.strip()` on the env-sourced Anthropic key: OPERATOR RULING NEEDED**, surfaced
 in the close-out rather than decided here.
 
+---
+
+## Eleventh ruling wave — 2026-07-27, SECURITY AUDIT — **DEPLOY IS BLOCKED**
+
+The audit attacked the prevention argument across eight surfaces (R19 shape B, R3, R12, R17, the
+seam gate, the unwrap allowlist, the mint gate) and **broke none of them**. Its verdict, which the
+lead accepts: **the argument holds for credentials this codebase RESOLVES AND SENDS. It does not
+hold for credentials in STRUCTURE — and structure is where the deleted catch-all was working.**
+
+Three widenings, none in the accepted-bounds list, all measured base-vs-HEAD, all against a
+388-passed tree. **All three reproduced independently by the lead:**
+
+```
+SURREAL_PASS=<v>            *** LEAKS ***   <- our own SurrealDB root password env-var NAME
+client_secret=<v>           *** LEAKS ***
+client-secret=<v>           redacted        <- the hyphen twin: the control that names the mechanism
+{'api_key': '<v>'}          *** LEAKS ***   <- the KEY is the label, and never participates
+{'Authorization': 'Basic <v>'}  *** LEAKS ***
+Authorization: Basic <v>    redacted        <- unquoted form fixed by R8; quoted form was not
+```
+
+**R37 — F2 🔴 `_ASSIGNMENT_RE`'s `\b` EXCLUDES EVERY UNDERSCORE COMPOUND.** `_` is a word
+character, so `\b` never matches after it: `client_secret`, `secret_key`, `session_token`,
+`refresh_token`, `db_password`, `private_key`, AWS-style names — **and `SURREAL_PASS`, the env var
+holding our own store's root password.** The hyphen twins scrub, which is the differential control
+proving the mechanism. ⚠ **`ASSIGNMENT_LABEL_SAMPLES` is seven BARE WORDS, so its "∀ label" pin
+ranges over a set that structurally CANNOT contain a compound** — the fixture-monoculture defect,
+in the ∀ pin guarding the surface.
+
+**R38 — F1 🔴 `_scrub_value` SCRUBS DICT VALUES IN ISOLATION; THE KEY — WHICH IS THE LABEL — NEVER
+PARTICIPATES.** Every credential map in `extra=`, and every dict/JSON repr, leaks for every label.
+Measured: 6 widened end-to-end cases, 7 at the unit seam, JSON formatter included.
+⚠ **R11's own stated scenario — *"a labelled bearer token out of an `extra=` map"* — is NOT
+actually covered.** Its instrument proves *routing*, not redaction: the 7 `TEXT_CARRIERS` are
+unlabelled BY CONSTRUCTION and every labelled pin drives a FLAT STRING. A pin whose prose names the
+case its fixtures cannot reach.
+
+**R39 — F3 🟠 the QUOTED `Authorization` form leaks every non-Bearer scheme.** `{'Authorization':
+'Basic …'}`, Token, JSON, `proxy-authorization` — all scrubbed at base, all leak now. **This is
+#235/R8/R16's own surface**: the fix landed for the unquoted line form only, and the receiver-blind
+pin is defeated **not by a scheme but by a quote**. Same root as R38; the audit reports **F1 and F3
+share one edit**.
+
+**R40 — F4 🟠 httpx retains the unwrapped `x-api-key` on every Request** and `Headers.__repr__`
+renders it in full — the bearer client shows `[secure]`, the x-api-key one does not (differential
+control). Shape B is genuinely clean on OUR objects (measured A/B); the retention pins inspect
+`counter.__dict__` and never a post-request Request. This is R20's known asymmetry with a new
+carrier. Fix or pin with R20's trigger.
+
+### THE RULING
+**DO NOT REINSTATE THE CATCH-ALL — the diagnosis was right and is not re-opened.** The audit
+agrees. **But R37/R38/R39 are fixed BEFORE DEPLOY**: ~10 lines inside the kept patterns plus three
+fixtures, and R38/R39 are one edit. A packet whose thesis is *prevent the leak* may not ship having
+widened three.
+
+⚠ **THE PATTERN ACROSS ALL THREE, and it is the packet's own recurring defect:** each is a pin
+whose PROPERTY is right and whose FIXTURES cannot reach the case its prose claims. Seven bare-word
+labels that cannot contain a compound; text carriers unlabelled by construction; a receiver-blind
+pin driven only by unquoted strings. **Ask of every remaining pin: can its fixtures actually REACH
+the case its name claims?**
+
+**Residuals surfaced, not dropped:** F5 non-container `extra=` values never scrubbed · F6
+third-party loggers unfiltered · F8 `SurrealConfig.url` accepts and logs userinfo — **all three
+PRE-EXISTING and untouched by this packet**, so scope is the operator's call. F7 (unknown scheme
+destroys the rest of the line) duplicates R34.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
