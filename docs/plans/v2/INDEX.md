@@ -1083,3 +1083,18 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   teaching the claim §6.3 records as FALSE, in the file every store brief reads FIRST (`04da8bd`).
   #105 resolved for `to`+`briefed`. NEXT = **04b** (blocks/fleet/footer/#219; DEPLOYS BOTH, and will
   be first to ship the 11-i security wave).
+- 2026-07-27 · **POST-04a: #246 BUILT+RUN, and a MEASURED memory leak on BOTH stores.**
+  `scripts/zero_test_store.sh` shipped, then its FIRST real run found **three defects in ~40 lines**
+  that syntax checks and a live guard test had passed: the guard keyed on a **substring of a name**
+  (`pgrep -f` matched a sibling's watcher and its own checker — no pytest running), the success path
+  **never verified its own effect** (restart+liveness pass just as happily over an untouched store),
+  and it was a **footgun** — a fresh store bootstraps only `SURREAL_USER`, so zeroing destroyed the
+  harness root user that had only ever existed because it was DEFINEd into the old store. That last
+  one was **#246's own named unknown** ("whether anything depends on store persistence — the one
+  thing that would break"): it was not a test, it was the credentials every test uses. Now
+  self-healing; verified 61M→17K + full suite **7137/0** on a zeroed store. **#249** (supersedes
+  #245): both stores grow to **20–25 GB RSS** with WORK and reclaim to **~695 MB** on restart —
+  same baseline despite 43× different datasets; ~400 MB per suite run; **~44 GB reclaimed**.
+  **#250**: the prod restart proved **#164 live** — lore-lore did NOT reconnect (2 calls, no heal),
+  manual `podman restart` fixed it in 10s. **That blocks #249's only mitigation and promotes 07a
+  from hygiene to enabling work.** NEXT = **04b**.
