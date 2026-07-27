@@ -541,13 +541,23 @@ UNWRAP_EVIDENCE_CATEGORIES: frozenset[str] = frozenset(
 UNWRAP_ALLOWLIST: dict[str, str] = {
     "loremaster/auth.py::verify": CONSTANT_TIME_COMPARE,
     "loremaster/auth.py::add_key": EMPTINESS_GUARD,
-    "loremaster/calibration/counting.py::__init__": AUTH_HEADER,
+    # ⚠ RE-DERIVED under R32 against the CURRENT design. This entry was
+    # ``counting.py::__init__`` — an address R19 then made IMPOSSIBLE, because
+    # shape B forbids building auth headers at construction. The property was
+    # right; the address was two rulings stale.
+    "loremaster/calibration/counting.py::build_auth_headers": AUTH_HEADER,
     "loremaster/store/_txn.py::signin_credentials": SDK_PAYLOAD,
-    "scripts/token_survey.py::__init__": AUTH_HEADER,
-    # ADDED BY PACKET 42: loresigil's ONE client seam, where the resolved bearer
-    # key becomes the ``Authorization`` header.
-    # ⚠ If the builder puts the single seam elsewhere, the stale-entry pin says so.
-    "loresigil/voyage_http.py::build_bearer_client": AUTH_HEADER,
+    # Was ``voyage_http.py::build_bearer_client``; R26 moved the unwrap into the
+    # typed seam, because the header literal must sit inside ``build_auth_headers``
+    # (the construction gate's only exemption) and the unwrap goes where the header
+    # string is built.
+    "loresigil/voyage_http.py::build_auth_headers": AUTH_HEADER,
+    # NEW under R29: the validator must hand a ``str`` to ``lorerunes.is_blank``.
+    # This is a real second loresigil unwrap, not a leak — see
+    # ``test_loresigil_has_exactly_the_two_unwraps_its_rulings_require``.
+    "loresigil/factory.py::_reject_a_blank_credential": EMPTINESS_GUARD,
+    # ``scripts/token_survey.py::__init__`` is GONE, not moved: the sync counter
+    # imports the shared seam instead of owning a copy. That is R22 working.
 }
 
 
@@ -625,7 +635,11 @@ class TestEveryUnwrapSiteIsAllowlisted:
         # ∀ pin below pass vacuously — the exact non-discriminating shape this
         # repo's fixture law forbids.
         sites = _unwrap_sites()
-        assert len(sites) >= 8, f"the unwrap scan found only {len(sites)} sites: {sites}"
+        # ⚠ R32 defect 1: this said ``>= 8``, a threshold NO ruled design reaches,
+        # while its sibling asserted ``<= 7`` and §0.9 said 6. Two pins in one
+        # class disagreeing about one number is the two-populations defect wearing
+        # a floor. Measured against the current design: **6**.
+        assert len(sites) >= 5, f"the unwrap scan found only {len(sites)} sites: {sites}"
 
     def test_the_scan_counts_calls_not_grep_hits(self) -> None:
         # The 13-vs-10 correction, asserted rather than described. Three of the
@@ -726,10 +740,10 @@ class TestEveryUnwrapSiteIsAllowlisted:
         # credential at a leaf call site. Five pre-existing + one new loresigil
         # seam = six. Asserted as a BOUND rather than an exact count so adding a
         # justified entry is possible, but doubling the surface is not.
-        assert 4 <= len(UNWRAP_ALLOWLIST) <= 7, (
-            f"the unwrap surface is {len(UNWRAP_ALLOWLIST)} entries; R17 shrank it to 5 "
-            "pre-existing + 1 loresigil seam. A jump means a new category of unwrap that "
-            "needs an operator decision, not a lint fix."
+        assert 5 <= len(UNWRAP_ALLOWLIST) <= 7, (
+            f"the unwrap surface is {len(UNWRAP_ALLOWLIST)} entries; the ruled design is SIX "
+            "— 2 auth.py + 1 SDK payload + 2 typed seams + 1 blankness validator. A jump means "
+            "a new category of unwrap that needs an operator decision, not a lint fix."
         )
 
 
@@ -772,7 +786,23 @@ _INCOMING_AUTH_MODULE = "loremaster/auth.py"
 
 # The one production file exempt from the seam: stdlib-only by ruling R14, so it
 # cannot import a typed seam from either package without breaking the deploy path.
-_STDLIB_ONLY_EXEMPT = "skills/lore-deploy/scripts/probe_embed.py"
+# ⚠ R32 defect 3 — WIDENED FROM ONE FILE TO THE BOUNDARY IT NAMES. R14's exemption
+# is *stdlib-only deploy scripts*, and the whole directory is that: none of them can
+# import ``SecretStr``, so none can call a typed seam. Keeping it at one filename
+# meant two siblings were flagged for things that are not credentials at all — a
+# ``Content-Type`` header, and a ``Bearer ${VAR}`` TEMPLATE that
+# ``test_secret_leak_vectors``'s sibling sweep had already scoped out with that
+# reason.
+#
+# ⚠ AND THE REASON THIS IS THE RIGHT REPAIR, on the record: the builder could have
+# renamed a helper to ``build_auth_headers`` and collected the exemption. It
+# refused and said so — that would be a ``str``-typed function wearing a typed
+# seam's name, gaming the gate instead of satisfying its property. A gate that can
+# be satisfied by a rename is not a gate.
+#
+# RE-OPEN TRIGGER (inherited from R14): the day any of these scripts runs under
+# ``_loremaster_python()``, the stdlib-only boundary is gone and they join the seam.
+_STDLIB_ONLY_EXEMPT_ROOT = "skills/lore-deploy/scripts/"
 
 
 def _auth_construction_offenders() -> list[str]:
@@ -793,8 +823,8 @@ def _auth_construction_offenders() -> list[str]:
     """
     offenders: list[str] = []
     for display, source_path in _python_sources():
-        if "probe_embed" in display or display.endswith("auth.py"):
-            continue  # R14 stdlib-only exempt; R26 constraint 2 excludes incoming auth
+        if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display.endswith("auth.py"):
+            continue  # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         enclosing: dict[int, str] = {}
         for node in ast.walk(tree):
@@ -1348,3 +1378,81 @@ class TestTheBlanknessPredicateIsGENUINELYSHARED:
             resolve_secret("LORE_PKT42_SHARED_PREDICATE")
         with pytest.raises(ValidationError):
             EmbeddingConfig(backend="tei", base_url="http://x", api_key=SecretStr(FAKE_SECRET))
+
+
+class TestTheInImageGuardCoversEveryWorkspaceMember:
+    """**THE SEVENTH — found by sweeping, not by a builder hitting it.**
+
+    R29 mints ``lorerunes`` and names **packet 01a's in-image conformance run
+    (#139)** as the instrument that proves the new member reached the deployed
+    artifact — consequence 5 of five, and the ruling's own words are that
+    forgetting it *"is #131/#139 verbatim"*.
+
+    Measured 2026-07-27 at ``147cf2e``: the ``Containerfile`` **does** carry the
+    member (``COPY lorerunes/ /app/lorerunes/``), but
+    ``conformance_provenance.WORKSPACE_MEMBERS`` is frozen at the OLD three, so
+    **the guard the ruling names cannot see the member the ruling mints.** If
+    ``lorerunes`` failed to reach the image, or reached it and would not import,
+    the conformance run would pass anyway. That is the artifact-differs-from-the-
+    test-environment shape with no instrument looking at it.
+
+    ⚠ **Pinned as a ∀ DERIVED FROM ``pyproject.toml``, never a hand-list** — which
+    is the whole lesson of R32. A fifth member added next year is covered by this
+    pin rather than by anyone remembering; a pin naming ``lorerunes`` would be
+    stale the same way the six R32 defects were.
+    """
+
+    @staticmethod
+    def _declared_members() -> list[str]:
+        import tomllib
+
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        manifest = tomllib.loads((workspace_root / "pyproject.toml").read_text(encoding="utf-8"))
+        members: list[str] = manifest["tool"]["uv"]["workspace"]["members"]
+        return members
+
+    def test_the_declared_workspace_is_not_empty(self) -> None:
+        # POSITIVE CONTROL: a mis-keyed lookup returning [] would make the ∀ pin
+        # below pass over nothing.
+        members = self._declared_members()
+        assert len(members) >= 3, f"the workspace member list looks wrong: {members}"
+
+    def test_the_conformance_run_checks_every_declared_member(self) -> None:
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        scripts_root = workspace_root / "skills" / "lore-deploy" / "scripts"
+        if str(scripts_root) not in sys.path:
+            sys.path.insert(0, str(scripts_root))
+        import conformance_provenance  # type: ignore[import-not-found]
+
+        checked = set(conformance_provenance.WORKSPACE_MEMBERS)
+        unseen = sorted(set(self._declared_members()) - checked)
+        assert not unseen, (
+            "the in-image conformance run does not check these workspace members: "
+            f"{unseen}. R29 names that run as THE instrument proving a new member reached the "
+            "deployed artifact (consequence 5 of five, '#131/#139 verbatim'). A member the "
+            "guard cannot see is a member whose absence from the image is invisible until "
+            "production. Add it to WORKSPACE_MEMBERS and to the frozen tuple its own test pins."
+        )
+
+    def test_the_image_actually_copies_every_declared_member(self) -> None:
+        # The other half, and the one that makes the pin above meaningful: the
+        # conformance run can only verify what the image contains. Checked against
+        # the Containerfile, because a member declared in the workspace and absent
+        # from the image is an ImportError at boot, in production only.
+        package_file = loremaster.__file__
+        assert package_file is not None
+        workspace_root = Path(package_file).resolve().parent.parent.parent
+        containerfile = (workspace_root / "Containerfile").read_text(encoding="utf-8")
+        missing = [
+            member
+            for member in self._declared_members()
+            if f"COPY {member}/" not in containerfile
+        ]
+        assert not missing, (
+            f"the Containerfile does not copy these workspace members: {missing}. They would be "
+            "an ImportError at boot, in production only, invisible to every test on this host."
+        )

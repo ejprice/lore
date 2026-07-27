@@ -1334,7 +1334,7 @@ class TestNoProductionObjectRetainsAnUnwrappedCredential:
     at the very site the ``UNWRAP_ALLOWLIST`` blesses.
 
     Neither defence could reach it. ``_ASSIGNMENT_RE`` needs the label
-    *immediately* followed by ``\s*[=:]\s*``; in a mapping repr there is a QUOTE
+    *immediately* followed by a separator regex; in a mapping repr there is a QUOTE
     between them, and in ``_scrub_value`` keys and values are scrubbed
     independently so the label never adjoins the value at all. And the
     ``SecretStr`` control cannot apply, because at that site the value is a bare
@@ -1698,6 +1698,16 @@ class TestEveryAuthHolderSiblingIsSwept:
 
         supply: dict[str, object] = {
             "api_key": SecretStr(ANTHROPIC_STYLE_KEY),
+            # ⚠ R32 defect 5: ``loresigil.factory.EmbeddingConfig`` is now correctly
+            # rostered as an auth holder, and it needs a ``backend``. Without this
+            # the sweep raised ``ValidationError`` — which ``except TypeError``
+            # does not catch — so the test ERRORED before R27.2's totality check
+            # could report anything. Supplying the field is the right repair;
+            # catching ``ValidationError`` would route a CONSTRUCTIBLE holder into
+            # ``skipped`` and redden R27.2 for the wrong reason, and defaulting
+            # ``backend`` in production is a silent-fallback hazard in a dispatch
+            # field that nobody ruled.
+            "backend": "tei",
             "base_url": "http://embedder.test:8080",
             "models": ("claude-sonnet-5",),
             "model": "claude-sonnet-5",

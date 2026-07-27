@@ -259,12 +259,27 @@ class TestEveryOtherFieldStillCopiesThrough:
         # ``lore.yaml`` edit controls; making it reddens here so it is a decision.
         translated = self._translate(monkeypatch)
         source = _loremaster_embedding_config()
+        # ⚠ **R32 defect 4 — THIS COULD NEVER PASS, AND IT WAS ARITHMETIC IN THE
+        # TEST, NOT A BUILD OUTCOME.** The filter was ``hasattr(source, name)``,
+        # and ``source`` is the LOREMASTER config, which has neither
+        # ``output_dimension`` nor ``api_key`` — the latter guaranteed by this
+        # file's own sibling pin
+        # ``test_the_loremaster_config_never_gains_a_resolved_key_field``. So the
+        # filter excluded exactly the two members the assertion then demanded and
+        # ``derived`` was empty against EVERY possible build. The C-DEF class.
+        #
+        # ``not hasattr(...)`` is the correct predicate: a loresigil field with no
+        # loremaster counterpart IS derived — it is a value a ``lore.yaml`` edit
+        # does not control, which is the property this pin exists for.
         derived = {
             name
             for name in type(translated).model_fields
-            if hasattr(source, name) and getattr(translated, name) != getattr(source, name)
+            if not hasattr(source, name) or getattr(translated, name) != getattr(source, name)
         }
-        assert derived == {"output_dimension", "api_key"}, (
+        # ``api_url`` joins the closed set honestly: the translator deliberately
+        # leaves it at each backend's own default rather than forcing one (the
+        # odoo15_ctx deploy bug), so it is genuinely not config-controlled.
+        assert derived == {"output_dimension", "api_key", "api_url"}, (
             f"the derived/forced field set changed: {derived}. Every other loresigil field "
             "must be copied through from lore.yaml, or a configured value silently reverts "
             "to a loresigil factory default."
@@ -278,7 +293,7 @@ class TestEveryOtherFieldStillCopiesThrough:
         shared = [
             name
             for name in type(translated).model_fields
-            if name not in {"output_dimension", "api_key"} and hasattr(source, name)
+            if name not in {"output_dimension", "api_key", "api_url"} and hasattr(source, name)
         ]
         # ANTI-VACUITY: the inventory says TEN fields are copied through. A build
         # that renamed them all would leave ``shared`` empty and this pin silent.
@@ -302,7 +317,7 @@ class TestEveryOtherFieldStillCopiesThrough:
         indistinguishable = [
             name
             for name, field in type(translated).model_fields.items()
-            if name not in {"output_dimension", "api_key"}
+            if name not in {"output_dimension", "api_key", "api_url"}
             and hasattr(source, name)
             and field.default is not None
             and getattr(source, name) == field.default
@@ -1010,6 +1025,13 @@ ENV_READ_ALLOWLIST: dict[str, str] = {
     ),
     "scripts/token_survey.py::_default_output_dir": (
         "TOKEN_SURVEY_OUT — an output directory override for a survey script."
+    ),
+    "skills/lore-deploy/scripts/lore_deploy.py::_loremaster_python": (
+        "LORE_PYTHON — an interpreter PATH override, an operational knob, not a credential. ⚠ It "
+        "cannot route through the shared resolver BY CONSTRUCTION: this is the function whose "
+        "whole job is to FIND an interpreter that HAS loremaster, so it runs before loremaster is "
+        "importable. Same stdlib-only deploy boundary as probe_embed.py (R14). Added under R32 "
+        "defect 6 — R6 widened the scan over skills/ and this read was never adjudicated."
     ),
     "skills/lore-deploy/scripts/probe_embed.py::_resolve_key": (
         "LEDGERED DESIGN DECISION (ruling R14, 2026-07-26) — NOT an oversight. This script is "

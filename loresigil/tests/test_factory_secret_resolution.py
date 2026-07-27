@@ -459,11 +459,30 @@ class TestTheBearerHeaderPolicyHasOneImplementation:
             f"(CLAUDE.md, #102). Found: {builders}"
         )
 
-    def test_exactly_one_unwrap_site_exists_in_loresigil(self) -> None:
-        # The unwrap is the policy; the allowlist gate in
-        # ``loremaster/tests/test_secret_typing.py`` governs the whole workspace,
-        # and this is its loresigil-local, mutation-visible companion. Changing
-        # the seam moves this pin with it; a private copy in a second arm does not.
+    def test_loresigil_has_exactly_the_two_unwraps_its_rulings_require(self) -> None:
+        # ⚠ **R32 defect 2 — THIS PIN PREDATED R29 AND ASSERTED "exactly ONE".**
+        # Two rulings each require an unwrap in this package, and neither can be
+        # removed:
+        #   1. ``voyage_http.py::build_auth_headers`` — R26's typed seam has to put
+        #      the REAL BYTES in the Authorization header.
+        #   2. ``factory.py::_reject_a_blank_credential`` — R29 mandates the
+        #      ``api_key`` validator CALL ``lorerunes.is_blank``, and ``is_blank``
+        #      takes a ``str``.
+        #
+        # Verified against the installed pydantic surface rather than assumed:
+        # ``SecretStr`` exposes ``get_secret_value()``, ``__len__``, ``__eq__`` and
+        # the masking ``__str__``/``__repr__``. ``__len__`` cannot see whitespace —
+        # which is exactly why R29 rejected ``min_length=1`` — and ``__eq__`` needs
+        # a value to compare against, while blankness is not a finite set. The only
+        # other spellings are ``_secret_value`` and a bound-method alias, **both
+        # named KNOWN BOUNDS by this contract's own gate docstring**, i.e. evasions;
+        # and a shared ``_unwrap()`` helper is forbidden there too — *"a helper
+        # whose only job is to unwrap is not an entry, it is a hole with a name."*
+        #
+        # Asserted as a SET OF FILES rather than a count, so the pin keeps saying
+        # "the seam and the validator, and nothing else" instead of a bare number
+        # that the next ruling silently falsifies. That is R32's root cause fixed
+        # in the pin's own shape, not just its value.
         sites: list[str] = []
         for display, source_path in _loresigil_sources():
             tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
@@ -474,7 +493,12 @@ class TestTheBearerHeaderPolicyHasOneImplementation:
                     and node.func.attr == "get_secret_value"
                 ):
                     sites.append(f"{display}:{node.lineno}")
-        assert len(sites) == 1, (
-            "loresigil must unwrap the credential in exactly ONE place — the client seam. "
-            f"Found {len(sites)}: {sites}"
+        files = {site.split(":")[0] for site in sites}
+        assert files == {"voyage_http.py", "factory.py"}, (
+            "loresigil must unwrap in exactly two places — R26's typed seam and R29's blankness "
+            f"validator. Found {sorted(sites)}. A third is a new unwrap that needs an "
+            "evidence-backed allowlist entry; a missing one means a ruling is not implemented."
+        )
+        assert len(sites) == 2, (
+            f"one of the two required unwraps is duplicated within its file: {sorted(sites)}"
         )
