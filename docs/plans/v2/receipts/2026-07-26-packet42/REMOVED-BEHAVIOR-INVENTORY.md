@@ -507,6 +507,55 @@ two-model and sync legs **do** catch last-writer-wins (2 RED); R24/R25 are now e
 (`resolve_config_value` named, co-run named); and the §9 self-audit **holds** — no stale
 instruction survives, and the R10 row is superseded in place rather than silently edited.
 
+---
+
+## Seventh ruling wave — 2026-07-27 — **ADVERSARY VERDICT: CONTRACT SUFFICIENT**
+
+Five passes. **No wrong build survives.** Every attack from rounds 1–4 is caught, including round
+4's blocker: `W-PARAMNAME-BARE` is now caught by **both** legs of the v3 union, verified
+deterministically. The full battery stays dead (`W-SYNCWIRE` 3 RED · `W-R10a` 2 RED · `W-SHAPEA`
+2 RED · `W-LASTWRITER` 2 RED). Frontier 1 confirmed the union is a genuine **OR**, not an AND —
+measured on a node emitting both verdicts, so no shape is exonerated by one leg passing. Frontier 5
+confirmed the corpus **runs** (13 nodes collected under `testpaths`).
+
+Three corrections are required before the builder starts. **None lets a wrong build through**, so
+none blocks the SUFFICIENT verdict — but R28.1 is a real instrument defect and is fixed now, not
+carried.
+
+**R28.1 — THE ATTACK CORPUS TESTS A COPY OF THE GATE. Fix by DELETION, not by re-syncing.**
+`_gate_flags()` **re-implements** `_node_verdicts()` instead of calling it. Proven by mutation: the
+adversary deleted v1's name leg from the **real** gate — `_node_verdicts` returned no verdict on S1,
+`_gate_flags` still returned `True`, the corpus passed **13/13**, and the file added **zero**
+failures. **The instrument built to measure the gate's reach every run measures a duplicate's
+reach.** This is **#102 — ONE IMPLEMENTATION — inside the instrument built to prevent that class**,
+and it is precisely what *"prove sharing by MUTATION"* exists to catch: change the shared thing, and
+a caller that keeps working is a private copy wearing the shared name.
+**The fix is that the corpus CALLS the real `_node_verdicts()`. Do not "keep the copy in sync"** —
+a synchronised copy is the same defect with a maintenance ritual attached.
+⚠ **It also falsified a LEDGER ROW, which is the second-order damage:** S6 is ledgered as caught by
+the construction gate; the real gate says **False**. S6 is in fact caught by the **mint** gate
+(`embedding.py:97`), a *different function*. Outcome safe, **attribution wrong, drift undetectable**.
+Re-derive every row's attribution against the real gate once the copy is gone.
+
+**R28.2 — S8's dissolution is OVER-CLAIMED. Add the qualifier.** Measured: `?api_key=` and `?token=`
+are covered by the surviving labelled pattern; **`?key=` and `?access_token=` LEAK.** The residual
+did not dissolve, it *shrank*. A residual claimed closed on a sample of two is the same error class
+as a count derived from one population — state which query-parameter spellings are covered and
+which remain a bound.
+
+**R28.3 — a countable claim is wrong, and it is this packet's own recurring defect.** The mint gate's
+cost was stated as *"6 production sites today, and 2 of them retire"*. Measured: **6 sites, 4
+retire** (`counting.py:77,84` + `token_survey.py:731,738`). The "2" counts **functions**, not
+**sites**. Two populations conflated into one number — the #102/#120 shape, in a packet that has now
+caught it four separate times (M3's 13-vs-10, the archived-report citation count, the twins-vs-
+bootstraps split, and this).
+
+**Verified closed, recorded so no later wave re-opens them:** R26's typed seam catches round 4's
+blocker; **R27.1 the module list is GENUINELY derived** (a brand-new module IS swept — measured, not
+claimed); **R27.2 the floor is replaced by a totality check** (`assert not skipped`, naming the
+unbuilt holder); the mint gate has **no production false positives** and excludes tests by
+construction; triggers on S2/S7/S9 are present.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
