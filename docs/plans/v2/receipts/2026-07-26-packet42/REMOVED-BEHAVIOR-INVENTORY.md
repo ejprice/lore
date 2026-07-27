@@ -390,6 +390,54 @@ mechanical enforcement, but `W-DEL` = 16 RED means a split commit has a red suit
 reported not a defect. The injected-client pin is **sound**: shape A passes, shape B passes,
 bare-dict retention fails.
 
+---
+
+## Fifth ruling wave — 2026-07-27, adversary THIRD pass (still INSUFFICIENT)
+
+Every round-2 finding's **pin** half is closed and independently verified. Two of the **scope-list**
+halves are not — and the surviving wrong build is a class nobody had enumerated. All four items are
+pins or scope text; **none is a design fork**, so these are ruled by extension of R19/R21 rather
+than re-escalated.
+
+**R22 — MP10, the SYNC TWIN. R19 APPLIES TO BOTH CLASSES.** `W-SYNCWIRE` — the sync
+`ClaudeTokenCounter` posting with **no auth header** — scores **0 failures** against the contract,
+because both wire pins target the **async** class only (measured `[None]` on the wire vs
+`['sk-ant-SYNCKEY']` on the correct build). R19's shape-B mandate and the owned-arm wire pin
+**extend to `ClaudeTokenCounter` verbatim**; every wire pin gets a sync leg. ⚠ **The generalisation
+matters more than the pin:** this packet has now been bitten three times by the same shape — the
+`load_api_key` twins, the owned-vs-injected arms, and now the async/sync twins. **Before any pin is
+called complete, enumerate the SIBLINGS of the object it targets.** A pin over one member of a
+twin pair is half a pin.
+
+**R23 — MP9 🔴, the STALE §9 ROW. FIX IT.** §9's R10 row still reads *"bake it into the `httpx`
+client as `loresigil/tei.py` does … **either shape passes**"*. Measured **false**: that build is
+`W-SHAPEA`, **2 RED** under R19. **A builder following §9 verbatim writes the shape R19 forbids.**
+This is the served-English-contradicting-code class **inside the scope list whose entire job is to
+prevent it** — and it is a stale rider of my own R10 text surviving into a wave that superseded it.
+Every §9 row must be re-read against R19–R21, not just amended where new rows were added.
+
+**R24 — MP11 🟠, the half-fixed MP6.** R21's three new §9 rows say *"→ a plain env read"*, which
+reddens `test_every_environment_read_is_the_entry_point_or_allowlisted` (**2 RED**, measured).
+Round 2's §9 was silent here; revision 4 is now **explicitly wrong**, which is worse. Name the
+actual mechanism the username read must use so the row is executable, not directional.
+
+**R25 — MP12.** §9 must name `test_calibration_counting.py` as a **required co-run** for R19: the
+shape change is invisible to the packet's own suites and only that file exercises it.
+
+**Verified and closed — recorded so no later wave re-opens them:** the new structured-`x-api-key`
+KNOWN BOUND is a **real bound, not a live leak** — `engine.py` *does* log `httpx.HTTPError` with
+`exc_info`, and the rendered record carries **no credential** in either format, proven with a
+positive control showing the same sink leaks when one IS present. The two `x-api-key` pins are
+**jointly honest**: narrowing the label reddens the line pins only, widening to cover the structured
+form reddens the bound pins only — a clean partition verified both ways. The reshape sweep reddens
+the same 8 files, **all named in §9** (R13/MP4 stays closed). W-R10a → 2 RED and W-SHAPEA → 2 RED:
+**the shape-B mandate is enforced in BOTH directions**, not just against the arm that prompted it.
+
+**Recorded because it is the counter-example to this packet's worst habit:** the adversary judged
+the author's handling of R20 part 2 *"the best work in this packet"* and confirmed it independently
+— handed a false rationale, it **measured** it, said so in the pin's own docstring, and pinned what
+is true rather than what it was told.
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
