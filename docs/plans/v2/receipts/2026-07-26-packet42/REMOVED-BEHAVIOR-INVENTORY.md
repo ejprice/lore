@@ -645,6 +645,62 @@ third time (`lore_impact` missed it; the contract author caught it; the stub cau
 already mandatory scope in §9; the builder must migrate it, and the GREEN gate must include a run
 that actually covers it.
 
+---
+
+## Ninth ruling wave — 2026-07-27, from the GREEN phase — **SIX CONTRACT DEFECTS, ONE ROOT CAUSE**
+
+The builder reached **8 failed / 372 passed** (from 121 failed), with `typecheck` **0 errors across
+five iterations**, `ruff` clean, the deploy skill **117 passed**, R25's co-run **16 passed**, and the
+full suite **10 failed / 7357 passed**. It then **stopped**, reported six contract defects with
+proposed patches, and **edited no test to make one pass.** All six are adjudicated by the lead as
+**REAL**. None is a builder failure.
+
+**R32 — the six defects route to `tdd-contract`.** Summarised; the builder's report carries the
+measurements and patches:
+1. **`UNWRAP_ALLOWLIST` is at PRE-R19/R26 addresses** (3 tests). R19 forbids building auth headers at
+   construction, so `counting.py::__init__` *cannot* be an unwrap site — the addresses moved to the
+   typed seams. ⚠ **And two pins in one class disagree about the same number**: one asserts
+   `len(sites) >= 8` while its sibling asserts `4 <= len(ALLOWLIST) <= 7` and §0.9 states 6.
+   Measured: **6**.
+2. **`test_exactly_one_unwrap_site_exists_in_loresigil`** (1) predates R29. `loresigil` now needs
+   **two** and cannot have fewer: the typed seam must put real bytes in the header, and R29's
+   validator must hand a `str` to `is_blank`. Verified against the installed pydantic surface, not
+   assumed; every alternative spelling is named as a KNOWN BOUND *by the contract's own docstring*.
+3. **The seam gate flags two stdlib-only deploy scripts** (1). One passes a `Content-Type` header
+   with **no credential at all**; the other emits a `Bearer ${VAR}` **template** — a function the
+   sibling sweep already scoped out *with that reason*. `_STDLIB_ONLY_EXEMPT` exists for
+   `probe_embed.py`; nobody extended it to R14's boundary.
+   ⚠ **The builder could have renamed a helper to `build_auth_headers` and collected the exemption.
+   It refused, and put the refusal ON THE RECORD as a refusal rather than an oversight** — that
+   would be a `str`-typed function wearing a typed seam's name, gaming the gate rather than
+   satisfying its property. That is the standard.
+4. **`test_the_derived_field_set_is_exactly_two` CANNOT PASS** (1) — the `hasattr(source, name)`
+   filter excludes **exactly the two fields the assertion then demands**, so `derived` is empty
+   against every possible build. Arithmetic in the test, not a build outcome. The C-DEF class.
+5. **The sibling sweep cannot construct the reshaped `EmbeddingConfig`** (1) — it is now correctly
+   rostered as an auth holder, but `supply` lacks `backend`, and the resulting `ValidationError` is
+   not caught by `except TypeError`, so the test errors before R27.2's totality check can report it.
+6. **`LORE_PYTHON` has no `ENV_READ_ALLOWLIST` entry** (1) — an interpreter PATH override, read by
+   the very function whose job is to FIND an interpreter that has loremaster, so it cannot import the
+   resolver by construction.
+
+### THE ROOT CAUSE, and it is the sharpest process lesson of this packet
+**Every one of the six is a pin written against a design that a LATER RULING CHANGED.** R19 (shape B)
+moved the unwraps; R26 (the typed seam) moved them again; R29 (the shared package) added a second
+loresigil unwrap; R27 rostered a new holder. The pins were correct when written and were never
+re-derived.
+
+**A SATISFIABILITY RECEIPT IS VALID ONLY FOR THE DESIGN IT WAS TAKEN AGAINST.** This contract HAD
+satisfiability receipts — repo law requires them, and they were real. They were taken at revisions
+3–4. Revisions 6 and 8 reshaped the design underneath them, and nobody re-ran them. This generalises
+R30 (*"a contract graded against the OLD world can hold a pin only the NEW world falsifies"*) from
+one pin to the whole instrument.
+
+**Standing law, in askable form:** after any ruling that moves WHERE a thing lives or HOW MANY of it
+there are, ask — *"which pins were written against the old shape, and has the satisfiability receipt
+been re-run since?"* If the answer to the second half is no, the contract's green-on-a-correct-build
+claim has expired. **Re-running it is cheap; discovering it in the builder is a stalled wave.**
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
