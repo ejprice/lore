@@ -10,11 +10,19 @@ sink. These tests pin that boundary:
   index each field — plus :data:`EXC_FIELD` when the caller passed an exception.
 * :class:`KeyValueFormatter` emits a human ``ts level logger event k=v`` line,
   with any traceback appended below it.
-* :class:`RedactingFilter` is the CRITICAL backstop: a bearer token, an
-  ``api_key``-style assignment, or a long high-entropy token is scrubbed to
-  :data:`REDACTED` in the message, the ``extra`` values, AND the rendered
-  exception/stack — proven by a known fake secret that must appear in NO emitted
-  record.
+* :class:`RedactingFilter` is the LABELLED-PATTERN backstop: a bearer token or
+  an ``api_key``-style assignment is scrubbed to :data:`REDACTED` in the message,
+  the ``extra`` values, AND the rendered exception/stack — proven by a known fake
+  secret that must appear in NO emitted record.
+
+  ⚠ PACKET 42 (2026-07-26) DELETED the bare high-entropy catch-all that used to
+  sit behind those two patterns, and with it #227's path exemption, the
+  bare-hex/SHA bound and the UUID bound. An UNLABELLED credential in free log
+  text is no longer redacted — a deliberate, operator-ruled trade whose
+  replacement control is the ``SecretStr`` TYPE. Every pin that certified the
+  deleted mechanism was removed rather than left green; the surviving property
+  pins and the accepted bounds both live in ``test_secret_leak_vectors.py``,
+  which is where anything about the entropy sweep belongs now.
 * Exception rendering is its own class below
   (:class:`TestExceptionRenderingIsEmittedAndScrubbed`, finding #211): the
   traceback must be EMITTED (it was silently dropped) and SCRUBBED (it was never
@@ -51,13 +59,16 @@ from loremaster.logging_setup import (
     JsonFormatter,
     KeyValueFormatter,
     RedactingFilter,
-    _scrub_text,
     configure_logging,
 )
 
 # A known fake bearer token + api key the secret-scrubbing test embeds in a log
-# call and then asserts appears in NO emitted record. High-entropy so the
-# entropy heuristic also catches it if the explicit pattern ever regresses.
+# call and then asserts appears in NO emitted record.
+#
+# ⚠ Both are only ever asserted BEHIND A LABEL (``Bearer …`` / ``api_key=…``).
+# Before packet 42 several pins here carried them BARE and passed on the entropy
+# catch-all; those pins certified a mechanism that no longer exists and were
+# deleted, not weakened.
 FAKE_BEARER_TOKEN = "sk-deadbeefcafef00d1234567890abcdef0123456789abcdef"
 FAKE_API_KEY = "AbCdEf0123456789AbCdEf0123456789AbCdEf01"
 
@@ -69,6 +80,11 @@ SILENCED_THIRD_PARTY = ("httpx",)
 # source LINE, so this value reaches the log through a path that has nothing to do
 # with the exception's message — the shape a message-only scrubber cannot see.
 LITERAL_IN_SOURCE = "Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT"
+
+# The same idea for the ``stack_info`` surface, which renders the CALLING line.
+# It is interpolated behind a ``token=`` key so the LABELLED pattern is what
+# redacts it (see ``_log_with_stack_info_from_a_literal_credential``).
+LITERAL_IN_SOURCE_LABEL_VALUE = "Kp9RmT2vX6bN4wQ8yH1jL5dF7gA3sZ0cUeIo"
 
 
 def _refuse(**_credentials: str) -> None:
@@ -97,8 +113,21 @@ def _log_with_stack_info_from_a_literal_credential(logger: logging.Logger) -> No
 
     Same correction as above: ``stack_info`` renders the CALLING line, so the
     literal must be ON the logging call, not on a guard above it.
+
+    ⚠ RE-AUTHORED BY PACKET 42. The literal used to sit BARE in a trailing
+    ``# noqa`` comment, so the only thing scrubbing it was the deleted entropy
+    catch-all — this pin certified a corpse and would have gone red on the
+    deletion. It now rides behind a ``token=`` LABEL, which is both the realistic
+    shape (a hardcoded credential passed at a call site) and the property that
+    actually survives. The BARE case is pinned as an accepted bound in
+    ``test_secret_leak_vectors.py``.
     """
-    logger.error("store.connect.failed", stack_info=True, extra={"tok": "unused"})  # noqa: E501  Zt7QnP4xW9kLm2Rb8VyH3sJd6FgA1cUe0oIT
+    _emit_with_stack(logger, token="Kp9RmT2vX6bN4wQ8yH1jL5dF7gA3sZ0cUeIo")
+
+
+def _emit_with_stack(logger: logging.Logger, **_credentials: str) -> None:
+    """Emit with ``stack_info=True`` so the CALLER's labelled line is rendered."""
+    logger.error("store.connect.failed", stack_info=True)
 
 
 def _make_record(
@@ -224,12 +253,14 @@ class TestRedactingFilter:
         assert FAKE_API_KEY not in str(record.detail)  # type: ignore[attr-defined]
         assert REDACTED in str(record.detail)  # type: ignore[attr-defined]
 
-    def test_redacts_long_high_entropy_token_in_extra(self) -> None:
-        # A bare high-entropy token (no "api_key=" prefix) must still be scrubbed —
-        # the entropy heuristic is the catch-all backstop.
-        record = _make_record(msg="event", extra={"blob": FAKE_BEARER_TOKEN})
-        RedactingFilter().filter(record)
-        assert FAKE_BEARER_TOKEN not in str(record.blob)  # type: ignore[attr-defined]
+    # DELETED BY PACKET 42 — ``test_redacts_long_high_entropy_token_in_extra``.
+    # It asserted that a BARE, unlabelled token in an ``extra`` value is scrubbed,
+    # which was true only of the deleted entropy catch-all (inventory A2/A18).
+    # The behaviour is now the packet's accepted, operator-ruled trade, and it is
+    # pinned AS A BOUND — with a "if you closed this deliberately, say so"
+    # message and a re-open trigger — by
+    # ``test_secret_leak_vectors.TestTheDeletionsResidualBoundsArePinned``.
+    # Leaving it here would have been a green test certifying a corpse.
 
     def test_does_not_redact_ordinary_short_values(self) -> None:
         # False-positive guard: normal short structured fields survive untouched.
@@ -258,13 +289,19 @@ class TestRedactingFilter:
             RedactingFilter().filter(record)
             assert record.field == value, f"{value!r} must not be redacted"  # type: ignore[attr-defined]
 
-    def test_still_redacts_a_secret_even_alongside_paths(self) -> None:
-        # The fix must NOT weaken the backstop: a genuine high-entropy token is
-        # still scrubbed even though paths now survive.
-        record = _make_record(msg="event", extra={"path": "src/a.py", "key": FAKE_BEARER_TOKEN})
+    def test_still_redacts_a_labelled_secret_even_alongside_paths(self) -> None:
+        # RE-AUTHORED BY PACKET 42. The original carried the token BARE, so it
+        # tested the deleted catch-all; the surviving property is that a LABELLED
+        # credential is redacted in the same record whose path fields survive
+        # untouched. A build that deleted the catch-all AND broke the labelled
+        # patterns passes nothing here.
+        record = _make_record(
+            msg="event", extra={"path": "src/a.py", "detail": f"api_key={FAKE_BEARER_TOKEN}"}
+        )
         RedactingFilter().filter(record)
         assert record.path == "src/a.py"  # type: ignore[attr-defined]
-        assert FAKE_BEARER_TOKEN not in str(record.key)  # type: ignore[attr-defined]
+        assert FAKE_BEARER_TOKEN not in str(record.detail)  # type: ignore[attr-defined]
+        assert REDACTED in str(record.detail)  # type: ignore[attr-defined]
 
 
 class TestExceptionRenderingIsEmittedAndScrubbed:
@@ -467,7 +504,16 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
         # "everything is absent" are the same string. Prove the stack is there
         # before believing it is clean.
         assert "Stack (most recent call last)" in parsed[EXC_FIELD]
-        assert LITERAL_IN_SOURCE not in parsed[EXC_FIELD]
+        # SECOND CONTROL, added by packet 42 after its reference build caught the
+        # re-authored fixture delivering NOTHING: the credential must be ON a
+        # rendered line. A multi-line call renders only its first line, so the
+        # literal has to sit on the CALLER's single line — the same R3 lesson,
+        # relearned the same way. Prove the render carries the labelled site.
+        assert "_emit_with_stack(logger, token=" in parsed[EXC_FIELD], (
+            "the fixture no longer puts the labelled credential on a rendered stack line — "
+            "this pin is vacuous (cold-audit R3, repeated)"
+        )
+        assert LITERAL_IN_SOURCE_LABEL_VALUE not in parsed[EXC_FIELD]
         assert REDACTED in parsed[EXC_FIELD]
 
     def test_exc_info_true_with_no_live_exception_emits_nothing(self) -> None:
@@ -614,31 +660,36 @@ class TestExceptionRenderingIsEmittedAndScrubbed:
 
 
 class TestOrdinaryPathsSurviveRedaction:
-    """Cold-audit DEFECT D: the redactor mangled FILE PATHS in tracebacks.
+    """Cold-audit DEFECT D / #227: the redactor mangled FILE PATHS in tracebacks.
 
     A path COMPONENT that is a UUID, a git SHA, a container overlay id or a nix
-    store hash is one unbroken high-entropy run, so the entropy backstop redacted
+    store hash was one unbroken high-entropy run, so the entropy backstop redacted
     it — turning ``/tmp/ci/<uuid>/app.py`` into ``/tmp/ci/***REDACTED***/app.py``.
-    Half B had just made tracebacks visible for the first time; this made them
-    unreadable in exactly the environments that need them most (CI runners,
+    #211 Half B had just made tracebacks visible for the first time; this made
+    them unreadable in exactly the environments that need them most (CI runners,
     containers, ephemeral checkouts).
 
+    ⚠ PACKET 42 DELETED THE CAUSE, so this property now holds because nothing
+    examines the run at all rather than because a four-condition exemption
+    (inventory A4-A9) tames a sweep. **The class stays as a REGRESSION pin.** The
+    property is what mattered; the mechanism never was, and the next engineer who
+    reaches for a shape-based detector reddens here first.
+
     ⚠ **EVERY PATH HERE IS CONSTRUCTED, NEVER TAKEN FROM THE RUNNING CHECKOUT.**
-    The original defect was invisible because this repo happens to live at
-    ``/home/ejprice/PycharmProjects/lore-pkt11i`` — a path with no high-entropy
-    component. A pin that renders the real ``__file__`` would pass here and fail
-    on a CI runner, which is CLAUDE.md's "THE TEST ENVIRONMENT IS A FICTION"
-    exactly: the fixture would guarantee the one condition under which the bug is
-    invisible. These fixtures are therefore hostile by construction and identical
-    on every machine.
+    The original defect was invisible because this repo happens to live at a path
+    with no high-entropy component. A pin that rendered the real ``__file__``
+    would pass here and fail on a CI runner — CLAUDE.md's "THE TEST ENVIRONMENT
+    IS A FICTION" exactly: the fixture would guarantee the one condition under
+    which the bug is invisible. These fixtures are hostile by construction and
+    identical on every machine.
 
     The provenance note that matters for anyone reading this later: the defect
-    PRE-DATES the #211 wave — ``_TOKEN_RE`` is byte-identical at ``d0ee2be``, and
-    the false positive reproduces there through ``extra=``. Half B did not create
-    it; it routed the path-dense traceback surface through it.
+    PRE-DATES the #211 wave — ``_TOKEN_RE`` was byte-identical at ``d0ee2be``,
+    and the false positive reproduced there through ``extra=``. Half B did not
+    create it; it routed the path-dense traceback surface through it.
     """
 
-    # (label, absolute path) — the shapes measured to trip the entropy backstop.
+    # (label, absolute path) — the four shapes measured to trip the deleted backstop.
     HOSTILE_PATHS = [
         ("uuid workspace", "/tmp/ci/090685cb-2064-498d-8479-e141e4fd4ea5/loremaster/store/surreal.py"),
         (
@@ -692,20 +743,13 @@ class TestOrdinaryPathsSurviveRedaction:
         assert FAKE_BEARER_TOKEN not in record.exc_text, f"{label}: SECRET LEAKED"
         assert REDACTED in record.exc_text
 
-    def test_the_exemption_is_contextual_not_a_blanket_stand_down(self) -> None:
-        """POSITIVE CONTROL for the guard itself: same value, two contexts.
-
-        The fix must exempt a high-entropy run *because it sits in a path*, not
-        because the backstop stopped firing. So take ONE identical token and
-        assert it survives inside a path and is redacted outside one. A build that
-        simply disabled the entropy sweep passes every test above and fails this.
-        """
-        token = "3f786850e387550fdab836ed7e6dc881de23001b2b4a3f7a4a5b6c7d8e9f0a1b"
-        in_path = _scrub_text(f"/var/lib/overlay/{token}/merged/app.py")
-        bare = _scrub_text(f"the value is {token}")
-        assert token in in_path, "path context must exempt the run"
-        assert token not in bare, "the SAME token outside a path must still be redacted"
-        assert REDACTED in bare
+    # DELETED BY PACKET 42 — ``test_the_exemption_is_contextual_not_a_blanket_stand_down``.
+    # It took ONE token and asserted it survived inside a path and was REDACTED
+    # outside one, to prove the #227 exemption was contextual rather than a
+    # blanket stand-down. Both halves of that discriminator died with the
+    # mechanism (inventory A4-A9): there is no exemption to be contextual, and
+    # the bare token outside a path is now the packet's accepted trade. Pinning
+    # either half would re-certify a deleted heuristic.
 
     def test_it_survives_end_to_end_through_a_configured_logger(self) -> None:
         # The pins above drive the filter directly; this proves the property holds
@@ -730,146 +774,34 @@ class TestOrdinaryPathsSurviveRedaction:
         assert FAKE_BEARER_TOKEN not in parsed[EXC_FIELD]
 
 
-class TestThePathExemptionNeverWeakensTheBackstop:
-    """Cold-audit R1: the #227 path guard silently stopped redacting credentials.
-
-    Standard base64's alphabet **includes ``/``**. The shipped guard exempted any
-    high-entropy run ADJACENT to a slash — so a base64 credential containing one
-    fragmented into slash-adjacent pieces and every piece was exempted. Measured
-    against `0233999`: **200 of 200** random base64 secrets containing a ``/``
-    survived scrubbing **intact** (the audit's 38-63% sampled base64 that did not
-    always contain a slash; forced to contain one, it is total).
-
-    That is the trade repo law forbids outright — **a backstop weakened to cure
-    false positives is worse than the bug it cured** — and it made the guard the
-    wave's only strict regression against ``d0ee2be``.
-
-    These pins fail on UNDER-REDACTION, which is the property that was missing.
-    Deleting the guard entirely reddens the #227 path pins; it does NOT redden
-    anything if the guard merely exempts too much. Only a corpus of credentials
-    that MUST be redacted can catch that, so that is what this is.
-    """
-
-    # Base64 credentials containing ``/`` — generated with a fixed seed and frozen
-    # here, every one of which the PRE-WAVE (`d0ee2be`) redactor scrubs. Any of
-    # them surviving is therefore a STRICT REGRESSION against the code this wave
-    # started from, not a judgement call about how aggressive the backstop is.
-    MUST_REDACT_BASE64 = [
-        "CfpxnEQnAeTAacmcqr45TP0oLu6KDRQ2s/ckZYK3cZtx5lXwgZDozJ+CEgN7avvD",
-        "TF71CzEMyxNV1EIWL1/j+9zWhuTEviMOrKAngz55prVV0n+2H0LwuaswP4vAQR0j",
-        "by8nT4Bgu/bGcMj5q/rb6Z3LKrEj4/yAYq6w83HfGbqtXGEN0vShpAK1a31vvfVN",
-        "VXzA1ouHARTCDCGPGiE+D4dEs+hCxcG1xqQYtjgsKCfaVqYcE4zbF0+BxE2JWVv/",
-        "VBiu/EvJSm0C6FfCXKE/9fZH9NBrbI4ZmSo4mWd0v0tYj2zvC+SgkwQ5JEwkj3FO",
-        "QVY8DahkcHa2z5onHIwr1LWR1aDxldlFTwe2JYSIBqRLCn2ZfyRDpMlGEaYWXv2/",
-        "5psaQ0WCu7Q3l/SxW++WMiXW82uBYnUgsdiV1JrC+xj36gJmK/Ljx/7Pea1DD8XF",
-        "ZgVLDiIuhzC6OxdM/YWX6GeuoG87xDjUbZzpPXpynLdwlwGyuIhEXXpXaNyi3Nmq",
-        "Kav7mrKvUxl5CwVK4MtO4C2DY5goGewm/7zGkZEX2BzLzJRIXraZ3m/aF+laAuLN",
-        "QKoFGfHlsnAHc6bOZM7KsJh+/xOxm4VmgyzKcpfhB1eiXpGzDxpohZCmUXt4pu/L",
-    ]
-
-    @pytest.mark.parametrize("secret", MUST_REDACT_BASE64)
-    def test_a_base64_credential_containing_a_slash_is_still_redacted(
-        self, secret: str
-    ) -> None:
-        scrubbed = _scrub_text(f"upstream rejected the request: api key is {secret}")
-        assert secret not in scrubbed, (
-            "a base64 credential containing '/' survived the backstop. The path "
-            "exemption (#227) must never widen far enough to admit one — the "
-            "pre-wave redactor scrubs every value in this corpus, so this is a "
-            "STRICT REGRESSION, not a tuning question (cold-audit R1)."
-        )
-
-    def test_it_holds_end_to_end_on_the_production_json_line(self) -> None:
-        # The unit above scrubs a string; this drives the real handler + formatter,
-        # because that JSON line is what actually leaves the process.
-        secret = self.MUST_REDACT_BASE64[0]
-        buffer = io.StringIO()
-        configure_logging(level="DEBUG", fmt="json")
-        handler = logging.getLogger("loremaster").handlers[0]
-        assert isinstance(handler, logging.StreamHandler)
-        handler.setStream(buffer)
-        try:
-            raise RuntimeError(f"upstream rejected key {secret}")
-        except RuntimeError:
-            logging.getLogger("loremaster.r1").exception("embed.request.failed")
-        output = buffer.getvalue()
-        assert "Traceback" in json.loads(output)[EXC_FIELD], "no traceback rendered"
-        assert secret not in output
-
-    def test_the_corpus_would_notice_a_backstop_that_stopped_working(self) -> None:
-        # POSITIVE CONTROL for the corpus itself: prove these values are only
-        # redacted BECAUSE of the entropy backstop, not because of some incidental
-        # property of the fixture. Each must survive a scrub that does nothing.
-        for secret in self.MUST_REDACT_BASE64:
-            assert secret in f"api key is {secret}"
-            assert secret not in _scrub_text(f"api key is {secret}")
-
-    def test_the_four_false_positive_classes_are_still_preserved(self) -> None:
-        # The other direction, in the same class: narrowing the exemption to close
-        # R1 must not re-break what #227 fixed. If these ever fail together with
-        # the corpus above passing, the guard has been narrowed into uselessness.
-        for _label, path in TestOrdinaryPathsSurviveRedaction.HOSTILE_PATHS:
-            assert _scrub_text(path) == path, f"#227 regression: {path}"
-
-
-class TestBareHexRunsStayRedactedKnownBound:
-    """A KNOWN BOUND, pinned so it is met deliberately (#227, lead ruling 2026-07-26).
-
-    A bare high-entropy hex run that is NOT inside a filesystem path is still
-    redacted, even when it is plainly not a secret — a git SHA in prose, or lore's
-    own ``unique_database()`` name (``test_<pid>_<uuid4.hex>``). These are FALSE
-    POSITIVES and they are accepted on purpose.
-
-    **THE RULING, and its reasoning, because the next engineer will want to "fix"
-    this:** a 40-hex secret and a 40-hex git SHA are *indistinguishable by shape*.
-    The only discriminator is surrounding context — and log text is forgeable, so
-    an allowlist keyed on a literal like ``commit `` is a gate keyed on a string,
-    which this repo has six separate receipts on the failure of. The asymmetry
-    decides it: **a redacted SHA costs provenance; an un-redacted 40-hex API key
-    costs a credential.** So the bound stands.
-
-    ⚠ **It rhymes with #131**, where git provenance was silently empty in
-    production for months because nothing rendered the field. This is the same
-    loss by a different route — provenance present, then scrubbed at the sink. The
-    difference is that #131 was discovered from an outage and this is written down,
-    which is the entire point of pinning a bound rather than leaving it latent.
-
-    **RE-OPEN TRIGGER (a bound without one is a can-kick):** if git provenance in
-    logs becomes load-bearing for an investigation. At that point the fix is NOT a
-    context allowlist — it is to stop putting bare SHAs through the redactor at
-    all, e.g. by carrying them as a typed field the filter is taught to skip.
-
-    This pin goes RED the day someone exempts either shape. That is intended: the
-    bound cannot be silently inherited, and it cannot be silently removed.
-    """
-
-    # (label, value that must STAY redacted, why it is not actually a secret)
-    ACCEPTED_FALSE_POSITIVES = [
-        ("git sha in prose", "commit 8538303a1b2c3d4e5f60718293a4b5c6d7e8f9a0 landed"),
-        ("unique_database", "test_12345_090685cb206449888879e141e4fd4ea5"),
-    ]
-
-    @pytest.mark.parametrize(
-        "label,value", ACCEPTED_FALSE_POSITIVES, ids=[c[0] for c in ACCEPTED_FALSE_POSITIVES]
-    )
-    def test_the_accepted_false_positive_is_still_redacted(self, label: str, value: str) -> None:
-        scrubbed = _scrub_text(value)
-        assert REDACTED in scrubbed, (
-            f"The {label!r} case is no longer redacted. This is a KNOWN BOUND (#227) "
-            "accepted by operator ruling on 2026-07-26, NOT an oversight — see this "
-            "class's docstring for why shape cannot distinguish a 40-hex SHA from a "
-            "40-hex credential. If you removed it DELIBERATELY: delete the entry from "
-            "ACCEPTED_FALSE_POSITIVES, delete this class if the list is now empty, and "
-            "say so in your report with the ruling that authorised it."
-        )
-
-    def test_the_bound_is_narrow_the_same_value_inside_a_path_survives(self) -> None:
-        # The bound is about BARE runs only. Inside a path the #227 fix exempts the
-        # identical value — so this pin cannot be mistaken for "hex is always
-        # redacted", which would misdescribe the behaviour to its next reader.
-        sha = "8538303a1b2c3d4e5f60718293a4b5c6d7e8f9a0"
-        assert REDACTED in _scrub_text(f"commit {sha} landed")
-        assert sha in _scrub_text(f"/var/lib/build/{sha}/out.log")
+# ---------------------------------------------------------------------------
+# DELETED BY PACKET 42 — two whole classes, with the reason each one dies.
+# ---------------------------------------------------------------------------
+# ``TestThePathExemptionNeverWeakensTheBackstop`` (cold-audit R1). Its corpus was
+# ten base64 credentials embedded as ``"api key is <secret>"`` — note the SPACE:
+# ``_ASSIGNMENT_RE`` needs ``label<sep>value`` with ``=`` or ``:``, so it never
+# fired, and every one of those ten was redacted PURELY by the entropy catch-all.
+# The class existed to prove #227's path exemption had not widened far enough to
+# admit an encoded credential. Inventory A4-A9: the exemption is deleted, so
+# there is nothing left to widen; inventory A18: those ten values are now the
+# accepted trade. Keeping the class would have made it the loudest corpse in the
+# suite — ten parametrized pins asserting a mechanism that no longer exists.
+#
+# ``TestBareHexRunsStayRedactedKnownBound`` (inventory A16). It pinned a git SHA
+# in prose and a ``unique_database()`` name as ACCEPTED FALSE POSITIVES, with the
+# ruling that *"a redacted SHA costs provenance; an un-redacted 40-hex API key
+# costs a credential"*. That asymmetry was an argument about the catch-all, and
+# the catch-all is gone: the bound DISSOLVED rather than being closed. Per
+# CLAUDE.md — *"a pin outlives its hole only as a lie"* — the class is deleted,
+# and the same two values are re-pinned INVERTED, as diagnostic data that must
+# now SURVIVE, in ``test_secret_leak_vectors.TestScrubbingNoLongerDestroys
+# DiagnosticData``. That is the recovered data the packet's Exit clause asks to
+# be reported as a receipt.
+#
+# ``test_the_four_false_positive_classes_are_still_preserved`` was the one pin in
+# either class worth keeping; it is not lost — the identical property is pinned
+# parametrically by ``TestOrdinaryPathsSurviveRedaction`` above and by
+# ``test_a_hashy_absolute_path_survives_verbatim`` in the new module.
 
 
 class TestConfigureLogging:
@@ -942,9 +874,17 @@ class TestConfigureLogging:
         handler = namespace_logger.handlers[0]
         assert isinstance(handler, logging.StreamHandler)
         handler.setStream(buffer)
+        # RE-AUTHORED BY PACKET 42: the second value used to be BARE
+        # (``"key": FAKE_API_KEY``) and was scrubbed only by the deleted entropy
+        # catch-all. Both values now ride behind a label, which is what the
+        # backstop still covers. The unlabelled case is an accepted bound pinned
+        # in ``test_secret_leak_vectors.py``, not a silent gap.
         logging.getLogger("loremaster.secret").info(
             "embed.probe.ok",
-            extra={"header": f"Authorization: Bearer {FAKE_BEARER_TOKEN}", "key": FAKE_API_KEY},
+            extra={
+                "header": f"Authorization: Bearer {FAKE_BEARER_TOKEN}",
+                "detail": f"api_key={FAKE_API_KEY}",
+            },
         )
         output = buffer.getvalue()
         assert FAKE_BEARER_TOKEN not in output

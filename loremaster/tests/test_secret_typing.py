@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from loremaster.config import resolve_secret
@@ -91,44 +92,66 @@ def _package_root() -> Path:
     return Path(package_file).resolve().parent
 
 
-def _scripts_root() -> Path | None:
-    """The repo's ``scripts/`` directory, or ``None`` when it is not alongside.
+# The trees these pins govern, as ``(display_label, path_relative_to_workspace)``.
+#
+# ⚠ WIDENED BY PACKET 42 (2026-07-26) from ``loremaster`` + ``scripts`` to the
+# WHOLE WORKSPACE. Packet 42 scope item 1 is *"loresigil's embedder keys are
+# still bare ``str``"* — a gap that existed precisely because the #211 ∀ pin
+# stopped at the package boundary. A structural pin that does not cover a
+# package is a pin that package is exempt from, silently.
+_SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
+    ("loremaster", "loremaster/loremaster"),
+    ("loresigil", "loresigil/loresigil"),
+    ("lorescribe", "lorescribe/lorescribe"),
+    ("scripts", "scripts"),
+    # Ruling R6 (2026-07-26): the deploy skill's scripts are IN SCOPE. They hold
+    # the FOURTH hand-rolled resolver (``probe_embed.py::_resolve_key``), and
+    # leaving them out would make "ONE entry point" true of the workspace and
+    # false of the repo.
+    ("skills", "skills"),
+)
 
-    CONDITIONAL BY DESIGN. In a checkout, ``scripts/`` sits two levels above the
-    package (``<repo>/loremaster/loremaster`` → ``<repo>/scripts``) and MUST be
-    scanned; in the deployed image ``loremaster`` lives in site-packages with no
-    ``scripts/`` anywhere, and the scan simply covers less.
-
-    It must be scanned because ``scripts/`` is **NOT a member of
-    ``scripts/typecheck.sh``** (``MEMBERS=(lorescribe loresigil loremaster)``), so
-    mypy never sees it — and its files construct the very stores this module
-    types. That gap shipped a real defect during #211's own migration:
-    ``survey_txn_contention_102.py`` kept a bare-``str`` ``PASSWORD`` and would
-    have died at the SDK seam, and ``snapshot_gc.py``'s helper annotations still
-    claimed ``str`` while ``main`` handed them a ``SecretStr``. Neither was
-    visible to the type gate OR to the main pytest run (``scripts/`` tests live
-    outside ``testpaths`` and run under their own ``cd scripts`` idiom).
-    """
-    candidate = _package_root().parent.parent / "scripts"
-    return candidate if candidate.is_dir() else None
+# ``scripts/`` is scanned even though it is NOT a member of
+# ``scripts/typecheck.sh`` (``MEMBERS=(lorescribe loresigil loremaster)``), so
+# mypy never sees it — and its files construct the very stores this module types.
+# That gap shipped a real defect during #211's own migration:
+# ``survey_txn_contention_102.py`` kept a bare-``str`` ``PASSWORD`` and would have
+# died at the SDK seam, and ``snapshot_gc.py``'s helper annotations still claimed
+# ``str`` while ``main`` handed them a ``SecretStr``. Neither was visible to the
+# type gate OR to the main pytest run.
+#
+# ⚠ ``skills/`` IS SCANNED (ruling R6) AND IT IS UNGATED GROUND — it sits outside
+# ``testpaths`` AND outside ``scripts/typecheck.sh``. Extending a gate over ground
+# nothing else checks is only worth anything if the gate RUNS there, so that is
+# asserted rather than assumed: these scanners live in ``loremaster/tests/``,
+# which IS collected, and they READ the tree rather than importing it.
+# ``test_the_scan_reaches_every_workspace_member`` is the receipt.
 
 
 def _python_sources() -> list[tuple[str, Path]]:
-    """Every ``.py`` file this pin governs, as ``(display_path, path)`` pairs.
+    """Every ``.py`` file these pins govern, as ``(display_path, path)`` pairs.
 
-    Covers the ``loremaster`` package plus the repo's ``scripts/`` when present
-    (see :func:`_scripts_root`).
+    Display paths are prefixed with the member label (``loresigil/factory.py``),
+    so a key is unambiguous across packages. A member directory that is absent —
+    the deployed image carries ``loremaster`` in site-packages with no
+    ``scripts/`` and no sibling checkouts — is skipped, and the scan simply
+    covers less; the positive control in
+    :meth:`TestEverySecretParameterIsTyped.test_the_scan_reaches_every_member`
+    is what stops that degrading silently in a CHECKOUT.
     """
-    package_root = _package_root()
-    sources = [
-        (str(path.relative_to(package_root)), path)
-        for path in sorted(package_root.rglob("*.py"))
-    ]
-    scripts_root = _scripts_root()
-    if scripts_root is not None:
+    workspace_root = _package_root().parent.parent
+    sources: list[tuple[str, Path]] = []
+    for label, relative in _SCANNED_MEMBERS:
+        root = workspace_root / relative
+        if not root.is_dir():
+            continue
         sources += [
-            (f"scripts/{path.relative_to(scripts_root)}", path)
-            for path in sorted(scripts_root.rglob("*.py"))
+            (f"{label}/{path.relative_to(root)}", path)
+            for path in sorted(root.rglob("*.py"))
+            # Test files are not production sources. Harmless for the package
+            # roots (they hold none) and load-bearing for ``scripts/`` and
+            # ``skills/``, which carry their tests inline beside the code.
+            if "tests" not in path.parts and not path.name.startswith("test_")
         ]
     return sources
 
@@ -244,15 +267,46 @@ class TestEverySecretParameterIsTyped:
             "(#211):\n  " + "\n  ".join(sorted(offenders))
         )
 
+    def test_the_scan_reaches_every_workspace_member(self) -> None:
+        # POSITIVE CONTROL for the WIDENING (packet 42). ``_python_sources``
+        # silently skips a member directory that is absent — correct in the
+        # deployed image, catastrophic in a checkout, where it would restore
+        # exactly the blind spot that let loresigil keep bare-``str`` keys through
+        # the whole of #211. In a checkout every member must be reached.
+        display_paths = [display for display, _ in _python_sources()]
+        for label, _relative in _SCANNED_MEMBERS:
+            assert any(display.startswith(f"{label}/") for display in display_paths), (
+                f"the scan reached no file under {label}/ — this pin is exempting a whole "
+                "package rather than governing it"
+            )
+
     def test_the_pin_is_keyed_on_names_and_says_so(self) -> None:
         # A HONEST BOUND on this instrument, stated as a test so it cannot be
         # mistaken for total coverage: the AST pin is keyed on PARAMETER NAMES,
         # and the set of names a future secret could wear is unbounded (a
         # parameter called ``value``, ``credential``, ``bearer`` would sail past).
-        # It is the cheap, mechanical half. The ∀ instrument that does NOT depend
-        # on names is the runtime leak scan in the class below, which constructs
-        # the real objects and searches their rendered state.
+        # It is the cheap, mechanical half.
         assert SECRET_PARAM_NAMES == frozenset({"password", "api_key"})
+
+    def test_the_name_keyed_bound_is_covered_by_the_unwrap_allowlist(self) -> None:
+        # THE RECONCILIATION packet 42 owes this file, with a RECEIPT rather than
+        # a promise. CLAUDE.md's instrument lesson is that enumerating the
+        # FORBIDDEN loses — and the pin above is exactly that shape, keyed on two
+        # parameter names. The correction is
+        # :class:`TestEveryUnwrapSiteIsAllowlisted`, which allowlists the SAFE:
+        # it is keyed on the ``.get_secret_value()`` CALL, so it sees credential
+        # handling regardless of what the parameter is called.
+        #
+        # ``ApiKeyVerifier``'s credential parameter is named ``value`` — invisible
+        # to SECRET_PARAM_NAMES — yet BOTH of its unwrap sites are governed by the
+        # allowlist. That is the proof the two instruments are complementary and
+        # not two copies of one blind spot.
+        assert "value" not in SECRET_PARAM_NAMES
+        auth_entries = [key for key in UNWRAP_ALLOWLIST if key.startswith("loremaster/auth.py::")]
+        assert len(auth_entries) == 2, (
+            "the unwrap allowlist no longer covers the credential handling the NAME-keyed "
+            f"pin above cannot see: {auth_entries}"
+        )
 
 
 class TestSecretsDoNotSurviveAsBareStringsOnInstances:
@@ -384,7 +438,7 @@ class TestSigninCredentialsIsTheOneUnwrapSeam:
         # in exactly one file.
         offenders: list[str] = []
         for relative, source_path in _python_sources():
-            if relative == str(Path("store") / "_txn.py"):
+            if relative == f"loremaster/{Path('store') / '_txn.py'}":
                 continue
             tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
             for node in ast.walk(tree):
@@ -400,4 +454,701 @@ class TestSigninCredentialsIsTheOneUnwrapSeam:
         assert not offenders, (
             "these sites hand-roll the SDK signin payload instead of calling "
             f"signin_credentials (#211 / #102): {offenders}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# PACKET 42 STEP 3 — GATE THE UNWRAP SURFACE (allowlist the safe)
+# --------------------------------------------------------------------------- #
+# Packet 42 step 3: *"An AST pin over the ``.get_secret_value()`` call sites.
+# Each entry is evidence-backed: the unwrapped value goes directly to a client
+# call and is not logged, stored, interpolated, or bound to a name that outlives
+# the expression. A new unwrap site with no entry is RED. This is CLAUDE.md's own
+# instrument law — the forbidden set is unbounded; the safe set is small and
+# enumerable."*
+#
+# ⚠ THE PACKET'S CRITERION AS WRITTEN IS FALSE OF SEVEN OF THE TEN SITES, and
+# saying so is the point of this block rather than a quibble. Measured
+# 2026-07-26 at 9c08cac:
+#   * five sites bind the unwrapped value to a local (``surreal_user = ...``)
+#     that outlives the expression — but the value is a root USERNAME, which
+#     ``store/_txn.py::signin_credentials`` documents as *deliberately NOT a
+#     secret*;
+#   * two sites bake the unwrapped bytes into a long-lived ``self._headers``
+#     mapping — which is the minimum surface an authenticated HTTP client can
+#     have, since the client must hold the credential to send it.
+# So "not stored, not bound" cannot be the literal test. What IS testable, and
+# what each entry asserts, is a CLOSED SET of evidence CATEGORIES, each of which
+# is a reason the unwrap is safe. A site that fits none of them is a design
+# decision, not a lint fix. The category set itself is pinned closed below, so
+# inventing a seventh category to launder a new unwrap reddens.
+# ⚠ ``NOT_A_SECRET`` IS RETIRED BY RULING R17 (#226 rider, 2026-07-26). Five of the
+# original ten entries were the SAME pointless round-trip — ``resolve_secret`` wrapping
+# the SurrealDB USERNAME, a non-secret, at a site that immediately unwrapped it again.
+# The consolidated seam wraps ONLY secrets; a non-secret config read gets a plain read,
+# so those five sites stop unwrapping and stop needing an entry. **The allowlist goes
+# 10 -> 5 pre-existing entries** (+1 for loresigil's new seam = 6 total).
+#
+# RE-DERIVED, NOT INHERITED (the rider claims "its author got 1 of 5 sites wrong";
+# this contract's standing law is to re-derive every inherited count). Measured
+# 2026-07-26 at 720e26a — all five ARE genuine username round-trips and the claim
+# does NOT reproduce as a mis-identification:
+#     index/cli.py:112 · server.py:6752 · scout.py:728        -> config.surreal.user_env
+#     search_score_survey.py:696 -> DEFAULT_SURREAL_USER_ENV  · snapshot_gc.py:332 -> args.user_env
+# and all five PASSWORD siblings (cli:113, server:6753, scout:729, survey:697, gc:333)
+# verifiably STAY wrapped — the dangerous direction is un-wrapping a real secret while
+# tidying away a fake one, and it does not occur.
+# ⚠ ONE site IS materially different, which is the grain of truth: ``snapshot_gc.py:332``
+# is the only one of the five whose ``KeyError`` is CAUGHT — ``main`` renders it as a
+# clean ``_EXIT_ERROR`` message. Dropping ``resolve_secret`` there must keep raising a
+# NAMING ``KeyError`` or the CLI's error message silently degrades.
+SDK_PAYLOAD = "sdk-payload: handed straight into the SDK call that needs the bytes on the wire"
+AUTH_HEADER = "auth-header: baked into an HTTP client's header map and held nowhere else"
+CONSTANT_TIME_COMPARE = "constant-time-compare: encoded for hmac.compare_digest, never bound"
+EMPTINESS_GUARD = "emptiness-guard: tested for truthiness only; the value is never bound"
+
+UNWRAP_EVIDENCE_CATEGORIES: frozenset[str] = frozenset(
+    {SDK_PAYLOAD, AUTH_HEADER, CONSTANT_TIME_COMPARE, EMPTINESS_GUARD}
+)
+
+# Keyed ``<display path>::<enclosing function>``. Every entry needs a category; a
+# new entry is a DESIGN decision, not a lint fix.
+UNWRAP_ALLOWLIST: dict[str, str] = {
+    "loremaster/auth.py::verify": CONSTANT_TIME_COMPARE,
+    "loremaster/auth.py::add_key": EMPTINESS_GUARD,
+    "loremaster/calibration/counting.py::__init__": AUTH_HEADER,
+    "loremaster/store/_txn.py::signin_credentials": SDK_PAYLOAD,
+    "scripts/token_survey.py::__init__": AUTH_HEADER,
+    # ADDED BY PACKET 42: loresigil's ONE client seam, where the resolved bearer
+    # key becomes the ``Authorization`` header.
+    # ⚠ If the builder puts the single seam elsewhere, the stale-entry pin says so.
+    "loresigil/voyage_http.py::build_bearer_client": AUTH_HEADER,
+}
+
+
+def _unwrap_sites() -> list[str]:
+    """Every ``.get_secret_value()`` CALL, keyed ``<display path>::<function>``.
+
+    AST, never grep — and that difference is load-bearing. Measured 2026-07-26 at
+    9c08cac, a grep for ``get_secret_value`` returns **13** hits of which only
+    **10** are call sites: ``config.py``'s ``resolve_secret`` docstring and two
+    lines of ``store/_txn.py``'s ``signin_credentials`` docstring are PROSE. The
+    packet's own measurement table says "13 call sites"; the Phase 0 inventory
+    corrected it to 10. An AST scan cannot make that mistake, because it never
+    sees a docstring as a call.
+    """
+    found: list[str] = []
+    for display, source_path in _python_sources():
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    enclosing.setdefault(id(inner), node.name)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get_secret_value"
+            ):
+                found.append(f"{display}::{enclosing.get(id(node), '<module>')}")
+    return sorted(set(found))
+
+
+class TestEveryUnwrapSiteIsAllowlisted:
+    """Packet 42 step 3 — the unwrap surface is a CLOSED, evidence-backed set.
+
+    THE THREAT MODEL, stated IN the instrument (CLAUDE.md: a gate needs one).
+    This gate catches the **HONEST developer** who unwraps a ``SecretStr`` for
+    convenience — to log it while debugging, to stash it on an attribute, to
+    build a connection string — and leaves the bare value somewhere a traceback
+    or a ``repr`` can render it. It is **NOT** a boundary against a hostile
+    author: anyone who can commit here can read ``secret._secret_value``,
+    ``vars(secret)``, or ``secret.__dict__`` and never touch the method this scan
+    is keyed on. Verdicts follow mechanically: *"a determined author reads the
+    private attribute"* is not a defect for this gate; *"a new unwrap ships
+    unnoticed"* is.
+
+    **KNOWN BOUNDS (pinned, not hidden) — THREE honest spellings this gate does not
+    see**, two of them named by the adversary's residuals:
+
+    1. **Attribute access.** ``pydantic.SecretStr`` stores its payload on
+       ``_secret_value`` (verified 2026-07-26: ``vars(SecretStr('abc')) ==
+       {'_secret_value': 'abc'}``), so ``s._secret_value`` bypasses the scan.
+    2. **The bound-method alias.** ``g = s.get_secret_value; g()`` — the CALL node's
+       ``func`` is a bare ``Name``, not an ``Attribute``, so the AST predicate never
+       matches. This is an *honest* spelling (it appears in comprehensions and
+       partials), which is why it is named rather than denied.
+    3. **The laundering helper.** An allowlisted wrapper launders every caller:
+       ``def _key(s): return s.get_secret_value()`` gets ONE entry and then any
+       number of sites call ``_key``. **Entries must therefore be LEAF call sites** —
+       a helper whose only job is to unwrap is not an entry, it is a hole with a
+       name. Judged at review; not mechanically enforced.
+
+    The scan is keyed on the
+    ``.get_secret_value()`` CALL. ``pydantic.SecretStr`` stores its payload on
+    ``_secret_value``, so attribute access bypasses this instrument entirely.
+    None of the three is closed, because closing them receiver-blind would refuse
+    legitimate code across the tree, and a gate that refuses honest code is a gate
+    that gets switched off. **RE-OPEN TRIGGER:** if a credential is ever found to
+    have escaped through any of the three, close that one and accept the false
+    positives.
+    """
+
+    def test_the_scan_finds_the_population(self) -> None:
+        # POSITIVE CONTROL. A scan that silently matched nothing would make the
+        # ∀ pin below pass vacuously — the exact non-discriminating shape this
+        # repo's fixture law forbids.
+        sites = _unwrap_sites()
+        assert len(sites) >= 8, f"the unwrap scan found only {len(sites)} sites: {sites}"
+
+    def test_the_scan_counts_calls_not_grep_hits(self) -> None:
+        # The 13-vs-10 correction, asserted rather than described. Three of the
+        # thirteen grep hits are prose inside docstrings; none may appear here.
+        sites = _unwrap_sites()
+        assert "loremaster/config.py::resolve_secret" not in sites, (
+            "the scan is matching DOCSTRING PROSE — resolve_secret's docstring mentions "
+            "get_secret_value() and does not call it"
+        )
+        assert sites.count("loremaster/store/_txn.py::signin_credentials") == 1, (
+            "signin_credentials' docstring mentions get_secret_value() twice and calls it "
+            "once; the scan must see exactly the call"
+        )
+
+    def test_every_unwrap_site_has_an_evidence_backed_entry(self) -> None:
+        unlisted = [site for site in _unwrap_sites() if site not in UNWRAP_ALLOWLIST]
+        assert not unlisted, (
+            "these sites unwrap a SecretStr with no entry in UNWRAP_ALLOWLIST. Adding one is "
+            "a DESIGN decision: state which evidence category makes the unwrap safe, and "
+            "check that the bare value cannot outlive the expression in a form a repr or a "
+            "traceback would render (packet 42 step 3):\n  " + "\n  ".join(unlisted)
+        )
+
+    def test_no_allowlist_entry_is_stale(self) -> None:
+        # BOTH DIRECTIONS, because a stale entry silently pre-authorises a future
+        # unwrap at that address. This is the same both-ways diff
+        # ``scripts/mutation_proof.py`` performs on declared-RED node ids, and the
+        # direction that catches a "fix" landing in dead code.
+        sites = set(_unwrap_sites())
+        stale = [key for key in UNWRAP_ALLOWLIST if key not in sites]
+        assert not stale, (
+            "these UNWRAP_ALLOWLIST entries name no live unwrap site. Delete them — an "
+            f"entry that guards nothing is a licence nobody asked for: {stale}"
+        )
+
+    def test_every_entry_uses_a_category_from_the_closed_set(self) -> None:
+        # The categories are the EVIDENCE. A free-text reason would let a future
+        # unwrap be laundered by writing a sentence; a closed set makes inventing
+        # a new justification a visible, deliberate act.
+        invented = {
+            key: evidence
+            for key, evidence in UNWRAP_ALLOWLIST.items()
+            if evidence not in UNWRAP_EVIDENCE_CATEGORIES
+        }
+        assert not invented, (
+            "these entries use an evidence category that is not in the closed set. A new "
+            f"category is a design decision the operator rules on, not a lint fix: {invented}"
+        )
+
+    def test_the_category_set_is_closed(self) -> None:
+        # And the set itself is pinned, so widening it reddens here first.
+        # ``NOT_A_SECRET`` was RETIRED by R17: the five username round-trips it
+        # justified are gone, and a category with no members is a door left open.
+        assert UNWRAP_EVIDENCE_CATEGORIES == frozenset(
+            {SDK_PAYLOAD, AUTH_HEADER, CONSTANT_TIME_COMPARE, EMPTINESS_GUARD}
+        )
+
+    def test_only_one_site_unwraps_for_the_surrealdb_sdk(self) -> None:
+        # ONE IMPLEMENTATION, restated as a property of the allowlist rather than
+        # left to the reader: twelve owners each calling ``get_secret_value()``
+        # inline would be twelve copies of the unwrap policy (#102). Exactly one
+        # entry may carry the SDK_PAYLOAD category.
+        sdk_sites = [key for key, evidence in UNWRAP_ALLOWLIST.items() if evidence == SDK_PAYLOAD]
+        assert sdk_sites == ["loremaster/store/_txn.py::signin_credentials"], (
+            f"the SDK unwrap policy has more than one implementation: {sdk_sites}"
+        )
+
+    def test_no_username_round_trip_survives(self) -> None:
+        # RULING R17 (#226), stated as the property rather than as a count: no
+        # entry may exist whose justification is "the value is not actually a
+        # secret". ``resolve_secret`` now wraps ONLY secrets, so a non-secret
+        # config read is a plain read and never reaches this list.
+        #
+        # The five retired sites, re-derived 2026-07-26 (see the comment on the
+        # category constants above): index/cli.py, server.py, scout.py,
+        # search_score_survey.py, snapshot_gc.py — all reading a ``*_user_env``.
+        retired = [
+            key
+            for key in UNWRAP_ALLOWLIST
+            if any(
+                key.startswith(prefix)
+                for prefix in (
+                    "loremaster/index/cli.py::",
+                    "loremaster/scout.py::",
+                    "loremaster/server.py::",
+                    "scripts/search_score_survey.py::",
+                    "scripts/snapshot_gc.py::",
+                )
+            )
+        ]
+        assert not retired, (
+            "these entries are the USERNAME round-trip R17 retired — resolve_secret should "
+            f"not be wrapping a non-secret at all: {retired}"
+        )
+
+    def test_the_surviving_entries_are_all_real_credential_unwraps(self) -> None:
+        # The positive half: after R17 every remaining entry unwraps a genuine
+        # credential at a leaf call site. Five pre-existing + one new loresigil
+        # seam = six. Asserted as a BOUND rather than an exact count so adding a
+        # justified entry is possible, but doubling the surface is not.
+        assert 4 <= len(UNWRAP_ALLOWLIST) <= 7, (
+            f"the unwrap surface is {len(UNWRAP_ALLOWLIST)} entries; R17 shrank it to 5 "
+            "pre-existing + 1 loresigil seam. A jump means a new category of unwrap that "
+            "needs an operator decision, not a lint fix."
+        )
+
+
+# --------------------------------------------------------------------------- #
+# RULING R26 — ONE TYPED AUTH-HEADER SEAM (the name-list, at its seventh address)
+# --------------------------------------------------------------------------- #
+# ``W-PARAMNAME-BARE`` — a class holding a bare-``str`` credential under the
+# parameter name ``bearer_token`` — leaked into a rendered log line in BOTH
+# formats and added ZERO failures, because THREE independent instruments all key
+# on NAMES: the sibling sweep on ``"api_key" in parameters``, ``SECRET_PARAM_NAMES``
+# on ``{"password", "api_key"}``, and this file's ``UNWRAP_ALLOWLIST`` on a
+# ``.get_secret_value()`` call a bare ``str`` never makes.
+#
+# ⚠ **THE GAP IS REAL; THE LEAK IS NOT.** Verified by the lead and not restated as
+# worse than it is: ``bearer_token`` exists in this tree ONLY as
+# ``auth.py::_bearer_token``, an INCOMING client token; ``auth.py`` contains ZERO
+# logger calls; and per M1 that local renders as ``self._verifier.verify(token)``
+# with no value. The wrong build is CONSTRUCTED. Nothing here describes a live leak.
+#
+# THE RULED SHAPE, which is this packet's own thesis turned on its own instrument:
+# stop DETECTING a credential by what it is called, and make a bare ``str`` a TYPE
+# ERROR at the last mile.
+#
+#     def build_auth_headers(credential: SecretStr) -> dict[str, str]: ...
+#
+# The parameter-name set is unbounded; the type is not. What remains for an AST
+# gate is small and STRUCTURAL, and that is the point.
+SEAM_FUNCTION = "build_auth_headers"
+
+# The packages that send outgoing credentials. TWO seams, not one shared helper —
+# ruling R26 constraint 1: ``loresigil`` cannot import ``loremaster`` (#222), and
+# **the enforcement is the TYPE SIGNATURE, not a shared implementation.** Two
+# typed seams are not a DRY violation when the shared thing is a type, not a policy.
+SEAM_PACKAGES: tuple[str, ...] = ("loremaster", "loresigil")
+
+# R26 constraint 2 — SCOPE IS OUTGOING CREDENTIALS ONLY. The incoming bearer token
+# in ``loremaster/auth.py`` is the other direction: we verify it, never send it,
+# and it is not in this seam. Over-building here was explicitly ruled against.
+_INCOMING_AUTH_MODULE = "loremaster/auth.py"
+
+# The one production file exempt from the seam: stdlib-only by ruling R14, so it
+# cannot import a typed seam from either package without breaking the deploy path.
+_STDLIB_ONLY_EXEMPT = "skills/lore-deploy/scripts/probe_embed.py"
+
+
+def _auth_construction_offenders() -> list[str]:
+    """Auth-header construction outside a seam — the v3 gate, both halves.
+
+    ⚠ **THIS SHAPE IS v3. v1 AND v2 BOTH FAILED AND THE FAILURES ARE THE DESIGN.**
+    Repo law requires the author of an invented property to attack it before
+    shipping; :class:`TestTheSeamGateWasAttackedByItsOwnAuthor` carries the corpus
+    and the measured results. In short:
+
+    * **v1** keyed on auth-header NAMES. **6 of 10 invented shapes walked past it.**
+    * **v2** keyed on the httpx CONSTRUCTION SURFACE (``headers=``/``auth=``) plus
+      ``SecretStr()`` minting. It closed the type bypasses v1 could not see — and
+      LOST the ones v1 caught, because a helper that merely *returns* a header dict
+      touches no httpx call.
+    * **v3 is the union**, and neither half is redundant: each closes exactly what
+      the other misses.
+    """
+    offenders: list[str] = []
+    for display, source_path in _python_sources():
+        if "probe_embed" in display or display.endswith("auth.py"):
+            continue  # R14 stdlib-only exempt; R26 constraint 2 excludes incoming auth
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        enclosing: dict[int, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(node):
+                    enclosing.setdefault(id(inner), node.name)
+        for node in ast.walk(tree):
+            if enclosing.get(id(node)) == SEAM_FUNCTION:
+                continue
+            if not isinstance(node, (ast.expr, ast.stmt)):
+                continue
+            offenders += [f"{display}:{node.lineno} {why}" for why in _node_verdicts(node)]
+    return offenders
+
+
+def _node_verdicts(node: ast.expr | ast.stmt) -> list[str]:
+    """The v3 gate's per-node verdicts — v1's name leg and v2's surface leg."""
+    verdicts: list[str] = []
+    # v1's half — an auth-header NAME as a literal.
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.lower() in AUTH_HEADER_NAMES
+    ):
+        verdicts.append(f"builds {node.value!r} outside the seam")
+    # v2's half — an httpx construction whose headers=/auth= is not from the seam.
+    # Never inspects a header NAME, so a computed one cannot slip past this leg.
+    if isinstance(node, ast.Call):
+        for keyword in node.keywords:
+            if keyword.arg in {"headers", "auth"} and not _is_seam_call(keyword.value):
+                verdicts.append(f"{keyword.arg}= not sourced from {SEAM_FUNCTION}()")
+    # v2's half — direct header mutation.
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "headers"
+    ):
+        verdicts.append("mutates .headers[...] directly")
+    return verdicts
+
+
+def _is_seam_call(value: ast.expr) -> bool:
+    """Is ``value`` a call to the typed seam?"""
+    return isinstance(value, ast.Call) and (
+        getattr(value.func, "id", None) == SEAM_FUNCTION
+        or getattr(value.func, "attr", None) == SEAM_FUNCTION
+    )
+
+
+AUTH_HEADER_NAMES: frozenset[str] = frozenset({"authorization", "x-api-key", "proxy-authorization"})
+
+
+def _is_secretstr_mint(node: ast.AST) -> bool:
+    """Is ``node`` a ``SecretStr(...)`` construction? THE mint predicate.
+
+    ONE implementation, called by both the file scan below and the attack corpus —
+    see :class:`TestTheSeamGateWasAttackedByItsOwnAuthor` for why that matters.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (getattr(func, "id", None) or getattr(func, "attr", None)) == "SecretStr"
+
+
+def _secretstr_mint_sites() -> list[str]:
+    """Every ``SecretStr(...)`` construction — the S6 bypass's gate."""
+    sites: list[str] = []
+    for display, source_path in _python_sources():
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        sites += [
+            f"{display}:{node.lineno}"
+            for node in ast.walk(tree)
+            if _is_secretstr_mint(node) and isinstance(node, ast.expr)
+        ]
+    return sites
+
+
+class TestOutgoingAuthHeadersGoThroughATypedSeam:
+    """R26: a bare ``str`` credential is a TYPE ERROR at the last mile.
+
+    THE THREAT MODEL, stated in the instrument: this catches the **HONEST
+    developer** who adds an outgoing auth header and, having a plain ``str`` in
+    hand, just uses it. It is NOT a boundary against an author who computes a
+    header name to evade a scan — that door is LEDGERED below rather than paid
+    for in false positives.
+    """
+
+    @pytest.mark.parametrize("package", SEAM_PACKAGES)
+    def test_the_package_has_a_typed_seam(self, package: str) -> None:
+        import importlib
+
+        module = importlib.import_module(package)
+        seam = _find_seam(package)
+        assert seam is not None, (
+            f"{package} has no {SEAM_FUNCTION}(). R26 requires ONE typed seam PER PACKAGE — "
+            "two seams, because loresigil cannot import loremaster (#222) and the enforcement "
+            "is the TYPE SIGNATURE, not a shared implementation."
+        )
+        del module
+        annotation = inspect.signature(seam).parameters["credential"].annotation
+        assert "SecretStr" in str(annotation), (
+            f"{package}'s seam takes {annotation!r}; it must take SecretStr — that annotation "
+            "IS the instrument, and it works regardless of what any caller names its variable."
+        )
+
+    @pytest.mark.parametrize("package", SEAM_PACKAGES)
+    def test_the_seam_rejects_a_bare_str_at_RUNTIME(self, package: str) -> None:
+        # ⚠ R26 CONSTRAINT 3 / #221: **mypy is the PREVENTION; a type-gate red is
+        # not a demonstrated pin.** The mypy gate is blind through
+        # ``dict[str, Any]`` — the SecretStr migration once passed it at zero delta
+        # with 119 tests runtime-broken. So the seam must refuse a bare ``str``
+        # when actually called, and that refusal is pinned here at runtime.
+        seam = _find_seam(package)
+        assert seam is not None
+        with pytest.raises((TypeError, AttributeError)):
+            seam("sk-ant-a-bare-string-not-a-secret")
+
+    @pytest.mark.parametrize("package", SEAM_PACKAGES)
+    def test_the_seam_still_produces_the_real_bytes(self, package: str) -> None:
+        # Without this, "reject a bare str" is satisfiable by returning nothing —
+        # the same trap as the wire pins in test_secret_leak_vectors.py.
+        seam = _find_seam(package)
+        assert seam is not None
+        headers = seam(SecretStr(FAKE_SECRET))
+        assert isinstance(headers, dict) and headers, "the seam produced no headers"
+        assert any(FAKE_SECRET in value for value in headers.values()), (
+            f"{package}'s seam does not put the real credential bytes in any header: {headers}"
+        )
+        assert any(key.lower() in AUTH_HEADER_NAMES for key in headers), (
+            f"{package}'s seam emits no recognised auth header: {list(headers)}"
+        )
+
+    def test_no_auth_header_is_built_outside_a_seam(self) -> None:
+        offenders = _auth_construction_offenders()
+        assert not offenders, (
+            "these sites build an outgoing auth header outside the typed seam. R26: route them "
+            f"through {SEAM_FUNCTION}(credential: SecretStr), so a bare str is a type error "
+            "whatever the variable is called:\n  " + "\n  ".join(offenders)
+        )
+
+    def test_secretstr_is_minted_only_where_a_credential_ORIGINATES(self) -> None:
+        # Closes attack shape S6: ``build_auth_headers(SecretStr(raw))`` satisfies
+        # the type while the value was bare the whole way. The type proves the
+        # value is wrapped AT the call, never that it was never bare — so the
+        # MINT is gated too. Cheap: 6 production sites today, and 2 of them retire
+        # with the resolver consolidation.
+        allowed = ("loremaster/config.py", "scripts/survey_txn_contention_102.py")
+        offenders = [
+            site for site in _secretstr_mint_sites() if not site.startswith(allowed)
+        ]
+        assert not offenders, (
+            "a SecretStr is minted outside a credential ORIGIN. Re-wrapping a bare str at a "
+            "call site defeats the typed seam (attack shape S6):\n  " + "\n  ".join(offenders)
+        )
+
+
+def _find_seam(package: str) -> Callable[..., dict[str, str]] | None:
+    """Locate ``build_auth_headers`` anywhere in ``package``, by name not address.
+
+    Deliberately address-independent: the contract pins that the seam EXISTS and
+    what its signature is, not which module the builder puts it in.
+    """
+    import importlib
+    import pkgutil
+
+    root = importlib.import_module(package)
+    for info in pkgutil.walk_packages(root.__path__, prefix=f"{package}."):
+        try:
+            module = importlib.import_module(info.name)
+        except Exception:  # pragma: no cover - optional module
+            continue
+        candidate = getattr(module, SEAM_FUNCTION, None)
+        if callable(candidate):
+            return cast("Callable[..., dict[str, str]]", candidate)
+    return None
+
+
+# The shapes I invented against my OWN seam design, with the measured verdict of
+# the shipped v3 gate. Repo law (packet 01's three-scanner chain): the author of an
+# invented property must build AND break its own shape before shipping it. v1 and
+# v2 of that chain failed because nobody required their authors to attack them.
+#
+# The value is the **attributing instrument**, re-derived against the REAL gate
+# under ruling R28.1 — never a boolean, because a boolean let a wrong attribution
+# (S6) sit undetected behind a correct outcome.
+#   ``_CONSTRUCTION`` = the auth-construction gate flags it.
+#   ``_MINT``         = the SecretStr-mint gate flags it.
+#   ``_UNCAUGHT``     = a LEDGERED BOUND with a reason, never a silent miss.
+_CONSTRUCTION = frozenset({"construction"})
+_MINT = frozenset({"mint"})
+_UNCAUGHT: frozenset[str] = frozenset()
+
+SEAM_ATTACK_CORPUS: dict[str, tuple[str, frozenset[str]]] = {
+    "S1 inline dict literal": ('def go(k):\n    return {"x-api-key": k}\n', _CONSTRUCTION),
+    "S2 computed header name": ('H = "x-api" + "-key"\ndef go(k):\n    return {H: k}\n', _UNCAUGHT),
+    "S3 module-constant name": (
+        'HDR = "authorization"\ndef go(k):\n    return {HDR: f"Bearer {k}"}\n',
+        _CONSTRUCTION,
+    ),
+    "S4 subscript mutation": (
+        'def go(req, k):\n    req.headers["authorization"] = f"Bearer {k}"\n',
+        _CONSTRUCTION,
+    ),
+    "S5 httpx auth= kwarg": (
+        "import httpx\ndef go(u, p):\n    return httpx.Client(auth=httpx.BasicAuth(u, p))\n",
+        _CONSTRUCTION,
+    ),
+    "S6 re-wrap a bare str": (
+        # ⚠ RE-DERIVED under R28.1: this row USED TO SAY "construction". The real
+        # gate says otherwise — S6 is caught by the MINT gate, a DIFFERENT function.
+        # Outcome always safe; the ATTRIBUTION was wrong, and only a copy of the
+        # gate could hide that.
+        "def go(raw):\n    return build_auth_headers(SecretStr(raw))\n",
+        _MINT,
+    ),
+    "S7 join-built name": ('def go(k):\n    return {"-".join(["x","api","key"]): k}\n', _UNCAUGHT),
+    "S8 credential in URL query": ('def go(b, k):\n    return f"{b}?api_key={k}"\n', _UNCAUGHT),
+    "S9 log the seam output": (
+        'def go(log, k):\n    h = build_auth_headers(k)\n    log.info("h", extra={"h": h})\n',
+        _UNCAUGHT,
+    ),
+    "S10 CORRECT seam (control)": (
+        "def build_auth_headers(credential):\n"
+        '    return {"x-api-key": credential.get_secret_value()}\n',
+        _UNCAUGHT,
+    ),
+}
+
+
+def _instruments_catching(source: str) -> frozenset[str]:
+    """Which REAL instrument(s) catch ``source`` — never a re-implementation.
+
+    ⚠ **RULING R28.1 — THIS FUNCTION USED TO BE A COPY OF THE GATE, AND THAT WAS
+    THE DEFECT.** The previous ``_gate_flags()`` re-implemented
+    :func:`_node_verdicts` inline. The adversary proved it by mutation: it deleted
+    v1's name leg from the REAL gate, ``_node_verdicts`` stopped flagging S1,
+    ``_gate_flags`` still returned ``True``, and this corpus passed **13/13** while
+    adding **zero** failures. **The instrument built to measure the gate's reach
+    every run was measuring a duplicate's reach** — #102 (ONE IMPLEMENTATION)
+    inside the instrument built to prevent that class, and exactly what *"prove
+    sharing by MUTATION"* exists to catch.
+
+    Fixed by **DELETION**, not by keeping a copy in sync — a synchronised copy is
+    the same defect with a maintenance ritual attached. This now calls
+    :func:`_node_verdicts` and :func:`_is_secretstr_mint` directly, so mutating
+    either moves the corpus with it.
+
+    It also returns the **attributing instrument**, not a boolean, because the
+    copy had falsified a ledger row: S6 was recorded as caught by the construction
+    gate when the real gate says otherwise — outcome safe, attribution wrong, and
+    drift undetectable. Attribution is now derived, so it cannot drift again.
+    """
+    tree = ast.parse(source)
+    enclosing: dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(node):
+                enclosing.setdefault(id(inner), node.name)
+    caught: set[str] = set()
+    for node in ast.walk(tree):
+        if _is_secretstr_mint(node):
+            caught.add("mint")
+        if enclosing.get(id(node)) == SEAM_FUNCTION:
+            continue
+        if isinstance(node, (ast.expr, ast.stmt)) and _node_verdicts(node):
+            caught.add("construction")
+    return frozenset(caught)
+
+
+class TestTheSeamGateWasAttackedByItsOwnAuthor:
+    """R26's build-AND-break requirement, kept as a running instrument.
+
+    The corpus is not a report artifact — it is a TEST, so the gate's reach is
+    **measured on every run** rather than claimed once. If a later change silently
+    narrows the gate, the shape it stops catching reddens here.
+    """
+
+    @pytest.mark.parametrize(
+        "shape", list(SEAM_ATTACK_CORPUS), ids=[k.split()[0] for k in SEAM_ATTACK_CORPUS]
+    )
+    def test_the_real_gates_verdict_on_each_invented_shape_is_unchanged(self, shape: str) -> None:
+        source, expected = SEAM_ATTACK_CORPUS[shape]
+        assert _instruments_catching(source) == expected, (
+            f"the REAL gate's verdict on {shape!r} changed. If you widened or narrowed an "
+            "instrument deliberately, update this row AND the ledger below; if not, a shape "
+            "has changed hands or slipped through."
+        )
+
+    def test_the_correct_seam_is_not_flagged(self) -> None:
+        # POSITIVE CONTROL in the other direction: a gate that flagged everything
+        # would "catch" every attack and be worthless.
+        source, _ = SEAM_ATTACK_CORPUS["S10 CORRECT seam (control)"]
+        assert _instruments_catching(source) == _UNCAUGHT
+
+    def test_the_corpus_calls_the_REAL_gate_and_not_a_copy(self) -> None:
+        # ⚠ RULING R28.1, pinned so the defect cannot return. The corpus must be
+        # WIRED to the production predicates, not a re-implementation of them.
+        # Asserted structurally: ``_instruments_catching`` must actually call
+        # ``_node_verdicts`` and ``_is_secretstr_mint``. A future author who
+        # "optimises" it back into an inline copy reddens here.
+        source = inspect.getsource(_instruments_catching)
+        for shared in ("_node_verdicts", "_is_secretstr_mint"):
+            assert f"{shared}(" in source, (
+                f"the attack corpus no longer calls {shared}() — it is measuring a COPY of the "
+                "gate again (R28.1). Fix by DELETION, never by keeping a copy in sync."
+            )
+
+    def test_each_instrument_catches_at_least_one_shape(self) -> None:
+        # ANTI-VACUITY over the corpus itself, now per-instrument rather than a
+        # bare count: if a refactor silently disabled one gate, its shapes would
+        # all move to UNCAUGHT and the parametrised rows would still pass.
+        attributed = {name for _src, names in SEAM_ATTACK_CORPUS.values() for name in names}
+        assert attributed == {"construction", "mint"}, (
+            f"an instrument stopped catching anything in the corpus: {sorted(attributed)}"
+        )
+
+    def test_the_uncaught_shapes_are_LEDGERED_with_reasons(self) -> None:
+        # ⚠ THE HONEST HALF. Four shapes are NOT caught, each recorded with why it
+        # is acceptable and what would re-open it.
+        #
+        # S2 / S7 — a COMPUTED header name (``"x-api" + "-key"``, ``"-".join(...)``).
+        #   No name-keyed leg can see these, and the surface leg only fires if the
+        #   dict reaches an httpx call in the same function. ACCEPTED under the
+        #   threat model: an honest developer writes the header name literally.
+        #   RE-OPEN TRIGGER: the day any production module computes a header name.
+        #
+        # S8 — a credential in a URL QUERY. ⚠ **RULING R28.2: this SHRANK, it did
+        #   not dissolve, and the earlier claim was over-stated from a sample of
+        #   two.** Measured against the surviving labelled pattern:
+        #       COVERED: ?api_key= ?api-key= ?apikey= ?apiKey= ?token= ?secret= ?password=
+        #       LEAKS:   ?key=  ?access_token=  ?auth=  ?x_api_key=
+        #   So a credential in a query string is covered only when the parameter
+        #   happens to be spelled like one of ``_ASSIGNMENT_RE``'s labels. It is not
+        #   a header, so it is outside this seam by construction — and the residual
+        #   is the four spellings above, not zero.
+        #   RE-OPEN TRIGGER: the day lore sends a credential as a query parameter
+        #   at all. Today it does not — every outgoing credential is a header.
+        #
+        # S9 — LOGGING the seam's own output. The seam returns ``dict[str, str]``,
+        #   a bare-str container by necessity (httpx needs the bytes). Covered for
+        #   every production holder by the retention and shape-B pins in
+        #   ``test_secret_leak_vectors.py``; the general case is a bound.
+        #   RE-OPEN TRIGGER: a caller binding the seam's result to anything that
+        #   outlives the request.
+        uncaught = {
+            shape for shape, (_src, names) in SEAM_ATTACK_CORPUS.items() if not names
+        }
+        assert uncaught == {
+            "S2 computed header name",
+            "S7 join-built name",
+            "S8 credential in URL query",
+            "S9 log the seam output",
+            "S10 CORRECT seam (control)",
+        }, (
+            "the set of shapes no instrument catches has changed. Every member needs a written "
+            f"reason and a re-open trigger in this test's body: {sorted(uncaught)}"
+        )
+
+    @pytest.mark.parametrize(
+        "spelling,covered",
+        [
+            ("api_key", True), ("api-key", True), ("apikey", True), ("apiKey", True),
+            ("token", True), ("secret", True), ("password", True),
+            ("key", False), ("access_token", False), ("auth", False), ("x_api_key", False),
+        ],
+    )
+    def test_the_query_parameter_residual_is_pinned_spelling_by_spelling(
+        self, spelling: str, covered: bool
+    ) -> None:
+        # RULING R28.2 made mechanical. The earlier text claimed S8 "dissolved" on
+        # the strength of ONE spelling; four spellings leak. Pinned individually so
+        # the boundary is a measured fact rather than a sample, and so widening the
+        # label set moves this table with it.
+        from loremaster.logging_setup import _ASSIGNMENT_RE, _BEARER_RE, REDACTED
+
+        rendered = f"GET https://api.example/v1/e?{spelling}={FAKE_SECRET}&n=3"
+        scrubbed = _BEARER_RE.sub(rf"\1{REDACTED}", rendered)
+        scrubbed = _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
+        assert (FAKE_SECRET not in scrubbed) is covered, (
+            f"?{spelling}= coverage changed. This table is the measured residual for S8; if a "
+            "label was added or removed, update it and say so."
         )
