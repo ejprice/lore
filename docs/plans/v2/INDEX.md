@@ -994,6 +994,30 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   negative search, a `pgrep -f` watcher — all claims whose scope is implicit in the instrument that
   produced it; one watcher had waited on ITSELF for 13.5h). NEXT = **42** (operator: prevent the leak,
   delete the sanitizer — 12.4% of function names are hidden from logs today).
+- 2026-07-27 · **11-i-a BUILT, AUDITED GO, MERGED** (`c7983e8`, pushed). Store half of the floor
+  machinery: schema + head mint + `StoreLease` (`kubernetes.leaderelection` + a SurrealDB lock
+  adapter) + the C8 projection. **Post-merge 7642 passed / 0 failed**, and the count RECONCILES
+  EXACTLY — merge-base 7066 + ours 505 + main's 71 — so the merge lost nothing. Baseline taken from
+  main at `0d06122` *immediately* before merging (7137/0). **THE ADVERSARY EARNED THE PACKET:**
+  contract graded **INSUFFICIENT**, 9 of 14 wrong builds surviving at 143/0, and it found THREE
+  defects in the RULED DESIGN's own wording — including a lock that **could never be created on a
+  virgin store**, caught with two differently-broken controls because one would have licensed the
+  wrong fix. Operator ruled **orjson** for the identity encodings, which DISSOLVED escalation E1
+  rather than answering it (the ambiguity was manufactured by the bespoke encoding). #198 consolidated
+  to ONE implementation in an installed package — four sites, not the two the finding named, found by
+  sweeping from the grep against the lead's own hand-list; #238 closed. **NEW LAW, all learned the
+  hard way: a fixture that writes its legacy row AFTER the migration cannot see the DEFAULT hazard at
+  all** (the fix wave caught this in its own probe, inside the wave about prose contradicting code) ·
+  **a clean auto-merge is not a correct one** — `_surreal_harness.py` merged without conflict and its
+  derived counts were wrong on BOTH sides (42/26 is neither) · **deriving a served count beats
+  correcting it**: F1's derivation absorbed main's new seams with no edit, which the merge was the
+  first real test of. ⚠ **STILL OPEN:** **#241** (intermittent 2-of-114 contention STOP, mechanism
+  unknown; 30 frozen runs green but on a DIFFERENT tree — instrument `scripts/contention_hunt.sh`) ·
+  **#242** (connection-glue duplication, where a naive extraction blinds the enumeration covering it;
+  its own count corrected as un-derived) · **#237**. ⚠ **11-ii MUST INHERIT:** the slice has ZERO
+  production consumers, so the store law is satisfied only VACUOUSLY — wiring a writer without its
+  `ensure_ready` gives an undeclared-table conflict storm, and for `lease` a READ THAT RAISES.
+  **NO DEPLOY** (`DEPLOY: no`; nothing served changes). NEXT = **11-i-b**.
 - 2026-07-26 · **BRANCH/DIFF-AWARENESS CONSULT** (operator question → input to packet 17). Three
   independent positions (Sonnet 5 · Opus 5 · Fable lead — lead's committed to file before reading
   either return; receipts `docs/plans/v2/receipts/2026-07-26-branch-diff-consult/`, SYNTHESIS.md
