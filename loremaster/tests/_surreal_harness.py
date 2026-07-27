@@ -21,9 +21,9 @@ broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
-36 test files import this harness, so a module-level import of code still being
+39 test files import this harness, so a module-level import of code still being
 built would turn one mid-TDD breakage into a COLLECTION error across all of them.
-(A SMALLER, DIFFERENT population — 22 test files — calls ``connect_admin``; those two
+(A SMALLER, DIFFERENT population — 24 test files — calls ``connect_admin``; those two
 numbers are not interchangeable, and committed prose conflated them until fff1382.
 Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
 sentence cannot rot.) The new-code imports (``SurrealStore`` / ``generate_ddl`` /

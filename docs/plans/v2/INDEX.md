@@ -43,7 +43,7 @@ HERE now** — a packet session must not need to read them.
 - **The committed-RED era is OVER — the suite is fully green at HEAD.** 03b discharged
   global mypy-zero (36 → 0, all members); suite **6937/0** at the 03b close; post-11-i-merge
   honest baseline **7065 passed / 1 failed**, and that single failure (`test_retired_symbols`
-  on three archived reports naming `_BRIEF_PUBLISH_` — main's own, named in
+  on three archived reports naming a retired brief-publish constant — main's own, named in
   `receipts/2026-07-24-packet11i/FIXWAVE-CLOSEOUT.md`) was **CLOSED by this sweep's banner
   fix** (`a7e6ea9`, scoped 16/16). ruff clean; skill suite 117 (03b close receipts).
 - **Findings ledger after this sweep: every PRE-SWEEP row (≤ #235) is resolved or
