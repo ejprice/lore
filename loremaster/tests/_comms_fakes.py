@@ -402,6 +402,50 @@ class FakeAgentRegistry:
 # ---------------------------------------------------------------------------
 
 
+#: The module packet 04a's contract pins as the ONE home of the unknown-agent policy
+#: (``test_enforced_relations.py::SHARED_POLICY_MODULE``).  Named here rather than
+#: imported at module scope on purpose: a module-level import of a module that does not
+#: exist yet makes every consumer of this file UNCOLLECTABLE instead of RED (finding #133).
+_SHARED_POLICY_MODULE = "loremaster.agent_existence"
+
+
+def _shared_unknown_agent_error() -> type[Exception]:
+    """The exception BASE both real ledgers raise for an unknown agent id, DERIVED from the
+    shared policy module rather than named by this file.
+
+    ⚠ Not :class:`loremaster.agents.UnknownAgentError`, which this module also imports and
+    which is a DIFFERENT error about a display NAME that resolves to no agent at the
+    REGISTRY.  This one is about a row ID that names no ``agent`` row at the LEDGER.
+
+    Why derived: pinning the class's NAME here would add a second name-keyed handle to a
+    contract that deliberately keeps only one (``reject_unknown_agents``), and the base's
+    identity is already pinned by VALUE in
+    ``test_enforced_relations.py::…test_BOTH_verbs_raise_an_error_a_caller_can_catch_with_ONE_except``.
+    So this reads the module's own exception exports and returns the one every other
+    derives from — and FAILS CLOSED, loudly, when there is no single such base, because a
+    fake that guesses which error to raise is a fake that can drift from production in the
+    exact dimension it is standing in for.
+    """
+    import importlib
+
+    module = importlib.import_module(_SHARED_POLICY_MODULE)
+    exported = [
+        obj
+        for obj in vars(module).values()
+        if isinstance(obj, type)
+        and issubclass(obj, Exception)
+        and obj.__module__ == _SHARED_POLICY_MODULE
+    ]
+    bases = [candidate for candidate in exported if all(issubclass(other, candidate) for other in exported)]
+    if len(bases) != 1:
+        raise AssertionError(
+            f"{_SHARED_POLICY_MODULE} must export exactly ONE exception class that every "
+            f"other exception it exports derives from — the base a caller catches to mean "
+            f"'this id names no agent'. Found: {[cls.__name__ for cls in exported]}"
+        )
+    return bases[0]
+
+
 @dataclass
 class FakeBriefDatabase:
     """The shared in-memory ``brief`` + ``briefed`` store two or more
@@ -422,6 +466,11 @@ class FakeBriefDatabase:
     briefs: dict[str, Brief] = field(default_factory=dict)
     edges: dict[tuple[str, str], BriefAckVia] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=dict)
+    #: The ``agent`` TABLE, as ``{agent_id: name}`` — mirrors
+    #: :attr:`_message_fakes.FakeMessageDatabase.agents`, which exists for exactly the same
+    #: reason on the sibling ledger (packet 04a / MP-7).  See
+    #: :meth:`FakeBriefLedger._reject_unknown_agent` for what an EMPTY mapping means and why.
+    agents: dict[str, str] = field(default_factory=dict)
 
 
 class FakeBriefLedger:
@@ -443,6 +492,51 @@ class FakeBriefLedger:
 
     async def close(self) -> None:
         await asyncio.sleep(0)
+
+    # -- test affordances (deliberately NOT part of the production surface) ---
+
+    def register_agent(self, *, agent_id: str, name: str) -> None:
+        """Make ``agent_id`` resolvable — this fake's stand-in for a row in the ``agent``
+        table the real ledger's unknown-agent check SELECTs.
+
+        Named and shaped identically to
+        :meth:`_message_fakes.FakeMessageLedger.register_agent`, on purpose: the two ledgers
+        need the SAME policy about what a registered agent IS, so their doubles must not
+        each invent their own vocabulary for saying so.
+        """
+        self.db.agents[agent_id] = name
+
+    # -- the unknown-agent policy (packet 04a) --------------------------------
+
+    def _reject_unknown_agent(self, agent_id: str | None) -> None:
+        """Refuse an ``agent_id`` that names no ``agent`` row — the fake's half of packet
+        04a's headline property, so ``publish``/``ack`` do not silently DIVERGE from the
+        real ledger on the one thing this packet is about.
+
+        ``agent_id=None`` is legal and unchecked: it means "a ledger-level caller with no
+        agent row in play" and writes no edge at all (production's third input class).
+
+        ⚠ **A DECLARED BOUND, stated because an unpinned known limitation is
+        indistinguishable from an unknown one.**  An EMPTY :attr:`FakeBriefDatabase.agents`
+        means *"this suite does not model the agent table"* and every id is accepted.  It is
+        not laziness and it is not free: ~55 ``brief_publish``/``brief_ack`` tool-seam sites
+        in ``test_comms_tool.py`` (plus three in ``test_comms_render_architecture.py``,
+        which no 04a agent may edit) drive this fake through a registry that populates its
+        OWN store, and making an unmodelled table refuse everything would redden all of them
+        for a fixture reason rather than a contract one.  The suites that CARE — the
+        ``[fake]`` half of ``test_brief_ledger.py`` and the tool-seam teaching pin — seed the
+        table and get production's behaviour exactly.
+        **Named re-open trigger:** the day the brief tool-seam harness seeds this table
+        wholesale (the ``FakeMessageLedger.register_agent`` idiom it already uses for
+        messages), delete this paragraph and refuse unconditionally.  The bound is pinned in
+        ``test_brief_ledger.py::TestTheFakeLedgerSharesTheUnknownAgentPolicy``.
+        """
+        if agent_id is None or not self.db.agents or agent_id in self.db.agents:
+            return
+        raise _shared_unknown_agent_error()(
+            f"unknown agent: {agent_id} — every agent must be a registered agent row "
+            f"before a brief can be published or acked in its name"
+        )
 
     # -- id ---------------------------------------------------------------------
 
@@ -499,6 +593,11 @@ class FakeBriefLedger:
         # report's contract-decisions section. This fake therefore does NOT
         # reject a blank body either, matching production's split.
         await asyncio.sleep(0)
+        # BEFORE the mint and BEFORE any write (packet 04a): a refused publish
+        # must burn no version and leave no row — the same ORDER production's
+        # app-level check runs in, because a fake that refuses LATER models a
+        # build the contract forbids.
+        self._reject_unknown_agent(agent_id)
         # --- the mint: an atomic per-name counter bump, NO ``await`` between
         # its read and its write (property 3's idiom, applied to the counter
         # row rather than a whole record) — mirrors production's ONE-statement
@@ -577,6 +676,10 @@ class FakeBriefLedger:
         via: str,
     ) -> BriefAckResult:
         await asyncio.sleep(0)
+        # BEFORE the RELATE, and before anything can be reported as
+        # ``already_acked`` (packet 04a): an unknown agent and the
+        # idempotent-re-ack signal must never share a failure path.
+        self._reject_unknown_agent(agent_id)
         versions = self._versions_of(name)
         if not versions:
             raise self._unknown_name_error(name)

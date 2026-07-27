@@ -698,3 +698,42 @@ confidence, which is always the direction.
   seeding now exists and the number is no longer actionable.
 - **The `fake` branch was left alone**, as specified: `FakeBriefLedger` is an independent in-memory
   implementation with no `agent` table and no endpoint validation to satisfy.
+
+---
+
+# S8 — CORRECTION NOTE (appended 2026-07-27 by `contract-04a-enforced-3`, at `369db57`)
+
+*Appended, never rewritten: §1–§7 are cited from the INDEX Log and from commits, so their
+addresses must keep resolving. Two claims above are WRONG and a builder would act on both.
+This section supersedes them; the original wording is left in place so a reader who arrives
+at it from a citation meets the correction rather than a silent edit.*
+
+**C1 — the SUMMARY BLOCK's pin/RED counts are STALE.** It says *"**File:**
+`loremaster/tests/test_enforced_relations.py` (new, 60 pins)"* and *"**RED count:** `26 failed,
+34 passed`"*. Those describe the pre-SPLIT file. **§S1/§S2 already carried the corrected
+post-split figures (38 pins, `17 failed, 21 passed`)** — but the SUMMARY BLOCK is what a lead
+reads first, and it was never updated (adversary §RESIDUALS R7).
+**Current, re-derived 2026-07-27 at `369db57` after this wave's additions:
+`26 failed, 24 passed in 5.32s` — 50 pins** (38 + 12 added by MP-1…MP-5). Receipts and the
+per-pin reasons: `REPORT-contract-04a-enforced-3.md` §1–§2.
+
+**C2 — §5 item 7's adjudication is FALSE, and it is the load-bearing kind of false.** It says
+*"`test_BOTH_verbs_raise_the_SAME_error_type` pins **sameness**, not identity, so a builder may
+keep `UnknownRecipientError` as a subclass of the shared error."* The assertion it describes was
+`type(a) is type(b)` — **type IDENTITY** — so a subclass build was exactly what that pin
+REJECTED. Measured by the adversary (§P4 / W-F): the subclass build this sentence recommends
+went `1 failed, 249 passed`. A builder following it would have written a build the contract
+refused, and then been tempted to weaken the pin.
+**Resolved 2026-07-27 by LEAD RULING** (adversary §C-DEF-3 proved all three readings cost
+something): **a SHARED BASE CLASS with distinct subclasses is the ruled shape.** The pin is
+re-shaped accordingly and renamed to say what it now checks —
+`test_BOTH_verbs_raise_an_error_a_caller_can_catch_with_ONE_except`, asserting that the two
+raised values share a base class DEFINED IN the shared policy module. §5 item 7's *adjudication*
+(spec-silent → escalate) was right; only its claim about the assertion was wrong.
+
+**Also closed since this report was written** (details in `REPORT-contract-04a-enforced-3.md`):
+§6.1's missing C-DEF receipt (a reference build now grades the contract `50 passed, 0 failed`,
+and `2189 passed, 0 failed` over nine suites) · §3 survivor #5 (routing-without-sharing, killed
+by the accept-everything mutation) · §6.2 (it IS closable, and how) · the `_seed_agent_rows`
+docstring's "three call sites" (six) and the coverage sweep's `>= 5` floor under a message
+saying SIX.

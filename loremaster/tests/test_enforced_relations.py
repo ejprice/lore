@@ -44,15 +44,24 @@ that describe the CHANGE — and GREEN in the ones that describe a CONTROL or a 
 behaviour.  Which is which is stated in every class docstring, because a contract whose
 author cannot say why each pin is red today has not written a contract.
 
-⚠ **ONE PRE-EXISTING CONTRACT FILE STRUCTURALLY CONTRADICTS THIS ONE, and fixing it is a
-NAMED 04a DELIVERABLE (operator-ruled 2026-07-26), not this file's job.**
-``test_brief_ledger.py``'s ``brief_ledger_factory`` applies ``generate_brief_ddl()`` and
-NOTHING ELSE, so the ``agent`` table never exists there and **every ``briefed`` edge its
-suite writes is a DANGLING edge to an agent row that was never created** (≥29 collected
-``[real]`` ids, derived 2026-07-26 — ``REPORT-contract-04a-enforced.md`` §4.D1).  After
-the flip every one of them fails.  Its sibling ``test_message_ledger.py`` already seeds
-real agent rows (``_seed_agents``) precisely because ``to`` is already ``ENFORCED``; the
-brief-ledger fixture needs the same treatment.
+⚠ **TWO PRE-EXISTING CONTRACT FILES STRUCTURALLY CONTRADICTED THIS ONE.  BOTH ARE NOW
+CLOSED — recorded here because a builder meeting either mid-wave would be tempted to
+weaken the flip rather than fix the fixture.**
+
+1. ``test_brief_ledger.py`` (§4.D1, operator-ruled a NAMED 04a deliverable 2026-07-26,
+   **landed `dfb5cd0`**): its ``brief_ledger_factory`` applied ``generate_brief_ddl()``
+   and nothing else, so the ``agent`` table never existed there and every ``briefed``
+   edge its suite wrote was a DANGLING edge.  Six functions in that file build a real
+   ledger; all six now call ``_seed_agent_rows``, and that coverage is a CHECKED variable
+   (``TestEveryRealLedgerSiteSeedsItsAgentRows``).
+2. ``test_retry_seam.py`` (adversary §C-DEF-2, **closed 2026-07-27**): its
+   ``_AckConnection`` is a DENY-BY-DEFAULT fake serving exactly ``ack()``'s two SELECTs
+   and the RELATE, so the app-level existence check this contract requires inside ``ack``
+   made five of its pins fail with *"the ack path issued a statement this fake does not
+   serve"*.  **Operator/lead RULING: widen the fake, honestly** — it now models the
+   ``agent`` table (deny-by-default preserved for every other statement) and the
+   retry-seam pins it exists to catch were re-proven RED under their own mutation after
+   the widening (``REPORT-contract-04a-enforced-3.md`` §3).
 """
 
 from __future__ import annotations
@@ -93,6 +102,7 @@ from loremaster.briefs import BriefLedger
 from loremaster.store.surreal import SurrealStoreError
 from loremaster.store.surreal_schema import (
     AGENT_TABLE,
+    BRIEF_COUNTER_TABLE,
     BRIEF_TABLE,
     BRIEFED_RELATION,
     MESSAGE_TABLE,
@@ -529,6 +539,116 @@ class TestTheEnforcedFlipMigratesADirtyStore:
         )
 
 
+class TestTheLEDGERsOwnMigrationPathLandsTheGuard:
+    """⛔ **THE PIN THAT KILLS W-A** — the #107 shape, in the packet written to prevent it.
+
+    Every pin in section B applies the DDL ITSELF
+    (``apply_ddl(connection, generator(), url=env.url)``).  That proves the **RECIPE**
+    migrates.  It cannot prove the **CAKE** does — and ``BriefLedger.ensure_ready()`` is the
+    SOLE path by which production ever migrates this table.  MEASURED (adversary §P1 W-A,
+    2026-07-26/27): a build whose emitter is perfectly correct and whose ``ensure_ready``
+    de-enforces the DDL on its way to the store
+    (``generate_brief_ddl().replace(" ENFORCED SCHEMAFULL", " SCHEMAFULL")``) passed this
+    contract **38/38 with ZERO new failures repo-wide**.
+
+    So this leg drives the LEDGER's own migration path and nothing else: the old world is
+    installed by hand, the store is dirtied, and then the ONLY step is ``ensure_ready()``.
+    Nothing here applies DDL on the ledger's behalf.
+
+    RED at `369db57`: the guard does not exist yet, so the fresh dangling RELATE is accepted.
+    """
+
+    @staticmethod
+    def _ledger_on(env: SurrealEnv) -> BriefLedger:
+        return BriefLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+
+    @staticmethod
+    async def _old_world_with_a_dangling_edge(
+        connection: SurrealConnection, env: SurrealEnv
+    ) -> str:
+        """Install the OLD (un-enforced) ``briefed`` world and dirty it.  Returns a REAL
+        agent id that exists on this database."""
+        await apply_ddl(connection, generate_agent_ddl(), url=env.url)
+        await apply_ddl(
+            connection,
+            old_world_ddl(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE, generate_brief_ddl),
+            url=env.url,
+        )
+        live_agent = ghost_id("live_agent")
+        await seed_endpoint(connection, AGENT_TABLE, live_agent)
+        ghost_brief = ghost_id("ghost_brief")
+        assert not await record_exists(connection, BRIEF_TABLE, ghost_brief)
+        await relate(
+            connection, BRIEFED_RELATION, in_table=AGENT_TABLE, in_id=live_agent,
+            out_table=BRIEF_TABLE, out_id=ghost_brief,
+        )
+        rows = await run(connection, f"SELECT id FROM {BRIEFED_RELATION}")
+        assert len(rows) == 1, (
+            "the OLD world must ACCEPT the dangling edge — otherwise this fixture is not "
+            "installing the world whose migration is under test"
+        )
+        return live_agent
+
+    async def test_ensure_ready_on_a_DIRTY_store_makes_the_guard_LIVE(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+    ) -> None:
+        connection, env = migration_db
+        live_agent = await self._old_world_with_a_dangling_edge(connection, env)
+
+        ledger = self._ledger_on(env)
+        try:
+            await ledger.ensure_ready()  # THE ONLY migration step. Nothing else runs DDL.
+        finally:
+            await ledger.close()
+
+        fresh_ghost = ghost_id("still_absent")
+        assert not await record_exists(connection, BRIEF_TABLE, fresh_ghost)
+        with pytest.raises(Exception):  # noqa: B017 - the engine's NotFoundError surface
+            await relate(
+                connection, BRIEFED_RELATION, in_table=AGENT_TABLE, in_id=live_agent,
+                out_table=BRIEF_TABLE, out_id=fresh_ghost,
+            )
+
+    async def test_POSITIVE_CONTROL_ensure_ready_still_accepts_two_REAL_endpoints(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+    ) -> None:
+        """A migration that refuses EVERYTHING is not a guard, it is an outage — and it
+        would satisfy the pin above.  GREEN today and after the flip.
+        """
+        connection, env = migration_db
+        live_agent = await self._old_world_with_a_dangling_edge(connection, env)
+
+        ledger = self._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+
+        live_brief = ghost_id("live_brief")
+        await seed_endpoint(connection, BRIEF_TABLE, live_brief)
+        await relate(
+            connection, BRIEFED_RELATION, in_table=AGENT_TABLE, in_id=live_agent,
+            out_table=BRIEF_TABLE, out_id=live_brief,
+        )
+        rows = await run(
+            connection,
+            f"SELECT id FROM {BRIEFED_RELATION} WHERE out = $out",
+            {"out": RecordID(BRIEF_TABLE, live_brief)},
+        )
+        assert rows, (
+            "after the LEDGER's own migration a briefed RELATE between two REAL endpoints "
+            "must still be accepted"
+        )
+
+
 # =========================================================================== #
 # SECTION C — THE UN-ENFORCING DOOR (probe §3 item (a)).
 #
@@ -709,6 +829,28 @@ class TestADanglingEdgeReadsAsAFirstClassMember:
 #: An agent id no fixture below ever registers.
 UNREGISTERED_AGENT_ID = "unregistered_agent_0000000000000000"
 
+#: A SECOND unregistered identity, and the reason it exists (adversary §P1 W-B, MEASURED
+#: 2026-07-26/27): with ONE literal on every negative leg, a "policy" that never queries the
+#: store at all — ``unknown = {id for id in agents if id == "unregistered_agent_0000…"}`` —
+#: passed this whole file 38/38.  A single-literal negative fixture is a MONOCULTURE, and the
+#: perturbation pair (§P2: swapping this literal reddened four pins on that wrong build)
+#: proved the fixture VALUE was what blinded the contract.
+#:
+#: This one deliberately wears the REGISTERED shape — ``registered_agent_`` + 32 hex, exactly
+#: the shape :func:`brief_ledger_with_a_real_agent` mints for the identity that DOES exist —
+#: so a refusal keyed on a prefix, a literal, a length, or "looks unregistered" accepts it.
+#: The 32 zeros cannot collide with a ``uuid4().hex``.  The fixture ASSERTS both ids absent.
+UNREGISTERED_AGENT_ID_WEARING_THE_REGISTERED_SHAPE = (
+    "registered_agent_00000000000000000000000000000000"
+)
+
+#: Every negative agent identity, as a parametrisation.  FIXTURES MUST DISCRIMINATE: if the
+#: code can branch on a value, at least one pin must use a DIFFERENT value.
+UNREGISTERED_AGENT_IDS = (
+    UNREGISTERED_AGENT_ID,
+    UNREGISTERED_AGENT_ID_WEARING_THE_REGISTERED_SHAPE,
+)
+
 _BRIEF_NAME = "project"
 _BRIEF_BODY = "the standing law"
 _PUBLISHER = "lead"
@@ -739,9 +881,10 @@ async def brief_ledger_with_a_real_agent() -> AsyncIterator[tuple[BriefLedger, s
     try:
         await apply_ddl(setup, generate_agent_ddl(), url=env.url)
         await seed_endpoint(setup, AGENT_TABLE, registered_id)
-        assert not await record_exists(setup, AGENT_TABLE, UNREGISTERED_AGENT_ID), (
-            "the negative fixture's agent id must genuinely NOT exist"
-        )
+        for absent_id in UNREGISTERED_AGENT_IDS:
+            assert not await record_exists(setup, AGENT_TABLE, absent_id), (
+                f"the negative fixture's agent id {absent_id!r} must genuinely NOT exist"
+            )
     finally:
         await setup.close()
 
@@ -787,6 +930,23 @@ async def _briefed_edge_count(ledger: BriefLedger) -> int:
     return int(rows[0].get("count", 0))
 
 
+async def _version_counter_rows(ledger: BriefLedger) -> list[Any]:
+    """Every stored ``brief_counter`` row — a RAW read of the hot MINT row itself.
+
+    ROW EXISTENCE is the discriminator the version NUMBER is not.  ``publish`` mints off
+    this row with an ``UPSERT`` **before** the CREATE, so a build that mints first, lets the
+    write be rejected, and hands the number back via ``_release_version`` leaves the row
+    BEHIND at ``next = 0`` — and the next real publish still gets v1.  "The next publish got
+    v1" is therefore true of BOTH a refused-early build and a minted-then-released one
+    (adversary §P1 W-D / §P2 leg 2b, MEASURED); "no counter row exists at all" is true of
+    only the first.
+    """
+    rows = await ledger._query(  # noqa: SLF001 - see above
+        f"SELECT id FROM {BRIEF_COUNTER_TABLE}"
+    )
+    return list(rows) if isinstance(rows, list) else []
+
+
 class TestPublishRefusesAnUnregisteredAgent:
     """RED at `28387a0`, all four legs — today ``publish`` writes the brief AND a dangling
     ack edge for an agent that does not exist (probe §10.2 leg A, MEASURED).
@@ -797,13 +957,16 @@ class TestPublishRefusesAnUnregisteredAgent:
     input, its stated fate.
     """
 
+    @pytest.mark.parametrize("unregistered_agent_id", UNREGISTERED_AGENT_IDS)
     async def test_an_UNREGISTERED_agent_id_is_REFUSED(
-        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+        self,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+        unregistered_agent_id: str,
     ) -> None:
         ledger, _registered, _env = brief_ledger_with_a_real_agent
         with pytest.raises(Exception) as caught:  # noqa: B017 - the type is section E's job
             await ledger.publish(
-                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=unregistered_agent_id
             )
         assert not isinstance(caught.value, SurrealStoreError), (
             "the refusal must come from the APP-LEVEL check, not from the engine: an "
@@ -812,8 +975,11 @@ class TestPublishRefusesAnUnregisteredAgent:
             "satisfy this packet's Exit criterion that a bogus publish TEACHES"
         )
 
+    @pytest.mark.parametrize("unregistered_agent_id", UNREGISTERED_AGENT_IDS)
     async def test_the_refusal_NAMES_the_bad_agent_id(
-        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+        self,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+        unregistered_agent_id: str,
     ) -> None:
         """The whole point of the app layer.  ``ENFORCED`` reports ONE bad endpoint, as
         untyped prose, only AFTER the write is attempted (store reference §4,
@@ -823,9 +989,9 @@ class TestPublishRefusesAnUnregisteredAgent:
         ledger, _registered, _env = brief_ledger_with_a_real_agent
         with pytest.raises(Exception) as caught:  # noqa: B017
             await ledger.publish(
-                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=unregistered_agent_id
             )
-        assert UNREGISTERED_AGENT_ID in str(caught.value), (
+        assert unregistered_agent_id in str(caught.value), (
             f"the refusal must name the offending agent id: {str(caught.value)!r}"
         )
 
@@ -918,6 +1084,134 @@ class TestPublishWithARegisteredAgentStillWorks:
         assert await _briefed_edge_count(ledger) == 0
 
 
+class TestARefusedAgentIdReachesNoWritePathAtAll:
+    """§F/§G — **the pins that kill W-D**, the wrong build that is GREENER repo-wide than the
+    correct one (adversary §P1: 2 failed / 2077 passed vs the correct build's 6 / 2073).
+
+    W-D checks AFTER the write instead of before: ``publish`` mints, writes, and lets the
+    engine's ``ENFORCED`` rejection arrive through ``_release_version``; ``ack`` has no
+    upstream check at all, so the rejection lands in ``_relate_briefed``'s
+    ``except SurrealStoreError`` — the IDEMPOTENT-RE-ACK signal — and the app error is
+    manufactured from inside that handler.  It survived the contract 38/38 because the two
+    properties that forbid it were stated in DOCSTRINGS and asserted nowhere:
+
+    * *"the refusal happens BEFORE the version is minted"* — observed only as "the next
+      publish gets v1", which a mint-then-release build also satisfies.  Closed by
+      :meth:`test_a_refused_publish_never_TOUCHES_the_version_counter_row`.
+    * *"two distinct failure modes must not share one except clause"* — the class docstring
+      below states it outright and no assertion in that class checks it.  Closed by
+      :meth:`test_a_refused_ack_never_ATTEMPTS_the_RELATE`.
+
+    A message that promises a check the assertion does not perform is a FALSE GATE (repo
+    law); these two convert the prose into assertions.
+
+    RED at `369db57`: today neither verb refuses anything, so both legs reach the write.
+    """
+
+    async def test_a_refused_publish_never_TOUCHES_the_version_counter_row(
+        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+    ) -> None:
+        """MINT-THEN-RELEASE leaves the hot row behind; refused-early never creates it."""
+        ledger, _registered, _env = brief_ledger_with_a_real_agent
+        with pytest.raises(Exception):  # noqa: B017
+            await ledger.publish(
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+            )
+        assert await _version_counter_rows(ledger) == [], (
+            f"a publish refused by the app-level check must never reach the MINT — the "
+            f"{BRIEF_COUNTER_TABLE} row exists, so this build minted a version, attempted "
+            f"the write, and handed the number back through the best-effort compensating "
+            f"path (_release_version). That path SWALLOWS its own failures: it is the "
+            f"difference between 'refused' and 'rolled back, we think'"
+        )
+
+    async def test_POSITIVE_CONTROL_an_ACCEPTED_publish_DOES_create_the_counter_row(
+        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+    ) -> None:
+        """Without this, the pin above passes on a build where the counter row is never
+        created by ANY publish — i.e. on an instrument that cannot see the row at all.
+        """
+        ledger, registered, _env = brief_ledger_with_a_real_agent
+        await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered)
+        assert len(await _version_counter_rows(ledger)) == 1, (
+            f"an ACCEPTED publish must leave exactly one {BRIEF_COUNTER_TABLE} row — if it "
+            f"does not, the read above cannot distinguish 'never minted' from 'never visible'"
+        )
+
+    async def test_a_refused_ack_never_ATTEMPTS_the_RELATE(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """§G's own class docstring, converted from prose into an assertion.
+
+        A sentinel replaces ``_relate_briefed`` entirely, so *reaching* the RELATE is
+        OBSERVABLE rather than inferred from an error type: a build whose unknown-agent
+        refusal is manufactured inside that method's ``except`` raises the sentinel and goes
+        RED here.  The error TYPE alone cannot see it — W-D raises an app error with the id
+        in it, from inside the shared catch.
+        """
+
+        class _RelateAttempted(RuntimeError):
+            """Raised INSTEAD of the RELATE — never by any upstream refusal."""
+
+        async def _sentinel(**_kwargs: Any) -> tuple[bool, str]:
+            raise _RelateAttempted("the ack path reached the briefed RELATE")
+
+        ledger, registered, _env = brief_ledger_with_a_real_agent
+        await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered)
+        monkeypatch.setattr(ledger, "_relate_briefed", _sentinel, raising=True)
+
+        with pytest.raises(Exception) as caught:  # noqa: B017
+            await ledger.ack(
+                agent_id=UNREGISTERED_AGENT_ID,
+                agent_name="ghost",
+                name=_BRIEF_NAME,
+                version=1,
+                via="explicit",
+            )
+        assert not isinstance(caught.value, _RelateAttempted), (
+            "the ack path ATTEMPTED the briefed RELATE for an agent that does not exist. "
+            "The refusal must happen upstream: an engine rejection arriving in "
+            "_relate_briefed's `except SurrealStoreError` shares its catch with the "
+            "IDEMPOTENT-RE-ACK signal, and two distinct failure modes separated only by a "
+            "follow-up read is the hazard this packet exists to close"
+        )
+        assert UNREGISTERED_AGENT_ID in str(caught.value), (
+            f"the upstream refusal must still NAME the bad id: {str(caught.value)!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_a_REGISTERED_agents_ack_DOES_reach_the_RELATE(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """The control the sentinel pin needs, and it is not decoration: without it, a run
+        where the monkeypatch silently failed to attach — or a build that refuses EVERY ack
+        upstream — passes the pin above for a reason that has nothing to do with the
+        property.  Here the sentinel MUST fire.
+        """
+
+        class _RelateAttempted(RuntimeError):
+            """Raised INSTEAD of the RELATE — never by any upstream refusal."""
+
+        async def _sentinel(**_kwargs: Any) -> tuple[bool, str]:
+            raise _RelateAttempted("the ack path reached the briefed RELATE")
+
+        ledger, registered, _env = brief_ledger_with_a_real_agent
+        await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered)
+        monkeypatch.setattr(ledger, "_relate_briefed", _sentinel, raising=True)
+
+        with pytest.raises(_RelateAttempted):
+            await ledger.ack(
+                agent_id=registered,
+                agent_name="fixer-b",
+                name=_BRIEF_NAME,
+                version=1,
+                via="explicit",
+            )
+
+
 class TestTheIdempotentReAckSignalIsNotConfusedWithAnUnknownAgent:
     """§G — the SHARED-CATCH hazard, and the reason this section demands the app check run
     UPSTREAM rather than merely alongside.
@@ -933,20 +1227,23 @@ class TestTheIdempotentReAckSignalIsNotConfusedWithAnUnknownAgent:
     RED at `28387a0`: today neither call refuses anything.
     """
 
+    @pytest.mark.parametrize("unregistered_agent_id", UNREGISTERED_AGENT_IDS)
     async def test_an_ack_by_an_UNREGISTERED_agent_is_REFUSED_and_never_already_acked(
-        self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
+        self,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+        unregistered_agent_id: str,
     ) -> None:
         ledger, registered, _env = brief_ledger_with_a_real_agent
         await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered)
         with pytest.raises(Exception) as caught:  # noqa: B017
             await ledger.ack(
-                agent_id=UNREGISTERED_AGENT_ID,
+                agent_id=unregistered_agent_id,
                 agent_name="ghost",
                 name=_BRIEF_NAME,
                 version=1,
                 via="explicit",
             )
-        assert UNREGISTERED_AGENT_ID in str(caught.value)
+        assert unregistered_agent_id in str(caught.value)
         assert not isinstance(caught.value, SurrealStoreError), (
             "an unknown agent must be refused by the app check, never surface as the raw "
             "store rejection the idempotent-re-ack handler also catches — two distinct "
@@ -1085,16 +1382,30 @@ class TestTheUnknownAgentPolicyHasONEHome:
                 _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered
             )
 
-    async def test_BOTH_verbs_raise_the_SAME_error_type_for_an_unknown_agent(
+    async def test_BOTH_verbs_raise_an_error_a_caller_can_catch_with_ONE_except(
         self, brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv]
     ) -> None:
-        """A value-level sharing proof that needs NO name at all.
+        """A value-level sharing proof that needs no ATTRIBUTE name at all.
 
-        One policy raises one type.  Today ``send`` raises
-        ``MessageLedger.UnknownRecipientError`` and ``publish`` raises nothing — two
-        different fates for one question, which IS the duplication this section forbids.
-        Kept alongside the name-keyed mutation pin because it survives a rename of
-        :data:`SHARED_POLICY_ATTR` and the mutation pin does not.
+        ⚠ **RE-SHAPED 2026-07-27 BY LEAD RULING (adversary §C-DEF-3).**  This pin used to
+        assert ``type(a) is type(b)`` — TYPE IDENTITY — and that made the contract
+        UNSATISFIABLE alongside ``test_message_ledger.py::TestVocabularies::
+        test_every_domain_error_is_a_message_ledger_error``, which requires
+        ``UnknownRecipientError`` to remain a ``MessageLedgerError``.  All three readings
+        were measured; the only one green on both suites made ``agent_existence`` import its
+        neighbour, destroying the layering that module exists for (§4.D4).
+        **RULED: a SHARED BASE CLASS with distinct subclasses.**
+
+        So the property pinned here is the one a CALLER actually needs — *one ``except``
+        catches both verbs* — and the base must belong to the SHARED policy module, not to
+        either ledger.  A satisfying shape (illustrative, not prescribed):
+        ``agent_existence.UnknownAgentError`` as the base, with
+        ``messages.UnknownRecipientError(MessageLedgerError, UnknownAgentError)``.
+
+        ⚠ And what this pin no longer does: TYPE IDENTITY was only ever a weak PROXY for
+        *"is the policy really shared"*.  :class:`TestTheSharedPolicyIsTheSOLEDecisionPoint`
+        tests that DIRECTLY, by neutralising the policy and demanding both verbs change —
+        which is why that class, not this one, is now the load-bearing sharing instrument.
         """
         from loremaster.messages import MessageLedger
 
@@ -1123,10 +1434,21 @@ class TestTheUnknownAgentPolicyHasONEHome:
                 )
         finally:
             await message_ledger.close()
-        assert type(publish_error.value) is type(send_error.value), (
-            "one policy raises one type: publish and send must refuse an unknown agent "
-            f"identically. Got {type(publish_error.value).__name__} vs "
-            f"{type(send_error.value).__name__}"
+        shared_bases = sorted(
+            base.__name__
+            for base in set(type(publish_error.value).__mro__)
+            & set(type(send_error.value).__mro__)
+            if base.__module__ == SHARED_POLICY_MODULE
+        )
+        assert shared_bases, (
+            f"publish raised {type(publish_error.value).__name__} "
+            f"({type(publish_error.value).__module__}) and send raised "
+            f"{type(send_error.value).__name__} ({type(send_error.value).__module__}), and "
+            f"they share NO base class defined in {SHARED_POLICY_MODULE}. One policy, one "
+            f"catchable thing: a caller that wants 'this id names no agent' must be able to "
+            f"write ONE except clause. Subclasses are legal (the ruled shape); a base owned "
+            f"by either LEDGER is not — that is the coupling the shared module exists to "
+            f"prevent (§4.D4)"
         )
 
 
@@ -1266,6 +1588,109 @@ class TestSendRefusesBeforeTheWrite:
             await ledger.close()
 
 
+class TestTheSharedPolicyIsTheSOLEDecisionPoint:
+    """⛔ **THE PINS THAT KILL W-E** — *routing is not sharing* — **and W-A as well.**
+
+    The two sentinel mutations in :class:`TestTheUnknownAgentPolicyHasONEHome` /
+    :class:`TestSendRefusesBeforeTheWrite` replace the shared policy with a **RAISING**
+    stub, which proves only that the function is CALLED.  MEASURED (adversary §P1 W-E): a
+    build where ``agent_existence.reject_unknown_agents`` exists, both ledgers import and
+    call it, and it decides NOTHING (``return None``) — each ledger keeping a private copy
+    of the decision underneath — passed this contract 38/38 **and every neighbouring
+    suite**.  A caller that keeps working after the shared thing is changed is a private
+    copy wearing the shared name.
+
+    The mutation these legs run is SEMANTIC, and it is the only one that can tell the
+    difference: replace the shared policy with an **ACCEPT-EVERYTHING** stub and demand that
+    the unregistered id then reaches the **ENGINE**, i.e. surfaces as a
+    :class:`~loremaster.store.surreal.SurrealStoreError` from the ``ENFORCED`` rejection.
+
+    * a PRIVATE copy underneath still refuses -> not a ``SurrealStoreError`` -> RED (W-E)
+    * NOTHING refuses, at either layer -> no raise at all -> RED (W-A, and any build whose
+      guard never LANDED)
+
+    ⚠ These two legs deliberately observe BOTH layers, so unlike the rest of sections E–H
+    they ARE in the group-C mutation proof's declared-RED set — see the ``MUTATION_PROOF``
+    block at the foot of this file.
+
+    RED at `369db57`: neither module has the attribute, so ``monkeypatch.setattr(…,
+    raising=True)`` fails closed.
+    """
+
+    @staticmethod
+    async def _accept_everything(*_args: Any, **_kwargs: Any) -> None:
+        """The substituted policy: it looks at nothing and refuses nothing."""
+        return None
+
+    async def test_MUTATION_neutralising_the_shared_policy_lets_publish_reach_the_ENGINE(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        import loremaster.briefs
+
+        monkeypatch.setattr(
+            loremaster.briefs, SHARED_POLICY_ATTR, self._accept_everything, raising=True
+        )
+        ledger, _registered, _env = brief_ledger_with_a_real_agent
+        with pytest.raises(SurrealStoreError):
+            await ledger.publish(
+                _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=UNREGISTERED_AGENT_ID
+            )
+
+    async def test_MUTATION_neutralising_the_shared_policy_lets_send_reach_the_ENGINE(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """``send``'s half.  ``to`` has been ``ENFORCED`` since packet 03, so the engine
+        backstop this leg observes is already live — only the app layer is mutated.
+        """
+        import loremaster.messages
+
+        _brief_ledger, registered, env = brief_ledger_with_a_real_agent
+        monkeypatch.setattr(
+            loremaster.messages, SHARED_POLICY_ATTR, self._accept_everything, raising=True
+        )
+        ledger = await TestSendRefusesBeforeTheWrite._ledger(env)
+        try:
+            with pytest.raises(SurrealStoreError):
+                await ledger.send(
+                    sender=_Ref(registered, "fixer-b"),
+                    session="wave7",
+                    body="hello",
+                    grade="signal",
+                    recipients=[_Ref(UNREGISTERED_AGENT_ID, "ghost")],
+                )
+        finally:
+            await ledger.close()
+
+    async def test_POSITIVE_CONTROL_the_neutralised_policy_still_lets_a_REGISTERED_publish_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """The control both legs above need, and it is load-bearing twice over.
+
+        A build that raised ``SurrealStoreError`` for EVERY publish would satisfy them; so
+        would a run in which the substitution silently did not take.  Here the stub is
+        installed identically and a REGISTERED agent must still publish cleanly — which
+        proves the mutation is inert for legal input and that the reds above are caused by
+        the ID, not by the patch.
+        """
+        import loremaster.briefs
+
+        monkeypatch.setattr(
+            loremaster.briefs, SHARED_POLICY_ATTR, self._accept_everything, raising=True
+        )
+        ledger, registered, _env = brief_ledger_with_a_real_agent
+        result = await ledger.publish(
+            _BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER, agent_id=registered
+        )
+        assert result.brief.version == 1
+        assert await _briefed_edge_count(ledger) == 1
+
+
 # =========================================================================== #
 # MUTATION_PROOF — the DECLARED-RED set, written BEFORE the run (finding #196).
 #
@@ -1291,6 +1716,8 @@ class TestSendRefusesBeforeTheWrite:
 #   C="$F::TestTheEnforcedFlipMigratesADirtyStore"
 #   D="$F::TestTheUnEnforcingDoor"
 #   E="$F::TestTheBriefSliceIsOrderDependentOnTheAgentSlice"
+#   G="$F::TestTheLEDGERsOwnMigrationPathLandsTheGuard"
+#   H="$F::TestTheSharedPolicyIsTheSOLEDecisionPoint"
 #   OLD="_define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE, enforced=True)"
 #   NEW="_define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE)"
 #   ./scripts/mutation_proof.py \
@@ -1302,11 +1729,29 @@ class TestSendRefusesBeforeTheWrite:
 #     --expect-red "$C::test_the_guard_is_LIVE_after_applying_todays_ddl_to_a_DIRTY_store[briefed]" \
 #     --expect-red "$D::test_re_emitting_the_edge_WITHOUT_ENFORCED_silently_un_guards_it[briefed]" \
 #     --expect-red "$E::test_a_brief_slice_applied_WITHOUT_the_agent_slice_still_guards" \
+#     --expect-red "$G::test_ensure_ready_on_a_DIRTY_store_makes_the_guard_LIVE" \
+#     --expect-red "$H::test_MUTATION_neutralising_the_shared_policy_lets_publish_reach_the_ENGINE" \
 #     -- uv run pytest -q "$F"
 #
-# The app-check pins (E/F/G/H) are deliberately NOT in the set: they depend on the
-# app-level layer, not on the engine clause, and a build that reddened them under this
-# mutation would have coupled two layers that must stay independent.
+# ⚠ THE SET GREW BY TWO ON 2026-07-27, and the reason is a CORRECTION to the sentence that
+# used to stand here (*"the app-check pins are deliberately NOT in the set"*):
+#
+#   * ``$G`` is a MIGRATION pin, not an app-check pin — it drives ``ensure_ready`` and
+#     nothing else.  It belongs to group B/C and reddens with them.
+#   * ``$H``'s PUBLISH leg is the one place where a pin OBSERVES BOTH LAYERS ON PURPOSE: it
+#     neutralises the app policy precisely so the ENGINE's rejection is what it measures.
+#     Under this mutation nothing refuses at either layer, so it reddens — CORRECTLY.  Its
+#     SEND leg does not (``to``'s clause is untouched by this mutation), and neither does its
+#     positive control.
+#
+# Every OTHER app-check pin (sections E–H: the refusal, the naming, the counter row, the
+# RELATE sentinel, the second identity, the common-base pin) stays OUT of the set and must
+# stay GREEN under this mutation: they depend on the app-level layer, not on the engine
+# clause, and a build that reddened them here would have coupled two layers the contract
+# requires to stay independent.  The adversary RAN this proof on its reference build and the
+# six-pin version fired EXACTLY (6/6, no unexpected reds, no declared-green) with every
+# app-check pin staying independent — so a mismatch on the eight-pin version is a finding
+# about the BUILD, not a licence to edit this list.
 #
 # PROOF 2 — group E, ONE IMPLEMENTATION.  Already MECHANISED IN-SUITE rather than left to
 # a shell block: ``test_MUTATION_replacing_the_shared_policy_changes_BOTH_verbs`` and

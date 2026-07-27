@@ -236,11 +236,17 @@ async def _seed_agent_rows(env: SurrealEnv, agent_ids: Sequence[str]) -> None:
     (store reference §2).  ``UPSERT`` rather than ``CREATE`` so a caller may seed the
     same id twice without the second call raising.
 
-    THE ONE seeding implementation in this file.  Three call sites share it —
-    :func:`brief_ledger_factory`, ``TestCoverageQueryCountIsBounded._coverage_query_count``
-    and ``TestAckedVersionsForIdsQueryCountIsBounded._query_count`` — because they need
-    the same POLICY (what a registered agent row IS), and a policy with three copies is
-    a policy that will be fixed in one of them.
+    THE ONE seeding implementation in this file, and **every function here that builds a
+    real :class:`~loremaster.briefs.BriefLedger` calls it** — because they need the same
+    POLICY (what a registered agent row IS), and a policy with N copies is a policy that
+    will be fixed in one of them.
+
+    ⚠ How many call sites: :data:`_REAL_LEDGER_BUILDER_FLOOR`, and the set itself is a
+    CHECKED VARIABLE — ``TestEveryRealLedgerSiteSeedsItsAgentRows`` AST-enumerates them and
+    reddens on a site that does not seed.  This docstring named THREE of them until
+    2026-07-27, when there were six (adversary §RESIDUALS R6): a hand-list beside a derived
+    gate is a list that goes stale silently, so the names are gone and the gate is the
+    address.
     """
     connection = await connect_admin(env)
     try:
@@ -293,10 +299,17 @@ async def brief_ledger_factory(request: pytest.FixtureRequest) -> AsyncIterator[
     the pytest-asyncio 1.4 ``Runner``-reentrancy rationale for NOT depending
     on ``surreal_env``).
 
-    The REAL branch seeds :data:`_SEEDED_AGENT_IDS` as live ``agent`` rows before any
-    ledger is built (see the block above this fixture for why).  The FAKE branch needs
-    nothing: ``FakeBriefLedger`` is an independent in-memory implementation with no
-    ``agent`` table and no endpoint validation to satisfy.
+    BOTH branches seed :data:`_SEEDED_AGENT_IDS` as ``agent`` rows before any ledger is
+    built — the REAL branch through the production emitter (see the block above this
+    fixture for why), the FAKE branch through ``FakeBriefLedger.register_agent``.
+
+    ⚠ The fake branch's seeding is NEW (packet 04a / MP-7, 2026-07-27) and this docstring
+    used to say the opposite: *"the FAKE branch needs nothing: FakeBriefLedger … has no
+    agent table and no endpoint validation to satisfy."*  That WAS true and it is exactly
+    what made the ``[fake]`` half of this file decoration for the property 04a is about —
+    every ``[fake]`` id could publish and ack in the name of an agent that does not exist,
+    forever, with the whole suite green.  A double that cannot fail the way production
+    fails is not standing in for production.
     """
     created: list[BriefLedger] = []
 
@@ -318,7 +331,9 @@ async def brief_ledger_factory(request: pytest.FixtureRequest) -> AsyncIterator[
             created.append(ledger)
             return ledger
     else:
-        shared_db = FakeBriefDatabase()
+        shared_db = FakeBriefDatabase(
+            agents={agent_id: agent_id for agent_id in _SEEDED_AGENT_IDS}
+        )
 
         async def make() -> BriefLedger:
             fake_ledger = FakeBriefLedger(db=shared_db)
@@ -1945,12 +1960,19 @@ class TestSubscribedNameSkewQueryPlans:
 # ===========================================================================
 # packet 04a / D1 — THE SEEDING'S OWN COVERAGE GATE.
 #
-# The seeding above has FIVE call sites, and deriving them (rather than typing a
-# list) is what found the last four: the factory alone was insufficient because
-# four helpers build their OWN ``BriefLedger`` on their OWN env. Five hand-placed
-# calls are five forgettable obligations, and the sixth site — written months from
+# The seeding above has SIX call sites, and deriving them (rather than typing a
+# list) is what found the last five: the factory alone was insufficient because
+# five helpers build their OWN ``BriefLedger`` on their OWN env. Six hand-placed
+# calls are six forgettable obligations, and the SEVENTH site — written months from
 # now by someone who never read this comment — is the one that reddens mysteriously
 # the day ``briefed`` is ENFORCED.
+#
+# ⚠ The three sentences above said FIVE/four/sixth until 2026-07-27, while the
+# commit message, the pin's own failure text and the file itself said six
+# (adversary §RESIDUALS R6). A count restated beside the thing it counts is a
+# count that drifts — which is this repo's most-repeated defect class, committed
+# here inside the fix for it. Re-derive: ``grep -c '_seed_agent_rows(' `` minus its
+# definition, or read _REAL_LEDGER_BUILDER_FLOOR below.
 #
 # So COVERAGE IS A CHECKED VARIABLE, not a hope (repo CLAUDE.md: enumerate every
 # call site and assert each was observed). The pin below AST-enumerates every
@@ -1958,6 +1980,18 @@ class TestSubscribedNameSkewQueryPlans:
 # also seeds. It is a deny-by-default sweep over the file's own source, so it cannot
 # be defeated by a site nobody told it about — which is the whole point.
 # ===========================================================================
+
+#: The number of real-``BriefLedger`` builders in this file, DERIVED at the packet-04a D1
+#: edit (2026-07-26, `dfb5cd0`) and re-derived 2026-07-27.  It is the sweep's FLOOR: a
+#: shrunken sweep reads exactly like full coverage, so a site that silently stops being
+#: found must FAIL rather than pass.
+#:
+#: ⚠ It was ``5`` while the assertion's own message said *"there were SIX"* (adversary
+#: §RESIDUALS R4) — so one builder site could be DELETED with the gate green, which is the
+#: precise failure the floor exists to prevent. A failure message that promises a check the
+#: assertion does not perform is a FALSE GATE; the number and the prose now come from ONE
+#: place. Lowering it is legal and must be DELIBERATE.
+_REAL_LEDGER_BUILDER_FLOOR = 6
 
 
 class TestEveryRealLedgerSiteSeedsItsAgentRows:
@@ -2021,10 +2055,11 @@ class TestEveryRealLedgerSiteSeedsItsAgentRows:
 
     def test_every_function_that_builds_a_real_BriefLedger_also_seeds_agent_rows(self) -> None:
         builders = self._real_ledger_builders()
-        assert len(builders) >= 5, (
-            f"the sweep found only {len(builders)} real-ledger builders; there were SIX at "
-            f"the packet-04a D1 edit. A shrunken sweep reads exactly like full coverage — "
-            f"if sites were genuinely removed, lower this floor deliberately"
+        assert len(builders) >= _REAL_LEDGER_BUILDER_FLOOR, (
+            f"the sweep found only {len(builders)} real-ledger builders; there were "
+            f"{_REAL_LEDGER_BUILDER_FLOOR} at the packet-04a D1 edit. A shrunken sweep reads "
+            f"exactly like full coverage — if sites were genuinely removed, lower this floor "
+            f"deliberately"
         )
         unseeded = sorted(name for name, called in builders.items() if "_seed_agent_rows" not in called)
         assert unseeded == [], (
@@ -2053,4 +2088,89 @@ class TestEveryRealLedgerSiteSeedsItsAgentRows:
             f"these agent-id constants are not seeded: {sorted(declared - set(_SEEDED_AGENT_IDS))}. "
             f"Add them to _SEEDED_AGENT_IDS — after packet 04a's ENFORCED flip an unseeded id "
             f"makes every test using it fail for a fixture reason, not a contract one"
+        )
+
+
+#: An agent id that is seeded NOWHERE — not in :data:`_SEEDED_AGENT_IDS`, not as a real
+#: row.  Deliberately NOT named ``AGENT_*_ID``: the constant sweep above would then demand
+#: it be seeded, which is the one thing it must never be.
+_UNSEEDED_AGENT_ID = "unseeded-agent-e3f0a1c2-never-registered"
+
+
+class TestTheFakeLedgerSharesTheUnknownAgentPolicy:
+    """**MP-7 (packet 04a, 2026-07-27).** The ``[fake]`` half of this file must fail the way
+    production fails on the ONE property this packet is about.
+
+    Before 04a, ``FakeBriefLedger`` modelled no ``agent`` table at all: ``publish(agent_id=
+    <anything>)`` always succeeded.  Every pin in this file that runs on both backends
+    therefore certified the unknown-agent property on the real one only — and the ~90
+    ``brief_publish`` tool-seam sites in ``test_comms_tool.py`` run on the fake EXCLUSIVELY.
+    A double that cannot fail the way production fails is decoration for exactly the
+    property it stands in for (adversary §P5).
+
+    Both legs below are parametrised over BOTH backends by :func:`brief_ledger`, so parity
+    is structural: one test body, two implementations, the same demanded outcome.
+
+    RED at `369db57` on `[real]` (nothing refuses yet) and on `[fake]` (the shared error
+    base does not exist yet, so the fake's derivation fails closed).
+    """
+
+    async def test_an_UNSEEDED_agent_id_is_REFUSED_by_this_backend(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the TYPE is 04a's contract
+            await brief_ledger.publish(
+                BRIEF_NAME_PROJECT, "the standing law", created_by="lead",
+                agent_id=_UNSEEDED_AGENT_ID,
+            )
+        assert _UNSEEDED_AGENT_ID in str(caught.value), (
+            f"the refusal must NAME the offending agent id: {str(caught.value)!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_a_SEEDED_agent_id_still_publishes_and_self_acks(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """Without this, the leg above passes on a backend that refuses EVERY publish."""
+        result = await brief_ledger.publish(
+            BRIEF_NAME_PROJECT, "the standing law", created_by="lead",
+            agent_id=AGENT_FIXER_B_ID,
+        )
+        assert result.brief.version == 1
+        assert await brief_ledger.acked_version(
+            agent_id=AGENT_FIXER_B_ID, name=BRIEF_NAME_PROJECT
+        ) == 1
+
+    async def test_agent_id_None_is_still_ACCEPTED_by_this_backend(
+        self, brief_ledger: BriefLedger
+    ) -> None:
+        """The third input class, forced on BOTH backends: ``None`` means "no agent row in
+        play" and must stay a legal, edge-free publish.  A fake that refused it would be
+        the quantifier law violated in the other direction.
+        """
+        result = await brief_ledger.publish(
+            BRIEF_NAME_PROJECT, "the standing law", created_by="lead"
+        )
+        assert result.brief.version == 1
+
+    async def test_the_UNMODELLED_agent_table_is_a_DECLARED_BOUND(self) -> None:
+        """⚠ A KNOWN BOUND (packet 04a / MP-7), pinned so it is met DELIBERATELY.
+
+        ``FakeBriefLedger`` refuses an unknown id only when its ``agent`` table is MODELLED
+        (non-empty).  An empty table means *"this suite does not model agents"* and accepts
+        everything — which is what keeps ~55 ``brief_publish`` tool-seam sites in
+        ``test_comms_tool.py``, and three in ``test_comms_render_architecture.py`` (a file
+        04a may not edit), from reddening for a fixture reason.
+
+        **If you closed this hole deliberately — the tool-seam harness now seeds the fake's
+        agent table wholesale — DELETE this pin and say so in your report.**  Do not "fix"
+        it by re-widening the fake.
+        """
+        unmodelled = FakeBriefLedger(db=FakeBriefDatabase())
+        result = await unmodelled.publish(
+            BRIEF_NAME_PROJECT, "the standing law", created_by="lead",
+            agent_id=_UNSEEDED_AGENT_ID,
+        )
+        assert result.brief.version == 1, (
+            "an UNMODELLED agent table must accept any id — see this test's docstring "
+            "before changing either side"
         )

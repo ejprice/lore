@@ -3870,11 +3870,57 @@ class _AckConnection:
     misattribute the failure to and re-raises for the WRONG reason); a value means a
     racer's edge is sitting there, and an unguarded handler will report the dropped ack as
     that racer's successful re-ack.
+
+    ⚠ **WIDENED 2026-07-27 (packet 04a, lead ruling on adversary §C-DEF-2) — and widened
+    HONESTLY, which is the only interesting part.**  04a's contract requires ``ack`` to
+    refuse an UNREGISTERED agent before it writes, which necessarily adds an
+    agent-existence READ to the ack path.  A closed-set fake that cannot model a new
+    reality is a STALE fake: all five pins riding this double failed with *"the ack path
+    issued a statement this fake does not serve: 'SELECT id FROM $agent_ids'"* — a red that
+    says nothing about the retry law they exist to guard.
+
+    So this fake now models the ``agent`` TABLE, exactly as the real store behaves: a
+    direct-record-access read returns ONLY the ids that exist (``_reject_unknown_recipients``'
+    docstring, [PROBED 2026-07-23 on spike-surreal 3.2.1]), so a policy asking about
+    :data:`_ACK_AGENT_ID` — which :func:`_ack_through` acks as — gets it back and proceeds
+    to the RELATE.  Two properties are deliberately preserved:
+
+    * **DENY BY DEFAULT.** Only a ``SELECT`` whose PARAMS bind ``agent`` RecordIDs is
+      served; every other unserved statement still fails loudly.  The fake is not widened
+      to "anything goes", and it is not keyed on one policy's exact SQL TEXT either —
+      keying on a literal is the instrument lesson this repo has already lost six times.
+    * **IT CAN STILL FAIL FOR ITS OWN REASONS.**  Proven, not asserted: after the widening
+      the pins riding this fake were re-run under the mutation they were written for (drop
+      ``_relate_briefed``'s ``except TxnContentionExhaustedError`` guard) and went RED —
+      receipts in ``REPORT-contract-04a-enforced-3.md`` §3.  *A fake widened until nothing
+      fails is worse than a red gate.*
+
+    ``registered_agent_ids`` is what the modelled ``agent`` table CONTAINS; a test that
+    wants the acking identity to be absent passes an empty set.
     """
 
     relate_error: BaseException
     existing_edge_via: str | None
+    registered_agent_ids: frozenset[str] = frozenset({_ACK_AGENT_ID})
     relate_calls: int = field(default=0, init=False)
+    agent_existence_reads: int = field(default=0, init=False)
+
+    @staticmethod
+    def _agent_ids_in(params: dict[str, Any] | None) -> list[str]:
+        """Every ``agent``-table RecordID bound into ``params``, in order.
+
+        Shape-keyed, never text-keyed: an existence check is *a read whose parameters name
+        agent rows*, whatever SurrealQL the shared policy spells it in.
+        """
+        found: list[str] = []
+        for value in (params or {}).values():
+            candidates = value if isinstance(value, (list, tuple)) else [value]
+            found.extend(
+                str(candidate.id)
+                for candidate in candidates
+                if isinstance(candidate, RecordID) and candidate.table_name == AGENT_TABLE
+            )
+        return found
 
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         if statement.startswith("RELATE"):
@@ -3894,6 +3940,21 @@ class _AckConnection:
             if self.existing_edge_via is None:
                 return []
             return [{"via": self.existing_edge_via, "in": RecordID(AGENT_TABLE, _ACK_AGENT_ID)}]
+        # ⚠ ORDER MATTERS and is not decoration: ``_select_briefed_edge``'s SELECT also
+        # binds an ``agent`` RecordID, so its own branch above must be tried FIRST. A
+        # reordering is caught — ``test_a_UNIQUE_violation_still_reports_the_honest_
+        # idempotent_re_ack`` would then read ``via`` off a row that carries only ``id``.
+        requested_agent_ids = self._agent_ids_in(params)
+        if statement.startswith("SELECT") and requested_agent_ids:
+            # The agent-existence read 04a adds ahead of the RELATE. A non-existent
+            # RecordID is silently DROPPED by the engine, so the caller derives the
+            # missing set as requested − returned; this returns only what EXISTS.
+            self.agent_existence_reads += 1
+            return [
+                {"id": RecordID(AGENT_TABLE, agent_id)}
+                for agent_id in requested_agent_ids
+                if agent_id in self.registered_agent_ids
+            ]
         raise AssertionError(
             f"the ack path issued a statement this fake does not serve: {statement!r}"
         )
