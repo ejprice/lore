@@ -171,6 +171,22 @@ ALTER was "in-place schema migration instead of drop+recreate". That was wrong a
 existing rows. Everything below is **[MEASURED]** (REPORT-c1f-contract-migration §4, live 3.1.5).
 The vendor documents no retro-validation **because there is none**.
 
+> **[RE-MEASURED 2026-07-26 on 3.2.1 — §1.4 CONFIRMED, with a second address, because the first one
+> does not resolve.]** `REPORT-c1f-contract-migration.md` is cited here and in §8 and is **tracked
+> nowhere in this repo** (`git ls-files` → empty) — #152/#153's dangling-address class, sitting under
+> the load-bearing claim that answers #107. The claim is NOT in doubt; its receipt was unreachable.
+> **Resolvable receipt:**
+> `docs/plans/v2/receipts/2026-07-26-packet11i-build/REPORT-fixwave-11ia-1.md` **§2.2** — a three-leg
+> isolated probe (`int DEFAULT 0` · bare `string` · `string DEFAULT 'x'`, each added alone to a table
+> already holding a row) in which **all three REJECT** an unrelated `UPDATE` with
+> `Expected <type> but found NONE`. **A `DEFAULT` does not rescue an existing row**, exactly as this
+> section says.
+> ⚠ **And the trap that probe fell into first, which is the reusable part:** its initial fixture
+> created the "legacy" row *after* the full DDL was applied, so `DEFAULT 0` filled it at CREATE and
+> the UPDATE passed trivially — appearing to REFUTE this section. **A fixture that writes its legacy
+> row after the migration cannot see this hazard at all.** Write the row under the OLD DDL, then
+> migrate, or you will measure nothing and believe §1.4 is wrong.
+
 | Change applied to a table WITH ROWS | The DDL | Existing rows | New writes | UPDATE of an old row |
 |---|---|---|---|---|
 | **Widen** an ASSERT | applies | intact, still writable | new value accepted; junk still rejected | fine |
@@ -832,7 +848,10 @@ issues #7061 #7310 #5014 #5070 · CVE-2026-49997.
 **Ours** — findings **#93** (txn root-cause selection, resolved @ 93a9aab) · **#102** (hot-row mint
 retry budget, open) · **#105** (dangling RELATE edges, open) · **#107** (the schema could not evolve
 — the outage) · `REPORT-c1f-docs-surreal.md` (vendor citations + the ALTER probes) ·
-`REPORT-c1f-contract-migration.md` §4 (the measured OVERWRITE matrix) · memories
+`REPORT-c1f-contract-migration.md` §4 (the measured OVERWRITE matrix — ⚠ **this address does NOT
+resolve**; it is tracked nowhere in this repo. The §1.4 claim it backs is re-measured on 3.2.1 at
+`docs/plans/v2/receipts/2026-07-26-packet11i-build/REPORT-fixwave-11ia-1.md` §2.2, which IS tracked;
+see the boxed note in §1.4) · memories
 `surreal-31-docs-audit-adjustments`, `read-the-docs-then-verify-them`,
 `surreal-error-classifier-latent-edges`, `surreal-stores-systemd-managed` · live probes on
 spike-surreal 3.1.5 (throwaway DBs; production `:18500` never touched).
