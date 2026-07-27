@@ -172,6 +172,21 @@ ASSIGNMENT_LABEL_SAMPLES: list[tuple[str, str]] = [
     ("secret", "secret"),
     ("password", "password"),
     ("authorization", "authorization"),
+    # ⚠ **RULING R37 — THE SEVEN ABOVE ARE ALL BARE WORDS, AND THAT WAS THE DEFECT.**
+    # The "∀ label" pin ranged over a set that **structurally could not contain an
+    # underscore compound**, so it could never reach the case its own name claims.
+    # ``_ASSIGNMENT_RE`` anchors on ``\b``, and ``_`` is a WORD character — so
+    # ``\bpassword\b`` never matches inside ``db_password``. Measured at 640b31b:
+    # ``client_secret``, ``session_token``, ``db_password`` and **``SURREAL_PASS``**
+    # all leaked; ``client-secret`` scrubbed.
+    #
+    # ``SURREAL_PASS`` is deliberately in this list: it is **our own env var name**,
+    # so the pin is anchored to a real leak in this repo's own logs rather than to
+    # an invented shape.
+    ("client_secret compound", "client_secret"),
+    ("session_token compound", "session_token"),
+    ("db_password compound", "db_password"),
+    ("SURREAL_PASS (ours)", "SURREAL_PASS"),
 ]
 
 # The separators ``_ASSIGNMENT_RE`` accepts between label and value.
@@ -367,7 +382,16 @@ class TestASecretStrCredentialNeverReachesARenderedLogLine:
         )
         assert SURREAL_ROOT_PASSWORD not in output
         assert VOYAGE_STYLE_KEY not in output
-        assert output.count(SECRET_MASK) >= 2, "both credentials must be masked, not just one"
+        # ⚠ The PROPERTY is "both credentials were neutralised, not dropped". This
+        # asserted the SecretStr mask specifically, which encoded a mechanism that
+        # then changed: once R38/R39 made the structured form redact, the masked
+        # ``**********`` is itself replaced by ``***REDACTED***``, so counting the
+        # mask went to zero while the property held perfectly. Assert the property
+        # — either sentinel, twice — not the spelling of one mechanism.
+        neutralised = output.count(SECRET_MASK) + output.count(REDACTED)
+        assert neutralised >= 2, (
+            f"both credentials must be masked or redacted, not dropped: {output}"
+        )
 
     def test_the_low_entropy_password_proves_the_type_not_a_leftover_heuristic(self) -> None:
         # DISCRIMINATOR, stated as its own pin because it is the one this module
@@ -462,6 +486,18 @@ class TestTheLabelledPatternsSurviveTheDeletion:
             f"the {scheme} credential LEAKED. _ASSIGNMENT_RE consumes the scheme word as if it "
             f"were the value, leaving the real credential untouched: {scrubbed!r}"
         )
+        # ⚠ **RULING R39 — THE QUOTED FORM, and the pin above could not reach it.**
+        # This pin is receiver-blind about the SCHEME and was still defeated — not
+        # by a scheme it did not know, but by a **QUOTE**. ``{'Authorization':
+        # 'Basic <v>'}`` leaked while the bare header form scrubbed, because the
+        # header pattern anchors on ``authorization\s*[=:]`` and a mapping repr puts
+        # a quote between them. Same surface as #235/R8/R16; a form none of their
+        # fixtures rendered.
+        quoted = _scrub_text(f"{{'Authorization': '{scheme} {credential}'}}")
+        assert credential not in quoted, (
+            f"the {scheme} credential LEAKED from the QUOTED header form. A mapping repr is how "
+            f"an httpx error actually renders headers: {quoted!r}"
+        )
         assert scrubbed == f"Authorization: {scheme} {REDACTED}", (
             f"R8's rule is that the SCHEME survives and the credential does not: {scrubbed!r}"
         )
@@ -499,6 +535,28 @@ class TestTheLabelledPatternsSurviveTheDeletion:
             "this — the set of auth schemes is open. Redact whatever follows the leading "
             "scheme word, whatever that word is."
         )
+
+    def test_every_allowlisted_scheme_takes_a_SINGLE_TOKEN_value(self) -> None:
+        # ⚠ **RULING R33 — the pin that stops the next engineer inheriting a leak
+        # we CAUSED.** ``Digest`` was allowlisted as a preservable scheme, but its
+        # value is a **comma-separated auth-param list**
+        # (``username="u", realm="r", response="<hash>"``), so preserving the
+        # scheme and redacting one whitespace-delimited token destroys the username
+        # and LOGS THE RESPONSE HASH. It is being removed from the production list.
+        #
+        # This pin is the general form: a scheme may only be allowlisted for
+        # scheme-preservation if its credential is ONE token. ``Negotiate`` and
+        # ``HOBA`` are the next candidates and each would have to pass this.
+        from loremaster import logging_setup
+
+        multi_token = 'username="alice", realm="lore", response="deadbeefcafef00d1234"'
+        for scheme in re.split(r"\|", logging_setup._KNOWN_SCHEMES):
+            scrubbed = _scrub_text(f"Authorization: {scheme} {multi_token}")
+            assert "deadbeefcafef00d1234" not in scrubbed, (
+                f"scheme {scheme!r} is allowlisted for scheme-preservation, but its credential "
+                f"is not a single token — the tail survives redaction: {scrubbed!r}. Only "
+                "single-token schemes may be preserved; the rest must redact the whole value."
+            )
 
     def test_an_authorization_header_with_no_scheme_is_still_redacted(self) -> None:
         # The other direction, so the R8 fix cannot be "never redact after
@@ -1551,65 +1609,24 @@ class TestNoProductionObjectRetainsAnUnwrappedCredential:
         assert ANTHROPIC_STYLE_KEY not in scrubbed
         assert scrubbed == f"x-api-key: {REDACTED}"
 
-    @pytest.mark.parametrize(
-        "label,rendered",
-        [
-            ("httpx Headers repr", "Headers({'x-api-key': '%s'})"),
-            ("plain dict repr", "{'x-api-key': '%s'}"),
-            ("json body", '{"x-api-key": "%s"}'),
-        ],
-        ids=["httpx-headers-repr", "dict-repr", "json-body"],
-    )
-    def test_the_STRUCTURED_x_api_key_form_remains_a_KNOWN_BOUND(
-        self, label: str, rendered: str
-    ) -> None:
-        # ⚠ **THE BOUND, WITH ITS RATIONALE CORRECTED TWICE — read this before
-        # "fixing" anything here.**
-        #
-        # R10's original rationale said the source fix *"removes the only object in
-        # the tree that held a labelled credential as a bare `str`"*. **That was
-        # FALSE** (ruling R20 part 1): after R10 the credential lives in an
-        # ``httpx.Headers`` map, and httpx obfuscates **only** ``authorization`` and
-        # ``proxy-authorization``. Re-derived here, httpx 0.28.1, reading
-        # ``Headers.__repr__`` -> ``_obfuscate_sensitive_headers`` -> the
-        # ``SENSITIVE_HEADERS`` set, then measuring:
-        #     Headers({'x-api-key': 'sk-ant-SECRETVALUE',
-        #              'authorization': '[secure]', 'proxy-authorization': '[secure]'})
-        # R10 cited ``tei.py`` as precedent; **that precedent does not transfer**,
-        # because ``tei.py`` authenticates with ``Authorization: Bearer`` and this
-        # counter with ``x-api-key``.
-        #
-        # ⚠ **AND R20's OWN part-2 rationale is ALSO false, measured here.** It says
-        # *"a rendered ``Headers`` repr WOULD be scrubbed"*. It would not: in every
-        # repr form there is a **QUOTE between the label and the colon**, and
-        # ``_ASSIGNMENT_RE`` requires ``\s*[=:]\s*`` IMMEDIATELY after the label.
-        # Measured with the labelled patterns alone (catch-all removed):
-        #     x-api-key: <k>                  -> REDACTED      (the line form; pinned above)
-        #     Headers({'x-api-key': '<k>'})   -> LEAKS
-        #     {'x-api-key': '<k>'}            -> LEAKS
-        #     {"x-api-key": "<k>"}            -> LEAKS
-        # This is the SAME structural fact the adversary established in MP1; the
-        # ruling contradicts its own earlier finding. So the structured form is a
-        # BOUND, not coverage, and it is pinned as one rather than assumed away.
-        #
-        # **WHY IT IS ACCEPTABLE:** R19's shape B means no client and no instance
-        # retains the credential, so the repr forms above are not produced by any
-        # lore code path — they would have to come from an httpx exception carrying
-        # a live request. R10 declined the redactor fix deliberately: pattern-matching
-        # arbitrary text is the practice packet 42 exists to end.
-        #
-        # **RE-OPEN TRIGGER (measured, from the adversary):** the day a lore client
-        # authenticates with a header httpx does not obfuscate — which is **TODAY**,
-        # for ``x-api-key``. So the standing instruction is narrower and sharper:
-        # **if an httpx error carrying request headers is ever logged on the
-        # Anthropic path, this bound becomes a live leak** — fix it at the SOURCE
-        # (stop rendering request headers), never by widening the pattern.
-        text = rendered % ANTHROPIC_STYLE_KEY
-        assert ANTHROPIC_STYLE_KEY in _scrub_text(text), (
-            f"the redactor now catches the {label}. If you did this DELIBERATELY, delete this "
-            "pin and say so — but R10 declined exactly this fix. Check you have not widened "
-            "a pattern back toward matching arbitrary text."
-        )
+    # ---------------------------------------------------------------- #
+    # RETIRED — ``test_the_STRUCTURED_x_api_key_form_remains_a_KNOWN_BOUND``
+    # ---------------------------------------------------------------- #
+    # It pinned three shapes as LEAKING: ``Headers({'x-api-key': …})``, a plain
+    # dict repr, and a JSON body. **Rulings R38/R39 closed all three**, and the
+    # production fix is landed — measured 2026-07-27, all three now redact.
+    #
+    # So the BOUND DISSOLVED, and per CLAUDE.md a pin outlives its hole only as a
+    # lie (A16's lesson, the second time this packet has applied it). The pin is
+    # DELETED WITH THIS NOTE rather than left green or weakened.
+    #
+    # ⚠ What was accepted with it is also gone: the old rationale said the
+    # structured form was tolerable because *"no lore code path produces it"*.
+    # R40 measured that false — httpx retains the unwrapped ``x-api-key`` on every
+    # Request and ``Headers.__repr__`` renders it — which is precisely why the
+    # bound had to close rather than be re-argued. The surviving coverage is
+    # pinned positively by ``test_the_x_api_key_HEADER_LINE_form_is_covered_by_a_kept_pattern``
+    # above and by the container pins in ``TestScrubValueRecursesIntoContainers``.
 
 
 def _auth_holder_classes() -> list[tuple[str, type]]:
@@ -1883,4 +1900,116 @@ class TestTheSyncCounterTwinIsAuthenticatedToo:
         assert len(seen) == 2, f"expected one request per model, saw {seen}"
         assert all(header == ANTHROPIC_STYLE_KEY for header in seen), (
             f"a per-model counter did not authenticate: {seen}"
+        )
+
+
+class TestScrubValueRecursesIntoContainers:
+    """**RULING R11 (MP2) — RESTORED, and its absence is the finding.**
+
+    ⚠ **THIS CLASS WAS MUTATION-PROVEN IN CONTRACT REVISION 3 AND NEVER REACHED A
+    COMMIT.** It caught the adversary's ``W-COSMETIC`` build — ``_scrub_value``
+    replaced by ``return value``, which had scored **204 passed / 0 failed** — and
+    took it to 8 failed. It is absent from `9ab5888`, the first commit of this
+    contract, and from every commit since. Most likely a slice-based edit in a
+    later revision swallowed it; whatever the cause, **R11's blocker has been
+    unprotected ever since, and no gate could tell, because a test that does not
+    exist does not fail.**
+
+    Found by the fixture-reach interrogation, not by a grep for regressions —
+    which is its own lesson: I went looking for cases my fixtures could not
+    construct and found a whole class that no longer existed.
+
+    **Why the existing carriers cannot substitute** (the adversary's analysis,
+    which is what makes this class necessary rather than nice): the
+    ``extra-nested`` carrier runs two legs, and **both are non-discriminating
+    here**. Its ``SecretStr`` leg is masked by the TYPE whatever ``_scrub_value``
+    does; its bare-``str`` leg is an ACCEPTED BOUND asserted to leak, so breaking
+    the recursion makes that assertion *more* true. The discriminating leg is a
+    **LABELLED bare ``str``** — not masked by a type, not an accepted bound.
+    """
+
+    LABELLED = f"Authorization: Bearer {VOYAGE_STYLE_KEY}"
+
+    @pytest.mark.parametrize(
+        "container", ["dict", "list", "tuple", "dict-in-list", "list-in-dict"]
+    )
+    def test_every_container_shape_recurses(self, container: str) -> None:
+        # ∀ container kind, forced individually — a build that kept the dict arm
+        # and dropped the list arm passes a dict-only pin.
+        payload: object = {
+            "dict": {"h": self.LABELLED},
+            "list": [self.LABELLED],
+            "tuple": (self.LABELLED,),
+            "dict-in-list": [{"h": self.LABELLED}],
+            "list-in-dict": {"hs": [self.LABELLED]},
+        }[container]
+        assert VOYAGE_STYLE_KEY not in repr(_scrub_value(payload)), (
+            "_scrub_value stopped recursing into containers. A19 is 'preserved — call sites "
+            "unchanged'; the recursion IS the call site."
+        )
+
+    def test_a_tuple_stays_a_tuple(self) -> None:
+        # The recursion must preserve the container TYPE, or a downstream consumer
+        # that indexes or serialises it changes shape.
+        assert isinstance(_scrub_value(("a", self.LABELLED)), tuple)
+
+    @pytest.mark.parametrize("fmt", FORMATS)
+    def test_it_holds_end_to_end_through_the_production_sink(self, fmt: str) -> None:
+        output = emit_through_configured_logger(
+            fmt,
+            lambda logger: logger.error(
+                "store.connect.failed", extra={"attempts": [{"hdr": self.LABELLED}]}
+            ),
+            child=f"mp2.{fmt}",
+        )
+        assert output.strip(), "nothing was emitted — this pin is vacuous"
+        assert VOYAGE_STYLE_KEY not in output
+        assert REDACTED in output, "the value was dropped rather than scrubbed"
+
+    @pytest.mark.parametrize(
+        "label", ["api_key", "password", "token", "secret", "authorization"]
+    )
+    def test_a_labelled_credential_AS_A_DICT_VALUE_is_scrubbed(self, label: str) -> None:
+        # ⚠ **RULING R38 — THE SHARPEST FIXTURE GAP IN THIS PACKET.** This class's
+        # prose claims it catches *"a labelled bearer token out of an ``extra=``
+        # map"*. It could not: the 7 ``TEXT_CARRIERS`` are unlabelled BY
+        # CONSTRUCTION, and every labelled pin drove a FLAT STRING — so no fixture
+        # anywhere put a labelled credential inside a CONTAINER. The class proved
+        # ROUTING (that recursion happens), never REDACTION of the shape it names.
+        #
+        # ``{'api_key': '<v>'}`` leaked while 388 tests passed. The discriminating
+        # fixture is the label as the KEY and the credential as the VALUE, because
+        # ``_scrub_value`` scrubs keys and values INDEPENDENTLY — so the label never
+        # adjoins the value and ``_ASSIGNMENT_RE`` structurally cannot fire.
+        scrubbed = _scrub_value({label: VOYAGE_STYLE_KEY})
+        assert VOYAGE_STYLE_KEY not in repr(scrubbed), (
+            f"a credential under the key {label!r} survived. The KEY is the label; scrubbing "
+            f"the value in isolation can never see it: {scrubbed!r}"
+        )
+
+    def test_a_credential_used_as_a_dict_KEY_is_scrubbed(self) -> None:
+        # ⚠ **THE TWELFTH, found by the fixture-reach interrogation rather than by
+        # an audit.** ``_scrub_value``'s dict arm is
+        # ``{key: _scrub_value(inner) for key, inner in value.items()}`` — it
+        # recurses into VALUES and passes every KEY through untouched. No pin in
+        # this packet could construct that shape: every container fixture put the
+        # credential in the value position.
+        #
+        # A real shape, not an invented one: a reverse lookup ``{token: identity}``
+        # or per-token telemetry ``{token: count}`` renders the credential as a key
+        # in any ``extra=`` map or repr.
+        scrubbed = _scrub_value({f"api_key={VOYAGE_STYLE_KEY}": 3})
+        assert VOYAGE_STYLE_KEY not in repr(scrubbed), (
+            "a credential in the KEY position survived — _scrub_value recurses into values "
+            f"and copies keys through: {scrubbed!r}"
+        )
+
+    def test_a_labelled_credential_in_a_MULTI_LINE_render_is_scrubbed(self) -> None:
+        # The other reach gap the interrogation surfaced: every labelled fixture in
+        # this packet is a SINGLE LINE. A pretty-printed JSON body — what an httpx
+        # error actually carries — separates label from value with a QUOTE and
+        # spreads the object over several lines. Neither half was ever rendered.
+        body = f'{{\n  "model": "voyage-4",\n  "api_key": "{VOYAGE_STYLE_KEY}"\n}}'
+        assert VOYAGE_STYLE_KEY not in _scrub_text(body), (
+            f"a credential in a pretty-printed JSON body survived: {_scrub_text(body)!r}"
         )

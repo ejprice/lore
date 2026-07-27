@@ -807,6 +807,16 @@ _INCOMING_AUTH_MODULE = "loremaster/auth.py"
 # ``_loremaster_python()``, the stdlib-only boundary is gone and they join the seam.
 _STDLIB_ONLY_EXEMPT_ROOT = "skills/lore-deploy/scripts/"
 
+# ⚠ **RULING C1 — THIS WAS A FILENAME SUFFIX, AND THE INSTRUMENT LESSON AT ITS Nth
+# ADDRESS.** The exemption for R26 constraint 2 (incoming auth is out of scope) was
+# ``display.endswith("auth.py")``. Measured: ``oauth.py``, ``xauth.py``,
+# ``jwt_auth.py`` and ``reauth.py`` are ALL exempt under that test, and the Phase-7
+# reviewer walked a byte-identical offender through as ``oauth.py``.
+#
+# An EXACT PATH, because the safe set here is exactly one file — the one module
+# that verifies an INCOMING client token. A suffix is a pattern; a path is a fact.
+_INCOMING_AUTH_EXEMPT = "loremaster/auth.py"
+
 
 def _auth_construction_offenders() -> list[str]:
     """Auth-header construction outside a seam — the v3 gate, both halves.
@@ -826,7 +836,7 @@ def _auth_construction_offenders() -> list[str]:
     """
     offenders: list[str] = []
     for display, source_path in _python_sources():
-        if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display.endswith("auth.py"):
+        if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display == _INCOMING_AUTH_EXEMPT:
             continue  # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth
         tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         enclosing: dict[int, str] = {}

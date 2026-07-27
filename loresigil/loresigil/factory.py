@@ -1,8 +1,15 @@
 """Backend-selecting factory: ``make_embedder(config) -> Embedder``.
 
-The single seam through which a consumer (lore, odoo-code) picks an embedding
-backend by **config only**, never by importing a concrete embedder class. A swap
-is therefore a config edit, not a code change.
+The single seam through which a consumer picks an embedding backend by **config
+only**, never by importing a concrete embedder class. A swap is therefore a config
+edit, not a code change.
+
+⚠ That sentence used to name *"(lore, odoo-code)"* as the consumers. Verified 2026-07-27
+(ruling R36): **odoo-code is a DONOR, not a consumer** — ``batching.py`` and
+``voyage_cloud.py`` record code *"ported from the odoo-code donor"*, and no sibling
+project imports this package. The distinction is not pedantry: prose naming an external
+consumer reads as a compatibility constraint, and this packet reshaped
+:class:`EmbeddingConfig` on the strength of there being none.
 
 * ``backend == "tei"`` → :class:`~loresigil.tei.TEIEmbedder`.
 * ``backend == "voyage-cloud"`` → :class:`~loresigil.voyage_cloud.VoyageCloudEmbedder`.

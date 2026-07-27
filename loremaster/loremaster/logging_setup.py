@@ -125,8 +125,41 @@ _LOGRECORD_RESERVED: frozenset[str] = frozenset(
 # identifiers or rendered source lines, and it is why the third pattern that once
 # sat beside them was deleted rather than tuned.
 _BEARER_RE = re.compile(r"(Bearer\s+)(\S+)", re.IGNORECASE)
+
+# ⚠ **THE OPTIONAL QUOTES IN THE SEPARATOR GROUP ARE A FIX, NOT DECORATION (ruling
+# R38/R39).** A credential almost never reaches a log line as a bare ``label=value``: it
+# arrives inside a MAPPING REPR — ``{'api_key': 'sk-…'}`` — where a QUOTE sits between the
+# label and the separator and another between the separator and the value. The pattern
+# required ``\s*[=:]\s*`` IMMEDIATELY after the label, so every dict and JSON rendering of
+# every label leaked. The quotes are captured INSIDE group 2 so the redacted line keeps its
+# punctuation and stays readable.
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|token|secret|password)\b(\s*[=:]\s*)(\S+)"
+    r"(?i)\b(api[_-]?key|apikey|token|secret|password)\b(['\"]?\s*[=:]\s*)['\"]?(\S+)"
+)
+
+# ⚠ **THE COMPOUND TWIN, AND WHY IT IS A SECOND PATTERN (ruling R37).**
+# ``\b`` cannot see a label at the tail of an underscore compound: ``_`` IS a word
+# character, so there is no boundary between ``client_`` and ``secret``. Measured — the
+# hyphen twin ``client-secret=`` redacted while ``client_secret=`` LEAKED, which is the
+# differential control naming the mechanism. The population is not exotic:
+# ``client_secret``, ``secret_key``, ``session_token``, ``refresh_token``, ``db_password``,
+# ``private_key``, the AWS family — **and ``SURREAL_PASS``, the env var holding this
+# project's own store root password.**
+#
+# ⚠ **``SURREAL_PASS`` NEEDED MORE THAN THE BOUNDARY FIX, and the ruling's own example is
+# why this pattern has its own label set.** ``PASS`` is not ``password``: no boundary
+# change could ever have matched it, because there was no label to match. So the compound
+# set adds ``pass`` and ``key`` — both far too broad as BARE words (``key=`` and ``pass=``
+# appear in ordinary prose) and both precise after a ``_`` or ``-``, which is exactly what
+# the lookbehind buys.
+#
+# THE TRADE, stated rather than discovered: ``cache_key=abc`` and ``sort_key=name`` now
+# redact. That is a real diagnostic cost and it is accepted deliberately — a leaked
+# ``private_key`` is not recoverable and a lost ``cache_key`` is. Narrowing this set is a
+# DESIGN decision, not a lint fix.
+_COMPOUND_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?<=[_-])(api[_-]?key|apikey|key|token|secret|password|pass)"
+    r"(['\"]?\s*[=:]\s*)['\"]?(\S+)"
 )
 
 # The auth schemes whose NAME is preserved in a redacted ``Authorization`` header.
@@ -143,7 +176,24 @@ _ASSIGNMENT_RE = re.compile(
 # The scheme word is worth preserving at all because it tells an operator WHICH
 # auth mechanism failed — exactly the diagnostic-data argument that motivated
 # deleting the guess above.
-_KNOWN_AUTH_SCHEMES: tuple[str, ...] = ("Bearer", "Basic", "Digest", "Token", "ApiKey")
+# ⚠ **EVERY SCHEME HERE MUST HAVE A SINGLE-TOKEN VALUE. ``Digest`` DID NOT, AND ADDING IT
+# WAS A LEAK THIS PACKET CAUSED (ruling R33).** :data:`_AUTH_HEADER_RE` redacts the FIRST
+# whitespace-delimited token after the scheme; an RFC 7616 ``Digest`` value is a
+# comma-separated auth-param list, so preserving the scheme destroyed ``username="u",`` and
+# logged ``response="<hash>"`` — the value that actually authenticates. The entropy sweep
+# this packet deleted had been covering it.
+#
+# It is R8's own defect — *the non-secret word redacted and the credential left in the log*
+# — reintroduced for the one allowlisted scheme whose value is not a single token, and it is
+# THE QUANTIFIER LAW: "one token after the scheme" was derived on ``Bearer`` and stated over
+# the whole allowlist. **Before adding a scheme here, check its value is ONE token**; an
+# unrecognised scheme already redacts the entire header value, which is the safe direction.
+# lore itself authenticates with ``Bearer`` and ``x-api-key``.
+#
+# Stored as the ALTERNATION ITSELF rather than a tuple: it has exactly one consumer, the
+# pattern below, and one representation cannot disagree with itself about ordering or
+# escaping.
+_KNOWN_SCHEMES: str = "Bearer|Basic|Token|ApiKey"
 
 # An ``Authorization`` header, in every shape one reaches a log line in: a real
 # header line, a lowercased HTTP/2 one, an ``authorization=…`` assignment, and a
@@ -160,10 +210,42 @@ _KNOWN_AUTH_SCHEMES: tuple[str, ...] = ("Bearer", "Basic", "Digest", "Token", "A
 # value token, 5 the rest of the LINE (never across a newline — a traceback is
 # scrubbed as one string, and the header value ends where the line does).
 _AUTH_HEADER_RE = re.compile(
-    rf"(?i)(\bauthorization\b\s*[=:]\s*)"
-    rf"(?:({'|'.join(_KNOWN_AUTH_SCHEMES)})(\s+))?"
+    rf"(?i)(\bauthorization\b['\"]?\s*[=:]\s*['\"]?)"
+    rf"(?:({_KNOWN_SCHEMES})(\s+))?"
     rf"(\S+)([^\n]*)"
 )
+
+
+#: One whitespace-separated token of an auth header value.
+_AUTH_VALUE_TOKEN_RE = re.compile(r"\s*(\S+)")
+
+
+def _auth_value_length(text: str) -> int:
+    """How many characters of ``text`` belong to the auth header's VALUE.
+
+    ⚠ **A PRESERVED SCHEME'S VALUE IS NOT ALWAYS ONE TOKEN, AND ASSUMING IT WAS LEAKED A
+    CREDENTIAL (ruling R33).** RFC 7235 lets a scheme take a comma-separated *auth-param
+    list* — ``username="u", realm="r", response="<hash>"`` — where the value that actually
+    authenticates is the LAST parameter, not the first token. Redacting one token there
+    destroys the username and logs the response hash.
+
+    The rule is receiver-blind, so it cannot go stale the way a scheme allowlist does: **a
+    token ending in a comma means the parameter list continues.** Consumption stops at the
+    first token that does not, which is what keeps the rest of a log LINE — the
+    ``https://api/x`` after a quoted ``curl`` header — outside the redaction.
+
+    Args:
+        text: The header value and whatever follows it on the line.
+
+    Returns:
+        The number of leading characters to redact.
+    """
+    end = 0
+    for token in _AUTH_VALUE_TOKEN_RE.finditer(text):
+        end = token.end()
+        if not token.group(1).endswith(","):
+            break
+    return end
 
 
 def _redact_auth_header(match: re.Match[str]) -> str:
@@ -172,14 +254,34 @@ def _redact_auth_header(match: re.Match[str]) -> str:
     Args:
         match: A :data:`_AUTH_HEADER_RE` match.
 
+    ⚠ **THE UNRECOGNISED-SCHEME BRANCH DISCARDS THE REST OF THE LINE, AND THAT IS
+    DELIBERATE COLLATERAL — documented here because a reader will otherwise meet it as
+    a mystery (ruling R34).** For a scheme we do not know, the first token may BE the
+    credential or may be a scheme word whose credential follows; we cannot tell, so both
+    go. Concretely, ``authorization: denied user=bob reason=policy`` renders as
+    ``authorization: ***REDACTED***`` and the diagnostic tail is lost.
+
+    That cost is accepted because it is what makes an unknown scheme SAFE — it is the
+    branch ``Digest`` now falls into (R33), and a Digest value's credential is not in its
+    first token. The failure direction is a lost diagnostic, never a leaked credential.
+
+    Args:
+        match: A :data:`_AUTH_HEADER_RE` match.
+
     Returns:
-        The header with its credential replaced by :data:`REDACTED`: the scheme
-        word and the rest of the line survive when the scheme is recognised;
-        everything after the separator goes when it is not.
+        The header with its credential replaced by :data:`REDACTED`: the scheme word and
+        the rest of the line survive when the scheme is recognised; everything after the
+        separator goes when it is not.
     """
     label, scheme, gap, first_token, rest_of_line = match.groups()
     if scheme:
-        return f"{label}{scheme}{gap}{REDACTED}{rest_of_line}"
+        value_and_tail = f"{first_token}{rest_of_line}"
+        tail = value_and_tail[_auth_value_length(value_and_tail) :]
+        return f"{label}{scheme}{gap}{REDACTED}{tail}"
+    # UNRECOGNISED SCHEME. Both ``first_token`` and ``rest_of_line`` are discarded — see
+    # the docstring. They are named rather than ignored so the drop is visible in the
+    # code and not only in the absence of an f-string slot.
+    del first_token, rest_of_line
     return f"{label}{REDACTED}"
 
 
@@ -204,20 +306,77 @@ def _scrub_text(value: str) -> str:
     """
     scrubbed = _AUTH_HEADER_RE.sub(_redact_auth_header, value)
     scrubbed = _BEARER_RE.sub(rf"\1{REDACTED}", scrubbed)
-    return _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
+    scrubbed = _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
+    return _COMPOUND_ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
 
 
-def _scrub_value(value: Any) -> Any:
+#: The sentinel :func:`_names_a_secret` labels. Any value that cannot itself match a
+#: pattern will do; it exists only to be looked for afterwards.
+_LABEL_PROBE = "LABELPROBEVALUE"
+
+
+def _names_a_secret(key: str) -> bool:
+    """Would a value labelled ``key`` be redacted?
+
+    ⚠ **THIS ASKS THE PATTERNS RATHER THAN RE-STATING THEM (ONE IMPLEMENTATION).** The
+    honest way to answer *"is this mapping key a secret label?"* is to label a known value
+    with it and see whether the redactor takes the value away. So the label set has exactly
+    one definition — the compiled patterns — and a label added or removed there changes
+    mapping behaviour in the same edit. A second list here would be a second answer to one
+    question, which is how ``client_secret`` and ``Authorization`` came to disagree with
+    themselves in the first place.
+
+    Args:
+        key: A mapping key, as it appears in an ``extra=`` field or a config dict.
+
+    Returns:
+        ``True`` when this key labels a credential.
+    """
+    return _LABEL_PROBE not in _scrub_text(f"{key}={_LABEL_PROBE}")
+
+
+def _scrub_value(value: Any, key: str | None = None) -> Any:
     """Scrub a single ``extra`` value, recursing through containers.
 
     Strings are scrubbed directly; lists/tuples/dicts are walked so a secret
     nested in a structured field is still caught; non-string scalars (ints,
     bools, floats, ``None``) are returned untouched (they cannot carry a token).
+
+    ⚠ **THE MAPPING KEY IS PASSED DOWN AS THE VALUE'S LABEL, AND ITS ABSENCE WAS A LEAK
+    (ruling R38).** A dict was walked by scrubbing each key and each value INDEPENDENTLY,
+    so for ``{"api_key": "sk-…"}`` the value was handed to :func:`_scrub_text` as a bare
+    string with no label anywhere near it — and the label patterns, which are the entire
+    mechanism, need a label. Every credential map in every ``extra=`` field leaked, for
+    every label. The scenario was named in a pin's own prose and no fixture reached it:
+    the carriers that pass a dict carry UNLABELLED values, and every labelled pin drives a
+    flat string.
+
+    Args:
+        value: The value to scrub.
+        key: The mapping key this value was found under, when there was one. A value
+            whose key :func:`_names_a_secret` is replaced wholesale — the key IS the
+            label, so there is nothing to preserve in the value.
+
+    Returns:
+        The value with every credential redacted, containers rebuilt in kind.
     """
     if isinstance(value, str):
+        if key is not None and _names_a_secret(key):
+            return REDACTED
         return _scrub_text(value)
     if isinstance(value, dict):
-        return {key: _scrub_value(inner) for key, inner in value.items()}
+        # The KEY is scrubbed as text AND passed down as the value's label. Both halves
+        # are needed and they are different defects: a credential can be the key itself
+        # (``{"api_key=sk-…": 3}`` — a reverse lookup or per-token telemetry), and a
+        # credential can be the value the key LABELS (``{"api_key": "sk-…"}``). The
+        # ORIGINAL key is what labels the value; scrubbing it first would hide the label
+        # from the value that needs it.
+        return {
+            (_scrub_text(inner_key) if isinstance(inner_key, str) else inner_key): _scrub_value(
+                inner, key=inner_key if isinstance(inner_key, str) else None
+            )
+            for inner_key, inner in value.items()
+        }
     if isinstance(value, (list, tuple)):
         scrubbed = [_scrub_value(item) for item in value]
         return type(value)(scrubbed)
@@ -318,6 +477,12 @@ class RedactingFilter(logging.Filter):
       inverts the stdlib's precedence and does exactly this) therefore still
       sees raw text. lore's own formatters route through
       :func:`scrubbed_exception_text` and so are safe regardless.
+    * A record carrying ``args`` is RENDERED here and its ``args`` cleared (see
+      :meth:`filter`), so a later handler formats the already-interpolated, already-
+      scrubbed message rather than re-interpolating. That is the same deliberate
+      pre-render as ``exc_text`` below, for the same reason, and it is strictly safer
+      for the other handler — but it IS observable, so it is stated rather than left
+      to be discovered.
     * Handler filters run per handler, in handler order. If a handler WITHOUT
       this filter formats the record first, it emits raw text and caches it —
       this filter then repairs ``exc_text`` for everyone after it, but cannot
@@ -328,13 +493,26 @@ class RedactingFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Sanitise ``record`` in place and keep it (returns ``True`` always)."""
-        if isinstance(record.msg, str):
-            record.msg = _scrub_text(record.msg)
         if record.args:
-            if isinstance(record.args, dict):
-                record.args = {k: _scrub_value(v) for k, v in record.args.items()}
-            else:
-                record.args = tuple(_scrub_value(a) for a in record.args)
+            # ⚠ **INTERPOLATE FIRST, THEN SCRUB — SCRUBBING A FORMAT STRING CAN DESTROY
+            # ITS PLACEHOLDERS AND MAKE THE EMIT RAISE (ruling R34).** Scrubbing ``msg``
+            # while ``args`` still waited meant a redaction that removed a ``%s`` left
+            # ``getMessage()`` with more arguments than slots. Measured:
+            # ``logger.warning("authorization: denied for %s after %s attempts", "bob", 3)``
+            # trips the unrecognised-scheme branch, which discards the rest of the line —
+            # placeholders included — and ``getMessage()`` then raises
+            # ``TypeError: not all arguments converted during string formatting``.
+            # **A logging backstop that can raise inside logging is worse than the leak it
+            # guards**, and no fixture reached it because every carrier that uses ``%``
+            # formatting carries an unlabelled value.
+            #
+            # Rendering first also scrubs the ARGUMENTS by construction: they are in the
+            # text. ``args`` is then cleared, because it has been consumed — leaving it
+            # would re-interpolate an already-rendered string.
+            record.msg = _scrub_text(record.getMessage())
+            record.args = ()
+        elif isinstance(record.msg, str):
+            record.msg = _scrub_text(record.msg)
         for key, value in list(record.__dict__.items()):
             if key in _LOGRECORD_RESERVED or key.startswith("_"):
                 continue

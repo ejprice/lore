@@ -824,6 +824,56 @@ third-party loggers unfiltered · F8 `SurrealConfig.url` accepts and logs userin
 PRE-EXISTING and untouched by this packet**, so scope is the operator's call. F7 (unknown scheme
 destroys the rest of the line) duplicates R34.
 
+---
+
+## Twelfth ruling wave — 2026-07-27 — **A TEST THAT DOES NOT EXIST DOES NOT FAIL**
+
+**R41 — THE MOST IMPORTANT FINDING OF THIS PACKET, and it is about our own process.**
+The contract author, sweeping its own pins after Phase 7, discovered that **R11's blocker class was
+ABSENT FROM EVERY COMMIT.** It was authored in revision 3. It was **mutation-proven** — it caught
+the adversary's 204-passed/0-failed wrong build, and that receipt is in the record. **It never
+landed.** So the `_scrub_value` container-recursion property has been unprotected since `9ab5888`,
+across five contract revisions, five adversary passes, a builder, a refactor and three Phase-7
+audits — **and no gate could tell, because a test that does not exist does not fail.**
+
+⚠ **This is a NEW failure mode for this repo's instrument catalogue, and it defeats every existing
+guard by construction.** The catalogue's six entries are all *"the instrument ran and was keyed on
+the wrong thing"*. This is *"the instrument was never there"*. Mutation proofs, ∀ sweeps, coverage
+of the SAFE set, runtime gates — every one of them grades **instruments that exist**. A green suite
+is silent about the pin you believe you wrote.
+
+**And note what it cost:** the security audit's F1 (dict values scrubbed in isolation) is precisely
+what R11's missing class would have caught. **We paid for that defect twice** — once when it was
+found and mutation-proven, again when an auditor rediscovered it from scratch two days later.
+
+**The askable form:** *"the pins I believe protect this — can I NAME the commit each one landed
+in?"* A mutation proof is evidence a pin WORKS, never evidence a pin SHIPPED. **The two are
+different claims and this packet conflated them.**
+**The mechanical form (do not rely on remembering):** at every wave close-out, diff the pin NAMES
+cited in reports against the pin names present in the committed tree. A cited pin absent from
+`git grep` is a pin that does not exist.
+
+**R42 — THE TWELFTH DEFECT: a credential in the dict KEY position.** `_scrub_value` recurses into
+values and copies keys through, so `{"<credential>": "value"}` renders the credential verbatim. No
+fixture in this packet could construct it — every carrier puts the secret in the value. Found by
+asking the reach-twin question (*can my fixtures reach the case my name claims?*), which is the
+question that also found the dict-value leak. Fixed and pinned.
+
+**R43 — ONE BOUND RETIRED RATHER THAN KEPT GREEN.** R38/R39 closed the structured `x-api-key`
+forms, so the KNOWN BOUND pinning them as *leaking* was **deleted with a note**, not left passing.
+A pin that outlives its hole is a lie, and a green "this still leaks" assertion is the worst kind —
+it teaches the next reader a limitation that no longer exists. This is the standing law working
+without being asked.
+
+**Verified by the lead at this state — every Phase-7 leak closed, and the recovered data still
+recovered:**
+
+```
+SURREAL_PASS / client_secret / session_token   redacted     dict value + nested map   redacted
+quoted Basic                                    redacted     Digest                    redacted
+uuid path / git sha / function name             INTACT
+```
+
 **Raised and NOT actioned (operator's call, out of packet scope):** residual R12 — the base scrubber
 mangles adjacent structure (`Bearer <k>'}` eats the closing quote/brace, because the pattern ends
 `(\S+)`). Pre-existing, cosmetic, unrelated to the deletion.
