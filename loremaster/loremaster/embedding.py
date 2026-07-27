@@ -24,7 +24,11 @@ from loresigil.base import Embedder
 from loresigil.factory import EmbeddingConfig as LoresigilEmbeddingConfig
 from loresigil.factory import make_embedder
 
-from loremaster.config import EmbeddingConfig
+# ``resolve_secret`` is imported into THIS module's namespace (not called through
+# ``config.resolve_secret``) so the composition-root translation below binds the
+# shared resolver at ``embedding.resolve_secret`` — the one attribute a caller,
+# or a mutation pin, can substitute to prove the routing is real.
+from loremaster.config import EmbeddingConfig, resolve_secret
 
 
 def to_loresigil_config(config: EmbeddingConfig) -> LoresigilEmbeddingConfig:

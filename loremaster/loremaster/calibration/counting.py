@@ -25,6 +25,11 @@ from pathlib import Path
 import httpx
 from pydantic import SecretStr
 
+# ``resolve_secret`` is imported into THIS module's namespace (not called through
+# ``config.resolve_secret``) so ``load_api_key`` binds the shared resolver at
+# ``counting.resolve_secret`` — the one attribute a caller, or a mutation pin,
+# can substitute to prove the routing is real.
+from loremaster.config import resolve_secret
 from loresigil import backoff
 
 #: Anthropic token-counting endpoint (billed free; no completion generated).

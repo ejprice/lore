@@ -17,9 +17,9 @@ Secrets are env-refs: the bearer key is read from the environment variable named
 from __future__ import annotations
 
 import os
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from loresigil.base import Embedder
 from loresigil.tei import DEFAULT_DIM as TEI_DEFAULT_DIM
@@ -56,6 +56,15 @@ class EmbeddingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     backend: Literal["tei", "voyage-cloud", "voyage-context"]
+    #: The bearer credential, ALREADY RESOLVED by the caller. loresigil resolves
+    #: nothing: it reads no environment variable and owns no dotenv workflow, so a
+    #: consumer's composition root is the single place a secret enters the process.
+    #: ``SecretStr`` is the protection rather than a convention — the value cannot
+    #: render through a ``repr``, an f-string or a traceback frame, only through a
+    #: deliberate ``get_secret_value()`` at the client seam. ``min_length=1`` makes a
+    #: blank credential a construction-time rejection, so no keyless embedder is ever
+    #: half-built.
+    api_key: Annotated[SecretStr, Field(min_length=1)]
     api_key_env: str
 
     # TEI fields (with verified defaults).
