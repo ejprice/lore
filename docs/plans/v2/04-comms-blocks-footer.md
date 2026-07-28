@@ -654,6 +654,27 @@ The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose
   avoid a C-DEF, which was the right call while it was unruled** — the ruling is what makes
   pinning safe, and that ordering is the point.
 
+### ✅ FINAL-ADVERSARY ESCALATIONS — RULED (lead, 2026-07-28)
+- **ESC-2 — `loremaster/loremaster/store/_txn.py` IS GRANTED TO THE BUILDER** (not to any contract
+  author). R7 puts both reads in ONE transaction, and the read sibling
+  (`execute_read_transaction`) does not exist. Independently found twice — `contractfix-04b1-r3`
+  §ESC-4 and the final adversary §ESCALATION-2. ⚠ **It must EXTEND THE SHARED SEAM, never
+  hand-roll a `query_raw`**: r3 MEASURED that a hand-rolled one **fails the repo's runtime
+  SDK-escape guard**. One implementation, per repo law.
+- **ESC-3 — ACCEPT THE BOUND (reading (i)), BUT THE DISCLOSURE MUST STATE THE REAL FAILURE MODE.**
+  MEASURED: `TestTheScopeOfTheTransitiveReadIsSTATED` and
+  `test_the_helpers_docstring_states_the_FLOOR_property` check TOKEN PRESENCE, so a docstring
+  reading *"Ignores the `blocked_by` column entirely; a `phantom` entry IS included in this
+  answer, which is a floor"* — **the exact inverse of the truth** — passes BOTH.
+  Reading (ii) (phrase-level assertion) is REJECTED: it invents a requirement no ruling carries
+  and is a C-DEF risk, which is the class this packet has already hit three times.
+  ⚠ **But the existing disclosure says the pins "check presence, not truth", and that
+  UNDERSTATES it** — a reader infers the failure mode is SILENCE when it is **INVERSION**. A
+  disclosure that misdescribes its own bound is the false-gate class the repo already names
+  (*"a failure message that promises a check the assertion does not perform"*). **So the class
+  docstring states, explicitly, that a docstring asserting the OPPOSITE passes this pin** — that
+  is the WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT rule applied to a bound we are keeping deliberately.
+
 ## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
 - **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
   silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
