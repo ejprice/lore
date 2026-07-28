@@ -311,7 +311,24 @@ class FakeTaskLedger:
         status: str | None = None,
         owner: str | None = None,
         blocked: bool | None = None,
+        limit: int | None = None,
     ) -> list[Task]:
+        """The fake's read.
+
+        ⚠ ``limit`` exists here because **operator ruling R5 (2026-07-28)** makes it part of
+        ``TaskLedger.query_tasks``' signature and requires the dispatcher to PASS it — and a
+        double that does not accept a parameter its production twin takes turns a correct
+        build into a ``TypeError`` in every test that drives this fake. That is not a
+        hypothetical: it was MEASURED as two red pins in ``test_mcp_server.py`` on a reference
+        build of packet 04b-1, disclosed nowhere, and it is why a contract's "removed-behaviour
+        inventory" has to survey the DOUBLES as well as the callers.
+
+        ⚠ **THE CAP APPLIES TO THE ANSWER, NEVER TO THE CANDIDATE SCAN** (ruling T1): the
+        slice is the LAST thing that happens, after the ``blocked`` partition has been
+        computed, so ``limit=5`` with a ``blocked`` filter serves five MATCHING rows rather
+        than whatever survives filtering the first five. A fake that sliced earlier would
+        teach its consumers the wrong contract, which is the one thing a double must never do.
+        """
         await asyncio.sleep(0)
         rows = list(self.db.tasks.values())
         if status is not None:
@@ -323,6 +340,8 @@ class FakeTaskLedger:
         # Deterministic NON-insertion order (adversarial property 1): reverse
         # sort by opaque id, never the dict's insertion order.
         rows.sort(key=lambda task: task.id, reverse=True)
+        if limit is not None:
+            rows = rows[:limit]
         return [task.model_copy(deep=True) for task in rows]
 
     # -- the atomic claim -----------------------------------------------------

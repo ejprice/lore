@@ -6953,21 +6953,61 @@ class TestRollupDispatch:
     async def test_since_on_a_non_rollup_action_is_rejected(
         self, rollup_ctx: AppContext
     ) -> None:
+        """⚠ **RE-AUTHORED 2026-07-28 (packet 04b-1, operator ruling R9).**
+
+        This pin used to assert the refusal BY VALUE:
+        ``"'since'/'limit' apply only to action='rollup' — omit them for 'query'"``.
+        R9 makes ``limit`` LEGAL for ``action='query'``, so that sentence became FALSE for
+        half of what it claims — a served refusal teaching an agent to omit the parameter
+        that is now the documented way to bound its own answer.  **A test written before a
+        semantic change certifies the OLD world**, and a suite can be green BECAUSE it still
+        asserts the corpse (repo law).
+
+        What survives R9 unchanged is the ``since`` half, so that is what is asserted, in the
+        one form the change cannot invalidate: the refusal NAMES the parameter it rejected.
+        **GREEN before R9 and after** — deliberately, so this file contributes no reddening
+        to a packet that does not own it.
+
+        ⚠ **WHAT THIS PIN DOES NOT CHECK, said plainly rather than implied by its name:** it
+        does not assert that the retired claim is GONE from the sentence.  That guard exists,
+        once, against a REAL ledger, in
+        ``test_query_tasks_bounded.py::TestLimitIsLEGALForQueryAtTheToolSeam::test_SINCE_on_action_QUERY_is_STILL_REFUSED_and_stops_claiming_limit_is_too``
+        — a second copy here would be copy #2 of a served-surface pin (repo law #102) and
+        would redden this file on a tree where the fix has not landed yet.
+        """
         with pytest.raises(ValueError) as exc_info:
             await getattr(rollup_ctx, "tasks")(
                 action="query", since="2026-01-01T00:00:00+00:00"
             )
-        assert str(exc_info.value) == (
-            "'since'/'limit' apply only to action='rollup' — omit them for 'query'"
+        message = str(exc_info.value)
+        assert "since" in message, (
+            f"the refusal does not name the parameter it rejected: {message!r}"
         )
 
-    async def test_limit_on_a_non_rollup_action_is_rejected(
+    async def test_limit_on_a_non_query_non_rollup_action_is_rejected(
         self, rollup_ctx: AppContext
     ) -> None:
+        """⚠ **RE-AUTHORED 2026-07-28 (packet 04b-1, operator ruling R9).**
+
+        This pin used to assert that ``limit`` is refused on ``action='query'``.  **R9 rules
+        the opposite** — ``limit`` becomes legal for ``query``, because with no cap available
+        an unfiltered ``query`` served a model consultant the entire ~110-row ledger.  Left
+        as it was, this pin would have been a red test the 04b-1 builder may not edit standing
+        against a fix it was ordered to make.
+
+        The widening is SURGICAL, so the surviving property is pinned instead: ``limit`` on
+        every OTHER non-rollup action is still refused.  ``create`` is chosen because the
+        strict-parameter guard runs BEFORE the required-argument checks, so this observes the
+        guard itself and not a missing ``subject``.  **GREEN before R9 and after** — the
+        assertions are exactly those ``test_query_tasks_bounded.py``'s R9 class makes of the
+        same call, so any build satisfying that contract satisfies this pin by construction.
+        """
         with pytest.raises(ValueError) as exc_info:
-            await getattr(rollup_ctx, "tasks")(action="query", limit=5)
-        assert str(exc_info.value) == (
-            "'since'/'limit' apply only to action='rollup' — omit them for 'query'"
+            await getattr(rollup_ctx, "tasks")(action="create", limit=5)
+        message = str(exc_info.value)
+        assert "limit" in message and "create" in message, (
+            f"a 'limit' on action='create' was refused without naming the parameter and the "
+            f"action, so a caller cannot tell which of the two to change: {message!r}"
         )
 
     async def test_one_task_transitioned_and_one_finding_filed_render_both_legs(
@@ -7312,10 +7352,36 @@ class TestCreateManyDispatch:
             f"references stay unambiguous"
         )
 
-    async def test_intra_batch_cycle_is_refused_with_the_exact_text(
+    async def test_intra_batch_cycle_is_refused_and_NAMES_every_member(
         self, rollup_ctx: AppContext
     ) -> None:
-        with pytest.raises(ValueError) as exc_info:
+        """⚠ **RE-AUTHORED 2026-07-28 (packet 04b-1, operator ruling R6).**
+
+        This pin used to assert the refusal BY VALUE and under ``pytest.raises(ValueError)``.
+        R6 rules **ONE cycle detector and ONE error class, ledger-owned** — today
+        ``AppContext._find_key_cycle`` owns a second cycle policy with its own sentence and a
+        bare ``ValueError``, fires FIRST, and means a ``lore_tasks`` caller never meets the
+        ledger's vocabulary.  ``TaskLedgerError`` is a ``RuntimeError``, so a correct build
+        raises something that is **not** a ``ValueError``, and the exact sentence becomes the
+        shared formatter's to spell (R6 permits the two vocabularies to differ — batch KEYS
+        and persisted IDS name different things).  MEASURED on a reference build: this pin
+        failed on the CLASS alone.
+
+        Both halves it used to guard are now pinned where they can be pinned honestly, against
+        a REAL ledger, in ``test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation``: the
+        CLASS is derived from the ledger's own raised value
+        (``test_a_BATCH_KEY_cycle_at_the_TOOL_SEAM_raises_the_LEDGERS_cycle_CLASS``) and the
+        SENTENCE is proved shared by MUTATION
+        (``test_MUTATION_replacing_the_shared_FORMATTER_changes_BOTH_refusals``).  Naming
+        either by value HERE would be a contract-defect: a red test the builder may not edit,
+        asserting a spelling no ruling carries.
+
+        What is left is the property that holds in BOTH worlds and that a caller actually
+        needs: **the refusal names every member of the cycle** — a caller cannot break a loop
+        it cannot see.  GREEN before R6 and after.  Distinctive keys, because single-letter
+        keys make a substring check pass on almost any message.
+        """
+        with pytest.raises(Exception) as exc_info:  # noqa: B017 - R6 rules the CLASS elsewhere
             await getattr(rollup_ctx, "tasks")(
                 action="create_many",
                 created_by="me",
@@ -7323,23 +7389,26 @@ class TestCreateManyDispatch:
                     {
                         "subject": "s1",
                         "description": "d",
-                        "key": "a",
-                        "blocked_by": ["b"],
+                        "key": "wave-7-charter",
+                        "blocked_by": ["wave-7-rollout"],
                     },
                     {
                         "subject": "s2",
                         "description": "d",
-                        "key": "b",
-                        "blocked_by": ["a"],
+                        "key": "wave-7-rollout",
+                        "blocked_by": ["wave-7-charter"],
                     },
                 ],
             )
         message = str(exc_info.value)
-        assert message.startswith(
-            "create_many items contain a blocked_by cycle among batch keys: "
+        assert not isinstance(exc_info.value, AssertionError), (
+            f"the dispatcher raised the test's own AssertionError rather than refusing the "
+            f"cyclic batch: {exc_info.value!r}"
         )
-        assert message.endswith(" — a cyclic batch can never be claimed; break the cycle")
-        assert "a -> b -> a" in message or "b -> a -> b" in message
+        assert "wave-7-charter" in message and "wave-7-rollout" in message, (
+            f"the cycle refusal must NAME every member of the cycle — a caller cannot break "
+            f"a loop it cannot see: {message!r}"
+        )
 
     async def test_items_on_a_non_create_many_action_is_rejected(
         self, rollup_ctx: AppContext

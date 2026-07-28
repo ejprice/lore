@@ -117,9 +117,18 @@ WHAT THIS FILE DOES NOT PIN
   not slice after materialisation, it **REJECTS** ``limit`` outright for every non-rollup
   action (re-derived at ``faf035d``: ``tasks(action='query', limit=5)`` raises
   ``ValueError: 'since'/'limit' apply only to action='rollup' …``).  So R5 is not a
-  re-ordering, it is a new accepted parameter — and TWO committed pins in
-  ``test_mcp_server.py`` assert today's rejection.  See ``REPORT-contractfix-04b1.md``
-  §ESCALATIONS.
+  re-ordering, it is a new accepted parameter.
+  ✅ **ESCALATION ESC-1 IS DISCHARGED, AND IT WAS UNDER-COUNTED (wave r5, 2026-07-28).**  It
+  said *"TWO committed pins in ``test_mcp_server.py`` assert today's rejection"*.  MEASURED
+  on a reference build: **FIVE** pins there break on a CORRECT build — the two R9 ones, R6's
+  cycle class against a ``pytest.raises(ValueError)``, and TWICE
+  ``_task_fakes.FakeTaskLedger.query_tasks`` not accepting R5's ``limit`` (the identical
+  ripple ESC-1 reasoned about for ``ensure_ready`` and never applied to ``query_tasks``).
+  **All five are now RE-AUTHORED IN PLACE**, green before the fix and after, so a builder
+  meets NO red test outside this contract.  Each carries a ``RE-AUTHORED 2026-07-28``
+  docstring naming the ruling that retired its old assertion and the pin that now owns the
+  property; the two fake-side ones are ``_task_fakes.FakeTaskLedger.query_tasks``' new
+  ``limit`` parameter.
 * Result ORDER.  ``query_tasks`` promises none (``_task_fakes`` deliberately reorders to
   keep consumers honest), so store reference §7's *ORDER BY under an explicit projection*
   hazard is a REPORTED RISK for the builder, not an invented requirement pinned here.
@@ -1031,11 +1040,12 @@ class TestTheLimitIsPUSHEDINTOTheStatement:
     through the real handler: it does not slice at all — ``AppContext.tasks`` REJECTS
     ``limit`` for every non-rollup action, ``ValueError: 'since'/'limit' apply only to
     action='rollup' — omit them for 'query'``.  So R5 is not a re-ordering of an existing
-    cap; it makes ``limit`` a NEWLY ACCEPTED parameter of ``action='query'``, and **two
-    committed pins in ``test_mcp_server.py`` assert today's rejection** (that file is
-    outside this contract's writable set — the exact edits are in
-    ``REPORT-contractfix-04b1.md`` §ESCALATIONS, and a builder who does not make them meets
-    two red tests it may not edit).
+    cap; it makes ``limit`` a NEWLY ACCEPTED parameter of ``action='query'``.
+    ✅ **The committed pins in ``test_mcp_server.py`` that asserted today's rejection have
+    been RE-AUTHORED in place (wave r5, 2026-07-28)** — they now pin only what survives R9,
+    are green before the fix and after, and each says so in its own docstring. So does
+    ``_task_fakes.FakeTaskLedger.query_tasks``, which gained the ``limit`` this ruling makes
+    the dispatcher pass. **A builder meets no red test outside this contract.**
 
     THE PROPERTY, stated over the outcome: a caller asking for N rows causes the ENGINE to
     hand back a number of rows bounded by N, not by the ledger.  A post-materialisation
@@ -1135,8 +1145,9 @@ class TestTheLimitIsPUSHEDINTOTheStatement:
                 f"lore_tasks action=query limit={_SERVED_LIMIT} rendered {len(lines)} task "
                 f"rows out of {UNRELATED_TASK_COUNT_SMALL}. ⚠ At faf035d this call RAISES "
                 f"ValueError ('since'/'limit' apply only to action='rollup'), so the builder "
-                f"must also relax that guard AND update the two pins in test_mcp_server.py "
-                f"that assert the rejection — see this class's docstring. rendered={rendered!r}"
+                f"must relax that guard — R9 splits it, it is not deleted. The pins in "
+                f"test_mcp_server.py that asserted the old rejection were re-authored in "
+                f"wave r5 and need no builder edit. rendered={rendered!r}"
             )
         finally:
             await ledger.close()
@@ -1401,10 +1412,13 @@ class TestLimitIsLEGALForQueryAtTheToolSeam:
     ``create`` and ``limit`` on ``transition`` and quietly retire a real teaching surface.
     R9 widened one parameter for one action; the three legs below say exactly that.
 
-    ⚠ ``test_mcp_server.py`` holds committed pins asserting today's rejection and is OUTSIDE
-    this contract's writable set — the exact edits are escalation ESC-1 in
-    ``REPORT-contractfix-04b1.md``, and a builder who does not make them meets red tests it
-    may not edit.
+    ✅ ``test_mcp_server.py``'s pins on the OLD rejection were RE-AUTHORED in wave r5
+    (2026-07-28) rather than left as escalation ESC-1's "exact edits the builder must make":
+    a contract that hands a builder a list of red tests in a file it may not edit has moved
+    the defect, not removed it. They now assert only what survives R9 — that ``since`` on
+    ``query`` is still refused and names the parameter, and that ``limit`` on ``create`` is
+    still refused and names both — which are exactly the assertions the two legs below make
+    of a REAL ledger. **Green before the fix and after.**
     """
 
     #: The retired claim, BY VALUE.  A failure message that promises a check the code no

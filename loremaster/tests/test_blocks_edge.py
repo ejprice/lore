@@ -132,6 +132,16 @@ declaring ``blocks`` in ``_enforced_relations_scaffold.KNOWN_RELATION_EDGES``:
 2. ``test_the_edge_is_declared_OVERWRITE_never_IF_NOT_EXISTS[blocks]``
 3. ``test_the_edge_declares_its_IN_and_OUT_endpoint_tables[blocks-endpoints4]``
 
+✅ **AND IT NO LONGER REDDENS ANYTHING IN ``test_mcp_server.py`` (wave r5, 2026-07-28).**
+A CORRECT build was MEASURED to break FIVE committed pins there, of which the contract
+disclosed TWO — R9's two, plus R6's cycle CLASS against a ``pytest.raises(ValueError)``,
+plus TWICE ``_task_fakes.FakeTaskLedger.query_tasks`` not accepting R5's ``limit``.  All
+five were **RE-AUTHORED IN PLACE** to pin only what survives the rulings, so each is green
+before the fix and after; each carries a ``RE-AUTHORED 2026-07-28`` docstring naming the
+ruling that retired its old assertion and the pin that now owns the property.  **A builder
+must never be trapped between a red test it may not edit and a fix that cannot make it
+green** — disclosing that trap a third time would have moved the defect, not removed it.
+
 All three go GREEN the moment the builder emits the edge, and **none of them may be
 "fixed" by removing ``blocks`` from the declared set or by adding it to
 ``DEFERRED_TO_PACKET_43``** — the latter is measured wrong build **W-C**, and it reddens
@@ -200,6 +210,7 @@ from _enforced_relations_scaffold import (
     BLOCKS_RELATION_NAME,
     DEFERRED_TO_PACKET_43,
     KNOWN_RELATION_EDGES,
+    MIGRATION_DIM,
     apply_ddl,
     every_emitted_relation_table,
     ghost_id,
@@ -1718,12 +1729,34 @@ class TestCreateRefusesToFormACycle:
     breaking the other — see
     :meth:`TestCreateRefusesToFormACycle.test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`.
 
-    ⚠ **PACKAGE VERDICT, CORRECTED:** the contract's original table said *"replace with the
-    engine operator"* for cycle detection.  That is right for the transitive READ (the
-    closure stays on the engine — packages over hand-rolling) and WRONG for this guard.
-    The guard's verdict is ``bespoke``, with the minimal surface the rule demands: a DFS
-    over the column, nothing more, sharing ONE implementation with ``server.py``'s
-    batch-key check (ruling R6) rather than becoming policy copy #2.
+    ⚠ **PACKAGE VERDICT, CORRECTED TWICE — AND THE SECOND CORRECTION IS THE HONEST ONE.**
+
+    v1 said *"replace with the engine operator"*.  That is right for the transitive READ (the
+    closure stays on the engine — packages over hand-rolling) and WRONG for this guard, for
+    the structural reason above: the closing dependency cannot carry an edge.
+
+    v2 corrected it to ``bespoke`` — *"a DFS over the column, nothing more"* — and **its
+    read-column evaluated no library at all.**  That is the exact shape ``brief-base.md``
+    names as the defect the ``Packages considered:`` line exists to catch: *"asserting a
+    package limitation without reading the API"*, and a correction is a specification too.
+
+    **v3, MEASURED (final adversary §PKG, 2026-07-28): the verdict is ``replace``, and the
+    library is STDLIB.**  ``graphlib.TopologicalSorter`` ships with Python;
+    ``CycleError.args[1]`` IS the cycle, in the exact shape BOTH call sites need — RUN on six
+    graph shapes: a 2-cycle yields ``['a', 'b', 'a']``, a SELF-loop yields ``['x', 'x']``
+    (byte-for-byte the format ``AppContext._find_key_cycle``'s own docstring already
+    promises), a 3-cycle yields ``['a', 'c', 'b', 'a']``, an acyclic diamond yields ``None``,
+    and a dependency naming an id OUTSIDE the graph is tolerated — which is precisely what a
+    ``blocked_by`` entry pointing outside the read needs.  ``CycleError`` is a ``ValueError``
+    subclass.  The swap was made in a reference build and the whole contract stayed green.
+
+    ⚠ **AND NO PIN IN THIS FILE REQUIRES IT**, deliberately: every cycle pin is behavioural
+    (which graphs are refused, which are accepted, whether ONE implementation is shared —
+    proved by MUTATION).  A builder may still hand-roll the walk; what the rule asks is that
+    the choice be made against a READ API rather than an assumption, and that if the answer
+    is still ``bespoke`` the report says what was read and why the stdlib did not fit.
+    Whatever is chosen, ruling R6 stands: ONE implementation, shared with ``server.py``'s
+    batch-key check rather than becoming policy copy #2.
 
     Two reachable holes, both MEASURED-by-reading (scout §A4), both invisible to
     ``_find_key_cycle`` because it filters its edge set to ``ref in key_index``:
@@ -1911,6 +1944,117 @@ class TestCreateRefusesToFormACycle:
             f"CANNOT carry an edge (see this class's docstring), so an engine detector "
             f"returns 'acyclic' and reddens the persisted-cycle pin above. "
             f"shallow={shallow_traffic.statements} deep={deep_traffic.statements}"
+        )
+
+    @staticmethod
+    async def _create_many_traffic(unrelated_count: int) -> tuple[StoreTraffic, int]:
+        """Traffic and answer size for ONE ``create_many`` naming ONE existing blocker.
+
+        ``create_many`` rather than ``create_task``, and the choice is load-bearing: a
+        ``create_task`` id is a fresh ``uuid4`` no caller has seen, so a build may skip the
+        persisted-cycle walk on that path entirely and the measurement would observe nothing.
+        ``create_many`` is the path the guard actually runs on.
+
+        The noise tasks are unrelated, unblocked and open, so the WORK is identical at every
+        ``unrelated_count`` by construction and any difference in rows-read is caused by the
+        LEDGER's size.  The created count travels back beside the number for its sibling's
+        reason: *"this number did not grow"* is TRUE of a build that reads nothing and
+        creates nothing.
+        """
+        from loremaster.tasks import TaskSpec
+
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        ledger = TaskLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        try:
+            await ledger.ensure_ready()
+            await _seed_unrelated_tasks(ledger, unrelated_count)
+            blocker = await ledger.create_task("a real blocker", DESCRIPTION, created_by=CREATOR)
+            created: list[str] = []
+
+            async def _run() -> None:
+                created.extend(
+                    await ledger.create_many(
+                        [
+                            TaskSpec(
+                                subject=SUBJECT,
+                                description=DESCRIPTION,
+                                blocked_by=[blocker],
+                            )
+                        ],
+                        created_by=CREATOR,
+                    )
+                )
+
+            traffic = await measure_store_traffic(ledger, _run)
+            return traffic, len(created)
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_size_of_the_LEDGER(
+        self,
+    ) -> None:
+        """**GREEN at ``bfea1f8``, and GREEN after — the one leg of this class that is not
+        RED today.**  DERIVED by running it, never asserted: at ``bfea1f8`` the ledger's
+        ``create_many`` performs no persisted-id walk at all (the only cycle check in the tree
+        is ``server.py``'s batch-local one), so there is no read to grow.  It is a guard on a
+        hazard the FIX INTRODUCES — the delete/replace law's dual: *tests written for a NEW
+        design certify only the new world*, so a pin that only ever went green after the
+        rewrite would never have caught this.
+
+        ⛔ **#253's OWN DEFECT, REACHABLE ON THE WRITE PATH** — and nothing measured it.
+
+        R7's rider forces the acyclicity guard to walk the ``blocked_by`` COLUMN CLIENT-SIDE,
+        and R7 puts that walk inside ONE round trip.  **One round trip says nothing about how
+        many ROWS it reads.**  A walk seeded with ``SELECT * FROM task`` — one statement, one
+        trip, the whole ledger — satisfies every pin this contract had: its sibling above
+        measures ROUND TRIPS and says in its own docstring *"rows are deliberately NOT
+        asserted"* (correct for its question, blind to this one), and
+        :class:`TestTheReadIsBOUNDEDByTheCallersFilter` measures ``query_tasks`` only.
+        MEASURED: dropping the dependency-bearing filter from the guard's single read took
+        rows-read from 10 to 65 as the ledger grew from 5 to 60 unrelated tasks, with the
+        whole contract green — **finding #253 reintroduced on the write path, invisible.**
+
+        THE DISCRIMINATION IS A GROWTH COMPARISON, never a threshold, for the reason its
+        sibling states: a magic number is a fixture value a builder can tune until it passes.
+
+        ⚠ **STATED SCOPE:** the guard legitimately reads more rows for a DEEPER dependency
+        chain — that is the answer's cost, not the ledger's — so the chain is held constant at
+        one hop and only the UNRELATED population varies.
+        """
+        small, small_created = await self._create_many_traffic(UNRELATED_TASK_COUNT_SMALL)
+        large, large_created = await self._create_many_traffic(UNRELATED_TASK_COUNT_LARGE)
+        assert small_created == large_created == 1, (
+            f"the two measurements created {small_created} and {large_created} tasks; each "
+            f"must create the ONE item. Either the fixture drifted — a rows-read comparison "
+            f"between two different amounts of work measures nothing — or the create wrote "
+            f"nothing at all, and 'the row count did not grow' is trivially true"
+        )
+        assert small.rows > 0, (
+            f"the instrument counted ZERO rows for a create that landed a task — it is not "
+            f"observing this call path, so its 'did not grow' verdict is worthless: {small}"
+        )
+        assert large.rows == small.rows, (
+            f"a create_many naming ONE blocker read {small.rows} rows against a ledger of "
+            f"{UNRELATED_TASK_COUNT_SMALL} unrelated tasks and {large.rows} against one of "
+            f"{UNRELATED_TASK_COUNT_LARGE}. The work is identical at both sizes, so the "
+            f"write path is scaling with the LEDGER — that is #253, on the WRITE side. The "
+            f"acyclicity walk must be bounded by the dependency graph it is walking, never "
+            f"seeded with the whole task table. ⚠ Do NOT fix this by moving the walk onto an "
+            f"ENGINE traversal of the blocks edge: the closing dependency of a cycle cannot "
+            f"carry an edge (see this class's docstring), so an engine detector returns "
+            f"'acyclic'. small={small.statements} large={large.statements}"
+        )
+        assert large.rows < UNRELATED_TASK_COUNT_LARGE, (
+            f"the write path touched {large.rows} rows, at least as many as the "
+            f"{UNRELATED_TASK_COUNT_LARGE} unrelated tasks that have nothing to do with the "
+            f"dependency it was asked to check: {large.statements}"
         )
 
 
@@ -2951,9 +3095,21 @@ class TestTheResultIsSELFDESCRIBING:
         from a partial set that is untrustworthy at every level — and an unusable answer is
         a route-around.
 
-        ⚠ A SERVED-ENGLISH pin, and it is here because this repo has ten receipts saying
-        that class has no other guard.  It checks that the words are PRESENT, and says so;
-        it cannot check that they are true.  What makes them true is pinned separately by
+        ⚠⚠ **A SERVED-ENGLISH pin, AND ITS BOUND IS WORSE THAN "IT CANNOT CHECK THEY ARE
+        TRUE" — SO THE BOUND IS STATED EXACTLY** (ESC-3, lead-ruled 2026-07-28: *accept the
+        bound, but the disclosure must state the REAL failure mode*).  It checks that the
+        token ``floor`` is PRESENT.  MEASURED: a docstring reading *"Ignores the
+        ``blocked_by`` column entirely; a ``phantom`` entry IS included in this answer, which
+        is a **floor**"* — **the exact INVERSE of the truth** — satisfies this pin and its
+        sibling in :class:`TestTheScopeOfTheTransitiveReadIsSTATED`.  So the failure mode this
+        pin admits is not SILENCE, it is **INVERSION**: a docstring asserting the OPPOSITE of
+        the property passes.  A disclosure that misdescribes its own bound is the false-gate
+        class this repo already names.
+
+        Reading (ii) — a phrase-level assertion requiring the sentence carrying ``floor`` to
+        also carry a negation — was **REJECTED** by the same ruling: it invents a requirement
+        no ruling carries, and that is the C-DEF class this packet has already hit three
+        times.  What makes the words TRUE is pinned separately by
         ``TestTheTransitiveBlockerRead``'s closure/dedup legs.
         """
         helper = getattr(TaskLedger, TRANSITIVE_BLOCKERS_ATTR, None)
@@ -6262,6 +6418,717 @@ class TestALEGACYCycleIsMINTEDAndRECORDED:
         )
 
 
+#: The legacy cycle ARITIES the ruled cycle pin's fixture does NOT construct.
+#:
+#: ⚠ **A MONOCULTURE AXIS, NAMED** (final adversary §P2).
+#: :class:`TestALEGACYCycleIsMINTEDAndRECORDED` builds a TWO-member cycle and nothing else,
+#: so every pin resting on it is silent about every other arity — and the two neighbours of
+#: 2 fail in DIFFERENT ways:
+#:
+#: * **1 — the SELF-loop.**  The shape a single defensive line deletes
+#:   (``if blocker == task_id: continue`` — *"a task cannot block itself, so don't mint that
+#:   edge"*), and the shape production actually HOLDS, because ``blocked_by`` was FAIL-OPEN
+#:   at write and this contract's own :class:`TestCreateRefusesToFormACycle` calls it
+#:   *"the 1-cycle … which ``ENFORCED`` alone cannot stop"*.  MEASURED: a backfill carrying
+#:   that line passed the WHOLE contract, 215 passed / 0 failed, while serving
+#:   ``ids=[] truncated=False`` on an unclaimable row — sidecar S3's exact false clear,
+#:   through the one door SECTION K did not guard.
+#: * **3 — the first arity a PAIR-shaped detector cannot see.**  A build that recognises
+#:   *"a and b name each other"* and nothing longer mirrors the 2-cycle and drops the 3-cycle.
+#:
+#: Arity 2 is deliberately NOT repeated here: it is the sibling class's, and a second copy
+#: of a pin is copy #2 of a served-surface guard (repo law #102).
+LEGACY_CYCLE_ARITIES = (1, 3)
+
+
+class TestALegacyCycleOfEVERYARITYIsMINTEDAndRECORDED:
+    """RED today.  ⛔ **ESC-4, ∀ ARITY** — the ruling held over the whole set it governs.
+
+    ESC-4 (lead, 2026-07-28, reading A) rules that the backfill **MINTS** legacy cycles and
+    **RECORDS** them, because refusing them would break **edge ≡ ``blocked_by``** on exactly
+    the rows the invariant is hardest to reason about.  :class:`TestALEGACYCycleIsMINTEDAndRECORDED`
+    pins that ruling on a TWO-member cycle.
+
+    **THE QUANTIFIER LAW, in its migration clothes:** *"a property derived over one member of
+    the set the ruling governs, then stated over the whole set."*  The ruling says *cycles*;
+    the fixture said *pairs*.  See :data:`LEGACY_CYCLE_ARITIES` for the two arities this class
+    adds and the measured wrong build each one kills.
+
+    ⚠ **WHAT THIS CLASS DELIBERATELY DOES NOT ASSERT**, so it cannot become a C-DEF the way
+    an over-specified cycle pin would: it says nothing about ``truncated`` over a cyclic walk,
+    nothing about whether a row appears in its OWN reach (that depends on ``+inclusive``,
+    which no ruling carries), and nothing about the SHAPE of the operator log beyond the ids
+    it must name.  Its sibling states the same bound for the same reason.
+    """
+
+    @staticmethod
+    async def _cyclic_legacy_store_of_arity(
+        connection: SurrealConnection, env: SurrealEnv, arity: int
+    ) -> list[str]:
+        """``arity`` legacy rows forming ONE cycle, COLUMNS ONLY, no edges anywhere.
+
+        Each member's ``blocked_by`` is written by a RAW ``UPDATE`` for the sibling
+        fixture's reason: after this packet lands no public verb will mint such a row (the
+        write-time guard refuses), and ``ENFORCED`` could not carry the closing dependency as
+        an edge at creation time anyway.  Production holds these rows because they were legal
+        when they were written.
+
+        Returns the members in cycle order, so ``members[i]`` is blocked by
+        ``members[i - 1]`` and the expected edge set is derivable rather than typed.
+        """
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        members = [f"cyc{arity}_{index}_{uuid.uuid4().hex}" for index in range(arity)]
+        for member in members:
+            await _seed_legacy_task(connection, member, blocked_by=[], status=STATUS_OPEN)
+        for index, member in enumerate(members):
+            await run(
+                connection,
+                f"UPDATE type::record('{TASK_TABLE}', $id) SET blocked_by = $blocked_by",
+                {"id": member, "blocked_by": [members[index - 1]]},
+            )
+        assert await _blocks_edge_pairs_or_NO_TABLE(connection) == set(), (
+            "the cyclic legacy fixture already holds blocks edges, so the backfill it exists "
+            "to measure has nothing to do and every leg below passes for a fixture reason"
+        )
+        return members
+
+    @staticmethod
+    def _expected_cycle_edges(members: list[str]) -> set[tuple[str, str]]:
+        """The ``(blocker, blocked)`` pairs the column calls for — E-1's direction."""
+        return {(members[index - 1], member) for index, member in enumerate(members)}
+
+    @pytest.mark.parametrize(
+        "arity", LEGACY_CYCLE_ARITIES, ids=[f"arity-{n}" for n in LEGACY_CYCLE_ARITIES]
+    )
+    async def test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set(
+        self,
+        arity: int,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ **The pin that kills the measured wrong build.**
+
+        An EXACT set, for :func:`_expected_backfilled_pairs`'s reason: a superset passes a
+        membership check while breaking the mirror (a closure-minting backfill), and a subset
+        is the skip this leg exists to catch.  At arity 1 the expected set is the single
+        SELF-edge ``(x, x)``.
+        """
+        connection, env = migration_db
+        members = await self._cyclic_legacy_store_of_arity(connection, env, arity)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        expected = self._expected_cycle_edges(members)
+        landed = await _blocks_edge_pairs(connection)
+        assert landed == expected, (
+            f"the backfill did not mirror a legacy {arity}-member cycle onto the edge table "
+            f"(ESC-4, ruled reading A). The edge set must MIRROR the column, whatever the "
+            f"cycle's arity: a skipped member leaves a row whose column says 'blocked' and "
+            f"whose edges say 'not blocked', which is the divergence the mirror invariant "
+            f"asserts cannot happen — and the traversal then serves ids=[] truncated=False "
+            f"on a task that can never be claimed (sidecar S3's shape). "
+            f"missing={sorted(expected - landed)} unexpected={sorted(landed - expected)}"
+        )
+
+    @pytest.mark.parametrize(
+        "arity", LEGACY_CYCLE_ARITIES, ids=[f"arity-{n}" for n in LEGACY_CYCLE_ARITIES]
+    )
+    async def test_a_legacy_CYCLE_of_this_ARITY_is_RECORDED_never_silent(
+        self,
+        arity: int,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ *"The RECORD is what stops it being silent."*
+
+        ⚠ Asserted over the UNION of the WARNING records rather than demanding ONE record
+        that names every member, and that is a deliberate weakening: a build that logs one
+        record per repaired ROW and a build that logs one per detected CYCLE are both
+        legitimate, and a pin requiring a single all-naming record would fail the first for a
+        reason no ruling carries.  What the operator needs is that **no member goes
+        unnamed** — that is what is asserted.
+        """
+        connection, env = migration_db
+        members = await self._cyclic_legacy_store_of_arity(connection, env, arity)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        loud = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+        unnamed = [member for member in members if not any(member in text for text in loud)]
+        assert loud and not unnamed, (
+            f"the backfill minted a legacy {arity}-member cycle and left "
+            f"{unnamed or 'every member'} unnamed at WARNING or above. A legacy cycle is a "
+            f"pre-existing DATA defect: an operator who is never told cannot repair the rows, "
+            f"and the next reader rediscovers it from a task that is stuck forever (ESC-4). "
+            f"loud records={loud!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "arity", LEGACY_CYCLE_ARITIES, ids=[f"arity-{n}" for n in LEGACY_CYCLE_ARITIES]
+    )
+    async def test_the_TRAVERSAL_TERMINATES_over_a_backfilled_cycle_of_this_ARITY(
+        self,
+        arity: int,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The half of ESC-4 that says minting is SAFE — *"``+collect`` terminates on
+        cycles (probe P4)"* — held at the arities the sibling pin does not reach.
+
+        Probe P4 measured termination on a 4-cycle; the SELF-loop is the shape most likely to
+        behave differently (a one-hop edge whose endpoints are the same row), and it is the
+        one this packet's own guard calls *"the 1-cycle which ``ENFORCED`` alone cannot
+        stop"*.  Pinned as a MEASUREMENT rather than inherited as a claim.
+
+        ⚠ **STATED BOUND, identical to the sibling's:** it asserts that the read RETURNS,
+        that it DEDUPLICATES, and — for a cycle longer than one — that it reaches every OTHER
+        member.  It deliberately asserts nothing about ``truncated`` and nothing about whether
+        the starting row appears in its own reach; neither is ruled, and pinning an unruled
+        value is the C-DEF risk ESC-4 was escalated to avoid.
+        """
+        connection, env = migration_db
+        members = await self._cyclic_legacy_store_of_arity(connection, env, arity)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            result = await _transitive_blockers(ledger, members[0])
+        finally:
+            await ledger.close()
+        others = set(members[1:])
+        assert others <= set(result.ids), (
+            f"the traversal over a backfilled {arity}-member legacy cycle did not reach "
+            f"{sorted(others - set(result.ids))}, which the columns put upstream of "
+            f"{members[0]!r}: {sorted(result.ids)}"
+        )
+        assert len(result.ids) == len(set(result.ids)), (
+            f"the closure over a {arity}-member cycle returned DUPLICATES, so it is WALKING "
+            f"the cycle rather than COLLECTING it: {result.ids}"
+        )
+
+
+class TestTheBackfillMirrorsADependencyOnASUPERSEDEDTask:
+    """RED today.  ⛔ **THE INTERACTION OF TWO INDIVIDUALLY-CORRECT RULINGS.**
+
+    R10(ii) rules that the blocker pre-check REFUSES a superseded blocker, because *"a
+    ``blocked_by`` naming a superseded task is NEVER legitimate"*.  R11 rules that the
+    backfill mirrors the ``blocked_by`` COLUMN onto the edge table.  A builder carrying
+    R10(ii)'s notion into R11's filter — one line, ``resolved = resolved - superseded``,
+    after the shared existence probe — satisfies both rulings as it reads them and **restores
+    sidecar S3's exact false clear**: the dependency vanishes from the edge set, the traversal
+    serves ``ids=[] truncated=False``, and the claim CAS refuses the row forever.
+    MEASURED: that build passed the WHOLE contract, 215 passed / 0 failed.
+
+    **The distinction the builder needs, stated once:** refusing a superseded blocker at
+    WRITE time is a decision about a dependency someone is creating NOW.  Dropping one at
+    MIGRATION time is a decision about a dependency that ALREADY EXISTS — and R10(iii) says
+    outright that *"supersession can happen AFTER dependents exist"*, so this row is not a
+    contrivance, it is the case R10(iii) was added to cover.  The mirror is over the COLUMN,
+    ∀ rows and ∀ blocker STATES.
+
+    ⚠ **A SECOND MONOCULTURE AXIS, NAMED** (final adversary §P2): every blocker in
+    ``legacy_column_store`` is ``open`` and non-superseded, so the LIFECYCLE STATE of a
+    blocker is a value no SECTION K fixture varies.
+    """
+
+    @staticmethod
+    async def _legacy_dependent_of_a_superseded_task(
+        connection: SurrealConnection, env: SurrealEnv
+    ) -> tuple[str, str, str]:
+        """A COLUMN-ONLY dependency on a blocker that has since been SUPERSEDED.
+
+        Built through the real ledger and then stripped back to the edge-less world, because
+        ``superseded_by`` is stamped by ``supersede_task`` inside its own transaction and no
+        raw seed should re-implement that stamp (repo law #102 — the fixture calls the verb).
+        ``DELETE blocks`` returns the store to the production-real partial state: columns
+        present, edges absent.
+
+        Returns ``(waiter, blocker, successor)``.
+        """
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            blocker = await ledger.create_task(
+                "work that got reframed", DESCRIPTION, created_by=CREATOR
+            )
+            successor = await ledger.supersede_task(
+                blocker,
+                subject="the reframed item",
+                description=DESCRIPTION,
+                created_by=CREATOR,
+            )
+        finally:
+            await ledger.close()
+        waiter = f"waiter_{uuid.uuid4().hex}"
+        await _seed_legacy_task(connection, waiter, blocked_by=[blocker], status=STATUS_OPEN)
+        await run(connection, f"DELETE {BLOCKS_RELATION_NAME}")
+        rows = await run(
+            connection,
+            f"SELECT VALUE superseded_by FROM type::record('{TASK_TABLE}', $id)",
+            {"id": blocker},
+        )
+        assert rows and rows[0] is not None, (
+            f"the fixture's blocker {blocker!r} is NOT superseded, so this class measures "
+            f"nothing about a superseded blocker: superseded_by={rows!r}"
+        )
+        assert await _blocks_edge_pairs(connection) == set(), (
+            "the fixture still holds blocks edges, so the backfill it exists to measure has "
+            "nothing to do and both legs below pass for a fixture reason"
+        )
+        return waiter, blocker, successor
+
+    async def test_a_legacy_dependency_on_a_SUPERSEDED_task_is_STILL_MIRRORED(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The EXACT set, so a build that mints the edge AND something else fails too."""
+        connection, env = migration_db
+        waiter, blocker, successor = await self._legacy_dependent_of_a_superseded_task(
+            connection, env
+        )
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        landed = await _blocks_edge_pairs(connection)
+        assert landed == {(blocker, waiter)}, (
+            f"the backfill did not mirror a legacy dependency whose blocker had been "
+            f"SUPERSEDED (by {successor!r}). R10(ii) refuses such a blocker at WRITE time; "
+            f"reusing that refusal as the MIGRATION's filter drops a dependency that already "
+            f"exists — the case R10(iii) names verbatim, *'supersession can happen AFTER "
+            f"dependents exist'* — and the row is then served as unblocked while the claim "
+            f"CAS holds it blocked forever. The mirror is over the COLUMN, forall rows and "
+            f"forall blocker states. expected={sorted({(blocker, waiter)})} got={sorted(landed)}"
+        )
+
+    async def test_a_SKIP_is_never_RECORDED_as_a_PHANTOM_when_the_row_EXISTS(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ **The operator record must not teach something false.**
+
+        R11's rider makes phantom skips RECORDED *"so an operator can act"*.  A build that
+        drops this dependency and files it under the phantom skip sends that operator after a
+        row that is plainly there — the log is not merely incomplete, it ASSERTS a fact about
+        the data that is false, which is the same class as a confident empty.
+
+        ⚠ The POSITIVE control for this leg is its neighbour
+        :meth:`TestThePHANTOMBlockerIsSKIPPEDAndRECORDED.test_the_phantom_SKIP_is_RECORDED_never_silent`,
+        which proves a GENUINE phantom IS recorded as one — so this pin cannot be satisfied by
+        a build that never records anything.  It is not duplicated here (repo law #102).
+        """
+        connection, env = migration_db
+        waiter, blocker, _successor = await self._legacy_dependent_of_a_superseded_task(
+            connection, env
+        )
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        lying = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+            and "phantom" in _recorded_text(record).lower()
+            and blocker in _recorded_text(record)
+        ]
+        assert not lying, (
+            f"the migration recorded {blocker!r} as a PHANTOM blocker of {waiter!r}, and that "
+            f"row EXISTS — the record an operator acts on is false. A phantom is a "
+            f"blocked_by entry naming NO task row; this one names a row that is merely "
+            f"superseded. records={lying!r}"
+        )
+
+
+class TestTheBackfillMirrorsADependencyOnATERMINALBlocker:
+    """RED today.  ⛔ **The other half of the LIFECYCLE-STATE axis.**
+
+    ``legacy_column_store`` holds a TERMINAL TASK (``LEGACY_TERMINAL_TASK``) and
+    :meth:`TestTheBACKFILLClosesTheLEGACYEdgeGap.test_the_backfill_covers_a_TERMINAL_row_too_not_only_the_OPEN_ones`
+    pins that the backfill covers it — but that is the status of the row being BACKFILLED.
+    **Every BLOCKER in that fixture is ``open``**, so *"the dependency already finished, there
+    is nothing to mint"* is a plausible, defensible-sounding wrong build that no pin sees.
+
+    It is a quieter defect than its superseded sibling — a row blocked only by a ``done`` task
+    IS claimable, so the traversal and the CAS still agree and
+    :class:`TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS` cannot catch it.  What it breaks is
+    **edge ≡ ``blocked_by``** itself, and 04b-2's critical-path render then cannot show a
+    consumer WHY a chain finished the way it did.  The mirror is over the COLUMN; the backfill
+    does not get to decide which dependencies were worth recording.
+
+    Both terminal statuses, because the terminal SET is ``{done, wontfix}`` and a build may
+    reach only one of them.
+    """
+
+    @staticmethod
+    async def _legacy_dependent_of_a_terminal_task(
+        connection: SurrealConnection, env: SurrealEnv, blocker_status: str
+    ) -> tuple[str, str]:
+        """A COLUMN-ONLY dependency on a blocker driven to ``blocker_status``."""
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            blocker = await ledger.create_task(
+                "work that finished", DESCRIPTION, created_by=CREATOR
+            )
+            await _drive_to(ledger, blocker, blocker_status)
+        finally:
+            await ledger.close()
+        waiter = f"waiter_{uuid.uuid4().hex}"
+        await _seed_legacy_task(connection, waiter, blocked_by=[blocker], status=STATUS_OPEN)
+        await run(connection, f"DELETE {BLOCKS_RELATION_NAME}")
+        assert await _blocks_edge_pairs(connection) == set(), (
+            "the fixture still holds blocks edges, so the backfill it exists to measure has "
+            "nothing to do and the leg below passes for a fixture reason"
+        )
+        return waiter, blocker
+
+    @pytest.mark.parametrize(
+        "blocker_status", [STATUS_DONE, STATUS_WONTFIX], ids=["done-blocker", "wontfix-blocker"]
+    )
+    async def test_a_legacy_dependency_on_a_TERMINAL_task_is_STILL_MIRRORED(
+        self,
+        blocker_status: str,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        connection, env = migration_db
+        waiter, blocker = await self._legacy_dependent_of_a_terminal_task(
+            connection, env, blocker_status
+        )
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        landed = await _blocks_edge_pairs(connection)
+        assert landed == {(blocker, waiter)}, (
+            f"the backfill did not mirror a legacy dependency whose blocker is already "
+            f"{blocker_status!r}. 'That dependency is finished, there is nothing to mint' is "
+            f"a decision the migration does not get to make: the mirror is over the COLUMN, "
+            f"forall rows and forall blocker states, and an edge set that quietly disagrees "
+            f"with the column is the divergence the invariant asserts cannot happen. "
+            f"expected={sorted({(blocker, waiter)})} got={sorted(landed)}"
+        )
+
+
+class TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS:
+    """RED today.  ⛔ **THE ∀-OVER-OUTCOMES PIN — the one that closes the CLASS.**
+
+    Every other pin in SECTION K guards a CAUSE that was debugged: the missing backfill, the
+    phantom skip, the 2-cycle, the superseded blocker, the cycle arities.  THE QUANTIFIER LAW
+    says an invariant conditioned on the failure mode that prompted the work is not the
+    invariant — so this class pins the OUTCOME instead:
+
+        **no row may be SERVED as having nothing upstream while the claim CAS holds it
+        blocked.**
+
+    Any backfill filter — present, future, or not yet imagined — whose skip makes the
+    traversal disagree with the CAS dies here.  MEASURED: it is RED on both of the wrong
+    builds that survived the whole contract (the skipped SELF-loop and the dropped SUPERSEDED
+    blocker) and GREEN on a correct one.
+
+    ``TestTheBoundedReadKeepsTheClaimAgreement`` makes the same agreement demand of
+    ``query_tasks``; **nothing made it of the TRAVERSAL**, which is the surface 04b-2 renders
+    a critical path from.
+
+    ⚠ **THE IMPLICATION IS ONE-DIRECTIONAL, AND THAT IS NOT A WEAKNESS.**  ``ids != []`` does
+    NOT mean unclaimable — a task whose only blocker is ``done`` has an upstream blocker and
+    is perfectly claimable, and one of the shapes below forces exactly that so the direction
+    cannot be quietly inverted.  What must never happen is the confident empty.
+    """
+
+    #: Every shape's row is OPEN, UNOWNED and NOT superseded, so a refused claim is caused by
+    #: a BLOCKER and never by the row's own lifecycle — a fixture where a claim could fail for
+    #: two reasons cannot tell which one it observed.
+    CLAIMER = "agreement-auditor"
+
+    @staticmethod
+    async def _legacy_world(
+        connection: SurrealConnection, env: SurrealEnv
+    ) -> tuple[dict[str, str], str]:
+        """The shapes, as COLUMNS ONLY, then handed to the backfill.
+
+        Live blockers are created through the ledger (a ``done`` blocker has to travel a legal
+        transition; a superseded one has to be stamped by ``supersede_task``), the dependent
+        rows are RAW-seeded because a blocked+legacy row is unreachable through the public
+        verbs, and ``DELETE blocks`` returns the store to the edge-less world 04b-1 deploys
+        into.  Returns ``(shapes, phantom_row_id)``.
+        """
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            open_blocker = await ledger.create_task(
+                "a live open blocker", DESCRIPTION, created_by=CREATOR
+            )
+            done_blocker = await ledger.create_task(
+                "a live blocker that finished", DESCRIPTION, created_by=CREATOR
+            )
+            await _drive_to(ledger, done_blocker, STATUS_DONE)
+            reframed = await ledger.create_task(
+                "a live blocker that got reframed", DESCRIPTION, created_by=CREATOR
+            )
+            await ledger.supersede_task(
+                reframed,
+                subject="the reframed item",
+                description=DESCRIPTION,
+                created_by=CREATOR,
+            )
+        finally:
+            await ledger.close()
+
+        shapes: dict[str, str] = {}
+        for label, blockers in (
+            ("no blockers at all", []),
+            ("blocked on a LIVE OPEN task", [open_blocker]),
+            ("blocked on a LIVE DONE task", [done_blocker]),
+            ("blocked on a SUPERSEDED task", [reframed]),
+        ):
+            row = f"agree_{uuid.uuid4().hex}"
+            await _seed_legacy_task(connection, row, blocked_by=blockers, status=STATUS_OPEN)
+            shapes[label] = row
+        self_loop = f"selfloop_{uuid.uuid4().hex}"
+        await _seed_legacy_task(
+            connection, self_loop, blocked_by=[self_loop], status=STATUS_OPEN
+        )
+        shapes["blocked on ITSELF (the 1-cycle)"] = self_loop
+
+        phantom_row = f"phantom_carrier_{uuid.uuid4().hex}"
+        await _seed_legacy_task(
+            connection,
+            phantom_row,
+            blocked_by=[ghost_id("ghost_blocker")],
+            status=STATUS_OPEN,
+        )
+        await run(connection, f"DELETE {BLOCKS_RELATION_NAME}")
+        return shapes, phantom_row
+
+    async def test_a_row_whose_blockers_ALL_RESOLVE_is_CLAIMABLE_whenever_the_traversal_is_EMPTY(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔⛔ The ∀. For every shape whose ``blocked_by`` names only LIVE task rows:
+        ``ids == [] and truncated is False`` ⇒ the claim is GRANTED.
+
+        ⚠ **THE 'ALL RESOLVE' CONDITION IS ASSERTED, NOT ASSUMED.**  A ``blocked_by`` entry
+        naming no task row is the ONE difference R11's backfill cannot delete (``ENFORCED``
+        forbids the edge, #236 rules the cleanup out), so it is excluded here and pinned
+        SEPARATELY as a known bound by the leg below.  Excluding it silently would be the
+        quantifier defect this class exists to close, one level up.
+
+        ⚠ The claim is DESTRUCTIVE, so every traversal is read FIRST and every claim is
+        attempted afterwards; the verdict is recorded per shape so a failure says WHICH one
+        diverged.
+        """
+        connection, env = migration_db
+        shapes, _phantom_row = await self._legacy_world(connection, env)
+
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            for label, row in shapes.items():
+                for blocker in await _column_blockers_of(ledger, row):
+                    assert await record_exists(connection, TASK_TABLE, blocker), (
+                        f"shape {label!r} names a blocker ({blocker!r}) that is NOT a live "
+                        f"task row, so it is outside this pin's stated scope and would make "
+                        f"the quantifier below dishonest — fix the fixture, not the assertion"
+                    )
+            served = {
+                label: await _transitive_blockers(ledger, row) for label, row in shapes.items()
+            }
+            confident_empty = {
+                label: (result.ids == [] and result.truncated is False)
+                for label, result in served.items()
+            }
+            claimed = {
+                label: (await ledger.claim_task(row, self.CLAIMER)).claimed
+                for label, row in shapes.items()
+            }
+        finally:
+            await ledger.close()
+
+        divergences = [
+            f"{label} ({shapes[label]}): the traversal served "
+            f"{_served_shape(served[label])} and the claim CAS said claimed="
+            f"{claimed[label]}"
+            for label in shapes
+            if confident_empty[label] and not claimed[label]
+        ]
+        assert not divergences, (
+            "the transitive read served a CONFIDENT EMPTY — ids=[] truncated=False, a "
+            "positive assertion that nothing is upstream — for a task the claim CAS refuses. "
+            "A consumer acting on that WITHOUT CHECKING concludes the task is ready and "
+            "attempts a claim that can never win; nothing in the response names the reason. "
+            "That is sidecar S3's defect, whatever backfill filter reintroduced it. "
+            f"Diverging shapes: {divergences}"
+        )
+        assert any(confident_empty.values()), (
+            f"no shape produced ids=[] truncated=False, so the implication above was VACUOUS "
+            f"— a build serving a non-empty answer for everything would pass it: "
+            f"{ {label: _served_shape(result) for label, result in served.items()} }"
+        )
+        assert not all(confident_empty.values()), (
+            f"every shape produced ids=[] truncated=False, so the fixture cannot tell a "
+            f"traversal that answers from one that answers CONSTANTLY: "
+            f"{ {label: _served_shape(result) for label, result in served.items()} }"
+        )
+        assert any(claimed.values()) and not all(claimed.values()), (
+            f"every shape landed on the SAME side of the claim gate, so the agreement above "
+            f"holds for a fixture reason: {claimed}"
+        )
+
+    async def test_KNOWN_BOUND_a_PHANTOM_blocker_is_the_ONE_row_the_traversal_CANNOT_see(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ **WHEN YOU CANNOT CLOSE A HOLE, PIN IT** (repo law; #137/#138's instrument).
+
+        A legacy ``blocked_by`` naming NO task row is, permanently, in the COLUMN and not in
+        the traversal: ``ENFORCED`` forbids the edge, R11's backfill therefore SKIPS it, and
+        #236 rules the cleanup of such rows OUT.  So the agreement above has exactly one
+        exception, and this leg ASSERTS the exception rather than leaving it as a silent
+        narrowing — the difference between a bound the next engineer meets DELIBERATELY and
+        one they rediscover from an outage.
+
+        The consumer-facing half of this bound is the read's own docstring
+        (:class:`TestTheScopeOfTheTransitiveReadIsSTATED`) — *a bound is a FACT, never a
+        disclaimer*.
+
+        ⚠ **NAMED RE-OPEN TRIGGER:** this pin goes RED the day the phantom residue is closed
+        — by a backfill that records it in some other channel the read consults, by #236 being
+        overturned, or by the read falling back to the COLUMN.  **If you closed it
+        deliberately, DELETE this pin and widen the ∀ above to cover every row.**
+        """
+        connection, env = migration_db
+        _shapes, phantom_row = await self._legacy_world(connection, env)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            result = await _transitive_blockers(ledger, phantom_row)
+            claim = await ledger.claim_task(phantom_row, self.CLAIMER)
+        finally:
+            await ledger.close()
+        assert result.ids == [] and result.truncated is False, (
+            f"the traversal returned something for a row whose ONLY blocker names no task "
+            f"row. ENFORCED forbids that edge and R11 skips it, so the read cannot see it — "
+            f"if this build CAN, the residue is closed and the sibling ∀ pin should be "
+            f"widened to cover every row. served={_served_shape(result)}"
+        )
+        assert not claim.claimed, (
+            f"the claim CAS ACCEPTED a task whose blocked_by names a never-minted id. That "
+            f"is a DIFFERENT and worse defect than the bound this pin describes: the CAS "
+            f"counts an unresolvable blocker and must refuse forever. claim={claim!r}"
+        )
+
+
+#: How many legacy edges the ONE-TRANSACTION pin backfills at each leg.  A GROWTH comparison,
+#: never a threshold: a per-edge write costs one round trip per edge and a single transaction
+#: costs the same at any size, so the two builds are distinguishable only by comparing sizes.
+#: 30 rather than 60 because the fixture writes each legacy row individually and the property
+#: is a ratio, not a magnitude.
+LEGACY_BACKFILL_EDGES_LARGE = 30
+LEGACY_BACKFILL_EDGES_SMALL = 2
+
+
+class TestTheBackfillIsONETransaction:
+    """RED today.  ⛔ **R11's OWN RATIONALE, WHICH NOTHING PINNED.**
+
+    R11 pre-filters the backfill through the existence policy for one stated reason: *"a naked
+    backfill meets legacy phantom blockers, which meet ``ENFORCED``, and rolls back the entire
+    **one-transaction** migration."*  That sentence is FALSE of a build that issues one
+    ``RELATE`` per legacy edge — and MEASURED, such a build passed the whole contract, because
+    :class:`TestTheNakedBackfillWouldRollTheMigrationBack` measures the **ENGINE** (a
+    hand-composed transaction) and never the build.
+
+    The consequence is concrete and it is not only theoretical hygiene: **PROOF 10b's declared
+    RED set is derived from that premise** (*"the whole migration rolls back, so nothing lands
+    at all"*).  Against an N-writes build the proof returns FEWER reds than declared →
+    ``PROOF FAILED`` → and the builder's next move is to edit the declared list, which is the
+    exact anti-pattern ``scripts/mutation_proof.py`` exists to prevent.
+
+    ⚠ **STATED BOUND, so this class does not over-claim.**  Round trips are what it measures.
+    One round trip is a NECESSARY condition for one transaction and is the property WB-C
+    violates; the ROLLBACK itself is measured on the engine by
+    :class:`TestTheNakedBackfillWouldRollTheMigrationBack`, and the two together are what make
+    R11's rationale true rather than assumed.  A statement-text pin was deliberately NOT
+    written: R7's sibling records why (*"a pin demanding the literal token ``BEGIN`` would
+    redden a build that composes the same guarantee differently"*).
+    """
+
+    @staticmethod
+    async def _boot_traffic(edge_count: int) -> tuple[StoreTraffic, int]:
+        """Round trips for the BOOT that back-fills ``edge_count`` legacy edges.
+
+        A chain rather than a star, so every legacy row carries exactly one blocker and the
+        edge count is the row count minus one — a fixture whose arithmetic a reader can check.
+        The ledger is fresh, so a backfill keyed on a per-instance *"did I already run"* flag
+        cannot pass this by not running.
+        """
+        env = make_env(database=unique_database(), dim=MIGRATION_DIM)
+        connection = await connect_admin(env)
+        try:
+            await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+            ids = [f"boot{index}_{uuid.uuid4().hex}" for index in range(edge_count + 1)]
+            for index, task_id in enumerate(ids):
+                await _seed_legacy_task(
+                    connection,
+                    task_id,
+                    blocked_by=[ids[index - 1]] if index else [],
+                    status=STATUS_OPEN,
+                )
+            ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+            try:
+                traffic = await measure_store_traffic(ledger, ledger.ensure_ready)
+            finally:
+                await ledger.close()
+            return traffic, len(await _blocks_edge_pairs(connection))
+        finally:
+            await connection.close()
+            await drop_database(env)
+
+    async def test_the_BOOTs_round_trips_do_NOT_grow_with_the_number_of_LEGACY_edges(
+        self,
+    ) -> None:
+        small, small_edges = await self._boot_traffic(LEGACY_BACKFILL_EDGES_SMALL)
+        large, large_edges = await self._boot_traffic(LEGACY_BACKFILL_EDGES_LARGE)
+        assert (small_edges, large_edges) == (
+            LEGACY_BACKFILL_EDGES_SMALL,
+            LEGACY_BACKFILL_EDGES_LARGE,
+        ), (
+            f"the two boots minted {small_edges} and {large_edges} edges where their columns "
+            f"call for {LEGACY_BACKFILL_EDGES_SMALL} and {LEGACY_BACKFILL_EDGES_LARGE}. A "
+            f"round-trip comparison between two backfills that did DIFFERENT amounts of work "
+            f"measures nothing — and 'the count did not grow' is trivially true of a backfill "
+            f"that mints nothing at all"
+        )
+        assert small.calls > 0, (
+            f"the instrument saw NO store traffic for a boot that applies DDL and mints "
+            f"{small_edges} edges — it is not observing this path, so the comparison below "
+            f"is worthless: {small}"
+        )
+        assert large.calls == small.calls, (
+            f"a boot that back-filled {LEGACY_BACKFILL_EDGES_SMALL} legacy edges cost "
+            f"{small.calls} round trips and one that back-filled "
+            f"{LEGACY_BACKFILL_EDGES_LARGE} cost {large.calls}. The backfill is issuing one "
+            f"write PER EDGE, so R11's own rationale — *'a naked backfill … rolls back the "
+            f"entire one-transaction migration'* — is FALSE of this build, and PROOF 10b's "
+            f"declared RED set (which assumes nothing lands at all) is measuring a "
+            f"guarantee that does not exist. Compose the edge writes into ONE transaction. "
+            f"small={small.statements} large={large.statements}"
+        )
+
+
 class TestTheBackfillRoutesThroughTheSHAREDExistencePolicy:
     """RED today.  ⛔ **L3 applied to R11** — *"pre-filtered through the L3 existence
     policy"*, proved the only way sharing can be proved: by MUTATION.
@@ -6651,6 +7518,25 @@ class TestTheBlockerPreCheckFAILSCLOSEDWhenItsOwnREADBreaks:
         )
 
 
+#: The engine-rejection MODES this file constructs at the store seam, as
+#: ``(label, statement, params)``.  ⚠ **A DERIVED-ENOUGH SET, AND ITS BOUND IS STATED IN THE
+#: CLASS BELOW.**  Each is a DIFFERENT reason the engine refuses a statement — a malformed
+#: one, an unresolvable function, a missing table, and a statement that ran and was cut off —
+#: so a seam that raises for one reason and returns for another cannot pass by picking the
+#: convenient mode.  MEASURED 2026-07-28 on spike-surreal 3.2.1: all four raise
+#: ``SurrealStoreError`` through ``TaskLedger._query``.
+#: ⚠ The labels are HYPHENATED and space-free ON PURPOSE: they become pytest parametrisation
+#: ids, a parametrisation id becomes part of a node id, and a node id is what
+#: ``scripts/mutation_proof.py --expect-red`` takes on a COMMAND LINE. A label carrying a comma
+#: or a space is a declared-red entry somebody has to quote correctly under ``set -e``.
+_ENGINE_REJECTION_MODES: tuple[tuple[str, str, dict[str, Any] | None], ...] = (
+    ("malformed-statement", "SELECT * FROM task WHERE THIS IS NOT SURQL AT ALL", None),
+    ("unknown-function", "SELECT no::such::function(1)", None),
+    ("absent-table-SCANNED", "SELECT id FROM a_table_that_was_never_defined", None),
+    ("cut-off-by-TIMEOUT", f"SELECT * FROM {TASK_TABLE} TIMEOUT 1ns", None),
+)
+
+
 class TestTheSTORESeamRAISESRatherThanReturningEMPTY:
     """GREEN before and after.  ⛔ The one-level-down control the ``{empty}`` mode needs.
 
@@ -6658,31 +7544,68 @@ class TestTheSTORESeamRAISESRatherThanReturningEMPTY:
     that returns ``[]`` because it FAILED and one that returns ``[]`` because the rows are
     genuinely absent are the SAME BYTES, and no amount of app-level care can separate them.
     Under the trust definition that would be a false clear — *unless the ``{empty}`` mode
-    cannot be produced by degradation in the first place*.
+    cannot be produced by a REJECTED read in the first place*.
 
-    It cannot, and this is the pin that says so with a measurement: the shared store seam
-    RAISES on a rejected statement.  So ``{empty}`` at the app layer means *"the store ran
-    the read and there was nothing"* — a TRUE clear — and every fail-closed refusal above
-    is a refusal about the data, never about a broken instrument.
+    **WHAT THIS CLASS ESTABLISHES, stated exactly, because its first version did not.**
+    A statement the ENGINE REJECTS raises through the ledger's shared seam; it never comes
+    back as ``[]``.  So an app-layer ``{empty}`` cannot have been manufactured by a rejection,
+    and every fail-closed refusal above is a refusal about the DATA rather than about a broken
+    instrument.
 
-    This is the ``ran-and-empty`` vs ``check-FAILED`` distinction §11.3 makes for the
-    footer, applied one layer down and turned into a control rather than a claim.
+    ⚠⚠ **AND THE CORRECTION THAT PRODUCED THIS VERSION, because the failure was this file's
+    own class** (final adversary §SECL, 2026-07-28).  The single leg that used to close this
+    mode measured **a PARSE ERROR** — *"SELECT \\* FROM task WHERE THIS IS NOT SURQL AT
+    ALL"* — while promising, in its own name, that *"a REJECTED read RAISES"*.  A parse error
+    is the ONE failure a FIXED statement string can never take: the existence policy's
+    statement is a literal (``SELECT id FROM $ids``), so it parses on every run of every
+    build.  The message named a general property; the assertion demonstrated one mode of it,
+    and the mode it demonstrated was the unreachable one.  *Interrogate every assertion
+    against its own failure message.*  The set is now :data:`_ENGINE_REJECTION_MODES`.
+
+    ⚠ **THE BOUND, AS A FACT AND NOT A DISCLAIMER — and it is the ONE mode where an app-layer
+    ``{empty}`` really can come from a degraded world.**  The existence read's shape is DIRECT
+    RECORD ACCESS over bound ``RecordID``s, and that shape behaves DIFFERENTLY from a table
+    scan: against a table that does not exist it returns **``OK []``**, not a rejection
+    (MEASURED, and pinned below as ``test_KNOWN_BOUND_…``).  So this class's claim is bounded
+    to *"the table exists"* — which the migration path guarantees, because ``ensure_ready``
+    applies the DDL BEFORE the backfill reads anything.  The residue is a wrong-DATABASE or
+    un-migrated world, and in that world there are no rows to back-fill either.
+    **RE-OPEN TRIGGER, named: the first degraded state in which the shared existence probe
+    returns a PARTIAL set** — a subset of the ids that really exist. That is the one shape
+    neither this class nor the app layer can see, and finding it is a STOP.
+
+    This is the ``ran-and-empty`` vs ``check-FAILED`` distinction §11.3 makes for the footer,
+    applied one layer down and turned into a control rather than a claim.
     """
 
+    @pytest.mark.parametrize(
+        ("label", "statement", "params"),
+        _ENGINE_REJECTION_MODES,
+        ids=[label for label, _statement, _params in _ENGINE_REJECTION_MODES],
+    )
     async def test_a_REJECTED_read_RAISES_it_does_not_come_back_as_an_EMPTY_LIST(
-        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+        self,
+        label: str,
+        statement: str,
+        params: dict[str, Any] | None,
+        task_ledger: tuple[TaskLedger, SurrealEnv, str],
     ) -> None:
+        """⛔ Four modes, one property.  A seam that raised only on a malformed statement
+        would pass a one-mode pin while laundering a TIMEOUT — the mode a deep traversal can
+        actually take — into *"there was nothing"*.
+        """
         ledger, _env, _blocker = task_ledger
         with pytest.raises(Exception) as caught:  # noqa: B017 - the seam's own type
-            await _raw(ledger, "SELECT * FROM task WHERE THIS IS NOT SURQL AT ALL")
+            await _raw(ledger, statement, params)
         assert not isinstance(caught.value, AssertionError), (
-            f"the seam raised the test's own AssertionError: {caught.value!r}"
+            f"the seam raised the test's own AssertionError for mode {label!r}: "
+            f"{caught.value!r}"
         )
 
     async def test_POSITIVE_CONTROL_a_read_that_MATCHES_NOTHING_returns_an_EMPTY_LIST(
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
-        """Without this the leg above is satisfied by a seam that raises on EVERYTHING, and
+        """Without this the legs above are satisfied by a seam that raises on EVERYTHING, and
         then ``{empty}`` would be unreachable for a reason that has nothing to do with
         honesty.
         """
@@ -6694,6 +7617,60 @@ class TestTheSTORESeamRAISESRatherThanReturningEMPTY:
         )
         assert rows == [], (
             f"a legal read matching no rows did not come back as an empty list: {rows!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_EXISTENCE_READS_OWN_SHAPE_answers_at_all(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ The control the bound below needs: the direct-record-access shape the shared
+        policy actually issues RESOLVES a row that exists and DROPS one that does not.
+
+        Without it, ``test_KNOWN_BOUND_…``'s empty answer is indistinguishable from a shape
+        that reads nothing at all — a probe that always returns ``[]`` would satisfy it.
+        """
+        ledger, _env, real_blocker = task_ledger
+        rows = await _raw(
+            ledger,
+            "SELECT id FROM $ids",
+            {"ids": [RecordID(TASK_TABLE, real_blocker), RecordID(TASK_TABLE, ghost_id("nope"))]},
+        )
+        resolved = {_row_key(row["id"]) for row in rows if isinstance(row, dict)}
+        assert resolved == {real_blocker}, (
+            f"the existence read's own shape did not resolve exactly the one id that exists. "
+            f"A non-existent RecordID is silently DROPPED (agent_existence's probed "
+            f"property), so the missing set is requested − returned: {rows!r}"
+        )
+
+    async def test_KNOWN_BOUND_the_EXISTENCE_SHAPE_on_an_ABSENT_TABLE_returns_EMPTY_not_a_RAISE(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **WHEN YOU CANNOT CLOSE A HOLE, PIN IT.**
+
+        A table SCAN of an absent table is REJECTED (mode 3 above).  **Direct record access
+        over the same absent table is not** — it returns ``OK []``, exactly as it does for a
+        row that is merely missing.  So the two worlds *"this table has never been defined"*
+        and *"these ids name no row"* render IDENTICAL BYTES at this seam, and the class
+        docstring's claim is bounded to a store whose ``task`` table exists.
+
+        This leg exists so the bound is met DELIBERATELY.  It is not a defect to fix at this
+        layer: ``ensure_ready`` applies the DDL before anything reads, and a store with no
+        ``task`` table has no rows to resolve either.
+
+        ⚠ **NAMED RE-OPEN TRIGGER:** the day the engine starts REJECTING direct record access
+        over an undefined table, this pin goes RED — and that reddening is good news, because
+        it means the class docstring's bound can be deleted.  **If you are reading this after
+        a SurrealDB upgrade, delete the pin and the bound together, in the same commit.**
+        """
+        ledger, _env, _blocker = task_ledger
+        rows = await _raw(
+            ledger,
+            "SELECT id FROM $ids",
+            {"ids": [RecordID("a_table_that_was_never_defined", ghost_id("nope"))]},
+        )
+        assert rows == [], (
+            f"direct record access over an UNDEFINED table no longer returns an empty list: "
+            f"{rows!r}. If it now RAISES, this bound is closed — delete this pin and the "
+            f"paragraph in this class's docstring that states the bound"
         )
 
 
@@ -6710,10 +7687,22 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
     that exists goes in the render.  The LEDGER's half of that is its docstring; 04b-2 owns
     the rendered half.
 
-    ⚠ A SERVED-ENGLISH pin, in this file's established idiom
-    (``test_the_helpers_docstring_states_the_FLOOR_property``) and with its bound: it checks
-    that the words are PRESENT, not that they are true.  What makes them true is
-    SECTION K's exact-set backfill pin.
+    ⚠⚠ **A SERVED-ENGLISH pin, in this file's established idiom
+    (``test_the_helpers_docstring_states_the_FLOOR_property``) — AND THE BOUND IS STATED
+    EXACTLY RATHER THAN AS "PRESENT, NOT TRUE"** (ESC-3, lead-ruled 2026-07-28).  It checks
+    that the tokens ``blocked_by`` and ``phantom`` are PRESENT.  MEASURED: a docstring reading
+    *"Ignores the ``blocked_by`` column entirely; a ``phantom`` entry IS included in this
+    answer, which is a floor"* — **the exact INVERSE of the truth** — passes this pin.  **A
+    docstring asserting the OPPOSITE of the bound satisfies it.**  The failure mode a reader
+    would infer from *"presence, not truth"* is SILENCE; the real one is INVERSION, and a
+    disclosure that understates its own bound is the false-gate class this repo names (*"a
+    failure message that promises a check the assertion does not perform"*).
+
+    The ruling ACCEPTS this bound deliberately — reading (ii), a phrase-level assertion, was
+    REJECTED as inventing a requirement no ruling carries and as a C-DEF risk.  This is
+    *when you cannot close a hole, PIN it* applied to a hole we are keeping: the next engineer
+    meets it with its rationale attached rather than rediscovering it.  What makes the words
+    TRUE is SECTION K's exact-set backfill pin.
     """
 
     def test_the_helpers_docstring_names_the_PHANTOM_BLOCKER_bound(self) -> None:
@@ -6953,6 +7942,17 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #   M="$F::TestTheBackfillIsIDEMPOTENT"
 #   N="$F::TestTheBackfillRoutesThroughTheSHAREDExistencePolicy"
 #
+# ⚠ FOUR MORE CLASSES JOINED SECTION K ON 2026-07-28 (wave r5), and every declared set below
+# had to be RE-DERIVED against them — a declared set that predates a class is a declared set
+# with a hole, in the direction the both-ways diff exists to catch:
+#   (letters U/V/W/Z, because A/B/C/D/E/G/H/K/L/M/N/P/Q/R/S/T/X/Y are already bound above —
+#    a reused letter silently re-points every proof that already used it.)
+#   U="$F::TestALegacyCycleOfEVERYARITYIsMINTEDAndRECORDED"
+#   V="$F::TestTheBackfillMirrorsADependencyOnASUPERSEDEDTask"
+#   J="$F::TestTheBackfillMirrorsADependencyOnATERMINALBlocker"
+#   W="$F::TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS"
+#   Z="$F::TestTheBackfillIsONETransaction"
+#
 # PROOF 10a — DELETE THE BACKFILL (the S3 world, restored).  Whatever call ``ensure_ready``
 #   makes into the backfill, remove it.  DECLARED RED (7):
 #     --expect-red "$K::test_ensure_ready_BACKFILLS_the_edges_from_the_EXISTING_columns"
@@ -6964,34 +7964,131 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #     --expect-red "$M::test_the_backfill_does_NOT_re_mint_over_edges_a_WRITE_PATH_already_made"
 #     --expect-red "$N::test_MUTATION_neutralising_the_shared_policy_STOPS_the_backfill"
 #     --expect-red "$N::test_a_FAILED_existence_read_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set[arity-1]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set[arity-3]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_RECORDED_never_silent[arity-1]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_RECORDED_never_silent[arity-3]"
+#     --expect-red "$U::test_the_TRAVERSAL_TERMINATES_over_a_backfilled_cycle_of_this_ARITY[arity-3]"
+#     --expect-red "$V::test_a_legacy_dependency_on_a_SUPERSEDED_task_is_STILL_MIRRORED"
+#     --expect-red "$J::test_a_legacy_dependency_on_a_TERMINAL_task_is_STILL_MIRRORED[done-blocker]"
+#     --expect-red "$J::test_a_legacy_dependency_on_a_TERMINAL_task_is_STILL_MIRRORED[wontfix-blocker]"
+#     --expect-red "$W::test_a_row_whose_blockers_ALL_RESOLVE_is_CLAIMABLE_whenever_the_traversal_is_EMPTY"
+#     --expect-red "$Z::test_the_BOOTs_round_trips_do_NOT_grow_with_the_number_of_LEGACY_edges"
 #   ⚠ ``$K::test_WITHOUT_the_backfill_the_traversal_serves_a_CONFIDENT_EMPTY`` and BOTH legs
 #   of ``TestTheNakedBackfillWouldRollTheMigrationBack`` must stay GREEN: they describe the
 #   ENGINE and the pre-R11 world, never the build. If they redden, the mutation reached
 #   further than the backfill and the declared set above is measuring the wrong thing.
-#   (The declared count is NINE, not seven — corrected here rather than in the shell, since
-#   a number restated beside a list rather than derived from it is the retiring clause's
-#   own example. COUNT THE LINES.)
+#   ⚠ THREE MORE MUST STAY GREEN, and each for a REASON worth knowing rather than as a
+#   bookkeeping note — they are the legs whose subject is NOT the backfill:
+#     * ``$U::test_the_TRAVERSAL_TERMINATES_over_a_backfilled_cycle_of_this_ARITY[arity-1]``
+#       — at arity 1 there is no OTHER member to reach, so its reach assertion is vacuously
+#       satisfied by an empty answer. It discriminates termination, not minting.
+#     * ``$V::test_a_SKIP_is_never_RECORDED_as_a_PHANTOM_when_the_row_EXISTS`` — it asserts
+#       an ABSENCE, and a backfill that never runs records nothing at all.
+#     * ``$W::test_KNOWN_BOUND_a_PHANTOM_blocker_is_the_ONE_row_the_traversal_CANNOT_see``
+#       — the phantom residue is what the backfill CANNOT close, so deleting the backfill
+#       cannot change it.
+#   (COUNT THE LINES rather than trusting a number. This block has now carried a wrong count
+#   twice — "seven" where the list held nine, corrected below; and "EIGHTEEN" for one edit,
+#   before $J's two legs joined it. That is exactly why the instruction is COUNT rather than
+#   a number, and why no number is stated here now.)
 #
 # PROOF 10b — DROP THE PRE-FILTER (a NAKED backfill).  Let the phantom RELATE into the
 #   migration transaction.  DECLARED RED: every leg of $K, $L and $M — the whole migration
 #   rolls back, so nothing lands at all — plus
 #   ``$B::test_ensure_ready_on_a_DIRTY_store_makes_the_guard_LIVE``, which drives the same
-#   entry point on a store whose rows are edge-less.  ⚠ THIS PROOF IS THE ONE THAT SAYS
-#   R11's wrinkle is real: if it comes back with FEWER reds than that, the migration is not
-#   one transaction and ``TestTheNakedBackfillWouldRollTheMigrationBack`` is lying.
+#   entry point on a store whose rows are edge-less, plus BOTH legs of $W (its fixture is the
+#   only wave-r5 one carrying a PHANTOM, so it is the only one whose ``ensure_ready`` fails).
+#   ⚠ THIS PROOF IS THE ONE THAT SAYS R11's wrinkle is real: if it comes back with FEWER reds
+#   than that, the migration is not one transaction and
+#   ``TestTheNakedBackfillWouldRollTheMigrationBack`` is lying.
+#   ✅ **AND THAT PREMISE IS NOW PINNED ON THE BUILD, WHICH IT WAS NOT** —
+#   ``$Z::test_the_BOOTs_round_trips_do_NOT_grow_with_the_number_of_LEGACY_edges``.  Before
+#   wave r5 a build that issued one RELATE per edge satisfied the whole contract, and against
+#   it this proof returns FEWER reds than declared → ``PROOF FAILED`` → and the builder's next
+#   move is to edit the declared list, the exact anti-pattern the script exists to prevent.
+#   ⚠ $U/$V (acyclic-or-cyclic but PHANTOM-FREE fixtures) and $Z (a phantom-free chain) must
+#   stay GREEN: a naked backfill only rolls back a migration that MEETS a phantom.
 #
 # PROOF 10c — MAKE THE SKIP SILENT (delete the log call, keep the skip).  DECLARED RED (1):
 #     --expect-red "$L::test_the_phantom_SKIP_is_RECORDED_never_silent"
 #   ⚠ ``$L::test_a_store_whose_blockers_ALL_RESOLVE_records_NO_skip`` must stay GREEN — it
 #   fires on the OPPOSITE error (recording a skip that never happened), so a proof that
-#   reddened both would have proved the two legs are one leg.
+#   reddened both would have proved the two legs are one leg.  So must
+#   ``$V::test_a_SKIP_is_never_RECORDED_as_a_PHANTOM_when_the_row_EXISTS``, for the same
+#   reason one level over: it fires on a skip record that names the WRONG row, and deleting
+#   the record cannot produce one.
 #
 # PROOF 10d — ESC-4 (lead-ruled 2026-07-28), the LEGACY CYCLE.  Make the backfill REFUSE a
 #   cycle instead of minting it (reading B, which the ruling rejected).  DECLARED RED (3):
-#   every leg of C="$F::TestALEGACYCycleIsMINTEDAndRECORDED".
-#   ⚠ Every leg of $K/$L/$M must stay GREEN — SECTION K's fixture is ACYCLIC by construction,
-#   so a cycle-refusing backfill may not move it. If one reddens, the refusal is firing on
-#   acyclic rows and the two fixtures are not independent.
+#   every leg of C="$F::TestALEGACYCycleIsMINTEDAndRECORDED", PLUS every ARITY leg wave r5
+#   added and the agreement pin the self-loop shape reaches:
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set[arity-1]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set[arity-3]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_RECORDED_never_silent[arity-1]"
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_RECORDED_never_silent[arity-3]"
+#     --expect-red "$U::test_the_TRAVERSAL_TERMINATES_over_a_backfilled_cycle_of_this_ARITY[arity-3]"
+#     --expect-red "$W::test_a_row_whose_blockers_ALL_RESOLVE_is_CLAIMABLE_whenever_the_traversal_is_EMPTY"
+#   (SIX added; COUNT THE LINES.)  ⚠ Every leg of $K/$L/$M, all of $V and $Z, and
+#   ``$U::…TERMINATES…[arity-1]`` must stay GREEN — those fixtures are ACYCLIC (or, at arity
+#   1, reach nothing to lose), so a cycle-refusing backfill may not move them. If one reddens,
+#   the refusal is firing on acyclic rows and the fixtures are not independent.
+#
+# PROOF 10e — WB-A (MEASURED to survive the pre-r5 contract, 215 passed / 0 failed): SKIP THE
+#   SELF-LOOP.  Insert, inside the backfill's per-dependency loop and BEFORE the mint,
+#   ``if blocker == task_id: continue`` — the one defensive line a builder writes for the
+#   sincerely-held reason *"a task cannot block itself, so don't mint that edge"*.
+#   DECLARED RED (2):
+#     --expect-red "$U::test_a_legacy_CYCLE_of_this_ARITY_is_MINTED_as_an_EXACT_edge_set[arity-1]"
+#     --expect-red "$W::test_a_row_whose_blockers_ALL_RESOLVE_is_CLAIMABLE_whenever_the_traversal_is_EMPTY"
+#   ⚠ BOTH ``[arity-3]`` legs must stay GREEN — a 3-cycle contains no ``blocker == task``
+#   pair, and that asymmetry is what proves the two arities discriminate DIFFERENT doors
+#   rather than being one pin wearing two ids.  ``$U::…RECORDED…[arity-1]`` is NOT declared:
+#   whether the cycle is still LOGGED depends on where the mutation sits relative to the
+#   detector, and a declared red that turns on the mutation's placement is a prediction about
+#   the mutation rather than about the build.
+#
+# PROOF 10f — WB-B (MEASURED to survive the pre-r5 contract, 215 passed / 0 failed): CARRY
+#   R10(ii) INTO THE MIGRATION.  Subtract the SUPERSEDED ids from the resolved set the shared
+#   probe returns, BEFORE the skip is recorded — so the migration both drops the edge and
+#   files the drop under the phantom record.  DECLARED RED (3):
+#     --expect-red "$V::test_a_legacy_dependency_on_a_SUPERSEDED_task_is_STILL_MIRRORED"
+#     --expect-red "$V::test_a_SKIP_is_never_RECORDED_as_a_PHANTOM_when_the_row_EXISTS"
+#     --expect-red "$W::test_a_row_whose_blockers_ALL_RESOLVE_is_CLAIMABLE_whenever_the_traversal_is_EMPTY"
+#   ⚠ THE PLACEMENT IS PART OF THE MUTATION, not an incidental detail: subtracting AFTER the
+#   skip record reddens only the first and third legs, and a declared set that does not say
+#   which variant it was written against is a prediction nobody can reproduce.
+#   ⚠ Every leg of $K/$L/$M/$U/$Z must stay GREEN — no other fixture holds a superseded row.
+#
+# PROOF 10g — WB-C (MEASURED to survive the pre-r5 contract): N SEPARATE WRITES.  Replace the
+#   composed migration transaction with a loop issuing one write per fragment.  DECLARED
+#   RED (1):
+#     --expect-red "$Z::test_the_BOOTs_round_trips_do_NOT_grow_with_the_number_of_LEGACY_edges"
+#   ⚠ EVERY leg of $K/$L/$M/$N/$U/$V/$J/$W must stay GREEN, and that is the whole point: the
+#   edges still LAND, so nothing that looks at the resulting edge set can tell the two builds
+#   apart. Only the round-trip growth can.
+#
+# PROOF 10h — THE OTHER HALF OF THE LIFECYCLE AXIS: SKIP A BLOCKER THAT ALREADY FINISHED.
+#   Filter the backfill's dependency set to blockers whose status is NOT in the terminal set —
+#   *"that dependency is done, there is nothing to mint"*.  DECLARED RED (2):
+#     --expect-red "$J::test_a_legacy_dependency_on_a_TERMINAL_task_is_STILL_MIRRORED[done-blocker]"
+#     --expect-red "$J::test_a_legacy_dependency_on_a_TERMINAL_task_is_STILL_MIRRORED[wontfix-blocker]"
+#   ⚠ $W must stay GREEN, and that is the FINDING this proof records rather than a footnote:
+#   a row blocked only by a DONE task is CLAIMABLE, so the traversal and the CAS still agree
+#   and the ∀-over-outcomes pin cannot see this defect at all. It breaks the MIRROR and
+#   nothing else — which is why the mirror needs a pin of its own over this axis.
+#   ⚠ Every leg of $K/$L/$M/$U/$V/$Z must stay GREEN: no other fixture holds a TERMINAL blocker
+#   (``LEGACY_TERMINAL_TASK`` is a terminal ROW whose blocker is ``open`` — a different axis,
+#   and the reason this one went unnoticed).
+#
+# PROOF 11 — WB-D (MEASURED to survive the pre-r5 contract: rows read 10 → 65): #253 ON THE
+#   WRITE PATH.  Drop the dependency-bearing filter from the write-time cycle guard's single
+#   read, so the client-side walk is seeded with the whole task table.  DECLARED RED (1):
+#     --expect-red "$E2::test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_size_of_the_LEDGER"
+#         (E2="$F::TestCreateRefusesToFormACycle")
+#   ⚠ ``$E2::test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`` must stay GREEN —
+#   the walk is still ONE round trip, it simply reads the whole ledger inside it. That a
+#   round-trip pin cannot see a rows defect is exactly why the rows pin had to exist.
 #
 # PROOF 9 — R9, the surgical widening.  Mutate the strict-parameter guard back to ONE
 #   sentence covering both parameters:
