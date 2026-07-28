@@ -1,6 +1,11 @@
 # 04 — Comms: blocks edge + fleet columns + footer · formerly PKT-28 phase C2c
 size ~0.20 wu · wave C · depends: packet 03
-law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · DEPLOY: yes (both)
+law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · DEPLOY: yes (04b-2 only)
+
+> ⚠ **THIS FILE NOW SERVES THREE PACKETS: 04a (DONE), 04b-1, 04b-2.** The scope division and
+> the rulings that produced it are in **§04b SPLIT** at the bottom; the INDEX table rows are
+> authoritative over any sentence above it. **Every "04b" in the body predates the split** —
+> read it as "04b-1 or 04b-2, per §04b SPLIT".
 
 ## Mission
 Close the C2 surface: the task-DAG `blocks` edge, the fleet view's message columns, the
@@ -31,7 +36,9 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   when traffic pends. ⚠ **DESIGN FORK — OPERATOR-RULED 2026-07-26.** There is **no shared
   render seam**: the three tools are independent `-> str` dispatchers with ~17 return points,
   so appending at the render sites would be sixteen-plus clones of one policy (the #102 shape
-  repo law forbids).
+  repo law forbids). ⚠ **"~17 return points" is 15, MEASURED at 04b's kickoff** —
+  `AppContext.findings` 8 · `AppContext.tasks` 6 · `AppContext.claim_task` 1. The argument is
+  unaffected; the number is not a number anyone derived.
   - **RULED SHAPE: ONE `_comms_footer(...)` helper called from the SINGLE exit of each of the
     three `AppContext` dispatchers.** DRY-legal, mypy-visible, `str`-typed, and
     **mutation-provable — change the footer text and ALL THREE pins must go RED** (a caller
@@ -62,13 +69,19 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   on one verb can never reach. **So `send`'s structural half is DONE, and done more strongly
   than a per-verb guard.** Building to the old text would have re-solved a solved problem while
   leaving the real gaps open.
-  **THE REAL GAP, measured at kickoff — exactly ONE of four relation tables is `ENFORCED`:**
+  **THE REAL GAP, measured at 04a's kickoff — ⚠ AND THIS TABLE WENT STALE AGAIN, IN THE SAME
+  PARAGRAPH THAT WARNS ABOUT IT (corrected at 04b's kickoff, 2026-07-28).** `briefed` read ❌
+  *"confirmed still a bare string"* — **04a FLIPPED IT**. Two of four are `ENFORCED`, not one;
+  the flip is **live in the production store**, verified read-only at 04b's kickoff
+  (`DEFINE TABLE briefed TYPE RELATION IN agent OUT brief ENFORCED SCHEMAFULL`) after it rode
+  packet 42's image. **Re-derive this table before building; do not read it.**
   | edge | endpoints | `ENFORCED`? | note |
   |---|---|---|---|
   | `to` | message→agent | ✅ packet 03 | closed |
-  | `briefed` | agent→brief | ❌ | `BriefLedger.publish(agent_id: str \| None)` — confirmed still a **bare string** |
-  | `refers` | code_node→name | ❌ | **the old text never mentioned these two** |
+  | `briefed` | agent→brief | ✅ **packet 04a** (`6f0e03a`) | closed — live in production |
+  | `refers` | code_node→name | ❌ | **the old text never mentioned these two** — deferred to packet **43**, NOT 04b |
   | `answers_to` | code_node→name | ❌ | ditto |
+  | `blocks` | task→task | — **absent** | minted by 04b-1, `ENFORCED` from birth (verified absent in the production store at 04b's kickoff) |
   **RULED SCOPE:** `ENFORCED` onto `briefed`, `refers`, `answers_to`, and onto the new `blocks`
   edge **from birth**. The app-level check stays as the **ergonomic layer** — it names EVERY bad
   id BEFORE the write; `ENFORCED` reports ONE, as untyped prose, only AFTER the write is
@@ -196,3 +209,129 @@ probe P4**).
 Full gates + cold audit + deploy BOTH + smoke: a blocked task chain renders its
 critical path; a bogus-recipient publish/send teaches instead of dangling; #105
 resolved; INDEX row + Log.
+⚠ **Superseded per half by §04b SPLIT.** "deploy BOTH" is void — see the ruling below.
+
+---
+
+# §04b SPLIT — kickoff 2026-07-28 (operator-ruled)
+
+## Ground truth that moved before a line was written
+Measured at this kickoff, read-only, and each one contradicts a sentence above:
+1. **04a is ALREADY DEPLOYED.** Its commits merged into the packet-42 branch
+   (`c7983e8` → `7e6c1f9` → `915b7b8`) and shipped in image `e91e37b9`. Verified in the
+   RUNNING artifact (`agent_existence.py` present, `enforced=True` in `_briefed_statements`)
+   and in the **production store** (`briefed` … `ENFORCED`). So 04a's `OVERWRITE` migration
+   landed on the real long-lived store — **which nobody had checked**; 04a's dirty-store
+   evidence was all from the test store. It rode another packet's deploy unverified.
+   **Consequence: "04b DEPLOYS BOTH / carries 04a's schema" is VOID.**
+2. `blocks` is **absent** from the production store — confirmed, not assumed.
+3. **`create_task` is a bare `_query`, not a transaction.** "Mirror the edge inside the
+   existing write txn" is a NO-OP PHRASE for it. `create_many` is transactional; `create_task`
+   is not, and `supersede_task` passes `blocked_by=None` (successor born unblocked).
+4. **`blocked_by` is FAIL-OPEN at write**: nothing validates that a blocker id names a real
+   task. Today such a task is created and is then **unclaimable forever, silently**.
+5. **`refers`/`answers_to` are packet 43's**, not this packet's — the #105 bullet's ruled
+   scope predates the 04a/43 split.
+6. **04a never mutation-proved all four edges** — it scoped that proof to the one edge it
+   flipped (`FLIPPED_BY_04A`, a single entry). The proof must be WIDENED here, not inherited.
+7. **#219 does NOT invert.** An AST sweep of all 187 production files found **zero**
+   identities interpolated into query text; six residual classes each adjudicated
+   individually. The prose is simply false — and it has **four** sites, not two.
+
+## The four operator rulings
+- **R1 — the footer gets a real caller identity.** The three ledger tools carry NO caller
+  identity today (only bare free-text `owner`/`actor`/`created_by`, never resolved against the
+  `agent` table), so *"traffic pends for YOU"* had no YOU and **the footer was not buildable as
+  specified**. RULED: add an **optional `agent` (+`session`)** parameter to `lore_tasks`,
+  `lore_claim_task` and `lore_findings`, mirroring `lore_comms`' identity contract; resolve
+  through the registry; **`agent` omitted ⇒ NO footer** — honest silence, never a guess.
+  *Rejected: resolving `owner`/`actor`/`created_by` heuristically (a guessed identity serves a
+  WRONG footer — a trust-doctrine hazard) and a fleet-wide agent-independent line (a different
+  feature).* This meets the `_INSTRUCTIONS` equality pin deliberately, through the declared
+  paragraph allowlist — never by growing `_COMMS_DUTY_VOCABULARY`, whose docstring forbids it.
+- **R2 — #247 is CLOSED HERE, in 04b-1**, not routed to 05. Measured: unreachable via
+  `lore_comms` (the sender is store-resolved by `agent_registry.touch`) but **caller-supplied
+  and unvalidated at the `MessageLedger.send` seam**; `message.sender` is an unconstrained
+  `record<agent>` and `to`'s `ENFORCED` cannot see it (a FIELD, not an edge endpoint). By the
+  packet's own "is it in the diff" test this was 05's — the operator granted the scope instead,
+  because the shared policy is already in hand.
+- **R3 — `blocks` ships `ENFORCED` from birth, WITH an app-level pre-check.** This CHANGES a
+  live verb: a `create` naming a phantom blocker is **refused** where today it silently
+  produces an unclaimable task. ⚠ **The 2026-07-26 "no comms consumers, change whatever"
+  ruling does NOT cover this** — `lore_tasks` is in active fleet use. The change is
+  deliberate: a loud refusal replaces a silent black hole. The app check is REQUIRED, not
+  garnish — per P5b the engine's rejection is withheld from the caller by the seam's error
+  hygiene, so it is **the only layer that can teach**.
+- **R4 — "unacked directive" means `acked_at IS NONE` AND `grade = 'directive'`** on the `to`
+  edge: a directive DELIVERED and never discharged. Nothing counts this today. *Rejected:
+  `seen_at IS NONE` (a filtered restatement of the unread column beside it) and the brief-ack
+  sense (already rendered as the fleet's `project` cell).*
+
+## Lead rulings (recorded; overturn by operator ruling)
+- **L1 — footer type discipline (the packet's D2 fork):** the footer is built as `Rendered`
+  and **explicitly `str()`-ed at the append**. Buys `render_line`'s runtime control-char
+  assert, keeps the diff proportional, does not pre-empt PKT-03's retype of the three
+  dispatchers. ⚠ **`Rendered`/`SafeLine` SUBCLASS `str`**, so mypy, the AST template pin, the
+  mint pin and the runtime assert are ALL blind to a `Rendered` demoted by concatenation — and
+  the packet's demanded text-mutation proof cannot see a wrong type choice either. **The type
+  choice needs its OWN pin.**
+- **L2 — the best-effort batch actions** (`findings.resolve_many` / `acknowledge_many`, which
+  may write 5, 3 or **0** of 5 items) footer **iff ≥1 item actually wrote** — the same
+  principle the trigger ruling already applied to `claim_task`'s losing branch. Requires the
+  internal helper to return a write-count beside its rendered string.
+- **L3 — the blocker-existence check is GENERALISED, never cloned.** 04a's
+  `agent_existence.reject_unknown_agents` / `format_unknown_agent_refusal` own a POLICY
+  (existence probe + refusal rendering). A `reject_unknown_tasks` sibling would be copy #2 of
+  that policy — the #102 shape. RULED: generalise to one implementation parameterised by
+  table + label, with the agent entry point kept as a thin typed adapter so 04a's callers and
+  pins are untouched. **Prove sharing by MUTATION**: change the shared refusal text and BOTH
+  the agent pins and the new task pins must go RED. If generalising forces a worse API, that
+  is an ESCALATION, not a licence to write the second copy.
+
+## 04b-1 — task DAG + the sender guard · ~0.25 wu · TEST-ONLY + schema, NO deploy
+**Scope IN:** the `blocks` edge in `surreal_schema::_task_statements` (`ENFORCED` from birth) —
+note `generate_ddl()` does NOT compose the comms/graph tables, so `_task_statements` is the one
+site feeding **both** `generate_task_ddl` and `generate_ddl`; `create_task` converted to
+`self._apply([fragment])` so CREATE+RELATE are atomic; the mirror at both write paths; the
+generalised blocker-existence pre-check (L3); the edge≡`blocked_by` invariant; an acyclicity
+guard over PERSISTED ids (today's only cycle check is `AppContext._find_key_cycle`, over
+`create_many`'s batch-local temp KEYS); the transitive read as a ledger-level helper
+(`@.{1..n+collect}` through the `SELECT … TIMEOUT` form, explicit small bound — **never** the
+bare idiom, which cannot carry a `TIMEOUT` and returns terminal-depth nodes only); the
+relation-edge mutation proof WIDENED from `FLIPPED_BY_04A` to all five edges; **#247**; 04a
+residuals **R-1** (the `ack` leg missing from the sole-decision mutation proof) and **R-2** (the
+id-SHAPE fixture monoculture).
+**Fixture floor (non-negotiable):** ≥3 deep AND branching — a 2-node chain cannot tell the
+closure from the terminal-depth read. Negative fixtures with positive controls throughout; a
+fixture where every endpoint exists cannot discriminate.
+**Removed-behaviour inventory REQUIRED** (delete/replace law): `create_task`'s non-transactional
+write · the fail-open `blocked_by` · `supersede_task` dropping the predecessor's dependencies
+(consistent with today's row — record as `old-behaviour-preserved` DELIBERATELY, not by accident).
+**Entry check:** `blocks` absent from the schema AND from both stores; `_task_statements` is
+still the shared site; `test_derivation_source_unification.py` runs in the wave gate (it is the
+ONLY guard on the `DEFERRED_TO_PACKET_43` exemption, and the edge-set pin
+`test_the_relation_edge_set_is_EXACTLY_the_four_known_edges` will redden on the fifth edge —
+that reddening is the DELIBERATE declaration, not a misfire).
+**Exit:** full gates with a passed-COUNT + cold REFUTE audit + commits; NO deploy (04b-2 ships
+it); findings resolved/filed; INDEX row + Log.
+
+## 04b-2 — the comms surface · ~0.25 wu · DEPLOYS (carries 04b-1)
+**Scope IN:** the blocked-chain / critical-path render; the fleet unread + unacked-directive
+columns (R4's reading), counted over the WHOLE set each label claims — counts come from the
+row-UNLIMITED `roster()`, never the capped `fleet()` window, and every cap
+(`_MAX_FLEET_LIMIT=200`, `_MAX_DRAIN_LIMIT=50`, `config.comms.fleet_limit`) is a window, not a
+denominator; `_comms_footer` per R1 + L1 + L2 (one helper, the SINGLE exit of each of the three
+dispatchers, per-ACTION-OUTCOME trigger, mutation-proven shared); the optional `agent`/`session`
+parameters and the `_INSTRUCTIONS` update; **#219** (all FOUR prose sites); 04a residuals **R-5**
+(`_comms_dispatch`'s `Raises:` omits `MessageLedgerError`) and **R-12** (`brief_ack` has no
+tool-seam teaching pin).
+**Exit:** full gates + cold audit + **deploy = rebuild + recreate BOTH** + smoke; a blocked task
+chain renders its critical path; the footer appears only for a resolved caller with pending
+traffic; #219 + #247 resolved; INDEX rows + Log.
+
+## Surfaced, NOT taken (operator's call, no ruling sought yet)
+- **`TaskLedger._is_blocked` computes "blocked" client-side over an UNBOUNDED
+  `SELECT * FROM task`** — found en route, outside this packet's grant, unfiled.
+- **04a residual R-7 is unfixable as written.** "Widen #105's own text" cannot be done: #105 is
+  already `resolved` with a full corrective note, and `lore_findings` has no verb that edits a
+  subject line (that gap IS finding #129). The subject still reads *"latent today"*.
