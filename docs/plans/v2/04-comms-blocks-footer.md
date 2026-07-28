@@ -300,7 +300,26 @@ guard over PERSISTED ids (today's only cycle check is `AppContext._find_key_cycl
 bare idiom, which cannot carry a `TIMEOUT` and returns terminal-depth nodes only); the
 relation-edge mutation proof WIDENED from `FLIPPED_BY_04A` to all five edges; **#247**; 04a
 residuals **R-1** (the `ack` leg missing from the sole-decision mutation proof) and **R-2** (the
-id-SHAPE fixture monoculture).
+id-SHAPE fixture monoculture); **#253** (added by operator ruling 2026-07-28 — see below).
+
+**#253 — `query_tasks` materialises the WHOLE table (operator-ruled INTO scope 2026-07-28).**
+`tasks.py::TaskLedger.query_tasks` issues `SELECT * FROM task` with **no WHERE and no LIMIT**, then
+applies `status` / `owner` / `blocked` in a Python loop; the tool-level `limit` slices only after
+the whole ledger is materialised into `Task` objects. Folded in HERE because 04b-1 already opens
+this ledger to mint `blocks`, and that edge is plausibly the bounded blocker-resolution mechanism
+the fix wants. ⚠ **The obvious fix is WRONG and the docstring says why:** *"Blocker statuses are
+resolved against the full table so a blocker filtered OUT by the `status`/`owner` filter still
+counts."* Pushing the filters into the store naively **silently mis-classifies** the `blocked`
+partition. The REQUIRED PROPERTIES (stated as properties, not a mechanism — a builder must not
+have to invent the general form): (1) no unbounded whole-table read — filters push into the store,
+blocker resolution is bounded by the candidate set's `blocked_by`/`blocks` edges; (2) the pinned
+semantics SURVIVE — an out-of-filter blocker still counts, a never-minted blocker id is fail-closed
+UNRESOLVED, terminal = `done`/`wontfix`, and the query partition can **never** disagree with the
+atomic claim's server-side `array::len` CAS (`tasks.py::_claim_fragment`), which is the invariant
+the current full read buys; (3) the pin DISCRIMINATES — N unrelated tasks ≫ K blockers, so a
+whole-table read and a bounded read are measurably different. Small-N cannot tell them apart.
+⚠ Note the finding CORRECTS this packet's first framing: the unbounded read is `query_tasks`,
+**not** `_is_blocked`, which is a pure predicate over an already-fetched dict and reads nothing.
 **Fixture floor (non-negotiable):** ≥3 deep AND branching — a 2-node chain cannot tell the
 closure from the terminal-depth read. Negative fixtures with positive controls throughout; a
 fixture where every endpoint exists cannot discriminate.
@@ -330,8 +349,9 @@ chain renders its critical path; the footer appears only for a resolved caller w
 traffic; #219 + #247 resolved; INDEX rows + Log.
 
 ## Surfaced, NOT taken (operator's call, no ruling sought yet)
-- **`TaskLedger._is_blocked` computes "blocked" client-side over an UNBOUNDED
-  `SELECT * FROM task`** — found en route, outside this packet's grant, unfiled.
+- ~~`TaskLedger._is_blocked` computes "blocked" client-side over an UNBOUNDED
+  `SELECT * FROM task`~~ → **RULED INTO 04b-1 as #253** (operator, 2026-07-28), and the symbol
+  named here was WRONG — see the #253 block in 04b-1's scope.
 - **04a residual R-7 is unfixable as written.** "Widen #105's own text" cannot be done: #105 is
   already `resolved` with a full corrective note, and `lore_findings` has no verb that edits a
   subject line (that gap IS finding #129). The subject still reads *"latent today"*.
