@@ -208,12 +208,22 @@ class TestEveryRelationEdgeIsEnforced:
             "decision that belongs to the operator"
         )
 
-    def test_the_relation_edge_set_is_EXACTLY_the_four_known_edges(self) -> None:
+    def test_the_relation_edge_set_is_EXACTLY_the_five_known_edges(self) -> None:
         """An exact-set pin over the emitted edges (the house idiom).
 
-        GREEN at `28387a0` and RED the moment packet 04b adds ``blocks`` — which is the
-        point: a new edge must be ADDED to ``KNOWN_RELATION_EDGES`` with its endpoints
-        stated, so the flip cannot silently miss it.
+        GREEN at `28387a0`, and **RED at `c5a2552`** — exactly as this pin's previous
+        version predicted it would be: *"RED the moment packet 04b adds ``blocks``, which is
+        the point: a new edge must be ADDED to ``KNOWN_RELATION_EDGES`` with its endpoints
+        stated, so the flip cannot silently miss it."*
+
+        ⚠ **THAT REDDENING IS THE DELIBERATE DECLARATION THIS PIN EXISTS TO FORCE, NOT A
+        MISFIRE.**  Packet 04b-1's contract added ``blocks`` to ``KNOWN_RELATION_EDGES``
+        (with ``(task, task)``) BEFORE the edge is emitted; this goes green the moment the
+        builder lands it in ``surreal_schema::_task_statements``.  Two ways of "fixing" it
+        are wrong and are pinned against elsewhere: removing ``blocks`` from the declared
+        set (``test_blocks_edge.py::TestTheBlocksEdgeIsDeclared::test_blocks_is_in_the_DECLARED_edge_set``)
+        and adding it to ``DEFERRED_TO_PACKET_43``, which is the measured wrong build W-C
+        (``…::test_blocks_is_NOT_in_the_DEFERRED_exemption_set``).
         """
         assert set(every_emitted_relation_table()) == set(KNOWN_RELATION_EDGES), (
             "the emitted relation-table set drifted from the declared set in "
@@ -846,11 +856,28 @@ UNREGISTERED_AGENT_ID_WEARING_THE_REGISTERED_SHAPE = (
     "registered_agent_00000000000000000000000000000000"
 )
 
+#: ⚠ **THE id-SHAPE AXIS — packet 04a cold-audit residual R-2, CLOSED HERE by packet
+#: 04b-1's contract (2026-07-28).**  R-2 recorded that every id in this file was
+#: UNBRACKETED, so the id-SHAPE hazard was invisible to the file that OWNS the shared
+#: policy: a hand-rolled ``str(row["id"]).split(":", 1)[-1]`` is right for ``agent:abc`` and
+#: WRONG for a uuid-shaped id, which the SDK renders ``agent:⟨0199c4f1-…⟩`` (store
+#: reference §7).  That exact guess cost the 04a reference-build author **130 red pins**
+#: across ``test_message_ledger.py`` + ``test_brief_ledger.py`` — i.e. the defect was caught
+#: only by NEIGHBOURING suites, which is an accident of where a fixture happened to live
+#: rather than a property of this contract.  Three more constructions below; each renders
+#: differently through ``str(RecordID(AGENT_TABLE, …))``.
+UNREGISTERED_AGENT_ID_UUID_SHAPE = "0199c4f1-7d2a-4e51-9a63-000000000000"
+UNREGISTERED_AGENT_ID_NUMERIC_SHAPE = "20260728"
+UNREGISTERED_AGENT_ID_DASHED_SHAPE = "wave-7-charter"
+
 #: Every negative agent identity, as a parametrisation.  FIXTURES MUST DISCRIMINATE: if the
 #: code can branch on a value, at least one pin must use a DIFFERENT value.
 UNREGISTERED_AGENT_IDS = (
     UNREGISTERED_AGENT_ID,
     UNREGISTERED_AGENT_ID_WEARING_THE_REGISTERED_SHAPE,
+    UNREGISTERED_AGENT_ID_UUID_SHAPE,
+    UNREGISTERED_AGENT_ID_NUMERIC_SHAPE,
+    UNREGISTERED_AGENT_ID_DASHED_SHAPE,
 )
 
 _BRIEF_NAME = "project"
@@ -879,8 +906,19 @@ async def brief_ledger_with_a_real_agent() -> AsyncIterator[tuple[BriefLedger, s
     """
     env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
     setup = await connect_admin(env)
-    registered_id = f"registered_agent_{uuid.uuid4().hex}"
+    # ⚠ R-2, the POSITIVE half of the id-SHAPE axis (packet 04b-1, 2026-07-28).  This was
+    # ``f"registered_agent_{uuid4().hex}"`` — a BARE id — so no leg of this file, positive or
+    # negative, ever exercised the bracketed ``agent:⟨…⟩`` rendering.  A DASHED uuid makes
+    # every POSITIVE leg (the control publishes, the ack, the edge counts) ride the shape a
+    # hand-rolled ``split(":")`` decodes WRONG, which is the direction that matters most:
+    # a mis-decoded REGISTERED id makes the policy refuse a real agent.
+    registered_id = str(uuid.uuid4())
     try:
+        assert "⟨" in str(RecordID(AGENT_TABLE, registered_id)), (
+            "the registered fixture id no longer renders bracketed, so this file has "
+            "silently reverted to residual R-2's blind spot (store reference §7). If the "
+            "SDK's rendering changed, say so — do not just accept the bare shape"
+        )
         await apply_ddl(setup, generate_agent_ddl(), url=env.url)
         await seed_endpoint(setup, AGENT_TABLE, registered_id)
         for absent_id in UNREGISTERED_AGENT_IDS:
@@ -1720,6 +1758,79 @@ class TestTheSharedPolicyIsTheSOLEDecisionPoint:
         finally:
             await ledger.close()
 
+    async def test_MUTATION_neutralising_the_shared_policy_lets_ack_reach_the_ENGINE(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """⚠ **04a cold-audit residual R-1, CLOSED HERE by packet 04b-1's contract
+        (2026-07-28).**  R-1: this class's sole-decision proof mutated ``publish`` and
+        ``send`` only — ``ack`` had NO accept-everything leg, so nothing anywhere showed
+        that ``ack``'s check DECIDES rather than merely being CALLED.  ``ack`` gained the
+        shared check in 04a precisely because an ``ENFORCED`` rejection on its RELATE would
+        otherwise arrive in :meth:`~loremaster.briefs.BriefLedger._relate_briefed`'s
+        ``except SurrealStoreError`` — which is the IDEMPOTENT-RE-ACK signal — leaving two
+        distinct failure modes sharing one catch.
+
+        That makes the observable here NON-OBVIOUS and worth stating: with the app check
+        neutralised, ``_relate_briefed`` DOES catch the engine's rejection, then
+        :meth:`_select_briefed_edge` finds no existing edge to attribute it to and
+        **re-raises**.  So the correct build surfaces ``SurrealStoreError`` and NEVER
+        ``already_acked=True`` — a build that reported the ghost ack as an idempotent no-op
+        would fail here on the raise, and a build keeping a private copy underneath the
+        shared call would fail with its own ``UnknownBriefAgentError`` instead.
+
+        The brief is published FIRST, with ``agent_id=None`` (the legal, edge-free input
+        class), so the mutation is in force for the ACK and nothing else.
+        """
+        import loremaster.briefs
+
+        ledger, _registered, _env = brief_ledger_with_a_real_agent
+        await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER)
+        monkeypatch.setattr(
+            loremaster.briefs, SHARED_POLICY_ATTR, self._accept_everything, raising=True
+        )
+        with pytest.raises(SurrealStoreError):
+            await ledger.ack(
+                agent_id=UNREGISTERED_AGENT_ID,
+                agent_name="ghost",
+                name=_BRIEF_NAME,
+                version=1,
+                via="explicit",
+            )
+        assert await _briefed_edge_count(ledger) == 0, (
+            "the refused ack wrote a briefed edge anyway — an ack for an agent that does "
+            "not exist is a permanent dangling receipt, which is #105's whole subject"
+        )
+
+    async def test_POSITIVE_CONTROL_the_neutralised_policy_still_lets_a_REGISTERED_ack_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        brief_ledger_with_a_real_agent: tuple[BriefLedger, str, SurrealEnv],
+    ) -> None:
+        """The control the ack leg needs, and it is load-bearing three ways: a build that
+        raised ``SurrealStoreError`` for EVERY ack would satisfy the leg above, so would a
+        run in which the substitution silently did not take, and so would a build whose
+        ``briefed`` guard rejected every RELATE (a botched flip).  Here the stub is
+        installed identically and a REGISTERED agent must still ack cleanly.
+        """
+        import loremaster.briefs
+
+        ledger, registered, _env = brief_ledger_with_a_real_agent
+        await ledger.publish(_BRIEF_NAME, _BRIEF_BODY, created_by=_PUBLISHER)
+        monkeypatch.setattr(
+            loremaster.briefs, SHARED_POLICY_ATTR, self._accept_everything, raising=True
+        )
+        result = await ledger.ack(
+            agent_id=registered,
+            agent_name="fixer-b",
+            name=_BRIEF_NAME,
+            version=1,
+            via="explicit",
+        )
+        assert result.already_acked is False
+        assert await _briefed_edge_count(ledger) == 1
+
     async def test_POSITIVE_CONTROL_the_neutralised_policy_still_lets_a_REGISTERED_publish_through(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1905,7 +2016,16 @@ class TestTheSERVEDRefusalTextHasONEImplementation:
 #     --expect-red "$E::test_a_brief_slice_applied_WITHOUT_the_agent_slice_still_guards" \
 #     --expect-red "$G::test_ensure_ready_on_a_DIRTY_store_makes_the_guard_LIVE" \
 #     --expect-red "$H::test_MUTATION_neutralising_the_shared_policy_lets_publish_reach_the_ENGINE" \
-#     -- uv run pytest -q "$F"
+#     --expect-red "$H::test_MUTATION_neutralising_the_shared_policy_lets_ack_reach_the_ENGINE" \
+#     -- uv run pytest -q --show-capture=no "$F"
+#
+# ⚠ THE SET GREW BY ONE MORE ON 2026-07-28 (packet 04b-1, closing 04a cold-audit residual
+# R-1): the new ``ack`` leg observes BOTH LAYERS for the same reason its ``publish`` sibling
+# does — it neutralises the app policy precisely so the ENGINE's ``briefed`` rejection is
+# what it measures — so deleting ``enforced=True`` from ``_briefed_statements`` reddens it
+# CORRECTLY.  Its POSITIVE CONTROL does not (a registered ack needs no guard) and stays out
+# of the set.  Declaring the leg without adding it here would have produced an UNEXPECTED
+# RED; leaving a stale list is how a real finding gets read as a wrong prediction.
 #
 # ⚠ THE SET GREW BY TWO ON 2026-07-27, and the reason is a CORRECTION to the sentence that
 # used to stand here (*"the app-check pins are deliberately NOT in the set"*):
@@ -1932,4 +2052,19 @@ class TestTheSERVEDRefusalTextHasONEImplementation:
 # ``test_MUTATION_send_routes_through_the_same_shared_policy`` replace the shared function
 # at runtime and demand each verb changes behaviour.  A private copy in either module
 # leaves its verb working and reddens the pin.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠ **THE PROOF ABOVE COVERS ONE EDGE OF FIVE, AND THAT IS DELIBERATE.**  Packet 04b-1's
+# brief called this proof a four-edge one; it never was.  ``REPORT-contract-04a-enforced.md``
+# §S4(a) re-scoped it at the 04a/43 split, verbatim: *"It now declares exactly the edges 04a
+# flips: one … A proof still declaring four edges would produce DECLARED REDS THAT STAY
+# GREEN — the direction the both-ways diff exists to catch."*
+#
+# The WIDENING to five edges lives in ``test_blocks_edge.py``'s own ``MUTATION_PROOF``
+# block (packet 04b-1), which carries proofs 1 and 3–5 and states plainly why the widening
+# is NOT UNIFORM: ``briefed``/``to``/``blocks`` carry ``enforced=True`` and their mutation is
+# deleting it, while ``refers``/``answers_to`` are deliberately un-enforced pending packet 43
+# — there is nothing to delete, so their per-edge mutation must be a DIFFERENT one (swapping
+# IN/OUT), proving THEIR pins are live rather than that their guard is.  Declaring one
+# mutation for all five would be the declared-red-that-stays-green shape all over again.
 # =========================================================================== #

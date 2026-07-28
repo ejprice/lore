@@ -1,4 +1,4 @@
-"""Shared scaffolding for the `ENFORCED` relation-edge contracts (packets 04a + 43).
+"""Shared scaffolding for the `ENFORCED` relation-edge contracts (packets 04a + 43 + 04b-1).
 
 Packet 04a's `ENFORCED` sweep was SPLIT on 2026-07-26 (operator ruling, packet 43
 minted `a075e85`): 04a flips ``briefed``; the ``refers`` / ``answers_to`` flip waits on
@@ -8,6 +8,7 @@ therefore live in two files:
 
 * ``test_enforced_relations.py`` — packet 04a
 * ``test_derivation_source_unification.py`` — packet 43
+* ``test_blocks_edge.py`` — packet 04b-1 (the FIFTH edge, ``task->blocks->task``)
 
 **This module exists so they share ONE implementation of the migration idiom rather than
 two copies of it.**  Repo law (#102): if two call sites need the same POLICY it is a
@@ -52,6 +53,7 @@ from loremaster.store.surreal_schema import (
     MESSAGE_TABLE,
     NAME_TABLE,
     REFERS_RELATION,
+    TASK_TABLE,
     TO_RELATION,
     _define_relation_table,
     generate_agent_ddl,
@@ -85,14 +87,34 @@ ALL_DDL_GENERATORS: dict[str, Callable[[], str]] = {
     "generate_graph_ddl": generate_graph_ddl,
 }
 
-#: The relation edges that exist at the 04a/43 split, as ``edge -> (in_table, out_table)``.
-#: An EXACT-SET pin reads this, so adding a fifth edge (packet 04b's ``blocks``) is a
-#: deliberate act with a teaching failure message, never a silent one.
+#: ⚠ **THE FIFTH EDGE, DECLARED BY PACKET 04b-1 ON 2026-07-28 — as a LITERAL, on purpose.**
+#: ``loremaster.store.surreal_schema`` does not export a ``BLOCKS_RELATION`` constant yet, and
+#: a module-level import of one that does not exist would make this scaffold — and therefore
+#: BOTH ``test_enforced_relations.py`` and ``test_derivation_source_unification.py`` —
+#: UNCOLLECTABLE rather than RED (finding #133: those are different states and the
+#: uncollectable one is the dangerous one, because it DELETES pins from the run instead of
+#: failing them).  So the name lives here as a string, and
+#: ``test_blocks_edge.py::TestTheBlocksEdgeIsDeclared``'s
+#: ``test_the_schema_exports_BLOCKS_RELATION_under_this_exact_name`` holds production's
+#: constant equal to it.  The day the constant exists, this literal may be
+#: replaced by the import in one edit.
+BLOCKS_RELATION_NAME = "blocks"
+
+#: The relation edges the schema declares, as ``edge -> (in_table, out_table)``.
+#: An EXACT-SET pin reads this, so adding an edge is a deliberate act with a teaching failure
+#: message, never a silent one.
+#:
+#: ⚠ ``blocks`` was ADDED here by packet 04b-1's contract BEFORE the edge exists, which is
+#: what makes ``test_the_relation_edge_set_is_EXACTLY_the_five_known_edges`` RED until the
+#: builder lands it.  That reddening **is the deliberate declaration the pin exists to
+#: force** (04a contract §6.8), not a misfire — see ``test_blocks_edge.py``'s module
+#: docstring, §"WHAT THIS CONTRACT TURNS RED IN FILES IT DOES NOT OWN".
 KNOWN_RELATION_EDGES: dict[str, tuple[str, str]] = {
     BRIEFED_RELATION: (AGENT_TABLE, BRIEF_TABLE),
     TO_RELATION: (MESSAGE_TABLE, AGENT_TABLE),
     REFERS_RELATION: (CODE_NODE_TABLE, NAME_TABLE),
     ANSWERS_TO_RELATION: (CODE_NODE_TABLE, NAME_TABLE),
+    BLOCKS_RELATION_NAME: (TASK_TABLE, TASK_TABLE),
 }
 
 #: ⚠ THE ONE DECLARED HOLE IN THE ∀ LAW, and the reason it is a NAMED CONSTANT rather
@@ -250,6 +272,20 @@ async def seed_endpoint(connection: SurrealConnection, table: str, row_id: str) 
         },
         NAME_TABLE: {"value": "demo.svc"},
         MESSAGE_TABLE: {"body": "m"},
+        # packet 04b-1: ``task`` becomes a RELATE endpoint (``task->blocks->task``), so it
+        # needs a minimally-valid row here like every other endpoint table.  Every REQUIRED
+        # (non-``option``) column of ``_TASK_FIELD_SPECS`` is present and ``status`` is
+        # inside the closed-domain ASSERT — a row that failed the ASSERT would make every
+        # negative pin fail for a reason that has nothing to do with ``ENFORCED``, which is
+        # the probe's own §6.2 lesson.
+        TASK_TABLE: {
+            "subject": "seeded blocker",
+            "description": "a task row seeded purely to be a live RELATE endpoint",
+            "status": "open",
+            "blocked_by": [],
+            "provenance": {"created_by": "scaffold", "created_at": now.isoformat(), "events": []},
+            "created_at": now,
+        },
     }
     await run(
         connection,
@@ -268,6 +304,11 @@ def edge_set_clause(edge: str) -> str:
     one that fails for the right one).
     """
     clauses = {
+        # ``blocks`` carries NO edge-local field: it is a pure MIRROR of the ``blocked_by``
+        # column, which holds no per-dependency metadata, so a required edge field would
+        # make the edge carry state the column cannot and the mirror invariant could not be
+        # stated at all.  Pinned in ``test_blocks_edge.py`` so this empty clause stays true.
+        BLOCKS_RELATION_NAME: "",
         BRIEFED_RELATION: "SET via = 'register', at = time::now()",
         REFERS_RELATION: (
             "SET kind = 'calls', resolved = true, src_tier = 'custom', "
