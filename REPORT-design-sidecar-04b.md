@@ -69,3 +69,36 @@ STANDING BY.
   size". One builder-brief sentence.
 
 STANDING BY.
+
+---
+
+## Follow-up 2 (2026-07-28, post-`25e2985`) — #259, the STALE badge
+
+- **Own miss owned first (doc §10 header):** my S1-b justification interpreted the badge
+  from its NAME, never its predicate — an un-derived claim inside my own ruling; the
+  operator's reap-first ordering is what exposed it.
+- **S1-b's CONCLUSION SURVIVES, justification replaced and STRONGER (doc §10.1):** a
+  predicate measured to fire on healthy agents is disqualified from driving EXCLUSION a
+  fortiori — the freshness window would today be hiding a live contract author.
+  Annotation-never-exclusion stands; the annotation itself falls.
+- **The badge: candidate (b) NOW (doc §10.2)** — retire `⚠ STALE`, serve the age (already
+  rendered). Anchored: `DEFAULT_COMMS_STALE_HEARTBEAT_S = 600`, one boolean spanning
+  1,020s to 1,407,600s. §1.3 asymmetry decides it: a measure without a verdict
+  under-claims (free); a wrong verdict kills the class categorically. (a)/(c) rejected as
+  rumour thresholds on a channel that measures comms cadence, not liveness; (c)
+  re-openable only behind the named measurement (per-role cadence after 04b-2 traffic;
+  prediction stated: the overlap won't vanish).
+- **(d) is the second step, shipped WITH its consumer (doc §10.3):** declared cadence ⇒
+  `overdue (declared ≤20m, silent 45m)` — a verdict TRUE BY CONSTRUCTION; no declaration
+  ⇒ age only (non-adoption fails honest, unlike the badge). The R1 lesson applied to
+  itself: the parameter lands in packet 06 with the drill that pays it, never before as
+  dead schema. 04b-2 ships (b) alone.
+- **Unacked-on-STALE (doc §10.4):** the cell's value survives — it was never the badge's;
+  it is unacked-N composed with age. The badge's noise threatens only the IMPERATIVE
+  teach line, which would instruct callers to re-route a live builder's traffic (the
+  drain-theft sibling). Same grammar rule as R8: imperatives ride only TRUE verdicts —
+  04b-2 ships the columns as measures, no stranded-imperative; the imperative arrives
+  with (d)'s overdue verdict. Packet 06 owed notice: the glyph retires; orphan detection
+  rides (d).
+
+STANDING BY.

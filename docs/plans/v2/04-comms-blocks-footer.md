@@ -534,6 +534,48 @@ The lead offered four candidate fixes; the sidecar rejected the framing and prod
   train an agent to skim past the signal. S1-a also shrinks the columns' grouped reads to
   fleet-size **by construction**.
 
+## SIDECAR RULING S2 — RETIRE THE `⚠ STALE` BADGE; SERVE THE AGE (2026-07-28, follow-up 2)
+Source: doc §10, on finding **#259**. Found by DOGFOODING **after** the S1-d reap — and it was
+INVISIBLE before it: with 38 corpses on the roster a 17-minute STALE looked like more of the
+same. **The operator's "reap first, then clean up the mess" ordering is what exposed it**, which
+is worth recording as a method, not just an outcome.
+- **The sidecar's own miss, in its words: it read the badge from its NAME, not its PREDICATE** —
+  an un-derived claim inside its own ruling, in a packet whose recurring defect class is
+  exactly that.
+- **MEASURED:** `config.py::DEFAULT_COMMS_STALE_HEARTBEAT_S = 600`, predicate
+  `heartbeat_age_s > stale_after_s`. One boolean spanning **1,020s to 1,407,600s** — a healthy
+  Opus contract author at 17m and a 16-day corpse render IDENTICALLY.
+- **S1-b's CONCLUSION SURVIVES, with a stronger justification.** A predicate measured to fire on
+  HEALTHY agents is disqualified from driving EXCLUSION *a fortiori* — the freshness window
+  rejected in S1-b would, today, be **hiding a live contract author**.
+  Annotation-never-exclusion stands; **what falls is the annotation itself.**
+- **RULED — candidate (b), NOW: retire `⚠ STALE`, serve the AGE** (already computed, already
+  rendered: `hb 17m` / `hb 2d`). DESIGN-LAW §1.3's asymmetry decides it: **a measure without a
+  verdict UNDER-claims, which is nearly free; a wrong verdict kills the class categorically.**
+- **(a)/(c) REJECTED as rumour thresholds** — the channel measures **comms cadence, not
+  liveness**, and a healthy builder's 30–60min gap overlaps early-death **at any threshold**.
+  (c) stays re-openable strictly behind a NAMED measurement (per-role cadence over N real
+  sessions once 04b-2's columns generate traffic; owner = #259's taker) — **with the sidecar's
+  prediction stated in advance so the measurement GRADES it: the overlap will not vanish.**
+- **(d) is the right SECOND step and must ship WITH its consumer:** a declared cadence yields
+  `overdue (declared ≤20m, silent 45m)` — a verdict **true by construction** (the derived-prose
+  law applied to liveness); with no declaration you get age only, so **non-adoption fails
+  HONEST** — the property the badge lacks. ⚠ **Sequencing rider, which is the R1 lesson applied
+  to itself:** the optional parameter lands in **packet 06, with the drill that pays for it**
+  (the drill controls its own briefs, so declaration is guaranteed there) — **never earlier as
+  dead schema nobody passes.** 04b-2 ships (b) alone.
+- **The unacked-on-STALE cell SURVIVES (§10.4) — its value was never the badge's.** It is
+  unacked-N **composed with age**: `unacked 3 · hb 2d` reads as stranded; `unacked 3 · hb 17m`
+  reads as a busy teammate, correctly. **What the badge's noise threatens is the IMPERATIVE**:
+  a "re-route or retire" teach line on a predicate firing at 17m would instruct callers to
+  **re-route a live builder's traffic** — the drain-theft hazard's sibling. Same grammar rule as
+  R8's split: **imperatives ride only TRUE verdicts.** So **04b-2 ships the columns as MEASURES
+  beside the age, with NO stranded-imperative**; the imperative arrives with (d)'s `overdue`
+  verdict, in the packet that builds it.
+- **PACKET 06 IS OWED NOTICE (two items):** the glyph RETIRES, so the drill must not assert
+  `⚠ STALE` in any expected render; and the drill's **orphan-detection leg rides (d)**, not the
+  badge.
+
 ## SIDECAR CAUTION C1 — carry this sentence into the BUILDER brief
 Rounds 2 and 3 were read verbatim at `5a2dca9`: **nothing to overrule** (doc §9), and T5's
 CAS-side `distinct` is judged the right fix of the three available — the only one that heals

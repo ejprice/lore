@@ -130,6 +130,7 @@ WHAT THIS FILE DOES NOT PIN
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from typing import Any
 
@@ -1132,6 +1133,18 @@ class TestTheLimitIsPUSHEDINTOTheStatement:
     async def test_POSITIVE_CONTROL_an_UNLIMITED_query_still_serves_EVERYTHING(self) -> None:
         """The control every cap pin needs: a build that served ``_SERVED_LIMIT`` rows
         unconditionally — or one that truncated every read — would pass all three legs above.
+
+        ⚠ **AND IT NOW HAS A NAMED, MEASURED WRONG BUILD, which it did not when it was
+        written.**  Probed 2026-07-28 against spike-surreal 3.2.1 (``ws://127.0.0.1:18000``,
+        the TEST store; ``docs/reference/surrealdb-31-capabilities.md`` documents no ``LIMIT``
+        behaviour, which is why this was measured rather than looked up)::
+
+            SELECT * FROM t LIMIT $k, $k = NONE  ->  0 rows, NO ERROR
+
+        So the most natural build of ruling R5 — always emit ``LIMIT $limit`` and bind
+        ``None`` when the caller supplied no cap — turns **every unlimited query in the fleet
+        into an empty answer**, silently, with no error anywhere and no round-trip cost to
+        hint at it.  This leg is the only thing in either contract file that catches it.
         """
         ledger, env = await _fresh_ledger()
         try:
@@ -1142,6 +1155,311 @@ class TestTheLimitIsPUSHEDINTOTheStatement:
                 f"{UNRELATED_TASK_COUNT_LARGE} tasks. A cap that applies when the caller did "
                 f"not ask for one is a silently truncated served answer — the trust-doctrine "
                 f"defect, in the fix for a trust-doctrine defect"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+#: The cap ruling **T1**'s pins ask for.  Bigger than :data:`_SERVED_LIMIT` on purpose: the
+#: discrimination below is combinatorial in this value (see
+#: :class:`TestTheCapAppliesToTheANSWERNotTheCandidateScan`), and 5 buys three more orders of
+#: magnitude than 3 for four extra fixture rows.
+_ANSWER_CAP = 5
+
+#: BLOCKED rows seeded BEFORE and AFTER the unblocked ones, so the unblocked population is a
+#: SANDWICH FILLING rather than a prefix or a suffix.  That is what makes the discrimination
+#: below deterministic under insertion order and reverse-insertion order instead of merely
+#: improbable — see the class docstring's three-ordering analysis.
+_BLOCKED_NOISE_EACH_SIDE = 30
+
+
+class TestTheCapAppliesToTheANSWERNotTheCandidateScan:
+    """RED since 2026-07-28.  ⛔ **Ruling T1 — NO SILENT SHORT ANSWERS.**
+
+    T1, verbatim: *"A ``LIMIT`` pushed into the statement cuts rows BEFORE the client-side
+    ``blocked`` filter, so ``query_tasks(status=…, blocked=False, limit=5)`` can serve FEWER
+    than 5 while more exist, with no signal. … RULED: the cap applies to the ANSWER, not the
+    candidate scan; and where the scan is exhausted before the cap fills, it SAYS SO."*
+    ``DESIGN-LAW`` §1.4 names silent truncation the cardinal failure class.
+
+    ⚠ **THIS IS THE ONE PLACE WHERE R5 AND #253 PULL IN OPPOSITE DIRECTIONS, and a builder
+    who satisfies either alone ships the other's defect.**  R5 says push the cap into the
+    statement; #253 says the ``blocked`` partition is decided client-side over the candidate
+    set.  Compose them naively — ``… WHERE status = $s LIMIT 5`` and then drop the blocked
+    ones — and the caller asked for five claimable tasks, got two, and is told nothing.  It
+    will conclude the backlog is nearly empty.  *That is not a slow query; it is a false
+    answer about the fleet's own work queue.*
+
+    **THE FIXTURE IS A SANDWICH, and the reason is that ``LIMIT`` without ``ORDER BY``
+    returns rows in an order this contract must not assume.**  ``_BLOCKED_NOISE_EACH_SIDE``
+    blocked rows are seeded, then ``_ANSWER_CAP`` unblocked ones, then that many blocked rows
+    again — so the unblocked population is neither a prefix nor a suffix of insertion order.
+    Three candidate orderings, all three adjudicated rather than hoped at:
+
+    * **insertion order** — the first ``_ANSWER_CAP`` rows are the root blocker plus blocked
+      noise, so a candidate-cap build serves ONE. Deterministic RED.
+    * **reverse insertion order** — the first ``_ANSWER_CAP`` rows are all blocked noise, so
+      it serves ZERO. Deterministic RED.
+    * **record-id order** (uuid4 hex, i.e. effectively a fresh random permutation each run) —
+      a candidate-cap build passes only if its whole window happens to be unblocked:
+      ``C(6, 5) / C(66, 5)`` = 6 / 8,936,928 ≈ **7e-7** per run.
+
+    **STATED BOUND, because a fixture that a wrong build passes one run in a million is still
+    a fixture a wrong build can pass:** the third case is a probability, not a proof. It is
+    stated here rather than left for an auditor to find, and it is why the cap is 5 and not
+    3 — the same fixture at ``_SERVED_LIMIT`` would be ≈1e-4, which is a flake rate, not a
+    negligible one.
+    """
+
+    @staticmethod
+    async def _sandwich_ledger() -> tuple[TaskLedger, SurrealEnv, str, int]:
+        """A ledger holding blocked noise / unblocked filling / blocked noise, all ``open``.
+
+        Returns the ledger, its env, the root blocker's id, and the TRUE size of the
+        unblocked-and-matching population — which every leg asserts against rather than
+        recomputing, because a fixture that silently produced a different population would
+        turn a discrimination into a tautology.
+        """
+        from loremaster.tasks import TaskSpec
+
+        ledger, env = await _fresh_ledger()
+        root = await ledger.create_task(
+            "the root blocker, which is itself unblocked", DESCRIPTION, created_by=CREATOR
+        )
+
+        async def _blocked_noise(tag: str) -> None:
+            await ledger.create_many(
+                [
+                    TaskSpec(
+                        subject=f"blocked backlog item {tag}-{index}",
+                        description=DESCRIPTION,
+                        blocked_by=[root],
+                    )
+                    for index in range(_BLOCKED_NOISE_EACH_SIDE)
+                ],
+                created_by=CREATOR,
+            )
+
+        await _blocked_noise("before")
+        await ledger.create_many(
+            [
+                TaskSpec(subject=f"claimable backlog item {index}", description=DESCRIPTION)
+                for index in range(_ANSWER_CAP)
+            ],
+            created_by=CREATOR,
+        )
+        await _blocked_noise("after")
+        return ledger, env, root, _ANSWER_CAP + 1  # + the root, which is unblocked too
+
+    async def test_a_capped_BLOCKED_query_serves_the_FULL_cap_when_the_answer_is_bigger(
+        self,
+    ) -> None:
+        """⛔ **The pin R-20 flagged and deliberately left unwritten.**
+
+        ``status`` AND ``blocked`` AND ``limit``, together, for the first time anywhere in
+        either contract file — which is why the hazard survived a contract, an adversary pass
+        and a fix wave: no pin combined the two parameters that interact.
+        """
+        ledger, env, root, true_answer_size = await self._sandwich_ledger()
+        try:
+            unlimited = await _ids(ledger, status=STATUS_OPEN, blocked=False)
+            assert len(unlimited) == true_answer_size, (
+                f"the fixture served {len(unlimited)} unblocked open tasks where it built "
+                f"{true_answer_size}; the sandwich did not come out as intended, so nothing "
+                f"below discriminates anything. root={root!r}"
+            )
+            capped = await _ids(ledger, status=STATUS_OPEN, blocked=False, limit=_ANSWER_CAP)
+            assert len(capped) == _ANSWER_CAP, (
+                f"query_tasks(status=open, blocked=False, limit={_ANSWER_CAP}) served "
+                f"{len(capped)} tasks while {len(unlimited)} genuinely qualify. The cap was "
+                f"applied to the CANDIDATE SCAN, so rows the `blocked` filter then dropped "
+                f"were spent out of the caller's budget — and the caller is told nothing, so "
+                f"it concludes the backlog holds {len(capped)} claimable items when it holds "
+                f"{len(unlimited)} (ruling T1). The cap belongs on the ANSWER: keep drawing "
+                f"candidates until the cap fills or the scan is exhausted"
+            )
+            assert capped <= unlimited, (
+                f"the capped answer is not a SUBSET of the uncapped one — it served "
+                f"{sorted(capped - unlimited)}, which the same query without a cap does not. "
+                f"A cap must window an answer, never change it"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_a_SHORT_answer_means_the_scan_was_EXHAUSTED_never_silently_truncated(
+        self,
+    ) -> None:
+        """⛔ **T1's second clause, at the layer this packet owns.**
+
+        *"Where the scan is exhausted before the cap fills, it SAYS SO."*  A ``list[Task]``
+        has nowhere to carry a flag, so the ledger-level form of that promise is the property
+        the flag would ATTEST: **a short answer is a TRUE short answer.**  If the ledger
+        serves fewer rows than the caller's cap, then there genuinely are no more — asking
+        the identical question with no cap at all returns exactly the same number.
+
+        A candidate-cap build fails this for a cap of ``2 × _BLOCKED_NOISE_EACH_SIDE`` even
+        though that cap is far larger than the answer: it spends its window on blocked rows,
+        serves short, and its shortness is a lie about the ledger rather than a fact about it.
+
+        ⚠ The RENDERED half of T1 — the counted-elision line R9 rules for the no-limit
+        display cap (``+K more — re-run with limit=N``) — is 04b-2's surface and is NOT
+        pinned here.  This is the ledger half, and it is the half that has to be TRUE before
+        any render of it can be honest.
+        """
+        generous_cap = 2 * _BLOCKED_NOISE_EACH_SIDE
+        ledger, env, root, true_answer_size = await self._sandwich_ledger()
+        try:
+            assert generous_cap > true_answer_size, (
+                f"this pin needs a cap the answer cannot fill ({generous_cap} vs "
+                f"{true_answer_size}); the fixture constants have drifted apart"
+            )
+            capped = await _ids(ledger, status=STATUS_OPEN, blocked=False, limit=generous_cap)
+            unlimited = await _ids(ledger, status=STATUS_OPEN, blocked=False)
+            assert len(capped) < generous_cap, (
+                f"the fixture filled a cap of {generous_cap} with {len(capped)} rows, so this "
+                f"measurement never reaches the short-answer case it exists to test. "
+                f"root={root!r}"
+            )
+            assert capped == unlimited, (
+                f"a capped query served {len(capped)} tasks and the SAME query with no cap "
+                f"served {len(unlimited)} — so the short answer was not the scan running out, "
+                f"it was rows being thrown away inside the cap. That is a silent truncation "
+                f"of a served answer (ruling T1, DESIGN-LAW §1.4's cardinal class): the caller "
+                f"cannot distinguish 'that is all there is' from 'that is all I looked at'. "
+                f"missing={sorted(unlimited - capped)}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_POSITIVE_CONTROL_the_SANDWICH_really_holds_blocked_rows_the_WHERE_cannot_see(
+        self,
+    ) -> None:
+        """The control both legs above need, and it is not decoration.
+
+        Their discrimination rests entirely on the noise rows being (a) genuinely BLOCKED and
+        (b) INDISTINGUISHABLE from the answer to the ``status`` filter — if the noise were a
+        different status, the store-side ``WHERE`` would exclude it and a candidate-cap build
+        would pass both legs while the defect stayed wide open.  So both halves are asserted
+        directly, at the same ledger, in the same shape the legs use.
+        """
+        ledger, env, root, true_answer_size = await self._sandwich_ledger()
+        try:
+            every_open = await _ids(ledger, status=STATUS_OPEN)
+            blocked_only = await _ids(ledger, status=STATUS_OPEN, blocked=True)
+            expected_noise = 2 * _BLOCKED_NOISE_EACH_SIDE
+            assert len(blocked_only) == expected_noise, (
+                f"{len(blocked_only)} rows are blocked where the fixture seeded "
+                f"{expected_noise}; the noise is not blocked, so it would never be dropped "
+                f"by the client-side filter and the legs above discriminate nothing. "
+                f"root={root!r}"
+            )
+            assert len(every_open) == expected_noise + true_answer_size, (
+                f"the `status=open` candidate set holds {len(every_open)} rows, not the "
+                f"{expected_noise + true_answer_size} the fixture built — so the noise is NOT "
+                f"indistinguishable from the answer to the store-side WHERE, and a "
+                f"candidate-cap build would never spend its window on it"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+class TestLimitIsLEGALForQueryAtTheToolSeam:
+    """RED since 2026-07-28.  ⛔ **Operator ruling R9's 04b-1 half** — *"``limit`` becomes
+    legal for ``query``"*.
+
+    ⚠ **R9 STATES A CONSEQUENCE NO EARLIER RULING DID, and it is a SERVED-SCHEMA change.**
+    R5 ruled that the tool-level ``limit`` pushes down; re-derived at ``5a2dca9``, through the
+    real handler, ``limit`` is not merely applied late — it is **REFUSED**::
+
+        tasks(action='query', limit=5)
+        -> ValueError: 'since'/'limit' apply only to action='rollup' — omit them for 'query'
+
+    So R5 is not a re-ordering of an existing cap, and the sidecar measured the cost of the
+    gap it leaves: with no cap available, an unfiltered ``query`` served it *the entire
+    ~110-row ledger*.
+
+    **THE POINT OF THIS CLASS IS THAT THE WIDENING IS SURGICAL.**  The single existing seam
+    pin (``TestTheLimitIsPUSHEDINTOTheStatement::test_the_TOOL_SEAM_passes_the_limit_through_to_the_ledger``)
+    observes that ``limit`` now WORKS on ``query`` — and is equally satisfied by a builder who
+    deleted the strict-parameter guard outright, which would silently accept ``since`` on
+    ``create`` and ``limit`` on ``transition`` and quietly retire a real teaching surface.
+    R9 widened one parameter for one action; the three legs below say exactly that.
+
+    ⚠ ``test_mcp_server.py`` holds committed pins asserting today's rejection and is OUTSIDE
+    this contract's writable set — the exact edits are escalation ESC-1 in
+    ``REPORT-contractfix-04b1.md``, and a builder who does not make them meets red tests it
+    may not edit.
+    """
+
+    #: The retired claim, BY VALUE.  A failure message that promises a check the code no
+    #: longer performs is a FALSE GATE (P2, 2026-07-14), and this one would tell an agent to
+    #: omit a parameter that is now the documented way to bound its own answer.
+    RETIRED_CLAIM = "'since'/'limit' apply only to action='rollup'"
+
+    async def test_limit_on_action_QUERY_is_ACCEPTED_by_the_strict_parameter_guard(
+        self,
+    ) -> None:
+        """R9's whole ruling, observed where a caller stands rather than at the ledger."""
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
+            rendered = await _tool_seam(ledger).tasks(action="query", limit=_SERVED_LIMIT)
+            assert isinstance(str(rendered), str), rendered
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_SINCE_on_action_QUERY_is_STILL_REFUSED_and_stops_claiming_limit_is_too(
+        self,
+    ) -> None:
+        """⛔ The leg a builder who deleted the guard fails, and the one that keeps the
+        served sentence honest.
+
+        Two assertions, two different wrong builds: the guard vanishing entirely (no raise),
+        and the guard surviving with its OLD sentence (a refusal that teaches an agent to
+        drop the very parameter R9 just made legal). The second is the subtler and is exactly
+        the class ``CLAUDE.md`` calls *natural-language surfaces whose consistency with code
+        no gate checks*.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            with pytest.raises(ValueError) as caught:  # noqa: PT011 - the TEXT is the assertion
+                await _tool_seam(ledger).tasks(action="query", since="2026-07-01T00:00:00Z")
+            message = str(caught.value)
+            assert "since" in message, (
+                f"the refusal does not name the parameter it rejected: {message!r}"
+            )
+            assert self.RETIRED_CLAIM not in message, (
+                f"the strict-parameter refusal still tells a caller that 'since'/'limit' "
+                f"apply only to action='rollup'. Under ruling R9 that is FALSE for 'limit' on "
+                f"'query', and the reader is an agent learning this tool's contract from the "
+                f"sentence — it will omit the parameter that is now the documented way to "
+                f"bound its own answer. Split the guard; do not widen the behaviour and leave "
+                f"the prose: {message!r}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_limit_on_a_NON_query_NON_rollup_action_is_STILL_REFUSED(self) -> None:
+        """⛔ The leg that makes the widening SURGICAL rather than a deletion.
+
+        ``create`` is chosen because the strict-parameter guard runs BEFORE the
+        required-argument checks, so this observes the guard itself and not a missing
+        ``subject``. R9 widened ONE parameter to ONE action.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            with pytest.raises(ValueError) as caught:  # noqa: PT011 - the TEXT is the assertion
+                await _tool_seam(ledger).tasks(action="create", limit=_SERVED_LIMIT)
+            message = str(caught.value)
+            assert "limit" in message and "create" in message, (
+                f"a 'limit' on action='create' was refused without naming the parameter and "
+                f"the action, so a caller cannot tell which of the two to change: {message!r}"
             )
         finally:
             await ledger.close()
@@ -1279,3 +1597,204 @@ class TestTheTwoReadsShareONESnapshot:
             f"over the ANSWER, and it carries the same open TOCTOU window R7 closes. "
             f"few={few.statements} many={many.statements}"
         )
+
+
+class TestTheInstrumentsOwnREACHIsACheckedVariable:
+    """RED at ``5a2dca9``.  ⛔ **Ruling T4 — instrument reach is a CHECKED VARIABLE, not a
+    stated bound.**
+
+    T4, verbatim: *"``measure_store_traffic`` is blind to non-``query_raw`` SDK calls
+    (contractfix R-22, disclosed as a docstring bound). This repo's six-defeats lesson says a
+    guard is an invariant only over the code it RUNS: enumerate the call sites and ASSERT
+    each was observed, so reach cannot silently become the next name-list."*
+
+    ⚠ **WHY THIS MATTERS MORE HERE THAN IN MOST PLACES.**  Nearly every #253 pin is a
+    NEGATIVE result — *"the rows read did not grow"* — and a blind instrument produces that
+    result perfectly.  ``measure_store_traffic`` counts at ``query_raw``; an SDK call that
+    reaches the engine another way (``select`` / ``create`` / ``insert`` / ``upsert`` /
+    ``relate``) was counted as **zero**, and zero reads as *"the read did not grow"*.  The
+    instrument would have lied in the direction of false confidence, about the exact
+    property this whole file exists to establish — and its predecessor had already been
+    defeated once the same way (``_rows_read``, keyed on ``TaskLedger._query``, blind to the
+    ``query_raw`` door ruling R7 requires).
+
+    **THE FIX IS DENY-BY-DEFAULT, NOT A LONGER LIST.**  Every door the instrument cannot
+    count is shadowed and RECORDED, the countable set is two names derived from the SDK's own
+    delegation, and :meth:`~_surreal_harness.StoreTraffic.require_full_reach` runs before
+    every reading is returned — so a caller cannot forget the check, which is how the last
+    runtime gate in this repo went blind (armed in four tests; the offending path was in a
+    fifth).
+    """
+
+    @staticmethod
+    async def _measure_a_real_read(**kwargs: Any) -> tuple[StoreTraffic, TaskLedger, SurrealEnv]:
+        """One ordinary ``query_tasks`` measurement, with the ledger left open."""
+        ledger, env = await _fresh_ledger()
+        await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
+        served: set[str] = set()
+        traffic = await measure_store_traffic(
+            ledger, lambda: _collect(ledger, served, status=STATUS_OPEN), **kwargs
+        )
+        assert served, "the measured read served nothing, so it exercised no door at all"
+        return traffic, ledger, env
+
+    async def test_a_REAL_measured_read_uses_ONLY_doors_the_instrument_can_COUNT(self) -> None:
+        """The ∀ over the flow every other pin in this file measures.
+
+        A door the instrument cannot count is NAMED here rather than absorbed into a small
+        number — which is the whole difference between *"the read did not grow"* and
+        *"I did not see the read"*.
+        """
+        traffic, ledger, env = await self._measure_a_real_read()
+        try:
+            assert traffic.doors, (
+                f"the measured read used NO SDK door at all, so this instrument observed "
+                f"nothing and every number it reports is vacuous: {traffic}"
+            )
+            assert traffic.unobserved == (), (
+                f"query_tasks reached the engine through {list(traffic.unobserved)}, which "
+                f"measure_store_traffic cannot count — so every rows-read and round-trip "
+                f"number in this file is an UNDERCOUNT of unknown size (ruling T4)"
+            )
+            traffic.require_full_reach("query_tasks(status=…)")
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_POSITIVE_CONTROL_an_UNCOUNTABLE_door_is_NAMED_and_the_reading_REFUSED(
+        self,
+    ) -> None:
+        """⛔⛔ **THE CONTROL WITHOUT WHICH THE LEG ABOVE IS DECORATION.**
+
+        ``unobserved == ()`` is a negative result, and a negative result from a detector that
+        cannot fire is indistinguishable from one from a working detector.  So: make a real
+        SDK call the instrument cannot count, in the middle of a measured window, and require
+        it to be (a) NAMED and (b) REFUSED.
+
+        ``select`` is used because it is a genuine engine round trip that never touches
+        ``query_raw`` — the exact shape R-22 disclosed as invisible — and because it is one
+        of the ten SDK write/read doors ``CLAUDE.md`` records a name-keyed gate being
+        defeated by.
+
+        BOTH halves are asserted.  A build that recorded the door but returned the reading
+        anyway leaves every caller free to act on a number it has been told is wrong, and
+        *"a guard nobody runs is a hope with a filename"*.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
+            connection = await ledger._ensure_connection()  # noqa: SLF001 - the seam IS the probe
+
+            async def _read_through_an_uncountable_door() -> None:
+                await connection.select(TASK_TABLE)
+
+            recorded = await measure_store_traffic(
+                ledger, _read_through_an_uncountable_door, allow_unobserved=True
+            )
+            assert any(entry.startswith("select") for entry in recorded.unobserved), (
+                f"a live `connection.select()` inside the measured window was NOT recorded "
+                f"as an uncountable door, so this instrument is still blind to exactly the "
+                f"class of call ruling T4 exists to close: {recorded}"
+            )
+            assert recorded.calls == 0, (
+                f"the instrument COUNTED a `select()` — it counts at `query_raw`, which "
+                f"`select` does not pass through, so a non-zero count here means the "
+                f"accounting no longer matches the doors: {recorded}"
+            )
+            with pytest.raises(AssertionError) as refusal:
+                recorded.require_full_reach("a deliberately uncountable read")
+            assert "select" in str(refusal.value), (
+                f"the refusal does not name the door it could not count, so a reader cannot "
+                f"tell which call to fix: {str(refusal.value)!r}"
+            )
+            with pytest.raises(AssertionError):
+                await measure_store_traffic(ledger, _read_through_an_uncountable_door)
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    def test_the_UNCOUNTABLE_door_set_is_DERIVED_from_the_SDK_and_DENIES_BY_DEFAULT(
+        self,
+    ) -> None:
+        """⛔ The property that stops reach becoming the next name-list.
+
+        The set is not asserted to EQUAL a list of methods — that would be the name-list
+        again, one level up, and it would need editing on every SDK release.  What is
+        asserted is the PARTITION: every public awaitable door on a real SDK connection is
+        in exactly one of *countable*, *uncountable*, or ``_sdk_guard``'s evidence-backed
+        safe set.  A method the SDK ships next year lands in *uncountable* with nobody
+        touching this file — which is the deny-by-default property, stated as a check.
+
+        The named samples are a NON-VACUITY guard, not the requirement: a build where
+        ``uncountable_doors()`` returned an empty set would satisfy the partition trivially
+        (and make the whole instrument blind again), so the ten doors this repo has receipts
+        about are required to be in it.
+        """
+        from _sdk_guard import SAFE_CONNECTION_METHODS, SDK_CONNECTION_CLASSES
+
+        uncountable = StoreTraffic.uncountable_doors()
+        countable = StoreTraffic.COUNTABLE_DOORS
+        every_door = {
+            name
+            for connection_class in SDK_CONNECTION_CLASSES
+            for name, function in inspect.getmembers(connection_class, inspect.isfunction)
+            if not name.startswith("_")
+            and (
+                inspect.iscoroutinefunction(function)
+                or getattr(function, "_sdk_guarded", False)
+            )
+        }
+        assert every_door, "no public awaitable methods were found on the SDK connection classes"
+        assert uncountable | countable | set(SAFE_CONNECTION_METHODS) >= every_door, (
+            f"these SDK connection doors are in NO bucket: "
+            f"{sorted(every_door - uncountable - countable - set(SAFE_CONNECTION_METHODS))}. "
+            f"Every door is countable, uncountable, or in _sdk_guard's evidence-backed safe "
+            f"set — an unbucketed one is a call this instrument neither counts nor refuses"
+        )
+        assert not (uncountable & countable), (
+            f"a door is declared both countable and uncountable: {sorted(uncountable & countable)}"
+        )
+        for known_engine_door in ("select", "create", "insert", "upsert", "relate", "delete"):
+            assert known_engine_door in uncountable, (
+                f"{known_engine_door!r} is not in the uncountable set. It reaches the engine "
+                f"without passing query_raw, so a build that used it would be measured as "
+                f"FREE — and this repo's SDK gate was already defeated once by exactly this "
+                f"family (`upsert`: 31 retryable conflicts in 64 live attempts, waved "
+                f"through by a three-name allowlist)"
+            )
+
+    async def test_the_query_DELEGATION_this_instrument_RESTS_ON_is_CHECKED(self) -> None:
+        """⛔ The assumption the instrument's own docstring makes, turned into a measurement.
+
+        *"``query()``'s body is ``response = await self.query_raw(...)``"* is a READ of SDK
+        2.0.0's source, and it is load-bearing: if it stopped being true, ``query`` calls
+        would be counted as zero round trips while still LOOKING observed, and this whole
+        file's growth comparisons would compare two zeros.
+
+        A doc is a source, not an oracle (``CLAUDE.md``, #107): the SDK's behaviour is
+        checked against the SDK, here, in the same run as the pins that depend on it. Exactly
+        one round trip for one statement also kills the double-counting bug the instrument's
+        first version had (measured: one two-row read reported ``calls=2, rows=4``).
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            connection = await ledger._ensure_connection()  # noqa: SLF001 - the seam IS the probe
+
+            async def _one_statement_through_query() -> None:
+                await connection.query(f"SELECT count() FROM {TASK_TABLE} GROUP ALL")
+
+            traffic = await measure_store_traffic(ledger, _one_statement_through_query)
+            assert "query" in traffic.doors, (
+                f"the `query` door was not recorded, so its delegation cannot be checked at "
+                f"all: {traffic}"
+            )
+            assert traffic.calls == 1, (
+                f"ONE statement through `connection.query()` was counted as "
+                f"{traffic.calls} round trip(s). 0 means `query` no longer delegates to "
+                f"`query_raw` and every measurement in this file is fiction; more than 1 "
+                f"means both doors are being counted and every round-trip number is "
+                f"inflated: {traffic}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)

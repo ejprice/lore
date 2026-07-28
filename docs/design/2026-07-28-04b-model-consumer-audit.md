@@ -557,3 +557,88 @@ R5/R6/R7 and the MP-4a rider were concurred in §5.6 and survive re-reading. On 
   heals LEGACY rows; and the served partition's ANY-semantics is duplicate-insensitive,
   so the two layers agree after the fix with no second change. The ≥8-way × 20 demand is
   the standing concurrency law correctly applied to a live-CAS edit.
+
+---
+
+# Follow-up 2 (2026-07-28, post-`25e2985`): #259 — the STALE badge is measured false, and it was inside my own ruling
+
+**The receipt (lead-measured, through the SERVED surface, post-reap):** a healthy Opus
+contract author mid-pin-battery renders `[active ⚠ STALE] hb 17m`; the 38 just-reaped
+corpses wore the identical badge at 391 hours. Anchored to symbols (re-derived by me,
+2026-07-28): the badge is ONE fleet-wide boolean — `config.py::DEFAULT_COMMS_STALE_
+HEARTBEAT_S = 600`, config knob `comms.stale_heartbeat_s`, predicate
+`heartbeat_age_s > stale_after_s` in the fleet-row render. 1,020 seconds and 1,407,600
+seconds cross the same line and get the same glyph. The badge measures *"has not called a
+comms verb in 10 minutes"* — a condition every working agent satisfies between comms
+touches — and cannot separate busy from dead.
+
+**Own miss, first:** §8's B3 justified annotation-over-exclusion with *"a STALE row is the
+orphan signal the subsystem exists to surface."* I interpreted the badge from its NAME,
+never from its predicate — an un-derived claim inside my own ruling, the exact class this
+repo's law names, and it sat invisible until the reap executed (which is retroactive proof
+the operator's reap-first ordering was right: cleaning the noise is what exposed that the
+signal was never a signal).
+
+## §10.1 — S1-b's CONCLUSION survives; its justification is replaced by a stronger one
+
+S1-b ruled: no freshness EXCLUSION in-session; freshness stays an annotation. That
+conclusion is not merely intact — the measurement REINFORCES it a fortiori: **a predicate
+measured to fire on healthy working agents is disqualified from driving exclusion**
+outright. Had S1-b adopted the freshness window, the fleet view would today be HIDING a
+live contract author mid-battery. The repaired justification: rows are kept visible not
+because STALE marks orphans (false) but because no available predicate can be trusted to
+remove a row — exclusion demands a verdict-grade predicate and none exists. What the
+measurement kills is the ANNOTATION, not the anti-exclusion rule.
+
+## §10.2 — The badge: retire the interpretation, keep the measure — candidate (b), NOW
+
+**RULE (recommended): drop `⚠ STALE`; serve the AGE, which is already computed and already
+rendered (`hb 17m` / `hb 2d`).** The age is a MEASURE — honest at every value,
+self-interpreting at the extremes, and the ambiguous middle is exactly where the badge was
+WRONG anyway. The badge is an INTERPRETATION measured false-positive at one extreme (17m,
+live) and non-discriminating at the other (391h, same glyph). Under DESIGN-LAW §1.3 the
+asymmetry is decisive: a measure without a verdict under-claims (nearly free); a wrong
+verdict costs the verdict class categorically — the first time an agent ground-truths
+`STALE` against a teammate it just heard from, every subsequent `STALE` is noise, kept or
+not.
+
+**Rejected as rumour thresholds:** (a) recalibrating the constant, and (c) graded bands —
+both need a working-cadence measurement nobody has, and both inherit the deeper flaw: the
+channel measures COMMS cadence, not liveness. A healthy builder's 30–60-minute comms gap
+overlaps early-death territory at any threshold and under any banding. (c) stays
+re-openable strictly behind a measurement with the deferral law's named decision point:
+*measure per-role comms-touch cadence across N real packet sessions once 04b-2's columns
+generate traffic; decide whether the busy/dead overlap vanishes under role-banding; owner
+= #259's taker.* Honest prediction, stated so the measurement is graded against it: the
+overlap will not vanish, because the signal is not in this channel — the measurement will
+more likely confirm (b)+(d) than enable (c).
+
+## §10.3 — Candidate (d) is the second step, and it must ship WITH its consumer
+
+**A per-agent DECLARED cadence converts the interpretation into a contract.** Declared at
+register/heartbeat (or in the spawn brief): *"expect a comms touch every ≤20m."* Then the
+render can serve `overdue (declared ≤20m, silent 45m)` — **a verdict TRUE BY
+CONSTRUCTION** (you are overdue by your own word), which is this packet's derived-prose
+law applied to liveness: prose derived from typed state, never a name-shaped guess. No
+declaration ⇒ no verdict, age only — the failure mode of non-adoption is honest silence,
+not a lie, which is exactly the property the 600s badge lacks.
+  **Sequencing rider — the R1 lesson applied to itself:** an optional declared parameter
+nobody is taught is a feature that never fires. The parameter lands in the SAME packet as
+the surface that pays it — packet 06's drill (orphan detection is its acceptance arc, and
+the drill controls its agents' briefs, so declaration is guaranteed there), not before as
+dead schema. 04b-2 ships (b) alone.
+
+## §10.4 — The unacked-on-STALE cell: the value survives; the badge-dependence does not
+
+§8 called unacked-on-STALE the highest-value cell. Corrected: the cell's value never came
+from the badge — it comes from **unacked-N composed with the age**, two measures the
+reader can judge (`unacked 3 · hb 2d` reads as stranded to any competent consumer;
+`unacked 3 · hb 17m` reads as a busy teammate, correctly). What the badge's noise actually
+threatens is the TEACH line: an imperative (*"stranded — re-route or retire"*) attached to
+a predicate that fires on live agents would instruct callers to re-route a working
+builder's traffic — the drain-theft hazard's sibling, served proactively. **Grammar rule,
+same shape as R8's imperative split: the IMPERATIVE rides only a TRUE verdict.** So:
+04b-2 ships the columns as measures beside the age, with NO stranded-imperative; the
+imperative arrives with (d)'s declared-overdue verdict (`overdue + unacked > 0` ⇒ teach),
+in the packet that builds (d). Cross-packet notice owed: packet 06's drill must not assert
+`⚠ STALE` in expected renders (the glyph retires), and its orphan-detection leg rides (d).

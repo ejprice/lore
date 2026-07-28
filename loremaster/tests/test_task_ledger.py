@@ -674,13 +674,20 @@ class TestBlockedClaiming:
         # was NEVER minted counts as an UNRESOLVED blocker. Fail-OPEN on a typo'd
         # dependency would silently unblock work in a coordination primitive; the
         # escape hatch for a genuinely bad dep is supersede_task, not a claim.
-        real_blocker = await _create(task_ledger, SUBJECT_MEMORY, DESCRIPTION_MEMORY)
-        never_minted_blocker = _mutate_into_unknown_id(real_blocker)  # same shape, never created
-        dependent = await task_ledger.create_task(
-            SUBJECT_LEDGER, DESCRIPTION_LEDGER, blocked_by=[never_minted_blocker], created_by=CREATOR
+        #
+        # ⚠ RE-AUTHORED for operator ruling R3 (packet 04b-1, 2026-07-28). The row is
+        # RAW-SEEDED because ``create_task`` now REFUSES a phantom blocker — see
+        # ``_seed_row_naming_a_never_minted_blocker`` for why that makes this pin
+        # stronger rather than weaker, not merely still-green.
+        dependent, never_minted_blocker = await _seed_row_naming_a_never_minted_blocker(
+            task_ledger
         )
         result = await task_ledger.claim_task(dependent, AGENT_A)
-        assert result.claimed is False
+        assert result.claimed is False, (
+            f"a task whose blocked_by names the never-minted id {never_minted_blocker!r} "
+            f"was CLAIMED. An unresolvable blocker is fail-closed: fail-OPEN on a typo'd "
+            f"dependency silently unblocks work in a coordination primitive"
+        )
         # Fail closed AND no mutation — still open/unowned/unclaimed.
         persisted = await task_ledger.get_task(dependent)
         assert persisted.status == STATUS_OPEN
@@ -692,15 +699,34 @@ class TestBlockedClaiming:
     ) -> None:
         # The query partition agrees with the claim gate: a dependent of a
         # never-minted blocker is genuinely blocked, never quietly unblocked.
-        real_blocker = await _create(task_ledger, SUBJECT_WATCHER, DESCRIPTION_WATCHER)
-        never_minted_blocker = _mutate_into_unknown_id(real_blocker)
-        dependent = await task_ledger.create_task(
-            SUBJECT_LEDGER, DESCRIPTION_LEDGER, blocked_by=[never_minted_blocker], created_by=CREATOR
+        #
+        # ⚠ RE-AUTHORED for operator ruling R3, as above.
+        dependent, never_minted_blocker = await _seed_row_naming_a_never_minted_blocker(
+            task_ledger
         )
         blocked_ids = {task.id for task in await task_ledger.query_tasks(blocked=True)}
         unblocked_ids = {task.id for task in await task_ledger.query_tasks(blocked=False)}
-        assert dependent in blocked_ids
-        assert dependent not in unblocked_ids
+        assert dependent in blocked_ids, (
+            f"query_tasks(blocked=True) omitted a task whose blocked_by names the "
+            f"never-minted id {never_minted_blocker!r}"
+        )
+        assert dependent not in unblocked_ids, (
+            f"query_tasks(blocked=False) served a task whose blocked_by names the "
+            f"never-minted id {never_minted_blocker!r} as claimable — the partition and the "
+            f"claim gate now disagree, and an agent is being told to attempt a claim that "
+            f"can never win"
+        )
+
+    # ⚠ THE WRITE HALF OF R3 IS DELIBERATELY *NOT* PINNED HERE — ESCALATED INSTEAD.
+    # The refusal itself (class, served sentence, which ids it names, both create verbs,
+    # four id shapes) is pinned against the REAL ledger in ``test_blocks_edge.py`` SECTION G.
+    # A pin here would run against BOTH backends, and whether ``FakeTaskLedger`` must ALSO
+    # refuse is UNRULED: this module's whole design is the real-vs-fake parity pin (*"a
+    # behaviour the fake gets wrong, or too friendly, shows up as a divergence rather than a
+    # fake-only green"*), which argues the fake must refuse — but ``_task_fakes.py`` is in no
+    # ruling's scope, so a both-backends pin would be RED on a build that is correct under the
+    # other reading. Both readings and a recommendation are in
+    # ``REPORT-contractfix-04b1-r3.md`` §ESCALATIONS; picking one silently was not available.
 
 
 # The full legal transition matrix (the brief's state machine, verbatim).

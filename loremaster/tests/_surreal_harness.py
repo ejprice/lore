@@ -60,6 +60,7 @@ them is a pointer a reader must follow in order to act.
 
 from __future__ import annotations
 
+import inspect
 import os
 import time
 import uuid
@@ -213,16 +214,111 @@ class StoreTraffic:
     ``calls`` is ROUND TRIPS (one per statement string handed to the SDK), ``rows``
     is every row the engine handed back across them, and ``statements`` is the
     statement text of each, in order.
+
+    ``doors`` names every SDK method the measured call actually used, and
+    ``unobserved`` names — as ``"<method> (call #<n>)"`` — every use of a door this
+    instrument CANNOT count. ``unobserved`` is normally empty because
+    :func:`measure_store_traffic` REFUSES to return a reading that carries one
+    (ruling **T4**); it is populated only for the pins that prove the refusal works.
     """
 
     calls: int
     rows: int
     statements: tuple[str, ...]
+    doors: tuple[str, ...] = ()
+    unobserved: tuple[str, ...] = ()
+
+    #: The two doors :func:`measure_store_traffic` can account for: ``query_raw``,
+    #: which it counts, and ``query``, which [READ, SDK 2.0.0
+    #: ``surrealdb/connections/async_ws.py``] delegates to it. Everything else on a
+    #: live connection is uncountable — see :meth:`uncountable_doors`.
+    COUNTABLE_DOORS = frozenset({"query", "query_raw"})
+
+    @staticmethod
+    def uncountable_doors() -> frozenset[str]:
+        """SDK connection methods that reach the engine WITHOUT passing ``query_raw``.
+
+        DERIVED from the SDK classes, DENY BY DEFAULT: everything public and awaitable
+        on a real connection is uncountable UNLESS it is in
+        :data:`COUNTABLE_DOORS`. A method the SDK adds in a future release is therefore
+        uncountable the day it lands, with nobody editing a list — the *allowlist the
+        safe* rule, because the dangerous surface is the SDK's and grows without asking
+        us, while the safe surface is ours and is enumerable. (``CLAUDE.md``: an SDK
+        gate keyed on 3 method names was defeated by the other 30.)
+
+        The connection classes and the authenticate/close exemptions come from
+        ``_sdk_guard``, which already owns that policy for the runtime retry gate; a
+        second copy of either would be the #102 shape.
+
+        ⚠ A METHOD OF :class:`StoreTraffic` rather than a module-level function on
+        purpose: ``_surreal_harness``'s module-level names are an exact-set ALLOWLIST
+        (``test_surreal_harness.py::_ALLOWED_MODULE_LEVEL_NAMES``), and this belongs to
+        the type that reports ``doors``/``unobserved`` anyway.
+        """
+        from _sdk_guard import SAFE_CONNECTION_METHODS, SDK_CONNECTION_CLASSES
+
+        return frozenset(
+            name
+            for connection_class in SDK_CONNECTION_CLASSES
+            for name, function in inspect.getmembers(connection_class, inspect.isfunction)
+            if not name.startswith("_")
+            and name not in SAFE_CONNECTION_METHODS
+            and name not in StoreTraffic.COUNTABLE_DOORS
+            # The runtime SDK guard replaces class methods with a plain ``def`` wrapper,
+            # so ``iscoroutinefunction`` alone under-reports once it has armed. Its own
+            # marker is the second half of the same question — the guard's predicate,
+            # not a clone of its policy.
+            and (
+                inspect.iscoroutinefunction(function)
+                or getattr(function, "_sdk_guarded", False)
+            )
+        )
+
+    def require_full_reach(self, flow: str) -> None:
+        """Refuse a traffic reading this instrument cannot substantiate (ruling **T4**).
+
+        Two ways a reading lies in the direction of false confidence, and both raise:
+
+        * **a door it cannot count was used** — the number it reports is an
+          UNDERCOUNT of unknown size, and every *"the read did not grow"* verdict
+          built on it is worthless. This is finding #136's law (*a gate must never
+          return a verdict it cannot substantiate*) applied to a measurement.
+        * **``query`` was used but no ``query_raw`` call was seen** — the delegation
+          this instrument's whole design rests on has stopped being true, so calls
+          that LOOK observed are in fact invisible.
+
+        ``flow`` names what was being measured, so the failure says which measurement
+        is unsound rather than that some measurement is.
+        """
+        if self.unobserved:
+            raise AssertionError(
+                f"the store-traffic instrument cannot see {len(self.unobserved)} SDK "
+                f"call(s) made while {flow}: {list(self.unobserved)}.\n"
+                f"It counts at `query_raw`, the one door every SurrealQL statement "
+                f"passes through — an SDK call that reaches the engine another way "
+                f"(`select` / `create` / `insert` / `upsert` / `relate` / …) is counted "
+                f"as FREE, and zero reads as 'the read did not grow'. That is the "
+                f"instrument lying in the direction of false confidence, which is the "
+                f"exact shape this repo has six receipts against.\n"
+                f"Fix the CODE (route the call through a SurrealQL statement) — do not "
+                f"widen this instrument's blind spot into an exemption list. "
+                f"observed doors={list(self.doors)} calls={self.calls} rows={self.rows}"
+            )
+        if "query" in self.doors and self.calls == 0:
+            raise AssertionError(
+                f"`query()` was called while {flow} and this instrument counted ZERO "
+                f"round trips. Its whole design rests on [READ, SDK 2.0.0 "
+                f"`surrealdb/connections/async_ws.py`] `query()` delegating to "
+                f"`query_raw()`; if that stopped being true, every call that LOOKS "
+                f"observed is invisible and every number here is fiction."
+            )
 
 
 async def measure_store_traffic(
     ledger: Any,
     call: Callable[[], Awaitable[Any]],
+    *,
+    allow_unobserved: bool = False,
 ) -> StoreTraffic:
     """Measure the engine traffic ``call()`` causes on ``ledger``'s own connection.
 
@@ -238,19 +334,32 @@ async def measure_store_traffic(
     confidence.  (CLAUDE.md's instrument lesson: a gate keyed on a NAME is defeated by
     the name nobody listed.)
 
-    ⚠ **ONLY ``query_raw`` IS WRAPPED, AND THAT IS DERIVED, NOT ASSUMED.** [READ, SDK
+    ⚠ **ONLY ``query_raw`` IS COUNTED, AND THAT IS DERIVED, NOT ASSUMED.** [READ, SDK
     2.0.0 ``surrealdb/connections/async_ws.py``] ``query()``'s body is
     ``response = await self.query_raw(...)`` followed by ``response["result"][0]["result"]``
     — so ``query_raw`` is the single narrow waist every statement passes through, and
-    wrapping BOTH double-counts every ``query()`` call (measured: one two-row read
-    reported ``calls=2, rows=4``).  **Stated bound:** an SDK call that reaches the
-    engine WITHOUT ``query_raw`` (``select`` / ``create`` / ``insert`` / ``upsert``) is
-    invisible here.  No ledger in this package uses one — every store touch is a
-    SurrealQL statement — but a build that started to would be measured as free.
+    counting BOTH double-counts every ``query()`` call (measured: one two-row read
+    reported ``calls=2, rows=4``).
 
-    ``query_raw`` is shadowed by an INSTANCE attribute and removed in ``finally``, so
-    the connection object's identity never changes — a ledger's own self-heal
-    comparison (``self._connection is connection``) still holds.
+    ⚠⚠ **RULING T4, 2026-07-28 — ITS REACH IS NOW A CHECKED VARIABLE, NOT A STATED
+    BOUND.**  This docstring used to carry the blind spot as prose: *"an SDK call that
+    reaches the engine WITHOUT ``query_raw`` is invisible here … a build that started to
+    would be measured as free."*  A guard is an invariant only over the code it RUNS, and
+    a bound nobody measures is a hope — ``CLAUDE.md``'s instrument lesson lists six
+    instruments defeated by exactly the door nobody listed, the last of them a RUNTIME
+    gate that was simply never armed over the offending path.
+
+    So every uncountable door is now SHADOWED TOO (:func:`_uncountable_sdk_doors`,
+    derived from the SDK classes deny-by-default), its use is RECORDED, and
+    :meth:`StoreTraffic.require_full_reach` runs before this function returns —
+    so a reading that undercounts RAISES instead of being served as a small number.
+    Callers get the check for free and cannot forget it. ``allow_unobserved=True``
+    suppresses only the raise, never the record, and exists for the pins that prove the
+    refusal fires.
+
+    Every wrapped method is shadowed by an INSTANCE attribute and removed in
+    ``finally``, so the connection object's identity never changes — a ledger's own
+    self-heal comparison (``self._connection is connection``) still holds.
 
     Args:
         ledger: Any ledger exposing ``_ensure_connection`` — typed ``Any`` rather
@@ -258,12 +367,23 @@ async def measure_store_traffic(
             (operator RULING 1, 2026-07-20: no module-level ``loremaster`` store
             import here, or one mid-TDD breakage makes every importer uncollectable).
         call: The zero-argument coroutine factory to measure.
+        allow_unobserved: When True, return a reading that carries uncountable calls
+            instead of raising. For the reach pins' positive control ONLY — a
+            measurement pin that sets it is asserting on a number it has been told is
+            wrong.
 
     Returns:
         The :class:`StoreTraffic` observed during ``call()``.
+
+    Raises:
+        AssertionError: When the measured call used a door this instrument cannot
+            count, or when ``query`` stopped delegating to ``query_raw``
+            (:meth:`StoreTraffic.require_full_reach`).
     """
     connection = await ledger._ensure_connection()  # noqa: SLF001 - the seam IS the measurement
     statements: list[str] = []
+    doors: list[str] = []
+    unobserved: list[str] = []
     rows = 0
 
     def _rows_in(payload: Any) -> int:
@@ -277,21 +397,61 @@ async def measure_store_traffic(
         )
 
     original_query_raw = connection.query_raw
+    original_query = connection.query
 
     async def _counting(*args: Any, **kwargs: Any) -> Any:
         nonlocal rows
         first = args[0] if args else kwargs.get("query", "")
         statements.append(str(first))
+        doors.append("query_raw")
         result = await original_query_raw(*args, **kwargs)
         rows += _rows_in(result)
         return result
 
-    connection.query_raw = _counting
+    async def _delegating(*args: Any, **kwargs: Any) -> Any:
+        """``query`` is COUNTABLE — it reaches the engine through ``query_raw`` above.
+
+        Recorded rather than ignored so :meth:`StoreTraffic.require_full_reach` can
+        CHECK that delegation instead of trusting the docstring that asserts it.
+        """
+        doors.append("query")
+        return await original_query(*args, **kwargs)
+
+    def _uncountable(name: str, original: Any) -> Any:
+        async def _recorded(*args: Any, **kwargs: Any) -> Any:
+            doors.append(name)
+            unobserved.append(f"{name} (call #{len(doors)})")
+            return await original(*args, **kwargs)
+
+        return _recorded
+
+    shadowed: dict[str, Any] = {"query_raw": _counting, "query": _delegating}
+    for name in sorted(StoreTraffic.uncountable_doors()):
+        existing = getattr(connection, name, None)
+        if existing is None:
+            continue
+        shadowed[name] = _uncountable(name, existing)
+    for name, replacement in shadowed.items():
+        setattr(connection, name, replacement)
     try:
         await call()
     finally:
-        del connection.query_raw
-    return StoreTraffic(calls=len(statements), rows=rows, statements=tuple(statements))
+        for name in shadowed:
+            # An INSTANCE attribute, so this uncovers the class method rather than
+            # deleting it. ``pop``-style tolerance is deliberate: a ledger that
+            # self-healed mid-call hands back a different connection object, and a
+            # bare ``del`` would then raise over the top of the real failure.
+            connection.__dict__.pop(name, None)
+    traffic = StoreTraffic(
+        calls=len(statements),
+        rows=rows,
+        statements=tuple(statements),
+        doors=tuple(dict.fromkeys(doors)),
+        unobserved=tuple(unobserved),
+    )
+    if not allow_unobserved:
+        traffic.require_full_reach("measuring store traffic")
+    return traffic
 
 
 async def call_until_recovered[T](

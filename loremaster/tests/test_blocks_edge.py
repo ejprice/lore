@@ -121,6 +121,7 @@ WHAT THIS FILE DOES NOT PIN
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -2104,12 +2105,14 @@ class TestTheCyclePolicyHasONEImplementation:
 
 
 class TestASupersededBlockerIsNotASilentBlackHole:
-    """⚠⚠ **RED TODAY, AND IT IS AN OPERATOR FORK — adversary B-3 / MP-5, UNRULED.**
+    """RED at ``5a2dca9``.  ⛔ **Operator ruling R10(ii), 2026-07-28 — MP-5 is now RULED,
+    and the ruling is NARROWER than the outcome pin this class used to carry.**
 
     Operator ruling **R3** changes a live verb on one justification: *"a loud refusal
     replaces a silent black hole"*, the black hole being *"a task created and then
-    **unclaimable forever, silently**"*.  This contract guards TWO causes — a phantom
-    blocker and a cycle.  The adversary MEASURED a THIRD, on a known-correct build:
+    **unclaimable forever, silently**"*.  This contract guarded TWO causes — a phantom
+    blocker and a cycle.  The adversary MEASURED a THIRD, on a known-correct build
+    (``REPORT-adversary-04b1.md`` §B-3, reproduced independently at ``faf035d``):
 
         blocker superseded; its status is still 'open'; TERMINAL is {done, wontfix}
         create_task(blocked_by=[<superseded>]) -> ACCEPTED
@@ -2117,87 +2120,267 @@ class TestASupersededBlockerIsNotASilentBlackHole:
           freed via transition->done?    NO  — IllegalTransitionError: task … is superseded
           freed via transition->wontfix? NO  — IllegalTransitionError: task … is superseded
           freed via supersede?           NO  — IllegalTransitionError: already superseded
-        POSITIVE CONTROL: a waiter on a NORMAL blocker driven to done -> claimed=True
 
     Existence passes (the row is right there).  No cycle.  Nothing refuses.  **The exact
     outcome R3 exists to abolish, through a door with a different cause** — THE QUANTIFIER
     LAW verbatim: the invariant was written over the failure modes already debugged instead
-    of over the OUTCOME.  ``supersede_task``'s own docstring is the receipt: *"a superseded
-    task is terminal-LIKE — it can no longer be claimed, transitioned … or superseded
-    again"*, i.e. it can never reach ``done``/``wontfix``, which is the only exit the claim
-    CAS accepts.
+    of over the OUTCOME.
 
-    **THIS PIN IS WRITTEN OVER THE OUTCOME, NOT OVER A MECHANISM**, so it is satisfied by
-    EITHER reading the adversary offers: (a) refuse at create, R3's own shape; or (b) treat
-    ``superseded_by IS NOT NONE`` as terminal in blocker resolution, which is smaller and
-    matches the docstring already quoted, but changes a live claim gate.
+    ⚠⚠ **WHY THE OLD OUTCOME PIN IS GONE AND MUST NOT COME BACK.**  Until R10 this class
+    held ONE pin written over the outcome — *refused at create* **or** *the blocker
+    escapable* — deliberately satisfied by either of two readings, because neither had been
+    ruled.  **R10 ruled one of them ILLEGAL**, so that pin now admits a build the operator
+    rejected, verbatim: *"REJECTED: treating ``superseded`` as terminal in the CAS —
+    supersession means the work MOVED, not finished, so it would silently un-block
+    dependents while the successor is open: the INVERSE black hole, quieter and worse."*
+    A contract that still passes a build its ruling forbids is not a looser contract, it is
+    a broken one — *tests written before a semantic change certify the OLD world*
+    (``CLAUDE.md``).  The forbidden reading is now pinned SHUT by
+    :meth:`test_a_DEPENDENT_created_BEFORE_the_supersede_is_NOT_silently_unblocked`.
 
-    ⚠⚠ **THERE IS A THIRD READING THIS PIN DELIBERATELY CANNOT SATISFY, AND IT IS THE
-    OPERATOR'S TO TAKE:** (c) declare the door out of scope with a NAMED RE-OPEN TRIGGER.
-    No pin can be green under (c) AND under (a)/(b) — they are opposite behaviours — so
-    picking a reading silently was not available.  **If the operator rules (c), DELETE THIS
-    CLASS and say so in the wave report; do not weaken it into something that passes.**
-    (The same disposition ``TestTheDuplicateBlockerDivergence`` carries for its own
-    escalation, and for the same reason.)
+    **WHAT IS RULED, and therefore what is pinned:** the blocker pre-check REFUSES a
+    superseded blocker and NAMES ITS SUCCESSOR, on both create verbs, before any row is
+    written; and a dependency on a superseded task, however it arose, is never dissolved.
+    R10(iii) — the ``supersede_task`` dependants warning and the claim render — is 04b-2's
+    surface and is NOT pinned here.
     """
 
-    async def test_a_create_blocked_on_a_SUPERSEDED_task_is_REFUSED_or_the_blocker_ESCAPABLE(
-        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
-    ) -> None:
-        from loremaster.tasks import IllegalTransitionError
+    @staticmethod
+    async def _superseded_blocker(ledger: TaskLedger) -> tuple[str, str]:
+        """A ``(blocker, successor)`` pair where ``blocker`` has been superseded.
 
-        ledger, _env, _blocker = task_ledger
+        Built through the PUBLIC verbs only — this is a state the fleet reaches every time
+        someone reframes a work item, not a contrivance a raw seed had to manufacture.
+        """
         blocker = await ledger.create_task(
             "a blocker that will be reframed", DESCRIPTION, created_by=CREATOR
         )
-        await ledger.supersede_task(
+        successor = await ledger.supersede_task(
+            blocker,
+            subject="the reframed work item",
+            description=DESCRIPTION,
+            created_by=CREATOR,
+        )
+        assert successor != blocker, (
+            "supersede_task returned the predecessor's own id, so this fixture has no "
+            "successor to name and every leg below would assert against one id twice"
+        )
+        return blocker, successor
+
+    async def test_a_create_blocked_on_a_SUPERSEDED_task_is_REFUSED(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ R10(ii)'s first clause.  *"A ``blocked_by`` naming a superseded task is NEVER
+        legitimate: the CAS can never resolve it — the refusal is correct in all cases."*
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker, _successor = await self._superseded_blocker(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.create_task(SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR)
+        assert blocker in str(caught.value), (
+            f"the refusal must NAME the superseded blocker the caller supplied, verbatim, "
+            f"or the caller cannot tell which of its blocked_by entries to edit: "
+            f"{str(caught.value)!r}"
+        )
+
+    async def test_the_refusal_NAMES_THE_SUCCESSOR_and_says_what_to_do_INSTEAD(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **The half that makes the refusal a RECOVERY rather than a rejection.**
+
+        R10(ii)'s whole cost argument is that the successor is already in hand: *"the check
+        already reads the blocker rows in one grouped query; projecting
+        ``status``/``superseded_by`` alongside existence is free."*  A refusal that names
+        only the bad id makes an agent pay a ``get_task`` round trip to learn what to block
+        on instead — which is the difference between a one-edit fix and a reconnaissance
+        trip, on the SERVED surface an agent learns the contract from.
+
+        The clause is asserted BY VALUE (:func:`_served_superseded_clause`) rather than as
+        *"the successor id appears somewhere"*: a message that happened to contain the
+        successor for an unrelated reason would pass a membership check, and F3 measured
+        what substring pins cost on exactly this surface.
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker, successor = await self._superseded_blocker(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.create_task(SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR)
+        message = str(caught.value)
+        clause = _served_superseded_clause(blocker, successor)
+        assert clause in message, (
+            f"the served refusal does not carry ruling R10(ii)'s clause verbatim.\n"
+            f"  want (as a substring): {clause!r}\n"
+            f"  got the whole message: {message!r}\n"
+            f"See _served_superseded_clause's docstring: this is pinned as a CLAUSE and not "
+            f"as the whole sentence deliberately, because R10 does not say which it is — so "
+            f"a build under EITHER reading passes this leg. If you changed the wording on "
+            f"purpose, change the spec function in the same commit and say so"
+        )
+
+    async def test_the_refusal_ALSO_states_that_NOTHING_was_created(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **RIDER-B's property, applied to the second refusal cause.**
+
+        RIDER-B ruled the no-write fact must be SERVED and not merely TRUE, and its
+        justification names no particular cause: *"an agent reading only 'refused' does not
+        know whether a partial batch landed, so it must pay a reconnaissance read before it
+        dare resend."*  That is as true of a superseded blocker as of a phantom one — THE
+        QUANTIFIER LAW: do not condition a served property on the one cause that prompted it.
+
+        Its own leg, with its own message, because a by-value diff of a long sentence does
+        not say WHICH clause went missing.
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker, _successor = await self._superseded_blocker(ledger)
+        before = await _task_row_count(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.create_task(SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR)
+        assert "NOTHING was created" in str(caught.value), (
+            f"the superseded-blocker refusal does not state that nothing was written, while "
+            f"the phantom-blocker refusal beside it does (RIDER-B). Two refusals from ONE "
+            f"pre-check that teach different amounts is the copy-#2 shape on a served "
+            f"surface: {str(caught.value)!r}"
+        )
+        assert await _task_row_count(ledger) == before, (
+            "…and the sentence must be TRUE: the refused create left a row behind"
+        )
+
+    async def test_a_refused_create_writes_NO_task_row(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """BEFORE the write, not rolled back after it — the MP-3 discriminator: a build that
+        creates the row and compensates leaves the count changed at some point, and leaves
+        an id minted that the caller was told never existed.
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker, _successor = await self._superseded_blocker(ledger)
+        before = await _task_row_count(ledger)
+        with pytest.raises(TaskLedgerError):
+            await ledger.create_task(SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR)
+        assert await _task_row_count(ledger) == before
+
+    async def test_create_many_ALSO_refuses_a_SUPERSEDED_blocker_and_writes_NO_ROWS(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """Pinned separately from ``create_task`` for the reason the phantom twin is: the
+        scout's explicit warning that the two verbs have DIFFERENT transaction shapes
+        (``create_task`` is a bare ``_query``, ``create_many`` is transactional), so a fix
+        may reach only one of them.
+        """
+        from loremaster.tasks import TaskSpec
+
+        ledger, _env, real_blocker = task_ledger
+        blocker, _successor = await self._superseded_blocker(ledger)
+        before = await _task_row_count(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.create_many(
+                [
+                    TaskSpec(
+                        subject="item 0 waits on a live blocker",
+                        description=DESCRIPTION,
+                        blocked_by=[real_blocker],
+                    ),
+                    TaskSpec(
+                        subject="item 1 waits on a REFRAMED blocker",
+                        description=DESCRIPTION,
+                        blocked_by=[blocker],
+                    ),
+                ],
+                created_by=CREATOR,
+            )
+        assert blocker in str(caught.value), (
+            f"create_many accepted or mis-reported a superseded blocker: {str(caught.value)!r}"
+        )
+        assert real_blocker not in str(caught.value), (
+            f"the batch refusal named a blocker that is perfectly fine ({real_blocker!r}) — "
+            f"it must name the offending entries and only those: {str(caught.value)!r}"
+        )
+        assert await _task_row_count(ledger) == before, (
+            "the refused BATCH left rows behind — create_many is all-or-nothing"
+        )
+
+    async def test_a_DEPENDENT_created_BEFORE_the_supersede_is_NOT_silently_unblocked(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔⛔ **THE PIN THAT KILLS THE READING R10 REJECTED — and the one the pre-check
+        structurally cannot cover.**
+
+        Ruling R10, verbatim: *"REJECTED: treating ``superseded`` as terminal in the CAS —
+        supersession means the work MOVED, not finished, so it would silently un-block
+        dependents while the successor is open: the INVERSE black hole, quieter and worse."*
+
+        The order of events here is the whole point, and it is ORDINARY: the dependent is
+        created while the blocker is a perfectly good open task, and the blocker is
+        superseded AFTERWARDS.  **No create-time pre-check can ever see this** — the
+        quantifier law, which R10(iii) names explicitly (*"supersession can happen AFTER
+        dependents exist — (ii) alone cannot catch it"*).
+
+        GREEN at ``5a2dca9`` and therefore a REMOVED-BEHAVIOUR guard (delete/replace law):
+        the measured wrong build it goes RED on is the adversary's reading (b) — resolve
+        ``superseded_by IS NOT NONE`` as terminal — which passes every other leg in this
+        class and every leg in ``TestTheBoundedReadKeepsTheClaimAgreement``, because none of
+        them ever produces a dependent whose blocker was superseded after birth.
+
+        BOTH mechanisms are asserted, not just the claim: an un-blocking build that reached
+        only ``query_tasks`` would serve the fleet a task it is told to claim and cannot,
+        and one that reached only the CAS would hide a claimable task.  Requirement 2(d)
+        says they may never disagree; this is a shape where a plausible fix makes them.
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker = await ledger.create_task(
+            "a blocker that is fine when the dependent is born", DESCRIPTION, created_by=CREATOR
+        )
+        dependent = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        successor = await ledger.supersede_task(
             blocker,
             subject="the reframed work item",
             description=DESCRIPTION,
             created_by=CREATOR,
         )
 
-        try:
-            waiter = await ledger.create_task(
-                SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
-            )
-        except TaskLedgerError:
-            return  # reading (a): refused at create, loudly. The black hole never opens.
-
-        if (await ledger.claim_task(waiter, ACTOR)).claimed:
-            return  # reading (b): a superseded blocker resolves, so the waiter is claimable.
-
-        escapes: list[str] = []
-        for terminal in (STATUS_DONE, STATUS_WONTFIX):
-            try:
-                await ledger.transition(blocker, terminal, actor=ACTOR, summary="freed")
-            except (IllegalTransitionError, TaskLedgerError) as refusal:
-                escapes.append(f"transition->{terminal}: {type(refusal).__name__}: {refusal}")
-                continue
-            if (await ledger.claim_task(waiter, ACTOR)).claimed:
-                return  # the blocker was ESCAPABLE after all.
-            escapes.append(f"transition->{terminal} landed but the waiter stayed unclaimable")
-
-        raise AssertionError(
-            f"a task blocked on a SUPERSEDED task was ACCEPTED, is NOT claimable, and its "
-            f"blocker cannot be driven to any terminal status — so it is unclaimable "
-            f"FOREVER, SILENTLY. That is the exact harm operator ruling R3 changed a live "
-            f"verb to abolish, reached through a THIRD cause this contract does not guard "
-            f"(the two it guards are a phantom blocker and a cycle). A superseded task is "
-            f"'terminal-like' per supersede_task's own docstring — it can never reach "
-            f"done/wontfix, which is the only exit the claim CAS accepts. Two readings "
-            f"satisfy this pin and BOTH are acceptable: refuse the create, or treat "
-            f"superseded_by IS NOT NONE as resolved in blocker resolution. See this class's "
-            f"docstring for the third reading, which is the operator's and which this pin "
-            f"cannot express. escape attempts: {escapes}"
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        assert dependent not in unblocked, (
+            f"query_tasks(blocked=False) served task {dependent!r} as claimable after its "
+            f"only blocker {blocker!r} was SUPERSEDED (successor {successor!r}). Ruling R10 "
+            f"REJECTED exactly this: supersession means the work MOVED, not that it "
+            f"finished, so dissolving the block un-blocks a dependent while the successor "
+            f"is still open — the INVERSE black hole, quieter and worse than the one this "
+            f"packet closes. The successor is the recovery, and naming it is 04b-2's render"
         )
+        claim = await ledger.claim_task(dependent, ACTOR)
+        assert not claim.claimed, (
+            f"the claim CAS granted task {dependent!r} whose only blocker {blocker!r} is "
+            f"superseded and not terminal. This is the same rejected reading as the leg "
+            f"above, reached through the OTHER mechanism — and if only one of the two "
+            f"changed, the served partition and the claim now disagree (requirement 2(d))"
+        )
+
+    async def test_POSITIVE_CONTROL_a_create_blocked_on_a_LIVE_blocker_is_ACCEPTED(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """Without this, every refusal leg above passes on a build that refuses everything.
+
+        The only variable against :meth:`test_a_create_blocked_on_a_SUPERSEDED_task_is_REFUSED`
+        is the supersession — same verbs, same fixture shape, same one blocker — so a build
+        that refuses for any OTHER reason reddens here rather than passing as if correct.
+        """
+        ledger, _env, _blocker = task_ledger
+        live_blocker = await ledger.create_task(
+            "a blocker that will NOT be reframed", DESCRIPTION, created_by=CREATOR
+        )
+        task_id = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[live_blocker], created_by=CREATOR
+        )
+        await _assert_mirror(ledger, task_id, where="positive control, one live blocker")
 
     async def test_POSITIVE_CONTROL_a_waiter_on_a_NORMAL_blocker_IS_freed_by_done(
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
-        """The control the pin above needs twice over: a build that refused EVERY create
-        would satisfy it, and so would one where NO waiter is ever claimable.  Same fixture
-        shape, same verbs, an ordinary blocker — the only variable is the supersession.
+        """The second control, on the OTHER axis: a build where NO waiter is ever claimable
+        satisfies every "still blocked" assertion in this class.  Same fixture shape, same
+        verbs, an ordinary blocker driven to a terminal status.
         """
         ledger, _env, _blocker = task_ledger
         blocker = await ledger.create_task("an ordinary blocker", DESCRIPTION, created_by=CREATOR)
@@ -4544,8 +4727,17 @@ class TestTheBoundedReadKeepsTheClaimAgreement:
         )
 
 
+#: How many racers the duplicate-blocker CAS pin runs.  Ruling **T5** ships this class with
+#: *"the concurrency evidence that standard demands: ≥8-way × 20 consecutive green runs,
+#: never a single green run"*, and the repo's standing rule is the same: a lone green run
+#: gave a LEAD a false all-clear on a real concurrency defect (``CLAUDE.md``, C1).  The 8 is
+#: encoded HERE; the 20 is an EXECUTION protocol and is stated in the class docstring,
+#: because a test cannot assert how many times it was run.
+DUPLICATE_BLOCKER_RACERS = 8
+
+
 class TestTheDuplicateBlockerDivergence:
-    """⚠⚠ **RED TODAY FOR A PRE-EXISTING REASON — ESCALATION E-6, NOT A 04b-1 REGRESSION.**
+    """⛔ **RULING T5, 2026-07-28 — CLOSED. RED at ``5a2dca9``.**  (Was escalation E-6.)
 
     Found while writing requirement 2(d)'s agreement pin, not looked for.  The two mechanisms
     treat a DUPLICATED blocker id differently:
@@ -4561,21 +4753,48 @@ class TestTheDuplicateBlockerDivergence:
     mechanisms.  A row that predates it, or any future write path that forgets it, produces a
     task the fleet is told is claimable and that can never be claimed.
 
-    **This is not caused by 04b-1 and it is not fixed by 04b-1's contract.**  It is pinned
-    here because requirement 2(d) says the two may NEVER disagree, and this is the input where
-    they already do.  **RECOMMENDED FIX (one line, in the file the builder is already
-    editing): ``array::len(array::distinct(blocked_by))`` in the CAS**, so the guard tolerates
-    what the normalisation was silently protecting it from.  **If the lead would rather route
-    this to its own finding, delete this class and say so — do not "fix" it by deleting the
-    duplicate from the fixture.**
+    T5, verbatim: *"A divergence between the SERVED partition and what the CAS actually does
+    is a trust defect by definition."*  The fix is the class's own one-line recommendation,
+    MEASURED green on a reference build: **``array::len(array::distinct(blocked_by))`` in the
+    CAS**, so the guard tolerates what the normalisation was silently protecting it from.
+
+    ⚠⚠ **THE OLD PIN ADMITTED A WRONG BUILD, AND THAT IS WHY IT CHANGED.**  It asserted only
+    that the two mechanisms AGREE (``claim.claimed == (legacy_id in unblocked)``) — which is
+    equally true of a build that "fixes" the divergence by teaching ``query_tasks`` to
+    double-count duplicates too, i.e. by making BOTH mechanisms call a fully-resolved task
+    unclaimable forever.  That build closes the divergence and keeps the black hole.  The
+    legs below assert the ANSWER, not merely the agreement: with every distinct blocker
+    terminal, the task is CLAIMABLE, in both mechanisms.
+
+    ⚠ **THIS TOUCHES THE LIVE CLAIM CAS, so it ships with the concurrency evidence this repo
+    demands** (T5, verbatim): **≥8-way × 20 consecutive green runs, never a single green
+    run.**  The 8-way leg is :meth:`test_EXACTLY_ONE_of_EIGHT_racers_wins_a_row_with_a_DUPLICATED_blocker`;
+    the 20 consecutive runs are an execution protocol a test cannot assert about itself, so
+    they are a RECEIPT the wave owes:
+
+        for i in $(seq 20); do uv run pytest -q --show-capture=no \\
+          "loremaster/tests/test_blocks_edge.py::TestTheDuplicateBlockerDivergence" \\
+          || { echo "RUN $i FAILED"; break; }; done
+
+    **A failing run is a STOP, never a "flaky".**  A builder may not downgrade a red
+    concurrency test to flakiness and proceed (``CLAUDE.md``: the C1 mint defect failed ~4 of
+    5 runs, was called flaky, and shipped).
     """
 
-    async def test_a_LEGACY_row_with_a_DUPLICATED_resolved_blocker_agrees_with_the_CAS(
-        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
-    ) -> None:
-        ledger, env, _seed = task_ledger
+    @staticmethod
+    async def _legacy_row_with_duplicate(
+        ledger: TaskLedger, env: SurrealEnv, *, blocker_status: str
+    ) -> tuple[str, str]:
+        """A raw-seeded ``blocked_by=[X, X]`` row, with ``X`` driven to ``blocker_status``.
+
+        Raw-seeded because ``_new_task_content``'s birth-time dedupe makes the shape
+        unreachable through the ledger — which is exactly the point: production holds rows
+        written before that normalisation existed, and a fixture that can only produce rows
+        today's write path allows guarantees the one condition under which the bug is
+        invisible (``CLAUDE.md``, "THE TEST ENVIRONMENT IS A FICTION").
+        """
         blocker = await ledger.create_task("the duplicated blocker", DESCRIPTION, created_by=CREATOR)
-        await _drive_to(ledger, blocker, STATUS_DONE)
+        await _drive_to(ledger, blocker, blocker_status)
         legacy_id = f"legacy_dupe_{uuid.uuid4().hex}"
         setup = await connect_admin(env)
         try:
@@ -4584,14 +4803,468 @@ class TestTheDuplicateBlockerDivergence:
             )
         finally:
             await setup.close()
+        return legacy_id, blocker
+
+    async def test_a_LEGACY_row_with_a_DUPLICATED_resolved_blocker_is_CLAIMABLE_in_BOTH(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ The ANSWER, not merely the agreement — see the class docstring for the wrong
+        build that "agree" alone waves through.
+        """
+        ledger, env, _seed = task_ledger
+        legacy_id, blocker = await self._legacy_row_with_duplicate(
+            ledger, env, blocker_status=STATUS_DONE
+        )
         unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        served_unblocked = legacy_id in unblocked
         claim = await ledger.claim_task(legacy_id, ACTOR)
-        assert claim.claimed == (legacy_id in unblocked), (
-            f"blocked_by=[X, X] with X terminal: query_tasks(blocked=False) says "
-            f"{legacy_id in unblocked}, the claim CAS says {claim.claimed}. The CAS compares "
-            f"array::len(blocked_by) with the length of the DISTINCT resolved set, so a "
-            f"duplicate makes the counts differ and the task is unclaimable forever while "
-            f"being served as claimable. See this class's docstring — E-6, pre-existing"
+        assert (served_unblocked, claim.claimed) == (True, True), (
+            f"blocked_by=[X, X] with X ({blocker!r}) DONE: query_tasks(blocked=False) says "
+            f"unblocked={served_unblocked}, the claim CAS says claimed={claim.claimed}. Every "
+            f"DISTINCT dependency of this task is terminal, so the answer is CLAIMABLE and "
+            f"both mechanisms must say so. The CAS compares array::len(blocked_by) with the "
+            f"length of the DISTINCT resolved set, so a duplicate makes the counts differ and "
+            f"the task is unclaimable forever while being served as claimable (T5). ⚠ Do NOT "
+            f"close this by making the QUERY double-count too — that agrees, and keeps the "
+            f"black hole"
+        )
+
+    async def test_POSITIVE_CONTROL_a_DUPLICATED_UNRESOLVED_blocker_stays_BLOCKED_in_BOTH(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """The control the leg above needs: a build that simply stopped counting blockers —
+        or that answered ``claimable`` for every legacy row — passes it.
+
+        Identical fixture, identical shape, ONE variable: the duplicated blocker is ``open``
+        instead of ``done``.  ``array::distinct`` must make a duplicate harmless, never make
+        a dependency disappear.
+        """
+        ledger, env, _seed = task_ledger
+        legacy_id, blocker = await self._legacy_row_with_duplicate(
+            ledger, env, blocker_status=STATUS_OPEN
+        )
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        served_unblocked = legacy_id in unblocked
+        claim = await ledger.claim_task(legacy_id, ACTOR)
+        assert (served_unblocked, claim.claimed) == (False, False), (
+            f"blocked_by=[X, X] with X ({blocker!r}) still OPEN: query_tasks(blocked=False) "
+            f"says unblocked={served_unblocked}, the claim CAS says claimed={claim.claimed}. "
+            f"De-duplicating the dependency list must not DROP the dependency — a build that "
+            f"resolved a duplicate by ignoring the entry fails closed in the fail-OPEN "
+            f"direction, which is worse than the divergence T5 closes"
+        )
+
+    async def test_EXACTLY_ONE_of_EIGHT_racers_wins_a_row_with_a_DUPLICATED_blocker(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **T5's concurrency clause — the CAS is LIVE code and this changes it.**
+
+        ``array::len(array::distinct(blocked_by))`` sits inside ``_claim_fragment``'s
+        compare-and-set, the one statement standing between two agents claiming the same
+        work.  A change there is not "one line" in risk terms, so the standard is the one
+        the repo already demands for a claim path: **≥8-way**, on **8 SEPARATE live
+        connections** (not eight coroutines on one socket — only separate sessions actually
+        exercise the server-side CAS + optimistic-concurrency retry), **× 20 consecutive
+        green runs**, per the protocol in the class docstring.
+
+        THE ASSERTION IS EXACTLY-ONE, in both directions.  ``> 1`` is a broken CAS: two
+        agents doing the same work, the failure this primitive exists to prevent.  ``0`` is
+        the T5 defect itself, unfixed — the row is fully resolved and nobody can take it —
+        and a pin asserting only ``<= 1`` would be GREEN on today's tree, which is the
+        no-discrimination shape this contract's own law forbids.
+        """
+        ledger, env, _seed = task_ledger
+        legacy_id, blocker = await self._legacy_row_with_duplicate(
+            ledger, env, blocker_status=STATUS_DONE
+        )
+
+        racers = [
+            TaskLedger(
+                url=env.url,
+                namespace=env.namespace,
+                database=env.database,
+                user=env.user,
+                password=env.password,
+            )
+            for _ in range(DUPLICATE_BLOCKER_RACERS)
+        ]
+        try:
+            await asyncio.gather(*(racer.ensure_ready() for racer in racers))
+            results = await asyncio.gather(
+                *(
+                    racer.claim_task(legacy_id, f"racer-{index}")
+                    for index, racer in enumerate(racers)
+                )
+            )
+        finally:
+            await asyncio.gather(*(racer.close() for racer in racers), return_exceptions=True)
+
+        winners = [index for index, result in enumerate(results) if result.claimed]
+        assert len(winners) == 1, (
+            f"{len(winners)} of {DUPLICATE_BLOCKER_RACERS} racers claimed task {legacy_id!r}, "
+            f"whose blocked_by is [X, X] with X ({blocker!r}) done. Exactly one must win.\n"
+            f"  ZERO winners is the T5 defect itself — array::len(blocked_by)=2 never equals "
+            f"the DISTINCT resolved count of 1, so a fully-resolved task is unclaimable "
+            f"forever while query_tasks serves it as claimable.\n"
+            f"  MORE THAN ONE is a broken compare-and-set: two agents are now doing the same "
+            f"work, which is the whole failure this primitive exists to prevent — and it "
+            f"would mean array::distinct was added OUTSIDE the atomic statement.\n"
+            f"  ⚠ A single green run NEVER clears this pin: 20 consecutive runs, and a red "
+            f"run is a STOP, not a 'flaky'. winners={winners}"
+        )
+        persisted = await ledger.get_task(legacy_id)
+        assert persisted.owner == f"racer-{winners[0]}", (
+            f"the winning claim reported racer-{winners[0]} but the persisted row names "
+            f"{persisted.owner!r} — the CAS and the row it writes disagree"
+        )
+
+
+# =========================================================================== #
+# SECTION J — RULING T2: A RAW ``(unspecified rejection)`` REACHING A CALLER IS A DEFECT.
+#
+# Ruling **T2** (2026-07-28, from design sidecar §5.4, "MP-3 generalised"), verbatim:
+# *"On every verb this packet touches, each caller-reachable engine rejection is either
+# pre-checked into a teaching refusal or classified into a teaching error.  An
+# undiagnosable error is the anti-teaching surface: the agent cannot tell its own mistake
+# from a broken tool, and the measured consult behaviour is that it blames the tool."*
+#
+# ⚠ IT IS PINNED AS A PROPERTY OVER THE VERBS, NOT AS A CASE.  The enumeration below is a
+# name-keyed table and that is stated rather than hidden — the repo's instrument lesson says
+# a name list is the shape with the most receipts against it.  Two things bound the damage,
+# and neither is a promise to remember:
+#
+#   * :meth:`TestEveryCallerReachableRefusalTEACHES.test_EVERY_public_TaskLedger_verb_is_ADJUDICATED_for_engine_rejections`
+#     derives the verb set FROM ``TaskLedger``'s own AST, exactly as SECTION D's mirror
+#     adjudication does, and requires every public verb to be in exactly one bucket — so a
+#     sixth verb cannot silently arrive with an unlaundered engine door.
+#   * the POSITIVE CONTROL proves the hygiene text is REAL and REACHABLE (neutralise the
+#     pre-check and the same call serves it), so the negative legs cannot pass vacuously.
+#     A probe needs a control: "the bad string was absent" is worth nothing until you have
+#     shown the instrument can see it present.
+#
+# ⚠ MEASURED HERE, 2026-07-28, against spike-surreal 3.2.1 (``ws://127.0.0.1:18000``, the
+# TEST store) — because ``docs/reference/surrealdb-31-capabilities.md`` documents no ``LIMIT``
+# behaviour at all and ruling R5/R9's newly-accepted parameter goes straight into one:
+#
+#     SELECT * FROM t LIMIT $k, $k = 3    -> 3 rows
+#     SELECT * FROM t LIMIT $k, $k = 0    -> 0 rows, no error
+#     SELECT * FROM t LIMIT $k, $k = -1   -> InternalError: LIMIT/START must be a
+#                                            non-negative integer, got -1
+#     SELECT * FROM t LIMIT $k, $k = NONE -> 0 rows, NO ERROR
+#
+# TWO consequences the builder needs, and neither was written down anywhere before:
+#   1. A NEGATIVE ``limit`` is a genuine ENGINE REJECTION on a newly-widened public
+#      parameter — T2's exact scope, and pinned below.
+#   2. **A ``NONE`` limit bound into the statement serves NOTHING, silently.**  So the
+#      obvious build — always emit ``LIMIT $limit`` and bind ``None`` when the caller passed
+#      no cap — turns EVERY unlimited query into an empty answer with no error anywhere.
+#      That build is killed by ``test_query_tasks_bounded.py``'s
+#      ``TestTheLimitIsPUSHEDINTOTheStatement::test_POSITIVE_CONTROL_an_UNLIMITED_query_still_serves_EVERYTHING``,
+#      whose docstring now names this measurement as the mechanism it catches.
+# =========================================================================== #
+
+
+def _engine_hygiene_markers() -> tuple[str, ...]:
+    """The store seam's caller-facing hygiene strings — READ FROM PRODUCTION, never retyped.
+
+    ``loremaster.store._txn`` owns the hygiene boundary (ledger #31): a rolled-back
+    statement is served to the caller as a short generic CLASS plus a pointer at the server
+    log, and the raw engine text — which can carry an interpolated value — is withheld.
+    That is correct FOR THE STORE and catastrophic for a LEDGER CALLER, who is an agent with
+    no server log and no way to tell its own bad input from a broken tool.
+
+    ⚠ CALL-TIME import, for :func:`_shared_policy`'s reason (finding #133): a module-level
+    import of a name that is later renamed makes this whole file UNCOLLECTABLE rather than
+    RED, and an uncollectable file DELETES its pins from the run instead of failing them.
+
+    ⚠ Derived rather than copied so a rename in production reddens these pins loudly instead
+    of leaving them asserting the absence of a string nothing produces any more — which is
+    how a served-English pin quietly stops discriminating.
+    """
+    import importlib
+
+    txn = importlib.import_module("loremaster.store._txn")
+    markers = (
+        getattr(txn, "_ERROR_CLASS_UNSPECIFIED", None),
+        getattr(txn, "_SERVER_LOG_HINT", None),
+    )
+    assert all(isinstance(marker, str) and marker for marker in markers), (
+        "loremaster.store._txn no longer exposes _ERROR_CLASS_UNSPECIFIED / _SERVER_LOG_HINT "
+        f"as non-empty strings ({markers!r}). This pin family asserts that neither string "
+        "reaches a ledger caller; if they were renamed, re-point this accessor in the same "
+        "commit — an absent marker makes every leg below pass vacuously"
+    )
+    return tuple(str(marker) for marker in markers)
+
+
+#: A ``limit`` the engine itself refuses — MEASURED (SECTION J's header), not assumed.
+#: Negative rather than zero because ``LIMIT 0`` is ACCEPTED by the engine (0 rows, no
+#: error), so zero cannot discriminate a laundered rejection from a legal empty answer.
+#: Whether ``limit=0`` should ALSO be refused is UNRULED and is escalated, not pinned.
+_ILLEGAL_LIMIT = -1
+
+
+async def _create_one(ledger: TaskLedger, *, blocked_by: list[str]) -> list[str]:
+    """One ``create_many`` item carrying ``blocked_by`` — the batch path in one call."""
+    from loremaster.tasks import TaskSpec
+
+    return await ledger.create_many(
+        [TaskSpec(subject=SUBJECT, description=DESCRIPTION, blocked_by=blocked_by)],
+        created_by=CREATOR,
+    )
+
+
+#: Public ``TaskLedger`` verbs with a caller-reachable ENGINE-rejection or pre-check door
+#: that ruling **T2** governs, each with the input that provokes it.  Every entry is a
+#: ``(verb, label, offending token, provoke)`` row; ``provoke`` takes the ledger and a REAL
+#: blocker id and returns the awaitable that must refuse.
+#:
+#: ⚠ The ``layer`` column is deliberate.  T2 accepts EITHER *"pre-checked into a teaching
+#: refusal"* OR *"classified into a teaching error"*, and knowing which layer is supposed to
+#: catch each door is what makes a failure diagnosable — an ``engine`` row that stops
+#: refusing means the pre-check vanished, an ``app`` row that stops refusing means the
+#: policy did.
+ENGINE_REJECTION_PATHS: tuple[tuple[str, str, str, str, Callable[..., Any]], ...] = (
+    (
+        "create_task",
+        "phantom blocker",
+        "engine",
+        PHANTOM_TASK_ID_UUID_SHAPE,
+        lambda ledger, _real: ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[PHANTOM_TASK_ID_UUID_SHAPE], created_by=CREATOR
+        ),
+    ),
+    (
+        "create_many",
+        "phantom blocker",
+        "engine",
+        PHANTOM_TASK_ID_KEY_SHAPE,
+        lambda ledger, _real: _create_one(ledger, blocked_by=[PHANTOM_TASK_ID_KEY_SHAPE]),
+    ),
+    (
+        "query_tasks",
+        "negative limit",
+        "engine",
+        str(_ILLEGAL_LIMIT),
+        lambda ledger, _real: ledger.query_tasks(limit=_ILLEGAL_LIMIT),
+    ),
+    (
+        "transitive_blockers",
+        "max_depth past the engine ceiling",
+        "engine",
+        str(ENGINE_RECURSION_CEILING + 1),
+        lambda ledger, real: _transitive_blockers(
+            ledger, real, max_depth=ENGINE_RECURSION_CEILING + 1
+        ),
+    ),
+    (
+        "transitive_blockers",
+        "unknown task id",
+        "app",
+        PHANTOM_TASK_ID_NUMERIC_SHAPE,
+        lambda ledger, _real: _transitive_blockers(ledger, PHANTOM_TASK_ID_NUMERIC_SHAPE),
+    ),
+)
+
+#: Public ``TaskLedger`` verbs adjudicated as having NO caller-reachable engine-rejection
+#: door this packet opens.  Declared explicitly rather than left off a list: an omission and
+#: a considered "nothing to launder here" look identical in a name-keyed table, and only one
+#: of them is a decision.
+VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH = frozenset(
+    {
+        "close",
+        "ensure_ready",
+        "get_task",
+        "claim_task",
+        "transition",
+        "supersede_task",
+        "updated_since",
+    }
+)
+
+class TestEveryCallerReachableRefusalTEACHES:
+    """RED at ``5a2dca9``.  ⛔ **Ruling T2** — the anti-teaching surface, pinned as a ∀.
+
+    THE CONSUMER IS AN AGENT.  ``statement 2 of 3 was rejected (unspecified rejection); see
+    the server log for the full engine detail`` is, to that reader, indistinguishable from
+    *"lore is broken"* — and the measured consult behaviour on an undiagnosable error is
+    that it **blames the tool** and routes around it.  Under the trust doctrine that is not
+    a cosmetic failure; it is the failure.
+
+    Each leg asserts three things about what the CALLER receives, and each kills a different
+    wrong build:
+
+    1. **the ledger's OWN vocabulary** (``TaskLedgerError``) — kills the build that lets the
+       store's exception through unlaundered.  ⚠ This is the load-bearing one, and a
+       "names the value" check alone does NOT cover it: the engine's own text for a bad
+       ``LIMIT`` is *"LIMIT/START must be a non-negative integer, got -1"*, which names the
+       value perfectly well while telling an agent nothing about which of ITS parameters was
+       wrong.  MEASURED, this file's SECTION J header.
+    2. **no hygiene marker** — kills the build that catches the store error and re-raises it
+       as a ledger error with the same undiagnosable body.
+    3. **the offending token, verbatim** — kills the build that teaches generically
+       (*"invalid dependency"*) and leaves a caller holding a 20-item batch with nothing to
+       edit.  RIDER-E's property, applied across every refusal cause.
+    """
+
+    @pytest.mark.parametrize(
+        ("verb", "label", "layer", "offending", "provoke"),
+        ENGINE_REJECTION_PATHS,
+        ids=[f"{verb}-{label.replace(' ', '_')}" for verb, label, _, _, _ in ENGINE_REJECTION_PATHS],
+    )
+    async def test_the_caller_receives_a_TEACHING_refusal_not_ENGINE_HYGIENE(
+        self,
+        task_ledger: tuple[TaskLedger, SurrealEnv, str],
+        verb: str,
+        label: str,
+        layer: str,
+        offending: str,
+        provoke: Callable[..., Any],
+    ) -> None:
+        ledger, _env, real_blocker = task_ledger
+        with pytest.raises(TaskLedgerError) as caught:
+            await provoke(ledger, real_blocker)
+        message = str(caught.value)
+        for marker in _engine_hygiene_markers():
+            assert marker not in message, (
+                f"{verb} ({label}, expected to be caught at the {layer} layer) served the "
+                f"caller the store's hygiene text {marker!r}. An agent holding this cannot "
+                f"tell its own bad input from a broken tool, has no server log to read, and "
+                f"the measured behaviour is that it blames the tool and routes around it "
+                f"(ruling T2). Pre-check it into a teaching refusal, or classify it into a "
+                f"teaching error: {message!r}"
+            )
+        assert offending in message, (
+            f"{verb} ({label}) refused without naming {offending!r} — the value the caller "
+            f"supplied. A refusal that does not carry the offending token back is not "
+            f"actionable in one edit (RIDER-E): {message!r}"
+        )
+
+    async def test_EVERY_public_TaskLedger_verb_is_ADJUDICATED_for_engine_rejections(
+        self,
+    ) -> None:
+        """⛔ Coverage as a CHECKED VARIABLE, deny-by-default — SECTION D's instrument,
+        pointed at T2 instead of at the mirror.
+
+        T2 says *"on every verb this packet touches"*, and *"every"* is only a quantifier if
+        something enumerates the set.  The verb set is DERIVED from ``TaskLedger``'s own AST,
+        so a verb added next packet lands in neither bucket and reddens here, rather than
+        arriving with an unlaundered engine door nobody listed.
+
+        ⚠ **STATED BOUND, because a gate that overstates its reach is what this repo
+        polices:** this proves every verb is ADJUDICATED, not that every rejection path
+        WITHIN an adjudicated verb was found. The table above is a name list and it is
+        labelled as one; what it buys is that the *verbs* cannot silently grow.
+
+        RED at ``5a2dca9`` for one reason: ``transitive_blockers`` does not exist yet.
+        """
+        source = Path(inspect.getfile(TaskLedger)).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        class_node = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "TaskLedger"
+        )
+        public_async = {
+            node.name
+            for node in class_node.body
+            if isinstance(node, ast.AsyncFunctionDef) and not node.name.startswith("_")
+        }
+        with_a_door = {verb for verb, _label, _layer, _offending, _provoke in ENGINE_REJECTION_PATHS}
+        declared = with_a_door | VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH
+        assert public_async == declared, (
+            "TaskLedger's public async verb set drifted from ruling T2's adjudication. "
+            f"On the class but NOT adjudicated: {sorted(public_async - declared)}. "
+            f"Adjudicated but NOT on the class: {sorted(declared - public_async)}. Every "
+            "verb belongs in exactly one of ENGINE_REJECTION_PATHS (has a caller-reachable "
+            "rejection door, and here is the input that provokes it) or "
+            "VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH (considered, and there is none) — an "
+            "omission and a decision must not look the same"
+        )
+        assert not (with_a_door & VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH), (
+            "a verb is declared BOTH as having a rejection door and as having none: "
+            f"{sorted(with_a_door & VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH)}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_hygiene_text_IS_reachable_when_the_precheck_is_GONE(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔⛔ **THE CONTROL WITHOUT WHICH EVERY LEG ABOVE IS WORTHLESS.**
+
+        Each leg above is a NEGATIVE result — *"the hygiene marker was absent"* — and a
+        negative result from a blind instrument is indistinguishable from one from a working
+        instrument.  If ``_ERROR_CLASS_UNSPECIFIED`` were never what this seam produces, or
+        if the engine simply accepted a phantom endpoint, every assertion above would pass
+        for a reason that has nothing to do with the code being right.
+
+        So: neutralise the shared pre-check, make the SAME call, and show that the caller is
+        now served the store's hygiene text — proving (a) the marker is real and is what
+        this path produces, (b) the pre-check is the ONLY thing standing between an agent
+        and it, and therefore (c) the negative legs measure something.
+
+        ⚠ The assertion is on the SERVER-LOG HINT rather than on a particular error CLASS
+        label: ``_classify_engine_error`` picks its label by matching engine text, and which
+        label an ``ENFORCED`` rejection earns is a measurement this contract does not own.
+        The hint is appended to EVERY classified rollback message whatever the class, so it
+        is the marker that cannot drift out from under this control.
+        """
+        ledger, _env, _blocker = task_ledger
+        _neutralise_the_policy(monkeypatch, "loremaster.tasks")
+        with pytest.raises(SurrealStoreError) as caught:
+            await ledger.create_task(
+                SUBJECT,
+                DESCRIPTION,
+                blocked_by=[PHANTOM_TASK_ID_UUID_SHAPE],
+                created_by=CREATOR,
+            )
+        message = str(caught.value)
+        _unspecified, server_log_hint = _engine_hygiene_markers()
+        assert server_log_hint in message, (
+            f"with the pre-check neutralised, a phantom blocker did NOT produce the store's "
+            f"hygiene text — so the negative legs in this class are asserting the absence of "
+            f"a string this path never produces, and they discriminate nothing. Either the "
+            f"engine now accepts a dangling `blocks` endpoint (a far worse finding — see "
+            f"TestTheBlocksEdgeIsGuardedFromBirth) or the seam's error hygiene changed: "
+            f"{message!r}"
+        )
+        assert PHANTOM_TASK_ID_UUID_SHAPE not in message, (
+            f"the store's own rejection message carried the offending id back to the caller. "
+            f"That is not a licence to skip the app pre-check — the hygiene boundary exists "
+            f"precisely because engine text can leak an interpolated VALUE, and a build that "
+            f"relies on it is relying on a string the store is designed to withhold: "
+            f"{message!r}"
+        )
+
+    async def test_a_ghost_SENDER_is_refused_in_the_MESSAGE_ledgers_OWN_vocabulary(
+        self, message_ledger_with_a_real_agent: tuple[Any, str, SurrealEnv]
+    ) -> None:
+        """T2 over the OTHER ledger this packet touches (#247, operator ruling R2).
+
+        Same property, different vocabulary — so it is a separate leg rather than a row in
+        the table above: a ``MessageLedger`` caller catches ``MessageLedgerError``, and
+        forcing both families through one parametrisation would have meant asserting a base
+        class this contract does not rule on.
+        """
+        ledger, registered, _env = message_ledger_with_a_real_agent
+        ghost = UNREGISTERED_SENDER_IDS[0]
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the TYPE has its own pin in §H
+            await ledger.send(
+                sender=_Ref(ghost, "phantom-lead"),
+                session="wave7",
+                body="a message from nobody",
+                grade="signal",
+                recipients=[_Ref(registered, "fixer-b")],
+            )
+        message = str(caught.value)
+        for marker in _engine_hygiene_markers():
+            assert marker not in message, (
+                f"the ghost-sender refusal served the store's hygiene text {marker!r}. The "
+                f"`to` edge is ENFORCED, so an unvalidated sender reaches the engine and the "
+                f"seam launders its rejection into exactly this — which teaches an agent "
+                f"nothing about the parameter it got wrong (ruling T2): {message!r}"
+            )
+        assert ghost in message, (
+            f"the refusal does not name the unresolved sender {ghost!r}: {message!r}"
         )
 
 
