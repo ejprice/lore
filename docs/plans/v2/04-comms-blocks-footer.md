@@ -624,6 +624,36 @@ The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose
 - Store backed up before any migration work: `/backups/lore/lore-prod-20260728T194511Z.surql`
   (2.68 GB, `EXIT=0`, 22 tables, engine success line verified).
 
+### ✅ R11's FOUR ESCALATIONS — RULED (lead, 2026-07-28, on `REPORT-contractfix-04b1-r4.md`)
+- **ESC-1 — "RECORDED" = a structured LOG record at WARNING or above** (reading A, as pinned),
+  naming both the phantom id and the task it was skipped for. Rejected reading B (a typed
+  migration summary returned by `ensure_ready`): it retypes a method five test doubles
+  implement and that DI calls at boot **for effect, not for value**. ⚠ **The consumer-facing
+  half is already handled elsewhere and must stay that way:** the log serves the OPERATOR; the
+  agent-facing bound is §C's pinned scope statement — a legacy `blocked_by` naming no task row
+  means the traversal is short **by design**, and the READ surface names that as a fact.
+- **ESC-2 — the policy module grows a NON-RAISING probe, and `reject_unknown_rows` becomes a
+  thin caller of it** (reading A). One implementation, two callers, inside the module L3
+  already names. Rejected reading B (call the raising entry per row and catch): N round trips,
+  and it makes an exception the control flow of a migration. This is ONE IMPLEMENTATION applied
+  to the policy's own shape.
+- **ESC-3 — READING B, and it is pinned: a failed pre-check is CLASSIFIED into the ledger's
+  vocabulary, not merely distinguishable.** The author recommended "B eventually, A now" out of
+  well-placed C-DEF caution — a contract must not invent a requirement a correct build fails.
+  **That caution does not apply once the requirement is RULED**: a correct build now classifies,
+  so the pin is satisfiable by construction. T2 bans a raw `(unspecified rejection)` reaching a
+  caller, and a store failure during the pre-check **does** reach one; that it is not
+  caller-provoked changes who caused it, not what the caller can do with it. Add the
+  `TaskLedgerError` type assertion the author names.
+- **ESC-4 — READING A, and NOW PINNED: the backfill MINTS legacy cycles, and RECORDS them** like
+  a phantom skip. Refusing them (B) would break **edge ≡ `blocked_by`** on exactly the rows the
+  invariant is hardest to reason about, and `+collect` terminates on cycles (probe P4). A legacy
+  cycle is a pre-existing DATA defect; the edge set must MIRROR reality, not quietly diverge from
+  it — a divergence the invariant asserts does not exist is a false clear in the store itself.
+  The RECORD is what stops it being silent. ⚠ **The author deliberately left this unpinned to
+  avoid a C-DEF, which was the right call while it was unruled** — the ruling is what makes
+  pinning safe, and that ordering is the point.
+
 ## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
 - **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
   silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
