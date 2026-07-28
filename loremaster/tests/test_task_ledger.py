@@ -266,42 +266,25 @@ async def _seed_row_naming_a_never_minted_blocker(
     """
     real_blocker = await _create(task_ledger, SUBJECT_MEMORY, DESCRIPTION_MEMORY)
     never_minted_blocker = _mutate_into_unknown_id(real_blocker)  # same shape, never created
-    dependent_id = f"legacy_{uuid4().hex}"
-    now = datetime.now(UTC)
+    # Born through the ordinary verb with NO dependency, then given one RAW. That is the
+    # order production wrote these rows in, and it means neither branch has to hand-build a
+    # task row — every column but ``blocked_by`` is whatever today's create path produces.
+    dependent_id = await _create(task_ledger, SUBJECT_LEDGER, DESCRIPTION_LEDGER)
+    # ``Any`` on purpose: the fixture's ``"fake"`` branch hands over a ``FakeTaskLedger``
+    # cast to ``TaskLedger`` (the parity pin's whole design), so an isinstance test against
+    # the DECLARED type narrows to "always true" and mypy calls the fake branch unreachable.
+    backend: Any = task_ledger
 
-    if isinstance(task_ledger, TaskLedger):
-        connection = await task_ledger._ensure_connection()  # noqa: SLF001 - the legacy seed
+    if isinstance(backend, TaskLedger):
+        connection = await backend._ensure_connection()  # noqa: SLF001 - the legacy seed
         await connection.query(
-            f"CREATE type::record('{TASK_TABLE}', $id) CONTENT $content",
-            {
-                "id": dependent_id,
-                "content": {
-                    "subject": SUBJECT_LEDGER,
-                    "description": DESCRIPTION_LEDGER,
-                    "status": STATUS_OPEN,
-                    "blocked_by": [never_minted_blocker],
-                    "provenance": {
-                        "created_by": "legacy",
-                        "created_at": now.isoformat(),
-                        "events": [],
-                    },
-                    "created_at": now,
-                },
-            },
+            f"UPDATE type::record('{TASK_TABLE}', $id) SET blocked_by = $blocked_by",
+            {"id": dependent_id, "blocked_by": [never_minted_blocker]},
         )
     else:
-        fake = cast(FakeTaskLedger, task_ledger)
-        fake.db.tasks[dependent_id] = Task(
-            id=dependent_id,
-            subject=SUBJECT_LEDGER,
-            description=DESCRIPTION_LEDGER,
-            status=STATUS_OPEN,
-            owner=None,
-            claimed_at=None,
-            blocked_by=[never_minted_blocker],
-            provenance={"created_by": "legacy", "created_at": now.isoformat(), "events": []},
-            superseded_by=None,
-            created_at=now,
+        fake = cast(FakeTaskLedger, backend)
+        fake.db.tasks[dependent_id] = fake.db.tasks[dependent_id].model_copy(
+            update={"blocked_by": [never_minted_blocker]}
         )
 
     persisted = await task_ledger.get_task(dependent_id)

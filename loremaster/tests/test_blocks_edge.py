@@ -4933,7 +4933,7 @@ class TestTheDuplicateBlockerDivergence:
 # a name list is the shape with the most receipts against it.  Two things bound the damage,
 # and neither is a promise to remember:
 #
-#   * :meth:`TestEveryCallerReachableRefusalTEACHES.test_EVERY_public_TaskLedger_verb_is_ADJUDICATED_for_engine_rejections`
+#   * :class:`TestEveryCallerReachableRefusalTEACHES`'s verb-adjudication leg
 #     derives the verb set FROM ``TaskLedger``'s own AST, exactly as SECTION D's mirror
 #     adjudication does, and requires every public verb to be in exactly one bucket — so a
 #     sixth verb cannot silently arrive with an unlaundered engine door.
@@ -4959,8 +4959,8 @@ class TestTheDuplicateBlockerDivergence:
 #      obvious build — always emit ``LIMIT $limit`` and bind ``None`` when the caller passed
 #      no cap — turns EVERY unlimited query into an empty answer with no error anywhere.
 #      That build is killed by ``test_query_tasks_bounded.py``'s
-#      ``TestTheLimitIsPUSHEDINTOTheStatement::test_POSITIVE_CONTROL_an_UNLIMITED_query_still_serves_EVERYTHING``,
-#      whose docstring now names this measurement as the mechanism it catches.
+#      ``TestTheLimitIsPUSHEDINTOTheStatement``'s UNLIMITED positive control, whose
+#      docstring now names this measurement as the mechanism it catches.
 # =========================================================================== #
 
 
@@ -5430,4 +5430,60 @@ class TestEveryCallerReachableRefusalTEACHES:
 #
 #   PROOFS 1 and 2 are the mirror image — they mutate code the build ADDS, so they can only
 #   run afterwards, and their declared sets must never carry the clause.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PROOFS 6–9 — ROUND 3's rulings (R10(ii) · T1 · T5 · R9).  Added 2026-07-28.
+#
+# ⚠ ALL FOUR MUTATE CODE THE BUILD ADDS, so like PROOFS 1–2 they can only run AFTER it
+# lands, and their declared sets must NOT carry the "three already-RED blocks declaration
+# pins" clause.  Every node id below was taken from ``pytest --collect-only -q``, never
+# typed from source and never transcribed from a run.
+#
+#   Q="$F::TestASupersededBlockerIsNotASilentBlackHole"
+#   R="$F::TestTheDuplicateBlockerDivergence"
+#   B=loremaster/tests/test_query_tasks_bounded.py
+#   S="$B::TestTheCapAppliesToTheANSWERNotTheCandidateScan"
+#   T="$B::TestLimitIsLEGALForQueryAtTheToolSeam"
+#
+# PROOF 6 — R10(ii), the superseded-blocker refusal.  Neutralise ONLY the supersession
+#   branch of the pre-check (leave the phantom branch alone), e.g. drop the
+#   ``superseded_by`` projection from the grouped existence read so every existing row
+#   reads as live.  DECLARED RED (5): every refusal leg, and NOT the two controls.
+#     --expect-red "$Q::test_a_create_blocked_on_a_SUPERSEDED_task_is_REFUSED"
+#     --expect-red "$Q::test_the_refusal_NAMES_THE_SUCCESSOR_and_says_what_to_do_INSTEAD"
+#     --expect-red "$Q::test_the_refusal_ALSO_states_that_NOTHING_was_created"
+#     --expect-red "$Q::test_a_refused_create_writes_NO_task_row"
+#     --expect-red "$Q::test_create_many_ALSO_refuses_a_SUPERSEDED_blocker_and_writes_NO_ROWS"
+#   ⚠ ``test_a_DEPENDENT_created_BEFORE_the_supersede_is_NOT_silently_unblocked`` must stay
+#   GREEN under this mutation, and that is the POINT: it guards the OTHER direction (the
+#   reading R10 rejected), so a mutation to the pre-check may not move it. If it reddens,
+#   the pre-check and the blocker-resolution path have been coupled.
+#
+# PROOF 7 — T5, the duplicate-blocker divergence.  Mutate the claim CAS back:
+#     --anchor "array::len(array::distinct(blocked_by))" --replacement "array::len(blocked_by)"
+#   DECLARED RED (2):
+#     --expect-red "$R::test_a_LEGACY_row_with_a_DUPLICATED_resolved_blocker_is_CLAIMABLE_in_BOTH"
+#     --expect-red "$R::test_EXACTLY_ONE_of_EIGHT_racers_wins_a_row_with_a_DUPLICATED_blocker"
+#   ⚠ ``test_POSITIVE_CONTROL_a_DUPLICATED_UNRESOLVED_blocker_stays_BLOCKED_in_BOTH`` stays
+#   GREEN — it is the leg that fires on the OPPOSITE error (dropping the dependency), so a
+#   proof that reddened it would have proved the two legs are one leg.
+#
+# PROOF 8 — T1, the cap on the ANSWER.  Mutate the cap onto the CANDIDATE SCAN (push the
+#   caller's ``limit`` into the WHERE-bearing statement and let the client-side ``blocked``
+#   filter cut it afterwards — the naive composition of R5 and #253).  DECLARED RED (2):
+#     --expect-red "$S::test_a_capped_BLOCKED_query_serves_the_FULL_cap_when_the_answer_is_bigger"
+#     --expect-red "$S::test_a_SHORT_answer_means_the_scan_was_EXHAUSTED_never_silently_truncated"
+#   ⚠ The SANDWICH control stays GREEN (it supplies no ``limit``). If it reddens, the
+#   fixture drifted and the two legs above are measuring nothing.
+#
+# PROOF 9 — R9, the surgical widening.  Mutate the strict-parameter guard back to ONE
+#   sentence covering both parameters:
+#     --anchor "'since'/'limit' apply only to action='rollup'"  (whatever the split spells)
+#   DECLARED RED (2), and they are RED for DIFFERENT reasons, which is why both are declared:
+#     --expect-red "$T::test_limit_on_action_QUERY_is_ACCEPTED_by_the_strict_parameter_guard"
+#     --expect-red "$T::test_SINCE_on_action_QUERY_is_STILL_REFUSED_and_stops_claiming_limit_is_too"
+#   ⚠ ``test_limit_on_a_NON_query_NON_rollup_action_is_STILL_REFUSED`` stays GREEN under this
+#   mutation — it is GREEN at ``5a2dca9`` too. It exists to catch the OPPOSITE mutation
+#   (deleting the guard), which no anchor here performs; run it as its own proof by deleting
+#   the guard block entirely and declaring all three of $T.
 # =========================================================================== #

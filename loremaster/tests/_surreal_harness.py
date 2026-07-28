@@ -66,9 +66,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, ClassVar, Protocol
 
 import pytest_asyncio
+import surrealdb as _surrealdb_package
+from _sdk_guard import SDK_CONNECTION_CLASSES
 from loremaster.index.records import Record, point_id, sha512_hex
 from pydantic import SecretStr
 from surrealdb import (
@@ -228,25 +231,53 @@ class StoreTraffic:
     doors: tuple[str, ...] = ()
     unobserved: tuple[str, ...] = ()
 
-    #: The two doors :func:`measure_store_traffic` can account for: ``query_raw``,
-    #: which it counts, and ``query``, which [READ, SDK 2.0.0
-    #: ``surrealdb/connections/async_ws.py``] delegates to it. Everything else on a
-    #: live connection is uncountable — see :meth:`uncountable_doors`.
-    COUNTABLE_DOORS = frozenset({"query", "query_raw"})
+    #: Every SDK connection door that reaches the engine THROUGH ``query_raw`` — and so
+    #: is already counted by :func:`measure_store_traffic`.
+    #:
+    #: ⚠⚠ **DERIVED BY READING THE SDK'S OWN SOURCE, AND THE READING OVERTURNED WHAT THIS
+    #: INSTRUMENT USED TO CLAIM.**  Its docstring stated a bound: *"an SDK call that
+    #: reaches the engine WITHOUT ``query_raw`` (``select`` / ``create`` / ``insert`` /
+    #: ``upsert``) is invisible here."*  **All four of those route through ``query_raw``
+    #: on SDK 2.0.0** — each builds SurrealQL and sends it that way — so the instrument
+    #: was already counting the exact methods it named as blind spots, and the four names
+    #: were the author's expectation rather than a reading.  *Read the dependency; do not
+    #: reverse-engineer what is written down* (``CLAUDE.md``, #107).
+    #:
+    #: The real blind spot is the SDK's own-RPC surface: ``begin`` / ``commit`` /
+    #: ``cancel`` / ``live`` / ``kill`` / ``info`` / ``use`` / ``let`` and friends, which
+    #: send their own request messages.  ``begin``/``commit`` are the ones with teeth
+    #: here — ruling R7 is a claim about TRANSACTIONS, and a build that opened one via the
+    #: SDK's RPC rather than a ``BEGIN``-bearing statement would undercount round trips.
+    #:
+    #: Computed IN THE CLASS BODY, i.e. at module import, deliberately: the runtime SDK
+    #: guard (autouse, from conftest) replaces these class attributes with its own
+    #: wrapper, and ``inspect.getsource`` on a wrapped method returns the GUARD's source.
+    #: Derived later, this set would be silently empty.
+    COUNTABLE_DOORS: ClassVar[frozenset[str]] = frozenset({"query_raw"}) | frozenset(
+        name
+        for connection_class in SDK_CONNECTION_CLASSES
+        for name, function in inspect.getmembers(connection_class, inspect.isfunction)
+        if not name.startswith("_")
+        and inspect.iscoroutinefunction(function)
+        and any(
+            delegation in inspect.getsource(function)
+            for delegation in ("self.query_raw(", "self.query(")
+        )
+    )
 
     @staticmethod
     def uncountable_doors() -> frozenset[str]:
         """SDK connection methods that reach the engine WITHOUT passing ``query_raw``.
 
-        DERIVED from the SDK classes, DENY BY DEFAULT: everything public and awaitable
-        on a real connection is uncountable UNLESS it is in
-        :data:`COUNTABLE_DOORS`. A method the SDK adds in a future release is therefore
-        uncountable the day it lands, with nobody editing a list — the *allowlist the
-        safe* rule, because the dangerous surface is the SDK's and grows without asking
-        us, while the safe surface is ours and is enumerable. (``CLAUDE.md``: an SDK
-        gate keyed on 3 method names was defeated by the other 30.)
+        DENY BY DEFAULT: everything public and awaitable on a real connection is
+        uncountable UNLESS it is in :data:`COUNTABLE_DOORS` (derived from the SDK's own
+        source) or in ``_sdk_guard``'s evidence-backed safe set. A method the SDK adds in
+        a future release is therefore uncountable the day it lands, with nobody editing a
+        list — the *allowlist the safe* rule, because the dangerous surface is the SDK's
+        and grows without asking us, while the safe surface is ours and is enumerable.
+        (``CLAUDE.md``: an SDK gate keyed on 3 method names was defeated by the other 30.)
 
-        The connection classes and the authenticate/close exemptions come from
+        The connection classes and the ``signin``/``close`` exemptions come from
         ``_sdk_guard``, which already owns that policy for the runtime retry gate; a
         second copy of either would be the #102 shape.
 
@@ -255,7 +286,7 @@ class StoreTraffic:
         (``test_surreal_harness.py::_ALLOWED_MODULE_LEVEL_NAMES``), and this belongs to
         the type that reports ``doors``/``unobserved`` anyway.
         """
-        from _sdk_guard import SAFE_CONNECTION_METHODS, SDK_CONNECTION_CLASSES
+        from _sdk_guard import SAFE_CONNECTION_METHODS
 
         return frozenset(
             name
@@ -417,11 +448,27 @@ async def measure_store_traffic(
         doors.append("query")
         return await original_query(*args, **kwargs)
 
+    sdk_package_root = str(Path(_surrealdb_package.__file__ or "").resolve().parent)
+
     def _uncountable(name: str, original: Any) -> Any:
-        async def _recorded(*args: Any, **kwargs: Any) -> Any:
-            doors.append(name)
-            unobserved.append(f"{name} (call #{len(doors)})")
-            return await original(*args, **kwargs)
+        # A PLAIN ``def``, for ``_sdk_guard``'s measured reason: an ``async def`` wrapper
+        # walks the stack when the loop RESUMES its body, by which time the calling frame
+        # is gone. The walk has to happen when the call is MADE. The coroutine is returned
+        # unawaited and the caller awaits it, exactly as before.
+        def _recorded(*args: Any, **kwargs: Any) -> Any:
+            # ATTRIBUTION BY THE IMMEDIATE CALLER, never by method name. The SDK calls its
+            # OWN doors internally — ``_send`` lazily re-``connect``s — and recording those
+            # would report a blind spot in code we do not own and cannot route differently.
+            # Filtering them by NAME would be the name-list this instrument exists to
+            # avoid; filtering by WHO CALLED is a property.
+            caller = inspect.currentframe()
+            calling_file = ""
+            if caller is not None and caller.f_back is not None:
+                calling_file = caller.f_back.f_code.co_filename
+            if not calling_file.startswith(sdk_package_root):
+                doors.append(name)
+                unobserved.append(f"{name} (call #{len(doors)})")
+            return original(*args, **kwargs)
 
         return _recorded
 

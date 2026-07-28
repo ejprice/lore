@@ -135,6 +135,7 @@ import uuid
 from typing import Any
 
 import pytest
+from _sdk_guard import SDK_CONNECTION_CLASSES
 from _surreal_harness import (
     PRODUCTION_DIM,
     StoreTraffic,
@@ -1671,10 +1672,11 @@ class TestTheInstrumentsOwnREACHIsACheckedVariable:
         SDK call the instrument cannot count, in the middle of a measured window, and require
         it to be (a) NAMED and (b) REFUSED.
 
-        ``select`` is used because it is a genuine engine round trip that never touches
-        ``query_raw`` — the exact shape R-22 disclosed as invisible — and because it is one
-        of the ten SDK write/read doors ``CLAUDE.md`` records a name-keyed gate being
-        defeated by.
+        ``version`` is used because it is a genuine server round trip that sends its OWN
+        request message rather than a SurrealQL statement — the real shape of this
+        instrument's blind spot (see :data:`~_surreal_harness.StoreTraffic.COUNTABLE_DOORS`
+        for why the four methods R-22 NAMED as invisible turned out not to be) — and
+        because it mutates nothing, so the control cannot damage the fixture it runs in.
 
         BOTH halves are asserted.  A build that recorded the door but returned the reading
         anyway leaves every caller free to act on a number it has been told is wrong, and
@@ -1684,31 +1686,35 @@ class TestTheInstrumentsOwnREACHIsACheckedVariable:
         try:
             await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
             connection = await ledger._ensure_connection()  # noqa: SLF001 - the seam IS the probe
+            assert "version" in StoreTraffic.uncountable_doors(), (
+                "this control needs a door the instrument genuinely cannot count; `version` "
+                "is no longer one, so it would prove nothing"
+            )
 
-            async def _read_through_an_uncountable_door() -> None:
-                await connection.select(TASK_TABLE)
+            async def _reach_the_server_through_an_uncountable_door() -> None:
+                await connection.version()
 
             recorded = await measure_store_traffic(
-                ledger, _read_through_an_uncountable_door, allow_unobserved=True
+                ledger, _reach_the_server_through_an_uncountable_door, allow_unobserved=True
             )
-            assert any(entry.startswith("select") for entry in recorded.unobserved), (
-                f"a live `connection.select()` inside the measured window was NOT recorded "
+            assert any(entry.startswith("version") for entry in recorded.unobserved), (
+                f"a live `connection.version()` inside the measured window was NOT recorded "
                 f"as an uncountable door, so this instrument is still blind to exactly the "
                 f"class of call ruling T4 exists to close: {recorded}"
             )
             assert recorded.calls == 0, (
-                f"the instrument COUNTED a `select()` — it counts at `query_raw`, which "
-                f"`select` does not pass through, so a non-zero count here means the "
+                f"the instrument COUNTED a `version()` — it counts at `query_raw`, which "
+                f"`version` does not pass through, so a non-zero count here means the "
                 f"accounting no longer matches the doors: {recorded}"
             )
             with pytest.raises(AssertionError) as refusal:
-                recorded.require_full_reach("a deliberately uncountable read")
-            assert "select" in str(refusal.value), (
+                recorded.require_full_reach("a deliberately uncountable call")
+            assert "version" in str(refusal.value), (
                 f"the refusal does not name the door it could not count, so a reader cannot "
                 f"tell which call to fix: {str(refusal.value)!r}"
             )
             with pytest.raises(AssertionError):
-                await measure_store_traffic(ledger, _read_through_an_uncountable_door)
+                await measure_store_traffic(ledger, _reach_the_server_through_an_uncountable_door)
         finally:
             await ledger.close()
             await drop_database(env)
@@ -1725,12 +1731,20 @@ class TestTheInstrumentsOwnREACHIsACheckedVariable:
         safe set.  A method the SDK ships next year lands in *uncountable* with nobody
         touching this file — which is the deny-by-default property, stated as a check.
 
-        The named samples are a NON-VACUITY guard, not the requirement: a build where
-        ``uncountable_doors()`` returned an empty set would satisfy the partition trivially
-        (and make the whole instrument blind again), so the ten doors this repo has receipts
-        about are required to be in it.
+        The named samples are a NON-VACUITY guard on BOTH sides, not the requirement: an
+        empty ``uncountable_doors()`` would satisfy the partition trivially and make the
+        instrument blind again, and an empty ``COUNTABLE_DOORS`` would make every ordinary
+        read look like a blind spot.
+
+        ⚠ **THE COUNTABLE SAMPLES ARE A CORRECTION, PINNED SO IT CANNOT SILENTLY REGRESS.**
+        This instrument's docstring used to state as a bound that ``select`` / ``create`` /
+        ``insert`` / ``upsert`` were invisible to it. Reading SDK 2.0.0's source shows all
+        four build SurrealQL and send it through ``query_raw``, so all four were already
+        counted — the "bound" was an author's expectation, never a reading, and it is
+        exactly the failure ``CLAUDE.md`` records as *reverse-engineering what is written
+        down*. The real blind spot is the own-RPC surface below.
         """
-        from _sdk_guard import SAFE_CONNECTION_METHODS, SDK_CONNECTION_CLASSES
+        from _sdk_guard import SAFE_CONNECTION_METHODS
 
         uncountable = StoreTraffic.uncountable_doors()
         countable = StoreTraffic.COUNTABLE_DOORS
@@ -1754,13 +1768,22 @@ class TestTheInstrumentsOwnREACHIsACheckedVariable:
         assert not (uncountable & countable), (
             f"a door is declared both countable and uncountable: {sorted(uncountable & countable)}"
         )
-        for known_engine_door in ("select", "create", "insert", "upsert", "relate", "delete"):
-            assert known_engine_door in uncountable, (
-                f"{known_engine_door!r} is not in the uncountable set. It reaches the engine "
-                f"without passing query_raw, so a build that used it would be measured as "
-                f"FREE — and this repo's SDK gate was already defeated once by exactly this "
-                f"family (`upsert`: 31 retryable conflicts in 64 live attempts, waved "
-                f"through by a three-name allowlist)"
+        for routed_through_query_raw in ("select", "create", "insert", "upsert", "delete"):
+            assert routed_through_query_raw in countable, (
+                f"{routed_through_query_raw!r} is no longer derived as routing through "
+                f"query_raw. Either the SDK changed — in which case every measurement in "
+                f"this file now undercounts and the derivation must be re-read against the "
+                f"new source — or the derivation broke and is silently returning less than "
+                f"the SDK offers. countable={sorted(countable)}"
+            )
+        for own_rpc_door in ("begin", "commit", "cancel", "live", "kill", "use"):
+            assert own_rpc_door in uncountable, (
+                f"{own_rpc_door!r} is not in the uncountable set. It sends its OWN request "
+                f"message rather than a SurrealQL statement, so a build that used it would "
+                f"be measured as FREE. `begin`/`commit` are the ones with teeth: ruling R7 "
+                f"is a claim about TRANSACTIONS, and a transaction opened by RPC rather than "
+                f"by a BEGIN-bearing statement would undercount round trips in the pin that "
+                f"exists to prove the two reads share one snapshot"
             )
 
     async def test_the_query_DELEGATION_this_instrument_RESTS_ON_is_CHECKED(self) -> None:
