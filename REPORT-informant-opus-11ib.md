@@ -652,4 +652,297 @@ of it.
 
 ---
 
-**STANDING BY.** Parts 1–3 complete. Package read; nothing outside it opened. Awaiting Part 4.
+---
+
+## PART 4 — THE INPUT CONTRACT (numbers assumed real)
+
+Parts 1–3 stand unrevised.
+
+The scheduler has exactly three branches, and each one needs exactly one datum. I state the
+contract that way deliberately: a slot that does not map to a branch is a datum I do not need, and
+a branch with no datum is a route-around reason.
+
+### SLOT 1 — the SKIP branch
+
+**(a) Datum.** `corpus_content_digest` — the C10 exact-skip change-detection datum, compared for
+**equality** against the digest on the adopted measurement row.
+
+**(b) Address.**
+- Primary: `05-adopted-row-provenance.md` → *"The adopted `floor_measurement` row — all 14 shipped
+  columns, in write order"* → **row 11**, `corpus_content_digest`, type `option<string>`, value
+  `fedcba98…3210`.
+- Corroboration that it is stable across runs: `07-determinism-and-run-receipt.md` → *"Pre-conditions,
+  asserted rather than assumed"* → row `corpus_content_digest`, run 1 = run 2, ✓.
+- Definition: `00-README.md` glossary → *"`C10` | the exact-skip change-detection datum:
+  `corpus_content_digest` over the corpus's ascending-id chunk walk"*.
+
+**(c) Bound.** `07`, commitment 1: *"Change detection must key on `corpus_content_digest` equality —
+the C10 datum, persisted on every row — and on nothing else. Digest equal ⇔ zero chunks added,
+removed or edited ⇔ skip."* Three consequences I must write into the contract, not around:
+1. **Equality is licensed in ONE direction only.** `digest == digest` ⇒ skip is sound. `digest !=
+   digest` licenses *"something changed"* and **nothing about how much** — it is a whole-corpus
+   digest over an ascending-id chunk walk, so a single edited chunk out of `23456` flips it exactly
+   as hard as a re-index. The scheduler may not read magnitude out of inequality. (This is U1 below.)
+2. **No substitute key is permitted.** `07` commitments 2 and 3 forbid inferring change from a
+   floor comparison, in both directions.
+3. **The column is `option<string>`.** Only `head_identity` and `created_at` are REQUIRED on that
+   row; `corpus_content_digest` is nullable, and the package never says what a NONE digest means.
+   The contract must therefore treat *digest absent* as **"skip test unavailable ⇒ do not skip"*,
+   which is my choice, not the package's instruction. (U13.)
+
+### SLOT 2 — the INVALIDATE branch
+
+**(a) Datum.** `embedding_schema_fingerprint` (paired with `instrument_version`) — compared for
+equality; **inequality invalidates the adopted floor outright, regardless of the digest.**
+
+**(b) Address.**
+- Primary: `05` → adopted row **row 12**, `embedding_schema_fingerprint`, `option<string>`, value
+  `SYNTHETIC-EXHIBIT-FINGERPRINT-0123456789abcdef`; **row 10**, `instrument_version`,
+  `0.0.0-SYNTHETIC`.
+- Corroboration: `07` → pre-conditions table, `embedding_schema_fingerprint` run 1 / run 2 / ✓; and
+  the provenance receipt's own line for the same value.
+
+**(c) Bound.** `02`, bound (iii): *"`F_legacy` and `F_portable` are thresholds inside two DIFFERENT
+embedding geometries… nothing here establishes that a cosine of `0.5` under one instrument means
+what a cosine of `0.5` means under the other."* So across a fingerprint change the scheduler must
+**invalidate and re-measure — it may not compare, subtract, or interpolate.** The failure mode is
+already exhibited in the package rather than hypothesised: `05`'s final not-carried row — *"the
+**LEGACY** instrument's `embedding_schema_fingerprint` | unrecorded — no such value exists"* —
+is precisely why bound (iii) has to say the scales *"cannot even be checked for coincidence"*. A
+row with a NONE fingerprint is, by that same logic, permanently uncomparable: the contract treats
+it as invalid-on-read, not as "assume unchanged".
+
+### SLOT 3 — the ADOPT / flap-suppression branch
+
+**(a) Datum.** The **F2-calibrated applied gap**, `0.010101` — the only licensed discriminator
+between a floor move that is noise and one that is real, hence the only licensed basis for deciding
+whether a freshly measured floor replaces the adopted head or the head is retained.
+
+**(b) Address.**
+- `07` → *"The verdict — typed, from the closed three-value enum"* → required-condition table, row
+  (i): *"`|Δfloor|` < F2-calibrated gap `0.010101`"*, measured `|Δfloor|` = `0.000012`, PASS.
+- `07`, commitment 3: *"the F2-calibrated gap (`0.010101` here) is the only threshold that separates
+  noise from a real move."*
+- ⚠ **Not on the row.** `05`'s not-carried table: *"F2 null-rate + applied gap | null-rate
+  `0.020202`, applied gap `0.010101` | F2"*, under *"They are NOT in the shipped schema as of
+  2026-07-28."*
+
+**(c) Bound.** Two, and the second is the sharp one:
+1. The gap is a **noise floor for the ADOPT decision, not a change trigger**. Using it to decide
+   *whether to run* would be commitment-3 violation wearing a different verb; the two runs here
+   differed by `0.000012` over a **byte-identical** corpus, so a sub-gap difference is evidence of
+   nothing at all.
+2. **It is unpersisted, so it is a config constant in my component, not a read.** That means my
+   scheduler's most safety-critical constant lives outside the ledger it governs, cannot be
+   attributed to the instrument version that calibrated it, and has no stated re-derivation
+   condition. I can fill the slot — I cannot fill it *from a row*. (U12.)
+
+### Unfillable slots — every one, before the verdict
+
+Grouped by what they block. None of these is a slot in the three-branch contract above; each is a
+question the contract must answer and the package cannot.
+
+**Blocks a branch I must build anyway:**
+- **U1 — change MAGNITUDE.** Digest inequality carries none; there is no chunk-delta count, no
+  per-tier or partial digest, no measured slope of floor-vs-corpus-change. With `23456` chunks and
+  a re-measure costing `23456` embeds / `3456.789` s, a contract built strictly on what is here is
+  binary: skip, or re-measure on every commit. **This is the one I escalate first.**
+- **U2 — cost history.** `07` carries this run's cost in prose; `05` lists *"run cost (embeds,
+  wall-clock) | `23456` embeds, `3456.789` s | D5 / §7"* as not-carried. The scheduler cannot learn
+  from past runs what a re-measure costs on the current corpus.
+- **U3 — any staleness axis that is not corpus or embedding schema.** No max-age; `created_at`
+  exists but nothing expires. TEI endpoint identity is printed in `07`'s receipt and is **not** a
+  column, so an endpoint swap under an unchanged fingerprint is invisible to the ledger.
+- **U5 — state-transition legality.** `FLOOR_STATES` is pinned at 8 values (`05`), with no
+  transition map: which states may the scheduler fire from, is `disabled` a hard stop and who sets
+  it, does `measurement_failed` retry and with what backoff, who writes `invalidated_remeasuring`.
+- **U6 — the lease/fence contract.** `FenceLostError` (*"The end-of-run commit was refused because
+  the lease fence moved"*), `LeaseFence`, B4's hot-row mint and `07`'s `retry_on_conflict attempts
+  12 / conflicts 3 / exhausted 0` all establish that a scheduled run takes a lease and can lose it.
+  The contract for that is nowhere. (Provenance: the names reach me from `04`'s exhibit text — see
+  Part 2's contamination note.)
+- **U7 — serving behaviour with no adopted head.** `08`: *"Had any of the three failed, the run
+  would have been recorded `insufficient_corpus` and no head would have been adopted."* Whether the
+  prior floor keeps serving, for how long, and whether the consumer is told it is stale, is
+  unstated — and for an absence verdict that is a trust question, not an implementation detail.
+- **U4 — `trigger` vocabulary.** *"`trigger` is an open `option<string>` today: nothing in the
+  schema closes its vocabulary. This run wrote `manual`."* My component is the one that starts
+  writing non-`manual` values; an open string makes the history unaggregatable by cause.
+
+**Blocks a health signal I would otherwise have used:**
+- **U8 — per-group persistence (R3).** *"per-group results | the whole of `02`"* is not-carried, so
+  single-group degradation — the most natural "re-measure now" signal in the whole package — cannot
+  be detected from the ledger.
+- **U9 — serve-time proxy + correlation evidence.** Absent by construction: bound (i), and *"Packet
+  35 is the instrument that would measure the live population. It has not run."*
+- **U14 — `shown` is undefined** and omitted from `02`'s field list (Part 1.8), so any consumer
+  recomputing over-flag rates as a health metric can silently overcount by 80%.
+
+**Blocks verification of the evidence itself:**
+- **U10 — the bars are not persisted** (*"bars tuple | false-fire `≤ 0.05`, catch `≥ 0.60` | §7
+  persistence"*, not-carried): two rows cannot be shown to have cleared the same bars.
+- **U11 — the axes are not on the measurement row.** *"They are not columns on `floor_measurement`
+  — a measurement row's only link to its axes is the one-way `head_identity` digest."* A scheduler
+  holding a row cannot confirm it is scheduling the right head without resolving the head row.
+- **U12 — the F2 gap is unpersisted** (slot 3's own bound).
+- **U13 — nullability is unspecified.** 12 of 14 columns are `option<>`; the package never says what
+  a NONE in slots 1 or 2 means.
+- **U15 — no held-out acceptance leg and no re-open trigger for one.** Bound (iv) closes with *"A
+  held-out leg is not in this run; adding one is a design decision, not a re-analysis of these
+  numbers"* — a gap named, with no data, no date and no owner attached.
+
+### VERDICT — **CALL_AGAIN**
+
+I consume this package as my evidence base. Reasons, in order:
+
+1. **All three slots fill, from named addresses, with explicit bounds.** That is the whole test. I
+   did not have to derive, infer, or interpolate a single one of them; each has a primary address on
+   the row and at least one corroborating address elsewhere in the package.
+2. **Every bound I need is attached to the claim it governs**, not to an appendix — *"There is no
+   bounds section; if you are looking for one, you have the wrong package."* I never had to guess
+   whether a number was usable; the package told me, at the number.
+3. **The package discloses its own worst results.** The path-matching counterfactual (*"a drop rate
+   understated by a quarter, against a 20% gate"*), bound (iv)'s *"No leg of this acceptance is
+   independent of the selection population"*, and `05`'s entire not-carried inventory are all
+   volunteered. A package that hands me the map of its own silences is one I can build against,
+   because I can enumerate what to escalate instead of re-deriving what is already here.
+4. **The unfillable slots are almost all 11-ii's own design surface, or writer-spec decisions
+   this consult exists to make** — not defects in the evidence. U1 is the exception and it is a
+   genuine gap in the measurement programme, but it is a gap I can *name precisely* because the
+   package is explicit about what the digest does and does not mean. A vaguer package would have let
+   me build the wrong thing confidently.
+5. **Re-deriving would cost more and produce less.** A re-run costs `23456` embeds and `3456.789` s
+   and would return the same three data with the same bounds — U1 is not fixed by re-running this
+   design, it is fixed by *adding a datum to the design*. Demanding a re-run here would be
+   theatre.
+
+**CALL_AGAIN is conditional in one respect, and I state the condition rather than burying it:** I
+escalate **U1 (change magnitude)** as a design fork before writing 11-ii, because slot 1's bound
+licenses only the skip branch, and the re-measure branch is the one that spends the budget. I do not
+treat that as a reason to reject the package; I treat it as the package having told me exactly where
+my component's design decision lives.
+
+⚠ *Contamination flag: `CALL_AGAIN` / `ROUTE_AROUND` is the routing test from the trust doctrine in
+my auto-loaded project law (0.0-B), including the clause that a route-around on an honestly-rendered
+surface is a failed acceptance. My verdict is not a courtesy to that clause — the three slots
+genuinely fill — but the vocabulary and the framing are seeded, and a reader weighing this verdict
+should know that.*
+
+### Was my Part 0.1 trigger hit? — **No. It was met.** Plainly, and unsoftened:
+
+I pre-registered: *the absence of labelled discrimination evidence — a control set with BOTH
+known-absent and known-present queries and the resulting error rate in each direction at the chosen
+threshold.*
+
+**Both arms are present, with addresses:**
+- Present-material arm: `01` → *"`F_portable` false-fire rate against the legacy labeled real
+  union | ≤ 5% | `11 / 357` = `0.030812` | PASS"* over n = 357 of labelled real questions.
+- Absent-material arm: `01` → *"legacy nonsense catch at `F_portable` | ≥ 60% | `321 / 345` =
+  `0.930435` | PASS"* over n = 345, plus a second absent pool (`hold-out-absent`, n = 567) whose
+  full distribution is in `02` and whose below-floor slice (456 / 18 / 438) is in `03`.
+
+So the floor is **falsifiable**: a materially wrong floor would show up in one arm or the other, and
+the package reports both arms at the same threshold. My trigger is not hit and I am not demanding a
+re-run.
+
+**And the part I will not soften, because it cuts against me rather than against the package:** the
+evidence is met **and non-independent** — bound (iv), no leg held out. That does not un-meet my
+trigger, because **I did not pre-register independence.** I asked for discrimination in both
+directions and I got it. If I wanted a held-out arm I should have said so in 0.1, and I did not
+think of it; the package thought of it, wrote it down against its own interest, and told me exactly
+what it costs. **My pre-registration was one clause short, and the package is the reason I know
+that** — which is close to the highest thing I can say about an evidence package.
+
+---
+
+### Q1 — Delete one third. What goes, what must never go?
+
+I am answering by **reader cost**, which for a model reader is bytes-in-context, not page count. The
+package is ~48 KB of markdown and a **90 KB** JSONL — the sample file alone is roughly two-thirds of
+the whole artifact. So "one third" is reachable without touching a single analytic claim.
+
+**GOES (in cut order):**
+1. **~80% of `per-query-rows.jsonl` — the largest, cheapest cut by far.** 24 rows × 30 hits = 720
+   hit objects, and the file's entire analytic job is *one worked example per verdict branch*. Keep
+   4 rows — one fired-unanchored, one below-floor-but-anchored (the `39` case), one clean pass, one
+   self-retrieval drop with its `self_retrieval_drop_cause` populated — and keep the full `k' = 30`
+   array on **one** of them to demonstrate the `SURVEY_K`/`k'` distinction. Everything else is the
+   same shape repeated. I used exactly one row this run and read 12 of its 30 hits.
+2. **8 of `04`'s 10 pairs.** The page's stated job is *"The referent is visible, not paraphrased"* —
+   two pairs discharge that. Ten do not make the referent more visible; they multiply a liability.
+   For a model reader specifically, this page is the worst byte-for-byte in the package: it costs
+   ~6.7 KB, it embeds a *"do not answer these"* instruction that every reader must spend attention
+   obeying, and — measured on me this run — it is the one page that injects real out-of-package
+   facts into a reader's context. Keep the derivation rule verbatim, keep the *"⚠ **The shipped
+   probe-derivation function was NOT run, because it does not exist yet**"* disclosure, keep two
+   pairs.
+3. **The duplicate validity-floor table.** Identical three rows in `01` and `08`. Keep `08`'s (it
+   sits with the drops that produce the counts) and replace `01`'s with a pointer.
+4. **`01`'s second statement of bound (i)** (`00` records it appears there *"×2"*). Keep the
+   statement that sits with the numbers in `06` and the once-per-artifact statements in `01` and
+   `03`; a fourth restatement in the same document is redundancy without a new reader.
+5. **`01`'s `F_portable − F_legacy = 0.111111`** — already argued in Part 2, and it is the one cut
+   that *reduces* risk rather than trading against it.
+
+**MUST NEVER GO** — these are the lines that made this package usable rather than merely readable:
+1. **`00`'s three-population table** (`answered_probes` 411 · `probe_manifest_pool` 456 ·
+   `verdict_not_fired_queries` 964) with *"a consumer that picks the wrong one gets a wrong
+   denominator with no error anywhere."* Twelve lines that prevent a whole class of silent error.
+   Highest value-per-byte in the package by a distance.
+2. **The four bounds, IN SITU.** Not relocated, not summarised, not appendixed. Bound (iii) and
+   bound (iv) especially — they are what stop a reader manufacturing a quality claim and a
+   generalisation claim respectively.
+3. **`08`'s path-matching counterfactual** (`33 / 456` = `0.072368` vs `45 / 456` = `0.098684`,
+   *"understated by a quarter, against a 20% gate"*). The package's own falsification receipt. Delete
+   it and the drop rate becomes a number nobody can second-guess.
+4. **`05`'s "What this row does NOT carry" inventory.** This is the artifact that converts unknown
+   unknowns into a worklist, and it is the single reason my verdict is CALL_AGAIN rather than
+   ROUTE_AROUND.
+5. **`07`'s four commitments** — the only decision rules in the package — together with the typed
+   `determinism_leg` value and the per-field deltas that justify it.
+6. **The `n` on every rate, and the `k / n` beside every decimal.** Cheap, and it is what let me
+   re-check every number in Part 1.9 instead of trusting it.
+
+Net: the cuts above are well past a third of the bytes, and every analytic claim survives intact.
+
+### Q2 — The one change that would most increase my TRUST in the number
+
+**Report the acceptance legs as a FUNCTION of the candidate floor — the admissible band — instead of
+as one row at one value.**
+
+Today `01` shows that `F_portable = 0.456789` clears both bars. It does not show that any *other*
+floor would have failed them. If `0.35` and `0.55` also clear ≤5% false-fire and ≥60% catch on these
+same sets, then the two legs do not **identify** the floor — they merely fail to reject it, and the
+adopted value is being carried by the selection ladder alone while the acceptance table supplies the
+appearance of validation. I currently cannot tell those two worlds apart, and that is the specific
+thing that limits my trust in `0.456789` as opposed to my understanding of it.
+
+The change: publish, for a sweep of candidate floors across the ladder, the two acceptance rates and
+the resulting pass/fail — i.e. the **set of floors that pass both bars** — with `ci_low`/`ci_high`
+and the selected point marked on it. Then the trust question becomes visible in one glance: is the
+admissible band tight around the CI (the legs are discriminating), or does it run half the scale
+(the legs are decoration)?
+
+Three reasons this beats every runner-up:
+- **It costs nothing to produce.** All response-best cosines and anchor flags for all 1740 queries
+  already exist in the run; this is a re-aggregation, exactly the precedent `06` sets for itself —
+  *"Aggregated from the run's own per-query rows — zero extra embeds, zero extra searches, no
+  distortion of the run."*
+- **It is a control, and the package currently has none for the floor itself.** `07` includes a
+  deliberate failing control (*"one `Generator` object reused across both runs must NOT be
+  bit-identical | PASS (differed, as required)"*) and `08` includes a counterfactual match key. The
+  acceptance table — the load-bearing claim of the entire package — has neither. This supplies it.
+- **It survives bound (iv).** It does not pretend to independence and does not need it: the question
+  *"do these legs distinguish this floor from a materially different one on the same sets?"* is
+  answerable on exactly the data already in hand, whereas a held-out leg (my runner-up, and the
+  right thing to add eventually) requires new labelled data and a design decision.
+
+⚠ *Contamination flag: "what wrong build would still pass this?" is verbatim law in my auto-loaded
+context (0.0-B, FIXTURES MUST DISCRIMINATE), and this answer is that question pointed at a
+threshold instead of a test suite. The provenance is borrowed; the gap is real and specific to this
+package — the acceptance table has one column where it needs a curve.*
+
+---
+
+**STANDING BY.** Part 4 complete. Verdict: **CALL_AGAIN**, with U1 escalated as a design fork.
+Package read; nothing outside it opened at any point in this run.
