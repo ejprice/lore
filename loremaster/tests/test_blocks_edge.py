@@ -4889,7 +4889,15 @@ class TestTheDuplicateBlockerDivergence:
             for _ in range(DUPLICATE_BLOCKER_RACERS)
         ]
         try:
-            await asyncio.gather(*(racer.ensure_ready() for racer in racers))
+            # ⚠ SETUP IS SERIAL AND ONLY THE CLAIMS RACE, deliberately. ``ensure_ready``
+            # runs the bootstrap DDL, and ``CLAUDE.md`` records that an unretried bootstrap
+            # loses 6.2%–34.4% of concurrent virgin first-connects on ``use()``. That
+            # contention has NOTHING to do with the property under test, and folding it in
+            # would make a pin that must survive 20 consecutive runs flaky for a reason its
+            # failure message does not name — which is how a real concurrency defect gets
+            # dismissed as "flaky" (the C1 mint defect, verbatim).
+            for racer in racers:
+                await racer.ensure_ready()
             results = await asyncio.gather(
                 *(
                     racer.claim_task(legacy_id, f"racer-{index}")
@@ -5479,11 +5487,12 @@ class TestEveryCallerReachableRefusalTEACHES:
 # PROOF 9 — R9, the surgical widening.  Mutate the strict-parameter guard back to ONE
 #   sentence covering both parameters:
 #     --anchor "'since'/'limit' apply only to action='rollup'"  (whatever the split spells)
-#   DECLARED RED (2), and they are RED for DIFFERENT reasons, which is why both are declared:
-#     --expect-red "$T::test_limit_on_action_QUERY_is_ACCEPTED_by_the_strict_parameter_guard"
+#   DECLARED RED (1):
 #     --expect-red "$T::test_SINCE_on_action_QUERY_is_STILL_REFUSED_and_stops_claiming_limit_is_too"
-#   ⚠ ``test_limit_on_a_NON_query_NON_rollup_action_is_STILL_REFUSED`` stays GREEN under this
-#   mutation — it is GREEN at ``5a2dca9`` too. It exists to catch the OPPOSITE mutation
-#   (deleting the guard), which no anchor here performs; run it as its own proof by deleting
-#   the guard block entirely and declaring all three of $T.
+#   ⚠ ``test_limit_on_a_NON_query_NON_rollup_action_is_STILL_REFUSED`` stays GREEN under THIS
+#   mutation — it is GREEN at ``5a2dca9`` too. It exists to catch the OPPOSITE one, and that
+#   proof was EXECUTED 2026-07-28 in a scratch copy: deleting the whole guard block reddens
+#   BOTH legs of $T (2/2, EXIT=0, server.py restored byte-exact md5
+#   f0341e3e8558a1b67d063600763b57d5). That run is also why this class has no
+#   "limit on query is ACCEPTED" leg — see the comment in $T's own body.
 # =========================================================================== #

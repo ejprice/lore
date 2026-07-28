@@ -1401,18 +1401,16 @@ class TestLimitIsLEGALForQueryAtTheToolSeam:
     #: omit a parameter that is now the documented way to bound its own answer.
     RETIRED_CLAIM = "'since'/'limit' apply only to action='rollup'"
 
-    async def test_limit_on_action_QUERY_is_ACCEPTED_by_the_strict_parameter_guard(
-        self,
-    ) -> None:
-        """R9's whole ruling, observed where a caller stands rather than at the ledger."""
-        ledger, env = await _fresh_ledger()
-        try:
-            await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
-            rendered = await _tool_seam(ledger).tasks(action="query", limit=_SERVED_LIMIT)
-            assert isinstance(str(rendered), str), rendered
-        finally:
-            await ledger.close()
-            await drop_database(env)
+    # ⚠ THERE IS NO "limit ON query IS ACCEPTED" LEG HERE, AND ITS ABSENCE IS A MEASURED
+    # DECISION.  This class shipped with one; a mutation proof that DELETED the strict
+    # parameter guard outright left it **GREEN** while the two legs below reddened — so it
+    # discriminated nothing that its siblings do not, and its presence was false comfort of
+    # exactly the kind this contract polices ("what WRONG build would still pass this?").
+    # R9's positive direction is pinned END TO END, one class away, by
+    # ``TestTheLimitIsPUSHEDINTOTheStatement::test_the_TOOL_SEAM_passes_the_limit_through_to_the_ledger``,
+    # which drives the same dispatcher and asserts the RENDERED ROW COUNT equals the cap — a
+    # build whose guard still refuses `limit` on `query` cannot reach that assertion at all.
+    # Duplicating it here would have been copy #2 of a served-surface pin (repo law #102).
 
     async def test_SINCE_on_action_QUERY_is_STILL_REFUSED_and_stops_claiming_limit_is_too(
         self,

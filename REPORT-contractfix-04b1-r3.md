@@ -44,12 +44,23 @@ and one of them was WRONG (§R-22).*
 - **decisions-needed (5):** ESC-A the fake-parity fork under R3 · ESC-B whether R10(ii)'s
   clause is the WHOLE served sentence · ESC-C `limit=0` · ESC-D the combined
   phantom+superseded refusal · ESC-E the shared-working-tree / sweep-commit hazard.
-- **Pin counts:** `test_blocks_edge.py` **133 → 149** · `test_query_tasks_bounded.py`
-  **29 → 39** · `test_task_ledger.py` **418 → 422** (two legs re-authored, two removed as
-  a C-DEF risk — see ESC-A). Contract total **162 → 188**.
-- **DECLARED vs OBSERVED RED, diffed BOTH ways:** 20 node ids declared from
-  `--collect-only` **before any run**; measured in a provenance-asserted scratch copy at
-  pristine `5a2dca9`: **20 fired, 0 unexpected reds, 0 declared-reds-that-stayed-green**.
+- **Pin counts, DERIVED per file by collecting `5a2dca9`'s version against mine (never
+  inherited):** `test_blocks_edge.py` **133 → 149** · `test_query_tasks_bounded.py`
+  **29 → 38** · `test_task_ledger.py` **234 → 234** (two legs re-authored IN PLACE; the two
+  I added were removed as a C-DEF risk — ESC-A). **Contract total 162 → 187.**
+  ⚠ An earlier draft of this line said `test_task_ledger.py` **418 → 422**, which is the
+  three-file collection total mistaken for one file's — an un-derived number inside the
+  report about re-deriving numbers. Caught by measuring instead of copying.
+- **DECLARED vs OBSERVED RED, diffed BOTH ways:** node ids declared from `--collect-only`
+  **before any run**, measured in a provenance-asserted scratch copy against pristine
+  `5a2dca9` production. **First pass: 20 declared → 20 fired, 0 unexpected, 0 declared-green.
+  Second pass after I deleted a weak pin of my own (below): 19 declared → 19 fired, 0
+  unexpected, 0 declared-green.**
+- **⚠ I DELETED ONE OF MY OWN PINS BECAUSE MY OWN MUTATION PROOF SHOWED IT WAS DECORATION.**
+  `TestLimitIsLEGALForQueryAtTheToolSeam::test_limit_on_action_QUERY_is_ACCEPTED_…` stayed
+  **GREEN** when MP-β deleted the strict-parameter guard outright — so it discriminated
+  nothing its siblings do not. Its absence is documented at the removal site with the
+  measurement. §X-MUT.
 - **⚠ MY OWN INSTRUMENT PRODUCED 4 UNEXPECTED REDS ON ITS FIRST RUN, AND ALL FOUR WERE
   REAL.** They overturned the inherited claim this contract was told to pin (§R-22), and
   the fix is in the contract, not in the expectation. §T4.
@@ -369,6 +380,252 @@ verbatim.
 
 ⚠ **I did NOT add a write-refusal pin here, and that is ESC-A, not an omission.** See
 §ESCALATIONS.
+
+---
+
+## §ESCALATIONS — five, each with both readings written down
+
+### ESC-A — **the fake-parity fork under R3. Operator's call; I refused to decide it.**
+
+R3 makes `create_task` refuse a phantom blocker. `test_task_ledger.py` runs its whole contract
+against **both** the real ledger and `FakeTaskLedger`, and that parametrisation exists for
+exactly one reason, stated in the fixture's own docstring: *"a behaviour the fake gets wrong,
+**or too friendly**, shows up as a real-vs-fake divergence rather than a fake-only green."*
+
+- **Reading 1 — the fake must ALSO refuse.** A permissive `FakeTaskLedger` under R3 is
+  textbook "too friendly": the double now diverges from production on a LIVE VERB, and
+  `test_mcp_server.py`'s dispatcher pins (which run against the fake) can never observe R3's
+  refusal at the seam at all. `_task_fakes.py` is already required to change for R5 anyway
+  (ESC-1 measured `FakeTaskLedger.query_tasks() got an unexpected keyword argument 'limit'`),
+  so the marginal cost is small.
+- **Reading 2 — the fake stays permissive.** It is an in-memory double with no row-existence
+  semantics; `_task_fakes.py` is named in no ruling's scope, and R3 is about a store guard.
+
+**I wrote and then REMOVED a both-backends write-refusal pin.** Under reading 2 it is RED on a
+correct build — a third C-DEF, which my brief explicitly forbade introducing. The refusal's
+shape (class, served sentence, which ids it names, both create verbs, four id shapes) is
+already pinned against the REAL ledger in `test_blocks_edge.py` SECTION G, so nothing is
+unpinned by leaving it out; what is unpinned is the PARITY. A comment at the removal site
+names the fork so the next reader meets it deliberately.
+
+**My recommendation: reading 1**, with `_task_fakes.py` added to the builder's writable set
+and the pin added then — not now.
+
+### ESC-B — **is R10(ii)'s sentence the WHOLE served text, or a CLAUSE?**
+
+R10 quotes *"task X is superseded by Y — block on Y instead"* and does not say. Two readings,
+different code:
+
+- **(i) the clause reading** — the refusal is the shared skeleton plus this clause, so a
+  caller learns both what is wrong AND that nothing landed.
+- **(ii) the whole-sentence reading** — that string, alone, is the served text.
+
+**Recommendation: (i)**, because RIDER-B's justification is general (*"an agent reading only
+'refused' does not know whether a partial batch landed, so it must pay a reconnaissance read
+before it dare resend"*) and nothing in R10 retracts it. **The pins are satisfiable under
+BOTH**: the clause is asserted as a substring, and the no-write fact has its own leg with its
+own message. A by-value whole-sentence pin would have been a C-DEF under reading (i).
+
+### ESC-C — **`limit=0`: refuse, or serve empty?**
+
+MEASURED: the engine ACCEPTS `LIMIT 0` and returns zero rows, no error. So it is not a T2
+engine-rejection path and T2 does not reach it. But `query_tasks(status=…, limit=0)` serving
+an empty answer over a full ledger is a *silently useless* answer, and T1's whole subject is
+answers that are short without saying so.
+
+- **(i) refuse `limit < 1`** with one teaching sentence covering both `0` and negatives —
+  smallest correct surface, one guard, and it makes the `-1` pin and this case one rule.
+- **(ii) accept `0` as a legal empty window** — literally what the caller asked for.
+
+**Recommendation: (i).** **NOT PINNED** — only the `-1` leg is, which is unambiguous under
+both readings, so no C-DEF either way.
+
+### ESC-D — **the COMBINED phantom + superseded refusal.**
+
+A create naming a phantom blocker AND a superseded one: does the refusal name both problems,
+or may it report phantoms and stop? R10 does not rule on it. SECTION G already rules that the
+refusal *"NAMES EVERY phantom not just the FIRST"* — extending that across problem CLASSES is
+arguably the same property and arguably a new requirement. The failure mode if it is not
+required is mild (a two-round-trip teach, not a black hole), which is why I did not pin it.
+
+**Recommendation: require it** — same argument as RIDER-A's locus (one edit, not a sequence of
+refusals). **NOT PINNED**, flagged here.
+
+### ESC-E — **the shared working tree, and the sweep-commit.**
+
+Two related facts, both operator-level:
+
+1. `cdf7136` and `d3d03f6` — both `docs(...)` commits — carry this contract's 800+ test-file
+   insertions. Unreviewed, mid-write, under messages naming none of it. Nothing is lost, but
+   the wave's history is now wrong about what those commits are, and `5a2dca9..HEAD` will not
+   answer *"what did r3 add"*. Sent to the lead as `lore_comms` seq **#1057** (directive, ack
+   owed, thread `q:sweep-commit-04b1-r3`); recorded here because a ruling that lives only in
+   an inbox is a ruling nobody meets.
+2. **This working tree has multiple live writers.** `docs/eval/smoke_p8b.py` and
+   `docs/eval/test_smoke_p8b.py` changed under me mid-session. My one `git stash` cycle
+   (DEVIATION 1) is exactly the move that could have destroyed a sibling's uncommitted work —
+   it did not, but only because I named four paths explicitly. **Recommendation: no agent in
+   a multi-writer session touches git state, and baseline measurements go in a
+   `scratch_copy.sh` copy** — which is where I redid mine, and where it should have been from
+   the start.
+
+---
+
+## §PROVENANCE — which tree, and how I know
+
+Three trees, and the distinction is load-bearing (#24 · #139 · #140):
+
+| tree | what it is | `loremaster.__file__` |
+|---|---|---|
+| `/home/ejprice/PycharmProjects/lore` | the shared repo — **multiple live writers**, contract authored here | (the checkout) |
+| `/home/ejprice/scratch/cfix04b1r3-ref` | the reference build (satisfiability receipt) | `…/cfix04b1r3-ref/loremaster/loremaster/__init__.py` |
+| `/home/ejprice/scratch/cfix04b1r3-mut` | mutation proofs + the pristine-`5a2dca9` RED baseline | `…/cfix04b1r3-mut/loremaster/loremaster/__init__.py` |
+
+Both scratch trees were made with `./scripts/scratch_copy.sh` (provenance ASSERTED, all four
+workspace members, non-zero on a poisoned copy) and both printed their `loremaster.__file__`
+from inside. I read **neither** `/home/ejprice/scratch/adv04b1-ref` nor
+`/home/ejprice/scratch/contractfix-04b1-ref`.
+
+**THE FALSE CLEAR I CONSTRUCTED AGAINST, and I name it because a satisfiability receipt has
+exactly one interesting way to lie: a builder that edits the contract.** "0 failed" reads
+identically whether the tests were satisfied or amended. So the contract's four files are
+MD5'd on both sides and diffed:
+
+```
+$ diff loremaster/tests/test_blocks_edge.py <scratch>/loremaster/tests/test_blocks_edge.py
+  57 lines — ALL of them my own `#`-prefixed MUTATION_PROOF block, present in the repo and
+  not yet synced to the scratch. Non-comment differences: ZERO.
+  (grep -E '^[<>] ' | grep -vE '^[<>] *#'  ->  empty)
+$ md5sum ...  the other three files: IDENTICAL on both sides.
+```
+
+The same check is re-run against the FINAL synced contract in §X-SAT, because a diff taken
+before the build finished proves nothing about the build.
+
+⚠ **The baseline commit is `5a2dca9`, not `HEAD~1`** — see DEVIATION 2. Anyone re-deriving
+"what was RED before this contract" against `HEAD~1` will measure this contract against
+itself.
+
+⚠ **The byte-exact restore is checked, not assumed.** The pin-count derivation (§SUMMARY)
+temporarily swapped `5a2dca9`'s versions of three test files into the MUT scratch to collect
+them. All four files' MD5s were compared against the repo afterwards and matched exactly —
+`1b49a824…` / `e5948d4d…` / `f4532fb5…` / `cb436ba1…`. An MD5 list is a detector, not a
+backup, so the restore came from kept CONTENT copies, never from git.
+
+---
+
+## §GATES — repo tree, UNPIPED, exits captured separately
+
+```
+$ ./scripts/typecheck.sh              -> TYPECHECK_EXIT=0   (171 loremaster files; all 5 members OK)
+$ uv run ruff check .                 -> RUFF_EXIT=0        "All checks passed!"
+$ uv run pytest -n auto -q --show-capture=no \
+    test_blocks_edge test_query_tasks_bounded test_task_ledger \
+    test_surreal_harness test_enforced_relations test_derivation_source_unification
+                                      -> PYTEST_EXIT=1
+    134 failed, 418 passed, 19 skipped in 11.22s
+```
+
+**Every one of the 134 is RED BY DESIGN, and the distribution is the receipt** — derived, not
+asserted:
+
+| file | failures | verdict |
+|---|---|---|
+| `test_blocks_edge.py` | 122 | the contract, against a tree with no `blocks` edge, no pre-check, no `transitive_blockers` and no bounded read |
+| `test_query_tasks_bounded.py` | 9 | ditto, plus R5/R7/R9/T1's newly-accepted `limit` |
+| `test_enforced_relations.py` | 3 | the three already-known `blocks` DECLARATION pins that `MUTATION_PROOF` PROOFS 3–5 explicitly account for |
+| **`test_task_ledger.py`** | **0** | ⬅ my ESC-3 re-authoring is GREEN on **both** backends, real and fake |
+| **`test_surreal_harness.py`** | **0** | ⬅ the rebuilt `measure_store_traffic` trips neither the module-level-name ALLOWLIST nor the derived docstring-count pins |
+
+The last two rows are the ones worth checking, because they are where this wave could have
+caused collateral and did not: `test_task_ledger.py` is the file R3's live-verb change breaks
+if the pins still certify the old world, and `test_surreal_harness.py` is the file the
+previous wave had to take a deviation against when it added ONE module-level name.
+
+---
+
+## §X-MUT — MUTATION PROOFS (declared from `--collect-only` BEFORE each run)
+
+Run in a **separate** provenance-asserted scratch (`/home/ejprice/scratch/cfix04b1r3-mut`,
+`loremaster.__file__` verified inside it) so the reference build's tree was never disturbed —
+and never in the shared repo tree, which has live sibling writers.
+
+⚠ Both proofs below mutate code that EXISTS at `5a2dca9`, so they are runnable **pre-build**.
+The four that mutate code the build ADDS (R10(ii)'s pre-check, T5's `array::distinct`, T1's
+answer-cap, R9's guard SPLIT) are declared as PROOFS 6–9 in `test_blocks_edge.py`'s
+`MUTATION_PROOF` block and are the builder's to execute — with the block's standing warning
+that their declared sets must NOT carry the "three already-RED `blocks` declaration pins"
+clause, because they can only run after those have gone green.
+
+| # | mutation | declared | result |
+|---|---|---|---|
+| **MP-α** | **the reading R10 REJECTED**: `status_by_id` maps a superseded blocker to `done`, i.e. *"treat `superseded_by IS NOT NONE` as terminal in blocker resolution"* (`tasks.py::query_tasks`) | 7 | **PROOF HELD 7/7, EXIT=0**, no unexpected reds, no declared-greens, tree restored byte-exact (`tasks.py` md5 `a0fb714473b4383ded5b5d82ab9ae685`) |
+| **MP-β** | **delete the strict-parameter guard entirely** (`server.py::AppContext.tasks`) | 2 | **PROOF HELD 2/2, EXIT=0**, tree restored byte-exact (`server.py` md5 `f0341e3e8558a1b67d063600763b57d5`) |
+
+**MP-α is the load-bearing one.** `test_a_DEPENDENT_created_BEFORE_the_supersede_is_NOT_silently_unblocked`
+is GREEN at `5a2dca9`, so nothing else in this contract demonstrates it can fail — and a pin
+that cannot be demonstrated failing is not a pin. Under the rejected reading it reddens, while
+`test_POSITIVE_CONTROL_a_waiter_on_a_NORMAL_blocker_IS_freed_by_done` stayed GREEN (its blocker
+is never superseded), which is what proves the two legs are two legs.
+
+**MP-β's value is the leg it did NOT redden.** `test_limit_on_action_QUERY_is_ACCEPTED_by_the_strict_parameter_guard`
+goes **GREEN** when the guard is deleted — predicted, deliberately NOT declared, and reported
+by the runner as the one passing test. That is the both-ways diff earning its keep: a
+one-directional check would have called this proof a pass while saying nothing about the leg
+whose whole job is to stop a builder "satisfying" R9 by deleting a teaching surface. The two
+legs that DID redden are the surgical ones, and
+`test_limit_on_a_NON_query_NON_rollup_action_is_STILL_REFUSED` is GREEN at `5a2dca9` — so this
+is the only evidence anywhere that it discriminates.
+
+⚠ **AN INCIDENTAL RECEIPT FOR T2, obtained for free.** MP-α's run printed, from a real
+`query_tasks` call:
+
+```
+loremaster.store._txn.SurrealStoreError: SurrealDB task query rejected against
+'ws://127.0.0.1:18000/rpc' (unspecified rejection); see the server log for the full engine detail
+```
+
+That is the anti-teaching surface, live, reaching a ledger caller — independent corroboration
+that `_ERROR_CLASS_UNSPECIFIED` and `_SERVER_LOG_HINT` are real, are what this path produces,
+and that §T2's negative legs are therefore not passing vacuously. (Here it came from reading
+the `blocks` table before it exists.)
+
+---
+
+## RESIDUALS — every item, its own line, its own verdict
+
+| # | item | verdict |
+|---|---|---|
+| R-1 | **R10(ii)** — the pre-check refuses a superseded blocker and names its successor | ✅ **PINNED**, 8 legs (was 2). §R10. The old outcome pin ADMITTED the reading R10 rejected and was re-authored, not extended. |
+| R-2 | **R10(ii)'s positive control** | ✅ **PINNED**, and there are TWO on different axes: a create on a LIVE blocker is accepted (kills refuse-everything), and a normal waiter is freed by `done` (kills nothing-is-ever-claimable). |
+| R-3 | **T1** — the cap applies to the ANSWER, not the candidate scan | ✅ **PINNED**, 3 legs, with the sandwich fixture and its three-ordering analysis. §T1. |
+| R-4 | **T1's discriminating case** — a naive candidate-cap build serves short | ✅ **PINNED**, deterministic under insertion and reverse-insertion order; ≈7e-7 under id order, and that residual probability is a **STATED BOUND** in the class docstring, not hidden. |
+| R-5 | **T2** — no raw `(unspecified rejection)` reaches a caller | ✅ **PINNED** as a ∀ over the verbs: 5 enumerated rejection paths + an AST-derived verb-adjudication pin + a positive control that the marker is real and reachable + a `send` leg for the other ledger. §T2. |
+| R-6 | **R10(iii)** — the supersede/claim RENDER teaches | 🟡 **ROUTED to 04b-2, not dropped.** `supersede_task` warns when the predecessor has dependents; `_render_claim_result`'s blocked branch names the superseded case with the same recovery. **NOT pinned here** (renders are 04b-2's surface, per my brief). Its 04b-1 half — that the block is never dissolved — IS pinned, by `test_a_DEPENDENT_created_BEFORE_the_supersede_is_NOT_silently_unblocked`. |
+| R-7 | **R9's render half** — the no-limit DEFAULT display cap with counted elision (`+K more — re-run with limit=N`) | 🟡 **ROUTED to 04b-2.** The LEDGER half (limit is legal, surgical, and a short answer is a true short answer) is pinned here. Default value is an operator's call (fleet precedent: config default + hard ceiling). |
+| R-8 | **T4** — instrument reach as a checked variable | ✅ **PINNED**, 4 legs, and the instrument itself was rebuilt deny-by-default with the check running before every reading is returned. §T4. |
+| R-9 | **⚠ R-22's stated bound was FACTUALLY WRONG** | 🔴 **CORRECTED, and it is the most consequential thing in this report.** `select`/`create`/`insert`/`upsert` — the four methods named as invisible — all route through `query_raw` on SDK 2.0.0 and were already counted; `relate` does not exist on the connection at all. Found by my own instrument's first run, not by me. The real blind spot is the own-RPC surface, and `begin`/`commit` are the ones with teeth for ruling R7. §T4. |
+| R-10 | **T5** — the duplicate-blocker divergence | ✅ **PINNED CLOSED**, 1 leg → 3. The old pin asserted only AGREEMENT and admitted a build that agrees by making both mechanisms wrong; the new legs assert the ANSWER. §T5. |
+| R-11 | **T5's concurrency standard** (≥8-way × 20 consecutive) | ✅ **8-way PINNED** (`DUPLICATE_BLOCKER_RACERS`, 8 separate live connections). The **20 consecutive runs are an EXECUTION protocol** a test cannot assert about itself — written into the class docstring as a runnable loop, and executed as a receipt in §X-CONC. |
+| R-12 | **R9's 04b-1 half** — `limit` legal for `query`, pinned at the seam | ✅ **PINNED**, 3 legs, and the surgical-ness is the point: the existing seam pin is equally satisfied by deleting the guard. §R9. |
+| R-13 | **ESC-3** — the two `test_task_ledger.py` pins certifying the pre-R3 world | ✅ **RE-AUTHORED** via `_seed_row_naming_a_never_minted_blocker`, backend-agnostic, born-then-given-a-dependency. §ESC-3. |
+| R-14 | The fake-parity fork under R3 | 🔴 **ESC-A — operator's call.** I wrote a both-backends write-refusal pin and REMOVED it: under one reading it is RED on a correct build, i.e. a third C-DEF, which my brief forbade. Recommendation and the exact pin are in §ESCALATIONS. |
+| R-15 | Is R10(ii)'s sentence the whole served text? | 🔴 **ESC-B.** Pinned as a CLAUSE + a separate no-write leg, so satisfiable under both readings. Recommendation: the clause reading. |
+| R-16 | `limit=0` — refuse or serve empty? | 🔴 **ESC-C.** MEASURED: the engine accepts it (0 rows, no error), so T2 does not reach it. **NOT pinned**; only `-1` is. Recommendation: refuse `limit < 1` with one sentence. |
+| R-17 | The combined phantom + superseded refusal | 🔴 **ESC-D.** Unruled; failure mode is a two-round-trip teach, not a black hole. **NOT pinned.** Recommendation: require it. |
+| R-18 | **ESC-1 / ESC-2 remain open and are NOT mine** | 🟡 **UNCHANGED.** `test_mcp_server.py` is outside my writable set; R5 breaks 4 pins there and R6 a fifth. My R9 class pins the widening at the seam from inside my own files, so the contract observes it either way — but the builder still meets those red tests. Exact edits: `REPORT-contractfix-04b1.md` §ESC-1/§ESC-2. |
+| R-19 | **ESC-4 remains open and is NOT mine** | 🟡 **UNCHANGED.** R7 needs a shared `execute_read_transaction` in `loremaster/store/_txn.py`; a hand-rolled `query_raw` fails the runtime SDK-escape guard. A production design decision for the builder's brief. |
+| R-20 | `measure_store_traffic` gained a `raise` on its default path | 🟡 **DISCLOSED BEHAVIOUR CHANGE.** Every existing caller now gets reach-checking for free and cannot forget it. No existing measurement uses an uncountable door, so nothing changed for them — verified by running the whole of `test_blocks_edge` + `test_query_tasks_bounded` + `test_surreal_harness`. A future build that DID would now go RED loudly rather than be measured as free. |
+| R-21 | `StoreTraffic` gained two fields and two members | 🟡 **NO ALLOWLIST IMPACT, deliberately.** `test_surreal_harness.py::_ALLOWED_MODULE_LEVEL_NAMES` is an exact-set pin over `_surreal_harness`'s MODULE-level names; `COUNTABLE_DOORS` / `uncountable_doors` / `require_full_reach` live on `StoreTraffic`, which is already allowlisted. I moved the derivation onto the class specifically to avoid an out-of-writable-set edit the previous wave had to take as a deviation. |
+| R-22 | `COUNTABLE_DOORS` is computed at MODULE IMPORT, in the class body | 🟡 **STATED CONSTRAINT, load-bearing.** The autouse runtime SDK guard replaces the SDK class methods with its own wrapper, so `inspect.getsource` later returns the GUARD's source and the derivation would be **silently empty**. Anyone moving it into a function reopens that. |
+| R-23 | T2's enumeration is a name-keyed table | 🟡 **STATED BOUND**, in its own docstring. The AST verb-adjudication pin stops the VERB SET growing silently; it does NOT prove every rejection path within an adjudicated verb was found. |
+| R-24 | The T2 positive control asserts the SERVER-LOG HINT, not an error CLASS label | 🟡 **DELIBERATE.** `_classify_engine_error` picks its label by matching engine text; which label an `ENFORCED` rejection earns is a measurement this contract does not own and did not make. The hint rides every classified rollback message whatever the class. |
+| R-25 | The T1 sandwich costs 66 task rows per leg (3 legs × 2 `create_many` batches) | 🟡 **ACCEPTED.** Measured well under a second per leg. It is the price of a fixture that discriminates at all — small-N cannot tell a candidate cap from an answer cap. |
+| R-26 | My scratch tree `/home/ejprice/scratch/cfix04b1r3-ref` | 🟡 **DISPOSITION NEEDED — your call.** It holds my reference build. I did NOT touch `/home/ejprice/scratch/adv04b1-ref` or `/home/ejprice/scratch/contractfix-04b1-ref`. |
+| R-27 | **The reference build was DELEGATED, and the scratch root carries the prior waves' REPORTS** | 🟡 **STATED BOUND ON THE RECEIPT'S INDEPENDENCE.** I built no production code myself; a fresh Opus subagent did, to a front-loaded brief, in my scratch. The two forbidden BUILD TREES were never touched — but `REPORT-contractfix-04b1.md` and `REPORT-adversary-04b1.md` sit at that scratch's root (they are committed project artifacts, and my own brief told me to read the first). So the build is independent of the prior TREES, not provably independent of their REPORTS. Stated rather than claimed away. |
+| R-28 | I did not run the FULL suite | 🟡 **DELIBERATE** (brief-base §3). Scoped to the suites named in §GATES plus every file I touched. |
+| R-29 | I could not drive my own ledger row | 🟡 **BLOCKED, and filed.** Task `e48347a9…` is held by `lead-pkt04b` (`in_progress`); `lore_claim_task` refuses it. brief-base §5 says the lead should never bookkeep an agent's row. Filed as part of **#262**. |
+| R-30 | `lore_comms` register/claim disagreement | 🔴 **FILED — finding #262.** `register` accepted a `task_id` another agent holds and rendered no notice; `lore_claim_task` refused it. Cheap fix proposed in the finding: the honest-notice shape lore already uses for brief skew. |
 
 ---
 
