@@ -51,6 +51,70 @@ helpers, the edge vocabulary) lives in ``_enforced_relations_scaffold.py`` and i
 IMPORTED, never copied — repo law #102.
 
 ============================================================================
+THE TRUST DEFINITION, APPLIED TO THIS PACKET (added 2026-07-28, wave r4)
+============================================================================
+
+``CLAUDE.md`` § *TRUST — THE HARD DEFINITION* landed on this branch at ``0acbf47``
+(merged ``c55792a``): *a response is trustworthy iff a consumer who acts on it WITHOUT
+CHECKING cannot be wrong in a way the response did not name*, achieved when BOTH legs
+pass — **leg 1 SCOPE DIFF** (design-time, healthy path) and **leg 2 FORGERY PINS**
+(build-time, degraded path: the surface's stateful dependencies × ``{stale, empty,
+wrong-instance, partial}``, CONSTRUCTED and byte-diffed against the healthy response;
+identical bytes = a false clear = STOP).
+
+**LEG 1 — the scope diff for the surfaces THIS packet serves.**  For each: the question
+the code actually answers (set / predicate / time) beside the question a consumer thinks
+it asked.  A row with a difference names where that difference is carried.
+
+* ``transitive_blockers(task_id)``
+  — **answers:** *"the tasks reachable UPSTREAM over ``blocks`` EDGES from this task, to a
+  depth of at most ``max_depth_used``, as of this read."*
+  — **asked:** *"what blocks this task?"*
+  — **DIFFERENCES, and where each is carried:** (a) *edges vs the ``blocked_by`` COLUMN* —
+  **CLOSED by ruling R11's backfill**, and pinned as an AGREEMENT in SECTION K rather than
+  disclosed in the render; before R11 this was the packet's worst defect (sidecar S3), a
+  confident ``ids=[] truncated=False`` on production's actual rows.  (b) *the depth bound*
+  — carried by ``truncated`` + ``max_depth_used`` on the result itself
+  (``TestTheReadIsHONESTAtItsBound``, ``TestTheResultIsSELFDESCRIBING``).  (c) *a
+  ``blocked_by`` entry that names NO task row* — a PHANTOM, which ``ENFORCED`` forbids as
+  an edge and R11's backfill therefore SKIPS; the residue is legacy-only (new writes are
+  refused by the pre-check) and is carried by the helper's own docstring
+  (``TestTheScopeOfTheTransitiveReadIsSTATED``).
+* ``query_tasks(status=…, owner=…, blocked=…, limit=…)``
+  — **answers:** *"tasks matching the store-side filters, partitioned by a ONE-HOP blocked
+  predicate resolved against the candidate set's blockers, windowed to ``limit`` ANSWERS."*
+  — **asked:** *"what work matches this?"*
+  — **DIFFERENCES:** the one-hop-not-transitive partition and the answer-cap-not-scan-cap
+  semantics, both pinned in ``test_query_tasks_bounded.py``
+  (``TestTheBlockedPartitionIsONEHOPNeverTransitive``,
+  ``TestTheCapAppliesToTheANSWERNotTheCandidateScan``).  No unnamed difference remains.
+* the blocker pre-check refusal — **answers:** *"these ids name no LIVE task row at this
+  ledger, as of the check"*; **asked:** *"is this dependency valid?"*  Difference: a
+  SUPERSEDED blocker exists but is never legitimate, and is named separately with its
+  successor (R10(ii), ``TestASupersededBlockerIsNotASilentBlackHole``).
+* the ``send`` sender guard — **answers:** *"this sender id names no ``agent`` row"*, in the
+  message ledger's OWN vocabulary (E-4), so a refusal cannot be misread as being about a
+  recipient.
+
+⚠ **LEG 1'S OWN STATED BOUND, from the law:** it is sound on *set* and
+*predicate-as-WRITTEN* only — **time, environment and predicate-as-EXECUTED are BELIEVED,
+not known** (#24 · #107 · #131 · #139).  Every row above is a claim about what the code
+SAYS, and only leg 2's constructions are claims about what it DOES.
+
+**LEG 2 — and the bound on the table this contract works from, stated as a FACT.**
+The owed-construction table is ``docs/design/2026-07-28-04b-model-consumer-audit.md``
+§11.1.  **``scripts/forgery_sites.py`` — the DERIVATION §12.2 specifies — DOES NOT
+EXIST.**  §11.1's table is therefore a **CURATED INTERIM, bounded to five served surfaces
+and to one reader's sight**, not a derived failure set; §12.3 says so in its own words.
+The law PERMITS a bounded interim and FORBIDS presenting it as complete, so this is
+recorded here as a fact rather than a disclaimer: *the constructions in SECTION L cover
+the dependencies and verbs written down in §11.1 and nothing else, and a false clear found
+later is a RE-OPEN TRIGGER, never a retroactive pass.*  04b-1 owns the traversal-timeout
+row, the pre-check-failed-read row and R9's honest-total row (the last of which resolves
+to an ASSERTED EMPTINESS — see ``test_query_tasks_bounded.py``); 04b-2 owns the
+fleet-column and footer rows.
+
+============================================================================
 RED-BY-DESIGN, AND WHAT THIS CONTRACT TURNS RED IN FILES IT DOES NOT OWN
 ============================================================================
 
@@ -123,6 +187,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import logging
 import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -5078,6 +5143,15 @@ ENGINE_REJECTION_PATHS: tuple[tuple[str, str, str, str, Callable[..., Any]], ...
 #: door this packet opens.  Declared explicitly rather than left off a list: an omission and
 #: a considered "nothing to launder here" look identical in a name-keyed table, and only one
 #: of them is a decision.
+#:
+#: ⚠ ``ensure_ready`` was RE-ADJUDICATED after ruling R11 gave it a BACKFILL (SECTION K),
+#: and it stays here deliberately: R11's new failure surface is provoked by a DEGRADED
+#: dependency, never by caller input, so there is no input a caller could supply to reach
+#: it and no offending token a refusal could carry back.  Its degraded leg is pinned where
+#: it belongs — ``TestTheBackfillRoutesThroughTheSHAREDExistencePolicy::
+#: test_a_FAILED_existence_read_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL`` — rather
+#: than bent into this table's ``(verb, offending token, provoke)`` shape, which would have
+#: required inventing a token no caller ever types.
 VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH = frozenset(
     {
         "close",
@@ -5273,6 +5347,1238 @@ class TestEveryCallerReachableRefusalTEACHES:
             )
         assert ghost in message, (
             f"the refusal does not name the unresolved sender {ghost!r}: {message!r}"
+        )
+
+
+# =========================================================================== #
+# SECTION K — RULING R11: THE ``ensure_ready`` BACKFILL, AND THE DEGRADED WORLD
+# THAT DEPLOYS ITSELF.
+#
+# ⚠⚠ SIDECAR FINDING S3 (packet §04b SPLIT, BLOCKER) — the defect that got past the
+# contract, the contract-adversary, TWO contract-fix waves and the lead, and became
+# visible only under ``CLAUDE.md``'s TRUST — THE HARD DEFINITION (leg 2):
+#
+#   The ``blocks`` mirror is ∀ verbs going FORWARD.  Production tasks carry ``blocked_by``
+#   COLUMNS TODAY and will have NO ``blocks`` EDGES at deploy.  The transitive read rides
+#   EDGES by design.  So the served answer, for exactly the rows the fleet is working, is
+#   ``ids=[] truncated=False`` — clean, confident, WRONG.  ``truncated=False`` is not a
+#   missing bound; it is a POSITIVE ASSERTION OF COMPLETENESS THAT IS FALSE, which is the
+#   definition's central failure.
+#
+# It is worse than an ordinary forgery-pin gap, and the reason is worth keeping: every
+# other owed construction has to be CONSTRUCTED.  **This degraded world needs no
+# constructing — it is the default state at deploy.**
+#
+# ✅ RULING R11 (operator, 2026-07-28) adopts the sidecar's recommendation IN FULL — *fix
+# the defect; do not disclose it*:
+#   * mint the missing ``blocks`` edges from the existing ``blocked_by`` columns AT
+#     MIGRATION TIME, inside ``TaskLedger.ensure_ready``;
+#   * PRE-FILTERED through the L3 existence policy — ⚠ legacy rows carry PHANTOM blockers
+#     (``blocked_by`` was FAIL-OPEN at write until this packet), phantoms meet ``ENFORCED``,
+#     and a NAKED backfill therefore ROLLS BACK THE ENTIRE one-transaction migration.  That
+#     failure mode is pinned BELOW as a BASELINE with its own positive control, so "the
+#     backfill skipped the phantom" cannot pass for a fixture reason;
+#   * phantom skips are RECORDED, never silent — *"a silent skip is a false clear in the
+#     exact shape S3 identifies"*;
+#   * IDEMPOTENT: ``ensure_ready`` runs at EVERY boot, and store reference §4 records that
+#     ``UNIQUE(in, out)`` on a relation edge makes a duplicate a LOUD ERR — so a second boot
+#     must neither raise nor double-mint;
+#   * forgery-pinned in the dirty-store harness that ALREADY EXISTS.  ``_seed_legacy_task``
+#     already constructs the production-real partial world; the instrument was built and was
+#     simply never pointed at the traversal.
+#   Rejected by the same ruling, recorded so neither is re-litigated: *render-names-the-
+#   bound* (legal under the definition, but a permanent tax on every future read for a
+#   one-time migration we declined to run) and *a separate one-shot script* (a deploy that
+#   forgets it silently reproduces the defect with no signal).
+#
+# THE FIXTURE FLOOR IS THE PACKET'S, UNCHANGED: ≥3 deep AND branching.  A backfill that
+# minted the transitive CLOSURE as direct edges, or one that stopped at the first hop, is
+# indistinguishable from correct on a 2-node chain — so the legacy world below is the same
+# 4-deep diamond ``branching_dag`` uses, written as COLUMNS ONLY.
+#
+# RED TODAY: every pin except the three BASELINE/CONTROL legs named in their docstrings.
+# =========================================================================== #
+
+
+#: The legacy DAG the backfill must reconstruct, as ``{task: (blockers,)}`` — COLUMNS ONLY,
+#: no edges anywhere.  4 deep, branching, and a diamond (``root`` is reachable from ``leaf``
+#: by two paths), so a one-hop backfill, a closure-minting backfill and a correct one all
+#: serve DIFFERENT answers.
+LEGACY_COLUMN_DAG: dict[str, tuple[str, ...]] = {
+    "root": (),
+    "left": ("root",),
+    "right": ("root",),
+    "middle": ("left", "right"),
+    "leaf": ("middle",),
+}
+
+#: The legacy row carrying ONE resolvable blocker and ONE PHANTOM.  Production's real shape,
+#: and the row that decides whether the whole migration lands or rolls back.
+LEGACY_MIXED_TASK = "mixed"
+
+#: A legacy row in a TERMINAL status that still carries a real ``blocked_by`` entry.  It is
+#: here because *"backfill only the tasks that are still open"* is a plausible wrong build
+#: that the DAG above cannot see: every row in it is ``open``.  The mirror is over the
+#: COLUMN, ∀ rows, whatever their status.
+LEGACY_TERMINAL_TASK = "terminal"
+
+
+def _row_key(value: Any) -> str:
+    """The bare row key of a record reference, however the SDK hands it back.
+
+    ``str(record.id)``, never a ``split(':')`` — store reference §7 (``RecordID`` is
+    UNHASHABLE on SDK 2.0.0 and its rendered form is not a parsing contract).  A value that
+    is not a ``RecordID`` falls through as its own ``str``, so a shape change reddens the
+    comparing pin with a readable diff instead of being silently normalised away.
+    """
+    identifier = getattr(value, "id", None)
+    return str(identifier) if identifier is not None else str(value)
+
+
+async def _blocks_edge_pairs(connection: SurrealConnection) -> set[tuple[str, str]]:
+    """Every ``blocks`` edge as a ``(blocker_key, blocked_key)`` pair.
+
+    ⚠ Direction is escalation **E-1**'s: ``RELATE $blocker->blocks->$task``, so ``in`` is
+    the BLOCKER and ``out`` is the task that is blocked.  A pin comparing an unordered set
+    of ids could not tell a correct backfill from one that RELATEs every pair backwards.
+
+    RAW rather than traversed, for :func:`_blocks_edge_count`'s reason: store reference §6.4
+    MEASURED that a traversal lists a dangling endpoint as a first-class member, so counting
+    and reading the edge ROWS is the only reading that answers *"what actually landed"*.
+    """
+    rows = await run(connection, f"SELECT in, out FROM {BLOCKS_RELATION_NAME}")
+    pairs: set[tuple[str, str]] = set()
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            pairs.add((_row_key(row.get("in")), _row_key(row.get("out"))))
+    return pairs
+
+
+async def _blocks_edge_pairs_or_NO_TABLE(connection: SurrealConnection) -> set[tuple[str, str]]:
+    """:func:`_blocks_edge_pairs`, tolerating a store whose edge table does not EXIST YET.
+
+    ⚠ **MEASURED 2026-07-28 on spike-surreal 3.2.1, and it CONTRADICTS what this section's
+    author first assumed** (the assumption cost 13 fixture errors, which is how it was
+    found): ``SELECT … FROM blocks`` against a store with no ``blocks`` table **RAISES**
+    ``NotFoundError: The table 'blocks' does not exist``.  It does NOT return an empty list.
+    Store reference §5's auto-creation is a property of a *write* (``RELATE``), never of a
+    read.
+
+    Used ONLY by the PRE-migration legs.  Every post-migration assertion uses the strict
+    reader, because once ``ensure_ready`` has run an absent edge table is a DEFECT and
+    laundering it into *"zero edges"* would be this file's own false-clear class.
+    """
+    try:
+        return await _blocks_edge_pairs(connection)
+    except Exception as error:  # noqa: BLE001 - narrowed immediately, and loudly
+        assert "does not exist" in str(error), (
+            f"reading the blocks edge table failed for a reason OTHER than the table being "
+            f"absent, and this helper must never swallow that: {error!r}"
+        )
+        return set()
+
+
+def _expected_backfilled_pairs(ids: dict[str, str]) -> set[tuple[str, str]]:
+    """EXACTLY the ``(blocker, blocked)`` pairs a correct backfill mints for the fixture.
+
+    An EXACT set, not a superset: a build that minted the transitive CLOSURE as direct
+    edges would serve the right ``transitive_blockers`` answer while breaking the
+    edge ≡ ``blocked_by`` mirror this packet exists to establish, and only an exact-set
+    comparison can tell them apart.  The phantom pair is absent BY CONSTRUCTION — it is
+    what R11 requires to be skipped.
+    """
+    pairs = {
+        (ids[blocker], ids[task])
+        for task, blockers in LEGACY_COLUMN_DAG.items()
+        for blocker in blockers
+    }
+    pairs.add((ids["root"], ids[LEGACY_MIXED_TASK]))
+    pairs.add((ids["root"], ids[LEGACY_TERMINAL_TASK]))
+    return pairs
+
+
+def _served_shape(outcome: Any) -> str:
+    """The SHAPE a consumer acts on, rendered so two worlds can be BYTE-DIFFED.
+
+    The trust definition's leg 2 compares the DEGRADED response against the HEALTHY one and
+    treats **identical bytes as a FALSE CLEAR**.  A ``TransitiveBlockers`` and a raised
+    error are both *"what the caller got"*, so both render through here — otherwise the
+    comparison could only be made where the shapes already match, which is the half of the
+    space where the answer is obvious.
+    """
+    if isinstance(outcome, Exception):
+        return f"RAISED {type(outcome).__name__}: {outcome}"
+    return (
+        f"OK ids={sorted(getattr(outcome, 'ids', []))} "
+        f"truncated={getattr(outcome, 'truncated', None)!r} "
+        f"max_depth_used={getattr(outcome, 'max_depth_used', None)!r}"
+    )
+
+
+async def _served_outcome(awaitable: Any) -> str:
+    """Await ``awaitable`` and render whatever the caller ends up holding."""
+    try:
+        return _served_shape(await awaitable)
+    except Exception as error:  # noqa: BLE001 - a failure IS part of the served shape
+        return _served_shape(error)
+
+
+def _patch_every_shared_policy_COROUTINE(
+    monkeypatch: pytest.MonkeyPatch, replacement: Callable[..., Any]
+) -> tuple[str, ...]:
+    """Replace EVERY public coroutine the shared existence-policy module owns.
+
+    DERIVED, never a name list, and applied at BOTH addresses — the policy module itself
+    AND every name in ``loremaster.tasks`` bound to a coroutine that module DEFINES —
+    because ``from … import name`` COPIES the reference, so patching only the module leaves
+    an already-bound caller untouched.
+
+    ⚠ Name-free BY CONSTRUCTION, and that is the point.  R11 requires the backfill's phantom
+    filter to route through this module (L3 — ONE IMPLEMENTATION), but the builder must
+    spell a NON-RAISING probe (``reject_unknown_rows`` raises; a filter needs the set of ids
+    that resolved).  Keying this on a name would pin a spelling nobody has chosen yet, and
+    CLAUDE.md's instrument lesson records six separate gates defeated by exactly that.
+
+    Returns the patched addresses, for the caller's failure message.  Fails CLOSED: an empty
+    derivation reddens rather than making its caller pass vacuously.
+    """
+    import importlib
+
+    policy_module = importlib.import_module(SHARED_POLICY_MODULE)
+    tasks_module = importlib.import_module("loremaster.tasks")
+    patched: list[str] = []
+    for name, value in list(vars(policy_module).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(value):
+            continue
+        monkeypatch.setattr(policy_module, name, replacement, raising=True)
+        patched.append(f"{SHARED_POLICY_MODULE}.{name}")
+    for name, value in list(vars(tasks_module).items()):
+        if not inspect.iscoroutinefunction(value):
+            continue
+        if getattr(value, "__module__", None) != SHARED_POLICY_MODULE:
+            continue
+        monkeypatch.setattr(tasks_module, name, replacement, raising=True)
+        patched.append(f"loremaster.tasks.{name}")
+    assert patched, (
+        f"no public coroutine was found in {SHARED_POLICY_MODULE} (nor any name in "
+        f"loremaster.tasks bound from it), so this degradation patched NOTHING and every "
+        f"assertion resting on it would pass vacuously. L3 rules the row-existence policy "
+        f"to be ONE implementation living there; if it moved, re-point "
+        f"SHARED_POLICY_MODULE in the same commit"
+    )
+    return tuple(patched)
+
+
+def _degrade_every_STORE_seam(
+    monkeypatch: pytest.MonkeyPatch, replacement: Callable[..., Any]
+) -> tuple[str, ...]:
+    """Replace every ``loremaster.store._txn`` coroutine ``loremaster.tasks`` imported.
+
+    DERIVED the same way and for the same reason: the seam set is *"module-level names in
+    ``loremaster.tasks`` that are coroutine functions DEFINED IN ``loremaster.store._txn``"*.
+    A builder who adds ``execute_read_transaction`` for ruling R7 (escalation ESC-4) is
+    covered automatically — a hand-written ``{"run_query", "execute_transaction"}`` would
+    have gone blind on exactly the seam R7 introduces.
+
+    ⚠ **THE CALLER MUST ALREADY HOLD A LIVE CONNECTION.**  ``bootstrap_session`` is one of
+    the derived seams, so degrading before the first connect fails at the socket instead of
+    at the read under test.  Every caller below drives a fixture that has already connected.
+
+    Fails CLOSED, twice: an empty derivation reddens, and so does one that does not include
+    the single-statement seam every ledger read rides.
+    """
+    import importlib
+
+    tasks_module = importlib.import_module("loremaster.tasks")
+    patched: list[str] = []
+    for name, value in list(vars(tasks_module).items()):
+        if not inspect.iscoroutinefunction(value):
+            continue
+        if getattr(value, "__module__", None) != "loremaster.store._txn":
+            continue
+        monkeypatch.setattr(tasks_module, name, replacement, raising=True)
+        patched.append(name)
+    assert "run_query" in patched, (
+        f"the derived store-seam set {sorted(patched)} does not contain run_query, so this "
+        f"degradation does not reach the ledger's single-statement reads and every "
+        f"assertion resting on it passes vacuously"
+    )
+    return tuple(patched)
+
+
+def _recorded_text(record: logging.LogRecord) -> str:
+    """A log record's FULL surface — its message AND every value it carries in ``extra``.
+
+    The repo's structured-logging idiom puts an EVENT NAME in the message and the data in
+    ``extra`` (``logger.debug("task.schema.ready", extra={"database": …})``), so a pin that
+    read only ``getMessage()`` would call a perfectly loud record silent.  Reading both
+    keeps this pin tolerant of the builder's choice while still discriminating: a skip that
+    is recorded NOWHERE fails it.
+    """
+    standard = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__)
+    extras = {key: value for key, value in record.__dict__.items() if key not in standard}
+    return f"{record.getMessage()} {extras!r}"
+
+
+@pytest_asyncio.fixture()
+async def legacy_column_store(
+    migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the imported fixture
+) -> AsyncIterator[tuple[SurrealConnection, SurrealEnv, dict[str, str]]]:
+    """The world 04b-1 DEPLOYS INTO: ``blocked_by`` COLUMNS, and ZERO ``blocks`` edges.
+
+    Built through :func:`_seed_legacy_task`, which is production's own shape and not a
+    contrivance: every ``task`` row written before this packet was written under a
+    FAIL-OPEN ``blocked_by``, and #236 rules the cleanup of what such rows left behind OUT.
+
+    The OLD DDL is applied first, so there is no ``blocks`` table at all — a store that has
+    never heard of the edge, which is exactly what the production store was measured to be
+    at 04b's kickoff (*"``blocks`` is absent from the production store — confirmed, not
+    assumed"*).
+
+    Yields ``(connection, env, ids)`` where ``ids`` maps every fixture name — the DAG's five,
+    ``LEGACY_MIXED_TASK``, ``LEGACY_TERMINAL_TASK`` and ``"phantom"`` — to its row key.
+    """
+    connection, env = migration_db
+    await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+    names = (*LEGACY_COLUMN_DAG, LEGACY_MIXED_TASK, LEGACY_TERMINAL_TASK)
+    ids = {name: f"{name}_{uuid.uuid4().hex}" for name in names}
+    ids["phantom"] = ghost_id("ghost_blocker")
+    for task, blockers in LEGACY_COLUMN_DAG.items():
+        await _seed_legacy_task(
+            connection,
+            ids[task],
+            blocked_by=[ids[blocker] for blocker in blockers],
+            status=STATUS_OPEN,
+        )
+    await _seed_legacy_task(
+        connection,
+        ids[LEGACY_MIXED_TASK],
+        blocked_by=[ids["root"], ids["phantom"]],
+        status=STATUS_OPEN,
+    )
+    await _seed_legacy_task(
+        connection,
+        ids[LEGACY_TERMINAL_TASK],
+        blocked_by=[ids["root"]],
+        status=STATUS_DONE,
+    )
+    assert not await record_exists(connection, TASK_TABLE, ids["phantom"]), (
+        "the legacy fixture's phantom blocker must genuinely NOT exist — a fixture whose "
+        "every blocker resolves cannot tell a pre-filtered backfill from a naked one"
+    )
+    assert await _blocks_edge_pairs_or_NO_TABLE(connection) == set(), (
+        "the legacy fixture already holds blocks edges, so the backfill it exists to "
+        "measure has nothing to do and every pin below passes for a fixture reason"
+    )
+    yield connection, env, ids
+
+
+class TestTheLegacyWorldIsGenuinelyTheDEGRADEDOne:
+    """GREEN before and after.  The anti-vacuity control for the whole of SECTION K.
+
+    Every pin below asserts that ``ensure_ready`` CHANGES something about a store built by
+    ``legacy_column_store``.  If that store already agreed with its columns, the section
+    would be measuring a migration against a world that needed none — a fixture that
+    guarantees the one condition under which the bug is invisible, which is the class
+    THE TEST ENVIRONMENT IS A FICTION exists to name.
+    """
+
+    async def test_the_legacy_rows_carry_COLUMNS_and_the_store_carries_NO_EDGES(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        connection, _env, ids = legacy_column_store
+        rows = await run(
+            connection,
+            f"SELECT id, blocked_by FROM {TASK_TABLE} WHERE array::len(blocked_by) > 0",
+        )
+        with_columns = {_row_key(row["id"]) for row in rows if isinstance(row, dict)}
+        expected = {
+            ids[name]
+            for name, blockers in LEGACY_COLUMN_DAG.items()
+            if blockers
+        } | {ids[LEGACY_MIXED_TASK], ids[LEGACY_TERMINAL_TASK]}
+        assert with_columns == expected, (
+            f"the legacy fixture did not produce the column-bearing rows it claims. "
+            f"missing={sorted(expected - with_columns)} unexpected="
+            f"{sorted(with_columns - expected)}"
+        )
+        assert await _blocks_edge_pairs_or_NO_TABLE(connection) == set(), (
+            "the legacy fixture holds blocks edges before any migration ran"
+        )
+
+
+class TestTheBACKFILLClosesTheLEGACYEdgeGap:
+    """RED today.  ⛔ **RULING R11** — the pins that kill the world that deploys itself.
+
+    ⚠ **THE DISCRIMINATION IS A BYTE DIFF BETWEEN TWO CONSTRUCTED WORLDS**, per the trust
+    definition's leg 2, not an assertion about one.  World A is production at deploy with
+    NO backfill — today's schema applied, legacy columns intact, no edges — and it serves
+    ``ids=[] truncated=False``.  World B is the same store after ``ensure_ready``.  If the
+    two render the SAME BYTES the backfill did not happen, and *identical bytes are a false
+    clear*: the caller cannot tell a task with no blockers from a task whose blockers the
+    read cannot see.
+
+    A build that satisfies every OTHER pin in this file — the mirror at every write path,
+    the closure operator, the honest bound, the pre-check — still serves world A's answer
+    on every row production already holds.  That is the whole of finding S3.
+    """
+
+    @staticmethod
+    async def _outcome_without_the_backfill(
+        connection: SurrealConnection, env: SurrealEnv, task_id: str
+    ) -> str:
+        """World A: today's SCHEMA, applied directly, and NOTHING else.
+
+        The DDL goes on through :func:`apply_ddl` rather than ``ensure_ready`` precisely
+        because ``ensure_ready`` is where R11 puts the backfill — so this is the deploy that
+        landed the edge table and no edges, which is what a build without R11 produces at
+        every boot.
+        """
+        await apply_ddl(connection, generate_task_ddl(), url=env.url)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            return await _served_outcome(_transitive_blockers(ledger, task_id))
+        finally:
+            await ledger.close()
+
+    async def test_WITHOUT_the_backfill_the_traversal_serves_a_CONFIDENT_EMPTY(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """RED today only because ``transitive_blockers`` does not exist yet; GREEN after,
+        and it must STAY green — it describes the ENGINE plus the schema, never the build.
+
+        ⛔ It is the degraded half of the byte diff, and the reason the section is not
+        self-congratulatory: it MEASURES the false clear rather than asserting that someone
+        avoided it.
+        """
+        import loremaster.tasks
+
+        connection, env, ids = legacy_column_store
+        served = await self._outcome_without_the_backfill(connection, env, ids["leaf"])
+        bound = getattr(loremaster.tasks, MAX_DEPTH_CONSTANT)
+        assert served == f"OK ids=[] truncated=False max_depth_used={bound!r}", (
+            f"world A did not serve the confident empty this section is built around. If "
+            f"the traversal now RAISES or reports truncated=True over an edge-less store "
+            f"that is a BETTER world than S3 described — but the pins below compare against "
+            f"this string, so re-derive them in the same commit. got={served!r}"
+        )
+
+    async def test_ensure_ready_BACKFILLS_the_edges_from_the_EXISTING_columns(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """⛔ The headline, as an EXACT edge set.
+
+        Exact rather than superset: a backfill that minted the transitive CLOSURE as direct
+        edges would make ``transitive_blockers`` right and the edge ≡ ``blocked_by`` mirror
+        wrong, and the two are indistinguishable to a read-side assertion.
+        """
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        landed = await _blocks_edge_pairs(connection)
+        expected = _expected_backfilled_pairs(ids)
+        assert landed == expected, (
+            f"ensure_ready did not reconstruct the blocks edges from the legacy blocked_by "
+            f"columns (ruling R11).\n"
+            f"  MISSING (a column with no edge — the S3 false clear): "
+            f"{sorted(expected - landed)}\n"
+            f"  UNEXPECTED (an edge with no column — a closure minted as direct edges, or "
+            f"the phantom that must be SKIPPED): {sorted(landed - expected)}\n"
+            f"Direction is E-1's: (blocker, blocked). phantom={ids['phantom']!r}"
+        )
+
+    async def test_the_BACKFILLED_answer_DIFFERS_from_the_UN_backfilled_one(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """⛔⛔ **THE BYTE DIFF ITSELF**, the leg the trust definition actually demands.
+
+        Two stores, seeded identically, differing in ONE thing: whether the ledger's own
+        migration ran.  The second store is minted here with its own env rather than by
+        requesting ``migration_db`` a second time — pytest caches a fixture per test, so
+        asking for both would hand back ONE store and the "diff" would compare a world with
+        itself.  (A backfill is not undoable, so both worlds must genuinely exist.)
+        """
+        healthy_connection, healthy_env, ids = legacy_column_store
+        degraded_env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        degraded_connection = await connect_admin(degraded_env)
+        try:
+            await apply_ddl(degraded_connection, _task_ddl_without_blocks(), url=degraded_env.url)
+            for task, blockers in LEGACY_COLUMN_DAG.items():
+                await _seed_legacy_task(
+                    degraded_connection,
+                    ids[task],
+                    blocked_by=[ids[blocker] for blocker in blockers],
+                    status=STATUS_OPEN,
+                )
+            degraded = await self._outcome_without_the_backfill(
+                degraded_connection, degraded_env, ids["leaf"]
+            )
+        finally:
+            await degraded_connection.close()
+            await drop_database(degraded_env)
+        assert healthy_connection is not degraded_connection, (
+            "the two worlds share one connection, so this pin is comparing a store with "
+            "itself"
+        )
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(healthy_env)
+        try:
+            await ledger.ensure_ready()
+            healthy = await _served_outcome(_transitive_blockers(ledger, ids["leaf"]))
+            result = await _transitive_blockers(ledger, ids["leaf"])
+        finally:
+            await ledger.close()
+        assert healthy != degraded, (
+            f"the store WITH the migration and the store WITHOUT it serve BYTE-IDENTICAL "
+            f"answers for the same task: {healthy!r}. Under CLAUDE.md's TRUST — THE HARD "
+            f"DEFINITION that is a FALSE CLEAR and a STOP: a consumer acting on this "
+            f"without checking concludes the task is unblocked, and nothing in the response "
+            f"names the reason it might not be. Ruling R11 exists to delete this difference "
+            f"rather than disclose it"
+        )
+        assert set(result.ids) == {ids["middle"], ids["left"], ids["right"], ids["root"]}, (
+            f"the backfilled traversal did not serve the legacy row's TRANSITIVE blocker "
+            f"set. A one-hop backfill serves {{middle}} alone; a closure-minting one serves "
+            f"the right ids off the wrong edges (caught by the exact-set pin above). "
+            f"got={sorted(result.ids)}"
+        )
+        assert result.truncated is False, (
+            f"a 4-deep legacy chain read at the default bound reported truncated=True: "
+            f"{healthy!r}"
+        )
+
+    async def test_the_backfill_covers_a_TERMINAL_row_too_not_only_the_OPEN_ones(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """The mirror is over the COLUMN, ∀ rows — *"backfill what is still open"* is the
+        plausible wrong build the all-``open`` DAG above cannot see, and it would leave a
+        ``done`` task's provenance permanently unreadable.
+        """
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert (ids["root"], ids[LEGACY_TERMINAL_TASK]) in await _blocks_edge_pairs(connection), (
+            f"the backfill skipped {LEGACY_TERMINAL_TASK!r}, whose status is "
+            f"{STATUS_DONE!r}. The edge ≡ blocked_by mirror is quantified over ROWS, not "
+            f"over live ones"
+        )
+
+
+class TestThePHANTOMBlockerIsSKIPPEDAndRECORDED:
+    """RED today.  ⛔ R11's two riders — and the second is the one that gets dropped.
+
+    THE RIDER IS PART OF THE RULING (``CLAUDE.md``, six instances in one packet): R11 says
+    *"pre-filtered through the L3 existence policy"* **and** *"phantom skips are RECORDED,
+    never silent — a silent skip is a false clear in the exact shape S3 identifies"*.  A
+    build that implements the clause before the "and" and not the one after it passes every
+    other pin in this section.
+    """
+
+    async def test_the_PHANTOM_edge_is_NOT_minted_and_the_MIGRATION_STILL_LANDS(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """⛔ Both halves in one assertion, because either alone admits a wrong build: a
+        backfill that skipped EVERYTHING would satisfy "no phantom edge", and one that
+        rolled back would satisfy it too — by writing nothing at all.
+        """
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        pairs = await _blocks_edge_pairs(connection)
+        phantom_pairs = {pair for pair in pairs if ids["phantom"] in pair}
+        assert phantom_pairs == set(), (
+            f"the backfill minted an edge for the PHANTOM blocker {ids['phantom']!r}: "
+            f"{sorted(phantom_pairs)}. ENFORCED rejects it (store reference §4), so inside "
+            f"the one-transaction migration this rolls the WHOLE thing back — see this "
+            f"class's BASELINE sibling"
+        )
+        assert (ids["root"], ids[LEGACY_MIXED_TASK]) in pairs, (
+            f"the mixed row {ids[LEGACY_MIXED_TASK]!r} got no edge for its RESOLVABLE "
+            f"blocker either, so the backfill dropped the whole ROW rather than the "
+            f"offending ENTRY. R11 pre-filters entries; a row-level skip loses real "
+            f"dependencies. pairs={sorted(pairs)}"
+        )
+
+    async def test_the_phantom_SKIP_is_RECORDED_never_silent(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]],
+    ) -> None:
+        """⛔ R11's second rider, and the reason it exists: a skipped entry is a SCOPE BOUND
+        on what the edge graph covers, and an unrecorded bound is one nobody can meet
+        deliberately.  *"A silent skip is a false clear in the exact shape S3 identifies."*
+
+        ⚠ Asserted over the record's WHOLE surface — message AND ``extra`` — because this
+        repo's logging idiom puts the data in ``extra`` (:func:`_recorded_text`).  What is
+        pinned is that BOTH ids reach a record at WARNING or above; how the builder spells
+        the event is its own.
+        """
+        _connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        loud = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+        naming_both = [
+            text for text in loud if ids["phantom"] in text and ids[LEGACY_MIXED_TASK] in text
+        ]
+        assert naming_both, (
+            f"the backfill skipped a phantom blocker and said NOTHING at WARNING or above. "
+            f"R11: phantom skips are RECORDED, never silent. The record must name the "
+            f"phantom ({ids['phantom']!r}) AND the task it was skipped for "
+            f"({ids[LEGACY_MIXED_TASK]!r}) — an id alone tells an operator which row to "
+            f"read but not which dependency vanished. loud records={loud!r}"
+        )
+
+    async def test_a_store_whose_blockers_ALL_RESOLVE_records_NO_skip(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The control the leg above cannot do without: a build that logs a skip
+        UNCONDITIONALLY — or that logs one per row, phantom or not — satisfies it perfectly
+        while telling an operator nothing.  Same migration, same shape, no phantom.
+        """
+        connection, env = migration_db
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        blocker_id = f"clean_blocker_{uuid.uuid4().hex}"
+        blocked_id = f"clean_blocked_{uuid.uuid4().hex}"
+        await _seed_legacy_task(connection, blocker_id, blocked_by=[], status=STATUS_OPEN)
+        await _seed_legacy_task(connection, blocked_id, blocked_by=[blocker_id], status=STATUS_OPEN)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert (blocker_id, blocked_id) in await _blocks_edge_pairs(connection), (
+            "the control's own backfill did not run, so its silence proves nothing"
+        )
+        noisy = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and blocked_id in _recorded_text(record)
+        ]
+        assert not noisy, (
+            f"a migration in which EVERY blocker resolved still recorded a warning naming "
+            f"{blocked_id!r}: {noisy!r}. A skip notice that fires when nothing was skipped "
+            f"is noise an operator learns to ignore — and then the real one is invisible"
+        )
+
+
+class TestTheNakedBackfillWouldRollTheMigrationBack:
+    """⛔ The BASELINE that makes R11's pre-filter a REQUIREMENT rather than a stylistic
+    preference.
+
+    ⚠ **COLOUR, DERIVED rather than assumed** (an earlier draft of this docstring said
+    *"green before and after"* and was wrong): the first leg is **RED at ``70cc5a4``** and
+    for a reason worth knowing — today's ``generate_task_ddl`` emits no ``blocks`` table at
+    all, so the phantom ``RELATE`` AUTO-CREATES one ``TYPE ANY`` (store reference §5) and is
+    accepted.  It goes GREEN the moment the edge ships ``ENFORCED``, and must STAY green.
+    The positive control is GREEN before and after.
+
+    R11's load-bearing wrinkle, verbatim: *"legacy rows carry phantom blockers, and those
+    meet ``ENFORCED``, so a naked backfill rolls back the whole one-transaction migration"*.
+    That is a claim about the ENGINE, and this class MEASURES it — because if it were
+    false, *"the phantom was skipped"* would be a nicety instead of the difference between
+    a store that migrates and a store that cannot boot.
+
+    Store reference §3: ``execute_transaction`` verifies EVERY statement's status, which is
+    why the rejection is visible at all — the SDK's own ``query()`` inspects only the first.
+    """
+
+    @staticmethod
+    async def _in_one_transaction(
+        connection: SurrealConnection, env: SurrealEnv, statement: str, params: dict[str, Any]
+    ) -> None:
+        """Run ``statement`` as ONE ``BEGIN … COMMIT``, exactly as the migration does."""
+        from loremaster.store._txn import _SurrealConnection, execute_transaction
+
+        async def _acquire() -> _SurrealConnection:
+            return connection
+
+        async def _never_drop(_connection: _SurrealConnection) -> None:
+            raise AssertionError("a statement rejection must never drop the connection")
+
+        await execute_transaction(
+            f"BEGIN;\n{statement}COMMIT;\n",
+            params,
+            acquire=_acquire,
+            drop=_never_drop,
+            url=env.url,
+        )
+
+    async def test_ONE_phantom_RELATE_rolls_back_the_REAL_edges_beside_it(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        connection, env, ids = legacy_column_store
+        await apply_ddl(connection, generate_task_ddl(), url=env.url)
+        params = {
+            "real_from": RecordID(TASK_TABLE, ids["root"]),
+            "real_to": RecordID(TASK_TABLE, ids["left"]),
+            "ghost_from": RecordID(TASK_TABLE, ids["phantom"]),
+            "ghost_to": RecordID(TASK_TABLE, ids[LEGACY_MIXED_TASK]),
+        }
+        with pytest.raises(Exception):  # noqa: B017 - the seam's own rejection type
+            await self._in_one_transaction(
+                connection,
+                env,
+                f"RELATE $real_from->{BLOCKS_RELATION_NAME}->$real_to;\n"
+                f"RELATE $ghost_from->{BLOCKS_RELATION_NAME}->$ghost_to;\n",
+                params,
+            )
+        assert await _blocks_edge_pairs(connection) == set(), (
+            "the phantom RELATE was rejected but the REAL edge beside it SURVIVED, so the "
+            "migration is not one transaction and R11's pre-filter would be optional. "
+            "Re-read store reference §3 before trusting any other pin in this section"
+        )
+
+    async def test_POSITIVE_CONTROL_the_SAME_transaction_WITHOUT_the_phantom_LANDS(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """Without this, the leg above is satisfied by a transaction that never works —
+        a broken DDL, a wrong endpoint type, a bad parameter binding.  The probe's own §6.2
+        lesson: an instrument that fails for the wrong reason reads exactly like one that
+        fails for the right one.
+        """
+        connection, env, ids = legacy_column_store
+        await apply_ddl(connection, generate_task_ddl(), url=env.url)
+        await self._in_one_transaction(
+            connection,
+            env,
+            f"RELATE $real_from->{BLOCKS_RELATION_NAME}->$real_to;\n",
+            {
+                "real_from": RecordID(TASK_TABLE, ids["root"]),
+                "real_to": RecordID(TASK_TABLE, ids["left"]),
+            },
+        )
+        assert await _blocks_edge_pairs(connection) == {(ids["root"], ids["left"])}, (
+            "a transaction holding only REAL endpoints did not land its edge, so the "
+            "rejection measured above cannot be attributed to the phantom"
+        )
+
+
+class TestTheBackfillIsIDEMPOTENT:
+    """RED today.  ``ensure_ready`` runs at EVERY BOOT.
+
+    Two failure modes, opposite directions, and a single pin catches neither alone: a
+    backfill that re-RELATEs unconditionally either DOUBLE-MINTS (no ``UNIQUE(in, out)``) or
+    RAISES (with one — store reference §4: *"a duplicate is a loud ERR … the index is a
+    correctness backstop, not a de-duplicator you can lean on silently"*).  The first is a
+    silently wrong edge graph; the second is a container that boots once and never again.
+    """
+
+    async def test_a_SECOND_ensure_ready_neither_RAISES_nor_DUPLICATES(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            after_first = await _blocks_edge_count(connection)
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        after_second = await _blocks_edge_count(connection)
+        assert after_first == len(_expected_backfilled_pairs(ids)), (
+            f"the first migration minted {after_first} edges where the fixture's columns "
+            f"call for {len(_expected_backfilled_pairs(ids))}"
+        )
+        assert after_second == after_first, (
+            f"a SECOND ensure_ready took the blocks edge count from {after_first} to "
+            f"{after_second}. ensure_ready runs at every boot, so a backfill that re-mints "
+            f"grows the edge table without bound and breaks the edge ≡ blocked_by mirror "
+            f"the moment it does"
+        )
+
+    async def test_the_backfill_does_NOT_re_mint_over_edges_a_WRITE_PATH_already_made(
+        self, legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]]
+    ) -> None:
+        """The other half of idempotence, and it is not the same half: the first boot's
+        backfill and a subsequent ``create_task`` both mint edges, so a second boot meets a
+        store whose edges came from TWO sources.  A backfill keyed on *"did I already run"*
+        rather than on the store's actual state passes the leg above and fails this one.
+        """
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            fresh = await ledger.create_task(
+                SUBJECT, DESCRIPTION, blocked_by=[ids["root"]], created_by=CREATOR
+            )
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        expected = _expected_backfilled_pairs(ids) | {(ids["root"], fresh)}
+        assert await _blocks_edge_pairs(connection) == expected, (
+            f"after a backfill, a normal create, and a second boot, the edge set is not "
+            f"exactly the union of the two sources. got="
+            f"{sorted(await _blocks_edge_pairs(connection))} expected={sorted(expected)}"
+        )
+
+
+class TestTheBackfillRoutesThroughTheSHAREDExistencePolicy:
+    """RED today.  ⛔ **L3 applied to R11** — *"pre-filtered through the L3 existence
+    policy"*, proved the only way sharing can be proved: by MUTATION.
+
+    ROUTING IS NOT SHARING, and a second copy of *"does this id name a live row"* is
+    exactly the #102 shape this packet already generalised once.  So the pin does not look
+    for a call; it makes the shared module's coroutines UNUSABLE and requires the backfill
+    to notice.
+
+    ⚠ **NAME-FREE BY CONSTRUCTION** (:func:`_patch_every_shared_policy_COROUTINE`): the
+    filter needs the set of ids that RESOLVED, and the policy's shipped entry point RAISES
+    instead of returning one — so the builder owes that module a non-raising probe and may
+    spell it however it likes.  This contract's author escalated that gap rather than
+    inventing the name (see the wave report's ESCALATIONS).
+    """
+
+    class _PolicyWasReached(RuntimeError):
+        """A sentinel distinguishable from every real error on this path."""
+
+    async def test_MUTATION_neutralising_the_shared_policy_STOPS_the_backfill(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]],
+    ) -> None:
+        _connection, env, _ids = legacy_column_store
+
+        async def _sentinel(*_args: Any, **_kwargs: Any) -> None:
+            raise self._PolicyWasReached("the shared row-existence policy was reached")
+
+        patched = _patch_every_shared_policy_COROUTINE(monkeypatch, _sentinel)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with pytest.raises(self._PolicyWasReached):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert patched, f"nothing was patched: {patched}"
+
+    async def test_POSITIVE_CONTROL_a_store_with_NOTHING_to_backfill_never_reaches_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ Without this the leg above is satisfied by an ``ensure_ready`` that calls the
+        policy for a reason having nothing to do with the backfill — or by one that calls it
+        once per boot regardless.  Here there are no legacy columns at all, so a correct
+        build has nothing to resolve and must complete.
+        """
+        connection, env = migration_db
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        await _seed_legacy_task(
+            connection, f"lonely_{uuid.uuid4().hex}", blocked_by=[], status=STATUS_OPEN
+        )
+
+        async def _sentinel(*_args: Any, **_kwargs: Any) -> None:
+            raise TestTheBackfillRoutesThroughTheSHAREDExistencePolicy._PolicyWasReached(
+                "the shared row-existence policy was reached with nothing to resolve"
+            )
+
+        _patch_every_shared_policy_COROUTINE(monkeypatch, _sentinel)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+
+    async def test_a_FAILED_existence_read_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]],
+    ) -> None:
+        """⛔ **Leg-2 forgery construction — §11.1's "blocker pre-check × {empty, error}"
+        row, at MIGRATION time.**
+
+        A backfill that wraps its pre-filter in a swallowing ``except`` completes, boots the
+        service, and leaves the traversal serving world A's confident empty on every legacy
+        row — *the exact defect R11 exists to delete, restored by a degradation nobody
+        constructed*.  The store's own seam raises rather than returning ``[]`` (its
+        positive control is in SECTION L), so a failed check CANNOT be mistaken for a store
+        with no matching rows: the only way to serve the false clear is to swallow.
+        """
+        _connection, env, _ids = legacy_column_store
+
+        async def _rejecting(*_args: Any, **_kwargs: Any) -> None:
+            raise SurrealStoreError("the existence read was rejected by the engine")
+
+        _patch_every_shared_policy_COROUTINE(monkeypatch, _rejecting)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with pytest.raises(Exception) as caught:  # noqa: B017 - vocabulary is the builder's
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert not isinstance(caught.value, AssertionError), (
+            f"ensure_ready raised the test's own AssertionError rather than propagating the "
+            f"store failure: {caught.value!r}"
+        )
+
+
+# =========================================================================== #
+# SECTION L — THE LEG-2 FORGERY CONSTRUCTIONS 04b-1 OWES.
+#
+# ``CLAUDE.md`` § TRUST — THE HARD DEFINITION, leg 2: derive the failure set (the surface's
+# stateful dependencies × ``{stale, empty, wrong-instance, partial}``), CONSTRUCT each state,
+# and BYTE-DIFF the served response against the healthy one.  **Identical bytes = a false
+# clear = STOP.**  Construction, never reasoning: *"a missed world-state is discoverable …
+# but a false belief about your own semantics is SELF-SEALING, and the only instrument that
+# breaks it is execution."*
+#
+# ⚠ **THE BOUND ON THIS SECTION, STATED AS A FACT AND NOT AS A DISCLAIMER.**
+# ``scripts/forgery_sites.py`` — the derivation the law's own clause implies and the design
+# doc §12.2 specifies — DOES NOT EXIST.  The failure set worked from here is
+# ``docs/design/2026-07-28-04b-model-consumer-audit.md`` §11.1's table, which its author
+# labels (§12.3) a **CURATED INTERIM, bounded to five served surfaces and to one reader's
+# sight**.  The law PERMITS a bounded interim and FORBIDS presenting it as complete.  So:
+# **the constructions below cover the dependencies and verbs written down in §11.1 and
+# nothing else.  A false clear found later is a RE-OPEN TRIGGER, never a retroactive pass.**
+#
+# Ownership, per this contract's brief: 04b-1 owns the TRAVERSAL-TIMEOUT row, the
+# PRE-CHECK-FAILED-READ row (its migration-time half is SECTION K's last leg) and R9's
+# HONEST-TOTAL row (which resolves to an ASSERTED EMPTINESS — see
+# ``test_query_tasks_bounded.py::TestNoTOTALIsServedThatWasNotMEASURED``).  04b-2 owns the
+# fleet-column and footer rows.
+#
+# ⚠ **A CORRECTION TO §11.1's OWN PRESCRIPTION, DERIVED HERE AND ESCALATED IN THE WAVE
+# REPORT.**  That row asks for *"a TEACHING error naming the timeout"*.  The ledger CANNOT
+# name it: ``_txn``'s hygiene boundary (ledger #31) withholds the engine text, and
+# ``_classify_engine_error`` has no timeout label at all — every timeout arrives as
+# ``unspecified rejection``.  A ledger that named it would be GUESSING, which is the
+# fabrication class this packet already refused once (``TestTheResultIsSELFDESCRIBING``).
+# The achievable and honest form is pinned instead: name the OPERATION, the BOUND it ran at,
+# and the RECOVERY — and never serve a partial closure as a complete one.
+# =========================================================================== #
+
+
+class TestTheTraversalIsLOUDWhenTheSTOREFails:
+    """RED today.  ⛔ §11.1 row 2 — *store × timeout/error mid-traversal*.
+
+    THE FALSE CLEAR IT HUNTS: a partial set served as complete.  ``+collect`` truncating at
+    the engine's bound is already handled honestly (``truncated``); a traversal that FAILS
+    mid-flight is a different world, and a build that caught the failure and returned what
+    it had — or returned an empty result — would render bytes a consumer cannot distinguish
+    from *"this task has no blockers"*.
+
+    THE CONSTRUCTION is the store seam raising, applied through
+    :func:`_degrade_every_STORE_seam`, which DERIVES the seam set rather than listing it.
+    The ledger is already connected by the fixture, which the helper's docstring requires.
+    """
+
+    @staticmethod
+    async def _seed_then_degrade(
+        monkeypatch: pytest.MonkeyPatch, ledger: TaskLedger, env: SurrealEnv
+    ) -> tuple[str, list[str]]:
+        """Seed a 4-chain, capture the HEALTHY served bytes, then break every store seam.
+
+        Returns ``(healthy_served, chain)`` — the WHOLE chain, not just its leaf, because
+        the caller has to REDACT every id out of a refusal before looking for a number in
+        it.  A task id is a uuid4 hex, and a 32-char hex string contains a given two-digit
+        substring more often than not: *"the bound is named in the message"* asserted over
+        the raw text would pass on a message that names only the id.  A fixture that cannot
+        distinguish the correct build from a plausible wrong one is decoration.
+
+        On return the degraded world is live, so the caller's next ledger call is the
+        constructed one.
+        """
+        setup = await connect_admin(env)
+        try:
+            chain = await _seed_chain(setup, 4)
+        finally:
+            await setup.close()
+        healthy = await _served_outcome(_transitive_blockers(ledger, chain[-1]))
+        unspecified, server_log_hint = _engine_hygiene_markers()
+
+        async def _rejecting(*_args: Any, **_kwargs: Any) -> Any:
+            raise SurrealStoreError(
+                f"statement 1 of 1 was rejected ({unspecified}); {server_log_hint}"
+            )
+
+        _degrade_every_STORE_seam(monkeypatch, _rejecting)
+        return healthy, chain
+
+    async def test_a_FAILED_traversal_NEVER_renders_as_a_COMPLETE_answer(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔⛔ The byte diff.  A degraded read that renders the healthy bytes — or ANY
+        ``OK …`` bytes — is a false clear and a STOP, not a pin to soften.
+        """
+        ledger, env, _blocker = task_ledger
+        healthy, chain = await self._seed_then_degrade(monkeypatch, ledger, env)
+        leaf = chain[-1]
+        degraded = await _served_outcome(_transitive_blockers(ledger, leaf))
+        assert healthy.startswith("OK "), (
+            f"the healthy leg did not produce a result at all, so the diff below compares "
+            f"two failures and discriminates nothing: {healthy!r}"
+        )
+        assert degraded != healthy, (
+            f"a traversal whose store read was REJECTED served BYTE-IDENTICAL output to a "
+            f"healthy one ({degraded!r}). Identical bytes across a healthy and a broken "
+            f"world is the definition's false clear"
+        )
+        assert not degraded.startswith("OK "), (
+            f"a traversal whose store read was REJECTED still returned a RESULT: "
+            f"{degraded!r}. Whatever ids it carries, `truncated` on that object is a claim "
+            f"about a walk that did not finish — partial served as complete, which is the "
+            f"one thing the honest-bound design exists to prevent. leaf={leaf!r}"
+        )
+
+    async def test_the_FAILURE_teaches_the_OPERATION_the_BOUND_and_the_RECOVERY(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ Ruling T2 on the degraded path, in the only form the hygiene boundary permits.
+
+        The ledger cannot name a TIMEOUT (see this section's header), so what it owes is:
+        its OWN vocabulary (pinned by TYPE, so a subclass counts and a raw store error does
+        not), no hygiene marker, the TASK it was asked about, and the BOUND it ran at —
+        which is the whole of what a caller needs in order to choose between retrying
+        smaller and giving up.
+        """
+        import loremaster.tasks
+
+        ledger, env, _blocker = task_ledger
+        _healthy, chain = await self._seed_then_degrade(monkeypatch, ledger, env)
+        leaf = chain[-1]
+        with pytest.raises(TaskLedgerError) as caught:
+            await _transitive_blockers(ledger, leaf)
+        message = str(caught.value)
+        for marker in _engine_hygiene_markers():
+            assert marker not in message, (
+                f"the failed traversal served the store's hygiene text {marker!r} to the "
+                f"caller: {message!r}"
+            )
+        assert leaf in message, (
+            f"the failure does not name the task it was asked about ({leaf!r}): {message!r}"
+        )
+        redacted = message
+        for task_id in chain:
+            redacted = redacted.replace(task_id, "<task-id>")
+        bound = getattr(loremaster.tasks, MAX_DEPTH_CONSTANT)
+        assert str(bound) in redacted, (
+            f"the failure does not name the depth bound it ran at ({bound}), so a caller "
+            f"cannot compute a smaller re-ask — the same ambiguity amendment A3-a closed on "
+            f"the SUCCESS path. (Asserted against the message with every task id REDACTED: "
+            f"a uuid4 hex contains a given two-digit substring more often than not, so the "
+            f"raw text would let a message naming only the id pass.) "
+            f"redacted={redacted!r} raw={message!r}"
+        )
+
+
+async def _task_row_count_via_ADMIN(env: SurrealEnv) -> int:
+    """The task-row count read on a SEPARATE admin connection.
+
+    ⚠ Deliberately NOT :func:`_task_row_count`, which rides the ledger's own ``_query``:
+    every caller below has DEGRADED that seam on purpose, so the ledger cannot be used to
+    observe the store it is being tested against.  An instrument that shares the fault it is
+    measuring reports whatever the fault says.
+    """
+    connection = await connect_admin(env)
+    try:
+        rows = await run(connection, f"SELECT count() FROM {TASK_TABLE} GROUP ALL")
+    finally:
+        await connection.close()
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return 0
+    return int(rows[0].get("count", 0))
+
+
+class TestTheBlockerPreCheckFAILSCLOSEDWhenItsOwnREADBreaks:
+    """RED today.  ⛔ §11.1 row 5 — *blocker pre-check × {empty, error}*, on the WRITE path.
+
+    THE FALSE CLEAR IT HUNTS IS FAIL-**OPEN**.  The pre-check exists to refuse a phantom
+    blocker BEFORE anything is written; ruling R3 is explicit that this replaces *"a silent
+    black hole"* (today a task naming a phantom blocker is created and is then unclaimable
+    forever) with *"a loud refusal"*.  A degraded existence read that comes back EMPTY, or
+    that throws, must never be read as *"nothing was wrong"* — that would restore the black
+    hole through a door nobody constructed.
+
+    ⚠ **AND THE TWO MODES ARE NOT THE SAME PIN**, which is §11.3's ran-and-empty vs
+    check-FAILED distinction applied to this surface:
+
+    * ``{empty}`` — indistinguishable, AT THIS LAYER, from *"the blockers genuinely are not
+      there"*, so the correct behaviour IS the phantom refusal: **fail-closed**.  That the
+      mode cannot be manufactured by a degraded store in the first place is what
+      :class:`TestTheSTORESeamRAISESRatherThanReturningEMPTY` measures, one layer down.
+    * ``{error}`` — a check that FAILED, and serving it as *"these ids name no task"* would
+      be a lie with real consequences (the caller goes and creates a duplicate blocker).
+      Its bytes must DIFFER from the phantom refusal's.
+    """
+
+    @staticmethod
+    async def _create_naming(ledger: TaskLedger, blocker_id: str) -> None:
+        await ledger.create_task(SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR)
+
+    async def test_an_EMPTY_existence_read_over_a_store_that_HAS_the_blocker_FAILS_CLOSED(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ Fail-CLOSED, and NOTHING written.  The blocker genuinely EXISTS in this store —
+        the fixture created it — so a build that accepted this create would be accepting on
+        the strength of a read that returned nothing.
+        """
+        ledger, env, real_blocker = task_ledger
+        before = await _task_row_count_via_ADMIN(env)
+
+        async def _empty(*_args: Any, **_kwargs: Any) -> Any:
+            return []
+
+        _degrade_every_STORE_seam(monkeypatch, _empty)
+        with pytest.raises(TaskLedgerError) as caught:
+            await self._create_naming(ledger, real_blocker)
+        assert real_blocker in str(caught.value), (
+            f"the refusal does not name the blocker whose existence could not be "
+            f"established ({real_blocker!r}): {str(caught.value)!r}"
+        )
+        assert await _task_row_count_via_ADMIN(env) == before, (
+            "a create whose blocker-existence read came back EMPTY still wrote a task row. "
+            "That is the fail-open black hole ruling R3 closes, restored by a degraded "
+            "dependency: the row is created and is then unclaimable forever, silently"
+        )
+
+    async def test_POSITIVE_CONTROL_the_SAME_create_SUCCEEDS_when_the_read_is_HEALTHY(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """Without this, the leg above is satisfied perfectly by a build that refuses EVERY
+        create — the refuse-everything wrong build that a negative-only fixture cannot see.
+        """
+        ledger, env, real_blocker = task_ledger
+        before = await _task_row_count_via_ADMIN(env)
+        await self._create_naming(ledger, real_blocker)
+        assert await _task_row_count_via_ADMIN(env) == before + 1, (
+            "a create naming a REAL, existing blocker did not write a row, so the "
+            "fail-closed leg above is measuring a build that refuses everything"
+        )
+
+    async def test_a_FAILED_existence_read_is_NOT_served_as_the_PHANTOM_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔⛔ The byte diff, and the reason ``{error}`` is a separate mode from ``{empty}``.
+
+        *"These ids name no task row"* is a FACT about the data.  Serving it when the check
+        never ran is a false clear wearing the same bytes — §11.3's fourth leg, verbatim:
+        *"ran-and-empty silence is a TRUE clear; check-failed silence is a false one wearing
+        the same bytes."*  A caller told its blocker does not exist goes and creates a
+        duplicate; a caller told the store is broken retries.
+        """
+        ledger, env, real_blocker = task_ledger
+        before = await _task_row_count_via_ADMIN(env)
+
+        async def _rejecting(*_args: Any, **_kwargs: Any) -> Any:
+            raise SurrealStoreError("the existence read was rejected by the engine")
+
+        _degrade_every_STORE_seam(monkeypatch, _rejecting)
+        served = await _served_outcome(self._create_naming(ledger, real_blocker))
+        assert served.startswith("RAISED "), (
+            f"a create whose blocker-existence read was REJECTED returned normally: "
+            f"{served!r}"
+        )
+        assert _served_task_refusal(real_blocker) not in served, (
+            f"a create whose existence read FAILED was served the PHANTOM refusal — the "
+            f"sentence that asserts, as a fact, that {real_blocker!r} names no task row. It "
+            f"does name one; the check simply never ran. The caller acts on that by minting "
+            f"a duplicate blocker. Two different worlds must not render the same bytes: "
+            f"{served!r}"
+        )
+        assert await _task_row_count_via_ADMIN(env) == before, (
+            "a create whose blocker-existence read FAILED still wrote a task row"
+        )
+
+
+class TestTheSTORESeamRAISESRatherThanReturningEMPTY:
+    """GREEN before and after.  ⛔ The one-level-down control the ``{empty}`` mode needs.
+
+    THE HONEST PROBLEM, stated rather than papered over: at the APP layer an existence read
+    that returns ``[]`` because it FAILED and one that returns ``[]`` because the rows are
+    genuinely absent are the SAME BYTES, and no amount of app-level care can separate them.
+    Under the trust definition that would be a false clear — *unless the ``{empty}`` mode
+    cannot be produced by degradation in the first place*.
+
+    It cannot, and this is the pin that says so with a measurement: the shared store seam
+    RAISES on a rejected statement.  So ``{empty}`` at the app layer means *"the store ran
+    the read and there was nothing"* — a TRUE clear — and every fail-closed refusal above
+    is a refusal about the data, never about a broken instrument.
+
+    This is the ``ran-and-empty`` vs ``check-FAILED`` distinction §11.3 makes for the
+    footer, applied one layer down and turned into a control rather than a claim.
+    """
+
+    async def test_a_REJECTED_read_RAISES_it_does_not_come_back_as_an_EMPTY_LIST(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        ledger, _env, _blocker = task_ledger
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the seam's own type
+            await _raw(ledger, "SELECT * FROM task WHERE THIS IS NOT SURQL AT ALL")
+        assert not isinstance(caught.value, AssertionError), (
+            f"the seam raised the test's own AssertionError: {caught.value!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_a_read_that_MATCHES_NOTHING_returns_an_EMPTY_LIST(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """Without this the leg above is satisfied by a seam that raises on EVERYTHING, and
+        then ``{empty}`` would be unreachable for a reason that has nothing to do with
+        honesty.
+        """
+        ledger, _env, _blocker = task_ledger
+        rows = await _raw(
+            ledger,
+            f"SELECT id FROM {TASK_TABLE} WHERE subject = $subject",
+            {"subject": f"no task has this subject {uuid.uuid4().hex}"},
+        )
+        assert rows == [], (
+            f"a legal read matching no rows did not come back as an empty list: {rows!r}"
+        )
+
+
+class TestTheScopeOfTheTransitiveReadIsSTATED:
+    """RED today.  ⛔ **LEG 1 — the SCOPE DIFF**, for the one row where a difference REMAINS.
+
+    R11's backfill deletes the *edges-vs-column* difference for every blocker that resolves.
+    What it cannot delete is the PHANTOM entry: ``ENFORCED`` forbids the edge, R11 skips it,
+    and #236 rules the cleanup of such rows OUT — so a legacy ``blocked_by`` naming no task
+    row is, permanently, in the COLUMN and not in the traversal.
+
+    Leg 1's question — *"what question did I actually answer, and is it the one the consumer
+    thinks they asked?"* — therefore has one honest residue, and the law says a difference
+    that exists goes in the render.  The LEDGER's half of that is its docstring; 04b-2 owns
+    the rendered half.
+
+    ⚠ A SERVED-ENGLISH pin, in this file's established idiom
+    (``test_the_helpers_docstring_states_the_FLOOR_property``) and with its bound: it checks
+    that the words are PRESENT, not that they are true.  What makes them true is
+    SECTION K's exact-set backfill pin.
+    """
+
+    def test_the_helpers_docstring_names_the_PHANTOM_BLOCKER_bound(self) -> None:
+        helper = getattr(TaskLedger, TRANSITIVE_BLOCKERS_ATTR, None)
+        assert helper is not None, (
+            f"TaskLedger.{TRANSITIVE_BLOCKERS_ATTR} does not exist — see this file's "
+            f"_transitive_blockers handle"
+        )
+        docstring = (helper.__doc__ or "").lower()
+        assert "blocked_by" in docstring and "phantom" in docstring, (
+            f"the transitive read's docstring does not state its one remaining scope "
+            f"difference. It answers 'blockers reachable over blocks EDGES'; a consumer "
+            f"asks 'what blocks this task', and after R11's backfill those sets differ by "
+            f"exactly one thing — a legacy blocked_by entry naming NO task row, which "
+            f"ENFORCED forbids as an edge and the backfill skips. State it as a FACT (a "
+            f"bound is a fact, never a disclaimer): the read covers blocked_by entries that "
+            f"name a live task row, and a PHANTOM entry is not among them. "
+            f"docstring={helper.__doc__!r}"
         )
 
 
@@ -5483,6 +6789,49 @@ class TestEveryCallerReachableRefusalTEACHES:
 #     --expect-red "$S::test_a_SHORT_answer_means_the_scan_was_EXHAUSTED_never_silently_truncated"
 #   ⚠ The SANDWICH control stays GREEN (it supplies no ``limit``). If it reddens, the
 #   fixture drifted and the two legs above are measuring nothing.
+#
+# PROOF 10 — RULING R11, the ``ensure_ready`` BACKFILL.  Added 2026-07-28 (wave r4).
+#   Like PROOFS 1–2 and 6–9 it mutates code the build ADDS, so it can only run afterwards
+#   and its declared set must NOT carry the "three already-RED blocks declaration pins"
+#   clause.  Node ids to be re-derived from ``--collect-only`` at execution time.
+#
+#   K="$F::TestTheBACKFILLClosesTheLEGACYEdgeGap"
+#   L="$F::TestThePHANTOMBlockerIsSKIPPEDAndRECORDED"
+#   M="$F::TestTheBackfillIsIDEMPOTENT"
+#   N="$F::TestTheBackfillRoutesThroughTheSHAREDExistencePolicy"
+#
+# PROOF 10a — DELETE THE BACKFILL (the S3 world, restored).  Whatever call ``ensure_ready``
+#   makes into the backfill, remove it.  DECLARED RED (7):
+#     --expect-red "$K::test_ensure_ready_BACKFILLS_the_edges_from_the_EXISTING_columns"
+#     --expect-red "$K::test_the_BACKFILLED_answer_DIFFERS_from_the_UN_backfilled_one"
+#     --expect-red "$K::test_the_backfill_covers_a_TERMINAL_row_too_not_only_the_OPEN_ones"
+#     --expect-red "$L::test_the_PHANTOM_edge_is_NOT_minted_and_the_MIGRATION_STILL_LANDS"
+#     --expect-red "$L::test_the_phantom_SKIP_is_RECORDED_never_silent"
+#     --expect-red "$M::test_a_SECOND_ensure_ready_neither_RAISES_nor_DUPLICATES"
+#     --expect-red "$M::test_the_backfill_does_NOT_re_mint_over_edges_a_WRITE_PATH_already_made"
+#     --expect-red "$N::test_MUTATION_neutralising_the_shared_policy_STOPS_the_backfill"
+#     --expect-red "$N::test_a_FAILED_existence_read_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL"
+#   ⚠ ``$K::test_WITHOUT_the_backfill_the_traversal_serves_a_CONFIDENT_EMPTY`` and BOTH legs
+#   of ``TestTheNakedBackfillWouldRollTheMigrationBack`` must stay GREEN: they describe the
+#   ENGINE and the pre-R11 world, never the build. If they redden, the mutation reached
+#   further than the backfill and the declared set above is measuring the wrong thing.
+#   (The declared count is NINE, not seven — corrected here rather than in the shell, since
+#   a number restated beside a list rather than derived from it is the retiring clause's
+#   own example. COUNT THE LINES.)
+#
+# PROOF 10b — DROP THE PRE-FILTER (a NAKED backfill).  Let the phantom RELATE into the
+#   migration transaction.  DECLARED RED: every leg of $K, $L and $M — the whole migration
+#   rolls back, so nothing lands at all — plus
+#   ``$B::test_ensure_ready_on_a_DIRTY_store_makes_the_guard_LIVE``, which drives the same
+#   entry point on a store whose rows are edge-less.  ⚠ THIS PROOF IS THE ONE THAT SAYS
+#   R11's wrinkle is real: if it comes back with FEWER reds than that, the migration is not
+#   one transaction and ``TestTheNakedBackfillWouldRollTheMigrationBack`` is lying.
+#
+# PROOF 10c — MAKE THE SKIP SILENT (delete the log call, keep the skip).  DECLARED RED (1):
+#     --expect-red "$L::test_the_phantom_SKIP_is_RECORDED_never_silent"
+#   ⚠ ``$L::test_a_store_whose_blockers_ALL_RESOLVE_records_NO_skip`` must stay GREEN — it
+#   fires on the OPPOSITE error (recording a skip that never happened), so a proof that
+#   reddened both would have proved the two legs are one leg.
 #
 # PROOF 9 — R9, the surgical widening.  Mutate the strict-parameter guard back to ONE
 #   sentence covering both parameters:

@@ -202,6 +202,17 @@ async def _ids(ledger: TaskLedger, **filters: Any) -> set[str]:
     return {task.id for task in await ledger.query_tasks(**filters)}
 
 
+async def _served_rows(ledger: TaskLedger, **filters: Any) -> Any:
+    """``query_tasks(**filters)``'s RAW return — the CONTAINER, not the id set.
+
+    Reached through ``**filters`` for exactly :func:`_ids`' reason: ``limit`` is a parameter
+    ruling **R5** ADDS, and a typed call site naming it would be a MYPY ERROR today rather
+    than a RED pin — a contract that fails its own gate before a builder ever sees it
+    (finding #133's sibling reasoning).
+    """
+    return await ledger.query_tasks(**filters)
+
+
 async def _collect(ledger: TaskLedger, sink: set[str], **filters: Any) -> None:
     """Run ``query_tasks(**filters)`` and record the served ids into ``sink``.
 
@@ -1815,6 +1826,103 @@ class TestTheInstrumentsOwnREACHIsACheckedVariable:
                 f"`query_raw` and every measurement in this file is fiction; more than 1 "
                 f"means both doors are being counted and every round-trip number is "
                 f"inflated: {traffic}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+# =========================================================================== #
+# HOLE 7 — R9's HONEST TOTAL, resolved as an ASSERTED EMPTINESS (added 2026-07-28, wave r4).
+#
+# ``CLAUDE.md`` § TRUST — THE HARD DEFINITION, leg 2, owed-construction table
+# (``docs/design/2026-07-28-04b-model-consumer-audit.md`` §11.1, last row):
+#
+#   | ``query``'s R9 elision line | store × error on the honest-total count | a fabricated
+#   | or absent total beside a capped listing | construct the failed count; the line goes
+#   | loud or drops the NUMBER, never invents one |
+#
+# ⚠ **RE-DERIVED HERE, AND THE ANSWER IS THAT 04b-1 HAS NO TOTAL TO CONSTRUCT AGAINST.**
+# ``TaskLedger.query_tasks`` serves ``list[Task]``: rows, and nothing beside them.  Ruling
+# R9's counted-elision line (*"+K more — re-run with limit=N"*) is a RENDER, routed to
+# 04b-2 by the previous wave (``REPORT-contractfix-04b1-r3.md`` §RESIDUALS R-7), and the
+# store-side count that would feed it does not exist at this layer.
+#
+# The law's own §12.2 step 4 says what to do with a derived pair that has no construction:
+# *"every derived pair carries either a CONSTRUCTED forgery pin or a RECORDED named bound;
+# a pair with neither is the gap report … a verb reaching no seam is pure-render — and that
+# emptiness is ASSERTED, not assumed."*  So the emptiness is asserted below rather than
+# claimed in prose, and the bound is recorded as a FACT:
+#
+#   **04b-1's task-read surface serves no total.  The construction for R9's elision line is
+#   OWED BY 04b-2, in the packet that builds the line** — a failed count must go loud or
+#   drop the NUMBER, and must never restate ``len(rows)`` as a ledger-wide total, which is
+#   the retiring clause's *"an `n` restated beside a claim rather than DERIVED from the
+#   computation that produced it"* wearing a capped listing.
+#
+# RED TODAY: neither leg — this class is GREEN at ``70cc5a4`` and must STAY green until
+# someone adds a total, at which point it reddens WITH the instruction it owes.
+# =========================================================================== #
+
+
+class TestNoTOTALIsServedThatWasNotMEASURED:
+    """A PINNED BOUND, in the *"when you cannot close a hole, pin it"* sense (``CLAUDE.md``,
+    #137/#138).
+
+    ⚠ **COLOUR, DERIVED rather than assumed** (an earlier draft of this docstring said
+    *"green before and after"* and was wrong): BOTH legs are **RED at ``70cc5a4``** for ONE
+    reason that has nothing to do with totals — ``query_tasks`` does not accept ``limit``
+    yet, and ruling **R5** adds it.  The cap is not decoration here: the fabrication hazard
+    §11.1 names is *"a total beside a CAPPED listing"*, so a leg without the cap would be
+    describing a different surface.  Both go green with R5 and must STAY green.
+
+    An unpinned known limitation is indistinguishable from an unknown one.  This one says,
+    mechanically: *the ledger serves ROWS and nothing beside them, so there is no number
+    here that could be invented.*  The day a builder wraps the answer in a result object
+    carrying a count, this pin goes RED carrying its own re-open instruction — which is
+    exactly the behaviour a bound is supposed to have, rather than being silently inherited
+    or silently "fixed".
+    """
+
+    async def test_query_tasks_serves_ROWS_and_NOTHING_BESIDE_THEM(self) -> None:
+        """⛔ The asserted emptiness.  Deny-by-default: the SAFE shape is one thing (a list
+        of rows) and the set of names a fabricated total could wear is unbounded — the same
+        reasoning ``TestTheResultIsSELFDESCRIBING``'s exact-field-set pin uses for the
+        transitive read's own uncountable tail.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_SMALL)
+            served = await _served_rows(ledger, limit=_SERVED_LIMIT)
+            assert type(served) is list, (
+                f"query_tasks served a {type(served).__name__} rather than a plain list. If "
+                f"that wrapper carries a TOTAL beside a capped listing, it has just acquired "
+                f"the leg-2 construction §11.1 owes: build the failed-count world and prove "
+                f"the line goes LOUD or drops the NUMBER — never restates len(rows), which "
+                f"is not a total at all once ruling R5 pushed the limit into the statement. "
+                f"Then delete this pin and say so in the wave report"
+            )
+            assert all(isinstance(row, Task) for row in served), (
+                f"query_tasks served something that is not a Task: "
+                f"{[type(row).__name__ for row in served]}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_POSITIVE_CONTROL_the_capped_read_really_DOES_serve_rows(self) -> None:
+        """Without this, the leg above is satisfied perfectly by ``return []`` — a build
+        that serves nothing serves no invented total either, and the emptiness assertion
+        would be measuring the absence of an answer rather than the absence of a claim.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_unrelated_tasks(ledger, UNRELATED_TASK_COUNT_LARGE)
+            served = await _served_rows(ledger, limit=_SERVED_LIMIT)
+            assert len(served) == _SERVED_LIMIT, (
+                f"the capped read served {len(served)} rows against a ledger holding "
+                f"{UNRELATED_TASK_COUNT_LARGE}; the control cannot show that the emptiness "
+                f"pin is looking at a real answer"
             )
         finally:
             await ledger.close()
