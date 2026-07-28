@@ -102,3 +102,75 @@ STANDING BY.
   rides (d).
 
 STANDING BY.
+
+---
+
+## Follow-up 3 (2026-07-28) — re-grade under the HARD definition (doc §11)
+
+- **Frame verified at the working address** (`lore_recall`, myself); graded against the
+  memory's text; the CLAUDE.md landing is 11-i-b's business.
+- **Your first pass is right with two credits (doc §11.1):** the schema/migration legs
+  and the #253 PARTITION legs already pass leg 2 (`_seed_legacy_task` + fail-closed +
+  claim-agreement over edge-less rows — re-derived by grep). Every OTHER served surface
+  is scope-diffed and NOT forgery-pinned. Owed constructions, tabled per dependency ×
+  mode: traversal (timeout ⇒ teaching error, never partial-as-complete), fleet columns
+  (failed grouped count must NOT render `0` — byte-diff vs healthy-zero must differ),
+  footer explicit leg (check-FAILED ⇒ loud line, write succeeds — a NEW fourth leg of my
+  own OVERRULE-1), pre-check (failed existence read ⇒ fail-CLOSED, constructed), R9's
+  elision total (never invent the number).
+- **THE HEADLINE (doc §11.2): the legacy-edge world deploys itself.** No backfill exists
+  anywhere (grepped); production tasks carry `blocked_by` columns TODAY (my §0.1 query —
+  04b-2's own row) and will have NO `blocks` edges at deploy, so the edge-riding
+  traversal serves `ids=[] truncated=False` — clean, confident, wrong — on the exact
+  rows the fleet is working. The partition is proven safe over that world; the traversal
+  fails BOTH legs. ESCALATION with recommendation: backfill in `ensure_ready`,
+  pre-filtered through the L3 existence policy (legacy phantoms meet `ENFORCED` — a
+  naked backfill rolls back the whole migration), phantom skips RECORDED, forgery-pinned
+  in the existing dirty-store harness. Fallback if refused: the render names the bound
+  as a fact — legal, and a permanent tax (a) deletes instead.
+- **Self-corrections (doc §11.3):** OVERRULE-1 gains the check-failed leg;
+  OVERRULE-2(a)'s "may append" was disclaimer-shaped — replaced with the fact-shaped
+  asymmetric bound (present ⇒ verified; absence asserts nothing); §10's age render
+  passes both legs.
+- **Consult discount (doc §11.4):** conceded — no question zero, all four in-repo.
+  Graded per finding AGAINST the bias direction: the V1/V2 flip survives STRENGTHENED
+  (house law biases toward passing `agent=`; both models still declined — survival under
+  adverse bias beats a cold read); the two hazards survive (asymmetric findings —
+  contamination manufactures unanimity, not asymmetry); Q2/Q4 survive on mechanism;
+  the route-around VOCABULARY unanimity is downgraded to colour, and no verdict rested
+  on it alone. Going forward: question zero in every consult; out-of-repo spawns for
+  served-string claims.
+
+STANDING BY.
+
+---
+
+## Follow-up 3-amended (2026-07-28) — the derivation (doc §12; law read in full at the worktree, read-only)
+
+- **§11.0 corrected in place**: the law and receipts exist on disk (the `lore-pkt11i-b`
+  worktree; later the same day, this checkout's `CLAUDE.md` too). §11's verdicts stand —
+  the fuller text tightens, not changes, them.
+- **The derivation exists, and only because of this repo's own prior law (doc §12.1):**
+  *a stateful dependency of a served surface is an I/O SEAM reachable in its call graph,
+  where the seam set is CROSS-DERIVED from the enforcement instruments that already
+  police each I/O class* — store→`_txn` proven sole-door by the #136 runtime guard
+  (reach a checked variable, T4); subprocess→the packet-01 exec gate; clock/fs ownable
+  by the 02a deny-by-default sweep pattern. Three packets of ONE-IMPLEMENTATION are what
+  make the seam registry an evidence-backed allowlist instead of a curated hope.
+- **The script it implies — `scripts/forgery_sites.py` (doc §12.2):** verb axis DERIVED
+  (tool registrations + the literal action-dispatch tables as walk INPUTS — the spec
+  indirection is where naive walks go blind); call-graph walk ∩ seam registry → verb ×
+  kind pairs; × the law's four modes → the worklist; meta-pin: every pair carries a
+  constructed pin or a recorded named bound, and a no-seam verb's emptiness is ASSERTED.
+  Worklist, never a verdict — registration_sites.py's posture inherited.
+- **Bounds stated plainly (doc §12.3):** the walk is astroid-bounded (believed beyond the
+  literal dispatch tables); the clock/fs seam rows are currently REASONING not
+  construction until their sweep is built; and **no such script exists today — §11.1's
+  table is the curated INTERIM, bounded and said so.** Whether the script lands as a
+  small instrument packet or a 04b-2 exit-gate item is the operator's sizing call.
+- **Worked example of the retiring clause (doc §12.4):** A3-a's `max_depth_used`-in-the-
+  result IS the derived-`n` form; the rejected alternative (render imports the constant)
+  is the restated-`n` false clear wearing verifiability. The packet and the law already
+  agree there.
+
+STANDING BY.

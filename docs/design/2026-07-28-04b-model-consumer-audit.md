@@ -146,6 +146,8 @@ tier has none, deliberately — ambiguity ⇒ silence).
     when it names a registered agent, mutating calls may append that agent's
     pending-traffic note."* Behaviour a description doesn't mention is behaviour an agent
     is eventually surprised by, and surprise is what kills the surface (Opus, verbatim).
+    ⚠ *Corrected in §11.3 (2026-07-28, hard-definition re-grade): "may append" is
+    disclaimer-shaped — the clause must state the asymmetric bound as FACTS.*
   - **(b) The fallback footer carries NO imperative drain command.** Opus's on-behalf
     hazard, which nobody had seen: a lead transitioning for a builder receives
     `…— lore_comms action=drain agent=builder-x1` and *"may well drain builder-x1's inbox,
@@ -642,3 +644,212 @@ same shape as R8's imperative split: the IMPERATIVE rides only a TRUE verdict.**
 imperative arrives with (d)'s declared-overdue verdict (`overdue + unacked > 0` ⇒ teach),
 in the packet that builds (d). Cross-packet notice owed: packet 06's drill must not assert
 `⚠ STALE` in expected renders (the glyph retires), and its orphan-detection leg rides (d).
+
+---
+
+# Follow-up 3 (2026-07-28): re-grade under THE HARD DEFINITION — the owed forgery pins
+
+## §11.0 — Frame verification, and its bound
+
+Re-derived at the working address (`lore_recall("trust doctrine")`, this session), not
+from the lead's transcription and not from `CLAUDE.md` (whose section is measured
+byte-unchanged — the memory's *"now in repo CLAUDE.md"* clause is ahead of the
+filesystem, and the receipts dir it cites does not exist yet; packet 11-i-b in flight).
+> **⚠ CORRECTED (same day, lead's own amendment):** the law and its receipts DO exist on
+> disk — in the worktree `/home/ejprice/PycharmProjects/lore-pkt11i-b` (branch
+> `pkt11-i-b-floor-runner`), whose `CLAUDE.md` carries the full section; both of us had
+> looked only at our own checkout. The full text was read there (read-only) for §12;
+> §11's grading against the memory text stands — the fuller text tightens, not changes,
+> those verdicts. *(Later the same day the section landed in THIS checkout's `CLAUDE.md`
+> too, closing the gap entirely.)*
+The definition graded against, verbatim from the memory: *a response is trustworthy iff a
+consumer who acts on it WITHOUT CHECKING cannot be wrong in a way the response did not
+name* — two legs, SCOPE DIFF (design-time, healthy path) + FORGERY PINS (build-time,
+degraded path: stateful dependencies × {stale, empty, wrong-instance, partial},
+CONSTRUCTED and byte-diffed; identical bytes = false clear = STOP; construction never
+reasoning).
+
+## §11.1 — The re-grade: leg 1 largely holds; leg 2 is owed, concentrated on the serving side
+
+**Credit first — two families already pass leg 2, and should be named so the gate is
+copied, not invented:** (i) the schema/migration legs are forgery-pinned in exactly the
+doctrine's sense — the dirty store, the W-A never-landed world, the un-enforcing door,
+the pre-existing dangling edge are all CONSTRUCTED degraded worlds diffed against
+healthy; (ii) the #253 **partition** legs construct the production-real partial world —
+`_seed_legacy_task` writes a column-bearing, EDGE-LESS row (with a phantom blocker), and
+pins fail-closed UNRESOLVED plus `claim.claimed == (legacy_id in unblocked)` agreement
+over it (re-derived by grep this session: `test_a_LEGACY_row_with_a_phantom_blocker_is_
+fail_closed_UNRESOLVED` + the claim-agreement class). The lead's "NONE is forgery-pinned"
+is therefore slightly too strong — but only for the store-DDL and partition families.
+**Every other served surface this packet adds is scope-diffed and NOT forgery-pinned:**
+
+| surface | dependency × mode | the false clear it would serve | owed construction |
+|---|---|---|---|
+| `transitive_blockers` / critical-path render | store × **partial (LEGACY: column, no edges)** | `ids=[] truncated=False` — clean, confident, WRONG — on the exact rows the fleet works today | →§11.2, the headline |
+| same | store × timeout/error mid-traversal | partial set served as complete, or a raw `(unspecified rejection)` (T2) | construct a tiny `TIMEOUT` on a deep chain; assert a TEACHING error naming the timeout — never partial-as-complete, never the raw reject |
+| fleet unread/unacked columns | store × {empty, partial, wrong-instance} on the grouped count | cells render **0** — byte-identical to genuinely-zero traffic | construct a failed/partial grouped read over agents WITH traffic; the render must NOT serve `unread 0` — a per-render loud notice; byte-diff vs healthy-zero MUST differ |
+| the footer, explicit `agent=` leg | registry/store × {error, empty} during the traffic check | silence — byte-identical to ran-and-empty, which the schema teaches as "check ran, inbox clear" | construct the check-failed world: one loud line (*"traffic check failed — drain manually"*), write still succeeds; byte-diff vs healthy-empty MUST differ. **This is a NEW leg of OVERRULE-1** — §11.3 |
+| blocker pre-check | store × {empty, error} on the existence read | fail-OPEN would accept a phantom silently (the packet's own black hole, re-opened by degradation) | construct the empty/failed read on a store that HAS the rows; assert fail-CLOSED (refuse-all naming all, or a classified teaching error) — the positive control distinguishes it from refuse-everything |
+| `query`'s R9 elision line | store × error on the honest-total count | a fabricated or absent total beside a capped listing | construct the failed count; the line goes loud or drops the NUMBER, never invents one |
+
+Boundedness stated per the doctrine's own bound: this table is complete only over the
+dependencies and verbs written here; a later false clear re-opens it, never retro-passes.
+
+## §11.2 — THE HEADLINE: the legacy-edge world is production's ACTUAL state at deploy, and the traversal has no answer for it
+
+The mirror invariant is ∀ verbs **going forward**. Nothing — contract, packet text, or
+ruling — mints `blocks` edges for the rows that ALREADY exist, and no backfill appears
+anywhere (grep this session: the only "backfill" in the packet is S1-d's smoke-agent
+one). The production ledger measurably carries live tasks with `blocked_by` (my own §0.1
+query: packet 04b-2's row itself). At deploy, every edge-resolved read serves those rows
+a confident empty answer. **The partition is safe** — its legacy pins prove it resolves
+column-consistent over edge-less rows. **The traversal is not**: `@.{1..n+collect}` rides
+edges by design, so 04b-2's critical-path render answers *"blockers reachable via edges
+minted ≥04b"* while the consumer asks *"what blocks this task"* — a real set difference,
+unnamed, healthy-path. This fails BOTH legs at once, and the degraded world needs no
+constructing: it deploys itself.
+
+**ESCALATION with recommendation (a design ruling, not a builder task):**
+- **(a) RECOMMENDED — backfill in `ensure_ready`**: idempotently RELATE missing edges
+  from existing `blocked_by` columns. ⚠ The wrinkle is load-bearing: legacy columns can
+  name PHANTOMS (fail-open history — production state, not hypothesis), and `ENFORCED`
+  REJECTS those RELATEs; inside the one-txn migration a single rejection rolls back the
+  lot. So the backfill pre-filters through the SAME generalised existence policy (L3 —
+  reuse, never copy #2), mints edges for real blockers, **skips phantoms and RECORDS the
+  skip** (the skip is itself a scope bound; a silent skip is a mini false-clear). Forgery
+  pin in the existing dirty-store harness: seed a legacy row with one real + one phantom
+  blocker pre-migration → `ensure_ready` → edge exists for the real one, phantom skipped
+  and recorded, traversal now agrees with the column.
+- **(b) rejected**: resolve the traversal client-side over columns — defeats the ruled
+  engine-traversal design and re-imports the N-read shape R7 exists to bound.
+- **(c) fallback if (a) is refused**: the render NAMES the bound as a fact (*"edges cover
+  tasks created after <deploy>"*) — legal under the definition, and a standing tax on
+  every consumer; (a) deletes the bound instead of naming it forever.
+
+## §11.3 — Self-corrections: my own rulings, re-graded
+
+- **OVERRULE-1 gains a fourth leg.** The ruled split (omitted ⇒ silence · ran-and-empty ⇒
+  silence · supplied-unresolvable ⇒ teach) is leg-1 complete and leg-2 blind:
+  **check-FAILED ⇒ teach, loudly, never failing the write.** Ran-and-empty silence is a
+  TRUE clear; check-failed silence is a false one wearing the same bytes. The forgery pin
+  is §11.1's footer row.
+- **OVERRULE-2(a)'s disclosure clause was disclaimer-shaped** (*"may append"* names
+  nothing — the definition's own example class). Replacement, fact-shaped and asymmetric
+  by design: *"when this names a registered agent and traffic pends, a third-person
+  traffic line is appended; the line, when present, is verified — its ABSENCE asserts
+  nothing."* An absence that asserts nothing is a named non-claim (the fallback is
+  unrequested garnish); the explicit `agent=` tier is where absence IS a claim, which is
+  exactly why it carries the check-failed leg above and the fallback need not.
+- **§10's age-only render passes both legs**: `hb 17m` scope-diffs itself — it claims
+  comms-touch age, not liveness — which is precisely what the retired badge failed to do.
+
+## §11.4 — The contamination discount on my four consults, answered
+
+Conceded: none of the four ran question zero, all four ran INSIDE this repo with the
+house law auto-loaded, and (per the companion ruling) a genuinely cold reader is not
+spawnable from here. Under the discount, graded finding by finding **against the
+DIRECTION of the bias** — the honest instrument available from inside:
+
+- **Q1's V1/V2 flip SURVIVES — STRENGTHENED, not merely intact.** The house law is
+  saturated with pass-your-identity fleet protocol (`lore_comms` requires `agent=` on
+  every action; briefs, drills, register habits). A contaminated informant is biased
+  TOWARD passing `agent=` — and both models still declined under the terse description.
+  A finding that survives an ADVERSE bias is stronger than a cold one. The mechanism
+  both gave is also house-independent generic behaviour ("the required one is the real
+  one; the optional twin is a legacy alias").
+- **The two Q1 hazards SURVIVE, and their asymmetry is the signature of derivation:**
+  shared contamination manufactures UNANIMITY, not asymmetry — yet drain-theft was seen
+  only by Opus (derived from the drain-stamps-seen semantics supplied in-prompt) and
+  hidden-coupling only by Sonnet (generic API reasoning). Under shared contamination,
+  disagreement between informants carries more information than agreement — and the Q1
+  design was built from the disagreements.
+- **Q2 (hard refusal) and Q4 (verbatim tokens) SURVIVE** on mechanism: the who-pays
+  asymmetry, resend-vs-reconcile cost, and round-trippable-token parsing are generic
+  agent economics, nowhere taught by the house law.
+- **DISCOUNTED as house echo, and I flag my own citations of it:** the consults'
+  route-around VOCABULARY ("taxes every future session", "categorical", "confident-
+  wrong") is the loaded doctrine talking, and their unanimity on it is contaminated
+  unanimity. No VERDICT in this doc rests on those phrases alone — but §1–§3 quote them
+  as corroboration, and that corroboration is hereby downgraded to colour. The verdicts
+  stand on the mechanism arguments beside them.
+- **Going forward:** question zero in every consult prompt; and where a claim is about
+  how a model reads a SERVED STRING (Q1's class), prefer an out-of-repo spawn (different
+  cwd, no auto-load) — from inside, bias-direction analysis like the above is the
+  strongest available instrument, and it must be stated per finding, never assumed away.
+
+---
+
+# Follow-up 3-amended (2026-07-28): the DERIVATION — read from the law's full text at `lore-pkt11i-b/CLAUDE.md`
+
+The amended question, per the law's own clause (*"derived like `registration_sites.py`,
+never a curated list of things that might go wrong"*): what property, run over 04b's
+served surfaces, YIELDS their stateful dependencies?
+
+## §12.1 — The property
+
+> **A stateful dependency of a served surface is an I/O SEAM reachable in that surface's
+> call graph — where the seam set is not curated but CROSS-DERIVED from the enforcement
+> instruments that already police each I/O class.**
+
+The reason this derivation is available in THIS repo, and would not be in most: three
+packets of the ONE-IMPLEMENTATION law have already forced every I/O class through exactly
+one named seam each, and built a gate per seam that proves nothing bypasses it. The seam
+registry is therefore an allowlist in the six-defeats-legal sense (small, enumerable,
+SAFE-set) whose completeness is not an opinion — each entry is evidence-backed by a
+running instrument:
+
+| dependency kind | the seam | the instrument that proves the seam is the ONLY door |
+|---|---|---|
+| store (incl. registry, index tables) | `_txn.run_query` / `execute_transaction` / `retry_on_conflict` | the #136 runtime SDK-escape guard: any call with no driver frame above it is an escape named by file:line — with reach a CHECKED variable (T4) |
+| subprocess | the exec seam | packet 01's receiver-blind deny + allowlist gate |
+| clock | the datetime/time call sites | ownable by the 02a-pattern deny-by-default AST sweep (a primitive outside a registered seam fails loud) — ⚠ not yet built for clock; named below |
+| fs | the indexer/watcher read seams (serving reads are store-backed by design — `lore_read` serves INDEXED bytes deliberately) | same sweep pattern; same bound |
+
+## §12.2 — The script it implies: `scripts/forgery_sites.py`
+
+1. **The VERB axis is derived, not listed:** read the `@mcp.tool` registrations (already
+   pinned as an exact set) **plus the action-dispatch tables** (`_TASK_ACTIONS`,
+   `_FINDING_ACTIONS`, the comms spec table — literal dicts, AST-readable). The
+   spec-table indirection is precisely where a naive static walk goes blind, so the
+   tables are INPUTS to the walk, not obstacles — and their set is pinned the same way
+   the tool set is.
+2. **Walk each verb's call graph** (the lore_impact substrate / astroid), **intersect
+   with the seam registry** → verb × dependency-kind pairs.
+3. **Cross the pairs with the law's four modes** ({stale, empty, wrong-instance,
+   partial} — the MODE axis is the law's fixed vocabulary, not derived; what each mode
+   MEANS per kind is judgement at construction time). Output: the owed forgery-pin
+   worklist.
+4. **The meta-pin that makes it a gate:** every derived pair carries either a CONSTRUCTED
+   forgery pin or a RECORDED named bound; a pair with neither is the gap report. A verb
+   reaching no seam is pure-render — and that emptiness is ASSERTED, not assumed.
+   Output is a worklist requiring judgement, never a verdict — `registration_sites.py`'s
+   own posture, inherited deliberately.
+
+## §12.3 — Bounds, stated so this section does not over-claim about itself
+
+- **The walk is astroid-bounded** (DESIGN-LAW §4: dynamic/framework-mediated dispatch
+  undercounts). Mitigated for the KNOWN dispatch tables by reading them as literals;
+  BELIEVED elsewhere. A false clear traced to an unwalked path is the re-open trigger,
+  never a retroactive pass.
+- **The clock/fs rows of the seam table are the registry's weakest entries** — no
+  deny-by-default sweep exists for them yet, so their "only door" status is currently
+  reasoning, which the law ranks below construction. Building that sweep is part of the
+  script, not optional garnish.
+- **No such script exists today. §11.1's table is the CURATED INTERIM**, bounded to the
+  five surfaces and the dependencies visible to one reader — presented as
+  incomplete-by-construction, which the law permits; presenting it as complete would not
+  be. The derivation above is buildable almost entirely from existing parts (the impact
+  graph + the AST-scan infrastructure + the three gates); whether it lands as a small
+  instrument packet or a 04b-2 exit-gate item is the operator's sizing call. Until it
+  runs, every leg-2 claim in this doc carries the interim bound.
+
+## §12.4 — The retiring clause, landing on a ruling already made (a worked example)
+
+The law retires *"an `n` restated beside a claim rather than DERIVED from the computation
+that produced it — a false clear wearing verifiability."* Amendment A3-a (§3) is that
+clause enforced avant la lettre: `max_depth_used` rides IN the typed result, from the
+computation that ran — while the alternative I rejected (the render importing the default
+constant to describe the read) is exactly the restated-`n`: byte-identical prose over a
+read that silently ran at a different bound the day the default changes. The packet and
+the law agree here with no edit needed; recorded so the next reader sees the clause has a
+local worked example, not just a slogan.

@@ -576,6 +576,61 @@ is worth recording as a method, not just an outcome.
   `⚠ STALE` in any expected render; and the drill's **orphan-detection leg rides (d)**, not the
   badge.
 
+## ⚠⚠ SIDECAR FINDING S3 — THE LEGACY-EDGE WORLD DEPLOYS ITSELF (2026-07-28, BLOCKER)
+Source: doc §11.2, re-graded under **TRUST — THE HARD DEFINITION** (`CLAUDE.md`, imported to
+this branch at `0acbf47` from `ee0e87d`). **This got past the contract, the contract-adversary,
+two contract-fix waves and the lead.** It became visible only under the new definition's Leg 2.
+- **THE DEFECT.** The `blocks` mirror is ∀ verbs **going FORWARD**. Production tasks carry
+  `blocked_by` COLUMNS **today** (measured — 04b-2's own ledger row is one) and will have **NO
+  `blocks` edges** at deploy. **The transitive read rides EDGES by design.** So 04b-2's
+  critical-path render serves **`ids=[] truncated=False`** — *clean, confident, wrong* — on
+  exactly the rows the fleet is working.
+- **It fails BOTH legs at once**, and it is worse than an ordinary forgery-pin gap: every other
+  owed construction has to be CONSTRUCTED. **This degraded world needs no constructing — it is
+  the default state at deploy.** `truncated=False` is not a missing bound; it is a **positive
+  assertion of completeness that is false**, which is the definition's central failure.
+- **NO BACKFILL EXISTS ANYWHERE** — the sidecar grepped the contract, the packet and every
+  ruling; the only "backfill" in this packet is S1-d's *smoke-agent* one, a different thing.
+- **RECOMMENDED (needs an OPERATOR RULING — it is a migration over production data):** backfill
+  the edges in `ensure_ready`, **pre-filtered through the L3 existence policy** — ⚠ legacy rows
+  carry phantom blockers, and those meet `ENFORCED`, so **a naked backfill rolls back the whole
+  one-transaction migration**; the phantom SKIPS are RECORDED, not silent; forgery-pinned in the
+  dirty-store harness that already exists.
+- **FALLBACK if the backfill is refused:** the render **names the bound as a FACT** (not a
+  disclaimer) — legal under the definition, and a **permanent tax on every future read**.
+- ⚠ **TWO CREDITS, so the gap is not overstated (§11.1):** the schema/migration legs AND #253's
+  partition legs **already pass Leg 2** — `_seed_legacy_task` constructs the production-real
+  partial world (column-bearing, edge-less, phantom blocker) and pins fail-closed +
+  claim-agreement over it. Everything else this packet adds is scope-diffed and forgery-BLIND.
+- **OWED CONSTRUCTIONS, tabled per dependency × mode (§11.1):** traversal timeout ⇒ a teaching
+  error, never partial-as-complete · the fleet columns' FAILED grouped count must **not** render
+  `0` (its bytes must differ from a healthy zero) · the footer's explicit leg, check-FAILED ⇒ a
+  loud line while the write still succeeds · the pre-check's failed existence read ⇒ constructed
+  fail-CLOSED · R9's honest total never invented.
+
+## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
+- **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
+  silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
+  failed identity check must TEACH, not fall silent — the identical render for two different
+  worlds is precisely what Leg 2 hunts.
+- **OVERRULE-2(a)'s "may append" was DISCLAIMER-SHAPED** and is replaced with a fact-shaped
+  asymmetric bound: **present ⇒ verified; absence asserts nothing.** ("A bound is a FACT, never
+  a disclaimer.")
+- §10's age-only render passes both legs as ruled.
+
+## CONSULT CONTAMINATION DISCOUNT (§11.4) — conceded, and the grading survives
+No question zero was asked; all four informants were in-repo (~60KB of house law preloaded).
+Re-graded **against the bias direction**, which is the strongest instrument available here:
+- **The V1/V2 `agent=` flip SURVIVES STRENGTHENED.** House law biases informants TOWARD passing
+  `agent=`; both still DECLINED under the terse description. **Survival under adverse bias beats
+  a cold read.**
+- **The two Q1 hazards survive because they are ASYMMETRIC** — contamination manufactures
+  UNANIMITY, not asymmetry; one distinct hazard per informant is the signature of derivation.
+- Q2/Q4 survive on mechanism. **The route-around VOCABULARY unanimity is DOWNGRADED to colour**;
+  no verdict rested on it alone.
+- **STANDING, going forward:** question zero in every consult prompt, and **out-of-repo spawns
+  for any claim about how a model reads a served string.**
+
 ## SIDECAR CAUTION C1 — carry this sentence into the BUILDER brief
 Rounds 2 and 3 were read verbatim at `5a2dca9`: **nothing to overrule** (doc §9), and T5's
 CAS-side `distinct` is judged the right fix of the three available — the only one that heals
