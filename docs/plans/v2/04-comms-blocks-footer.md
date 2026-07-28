@@ -334,6 +334,51 @@ that reddening is the DELIBERATE declaration, not a misfire).
 **Exit:** full gates with a passed-COUNT + cold REFUTE audit + commits; NO deploy (04b-2 ships
 it); findings resolved/filed; INDEX row + Log.
 
+## 04b-1 escalation rulings (lead, 2026-07-28 — on `REPORT-contract-04b1.md`)
+All five of the contract author's escalations are **ACCEPTED AS PINNED**. Each was raised with
+both readings written down and a recommendation; the recommendations were right. Recorded here
+because a ruling that lives only in a report is a ruling the next agent does not meet.
+- **E-1 — edge direction: `RELATE $blocker->blocks->$task`** (`in` = blocker, `out` = task).
+  Reads as English, and puts the newly-created row on the `out` side — the side 04a MEASURED
+  resolves inside an uncommitted transaction.
+  ⚠ **RIDER, and it is the lead's addition, not the author's miss: the probe measured the
+  FORWARD arrow.** P4 established `+collect` closure, dedup, cycle-termination and the silent
+  256 truncation on `->blocks->`. This design traverses **`<-blocks<-`** (upstream blockers).
+  Same-behaviour-on-the-reverse-arrow is an INFERENCE, and inferring a property over the whole
+  set from the one member you measured is THE QUANTIFIER LAW's exact shape. **The adversary
+  MEASURES the reverse arrow before the builder relies on it** — closure, dedup over a diamond,
+  cycle termination, and whether the bound truncates the same way.
+- **E-2 — identity rendering: `name (id)` where a display label exists, BARE id where none
+  does.** A task has no name at the call site; forcing the shape yields `abc (abc)`, which
+  teaches a reader that it does.
+- **E-3 — the transitive read serves UPSTREAM blockers, and is HONEST at its bound**: a typed
+  result carrying `truncated`, never a silent short answer (probe §5.3 measured 256-of-299 with
+  no error and no signal) and never a RAISE (which makes a legitimately deep DAG unreadable
+  rather than honestly partial). The instrument is a DISCRIMINATING PAIR — a 5-chain at
+  `max_depth=2` reports `truncated=True`, a 3-chain at the SAME depth reports `False`; a build
+  hard-coding either value dies on one leg.
+- **E-4 — #247: the sender is validated FIRST, in its own call, with its own error
+  vocabulary.** A refusal that mis-names the role is one an agent acts on wrongly.
+  **ACCEPTED COST, stated so it is not rediscovered as a surprise: one extra round trip on the
+  send path** (and 04a's R-4 already noted an unmeasured extra trip on `publish`/`ack`).
+  **NAMED RE-OPEN TRIGGER:** if send-path latency ever becomes a measured concern, the
+  pre-authorised alternative is ONE existence call whose refusal is ROLE-TAGGED and names both
+  roles correctly — that is a contract change, not a builder's shortcut.
+- **E-5 — the mutation proof is FIVE PER-EDGE PROOFS with two mutation shapes**, not one shared
+  mutation. ⚠ **The brief's "widen it to five edges" was WRONG and the author was right to
+  refuse it**: `refers`/`answers_to` carry no `enforced=True` to delete, so one mutation would
+  declare reds that stay GREEN for two of the five — precisely the direction the both-ways diff
+  exists to catch. The two deferred edges get an IN/OUT swap instead, proving THEIR pins are
+  live rather than that their guard is.
+
+**Owed before the builder is done** (each cheap, none optional):
+1. **PROOF 5 was never executed** ("not run for time"). Run it.
+2. **PROOF 3 was run piped to `tail`**, so its shell `$?` was `tail`'s — the repo's own #196
+   lesson, self-declared by the author. Re-run it UNPIPED with the exit captured.
+3. **04a residual R-e:** `test_surreal_store.py::test_the_whole_schema_migrates_an_existing_
+   populated_store` applies four slices and not the guarded-edge ones; a fifth edge widens that
+   gap again. It was outside the contract's writable set — the builder's scope now.
+
 ## 04b-2 — the comms surface · ~0.25 wu · DEPLOYS (carries 04b-1)
 **Scope IN:** the blocked-chain / critical-path render; the fleet unread + unacked-directive
 columns (R4's reading), counted over the WHOLE set each label claims — counts come from the
