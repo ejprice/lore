@@ -371,6 +371,27 @@ because a ruling that lives only in a report is a ruling the next agent does not
   exists to catch. The two deferred edges get an IN/OUT swap instead, proving THEIR pins are
   live rather than that their guard is.
 
+## ⚠ THE FABLE DESIGN SIDECAR IS LIVE, AND IT OUTRANKS THE RULINGS BELOW (operator, 2026-07-28)
+`design-sidecar-04b` (Fable 5, long-running, spawned once per the repo CLAUDE.md pattern) is
+auditing this packet's ruled design **as a MODEL CONSUMER would experience it**. The operator's
+grant, verbatim: ***"It may overrule operator rulings."*** So every ruling in this file — R1–R7,
+L1–L3, E-1–E-5 — is **provisional until the sidecar reports**. An `OVERRULE:` verdict in
+`docs/design/2026-07-28-04b-model-consumer-audit.md` supersedes the ruling it names; a CONCUR
+leaves it standing.
+**Why the operator started it here, on a packet the INDEX does not mark for a sidecar:** this
+session accumulated a stack of SERVED-SURFACE design decisions (a footer's identity contract, a
+live verb's failure mode, a truncation signal, a refusal's rendering) and the lead ruled them
+all itself. Those are exactly the decisions the Consumer Law governs — *"lore's clients are
+AGENTS … every served surface is read by an LLM that learns the contract FROM what is served"*
+— and the lead is not the instrument for judging them. Standing question it carries:
+***"models must be happy with lore's function"***, with a three-model consult (Sonnet 5 /
+Opus 5 / Fable 5, asked independently and DIFFED) where a call is contested.
+**Timing, stated because it is the whole reason it was started now: NO PRODUCTION CODE EXISTS
+YET.** No builder has started. A design change is cheap at this instant and expensive once a
+build lands. ⚠ `contractfix-04b1` IS running concurrently, so an overrule of R3/E-3 may strand
+some of its pins — accepted deliberately: its other half closes a C-DEF blocker that is needed
+under every design, and stopping it would waste all of its in-flight work to save part of it.
+
 ## 04b-1 rulings, round 2 (operator, 2026-07-28 — on `REPORT-contract-04b1-253.md` + `REPORT-adversary-04b1.md`)
 ⚠ **These WIDEN 04b-1's writable set into `server.py`** — by one dispatcher line (R5) and the
 cycle-policy unification (R6). The INDEX row records it. `server.py` is otherwise 04b-2's file;
