@@ -53,8 +53,9 @@ store was never touched):**
    **MEASURED.**
 4. The query render served task `7b701f0ecd734bb0bff4073ecb0c405f` with
    `owner smoke - [#99 open] forged finding entry (kind friction, by attacker)` — a stored
-   hostile owner value (the #99 security probe's seed) rendered **inline, un-shaped**, in a
-   served row. Caller free-text identities demonstrably reach serves. **MEASURED** (→ §5.3).
+   hostile owner value (the #99 security probe's seed) rendered inline in a served row.
+   Caller free-text identities demonstrably reach serves as same-line text. **MEASURED**
+   (⚠ the original "un-shaped/raw" framing here is retired — see §5.3's correction).
 
 **Consults commissioned** (operator sanction: *"When in doubt, consult Sonnet 5, Opus 5,
 and Fable 5"*): four independent subagent consults — Sonnet and Opus, one prompt per
@@ -334,6 +335,15 @@ Default value operator's-call (fleet precedent: config default + hard ceiling).
 
 ### 5.3 Caller identities are hostile text, and the footer is a new render of them — measured, not hypothetical
 
+> **⚠ CORRECTION (2026-07-28, post-`f00ebd5`; lead-measured, ruled as T3 at `5a2dca9`):**
+> the "served **raw** / un-shaped" framing in this section and §0.4 is **RETIRED — too
+> strong.** Measured at the seam: `safe_str`/`sanitise_line` COLLAPSE newlines, so one
+> stored value cannot forge a ROW BOUNDARY; what survives verbatim is SAME-LINE text only.
+> The recommendation survives sharpened, which is why the section stands: same-line
+> injection in a task row is *misreading*; in the FOOTER it is an *INSTRUCTION* — agents
+> obey instructions where they merely misread rows. T3 rules the footer-shaped hostile
+> fixture mandatory. Read everything below through that correction.
+
 The production ledger is serving, today, a stored owner value shaped like a finding row
 (`owner smoke - [#99 open] forged finding entry (kind friction, by attacker)` — task
 `7b701f0e…`, my own query, §0.4). The new surfaces this packet mints interpolate caller
@@ -439,3 +449,111 @@ a path-scoped constant lookup; routed to grep and said so). My own probe failure
 that survived to a claim — the one stat-dirty `git status` observation (`surreal_schema.py`
 flagged M with an empty diff after a mutation proof's byte-exact restore) resolved on
 re-read and is noted in REPORT-design-sidecar-04b.md.*
+
+---
+
+# Follow-up 1 (2026-07-28, post-`5a2dca9`)
+
+*Rulings landed on the first-task verdicts: R8 (both footer overrules accepted, the
+description string promoted to load-bearing), R9 (query limit + default capped render),
+R10 (MP-5 closed both halves, superseded-as-terminal rejected, transfer deferred with
+trigger), T1–T5. §5.3 above now carries the T3 correction: the "raw" framing is retired.*
+
+## §8 — The fleet-corpse question (#258): what does an agent calling `fleet` actually need?
+
+**The measured situation** (lead, 2026-07-28, deployed surface): `fleet` serves 39
+non-retired agents, 38 "active" — essentially all dead packet-03b smoke agents across ≥7
+sessions, 18h–2d stale. The deploy gate is the polluter: the instrument that certifies
+comms degrades it on every run. The render is per-row HONEST (derived STALE, true counts,
+counted elision) — which is exactly why no honesty pin catches it: every row is true; the
+SURFACE is drowned. 04b-2 is about to add two more numbers per corpse.
+
+**The consumer question decides it, and the deciding fact is structural, not a
+preference.** An agent's actionable universe through the served comms surface is its
+SESSION — measured from the served `send` contract itself: the `to` description reads
+*"Every name is resolved in YOUR session only"*, and broadcast is *"every non-retired
+teammate in your session."* An agent cannot message, nudge, await, or re-route ANY
+cross-session row. For an agent consumer, every out-of-session row in the default view is
+a row about someone it cannot reach — noise by construction, at any freshness. **The
+corpse problem is a SCOPE problem wearing a freshness costume.** Verdict is composition
+(d), four parts:
+
+- **B1 — the cause (candidate (a), CONCUR, necessary regardless of any render change):**
+  the deploy-gate smoke retires its own agents in a finally-block, and a one-shot
+  operator-run backfill retires the existing corpses. An instrument that durably degrades
+  the surface it certifies fails the instrument test on every run. This alone does not
+  settle the render, because corpses are a PERMANENT feature of fleet data, not a smoke
+  bug: leads TaskStop agents routinely and a killed agent never retires itself — the C4
+  drill's own arc (*kill → orphan surfaces in fleet*) DESIGNS for corpses.
+- **B2 — the surface: `fleet` defaults to the CALLER'S session.** No new parameter is
+  needed to know it: `fleet` requires registration (measured — my own unregistered call
+  was refused by name), so the handler holds `agent_row.session` before rendering. The
+  cross-session tail collapses to ONE counted line teaching the widening re-ask
+  (`+N agents in M other sessions — session=<s> to inspect one, all_sessions=true for
+  everything`), per the caps-are-never-dead-ends law (DESIGN-LAW §2). The 2026-07-26
+  no-consumers grant covers the default change, and 04b-2 already owns this render.
+  The operator/lead observability view keeps everything, one re-ask away — and that is
+  the view where corpses are INFORMATIVE.
+- **B3 — do NOT freshness-filter within the session (candidate (c) REJECTED as the
+  primary):** in-session, a STALE row is not noise — it is the orphan signal the
+  subsystem exists to surface, and (see below) the row whose NEW columns matter most. A
+  freshness window would hide exactly the rows the drill certifies. Freshness stays a
+  derived ANNOTATION (`[active ⚠ STALE]`), never an exclusion. ((c) remains available as
+  a secondary nicety on the explicit all-sessions view; B1+B2 mostly dissolve the need.)
+- **B4 — candidate (b), the reaper: REJECTED in both forms.** Hard-delete re-arms #105
+  (concur with the finding's own note — the comms design assumes agent rows are never
+  hard-deleted, and deletion mints ghosts behind `ENFORCED`'s future-writes-only guard).
+  Auto-retire is subtler and worse: retirement is a STATUS ANOTHER AGENT OWNS;
+  heartbeat-age is evidence, not proof (an agent quiet behind a background gate run is
+  this fleet's own documented benign waiting mode); and a READ verb that MUTATES rows is
+  a surprise no consumer should meet. Writing a heuristic guess as durable status is the
+  confident-wrong class — categorical trust loss on the registry itself. An explicit
+  operator-invoked retire sweep stays legitimate (a decision, not a heuristic).
+  Long-horizon registry growth is a RETENTION question, same class as the open trace-GC
+  task (`d9395d54…`): deferred, named re-open trigger — roster size passes an
+  operator-set bound, or the first hosted deployment (packet 39), whichever first.
+
+**Does the answer change once the unread/unacked columns exist? Yes — the columns raise
+the stakes of scoping, in both directions, which is why B2 should land WITH or BEFORE
+them:**
+1. **In-session, unread/unacked on a STALE row is the highest-value cell on the
+   surface**: stranded directives — traffic someone must re-route or explicitly retire.
+   That is a §1.4 decision tree the render can teach in one line. Under the global
+   default, the identical cells on 38 unreachable corpses are unactionable numbers —
+   computed, served, skimmed — training agents to ignore exactly the signal class B3
+   preserves. Same cells, opposite trust outcome, decided purely by scope.
+2. **Cost follows scope**: the per-row grouped reads (counting law — each cell covers its
+   agent's WHOLE pending set, projection-narrow, never drain's full-body read ×N, #183)
+   shrink from ≤200 displayed rows to actual-fleet-size by construction, not by tuning.
+
+**#257's class (brief-theatre), one note:** a placeholder brief body served with full ack
+ceremony has no mechanical pin that survives false positives (a one-line brief is
+legitimate; `x` is only visibly theatre to a reader). Its instrument is the consumer
+battery's honesty probes — *does teaching match behaviour* — where R8's rider already
+lives. Named so the class is not re-derived; no new machinery recommended.
+
+**Consult judgment: NOT contested — no consult run.** The deciding fact (the send
+surface's session-scoped universe) is structural and measured, not a preference between
+close options. Recorded per the consult rule in my brief.
+
+## §9 — Rounds 2 and 3 reviewed verbatim at `5a2dca9`: nothing to overrule
+
+R5/R6/R7 and the MP-4a rider were concurred in §5.6 and survive re-reading. On round 3:
+- **T1 (answer-cap, exhausted-scan says so): CONCUR.** One pin-design caution, flagged
+  not overruled: answer-cap semantics make rows-read on a `blocked=`-filtered capped
+  query legitimately vary with the candidates' blocked-distribution. A future
+  `rows-read ≤ f(limit)` pin on that path would be wrong BY DESIGN — the boundedness
+  instrument's property stays *"does not grow with UNRELATED ledger size"*, never
+  *"≤ limit."* One sentence in the builder brief keeps anyone from pinning the wrong
+  invariant.
+- **T2: CONCUR** (it is this audit's §5.4, ruled).
+- **T3: CONCUR**, and §5.3 now carries its correction — the sharpening (same-line forgery
+  is an INSTRUCTION on the footer surface) is better than my original claim.
+- **T4 (reach as a checked variable): CONCUR** — the six-defeats law applied to the new
+  instrument; a disclosed blind spot is still a blind spot until coverage is asserted.
+- **T5 (`array::len(array::distinct(blocked_by))` in the CAS): CONCUR, and it is the
+  right fix of the three available.** A schema-side distinctness ASSERT guards future
+  writes only (the FLEXIBLE-array lesson) — the CAS-side fix is the only one that also
+  heals LEGACY rows; and the served partition's ANY-semantics is duplicate-insensitive,
+  so the two layers agree after the fix with no second change. The ≥8-way × 20 demand is
+  the standing concurrency law correctly applied to a live-CAS edit.

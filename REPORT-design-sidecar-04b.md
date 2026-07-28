@@ -38,3 +38,34 @@ The doc is the deliverable; this report adds only what a lead needs to route it:
    doc, which is their durable address (brief-base §1 deliverable-address rule applied).
 
 STANDING BY.
+
+---
+
+## Follow-up 1 (2026-07-28, post-`5a2dca9`)
+
+- **A (correction): accepted and landed at the durable address** — doc §5.3 + §0.4 now
+  carry the dated retirement of the "raw" framing; T3's sharpening (same-line forgery is
+  an INSTRUCTION on the footer surface) is recorded as better than my original claim.
+- **B (#258, fleet corpses): answered in full — doc §8.** Verdict: composition. B1 smoke
+  retires its own agents (cause; necessary regardless). B2 `fleet` defaults to the
+  CALLER'S session — no new parameter needed (fleet requires registration, measured; the
+  handler already holds the caller's session) — with one counted cross-session line; the
+  deciding fact is structural and MEASURED: the served `send` contract resolves names in
+  the caller's session ONLY, so out-of-session rows are unreachable-by-construction noise
+  for an agent. The corpse problem is a scope problem wearing a freshness costume. B3 no
+  freshness EXCLUSION in-session (stale rows are the orphan signal; annotation stays).
+  B4 reaper REJECTED both forms (hard-delete re-arms #105; auto-retire writes a heuristic
+  guess as a status another agent owns, on a READ path); retention deferred with a named
+  trigger (roster bound or first hosted deploy/packet 39). **The columns change the
+  stakes, not the answer**: in-session, unacked-on-STALE is the stranded-directive signal
+  (highest-value cell); cross-session it is unactionable noise — so B2 lands WITH or
+  BEFORE the columns, and cost shrinks to fleet-size by construction. Consult judged NOT
+  contested (structural deciding fact); none run, per the rule.
+- **C (rounds 2/3): read verbatim at `5a2dca9` — NOTHING TO OVERRULE** (doc §9). T5's
+  CAS-side distinct is the right fix of the three (only one healing legacy rows; the
+  partition's ANY-semantics already agrees). One flagged caution, not an overrule: under
+  T1's answer-cap, a future `rows-read ≤ f(limit)` pin on the blocked-filtered path would
+  be wrong by design — keep the boundedness property "does not grow with UNRELATED ledger
+  size". One builder-brief sentence.
+
+STANDING BY.

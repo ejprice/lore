@@ -503,6 +503,46 @@ these two touches are named exceptions, not a general grant.
    populated_store` applies four slices and not the guarded-edge ones; a fifth edge widens that
    gap again. It was outside the contract's writable set — the builder's scope now.
 
+## SIDECAR RULING S1 — `fleet` DEFAULTS TO THE CALLER'S SESSION (2026-07-28, follow-up 1)
+Source: `docs/design/2026-07-28-04b-model-consumer-audit.md` §8, on dogfood findings #257/#258.
+**This lands WITH or BEFORE 04b-2's new columns** — it is not a cleanup that can trail them.
+The lead offered four candidate fixes; the sidecar rejected the framing and produced a fifth.
+- **The deciding fact is STRUCTURAL, not taste, which is why no consult was run:** the served
+  `send` contract resolves recipient names **in YOUR session only**. So every out-of-session
+  row in `fleet` is **unreachable-by-construction** — an agent cannot act on it at all.
+  **The corpse problem is a SCOPE problem wearing a freshness costume.**
+- **S1-a (the load-bearing half): `fleet` defaults to the caller's session, with NO new
+  parameter.** `fleet` already REQUIRES registration (measured — the sidecar's own unregistered
+  call was refused), so the handler already holds `agent_row.session`. The cross-session
+  remainder becomes ONE counted line teaching the widening re-ask — the house elision grammar,
+  which already exists.
+- **S1-b: NO freshness exclusion in-session.** Stale rows are **the orphan signal** — the
+  drill's whole point is that a killed agent surfaces in `fleet`. Annotate, never hide.
+- **S1-c: the reaper is REJECTED in BOTH forms.** Hard-delete re-arms #105 (the comms design
+  assumes agent rows are never hard-deleted). Auto-retire writes a **heuristic guess** as a
+  status **another agent owns**, on a **READ path** — the confident-wrong class. Retention is
+  deferred with a named trigger: an operator-set roster bound, or the first hosted deploy
+  (packet 39).
+- **S1-d: the smoke retires its own agents, plus one backfill for the existing corpses.**
+  Necessary but NOT sufficient on its own — corpses are a *designed-for permanent feature*
+  (kills never self-retire; the drill surfaces orphans deliberately). ⚠ **This touches
+  `smoke_p8b`/deploy tooling, which is OUTSIDE 04b's writable set — it needs its own scope
+  grant or its own routing. Flagged, not assumed.**
+- **Why the new columns change the STAKES but not the ANSWER:** in-session,
+  **unacked-on-STALE is the highest-value cell on the whole surface** (a stranded directive an
+  agent can re-route). Cross-session, the same two numbers are 38 unactionable values that
+  train an agent to skim past the signal. S1-a also shrinks the columns' grouped reads to
+  fleet-size **by construction**.
+
+## SIDECAR CAUTION C1 — carry this sentence into the BUILDER brief
+Rounds 2 and 3 were read verbatim at `5a2dca9`: **nothing to overrule** (doc §9), and T5's
+CAS-side `distinct` is judged the right fix of the three available — the only one that heals
+legacy rows, and the query partition's ANY-semantics already agrees with it post-fix.
+The one caution, which is not an overrule: **under T1's answer-cap, a future
+"rows-read ≤ f(limit)" pin on the blocked-filtered path would be WRONG BY DESIGN.** The
+boundedness property stays *"does not grow with UNRELATED ledger size"* — filling an
+answer-cap legitimately requires scanning past non-matching candidates.
+
 ## 04b-2 — the comms surface · ~0.25 wu · DEPLOYS (carries 04b-1)
 **Scope IN:** the blocked-chain / critical-path render; the fleet unread + unacked-directive
 columns (R4's reading), counted over the WHOLE set each label claims — counts come from the

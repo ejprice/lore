@@ -389,6 +389,41 @@ def _served_blocker_identity(blocker_id: str, *, item_index: int | None = None) 
     return blocker_id if item_index is None else f"{blocker_id} (item {item_index})"
 
 
+def _served_superseded_clause(blocker_id: str, successor_id: str) -> str:
+    """The RULED clause a caller naming a SUPERSEDED blocker is served (**R10(ii)**).
+
+    Operator ruling **R10**, 2026-07-28, verbatim: *"04b-1's blocker pre-check refuses a
+    superseded blocker and names its successor (``task X is superseded by Y — block on Y
+    instead``) — near-zero cost, the grouped existence query already holds the rows, and a
+    ``blocked_by`` naming a superseded task is NEVER legitimate."*
+
+    ⚠ **DELIBERATELY NOT DERIVED FROM PRODUCTION**, for :func:`_served_task_refusal`'s
+    reason: a pin that asked the formatter what the text is agrees with it by construction.
+    THIS IS THE SPEC.
+
+    ⚠⚠ **PINNED AS A CLAUSE, NOT AS THE WHOLE SENTENCE — AND THAT IS AN ESCALATION, NOT A
+    PREFERENCE.**  R10 quotes one sentence and does not say whether it is the COMPLETE
+    served text or a new clause inside the existing refusal skeleton (which RIDER-B requires
+    to carry *"NOTHING was created"*).  Those two readings produce different code, so per
+    brief-base §2 both are written down and neither is picked silently:
+
+    * **(i) the clause reading** — the refusal is the shared skeleton plus this clause, so a
+      caller learns BOTH what is wrong and that nothing landed;
+    * **(ii) the whole-sentence reading** — this string, alone, is the served text.
+
+    **Recommendation: (i)**, because RIDER-B's justification is general (*"an agent reading
+    only 'refused' does not know whether a partial batch landed, so it must pay a
+    reconnaissance read before it dare resend"*) and nothing in R10 retracts it.  **The pins
+    below are satisfiable under BOTH** — they assert this clause appears VERBATIM and, in a
+    separate leg with its own failure message, that the no-write fact is stated.  A
+    by-value whole-sentence pin would have been a C-DEF under reading (i).
+    """
+    return (
+        f"task {blocker_id} is superseded by {successor_id} — "
+        f"block on {successor_id} instead"
+    )
+
+
 def _served_max_depth_refusal(value: int) -> str:
     """The EXACT sentence a caller passing an out-of-range ``max_depth`` is served.
 
