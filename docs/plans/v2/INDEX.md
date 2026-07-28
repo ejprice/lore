@@ -39,13 +39,15 @@ HERE now** — a packet session must not need to read them.
   introspection stays with odoo-dev by design.
 
 ## State of record (verified 2026-07-26, by the findings sweep — after 03b, 10-d, and the 11-i design + security fix wave)
-- Branch `feat/surreal-unification` @ **d5b6ad8** + the 2026-07-27 sweep's docs commits (not
-  pushed). Since the first sweep: **42 DONE + DEPLOYED** (all three mid-flight riders honoured —
-  #235's production receipt: the redactor had been logging the credential for every non-Bearer
-  scheme) · **04 split → 04a DONE (test-only) / 04b NEXT (deploys, carries 04a's schema)** ·
-  **11-i-a BUILT + AUDIT-GO on worktree branch `pkt11-i-a-floor-machinery`, UNMERGED** (11-i-b
-  not started) · **packet 43 minted** (operator ruled the D2 root fix) · **`lorerunes` minted**
-  (the ruled home for shared code — repo CLAUDE.md).
+- Branch `feat/surreal-unification` — **PUSHED through `d5b6ad8`** (upstream exists since the
+  11-i-a merge; local runs ahead by the sweep docs commits). Since the first sweep: **42 DONE +
+  DEPLOYED** (all three mid-flight riders honoured — #235's production receipt: the redactor had
+  been logging the credential for every non-Bearer scheme) · **04 split → 04a DONE (test-only) /
+  04b NEXT (deploys, carries 04a's schema)** · **11-i-a BUILT + AUDIT-GO + MERGED at `c7983e8`
+  (Log 2026-07-27; worktree removed)** — 11-i-b not started · **packet 43 minted** (operator
+  ruled the D2 root fix) · **`lorerunes` minted** (the ruled home for shared code — repo
+  CLAUDE.md). ⚠ Sweep #2 first recorded 11-i-a as "unmerged" from the STALE table row while Log
+  + git said merged — corrected same day; re-derive state from git, not from a row.
 - **The committed-RED era is OVER — the suite is fully green at HEAD.** 03b discharged
   global mypy-zero (36 → 0, all members); suite **6937/0** at the 03b close; post-11-i-merge
   honest baseline **7065 passed / 1 failed**, and that single failure (`test_retired_symbols`
@@ -67,9 +69,11 @@ HERE now** — a packet session must not need to read them.
   image and re-verified: 10-d's disarm (`cosine_floor.state="disabled"` with the honest
   note) and #147's traces. The deploy gates itself (artifact + workspace-honesty probes —
   packet 01); `lore_index()` serves the real branch/ref.
-  ⚠ Still commit-only: everything after `915b7b8` (docs) — and **11-i-a's entire build,
-  which is on its own UNMERGED worktree branch** (its merge is its own gated step; 11-ii
-  MUST inherit audit R2 — the slice has zero production consumers until then).
+  **11-i-a's dark machinery is IN this image** (merged `c7983e8` before 42's merge base) —
+  deployed but UNSERVED by design: serving untouched until 11-ii, and 11-ii MUST inherit
+  audit R2 (the slice has zero production consumers, so the store law is satisfied only
+  vacuously — wire the writer WITH its `ensure_ready`). ⚠ Still commit-only: only the docs
+  commits after `915b7b8`.
   15-tool surface; cosine substrate live; the 0.50649 floor constant is RETIRED FROM
   SERVING (10-d disarm; #161's re-measure rides 11-i, cutover + constant retirement 11-ii).
   P7→P8d′, SLATE S1–S7, the closure wave, PKT-06/C0, PKT-28 C1, the #102 retry-substrate
@@ -196,7 +200,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 09 | surface-residues (#15, #64, #80, #82, #84–#86, #88, #92, docs truth; + #197 #208 #230 #231 slotted 2026-07-26, #244 2026-07-27 — re-size at kickoff) | PKT-03 | L ∥ | 0.20 →re-size | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
 | 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **✅ DONE + DEPLOYED 2026-07-26** (built/audited/merged `be4c591` 2026-07-24; deploy RODE 03b's — both containers on `b46bc1d5`). Live receipt from the running artifact: `lore_index()` serves `cosine_floor.state="disabled"` with the note naming #83/#176/#179/#180. ⚠ **The disarm MASKS #176/#179/#180, it does not FIX them** (`d7a1ce5`) — the per-instance calibration that resolves them is 11-i/11-ii; those findings stay OPEN. |
-| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE). **11-i-a CONTRACT PHASE IN FLIGHT — branch `pkt11-i-a-floor-machinery`, worktree, UNMERGED, nothing deployed.** Contract `d6c0dd4` → adversary **INSUFFICIENT** (9 of 14 wrong builds survived at 143/0) → fix wave `e8aa8f4`: **186 collected**, satisfiability **186 / 925 / 561, all 0-failed** against a reference build, lead-verified. Deps adopted `38c9774`; **#198** consolidated `ea7406e`; **#238 closed** (`docs/eval` now gated, 190 tests). Rulings: `receipts/2026-07-26-packet11i-build/RULINGS-2026-07-26-{bootstrap,contract-11ia,adversary}.md`. **11-i-a BUILT + AUDITED GO — READY TO MERGE, unmerged, nothing deployed.** contract `d6c0dd4` → adversary **INSUFFICIENT** (9/14 wrong builds survived) → fix wave `e8aa8f4` → build `7acbef4` → closure `0e99c1e` → **cold audit GO** `2b23862` (every predicted gate number reproduced exactly; freeze verified 22×) → audit fix wave `675aab5`. **Full suite 7571 passed / 0 failed**, lead-verified independently; typecheck 162 clean; ruff clean. Receipts + 3 RULINGS files: `receipts/2026-07-26-packet11i-build/`. ⚠ **OPEN, carried:** #241 (intermittent 2-of-114 contention STOP, mechanism unknown — 30 frozen runs green but on a DIFFERENT tree; instrument `scripts/contention_hunt.sh`) · #242 (connection-glue duplication; a naive extraction blinds the enumeration covering it) · 4 dangling `REPORT-*.md` citations pre-dating this packet, one of them in the store reference (#157's population). ⚠ **11-ii MUST INHERIT (audit R2):** the slice has ZERO production consumers, so the store law is satisfied only VACUOUSLY — wiring a writer without its `ensure_ready` gives an undeclared-table conflict storm, and for `lease` an undeclared-table READ THAT RAISES. **11-i-b not started** · task ledger row `1586bbc0` (claimed at kickoff) |
+| 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE). **11-i-a MERGED `c7983e8` 2026-07-27 (worktree removed; its dark machinery rides the deployed `e91e37b9` image UNSERVED — by design, serving untouched until 11-ii).** History: contract `d6c0dd4` (branch `pkt11-i-a-floor-machinery`) → adversary **INSUFFICIENT** (9 of 14 wrong builds survived at 143/0) → fix wave `e8aa8f4`: **186 collected**, satisfiability **186 / 925 / 561, all 0-failed** against a reference build, lead-verified. Deps adopted `38c9774`; **#198** consolidated `ea7406e`; **#238 closed** (`docs/eval` now gated, 190 tests). Rulings: `receipts/2026-07-26-packet11i-build/RULINGS-2026-07-26-{bootstrap,contract-11ia,adversary}.md`. contract `d6c0dd4` → adversary **INSUFFICIENT** (9/14 wrong builds survived) → fix wave `e8aa8f4` → build `7acbef4` → closure `0e99c1e` → **cold audit GO** `2b23862` (every predicted gate number reproduced exactly; freeze verified 22×) → audit fix wave `675aab5`. **Full suite 7571 passed / 0 failed**, lead-verified independently; typecheck 162 clean; ruff clean. Receipts + 3 RULINGS files: `receipts/2026-07-26-packet11i-build/`. ⚠ **OPEN, carried:** #241 (intermittent 2-of-114 contention STOP, mechanism unknown — 30 frozen runs green but on a DIFFERENT tree; instrument `scripts/contention_hunt.sh`) · #242 (connection-glue duplication; a naive extraction blinds the enumeration covering it) · 4 dangling `REPORT-*.md` citations pre-dating this packet, one of them in the store reference (#157's population). ⚠ **11-ii MUST INHERIT (audit R2):** the slice has ZERO production consumers, so the store law is satisfied only VACUOUSLY — wiring a writer without its `ensure_ready` gives an undeclared-table conflict storm, and for `lease` an undeclared-table READ THAT RAISES. **11-i-b not started** · task ledger row `1586bbc0` (claimed at kickoff) |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + ONE resolver + a typed auth-header seam, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 →0.55 | — (independent) | **✅ DONE + DEPLOYED 2026-07-28** (`915b7b8`; image `e91e37b9`). Suite **7980/0**, typecheck 0 across **five** members, ruff, smoke all-PASS. Contract 11 revisions, adversary **SUFFICIENT after 5 passes**, 43 rulings. **12 defects green at every gate**, incl. a live production leak (#235), an instrument testing a COPY of its own gate, and 4 scanners silently narrowed. Mints **`lorerunes`** (4th member, the home for shared code). #222 #226 #227 #233 #235 #251 closed. |
 | 43 | **DERIVATION-SOURCE UNIFICATION** (design pass FIRST) — `_derive_nodes` reads the caller's chunk set while `_derive_edges` re-reads the file fresh; a save between them makes the fragment RELATE from a node it never created. **Then** the `refers`/`answers_to` `ENFORCED` flip, which was blocked ONLY on this. + #248 `_bare_id` ONE-IMPLEMENTATION (separable at kickoff) | — | L | 0.20 | — (independent) | **open — minted 2026-07-26** (operator ruled the ROOT fix over the two local patches). Split out of 04; store facts already measured on 3.2.1 — do NOT re-probe. **DESIGN problem → Opus author who attacks its own design, never a builder.** |
@@ -1177,3 +1181,10 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   #242→pool 25 (extraction-design, needs owner); #233's 42-close leaves a count-line render
   residual in 28; #241 recorded as #159's SECOND instance (watch). State refreshed: deployed =
   `e91e37b9` (42; 11-i security wave DISCHARGED); 11-i-a ready-to-merge, unmerged worktree.
+- 2026-07-27 · **CORRECTION (operator caught it): 11-i-a is MERGED, not "ready-to-merge".** The
+  entry above and sweep #2's state text repeated the 11-i TABLE ROW, which was never flipped —
+  while the Log's own `c7983e8` entry and git both said MERGED (all four build commits are
+  ancestors of HEAD; worktree removed; the dark machinery is inside the deployed `e91e37b9`
+  image, unserved by design). Also corrected: the branch HAS an upstream (pushed through
+  `d5b6ad8`). Row + state block fixed. The lesson is the inherited-number law applied to STATE:
+  a status cell is a claim someone wrote, git is the measurement — re-derive before repeating.
