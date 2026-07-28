@@ -76,6 +76,7 @@ from loremaster.store._txn import (
     SurrealStoreError,
     _SurrealConnection,
 )
+from loremaster.store.surreal_schema import TASK_TABLE
 from loremaster.tasks import (
     ClaimResult,
     IllegalTransitionError,
@@ -231,6 +232,85 @@ async def _derive_unknown_id(task_ledger: TaskLedger) -> str:
     """A never-minted, same-shaped id (via a throwaway real task)."""
     scratch_id = await _create(task_ledger, SUBJECT_WATCHER, DESCRIPTION_WATCHER)
     return _mutate_into_unknown_id(scratch_id)
+
+
+async def _seed_row_naming_a_never_minted_blocker(
+    task_ledger: TaskLedger,
+) -> tuple[str, str]:
+    """RAW-SEED an open task whose ``blocked_by`` names an id nothing ever minted.
+
+    Returns ``(dependent_id, never_minted_blocker_id)``.
+
+    ⚠ **WHY RAW, AND WHY THIS IS A STRONGER FIXTURE THAN THE ONE IT REPLACES.**  Operator
+    ruling R3 (packet 04b-1, 2026-07-28) makes ``create_task`` REFUSE a blocked_by entry
+    naming no real task — a deliberate live-verb change, *"a loud refusal replaces a silent
+    black hole"*.  The two pins that use this helper were written before that change and
+    built their fixture through ``create_task``; left alone they would certify the OLD
+    world, which is the failure class ``CLAUDE.md`` names outright (*"a suite can be green
+    BECAUSE it still asserts the corpse"*).
+
+    But the READ property they pin — an unresolvable blocker is fail-CLOSED — does not go
+    away with the write.  **Every row written before this packet lived under a FAIL-OPEN
+    ``blocked_by``**, so a long-lived store holds exactly these rows and nothing will ever
+    clean them (#236 is ruled OUT).  A fixture that can only produce rows the NEW guard
+    allows is a fixture that guarantees the one condition under which the bug is invisible —
+    the #107/#131 shape, verbatim.  Raw-seeding keeps the pins pointed at production's real
+    state instead of at the test environment's fiction.
+
+    Backend-agnostic on purpose: this module's contract runs against BOTH the real
+    SurrealDB-backed ledger and ``FakeTaskLedger``, and the parity is the point.  The real
+    branch writes through the ledger's OWN connection (no ``SurrealEnv`` is exposed by the
+    fixture, and ``measure_store_traffic`` establishes the same access idiom); the fake
+    branch writes into the in-memory table its ledger reads.  Neither branch goes near the
+    guard being bypassed, which is what makes this a legacy row rather than a hole in R3.
+    """
+    real_blocker = await _create(task_ledger, SUBJECT_MEMORY, DESCRIPTION_MEMORY)
+    never_minted_blocker = _mutate_into_unknown_id(real_blocker)  # same shape, never created
+    dependent_id = f"legacy_{uuid4().hex}"
+    now = datetime.now(UTC)
+
+    if isinstance(task_ledger, TaskLedger):
+        connection = await task_ledger._ensure_connection()  # noqa: SLF001 - the legacy seed
+        await connection.query(
+            f"CREATE type::record('{TASK_TABLE}', $id) CONTENT $content",
+            {
+                "id": dependent_id,
+                "content": {
+                    "subject": SUBJECT_LEDGER,
+                    "description": DESCRIPTION_LEDGER,
+                    "status": STATUS_OPEN,
+                    "blocked_by": [never_minted_blocker],
+                    "provenance": {
+                        "created_by": "legacy",
+                        "created_at": now.isoformat(),
+                        "events": [],
+                    },
+                    "created_at": now,
+                },
+            },
+        )
+    else:
+        fake = cast(FakeTaskLedger, task_ledger)
+        fake.db.tasks[dependent_id] = Task(
+            id=dependent_id,
+            subject=SUBJECT_LEDGER,
+            description=DESCRIPTION_LEDGER,
+            status=STATUS_OPEN,
+            owner=None,
+            claimed_at=None,
+            blocked_by=[never_minted_blocker],
+            provenance={"created_by": "legacy", "created_at": now.isoformat(), "events": []},
+            superseded_by=None,
+            created_at=now,
+        )
+
+    persisted = await task_ledger.get_task(dependent_id)
+    assert persisted.blocked_by == [never_minted_blocker], (
+        f"the legacy seed did not land its blocked_by column ({persisted.blocked_by!r}), so "
+        f"the pins using it would assert the fail-closed property about a task that has no "
+        f"unresolvable blocker at all"
+    )
+    return dependent_id, never_minted_blocker
 
 
 # A factory that builds one more ready ``TaskLedger`` on the SAME database — the
