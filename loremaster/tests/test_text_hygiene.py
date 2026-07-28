@@ -275,3 +275,157 @@ class TestNoRetiredBareVerbsInRuntimeStrings:
             "runtime string names a retired bare verb with no living code behind "
             "it:\n" + "\n".join(offenders)
         )
+
+
+# ---------------------------------------------------------------------------
+# Repo-wide BYTE hygiene: no tracked text file may carry a NUL.
+#
+# Provenance (2026-07-28, packet 11-i-b kickoff, scout-11ib-1 found it BY
+# ACCIDENT): `REPORT-contract-11ia-1-fixwave.md` carried a single stray NUL —
+# in a sentence *about* NUL escaping, where the author meant to type the
+# literal text ``\x00``. One byte, and `file(1)` reclassifies the whole
+# archived receipt as ``data``: **plain `grep` then SKIPS it, silently.**
+#
+# Why that is a defect and not a curiosity. This repo's #1 audited failure
+# class is the rename/reshape sweep, and its ruled instrument is a BARE,
+# anchor-free grep over the tree — with archived receipts explicitly in scope,
+# because a receipt is a durable, citable address (the #152 archiving law).
+# A file grep cannot see is a file the sweep cannot see, and the sweep's whole
+# job is exhaustiveness. Measured bound, stated honestly rather than inflated:
+# lore's index DID ingest this file (10 chunks), so the RAG was never blind —
+# the damage is confined to the grep fallback, which is precisely the path
+# CLAUDE.md reserves for "rename-exhaustiveness where one missed site
+# compiles-but-breaks".
+#
+# THE INSTRUMENT LESSON, paid for in this very session: the lead's first
+# repo-wide scan used ``grep -qP '\x00'`` and reported ZERO hits — a FALSE
+# NEGATIVE, because grep classifies such a file as binary and the -q probe
+# came back empty-handed. A negative result from an uncontrolled probe is
+# worth nothing (CLAUDE.md: "a probe needs a control"). Hence
+# ``test_the_detector_can_actually_see_a_NUL`` below: this pin refuses to
+# report a clean tree until it has demonstrated, in the same run, that it can
+# see a NUL it planted itself.
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Directories that legitimately hold non-source bytes. Kept SHORT and boring on
+# purpose: this is the fallback path only. The authoritative enumeration is
+# ``git ls-files`` (a DERIVED list, per the repo's registration-sites law —
+# never a hand-maintained one); the walk exists so the pin still RUNS where the
+# git BINARY is absent, which in this project is not hypothetical (#131: the
+# deployed image had no git, and the OSError was swallowed for months).
+_WALK_SKIP_DIRS: frozenset[str] = frozenset(
+    {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+)
+
+# Suffixes whose files are legitimately binary. A NUL in these is not a defect.
+_BINARY_SUFFIXES: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".gz", ".whl", ".so", ".pyc", ".onnx", ".bin"}
+)
+
+
+def _tracked_text_files() -> tuple[list[Path], str]:
+    """Every repo file that is meant to be plain text, plus the instrument used.
+
+    Returns ``(paths, instrument)`` so the failure message can say HOW the set
+    was derived — a count with no named instrument is the kind of claim this
+    repo re-derives rather than trusts.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is not None:
+        completed = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            paths = [
+                _REPO_ROOT / name
+                for name in completed.stdout.split("\0")
+                if name and (_REPO_ROOT / name).is_file()
+            ]
+            return (
+                [p for p in paths if p.suffix.lower() not in _BINARY_SUFFIXES],
+                "git ls-files",
+            )
+
+    walked: list[Path] = []
+    for path in _REPO_ROOT.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in _WALK_SKIP_DIRS for part in path.parts):
+            continue
+        if path.suffix.lower() in _BINARY_SUFFIXES:
+            continue
+        walked.append(path)
+    return walked, "filesystem walk (git unavailable)"
+
+
+class TestNoNulBytesInTrackedTextFiles:
+    """A tracked text file with a NUL is invisible to the sweep instrument."""
+
+    def test_the_detector_can_actually_see_a_NUL(self, tmp_path: Path) -> None:
+        """POSITIVE CONTROL — the clean-tree verdict below means nothing without it.
+
+        The lead's first attempt at this scan (``grep -qP '\\x00'``) returned a
+        confident, wrong "no NUL anywhere" while a NUL sat in a tracked file.
+        This test plants one and demands the detector find it, so a clean result
+        from the sibling test is a MEASUREMENT rather than a hope.
+        """
+        planted = tmp_path / "planted.md"
+        planted.write_bytes(b"ordinary prose\x00more prose\n")
+        assert b"\x00" in planted.read_bytes(), (
+            "the control file does not contain the NUL it was built to contain -- "
+            "the instrument cannot be trusted in either direction"
+        )
+
+        clean = tmp_path / "clean.md"
+        clean.write_bytes(b"ordinary prose, no NUL\n")
+        assert b"\x00" not in clean.read_bytes(), (
+            "the detector reports a NUL in a file that has none -- it would flag "
+            "the whole tree and teach everyone to switch it off"
+        )
+
+    def test_no_tracked_text_file_contains_a_NUL(self) -> None:
+        paths, instrument = _tracked_text_files()
+
+        # Coverage is a CHECKED variable, not an assumption: a guard is an
+        # invariant only over the files it actually READS. A broken enumeration
+        # would otherwise pass vacuously and read as "the tree is clean".
+        assert len(paths) > 200, (
+            f"the file enumeration ({instrument}) found only {len(paths)} text "
+            f"files under {_REPO_ROOT}; this repo has far more, so the scan is "
+            f"broken and its clean verdict would be vacuous"
+        )
+
+        offenders: list[str] = []
+        for path in paths:
+            try:
+                blob = path.read_bytes()
+            except OSError:  # pragma: no cover - unreadable file is not this pin's business
+                continue
+            count = blob.count(b"\x00")
+            if count:
+                index = blob.index(b"\x00")
+                line = blob[:index].count(b"\n") + 1
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}: {count} NUL byte(s), "
+                    f"first at line {line}"
+                )
+
+        assert not offenders, (
+            f"a tracked text file carries a NUL byte, which makes `file(1)` call it "
+            f"`data` and makes plain `grep` SKIP IT SILENTLY -- so this repo's ruled "
+            f"rename-sweep instrument (a bare, anchor-free grep over the tree, archived "
+            f"receipts included) goes blind on it without saying so. Enumerated by "
+            f"{instrument}; {len(paths)} files scanned.\n"
+            + "\n".join(offenders)
+            + "\n\nFix: replace the raw NUL with the text that was meant (usually the "
+            "literal escape `\\x00`). If a file must genuinely hold NULs, give it a "
+            "binary suffix or add that suffix to _BINARY_SUFFIXES -- deliberately, in a "
+            "diff a reviewer can see."
+        )
