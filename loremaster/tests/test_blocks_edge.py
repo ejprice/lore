@@ -6131,6 +6131,137 @@ class TestTheBackfillIsIDEMPOTENT:
         )
 
 
+class TestALEGACYCycleIsMINTEDAndRECORDED:
+    """RED today.  ⛔ **ESCALATION ESC-4, RULED READING A (lead, 2026-07-28).**
+
+    A legacy row can name itself, or two legacy rows can name each other: ``blocked_by`` was
+    FAIL-OPEN at write, and the acyclicity guard R3 adds is a WRITE-time guard for NEW
+    writes.  R11 said nothing about what the backfill does with such rows, so this contract's
+    author flagged it and deliberately did NOT pin either reading — pinning one would have
+    made a build that defensibly chose the other RED on a correct implementation.
+
+    **The ruling, and its reason, because the reason is the load-bearing half:** the backfill
+    **MINTS** legacy cycles and **RECORDS** them.  Refusing them would break
+    **edge ≡ ``blocked_by``** on exactly the rows the invariant is hardest to reason about,
+    and ``+collect`` terminates on cycles (probe P4).  Verbatim: *"a legacy cycle is a
+    pre-existing DATA defect; the edge set must MIRROR reality, not quietly diverge from it —
+    a divergence the invariant asserts does not exist is a false clear in the store itself.
+    The RECORD is what stops it being silent."*
+
+    ⚠ This store is built in its own database rather than in ``legacy_column_store``, so the
+    acyclic fixture every other leg in SECTION K depends on stays acyclic and says so.
+    """
+
+    @staticmethod
+    async def _cyclic_legacy_store(
+        connection: SurrealConnection, env: SurrealEnv
+    ) -> tuple[str, str]:
+        """Two legacy rows that block EACH OTHER, columns only, no edges.
+
+        The closing dependency is written by a RAW ``UPDATE``, and it has to be: after this
+        packet lands, no public verb will mint it (the cycle guard refuses), and ``ENFORCED``
+        could not carry it as an edge at creation time anyway (adversary MP-4a — the closing
+        edge points at a task that does not exist yet).  Production holds such rows because
+        they were legal when they were written.
+        """
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        first = f"cycle_first_{uuid.uuid4().hex}"
+        second = f"cycle_second_{uuid.uuid4().hex}"
+        await _seed_legacy_task(connection, first, blocked_by=[], status=STATUS_OPEN)
+        await _seed_legacy_task(connection, second, blocked_by=[first], status=STATUS_OPEN)
+        await run(
+            connection,
+            f"UPDATE type::record('{TASK_TABLE}', $id) SET blocked_by = $blocked_by",
+            {"id": first, "blocked_by": [second]},
+        )
+        return first, second
+
+    async def test_a_legacy_CYCLE_is_MINTED_so_the_edge_set_MIRRORS_the_COLUMN(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The ruled behaviour, as an EXACT set — a build that REFUSED the cycle would
+        leave two rows whose column says "blocked" and whose edge set says "not blocked",
+        which is the divergence the mirror invariant asserts cannot happen.
+        """
+        connection, env = migration_db
+        first, second = await self._cyclic_legacy_store(connection, env)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert await _blocks_edge_pairs(connection) == {(second, first), (first, second)}, (
+            f"the backfill did not mirror the legacy CYCLE onto the edge table (ESC-4, ruled "
+            f"reading A). Both directions must be present: {first!r} is blocked_by "
+            f"{second!r} AND {second!r} is blocked_by {first!r}. A build that refused the "
+            f"cycle leaves the column and the edge set disagreeing on exactly the rows the "
+            f"invariant is hardest to reason about. "
+            f"got={sorted(await _blocks_edge_pairs(connection))}"
+        )
+
+    async def test_the_legacy_CYCLE_is_RECORDED_never_silent(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ *"The RECORD is what stops it being silent."*  Minting a cycle is the ruled
+        behaviour AND a pre-existing data defect; an operator who is never told cannot fix
+        the rows, and the next reader rediscovers it from a stuck task.
+        """
+        connection, env = migration_db
+        first, second = await self._cyclic_legacy_store(connection, env)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        loud = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+        assert [text for text in loud if first in text and second in text], (
+            f"the backfill minted a legacy CYCLE and said NOTHING at WARNING or above. The "
+            f"record must name both members ({first!r}, {second!r}) so an operator can "
+            f"repair the data (ESC-4). loud records={loud!r}"
+        )
+
+    async def test_the_TRAVERSAL_TERMINATES_over_a_backfilled_legacy_cycle(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The half of the ruling that says minting is SAFE: *"``+collect`` terminates on
+        cycles (probe P4)."*  Pinned as a MEASUREMENT rather than inherited as a claim.
+
+        ⚠ **STATED BOUND, so this pin does not over-claim:** it asserts that the read
+        RETURNS, that it reaches the other member, and that it DEDUPLICATES.  It deliberately
+        does NOT assert ``truncated`` or whether the ROOT appears in its own reach — the
+        first depends on how a build derives truncation over a cyclic walk and the second on
+        whether ``+inclusive`` is in play, and neither is ruled. Pinning an unruled value
+        here is the C-DEF risk ESC-4 was escalated to avoid.
+        """
+        connection, env = migration_db
+        first, second = await self._cyclic_legacy_store(connection, env)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+            result = await _transitive_blockers(ledger, first)
+        finally:
+            await ledger.close()
+        assert second in result.ids, (
+            f"the traversal over a backfilled legacy cycle did not reach {second!r}, which "
+            f"{first!r}'s column names as its blocker: {sorted(result.ids)}"
+        )
+        assert len(result.ids) == len(set(result.ids)), (
+            f"the closure over a cycle returned DUPLICATES, so it is walking the cycle "
+            f"rather than collecting it: {result.ids}"
+        )
+
+
 class TestTheBackfillRoutesThroughTheSHAREDExistencePolicy:
     """RED today.  ⛔ **L3 applied to R11** — *"pre-filtered through the L3 existence
     policy"*, proved the only way sharing can be proved: by MUTATION.
@@ -6463,7 +6594,7 @@ class TestTheBlockerPreCheckFAILSCLOSEDWhenItsOwnREADBreaks:
             "fail-closed leg above is measuring a build that refuses everything"
         )
 
-    async def test_a_FAILED_existence_read_is_NOT_served_as_the_PHANTOM_refusal(
+    async def test_a_FAILED_existence_read_is_CLASSIFIED_not_served_as_the_PHANTOM_refusal(
         self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
         """⛔⛔ The byte diff, and the reason ``{error}`` is a separate mode from ``{empty}``.
@@ -6473,26 +6604,48 @@ class TestTheBlockerPreCheckFAILSCLOSEDWhenItsOwnREADBreaks:
         *"ran-and-empty silence is a TRUE clear; check-failed silence is a false one wearing
         the same bytes."*  A caller told its blocker does not exist goes and creates a
         duplicate; a caller told the store is broken retries.
+
+        ⚠ **ESCALATION ESC-3, RULED READING B (lead, 2026-07-28, on this wave's report):
+        a failed pre-check is CLASSIFIED into the ledger's vocabulary, not merely
+        distinguishable.**  This contract's author had pinned only the weaker property and
+        recommended *"B eventually, A now"* out of C-DEF caution — a contract must not invent
+        a requirement a correct build fails.  The ruling dissolves that risk: a correct build
+        now classifies, so the type assertion below is satisfiable by construction.  Ruling,
+        verbatim: *"T2 bans a raw ``(unspecified rejection)`` reaching a caller, and a store
+        failure during the pre-check DOES reach one; that it is not caller-provoked changes
+        who caused it, not what the caller can do with it."*
+
+        ⚠ The stub raises with the seam's OWN laundered text rather than a friendly
+        sentence, so the hygiene assertion measures something: a build that re-raises the
+        store's error verbatim fails it, and a build that invents a nicer message could pass
+        a check written against a nicer stub.
         """
         ledger, env, real_blocker = task_ledger
         before = await _task_row_count_via_ADMIN(env)
+        unspecified, server_log_hint = _engine_hygiene_markers()
 
         async def _rejecting(*_args: Any, **_kwargs: Any) -> Any:
-            raise SurrealStoreError("the existence read was rejected by the engine")
+            raise SurrealStoreError(
+                f"statement 1 of 1 was rejected ({unspecified}); {server_log_hint}"
+            )
 
         _degrade_every_STORE_seam(monkeypatch, _rejecting)
-        served = await _served_outcome(self._create_naming(ledger, real_blocker))
-        assert served.startswith("RAISED "), (
-            f"a create whose blocker-existence read was REJECTED returned normally: "
-            f"{served!r}"
-        )
-        assert _served_task_refusal(real_blocker) not in served, (
+        with pytest.raises(TaskLedgerError) as caught:
+            await self._create_naming(ledger, real_blocker)
+        message = str(caught.value)
+        assert _served_task_refusal(real_blocker) not in message, (
             f"a create whose existence read FAILED was served the PHANTOM refusal — the "
             f"sentence that asserts, as a fact, that {real_blocker!r} names no task row. It "
             f"does name one; the check simply never ran. The caller acts on that by minting "
             f"a duplicate blocker. Two different worlds must not render the same bytes: "
-            f"{served!r}"
+            f"{message!r}"
         )
+        for marker in (unspecified, server_log_hint):
+            assert marker not in message, (
+                f"the failed pre-check served the store's hygiene text {marker!r} to the "
+                f"caller (ESC-3, ruled reading B). An agent holding this cannot tell its own "
+                f"bad input from a broken tool: {message!r}"
+            )
         assert await _task_row_count_via_ADMIN(env) == before, (
             "a create whose blocker-existence read FAILED still wrote a task row"
         )
@@ -6832,6 +6985,13 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #   ⚠ ``$L::test_a_store_whose_blockers_ALL_RESOLVE_records_NO_skip`` must stay GREEN — it
 #   fires on the OPPOSITE error (recording a skip that never happened), so a proof that
 #   reddened both would have proved the two legs are one leg.
+#
+# PROOF 10d — ESC-4 (lead-ruled 2026-07-28), the LEGACY CYCLE.  Make the backfill REFUSE a
+#   cycle instead of minting it (reading B, which the ruling rejected).  DECLARED RED (3):
+#   every leg of C="$F::TestALEGACYCycleIsMINTEDAndRECORDED".
+#   ⚠ Every leg of $K/$L/$M must stay GREEN — SECTION K's fixture is ACYCLIC by construction,
+#   so a cycle-refusing backfill may not move it. If one reddens, the refusal is firing on
+#   acyclic rows and the two fixtures are not independent.
 #
 # PROOF 9 — R9, the surgical widening.  Mutate the strict-parameter guard back to ONE
 #   sentence covering both parameters:

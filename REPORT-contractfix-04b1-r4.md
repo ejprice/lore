@@ -17,7 +17,8 @@ number below was DERIVED here by collecting/running, including numbers inherited
 
 - **state: done-with-deviations.** Every worklist item A–D dispositioned in §RESIDUALS; one
   deviation, four escalations, one finding filed.
-- **A — RULING R11 (the blocker): ✅ PINNED**, SECTION K, **20 pins** across six classes:
+- **A — RULING R11 (the blocker): ✅ PINNED**, SECTION K, **23 pins** across seven classes
+  (20 from the worklist, +3 from the lead's ESC-4 ruling on legacy cycles):
   the exact-set backfill, the byte diff against the un-backfilled world, the terminal-row
   leg, the phantom skip + its RECORD + the no-false-skip control, the naked-backfill
   BASELINE + its positive control, idempotence (two legs, opposite failure modes), and the
@@ -51,18 +52,22 @@ number below was DERIVED here by collecting/running, including numbers inherited
   live traceback) → **`keep_with_trigger`**: caught by MESSAGE rather than by TYPE, because
   a typed import of an SDK error class in a test that must stay collectable under an SDK
   bump is the #133 shape; re-open if the SDK stabilises its error taxonomy.
-- **decisions-needed (4):** ESC-1 what "RECORDED" means for a phantom skip · ESC-2 the
-  non-raising probe R11's pre-filter needs · ESC-3 whether a failed pre-check must be
-  LAUNDERED as well as distinguishable · ESC-4 legacy `blocked_by` CYCLES, on which R11 is
-  silent. All four in §ESCALATIONS with both readings and a recommendation.
+- **decisions-needed: NONE OUTSTANDING.** I raised four (ESC-1..ESC-4) with both readings
+  and a recommendation each; **the lead RULED all four at `92577f1` while this wave was
+  still running**, and **I have implemented the two that changed the contract** — ESC-3
+  (reading B: a failed pre-check is CLASSIFIED, not merely distinguishable) and ESC-4
+  (reading A, NOW PINNED: the backfill MINTS legacy cycles and RECORDS them). §ESCALATIONS
+  carries each escalation, its ruling, and what changed.
 - **Pin counts, DERIVED by collecting `70cc5a4`'s files and mine (never inherited):**
-  `test_blocks_edge.py` **149 → 172** · `test_query_tasks_bounded.py` **38 → 40**.
-  **Contract total 187 → 212 (+25).**
+  `test_blocks_edge.py` **149 → 175** · `test_query_tasks_bounded.py` **38 → 40**.
+  **Contract total 187 → 215 (+28)** — 25 from worklist A–D, plus 3 from the lead's ESC-4
+  ruling.
 - **DECLARED vs OBSERVED RED, diffed BOTH ways:** node ids declared from `--collect-only`
   and written to disk **before any run**, measured in a provenance-asserted scratch copy
-  against pristine `70cc5a4` production. **18 declared RED → 18 fired · 0 unexpected reds ·
-  0 declared-reds-that-stayed-green · 0 declared-greens-that-went-red** (7 declared GREEN,
-  7 green). §DECLARED.
+  against pristine `70cc5a4` production, and RE-DECLARED + RE-RUN after the lead's ESC-3/4
+  ruling added pins. **Final: 22 declared RED → 22 fired · 0 unexpected reds ·
+  0 declared-reds-that-stayed-green · 0 declared-greens-that-went-red** (6 declared GREEN,
+  6 green). §DECLARED.
 - **SATISFIABILITY RECEIPT:** *(pending — §X-SAT)*
 - **Gates (repo tree, unpiped, exits captured separately):** `./scripts/typecheck.sh`
   **EXIT=0** · `uv run ruff check .` **EXIT=0**. §GATES.
@@ -255,12 +260,18 @@ DECLARED-GREEN THAT WENT RED:       (none)
 declared red=18   observed red=18
 ```
 
-The 7 declared-GREEN pins are the controls and the two `{empty}`-mode measurements: the
+The 6 declared-GREEN pins are the controls and the two `{empty}`-mode measurements: the
 legacy-world anti-vacuity leg, the naked-backfill positive control, the
-nothing-to-backfill positive control, both store-seam legs, the pre-check positive control,
-and the `{error}`-mode byte diff (green pre-build **because a raw store error already differs
-from a phantom refusal** — its discrimination is against a WRONG BUILT world that catches and
-converts, which is what a forgery pin is for).
+nothing-to-backfill positive control, both store-seam legs, and the pre-check positive
+control.
+
+⚠ **ONE PIN MOVED FROM GREEN TO RED BECAUSE OF THE LEAD'S RULING, and that is the whole
+point of escalate-then-pin.** Under my recommended reading A, the `{error}`-mode leg was
+GREEN pre-build (a raw store error already differs from a phantom refusal, so it
+discriminated only against a WRONG BUILT world). Under the ruled reading B it asserts
+`pytest.raises(TaskLedgerError)` — measured: `SurrealStoreError` is NOT a subclass of
+`TaskLedgerError` (both descend from `RuntimeError` independently), so the pin is now RED at
+`70cc5a4` and discriminates against today's tree as well.
 
 ---
 
@@ -282,6 +293,32 @@ i.e. a contract that fails its own gate before a builder sees it (finding #133's
 Routed through a `**filters: Any` helper (`_served_rows`), which is exactly why `_ids`
 already existed in that shape.
 
+### RED honesty — the WHOLE contract at pristine `70cc5a4`
+
+```
+$ uv run pytest -q -n auto --show-capture=no \
+      loremaster/tests/test_blocks_edge.py loremaster/tests/test_query_tasks_bounded.py
+152 failed, 63 passed in 8.45s        (PYTEST_EXIT=1)
+  test_blocks_edge.py           142 RED / 33 GREEN   (of 175)
+  test_query_tasks_bounded.py    10 RED / 30 GREEN   (of  40)
+```
+
+⚠ **AN INHERITED NUMBER THAT DID NOT SURVIVE RE-DERIVATION, disclosed rather than
+quietly reconciled.** Subtracting my own 22 declared reds gives the pre-existing split
+**122 / 8**. `REPORT-contractfix-04b1-r3.md` §GATES records **122 / 9** — the
+`test_blocks_edge.py` half matches exactly, the `test_query_tasks_bounded.py` half is one
+LOWER here. The baselines differ (r3 measured at `5a2dca9`; this is `70cc5a4`, which carries
+r3's own committed contract plus two merges), so drift is the likely explanation and I did
+NOT chase it — but *"likely"* is not a measurement, and a count nobody re-derives is how a
+wrong number survives. The eight pre-existing bounded reds, listed so the next reader can
+diff rather than re-guess: `TestLimitIsLEGALForQueryAtTheToolSeam::test_SINCE_on_action_
+QUERY_is_STILL_REFUSED_…` · `TestTheBLOCKEDPathIsBoundedToo::test_rows_read_does_NOT_grow_
+when_BLOCKED_is_also_asked[owner-filter]` and `[status-filter]` ·
+`TestTheCapAppliesToTheANSWERNotTheCandidateScan::test_a_capped_BLOCKED_query_…` and
+`::test_a_SHORT_answer_means_the_scan_was_EXHAUSTED_…` ·
+`TestTheLimitIsPUSHEDINTOTheStatement::test_query_tasks_ACCEPTS_a_limit_…`,
+`::test_the_LIMIT_bounds_the_ROWS_READ_…` and `::test_the_TOOL_SEAM_passes_the_limit_…`.
+
 ---
 
 ## §X-SAT — SATISFIABILITY RECEIPT
@@ -290,7 +327,13 @@ already existed in that shape.
 
 ---
 
-## §ESCALATIONS — four, each with both readings written down
+## §ESCALATIONS — four raised, ALL FOUR RULED by the lead at `92577f1`, two implemented here
+
+⚠ **READ THIS FIRST: the lead ruled these WHILE THIS WAVE WAS STILL RUNNING**, on an earlier
+draft of this report, and committed the ruling into `docs/plans/v2/04-comms-blocks-footer.md`
+(§*R11's FOUR ESCALATIONS — RULED*). Each escalation below therefore carries the reading I
+recommended, the RULING, and **what I changed in response**. ESC-1 and ESC-2 confirmed what
+was already pinned; **ESC-3 and ESC-4 changed the contract and are implemented.**
 
 ### ESC-1 — what does "RECORDED" mean for a phantom skip?
 
@@ -304,10 +347,11 @@ R11 says *"phantom skips are RECORDED, never silent"* and does not say where.
   can act on it), but it retypes a method five test doubles implement and that DI calls at
   boot for effect, not for value.
 
-**Recommendation: A**, which is what is pinned. The pin asserts over the record's WHOLE
-surface (message AND `extra`) so the builder's event spelling is its own; only *"both ids
-reach a record at WARNING or above"* is fixed. If the operator prefers B, the change is one
-assertion in `test_the_phantom_SKIP_is_RECORDED_never_silent`.
+**Recommendation: A.** ✅ **RULED A.** No contract change. The lead's rider is worth carrying
+into the builder brief: *"the log serves the OPERATOR; the agent-facing bound is §C's pinned
+scope statement"* — i.e. the two halves are deliberately on different surfaces, and a builder
+that tries to serve the skip to the AGENT through the traversal result would be re-opening
+the exact-field-set ban (`TestTheResultIsSELFDESCRIBING`).
 
 ### ESC-2 — R11's pre-filter needs a NON-RAISING probe the policy does not have
 
@@ -322,7 +366,9 @@ entry point (`reject_unknown_rows`) **raises**; a filter needs the SET of ids th
 
 The contract does not pin the NAME (`_patch_every_shared_policy_COROUTINE` is derived), so
 both readings satisfy it; the pin only requires that the decision be made **inside that
-module**. Flagged because it is a design decision the builder should not make silently.
+module**. ✅ **RULED A** — *"one implementation, two callers, inside the module L3 already
+names"*; B *"makes an exception the control flow of a migration"*. No contract change: the
+derived, name-free pin already admits A and requires the module.
 
 ### ESC-3 — must a FAILED pre-check be LAUNDERED as well as distinguishable?
 
@@ -337,10 +383,20 @@ T2's table — but it does reach a caller.
   correct build could be RED on it — the C-DEF class two prior waves already hit.
 * **Reading B: it must be classified into the ledger's vocabulary**, like every other T2 door.
 
-**Recommendation: B eventually, A now** — and the honest reason is that B is one line in a
-builder's diff and zero lines in this contract, so it costs nothing to rule it later. If the
-operator rules B, add a `TaskLedgerError` type assertion to
-`test_a_FAILED_existence_read_is_NOT_served_as_the_PHANTOM_refusal`.
+**Recommendation: B eventually, A now.** ✅ **RULED B, AND IMPLEMENTED.** The lead's reason
+is the part worth keeping: *"the author recommended 'B eventually, A now' out of well-placed
+C-DEF caution — a contract must not invent a requirement a correct build fails. That caution
+does not apply once the requirement is RULED: a correct build now classifies, so the pin is
+satisfiable by construction."*
+
+**CHANGED:** the pin is renamed
+`test_a_FAILED_existence_read_is_CLASSIFIED_not_served_as_the_PHANTOM_refusal` and now
+asserts `pytest.raises(TaskLedgerError)` plus the absence of BOTH hygiene markers. Its stub
+was also strengthened to raise the seam's OWN laundered text rather than a friendly sentence
+— otherwise the hygiene assertion would have been measuring a string the path never produces.
+**Measured consequence:** `SurrealStoreError` is not a subclass of `TaskLedgerError` (both
+descend from `RuntimeError` independently), so the pin moved from GREEN to **RED at
+`70cc5a4`** — it now discriminates against today's tree, not only against a wrong built one.
 
 ### ESC-4 — legacy `blocked_by` CYCLES, on which R11 is silent
 
@@ -352,10 +408,22 @@ fail-open, and the acyclicity guard R3 adds is a WRITE-time guard for NEW writes
   `+collect` terminates on cycles (probe P4).
 * **Reading B: the backfill refuses them** and records the skip like a phantom.
 
-**Recommendation: A** — but **NOT PINNED EITHER WAY, deliberately**: pinning A would make a
-build that (defensibly) chose B RED on a correct implementation. The fixture is acyclic and
-says so. This is the one place in SECTION K where I chose an unpinned flag over a pin, and
-the reason is the C-DEF rule, not indifference.
+**Recommendation: A** — and it was **NOT PINNED EITHER WAY, deliberately**: pinning A while
+it was unruled would have made a build that defensibly chose B RED on a correct
+implementation. ✅ **RULED A, AND NOW PINNED.**
+
+**CHANGED:** new class `TestALEGACYCycleIsMINTEDAndRECORDED`, 3 legs, in its own database so
+SECTION K's acyclic fixture stays acyclic: the edge set MIRRORS the cyclic column exactly
+(both directions), the cycle is RECORDED at WARNING naming both members, and the traversal
+TERMINATES and DEDUPLICATES over it. The closing dependency is written by a raw `UPDATE`
+because no public verb will mint it after this packet and `ENFORCED` could not carry it at
+creation time anyway (adversary MP-4a).
+
+⚠ **The third leg carries a STATED BOUND rather than over-claiming**: it does NOT assert
+`truncated`, nor whether the root appears in its own reach — the first depends on how a build
+derives truncation over a cyclic walk and the second on whether `+inclusive` is in play, and
+**neither is ruled**. Pinning an unruled value there would re-create exactly the C-DEF risk
+this escalation existed to avoid.
 
 ---
 
@@ -375,17 +443,20 @@ the reason is the C-DEF rule, not indifference.
 | R-10 | **B — "identical bytes = a false clear = STOP"** | ✅ **NO FALSE CLEAR FOUND.** Every construction's degraded bytes differ from its healthy bytes. The one mode where identity is unavoidable (`{empty}` at the app layer) is closed one level down and pinned there, not softened. |
 | R-11 | **C — leg-1 scope diff** | ✅ **WRITTEN** (module docstring, four surfaces) and the one surviving difference **PINNED**. |
 | R-12 | **D — the interim bound** | ✅ **RECORDED AS A FACT** in the contract's prose, twice, with the re-open-trigger clause. |
-| R-13 | **The `{empty}` mode is indistinguishable AT THE APP LAYER** | 🟡 **STATED BOUND, closed one level down.** `TestTheSTORESeamRAISESRatherThanReturningEMPTY` measures that a rejected read raises rather than returning `[]`, so the mode cannot be manufactured by degradation. Written into the class docstring, not hidden. |
+| R-13b | **The `{empty}` mode is indistinguishable AT THE APP LAYER** | 🟡 **STATED BOUND, closed one level down.** `TestTheSTORESeamRAISESRatherThanReturningEMPTY` measures that a rejected read raises rather than returning `[]`, so the mode cannot be manufactured by degradation. Written into the class docstring, not hidden. |
 | R-14 | **`ensure_ready` stays in `VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH`** | 🟡 **RE-ADJUDICATED DELIBERATELY**, with the reasoning at the site: R11's new failure surface is provoked by a degraded dependency, never by caller input, so there is no offending token a refusal could carry back and no `provoke` lambda that is not an invention. |
 | R-15 | **The served-English pin on the traversal docstring** | 🟡 **STATED BOUND.** It checks two tokens are PRESENT (`blocked_by`, `phantom`); it cannot check the sentence is true. Same idiom and same bound as the existing FLOOR-property pin. |
 | R-16 | **`_served_shape` renders a result and an exception into one string** | 🟡 **DELIBERATE.** A byte diff between a healthy result and a degraded raise is impossible otherwise, and "what the caller got" is the right unit. Not a production surface. |
 | R-17 | **The absent-table read is caught by MESSAGE, not by TYPE** | 🟡 **STATED CONSTRAINT.** A typed import of `surrealdb.errors.NotFoundError` in a test that must stay collectable under an SDK bump is the #133 shape; the catch asserts the message rather than swallowing, so a different failure re-raises loudly. |
-| R-18 | **ESC-1 / ESC-2 / ESC-3 / ESC-4** | 🔴 **OPEN — operator's call**, all four with both readings and a recommendation. §ESCALATIONS. |
-| R-19 | **Legacy `blocked_by` cycles are NOT pinned** | 🔴 **ESC-4, and it is the one place I chose a flag over a pin.** Pinning either reading would risk a C-DEF; the fixture is acyclic and says so. |
-| R-20 | **04b-2's owed constructions (fleet columns, footer)** | 🟡 **NOT MINE, and named as such** in SECTION L's header so 04b-2 inherits an address rather than a rediscovery. |
-| R-21 | **ESC-1..ESC-5 of `REPORT-contractfix-04b1.md` and ESC-A..ESC-E of `-r3`** | 🟡 **UNCHANGED — not in my worklist and not touched.** They remain open exactly as those reports leave them; nothing here supersedes them. |
-| R-22 | **Scratch trees** | 🟡 **DISPOSITION NEEDED — your call.** `/home/ejprice/scratch/cfix04b1r4-red` (the RED baseline) and `/home/ejprice/scratch/cfix04b1r4-ref` (the reference build). I did NOT touch `adv04b1-ref`, `contractfix-04b1-ref` or `cfix04b1r3-ref`. |
-| R-23 | **The reference build was DELEGATED, and the scratch root carries prior waves' REPORTS** | 🟡 **STATED BOUND ON THE RECEIPT'S INDEPENDENCE.** I wrote no production code; a fresh Opus subagent did, to a front-loaded brief that FORBADE reading the three prior reference TREES. But `REPORT-contractfix-04b1*.md` and `REPORT-adversary-04b1.md` are tracked artifacts and therefore sit at the scratch root. Independent of the prior trees; not provably independent of their reports. Stated rather than claimed away. |
-| R-24 | **I did not run the FULL suite** | 🟡 **DELIBERATE** (brief-base §3). Scoped to the two contract files plus, in the reference build, the neighbouring suites named in §X-SAT. |
-| R-25 | **I could not drive my own ledger row** | 🟡 **UNCHANGED FROM r3.** Task `e48347a9…` is held by `lead-pkt04b`; this is finding **#262**, already filed by the previous wave. Not re-filed. |
-| R-26 | **No git state was mutated** | ✅ Verified: `git status --porcelain` shows exactly the two contract files modified, plus this report. No `add`/`commit`/`stash`/`checkout`. |
+| R-18 | **ESC-1 / ESC-2** | ✅ **RULED (`92577f1`), NO CONTRACT CHANGE** — both confirmed the reading already pinned. ESC-1's rider (log serves the OPERATOR; the agent-facing bound is the READ surface's scope statement) belongs in the builder brief. |
+| R-19 | **ESC-3 — a failed pre-check must be CLASSIFIED** | ✅ **RULED B, IMPLEMENTED.** Pin renamed and strengthened to a `TaskLedgerError` type assertion + both hygiene markers; its stub now raises the seam's own laundered text. Moved GREEN→RED at `70cc5a4`. |
+| R-20 | **ESC-4 — legacy `blocked_by` CYCLES** | ✅ **RULED A, NOW PINNED** — `TestALEGACYCycleIsMINTEDAndRECORDED`, 3 legs in its own database, with a stated bound on what the termination leg does NOT assert (`truncated`, root-in-own-reach: both unruled). |
+| R-21 | **The cycle fixture writes its closing dependency with a RAW `UPDATE`** | 🟡 **NECESSARY, and documented at the site.** After this packet no public verb will mint it (the cycle guard refuses) and `ENFORCED` could not carry it at creation time (adversary MP-4a: the closing edge points at a task that does not exist yet). Production holds such rows because they were legal when written. |
+| R-22 | **04b-2's owed constructions (fleet columns, footer)** | 🟡 **NOT MINE, and named as such** in SECTION L's header so 04b-2 inherits an address rather than a rediscovery. |
+| R-23 | **ESC-1..ESC-5 of `REPORT-contractfix-04b1.md` and ESC-A..ESC-E of `-r3`** | 🟡 **UNCHANGED — not in my worklist and not touched.** They remain open exactly as those reports leave them; nothing here supersedes them. |
+| R-24 | **Scratch trees** | 🟡 **DISPOSITION NEEDED — your call.** `/home/ejprice/scratch/cfix04b1r4-red` (the RED baseline) and `/home/ejprice/scratch/cfix04b1r4-ref` (the reference build). I did NOT touch `adv04b1-ref`, `contractfix-04b1-ref` or `cfix04b1r3-ref`. |
+| R-25 | **The reference build was DELEGATED, and the scratch root carries prior waves' REPORTS** | 🟡 **STATED BOUND ON THE RECEIPT'S INDEPENDENCE.** I wrote no production code; a fresh Opus subagent did, to a front-loaded brief that FORBADE reading the three prior reference TREES. But `REPORT-contractfix-04b1*.md` and `REPORT-adversary-04b1.md` are tracked artifacts and therefore sit at the scratch root. Independent of the prior trees; not provably independent of their reports. Stated rather than claimed away. |
+| R-26 | **I did not run the FULL suite** | 🟡 **DELIBERATE** (brief-base §3). Scoped to the two contract files plus, in the reference build, the neighbouring suites named in §X-SAT. |
+| R-27 | **I could not drive my own ledger row** | 🟡 **UNCHANGED FROM r3.** Task `e48347a9…` is held by `lead-pkt04b`; this is finding **#262**, already filed by the previous wave. Not re-filed. |
+| R-28 | **No git state was mutated BY ME** | ✅ Verified — I ran no `add`/`commit`/`stash`/`checkout`/`rebase`. |
+| R-29 | **⚠ A SIBLING COMMITTED MY IN-FLIGHT CONTRACT AGAIN — the hazard r3 filed as ESC-E, recurring** | 🟡 **DISCLOSED, nothing lost.** Mid-wave, HEAD moved `70cc5a4` → `922f4c9` (*"test(04b-1): R11 backfill + the Leg-2 forgery constructions — the contract is complete"*) → `92577f1` (the escalation ruling). `922f4c9` carries my two test files and this report as they stood at that moment; my later edits (the ESC-3/ESC-4 pins, the id-redaction strengthening) are the current working-tree delta. **Consequence for anyone re-measuring: the pristine baseline is `70cc5a4`, NOT `HEAD~1` or `HEAD~2`** — `922f4c9` already contains part of this contract. It also means the commit message *"the contract is complete"* was true of a 212-pin snapshot and the contract is now 215. |
