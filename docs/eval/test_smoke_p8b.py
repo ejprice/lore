@@ -34,8 +34,9 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -1398,10 +1399,27 @@ RUN_ID = "deadbeef"
 ANY_RENDER = "(a render this gate does not read)"
 
 
+class ToolError(NamedTuple):
+    """A scripted response the server reports as a TOOL-LEVEL error (``isError``).
+
+    The transcript's response slot carries either plain text (a normal answer) or
+    one of these. It exists because the teardown pins (finding #258) have to drive
+    the smoke down its FAILURE path — an agent registered by a run that then fails
+    must still be retired — and a transcript that can only answer successfully
+    cannot express that. Wrapping the text keeps ONE fake session rather than a
+    second one that differs only in being able to fail.
+    """
+
+    text: str
+
+
+ScriptEntry = tuple[str, str | ToolError]
+
+
 class ScriptedSession:
     """A ``ClientSession`` stand-in that answers from an ordered transcript."""
 
-    def __init__(self, script: list[tuple[str, str]]) -> None:
+    def __init__(self, script: Sequence[ScriptEntry]) -> None:
         self._script = list(script)
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -1418,7 +1436,9 @@ class ScriptedSession:
                 f"call {len(self.calls)}: expected action {expected_action!r}, got "
                 f"{actual_action!r} ({arguments})"
             )
-        return CallToolResult(content=[TextContent(type="text", text=response)], isError=False)
+        is_error = isinstance(response, ToolError)
+        text = response.text if isinstance(response, ToolError) else response
+        return CallToolResult(content=[TextContent(type="text", text=text)], isError=is_error)
 
     @property
     def exhausted(self) -> bool:
@@ -1468,7 +1488,7 @@ SKEW_SCRIPT = [
 ]
 
 
-def scripted_fleet(script: list[tuple[str, str]]) -> tuple[smoke_p8b.SmokeFleet, ScriptedSession]:
+def scripted_fleet(script: Sequence[ScriptEntry]) -> tuple[smoke_p8b.SmokeFleet, ScriptedSession]:
     """A :class:`SmokeFleet` wired to a scripted session, with this run's id."""
     session = ScriptedSession(script)
     return smoke_p8b.SmokeFleet(session, run_id=RUN_ID), session  # type: ignore[arg-type]
@@ -1680,6 +1700,244 @@ class TestGateFlowDryRun:
         fleet, _ = scripted_fleet(script)
         message = await await_failure(smoke_p8b.check_drain_serves_skew(fleet))
         assert "must see no mention of it" in message
+
+
+def retired_by(session: ScriptedSession) -> list[str]:
+    """Every agent the transcript RETIRED, in order, read off the exact wire shape.
+
+    Asserted POSITIVELY — a ``heartbeat`` carrying ``status='retired'`` — rather
+    than by enumerating the verbs a teardown must not use. The forbidden set (any
+    delete-shaped verb the comms surface might ever grow) is unbounded; the legal
+    shape is one call, so it is the one that gets named (repo ``CLAUDE.md``, the
+    instrument lesson).
+
+    The status is the LITERAL the server's closed vocabulary accepts, never
+    ``smoke_p8b.AGENT_STATUS_RETIRED``: a helper reading production's own constant
+    agrees with production by construction and could not see it move. Spelling the
+    wire value here is what makes the mutation proof mean something.
+    """
+    return [
+        arguments["agent"]
+        for _, arguments in session.calls
+        if arguments.get("action") == "heartbeat" and arguments.get("status") == "retired"
+    ]
+
+
+class TestTheSmokeRetiresTheAgentsItRegisters:
+    """Finding #258 — THE DEPLOY GATE WAS THE POLLUTER, and these are its pins.
+
+    Every full smoke run registers five comms agents and retires exactly ONE of
+    them on purpose (gate 3's fixture), so before this teardown existed each
+    deploy left four permanent rows on the fleet roster. Measured on the live
+    production store 2026-07-28, before the lead's backfill: **40 non-retired
+    agents, 38 of them dead smoke/probe artifacts across 13 sessions**, heartbeats
+    19h-391h old — against two live workers. The surface whose entire job is "who
+    is working right now" was answering at roughly 1:20, and degrading on every
+    deploy.
+
+    THE SHAPE IS RULED, not chosen. Sidecar ruling S1-c
+    (``docs/plans/v2/04-comms-blocks-footer.md`` §SIDECAR RULING S1) rejected both
+    reaper forms because the comms design assumes agent rows are never HARD
+    DELETED — finding #105's closure rests on that assumption — so the only legal
+    teardown is a status change to ``retired``. S1-d is this fix.
+
+    AND THE VERIFICATION IS CONSTRAINED BY finding #259: ``STALE`` is derived from
+    heartbeat age and fires on a HEALTHY working agent at 17 minutes, wearing the
+    identical badge 391-hour corpses wore, so it cannot distinguish busy from
+    dead. Nothing here asserts on ``STALE``; every pin reads ``status='retired'``,
+    which is a written fact rather than an inferred one.
+    """
+
+    ROLE = "packet-03b deploy-gate smoke"
+
+    async def test_the_gate_runner_retires_its_agents_when_a_gate_FAILS(self) -> None:
+        """THE load-bearing pin: the FAILURE path is where a leak would hide.
+
+        A teardown on the success path only is the wrong build this whole class
+        exists to catch — and it is the *natural* one to write, because that is
+        where the happy transcript ends. So the transcript here fails gate 1's
+        ``send`` at the wire (``isError``) after two agents are already
+        registered, and both must still be retired.
+
+        It also pins the WIRING, not merely the mechanism: it drives the real
+        ``run_packet_03b_gates``, so a build that ships a perfect teardown nobody
+        calls goes red here.
+        """
+        script: list[ScriptEntry] = [
+            ("lore_index", '{"traces": {"total": 5}}'),
+            ("register", ANY_RENDER),  # smoke-sender
+            ("register", ANY_RENDER),  # smoke-alpha
+            ("send", ToolError("the server refused this send")),
+            ("heartbeat", ANY_RENDER),  # teardown: smoke-sender
+            ("heartbeat", ANY_RENDER),  # teardown: smoke-alpha
+        ]
+        session = ScriptedSession(script)
+        message = await await_failure(smoke_p8b.run_packet_03b_gates(session))  # type: ignore[arg-type]
+        assert "the server refused this send" in message, (
+            "the gate's own failure must reach the caller unchanged — a teardown "
+            "that swallows or replaces it turns a broken deploy into a clean one"
+        )
+        assert retired_by(session) == [smoke_p8b.SMOKE_SENDER, smoke_p8b.SMOKE_ALPHA]
+        assert session.exhausted
+
+    async def test_the_teardown_retires_a_name_NO_GATE_HARDCODES(self) -> None:
+        """The set is DERIVED from what was registered, never a hand-written list.
+
+        The wrong build: a teardown naming ``SMOKE_SENDER``/``SMOKE_ALPHA``/… as
+        literals. It passes every other pin in this class — those *are* the names
+        the gates use — and then silently leaks the day a gate registers a sixth
+        agent. So one pin registers a name that appears nowhere in the smoke.
+        """
+        invented = "smoke-a-name-no-gate-knows"
+        fleet, session = scripted_fleet([("register", ANY_RENDER), ("heartbeat", ANY_RENDER)])
+        async with fleet:
+            await fleet.comms(agent=invented, action="register", role=self.ROLE)
+        assert retired_by(session) == [invented]
+        assert session.exhausted
+
+    async def test_the_agent_gate_3_ALREADY_retired_is_not_retired_twice(self) -> None:
+        """Retirement is TERMINAL on the real store.
+
+        ``AgentRegistry.touch`` refuses a retired row (``RetiredAgentError``)
+        before it ever reaches the self-edge allowance, so a teardown that
+        re-retires gate 3's deliberate corpse would make every otherwise-clean
+        smoke run end in a teardown error. The skip is derived from the same
+        ledger the retire set is.
+        """
+        fleet, session = scripted_fleet(
+            [
+                ("register", ANY_RENDER),  # smoke-sender
+                ("register", ANY_RENDER),  # smoke-retired
+                ("heartbeat", ANY_RENDER),  # gate 3 retires it ON PURPOSE
+                ("heartbeat", ANY_RENDER),  # teardown: smoke-sender ONLY
+            ]
+        )
+        async with fleet:
+            await fleet.comms(agent=smoke_p8b.SMOKE_SENDER, action="register", role=self.ROLE)
+            await fleet.comms(agent=smoke_p8b.SMOKE_RETIRED, action="register", role=self.ROLE)
+            await fleet.comms(
+                agent=smoke_p8b.SMOKE_RETIRED,
+                action="heartbeat",
+                status=smoke_p8b.AGENT_STATUS_RETIRED,
+            )
+        assert retired_by(session) == [smoke_p8b.SMOKE_RETIRED, smoke_p8b.SMOKE_SENDER]
+        assert session.exhausted
+
+    async def test_the_teardown_does_not_CLAIM_the_retirement_a_gate_performed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The PASS line is derived from work done, not restated beside it.
+
+        Counted after the fact, ``registered`` and ``retired`` are the same set,
+        so the obvious phrasing ("retired 5 of this run's 5") credits the teardown
+        with gate 3's deliberate corpse. On the real gates that is 5 claimed
+        against 4 performed — a served number describing a set larger than the one
+        it did. Same class as every count defect in this repo's ledger, in the fix
+        for a signal defect, so it gets a pin rather than a promise.
+        """
+        fleet, _ = scripted_fleet(
+            [
+                ("register", ANY_RENDER),  # smoke-sender
+                ("register", ANY_RENDER),  # smoke-retired
+                ("heartbeat", ANY_RENDER),  # a GATE retires it, not the teardown
+                ("heartbeat", ANY_RENDER),  # teardown: smoke-sender only
+            ]
+        )
+        async with fleet:
+            await fleet.comms(agent=smoke_p8b.SMOKE_SENDER, action="register", role=self.ROLE)
+            await fleet.comms(agent=smoke_p8b.SMOKE_RETIRED, action="register", role=self.ROLE)
+            await fleet.comms(
+                agent=smoke_p8b.SMOKE_RETIRED,
+                action="heartbeat",
+                status=smoke_p8b.AGENT_STATUS_RETIRED,
+            )
+        rendered = capsys.readouterr().out
+        assert "teardown retired 1 agent(s)" in rendered, (
+            f"the teardown retired ONE agent and must say so; it registered two, "
+            f"one of which a gate had already retired. Rendered: {rendered!r}"
+        )
+        assert "registered 2" in rendered and "1 was/were already retired" in rendered
+
+    async def test_a_retire_the_server_REFUSES_is_LOUD_when_the_gates_passed(self) -> None:
+        """A silent teardown failure IS the leak, wearing a green exit code.
+
+        The wrong build swallows every teardown error "so cleanup never masks a
+        real failure" — and then the roster refills exactly as before with the
+        smoke reporting ALL CHECKS PASSED. When the gates passed, an unretired
+        agent is the defect, so it fails the run and names the agent.
+        """
+        fleet, session = scripted_fleet(
+            [("register", ANY_RENDER), ("heartbeat", ToolError("store said no"))]
+        )
+        with pytest.raises(SmokeCheckFailed) as caught:
+            async with fleet:
+                await fleet.comms(
+                    agent=smoke_p8b.SMOKE_SENDER, action="register", role=self.ROLE
+                )
+        message = str(caught.value)
+        assert smoke_p8b.SMOKE_SENDER in message and "store said no" in message
+        assert "#258" in message, "the failure must name the finding it re-opens"
+        assert session.exhausted
+
+    async def test_a_teardown_failure_does_NOT_mask_the_gate_failure(self) -> None:
+        """The other direction: when the gates already failed, the GATE wins.
+
+        A teardown error raised over an in-flight gate failure would replace the
+        diagnosis of a broken deploy with a diagnosis of a messy cleanup — the
+        deploy-night failure mode where the real error is the one you cannot see.
+        It still TRIES, and the attempt is asserted so "gave up early" is not a
+        passing build.
+        """
+        fleet, session = scripted_fleet(
+            [
+                ("register", ANY_RENDER),
+                ("send", ToolError("gate 1 blew up")),
+                ("heartbeat", ToolError("and so did the teardown")),
+            ]
+        )
+        with pytest.raises(SmokeCheckFailed) as caught:
+            async with fleet:
+                await fleet.comms(
+                    agent=smoke_p8b.SMOKE_SENDER, action="register", role=self.ROLE
+                )
+                await fleet.comms(
+                    agent=smoke_p8b.SMOKE_SENDER, action="send", body="x", grade="signal"
+                )
+        assert "gate 1 blew up" in str(caught.value)
+        assert "and so did the teardown" not in str(caught.value)
+        assert retired_by(session) == [smoke_p8b.SMOKE_SENDER]
+        assert session.exhausted
+
+    async def test_the_teardown_calls_are_RECORDED_in_the_issued_ledger(self) -> None:
+        """Gate 5 asserts the production trace rows are EXACTLY ``fleet.issued``.
+
+        The teardown's own calls write trace rows like any other, so they are
+        recorded — and the ordering constraint that keeps gate 5 exact is that
+        the teardown runs AFTER it. A build that retired mid-run would put rows
+        on the store that gate 5's multiset had never heard of.
+        """
+        fleet, _ = scripted_fleet([("register", ANY_RENDER), ("heartbeat", ANY_RENDER)])
+        async with fleet:
+            await fleet.comms(agent=smoke_p8b.SMOKE_SENDER, action="register", role=self.ROLE)
+        assert fleet.issued == (
+            (smoke_p8b.SMOKE_SENDER, "register"),
+            (smoke_p8b.SMOKE_SENDER, "heartbeat"),
+        )
+
+    def test_gate_3_and_the_teardown_share_ONE_retired_status_literal(self) -> None:
+        """ONE IMPLEMENTATION, proven by mutation rather than by inspection.
+
+        ``AGENT_STATUS_RETIRED`` is the single spelling of the status both gate 3
+        and the teardown write. Change it and every pin in this class reddens
+        together — which is the only test that distinguishes sharing from two
+        copies that happen to agree today.
+        """
+        assert smoke_p8b.AGENT_STATUS_RETIRED == "retired"
+        source = Path(smoke_p8b.__file__).read_text(encoding="utf-8")
+        assert source.count('status="retired"') == 0, (
+            "a literal 'retired' status on the wire is a private copy wearing the "
+            "shared name — write AGENT_STATUS_RETIRED"
+        )
 
 
 async def await_failure(coroutine: Any) -> str:
