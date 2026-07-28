@@ -32,6 +32,17 @@ risks on this box, plus the minimal observability the #124 watch needs.
   work. Disposition per its filing: re-probe with the UNIQUE index dropped (test store only),
   then land the CONFIRMED mechanism in the store reference §2/§6.6. Shipped code is
   unaffected today — the hazard is any future message-scoped edge write.
+- **#249** (slotted 2026-07-27) — SurrealDB 3.2.1 RSS grows with WORK and is never reclaimed:
+  both stores measured at 20–25 GB; restart returns both to ~695 MB regardless of dataset size
+  (~44 GB reclaimed once; ~400 MB per suite run). Mitigation = a deliberate restart policy in
+  the quadlets, sized WITH #110's cache bounds (they may be one fix); candidate upstream
+  report. ⚠ BLOCKED for production by #250/#164 — lore-lore does not survive a store restart;
+  **07a is the enabler, sequence it first.**
+- **#239** (slotted 2026-07-27) — 4.0 UPGRADE BREAK, land in the reference: deterministic edge
+  ids on a RELATE overwrite SILENTLY on 3.2.1 and become a HARD ERROR on 4.0 (verified via 3.2
+  release-note item #349; receipts in 04a's probe report). Land it in
+  `docs/reference/surrealdb-31-capabilities.md` §0/§4 with the named trigger: BEFORE any 4.x
+  adoption, sweep every RELATE site for deterministic ids.
 
 ## Scope OUT
 - Engine upgrades; any schema/DDL change; any lore-code change. Production data migration.

@@ -61,6 +61,13 @@ attacks its own design** before any builder sees it, or it escalates to the oper
    created"*, **statement-ORDERED** (the check is at RELATE time, per-record; order IS the
    contract). ⚠ Pin the ∀ property, **never** "our 56 modules are clean" — an invariant conditioned
    on the inputs that happened to be tested is THE QUANTIFIER LAW violated.
+5. **#248 (slotted 2026-07-27; same seams and provenance — the D-d parse):** SEVEN hand-rolled
+   `_bare_id` copies package-wide, each with its own private `_TABLE_SEPARATOR` — the parse D-d
+   proved easy to get wrong (130 red pins). Consolidate to ONE implementation while in these
+   seams, with a per-site mutation proof (change the separator/mint → every caller's pin must
+   redden; a caller that stays green is a private copy wearing the shared name). ⚠ SEPARABLE:
+   if this pushes the packet past the sizing law at kickoff, it SPLITS OUT with its own row —
+   never silently dropped.
 
 ## Scope OUT
 - The `briefed` flip, the app-level unknown-agent check, `blocks`, fleet columns, `_comms_footer`,

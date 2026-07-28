@@ -37,6 +37,11 @@ hygiene pass. All are confirmed-filed, none has a home elsewhere in the packet s
 - **#231** (slotted 2026-07-26) — the #210 anchored-pattern gate's allowlist is keyed on
   the pattern NAME, so exempting one legitimate call site blinds EVERY site using that
   pattern. Re-key the exemption on (pattern, site).
+- **#244** (slotted 2026-07-27; priority LOWERED by its own ack note — #246's zero-on-start
+  mooted the reaper rationale) — 23 hand-rolled clones of `unique_database()` across 22 test
+  modules: 22 drop the pid, one FAKES it with a MAC-derived constant. Plain ONE-IMPLEMENTATION
+  debt now: collapse onto the harness mint, PROVE SHARING BY MUTATION, and render a PER-SITE
+  verdict (reuse vs deliberate-divergence-with-reason) — do not assume all 23 are accidents.
 - **Docs truth pass:** README stale "still on Qdrant … until P7" prose (~L167) +
   historical mentions refresh; adopt the external review's recommended positioning
   language (operator approves wording); annotate docs/design/2026-07-05-p13 stale

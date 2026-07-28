@@ -143,6 +143,13 @@ pending-traffic nudge footer, and the dangling-edge hardening.
   uses bound parameters. Fix the prose toward the measured truth (served prose is DERIVED
   from behaviour, never re-stated beside it — repo law); it deploys with this packet.
 
+- **#247 (slotted 2026-07-27) — the SENDER door: adjudicate at 04b's kickoff.** The message
+  SENDER is an unguarded door for a stored identity naming no agent row — measured GREEN on a
+  correct 04a build (the sender-side sibling of the recipient guard 04a closed; "not obviously
+  in 04a's scope" per its filer). Either close it here with the same pattern (app-level check +
+  negative fixture + positive control), or pass it to 05 as an operator-visible Log line —
+  never silently.
+
 ## ⚠ OPERATOR RULING 2026-07-26 — NO CONSUMERS, NO BACK-COMPAT OBLIGATION
 **Verbatim: *"None of the comms package is in use. Change whatever."*** The comms surface has **no
 live consumers**, so nothing in this packet owes a migration path, a deprecation shim, a preserved

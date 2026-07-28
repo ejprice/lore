@@ -19,6 +19,11 @@ exceeded the sizing law. This half is what the store DOES after an error is unde
   recovery without a container restart, 20-consecutive. ⚠ The `[VENDOR]` 3.2.1 note names
   a cold-start `Session not found` router-race fix (#308) — probe whether it changes the
   wedge shape before pinning fixtures.
+  **#250 (2026-07-27): #164 REPRODUCED IN PRODUCTION** — lore-lore did NOT survive a
+  lore-surreal restart (2 calls, no heal; a manual `podman restart` fixed it in 10s).
+  **This packet is thereby PROMOTED from hygiene to ENABLING work**: it is the blocker on
+  #249's only mitigation (a store restart policy reclaiming the measured 20–25 GB RSS
+  growth — packet 16). Resolve #250 with the same drill receipt as #164.
 - **#128** — server.py's batched finding resolve/acknowledge: TxnContentionExhaustedError /
   SurrealStoreError on one item must degrade PER-ITEM (the best-effort contract the verbs
   already promise), never kill the whole batch response. Concurrency pin under real
@@ -35,7 +40,7 @@ exceeded the sizing law. This half is what the store DOES after an error is unde
   the existing driver, it does not fork it).
 
 ## Entry check
-Store reference FIRST (repo law), §0 included. `lore_findings` → #164 #128 #126 #127
+Store reference FIRST (repo law), §0 included. `lore_findings` → #164 #128 #126 #127 #250
 states; packet 07's landed state (shared files). Probe the dead-socket error shape on
 spike-surreal 3.2.1 (bounce it live) BEFORE writing fixtures — commit the transcript.
 

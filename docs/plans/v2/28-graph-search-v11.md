@@ -20,12 +20,18 @@ pre-registered rule or not at all.
   here with the other graph candidates.
 - **Finding #3** (attribute-access reference granularity — engine-level astroid
   attribute edges): OPERATOR SCOPE GRANT REQUIRED before building; present cost first.
-- **Finding #233** (slotted 2026-07-26): `lore_impact` undercounted a production consumer
-  set — `scripts/` consumers are invisible to the graph (missed
-  `scripts/search_score_survey.py::_make_embedder`, which would break at runtime with no
-  gate to catch it). Same second-class-tree pattern as #188 (scripts/ outside the mypy
-  gate, since fixed) and 03b's testpaths hole. Fix the coverage, or serve the bound LOUDLY —
-  an impact answer that excludes an indexed-but-ungraphed tree must say so (DESIGN-LAW §1).
+- **#233 — RESOLVED by packet 42 (2026-07-28); a SERVING residual lands here.** The missed
+  `scripts/` consumer was migrated and shipped, and lore_impact's caveats were honest. What
+  remains is calibration: when a target resolves under a SAME-IDENTITY COLLISION and the
+  verdict is count-shaped, **the COUNT LINE itself should carry the degradation** — the count
+  is what gets copied into a brief; the caveats below it are what get dropped (measured: a
+  lead relayed "2 prod refs" past two caveats). Evaluate that render change here, under the
+  usual client-metrics gate.
+- **#252** (slotted 2026-07-27; canonical re-file of a 2026-07-04 FRICTION.md row) —
+  `tests_for` returns EMPTY for helpers exercised only INDIRECTLY (19 passing tests drive
+  `_sanitise_line` through the render pipeline; no direct reference edge, so the graph
+  credits nothing). Credit coverage via containing-module/class co-location or an indirect
+  call chain — joins #155 as the tests_for gap pair.
 - **Relative-score fusion** (Weaviate relativeScoreFusion / Qdrant DBSF analogue) —
   evaluate against the floor machinery under a pre-registered rule (ledgered follow-up
   from the weak-match validation); source-concentration + pool-size signals likewise.
@@ -47,8 +53,9 @@ pre-registered rule or not at all.
 - Reranker adoption without an A/B accuracy win (config seam exists; default off).
 
 ## Entry check
-`lore_findings` → #70, #3, #155, #233 states; re-run the 35-pair bar BEFORE (the packet's
-own baseline) — every adoption here must hold or improve it.
+`lore_findings` → #70, #3, #155, #252 states (#233 resolved by 42 — only its render
+suggestion above remains); re-run the 35-pair bar BEFORE (the packet's own baseline) —
+every adoption here must hold or improve it.
 
 ## Exit
 Full gates + cold audit; deploy BOTH; the 35-pair bar re-run AFTER with receipts

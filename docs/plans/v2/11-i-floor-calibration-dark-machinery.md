@@ -19,6 +19,11 @@ BUILD → **11-i-a (~0.15) / 11-i-b (~0.24)** at kickoff. Two findings ride the 
   undiagnosed hang, and the percentile duplication). The contract phase applies packages-
   over-hand-rolling per the RULINGS' disposition — and if the RULINGS are silent on a given
   primitive, adjudicate it there before any bespoke statistical code is extended.
+- **#237** (2026-07-27, filed from the #198 consolidation) — the pre-existing percentile
+  suites are CONVENTION-INSENSITIVE: a silent estimator swap passed them 100%. The
+  consolidated seam needs a convention-discriminating pin — a known input whose answer
+  DIFFERS across estimator conventions — mutation-proven by swapping the convention and
+  watching RED.
 
 ## Mission
 Build the measurement machinery and its store, **with the serving surface untouched**.
