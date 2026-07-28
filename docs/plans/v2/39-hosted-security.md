@@ -14,6 +14,10 @@ actually needs vs what waits.
 - Threat-model + design doc: who can reach the mcp role, with what identity, scoped
   how (per-role creds from packet 36 are the substrate; per-project namespace isolation
   already exists — state what it does and does not guarantee).
+  Named inputs (2026-07-26): **#206** (session-owner binding disabled by the hand-rolled
+  bearer path — packet 36 fixes it; this design VERIFIES the fix under the hosted threat
+  model) · packet 17's second ruled block names this packet's seam list (per-scout identity,
+  view-scoped write grants, base read-only, content trust, revocation).
 - Operator fork, briefed with recommendations: (a) OAuth/DCR now vs Bearer+TLS+network
   perimeter documented as the v1.2 posture; (b) multi-tenant scope grants (Spectron
   justified-OUT earlier — re-justify or keep out).

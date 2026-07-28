@@ -1,0 +1,171 @@
+# Packet 11-i-a — the adversary's verdict, RULED
+
+**Ruled by `lead-11ia`, 2026-07-26**, on `REPORT-adversary-11ia-1.md` (this directory).
+
+**VERDICT ACCEPTED: CONTRACT INSUFFICIENT.** 9 of 14 valid wrong builds survived at
+**143 passed / 0 failed** each. A fix wave runs **before any builder starts**. The five that were
+caught include a positive control, so the instrument demonstrably fires.
+
+The contract is **not** being rewritten — the adversary's §13 names what it does exceptionally well
+and a fix wave must not damage it. This is an additive pin wave plus three unblocks.
+
+---
+
+## O1 — OPERATOR RULING: the identity encodings use `orjson`, and E1 is SUPERSEDED
+
+**Operator, 2026-07-26: `orjson` with `OPT_SORT_KEYS`.** This is the adversary's P-PKG finding —
+survey rows 8 and 9 (canonical serialisation for `head_identity`'s pre-image and for
+`corpus_content_digest`) had **no package row at all**, in a packet whose governing law is
+packages-over-hand-rolling.
+
+**Consequences, all of them:**
+1. **Escalation E1 ceases to exist.** It asked which of two `\x00`-joining readings mints the
+   record identity. JSON admits **one** reading, so there is nothing left to rule. My E1 ruling in
+   `RULINGS-2026-07-26-contract-11ia.md` is **VOID** — not overridden on the merits, *dissolved*.
+   That is the strongest argument for the package: the ambiguity was manufactured by the bespoke
+   encoding, and it was ruled rather than removed.
+2. **The golden digest changes.** `c52fce03…daf148cf` was the digest of the `\x00` pre-image. Re-pin
+   the golden vector for `{"scope": "pooled", "statistic": "cosine_floor"}` against the orjson
+   pre-image, and keep it a golden vector — this is still a record identity.
+3. **The `\x00`-refusal guard is no longer load-bearing** (JSON escapes NUL — probed:
+   `"pooled\x00statistic\x00forged"`). Dropping it is fine; keeping it as defence-in-depth is
+   also fine. **What must NOT be dropped is the 12-mapping distinctness matrix** — it pins the
+   PROPERTY (no separator forgery, order independence, boundary-shift sensitivity), and the property
+   is what we actually depend on. A pin that survives an encoding change is the pin worth having.
+4. **Row 9 goes the same way**, by the same ruling applied to the same class. `corpus_content_digest`
+   keeps a PROPERTY pin rather than a golden vector (a re-encoded corpus digest costs one extra
+   measurement; a re-encoded head id is a migration) — that asymmetry from the contract's §4g stands.
+5. **`orjson` is now a DECLARED `loremaster` dependency**, not a transitive one. It was only ever
+   transitive. An identity frozen in the store must never rest on a version somebody else's
+   dependency happens to resolve.
+
+**Recorded honestly:** the adversary did not argue for the package. It said the bespoke verdict was
+*legitimate but unargued* — nobody asked whether the ambiguity needed to exist. That framing is what
+made this decidable, and it is the standard for every future P-PKG row.
+
+## O2 — B1: the 4 `test_retry_seam.py` entries are AUTHORISED, and the builder is told so
+
+Three node ids **cannot be made green by production code**: `_SEAM_REJECTION_EVENTS` and
+`_SEAM_REJECTION_NOUNS` are hand-written dicts, and one pin does a raw `KeyError`-ing lookup.
+Adding the four entries takes the file to **561 passed / 0 failed**.
+
+**This is authorised explicitly in the build brief, with the values named**, because the two moves a
+builder makes when trapped are both catastrophic and both predictable:
+- invent a bespoke seam shape so the new classes fall OUT of the AST enumeration — that is finding
+  **#120 verbatim**, the defect this contract's own design deliberately avoided; or
+- declare the reds "pre-existing" and ship — **a builder verdict this repo forbids outright**.
+
+This is the C-DEF trap (**#133**) caught before it cost anything: the contract author's report told
+the builder all 60 go green by routing correctly, and **that claim is false**. A satisfiability
+receipt that skips the pre-existing suites the seam touches is not a receipt — which is exactly why
+that leg was in the adversary's brief.
+
+## O3 — B2: rule **(b)**, and M5 is where the third fate lives
+
+`test_a_commit_with_NO_lease_row_at_all_is_refused_when_fenced` fails because on SurrealDB 3.2.1 a
+read from an **undeclared table RAISES** (`NotFoundError: The table 'lease' does not exist`) rather
+than returning `[]`. So the E2-ruled confirming re-read cannot complete, and **my own E2 rider**
+("if the confirming read fails, re-raise the original untouched") **contradicts the pin**.
+
+**RULED (b): the pin's fixture creates the `lease` table.** The pin's name says *no lease ROW*; the
+fixture was giving it *no lease TABLE*. That is a fixture defect, and fixing the fixture makes the
+pin test the thing it is named for.
+
+**RULED, and this is the half that must not be dropped: the table-absence case is a REAL third fate
+and gets its own pin — M5.** A fenced commit whose confirming re-read RAISES must re-raise the
+ORIGINAL error untouched, never `FenceLostError`. So the rider survives intact and gains the
+instrument it was missing.
+
+**Rejected: (a), the floor ledger emitting the lease slice.** The adversary's reference build only
+passes because `FloorCalibrationStore.ensure_ready()` also emits `generate_lease_ddl()` — an
+**undisclosed cross-slice coupling that no pin requires**. Making one slice silently responsible for
+another's DDL to satisfy a fixture is how a hidden ordering dependency ships. If the two slices
+genuinely need a creation order, that is a separate, pinned, stated requirement — not a side effect.
+
+## O4 — B3: delete the stub comment
+
+`test_no_production_module_mentions_the_retired_name` fires on the contract author's own stub banner
+in `store/surreal_schema.py`. The pin is doing its job; its subject is the contract. Delete the
+comment.
+
+⚠ **And the part that matters more than the comment:** the sweep's scope stops at `.py`, so it
+**cannot reach the 4 live design-doc lines** the adversary found. That is this repo's rename law
+("bare, anchor-free patterns; prose mentions carry no structural anchors") with the instrument
+itself carrying the blind spot. Widen the sweep to the design docs, or state the bound and pin it —
+the fix wave decides which and says so.
+
+## O5 — M1–M14 are all REQUIRED
+
+They are the graded output of the adversary pass, which is the same standing this repo gave the
+2026-07-25 adjudications (decision 7). **M1, M2, M3, M4 are BLOCKERS** alongside B1–B3.
+
+Two carry a correction to me, and I am recording it as mine rather than as the contract's:
+
+> **M9 (`adopted_n` is silently droppable) and M13 (nothing reads the 30/15/30 constants) both
+> contradict my own E4 ruling**, which stated those were "already pinned". I took that from the
+> contract author's §5 prose and **relayed it into a ruling without verifying it**. This repo's law
+> is that a figure you did not measure is a rumour, and that applies to a claim of coverage exactly
+> as it applies to a number. The E4 *split* (the ladder generator belongs to 11-i-b) stands on its
+> own reasoning and is unaffected; the *"already pinned"* clause is withdrawn, and M9 and M13 are
+> the pins that make it true.
+
+## O6 — #238 is DONE, not deferred
+
+`docs/eval` is now a `testpaths` entry (**190 passed**, ruff clean). The deploy smoke's own suite
+runs in every gate for the first time. This also discharges the named re-open trigger on #198's
+accepted bound, so the smoke's fourth percentile copy is now gated from both sides.
+
+---
+
+## Standing for the fix wave
+
+- The contract is **frozen at `d6c0dd4`**; the adversary graded exactly that and proved the tree
+  byte-identical. Everything here is **additive** except B2's fixture, B3's comment, and O1's golden
+  digest.
+- The adversary's own disclosure is worth honouring: its brief made it read the author's package
+  table before building its own, against its role spec. It compensated by re-deriving every row from
+  installed source. **Next adversary brief must not order the reads that way.**
+- **#185 is CONFIRMED live**: the scratch copy's `.git` was a 71-byte worktree pointer, renamed out
+  of the way before any work. Every future scratch-copy brief in a worktree carries that step.
+
+---
+
+## O7 — Q3: a measurement row MUST name its head. `head_identity` is REQUIRED. [LEAD CALL]
+
+**The question** (fix-wave §6 Q3, deferred until the trade was stated): the dirty-store migration
+fixture does `CREATE floor_measurement:legacy CONTENT { state: 'measured' }`, and that CREATE must
+SUCCEED for the pin to work. Which forces every other measurement column to be `option<>` or
+defaulted — so the store could never REQUIRE a measurement row to name its own head.
+
+**RULED: `head_identity` is a REQUIRED column on every `floor_measurement` row, and the migration
+fixture supplies it.**
+
+**Why the ∀-reach objection does not survive being stated precisely** — this is the whole ruling,
+and it is why the question was worth deferring rather than guessing:
+
+The reach the minimal row buys is reach over **OPTIONAL** columns: *"the migration lands no matter
+which optional columns a legacy row happens to carry."* Requiring `head_identity` **does not touch
+that reach at all** — the optional columns stay optional, and the fixture still omits every one of
+them. It changes exactly one thing: the fixture must supply the one column that was never optional
+in the first place. Nothing is traded away.
+
+**And the reason it must be required, rather than merely usually-present:** the history is
+**append-only**. A measurement row that cannot name its own scope is **unattributable forever** —
+no later read can recover which axes it measured, and both the head mint and the exact-skip
+scheduler are keyed on exactly that. An orphan row in an append-only table is not a degraded row;
+it is a permanent one.
+
+**The disqualifying question, asked and answered:** is there ANY state in which a row legitimately
+lacks a head? No — **the axes are INPUTS**, fixed before a measurement begins. Even
+`measurement_failed` and `insufficient_corpus` rows know their scope and statistic at creation
+time; that is precisely what makes them useful to read back. There is no window in which the store
+knows a measurement happened but not what it was measuring.
+
+**So the fixture was encoding an accident as a constraint.** It was minimal because writing one
+column is easy, not because a one-column row was ever a thing production could produce — and the
+schema was about to be shaped around it. That is the fixture-drives-the-design failure this repo
+files under *"fixture factories must not default a parameter the code branches on"*, one level up:
+here a fixture's convenience was about to relax a column that can never legitimately be absent.
+
+**Re-open trigger:** a genuine legacy corpus discovered with head-less rows in it — at which point
+the migration is a DATA migration with a stated backfill, not a loosened column.

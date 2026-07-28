@@ -6,6 +6,20 @@ split provenance: packet 11 split at kickoff per its own ≥0.30 clause — desi
 per-half sizes here are the lead's split of B8's ">0.30"; B8 sized the whole, not the halves.
 Re-check at kickoff.
 
+⚠ **DESIGN RULED 2026-07-26 — read the rulings BEFORE this file's older prose:** all 23
+decisions are ruled in `receipts/2026-07-24-packet11i/RULINGS-2026-07-25.md` (+ Addendum
+F-r2 §R1–R10 in the design doc); S1 measured NOT DEGENERATE. The INDEX row re-splits the
+BUILD → **11-i-a (~0.15) / 11-i-b (~0.24)** at kickoff. Two findings ride the build order
+(slotted 2026-07-26):
+- **#198** — `weighted_percentile` is hand-rolled TWICE and this packet would add a THIRD
+  consumer: consolidate to ONE implementation BEFORE the new consumer lands (ONE-
+  IMPLEMENTATION law).
+- **#201** — the floor-calibration statistical core is a hand-rolled reimplementation of
+  sklearn/scipy/numpy primitives (named root cause of the affordability crisis, the
+  undiagnosed hang, and the percentile duplication). The contract phase applies packages-
+  over-hand-rolling per the RULINGS' disposition — and if the RULINGS are silent on a given
+  primitive, adjudicate it there before any bespoke statistical code is extended.
+
 ## Mission
 Build the measurement machinery and its store, **with the serving surface untouched**.
 Executes B7 steps 1, 2 and 5 of the ruled design. Nothing in this packet changes what any

@@ -332,9 +332,14 @@ migrating out from under a stable file set.
   store via the shared retry driver (`_txn.retry_on_conflict` — DESIGN-LAW §5; ONE
   IMPLEMENTATION law: no private lease loop).
 - *Quiescence over clocks:* the trigger defers while the index is unsettled and dedupes
-  while a run is queued/running. No invented cooldown constant; a continuously-churning
-  corpus renders `stale_remeasuring` honestly until it settles. (A clock-based cooldown
+  while a run is queued/running. No invented cooldown constant. (A clock-based cooldown
   is a guessed constant with a failure mode; quiescence is a measured condition.)
+  ⚠ **AMENDED by Addendum F §F4 — cited, not re-derived.** This bullet originally ended
+  *"a continuously-churning corpus renders `stale_remeasuring` honestly until it
+  settles."* **Both halves are retired.** The state is now **`invalidated_remeasuring`**
+  and its predicate is **leg 1 ONLY** (vector-identity / embedding-fingerprint
+  invalidation), so **churn staleness no longer produces a waiting state at all** — under
+  D3 a disjoint fresh measurement causes immediate adoption, not a stale interlude.
 - *Flap bound:* determinism control (§4) — an unchanged corpus reproduces its floor
   exactly, so back-to-back triggers converge instead of oscillating.
 - *Cost, measured not assumed:* each run records embed count and wall-clock in its row.
@@ -415,7 +420,7 @@ regression control, not deleted.
 | `measuring` (first run in flight) | no | disarmed | dark |
 | `measured` (adopted; bars met) | yes | armed | live |
 | `measured_not_adopted` (catch bar failed) | yes (per-hit only) | disarmed | live |
-| `stale_remeasuring` (leg fired; run queued/in flight) | per F4 (§5) | disarmed | leg-dependent (F4) |
+| `invalidated_remeasuring` (vector-identity invalidation; the adopted floor is known-invalid in the new space; re-measure queued/awaiting reconcile settle) — **renamed + re-predicated by Addendum F §F4**; was `stale_remeasuring` (*"leg fired; run queued/in flight"*) | per F4 (§5) | disarmed | leg-dependent (F4) |
 | `measurement_failed` (validity gate failed; finding filed) | last adopted if fingerprint-valid, else no | disarmed | leg-dependent (F4) |
 | `insufficient_corpus` (min samples unreachable) | no | disarmed | dark |
 | `disabled` (config off) | no | disarmed | dark |
@@ -656,10 +661,14 @@ copy (repo law).
 - **F2 — DECIDED:** proceed without #160; the design is #160-outcome-invariant (§2).
 - **F4 — DECIDED as specced:** the aggregate verdict is disarmed whenever state ≠
   `measured` — including the whole remediation window (A1's unevaluated ⇒ disarmed
-  holds there: a running remediation is `measuring`/`stale_remeasuring`, both ≠
+  holds there: a running remediation is `measuring`/`invalidated_remeasuring`, both ≠
   `measured`). The per-hit flag is DARK under vector-identity staleness (old-space
-  comparison is meaningless — §1.2's live receipt) and LIVE-on-the-old-floor under
-  churn staleness until adoption swaps it. The substrate never disarms.
+  comparison is meaningless — §1.2's live receipt). The substrate never disarms.
+  ⚠ **AMENDED by Addendum F §F4 — cited, not re-derived.** The state was renamed from
+  `stale_remeasuring`, and the clause *"and LIVE-on-the-old-floor under churn staleness
+  until adoption swaps it"* is **recorded as SUPERSEDED** (E1 darkened the per-hit flag
+  independently). The aggregate disposition — disarmed whenever state ≠ `measured` —
+  carries over unchanged, which is why the rest of this bullet stands.
 - **F5 — DECIDED:** hold-out absents + the config hook; re-opens only if R2's lab
   validation fails its catch leg.
 - **F6 — DECIDED as the default:** churn tolerance 10% inherited, with the named

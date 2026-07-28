@@ -24,6 +24,19 @@ dev = [
     "pytest-xdist",
     "types-defusedxml",
     "types-PyYAML",
+    # Markdown BLOCK segmentation for the retirement-marker sweep
+    # (test_floor_calibration_schema.py). The sweep must tell a line that TEACHES
+    # a retired name from one that MARKS it as retired, and the marker legitimately
+    # sits on a neighbouring line — so the unit is the markdown block, not the line.
+    #
+    # DECLARED, not inherited: it already resolved transitively via ``rich``, and a
+    # transitive pin is somebody else's promise to keep. It is dev-only because
+    # nothing shipped imports it.
+    #
+    # Adopted to DELETE a hand-rolled block splitter, per packages-over-hand-rolling:
+    # its author probed ``MarkdownIt.parse()`` token ``.map`` spans against all six
+    # real hit sites and measured identical boundaries before recommending it.
+    "markdown-it-py>=4.2",
 ]
 
 # ---------------------------------------------------------------------------
@@ -103,6 +116,22 @@ disallow_any_unimported = false
 module = ["astroid", "astroid.*"]
 follow_untyped_imports = true
 
+# ``kubernetes`` (adopted for ``leaderelection`` — ruled decision 22) ships no
+# ``py.typed`` marker, so under ``disallow_any_unimported`` every symbol it
+# hands us is a blocking ``no-any-unimported`` error. Same shape, and the same
+# containment discipline, as the astroid boundary above: the library's objects
+# are confined to ``loremaster.store.lease`` — the SurrealDB lock adapter —
+# and to that module's contract, both of which reduce them to typed values
+# (``LeaseObservation``, ``LockAbsent``, plain ``bool`` statuses) before
+# anything else in the package sees them.
+[[tool.mypy.overrides]]
+module = ["kubernetes", "kubernetes.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["loremaster.store.lease", "tests.test_store_lease", "test_store_lease"]
+disallow_any_unimported = false
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
@@ -140,4 +169,18 @@ testpaths = [
     # ``scripts/typecheck.sh`` (#188 measured 41 mypy errors there) — a separate
     # work item, deliberately not conflated with this one.
     "scripts",
+    # ``docs/eval/`` carries the DEPLOY SMOKE's own suite — the tests guarding
+    # smoke_p8b.py, the instrument that caught #107 and #131, each time as the
+    # only thing looking. Until 2026-07-26 not one of them ran in any gate.
+    #
+    # This is #238, and it is #199's shape exactly: the same "a guard nobody runs
+    # is a hope with a filename" argument that put ``scripts`` on this list the
+    # day before. A detector whose own tests are ungated is one nobody would know
+    # had rotted.
+    #
+    # It also discharges the named re-open trigger on #198's accepted bound: the
+    # smoke keeps its own fourth copy of the nearest-rank percentile, permitted
+    # only because a pin holds it equal to ``loremaster.stats`` — and that pin is
+    # now gated from both sides.
+    "docs/eval",
 ]

@@ -36,10 +36,24 @@ DELIBERATE DECOUPLING, inherited from :class:`~loremaster.briefs.BriefLedger`
 identity (anything satisfying :class:`~loremaster.agent_ref.AgentRefLike`); the
 DISPATCHER resolves the roster, which is where broadcast semantics and the
 exclude-the-sender rule live (``test_comms_tool.py``). What the ledger still owns
-— because the engine validates NEITHER RELATE endpoint (store reference §4,
-finding #105) — is that EVERY supplied recipient id must EXIST in the ``agent``
-table before a single ``RELATE`` runs: a raw SELECT over ``agent`` by id, NOT an
-import of the registry module, so the decoupling holds.
+is that EVERY supplied recipient id must EXIST in the ``agent`` table before a
+single ``RELATE`` runs — :func:`~loremaster.agent_existence.reject_unknown_agents`,
+a raw SELECT over ``agent`` by id, NOT an import of the registry module, so the
+decoupling holds.
+
+⚠ **AND THE REASON THAT CHECK IS REQUIRED IS NOT THAT THE ENGINE IS BLIND.** It
+is not: ``to`` has carried ``ENFORCED`` since `df59f76` and ``briefed`` since
+`6f0e03a`, so the engine validates BOTH endpoints on both edges. The rationale
+this paragraph carried until 2026-07-27 — *"because the engine validates NEITHER
+RELATE endpoint"* — was written in `e6b9b81`, invalidated by `df59f76`, and is a
+FALSE RATIONALE FOR A REQUIRED CHECK: an agent reading it would conclude the app
+check is the only guard, and could therefore delete it the day it looks redundant.
+The true reason is stated once, in :mod:`loremaster.agent_existence`'s module
+docstring (with store reference §4, the ``ENFORCED`` adoption table's
+error-ergonomics row): ``ENFORCED`` reports ONE bad endpoint, as untyped prose,
+only AFTER the write is attempted — and the store seam's error hygiene withholds
+even that. The app-level check is the ONLY layer that can TEACH. Neither guard is
+redundant; #105 names the hazard both address.
 
 SCOPE HISTORY (both packets are now landed, so this is provenance, not a caveat):
 packet **03a-1** built the SEND path plus :meth:`~MessageLedger.drain` — drain was
@@ -63,6 +77,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 from ulid import ULID
 
+from loremaster.agent_existence import UnknownAgentRowError, reject_unknown_agents
 from loremaster.agent_ref import AgentRefLike
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -326,8 +341,19 @@ class MessagePointerError(MessageLedgerError):
     """
 
 
-class UnknownRecipientError(MessageLedgerError):
-    """Raised when a recipient id names no registered ``agent`` row."""
+class UnknownRecipientError(MessageLedgerError, UnknownAgentRowError):
+    """Raised when a recipient id names no registered ``agent`` row.
+
+    TWO bases on purpose (packet 04a): a :class:`MessageLedgerError`, so a caller
+    keeps ONE ``except`` for this ledger's whole vocabulary
+    (``test_message_ledger.py::TestVocabularies``); and a
+    :class:`~loremaster.agent_existence.UnknownAgentRowError`, so a caller who
+    wants *"this id names no agent"* across BOTH the message and brief verbs can
+    write ONE ``except`` for that instead. The shared base belongs to the shared
+    policy module rather than to either ledger — a base owned by a LEDGER would
+    make its sibling import it, which is the coupling
+    :mod:`loremaster.agent_existence` exists to prevent.
+    """
 
 
 class EmptyRecipientSetError(MessageLedgerError):
@@ -715,29 +741,19 @@ class MessageLedger:
 
     async def _reject_unknown_recipients(self, recipients: Sequence[AgentRefLike]) -> None:
         """Raise :class:`UnknownRecipientError` naming EVERY recipient id that is
-        not a registered ``agent`` row (store reference §4 / finding #105 — the
-        engine validates NEITHER RELATE endpoint, so this app-level check is the
-        ONLY guard against a permanent, silent delivery receipt for a ghost).
+        not a registered ``agent`` row (store reference §4 / finding #105).
 
-        ONE query regardless of recipient count: a direct-record-access
-        ``SELECT id FROM $ids`` returns only the ids that EXIST (a non-existent
-        RecordID is silently dropped, [PROBED 2026-07-23 on spike-surreal 3.2.1]),
-        so the missing ids are exactly ``requested − returned``.
+        ⚠ **This method DECIDES NOTHING.** Packet 04a extracted the decision to
+        :func:`~loremaster.agent_existence.reject_unknown_agents` because
+        ``BriefLedger.publish``/``ack`` need the SAME policy, and a second copy of
+        a policy is where the divergence starts (repo law #102). What survives here
+        is the ledger's own VOCABULARY — the error class its callers catch — and
+        nothing else. Re-deciding underneath the shared call would be a private
+        copy wearing the shared name, which is exactly what
+        ``test_enforced_relations.py::TestTheSharedPolicyIsTheSOLEDecisionPoint``
+        neutralises the shared function to detect.
         """
-        distinct_ids = list(dict.fromkeys(ref.id for ref in recipients))
-        rows = self._as_rows(
-            await self._query(
-                "SELECT id FROM $recipient_ids",
-                {"recipient_ids": [RecordID(AGENT_TABLE, agent_id) for agent_id in distinct_ids]},
-            )
-        )
-        existing_ids = {self._bare_id(row[_ID_KEY]) for row in rows if _ID_KEY in row}
-        unknown = sorted({ref.name for ref in recipients if ref.id not in existing_ids})
-        if unknown:
-            raise UnknownRecipientError(
-                f"unknown recipient(s): {', '.join(unknown)} — every recipient must be a "
-                f"registered agent before it can be sent to"
-            )
+        await reject_unknown_agents(self._query, recipients, error=UnknownRecipientError)
 
     @staticmethod
     def _dedupe_by_identity(recipients: Sequence[AgentRefLike]) -> list[AgentRefLike]:

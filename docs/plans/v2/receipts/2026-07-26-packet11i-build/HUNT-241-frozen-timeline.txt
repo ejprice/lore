@@ -1,0 +1,36 @@
+FREEZE BASELINE  head=0e99c1edc19c1203c0b2cc74edd982c2fd5e50ee  worktree-hash=d41d8cd98f00b204e9800998ecf8427e  2026-07-26T21:22:12-04:00
+--- full suite (recreates the post-suite window) ---
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+7559 passed, 17 skipped, 3 xfailed, 1 warning in 187.89s (0:03:07)
+run 1: green   210 passed in 11.25s  [collected=210]
+run 2: green   210 passed in 12.03s  [collected=210]
+run 3: green   210 passed in 11.75s  [collected=210]
+run 4: green   210 passed in 12.06s  [collected=210]
+run 5: green   210 passed in 14.28s  [collected=210]
+run 6: green   210 passed in 11.56s  [collected=210]
+run 7: green   210 passed in 12.35s  [collected=210]
+run 8: green   210 passed in 11.52s  [collected=210]
+run 9: green   210 passed in 12.04s  [collected=210]
+run 10: green   210 passed in 12.38s  [collected=210]
+run 11: green   210 passed in 11.81s  [collected=210]
+run 12: green   210 passed in 11.58s  [collected=210]
+run 13: green   210 passed in 12.04s  [collected=210]
+run 14: green   210 passed in 11.98s  [collected=210]
+run 15: green   210 passed in 11.96s  [collected=210]
+run 16: green   210 passed in 11.90s  [collected=210]
+run 17: green   210 passed in 11.96s  [collected=210]
+run 18: green   210 passed in 12.06s  [collected=210]
+run 19: green   210 passed in 12.07s  [collected=210]
+run 20: green   210 passed in 12.26s  [collected=210]
+run 21: green   210 passed in 11.75s  [collected=210]
+run 22: green   210 passed in 12.01s  [collected=210]
+run 23: green   210 passed in 11.81s  [collected=210]
+run 24: green   210 passed in 11.88s  [collected=210]
+run 25: green   210 passed in 12.01s  [collected=210]
+run 26: green   210 passed in 12.12s  [collected=210]
+run 27: green   210 passed in 11.79s  [collected=210]
+run 28: green   210 passed in 11.74s  [collected=210]
+run 29: green   210 passed in 11.76s  [collected=210]
+run 30: green   210 passed in 11.55s  [collected=210]
+TOTAL FAILING RUNS: 0 / 30   (freeze held: head and worktree unchanged throughout)
+done 2026-07-26T21:31:42-04:00

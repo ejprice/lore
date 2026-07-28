@@ -71,9 +71,13 @@ shell-quoting a multi-line anchor is its own defect generator.
   * Node ids are parsed from pytest's ``FAILED``/``ERROR`` summary lines, split
     at the FIRST ``" - "``. A parametrised id that itself contains ``" - "`` will
     truncate. Colour is disabled for the child so the prefixes stay parseable.
-  * A line of a test's own captured output beginning with ``FAILED `` is
-    indistinguishable from a summary line. It surfaces as an unexpected red —
-    loud and wrong, never silent and wrong.
+  * ⚠ ONLY lines inside pytest's ``short test summary info`` section are read. A
+    command that suppresses that section (``--no-summary``, ``-p no:terminal``, or
+    anything that is not pytest) therefore yields NO node ids — which surfaces as
+    the loud ``unparseable`` exit below, or as a loud declared-but-green mismatch,
+    never as a quiet pass. That is a MOVED bound, stated rather than hidden: the
+    previous output-wide scan mistook a test's own captured ``ERROR ``/``FAILED ``
+    log line for a summary line and failed correct proofs.
   * Restoration is by CONTENT (an md5-verified copy), so it survives a crashing
     command and a non-zero exit. It does NOT survive ``SIGKILL`` of this process.
   * It restores ONE file. A command with side effects of its own is out of scope.
@@ -102,21 +106,53 @@ _EXIT_UNPARSEABLE = 6
 
 _SUMMARY_PREFIXES = ("FAILED ", "ERROR ")
 
+# pytest's own section banner: ``==== short test summary info ====``. Everything AFTER it
+# is summary lines; everything before it is captured output, tracebacks and progress.
+_SUMMARY_HEADER = "short test summary info"
+
 
 def _md5(path: Path) -> str:
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
+def _summary_section(output: str) -> list[str]:
+    """The lines of pytest's ``short test summary info`` section, or ``[]``.
+
+    Searched from the END so that a fixture or a captured log line containing the banner
+    text cannot shadow the real section, which is always last.
+    """
+    lines = output.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        stripped = lines[index].strip()
+        if stripped.startswith("=") and _SUMMARY_HEADER in stripped:
+            return lines[index + 1 :]
+    return []
+
+
 def parse_red_node_ids(output: str) -> set[str]:
     """Extract failing node ids from a pytest run's short summary.
 
-    Split at the FIRST ``" - "``: pytest emits ``FAILED <nodeid> - <message>``
-    and the message routinely contains further dashes, so splitting at the last
-    one (or on whitespace) yields ids that match nothing — which would make every
-    proof report a spurious mismatch and turn this tool into noise.
+    ⚠ **ONLY from inside the ``short test summary info`` SECTION**, and that scoping is
+    load-bearing rather than tidy. A ``Captured log call`` line reads::
+
+        ERROR    loremaster.floor_calibration.store:_txn.py:1199 floor_calibration.query.rejected
+
+    It begins with ``ERROR `` — a summary prefix — so an output-wide scan turns it into a
+    phantom node id and reports a two-way mismatch on a proof that was perfectly correct.
+    Met live by the packet 11-i-a cold audit; in a repo whose seams log every rejection at
+    ERROR, that is most proofs.
+
+    The scoping is an ALLOWLIST (where a summary line may legally appear), never a list of
+    forbidden prefixes: the forbidden set is unbounded — log levels, a test's own
+    ``print``, a doctest — and this repo has six receipts for name-list instruments losing
+    to the entry nobody enumerated.
+
+    Split at the FIRST ``" - "``: pytest emits ``FAILED <nodeid> - <message>`` and the
+    message routinely contains further dashes, so splitting at the last one (or on
+    whitespace) yields ids that match nothing.
     """
     reds: set[str] = set()
-    for raw in output.splitlines():
+    for raw in _summary_section(output):
         line = raw.strip()
         for prefix in _SUMMARY_PREFIXES:
             if line.startswith(prefix):

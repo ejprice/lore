@@ -1332,6 +1332,25 @@ def _brief_statements() -> list[str]:
 def _briefed_statements() -> list[str]:
     """The ``briefed`` relation edge table: fields + the UNIQUE ``(in, out)`` index.
 
+    ``ENFORCED`` since packet 04a (#105): ``DEFINE TABLE OVERWRITE briefed TYPE
+    RELATION IN agent OUT brief ENFORCED SCHEMAFULL``. The clause validates that
+    BOTH endpoints reference EXISTING records and guards the TABLE — including
+    the ``INSERT RELATION`` door an app-level check on one verb can never reach
+    (store reference §4). It is the STRUCTURAL half only: the engine reports ONE
+    bad endpoint, as untyped prose, after the write is attempted, and the seam's
+    error hygiene withholds even that — so
+    :func:`loremaster.agent_existence.reject_unknown_agents` stays the layer that
+    TEACHES. Neither is redundant; do not delete one for the other.
+    ⚠ This clause lands on an EXISTING table in every long-lived store, which is
+    why :func:`_define_relation_table` emits ``OVERWRITE``: ``IF NOT EXISTS``
+    would be a MEASURED silent no-op and the guard would never reach production
+    (#107's shape, invisible to every virgin-DB fixture).
+    ⚠ Consequence: this slice is now ORDER-DEPENDENT on
+    :func:`generate_agent_ddl` — an ``IN agent`` edge needs the ``agent`` table
+    to exist. Every consumer already applies the agent slice first
+    (``server.py``: ``agent_registry`` -> ``brief_ledger`` -> ``message_ledger``),
+    exactly as ``_message_statements`` records for ``to``.
+
     Mirrors ``_refers_statements``/``_answers_to_statements``'s shape: define
     the relation table (:func:`_define_relation_table` — ``in``/``out`` are
     auto-defined, never hand-declared), emit the edge-local metadata fields
@@ -1344,7 +1363,7 @@ def _briefed_statements() -> list[str]:
     field-spec comment for the live-probed safety confirmation).
     """
     statements: list[str] = [
-        _define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE)
+        _define_relation_table(BRIEFED_RELATION, AGENT_TABLE, BRIEF_TABLE, enforced=True)
     ]
     statements += [
         _define_field(BRIEFED_RELATION, name, type_expr, constraint=constraint)
@@ -1746,3 +1765,316 @@ def generate_graph_ddl() -> str:
     statements += _refers_statements()
     statements += _answers_to_statements()
     return ";\n".join(statements) + ";\n"
+
+
+# =============================================================================
+# ⚠ PACKET 11-i-a — floor calibration + the leader-election lease.
+#
+# The NAMES, SIGNATURES and closed-domain tuples were FROZEN by the contract
+# author (`contract-11ia-1`) and are the interface 11-i-b cites; the emitters
+# below were built by `builder-11ia-1` against that contract. Both closed tuples
+# are pinned as EXACT SETS against an explicit expected literal in
+# ``test_floor_calibration_domain.py``, so adding or removing a member is a diff
+# a reviewer sees rather than a silent change to what 11-ii serves.
+#
+# Design of record: `docs/design/2026-07-24-floor-calibration.md` §7 + Addendum
+# B (B4 schema/migration) · `docs/design/2026-07-25-floor-calibration-addendum-F.md`
+# F4/F5/F6 · `docs/design/2026-07-25-floor-calibration-addendum-F-r2.md` R10.2 ·
+# `docs/plans/v2/receipts/2026-07-24-packet11i/RULINGS-2026-07-25.md`.
+#
+# DDL DECISION RULE (store reference §1.1, NON-NEGOTIABLE): plain TABLE →
+# ``IF NOT EXISTS``; FIELD → ``OVERWRITE``; INDEX → ``IF NOT EXISTS``; ``ALTER``
+# is a trap, not the migration verb (§1.3). None of these tables is a RELATION
+# and none carries a SEQUENCE, so the two inversions the packet's entry check
+# warns about (§1.1's RELATION row, #146's SEQUENCE residual) do not apply —
+# and if either is ever added, §1 is re-read FIRST.
+# =============================================================================
+
+# The append-only measurement table: one row per completed calibration run per
+# head. History is the F6 tuning record and takes no field-migration pressure.
+FLOOR_MEASUREMENT_TABLE = "floor_measurement"
+
+# The head pointer table: ONE row per :func:`head_identity` value, carrying the
+# adopted measurement link and the monotonic ``revision`` every adopting run
+# contends on. THE HOT ROW (B4) — ``_txn.retry_on_conflict`` is the ONE driver.
+FLOOR_HEAD_TABLE = "floor_head"
+
+# The single leader-election lease row (R10.2). Deployment-global: F6's axes do
+# not apply, so the id is a fixed singleton.
+LEASE_TABLE = "lease"
+LEASE_SINGLETON_ID = "singleton"
+
+# The CLOSED, exactly-pinned engine state set (§7 + F4.1's rename). Every value
+# distinct, and the name F4.1 retired must appear nowhere in production — the
+# retired literal itself is NOT written here, because the corpse sweep in
+# ``test_floor_calibration_schema.py`` scans production source with a bare,
+# anchor-free pattern and a comment naming the corpse makes that pin RED.
+FLOOR_STATES: tuple[str, ...] = (
+    "unmeasured",
+    "measuring",
+    "measured",
+    "measured_not_adopted",
+    "invalidated_remeasuring",
+    "measurement_failed",
+    "insufficient_corpus",
+    "disabled",
+)
+
+# The CLOSED, exactly-pinned non-adoption cause enum (F5). The two degeneracies
+# — ``substrate_indiscriminate`` (a CORPUS property) and ``interval_degenerate``
+# (an INSTRUMENT property) — are DISTINCT VALUES BY RULING: collapsing them
+# would let an instrument artifact be served as a confident corpus claim.
+FLOOR_NON_ADOPTION_CAUSES: tuple[str, ...] = (
+    "head_retained_overlap",
+    "catch_bar_unmet",
+    "substrate_indiscriminate",
+    "interval_degenerate",
+    "stability_gate_unmet",
+)
+
+# The ``floor_measurement`` column NAMES, in write order — the SINGLE source of
+# truth for the ledger's projected history read as well as for the DDL. Only the
+# NAMES live here; the TYPES and the closed-domain ``ASSERT``s are emitted inside
+# :func:`_floor_measurement_statements`, which reads :data:`FLOOR_STATES` /
+# :data:`FLOOR_NON_ADOPTION_CAUSES` AT CALL TIME so the assert is a DERIVATION of
+# the ruled domains rather than a hand-typed twin of them.
+FLOOR_MEASUREMENT_COLUMNS: tuple[str, ...] = (
+    "head_identity",
+    "head_revision",
+    "state",
+    "non_adoption_cause",
+    "note",
+    "floor",
+    "ci_low",
+    "ci_high",
+    "adopted_n",
+    "instrument_version",
+    "corpus_content_digest",
+    "embedding_schema_fingerprint",
+    "trigger",
+    "created_at",
+)
+
+# The measurement column carrying the head this row measured (F6/O7) and the head
+# revision an ADOPTING commit minted for it. The revision is written INSIDE the
+# commit transaction (see ``FloorCalibrationStore.record_measurement``) precisely
+# so the receipt can be read back from an IMMUTABLE row instead of re-reading the
+# hot head row, which a concurrent racer may already have advanced.
+FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN = "head_identity"
+FLOOR_MEASUREMENT_HEAD_REVISION_COLUMN = "head_revision"
+# The append-only history's ordering column — ``measurement_history`` reads
+# newest-first off it, and the index below is what keeps that read off a table
+# scan as the history grows.
+FLOOR_MEASUREMENT_CREATED_AT_COLUMN = "created_at"
+
+# The ``floor_head`` columns that are NOT axis columns. The axis columns
+# themselves are DERIVED from the head-identity registry — see
+# :func:`_floor_head_statements`.
+FLOOR_HEAD_REVISION_COLUMN = "revision"
+FLOOR_HEAD_MEASUREMENT_COLUMN = "measurement"
+FLOOR_HEAD_ADOPTED_AT_COLUMN = "adopted_at"
+FLOOR_HEAD_AXES_COLUMN = "axes"
+
+# The ``lease`` row's columns: the library's four record fields (ALL STRINGS —
+# ``kubernetes.leaderelection`` writes ``str(now)``, so a ``datetime`` column
+# would reject every renewal it ever makes) plus our two store-minted counters.
+LEASE_HOLDER_IDENTITY_COLUMN = "holder_identity"
+LEASE_REVISION_COLUMN = "revision"
+LEASE_FENCE_EPOCH_COLUMN = "fence_epoch"
+_LEASE_RECORD_STRING_COLUMNS: tuple[str, ...] = (
+    LEASE_HOLDER_IDENTITY_COLUMN,
+    "lease_duration",
+    "acquire_time",
+    "renew_time",
+)
+
+
+def _floor_measurement_statements() -> list[str]:
+    """The append-only ``floor_measurement`` table: fields + the history index.
+
+    ⚠ **EVERY COLUMN BUT ``head_identity``, ``state`` AND ``created_at`` IS
+    ``option<>``**, and that is forced rather than chosen: store reference §1.4
+    requires a NEW field on a possibly-populated table to be ``option<>`` (a
+    required one poisons every existing row, and a ``DEFAULT`` does NOT rescue
+    it), and ``TestTheSchemaMigratesAnEXISTINGStore`` stands in for an older
+    deployment by creating a row that carries only the REQUIRED columns.
+
+    ⚠ **``head_identity`` IS REQUIRED — RULING O7 (2026-07-26), and the trade was
+    stated before it was taken.** The history is APPEND-ONLY, so a measurement row
+    that cannot name its own scope is unattributable FOREVER: no later read can
+    recover which axes it measured, and both the head mint and the exact-skip
+    scheduler are keyed on exactly that. There is no state in which a row
+    legitimately lacks a head — the axes are INPUTS, fixed before a measurement
+    begins, so even ``measurement_failed`` and ``insufficient_corpus`` rows know
+    their scope at creation time. The §1.4 objection does not apply here because
+    this table has never been deployed; O7's re-open trigger is a genuine legacy
+    corpus found with head-less rows in it, which is a DATA migration with a
+    stated backfill, not a loosened column. Pinned by
+    ``test_a_measurement_row_with_NO_head_identity_is_REFUSED`` (with a positive
+    control) in ``test_floor_calibration_schema.py``. The ledger's own derivation
+    in :meth:`~loremaster.floor_calibration.store.FloorCalibrationStore.record_measurement`
+    stays the ergonomic layer; this column is the backstop for a raw writer.
+
+    The ``ASSERT``s on ``state`` / ``non_adoption_cause`` are generated FROM
+    :data:`FLOOR_STATES` / :data:`FLOOR_NON_ADOPTION_CAUSES` at call time, never
+    typed beside them — a hand-typed twin drifts the first time a state is added
+    and no gate can see prose disagreeing with code.
+    """
+    allowed_states = ", ".join(f"'{state}'" for state in FLOOR_STATES)
+    allowed_causes = ", ".join(f"'{cause}'" for cause in FLOOR_NON_ADOPTION_CAUSES)
+    # ``(name, type_expr, constraint)`` — the ORDER matches
+    # :data:`FLOOR_MEASUREMENT_COLUMNS`, which is what the ledger projects.
+    specs: tuple[tuple[str, str, str], ...] = (
+        # REQUIRED (ruling O7) — see the docstring. Not ``option<>``, and not
+        # ``DEFAULT``-rescued either: a default would FABRICATE an identity, which
+        # is the opposite of what the ruling is for.
+        (FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN, "string", ""),
+        (FLOOR_MEASUREMENT_HEAD_REVISION_COLUMN, "option<int>", ""),
+        ("state", "string", f"ASSERT $value IN [{allowed_states}]"),
+        # A BARE assert: an ``option<>`` field's ASSERT is not evaluated when the
+        # value is NONE (store reference §7), so a ``$value = NONE OR`` guard
+        # would be cruft that teaches the next author it is required.
+        ("non_adoption_cause", "option<string>", f"ASSERT $value IN [{allowed_causes}]"),
+        ("note", "option<string>", ""),
+        ("floor", "option<float>", ""),
+        ("ci_low", "option<float>", ""),
+        ("ci_high", "option<float>", ""),
+        ("adopted_n", "option<int>", ""),
+        ("instrument_version", "option<string>", ""),
+        ("corpus_content_digest", "option<string>", ""),
+        ("embedding_schema_fingerprint", "option<string>", ""),
+        ("trigger", "option<string>", ""),
+        (FLOOR_MEASUREMENT_CREATED_AT_COLUMN, "datetime", "DEFAULT time::now()"),
+    )
+    statements: list[str] = [_define_table(FLOOR_MEASUREMENT_TABLE)]
+    statements += [
+        _define_field(FLOOR_MEASUREMENT_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in specs
+    ]
+    statements.append(
+        _plain_index(
+            FLOOR_MEASUREMENT_TABLE,
+            f"{FLOOR_MEASUREMENT_TABLE}_head_created",
+            (FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN, FLOOR_MEASUREMENT_CREATED_AT_COLUMN),
+        )
+    )
+    return statements
+
+
+def _floor_head_statements() -> list[str]:
+    """The ``floor_head`` pointer table: ONE HOT ROW per head identity.
+
+    The axis columns are DERIVED from
+    :data:`~loremaster.floor_calibration.domain.FLOOR_HEAD_ALWAYS_SERIALISED_AXES`
+    — imported inside the function so this schema module stays an import-time
+    LEAF (every store module imports it; nothing it emits may drag the domain
+    package in at import time). Registering a new always-serialised axis
+    therefore adds its column here and its bound value at the ledger's write in
+    ONE change, instead of leaving a column list to drift.
+
+    ⚠ **THE AXIS COLUMNS ARE ``option<string>`` — INCLUDING ``scope``** — for the
+    §1.4 reason ``floor_measurement``'s columns are, and that is what lets
+    ``M14``'s head leg stand in for an older deployment with a ``scope``-only row.
+
+    ⚠ **``revision`` IS THE ONE REQUIRED COLUMN HERE: ``int DEFAULT 0``, NOT
+    ``option<>``** — it is the monotonic counter every adopting run contends on
+    (the hot row, B4), and a head whose revision could be NONE is a head no
+    contender can compare against. **Store reference §1.4 applies to it in full,
+    and a ``DEFAULT`` does NOT rescue an existing row that lacks the field.**
+    Measured 2026-07-26 on the 3.2.1 test store, with a control: a ``floor_head``
+    row written before this column existed SURVIVES the migration and stays
+    readable, but an ``UPDATE`` that does not itself set ``revision`` is
+    REJECTED (*"Couldn't coerce value for field `revision` … Expected `int` but
+    found `NONE`"*) — and the SAME statement is accepted once the column is
+    populated, so the refusal is the missing column and not the write. Nothing
+    breaks today for exactly one reason: **every production write to this table
+    is the mint, and the mint sets it** (``revision = (revision ?? 0) + 1`` in
+    ``FloorCalibrationStore._head_mint_statement`` — the ``??`` is what covers a
+    legacy row, not the ``DEFAULT``). A future writer that touches a head row
+    WITHOUT setting ``revision`` re-opens this; keep the mint the only writer, or
+    backfill.
+
+    (This docstring previously claimed the opposite in both directions —
+    "everything except ``scope`` is optional" — while ``scope`` was optional and
+    ``revision`` was not. Cold audit 11-i-a F2.)
+    """
+    from loremaster.floor_calibration.domain import (  # noqa: PLC0415 - see the docstring
+        FLOOR_HEAD_ALWAYS_SERIALISED_AXES,
+    )
+
+    statements: list[str] = [_define_table(FLOOR_HEAD_TABLE)]
+    statements += [
+        # ``option<string>``, not ``string``: M14's migration leg writes a head row
+        # carrying ONE axis column, and §1.4 forbids a required NEW field on a
+        # table that may already hold rows. The LEDGER always writes every axis
+        # (its head id is a pure function of them), so an absent axis column can
+        # only come from a raw writer.
+        _define_field(FLOOR_HEAD_TABLE, axis, "option<string>")
+        for axis in FLOOR_HEAD_ALWAYS_SERIALISED_AXES
+    ]
+    statements += [
+        _define_field(FLOOR_HEAD_TABLE, FLOOR_HEAD_REVISION_COLUMN, "int", constraint="DEFAULT 0"),
+        _define_field(
+            FLOOR_HEAD_TABLE,
+            FLOOR_HEAD_MEASUREMENT_COLUMN,
+            f"option<record<{FLOOR_MEASUREMENT_TABLE}>>",
+        ),
+        _define_field(FLOOR_HEAD_TABLE, FLOOR_HEAD_ADOPTED_AT_COLUMN, "option<datetime>"),
+        # The FULL axis mapping the id was minted from — the authority a reader
+        # resolves ``AdoptedHead.axes`` from, including any registered axis that
+        # is NOT an always-serialised column. ``FLEXIBLE`` is TRAILING (§7).
+        _define_field(FLOOR_HEAD_TABLE, FLOOR_HEAD_AXES_COLUMN, "option<object> FLEXIBLE"),
+    ]
+    return statements
+
+
+def _lease_statements() -> list[str]:
+    """The single leader-election ``lease`` row's table (R10.2).
+
+    ⚠ **ALL FOUR OF THE LIBRARY'S RECORD FIELDS ARE ``option<string>``.**
+    ``kubernetes.leaderelection`` writes ``LeaderElectionRecord(identity,
+    str(lease_duration), str(now), str(now))`` — four STRINGS, the times NAIVE
+    local ``datetime.fromtimestamp`` renders — so a ``datetime``-typed
+    ``renew_time`` rejects every renewal the library ever makes. ``option<>`` on
+    ``holder_identity`` is ruled decision 23: ``release_if_held`` clears the
+    holder to NONE, and a required column makes graceful handoff impossible
+    (§1.4: a ``DEFAULT`` does not rescue it either).
+
+    ``revision`` is the optimistic-concurrency token (the ``resourceVersion``
+    role) and ``fence_epoch`` is §R2's fencing token; both are minted STORE-SIDE
+    in the same UPDATE, so no reader can observe a half-applied pair.
+    """
+    statements: list[str] = [_define_table(LEASE_TABLE)]
+    statements += [
+        _define_field(LEASE_TABLE, column, "option<string>")
+        for column in _LEASE_RECORD_STRING_COLUMNS
+    ]
+    statements += [
+        _define_field(LEASE_TABLE, LEASE_REVISION_COLUMN, "int", constraint="DEFAULT 0"),
+        _define_field(LEASE_TABLE, LEASE_FENCE_EPOCH_COLUMN, "int", constraint="DEFAULT 0"),
+    ]
+    return statements
+
+
+def generate_floor_calibration_ddl() -> str:
+    """The ``floor_measurement`` + ``floor_head`` slice (B4).
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string, in the same shape
+        every other ``generate_*_ddl`` returns, ready to wrap in ONE
+        ``BEGIN … COMMIT`` and run through ``execute_transaction`` (NEVER a bare
+        multi-statement ``query()`` — store reference §3 validates statement[0]
+        only).
+    """
+    statements: list[str] = _floor_measurement_statements()
+    statements += _floor_head_statements()
+    return ";\n".join(statements) + ";\n"
+
+
+def generate_lease_ddl() -> str:
+    """The single ``lease`` row's slice (R10.2).
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string.
+    """
+    return ";\n".join(_lease_statements()) + ";\n"

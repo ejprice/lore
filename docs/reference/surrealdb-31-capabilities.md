@@ -171,6 +171,22 @@ ALTER was "in-place schema migration instead of drop+recreate". That was wrong a
 existing rows. Everything below is **[MEASURED]** (REPORT-c1f-contract-migration §4, live 3.1.5).
 The vendor documents no retro-validation **because there is none**.
 
+> **[RE-MEASURED 2026-07-26 on 3.2.1 — §1.4 CONFIRMED, with a second address, because the first one
+> does not resolve.]** `REPORT-c1f-contract-migration.md` is cited here and in §8 and is **tracked
+> nowhere in this repo** (`git ls-files` → empty) — #152/#153's dangling-address class, sitting under
+> the load-bearing claim that answers #107. The claim is NOT in doubt; its receipt was unreachable.
+> **Resolvable receipt:**
+> `docs/plans/v2/receipts/2026-07-26-packet11i-build/REPORT-fixwave-11ia-1.md` **§2.2** — a three-leg
+> isolated probe (`int DEFAULT 0` · bare `string` · `string DEFAULT 'x'`, each added alone to a table
+> already holding a row) in which **all three REJECT** an unrelated `UPDATE` with
+> `Expected <type> but found NONE`. **A `DEFAULT` does not rescue an existing row**, exactly as this
+> section says.
+> ⚠ **And the trap that probe fell into first, which is the reusable part:** its initial fixture
+> created the "legacy" row *after* the full DDL was applied, so `DEFAULT 0` filled it at CREATE and
+> the UPDATE passed trivially — appearing to REFUTE this section. **A fixture that writes its legacy
+> row after the migration cannot see this hazard at all.** Write the row under the OLD DDL, then
+> migrate, or you will measure nothing and believe §1.4 is wrong.
+
 | Change applied to a table WITH ROWS | The DDL | Existing rows | New writes | UPDATE of an old row |
 |---|---|---|---|---|
 | **Widen** an ASSERT | applies | intact, still writable | new value accepted; junk still rejected | fine |
@@ -707,6 +723,7 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | A **per-entry ASSERT** on an array column [PROBED 2026-07-25, 3.2.1] | TWO field rows — the array and its element path: `DEFINE FIELD refs … TYPE array<string> DEFAULT [] ASSERT array::len($value) <= 20` **plus** `DEFINE FIELD OVERWRITE refs[*] … TYPE string ASSERT string::len($value) <= 256`. The composed `DEFAULT [] ASSERT` clause works; count and per-entry asserts fire independently, and the element error names **`refs.*`** and the offending VALUE. | ⚠ **The element row without `OVERWRITE` → `"The field 'refs.*' already exists"`.** `DEFINE FIELD … TYPE array<T>` **IMPLICITLY DEFINES `<field>.*`**, so the element definition is always a RE-definition — §1.1's `OVERWRITE`-for-fields rule applies to it with no exception. A whole-array `$value.all(\|$x\| …)` closure also works and is a known-good fallback, but loses per-element error ergonomics (it dumps the whole array). |
 | An ASSERT on an **`option<>`** field, when the value is absent [PROBED 2026-07-25, 3.2.1] | write the assert BARE: `TYPE option<string> ASSERT string::len($value) <= 256`. **The ASSERT is NOT evaluated when the field is NONE** — an omitted field is accepted, and the assert still fires on a supplied over-length value. | `ASSERT $value = NONE OR …` — harmless but **pure cruft**, and it teaches the next author that the guard is required. Do not copy the guard onto new `option<>` fields. |
 | Compare `INFO FOR TABLE` output against the DDL you emitted [PROBED 2026-07-25, 3.2.1] | pin the **EMITTED** statement (house idiom) | the stored echo is **NORMALISED and will not match**: a closure `\|$r\|` comes back `\|$r: any\|`, and `option<array<string>>` comes back `none \| array<string>`. Any pin diffing the echo against emitted DDL mismatches on closure- or `option<>`-bearing definitions. |
+| Put a `RecordID` in a `set` or use it as a dict key [PROBED 2026-07-27, SDK 2.0.0] | decode first — `str(record.id)` (the SDK's own rendering) and key on the `str` | **`RecordID` is UNHASHABLE** — `__hash__ is None` on SDK 2.0.0, so a `set()` / dict key raises `TypeError` at runtime. **Two independent agents hit this within one packet** (a probe script raised mid-body; a builder measured it deliberately), which is why it is here. ⚠ And decode with **`str(record.id)`, never `str(row["id"]).split(":", 1)[-1]`** — the split is right for `agent:abc` and **WRONG for a uuid-shaped id**, which the SDK renders `agent:⟨0199c4f1-7d2a-…⟩`. That exact guess cost **130 red pins** across two suites (finding #248: seven hand-rolled copies of this parse exist package-wide). |
 
 ---
 
@@ -722,12 +739,32 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
 - **[SAME CLASS] `DEFINE INDEX IF NOT EXISTS`** carries the identical silent-no-op hazard for any
   index change that is *not* the embedding dim (fields, analyzer, UNIQUE-ness). The dim case is
   covered by the fingerprint rebuild; **the others are covered by nothing.**
-- **[#102, OPEN] The shared `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered**
-  (§5). Blocks `-n auto` as the full-suite checkpoint gate.
-- **[#105, OPEN — and NO LONGER LATENT] Dangling `RELATE` edges, on BOTH endpoints** (§4). Goes live
-  the moment any verb accepts a recipient/endpoint identity from a caller rather than resolving it
-  from the store. An application-level existence check is the only guard; a typed
-  `TYPE RELATION IN a OUT b` catches only wrong-*table* endpoints.
+- **[#102, ~~OPEN~~ → FIXED 2026-07-14 at `9d29111`; corrected here 2026-07-26]** ~~The shared
+  `_txn` conflict-retry budget is 2-way-tuned and completely un-jittered (§5). Blocks `-n auto` as
+  the full-suite checkpoint gate.~~ **BOTH HALVES ARE NOW FALSE.** §5 of *this file* records the
+  fix: `retry_on_conflict` draws **fresh full jitter per attempt**, and `-n auto` is this repo's
+  **standard** gate (`CLAUDE.md`: measured 846s → 88s, identical pass count). Left visible rather
+  than deleted because the correction is the lesson: **§5 and §8 of one document contradicted each
+  other for twelve days**, and a retrieval chunk arrives without its neighbours (#160) — so a reader
+  landing here alone was taught a mechanism that no longer exists, in the file this repo makes a
+  REQUIRED FIRST READ. Found by `builder-11ia-1` during packet 11-i-a, which is to say: found by
+  someone obeying the instruction to read this file first, which is the only reason it was found at
+  all.
+- **[#105, GUARDED on `to` + `briefed`; OPEN elsewhere] Dangling `RELATE` edges, on BOTH endpoints**
+  (§4). Goes live the moment any verb accepts a recipient/endpoint identity from a caller rather than
+  resolving it from the store. **The engine's `ENFORCED` clause guards BOTH endpoints (§4) and is now
+  live on `to` (`df59f76`) and `briefed` (`6f0e03a`); `refers`/`answers_to` remain unguarded pending
+  packet 43.** `ENFORCED` is a **BACKSTOP, not a replacement**: it reports ONE bad endpoint, as
+  untyped prose, only AFTER the write is attempted, aborting the txn — and the seam's error hygiene
+  withholds even that from the caller — **so an application-level check remains the only layer that
+  can TEACH.** A typed `TYPE RELATION IN a OUT b` alone catches only wrong-*table* endpoints.
+  ⚠ **This bullet read *"an application-level existence check is the only guard"* until 2026-07-27** —
+  the very sentence **§6.3 of this file records as FALSE** (*"this one would have made us hand-roll a
+  guard the vendor already ships"*), surviving in the open-hazards summary twelve sections below its
+  own correction. Caught by packet 04a's fix wave, not by any gate. **If you are adding a hazard
+  bullet here, check whether §4 or §6 already settles it** — a summary that contradicts its own
+  authority is worse than no summary, because this is the file every store brief is told to read
+  FIRST.
 - **[UNVERIFIED] Does an edge-table LIVE SELECT fire on `RELATE`?** Never probed. The
   contentless-wake design makes an empty payload harmless (so #5014 cannot bite), but the *firing*
   itself is an assumption.
@@ -823,7 +860,10 @@ issues #7061 #7310 #5014 #5070 · CVE-2026-49997.
 **Ours** — findings **#93** (txn root-cause selection, resolved @ 93a9aab) · **#102** (hot-row mint
 retry budget, open) · **#105** (dangling RELATE edges, open) · **#107** (the schema could not evolve
 — the outage) · `REPORT-c1f-docs-surreal.md` (vendor citations + the ALTER probes) ·
-`REPORT-c1f-contract-migration.md` §4 (the measured OVERWRITE matrix) · memories
+`REPORT-c1f-contract-migration.md` §4 (the measured OVERWRITE matrix — ⚠ **this address does NOT
+resolve**; it is tracked nowhere in this repo. The §1.4 claim it backs is re-measured on 3.2.1 at
+`docs/plans/v2/receipts/2026-07-26-packet11i-build/REPORT-fixwave-11ia-1.md` §2.2, which IS tracked;
+see the boxed note in §1.4) · memories
 `surreal-31-docs-audit-adjustments`, `read-the-docs-then-verify-them`,
 `surreal-error-classifier-latent-edges`, `surreal-stores-systemd-managed` · live probes on
 spike-surreal 3.1.5 (throwaway DBs; production `:18500` never touched).

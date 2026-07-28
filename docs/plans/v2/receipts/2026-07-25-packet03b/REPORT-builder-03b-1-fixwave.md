@@ -1,5 +1,9 @@
 # REPORT-builder-03b-1-fixwave — packet 03b, the post-audit fix wave
 
+> ⚠ **SUPERSEDED SYMBOLS (dated record):** mentions `_BRIEF_PUBLISH_`, a retired prefix (the
+> private mint-retry constants deleted by finding #108 — `_txn.retry_on_conflict` owns the
+> policy now). Preserved as-written per the archive law; read it as history, not instruction.
+
 brief-base v6 read
 
 ## SUMMARY BLOCK

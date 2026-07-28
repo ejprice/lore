@@ -1,5 +1,9 @@
 # REPORT-smoke-author-03b-1 — packet 03b's five live deploy-gate receipts
 
+> ⚠ **SUPERSEDED SYMBOLS (dated record):** mentions `_BRIEF_PUBLISH_`, a retired prefix (the
+> private mint-retry constants deleted by finding #108 — `_txn.retry_on_conflict` owns the
+> policy now). Preserved as-written per the archive law; read it as history, not instruction.
+
 brief-base v6 read
 
 ## SUMMARY BLOCK
