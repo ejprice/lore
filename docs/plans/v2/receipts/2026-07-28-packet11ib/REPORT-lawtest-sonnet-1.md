@@ -1,5 +1,13 @@
 # REPORT — lawtest-sonnet-1
 
+> **SUPERSEDED SYMBOL NOTICE (added 2026-07-28 by `lead-11ib`, at archive time).**
+> This is a DATED RECORD and its prose is preserved verbatim — nothing below has been
+> rewritten. It mentions **`_apply_mint`**, a symbol that NO LONGER EXISTS in this repo.
+> The author used it only as an illustrative example of a boolean/existence claim
+> (`"Symbol _apply_mint not found."`) while answering a question about scaffolding on
+> non-numeric claims; the argument does not depend on that symbol being real, and it was
+> not asked to check. Caught by `test_retired_symbols.py` at the pre-merge baseline.
+
 Reading only the TEXT supplied in the spawn brief (no other repo file read, per instructions — none of the questions below required it).
 
 ## 1 — First read, before any evaluation
