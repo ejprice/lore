@@ -124,6 +124,7 @@ import ast
 import inspect
 import uuid
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +167,12 @@ from loremaster.store.surreal_schema import (
     generate_task_ddl,
 )
 from loremaster.tasks import (
+    STATUS_BLOCKED,
+    STATUS_CLAIMED,
     STATUS_DONE,
     STATUS_IN_PROGRESS,
+    STATUS_OPEN,
+    STATUS_WONTFIX,
     TaskLedger,
     TaskLedgerError,
     TaskNotFoundError,
@@ -2540,6 +2545,576 @@ class TestSendRefusesAGhostSENDER:
             "with the shared policy neutralised the ghost sender must reach the write — a "
             "refusal here means MessageLedger.send re-decides underneath the shared call, "
             "which is a private copy wearing the shared name"
+        )
+
+
+# =========================================================================== #
+# SECTION I — #253: ``query_tasks`` MATERIALISES THE WHOLE TABLE.
+#
+# Operator-ruled INTO 04b-1 on 2026-07-28 (packet §04b SPLIT, the "#253" block, committed
+# `0f4656c`).  It is in THIS packet because 04b-1 already opens this ledger to mint
+# ``blocks``, and that edge is plausibly the bounded blocker-resolution mechanism.
+#
+# THE SEAM, MEASURED at `c5a2552` — ``tasks.py::TaskLedger.query_tasks``:
+#
+#     rows = self._as_rows(await self._query(f"SELECT * FROM {TASK_TABLE}"))
+#
+# No WHERE, no LIMIT.  ``status`` / ``owner`` / ``blocked`` are then applied in a Python
+# loop over every row in the ledger, and the tool-level ``limit`` slices only AFTER the whole
+# table has been materialised into ``Task`` objects.
+#
+# ⚠⚠ THE OBVIOUS FIX IS WRONG, AND THE DOCSTRING OF THE METHOD SAYS SO:
+# *"Blocker statuses are resolved against the full table so a blocker filtered OUT by the
+# status/owner filter still counts."*  **The full read is LOAD-BEARING for the ``blocked``
+# partition.**  Pushing the filters into the store naively mis-classifies it SILENTLY, and the
+# DIRECTION of the error depends on which filter the caller supplied.  This is a
+# removed-behaviour inventory item, not a footnote.
+#
+# ⚠ AND ``_is_blocked`` IS NOT THE DEFECT.  It is a PURE predicate over an
+# already-fetched ``status_by_id`` dict and reads nothing; the unbounded read is its CALLER.
+# An earlier framing named the wrong symbol; nothing below pins ``_is_blocked``.
+#
+# ⚠ TWO VERDICTED NON-DEFECTS, so nothing here re-flags them: the rollup read is bounded by
+# ``WHERE updated_at > $since``, and ``_select_row`` is a single-record ``type::record(...)``
+# read.
+#
+# RED TODAY: every pin in this section except the instrument's own positive control and the
+# semantics pins that describe behaviour today's full read already gets right.
+# =========================================================================== #
+
+#: How many UNRELATED tasks the growth fixture mints at its LARGE-N leg.  ≫ the ≤3 blockers
+#: any pin here uses, because a whole-table read and a bounded read are INDISTINGUISHABLE at
+#: small N — this repo's most-repeated fixture failure, and the reason the assertion below is
+#: a GROWTH comparison (small-N vs large-N) rather than a threshold: a threshold is a fixture
+#: value someone can tune until it passes.
+UNRELATED_TASK_COUNT_LARGE = 60
+UNRELATED_TASK_COUNT_SMALL = 5
+
+
+async def _rows_read(ledger: TaskLedger, call: Callable[[], Any]) -> int:
+    """Total ROWS returned to ``ledger`` by every ``_query`` it issues during ``call()``.
+
+    ⚠ **A ROWS-READ INSTRUMENT, DELIBERATELY — AND THE REASON IS THE FINDING.**  The tree
+    already has a query-COUNT instrument
+    (``test_brief_ledger.py::TestCoverageQueryCountIsBounded::_coverage_query_count``, whose
+    capture-then-wrap idiom and small-N-vs-large-N comparison this clones).  **It cannot see
+    #253 at all**: the defect is ONE query that reads the whole table, so the query COUNT is
+    1 both before and after the fix.  Counting ROWS is what discriminates, and saying so here
+    is cheaper than the next author rediscovering that a reused instrument was blind.
+
+    Instance-local reassignment, restored in ``finally`` — never a class-level monkeypatch,
+    so no cross-test restore is needed (the same posture as the instrument it clones).
+    """
+    total = 0
+    original = ledger._query  # noqa: SLF001 - instrumenting the seam IS the measurement
+
+    async def _counting(statement: str, params: dict[str, Any] | None = None) -> Any:
+        nonlocal total
+        result = await original(statement, params)
+        if isinstance(result, list):
+            total += len(result)
+        return result
+
+    ledger._query = _counting  # type: ignore[method-assign]  # noqa: SLF001
+    try:
+        await call()
+    finally:
+        ledger._query = original  # type: ignore[method-assign]  # noqa: SLF001
+    return total
+
+
+async def _seed_unrelated_tasks(ledger: TaskLedger, count: int) -> list[str]:
+    """Mint ``count`` unrelated, unblocked, open tasks in ONE transaction.
+
+    Through ``create_many`` rather than N× ``create_task`` so the fixture cost is one
+    round trip: the pins below care about what the READ touches, never about how the noise
+    got there.
+    """
+    from loremaster.tasks import TaskSpec
+
+    if count == 0:
+        return []
+    specs = [
+        TaskSpec(subject=f"unrelated backlog item {index}", description=DESCRIPTION)
+        for index in range(count)
+    ]
+    return await ledger.create_many(specs, created_by=CREATOR)
+
+
+async def _seed_legacy_task(
+    connection: SurrealConnection, task_id: str, *, blocked_by: list[str], status: str
+) -> None:
+    """RAW-CREATE a ``task`` row with an arbitrary ``blocked_by``, bypassing every guard.
+
+    ⚠ **This is not a contrivance — it is the PRODUCTION state.**  Once requirement I lands,
+    the ledger REFUSES to mint a task naming a phantom blocker; but every row written BEFORE
+    this packet was written under a FAIL-OPEN ``blocked_by`` (scout §A2-FLAG 4), so a
+    long-lived store holds exactly these rows and nothing will ever clean them (#236 is ruled
+    OUT).  A fixture that can only produce rows the NEW guard allows is a fixture that
+    guarantees the one condition under which the bug is invisible.
+
+    Note what such a row does NOT have: a ``blocks`` EDGE.  ``ENFORCED`` cannot write an edge
+    to a task that does not exist — which is exactly the divergence
+    :meth:`TestTheBoundedReadKeepsTheClaimAgreement.test_a_LEGACY_row_with_a_phantom_blocker_is_fail_closed_UNRESOLVED`
+    exists to catch.
+    """
+    now = datetime.now(UTC)
+    await run(
+        connection,
+        f"CREATE type::record('{TASK_TABLE}', $id) CONTENT $content",
+        {
+            "id": task_id,
+            "content": {
+                "subject": "a legacy row written under the fail-open blocked_by",
+                "description": DESCRIPTION,
+                "status": status,
+                "blocked_by": blocked_by,
+                "provenance": {"created_by": "legacy", "created_at": now.isoformat(), "events": []},
+                "created_at": now,
+            },
+        },
+    )
+
+
+async def _drive_to(ledger: TaskLedger, task_id: str, status: str) -> None:
+    """Drive a freshly-created open task to ``status`` along a LEGAL edge.
+
+    Uses the real state machine (``LEGAL_TRANSITIONS``) rather than a raw UPDATE, so the
+    six-status fixture in :class:`TestTheTerminalSetIsExactlyDoneAndWontfix` exercises rows
+    production can actually produce.
+    """
+    if status == STATUS_OPEN:
+        return
+    if status == STATUS_BLOCKED:
+        await ledger.transition(task_id, STATUS_BLOCKED, actor=ACTOR)
+        return
+    if status == STATUS_WONTFIX:
+        await ledger.transition(task_id, STATUS_WONTFIX, actor=ACTOR)
+        return
+    claim = await ledger.claim_task(task_id, ACTOR)
+    assert claim.claimed, f"the fixture could not claim {task_id!r} on its way to {status!r}"
+    if status == STATUS_CLAIMED:
+        return
+    await ledger.transition(task_id, STATUS_IN_PROGRESS, actor=ACTOR)
+    if status == STATUS_IN_PROGRESS:
+        return
+    if status == STATUS_DONE:
+        await ledger.transition(task_id, STATUS_DONE, actor=ACTOR, summary="blocker finished")
+        return
+    raise AssertionError(f"the fixture has no legal path to {status!r}")
+
+
+class TestTheReadIsBOUNDEDByTheCallersFilter:
+    """RED today.  ⛔ #253 — the pin a whole-table read cannot pass.
+
+    THE DISCRIMINATION IS A GROWTH COMPARISON, not a threshold.  The same query, answering
+    the same question, is measured against a ledger holding 5 unrelated tasks and one holding
+    60.  A bounded read touches the candidate set and its blockers — identical at both N.  A
+    ``SELECT * FROM task`` touches everything — 5 rows vs 60.
+
+    ⚠ Why not a threshold: a magic number is a fixture value a builder can tune until it
+    passes, and it would encode today's row shapes as a law.  The GROWTH property is the
+    actual requirement (*"does the work scale with the size of the ledger, or with the size of
+    the answer?"*) and no tuning satisfies it.
+
+    ⚠ **THIS SECTION DOES NOT PIN THE UNFILTERED READ.**  ``query_tasks()`` with no
+    ``status``/``owner`` legitimately asks for every task, so its cost is the answer's cost.
+    The tool-level ``limit`` that slices AFTER materialisation lives at the ``AppContext``
+    dispatcher in ``server.py``, outside this packet's writable set — flagged in the report,
+    not silently folded in.
+    """
+
+    @staticmethod
+    async def _measure(unrelated_count: int, *, by_owner: bool) -> int:
+        """Rows read by ONE filtered ``query_tasks`` against a ledger of the given size.
+
+        The ANSWER is identical at every ``unrelated_count`` by construction: the noise tasks
+        are open + unowned, and the query filters on a status/owner only the target tasks
+        have.  So any difference in rows-read is caused by the LEDGER's size, which is the
+        whole question.
+        """
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        ledger = TaskLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        try:
+            await ledger.ensure_ready()
+            await _seed_unrelated_tasks(ledger, unrelated_count)
+            blocker = await ledger.create_task("a real blocker", DESCRIPTION, created_by=CREATOR)
+            target = await ledger.create_task(
+                SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+            )
+            if by_owner:
+                claim = await ledger.claim_task(target, ACTOR)
+                assert claim.claimed
+                return await _rows_read(ledger, lambda: ledger.query_tasks(owner=ACTOR))
+            await ledger.transition(target, STATUS_WONTFIX, actor=ACTOR)
+            return await _rows_read(ledger, lambda: ledger.query_tasks(status=STATUS_WONTFIX))
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    @pytest.mark.parametrize("by_owner", [False, True], ids=["status-filter", "owner-filter"])
+    async def test_rows_read_does_NOT_grow_with_the_size_of_the_LEDGER(self, by_owner: bool) -> None:
+        """Both filters, because requirement 1 names both and a fix may reach only one."""
+        small = await self._measure(UNRELATED_TASK_COUNT_SMALL, by_owner=by_owner)
+        large = await self._measure(UNRELATED_TASK_COUNT_LARGE, by_owner=by_owner)
+        assert large == small, (
+            f"a filtered query_tasks read {small} rows against a ledger of "
+            f"{UNRELATED_TASK_COUNT_SMALL} unrelated tasks but {large} against one of "
+            f"{UNRELATED_TASK_COUNT_LARGE}. The answer is the same at both sizes, so the "
+            f"read is scaling with the LEDGER rather than with the ANSWER — that is #253. "
+            f"The status/owner filters must push into the store, and blocker resolution must "
+            f"be bounded by the CANDIDATE set's blocked_by / blocks edges. ⚠ Do NOT fix this "
+            f"by dropping the full-table blocker resolution: it is load-bearing (see this "
+            f"class's siblings in TestTheBoundedReadKeepsTheClaimAgreement)"
+        )
+        assert large < UNRELATED_TASK_COUNT_LARGE, (
+            f"the read touched {large} rows, at least as many as the "
+            f"{UNRELATED_TASK_COUNT_LARGE} unrelated tasks that are not in its answer"
+        )
+
+    async def test_POSITIVE_CONTROL_the_instrument_CAN_see_an_unbounded_read_grow(self) -> None:
+        """⛔ A PROBE NEEDS A CONTROL.
+
+        The pin above is a NEGATIVE result (*"this number did not grow"*), and a negative
+        result from a blind instrument is indistinguishable from a negative result from a
+        working one.  A counter that always returned 0 — because ``_query`` returns something
+        this wrapper does not recognise as a list, or because the reassignment did not take —
+        would satisfy it perfectly.
+
+        So: run a DELIBERATELY unbounded read through the same instrument at the same two
+        sizes and require the number to grow, and to grow by the amount seeded.
+        """
+
+        async def _unbounded(unrelated_count: int) -> int:
+            env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+            ledger = TaskLedger(
+                url=env.url,
+                namespace=env.namespace,
+                database=env.database,
+                user=env.user,
+                password=env.password,
+            )
+            try:
+                await ledger.ensure_ready()
+                await _seed_unrelated_tasks(ledger, unrelated_count)
+                return await _rows_read(
+                    ledger,
+                    lambda: _raw(ledger, f"SELECT * FROM {TASK_TABLE}"),
+                )
+            finally:
+                await ledger.close()
+                await drop_database(env)
+
+        small = await _unbounded(UNRELATED_TASK_COUNT_SMALL)
+        large = await _unbounded(UNRELATED_TASK_COUNT_LARGE)
+        assert small == UNRELATED_TASK_COUNT_SMALL, (
+            f"the instrument counted {small} rows for a whole-table read of "
+            f"{UNRELATED_TASK_COUNT_SMALL} tasks — it is not observing row counts, so every "
+            f"'did not grow' result it produces is worthless"
+        )
+        assert large == UNRELATED_TASK_COUNT_LARGE, large
+        assert large > small
+
+
+class TestTheTerminalSetIsExactlyDoneAndWontfix:
+    """GREEN today — a REGRESSION pin, and requirement 2(c).
+
+    ∀ over the WHOLE six-status vocabulary, each fate forced by its own fixture: a blocker
+    unblocks its dependent iff its status is ``done`` or ``wontfix``, and blocks it in all
+    four other states.  Pinned as a universal rather than as "done unblocks" because a
+    bounded rewrite most plausibly gets this wrong at the edges — and the sharpest edge is
+    the status literally named ``blocked``, which is NOT terminal and which a rewrite
+    conflating *dependency*-blocked with *status*-blocked would resolve.
+    """
+
+    @pytest.mark.parametrize(
+        ("blocker_status", "unblocks"),
+        [
+            (STATUS_OPEN, False),
+            (STATUS_CLAIMED, False),
+            (STATUS_IN_PROGRESS, False),
+            (STATUS_BLOCKED, False),
+            (STATUS_DONE, True),
+            (STATUS_WONTFIX, True),
+        ],
+    )
+    async def test_a_blocker_unblocks_ONLY_from_a_terminal_status(
+        self,
+        task_ledger: tuple[TaskLedger, SurrealEnv, str],
+        blocker_status: str,
+        unblocks: bool,
+    ) -> None:
+        ledger, _env, _seed = task_ledger
+        blocker = await ledger.create_task("the blocker", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        await _drive_to(ledger, blocker, blocker_status)
+        unblocked_ids = {task.id for task in await ledger.query_tasks(blocked=False)}
+        blocked_ids = {task.id for task in await ledger.query_tasks(blocked=True)}
+        assert (dependent in unblocked_ids) is unblocks, (
+            f"with its only blocker in status {blocker_status!r}, the dependent's "
+            f"blocked=False membership was {dependent in unblocked_ids}, expected "
+            f"{unblocks}. TERMINAL is exactly {{done, wontfix}} — note that the status "
+            f"literally named 'blocked' is NOT terminal"
+        )
+        assert (dependent in blocked_ids) is not unblocks, (
+            "the blocked=True and blocked=False partitions disagree with each other about "
+            f"{dependent!r} — they must be complementary"
+        )
+
+
+class TestTheBoundedReadKeepsTheClaimAgreement:
+    """RED today in its bounded-read legs, GREEN in the semantics it preserves.
+
+    ⛔ **THE PINS A NAIVE PUSH-DOWN BREAKS.**  ``query_tasks``' own docstring names the
+    property the full read buys: *"Blocker statuses are resolved against the full table so a
+    blocker filtered OUT by the status/owner filter still counts."*  Push the caller's filter
+    into the store without separating the two reads and the blocker vanishes from
+    ``status_by_id``, so ``_is_blocked`` sees an unresolvable id and the dependent flips —
+    **silently, and in a direction that depends on which filter the caller supplied.**
+
+    Requirement 2(d) is the one that matters most and is the hardest to get right: the query
+    partition and the atomic claim's SERVER-SIDE CAS
+    (``tasks.py::_claim_fragment``'s ``array::len(blocked_by) = array::len($clm_resolved)``)
+    are two INDEPENDENT implementations of one question.  Today they agree because the query
+    side reads everything.  A bounded rewrite is a second chance to make them disagree, and a
+    disagreement is invisible until an agent is told a task is claimable and the claim then
+    silently writes nothing.
+    """
+
+    async def test_a_blocker_EXCLUDED_by_the_STATUS_filter_still_counts(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """GREEN today (the full read buys it) — RED on a naive push-down.
+
+        The blocker is ``in_progress``; the caller asks for ``status='open'``.  The blocker is
+        therefore NOT in the caller's candidate set, and it must STILL block its dependent.
+        """
+        ledger, _env, _seed = task_ledger
+        blocker = await ledger.create_task("the excluded blocker", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        await _drive_to(ledger, blocker, STATUS_IN_PROGRESS)
+        open_and_unblocked = {
+            task.id for task in await ledger.query_tasks(status=STATUS_OPEN, blocked=False)
+        }
+        assert dependent not in open_and_unblocked, (
+            "a blocker that the caller's status filter excluded stopped counting, so an "
+            "unclaimable task was served as unblocked. The candidate set and the "
+            "blocker-resolution set are DIFFERENT sets; pushing one filter into the store "
+            "must not narrow the other"
+        )
+
+    async def test_a_blocker_EXCLUDED_by_the_OWNER_filter_still_counts(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """The second filter, because a fix may reach only one — and because the OWNER filter
+        excludes on a column the blocker-resolution read has no reason to project at all.
+        """
+        ledger, _env, _seed = task_ledger
+        blocker = await ledger.create_task("the other owner's blocker", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        await _drive_to(ledger, blocker, STATUS_CLAIMED)  # owned by ACTOR
+        other_owner = "someone-else"
+        claim = await ledger.claim_task(dependent, other_owner)
+        assert not claim.claimed, (
+            "the fixture's dependent was claimable, so this pin cannot observe anything — "
+            "its blocker is not blocking"
+        )
+        owned_elsewhere = {
+            task.id for task in await ledger.query_tasks(owner=other_owner, blocked=False)
+        }
+        assert dependent not in owned_elsewhere, (
+            "a blocker owned by a DIFFERENT identity stopped counting once the owner filter "
+            "was applied"
+        )
+
+    async def test_a_LEGACY_row_with_a_phantom_blocker_is_fail_closed_UNRESOLVED(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **THE MOST LIKELY WAY A BOUNDED REWRITE BREAKS, and requirement 2(b).**
+
+        A row written before 04b-1 can name a blocker that was never minted (``blocked_by``
+        was FAIL-OPEN at write).  Such a row has **no ``blocks`` EDGE** — ``ENFORCED`` cannot
+        write an edge to a task that does not exist.  So a rewrite that resolves blockers
+        through the EDGE rather than the COLUMN sees NO blockers, calls the row UNBLOCKED,
+        and serves it as claimable — while the claim CAS, which reads the COLUMN, refuses it
+        forever.  Two mechanisms, one question, opposite answers, no error anywhere.
+
+        The row is raw-seeded because the new guard makes it unreachable through the ledger;
+        see :func:`_seed_legacy_task` for why that is production's state and not a contrivance.
+        """
+        ledger, env, _seed = task_ledger
+        legacy_id = f"legacy_{uuid.uuid4().hex}"
+        setup = await connect_admin(env)
+        try:
+            await _seed_legacy_task(
+                setup, legacy_id, blocked_by=[PHANTOM_TASK_ID_UUID_SHAPE], status=STATUS_OPEN
+            )
+            assert not await record_exists(setup, TASK_TABLE, PHANTOM_TASK_ID_UUID_SHAPE)
+        finally:
+            await setup.close()
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        assert legacy_id not in unblocked, (
+            "a task whose blocked_by names a NEVER-MINTED id was served as unblocked. An "
+            "unresolvable blocker is FAIL-CLOSED: the claim CAS counts it "
+            "(array::len(blocked_by) != array::len($clm_resolved)) and refuses forever, so a "
+            "query that calls it claimable is telling an agent to attempt a claim that can "
+            "never win. ⚠ If you resolved blockers through the blocks EDGE, note that a "
+            "legacy row has no edge for a blocker that does not exist"
+        )
+        claim = await ledger.claim_task(legacy_id, ACTOR)
+        assert not claim.claimed, (
+            "the CAS itself accepted a task with an unresolvable blocker — that is a "
+            "DIFFERENT and worse defect than the one this pin was written for"
+        )
+
+    async def test_the_PARTITION_and_the_CLAIM_can_never_DISAGREE(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """⛔ **Requirement 2(d) — the ∀ agreement pin.**
+
+        For every open, unowned, non-superseded task in the ledger: membership of
+        ``query_tasks(blocked=False)`` must equal *"a claim would succeed"*.  Two independent
+        mechanisms — a Python predicate over a read, and a server-side ``array::len`` CAS
+        inside a transaction — held to one answer, over a fixture set that FORCES every
+        interesting shape rather than sampling whichever the rewrite happens to handle.
+
+        THE QUANTIFIER LAW: the property is not *"the rewrite still handles a done blocker"*.
+        It is *"the two mechanisms agree, ∀ tasks, whatever made them blocked"* — and each
+        fate below is forced by its own row.
+
+        ⚠ The claim is DESTRUCTIVE (a win writes an owner), so it runs LAST, after the whole
+        partition has been read; and the assertion is made per-task with the task named, so a
+        failure says WHICH shape diverged rather than that some did.
+        """
+        ledger, env, _seed = task_ledger
+        shapes: dict[str, str] = {}
+
+        shapes["no blockers"] = await ledger.create_task(
+            "no blockers", DESCRIPTION, created_by=CREATOR
+        )
+        for label, blocker_status in (
+            ("blocker done", STATUS_DONE),
+            ("blocker wontfix", STATUS_WONTFIX),
+            ("blocker open", STATUS_OPEN),
+            ("blocker in_progress", STATUS_IN_PROGRESS),
+            ("blocker status-blocked", STATUS_BLOCKED),
+        ):
+            blocker = await ledger.create_task(f"blocker for {label}", DESCRIPTION, created_by=CREATOR)
+            shapes[label] = await ledger.create_task(
+                label, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+            )
+            await _drive_to(ledger, blocker, blocker_status)
+
+        first = await ledger.create_task("first of two", DESCRIPTION, created_by=CREATOR)
+        second = await ledger.create_task("second of two", DESCRIPTION, created_by=CREATOR)
+        shapes["two blockers, one resolved"] = await ledger.create_task(
+            "one of two resolved", DESCRIPTION, blocked_by=[first, second], created_by=CREATOR
+        )
+        await _drive_to(ledger, first, STATUS_DONE)
+        both_a = await ledger.create_task("both a", DESCRIPTION, created_by=CREATOR)
+        both_b = await ledger.create_task("both b", DESCRIPTION, created_by=CREATOR)
+        shapes["two blockers, both resolved"] = await ledger.create_task(
+            "both resolved", DESCRIPTION, blocked_by=[both_a, both_b], created_by=CREATOR
+        )
+        await _drive_to(ledger, both_a, STATUS_DONE)
+        await _drive_to(ledger, both_b, STATUS_WONTFIX)
+
+        legacy_id = f"legacy_{uuid.uuid4().hex}"
+        setup = await connect_admin(env)
+        try:
+            await _seed_legacy_task(
+                setup, legacy_id, blocked_by=[PHANTOM_TASK_ID_NUMERIC_SHAPE], status=STATUS_OPEN
+            )
+        finally:
+            await setup.close()
+        shapes["legacy row, phantom blocker"] = legacy_id
+
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        partition_says = {label: task_id in unblocked for label, task_id in shapes.items()}
+
+        disagreements: list[str] = []
+        for label, task_id in shapes.items():
+            claim = await ledger.claim_task(task_id, f"claimer-{uuid.uuid4().hex[:8]}")
+            if claim.claimed != partition_says[label]:
+                disagreements.append(
+                    f"{label} ({task_id}): query_tasks(blocked=False) said "
+                    f"{partition_says[label]}, the claim CAS said {claim.claimed}"
+                )
+        assert disagreements == [], (
+            "the query partition and the atomic claim's server-side CAS disagree. These are "
+            "two INDEPENDENT implementations of 'is every blocker terminal' — the full-table "
+            "read is what makes them agree today, so a bounded rewrite must keep them equal "
+            "BY CONSTRUCTION, not by coincidence. A disagreement is invisible in production: "
+            "an agent is told a task is claimable and the claim silently writes nothing. "
+            f"Diverging shapes: {disagreements}"
+        )
+        assert any(partition_says.values()) and not all(partition_says.values()), (
+            "every shape in this fixture landed on the SAME side of the partition, so the "
+            "agreement above holds for a fixture reason — a build answering one constant "
+            "would pass it"
+        )
+
+
+class TestTheDuplicateBlockerDivergence:
+    """⚠⚠ **RED TODAY FOR A PRE-EXISTING REASON — ESCALATION E-6, NOT A 04b-1 REGRESSION.**
+
+    Found while writing requirement 2(d)'s agreement pin, not looked for.  The two mechanisms
+    treat a DUPLICATED blocker id differently:
+
+    * ``_is_blocked`` iterates ``blocked_by`` ENTRIES, so a repeated id is harmless;
+    * ``_claim_fragment`` compares ``array::len(blocked_by)`` against
+      ``array::len($clm_resolved)``, and the resolved list is a SET of matching rows — so
+      ``blocked_by = [X, X]`` with X ``done`` is ``2 != 1`` and the claim **fails forever**.
+
+    ``_new_task_content`` dedupes at birth *"so a DUPLICATE id must not double-count against
+    the claim gate's array::len CAS"* — i.e. the normalisation exists **precisely because the
+    CAS cannot tolerate duplicates**, and it is the ONLY thing standing between the two
+    mechanisms.  A row that predates it, or any future write path that forgets it, produces a
+    task the fleet is told is claimable and that can never be claimed.
+
+    **This is not caused by 04b-1 and it is not fixed by 04b-1's contract.**  It is pinned
+    here because requirement 2(d) says the two may NEVER disagree, and this is the input where
+    they already do.  **RECOMMENDED FIX (one line, in the file the builder is already
+    editing): ``array::len(array::distinct(blocked_by))`` in the CAS**, so the guard tolerates
+    what the normalisation was silently protecting it from.  **If the lead would rather route
+    this to its own finding, delete this class and say so — do not "fix" it by deleting the
+    duplicate from the fixture.**
+    """
+
+    async def test_a_LEGACY_row_with_a_DUPLICATED_resolved_blocker_agrees_with_the_CAS(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        ledger, env, _seed = task_ledger
+        blocker = await ledger.create_task("the duplicated blocker", DESCRIPTION, created_by=CREATOR)
+        await _drive_to(ledger, blocker, STATUS_DONE)
+        legacy_id = f"legacy_dupe_{uuid.uuid4().hex}"
+        setup = await connect_admin(env)
+        try:
+            await _seed_legacy_task(
+                setup, legacy_id, blocked_by=[blocker, blocker], status=STATUS_OPEN
+            )
+        finally:
+            await setup.close()
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        claim = await ledger.claim_task(legacy_id, ACTOR)
+        assert claim.claimed == (legacy_id in unblocked), (
+            f"blocked_by=[X, X] with X terminal: query_tasks(blocked=False) says "
+            f"{legacy_id in unblocked}, the claim CAS says {claim.claimed}. The CAS compares "
+            f"array::len(blocked_by) with the length of the DISTINCT resolved set, so a "
+            f"duplicate makes the counts differ and the task is unclaimable forever while "
+            f"being served as claimable. See this class's docstring — E-6, pre-existing"
         )
 
 
