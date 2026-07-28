@@ -19,6 +19,67 @@ audited failure patterns (P7–P8d); the phase resume docs in `~/.claude/plans/`
   surface is a FAILED acceptance to fix, never a waived answer. First instance: packet 03b
   rulings §C5. Design mechanics: DESIGN-LAW §1. Memory: `lore_recall("trust doctrine")`.
 
+### TRUST — THE HARD DEFINITION, so you can tell when you have achieved it
+(operator-directed 2026-07-28; derived by a three-model consult — Opus, Sonnet 5, Fable —
+each of which conceded against its own position. Receipts: `REPORT-lawtest-{opus,sonnet,fable}-1.md`
+in `receipts/2026-07-28-packet11ib/`. The clauses above say what trust REQUIRES; this says
+what it IS and when you are DONE.)
+
+> **A response is trustworthy iff a consumer who acts on it WITHOUT CHECKING cannot be
+> wrong in a way the response did not name.**
+
+Trust is a property of a **RESPONSE**, not of a tool, and it **does not require being
+right** — a response that names its bound and then hits that bound has kept faith. That is
+what makes it achievable instead of demanding omniscience. **A bound is a FACT (the set,
+the predicate, the time), never a disclaimer:** *"results may be incomplete"* names nothing,
+licenses nothing narrower, and fails on its own terms.
+
+**ACHIEVED when BOTH legs pass. Two legs, because each is blind exactly where the other is
+strong — collapsing them loses whichever case the survivor cannot see.**
+
+- **Leg 1 — SCOPE DIFF** *(healthy path: design ≠ label)*. Write the question you actually
+  answered — set, predicate, time. Write the question the consumer thinks they asked. Any
+  difference goes in the render; no difference ⇒ done. **Ask: *"what question did I actually
+  answer, and is it the one the consumer thinks they asked?"*** Design-time, baked into the
+  render template once, ~free per call. ⚠ **Two stated bounds:** it is sound on *set* and
+  *predicate-as-WRITTEN* only — **time, environment, and predicate-as-EXECUTED are BELIEVED,
+  not known** (#24 · #107 · #131 · #139); and its stopping rule bounds the *diff*, not the
+  *"question the consumer asked"*, which over an open caller set is still judgement.
+- **Leg 2 — FORGERY PINS** *(degraded path: runtime ≠ design)*. Derive the failure set —
+  the surface's stateful dependencies (index, store, fs, clock, subprocess) **×**
+  `{stale, empty, wrong-instance, partial}`; that is dependencies-×-verbs, **derived like
+  `registration_sites.py`, never a curated list of things that might go wrong**. CONSTRUCT
+  each state and byte-diff the served response against the healthy one. **Identical bytes =
+  a false clear = STOP.** **Ask: *"what broken state of this tool would serve exactly these
+  bytes?"*** Build-time, per tool — never per-call (injected states cannot re-run live).
+- **CONSTRUCTION, NEVER REASONING, and this is the load-bearing sentence:** a missed
+  world-state is *discoverable* — routine coverage finds it by accident, without anyone
+  knowing the bug — but **a false belief about your own semantics is SELF-SEALING, and the
+  only instrument that breaks it is execution.** #107's author sincerely believed
+  `IF NOT EXISTS` errored on an existing field (the vendor docs said so), would have
+  completed Leg 1 truthfully, and returned DONE.
+
+**LOST: one false clear** — a wrong state that renders identically to the correct one. That
+is a **STOP naming a gap in the derived failure set**, never a quiet fix. **The ledger is
+asymmetric AND it RESETS:** an LLM consumer inherits no reputation across sessions — it
+travels only as text, and a document asserting *"this tool is reliable"* is just another
+claim it evaluates against the response in front of it. So one true clear buys almost
+nothing while one false clear is fatal and irreversible within the session. **There is no
+equilibrium in which credit accumulates: "earning trust over time" is NOT a strategy —
+avoiding false clears is the only one, and it is won at BUILD time or not at all.**
+
+**BOUND, stated so this section does not over-claim about itself:** the derived failure set
+is complete only over the dependencies and verbs written down. Every false clear found
+later is a **re-open trigger**, never a retroactive pass.
+
+**What this REPLACES:** cheap-vs-expensive verification is a real property but a *downstream*
+one — verification ergonomics, not trust. A claim that cannot be checked has infinite
+verification cost, so there is nothing to optimise until the gate above passes. And it is
+not decidable: builders disagree about where "cheap" ends, but nobody disagrees about
+whether two runs produced byte-identical output. ⚠ **Scaffolding that can lie is worse than
+none** — an `n` restated beside a claim rather than DERIVED from the computation that
+produced it is a false clear *wearing* verifiability, armoured by compliance.
+
 ## Quality gates (operator-ruled, every commit)
 - `scripts/typecheck.sh` — zero mypy errors including test trees. This runner is
   canonical; a single combined `mypy` invocation false-errors on `tests.conftest`.
