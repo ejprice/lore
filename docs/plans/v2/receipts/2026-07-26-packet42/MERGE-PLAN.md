@@ -1,5 +1,11 @@
 # Packet 42 — BASELINE + MERGE PLAN
 
+> ⚠ **SUPERSEDED SYMBOLS (dated record):** mentions `_BRIEF_PUBLISH_`, a retired prefix (the
+> private mint-retry constants deleted by finding #108 — `_txn.retry_on_conflict` owns that
+> policy now). It appears here only inside REPRODUCED TEST OUTPUT: this record quotes the
+> packet-11i/03b doc-banner failure that packet 42 inherited and verified as unrelated to its
+> own work. Preserved as-written per the archive law; read it as history, not instruction.
+
 Written 2026-07-27, before any merge. Every number below is a **measurement taken by the lead**,
 not a recollection. The plan exists because the merge is the riskiest remaining step: it is the one
 place where two packets' greens can be confused for each other.

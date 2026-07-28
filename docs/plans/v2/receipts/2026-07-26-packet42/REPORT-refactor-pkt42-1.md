@@ -1,5 +1,11 @@
 # REPORT-refactor-pkt42-1 — packet 42 REFACTOR phase
 
+> ⚠ **SUPERSEDED SYMBOLS (dated record):** mentions `_BRIEF_PUBLISH_`, a retired prefix (the
+> private mint-retry constants deleted by finding #108 — `_txn.retry_on_conflict` owns that
+> policy now). It appears here only inside REPRODUCED TEST OUTPUT: this record quotes the
+> packet-11i/03b doc-banner failure that packet 42 inherited and verified as unrelated to its
+> own work. Preserved as-written per the archive law; read it as history, not instruction.
+
 brief-base v7 read
 
 - **state:** done
