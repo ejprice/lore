@@ -21,7 +21,8 @@ runs AND one subprocess run.
 
 ## Leg B — end-to-end reproduction (the verb run twice on the live corpus)
 
-The verb was run twice on the live corpus. Both runs' settled-index start/end checks passed.
+The verb was run twice on the live corpus. Both runs' settled-index start/end checks
+passed.
 
 **Determinism: deterministic.**
 

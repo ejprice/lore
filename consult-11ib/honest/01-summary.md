@@ -27,9 +27,13 @@ that would measure that; it has not run.
 
 `F_portable − F_legacy = 0.111111`.
 
-⚠ That single scalar is the whole of what this page says about the divergence between the two
-instruments. It is not sufficient to characterise the divergence — see `02`, which carries the
-per-percentile and per-group behaviour that this number averages away.
+⚠ **That scalar is DIMENSIONLESS and it is not a quality delta.** The two floors are thresholds
+in two different embedding geometries; the package carries an `embedding_schema_fingerprint` for
+the portable instrument and none for the legacy one, so the two scales cannot be checked for
+coincidence. It may not be re-expressed as an improvement, a regression or a percentage —
+`02`'s bound (iii) states this in full, beside the tables it governs. What `02` does carry is
+the per-percentile and per-group SHAPE of the paired difference, which this single number
+averages away.
 
 ## `choose_cosine_floor` selection receipts
 
@@ -64,6 +68,18 @@ with response-best cosines captured by the PORTABLE instrument.
 **Both legs pass ⇒ the portable instrument is ACCEPTED as built.** Nothing here ships on a
 caveat: a failed leg would have returned the instrument to design, not qualified this page.
 
+> **Bound (iv) — the acceptance was NOT evaluated on held-out data, and here is exactly what
+> that costs.** `legacy-nonsense` is **one of the six groups `F_portable` was selected over**
+> (`02`, group 6), and the legacy labeled real union is the union of two more of them (groups 1
+> and 2). **No leg of this acceptance is independent of the selection population.** What the
+> selection did NOT do is the part that bounds the damage: `F_portable` was chosen off the
+> pooled ladder across all six groups, **not** by sweeping for the value that maximises catch on
+> `legacy-nonsense` or minimises false-fire on the real union — no single group's statistic was
+> optimised, and no group's labels were derived from either instrument's own output. So these
+> legs establish **"the portable floor clears the original bars on the original labeled sets"**
+> and they do **not** establish that it generalises to any set not in the six. A held-out leg
+> is not in this run; adding one is a design decision, not a re-analysis of these numbers.
+
 Both acceptance rates are properties of the survey's labeled sets. Neither is an estimate of
 how often the absence verdict would fire in production — that population was not sampled here
 (packet 35).
@@ -72,7 +88,7 @@ how often the absence verdict would fire in production — that population was n
 
 | floor | required | this run | met |
 |---|---|---|---|
-| `MIN_ANSWERED_PROBES` | 30 | 411 (after drops — `08`) | ✓ |
+| `MIN_ANSWERED_PROBES` | 30 | 411 = `answered_probes` (after drops — `08`) | ✓ |
 | `MIN_IDENTIFIER_PROBES` | 15 | 15 | ✓ |
 | `MIN_ABSENT_SAMPLES` | 30 | 533 (after drops — `08`) | ✓ |
 

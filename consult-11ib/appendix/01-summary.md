@@ -21,15 +21,35 @@ own floor selection.
 
 `F_portable − F_legacy = 0.111111`.
 
-## Pre-registered acceptance
+## `choose_cosine_floor` selection receipts
+
+Counts are of queries whose response-best cosine fell **below** the floor, with the anchor gate
+applied afterwards: the absence verdict fires on `max_cosine < floor AND NOT has_verbatim_anchor`.
+
+**Legacy labeled real union** — the union of the two human groups (`human-prose` n = 123 +
+`human-implementation-vocabulary` n = 234), **n = 357**:
+
+| | below floor | of those, anchored (verdict suppressed) | false fires |
+|---|---|---|---|
+| at `F_legacy` = `0.345678`, legacy instrument | 5 | 2 | 3 → `3 / 357` = `0.008403` |
+| at `F_portable` = `0.456789`, portable instrument | 23 | 12 | 11 → `11 / 357` = `0.030812` |
+
+**Legacy labeled nonsense set** — the `legacy-nonsense` group, **n = 345**:
+
+| | below floor | of those, anchored (verdict suppressed) | absence verdict fired (catch) |
+|---|---|---|---|
+| at `F_legacy` = `0.345678`, legacy instrument | 237 | 3 | 234 → `234 / 345` = `0.678261` |
+| at `F_portable` = `0.456789`, portable instrument | 324 | 3 | 321 → `321 / 345` = `0.930435` |
+
+## Pre-registered acceptance — both legs, with their values
 
 The bars were registered before the run. Both legs are judged on the ORIGINAL labeled sets,
 with response-best cosines captured by the PORTABLE instrument.
 
-| leg | verdict |
-|---|---|
-| **(1)** `F_portable` false-fire rate against the legacy labeled real union | **PASS** |
-| **(2)** legacy nonsense catch at `F_portable` | **PASS** |
+| leg | bar | measured | verdict |
+|---|---|---|---|
+| **(1)** `F_portable` false-fire rate against the legacy labeled real union | **≤ 5%** (`0.05`) | `11 / 357` = **`0.030812`** | **PASS** |
+| **(2)** legacy nonsense catch at `F_portable` | **≥ 60%** (`0.60`) | `321 / 345` = **`0.930435`** | **PASS** |
 
 **Both legs pass ⇒ the portable instrument is ACCEPTED as built.** Nothing here ships on a
 caveat: a failed leg would have returned the instrument to design, not qualified this page.

@@ -30,7 +30,9 @@ the floor can matter at all in that group.*
 | `legacy-nonsense` | 324 | 3 | 321 |
 | **all** | **815** | **39** | **776** |
 
-Answered queries in this run = `1740 − 776` = **964**. That is the denominator `06` uses.
+**`verdict_not_fired_queries`** = `1740 − 776` = **964**. That is the denominator `06` uses. It
+is NOT `answered_probes` (411) and NOT `probe_manifest_pool` (456) — `00`'s population table
+names all three and says which artifact uses which.
 
 The two human groups' rows here are the same counts `01` reports as the legacy labeled real
 union (`12 + 11 = 23` below floor, `8 + 4 = 12` anchored, `4 + 7 = 11` false fires).

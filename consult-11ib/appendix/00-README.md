@@ -8,7 +8,7 @@ family so that no value can be quoted anywhere as a lore measurement. R2 has not
 | file | what it carries |
 |---|---|
 | `00-README.md` | this map, the population names, and the term glossary |
-| `01-summary.md` | both floors and the two pre-registered acceptance verdicts |
+| `01-summary.md` | both floors, their selection receipts, the two pre-registered acceptance legs, the run's measured population, and the acceptance's independence bound |
 | `02-per-group-distributions.md` | response-best cosine distributions for the six measurement groups under both instruments, with per-percentile deltas — and the commensurability bound that governs every delta on the page |
 | `per-query-rows.jsonl` | the per-query rows themselves (deterministic sample) |
 | `03-anchor-rates.md` | verbatim-anchor rate per group |
@@ -17,6 +17,7 @@ family so that no value can be quoted anywhere as a lore measurement. R2 has not
 | `06-per-hit-decomposition.md` | the per-hit cosine distribution and the over-flag decomposition |
 | `07-determinism-and-run-receipt.md` | the determinism control's verdict, and the run's provenance receipt |
 | `08-drop-diagnostics.md` | probe drops by cause, and the validity floors |
+| `09-bounds.md` | every bound that governs any number in this package |
 
 ## THREE populations, three names — never call any of them just "answered"
 

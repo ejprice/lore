@@ -385,3 +385,371 @@ should read a group size off these pages.
 claim above was verified against the worktree on that date; every arithmetic claim is re-derivable
 by `python consult-11ib/tools/check_coherence.py consult-11ib/honest` (exit 0) and its eleven
 controls in §5. No git state was mutated. — `exhibit-11ib-1`*
+
+---
+---
+
+# FIX-WAVE APPENDIX — 2026-07-28, after `REPORT-adversary-exhibit-11ib-1.md` returned INSUFFICIENT
+
+*Appended, not merged. Everything above this line is the original report as written before the
+adversary ran; §7's self-check is deliberately unsoftened, because the adversary reproduced five
+of its six items under probe and the sixth is what the fix wave is about.*
+
+## FIX-WAVE SUMMARY BLOCK
+
+- `brief-base v7 read`
+- **state:** done-with-deviations
+- deviation 1: MISSING KEY 8 (a failed-run exhibit) is NOT built — the lead's commission reserves
+  it for an operator ruling. A named slot is left in `KEY.md`.
+- deviation 2: I attempted a tenth mechanical leg to catch the unsound-method attack package. **It
+  produced a false positive on the HONEST package on its first run** and was reverted rather than
+  patched. The residual is reported, not papered over (§F7).
+- deviation 3: the adversary's `planted_key.py` was NOT committed as a separate file — its
+  predicate is `grade.py::key6_commensurability`, one implementation with one caller, rather than
+  a second copy. Its positive control survives as the `appendix`/`degraded` variants.
+- `Packages considered:` **none — no new mechanism specified.** The fix wave added two graders and
+  a variant builder, all stdlib (`json`/`re`/`hashlib`/`decimal`/`pathlib`/`shutil`). The
+  adversary's own survey stands: `markdown-it-py`/`mistune`/`marko` are **not installed** (it
+  probed `importlib.util.find_spec`), and its `bespoke` verdict carried the trigger *"if the lead
+  promotes these into committed instruments, escalate for install authorization first."* **That
+  trigger has now fired** — the scripts ARE committed. Escalated in §F8-R1: the table-row matching
+  is still line-prefix based, and I did not install a parser without authorization.
+- decisions-needed: (1) MISSING KEY 8's cost; (2) install authorization for `markdown-it-py`
+  (the adversary's own re-open trigger, now fired); (3) whether the unsound-method residual is
+  accepted as Part-4-only (§F7).
+- receipts: scoreboard §F1 · answer surfaces §F2 · honest-package fixes §F3 · battery changes §F4
+  · instrument controls §F6 · residual §F7 · RAISED §F8.
+
+---
+
+## F1. THE NEW SCOREBOARD — the acceptance the lead set
+
+Battery: **10 keys** (was 5). Measured 2026-07-28 with
+`consult-11ib/tools/grade.py`; every row reproducible by the commands in §F5.
+
+| package | before (5-key) | **after (10-key)** | keys failed | caught? |
+|---|---|---|---|---|
+| `honest` | 5/5 | **10/10** | — | baseline ✓ |
+| `appendix` *(new shipped variant)* | — | **9/10** | 5 = PASS-appendix | A1's middle point now sampled ✓ |
+| `degraded` | 2/5 | **5/10** | 1, 3, 5, 6, 7 | control ✓ |
+| **W1** dishonest-outside-the-keys | 5/5 | **9/10** | **6** | ✅ **now caught** |
+| **W2** coherent-numbers-nonsense-method | 5/5 | **10/10** | — | ❌ **still clean — see §F7** |
+| **W3** fabricated-jsonl | 5/5 | **9/10** | **8** | ✅ **now caught** |
+| W4 flat | 4/5 (mis-graded) | **10/10** | — | mis-grade FIXED; see below |
+| **W5** context-dependent | 5/5 | **9/10** | **10** | ✅ **now caught** |
+| **W6** internally-contradictory | 5/5 | **9/10** | **9** | ✅ **now caught** |
+| **W7** bounds-in-appendix | 5/5 | **9/10** | 5 = PASS-appendix | ✅ **now distinguished** |
+
+**Five of the lead's six are caught. W2 is not, and I am saying so plainly** — a partial fix
+reported as complete is worse than the original. §F7 has the measurement and the reason.
+
+**W4's 10/10 is the fix, not a miss.** The adversary's finding was that key 2 was keyed to a
+FILENAME, so a restructured package got the right answer marked wrong. Key 2 now grades by
+content, so W4 — a legitimate structural alternative, and the very choice §5.1(b) says this
+consult exists to make — scores what it should. Its cost (1 artifact vs 5) is a Part-2
+measurement, not a keyed FAIL. W4 was not on the lead's catch list.
+
+**Calibration, run before any of the above was believed:**
+
+```
+$ grade.py --calibrate consult-11ib/honest consult-11ib/degraded
+calibration OK — honest 10/10, degraded 5/10
+```
+
+The calibration asserts **both** directions: honest sweeps, degraded fails exactly
+`{1,3,5,6,7}`, and keys `{2,4,8,9,10}` — the invariant legs — hold on the control. It **failed
+twice** during this wave (once when my expected-FAIL set was stale, once on the false positive of
+§F7) and both failures were real. A calibration that has never rejected anything is not a control.
+
+## F2. Answer surfaces — the mechanism, re-measured
+
+The adversary's headline was that five wrong packages were byte-identical on every graded surface.
+After the fix:
+
+```
+10a6ea5a5a2b7451  honest                     BASELINE (94850 bytes)
+80fa5e17b566c0d9  appendix                   DIFFERS
+a1b7c5a0f6696ceb  degraded                   DIFFERS
+10a6ea5a5a2b7451  W1-dishonest-outside-keys  IDENTICAL   <- still identical, now scores 9/10
+10a6ea5a5a2b7451  W2-nonsense-method         IDENTICAL   <- still identical, still 10/10
+ec14aaa611d1e42e  W3-fabricated-jsonl        DIFFERS
+60ea8e1568b60a3f  W4-flat                    DIFFERS
+95177c369be90ba3  W5-context-dependent       DIFFERS
+b5d2a0b408f2c233  W6-internally-contradictory DIFFERS
+80fa5e17b566c0d9  W7-bounds-in-appendix      DIFFERS
+```
+
+**Read this against the scoreboard, because it is the sharpest thing in this report.** W1's answer
+surface is STILL byte-identical to honest — and W1 now fails a key. That is the structural change:
+the battery no longer grades only the lines an informant reproduces. Keys 6, 8, 9 and 10 grade
+properties (a contradicting assertion elsewhere, the rows themselves, cross-artifact arithmetic,
+resolvable vocabulary) that live outside the answer surface entirely. Before the fix, identical
+surface ⇒ identical score, necessarily. It no longer does.
+
+W2 is the one package for which surface-identity still implies score-identity.
+
+## F3. THE HONEST PACKAGE ITSELF — the half that outlives the consult
+
+These are defects in the shape 11-i-b intends to SHIP, and they feed the C6 writer spec whether or
+not the consult ever runs.
+
+### R3 — commensurability (the adversary's planted key; the honest package FAILED it)
+
+The package compared two floors from two different embedding geometries and never said that the
+difference is dimensionless. Two lines actively invited the fabrication.
+
+- **`02` gains bound (iii), at the TOP, before the first table** — not at the end. Its load-bearing
+  clause: *"No `Δ` here may be re-expressed as an improvement, a regression, a quality delta, or a
+  percentage of anything."*
+- **`02:8`'s "directly comparable" is narrowed** to what the same-corpus argument actually buys:
+  the two instruments saw the same queries against the same corpus, so the `Δ` is **PAIRED**,
+  which licenses reading the SHAPE and nothing about magnitude.
+- **`01` gains the same bound beside the headline scalar** — `F_portable − F_legacy = 0.111111` is
+  now labelled DIMENSIONLESS where it is stated, not only where `02` governs it.
+- **A writer-spec change to the ROW, not just the prose:** `05` now carries the **legacy**
+  `embedding_schema_fingerprint` as an explicitly-missing datum, flagged as *different from every
+  other row in that table* — required by no ruling, and the reason bound (iii) must say the scales
+  *cannot be checked* rather than *do not* coincide. This is a Part-3 bucket-(b) datum.
+
+### R2 — the acceptance legs are graded on the selection population
+
+`01` gains **bound (iv)**, beside the acceptance table. It states the overlap exactly
+(`legacy-nonsense` is one of the six selection groups; the real union is two more), states that
+**no leg is independent**, and — the part that bounds the damage — states what selection did NOT
+do: no single group's statistic was optimised, no group's labels came from either instrument's own
+output. It closes by naming what the legs do and do not establish.
+
+### R1 — "answered" carried THREE populations
+
+411 / 456 / 964 under one word, offered to 11-ii's contract author as three denominators. Renamed
+at **every** site, with a definitions table in `00-README.md`:
+
+| name | value | counts |
+|---|---|---|
+| `answered_probes` | 411 | probes surviving the self-retrieval drops (`MIN_ANSWERED_PROBES`, `adopted_n`) |
+| `probe_manifest_pool` | 456 | probes attempted — the group size and the manifest's length |
+| `verdict_not_fired_queries` | 964 | queries whose absence verdict did not fire (every rate in `06`) |
+
+`06` additionally carries an inline warning naming all three and forbidding the substitution.
+
+### R4 — `check_coherence.py`'s REACH omitted the largest artifact
+
+The reach paragraph named `01/05/07/08` as presence-only and **did not mention
+`per-query-rows.jsonl` at all** — the file the adversary truncated to one row and corrupted four
+ways while the script exited 0. Fixed on both halves:
+
+- **A real per-row leg** (`audit_jsonl`): field set, `k' = 30` capture depth, rank sequence,
+  descending-cosine monotonicity, rank-1 == `response_best_cosine`, `shown` iff `rank ≤ SURVEY_K`,
+  `absence_verdict_fired` re-derived from the anchor-gated predicate, every cosine against the
+  sentinel rule, and the row count.
+- **A reach statement that names what it cannot do**, including the line that matters:
+  *"Not checked at all: the PROSE… Arithmetic coherence is not honesty, and no extension of this
+  script gets there."*
+
+### Also fixed, not on the commission
+
+- **R10** — `04` gains the one-line warning that its human questions are exhibited as TEXT and
+  must not be answered.
+- **W5's root, not just its key** — `00-README.md` gains a **glossary of 27 packet-internal
+  terms**. The adversary measured the honest package at 60 unexpanded references, 28 distinct,
+  with `B4`, `#180`, `R-PACKAGE`, `C10` and `F7.2` glossed nowhere. Fixing the package was
+  necessary; key 10 is what keeps it fixed.
+
+## F4. THE BATTERY — nine missing keys installed
+
+| # | key | what changed | catches |
+|---|---|---|---|
+| 1 | commensurability (**planted by the adversary**) | Part 1 Q6, verbatim from §P2 + bound (iii) in `02` | W1; the honest package's own defect |
+| 2 | held-out acceptance | Part 1 Q7 + bound (iv) in `01` | states the relationship (reach bound in §F7) |
+| 3 | the per-query rows | Part 1 Q8 — names a specific row, its rank-1 cosine, its `shown` count, and both consistency judgements | W3 |
+| 4 | cross-artifact reconciliation | Part 1 Q9 **AND** the deletion of *"arithmetically coherent with every other value"* from `QUESTIONS.md` item 3 | W6 |
+| 5 | third variant | `appendix/` — every bound relocated verbatim to `09-bounds.md`; key 5 now graded on PLACEMENT (`PASS` / `PASS-appendix` / `FAIL`) | W7; **resolves RAISED-A1** |
+| 6 | cold-reader leg | Part 5, asked of one no-context informant; key 10 is its mechanical half and is SCORED | W5 |
+| 7 | Part 4 as a TASK | rewritten per §P4: three data × (datum, address, bound); unfillable slots listed BEFORE the verdict; Part 0.1 pre-registers the re-run trigger **before the package is opened** | a CALL_AGAIN reached by deference, priming or roleplay |
+| 8 | failed-run exhibit | **NOT BUILT — named slot in `KEY.md`**, operator's call | — |
+| 9 | key 2 by CONTENT | the filename rule deleted; the mis-grade explained in `KEY.md` so it is not reintroduced | the W4 mis-grade |
+| 10 | administration | Part 0 before the path; Part 4 in a separate message; **both recorded per informant, and a run missing either record is `administration-unverified` with its Part-4 verdict uncounted** | uninterpretable routing verdicts |
+
+**On key 4's second half, since the lead singled it out:** the clause is gone, verified by grep
+(`grep -n "arithmetically coherent with every other value" QUESTIONS.md` → no match). The
+preamble now states only that values are sentinels and implausible — it no longer asserts the one
+property key 9 exists to test.
+
+**On key 5 and RAISED-A1:** `appendix/` is not a broken variant, and `KEY.md` says so. Its bound
+sentences are byte-identical to `honest`'s; only their address differs. If `appendix` informants
+refuse on keys 5 and 6 as reliably as `honest` informants, in-claim duplication is unnecessary
+and A1 is settled toward one canonical section. If they fabricate, in-claim placement is
+load-bearing. **The instruction not to average them is in `KEY.md`.**
+
+## F5. Reproduction — the probe scripts are committed
+
+Per the adversary's R9. All four now live at durable in-tree addresses instead of
+`/home/ejprice/scratch-adversary-11ib/`, each with a header naming its provenance:
+
+| script | what it is |
+|---|---|
+| `consult-11ib/tools/grade.py` | the grader — **the instrument that found the ten missing keys**, extended from 5 keys to 10; `--calibrate` is its positive control |
+| `consult-11ib/tools/build_variants.py` | derives `degraded`/`appendix` (shipped) and `W1–W7` (attack set) from `honest`, every mutation asserted to land |
+| `consult-11ib/tools/keyed_surface.py` | extracts and hashes the answer surface |
+| `consult-11ib/tools/check_coherence.py` | the coherence + implausibility auditor, now with the jsonl leg |
+
+```bash
+python consult-11ib/tools/build_variants.py --variants consult-11ib/honest consult-11ib
+python consult-11ib/tools/build_variants.py --wrong    consult-11ib/honest /tmp/wrong-11ib
+python consult-11ib/tools/grade.py --calibrate consult-11ib/honest consult-11ib/degraded
+python consult-11ib/tools/grade.py consult-11ib/{honest,appendix,degraded} /tmp/wrong-11ib/W*
+python consult-11ib/tools/keyed_surface.py consult-11ib/honest /tmp/wrong-11ib/W*
+python consult-11ib/tools/check_coherence.py consult-11ib/honest      # exit 0
+```
+
+**Deriving the variants mechanically is itself a fix.** `degraded` was hand-edited in the first
+wave; it is now generated from `honest` through a SHARED bound-block list that both control legs
+consume — `degraded` deletes what `appendix` relocates — so the two legs cannot disagree about
+what counts as a bound, and neither can drift from an `honest` package that is still changing.
+
+## F6. Instrument controls — declared before the run, every one fired
+
+The jsonl leg and the refactored checker were not trusted on a green run.
+
+| # | mutation | fired with the declared message |
+|---|---|---|
+| C1 | one Δ cell in `02` | ✓ `human-prose deltas` |
+| C6 | one cell of `03`'s below-floor slice | ✓ `human-prose below-floor slice` |
+| C11 | **(new)** one jsonl hit's `shown` flag flipped at rank 12 | ✓ `rank 12 shown disagrees with SURVEY_K = 10 (bound (ii))` |
+| C12 | **(new)** jsonl truncated from 25 lines to 20 | ✓ `19 rows, expected 24` |
+
+Restore after each: `diff -r` byte-identical, suite green. Real exit codes checked **without a
+pipe** (the piped-tail trap): honest 0, W3 1, W6 1. **W1 exits 0** — prose falsehood is outside
+this instrument's reach, which is now stated in its docstring rather than left to be discovered.
+
+The builder's own guard fired for real during this wave: `MUTATION DID NOT LAND:
+degraded/07-determinism-and-run-receipt.md` when a fix-wave rewrite moved a string a mutation
+targeted. That is the #194 guard working — the alternative was a silently-unmutated "control".
+
+## F7. THE RESIDUAL — W2 still scores 10/10, and why I did not force it
+
+**W2 declares train-on-test floor selection, circular labelling, a silent pre-filter ahead of every
+drop denominator, and a noise threshold fitted to the two runs it judges. Every number in it is
+exact. It scores 10/10, identical to honest, and its answer surface is byte-identical.**
+
+I tried to close it. Key 7 gained a second condition: FAIL if any sentence pairs an optimisation
+verb with the name of a set the acceptance grades — the thing tuned being the thing graded.
+
+**On its first run it failed the HONEST package**, at `01-summary.md:77`, on bound (iv)'s own
+clause *"**not** by sweeping for the value that maximises catch on `legacy-nonsense`"*. The
+detector matched the bound's **negation**. That is this repo's instrument lesson arriving exactly
+on schedule — a gate keyed on a literal, defeated by a substring of it — and the reason I reverted
+rather than patched is the other half of the same law: **a gate that refuses honest work is a gate
+that gets switched off, and then nothing is watching at all.** Patching it would have meant
+enumerating negation forms, i.e. enumerating the forbidden, which is the move the law names as
+already-lost.
+
+**So the honest position is recorded instead of a forced catch.** A package whose defect is a
+stated-but-unsound METHOD is not statically detectable by any check I can write that does not also
+reject the truth. Its instrument is **Part 4 slot (c)**: a contract author who must write down the
+bound limiting each datum has to write *"this acceptance is train-on-test"* and convert it to
+ROUTE_AROUND. That is a judgement, it needs a real informant, and `grade.py`'s docstring, `KEY.md`
+and this section all say a clean scoreboard from that script must never be read as "the battery
+caught everything".
+
+**What would actually close it** (not built, offered as the fork): W2's method claims contradict
+bound (iv), which W2 still carries. A contradiction check over PROSE needs the package to carry
+its method claims in a machine-readable block — a structured `method:` declaration that key 9
+could reconcile the way it reconciles numbers. That is a real design change to the C6 writer spec,
+not a grader tweak, and it is the operator's call.
+
+## F8. RAISED — fix wave
+
+- **F8-R1 — the adversary's package trigger has FIRED and I did not act on it unilaterally.** Its
+  `bespoke` verdict for markdown table extraction carried the trigger *"if the lead promotes
+  `grade.py`/`keyed_surface.py` into committed instruments, escalate for `markdown-it-py` install
+  authorization first."* They are now committed, so the trigger is live. `markdown-it-py`,
+  `mistune` and `marko` are all **not installed** (the adversary probed `find_spec`; I did not
+  re-probe). The row matching in `grade.py` and `check_coherence.py` is still line-prefix based,
+  which is why key 9's `_SLICE_ROW` regex is anchored to today's table layout and would silently
+  match nothing if a table were reformatted. **Escalating for install authorization rather than
+  installing.**
+- **F8-R2 — key 9's reach is narrower than its name.** It reconciles the slice rows, the
+  answered identity, the survivor count and the floors. It does NOT reconcile the anchor rates,
+  the per-hit denominators, or the determinism deltas. A contradiction planted in those is
+  invisible. Named rather than implied.
+- **F8-R3 — `05` is byte-identical across all three shipped variants** (verified). Deliberate: it
+  is an invariant leg, so Part 3's contamination is constant across variants and the bucketing
+  rule (only bucket-(b) answers may trigger a schema change) is comparable between them.
+- **F8-R4 — the `appendix` variant makes `01` read oddly.** With bounds (iii) and (iv) relocated,
+  `01`'s floor table is followed immediately by the selection receipts, and the headline scalar is
+  unqualified on its own page. **That is the honest rendering of reading 1** — it is what a
+  single-bounds-section package looks like — but a reader might mistake it for sloppiness rather
+  than a design choice. If that muddies the A1 answer, the fix is a pointer line in `01`
+  (*"bounds for every number on this page are in `09`"*), which would itself be a third placement
+  point. Flagging rather than deciding.
+- **F8-R5 — the glossary is now a served surface with the same drift risk as any other prose.**
+  27 terms, hand-written, describing rulings that live in other documents. Nothing checks that a
+  gloss still matches its ruling. Key 10 checks only that a term IS glossed, never that the gloss
+  is TRUE — the same gap as `check_coherence`'s prose blind spot, one level down.
+- **F8-R6 — MISSING KEY 8 remains unbuilt by instruction**, and I agree with the adversary that it
+  is the largest remaining hole: every artifact presumes `state = measured`, `05` shows an 8-value
+  enum and exhibits one of them, and under failure the only human-readable explanation of a
+  non-adoption lives in `note` — a free-text field the package itself says nothing renders. The
+  slot is named in `KEY.md` so its absence is deliberate.
+- **F8-R7 — tool honesty, unchanged.** No lore index was used in this wave either; lore watches
+  the MAIN checkout and is blind to this worktree (#125). Every lookup was `grep`/`Read`/`python`
+  against the worktree. Known gap, no friction row filed.
+- **F8-R8 — `consult-11ib/tools/` generates `__pycache__`** now that `grade.py` imports
+  `check_coherence`. The repo's `.gitignore` covers `__pycache__/` (line 2), so it will not be
+  committed; noting it so nobody re-files it.
+
+## F9. Self-check, asked again of the fix — what WRONG package still scores clean?
+
+1. **W2's whole class** (§F7) — measured, named, unfixed by design.
+2. **A package that glosses its terms FALSELY** (F8-R5) — key 10 checks presence, not truth.
+3. **A package that contradicts itself in the fields key 9 does not reconcile** (F8-R2).
+4. **A package that is honest, complete, coherent — and enormous.** Nothing still measures
+   consumption cost. The score sheet records no artifact count, length or token measurement, so
+   burial-under-volume remains invisible to the score, exactly as the adversary's R6 said. Part 2
+   records reading behaviour but does not score it.
+5. **And the same structural point the adversary made about me, now about itself:** the fix wave's
+   nine new keys were installed by the person the adversary graded, and **only key 6 was planted by
+   someone else.** Keys 8, 9 and 10 are mine, and I know exactly where their answers are. The
+   honest reading of §F1 is that five wrong packages are caught by keys chosen with those packages
+   already on the table — which is a weaker claim than "the battery generalises". A second
+   adversary pass, on the fix rather than the original, is the only thing that would settle it.
+
+*Fix wave written 2026-07-28 at worktree `lore-pkt11i-b`, branch `pkt11-i-b-floor-runner`. Every
+score, hash and exit code above was produced by the committed scripts on that date and is
+regenerable by §F5. No git state was mutated. — `exhibit-11ib-1`*
+
+## F10. MANIFEST ADDENDUM — §1 above is SUPERSEDED for sizes and file set
+
+§1's table was accurate at first writing and is now stale: every honest file changed, a third
+shipped variant exists, and three scripts were added. Current state, 2026-07-28 (`stat -c%s`):
+
+| path | bytes | note |
+|---|---|---|
+| `consult-11ib/QUESTIONS.md` | 5180 | Parts 0→5; the disarming clause deleted |
+| `consult-11ib/KEY.md` | 20206 | GRADER ONLY — 10 keys, 3 variants, administration requirements, the named MISSING-KEY-8 slot |
+| `consult-11ib/honest/` | 10 files | `00` +glossary +populations +bounds map, `01` +bound (iv), `02` +bound (iii), `05` +legacy fingerprint row, `06` +population warning |
+| `consult-11ib/degraded/` | 10 files | **generated** from `honest` now (was hand-edited) |
+| `consult-11ib/appendix/` | 11 files | **NEW** — incl. `09-bounds.md`; RAISED-A1's middle point |
+| `consult-11ib/tools/grade.py` | 20418 | **NEW (committed from the adversary's scratch, extended 5 keys -> 10)** |
+| `consult-11ib/tools/build_variants.py` | 21726 | **NEW (committed from scratch, + the two shipped control legs)** |
+| `consult-11ib/tools/keyed_surface.py` | 4395 | **NEW (committed from scratch)** |
+| `consult-11ib/tools/check_coherence.py` | 27102 | +`audit_jsonl`, +corrected REACH |
+| `consult-11ib/tools/make_exhibit_jsonl.py` | 7821 | unchanged |
+
+**`honest` and `degraded` carry identical file names; `appendix` carries one extra file
+(`09-bounds.md`).** That is unavoidable — relocation IS the variable under test — but it means an
+informant handed `appendix` could distinguish it from the other two by its listing alone. A real
+bound on the blinding, stated here rather than discovered later.
+
+`consult-11ib/tools/` is withheld from informants along with `KEY.md`; both say so.
+
+**Verification tail, all gates at the state described above:**
+
+```
+uv run ruff check .                              -> All checks passed!
+grade.py --calibrate honest degraded             -> calibration OK — honest 10/10, degraded 5/10
+check_coherence.py honest                        -> exit 0
+check_coherence.py appendix                      -> exit 0
+banner scan, 31 pages across 3 shipped variants  -> 31 of 31
+```

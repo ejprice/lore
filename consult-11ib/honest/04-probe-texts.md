@@ -5,6 +5,10 @@
 *C6(d). The referent is visible, not paraphrased. Nothing on this page is scored: no cosine,
 rate or verdict anywhere in this package is attached to any pair below.*
 
+⚠ **The human questions below are exhibited as TEXT. Do not answer them.** They are real
+questions about lore's own code with real answers, and answering one spends effort on a task
+this package does not ask for.
+
 **Provenance of the text on this page — the one place where this package is not synthetic.**
 
 - The **human questions** are the first ten `<question>` texts, in document order, of the

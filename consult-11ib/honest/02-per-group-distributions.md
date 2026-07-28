@@ -4,9 +4,22 @@
 
 *C6(b). The per-query rows themselves are in `per-query-rows.jsonl`.*
 
+> **Bound (iii) — the two instruments' cosines are NOT commensurable. Read this before the
+> first table.** `F_legacy` and `F_portable` are thresholds inside two DIFFERENT embedding
+> geometries. Their difference `0.111111` has no units and is **not a retrieval-quality
+> change**: nothing here establishes that a cosine of `0.5` under one instrument means what a
+> cosine of `0.5` means under the other. This package records one
+> `embedding_schema_fingerprint` — the portable row's (`05`, column 12) — and **none for the
+> legacy instrument**, so the two scales cannot even be checked for coincidence. Every `Δ` on
+> this page is a difference of two SHAPES measured on the same queries, read only for whether
+> the shape is constant. **No `Δ` here may be re-expressed as an improvement, a regression, a
+> quality delta, or a percentage of anything.** Measuring quality across instruments needs a
+> shared human-judged relevance set; this run has none.
+
 Both instruments captured a response-best cosine for every query in all six groups on the same
-corpus snapshot, so the two instruments are directly comparable group by group and percentile
-by percentile. `Δ` throughout is `portable − legacy`.
+corpus snapshot. That buys exactly one thing: the two instruments saw the same queries against
+the same corpus, so their `Δ` is **PAIRED** — which licenses reading the SHAPE of the
+difference, and nothing about its magnitude. `Δ` throughout is `portable − legacy`.
 
 `n` values are the group sizes; the six sum to **1740**, the run's full query set.
 
@@ -90,7 +103,7 @@ p5–p95 width: legacy `0.363636` · portable `0.303030` · **Δ width `−0.060
 | `legacy-nonsense` | `+0.030303` | `+0.020202` | `−0.040404` | `−0.060606` |
 
 **Derived from the columns above, and the reason the headline scalar in `01` is not sufficient:**
-the shift from legacy to portable is not a constant. It differs across percentiles WITHIN a
+the paired difference from legacy to portable is not a constant. It differs across percentiles WITHIN a
 group (`human-implementation-vocabulary`: `−0.030303` at p5, `+0.151515` at p95), it differs
 across groups at the same percentile (median Δ ranges `+0.030303` to `+0.111111`), it **changes
 sign** in `legacy-nonsense` above the median, and the p5–p95 width changes by a different amount

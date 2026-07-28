@@ -6,7 +6,7 @@
 AND counted — no probe is silently discarded, and no dropped probe contributes a synthetic
 `0.0`.*
 
-## Self-retrieval drops — the `self-supervised-answered` pool (n = 456)
+## Self-retrieval drops — `probe_manifest_pool` (the `self-supervised-answered` group, n = 456)
 
 A probe self-retrieves when the probe's own SOURCE CHUNK appears in the `k' = 30` hit capture,
 matched on **`point_id` equality**. It is a drop when it does not.
@@ -21,7 +21,8 @@ matched on **`point_id` equality**. It is a drop when it does not.
 Gate: the run is recorded `measurement_failed` if the self-retrieval drop rate exceeds **20%**.
 `0.098684 ≤ 0.20` — **PASS**.
 
-Surviving probes: `456 − 45` = **411**. That is the `adopted_n` written to the row in `05` — the
+Surviving probes: **`answered_probes`** = `probe_manifest_pool − 45` = `456 − 45` = **411**.
+That is the `adopted_n` written to the row in `05` — the
 ACTUAL surviving count, not a nominal ladder rung.
 
 **Why the match key is stated.** The 12 `sibling_chunk_same_file_only` drops are exactly the
@@ -52,7 +53,7 @@ The `MIN_ABSENT_SAMPLES` floor is evaluated AFTER these drops, on 533, not on 56
 
 | floor | required | this run | met |
 |---|---|---|---|
-| `MIN_ANSWERED_PROBES` | 30 | 411 | ✓ |
+| `MIN_ANSWERED_PROBES` | 30 | 411 = `answered_probes` | ✓ |
 | `MIN_IDENTIFIER_PROBES` | 15 | 15 | ✓ (at the floor) |
 | `MIN_ABSENT_SAMPLES` | 30 | 533 | ✓ |
 
@@ -62,7 +63,7 @@ would have been adopted.
 ## The probe manifest and the paired decomposition
 
 The row persists a probe manifest: **456** `(point_id, probe_text_sha512)` pairs over the run's
-answered pool, written in the same row-write as the measurement.
+`probe_manifest_pool`, written in the same row-write as the measurement.
 
 Within each run, the paired-decomposition check compares the floor computed over the surviving
 manifest subset against the floor computed over the full pool:

@@ -18,12 +18,24 @@ Plus the implausibility leg: every INDEPENDENTLY CHOSEN real value must be a two
 definition — they are whatever the arithmetic makes them.
 
 **REACH — stated because a gate is an invariant only over what it actually inspects.**
-Positionally checked, cell by cell (a value moved between cells is caught): every stats row,
-delta row, width line and cross-group row in ``02``; both tables in ``03``; the decomposition
-and per-hit rows in ``06``. Presence-only (a duplicate elsewhere in the same file can mask an
-edit — this is MEASURED, see :meth:`Auditor.present`): the tables in ``01``, ``05``, ``07`` and
-``08``. Not checked at all: the prose. Extending the positional leg to ``01``/``08`` is the
-obvious next move if this package is ever regenerated rather than hand-written.
+
+- **Positionally checked, cell by cell** (a value moved between cells is caught): every stats
+  row, delta row, width line and cross-group row in ``02``; both tables in ``03``; the
+  decomposition and per-hit rows in ``06``.
+- **Schema- and predicate-checked, row by row:** ``per-query-rows.jsonl`` — every row's field
+  set, its hit capture's depth and monotonicity, its ``shown`` flags against ``SURVEY_K``, its
+  ``absence_verdict_fired`` against the anchor-gated predicate, and every cosine against the
+  sentinel rule. **This leg was ABSENT until 2026-07-28 and its absence was a real hole:** an
+  adversary truncated the file to one row and corrupted it four ways, and this script — whose
+  reach statement did not mention the file at all — exited 0.
+- **Presence-only** (a duplicate elsewhere in the same file can mask an edit — MEASURED, see
+  :meth:`Auditor.present`): the tables in ``01``, ``05``, ``07`` and ``08``.
+- **Not checked at all: the PROSE.** This is the load-bearing limit. Every falsehood an
+  adversary planted in this package's sentences — an inverted scope bound, a stability claim
+  over an n = 15 pool, an instruction to render stored free text unsanitised, an assertion that
+  two instruments' cosines are commensurable — passed this script with exit 0. **Arithmetic
+  coherence is not honesty**, and no extension of this script gets there; that is what the
+  consult battery's keys are for.
 
 Silent on success, loud on failure; non-zero exit on any violation.
 
@@ -32,6 +44,7 @@ Run: ``python consult-11ib/tools/check_coherence.py consult-11ib/honest``
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from decimal import Decimal
@@ -481,6 +494,85 @@ def audit_determinism(auditor: Auditor) -> None:
     auditor.present(DETERMINISM, "within_ci_by_construction", "typed verdict")
 
 
+JSONL_NAME = "per-query-rows.jsonl"
+JSONL_ROWS = 24
+K_PRIME = 30
+REQUIRED_ROW_KEYS = frozenset(
+    {
+        "_synthetic", "query_id", "group", "sampled_at_position", "query_text",
+        "response_best_cosine", "has_verbatim_anchor", "absence_verdict_fired",
+        "source_point_id", "self_retrieved", "self_retrieval_drop_cause", "hits",
+    }
+)
+REQUIRED_HIT_KEYS = frozenset({"rank", "point_id", "vector_cosine", "shown"})
+
+
+def audit_jsonl(auditor: Auditor) -> None:
+    """The per-query rows: schema, capture depth, monotonicity, and every derived flag.
+
+    C6(b) requires *"the per-query jsonl rows themselves"*, and until 2026-07-28 no instrument
+    in this packet inspected them — so a truncated, fabricated file passed every gate. Each
+    predicate below is re-derived from the row rather than read off it.
+    """
+    path = auditor.package / JSONL_NAME
+    if not path.exists():
+        auditor.violations.append(f"{JSONL_NAME}: absent")
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        auditor.violations.append(f"{JSONL_NAME}: empty")
+        return
+    auditor.check(
+        json.loads(lines[0]).get("_banner") == BANNER, f"{JSONL_NAME}: first line is not the banner"
+    )
+    rows = [json.loads(line) for line in lines[1:]]
+    auditor.check(len(rows) == JSONL_ROWS, f"{JSONL_NAME}: {len(rows)} rows, expected {JSONL_ROWS}")
+    for row in rows:
+        query = row.get("query_id", "<no query_id>")
+        auditor.check(
+            set(row) == REQUIRED_ROW_KEYS,
+            f"{JSONL_NAME}/{query}: field set is {sorted(set(row) ^ REQUIRED_ROW_KEYS)} off spec",
+        )
+        auditor.check(row.get("_synthetic") is True, f"{JSONL_NAME}/{query}: not marked synthetic")
+        auditor.check(
+            row.get("group") in GROUPS, f"{JSONL_NAME}/{query}: group {row.get('group')!r} unknown"
+        )
+        best = row.get("response_best_cosine")
+        auditor.sentinel(f"{best:.6f}", f"{JSONL_NAME}/{query} response_best_cosine")
+        hits = row.get("hits") or []
+        auditor.check(
+            len(hits) == K_PRIME, f"{JSONL_NAME}/{query}: {len(hits)} hits, expected k' = {K_PRIME}"
+        )
+        cosines = [hit.get("vector_cosine") for hit in hits]
+        auditor.check(
+            cosines == sorted(cosines, reverse=True),
+            f"{JSONL_NAME}/{query}: hit cosines are not monotone descending",
+        )
+        auditor.check(
+            bool(hits) and cosines[0] == best,
+            f"{JSONL_NAME}/{query}: rank-1 cosine != response_best_cosine",
+        )
+        for hit in hits:
+            auditor.check(
+                set(hit) == REQUIRED_HIT_KEYS, f"{JSONL_NAME}/{query}: a hit's field set is off spec"
+            )
+            auditor.check(
+                hit.get("shown") is (hit.get("rank", 0) <= SHOWN_K),
+                f"{JSONL_NAME}/{query}: rank {hit.get('rank')} `shown` disagrees with "
+                f"SURVEY_K = {SHOWN_K} (bound (ii))",
+            )
+            auditor.sentinel(f"{hit.get('vector_cosine'):.6f}", f"{JSONL_NAME}/{query} hit cosine")
+        auditor.check(
+            row.get("absence_verdict_fired")
+            == (Decimal(f"{best:.6f}") < FLOOR_PORTABLE and not row.get("has_verbatim_anchor")),
+            f"{JSONL_NAME}/{query}: absence_verdict_fired disagrees with the anchor-gated predicate",
+        )
+        auditor.check(
+            [hit["rank"] for hit in hits] == list(range(1, K_PRIME + 1)),
+            f"{JSONL_NAME}/{query}: ranks are not 1..{K_PRIME}",
+        )
+
+
 def audit_banner(auditor: Auditor) -> None:
     """Exhibit rule 1: every page carries the banner on its first line."""
     for path in sorted(auditor.package.iterdir()):
@@ -500,6 +592,7 @@ def audit(package: Path) -> list[str]:
         audit_drops,
         audit_per_hit,
         audit_determinism,
+        audit_jsonl,
         audit_banner,
     ):
         leg(auditor)

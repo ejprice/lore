@@ -106,6 +106,15 @@ shipped field set is sufficient BEFORE the additive valve closes.
 | anchored-excluded count | `39` | C2 |
 | corpus snapshot counts (file / chunk / per-tier) | `1234` files, `23456` chunks | §7 persistence |
 | axis columns (`statistic`, `scope`) on the measurement row | `response_best_cosine`, `SYNTHETIC_SCOPE` | F6 / decision 5 |
+| the **LEGACY** instrument's `embedding_schema_fingerprint` | unrecorded — no such value exists | nothing yet; see below |
+
+⚠ **The last row is different from the others and is called out because it is not on anyone's
+list.** Every other row above is a column some ruling already requires. The legacy instrument's
+fingerprint is required by nothing — and its absence is exactly why `02`'s bound (iii) has to
+say the two instruments' scales *cannot be checked* for coincidence rather than *do not*
+coincide. A reader cannot verify the premise the package's own comparison rests on. Recording
+it, or recording explicitly that it is unrecoverable, is a writer-spec decision this consult
+should make.
 
 Everything in that table exists in this package only as prose in these documents. A distinction
 the row never recorded is a distinction no later render can serve.
