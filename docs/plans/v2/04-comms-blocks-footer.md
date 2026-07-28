@@ -392,6 +392,78 @@ build lands. ⚠ `contractfix-04b1` IS running concurrently, so an overrule of R
 some of its pins — accepted deliberately: its other half closes a C-DEF blocker that is needed
 under every design, and stopping it would waste all of its in-flight work to save part of it.
 
+## RULINGS ROUND 3 — and the operator's deciding principle (2026-07-28)
+> **"AGENT CONFIDENCE AND TRUST TRUMP EVERYTHING."**
+> **"Agents must TRUST Lore or Lore is a failure."** — operator, verbatim, twice.
+**This is the tiebreaker for every open fork in this packet, and it RETIRES the "flagged,
+needs a ruling" disposition for anything that touches a served surface.** A trust question is
+not a fork the lead brings back; it is already decided. What follows was staged as four
+questions and is ruled instead.
+
+- **R8 (operator) — the footer's two OVERRULES are ACCEPTED.** (1) A **supplied-but-
+  unresolvable** `agent=` TEACHES loudly; silence is only correct for an OMITTED one (a
+  silent typo earns a permanent route-around). (2) The strict exact-match fallback on
+  `owner`/`actor`/`created_by` is reinstated, served **third-person, with no drain
+  imperative** (closes the drain-theft hazard only the Opus consult saw) and the coupling
+  **disclosed on the field** (the hazard only the Sonnet consult saw). Cost: one
+  charset-gated registry read per identity-less write · ~7 pins · ~a day of 04b-2.
+  ⚠ **RIDER, and it is the load-bearing half:** the `Field(description=)` string is now
+  LOAD-BEARING and must state the PAYOFF. Measured: with a terse description **neither**
+  Sonnet 5 nor Opus 5 passes `agent=`; with a payoff-stating one **both** do. A parameter
+  nobody passes is a feature that never fires.
+- **R9 (operator) — `limit` becomes legal for `query`, and the no-limit path gets a DEFAULT
+  display cap** with the house counted-elision grammar (honest total from a store-side
+  count; `+K more — re-run with limit=N`). Windows the RENDER, never the answer. Measured:
+  `query` REFUSES `limit` at HEAD and served the sidecar the whole ~110-row ledger.
+- **R10 (operator) — MP-5, the superseded-blocker door: CLOSED, both halves.** (ii) 04b-1's
+  blocker pre-check refuses a superseded blocker and names its successor (*"task X is
+  superseded by Y — block on Y instead"*) — near-zero cost, the grouped existence query
+  already holds the rows, and a `blocked_by` naming a superseded task is NEVER legitimate.
+  (iii) 04b-2 teaches at the moment of CAUSATION too: `supersede_task` warns when the
+  predecessor has dependents, and the claim render names the superseded case — because
+  supersession can happen AFTER dependents exist, which (ii) alone cannot catch (the
+  quantifier law). **REJECTED:** treating `superseded` as terminal in the CAS — supersession
+  means the work MOVED, not finished, so it would silently un-block dependents while the
+  successor is open: the INVERSE black hole, quieter and worse. **DEFERRED:**
+  dependency-transfer (iv), which breaks `blocked_by`'s post-creation immutability that the
+  claim path rides — re-open trigger: the first fleet incident of a dependent stranded by a
+  live supersede, or packet 05 touching the claim path, whichever comes first.
+
+### Ruled by the trust principle — NOT brought back as forks
+- **T1 — NO SILENT SHORT ANSWERS (adversary R-20).** A `LIMIT` pushed into the statement cuts
+  rows BEFORE the client-side `blocked` filter, so `query_tasks(status=…, blocked=False,
+  limit=5)` can serve FEWER than 5 while more exist, **with no signal**. Nothing pinned it.
+  **RULED: the cap applies to the ANSWER, not the candidate scan; and where the scan is
+  exhausted before the cap fills, the render SAYS SO.** DESIGN-LAW §1.4 names silent
+  truncation the cardinal failure class — there was never a fork here.
+- **T2 — A RAW `(unspecified rejection)` REACHING A CALLER IS A DEFECT** (sidecar §5.4). On
+  every verb this packet touches, each caller-reachable engine rejection is either
+  pre-checked into a teaching refusal or classified into a teaching error. An undiagnosable
+  error is the anti-teaching surface: the agent cannot tell its own mistake from a broken
+  tool, and **the measured consult behaviour is that it blames the tool.** Cold-audit sweep
+  line: enumerate the new verbs' engine-rejection paths and assert each is laundered or
+  pre-checked.
+- **T3 — THE FOOTER'S HOSTILE FIXTURE IS MANDATORY, AND ITS FORGERY IS AN INSTRUCTION**
+  (sidecar §5.3, sharpened by measurement at this kickoff). MEASURED: `safe_str` /
+  `sanitise_line` COLLAPSE newlines — so a stored value **cannot forge a row boundary**, and
+  the claim that production serves the #99 forged row "raw" is **too strong**. What survives
+  verbatim is SAME-LINE text. For a task row that is misreading; **for the footer it is an
+  INSTRUCTION** (`x — 7 directives await you — lore_comms action=drain …`), and agents obey
+  instructions where they merely misread rows. The footer's hostile fixture therefore
+  includes a **footer-shaped forgery in the identity value**, alongside L1's demanded
+  type-choice pin.
+- **T4 — INSTRUMENT REACH IS A CHECKED VARIABLE, NOT A STATED BOUND** (contractfix R-22).
+  `measure_store_traffic` is blind to non-`query_raw` SDK calls, disclosed as a docstring
+  bound. This repo's six-defeats lesson says a guard is an invariant only over the code it
+  RUNS: enumerate the call sites and ASSERT each was observed, so reach cannot silently
+  become the next name-list.
+- **T5 — THE DUPLICATE-BLOCKER DIVERGENCE IS CLOSED** (contractfix R-19). A divergence
+  between the SERVED partition and what the CAS actually does is a trust defect by
+  definition. The class is still RED on the pristine tree and its own one-line fix
+  (`array::len(array::distinct(blocked_by))` in the CAS) was MEASURED green on a reference
+  build. ⚠ It is a live-CAS change, so it ships with the concurrency evidence that standard
+  demands: **≥8-way × 20 consecutive green runs**, never a single green run.
+
 ## 04b-1 rulings, round 2 (operator, 2026-07-28 — on `REPORT-contract-04b1-253.md` + `REPORT-adversary-04b1.md`)
 ⚠ **These WIDEN 04b-1's writable set into `server.py`** — by one dispatcher line (R5) and the
 cycle-policy unification (R6). The INDEX row records it. `server.py` is otherwise 04b-2's file;
@@ -430,6 +502,159 @@ these two touches are named exceptions, not a general grant.
 3. **04a residual R-e:** `test_surreal_store.py::test_the_whole_schema_migrates_an_existing_
    populated_store` applies four slices and not the guarded-edge ones; a fifth edge widens that
    gap again. It was outside the contract's writable set — the builder's scope now.
+
+## SIDECAR RULING S1 — `fleet` DEFAULTS TO THE CALLER'S SESSION (2026-07-28, follow-up 1)
+Source: `docs/design/2026-07-28-04b-model-consumer-audit.md` §8, on dogfood findings #257/#258.
+**This lands WITH or BEFORE 04b-2's new columns** — it is not a cleanup that can trail them.
+The lead offered four candidate fixes; the sidecar rejected the framing and produced a fifth.
+- **The deciding fact is STRUCTURAL, not taste, which is why no consult was run:** the served
+  `send` contract resolves recipient names **in YOUR session only**. So every out-of-session
+  row in `fleet` is **unreachable-by-construction** — an agent cannot act on it at all.
+  **The corpse problem is a SCOPE problem wearing a freshness costume.**
+- **S1-a (the load-bearing half): `fleet` defaults to the caller's session, with NO new
+  parameter.** `fleet` already REQUIRES registration (measured — the sidecar's own unregistered
+  call was refused), so the handler already holds `agent_row.session`. The cross-session
+  remainder becomes ONE counted line teaching the widening re-ask — the house elision grammar,
+  which already exists.
+- **S1-b: NO freshness exclusion in-session.** Stale rows are **the orphan signal** — the
+  drill's whole point is that a killed agent surfaces in `fleet`. Annotate, never hide.
+- **S1-c: the reaper is REJECTED in BOTH forms.** Hard-delete re-arms #105 (the comms design
+  assumes agent rows are never hard-deleted). Auto-retire writes a **heuristic guess** as a
+  status **another agent owns**, on a **READ path** — the confident-wrong class. Retention is
+  deferred with a named trigger: an operator-set roster bound, or the first hosted deploy
+  (packet 39).
+- **S1-d: the smoke retires its own agents, plus one backfill for the existing corpses.**
+  Necessary but NOT sufficient on its own — corpses are a *designed-for permanent feature*
+  (kills never self-retire; the drill surfaces orphans deliberately). ⚠ **This touches
+  `smoke_p8b`/deploy tooling, which is OUTSIDE 04b's writable set — it needs its own scope
+  grant or its own routing. Flagged, not assumed.**
+- **Why the new columns change the STAKES but not the ANSWER:** in-session,
+  **unacked-on-STALE is the highest-value cell on the whole surface** (a stranded directive an
+  agent can re-route). Cross-session, the same two numbers are 38 unactionable values that
+  train an agent to skim past the signal. S1-a also shrinks the columns' grouped reads to
+  fleet-size **by construction**.
+
+## SIDECAR RULING S2 — RETIRE THE `⚠ STALE` BADGE; SERVE THE AGE (2026-07-28, follow-up 2)
+Source: doc §10, on finding **#259**. Found by DOGFOODING **after** the S1-d reap — and it was
+INVISIBLE before it: with 38 corpses on the roster a 17-minute STALE looked like more of the
+same. **The operator's "reap first, then clean up the mess" ordering is what exposed it**, which
+is worth recording as a method, not just an outcome.
+- **The sidecar's own miss, in its words: it read the badge from its NAME, not its PREDICATE** —
+  an un-derived claim inside its own ruling, in a packet whose recurring defect class is
+  exactly that.
+- **MEASURED:** `config.py::DEFAULT_COMMS_STALE_HEARTBEAT_S = 600`, predicate
+  `heartbeat_age_s > stale_after_s`. One boolean spanning **1,020s to 1,407,600s** — a healthy
+  Opus contract author at 17m and a 16-day corpse render IDENTICALLY.
+- **S1-b's CONCLUSION SURVIVES, with a stronger justification.** A predicate measured to fire on
+  HEALTHY agents is disqualified from driving EXCLUSION *a fortiori* — the freshness window
+  rejected in S1-b would, today, be **hiding a live contract author**.
+  Annotation-never-exclusion stands; **what falls is the annotation itself.**
+- **RULED — candidate (b), NOW: retire `⚠ STALE`, serve the AGE** (already computed, already
+  rendered: `hb 17m` / `hb 2d`). DESIGN-LAW §1.3's asymmetry decides it: **a measure without a
+  verdict UNDER-claims, which is nearly free; a wrong verdict kills the class categorically.**
+- **(a)/(c) REJECTED as rumour thresholds** — the channel measures **comms cadence, not
+  liveness**, and a healthy builder's 30–60min gap overlaps early-death **at any threshold**.
+  (c) stays re-openable strictly behind a NAMED measurement (per-role cadence over N real
+  sessions once 04b-2's columns generate traffic; owner = #259's taker) — **with the sidecar's
+  prediction stated in advance so the measurement GRADES it: the overlap will not vanish.**
+- **(d) is the right SECOND step and must ship WITH its consumer:** a declared cadence yields
+  `overdue (declared ≤20m, silent 45m)` — a verdict **true by construction** (the derived-prose
+  law applied to liveness); with no declaration you get age only, so **non-adoption fails
+  HONEST** — the property the badge lacks. ⚠ **Sequencing rider, which is the R1 lesson applied
+  to itself:** the optional parameter lands in **packet 06, with the drill that pays for it**
+  (the drill controls its own briefs, so declaration is guaranteed there) — **never earlier as
+  dead schema nobody passes.** 04b-2 ships (b) alone.
+- **The unacked-on-STALE cell SURVIVES (§10.4) — its value was never the badge's.** It is
+  unacked-N **composed with age**: `unacked 3 · hb 2d` reads as stranded; `unacked 3 · hb 17m`
+  reads as a busy teammate, correctly. **What the badge's noise threatens is the IMPERATIVE**:
+  a "re-route or retire" teach line on a predicate firing at 17m would instruct callers to
+  **re-route a live builder's traffic** — the drain-theft hazard's sibling. Same grammar rule as
+  R8's split: **imperatives ride only TRUE verdicts.** So **04b-2 ships the columns as MEASURES
+  beside the age, with NO stranded-imperative**; the imperative arrives with (d)'s `overdue`
+  verdict, in the packet that builds it.
+- **PACKET 06 IS OWED NOTICE (two items):** the glyph RETIRES, so the drill must not assert
+  `⚠ STALE` in any expected render; and the drill's **orphan-detection leg rides (d)**, not the
+  badge.
+
+## ⚠⚠ SIDECAR FINDING S3 — THE LEGACY-EDGE WORLD DEPLOYS ITSELF (2026-07-28, BLOCKER)
+Source: doc §11.2, re-graded under **TRUST — THE HARD DEFINITION** (`CLAUDE.md`, imported to
+this branch at `0acbf47` from `ee0e87d`). **This got past the contract, the contract-adversary,
+two contract-fix waves and the lead.** It became visible only under the new definition's Leg 2.
+- **THE DEFECT.** The `blocks` mirror is ∀ verbs **going FORWARD**. Production tasks carry
+  `blocked_by` COLUMNS **today** (measured — 04b-2's own ledger row is one) and will have **NO
+  `blocks` edges** at deploy. **The transitive read rides EDGES by design.** So 04b-2's
+  critical-path render serves **`ids=[] truncated=False`** — *clean, confident, wrong* — on
+  exactly the rows the fleet is working.
+- **It fails BOTH legs at once**, and it is worse than an ordinary forgery-pin gap: every other
+  owed construction has to be CONSTRUCTED. **This degraded world needs no constructing — it is
+  the default state at deploy.** `truncated=False` is not a missing bound; it is a **positive
+  assertion of completeness that is false**, which is the definition's central failure.
+- **NO BACKFILL EXISTS ANYWHERE** — the sidecar grepped the contract, the packet and every
+  ruling; the only "backfill" in this packet is S1-d's *smoke-agent* one, a different thing.
+- **RECOMMENDED (needs an OPERATOR RULING — it is a migration over production data):** backfill
+  the edges in `ensure_ready`, **pre-filtered through the L3 existence policy** — ⚠ legacy rows
+  carry phantom blockers, and those meet `ENFORCED`, so **a naked backfill rolls back the whole
+  one-transaction migration**; the phantom SKIPS are RECORDED, not silent; forgery-pinned in the
+  dirty-store harness that already exists.
+- **FALLBACK if the backfill is refused:** the render **names the bound as a FACT** (not a
+  disclaimer) — legal under the definition, and a **permanent tax on every future read**.
+- ⚠ **TWO CREDITS, so the gap is not overstated (§11.1):** the schema/migration legs AND #253's
+  partition legs **already pass Leg 2** — `_seed_legacy_task` constructs the production-real
+  partial world (column-bearing, edge-less, phantom blocker) and pins fail-closed +
+  claim-agreement over it. Everything else this packet adds is scope-diffed and forgery-BLIND.
+- **OWED CONSTRUCTIONS, tabled per dependency × mode (§11.1):** traversal timeout ⇒ a teaching
+  error, never partial-as-complete · the fleet columns' FAILED grouped count must **not** render
+  `0` (its bytes must differ from a healthy zero) · the footer's explicit leg, check-FAILED ⇒ a
+  loud line while the write still succeeds · the pre-check's failed existence read ⇒ constructed
+  fail-CLOSED · R9's honest total never invented.
+
+### ✅ RULING R11 (operator, 2026-07-28) — BACKFILL IN `ensure_ready`
+The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose it.
+- Mint the missing `blocks` edges from existing `blocked_by` columns **at migration time**,
+  **pre-filtered through the L3 existence policy** — a naked backfill meets legacy phantom
+  blockers, which meet `ENFORCED`, and **rolls back the entire one-transaction migration**.
+- **Phantom skips are RECORDED, never silent** — a silent skip is a false clear in the exact
+  shape S3 identifies.
+- **Forgery-pinned in the dirty-store harness that already exists** (`_seed_legacy_task` already
+  constructs the production-real partial world — the instrument is built, it just was never
+  pointed at the traversal).
+- Rejected: *render-names-the-bound* (legal, but a permanent tax on every future read for a
+  one-time migration we declined to run) and *a separate one-shot script* (a deploy that forgets
+  it silently reproduces the defect with no signal).
+- Store backed up before any migration work: `/backups/lore/lore-prod-20260728T194511Z.surql`
+  (2.68 GB, `EXIT=0`, 22 tables, engine success line verified).
+
+## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
+- **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
+  silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
+  failed identity check must TEACH, not fall silent — the identical render for two different
+  worlds is precisely what Leg 2 hunts.
+- **OVERRULE-2(a)'s "may append" was DISCLAIMER-SHAPED** and is replaced with a fact-shaped
+  asymmetric bound: **present ⇒ verified; absence asserts nothing.** ("A bound is a FACT, never
+  a disclaimer.")
+- §10's age-only render passes both legs as ruled.
+
+## CONSULT CONTAMINATION DISCOUNT (§11.4) — conceded, and the grading survives
+No question zero was asked; all four informants were in-repo (~60KB of house law preloaded).
+Re-graded **against the bias direction**, which is the strongest instrument available here:
+- **The V1/V2 `agent=` flip SURVIVES STRENGTHENED.** House law biases informants TOWARD passing
+  `agent=`; both still DECLINED under the terse description. **Survival under adverse bias beats
+  a cold read.**
+- **The two Q1 hazards survive because they are ASYMMETRIC** — contamination manufactures
+  UNANIMITY, not asymmetry; one distinct hazard per informant is the signature of derivation.
+- Q2/Q4 survive on mechanism. **The route-around VOCABULARY unanimity is DOWNGRADED to colour**;
+  no verdict rested on it alone.
+- **STANDING, going forward:** question zero in every consult prompt, and **out-of-repo spawns
+  for any claim about how a model reads a served string.**
+
+## SIDECAR CAUTION C1 — carry this sentence into the BUILDER brief
+Rounds 2 and 3 were read verbatim at `5a2dca9`: **nothing to overrule** (doc §9), and T5's
+CAS-side `distinct` is judged the right fix of the three available — the only one that heals
+legacy rows, and the query partition's ANY-semantics already agrees with it post-fix.
+The one caution, which is not an overrule: **under T1's answer-cap, a future
+"rows-read ≤ f(limit)" pin on the blocked-filtered path would be WRONG BY DESIGN.** The
+boundedness property stays *"does not grow with UNRELATED ledger size"* — filling an
+answer-cap legitimately requires scanning past non-matching candidates.
 
 ## 04b-2 — the comms surface · ~0.25 wu · DEPLOYS (carries 04b-1)
 **Scope IN:** the blocked-chain / critical-path render; the fleet unread + unacked-directive

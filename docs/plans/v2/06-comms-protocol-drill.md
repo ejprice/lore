@@ -106,3 +106,35 @@ repo orchestration law).
 ## Exit
 Drill receipts committed; protocol docs (brief-base v3) versioned; any defect found →
 red-first fix + finding; INDEX row + Log. **Wave C closes here.**
+
+---
+
+## ⚠ INHERITED FROM 04b — three obligations, written HERE so this session meets them
+Source: `docs/plans/v2/04-comms-blocks-footer.md` §SIDECAR RULING S2 + findings #257/#259;
+design doc `docs/design/2026-07-28-04b-model-consumer-audit.md` §10. Committed `cdf7136`.
+All three were found by DOGFOODING the deployed comms surface during 04b's kickoff — i.e. by
+using it for real fleet work, not by reading its tests.
+
+1. **THE `⚠ STALE` GLYPH IS RETIRED — the drill must not assert it in any expected render.**
+   MEASURED: its predicate (`config.py::DEFAULT_COMMS_STALE_HEARTBEAT_S = 600`,
+   `heartbeat_age_s > stale_after_s`) fired on a **healthy Opus contract author at 17 minutes**
+   and on a **16-day corpse**, identically — one boolean over 1,020s–1,407,600s. 04b-2 replaces
+   it with the AGE, which was always already rendered (`hb 17m` / `hb 2d`).
+2. **THE DRILL'S ORPHAN-DETECTION LEG RIDES THE DECLARED-CADENCE VERDICT (S2's (d)), NOT THE
+   BADGE — and THIS PACKET BUILDS IT.** `overdue (declared ≤20m, silent 45m)` is a verdict
+   TRUE BY CONSTRUCTION; with no declaration an agent gets age only, so **non-adoption fails
+   HONEST**. ⚠ **Its optional `cadence` parameter lands HERE and NOT EARLIER, deliberately** —
+   the drill controls its own briefs, so declaration is *guaranteed* here, whereas shipping the
+   parameter in 04b-2 would ship dead schema nobody passes. **That sequencing IS the R1 lesson
+   applied to itself:** 04b measured that with a terse parameter description NEITHER Sonnet 5
+   nor Opus 5 passes an optional param, and with a payoff-stating one BOTH do. A parameter
+   whose consumer does not exist yet is a feature that never fires.
+3. **THE BRIEF NON-VACUITY QUESTION IS THIS PACKET'S (finding #257).** The standing `project`
+   brief body was literally `x` for 15 days at v6, and the surface served it **with full
+   ceremony** — recording an ack, reporting "ack recorded (via register)", and instructing the
+   agent to echo `brief project v6 read`. Every agent's first instruction from lore taught it
+   that brief-acks are theatre. Content fixed (v7 published 2026-07-28); the INSTRUMENT is
+   open, and it is yours because you own the brief protocol. Candidate, NOT ruled: a
+   non-vacuity floor at `brief_publish`. ⚠ It needs an operator ruling because it is a WRITE
+   VERB REFUSING A BODY ITS AUTHOR INTENDED — not a tidy-up. Note no gate caught this in 15
+   days, and no gate could: **no gate can assert that a brief SAYS anything.**

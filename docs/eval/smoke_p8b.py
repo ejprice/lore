@@ -110,6 +110,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import TracebackType
 from typing import Any, NamedTuple
 
 from mcp import ClientSession
@@ -845,6 +846,14 @@ SMOKE_RETIRED = "smoke-retired"
 SMOKE_LIVE_RECIPIENTS = (SMOKE_ALPHA, SMOKE_BRAVO, SMOKE_CHARLIE)
 SMOKE_ROLE = "packet-03b deploy-gate smoke"
 
+# ``agents.py``'s terminal status, mirrored (not imported — see the FENCE_CHAR
+# note). ONE spelling, written by the two places this script retires anything:
+# gate 3's deliberate corpse and the run teardown. Two literals that happen to
+# agree today are two literals; a shared constant reddens both pins at once when
+# it moves, which is the only way to tell those apart (repo ``CLAUDE.md``, ONE
+# IMPLEMENTATION).
+AGENT_STATUS_RETIRED = "retired"
+
 # ``messages.py`` GRADES, mirrored (not imported — see the FENCE_CHAR note).
 GRADE_DIRECTIVE = "directive"
 GRADE_SIGNAL = "signal"
@@ -1409,6 +1418,17 @@ class SmokeFleet:
     foreign to an action — which is what makes the gate-5 read session-scoped and
     therefore immune to whatever other clients are talking to production at the
     same time.
+
+    **IT IS ALSO AN ASYNC CONTEXT MANAGER, AND THAT IS LOAD-BEARING (#258).**
+    Until 2026-07-28 this class registered agents and never retired them, so every
+    deploy permanently enlarged the production fleet roster: measured that day,
+    before the backfill, **40 non-retired agents of which 38 were dead smoke/probe
+    artifacts across 13 sessions** — the surface whose whole job is "who is working
+    right now", answering at roughly 1:20 and degrading on every deploy. The
+    instrument that proved the comms surface worked was the instrument degrading
+    it. Entering the context is what makes the teardown UNCONDITIONAL: an
+    exception on any gate still exits the ``async with``, so a run that FAILS
+    cannot become the new leak.
     """
 
     def __init__(self, client: ClientSession, *, run_id: str) -> None:
@@ -1417,6 +1437,8 @@ class SmokeFleet:
         self._session_name = f"{SMOKE_SESSION_PREFIX}-{run_id}"
         self._brief_name = f"{SMOKE_SESSION_PREFIX}-brief-{run_id}"
         self._issued: list[tuple[str, str]] = []
+        self._registered: list[str] = []
+        self._retired: set[str] = set()
 
     @property
     def session_name(self) -> str:
@@ -1433,6 +1455,17 @@ class SmokeFleet:
         """Every ``(agent, action)`` this run put on the wire, in order."""
         return tuple(self._issued)
 
+    @property
+    def registered(self) -> tuple[str, ...]:
+        """Every agent name this run tried to REGISTER, in order, deduplicated.
+
+        DERIVED from the calls actually issued, never a hand-written list: a
+        teardown reading a literal roster leaks silently the day a gate registers
+        one more agent, and would pass every pin whose fixture uses the names the
+        gates use today.
+        """
+        return tuple(self._registered)
+
     async def comms(self, *, agent: str, action: str, **arguments: Any) -> str:
         """Call ``lore_comms`` for ``agent``, in this run's session; return the render.
 
@@ -1446,9 +1479,102 @@ class SmokeFleet:
             **arguments,
         }
         self._issued.append((agent, action))
+        if action == "register" and agent not in self._registered:
+            # BEFORE the call, deliberately: a register whose response never
+            # arrived may still have written the row, and an unnecessary retire
+            # attempt is cheap while a missed one is permanent litter.
+            self._registered.append(agent)
         result = await call_tool(self._client, COMMS_TOOL_NAME, payload)
         require_no_tool_error(result, f"{COMMS_TOOL_NAME}(agent={agent!r}, action={action!r})")
+        if action == "heartbeat" and arguments.get("status") == AGENT_STATUS_RETIRED:
+            # AFTER the call, equally deliberately: only a retirement the server
+            # ACCEPTED may be skipped at teardown. Recorded here rather than at
+            # each call site so gate 3's deliberate corpse and the teardown's own
+            # work share ONE ledger.
+            self._retired.add(agent)
         return _joined_text(result)
+
+    async def retire_registered_agents(self) -> tuple[str, ...]:
+        """Retire every agent this run registered and has not already retired.
+
+        RETIRE, NEVER DELETE — a status change, per sidecar ruling S1-c
+        (``docs/plans/v2/04-comms-blocks-footer.md`` §SIDECAR RULING S1): the comms
+        design assumes agent rows are never hard-deleted, and finding #105's
+        closure rests on that assumption, so a deleting cleanup would re-arm it.
+
+        Best-effort per agent — one refusal never costs the rest their teardown —
+        and the refusals are RETURNED rather than raised, because whether an
+        unretired agent is fatal depends on something this method cannot see: if
+        the gates passed, it is the #258 leak and must fail the run; if a gate
+        already failed, the gate's diagnosis is the one that matters.
+
+        Returns:
+            One ``"<agent>: <reason>"`` line per agent that could NOT be retired,
+            in the order attempted; empty when the roster is clean.
+        """
+        failures: list[str] = []
+        for name in self._registered:
+            if name in self._retired:
+                # Retirement is terminal: ``AgentRegistry.touch`` refuses a
+                # retired row outright, so re-retiring gate 3's deliberate corpse
+                # would make every clean run end in a teardown error.
+                continue
+            try:
+                await self.comms(
+                    agent=name, action="heartbeat", status=AGENT_STATUS_RETIRED
+                )
+            except Exception as exc:  # noqa: BLE001 - teardown: report, never abort
+                failures.append(f"{name}: {exc}")
+        return tuple(failures)
+
+    async def __aenter__(self) -> SmokeFleet:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback_: TracebackType | None,
+    ) -> None:
+        """Retire what this run registered — on EVERY exit path, #258's fix.
+
+        Raises:
+            SmokeCheckFailed: The gates passed but an agent could not be retired,
+                which is the leak itself and so fails the run. Never raised over
+                an in-flight gate failure — that diagnosis wins, and the teardown
+                trouble is printed instead.
+        """
+        # Counted BEFORE the teardown runs, deliberately: afterwards every name
+        # is retired and the two numbers collapse, so the line would credit the
+        # teardown with gate 3's deliberate corpse. A render that describes work
+        # must be DERIVED from the work, and "5 of 5" reads as five retirements
+        # this teardown performed when the true figure is four.
+        owed = [name for name in self._registered if name not in self._retired]
+        failures = await self.retire_registered_agents()
+        if not failures:
+            print(
+                f"PASS: teardown retired {len(owed)} agent(s) — this run registered "
+                f"{len(self._registered)} in session {self._session_name!r} and "
+                f"{len(self._registered) - len(owed)} was/were already retired by a gate. "
+                f"The deploy gate leaves no fleet litter (#258)"
+            )
+            return
+        summary = "; ".join(failures)
+        if exc_type is not None:
+            print(
+                f"WARNING: teardown could not retire {len(failures)} agent(s) in session "
+                f"{self._session_name!r} ({summary}) — reported, not raised, because a gate "
+                f"failure is already in flight and IT is the diagnosis worth keeping",
+                file=sys.stderr,
+            )
+            return
+        raise SmokeCheckFailed(
+            f"#258 teardown: {len(failures)} agent(s) this run registered are still on the "
+            f"fleet roster in session {self._session_name!r} — {summary}. Every unretired "
+            f"agent is permanent litter on the surface whose only job is 'who is working "
+            f"right now'; that is the defect this teardown exists to prevent, so a run that "
+            f"leaks one does not pass"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1678,7 +1804,7 @@ async def check_broadcast_reaches_non_retired(fleet: SmokeFleet) -> None:
     """
     for name in (SMOKE_BRAVO, SMOKE_CHARLIE, SMOKE_RETIRED):
         await fleet.comms(agent=name, action="register", role=SMOKE_ROLE)
-    await fleet.comms(agent=SMOKE_RETIRED, action="heartbeat", status="retired")
+    await fleet.comms(agent=SMOKE_RETIRED, action="heartbeat", status=AGENT_STATUS_RETIRED)
 
     fleet_text = await fleet.comms(agent=SMOKE_SENDER, action="fleet")
     expected_non_retired = 1 + len(SMOKE_LIVE_RECIPIENTS)
@@ -2971,18 +3097,27 @@ async def check_production_traces(
 
 
 async def run_packet_03b_gates(session: ClientSession) -> None:
-    """The five packet-03b deploy gates, in order, on one live MCP session."""
+    """The five packet-03b deploy gates, in order, on one live MCP session.
+
+    The ``async with`` is the #258 fix and its placement is the whole design: the
+    teardown retires this run's agents on EVERY exit path, and it runs strictly
+    AFTER gate 5 — whose assertion is that the production trace rows for this
+    session are EXACTLY the ``(agent, action)`` multiset ``fleet.issued`` records.
+    Retiring any earlier would put rows on the store that gate 5 had never heard
+    of, and turn the leak fix into a false red on deploy night.
+    """
     run_id = uuid.uuid4().hex[:8]
-    fleet = SmokeFleet(session, run_id=run_id)
-    print(f"\n-- packet 03b deploy gates (session {fleet.session_name!r}) --")
-    total_before = await read_trace_total(session, check_name="lore_index (traces, before)")
-    await check_comms_round_trip(fleet)
-    await check_broadcast_reaches_non_retired(fleet)
-    await check_drain_serves_skew(fleet)
-    # AFTER gate 3 (it reuses the agent gate 3 registered and emptied) and BEFORE
-    # gate 5 (its calls must fall inside the trace-delta window being measured).
-    await check_drain_elision_reask(fleet)
-    await check_production_traces(session, fleet, total_before=total_before)
+    async with SmokeFleet(session, run_id=run_id) as fleet:
+        print(f"\n-- packet 03b deploy gates (session {fleet.session_name!r}) --")
+        total_before = await read_trace_total(session, check_name="lore_index (traces, before)")
+        await check_comms_round_trip(fleet)
+        await check_broadcast_reaches_non_retired(fleet)
+        await check_drain_serves_skew(fleet)
+        # AFTER gate 3 (it reuses the agent gate 3 registered and emptied) and
+        # BEFORE gate 5 (its calls must fall inside the trace-delta window being
+        # measured).
+        await check_drain_elision_reask(fleet)
+        await check_production_traces(session, fleet, total_before=total_before)
 
 
 # ---------------------------------------------------------------------------

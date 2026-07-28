@@ -104,7 +104,9 @@ from loremaster.store.surreal_schema import (
     FILE_TABLE,
     FINDING_TABLE,
     MEMORY_TABLE,
+    MESSAGE_TABLE,
     TASK_TABLE,
+    TO_RELATION,
     TRACE_TABLE,
     _define_field,
     _define_table,
@@ -112,11 +114,13 @@ from loremaster.store.surreal_schema import (
     generate_brief_ddl,
     generate_ddl,
     generate_graph_ddl,
+    generate_message_ddl,
 )
 from loremaster.symbols import _SCROLL_LIMIT  # the real scroll caller's read cap
 from lorescribe.models import Chunk
 from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
+from surrealdb import RecordID
 from surrealdb.errors import ErrorKind, ServerError, SurrealError
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
@@ -4705,6 +4709,15 @@ class TestLiveEngineClassification:
 # (both HNSW indexes) — at ``PRODUCTION_DIM`` that is needless work per test.
 _MIGRATION_DIM = 8
 
+# Packet 04b-1's ``blocks`` edge, as a LITERAL rather than an import (04a residual
+# R-e). Finding #133: importing a name the schema does not export YET makes this
+# whole file uncollectable rather than RED, and an uncollectable file deletes its
+# pins from the run instead of failing them. The equality between this literal and
+# the schema's own ``BLOCKS_RELATION`` constant is pinned in
+# ``test_enforced_relations.py`` (the declared-edge-set pins), which is its home —
+# this file's question is whether an edge ROW survives a whole-schema re-apply.
+_BLOCKS_RELATION_LITERAL = "blocks"
+
 # The probe table the field-level pins evolve. A dedicated table (not a real one)
 # keeps the pins about ``_define_field`` — the SHARED emitter every table's DDL
 # goes through — rather than about any single ledger's field list, which is free
@@ -5191,6 +5204,25 @@ class TestSchemaMigrationAgainstAnExistingStore:
         constraints still bite. A fix that converges the schema by dropping and
         re-creating a table would pass every widening pin above and destroy the
         production store; this is the pin that catches it.
+
+        ⚠ **WIDENED 2026-07-28 (04a residual R-e, CONFIRMED and found WIDER than
+        first stated, by the 04b-1 contract adversary).** This pin applied FOUR
+        slices and ``generate_message_ddl`` was not among them — so ``to``, an
+        ``ENFORCED`` delivery edge carrying every seen/ack stamp in the comms
+        surface, **was never migrated by the repo's only whole-schema migration
+        pin** — and no edge ROW of any kind was seeded except ``briefed``'s. The
+        blast radius the paragraph above claims was therefore narrower than the
+        schema it claims to cover. Now: five slices, and a ROW on every guarded
+        edge this store declares, because an edge TABLE surviving a re-apply and
+        an edge ROW surviving one are DIFFERENT properties and only the second is
+        what a deploy actually risks.
+
+        ⚠ ``blocks`` (packet 04b-1) is named by LITERAL rather than imported.
+        Finding #133: a module-level import of a name that does not exist yet
+        makes this whole file UNCOLLECTABLE rather than RED, and an uncollectable
+        file DELETES its pins from the run instead of failing them. That literal
+        is held equal to the schema's own constant by ``test_enforced_relations``'s
+        edge-set pins, which is where the equality belongs.
         """
         connection, env = migration_db
         ddl_slices = (
@@ -5198,6 +5230,7 @@ class TestSchemaMigrationAgainstAnExistingStore:
             generate_graph_ddl(),
             generate_agent_ddl(),
             generate_brief_ddl(),
+            generate_message_ddl(),
         )
         for ddl in ddl_slices:
             await _apply_ddl(connection, ddl, url=env.url)
@@ -5303,26 +5336,111 @@ class TestSchemaMigrationAgainstAnExistingStore:
                 f"CREATE {target} CONTENT $content",
                 {"table": table, "key": record.point_id, "content": content},
             )
+
+        # ⚠ A SECOND ``task`` row, so the ``blocks`` edge below has two distinct
+        # endpoints. It is asserted separately from ``seeds`` because that loop
+        # demands exactly ONE row per table.
         await run(
             connection,
-            f"RELATE {AGENT_TABLE}:probe->{BRIEFED_RELATION}->{BRIEF_TABLE}:probe "
-            "CONTENT { via: 'register' }",
+            f"CREATE {TASK_TABLE}:blocker CONTENT $content",
+            {
+                "content": {
+                    "subject": "the blocker of the migrating task",
+                    "description": "a second task row written under the OLD schema",
+                    "status": "open",
+                    "provenance": {"created_by": "c1f"},
+                    "created_at": stamp,
+                }
+            },
         )
+        # ⚠ ``sender`` is a ``record<agent>`` LINK and is REQUIRED, so it must be
+        # bound as a real ``RecordID`` inside the CREATE's own CONTENT. The string
+        # ``'agent:probe'`` is refused outright ("Expected `record<agent>` but found
+        # `'agent:probe'`") and a later ``UPDATE ... SET`` cannot rescue it, because
+        # the CREATE fails first on the missing column (both measured 2026-07-28,
+        # 3.2.1).
+        await run(
+            connection,
+            f"CREATE {MESSAGE_TABLE}:probe CONTENT $content",
+            {
+                "content": {
+                    "seq": 1,
+                    "session": "migration-probe",
+                    "thread": "q:does the store survive its own migration",
+                    "sender": RecordID(AGENT_TABLE, "probe"),
+                    "grade": "directive",
+                    "body": "a message row written under the OLD schema",
+                    "created_at": stamp,
+                }
+            },
+        )
+
+        # A ROW on every guarded edge — the half the four-slice version never had.
+        # ``via``/``ack_note``/``blocks``' bare edge are all read back below.
+        edge_seeds: tuple[tuple[str, str], ...] = (
+            (
+                BRIEFED_RELATION,
+                f"RELATE {AGENT_TABLE}:probe->{BRIEFED_RELATION}->{BRIEF_TABLE}:probe "
+                "CONTENT { via: 'register' }",
+            ),
+            (
+                TO_RELATION,
+                f"RELATE {MESSAGE_TABLE}:probe->{TO_RELATION}->{AGENT_TABLE}:probe "
+                "CONTENT { session: 'migration-probe', created_at: $stamp, "
+                "ack_note: 'acked before the deploy' }",
+            ),
+            (
+                _BLOCKS_RELATION_LITERAL,
+                f"RELATE {TASK_TABLE}:blocker->{_BLOCKS_RELATION_LITERAL}->{TASK_TABLE}:probe",
+            ),
+        )
+        for _edge, statement in edge_seeds:
+            await run(connection, statement, {"stamp": stamp})
 
         # THE DEPLOY: re-apply every slice to the now-populated store.
         for ddl in ddl_slices:
             await _apply_ddl(connection, ddl, url=env.url)
 
         # 1. Every seeded row survived — same count, same content.
+        #    ⚠ ``task`` holds TWO rows since the R-e widening (the ``blocks`` edge
+        #    needs two endpoints), so the per-table count is DERIVED from what was
+        #    seeded rather than assumed to be one — a hardcoded 1 here is how a
+        #    widening quietly turns a survival pin into a fixture-arithmetic pin.
+        expected_row_counts = {TASK_TABLE: 2}
         for table, _target, content in seeds:
             rows = await run(connection, f"SELECT * FROM {table}")
-            assert len(rows) == 1, f"{table} lost (or duplicated) its row across the migration"
+            expected_count = expected_row_counts.get(table, 1)
+            assert len(rows) == expected_count, (
+                f"{table} lost (or duplicated) its rows across the migration: "
+                f"{len(rows)} rows, expected {expected_count}"
+            )
+            rows = [row for row in rows if str(row["id"].id) == "probe" or table == CHUNK_TABLE]
+            assert len(rows) == 1, f"{table} lost its seeded probe row across the migration"
             for key, value in content.items():
                 if key in {"embedding", "created_at", "updated_at", "registered_at", "heartbeat_at"}:
                     continue  # floats / engine datetimes: presence is pinned by the row surviving
                 assert rows[0][key] == value, f"{table}.{key} changed across the migration"
         edges = await run(connection, f"SELECT via FROM {BRIEFED_RELATION}")
         assert [edge["via"] for edge in edges] == ["register"]
+
+        # 1b. EVERY guarded edge ROW survived, with its edge-local payload.
+        #     ``ENFORCED`` + ``OVERWRITE`` is a FULL REPLACE of the table
+        #     definition on every deploy (store reference §1.1), so "the edge rows
+        #     are still there afterwards" is exactly the property a deploy risks
+        #     and exactly the one four slices and one edge row never asked about.
+        for edge, _statement in edge_seeds:
+            surviving = await run(connection, f"SELECT * FROM {edge}")
+            assert len(surviving) == 1, (
+                f"the {edge!r} edge row did not survive the whole-schema re-apply "
+                f"(got {len(surviving)} rows). An ENFORCED relation table is "
+                f"re-defined with OVERWRITE on every ensure_ready — a full replace "
+                f"of the DEFINITION must never take the ROWS with it"
+            )
+        delivered = await run(connection, f"SELECT ack_note FROM {TO_RELATION}")
+        assert [edge["ack_note"] for edge in delivered] == ["acked before the deploy"], (
+            "the to edge's edge-local ack_note did not survive the migration — the "
+            "column that records that a directive was discharged"
+        )
 
         # 2. The constraints still BITE after the re-application (the control: a
         #    migration that converged by loosening every table would pass step 1).
