@@ -371,6 +371,37 @@ because a ruling that lives only in a report is a ruling the next agent does not
   exists to catch. The two deferred edges get an IN/OUT swap instead, proving THEIR pins are
   live rather than that their guard is.
 
+## 04b-1 rulings, round 2 (operator, 2026-07-28 — on `REPORT-contract-04b1-253.md` + `REPORT-adversary-04b1.md`)
+⚠ **These WIDEN 04b-1's writable set into `server.py`** — by one dispatcher line (R5) and the
+cycle-policy unification (R6). The INDEX row records it. `server.py` is otherwise 04b-2's file;
+these two touches are named exceptions, not a general grant.
+- **R5 — the tool-level `limit` PUSHES DOWN, in 04b-1.** A bounded `query_tasks` that still
+  materialises every matching row before the dispatcher slices is a HALF-FIX THAT READS AS A
+  FIX — the trust hazard, not merely an inefficiency. `query_tasks` takes a `limit` and pushes
+  it into the store; the dispatcher passes it. (Escalation E-D, raised by both #253 authors.)
+- **R6 — ONE cycle detector, ledger-owned** (adversary MP-4). Today `server.py::AppContext.
+  _find_key_cycle` owns a policy with its own sentence and a bare `ValueError`, and it fires
+  FIRST — so a `lore_tasks` caller would never see the ledger's new vocabulary, and every cycle
+  pin in the contract calls the ledger directly, observing nothing an agent is actually served.
+  The DETECTION ALGORITHM is shared; the vocabularies may still differ (batch-local temp keys vs
+  persisted ids) because they name different things. One refusal sentence shape, one error class,
+  and **a pin at the TOOL SEAM** observing what a caller receives. This is ruling L3's shape
+  applied to the cycle policy, which the contract left silent.
+- **R7 — the TOCTOU is CLOSED BY CONSTRUCTION, not measured and accepted.** Any bounded rewrite
+  is a TWO-read operation (candidates, then blockers) and a writer committing between them can
+  make the served `blocked` partition disagree with the claim CAS **without either read being
+  wrong** — a window today's single full read does not have, i.e. **a hazard this fix
+  INTRODUCES**. Both reads go inside ONE `BEGIN … COMMIT` so they share a snapshot; the pin
+  asserts the single transaction. Rejected: a named-hazard-only posture (accepts a correctness
+  window on a SERVED answer on the strength of an argument, with no instrument) and a
+  characterisation measurement (≥8-way × 20 — expensive, and it measures what this removes).
+- **⚠ R7's rider, and it is load-bearing:** the adversary's MP-4a shows the write-time cycle
+  guard must walk the `blocked_by` COLUMN client-side — the closing dependency **cannot** carry
+  an edge, because `ENFORCED` rejects a `RELATE` to a task that does not exist yet, so any
+  engine-traversal detector returns "acyclic". **A client-side walk is N reads**, which is
+  exactly the shape R7 puts inside one transaction. The two rulings compose; a builder must not
+  satisfy one by breaking the other.
+
 **Owed before the builder is done** (each cheap, none optional):
 1. **PROOF 5 was never executed** ("not run for time"). Run it.
 2. **PROOF 3 was run piped to `tail`**, so its shell `$?` was `tail`'s — the repo's own #196
