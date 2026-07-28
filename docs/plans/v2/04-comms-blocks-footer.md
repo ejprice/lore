@@ -608,6 +608,22 @@ two contract-fix waves and the lead.** It became visible only under the new defi
   loud line while the write still succeeds · the pre-check's failed existence read ⇒ constructed
   fail-CLOSED · R9's honest total never invented.
 
+### ✅ RULING R11 (operator, 2026-07-28) — BACKFILL IN `ensure_ready`
+The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose it.
+- Mint the missing `blocks` edges from existing `blocked_by` columns **at migration time**,
+  **pre-filtered through the L3 existence policy** — a naked backfill meets legacy phantom
+  blockers, which meet `ENFORCED`, and **rolls back the entire one-transaction migration**.
+- **Phantom skips are RECORDED, never silent** — a silent skip is a false clear in the exact
+  shape S3 identifies.
+- **Forgery-pinned in the dirty-store harness that already exists** (`_seed_legacy_task` already
+  constructs the production-real partial world — the instrument is built, it just was never
+  pointed at the traversal).
+- Rejected: *render-names-the-bound* (legal, but a permanent tax on every future read for a
+  one-time migration we declined to run) and *a separate one-shot script* (a deploy that forgets
+  it silently reproduces the defect with no signal).
+- Store backed up before any migration work: `/backups/lore/lore-prod-20260728T194511Z.surql`
+  (2.68 GB, `EXIT=0`, 22 tables, engine success line verified).
+
 ## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
 - **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
   silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
