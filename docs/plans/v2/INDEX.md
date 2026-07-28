@@ -203,6 +203,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
 | 10-d | **weak-match DISARM** (#176/#179/#180 — confidence surfaces dark NOW; trust doctrine, Addendum E1) | — | L | 0.05 | — (independent) | **✅ DONE + DEPLOYED 2026-07-26** (built/audited/merged `be4c591` 2026-07-24; deploy RODE 03b's — both containers on `b46bc1d5`). Live receipt from the running artifact: `lore_index()` serves `cosine_floor.state="disabled"` with the note naming #83/#176/#179/#180. ⚠ **The disarm MASKS #176/#179/#180, it does not FIX them** (`d7a1ce5`) — the per-instance calibration that resolves them is 11-i/11-ii; those findings stay OPEN. |
 | 11-i | floor-calibration: DARK MACHINERY (engine + store + in-container runner + R2 lab validation; serving untouched, no deploy) | PKT-02 | L | 0.20 → split 11-i-a ~0.15 / 11-i-b ~0.24 | 10 ruled | **DESIGN RULED 2026-07-26** (23 decisions: RULINGS-2026-07-25.md; Addendum F-r2 §R1–R10; S1 measured NOT DEGENERATE). **11-i-a MERGED `c7983e8` 2026-07-27 (worktree removed; its dark machinery rides the deployed `e91e37b9` image UNSERVED — by design, serving untouched until 11-ii).** History: contract `d6c0dd4` (branch `pkt11-i-a-floor-machinery`) → adversary **INSUFFICIENT** (9 of 14 wrong builds survived at 143/0) → fix wave `e8aa8f4`: **186 collected**, satisfiability **186 / 925 / 561, all 0-failed** against a reference build, lead-verified. Deps adopted `38c9774`; **#198** consolidated `ea7406e`; **#238 closed** (`docs/eval` now gated, 190 tests). Rulings: `receipts/2026-07-26-packet11i-build/RULINGS-2026-07-26-{bootstrap,contract-11ia,adversary}.md`. contract `d6c0dd4` → adversary **INSUFFICIENT** (9/14 wrong builds survived) → fix wave `e8aa8f4` → build `7acbef4` → closure `0e99c1e` → **cold audit GO** `2b23862` (every predicted gate number reproduced exactly; freeze verified 22×) → audit fix wave `675aab5`. **Full suite 7571 passed / 0 failed**, lead-verified independently; typecheck 162 clean; ruff clean. Receipts + 3 RULINGS files: `receipts/2026-07-26-packet11i-build/`. ⚠ **OPEN, carried:** #241 (intermittent 2-of-114 contention STOP, mechanism unknown — 30 frozen runs green but on a DIFFERENT tree; instrument `scripts/contention_hunt.sh`) · #242 (connection-glue duplication; a naive extraction blinds the enumeration covering it) · 4 dangling `REPORT-*.md` citations pre-dating this packet, one of them in the store reference (#157's population). ⚠ **11-ii MUST INHERIT (audit R2):** the slice has ZERO production consumers, so the store law is satisfied only VACUOUSLY — wiring a writer without its `ensure_ready` gives an undeclared-table conflict storm, and for `lease` an undeclared-table READ THAT RAISES. **11-i-b not started** · task ledger row `1586bbc0` (claimed at kickoff) |
+| 11-i-a-r | floor-calibration: THE STORE CARVE-OUT (the measurement-row columns 11-i-a never shipped + the corpus-growth classifier + the `adopt=True` guard) | PKT-02 | L | 0.03–0.04 | 11-i-a merged | **MINTED 2026-07-28 by operator ruling** — carved out of 11-i-b because the work pushing b over the ≥0.30 clause is exactly the work crossing the a/b ownership line. Sequence **a-r → b contract → b build**; b re-prices to ~0.28–0.29 whole, in its Q4.1 character. Scope: (a) the RULING-REQUIRED columns (R-C `batch`, R-G `scipy_version`/`numpy_version`, `B`/`N`/`method`, `k_prime`, bars tuple, gate triples, F2 null-rate + applied gap, sensitivity floor, degeneracy telemetry, per-group results, run cost, C9/C13 drop diagnostics, C11 manifest) as B4 `OVERWRITE` additions with per-key write→read→present pins; (b) the CONSUMER-NAMED data from the 2026-07-28 consult (`CONSULT-SYNTHESIS-11ib.md` §3 — ten items, **none in the shipped 14 columns**); (c) FU1.2's corpus-growth classifier; (d) FU1.3's `adopt=True` guard, landing BEFORE b's contract so the contract is written against the refusal. ⚠ **Ruling R-G is premised on the row "already carrying `B`, `N`, `method`" — verified FALSE by importing the module**; a ruling resting on an unchecked premise is why neither the scout nor the sidecar's authors caught the gap earlier. ⚠ **ONE ESCALATION, not a column**: Opus's U1 — the re-measure branch has NO threshold (a whole-corpus digest changes on a one-character edit, so a scheduler is either "skip" or "re-measure everything, constantly"); design fork, operator's. `DEPLOY: no`. Ledger row `6e09610b`. Packet doc NOT YET WRITTEN. |
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + ONE resolver + a typed auth-header seam, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 →0.55 | — (independent) | **✅ DONE + DEPLOYED 2026-07-28** (`915b7b8`; image `e91e37b9`). Suite **7980/0**, typecheck 0 across **five** members, ruff, smoke all-PASS. Contract 11 revisions, adversary **SUFFICIENT after 5 passes**, 43 rulings. **12 defects green at every gate**, incl. a live production leak (#235), an instrument testing a COPY of its own gate, and 4 scanners silently narrowed. Mints **`lorerunes`** (4th member, the home for shared code). #222 #226 #227 #233 #235 #251 closed. |
 | 43 | **DERIVATION-SOURCE UNIFICATION** (design pass FIRST) — `_derive_nodes` reads the caller's chunk set while `_derive_edges` re-reads the file fresh; a save between them makes the fragment RELATE from a node it never created. **Then** the `refers`/`answers_to` `ENFORCED` flip, which was blocked ONLY on this. + #248 `_bare_id` ONE-IMPLEMENTATION (separable at kickoff) | — | L | 0.20 | — (independent) | **open — minted 2026-07-26** (operator ruled the ROOT fix over the two local patches). Split out of 04; store facts already measured on 3.2.1 — do NOT re-probe. **DESIGN problem → Opus author who attacks its own design, never a builder.** |
@@ -1215,3 +1216,44 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   with the claim's server-side `array::len` CAS. ⚠ And the lead's own first framing was wrong — the
   unbounded read is `query_tasks`, **not** `_is_blocked`, a pure predicate that reads nothing;
   re-derived before filing, which is the only reason the right symbol is named.
+- 2026-07-28 · **11-i-b KICKOFF + THE TRUST DOCTRINE GETS A HARD DEFINITION** (merged `c55792a`).
+  Packet 11-i-b opened in a worktree on operator direction. Two landmines closed on entry: the
+  worktree venv was **#140 poison mode 3** (`loremaster.__file__ = None`, zero workspace members —
+  every test would have "passed" against no production code), and **#185 was MEASURED** (a scratch
+  copy from a worktree resolves `--git-dir` to the REAL worktree while `--show-toplevel` reports the
+  copy, so git writes mutate the real branch while the Python provenance assertion passes; mitigation
+  both legs measured, in lore memory). Baseline pinned: 81 inherited RED, every group verdicted
+  individually, **8029 passed in BOTH legs** — the equality is what made the attribution airtight.
+  ⚠ The 81st was NOT a declared RED but a real 04b-1 defect (the harness docstring's DERIVED importer
+  count stale at 43 vs 45) — **04b-1 has since fixed it**, confirmed by the post-merge diff.
+  **Scout + Fable sidecar converged from opposite ends on ONE gap**: the shipped
+  `FLOOR_MEASUREMENT_COLUMNS` is 14 names and ~12 the rulings require are ABSENT — re-derived by the
+  lead by IMPORTING the module, which also showed **ruling R-G is premised on a FALSE fact** (the row
+  "already carrying `B`, `N`, `method`"). Sizing reconciled to **~0.31** (Fable adjudicated the
+  scout's six additions item-by-item and then said its own KEEP-WHOLE recommendation did not survive
+  its own number) → **packet 11-i-a-r MINTED by operator ruling**.
+  **THE CONSUMER CONSULT** (4 blind informants; battery designed by the sidecar, then **adversarially
+  attacked BEFORE any informant ran — verdict INSUFFICIENT, 6 wrong packages scoring 5/5 identical to
+  honest, five byte-identical on every graded surface**) returned the result that matters:
+  **AGENTS TRUST WHAT THEY CAN CHECK.** Fable would delete ⅔ of the package's bytes but refuses the
+  cross-artifact redundancy — *"why the verdict is CALL_AGAIN instead of 'trust me'"*; Opus's
+  never-cut list is *the `n` on every rate*. Control worked: degraded → ROUTE_AROUND, honest/appendix
+  → CALL_AGAIN. **Ten data the consumers named, none in the shipped columns** — sharpest is Opus's
+  U1, that the re-measure branch has no threshold, which nobody on the authoring side found.
+  **THE TRUST DOCTRINE NOW CARRIES A HARD, DECIDABLE DEFINITION** (CLAUDE.md, imported to this branch
+  at `0acbf47`): *a response is trustworthy iff a consumer who acts on it WITHOUT CHECKING cannot be
+  wrong in a way the response did not name.* Two legs — the scope diff (healthy path, design ≠ label)
+  and constructed forgery pins (degraded path, runtime ≠ design) — because **each is blind exactly
+  where the other is strong**, proven by putting each author's shape to the other: Opus conceded its
+  procedure cannot catch #107 (step 1 is sourced from BELIEF; its own axis audit found *time*,
+  *environment* and *predicate-as-EXECUTED* believed rather than known), Fable conceded its inventory's
+  first form was forbidden-set shaped and DERIVED it instead, Sonnet conceded its bounding analogy was
+  wrong and then found the hole in Opus's stopping rule nobody else saw. **All three conceded against
+  themselves.** The lead's own proposed paragraph FAILED review 3/3 and does not ship — it was
+  verification ergonomics, mislabelled "trust". Also killed: *"earning trust over time"* is not a
+  strategy — reputation is not inherited across sessions, so it is won at BUILD time or not at all.
+  ⚠ **The lead asserted one ranking it had not measured and the operator caught it** — right law,
+  wrong object; measuring it inverted the conclusion. And **"Done" was claimed while the law sat on an
+  unmerged branch no agent reads** — filing is not installing, twice in one hour, inside the law about
+  exactly that. Receipts (16 files): `receipts/2026-07-28-packet11ib/`. NEXT = **11-i-a-r** (packet doc
+  unwritten), then 11-i-b's contract.
