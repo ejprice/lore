@@ -1472,6 +1472,7 @@ _ALLOWED_MODULE_LEVEL_NAMES = frozenset(
         "NONDEFAULT_DIM",
         "PRODUCTION_DIM",
         "SLUG",
+        "StoreTraffic",
         "SurrealConnection",
         "SurrealEnv",
         "TEST_NAMESPACE",
@@ -1495,6 +1496,13 @@ _ALLOWED_MODULE_LEVEL_NAMES = frozenset(
         "connect_admin",
         "drop_database",
         "make_env",
+        # packet 04b-1 (escalation E-C): the ROWS/ROUND-TRIP instrument #253's pins ride.
+        # It lives here, beside ``run``, because TWO test modules measure with it and a
+        # test module importing a sibling test module is the wrong address — the same
+        # reasoning that put the migration idiom in ``_enforced_relations_scaffold``.
+        # It is a MEASUREMENT, not retry policy: it owns no budget, no backoff and no
+        # conflict marker, which is the property this allowlist exists to protect.
+        "measure_store_traffic",
         "run",
         "surreal_env",
         "surreal_password",

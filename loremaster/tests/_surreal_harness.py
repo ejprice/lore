@@ -21,9 +21,9 @@ broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
-43 test files import this harness, so a module-level import of code still being
+45 test files import this harness, so a module-level import of code still being
 built would turn one mid-TDD breakage into a COLLECTION error across all of them.
-(A SMALLER, DIFFERENT population — 26 test files — calls ``connect_admin``; those two
+(A SMALLER, DIFFERENT population — 28 test files — calls ``connect_admin``; those two
 numbers are not interchangeable, and committed prose conflated them until fff1382.
 Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
 sentence cannot rot.) The new-code imports (``SurrealStore`` / ``generate_ddl`` /
@@ -204,6 +204,94 @@ async def run(
     the same pattern ``conftest.kz_query``/``kz_row`` use for the Kùzu union.
     """
     return await connection.query(statement, params)
+
+
+@dataclass(frozen=True)
+class StoreTraffic:
+    """What ONE measured call actually cost at the engine.
+
+    ``calls`` is ROUND TRIPS (one per statement string handed to the SDK), ``rows``
+    is every row the engine handed back across them, and ``statements`` is the
+    statement text of each, in order.
+    """
+
+    calls: int
+    rows: int
+    statements: tuple[str, ...]
+
+
+async def measure_store_traffic(
+    ledger: Any,
+    call: Callable[[], Awaitable[Any]],
+) -> StoreTraffic:
+    """Measure the engine traffic ``call()`` causes on ``ledger``'s own connection.
+
+    ⚠ **INSTRUMENTED AT THE CONNECTION, NOT AT A LEDGER SEAM — and that is the whole
+    point.**  An earlier version of this instrument (``test_blocks_edge::_rows_read``,
+    packet 04b-1) wrapped ``TaskLedger._query``, which is ONE of a ledger's doors:
+    ``_query`` rides ``_txn.run_query``, ``_apply`` rides ``_txn.execute_transaction``
+    (which returns ``None`` and therefore cannot serve a READ), and a bounded read that
+    must share ONE snapshot across two reads needs a THIRD door — ``query_raw``, the
+    only SDK call that hands back every statement's result (store reference §3).  A
+    seam-keyed counter reports **zero** for any door it was not named after, and zero
+    reads as *"the read did not grow"* — the instrument lying in the direction of false
+    confidence.  (CLAUDE.md's instrument lesson: a gate keyed on a NAME is defeated by
+    the name nobody listed.)
+
+    ⚠ **ONLY ``query_raw`` IS WRAPPED, AND THAT IS DERIVED, NOT ASSUMED.** [READ, SDK
+    2.0.0 ``surrealdb/connections/async_ws.py``] ``query()``'s body is
+    ``response = await self.query_raw(...)`` followed by ``response["result"][0]["result"]``
+    — so ``query_raw`` is the single narrow waist every statement passes through, and
+    wrapping BOTH double-counts every ``query()`` call (measured: one two-row read
+    reported ``calls=2, rows=4``).  **Stated bound:** an SDK call that reaches the
+    engine WITHOUT ``query_raw`` (``select`` / ``create`` / ``insert`` / ``upsert``) is
+    invisible here.  No ledger in this package uses one — every store touch is a
+    SurrealQL statement — but a build that started to would be measured as free.
+
+    ``query_raw`` is shadowed by an INSTANCE attribute and removed in ``finally``, so
+    the connection object's identity never changes — a ledger's own self-heal
+    comparison (``self._connection is connection``) still holds.
+
+    Args:
+        ledger: Any ledger exposing ``_ensure_connection`` — typed ``Any`` rather
+            than a protocol so this module keeps its module-level import surface
+            (operator RULING 1, 2026-07-20: no module-level ``loremaster`` store
+            import here, or one mid-TDD breakage makes every importer uncollectable).
+        call: The zero-argument coroutine factory to measure.
+
+    Returns:
+        The :class:`StoreTraffic` observed during ``call()``.
+    """
+    connection = await ledger._ensure_connection()  # noqa: SLF001 - the seam IS the measurement
+    statements: list[str] = []
+    rows = 0
+
+    def _rows_in(payload: Any) -> int:
+        """Rows across every statement in a ``query_raw`` envelope."""
+        if not isinstance(payload, dict) or not isinstance(payload.get("result"), list):
+            return 0
+        return sum(
+            len(entry["result"])
+            for entry in payload["result"]
+            if isinstance(entry, dict) and isinstance(entry.get("result"), list)
+        )
+
+    original_query_raw = connection.query_raw
+
+    async def _counting(*args: Any, **kwargs: Any) -> Any:
+        nonlocal rows
+        first = args[0] if args else kwargs.get("query", "")
+        statements.append(str(first))
+        result = await original_query_raw(*args, **kwargs)
+        rows += _rows_in(result)
+        return result
+
+    connection.query_raw = _counting
+    try:
+        await call()
+    finally:
+        del connection.query_raw
+    return StoreTraffic(calls=len(statements), rows=rows, statements=tuple(statements))
 
 
 async def call_until_recovered[T](
