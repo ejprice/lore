@@ -98,10 +98,14 @@ _SENTINEL_ADDITIVE = 4321.5
 #:
 #: ``token_survey.ClaudeTokenCounter._sleep_backoff`` lives in ``scripts/``, where THREE
 #: independently-reasonable decisions intersect:
-#:   1. ``scripts/`` is excluded from ``testpaths``, so its **150** collectable test nodes
-#:      have never run in any gate (finding **#199**; measured 2026-07-25 —
+#:   1. ``scripts/`` **used to be** excluded from ``testpaths``, so its collectable test
+#:      nodes had never run in any gate (finding **#199**; measured 2026-07-25 —
 #:      ``uv run pytest scripts/ --collect-only -q`` → 150, versus ``0`` collected by a bare
-#:      gated run);
+#:      gated run). ⚠ **DISCHARGED 2026-07-25 by #199** — ``scripts`` is in ``testpaths``,
+#:      and re-measured 2026-07-29 in packet 44 BOTH figures have moved: 352 collectable
+#:      nodes, and a bare gated run now collects all 352, not 0. **This premise no longer
+#:      holds, and the conclusion below does not depend on it** — reason 2 alone is
+#:      sufficient, which is why the ⚠⚠ warning above still stands;
 #:   2. ``scripts/test_token_survey.py`` does not cover ``ClaudeTokenCounter`` **at all** —
 #:      by design, not oversight: that module's own docstring declares the live counting
 #:      client *"intentionally test-exempt"* as its only network surface;

@@ -148,8 +148,11 @@ _SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
 #
 # ⚠ ``skills/`` IS SCANNED (ruling R6), and it was ungated ground when that
 # ruling was written — outside ``testpaths`` AND outside ``scripts/typecheck.sh``.
-# Ruling R9 closed the second half IN THIS PACKET (``skills`` is now its own
-# ``MEMBERS`` iteration), so today the residual is ``testpaths`` alone. Extending
+# Ruling R9 closed the second half in packet 42 (``skills`` is its own ``MEMBERS``
+# iteration). ⚠ CORRECTED 2026-07-29: this comment used to end "so today the
+# residual is ``testpaths`` alone" — packet 44 closed that half too, so there is
+# no residual; ``skills/lore-deploy/{scripts,tests}`` are ``testpaths`` entries
+# and their 117 tests run in the standard gate. Extending
 # a gate over ground nothing else checks is only worth anything if the gate RUNS
 # there, so that is asserted rather than assumed: these scanners live in
 # ``loremaster/tests/``, which IS collected, and they READ the tree rather than

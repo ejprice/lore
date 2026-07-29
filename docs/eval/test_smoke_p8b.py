@@ -25,9 +25,15 @@ Run it with the project venv, from the repo root::
 
     uv run pytest docs/eval/test_smoke_p8b.py -q
 
-⚠ ``pyproject.toml``'s ``testpaths`` covers the three workspace members only, so
-this file is NOT collected by a bare ``pytest`` run. It is a deploy-ritual
-instrument, run explicitly beside the smoke it grades.
+⚠ **CORRECTED 2026-07-29 (packet 44, finding #282's class).** This paragraph used to
+read: *"``pyproject.toml``'s ``testpaths`` covers the three workspace members only, so
+this file is NOT collected by a bare ``pytest`` run."*  **Both halves were false.**
+``testpaths`` names four workspace-member test trees plus ``scripts``, ``docs/eval``
+and ``skills/lore-deploy`` — and **this file IS collected by a bare ``pytest`` run**,
+and has been since #238 landed on 2026-07-26.  It is still a deploy-ritual instrument
+worth running explicitly beside the smoke it grades; it is no longer the ONLY way it
+runs.  Packet 44 added the type gate too (``docs/eval`` is a ``scripts/typecheck.sh``
+root with a leg-scoped ``MYPYPATH``), so this tree is now covered on both axes.
 """
 
 from __future__ import annotations

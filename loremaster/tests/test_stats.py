@@ -75,9 +75,13 @@ for _consumer_dir in (_REPO_ROOT / "scripts", _REPO_ROOT / "docs" / "eval"):
     if str(_consumer_dir) not in sys.path:
         sys.path.insert(0, str(_consumer_dir))
 
-# ``smoke_p8b`` comes from ``docs/eval/``, which is not in ``testpaths`` (finding
-# #238) — so the smoke's own suite never runs in the standard gate and its
-# percentile is pinned from HERE, which does.
+# ``smoke_p8b`` comes from ``docs/eval/``. ⚠ CORRECTED 2026-07-29 (packet 44):
+# this comment used to say that tree "is not in ``testpaths`` (finding #238) — so
+# the smoke's own suite never runs in the standard gate". **#238 CLOSED that on
+# 2026-07-26**: ``docs/eval`` is in ``testpaths`` and its suite runs in the
+# standard gate; packet 44 added the type gate too. The percentile is still
+# pinned from HERE — see :class:`TestSmokeP8bPercentileUnits` for what that now
+# rests on, since the reason above is no longer one of them.
 import smoke_p8b as smoke  # type: ignore[import-not-found]  # noqa: E402
 import survey_txn_contention_102 as txn  # type: ignore[import-not-found]  # noqa: E402
 import token_survey as ts  # type: ignore[import-not-found]  # noqa: E402
@@ -535,21 +539,36 @@ class TestSmokeP8bPercentileUnits:
     The other three copies were deleted in favour of :mod:`loremaster.stats`.
     This one stays hand-rolled, because ``smoke_p8b.py`` is the DEPLOY SMOKE —
     the instrument that caught both #107 and #131, each time after the fact and
-    each time because it was the only thing looking — and ``docs/eval/`` is
-    outside ``testpaths`` (finding #238), so **no gate watches its imports**.  A
-    detector that can fail to *start* is strictly worse than a detector carrying a
-    duplicated three-line percentile, so it acquires **no new imports at all**.
+    each time because it was the only thing looking.  A detector that can fail to
+    *start* is strictly worse than a detector carrying a duplicated three-line
+    percentile, so it acquires **no new imports at all**.
 
     So the duplication is bought deliberately, and this is the price: the copy may
-    exist, but it **may not drift**.  These pins live in a GATED tree even though
-    the smoke's own suite does not run in the standard gate — that asymmetry is
-    the whole reason they are here rather than beside the file they guard.
+    exist, but it **may not drift**.
 
-    **RE-OPEN TRIGGER:** the day ``docs/eval/`` gains a ``testpaths`` entry, the
-    trade changes — the smoke's own suite would then be gated, an import break
-    would be caught, and consolidating could be reconsidered.  Until then, do not
-    "helpfully" port this: you would be re-opening a settled trade and removing a
-    working detector.
+    ⚠ **THE RE-OPEN TRIGGER HAS FIRED — recorded here 2026-07-29, finding #282.**
+    This docstring used to argue that ``docs/eval/`` was *"outside ``testpaths``
+    (finding #238), so no gate watches its imports"*, and named its own trigger:
+    *"the day ``docs/eval/`` gains a ``testpaths`` entry, the trade changes — the
+    smoke's own suite would then be gated, an import break would be caught, and
+    consolidating could be reconsidered."*  **That day was 2026-07-26** (#238),
+    and packet 44 then added the type gate as well, so ``docs/eval`` is now
+    covered on BOTH axes.  The premise the trade rested on is gone, and for three
+    days the class went on teaching a retired fact — which is the whole of #282.
+
+    **What is discharged and what is NOT.** Discharged: the stale premise, above.
+    **NOT discharged: whether to consolidate.** The trigger says the trade "could
+    be reconsidered", not that it must be resolved one way — and the surviving
+    half of the original argument is untouched by gating: the smoke is a
+    detachable instrument pointed at a deployed image, and *any* new import is a
+    new way for it to fail to start.  Choosing between "consolidate now that
+    imports are watched" and "keep the copy, the import-count argument stands"
+    is a DESIGN decision about a settled trade, and it belongs to the operator,
+    not to the agent that noticed the trigger.  **It is surfaced, not settled.**
+
+    Until it IS settled, the standing instruction is unchanged: do not
+    "helpfully" port this.  These pins stay, and they are load-bearing either
+    way — under consolidation they become the equality oracle for the port.
 
     Two UNITS meet here: this takes a ``[0, 1]`` FRACTION while every other caller
     takes a ``[0, 100]`` PERCENT, which is how a ``/100`` goes missing.  Measured

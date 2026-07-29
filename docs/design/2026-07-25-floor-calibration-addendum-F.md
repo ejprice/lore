@@ -449,6 +449,24 @@ this table adds this addendum's own, so the ledger stays one list.
 2. **`scripts/` has no `testpaths` entry** — the identity pins and the dominance suite that produced
    0.50649 have never run in any gate (probe §9.2, adversary §6.6, scout RAISED-4 — three
    independent reports now). Operator's call, third time of asking.
+   > ⚠ **DISCHARGED 2026-07-25 by finding #199** — noted here 2026-07-29 (packet 44) because
+   > this raise was still reading as open on its fourth pass. `scripts` IS a `testpaths` entry;
+   > re-measured in packet 44, a bare gated run collects **352** nodes from that tree, where the
+   > raise was written against **0**. ⚠ **The raise's OTHER half is still open and is a different
+   > finding: `scripts/` remains outside `scripts/typecheck.sh` MEMBERS** (#188; its standing
+   > disposition is that clearing it is its own work item, precisely so the canonical gate does
+   > not land red and get switched off). The **execution** axis is closed; the **type** axis is not.
+   >
+   > ⚠ **And #188's SIZE is invocation-shape-dependent, which nobody has recorded — measured on
+   > committed ground 2026-07-29 (`git ls-files 'scripts/*.py'`, so a sibling's untracked
+   > in-flight file cannot inflate it):** `uv run mypy <tracked scripts>` → **45 errors in 7
+   > files**, reproducing the 2026-07-29 sweep exactly; but `MYPYPATH=scripts uv run mypy
+   > <same files>` → **24 errors in 7 files**. **21 of the 45 are import-resolution artifacts,
+   > not type defects** — the same thing that made #261 look 6× larger than it was, and the same
+   > fix (a leg-scoped `MYPYPATH`, as packet 44 gave `docs/eval`). Whoever picks up #188 should
+   > re-measure in the LEG shape before sizing it; 24 is a different job from 45.
+   > *(The identical raise is logged as `F12.2 — SURVIVES UNCHANGED` in the r2 amendment ledger;
+   > that row was not edited here — see this packet's builder report for the flagged edit.)*
 3. **`capture_git_identity`'s silent `(None, None)`** — live production defect, four
    indistinguishable causes (F10.3; adversary §6.5). Needs an owner and a finding.
 4. **11-ii must move the engine's CPU-bound arithmetic off the server's event loop** (F9's flag) —

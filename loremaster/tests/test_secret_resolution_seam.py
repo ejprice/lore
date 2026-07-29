@@ -1064,9 +1064,14 @@ def _scanned_python_sources() -> list[tuple[str, Path]]:
     ``skills/`` was outside ``testpaths`` AND outside ``scripts/typecheck.sh``, so
     extending a gate over it means proving the gate RUNS there. It does — this
     scanner lives in ``loremaster/tests/``, which IS collected, and it READS
-    ``skills/`` rather than importing it. (Ruling R9 later closed the typecheck
-    half within this same packet — ``skills`` is now its own ``MEMBERS``
-    iteration — so the standing residual is ``testpaths`` alone.)
+    ``skills/`` rather than importing it. (Ruling R9 closed the typecheck half
+    within that same packet — ``skills`` is its own ``MEMBERS`` iteration — and
+    **packet 44 closed the last half on 2026-07-29**: this docstring used to end
+    *"so the standing residual is ``testpaths`` alone"*, and there is now no
+    residual — ``skills/lore-deploy/{scripts,tests}`` are ``testpaths`` entries and
+    their 117 tests run in the standard gate. The rider below is unaffected: it
+    proves THIS scanner reaches the tree, which is a different claim from the tree
+    having its own gate, and both are now true.)
     :meth:`TestSecretResolutionHasExactlyOneEntryPoint.
     test_the_scan_reaches_the_skills_tree` is the receipt, and it fails loudly if
     the directory ever stops being reached. A guard nobody runs is a hope with a
@@ -1118,8 +1123,9 @@ class TestSecretResolutionHasExactlyOneEntryPoint:
 
     def test_the_scan_reaches_the_skills_tree(self) -> None:
         # ⚠ R6's RIDER, and the reason it is a test rather than a claim in a report.
-        # ``skills/`` is outside ``testpaths`` (ruling R9 brought it INSIDE
-        # ``scripts/typecheck.sh`` in this same packet, but not inside pytest).
+        # When R6 was written ``skills/`` was outside ``testpaths`` (ruling R9
+        # brought it INSIDE ``scripts/typecheck.sh`` in that same packet, but not
+        # inside pytest; packet 44 added the ``testpaths`` entries on 2026-07-29).
         # Extending a gate over ungated ground is worthless unless the gate RUNS
         # there — a guard nobody runs is a hope with a filename (2026-07-26 law;
         # both of packet 03b's instruments were victims of the class they

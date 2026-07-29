@@ -53,8 +53,10 @@ cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." || exit 1
 # must cover".
 #
 # * ``skills`` is the deploy skill's script tree (ruling R9, packet 42). It was ungated
-#   ground in every other respect, and packet 42 audits a resolver that LIVES there: an
-#   AST pin covered its SHAPE, nothing covered its TYPES.
+#   ground in every other respect WHEN R9 WAS WRITTEN, and packet 42 audits a resolver
+#   that LIVES there: an AST pin covered its SHAPE, nothing covered its TYPES. (Packet 44
+#   closed the other half on 2026-07-29 — ``skills/lore-deploy/{scripts,tests}`` are now
+#   ``testpaths`` entries — so the tree is no longer ungated on either axis.)
 # * ``docs/eval`` is the deploy smoke — ``smoke_p8b.py``, the instrument that caught #107
 #   and #131, each time as the only thing looking — plus that smoke's own suite (#238 put
 #   those tests in ``testpaths``; this is the other half, #261).
