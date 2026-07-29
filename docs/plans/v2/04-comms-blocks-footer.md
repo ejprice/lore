@@ -768,6 +768,26 @@ dispatchers, per-ACTION-OUTCOME trigger, mutation-proven shared); the optional `
 parameters and the `_INSTRUCTIONS` update; **#219** (all FOUR prose sites); 04a residuals **R-5**
 (`_comms_dispatch`'s `Raises:` omits `MessageLedgerError`) and **R-12** (`brief_ack` has no
 tool-seam teaching pin).
+**⚠⚠ INHERITED FROM 04b-1 — 04b-2 OWNS EVERY ROW BELOW. This list is the guaranteed-read
+channel; the reasoning lives where each row points, and NONE of it is in the Scope IN above,
+which predates the 04b-1 wave.** (Written 2026-07-29 at close-out, because the operator asked
+the right question: *"will the 04b-2 orchestrator know this is its?"* — and the honest answer
+was NO. A ruling recorded only in a sibling ruling-block is a ruling the next session never
+meets; this file's own §SIDECAR and §RULING blocks were exactly that.)
+
+| # | inherited item | where the reasoning is |
+|---|---|---|
+| **#274 + #276** | The ACCEPTED BOUND: the contract cannot prove the backfill free of caps/doors/chunking, because it ENUMERATES THE FORBIDDEN SET. The audit quantified it — the pin reaches **2 of 4 doors**. ⚠ **The cure is now BUILT, not just designed**: `scripts/forgery_door_sweep.py` (`fe576ba`) derives the door set receiver-blind and reproduces the audit's result. **Adopt/extend it; do not re-derive.** | §ACCEPTED KNOWN BOUND above · design doc §12 · `receipts/2026-07-28-packet04b1/REPORT-coldaudit-04b1.md` §2.3 |
+| **#279** | The store-seam derivation now exists **TWICE** — `scripts/forgery_door_sweep.py` and `test_blocks_edge.py::_degrade_every_STORE_seam`. ONE IMPLEMENTATION says unify. The builder ESCALATED rather than unifying because it edits a contract file 04b-1 closed GREEN — **that is 04b-2's call, not a tidy-up to slip in behind a GO.** | finding #279 · `REPORT-builder-forgery-sites.md` |
+| **#273** | `_record_legacy_cycles` hand-rolls all-cycle enumeration; `networkx.simple_cycles` is authorised and does it in one call. ⚠ **MEASURED NON-DEFECT** — the hand-rolled walk matched networkx on five adversarial shapes, zero mismatches — so this is packages-over-hand-rolling, NOT a correctness fix. Must land in ONE edit with **#272**, because moving networkx from test-oracle to production import changes both the dependency group and the mypy-override scope. ⚠ It would also become a PRODUCTION dep in the image. | finding #273 · #272's resolve note |
+| **ESC-1** | The named MEASUREMENT that decides a pinned known bound: **is the ancestor closure of the NEW dependencies fully PERSISTED at write time?** If yes, the write-path cycle read is achievable, and the known-bound pin becomes a **defect report to be DELETED WITH THE FIX** rather than a bound to keep. Decision point is THIS kickoff. | §r6's TWO ESCALATIONS above |
+| **ESC-5** | The capped-listing false clear is an **ENTRY CONDITION of 04b-2**, not a hope. T1 forbids SERVING a silent short answer; nothing is served until this packet deploys, which is why deferring it was legal — and why shipping without it is not. | §r6's TWO ESCALATIONS above |
+| **S1-a** | `fleet` defaults to the CALLER'S SESSION (no new parameter — the handler already holds `agent_row.session`), cross-session tail as ONE counted elision line. **Lands WITH or BEFORE the new columns**, or they compute two more numbers for corpses. | §SIDECAR RULING S1 above |
+| **S2** | The `⚠ STALE` badge RETIRES; serve the AGE. 04b-2 ships that alone — the declared-cadence verdict is packet 06's, with its parameter. **The new columns ship as MEASURES beside the age with NO stranded-imperative**; imperatives ride only TRUE verdicts. | §SIDECAR RULING S2 above |
+| **R10(iii)** | The supersede/claim RENDERS teach: `supersede_task` warns when the predecessor has dependents; the claim render names the superseded case. (ii) closed the at-create door in 04b-1; this closes the moment-of-causation one. | §R11's FOUR ESCALATIONS above |
+| **#268** | PROOF 8's second declared RED stays GREEN — the T1 sandwich's cap does not discriminate against a candidate-scan cap over 66 candidates. Contract gap, arithmetic named in the finding. | finding #268 · cold audit CA-10 |
+| **CA-11 · CA-12** | Write-time cycle guard TOCTOU with a concurrent racer (real, correctly characterised, closing it is a contract change) · the cycle-graph read has no supporting index (bounded by the dependency-bearing population today). Both OPEN, neither 04b-1's. | `REPORT-coldaudit-04b1.md` §10 |
+
 **Exit:** full gates + cold audit + **deploy = rebuild + recreate BOTH** + smoke; a blocked task
 chain renders its critical path; the footer appears only for a resolved caller with pending
 traffic; #219 + #247 resolved; INDEX rows + Log.
