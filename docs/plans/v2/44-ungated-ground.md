@@ -5,8 +5,10 @@ never read a list — and "a guard nobody runs is a hope with a filename") ·
 packages-over-hand-rolling
 
 **Provenance: MINTED by the operator-directed findings sweep of 2026-07-29** to home the
-ungated-ground findings — the #188/#233/#238 second-class-tree class, recurring. Operator may
-strike or re-home at kickoff.
+ungated-ground findings — the #188/#233/#238 second-class-tree class, recurring.
+**OPERATOR-CONFIRMED 2026-07-29 (kept as-is, option 3 of the demote/fold/keep fork):** the
+packet stands as a standing 0.15 row until a session picks it up. The load-bearing piece is
+the DERIVED invariant (third Scope IN item) — without it this packet is instance-patch #5.
 
 ## Mission
 Close the remaining trees that hold load-bearing committed code no gate covers. The class has
