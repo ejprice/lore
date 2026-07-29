@@ -1043,7 +1043,8 @@ re-runnable measurement:**
 ## C1. The instrument
 
 A committed script — `scripts/comms_consumer_eval.py` (harness-venv, keyed like the §6
-A/B instrument: `docs/eval/evaluation_harness_p8a.py` precedent, anthropic+mcp venv, key
+A/B instrument: `docs/plans/v2/receipts/2026-07-04-p8a/evaluation_harness_p8a.py` precedent
+(archived there from `docs/eval/` on 2026-07-29 at `439b55d`, bytes unchanged), anthropic+mcp venv, key
 at `/home/ejprice/docker/mcp/.env`) — that:
 1. **Generates its fixtures by CALLING THE REAL RENDER HELPERS** (never transcribed
    renders — render drift auto-propagates into the eval or the eval fails to build):

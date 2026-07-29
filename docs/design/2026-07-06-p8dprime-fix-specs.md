@@ -4,11 +4,16 @@
 **Tree analyzed:** `feat/surreal-unification` @ d3ea4d9, plus 13faa6a
 (`fix(search): tier-only filter misses teach tiers, not paths (#54 partial)`) which
 landed mid-analysis — every file:line below re-verified against 13faa6a.
-**Evidence base:** docs/eval/p8d-flip-eval-raw.md (35 transcripts),
-docs/eval/2026-07-04-p8a-baseline.md (per-task baseline table), findings #52/#53/#54
+**Evidence base:** docs/plans/v2/receipts/2026-07-04-p8a/p8d-flip-eval-raw.md (35 transcripts),
+docs/plans/v2/receipts/2026-07-04-p8a/2026-07-04-p8a-baseline.md (per-task baseline table),
+findings #52/#53/#54
 (full bodies via `lore_findings get`), live repro calls against the deployed
 (defective) MCP, and direct source reads. Live tool output was used to REPRODUCE
 only, never trusted (resume-doc degraded-surface warnings applied).
+**Address note (added 2026-07-29):** every `docs/eval/…` evidence path this document cited
+was archived to `docs/plans/v2/receipts/2026-07-04-p8a/` at `439b55d` (packet 44). The paths
+above and in §3.1 are updated; **the bytes are unchanged** (all six moved as 100%-similarity
+`git mv` renames), so every number derived from them below stands unaltered.
 
 These specs are written to be handed to sonnet builders verbatim. Every design
 decision is made here; an open question in a spec is a spec defect — flag it to the
@@ -432,8 +437,10 @@ pairs 1-11. Gates: scoped pytest + ruff + typecheck.sh; never the full suite.
 
 ### 3.1 Per-task turn-cost delta table (gate: frozen pairs 1-11)
 
-Baseline = docs/eval/2026-07-04-p8a-baseline.md run 3 (11/11 · 5.45 · 1447.1).
-Flip = docs/eval/p8d-flip-eval-raw.md tasks 1-11 (10/11 · 9.64 · 2051.8; sums
+Baseline = docs/plans/v2/receipts/2026-07-04-p8a/2026-07-04-p8a-baseline.md run 3
+(11/11 · 5.45 · 1447.1).
+Flip = docs/plans/v2/receipts/2026-07-04-p8a/p8d-flip-eval-raw.md tasks 1-11
+(10/11 · 9.64 · 2051.8; sums
 re-verified from the raw per-task numbers: 106 calls, 22,570 output tokens).
 
 | # | Baseline calls (mix) | Flip calls (mix) | Δcalls | Δout-tok | Attributed cause(s) — from the transcripts |

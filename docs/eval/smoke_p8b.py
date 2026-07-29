@@ -12,7 +12,8 @@ smoke check.
 
 Run it from the lore repo root (``/home/ejprice/PycharmProjects/lore``) so ``uv``
 resolves the workspace venv that already carries the ``mcp`` client package the
-project's own eval harness uses (see ``docs/eval/connections_p8a.py``)::
+project's own eval harness uses (see
+``docs/plans/v2/receipts/2026-07-04-p8a/connections_p8a.py``)::
 
     uv run python docs/eval/smoke_p8b.py [--mechanics]
 
@@ -21,10 +22,16 @@ docstring here claimed it "lives OUTSIDE the lore repo (a scratchpad script, not
 repo artifact)", which stopped being true the day it was committed. Corrected
 2026-07-25 by ``smoke-author-03b-1`` while adding the packet-03b gates.)
 
-CONNECTION LAYER: modeled on the committed, PROVEN ``docs/eval/connections_p8a.py``
-(P8a baseline instrument, verified live against this exact server) rather than
-importing it, so this script stays self-contained. In particular it copies that
-module's two hard-won lessons:
+CONNECTION LAYER: modeled on the committed, PROVEN
+``docs/plans/v2/receipts/2026-07-04-p8a/connections_p8a.py`` (P8a baseline instrument,
+verified live against this exact server) rather than importing it, so this script stays
+self-contained. In particular it copies that module's two hard-won lessons:
+
+(``connections_p8a.py`` and ``evaluation_harness_p8a.py`` — named below and at
+:func:`connect` — lived in ``docs/eval/`` until packet 44 archived them to
+``docs/plans/v2/receipts/2026-07-04-p8a/`` on 2026-07-29 at ``439b55d``. Content is
+byte-identical: git recorded all six moved files as 100%-similarity renames. See that
+directory's README for the base-path note.)
 
 1. ``streamablehttp_client``'s async context yields a tuple whose length varies by
    SDK version/transport (a plain ``(read, write)`` 2-tuple, or a 3-tuple with a
@@ -239,7 +246,8 @@ class SmokeCheckFailed(AssertionError):
 async def connect(url: str) -> AsyncIterator[ClientSession]:
     """Open + initialize a streamable-HTTP MCP session against ``url``.
 
-    Modeled on ``docs/eval/connections_p8a.py``'s ``MCPConnectionHTTP`` /
+    Modeled on ``docs/plans/v2/receipts/2026-07-04-p8a/connections_p8a.py``'s
+    ``MCPConnectionHTTP`` /
     ``MCPConnection.__aenter__``: ``streamablehttp_client``'s yielded tuple is
     unpacked defensively (2-tuple, or 3-tuple with a trailing session-id getter)
     rather than assuming one fixed shape.

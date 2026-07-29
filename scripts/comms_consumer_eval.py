@@ -23,7 +23,9 @@ drifted away from the kwargs this seam passes, the run FAILS LOUD
 (:class:`RenderSeamUnavailable`) rather than grading a stale copy — that failure mode is
 the whole point of the seam (§C1.1).
 
-HOW TO RUN (the p8a precedent, ``docs/eval/evaluation_harness_p8a.py``: harness venv +
+HOW TO RUN (the p8a precedent,
+``docs/plans/v2/receipts/2026-07-04-p8a/evaluation_harness_p8a.py`` — archived there from
+``docs/eval/`` on 2026-07-29 at ``439b55d``, bytes unchanged: harness venv +
 the key at ``/home/ejprice/docker/mcp/.env``).  ``anthropic`` is deliberately NOT a
 project dependency, so the SDK is layered over the project environment for the run:
 

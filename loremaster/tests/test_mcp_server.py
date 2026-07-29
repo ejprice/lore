@@ -4580,7 +4580,8 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
     ) -> None:
         """A tier-only miss teaches tiers, never path/subtree wording (P8d' #54).
 
-        Live repro (docs/eval/p8d-flip-eval-raw.md task 9 feedback): tier=
+        Live repro (docs/plans/v2/receipts/2026-07-04-p8a/p8d-flip-eval-raw.md task 9
+        feedback — archived from docs/eval/ on 2026-07-29 at 439b55d): tier=
         "loresigil" (a package name, not a tier) rendered the PATH-flavored
         ``_FILTER_MISS_NO_SUBTREE_HINT`` ("subtree/prefix scoping is not
         supported ... pass an exact indexed file path") even though no path

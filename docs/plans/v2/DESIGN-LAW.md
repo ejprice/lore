@@ -124,10 +124,16 @@ Sources: P8c:139-143, P8d:217-221 (extraction receipt).
   legitimately fail on engine semantics; a down spike = ~861 loud errors by design).
 
 ## 6. Eval + measurement pins
-Sources: docs/eval/2026-07-04-p8a-baseline.md:44-49; client-needs ruling.
-- The A/B instrument is `docs/eval/evaluation_harness_p8a.py` + `connections_p8a.py`,
+Sources: docs/plans/v2/receipts/2026-07-04-p8a/2026-07-04-p8a-baseline.md:44-49; client-needs ruling.
+- The A/B instrument is `docs/plans/v2/receipts/2026-07-04-p8a/evaluation_harness_p8a.py`
+  + `connections_p8a.py` (its required sibling, same directory),
   REUSED VERBATIM, pinned model `claude-sonnet-4-5-20250929` — measurement pins are
   never "upgraded". Harness venv needs anthropic+mcp; key at /home/ejprice/docker/mcp/.env.
+  (⚠ ADDRESS ONLY: these three lived in `docs/eval/` until packet 44 archived them on
+  2026-07-29 at `439b55d`. **The bytes are unchanged** — git recorded all six moved files
+  as 100%-similarity renames, `6 files changed, 0 insertions(+), 0 deletions(-)` — so
+  "REUSED VERBATIM" is satisfied by running exactly what is there. See that directory's
+  README. Nothing about the pin was upgraded, weakened, or re-measured.)
 - Standing bar: 35-pair set graded by client metrics (§1.1). 11-pair calls-leg RETIRED.
 - `CLAUDE_PER_VOYAGE_CEILING = 1.78` is a measured constant (token-weighted p95 max
   across 3 corpora) — re-measure via scripts/token_survey.py on corpus change, never assume.
