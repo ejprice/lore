@@ -779,3 +779,27 @@ traffic; #219 + #247 resolved; INDEX rows + Log.
 - **04a residual R-7 is unfixable as written.** "Widen #105's own text" cannot be done: #105 is
   already `resolved` with a full corrective note, and `lore_findings` has no verb that edits a
   subject line (that gap IS finding #129). The subject still reads *"latent today"*.
+
+## SWEEP ADDITIONS 2026-07-29 (04b-2 — routed by the operator-directed findings sweep)
+⚠ **SIZING FENCE FIRST (operator directive: packets KEEP the size goal — they always run
+over).** 04b-2 already owns the deploy-critical core (chain render, fleet columns, footer,
+`agent`/`session` params, #219) plus #274/#276/#273/ESC-1/capped-listing/S1-a from 04b-1's
+close. The items below are close-out-cheap verifications and one config line. **At kickoff,
+anything here (or above) that is neither deploy-critical nor a-few-lines-cheap SPLITS to a
+minted 04b-3 rather than stretching the session — the split is the ruled default.**
+- **#253** — ruled into 04b-1 and its bounded read shipped: VERIFY in the deployed artifact at
+  this packet's deploy and resolve with the receipt (no whole-table materialisation).
+- **#260** — `lore.yaml`'s include-list omits `lorerunes`, so the ruled home for shared code is
+  invisible to `lore_search` (and the file is gitignored, so `registration_sites.py`
+  structurally cannot flag it). Apply the include at THIS deploy's recreate — the safe moment;
+  lore-lore is not restart-durable (#165/#166) — then verify `lore_search` serves lorerunes
+  post-deploy. The gitignored-config blind spot is recorded in the finding; note it on resolve.
+- **#263** — §11.1's traversal-timeout construction demands an error "naming the timeout" the
+  ledger provably cannot produce: fix the packet text to the construction the landed contract
+  actually uses, or wontfix citing it.
+- **#268** — PROOF 8's second declared RED stays GREEN (a generous cap of 60 cannot
+  discriminate against a candidate-scan cap over 66 candidates): strengthen the pin, both-ways
+  mutation-proven per #229.
+- **#277** — fold into the close-out receipts and resolve there: a SUGGESTED FIX in a report is
+  unpinned prose and inherits no authority from the measurement beside it (#275's sibling
+  lesson) — re-derive before applying, always.

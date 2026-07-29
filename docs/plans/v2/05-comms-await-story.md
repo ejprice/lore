@@ -3,6 +3,21 @@ size ~0.30 wu →split at kickoff if the folds push past 0.25 · wave C · depen
 law: read `comms-subsystem.md` FIRST + DESIGN-LAW §8/§5/§1 · **Opus 4.8 builder on the
 await/LIVE leg (operator roster ruling)** · DEPLOY: yes (both)
 
+⚠ **SPLIT RULED BY THE 2026-07-29 SWEEP (operator sizing directive: packets KEEP the size
+goal — they always run over).** This packet's accumulated load (core + two DD inheritances +
+five routed findings + two verb folds) is far past the law. It boots as TWO sessions; this
+file stays the shared reference until the kickoff mints the bootable halves (the 03a
+precedent):
+- **05a — the WAIT SURFACE (~0.30, re-size at its own kickoff; DEPLOYS):** await + story +
+  rollup extension + `comms_cli.py`; DD-2.a (waiting mechanism) · DD-4.c (`since=` serves
+  seen rows) · R1 drain-question visibility · #183 (bound the pending read) · #190 (oracle
+  parity FIRST — before any message-path pin) · #214 (the live receipt).
+- **05b — LEDGER VERBS + HOOKS (~0.20):** #89 (task detail read) · #174 (supersede carries
+  `blocked_by`) · **#256** (an ANNOTATE edge for open/acknowledged findings — ack→ack is
+  illegal, so a correction must mint a duplicate or mis-resolve; hit by three sweeps running)
+  · **#262** (register accepts a task_id another agent holds, SILENTLY — two surfaces
+  disagree and only one says so) · idle-gate v2 (#121/#149) · #195 home-settling (with 06).
+
 ## Mission
 The wait-and-reconstruct half of the surface: bounded await, task-anchored story,
 rollup extension, CLI, and the idle-gate hook rework.

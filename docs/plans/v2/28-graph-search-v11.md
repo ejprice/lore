@@ -27,6 +27,10 @@ pre-registered rule or not at all.
   is what gets copied into a brief; the caveats below it are what get dropped (measured: a
   lead relayed "2 prod refs" past two caveats). Evaluate that render change here, under the
   usual client-metrics gate.
+- **#254** (slotted 2026-07-29) — path-scoped `lore_search` under the default budget served
+  ONE STUB for a constant lookup and the agent routed to grep — a live ROUTE_AROUND signal
+  (trust doctrine: a routed-around honest surface is a failed acceptance). Evaluate
+  budget/detail defaults for path-scoped lookups, under the client-metrics gate.
 - **#252** (slotted 2026-07-27; canonical re-file of a 2026-07-04 FRICTION.md row) —
   `tests_for` returns EMPTY for helpers exercised only INDIRECTLY (19 passing tests drive
   `_sanitise_line` through the render pipeline; no direct reference edge, so the graph

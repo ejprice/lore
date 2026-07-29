@@ -1,7 +1,10 @@
 # 09 — Served-surface + docs-truth residues (formerly PKT-03)
-size ~0.20 wu → RE-SIZE AT KICKOFF (4 findings added by the 2026-07-26 sweep; the sizing
-law's ≥0.30 split clause applies) · wave L (parallel-safe; re-waved 2026-07-14) · depends:
-none · #92 supersedes the #34/#90 chain this file predates
+size: **SPLIT RULED by the 2026-07-29 sweep (operator sizing directive)** — the accumulated
+load is past the law. Boots as TWO sessions; this file is the shared reference until each
+kickoff mints its half: **09a — served-surface + docs truth (~0.20):** #15 #64 #80 #82
+#84–#86 #88 #92 + #197 #208 + the docs-truth pass. **09b — testing hygiene (~0.15):**
+#230 #231 #244. · wave L (parallel-safe; re-waved 2026-07-14) · depends: none · #92
+supersedes the #34/#90 chain this file predates
 law: DESIGN-LAW §1 (client law), §2 (map semantics — read before touching map renders)
 
 ## Mission
