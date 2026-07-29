@@ -56,6 +56,16 @@ reader meets them deliberately rather than discovering them:
 
 Its verdict is *"look at these"*, never *"there are no other sites"*. Use it to find
 work, not to certify its absence.
+
+⚠ **HAND-RUN, AND EXITING NON-ZERO ON A HEALTHY TREE, ARE BOTH DELIBERATE — this script
+is a WORKLIST, and a worklist cannot be a pass/fail gate.** It is in no ``testpaths``
+entry and no CI leg on purpose: its exit 1 means *"these sites need judgement"*, and on a
+healthy tree several always will (a member's own ``pyproject.toml`` correctly omits
+itself; ``LORE_NAMESPACES`` is a deliberate subset). Wiring that exit code into a gate
+would make the gate permanently red, and a gate that is always red is a gate that gets
+switched off — so its ungatedness is a stated bound, not an oversight (packet 44,
+2026-07-29). The thing that IS enforceable — "every committed ``.py`` rides some gate" —
+is a different instrument; this one asks a question no exit code can answer.
 """
 
 from __future__ import annotations
@@ -81,12 +91,31 @@ _WINDOW_LINES = 4
 #: it with a blind spot, deliberately.
 _MIN_MEMBERS_FOR_A_SITE = 3
 
-#: Trees whose hits are archived records rather than live registrations. Receipts are
-#: preserved byte-faithful by repo law, so a stale member list inside one is evidence of
-#: what was true then, not a site to update.
+#: Paths whose hits cannot be live registrations. Each exclusion carries its OWN reason,
+#: because they are not the same kind of thing and a shared rationale over-claims:
+#:
+#: * ``docs/plans/v2/receipts`` — archived records. Preserved byte-faithful by repo law
+#:   (see ``[tool.ruff] extend-exclude``'s committed comment), so a stale member list
+#:   inside one is evidence of what was true then, not a site to update.
+#: * ``REPORT-*.md`` — a wave report at the repo root is a record of one agent's run,
+#:   awaiting the ``git mv`` into ``receipts/`` that the archive law prescribes.
+#: * ``uv.lock`` — generated. Editing it by hand is not a registration, it is damage.
+#:
+#: ⚠ ``:!docs/eval`` USED TO BE HERE AND WAS REMOVED (packet 44, 2026-07-29). Its stated
+#: reason was "archived records", and that was FALSE of half the tree: ``docs/eval`` holds
+#: ``smoke_p8b.py``, the LIVE deploy smoke that caught #107 and #131. Excluding a live tree
+#: from a detector on an archival rationale is how a registration site hides. The six
+#: genuinely archived files in that directory were moved to
+#: ``docs/plans/v2/receipts/2026-07-04-p8a/`` in the same packet, so the remaining tree is
+#: wholly live and the first exclusion above covers the records. Removal cost ZERO new
+#: worklist rows, and that is re-derivable from this script rather than taken on trust:
+#: after the archive, ``docs/eval`` contains registration-shaped mentions of exactly ONE
+#: distinct member (``loremaster``, 3 of them; the other three members appear 0 times), and
+#: a site requires :data:`_MIN_MEMBERS_FOR_A_SITE` DISTINCT members inside
+#: :data:`_WINDOW_LINES` — so the tree cannot contribute a site at all until a second
+#: member's name lands there. Which is exactly when you would want to hear about it.
 _EXCLUDED = (
     ":!docs/plans/v2/receipts",
-    ":!docs/eval",
     ":!REPORT-*.md",
     ":!uv.lock",
 )
