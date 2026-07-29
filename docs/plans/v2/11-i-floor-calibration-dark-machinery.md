@@ -24,6 +24,26 @@ BUILD → **11-i-a (~0.15) / 11-i-b (~0.24)** at kickoff. Two findings ride the 
   consolidated seam needs a convention-discriminating pin — a known input whose answer
   DIFFERS across estimator conventions — mutation-proven by swapping the convention and
   watching RED.
+  ⚠ **RESIDUAL, routed here 2026-07-28 as finding #255:** the two OLD convention-blind
+  fixtures (`scripts/test_token_survey.py`, `scripts/test_search_score_survey.py`) are still
+  committed and still cannot discriminate. Harmless while the new pins exist, MISLEADING to
+  anyone reading them as estimator coverage. **11-i-b's port is where the ruling #237 asked
+  for must finally be TAKEN** rather than carried a third time: strengthen them to interior
+  percentiles on n≥3 distinct values, or annotate them pointing at `loremaster/tests/test_stats.py`
+  as the file that actually guards the convention.
+- **THE `shown` FIELD'S SEMANTICS — a DESIGNER decision (operator ruling 2026-07-28), and it
+  binds 11-i-b because 11-i-b writes the field.** Raised by `informant-fable-11ib` reading the
+  consult exhibit: every fired-absence row marked its full shown-k slice as `shown: true`,
+  **while the caller had been served an ABSENCE and shown nothing**. ⚠ Verified against the
+  tree before routing: the real `HitCapture` carries **no `shown` field at all** — so this is a
+  WRITER-SPEC question for what b builds, **not a defect in shipped code**, and the packet must
+  not be briefed as if it were fixing one. The decision: does `shown` mean *"inside the
+  shown-k slice"* (a capture-geometry fact) or *"actually displayed to the caller"* (a serving
+  fact)? They diverge on exactly the rows the absence verdict fires, which is the population
+  11-ii most needs to reason about — and per the Consumer Law a render cannot serve a
+  distinction the row never recorded, so choosing the geometry reading silently forecloses the
+  serving one. **Owner: the design sidecar, before b's jsonl writer is specified.** Not a
+  builder's call; not settled here. Receipt: `receipts/2026-07-28-packet11ib/REPORT-informant-fable-11ib.md` §1.8.
 
 ## Mission
 Build the measurement machinery and its store, **with the serving surface untouched**.
