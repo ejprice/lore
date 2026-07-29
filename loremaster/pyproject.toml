@@ -36,7 +36,6 @@ dependencies = [
     # transitively before packet 11-i-a. An identity frozen in the store must never
     # rest on a version somebody else's dependency happens to resolve.
     "orjson>=3.11",
-    "networkx>=3.6.1",
 ]
 
 [tool.uv.sources]
@@ -47,6 +46,11 @@ loresigil = { workspace = true }
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "networkx>=3.6.1",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["loremaster"]

@@ -753,7 +753,6 @@ dependencies = [
     { name = "lorescribe" },
     { name = "loresigil" },
     { name = "mcp", extra = ["cli"] },
-    { name = "networkx" },
     { name = "numpy" },
     { name = "orjson" },
     { name = "pydantic" },
@@ -767,6 +766,11 @@ dependencies = [
     { name = "watchdog" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "networkx" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4.5" },
@@ -776,7 +780,6 @@ requires-dist = [
     { name = "lorescribe", editable = "lorescribe" },
     { name = "loresigil", editable = "loresigil" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27" },
-    { name = "networkx", specifier = ">=3.6.1" },
     { name = "numpy", specifier = ">=2.5.1" },
     { name = "orjson", specifier = ">=3.11" },
     { name = "pydantic", specifier = ">=2.13" },
@@ -789,6 +792,9 @@ requires-dist = [
     { name = "surrealdb", specifier = ">=2.0" },
     { name = "watchdog", specifier = ">=6.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "networkx", specifier = ">=3.6.1" }]
 
 [[package]]
 name = "lorerunes"
