@@ -1,5 +1,34 @@
 """Mechanical grader for the 11-i-b consult battery.
 
+⚠⚠ ARCHIVED AND KNOWN-BROKEN — read before running (added 2026-07-28, packet 11-i-b close-out).
+
+1. **PATHS IN THE USAGE LINES BELOW ARE STALE.** This tool was authored at the REPO ROOT as
+   ``consult-11ib/tools/``. It now lives under
+   ``docs/plans/v2/receipts/2026-07-28-packet11ib/consult-11ib/tools/``. Every ``consult-11ib/...``
+   path quoted here and in the packet's reports is relative to that archive directory, NOT to the
+   repo root. Nothing rewrites them on a move, so they will not run as written.
+
+2. **NOTHING CALLS THIS, AND NO GATE RUNS IT.** Verified at close-out by searching every reference
+   to each of the five tool filenames: zero invocations -- every hit is a usage docstring, sibling
+   prose, or a reproduction command in the archived reports. It is in neither ``testpaths`` nor
+   ``scripts/typecheck.sh``. That is DELIBERATE (these are hand-run consult instruments, archived
+   rather than promoted) -- but it means **no regression in this file will ever be caught**, and
+   it has had no gate since the day it was written.
+
+3. **IF YOU PROMOTE IT, DO NOT JUST COPY IT.** The promotion path is ``scripts/`` (which IS in
+   ``testpaths``), with gating, a ``typecheck.sh`` entry, and the fix in finding **#270**. The
+   published scoreboard in ``REPORT-exhibit-11ib-1.md`` §F1 is the equality oracle for that work:
+   honest 10/10, degraded 5/10, W1/W3/W5/W6 caught at 9/10.
+
+4. **THE MARKDOWN TABLE PARSING IS DEFECTIVE — finding #270, measured, not suspected.** This file
+   reads table rows with ``line.strip("|").split("|")``. A cell containing an escaped pipe inside a
+   code span is split into TWO cells: probed 2026-07-28, a row whose cell reads ``a <escaped-pipe> b`` yields
+   the single value ``a | b`` under ``markdown-it-py`` (already a DECLARED dev dependency, adopted
+   under packages-over-hand-rolling for exactly this class) and two broken cells here. **A grading
+   instrument that mis-parses a cell can score a package wrongly, which is the one thing this
+   battery exists to catch.** The same hand-roll exists in a sibling tool -- two copies of one
+   defect, the ONE IMPLEMENTATION law violated with the correct package already in the tree.
+
 **PROVENANCE — this is the instrument that found the ten missing keys.** It was written by
 `adversary-exhibit-11ib-1` (2026-07-28) to attack the battery empirically, lived only in
 `/home/ejprice/scratch-adversary-11ib/` (an unrecoverable address), and is committed here so a

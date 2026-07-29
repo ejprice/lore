@@ -32,5 +32,6 @@ declared dev dependency; **finding #270** records why, and the published scorebo
 | `REPORT-fable-design-11ib-2.md` | the design sidecar: Q1–Q6 + the FU1 reconciliation |
 | `consult-11ib/` | the exhibit variants, the battery, the grader-only key, and the hand-run tools |
 
-⚠ `REPORT-lawtest-sonnet-1.md` carries a **SUPERSEDED SYMBOL NOTICE** — it names `_apply_mint`,
-which no longer exists. The prose is preserved deliberately; see the banner.
+⚠ `REPORT-lawtest-sonnet-1.md` carries a **SUPERSEDED SYMBOL NOTICE** at its top: it names a
+symbol that no longer exists, used only as an illustrative example. The prose is preserved
+deliberately — read the banner there for which symbol and why.

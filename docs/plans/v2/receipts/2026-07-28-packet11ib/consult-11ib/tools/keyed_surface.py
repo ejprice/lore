@@ -1,5 +1,25 @@
 """Extract and hash the ANSWER SURFACE — the exact text an informant must reproduce per key.
 
+⚠⚠ ARCHIVED AND KNOWN-BROKEN — read before running (added 2026-07-28, packet 11-i-b close-out).
+
+1. **PATHS IN THE USAGE LINES BELOW ARE STALE.** This tool was authored at the REPO ROOT as
+   ``consult-11ib/tools/``. It now lives under
+   ``docs/plans/v2/receipts/2026-07-28-packet11ib/consult-11ib/tools/``. Every ``consult-11ib/...``
+   path quoted here and in the packet's reports is relative to that archive directory, NOT to the
+   repo root. Nothing rewrites them on a move, so they will not run as written.
+
+2. **NOTHING CALLS THIS, AND NO GATE RUNS IT.** Verified at close-out by searching every reference
+   to each of the five tool filenames: zero invocations -- every hit is a usage docstring, sibling
+   prose, or a reproduction command in the archived reports. It is in neither ``testpaths`` nor
+   ``scripts/typecheck.sh``. That is DELIBERATE (these are hand-run consult instruments, archived
+   rather than promoted) -- but it means **no regression in this file will ever be caught**, and
+   it has had no gate since the day it was written.
+
+3. **IF YOU PROMOTE IT, DO NOT JUST COPY IT.** The promotion path is ``scripts/`` (which IS in
+   ``testpaths``), with gating, a ``typecheck.sh`` entry, and the fix in finding **#270**. The
+   published scoreboard in ``REPORT-exhibit-11ib-1.md`` §F1 is the equality oracle for that work:
+   honest 10/10, degraded 5/10, W1/W3/W5/W6 caught at 9/10.
+
 **PROVENANCE.** Written by `adversary-exhibit-11ib-1` (2026-07-28) and committed here rather than
 left in scratch: it is the instrument that turned "six wrong packages happen to score the same"
 into "five wrong packages are BYTE-IDENTICAL on every surface the battery grades", which is the
