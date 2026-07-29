@@ -41,6 +41,13 @@ loremaster.__file__ = /home/ejprice/scratch-contractfix-04b1-r6/loremaster/lorem
 
 I read none of the pre-existing `/home/ejprice/scratch*` reference builds.
 
+⚠ **A NOTE ON GIT, so a later reader is not confused by the history.** I ran no git
+state-mutating command. **The LEAD committed this wave's four test files while I was writing
+this report**, as `710adea` (*"test(04b-1): close the delta adversary's six pins + correct
+Leg 1 (stage 1 of 4)"*), on top of `121f1f2`. Every measurement below was taken on the working
+tree whose content is now that commit; the gate re-runs after my last docstring amendment
+(§A1's stated bound) are the ones pasted in §SAT, and they were re-run AFTER that amendment.
+
 ---
 
 ## SUMMARY BLOCK
@@ -87,7 +94,7 @@ I read none of the pre-existing `/home/ejprice/scratch*` reference builds.
   `nx.simple_cycles`' behaviour by RUNNING it on four graph topologies against the shipped
   `graphlib` loop (table in §A3) → **replace** for the test oracle (it is the independent
   second enumeration a diff needs); for PRODUCTION it is a `bespoke`→`replace` question whose
-  premise changed at `54d0505`, filed as **#273**, NOT settled here (production is outside a
+  premise changed at `54d0585`, filed as **#273**, NOT settled here (production is outside a
   contract author's writable set). `graphlib.TopologicalSorter` for cycle DETECTION — READ its
   `prepare()` docstring (*"If any cycle is detected, CycleError will be raised"* — singular)
   → **keep_with_trigger**; trigger: the day a per-cycle CONSUMER exists. `pytest.MonkeyPatch`

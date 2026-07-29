@@ -74,18 +74,40 @@ remains"* — contradicted by a live measurement.  **Leg 1 is a claim about the 
 row may state only what the response is TRUE of; where a guarantee depends on something having
 happened, the row names that something as a FACT rather than asserting the difference away.**
 
+⚠⚠ **AND ROW 1'S FIRST CORRECTION WAS FALSE TOO — FINDING #275**, so the form below is the
+THIRD, and it is shaped by what killed the second (r6 adversary §LEG1 + cold audit §4, MEASURED
+2026-07-28 and independently re-derived 2026-07-29 at ``af3551c``).  The second version named
+the edges *"this ledger's last completed ``ensure_ready`` mirrored"* — a STRICT SUBSET of what
+the response is true of: a VIRGIN boot mirrors **0** edges and the read still serves a
+dependency written after it, so the row asserted the INVERSE of the edge ≡ column invariant
+SECTION K pins.  **ANY predicate indexed on *the last* ``ensure_ready`` is false again on the
+NEXT boot**, and that is measured rather than argued: the backfill is idempotent against the
+STORE's edge set (:meth:`~loremaster.tasks.TaskLedger._backfill_blocks_edges`), so a second boot
+over an unchanged store mirrors **0**, nothing is written after it, and the read still serves
+the edge the first boot's caller minted.  The form below is therefore indexed on the edges the
+ledger **HOLDS** and on the DOORS that mint them — the only description that survives a reboot.
+
 * ``transitive_blockers(task_id)``
-  — **answers:** *"the tasks reachable UPSTREAM over the ``blocks`` EDGES **this ledger's last
-  completed ``ensure_ready`` mirrored**, from this task, to a depth of at most
-  ``max_depth_used``, **at this ledger**, as of this read."*
+  — **answers:** *"the tasks reachable UPSTREAM over **EVERY ``blocks`` EDGE THIS LEDGER
+  HOLDS**, from this task, to a depth of at most ``max_depth_used``, **at this ledger**, as of
+  this read."*  Those edges enter the store at exactly three MINT sites and leave it at none:
+  ``ensure_ready``'s backfill mirrors every ``blocked_by`` entry that names a live task row and
+  carries no edge yet, and ``create_task``/``create_many`` mint each new dependency's edge in
+  the SAME transaction as its row — and **no PRODUCTION path deletes one** (this contract's own
+  fixtures do, to construct the edge-less world).  DERIVED 2026-07-29 at ``af3551c``, not
+  asserted: ``_relate_fragment`` has exactly those three callers, and no statement anywhere in
+  ``loremaster/loremaster/`` deletes a ``blocks`` edge or a ``task`` row.
   — **asked:** *"what blocks this task?"*
   — **DIFFERENCES, and where each is carried:** (a) *edges vs the ``blocked_by`` COLUMN* —
   R11's backfill is what makes the two agree, and the agreement is pinned in SECTION K
   (``TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS``) rather than disclosed in the render.  ⚠ The
-  predicate above says *"a COMPLETED migration"* because a migration that ran PARTIALLY, or
-  failed and was swallowed, re-opens this difference exactly — a confident
-  ``ids=[] truncated=False`` on production's real rows, which is sidecar S3, the packet's worst
-  defect.  Those two states are now CONSTRUCTED, not argued
+  predicate above names the BACKFILL as the door the LEGACY edges come through, because a
+  migration that ran PARTIALLY, or failed and was swallowed, leaves exactly those edges
+  unminted and re-opens this difference — a confident ``ids=[] truncated=False`` on
+  production's real rows, which is sidecar S3, the packet's worst defect.  MEASURED 2026-07-29
+  at ``af3551c``: over a store whose ``blocked_by`` columns are intact but whose ``blocks``
+  edges are all deleted, the read serves ``ids=[] truncated=False``, and a following
+  ``ensure_ready`` restores the answer.  Those two states are CONSTRUCTED, not argued
   (``TestTheBackfillCoversALegacyStoreLARGERThanEveryOtherFIXTURE``,
   ``TestANYBackfillFailureMakesEnsureReadyLOUD``).  (b) *the depth bound* — carried by
   ``truncated`` + ``max_depth_used`` on the result itself (``TestTheReadIsHONESTAtItsBound``,
@@ -7868,12 +7890,13 @@ class TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST:
         ONE import site for the oracle, called by every leg that needs it — the alternative
         was the same four lines in three places, i.e. copy #2 of a policy (repo law #102).
         """
-        # ⚠ ``types-networkx`` is not a dependency of this workspace; the house idiom for
-        # that is a ``[[tool.mypy.overrides]]`` block in ``pyproject.toml`` (as ``astroid``
-        # and ``kubernetes`` have), which is OUTSIDE this contract's writable set. Flagged in
-        # ``REPORT-contractfix-04b1-r6.md`` §RESIDUALS with the exact edit; this inline
-        # ignore is the version a test file may make on its own.
-        import networkx  # type: ignore[import-untyped]
+        # ⚠ ``types-networkx`` is not a dependency of this workspace, so this import is
+        # untyped to mypy. The house idiom for that is a ``[[tool.mypy.overrides]]`` block
+        # in the ROOT ``pyproject.toml`` — as ``astroid`` and ``kubernetes`` have — and
+        # ``networkx``/``networkx.*`` now has one (finding #272, 2026-07-29). Hence NO
+        # inline ignore here: with the override in place mypy's unused-ignore reporting
+        # would make one an error.
+        import networkx
 
         graph = networkx.DiGraph()
         for node, blockers in spec.items():
