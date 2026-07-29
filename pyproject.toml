@@ -210,4 +210,27 @@ testpaths = [
     # only because a pin holds it equal to ``loremaster.stats`` — and that pin is
     # now gated from both sides.
     "docs/eval",
+    # ``skills/lore-deploy`` holds 117 committed tests that, until 2026-07-29, ran ONLY
+    # when someone remembered the hand-run idiom in CLAUDE.md (``cd
+    # skills/lore-deploy/scripts && uv run python -m pytest -q . ../tests``). That is the
+    # third instance of the #199/#238 class — and the sharpest one, because the set
+    # includes ``test_conformance_provenance.py``, which guards
+    # ``conformance_provenance.py::EXPECTED_MEMBERS``: the check that proves a workspace
+    # member actually ARRIVED in the deployed image. A missing member is an ImportError at
+    # boot, in production only, invisible to every test on this host (#131/#139) — and the
+    # guard against it was itself guarded by a habit.
+    #
+    # ``skills`` was already a ``scripts/typecheck.sh`` root (ruling R9, packet 42), so
+    # this closes the OTHER axis. Same shape as the two entries above it: #199 put
+    # ``scripts`` here, #238 put ``docs/eval`` here, both for the same reason.
+    #
+    # Two entries, not one, because the tests live in two sibling trees — ``scripts/``
+    # holds tests beside the code they cover, ``tests/`` holds the rest.
+    #
+    # THE MERGE IS MEASURED, NOT ASSUMED. Isolated green is not evidence of a clean merge:
+    # the ``tests.*`` namespace collision that forces ``typecheck.sh`` to iterate per-root
+    # lives in exactly this neighbourhood. Collected 8315 before, 8432 after, and
+    # 8315 + 117 = 8432 EXACTLY — no collision, no test lost, nothing shadowed.
+    "skills/lore-deploy/scripts",
+    "skills/lore-deploy/tests",
 ]
