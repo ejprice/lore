@@ -36,10 +36,23 @@ HEAD0=$(git rev-parse HEAD)
 DIRT0=$(git status --porcelain | md5sum | cut -d' ' -f1)
 echo "FREEZE BASELINE  head=$HEAD0  worktree-hash=$DIRT0  $(date -Is)" > "$TL"
 
-CONTRACT="loremaster/tests/test_floor_calibration_domain.py
-loremaster/tests/test_floor_calibration_schema.py
-loremaster/tests/test_floor_calibration_store.py
-loremaster/tests/test_store_lease.py"
+# An ARRAY, not a newline-separated string (2026-07-29, packet 44's shellcheck leg).
+#
+# ⚠ THE OBVIOUS FIX HERE IS A FALSE CLEAR, so it is written down. shellcheck flagged the
+# two `$CONTRACT` expansions below as SC2086 ("double quote to prevent globbing and word
+# splitting"), and its suggested `"$CONTRACT"` COLLAPSES FOUR PATHS INTO ONE ARGUMENT —
+# measured: argc 4 -> 1. pytest then finds no such file, `--collect-only | grep -c` returns
+# **0**, so `BASE_COLLECTED` is 0, every iteration's N is 0, and the "COLLECTED COUNT
+# MOVED" abort never fires because 0 == 0. Worse, pytest's "file or directory not found"
+# does not match this script's `^[0-9]+ (failed|error)` detector, so all thirty runs log as
+# **green** over zero tests. The word splitting was DELIBERATE; an array preserves it
+# explicitly and satisfies the linter for the right reason instead of by accident.
+CONTRACT=(
+    loremaster/tests/test_floor_calibration_domain.py
+    loremaster/tests/test_floor_calibration_schema.py
+    loremaster/tests/test_floor_calibration_store.py
+    loremaster/tests/test_store_lease.py
+)
 
 # Establish the post-full-suite condition the original failure's timing fitted.
 echo "--- full suite (recreates the post-suite window) ---" >> "$TL"
@@ -51,7 +64,7 @@ fails=0
 for i in $(seq 1 "$ITERS"); do
     RUN="$OUT/run-$(printf '%02d' "$i").txt"
     { echo "=== run $i start $(date -Is) ==="
-      uv run --no-sync pytest -n auto -q --tb=long -rf $CONTRACT 2>&1
+      uv run --no-sync pytest -n auto -q --tb=long -rf "${CONTRACT[@]}" 2>&1
       echo "=== pytest exit: $? ==="; } > "$RUN" 2>&1
 
     # Freeze check — the detector take 1 lacked.
@@ -68,7 +81,7 @@ for i in $(seq 1 "$ITERS"); do
     # output file; a traceback containing such a string corrupts that, so the
     # detector could be fooled by the very failure it exists to catch — cold
     # audit residual R12b.)
-    N=$(uv run --no-sync pytest --collect-only -q $CONTRACT 2>/dev/null | grep -cE "^loremaster/tests/.*::")
+    N=$(uv run --no-sync pytest --collect-only -q "${CONTRACT[@]}" 2>/dev/null | grep -cE "^loremaster/tests/.*::")
     [ -z "$BASE_COLLECTED" ] && BASE_COLLECTED="$N"
     if [ "$N" != "$BASE_COLLECTED" ]; then
         echo "ABORT at run $i: COLLECTED COUNT MOVED ($N vs $BASE_COLLECTED)." >> "$TL"; exit 3

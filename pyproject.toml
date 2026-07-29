@@ -37,6 +37,18 @@ dev = [
     # its author probed ``MarkdownIt.parse()`` token ``.map`` spans against all six
     # real hit sites and measured identical boundaries before recommending it.
     "markdown-it-py>=4.2",
+    # The SHELL leg of ``scripts/typecheck.sh``. Until 2026-07-29 this repo had SEVEN
+    # committed ``.sh`` files and no shell gate whatsoever — including ``typecheck.sh``
+    # itself and ``scratch_copy.sh``, the #140 provenance tool CLAUDE.md orders every
+    # mutating agent to use. The gate's first run found a real defect in the runner:
+    # an unguarded ``cd`` (SC2164) in the very block whose comment explains at length
+    # that a wrong cwd makes the output LIE.
+    #
+    # shellcheck-py over a system package, deliberately: it VENDORS the shellcheck
+    # binary as a wheel, so the gate resolves from ``uv``'s lock like every other tool
+    # here and cannot pass on one machine and be absent on another. That absence is
+    # #131 verbatim — code that shells out to a binary the environment does not have.
+    "shellcheck-py",
 ]
 
 # ---------------------------------------------------------------------------

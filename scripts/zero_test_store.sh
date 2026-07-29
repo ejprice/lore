@@ -133,7 +133,18 @@ fi
 # every test uses.
 if [[ -r "${SECRETS_ENV}" ]]; then
     (
-        set -a; . "${SECRETS_ENV}"; set +a
+        # SC1090: the path is a runtime variable by design — the caller may point
+        # ``SECRETS_ENV`` anywhere — so there is nothing for shellcheck to follow and
+        # nothing it could usefully check. Making the path constant to satisfy the linter
+        # would trade a real capability for a clean report, which is the wrong direction.
+        #
+        # ⚠ The directive must sit immediately BEFORE the ``.`` command, so the
+        # one-liner `set -a; . "${SECRETS_ENV}"; set +a` had to be split: on the
+        # compound line the directive binds to `set -a` and SC1090 still fires.
+        set -a
+        # shellcheck source=/dev/null
+        . "${SECRETS_ENV}"
+        set +a
         curl -fsS -u "${SURREAL_USER}:${SURREAL_PASS}" -X POST \
              -H "Accept: application/json" -H "surreal-ns: main" -H "surreal-db: main" \
              --data-binary "DEFINE USER IF NOT EXISTS ${HARNESS_USER} ON ROOT PASSWORD '${HARNESS_PASS}' ROLES OWNER;" \
