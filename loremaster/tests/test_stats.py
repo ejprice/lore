@@ -546,29 +546,43 @@ class TestSmokeP8bPercentileUnits:
     So the duplication is bought deliberately, and this is the price: the copy may
     exist, but it **may not drift**.
 
-    ⚠ **THE RE-OPEN TRIGGER HAS FIRED — recorded here 2026-07-29, finding #282.**
-    This docstring used to argue that ``docs/eval/`` was *"outside ``testpaths``
-    (finding #238), so no gate watches its imports"*, and named its own trigger:
-    *"the day ``docs/eval/`` gains a ``testpaths`` entry, the trade changes — the
-    smoke's own suite would then be gated, an import break would be caught, and
-    consolidating could be reconsidered."*  **That day was 2026-07-26** (#238),
-    and packet 44 then added the type gate as well, so ``docs/eval`` is now
-    covered on BOTH axes.  The premise the trade rested on is gone, and for three
-    days the class went on teaching a retired fact — which is the whole of #282.
+    ⚠ **THE OLD RE-OPEN TRIGGER FIRED, AND THE TRADE WAS RE-RULED: KEEP THE COPY.**
+    (Operator ruling, 2026-07-29, packet 44; finding #282 found the fired trigger,
+    #286 carries the decision.)
 
-    **What is discharged and what is NOT.** Discharged: the stale premise, above.
-    **NOT discharged: whether to consolidate.** The trigger says the trade "could
-    be reconsidered", not that it must be resolved one way — and the surviving
-    half of the original argument is untouched by gating: the smoke is a
-    detachable instrument pointed at a deployed image, and *any* new import is a
-    new way for it to fail to start.  Choosing between "consolidate now that
-    imports are watched" and "keep the copy, the import-count argument stands"
-    is a DESIGN decision about a settled trade, and it belongs to the operator,
-    not to the agent that noticed the trigger.  **It is surfaced, not settled.**
+    The retired trigger read: *"the day ``docs/eval/`` gains a ``testpaths`` entry,
+    the trade changes — the smoke's own suite would then be gated, an import break
+    would be caught, and consolidating could be reconsidered."*  **That day was
+    2026-07-26** (#238), and packet 44 added the type gate as well, so ``docs/eval``
+    is now covered on BOTH axes.  For three days afterwards this docstring went on
+    teaching the retired premise — *"outside ``testpaths``… so no gate watches its
+    imports"* — which is the whole of #282.
 
-    Until it IS settled, the standing instruction is unchanged: do not
-    "helpfully" port this.  These pins stay, and they are load-bearing either
-    way — under consolidation they become the equality oracle for the port.
+    **The trigger fired and the bound SURVIVED IT, deliberately, and here is why —
+    because a bound whose stated reason has expired is indistinguishable from an
+    unexamined one.**  The reasoning that actually reversed the #238 port was never
+    "no gate watches the imports".  It was that **the smoke must run DETACHED** —
+    pointed at a deployed image, from an arbitrary cwd, under whatever interpreter
+    is to hand — and a cross-package import presupposes an environment that a
+    detached run is exactly the scenario for not having.  Gating ``docs/eval``
+    changes what the REPO checks; it changes nothing about the environment the
+    smoke runs in when it matters.  So the trade is unchanged, and the duplication
+    is still bought deliberately.  The price is unchanged too: the copy may exist,
+    but it **may not drift**, and this class is what enforces that.
+
+    **NEW RE-OPEN TRIGGER** (the old one is spent; a bound with a fired trigger and
+    no replacement is unpinned in the way that matters): *the day the smoke's
+    execution environment is GUARANTEED to import ``loremaster`` — i.e. it is only
+    ever run inside the deployed image or under the workspace venv, and the
+    detached/arbitrary-interpreter invocation is retired* — the environment
+    argument above dies and consolidating into :mod:`loremaster.stats` should be
+    reconsidered.  Nothing short of that changes this trade; in particular, adding
+    further gates over ``docs/eval`` does **not**, and that mistake has now been
+    made once.
+
+    Until then, do not "helpfully" port this.  These pins stay, and they are
+    load-bearing either way — under a future consolidation they become the equality
+    oracle for the port.
 
     Two UNITS meet here: this takes a ``[0, 1]`` FRACTION while every other caller
     takes a ``[0, 100]`` PERCENT, which is how a ``/100`` goes missing.  Measured

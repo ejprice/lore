@@ -40,15 +40,25 @@ routed around, it was not the instrument for these questions.
   trigger = "a future packet promotes a battery grader to `scripts/`"; the swap must NOT touch the
   archived copies (byte-faithful law). **shell-array parsing / `git ls-files` enumeration /
   `tomllib`** → already-present tools, no new mechanism authored.
-- **decisions-needed (5, all in §SURFACED):** ① the #198 consolidation fork re-opened by its own
-  fired trigger — **filed as #286**, needs an operator ruling · ② `docs/plans/v2/INDEX.md:283`
-  dangles, exact edit supplied, lead's file · ③ `REPORT-builder-forgery-sites.md` is a tracked
-  report at the repo root awaiting its archive-law `git mv` · ④ the F12.2 row in the r2 amendment
-  ledger carries the same now-discharged raise, exact edit supplied · ⑤ **#188 is
-  invocation-shape-dependent and materially smaller than believed** — 45 vs **24**.
-- **receipt pointers:** gate tails §GATES · mutation proofs §RIDER · the per-hit prose verdicts
-  §A2 and §F · the CONTRACT false-clear measurement §E2 · ledger dispositions §G.
-- **findings:** #261 #270 #280 #281 #282 #283 **resolved** (6); **#286 filed** (1 new).
+- **decisions-needed (5, all in §SURFACED):** ① ~~the #198 fork~~ **RULED 2026-07-29 and
+  implemented — keep, re-pinned; #286 resolved** (§F1) · ② `docs/plans/v2/INDEX.md:283` dangles,
+  exact edit supplied, lead's file · ③ `REPORT-builder-forgery-sites.md` is a tracked report still
+  at the repo root awaiting its archive-law `git mv` (the packet-44 three were archived at
+  `abcafe8`; this one was not) · ④ the F12.2 row in the r2 amendment ledger carries the same
+  now-discharged raise, exact edit supplied · ⑤ **#188 is invocation-shape-dependent and materially
+  smaller than believed** — 45 vs **24**.
+- **⚠ ledger-honesty item (§F2), reported not fixed:** #238's resolution note claims it discharged
+  #198's re-open trigger. It **fired** it; firing is not discharging — wrong ground, no replacement
+  trigger, never propagated to the docstring. Plus a dangling `scripts/test_survey_stats.py`
+  citation in **both** #238's body and #198's note. Verified today.
+- **receipt pointers:** gate tails + the ruled **CI-shape `env -i` receipt and its discriminating
+  Control C** §GATES · mutation proofs §RIDER · per-hit prose verdicts §A2 and §F · the CONTRACT
+  false-clear measurement §E2 · ledger dispositions §G.
+- **findings:** #261 #270 #280 #281 #282 #283 **resolved**; **#286 filed and resolved same-day**
+  (7 total touched).
+- ⚠ **process note:** this report was `git mv`'d into `receipts/` by the lead at `abcafe8` **while
+  I was still working**, then extended in place at its archived address. Flagged in §SURFACED ⑦ —
+  archiving a report mid-wave collides with the never-edit-an-archived-body law.
 
 ---
 
@@ -79,6 +89,66 @@ uv run pytest -n auto
 ⚠ **The passed-count above is an EXECUTED count, not a collected one** — the brief was right to
 insist, and the reconciliation to 8432 is what makes it checkable. A final re-run at report time
 is in §TREE-MOVED, along with why its total is larger and why that total is not mine.
+
+### CI-SHAPE — the ruled receipt (operator, 2026-07-29: *"a clean-shell run from the repo root, no session env leakage"*)
+
+**Exact command and exit status, captured directly (not through a pipe):**
+
+```
+$ env -i HOME="$HOME" PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      bash --noprofile --norc -c 'cd <repo root> && ./scripts/typecheck.sh'
+  typecheck: lorerunes OK
+  typecheck: lorescribe OK
+  typecheck: loresigil OK
+  typecheck: loremaster OK
+  typecheck: skills OK
+  typecheck: docs/eval OK
+  typecheck: shellcheck OK (7 tracked .sh)
+CLEAN_SHELL_TYPECHECK_EXIT=0
+
+$ env -i HOME=… PATH=… bash --noprofile --norc -c 'uv run ruff check .'
+  All checks passed!
+CLEAN_SHELL_RUFF_EXIT=0
+```
+
+The environment the gate actually saw, printed rather than asserted — `HOME`, `PATH`, `PWD`,
+`SHLVL`, `_`, and nothing else. No `MYPYPATH`, `VIRTUAL_ENV`, `PYTHONPATH` or `UV_*`.
+`--noprofile --norc` so no dotfile re-injects anything. `HOME` and `PATH` are the irreducible
+minimum: without them `uv` is not on the path and cannot find its cache, so the run would fail for
+a reason that has nothing to do with the gate.
+
+**⚠ CONTROL C — proving the clean-shell run DISCRIMINATES, because an `env -i` receipt that passes
+no matter what is decoration.** Declared before running: with the leg's `MYPYPATH` map emptied, my
+*session* (with `MYPYPATH=docs/eval` exported) must show `docs/eval OK` — a false clear — while the
+*clean shell* must show `docs/eval FAILED`. If both agreed, the receipt would prove nothing.
+
+```
+(a) SESSION, MYPYPATH=docs/eval exported, MEMBER_MYPYPATH emptied
+      typecheck: loremaster FAILED      <-- !!
+      typecheck: docs/eval  OK          <-- FALSE CLEAR, purely from ambient env
+(b) CLEAN SHELL, same mutated file
+      typecheck: loremaster OK
+      typecheck: docs/eval  FAILED      <-- CAUGHT
+```
+
+Restored byte-exact (md5 `0e233421…`, empty `git diff`).
+
+**The control did more than validate the receipt — it turned §B's design argument into a
+measurement.** I had *argued* (following sidecar §Q1.2) that a global `mypy_path` would be
+harmful. Line (a) shows it is harmful **immediately and concretely**: putting `docs/eval` on the
+global path **breaks the `loremaster` leg outright**, measured —
+
+```
+uv run mypy loremaster                    ->  Success: no issues found in 171 source files
+MYPYPATH=docs/eval uv run mypy loremaster ->  loremaster/tests/test_stats.py:85:
+                                              error: Unused "type: ignore" comment [unused-ignore]
+                                              Found 1 error in 1 file
+```
+
+because `import smoke_p8b` starts resolving and its `# type: ignore[import-not-found]` becomes
+unused under `strict`. So the rejected design fixes 7 phantom errors, **installs 1 real one**, and
+*then* silently licenses the production `import smoke_p8b` that would `ImportError` in the deployed
+image. Three strikes, one of them now measured rather than predicted.
 
 Collection arithmetic for the `skills` addition, re-derived rather than inherited:
 
@@ -383,22 +453,80 @@ The sweep runs AFTER item D deliberately: five of the sites are falsified by my 
 assertions on these strings and on the `150`. **Zero hits.** Every stale site was a comment or a
 docstring; the `150` was a `#:` data-comment with no assertion behind it.
 
-### F1 — #282's trigger: discharged, and the line I did NOT cross
+### F1 — #198's trigger: FIRED, RE-RULED, RE-PINNED (operator ruling, 2026-07-29)
 
-The docstring's own trigger read: *"the day `docs/eval/` gains a `testpaths` entry, the trade
-changes — the smoke's own suite would then be gated, an import break would be caught, and
-consolidating could be reconsidered."* That day was 2026-07-26; it sat undischarged for three days.
+The docstring's trigger read: *"the day `docs/eval/` gains a `testpaths` entry, the trade changes
+— the smoke's own suite would then be gated, an import break would be caught, and consolidating
+could be reconsidered."* That day was 2026-07-26. I first surfaced the fork and filed **#286**;
+the operator then **ruled it**, so the ruling is now implemented rather than surfaced.
 
-I discharged the **stale premise**. I did **not** decide whether to consolidate the deliberate 4th
-percentile copy, and that restraint is deliberate: the trigger says the trade *"could be
-reconsidered"*, and the surviving half of #198's argument is untouched by gating — the smoke is a
-**detachable** instrument pointed at a deployed image, and any new import is a new way for it to
-fail to *start*. Gating watches the import from the repo; it does nothing for a detached run
-against a container, which is the shape #238's own RULING-2 reversal was measured on. That is a
-design decision about a settled trade and it belongs to the operator.
+**RULED: KEEP the 4th copy, RE-PINNED.** Written into `TestSmokeP8bPercentileUnits`'s docstring —
+the artifact where the trigger lives and where the next engineer meets it, which is precisely the
+half that failed last time.
 
-**Filed as #286** so it has a ledger address rather than living only in a docstring and this
-report — a deferral without a named decision point is a can-kick.
+**The recorded reason, which CORRECTS the record rather than restating it:** the argument that
+actually reversed the #238 port was never *"no gate watches its imports"*. It is that **the smoke
+must run DETACHED** — pointed at a deployed image, from an arbitrary cwd, under whatever
+interpreter is to hand — and a cross-package import presupposes an environment that a detached run
+is exactly the scenario for not having. Gating `docs/eval` changes what the REPO checks; it changes
+nothing about the environment the smoke runs in when it matters. **So the trigger fired and the
+bound survived it, deliberately, with its real reason now attached** — because a bound whose stated
+reason has expired is indistinguishable from an unexamined one.
+
+**NEW named trigger, replacing the spent one** (a bound with a fired trigger and no replacement is
+unpinned in the way that matters): *the day the smoke's execution environment is GUARANTEED to
+import `loremaster` — it is only ever run inside the deployed image or under the workspace venv,
+and the detached/arbitrary-interpreter invocation is retired.* **Explicitly NOT a trigger: adding
+further gates over `docs/eval`** — that mistake has now been made once, and the docstring says so
+so it is not made twice.
+
+Verified after the edit: `pytest loremaster/tests/test_stats.py` → **35 passed**; ruff clean.
+**#286 resolved** with the ruling recorded.
+
+### F2 — ⚠ LEDGER-HONESTY ITEM: #238's note claimed this trigger was discharged, and it was not
+
+Verified against the ledger as instructed, and **reported rather than fixed**.
+
+**#238's resolution note** (actor `lead-11ia`, 2026-07-27) states verbatim: *"IT ALSO DISCHARGES
+#198's NAMED RE-OPEN TRIGGER. The smoke keeps its own fourth copy of the nearest-rank percentile as
+an accepted bound, permitted only because a pin holds it equal to loremaster.stats — and that pin
+is now gated from both sides rather than one."*
+
+**What actually happened is that #238's fix FIRED the trigger. Firing is not discharging.** Three
+specifics, each checkable:
+
+1. **The ground given is not a ground.** *"That pin is now gated from both sides rather than one"*
+   is a statement about the PIN's strength. The trigger asked whether the **TRADE** survives. The
+   real reason it survives — detached execution — appears **nowhere** in #238's note, in #198's
+   note, or in the docstring, until this packet put it there.
+2. **No replacement trigger was named**, leaving the bound carrying a spent one. Per the deferral
+   law that is an unpinned bound wearing a pin.
+3. **It was never propagated to the artifact.** The docstring where the trigger lived went on
+   teaching the retired premise for three days, until #282 caught it.
+
+**Net effect, and this is the part worth your attention: the ledger read "discharged" while the
+code read "pending".** An agent consulting either source alone was correctly informed by that
+source and jointly misled — the divergence class this repo builds instruments against.
+
+**My verdict, stated carefully: this is NOT a fabrication.** A real disposition — keep the bound —
+was clearly implied, and it is the same one the operator has now ruled. It was recorded as
+**complete** when it was **premature**, on a wrong ground, and unpropagated. I did not edit #238
+(it is resolved, and its note is another agent's record); the finding is written into **#286**'s
+resolution so it has a durable address.
+
+**⚠ AND A SECOND, INDEPENDENT DEFECT IN THE SAME PAIR OF NOTES — a dangling citation.** Both
+#238's body and #198's resolution note locate the pin at
+**`scripts/test_survey_stats.py::TestSmokeP8bPercentileUnits`**. Verified today:
+
+```
+git ls-files | grep -i test_survey_stats   ->  NO SUCH TRACKED FILE
+git grep -ln TestSmokeP8bPercentileUnits   ->  loremaster/tests/test_stats.py
+```
+
+So the load-bearing sentence in **both** notes — *"it cannot drift, because THIS pin holds it equal
+and THAT pin is gated"* — points at nothing. The pin is real and does run; only the address is
+wrong. (Independently caught by the 2026-07-29 entry sweep §7, so this is a corroborated second
+sighting, not a fresh claim.)
 
 ---
 
@@ -418,12 +546,28 @@ report — a deferral without a named decision point is a can-kick.
 
 ## SURFACED TO LEAD — questions, not verdicts
 
-**① The #198 consolidation fork is live and needs an operator ruling.** Filed as **#286**. Arms:
-consolidate the 4th percentile copy now that imports are watched, or keep it and **re-pin the bound
-on its surviving argument** with a trigger that can actually fire. My recommendation is the latter
-— an accepted bound whose stated reason has expired is indistinguishable from an unexamined one —
-but this is a design call on a settled trade and it is yours, not mine. Do you want it ruled in
-packet 44 or routed out?
+**① ~~The #198 consolidation fork~~ — CLOSED. RULED 2026-07-29 and implemented.** Keep the 4th
+copy, re-pinned on the detached-execution reason, with a new named trigger. #286 filed and resolved
+the same day. Details §F1. **No longer a decision needed — listed here so the row is not read as
+still open.**
+
+**⑦ ⚠ NEW — a process hazard, surfaced because it bit this wave.** The lead `git mv`'d all three
+packet-44 reports into `receipts/2026-07-29-packet44/` at `abcafe8` **while I was still working**,
+and then sent me two further work items. That puts two standing laws in direct collision: *"never
+edit an archived file's body"* (my brief's do-not-touch, and the byte-faithful receipt law) versus
+*"the report must be complete."* I resolved it by extending my own report **in place at its
+archived address**, on the grounds that (a) it is my own report, (b) the wave it documents was
+still in flight, so this is completing a receipt rather than falsifying a closed one, and (c) the
+alternative — an archived report that omits the operator's ruling and the CI-shape receipt — is
+strictly worse and would itself be a stale served surface.
+
+Flagging rather than assuming, because it is exactly the kind of silent reading a brief should not
+have to leave to judgement. **Suggested rule for the close-out ritual: archive reports as the LAST
+step of a wave, after the authors are stopped** — or, if a report must be archived early, say so in
+the brief so the author knows its address changed and that in-place completion is sanctioned. I
+also lost ~1 tool call discovering the file had vanished from the root, which is the cheap version
+of this failure; the expensive version is an agent recreating the report at the old path and the
+wave shipping two divergent copies.
 
 **② `docs/plans/v2/INDEX.md:283` now dangles** (your file — I did not touch it). Exact edit:
 
