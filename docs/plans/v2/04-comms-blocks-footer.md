@@ -699,6 +699,33 @@ The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose
   client-side, the property is achievable, and the known-bound pin becomes a defect report to be
   DELETED WITH THE FIX rather than a bound to keep.
 
+### ⚠ ACCEPTED KNOWN BOUND (operator, 2026-07-29) — finding #274, and 04b-2 MUST consult it
+**04b-1's contract cannot PROVE the backfill free of caps/doors/chunking.** Three consecutive
+adversary passes each found MORE surviving wrong builds, all of ONE class (a cap, a door or a
+chunk on the backfill path producing a silent short answer): 2 survivors after r5, **4 after
+r6**, each passing the whole contract with a positive control.
+- **The cause is diagnosed, not mysterious: the contract was ENUMERATING WHAT IS FORBIDDEN** —
+  no cap of 50, then of 40, then of 200, then not these two doors. The forbidden set is
+  UNBOUNDED (`CLAUDE.md`'s instrument lesson, six prior receipts), and a class surviving TWO
+  waves is a DESIGN escalation, not a third fix. We were at three.
+- **The design answer, recorded so nobody re-derives it:** allowlist the SAFE set — pin the
+  STATEMENT SHAPE (the backfill's reads carry NO `LIMIT` clause at all) and DERIVE the door set
+  the way `scripts/registration_sites.py` derives registration sites. One pin per PROPERTY, not
+  one per wrong build. Independently named by the stage-2 adversary as M1 and M4. ⚠ A property
+  to INVENT ⇒ an Opus author who attacks its own design, never a fix-wave brief.
+- **Why accepting it is safe TODAY:** the shipped build is MEASURED clean of all six shapes (AST
+  over both methods at `b8607c4`: zero try/except, no `LIMIT`, no chunking — lead-verified AND
+  re-verified by the stage-2 adversary) · **04b-1 DOES NOT DEPLOY**, so no consumer can meet it ·
+  and there is **NO FOURTH C-DEF** (247/0 and 881/0 against the shipped build), so no future
+  builder is trapped.
+- **RE-OPEN TRIGGERS:** 04b-2's kickoff (it deploys this code — the design fix is its natural
+  home) · ANY edit to `_backfill_blocks_edges` / `_record_legacy_cycles`, because the guard that
+  would catch a re-introduced cap does not exist and **the reviewer IS the guard** · the first
+  production report of a short `transitive_blockers` answer.
+- ⚠ **RECORDED, NOT PINNED.** The repo's own rule is a test asserting the hole that goes RED when
+  someone closes it. That pin was not written — an unpinned known limitation is one step from an
+  unknown one, and finding #274 plus this block are currently all that hold it.
+
 ## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
 - **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
   silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
