@@ -1,5 +1,16 @@
 # REPORT-contract-11ia-1 — the TEST CONTRACT for packet 11-i-a
 
+> **⚠ CORRECTION HEADER (added 2026-07-28 by `lead-11ib`; the report below is UNCHANGED).**
+> Three claims in **§1.6** are contradicted by the shipped tree, measured at `2b8aa01` by
+> `scout-11ib-1` (§B-6.1–3) and re-derived by importing `loremaster.store.surreal_schema`.
+> **`floor_measurement` does NOT carry:** (1) the queryable axis columns `statistic` /
+> `scope` / `query_shape` — those live on `floor_head`, so **measurement history cannot be
+> queried by scope or statistic except through `head_identity`**; (2) the F7.2 degeneracy
+> telemetry; (3) the F2/R2.5 sensitivity floor. The shipped set is **14 columns**, and the
+> gap is the subject of packet **11-i-a-r** (`docs/plans/v2/11-i-a-r-store-carveout.md`).
+> Also stale: **§1.1**'s "the two closed tuples ship EMPTY in the stub" — they are now
+> populated (8 states, 5 causes). **Cite the tree, not this report, for what the row carries.**
+
 brief-base v7 read
 
 - **state:** done-with-deviations

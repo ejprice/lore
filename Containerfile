@@ -10,9 +10,13 @@
 # Never per-project images — see the run invocation at the bottom of this file.
 #
 # Base: python:3.14-slim. The whole dependency stack installs binary-only on
-# CPython 3.14 (audited: pydantic-core cp314 wheel, qdrant-client, watchdog,
-# tokenizers, mcp, sqlglot, langchain-text-splitters, defusedxml, pyyaml — zero
-# source builds), so no compiler toolchain is needed in the image.
+# CPython 3.14 (audited: pydantic-core cp314 wheel, numpy, scipy, scikit-learn,
+# watchdog, tokenizers, mcp, sqlglot, langchain-text-splitters, defusedxml,
+# pyyaml — zero source builds), so no compiler toolchain is needed in the image.
+# ⚠ This list is PROSE beside code and nothing gates it — corrected 2026-07-28
+# (found by scout-11ib-1): it still named `qdrant-client`, retired at `04879f7`,
+# and omitted numpy/scipy/scikit-learn, adopted at `38c9774` and by far the most
+# wheel-fragile members of the stack. Re-audit it whenever a dependency lands.
 # ---------------------------------------------------------------------------
 FROM python:3.14-slim
 

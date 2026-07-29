@@ -1,5 +1,11 @@
 # REPORT-builder-11ia-1 — packet 11-i-a, the production build
 
+> **⚠ CORRECTION HEADER (added 2026-07-28 by `lead-11ib`; the report below is UNCHANGED).**
+> **Deviation 1 is STALE.** It records `head_identity` shipping as `option<string>` rather
+> than the REQUIRED column ruling **O7** ordered. The audit fix wave (`675aab5`) closed that:
+> measured at `2b8aa01`, it is `(FLOOR_MEASUREMENT_HEAD_IDENTITY_COLUMN, "string", "")` —
+> **REQUIRED**. Do not carry the deviation forward. Found by `scout-11ib-1` §B-6.6.
+
 brief-base v7 read
 
 **provenance (#140):** `loremaster.__file__` =
