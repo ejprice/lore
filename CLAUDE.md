@@ -761,6 +761,19 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   FILE.** Five agents, a cold audit, a contract-adversary and the lead all probed the
   engine from scratch instead of reading it. The knowledge existed; the POINTER did not.
   A fact that is written down and unread is a fact we do not have.
+- **A CONTRACT NEEDS AN ADVERSARY BEFORE A BUILDER (operator, 2026-07-28).** The order is
+  **contract → adversary → build → cold audit**, and no contract revision skips the
+  adversary because it is "small" or "just implements what the adversary already asked
+  for". ⚠ **Receipts, same day, twice:** wave `r5` closed six adversary-found pins and went
+  STRAIGHT to a builder; a later delta pass found **two more wrong builds that passed all
+  234 pins** — one restoring the very false clear the packet exists to close — plus a Leg-1
+  table with **2 of 4 rows measurably false**. The build happened to be clean, which is
+  luck, not process: nobody knew that until after it shipped. And r5's own declared RED
+  count did not reproduce (163/69 claimed vs 165/69 over 234 collected), unnoticed because
+  the lead's verification ran a DIFFERENT FILE SET — *"I verified it" is a claim about a
+  SCOPE, not a fact.* A fix wave is exactly where an adversary is cheapest and most needed:
+  it is written by someone who has just been told what they missed, which is the state most
+  likely to produce a narrow patch that satisfies the letter of a finding.
 - Reports: REPORT-<agent-name>.md at repo root, EXACT name. One concern per commit;
   cold REFUTE audit before every wave commit (builder ≠ grader; P8d receipts: 3 of 4
   waves shipped a defect green at every builder gate and only the cold audit caught it).
