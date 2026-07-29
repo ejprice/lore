@@ -206,7 +206,12 @@ from loremaster.symbols import (
     SymbolResolver,
     VerifyResult,
 )
-from loremaster.tasks import STATUS_DONE
+from loremaster.tasks import (
+    CYCLE_NOUN_BATCH_KEYS,
+    STATUS_DONE,
+    find_blocked_by_cycle,
+    raise_cycle_refusal,
+)
 from loremaster.tasks import TaskSpec as _TaskSpec
 from loresigil import backoff
 
@@ -1139,6 +1144,12 @@ _TASK_ACTIONS = (
     _TASK_ACTION_ROLLUP,
     _TASK_ACTION_CREATE_MANY,
 )
+# The actions ``limit`` is legal for (operator ruling **R9**, 2026-07-28). It WIDENED by
+# exactly one action and one parameter: ``query`` gained a cap because an agent had no way
+# to bound its own answer, while ``since`` stayed rollup-only and every other action still
+# refuses both. A SET rather than a deleted guard — a caller passing ``limit`` to
+# ``transition`` is making a mistake and deserves to be told.
+_TASK_ACTIONS_ACCEPTING_LIMIT = (_TASK_ACTION_ROLLUP, _TASK_ACTION_QUERY)
 
 # PKT-06 §1: the rollup's bootstrap epoch (an omitted ``since`` starts a full-
 # history bootstrap) and its default per-leg row cap (U3, strikeable).
@@ -3488,15 +3499,32 @@ class AppContext:
         PKT-06 ADDS two actions: ``rollup`` — the fleet's one-call, cursor-based
         catch-up composing BOTH ledgers' activity (see :meth:`_rollup`) — and
         ``create_many`` — batch create with caller-temp-key dependency wiring
-        (see :meth:`_create_many`). ``since``/``limit`` are strict to
-        ``action='rollup'``; ``items`` is strict to ``action='create_many'``;
+        (see :meth:`_create_many`). ``since`` is strict to ``action='rollup'``;
+        ``limit`` is legal for ``action='rollup'`` AND ``action='query'``
+        (operator ruling **R9**, packet 04b-1 — ``query``'s cap is PUSHED INTO
+        the statement by :meth:`~loremaster.tasks.TaskLedger.query_tasks`, never
+        applied after materialisation) and refused for every other action;
+        ``items`` is strict to ``action='create_many'``;
         ``summary``/``report_path`` ride the EXISTING ``transition`` action (the
         done-transition's mandatory completion record, enforced ledger-side by
         :meth:`~loremaster.tasks.TaskLedger._validate_done_summary`).
         """
-        if action != _TASK_ACTION_ROLLUP and (since is not None or limit is not None):
+        # ⚠ THE GUARD IS SPLIT, NOT DELETED (operator ruling **R9**, 2026-07-28). ``limit``
+        # is now legal for ``query`` too — it is the documented way for an agent to bound
+        # its own answer, and with no cap available an unfiltered ``query`` served a
+        # consult the entire ledger. ``since`` stays rollup-only. The two refusals are
+        # SEPARATE sentences because the old joint one now teaches a caller to drop the
+        # very parameter this ruling made legal, and the reader is an agent learning this
+        # tool's contract from the sentence.
+        if action != _TASK_ACTION_ROLLUP and since is not None:
             raise ValueError(
-                f"'since'/'limit' apply only to action='rollup' — omit them for {action!r}"
+                f"'since' applies only to action='rollup' — omit it for {action!r}"
+            )
+        if action not in _TASK_ACTIONS_ACCEPTING_LIMIT and limit is not None:
+            raise ValueError(
+                f"'limit' applies only to "
+                f"{' and '.join(f'action={name!r}' for name in _TASK_ACTIONS_ACCEPTING_LIMIT)}"
+                f" — omit it for {action!r}"
             )
         if action != _TASK_ACTION_CREATE_MANY and items is not None:
             raise ValueError(
@@ -3517,8 +3545,12 @@ class AppContext:
             )
             return f"created task {new_id} (status open)"
         if action == _TASK_ACTION_QUERY:
+            # ⚠ The cap is PUSHED DOWN (operator ruling **R5**), never applied here: a
+            # bounded ``query_tasks`` that still materialises every matching row before
+            # the dispatcher slices is a half-fix that READS as a fix — the trust hazard,
+            # not merely an inefficiency.
             rows = await self.task_ledger.query_tasks(
-                status=status, owner=owner, blocked=blocked
+                status=status, owner=owner, blocked=blocked, limit=limit
             )
             return self._render_task_rows(rows)
         if action == _TASK_ACTION_TRANSITION:
@@ -3699,41 +3731,6 @@ class AppContext:
         all_stamps += [finding.created_at for finding in finding_window.rows]
         return max(all_stamps)
 
-    @staticmethod
-    def _find_key_cycle(edges: dict[str, set[str]]) -> list[str] | None:
-        """DFS cycle detection over a ``create_many`` batch-local key-reference graph.
-
-        Returns the first cycle found as an ordered path ending back at its own
-        start (e.g. ``["a", "b", "a"]``; a self-reference yields ``["x", "x"]``),
-        or ``None`` when the graph is acyclic. Nodes are visited in SORTED order
-        so a genuine cycle is reported deterministically.
-        """
-        color: dict[str, int] = {}
-        path: list[str] = []
-
-        def visit(node: str) -> list[str] | None:
-            color[node] = 1
-            path.append(node)
-            for neighbor in sorted(edges.get(node, ())):
-                state = color.get(neighbor, 0)
-                if state == 1:
-                    start = path.index(neighbor)
-                    return [*path[start:], neighbor]
-                if state == 0:
-                    found = visit(neighbor)
-                    if found is not None:
-                        return found
-            color[node] = 2
-            path.pop()
-            return None
-
-        for node in sorted(edges):
-            if color.get(node, 0) == 0:
-                found = visit(node)
-                if found is not None:
-                    return found
-        return None
-
     async def _create_many(  # noqa: PLR0912 - sequential client-side validation steps in the design's own pinned order; splitting would scatter one coherent pipeline with no clearer seam
         self, *, items: list[dict[str, Any]], created_by: str
     ) -> str:
@@ -3797,13 +3794,17 @@ class AppContext:
             for item in parsed
             if item.key is not None
         }
-        cycle = self._find_key_cycle(edges)
+        # ⚠ ONE cycle detector and ONE refusal SHAPE, both ledger-owned (operator ruling
+        # **R6**, 2026-07-28). This dispatcher used to own a SECOND cycle policy — its own
+        # DFS, its own sentence and a bare ``ValueError`` — and it fires FIRST, so a
+        # ``lore_tasks`` caller never met the ledger's vocabulary at all and every cycle
+        # pin that called the ledger directly observed neither of the two refusals an
+        # agent actually receives. That is #102's shape on a served surface. The
+        # VOCABULARIES may still differ (batch-local temp KEYS and persisted task IDS name
+        # different things), which is why the shared thing is a formatter taking the NOUN.
+        cycle = find_blocked_by_cycle(edges)
         if cycle is not None:
-            raise ValueError(
-                "create_many items contain a blocked_by cycle among batch keys: "
-                f"{' -> '.join(cycle)} — a cyclic batch can never be claimed; "
-                f"break the cycle"
-            )
+            raise_cycle_refusal(noun=CYCLE_NOUN_BATCH_KEYS, cycle=cycle)
 
         minted_ids = [uuid4().hex for _ in parsed]
         key_to_id = {key: minted_ids[index] for key, index in key_index.items()}

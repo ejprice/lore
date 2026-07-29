@@ -47,28 +47,54 @@ docstring — that file is the authoritative spec):
         async close() -> None
         async create_task(subject, description, *, blocked_by=None, created_by) -> str
         async get_task(task_id) -> Task
-        async query_tasks(*, status=None, owner=None, blocked=None) -> list[Task]
+        async query_tasks(*, status=None, owner=None, blocked=None, limit=None) -> list[Task]
         async claim_task(task_id, owner) -> ClaimResult
         async transition(task_id, status, *, actor) -> Task
         async supersede_task(task_id, *, subject, description, created_by) -> str
+        async transitive_blockers(task_id, *, max_depth=None) -> TransitiveBlockers
 
     Exceptions: TaskLedgerError(RuntimeError);
                 TaskNotFoundError(TaskLedgerError);
-                IllegalTransitionError(TaskLedgerError).
+                IllegalTransitionError(TaskLedgerError);
+                UnknownBlockerError(TaskLedgerError, agent_existence.UnknownRowError);
+                TaskCycleError(TaskLedgerError).
+
+PACKET 04b-1 adds the ``task->blocks->task`` DAG edge beside the ``blocked_by``
+column. The edge is a PURE MIRROR of the column — same set, every write path, every
+row — and it is ``ENFORCED`` from birth, so an edge to a task that does not exist is
+impossible. Two consequences worth stating once, because they decide how the rest of
+this module reads:
+
+* **the COLUMN is the authority the CLAIM reads, and the EDGE is the authority the
+  TRAVERSAL reads.** They agree by construction (the mirror at every write path plus
+  :meth:`~TaskLedger.ensure_ready`'s backfill of the rows that predate the edge) with
+  ONE permanent residue: a legacy ``blocked_by`` naming NO task row cannot carry an
+  edge. It still blocks the task — the claim CAS counts it — so the residue can only
+  make the traversal SHORT, never make a blocked task look claimable.
+* **the write-time acyclicity guard walks the COLUMN and the transitive read walks the
+  EDGE, and neither may be swapped for the other.** A cycle closes on a dependency
+  naming a task that does not exist yet; ``ENFORCED`` forbids that edge, so an engine
+  traversal of ``blocks`` reports every such cycle as acyclic.
 """
 
 from __future__ import annotations
 
 import asyncio
+import graphlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.agent_existence import (
+    UnknownRowError,
+    reject_unknown_rows,
+    resolve_existing_rows,
+)
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -78,11 +104,12 @@ from loremaster.store._txn import (
     _SurrealConnection,
     bootstrap_session,
     compose,
+    execute_read_transaction,
     execute_transaction,
     run_query,
     signin_credentials,
 )
-from loremaster.store.surreal_schema import TASK_TABLE, generate_task_ddl
+from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE, generate_task_ddl
 
 logger = logging.getLogger(__name__)
 
@@ -231,9 +258,10 @@ _TRANSITION_EXPECTED_FROM_PARAM = "tr_expected_from"
 _TRANSITION_UPDATED_VAR = "tr_updated"
 _TRANSITION_ALREADY_MESSAGE = "task transition lost a concurrent compare-and-set"
 
-# The single-read existence-check / create param names.
+# The single-record read's param name. (The create path's own params moved to the
+# shared ``cm<i>_`` namespacing when packet 04b-1 made ``create_task`` transactional,
+# so the two create verbs compose through one fragment builder rather than two.)
 _ROW_ID_PARAM = "id"
-_ROW_CONTENT_PARAM = "content"
 
 # PKT-06 §1: ``updated_since``'s bound-parameter name and the field a
 # ``SELECT count() … GROUP ALL`` result carries the total under (mirrors
@@ -251,6 +279,72 @@ _CREATE_MANY_CONTENT_PARAM_FMT = "cm{index}_content"
 # PKT-06 §4: the done-transition's mandatory-summary cap (the approved row's
 # "capped summary" — a decided value, individually strikeable per the design).
 _DONE_SUMMARY_MAX_CHARS = 300
+
+# --- packet 04b-1: the ``blocks`` DAG -----------------------------------------
+
+#: SurrealDB's HARD recursion ceiling. [PROBED 2026-07-26, 3.2.1, packet-04 probe §5.3]
+#: ``@.{..257}`` raises *"Found 257 for bound but expected 256 at most"* and an OPEN bound
+#: past 256 raises *"Exceeded the idiom recursion limit"*. It is FIXED by the engine and is
+#: not configurable, which is why the public ``max_depth`` bound is a property of THIS API
+#: rather than of an implementation detail a caller cannot see.
+ENGINE_RECURSION_CEILING = 256
+
+#: The default depth :meth:`TaskLedger.transitive_blockers` walks. A NAMED CONSTANT rather
+#: than a literal at the call site so the packet's *"explicit small bound"* is greppable and
+#: changeable in ONE place — and so a caller's render can teach a concrete re-ask without
+#: re-deriving it (it travels back on every result as ``max_depth_used``). It sits well
+#: inside :data:`ENGINE_RECURSION_CEILING`: a default at or above the ceiling would turn a
+#: silent truncation into a boot-visible crash on the first deep graph.
+TASK_BLOCKER_MAX_DEPTH = 32
+
+#: The blocker pre-check's vocabulary, handed to the SHARED row-existence policy
+#: (:func:`~loremaster.agent_existence.reject_unknown_rows`). It is DATA here, never a
+#: sentence typed at the call site: lead ruling **L3** rules the check a GENERALISATION of
+#: packet 04a's agent policy, and a second refusal sentence would be copy #2 of a served
+#: surface (#102).
+_BLOCKER_NOUN = "task"
+_BLOCKER_REMEDY = (
+    "every blocked_by entry must name an existing task row or a task created in the same "
+    "call; NOTHING was created, so a corrected resend is safe"
+)
+
+#: The two CYCLE vocabularies operator ruling **R6** permits to differ — batch-local temp
+#: KEYS and PERSISTED task ids name different things — over the ONE shared sentence shape
+#: (:func:`format_cycle_refusal`) and the ONE shared detector
+#: (:func:`find_blocked_by_cycle`).
+CYCLE_NOUN_PERSISTED_IDS = "task ids"
+CYCLE_NOUN_BATCH_KEYS = "batch keys"
+
+#: The traversal's wall-clock backstop. Probe §5.5: WHICH brake fires — the depth bound or
+#: the clock — is a property of the DATA (the graph's branching factor), not of the query,
+#: so the safe shape is neither brake alone: an explicit small upper bound, ``+collect``,
+#: AND a ``SELECT``-level ``TIMEOUT``. It is a ``SELECT`` clause and a PARSE ERROR on a bare
+#: idiom (probe §5.2), which is why the traversal is written in the ``SELECT … @ … FROM``
+#: form rather than as the bare recursive idiom.
+_TRAVERSAL_TIMEOUT = "5s"
+
+# The bound-parameter names of the new statements (the house idiom: named once each, never
+# a hand-copied literal drifting between the statement and its params).
+_TRAVERSAL_START_PARAM = "tb_start"
+_TRAVERSAL_WITHIN_KEY = "within"
+_TRAVERSAL_PROBE_KEY = "probe"
+_QUERY_ROWS_VAR = "qt_rows"
+_QUERY_STATUS_PARAM = "qt_status"
+_QUERY_OWNER_PARAM = "qt_owner"
+_QUERY_LIMIT_PARAM = "qt_limit"
+_BACKFILL_IN_KEY = "blocker"
+_BACKFILL_OUT_KEY = "blocked"
+_RELATE_FROM_PARAM_FMT = "rel{index}_from"
+_RELATE_TO_PARAM_FMT = "rel{index}_to"
+
+# The structured log events the ``ensure_ready`` backfill emits. Ruling **R11**: a phantom
+# skip is RECORDED, never silent (*"a silent skip is a false clear"*), and ESC-4 rules the
+# same for a legacy CYCLE, which the backfill MINTS rather than refusing (the edge set must
+# MIRROR reality; a divergence the invariant asserts does not exist is a false clear in the
+# store itself). Both are WARNING because both name a pre-existing DATA defect an operator
+# can act on.
+_BACKFILL_PHANTOM_EVENT = "task.backfill.phantom_blocker_skipped"
+_BACKFILL_CYCLE_EVENT = "task.backfill.legacy_cycle_minted"
 
 
 class Task(BaseModel):
@@ -379,6 +473,187 @@ class IllegalTransitionError(TaskLedgerError):
     """Raised when a requested status transition is not a legal state-machine edge."""
 
 
+class UnknownBlockerError(TaskLedgerError, UnknownRowError):
+    """Raised when a ``blocked_by`` entry does not name a USABLE task row.
+
+    TWO bases on purpose, and the second is not decoration: a task caller keeps ONE
+    ``except TaskLedgerError`` for this ledger's whole vocabulary, while a caller who
+    wants *"this id names no row"* across BOTH the agent and task families catches
+    :class:`~loremaster.agent_existence.UnknownRowError` — the shared base of the shared
+    policy (lead ruling L3, 04a's ``UnknownRecipientError`` shape).
+
+    Operator ruling **R3** makes this a CHANGE to a live verb: a create naming a phantom
+    blocker is now REFUSED where it used to produce a task that was unclaimable forever,
+    silently. Ruling **R10(ii)** widens the same refusal to a SUPERSEDED blocker, naming
+    its successor — supersession means the work MOVED, so a ``blocked_by`` naming a
+    superseded task can never resolve.
+    """
+
+
+class TaskCycleError(TaskLedgerError):
+    """Raised when a requested write would put a task on a ``blocked_by`` CYCLE.
+
+    ⚠ Deliberately NOT a :class:`~loremaster.agent_existence.UnknownRowError`: a cycle and
+    a phantom blocker are DIFFERENT problems needing DIFFERENT next moves (break the loop
+    vs create the missing task), and every id on a cycle EXISTS — which is precisely why
+    ``ENFORCED`` cannot catch it.
+
+    Operator ruling **R6**: ONE error class for BOTH cycle vocabularies, so a
+    ``lore_tasks`` caller can write one ``except`` for *"this batch has a loop"* whether
+    the loop is among batch KEYS or among PERSISTED ids.
+    """
+
+
+class TransitiveBlockers(BaseModel):
+    """What :meth:`TaskLedger.transitive_blockers` serves — HONEST at its bound (E-3).
+
+    ⚠ **THE FIELD SET IS CLOSED, AND THE ABSENCE IS THE POINT.** The tail beyond a
+    truncated closure is genuinely UNCOUNTABLE without walking it — the server does not
+    know how many blockers lie past the bound — so a ``remaining``/``total``/``+K`` field
+    could only ever be FABRICATED. A tool caught inventing one number is untrustworthy on
+    all of them, so the safe set is enumerated here and nothing else may be added.
+
+    Attributes:
+        ids: The task's transitive UPSTREAM blockers — deduplicated and ordered by
+            proximity (the ``+collect`` closure's own ordering), never including the task
+            itself unless it genuinely lies on a cycle.
+        truncated: Whether the walk stopped at ``max_depth_used`` with more upstream
+            still reachable. NEVER a silently short list: probe §5.3 measured
+            ``{..256+collect}`` returning 256 of 299 nodes with no error and no signal.
+        max_depth_used: The depth the read ACTUALLY ran at — the caller's ``max_depth``
+            when supplied, else :data:`TASK_BLOCKER_MAX_DEPTH`. It travels back so a
+            render can teach a concrete re-ask without importing or re-deriving the
+            ledger's default, which drifts the day the default changes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str] = Field(default_factory=list)
+    truncated: bool = False
+    max_depth_used: int
+
+
+def find_blocked_by_cycle(edges: Mapping[str, Iterable[str]]) -> list[str] | None:
+    """The ONE ``blocked_by`` cycle detector (operator ruling **R6**).
+
+    Ledger-owned and shared: BOTH the write-time guard over PERSISTED ids and
+    ``server.py``'s batch-local temp-KEY check route through it, so a cyclic batch cannot
+    be refused by two detectors with two sentences and two error classes. Sharing is
+    proved by MUTATION, never by inspection — neutralise this and BOTH shapes must stop
+    being refused (``test_blocks_edge.py::TestTheCyclePolicyHasONEImplementation``).
+
+    **Packages considered — ``replace``, and the library is STDLIB.**
+    :class:`graphlib.TopologicalSorter` ships with Python and its
+    ``CycleError.args[1]`` IS the cycle in the exact shape both call sites need: a
+    2-cycle yields ``['a', 'b', 'a']`` and a SELF-loop ``['x', 'x']`` — byte-for-byte
+    the format the batch-key check's own docstring already promised — and a dependency
+    naming an id OUTSIDE the graph is tolerated, which is precisely what a ``blocked_by``
+    entry pointing outside the read needs.
+
+    Args:
+        edges: ``{node: the nodes it is blocked_by}``. A referenced node that is not
+            itself a key is tolerated (it has no dependencies of its own).
+
+    Returns:
+        The first cycle found, as an ordered path ending back at its own start, or
+        ``None`` when the graph is acyclic. Nodes and their dependencies are SORTED
+        before the walk so a graph with several cycles reports the same one every run —
+        a refusal that names a different loop each attempt is not actionable.
+    """
+    graph = {node: sorted(set(refs)) for node, refs in sorted(edges.items())}
+    try:
+        graphlib.TopologicalSorter(graph).prepare()
+    except graphlib.CycleError as cycle:
+        return [str(member) for member in cycle.args[1]]
+    return None
+
+
+def format_cycle_refusal(*, noun: str, cycle: Sequence[str]) -> str:
+    """The ONE served cycle-refusal sentence — one SHAPE, two vocabularies (**R6**).
+
+    R6, verbatim: *"The DETECTION ALGORITHM is shared; the vocabularies may still differ
+    (batch-local temp keys vs persisted ids) because they name different things."* So the
+    shared thing is a formatter taking the NOUN, never a constant string — and mutating
+    it must change BOTH served sentences, which is the only test that tells DRY from
+    looks-DRY.
+
+    THE CONSUMER IS AN AGENT: the sentence names EVERY member of the loop, in order,
+    because a caller cannot break a cycle it cannot see; and it states the no-write fact
+    for the same reason the blocker refusal does — an agent reading only *"refused"* must
+    otherwise pay a reconnaissance read before it dares resend.
+
+    Args:
+        noun: What the cycle's members are (:data:`CYCLE_NOUN_BATCH_KEYS` /
+            :data:`CYCLE_NOUN_PERSISTED_IDS`).
+        cycle: The loop as an ordered path ending back at its own start.
+
+    Returns:
+        The refusal sentence, with no leading class name — the caller wraps it.
+    """
+    return (
+        f"blocked_by cycle among {noun}: {' -> '.join(cycle)} — a task on a cycle can "
+        f"never be claimed, because every one of its blockers must reach a terminal "
+        f"status first; break the cycle. NOTHING was created, so a corrected resend "
+        f"is safe"
+    )
+
+
+def raise_cycle_refusal(*, noun: str, cycle: Sequence[str]) -> NoReturn:
+    """Refuse a cycle in the ONE error class and the ONE sentence shape (**R6**).
+
+    The single RAISE site both consumers call, so the class and the sentence cannot drift
+    apart at one of them. ``server.py`` calls THIS rather than formatting its own error:
+    that is what keeps the shared formatter observable from the dispatcher — a bound copy
+    of the formatter in another module would be a private copy wearing the shared name.
+    """
+    raise TaskCycleError(format_cycle_refusal(noun=noun, cycle=cycle))
+
+
+def _drop_one_cycle_edge(
+    graph: dict[str, set[str]], cycle: Sequence[str]
+) -> bool:
+    """Remove ONE edge of ``cycle`` from ``graph`` in place; ``True`` if one was removed.
+
+    Used to keep looking PAST a cycle that is not the caller's business — a legacy loop
+    among rows this call did not write, which the write guard must not blame a new caller
+    for, and which the backfill has already RECORDED. One edge per iteration (never the
+    whole member set) so a DIFFERENT loop sharing some of these nodes still surfaces on a
+    later pass; progress is guaranteed because every iteration removes an edge.
+    """
+    for index in range(len(cycle) - 1):
+        first, second = cycle[index], cycle[index + 1]
+        if second in graph.get(first, ()):
+            graph[first] = graph[first] - {second}
+            return True
+        if first in graph.get(second, ()):
+            graph[second] = graph[second] - {first}
+            return True
+    return False
+
+
+def _superseded_blocker_clause(row_id: str, row: Mapping[str, Any]) -> str | None:
+    """Operator ruling **R10(ii)**: a SUPERSEDED blocker is refused, naming its successor.
+
+    A ``blocked_by`` naming a superseded task is NEVER legitimate — the claim CAS can only
+    resolve a blocker that reaches ``done``/``wontfix``, and a superseded row refuses every
+    transition — so the dependency is a silent black hole of exactly the shape ruling R3
+    exists to abolish, reached through a different door.
+
+    Near-zero cost, which is why the ruling is affordable: the grouped existence read
+    already holds the row, so projecting ``superseded_by`` beside existence costs nothing
+    and turns a rejection into a RECOVERY — the difference between a one-edit fix and a
+    reconnaissance round trip, on the served surface an agent learns the contract from.
+
+    Returns the clause when the row is superseded, else ``None`` (the row is usable).
+    """
+    successor = row.get(_COL_SUPERSEDED_BY)
+    if successor is None:
+        return None
+    return (
+        f"task {row_id} is superseded by {successor} — block on {successor} instead"
+    )
+
+
 class TaskLedger:
     """Durable, fleet-visible task ledger over a single SurrealDB database.
 
@@ -498,9 +773,16 @@ class TaskLedger:
         ``DEFINE FIELD OVERWRITE`` (see :mod:`loremaster.store.surreal_schema`),
         so a field definition CHANGE still migrates a live store.
 
+        THEN back-fills the ``blocks`` edge from the ``blocked_by`` COLUMNS that are
+        already there (operator ruling **R11**) — see :meth:`_backfill_blocks_edges` for
+        why that is a correctness requirement and not a nicety.
+
         Raises:
             SurrealConnectionError: The server is unreachable or the socket died.
-            SurrealStoreError: A DDL statement was rejected by the engine.
+            SurrealStoreError: A DDL statement was rejected by the engine, or the
+                backfill's own reads/writes were.
+            UnknownBlockerError: Never — the backfill SKIPS a phantom blocker (loudly)
+                rather than refusing; listed only to say so explicitly.
         """
         await self._ensure_connection()
         ddl = generate_task_ddl()
@@ -512,6 +794,165 @@ class TaskLedger:
             url=self._url,
         )
         logger.debug("task.schema.ready", extra={"database": self._database})
+        await self._backfill_blocks_edges()
+
+    async def _backfill_blocks_edges(self) -> None:
+        """Mint the ``blocks`` edges the EXISTING ``blocked_by`` columns already imply.
+
+        ⚠⚠ **WITHOUT THIS THE DEPLOY SHIPS A CONFIDENT LIE** (sidecar finding S3, operator
+        ruling **R11**). The mirror is ∀ verbs going FORWARD; every task row written before
+        this packet carries a ``blocked_by`` COLUMN and NO edge, and
+        :meth:`transitive_blockers` rides EDGES by design — so on exactly the rows a fleet
+        is working the read would answer ``ids=[] truncated=False``: clean, confident and
+        WRONG. That is not a missing bound, it is a positive assertion of completeness that
+        is false. R11 rules the defect FIXED rather than disclosed, because a permanent tax
+        on every future read is a bad trade for a one-time migration, and a separate
+        one-shot script is a deploy that silently reproduces the defect the day someone
+        forgets it.
+
+        Four properties, each of which a plausible build drops:
+
+        * **PRE-FILTERED through the SHARED row-existence policy** (L3). Legacy rows carry
+          PHANTOM blockers — ``blocked_by`` was FAIL-OPEN at write until this packet — and a
+          phantom endpoint meets ``ENFORCED``, so a NAKED backfill does not skip one edge:
+          it ROLLS BACK THE WHOLE ONE-TRANSACTION MIGRATION and the store never boots.
+        * **The skip is RECORDED, never silent**, naming the phantom AND the task it was
+          skipped for: a skipped entry is a SCOPE BOUND on what the edge graph covers, and
+          an unrecorded bound is one nobody can meet deliberately.
+        * **A legacy CYCLE is MINTED, and RECORDED** (ESC-4). Refusing it would break
+          edge ≡ ``blocked_by`` on exactly the rows the invariant is hardest to reason
+          about, and ``+collect`` terminates on cycles (probe §5.4). A legacy cycle is a
+          pre-existing DATA defect; the edge set must MIRROR reality rather than quietly
+          diverge from it, and the RECORD is what stops the mirroring being silent.
+        * **IDEMPOTENT, against the STORE's own edge set** rather than against a
+          *"have I run"* flag: this runs at EVERY boot, and between two boots an ordinary
+          ``create_task`` also mints edges, so the second boot meets a store whose edges
+          came from two sources. Re-minting would either double the edge (no
+          ``UNIQUE(in, out)``) or raise (with one — §4: *"a duplicate is a loud ERR"*),
+          i.e. a silently wrong graph or a container that boots exactly once.
+
+        The mirror is over the COLUMN, ∀ ROWS and ∀ BLOCKER STATES — not only the ``open``
+        rows, not only the un-superseded blockers, not only the unfinished ones. R10(ii)
+        refuses a superseded blocker at WRITE time, which is a decision about a dependency
+        someone is creating NOW; reusing that refusal HERE would drop a dependency that
+        already exists (R10(iii): *"supersession can happen AFTER dependents exist"*) and
+        restore S3's false clear through the filter meant to prevent it.
+
+        Cost: THREE round trips on a boot with legacy edges to mint (the graph read, the
+        existence probe, the one mint transaction), TWO when there is nothing missing, and
+        it never grows with the number of edges — R11's own rationale is a claim about ONE
+        transaction, and a build issuing one ``RELATE`` per edge makes that rationale false.
+        """
+        columns, existing = await self._read_mirror_state()
+        wanted = {
+            (blocker, task_id)
+            for task_id, blockers in columns.items()
+            for blocker in dict.fromkeys(blockers)
+        }
+        missing = sorted(wanted - existing)
+        if not missing:
+            return
+
+        resolved = await resolve_existing_rows(
+            self._query, TASK_TABLE, sorted({blocker for blocker, _task in missing})
+        )
+        mintable: list[tuple[str, str]] = []
+        for blocker, task_id in missing:
+            if blocker in resolved:
+                mintable.append((blocker, task_id))
+                continue
+            logger.warning(
+                _BACKFILL_PHANTOM_EVENT,
+                extra={
+                    "database": self._database,
+                    "task_id": task_id,
+                    "phantom_blocker_id": blocker,
+                },
+            )
+        self._record_legacy_cycles(columns)
+        if not mintable:
+            return
+        await self._apply([self._relate_fragment(mintable)])
+        logger.info(
+            "task.backfill.blocks_edges_minted",
+            extra={"database": self._database, "minted": len(mintable)},
+        )
+
+    async def _read_mirror_state(
+        self,
+    ) -> tuple[dict[str, list[str]], set[tuple[str, str]]]:
+        """The whole mirror, read in ONE round trip: the columns and the edges that exist.
+
+        BOTH reads share one snapshot, so the "what is missing" set can never be computed
+        from a column read and an edge read that saw different stores. The column read is
+        bounded by the DEPENDENCY-BEARING rows (``array::len(blocked_by) > 0``), never the
+        whole table — the same property #253 is about, on the migration path.
+        """
+        results = await execute_read_transaction(
+            "BEGIN;\n"
+            f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} FROM {TASK_TABLE} "
+            f"WHERE array::len({_COL_BLOCKED_BY}) > 0;\n"
+            f"SELECT record::id(in) AS {_BACKFILL_IN_KEY}, record::id(out) AS "
+            f"{_BACKFILL_OUT_KEY} FROM {BLOCKS_RELATION};\n"
+            "COMMIT;\n",
+            {},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
+        payloads = self._row_payloads(results)
+        column_rows = self._as_rows(payloads[0] if payloads else [])
+        edge_rows = self._as_rows(payloads[1] if len(payloads) > 1 else [])
+        columns = {
+            str(row.get(_ID_KEY)): [
+                str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())
+            ]
+            for row in column_rows
+        }
+        edges = {
+            (str(row.get(_BACKFILL_IN_KEY)), str(row.get(_BACKFILL_OUT_KEY)))
+            for row in edge_rows
+        }
+        return columns, edges
+
+    def _record_legacy_cycles(self, columns: Mapping[str, Sequence[str]]) -> None:
+        """Record every legacy ``blocked_by`` CYCLE the backfill is about to mirror (ESC-4).
+
+        Not a refusal — the ruling is explicit that refusing would break the mirror on the
+        rows the invariant is hardest to reason about. What it buys is that a pre-existing
+        DATA defect stops being invisible: an operator who is never told cannot repair the
+        rows, and the next reader rediscovers it from a task that is stuck forever.
+
+        Every member of every loop is named. The walk drops ONE edge per loop and looks
+        again, so a graph holding several cycles records each of them rather than the first.
+        """
+        working = {node: set(refs) for node, refs in columns.items()}
+        while True:
+            cycle = find_blocked_by_cycle(working)
+            if cycle is None:
+                return
+            logger.warning(
+                _BACKFILL_CYCLE_EVENT,
+                extra={
+                    "database": self._database,
+                    "cycle": " -> ".join(cycle),
+                    "members": sorted(set(cycle)),
+                },
+            )
+            if not _drop_one_cycle_edge(working, cycle):
+                return
+
+    @staticmethod
+    def _row_payloads(results: Sequence[Any]) -> list[list[Any]]:
+        """The ROW-BEARING results of a read transaction, in statement order.
+
+        ⚠ Filtered by SHAPE rather than indexed by position, and that is deliberate: the
+        engine's envelope carries an entry for ``BEGIN`` and for ``COMMIT`` too (MEASURED
+        2026-07-28 on spike-surreal 3.2.1), and a ``LET`` yields ``None``. Positional
+        indexing would therefore encode an off-by-one that is invisible until the day the
+        envelope changes; every ``SELECT`` returns a list and nothing else here does.
+        """
+        return [entry for entry in results if isinstance(entry, list)]
 
     async def close(self) -> None:
         """Close the live connection (if any); tolerant of a never-connected ledger."""
@@ -596,6 +1037,15 @@ class TaskLedger:
         are NEVER content-deduped: a fresh ``uuid4`` id is minted every call, so
         two tasks sharing a subject are two distinct work items.
 
+        PACKET 04b-1 makes this a TRANSACTION and gives it two pre-checks. The row and
+        its ``blocks`` edges are written in ONE ``BEGIN … COMMIT`` (see
+        :meth:`_create_fragment` / :meth:`_relate_fragment`), so a rejected edge can never
+        leave an orphan task behind whose ``blocked_by`` names a blocker with no edge.
+        Before that: every ``blocked_by`` entry is resolved against the ledger (operator
+        rulings **R3** / **R10(ii)** — a phantom or SUPERSEDED blocker is REFUSED, by
+        name, where it used to produce a task that was unclaimable forever, silently), and
+        the dependency graph is walked for a CYCLE over PERSISTED ids (**R6**).
+
         Args:
             subject: The short human-readable title of the work item.
             description: The longer free-text description of the work item.
@@ -607,13 +1057,38 @@ class TaskLedger:
 
         Returns:
             The newly created task's opaque, hashable string id.
+
+        Cost:
+            **3 round trips** when ``blocked_by`` is non-empty — the blocker-existence
+            pre-check, the acyclicity walk, and the write — against 1 before this packet,
+            and **1** when there are no dependencies at all (both pre-checks short-circuit
+            without touching the wire). Stated here because ruling **E-4** states the send
+            path's extra trip as an ACCEPTED COST and the CREATE path takes the same kind
+            of hit with no ruling naming it: an unstated cost is a surprise the next
+            engineer rediscovers from a latency graph. **Re-open trigger:** the first
+            measured create-path latency concern — the pre-authorised alternative is
+            folding the acyclicity walk into the existence read's transaction, which costs
+            the shared policy its own seam and is a contract change, not a shortcut.
+
+        Raises:
+            UnknownBlockerError: A ``blocked_by`` entry names no task row, or names a
+                SUPERSEDED one (the refusal names its successor).
+            TaskCycleError: The dependency would close a ``blocked_by`` cycle, so the
+                task could never be claimed.
+            TaskLedgerError: The blocker-existence read itself failed — a store fault,
+                classified into this ledger's vocabulary rather than served raw.
         """
+        dependencies = list(dict.fromkeys(blocked_by or ()))
         task_id = uuid4().hex  # OPAQUE, non-sequential; never content-derived.
+        await self._reject_unusable_blockers([(entry, entry) for entry in dependencies])
+        await self._refuse_a_cycle({task_id: dependencies})
         now = datetime.now(UTC)
-        content = self._new_task_content(subject, description, blocked_by, created_by, now)
-        await self._query(
-            f"CREATE type::record('{TASK_TABLE}', ${_ROW_ID_PARAM}) CONTENT ${_ROW_CONTENT_PARAM}",
-            {_ROW_ID_PARAM: task_id, _ROW_CONTENT_PARAM: content},
+        content = self._new_task_content(subject, description, dependencies, created_by, now)
+        await self._apply(
+            [
+                self._create_fragment(0, task_id, content),
+                self._relate_fragment([(blocker, task_id) for blocker in dependencies]),
+            ]
         )
         return task_id
 
@@ -637,16 +1112,47 @@ class TaskLedger:
         status: str | None = None,
         owner: str | None = None,
         blocked: bool | None = None,
+        limit: int | None = None,
     ) -> list[Task]:
         """Return the tasks matching every supplied filter, AND-combined.
 
-        The fleet-visible read: exact ``status`` / ``owner`` equality filters
-        plus a dependency-aware ``blocked`` partition. A task is BLOCKED iff ANY
-        of its ``blocked_by`` entries is unresolved — the blocker's row is
-        missing (a never-minted id ⇒ fail-closed UNRESOLVED) or its status is not
-        terminal (``done`` / ``wontfix``). Blocker statuses are resolved against
-        the full table so a blocker filtered OUT by the ``status`` / ``owner``
-        filter still counts.
+        The fleet-visible read: exact ``status`` / ``owner`` equality filters plus a
+        dependency-aware ``blocked`` partition. A task is BLOCKED iff ANY of its OWN
+        ``blocked_by`` entries is unresolved — the blocker's row is missing (a
+        never-minted id ⇒ fail-closed UNRESOLVED) or its status is not terminal
+        (``done`` / ``wontfix``). The partition is strictly ONE HOP, exactly like the
+        atomic claim's server-side ``array::len`` CAS, which compares against THIS row's
+        own column and knows nothing about the chain; a transitive resolver would make
+        the two disagree, in a direction that hides claimable work from the fleet
+        forever. (The TRANSITIVE view is :meth:`transitive_blockers`, and it is a
+        different question.)
+
+        **#253 — the read is BOUNDED by the caller's filter.** ``status``/``owner`` push
+        into the STATEMENT, so the work scales with the ANSWER rather than with the
+        ledger. ⚠ **Blocker resolution does NOT narrow with them**, and that is
+        load-bearing: the blockers are resolved by their own read over the CANDIDATE
+        set's ``blocked_by`` ids, so a blocker the caller's own filter excluded still
+        counts. Narrowing it is the plausible rewrite that silently mis-classifies the
+        partition, in a direction that depends on which filter the caller supplied — for
+        a TERMINAL out-of-filter blocker it drops claimable work from the answer while
+        the claim CAS still grants it to anyone asking by id.
+
+        **R7 — both reads share ONE snapshot.** They ride ONE ``BEGIN … COMMIT``
+        (:func:`~loremaster.store._txn.execute_read_transaction`), so the TOCTOU a
+        two-read rewrite would otherwise INTRODUCE — a writer committing between the
+        candidate read and the blocker read, making the served partition disagree with
+        the claim CAS without either read being wrong — is closed BY CONSTRUCTION rather
+        than named and accepted.
+
+        **T1 — the cap applies to the ANSWER, never to the candidate scan.** With
+        ``blocked`` supplied, a ``LIMIT`` in the statement would cut rows BEFORE the
+        partition and serve fewer than the caller asked for while more exist, with no
+        signal; so the scan is capped only where the candidates ARE the answer
+        (``blocked is None``) and is otherwise exhausted before the cap is applied. A
+        short answer is therefore a TRUE short answer — asking the identical question
+        with no cap returns the same rows. ⚠ Consequently a *"rows read ≤ f(limit)"*
+        expectation on the blocked-filtered path is wrong by design: filling an answer
+        cap legitimately means scanning past non-matching candidates.
 
         Args:
             status: When given, restrict to tasks in this exact status.
@@ -654,26 +1160,120 @@ class TaskLedger:
                 identity.
             blocked: When given, restrict to genuinely-blocked (``True``) or
                 genuinely-unblocked (``False``) tasks.
+            limit: When given, the maximum number of tasks to SERVE (a positive int).
+                It windows the answer; it never changes which tasks qualify.
 
         Returns:
-            The matching tasks (empty when nothing matches).
-        """
-        rows = self._as_rows(await self._query(f"SELECT * FROM {TASK_TABLE}"))
-        tasks = [self._row_to_task(row) for row in rows]
-        # Resolve blockers against EVERY task, not the post-filter subset, so a
-        # blocker excluded by ``status``/``owner`` still contributes its status.
-        status_by_id = {task.id: str(task.status) for task in tasks}
+            The matching tasks (empty when nothing matches), capped at ``limit``.
 
-        selected: list[Task] = []
-        for task in tasks:
-            if status is not None and task.status != status:
-                continue
-            if owner is not None and task.owner != owner:
-                continue
-            if blocked is not None and self._is_blocked(task, status_by_id) != blocked:
-                continue
-            selected.append(task)
-        return selected
+        Raises:
+            TaskLedgerError: ``limit`` is not a positive integer. Refused CLIENT-SIDE,
+                naming the value: the engine rejects a negative ``LIMIT`` with
+                *"LIMIT/START must be a non-negative integer"* (MEASURED), which the
+                store seam's error hygiene then withholds — so a caller would receive
+                *"(unspecified rejection); see the server log"* and could not tell its
+                own bad input from a broken tool (ruling **T2**).
+        """
+        cap = self._validated_limit(limit)
+        statement, params = self._candidate_statement(
+            status=status, owner=owner, limit=None if blocked is not None else cap
+        )
+        fragments = [
+            f"LET ${_QUERY_ROWS_VAR} = ({statement})",
+            f"${_QUERY_ROWS_VAR}",
+        ]
+        if blocked is not None:
+            # The blocker read is DIRECT RECORD ACCESS over the candidates' own
+            # ``blocked_by`` ids, built server-side inside the same snapshot: a
+            # never-minted id is silently DROPPED, which is exactly the fail-closed
+            # UNRESOLVED default the claim CAS applies, so the two mechanisms cannot
+            # disagree about a phantom blocker.
+            # ⚠ ``id`` is projected BARE and decoded client-side, NOT ``record::id(id)``.
+            # MEASURED 2026-07-28 on 3.2.1: over a FROM-array holding a RecordID that
+            # names no row, the projection is evaluated against a NONE record and
+            # ``record::id(NONE)`` is an ENGINE ERROR that rolls the whole transaction
+            # back — so the server-side decode turns exactly the fail-closed case this
+            # read exists to serve into a failure. A bare ``id`` drops the ghost silently,
+            # which is the behaviour the CAS matches.
+            fragments.append(
+                f"SELECT {_ID_KEY}, {_COL_STATUS} FROM "
+                f"array::map(array::distinct(array::flatten(${_QUERY_ROWS_VAR}."
+                f"{_COL_BLOCKED_BY})), |$blocker| type::record('{TASK_TABLE}', $blocker))"
+            )
+        payloads = self._row_payloads(
+            await execute_read_transaction(
+                "BEGIN;\n" + ";\n".join(fragments) + ";\nCOMMIT;\n",
+                params,
+                acquire=self._ensure_connection,
+                drop=self._drop_connection,
+                url=self._url,
+            )
+        )
+        candidates = [self._row_to_task(row) for row in self._as_rows(payloads[0] if payloads else [])]
+        if blocked is None:
+            return candidates
+        status_by_id = {
+            self._bare_id(row.get(_ID_KEY)): str(row.get(_COL_STATUS))
+            for row in self._as_rows(payloads[1] if len(payloads) > 1 else [])
+        }
+        selected = [
+            task for task in candidates if self._is_blocked(task, status_by_id) == blocked
+        ]
+        return selected if cap is None else selected[:cap]
+
+    @staticmethod
+    def _validated_limit(limit: int | None) -> int | None:
+        """Refuse an unusable ``limit`` CLIENT-SIDE, in this ledger's own words.
+
+        ``bool`` is excluded explicitly because it is an ``int`` subclass and
+        ``limit=True`` would silently mean ``LIMIT 1``. Nothing is bound into a statement
+        until this passes, so an out-of-range cap costs no round trip at all.
+        """
+        if limit is None:
+            return None
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise TaskLedgerError(
+                f"limit={limit!r} is out of range — it must be a positive integer "
+                f"naming how many tasks to serve, or be omitted for every match"
+            )
+        return limit
+
+    @staticmethod
+    def _candidate_statement(
+        *, status: str | None, owner: str | None, limit: int | None
+    ) -> tuple[str, dict[str, Any]]:
+        """The candidate ``SELECT``: the caller's equality filters, pushed into the store.
+
+        ``SELECT *`` deliberately, never a projection list: store reference §2 records
+        that a column left OUT of an explicit projection reads back as ``None`` SILENTLY,
+        and :meth:`_row_to_task` would map that to ``subject=''`` / ``provenance={}`` — a
+        structurally valid, materially FALSE task. Pushing filters into the store is
+        exactly the moment somebody writes a projection list, so the absence of one here
+        is a decision.
+
+        Every caller VALUE travels as a BOUND PARAMETER. ``owner`` is unconstrained free
+        text (``claim_task`` takes any string), so an interpolated one is both an
+        injection surface and a parse error waiting for an apostrophe.
+        """
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if status is not None:
+            clauses.append(f"{_COL_STATUS} = ${_QUERY_STATUS_PARAM}")
+            params[_QUERY_STATUS_PARAM] = status
+        if owner is not None:
+            clauses.append(f"{_COL_OWNER} = ${_QUERY_OWNER_PARAM}")
+            params[_QUERY_OWNER_PARAM] = owner
+        statement = f"SELECT * FROM {TASK_TABLE}"
+        if clauses:
+            statement = f"{statement} WHERE {' AND '.join(clauses)}"
+        if limit is not None:
+            # ⚠ Emitted ONLY when the caller asked for a cap. MEASURED on 3.2.1:
+            # ``LIMIT $k`` with ``$k = NONE`` returns ZERO rows and NO error, so the
+            # obvious build — always emit the clause and bind ``None`` — turns every
+            # unlimited query in the fleet into an empty answer, silently.
+            statement = f"{statement} LIMIT ${_QUERY_LIMIT_PARAM}"
+            params[_QUERY_LIMIT_PARAM] = limit
+        return statement, params
 
     # -- the atomic claim ---------------------------------------------------
 
@@ -736,10 +1336,23 @@ class TaskLedger:
         terminal status (read inside the transaction, so consistent with the
         mutation). The UPDATE mutates ONLY when the row is still open, unowned,
         not superseded, AND every blocker resolved — expressed as
-        ``array::len(blocked_by) = array::len($clm_resolved)``: a never-minted or
-        still-open blocker is simply absent from the resolved list, so the counts
-        differ and the claim fails CLOSED. A failed guard matches zero rows and
-        writes nothing.
+        ``array::len(array::distinct(blocked_by)) = array::len($clm_resolved)``: a
+        never-minted or still-open blocker is simply absent from the resolved list, so
+        the counts differ and the claim fails CLOSED. A failed guard matches zero rows
+        and writes nothing.
+
+        ⚠ **``array::distinct`` IS RULING T5's FIX AND IT IS NOT COSMETIC.** The resolved
+        list is a SET of matching rows, so a row whose ``blocked_by`` is ``[X, X]`` with
+        ``X`` done compares ``2 != 1`` and can NEVER be claimed — while ``_is_blocked``
+        iterates ENTRIES and cheerfully serves it as claimable. ``_new_task_content``'s
+        birth-time dedupe is the only thing that has been standing between the two
+        mechanisms, i.e. the normalisation exists precisely because the CAS could not
+        tolerate duplicates; a row that predates it — or any future write path that
+        forgets it — is a task the fleet is told to claim and that nobody can take. A
+        divergence between the SERVED partition and what the CAS actually does is a trust
+        defect by definition, so the guard is made to tolerate what the normalisation was
+        silently protecting it from. ⚠ It must stay INSIDE this one atomic statement:
+        de-duplicating anywhere else leaves the compare-and-set itself unchanged.
         """
         resolve_blockers = (
             f"LET ${_CLAIM_RESOLVED_VAR} = "
@@ -756,7 +1369,8 @@ class TaskLedger:
             f"WHERE {_COL_STATUS} = ${_CLAIM_OPEN_PARAM} "
             f"AND {_COL_OWNER} IS NONE "
             f"AND {_COL_SUPERSEDED_BY} IS NONE "
-            f"AND array::len({_COL_BLOCKED_BY}) = array::len(${_CLAIM_RESOLVED_VAR})"
+            f"AND array::len(array::distinct({_COL_BLOCKED_BY})) = "
+            f"array::len(${_CLAIM_RESOLVED_VAR})"
         )
         return TxnFragment(
             statements=[resolve_blockers, guarded_claim],
@@ -1303,9 +1917,40 @@ class TaskLedger:
             The newly created tasks' opaque ids, positionally aligned with
             ``specs``.
 
+        PACKET 04b-1 mirrors every item's ``blocked_by`` onto the ``blocks`` edge INSIDE
+        that same transaction, and pre-checks the whole batch first. ⚠ **Every CREATE is
+        emitted before every RELATE**, which is a correctness requirement rather than a
+        tidiness one: ``ENFORCED`` demands both endpoints EXIST at RELATE time, and a
+        batch may reference a sibling FORWARD in its own order (which is exactly what the
+        dispatcher produces once it resolves temp keys against pre-minted ids), so
+        interleaving ``CREATE_0, RELATE_0, CREATE_1`` would have item 0's edge reject an
+        endpoint the very next statement was about to create and roll the whole batch back.
+        A blocker naming an id INSIDE the batch is therefore legal and is resolved by the
+        transaction itself, never by the pre-check.
+
+        Args:
+            specs: The task specifications to create (non-empty).
+            created_by: The identity creating the batch, recorded in every
+                spec's ``provenance`` (mirrors :meth:`create_task`).
+            ids: Optional caller-minted ids, positionally aligned with
+                ``specs``. Omitted ⇒ the ledger mints (``uuid4().hex`` per
+                spec).
+
+        Returns:
+            The newly created tasks' opaque ids, positionally aligned with
+            ``specs``.
+
         Raises:
             ValueError: ``specs`` is empty, or ``ids`` is given and its
                 length does not match ``specs``.
+            UnknownBlockerError: An item's ``blocked_by`` entry names no task row — and
+                none in this batch either — or names a SUPERSEDED one. The refusal names
+                every offending entry WITH the item that carried it, because an agent
+                holding a twenty-item batch cannot otherwise tell which item to edit.
+            TaskCycleError: The batch would close a ``blocked_by`` cycle, among its own
+                ids or through PERSISTED rows.
+            TaskLedgerError: The blocker-existence read itself failed — a store fault,
+                classified into this ledger's vocabulary rather than served raw.
         """
         if not specs:
             raise ValueError("create_many requires a non-empty list of specs")
@@ -1314,28 +1959,300 @@ class TaskLedger:
                 f"create_many 'ids' must align positionally with 'specs' — "
                 f"got {len(ids)} ids for {len(specs)} specs"
             )
+        minted_ids = [
+            ids[index] if ids is not None else uuid4().hex for index in range(len(specs))
+        ]
+        dependencies = [list(dict.fromkeys(spec.blocked_by or ())) for spec in specs]
+        within_batch = set(minted_ids)
+        await self._reject_unusable_blockers(
+            [
+                (entry, f"{entry} (item {index})")
+                for index, entries in enumerate(dependencies)
+                for entry in entries
+                if entry not in within_batch
+            ]
+        )
+        await self._refuse_a_cycle(dict(zip(minted_ids, dependencies, strict=True)))
+
         now = datetime.now(UTC)
-        fragments: list[TxnFragment] = []
-        minted_ids: list[str] = []
+        creates: list[TxnFragment] = []
+        pairs: list[tuple[str, str]] = []
         for index, spec in enumerate(specs):
-            task_id = ids[index] if ids is not None else uuid4().hex
             content = self._new_task_content(
-                spec.subject, spec.description, spec.blocked_by, created_by, now
+                spec.subject, spec.description, dependencies[index], created_by, now
             )
-            id_param = _CREATE_MANY_ID_PARAM_FMT.format(index=index)
-            content_param = _CREATE_MANY_CONTENT_PARAM_FMT.format(index=index)
-            fragments.append(
-                TxnFragment(
-                    statements=[
-                        f"CREATE type::record('{TASK_TABLE}', ${id_param}) "
-                        f"CONTENT ${content_param}"
-                    ],
-                    params={id_param: task_id, content_param: content},
+            creates.append(self._create_fragment(index, minted_ids[index], content))
+            pairs.extend((blocker, minted_ids[index]) for blocker in dependencies[index])
+        await self._apply([*creates, self._relate_fragment(pairs)])
+        return minted_ids
+
+    # -- the blocks mirror, the pre-check and the acyclicity guard -----------
+
+    @staticmethod
+    def _create_fragment(index: int, task_id: str, content: dict[str, Any]) -> TxnFragment:
+        """ONE task row's ``CREATE``, param-namespaced so ``compose`` never collides."""
+        id_param = _CREATE_MANY_ID_PARAM_FMT.format(index=index)
+        content_param = _CREATE_MANY_CONTENT_PARAM_FMT.format(index=index)
+        return TxnFragment(
+            statements=[
+                f"CREATE type::record('{TASK_TABLE}', ${id_param}) CONTENT ${content_param}"
+            ],
+            params={id_param: task_id, content_param: content},
+        )
+
+    @staticmethod
+    def _relate_fragment(pairs: Sequence[tuple[str, str]]) -> TxnFragment:
+        """The ``blocks`` mirror: one ``RELATE`` per ``(blocker, blocked task)`` pair.
+
+        Direction is escalation **E-1**'s — ``RELATE $blocker->blocks->$task``, so ``in``
+        is the blocker and ``out`` is the task that waits. It reads as English, and it
+        puts the NEWLY-CREATED row on the ``out`` side, the side packet 04a MEASURED
+        resolves inside an uncommitted transaction.
+
+        Endpoints are BOUND ``RecordID`` objects: ``RELATE type::record(..)->e->…`` is a
+        PARSE ERROR and a bare ``str`` endpoint is rejected loudly (store reference §4/§7).
+        An EMPTY ``pairs`` yields a fragment with no statements at all, so a create with no
+        dependencies pays for no edge machinery — and never writes an edge to nothing.
+        """
+        statements: list[str] = []
+        params: dict[str, Any] = {}
+        for index, (blocker, blocked) in enumerate(pairs):
+            from_param = _RELATE_FROM_PARAM_FMT.format(index=index)
+            to_param = _RELATE_TO_PARAM_FMT.format(index=index)
+            statements.append(
+                f"RELATE ${from_param}->{BLOCKS_RELATION}->${to_param}"
+            )
+            params[from_param] = RecordID(TASK_TABLE, blocker)
+            params[to_param] = RecordID(TASK_TABLE, blocked)
+        return TxnFragment(statements=statements, params=params)
+
+    async def _reject_unusable_blockers(
+        self, identities: Sequence[tuple[str, str]]
+    ) -> None:
+        """Refuse, by name, every ``blocked_by`` entry that is not a USABLE task row.
+
+        Routes through the SHARED row-existence policy (lead ruling **L3**) — the same
+        implementation packet 04a's agent verbs use, parameterised by table and
+        vocabulary. A ``reject_unknown_tasks`` sibling would have been copy #2 of that
+        policy, which is #102's shape; the DECISION lives there and only there, and this
+        method supplies the vocabulary and the error class its own callers catch.
+
+        ⚠ **A FAILED CHECK IS NOT AN ABSENT ROW** (escalation **ESC-3**, ruled reading B).
+        *"These ids name no task row"* is a FACT about the data; serving it when the check
+        never RAN is a false clear wearing the same bytes, and a caller told its blocker
+        does not exist goes and creates a duplicate. So a store rejection during the
+        pre-check is CLASSIFIED into this ledger's vocabulary — never re-raised with the
+        seam's ``(unspecified rejection); see the server log`` body, which an agent cannot
+        tell from a broken tool (ruling **T2**), and never laundered into the phantom
+        refusal. It also FAILS CLOSED: nothing is written either way.
+
+        Args:
+            identities: ``(blocker id, rendered identity)`` pairs. The rendering carries
+                the LOCUS on the batch path (``<id> (item n)``) — without it an agent
+                holding a twenty-item batch cannot tell which item carried the bad id,
+                and a value appearing in two items makes the first retry a coin flip —
+                and is the BARE id on the single-task path, where there is no item to
+                name and ``abc (abc)`` would teach that a task has a name equal to its id.
+        """
+        if not identities:
+            return
+        try:
+            await reject_unknown_rows(
+                self._query,
+                TASK_TABLE,
+                identities,
+                noun=_BLOCKER_NOUN,
+                remedy=_BLOCKER_REMEDY,
+                error=UnknownBlockerError,
+                projection=(_COL_SUPERSEDED_BY,),
+                disqualified=_superseded_blocker_clause,
+            )
+        except UnknownBlockerError:
+            raise
+        except SurrealStoreError as error:
+            named = ", ".join(sorted({identity for _row_id, identity in identities}))
+            raise TaskLedgerError(
+                f"could not check the blocked_by entries {named} against the task "
+                f"ledger: the existence read was REJECTED by the store, so the check "
+                f"never ran and NOTHING was created. This is a store fault, not a bad "
+                f"id — the ids may be perfectly good; retry, and escalate if it persists"
+            ) from error
+
+    async def _refuse_a_cycle(self, pending: Mapping[str, Sequence[str]]) -> None:
+        """Refuse a write that would put one of ``pending``'s tasks on a ``blocked_by`` cycle.
+
+        ⚠⚠ **THE WALK IS OVER THE ``blocked_by`` COLUMN, CLIENT-SIDE, AND IT CANNOT BE THE
+        ENGINE'S SELF-REACH OPERATOR.** The reason is structural and it is caused by this
+        packet's own guard: a cycle CLOSES on a dependency naming a task that does not
+        exist yet, and ``ENFORCED`` rejects a ``RELATE`` to a task that does not exist — so
+        that link can only ever be a COLUMN, there is no ``blocks`` edge on it, and any
+        engine traversal of the edge returns *"acyclic"*. The column is also the RIGHT
+        thing to walk rather than merely the possible one: the claim CAS reads
+        ``blocked_by``, so a COLUMN cycle is what makes a task unclaimable forever, which
+        is the harm this guard exists to prevent.
+
+        ⚠ **AND IT COMPOSES WITH RULING R7:** a client-side walk over a chain of depth N
+        is N reads, and R7 puts exactly that shape inside ONE snapshot — so the graph
+        arrives in ONE round trip, bounded by the DEPENDENCY-BEARING rows rather than
+        seeded with the whole task table (which would reintroduce #253 on the write path,
+        invisibly: one round trip says nothing about how many rows it reads).
+
+        A cycle among rows this call did NOT write is a pre-existing DATA defect that
+        ``ensure_ready``'s backfill has already RECORDED; refusing a caller for it would
+        make an unrelated legacy loop block every future create. So such a loop is stepped
+        over — one edge at a time, so a DIFFERENT loop through the same rows still
+        surfaces — and only a cycle a ``pending`` task actually lies on is refused.
+
+        Args:
+            pending: ``{the id about to be created: its deduped blocked_by}``.
+        """
+        if not any(pending.values()):
+            return
+        graph: dict[str, set[str]] = {
+            node: set(refs) for node, refs in (await self._read_dependency_graph()).items()
+        }
+        for task_id, blockers in pending.items():
+            graph[task_id] = set(blockers)
+        minted = set(pending)
+        while True:
+            cycle = find_blocked_by_cycle(graph)
+            if cycle is None:
+                return
+            if minted.intersection(cycle):
+                raise_cycle_refusal(noun=CYCLE_NOUN_PERSISTED_IDS, cycle=cycle)
+            if not _drop_one_cycle_edge(graph, cycle):
+                return
+
+    async def _read_dependency_graph(self) -> dict[str, list[str]]:
+        """The whole ``blocked_by`` graph, in ONE read bounded by the DEPENDENCY-BEARING rows.
+
+        ``WHERE array::len(blocked_by) > 0`` is the load-bearing clause: without it this
+        single statement is ``SELECT * FROM task`` — one round trip, the whole ledger —
+        which satisfies every round-trip pin while scaling the write path with the size of
+        the backlog. That is finding #253, reintroduced on the side nothing was measuring.
+
+        ``record::id(id)`` decodes the id, never a hand-rolled ``str(row["id"]).split(":")``
+        — right for ``task:abc`` and WRONG for a uuid-shaped id, which the SDK renders
+        ``task:⟨0199c4f1-…⟩`` (store reference §7, finding #248).
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} "
+                f"FROM {TASK_TABLE} WHERE array::len({_COL_BLOCKED_BY}) > 0"
+            )
+        )
+        return {
+            str(row.get(_ID_KEY)): [
+                str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())
+            ]
+            for row in rows
+        }
+
+    async def transitive_blockers(
+        self, task_id: str, *, max_depth: int | None = None
+    ) -> TransitiveBlockers:
+        """Every task ``task_id`` is transitively waiting on, HONEST at its bound.
+
+        Serves the UPSTREAM reach over the ``blocks`` EDGE — what this task is waiting on,
+        which is what a critical-path render needs — deduplicated and ordered by proximity,
+        so a TRUNCATED answer is still a valid **FLOOR**: the ids served are complete at
+        every depth the walk reached, i.e. *"at least these must resolve first"*. Without
+        that property a partial answer would be indistinguishable from an arbitrary sample
+        and a consumer could not use it at all.
+
+        **SCOPE, stated as a FACT rather than as a disclaimer.** It answers *"the tasks
+        reachable upstream over ``blocks`` EDGES from this task, to a depth of at most
+        ``max_depth_used``, as of this read"*. After ``ensure_ready``'s backfill the edge
+        set mirrors the ``blocked_by`` COLUMN for every entry naming a live task row, so
+        the two agree — with ONE permanent residue: a legacy ``blocked_by`` entry that
+        names NO task row at all (a **phantom**) can never carry an edge, because
+        ``ENFORCED`` forbids it and the backfill therefore skips it. Such an entry is in
+        the column and NOT in this answer. It still blocks the task: the claim CAS counts
+        it and refuses forever, so a phantom-blocked row is never served as claimable.
+
+        Args:
+            task_id: The task whose upstream blockers to walk.
+            max_depth: The walk's depth bound; omitted ⇒ :data:`TASK_BLOCKER_MAX_DEPTH`.
+                Must be at least 1 and strictly below :data:`ENGINE_RECURSION_CEILING`.
+
+        Returns:
+            A :class:`TransitiveBlockers` carrying the ids, whether the walk was
+            ``truncated``, and the bound it actually ran at.
+
+        Raises:
+            TaskLedgerError: ``max_depth`` is out of range (refused CLIENT-SIDE, naming
+                the value AND the range — no statement reaches the engine, whose own
+                complaint the seam's hygiene would withhold), or the traversal's read was
+                rejected by the store (classified, never served as a partial answer).
+            TaskNotFoundError: ``task_id`` names no task row. An id that names nothing and
+                an id with no blockers are two different questions, and ``[]`` cannot be
+                the answer to both.
+        """
+        depth = TASK_BLOCKER_MAX_DEPTH if max_depth is None else max_depth
+        if isinstance(depth, bool) or not isinstance(depth, int) or not (
+            1 <= depth < ENGINE_RECURSION_CEILING
+        ):
+            raise TaskLedgerError(
+                f"max_depth={depth} is out of range — it must be at least 1 and strictly "
+                f"below the engine's recursion ceiling of {ENGINE_RECURSION_CEILING}"
+            )
+        # TRUNCATION IS MEASURED, NEVER INFERRED. The engine truncates SILENTLY at its
+        # bound (probe §5.3: 256 of 299 nodes, no error, no signal), and a build that
+        # inferred it from ``len(ids) >= max_depth`` cannot tell a complete answer from a
+        # cut one at the boundary — it would tell every caller with a full-depth graph
+        # that its critical path is incomplete. So the SAME statement also collects at
+        # ONE DEEPER bound and the two reaches are compared; that is why the public range
+        # stops strictly below the engine's ceiling rather than at it.
+        statement = (
+            f"SELECT @.{{1..{depth}+collect}}(<-{BLOCKS_RELATION}<-{TASK_TABLE}).{_ID_KEY} "
+            f"AS {_TRAVERSAL_WITHIN_KEY}, "
+            f"@.{{1..{depth + 1}+collect}}(<-{BLOCKS_RELATION}<-{TASK_TABLE}).{_ID_KEY} "
+            f"AS {_TRAVERSAL_PROBE_KEY} "
+            f"FROM ${_TRAVERSAL_START_PARAM} TIMEOUT {_TRAVERSAL_TIMEOUT}"
+        )
+        try:
+            rows = self._as_rows(
+                await self._query(
+                    statement, {_TRAVERSAL_START_PARAM: RecordID(TASK_TABLE, task_id)}
                 )
             )
-            minted_ids.append(task_id)
-        await self._apply(fragments)
-        return minted_ids
+        except SurrealStoreError as error:
+            # A traversal that FAILED mid-flight is a different world from one that hit
+            # its bound, and returning what we had — or an empty result — would render
+            # bytes a consumer cannot tell from "this task has no blockers". The ledger
+            # cannot name the engine's own reason (the hygiene boundary withholds it, and
+            # a guessed one would be a fabrication), so it names what it CAN: the
+            # operation, the task, the bound it ran at, and the recovery.
+            raise TaskLedgerError(
+                f"the upstream blocker walk for task {task_id!r} at max_depth={depth} "
+                f"was REJECTED by the store, so NO answer is served — a partial reach "
+                f"would be indistinguishable from a complete one. Retry, or retry at a "
+                f"smaller max_depth if the graph is deep"
+            ) from error
+        if not rows:
+            raise TaskNotFoundError(f"no task with id {task_id!r}")
+        within = [str(record) for record in self._traversal_ids(rows[0], _TRAVERSAL_WITHIN_KEY)]
+        deeper = {str(record) for record in self._traversal_ids(rows[0], _TRAVERSAL_PROBE_KEY)}
+        return TransitiveBlockers(
+            ids=within,
+            truncated=deeper != set(within),
+            max_depth_used=depth,
+        )
+
+    @staticmethod
+    def _traversal_ids(row: Mapping[str, Any], key: str) -> list[str]:
+        """Decode one traversal projection's node ids.
+
+        ``str(record.id)`` for a ``RecordID`` — never ``str(record).split(":")``, which is
+        right for ``task:abc`` and WRONG for the bracketed rendering the SDK gives a
+        uuid-shaped id (store reference §7). A served id that ``get_task`` cannot resolve
+        is worse than no answer: an agent will use it, and every call it makes with it
+        fails.
+        """
+        return [
+            str(node.id) if isinstance(node, RecordID) else str(node)
+            for node in (row.get(key) or ())
+        ]
 
     # -- write helpers ------------------------------------------------------
 

@@ -72,6 +72,14 @@ FINDING_COUNTER_SINGLETON_ID = "singleton"
 TRACE_TABLE = "trace"
 COMMAND_TABLE = "command"
 TASK_TABLE = "task"
+# The task DAG's native ``TYPE RELATION`` edge (``task->blocks->task``), minted by
+# packet 04b-1 and ``ENFORCED`` from birth (operator ruling R3). Direction is
+# escalation **E-1**'s: ``RELATE $blocker->blocks->$blocked_task``, so ``in`` is the
+# BLOCKER and ``out`` is the task that waits. It is a pure MIRROR of
+# ``task.blocked_by`` — it carries no edge-local field, because the column holds no
+# per-dependency metadata and an edge field would make the edge carry state the column
+# cannot (which is what makes the edge ≡ column invariant statable at all).
+BLOCKS_RELATION = "blocks"
 
 # The PKT-28 C1 agent-comms tables (the durable, fleet-visible AGENT REGISTRY
 # and BRIEF LEDGER — :mod:`loremaster.agents` / :mod:`loremaster.briefs`).
@@ -1219,6 +1227,26 @@ def _task_statements() -> list[str]:
     fleet-visible ``query_tasks(status=...)`` filter. UNLIKE ``chunk`` /
     ``memory`` the table carries no HNSW/FULLTEXT index — a task is coordinated
     by exact state, never retrieved semantically.
+
+    Packet 04b-1 appends the :data:`BLOCKS_RELATION` edge table
+    (``task->blocks->task``, ``ENFORCED`` from birth — operator ruling R3). THIS
+    SLICE IS NOW ORDER-DEPENDENT ON ITSELF, exactly as the brief slice became
+    order-dependent on the AGENT slice when 04a flipped ``briefed``: the relation
+    clause names ``task`` as BOTH endpoints, so its ``DEFINE TABLE`` must be emitted
+    AFTER the ``task`` table's own. It is emitted HERE, and only here, because
+    ``generate_ddl()`` composes the task slice but NOT the comms/graph generators —
+    so this is the one site feeding both :func:`generate_task_ddl` and
+    :func:`generate_ddl`, and declaring the edge anywhere else would leave one path
+    defining it and the other auto-creating it ``TYPE ANY`` on first RELATE (§5),
+    silently discarding the ``IN``/``OUT`` guard.
+
+    The edge carries NO ``DEFINE FIELD`` and NO index. No edge field: it is a pure
+    mirror of ``blocked_by`` (see :data:`BLOCKS_RELATION`). No ``UNIQUE(in, out)``:
+    §4 records that the index makes a duplicate a LOUD ERR, and
+    :meth:`~loremaster.tasks.TaskLedger.ensure_ready`'s backfill re-runs at EVERY
+    boot — it de-duplicates against the store's own edge set instead, which is the
+    only reading that also survives edges written by a normal ``create_task``
+    between two boots.
     """
     statements: list[str] = [_define_table(TASK_TABLE)]
     statements += [
@@ -1227,6 +1255,9 @@ def _task_statements() -> list[str]:
     ]
     statements.append(
         _plain_index(TASK_TABLE, f"{TASK_TABLE}_{_TASK_STATUS_FIELD}", (_TASK_STATUS_FIELD,))
+    )
+    statements.append(
+        _define_relation_table(BLOCKS_RELATION, TASK_TABLE, TASK_TABLE, enforced=True)
     )
     return statements
 

@@ -857,7 +857,9 @@ async def retry_on_conflict[T](
             it is attributable (blindreader-dry-2 F1 / audit-fix-1 B3).
             ``None`` (the default) omits the seam-identity extras entirely rather
             than logging a hole. EVERY caller passes its own ``label`` except one:
-            :func:`execute_transaction`, which keeps its own attribution via
+            :func:`_run_verified_transaction` — the ONE ``BEGIN … COMMIT`` attempt
+            body behind :func:`execute_transaction` and
+            :func:`execute_read_transaction` — which keeps its own attribution via
             ``_log_rollback``. The EXEMPT caller is what is named — enumerating the
             attributed ones instead goes stale at the next caller (finding #151).
         url: The caller's RPC URL, logged alongside ``label`` — ``None`` unless
@@ -1301,6 +1303,89 @@ async def execute_transaction(
         TxnContentionExhaustedError: A genuine write-write conflict outlived
             the deadline/attempt budget. Subclasses :class:`SurrealStoreError`.
     """
+    await _run_verified_transaction(
+        statement,
+        params,
+        acquire=acquire,
+        drop=drop,
+        url=url,
+        deadline_seconds=deadline_seconds,
+    )
+
+
+async def execute_read_transaction(
+    statement: str,
+    params: dict[str, Any],
+    *,
+    acquire: AcquireConnection,
+    drop: DropConnection,
+    url: str,
+    deadline_seconds: float | None = None,
+) -> list[Any]:
+    """:func:`execute_transaction`'s READ sibling — same guarantees, and it RETURNS.
+
+    ⚠ **IT EXISTS BECAUSE A TRANSACTION THAT MUST SERVE A READ HAS NOWHERE ELSE TO
+    GO.** :func:`execute_transaction` returns ``None`` by design, so a caller whose
+    two dependent reads must share ONE snapshot (operator ruling **R7**: *"the TOCTOU
+    is CLOSED BY CONSTRUCTION, not measured and accepted"*) could otherwise only
+    hand-roll a ``query_raw`` — which was MEASURED to fail this repo's runtime
+    SDK-escape guard. So the shared seam is EXTENDED rather than escaped: both verbs
+    ride ONE attempt body (:func:`_run_verified_transaction`), which owns the
+    per-statement verification, the rollback classification, the retry/backoff driver
+    and the hygiene boundary. The ONLY difference is what is done with the response —
+    this one projects it, that one discards it. Duplicating the body would have been
+    the #102 shape inside the seam that exists to prevent it.
+
+    Args:
+        statement: The full multi-statement ``BEGIN … COMMIT`` SurrealQL text.
+        params: The bound parameters for the whole transaction.
+        acquire: Returns the owner's live connection (its ``_ensure_connection``).
+        drop: Self-heals the owner on a transport failure.
+        url: The owner's RPC URL, for the error messages.
+        deadline_seconds: The wall-clock budget for conflict retries (see
+            :func:`execute_transaction`).
+
+    Returns:
+        Each statement's ``result``, in statement order — including the ``None`` a
+        ``LET`` yields, so a caller can index by the position it composed.
+
+    Raises:
+        SurrealConnectionError: The server is unreachable or the socket died.
+        SurrealStoreError: A non-retryable (domain) statement failure — the whole
+            transaction was rolled back. Classified/generic, exactly as its sibling.
+        TxnContentionExhaustedError: A genuine write-write conflict outlived the
+            deadline/attempt budget.
+    """
+    response = await _run_verified_transaction(
+        statement,
+        params,
+        acquire=acquire,
+        drop=drop,
+        url=url,
+        deadline_seconds=deadline_seconds,
+    )
+    results = response.get("result")
+    if not isinstance(results, list):
+        return []
+    return [entry.get("result") if isinstance(entry, dict) else None for entry in results]
+
+
+async def _run_verified_transaction(
+    statement: str,
+    params: dict[str, Any],
+    *,
+    acquire: AcquireConnection,
+    drop: DropConnection,
+    url: str,
+    deadline_seconds: float | None,
+) -> dict[str, Any]:
+    """The ONE ``BEGIN … COMMIT`` attempt body — verify every statement, then return it.
+
+    Extracted so :func:`execute_transaction` and :func:`execute_read_transaction` share
+    the classification, the retry disposition and the hygiene boundary rather than
+    cloning them. Its own contract is :func:`execute_transaction`'s docstring, which is
+    the canonical description of the mechanism.
+    """
     # Stashed by the attempt body on every CONFLICTED try, so the exhaustion
     # log line (below) can report the LAST attempt's root cause — logging on
     # every retry would spam the log for a conflict that resolves cleanly;
@@ -1308,6 +1393,7 @@ async def execute_transaction(
     # or an exhausted conflict, once) matches this seam's behaviour before
     # finding #108 extracted the driver.
     last_conflict: tuple[_FailedStatement, int, list[_FailedStatement]] | None = None
+    verified: dict[str, Any] = {}
 
     async def _attempt() -> None:
         nonlocal last_conflict
@@ -1315,6 +1401,8 @@ async def execute_transaction(
         failed_statements = _failed_statements(response)
         statement_count = len(response.get("result") or [])
         if not failed_statements:
+            verified.clear()
+            verified.update(response)
             return
         is_conflict, root_cause = _rollback_verdict(failed_statements)
         if not is_conflict:
@@ -1334,6 +1422,7 @@ async def execute_transaction(
         if last_conflict is not None:
             _log_rollback(*last_conflict)
         raise
+    return verified
 
 
 async def _txn_query_raw(

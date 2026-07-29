@@ -77,7 +77,14 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 from ulid import ULID
 
-from loremaster.agent_existence import UnknownAgentRowError, reject_unknown_agents
+from loremaster.agent_existence import (
+    AGENT_ROW_NOUN,
+    AGENT_ROW_REMEDY,
+    UnknownAgentRowError,
+    agent_identities,
+    reject_unknown_agents,
+    reject_unknown_rows,
+)
 from loremaster.agent_ref import AgentRefLike
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -356,6 +363,26 @@ class UnknownRecipientError(MessageLedgerError, UnknownAgentRowError):
     """
 
 
+class UnknownSenderError(MessageLedgerError, UnknownAgentRowError):
+    """Raised when a message's SENDER id names no registered ``agent`` row (#247).
+
+    ⚠ **ITS OWN CLASS, AND THAT IS ESCALATION E-4's RULING RATHER THAN A PREFERENCE.**
+    ``to``'s ``ENFORCED`` clause cannot reach this door at all: ``message.sender`` is a
+    FIELD on the ``message`` row — a record LINK — never an ENDPOINT of the ``to`` edge,
+    and ``record<agent>`` constrains the TABLE, never the EXISTENCE of the row, so a
+    ``RecordID("agent", "does-not-exist")`` is a perfectly well-typed ``record<agent>``.
+    Folding the sender into the recipient check would therefore have raised
+    :class:`UnknownRecipientError` for a bad SENDER — a refusal that mis-names the role
+    is one an agent acts on wrongly, and a message FROM a ghost is the worse fault of the
+    two, so it is reported FIRST and on its own.
+
+    **ACCEPTED COST, stated so it is not rediscovered as a surprise: one extra round trip
+    on the send path.** NAMED RE-OPEN TRIGGER: if send-path latency ever becomes a
+    MEASURED concern, the pre-authorised alternative is ONE existence call whose refusal
+    is ROLE-TAGGED and names both roles correctly — a contract change, never a shortcut.
+    """
+
+
 class EmptyRecipientSetError(MessageLedgerError):
     """Raised when a send names no recipient — a message with no delivery edge can
     never be read; the ledger never resolves a broadcast roster (the dispatcher
@@ -594,6 +621,8 @@ class MessageLedger:
                 than :data:`MESSAGE_REFS_MAX_COUNT` entries. REJECTED, never
                 truncated — a shortened pointer is a broken one.
             EmptyRecipientSetError: ``recipients`` is empty.
+            UnknownSenderError: ``sender``'s id names no registered agent row (#247).
+                Checked FIRST, in its own call and its own vocabulary (E-4).
             UnknownRecipientError: A recipient id names no registered agent.
             SurrealConnectionError: A transport fault.
             SurrealStoreError: The engine rejected the write.
@@ -621,6 +650,7 @@ class MessageLedger:
                 f"(broadcast is the dispatcher's concern), so an empty recipient set in "
                 f"session {session!r} is a caller error, not a broadcast"
             )
+        await self._reject_a_ghost_sender(sender)
         await self._reject_unknown_recipients(recipients)
         deduped = self._dedupe_by_identity(recipients)
         created_at = datetime.now(UTC)
@@ -738,6 +768,32 @@ class MessageLedger:
                     f"{MESSAGE_POINTER_MAX_CHARS}-char pointer cap — {field_name} is a LABEL, "
                     f"not content"
                 )
+
+    async def _reject_a_ghost_sender(self, sender: AgentRefLike) -> None:
+        """Raise :class:`UnknownSenderError` when ``sender``'s id names no ``agent`` row.
+
+        **#247, closed by operator ruling R2.** MEASURED on a correct 04a build:
+        ``send(sender=<unregistered>, recipients=[registered])`` SUCCEEDED, storing
+        provenance for an agent that does not exist — and provenance you cannot trust is
+        worse than none. The door is unreachable through ``lore_comms action=send``
+        (``AppContext.comms`` resolves the caller through the registry and passes the
+        resolved row through), and wide open at THIS seam, whose ``AgentRefLike`` is a
+        STRUCTURAL protocol satisfied by any object carrying an ``id`` string.
+
+        ⚠ **This method DECIDES NOTHING**, exactly like its recipient sibling: it routes
+        through the SHARED row-existence policy, with the AGENT vocabulary taken from that
+        module rather than re-typed here, and contributes only the error class its callers
+        catch. Re-deciding underneath the shared call would be a private copy wearing the
+        shared name — which the sharing proof neutralises the shared policy to detect.
+        """
+        await reject_unknown_rows(
+            self._query,
+            AGENT_TABLE,
+            agent_identities([sender]),
+            noun=AGENT_ROW_NOUN,
+            remedy=AGENT_ROW_REMEDY,
+            error=UnknownSenderError,
+        )
 
     async def _reject_unknown_recipients(self, recipients: Sequence[AgentRefLike]) -> None:
         """Raise :class:`UnknownRecipientError` naming EVERY recipient id that is

@@ -7301,8 +7301,17 @@ _BOOTSTRAP_URL_KEYWORD = "url"
 # evidence and decide whether it still covers what is there.
 _Exemption = tuple[str, int]
 
+# ⚠ RE-KEYED 2026-07-28 (packet 04b-1): the enclosing function was RENAMED, not changed.
+# Escalation ESC-2 granted `_txn.py` a READ sibling (`execute_read_transaction`) for ruling
+# R7, and a second copy of the attempt body would have been the #102 shape inside the seam
+# that exists to prevent it — so the ONE `BEGIN … COMMIT` attempt body moved into
+# `_run_verified_transaction`, which BOTH public verbs call. The call, its count and its
+# evidence are unchanged: `_log_rollback` still runs on the way out, in that same body.
+# This is the edit `TestTheDriversProseAboutItsCallersIsDerivedFromItsCallers::
+# test_the_reach_the_liar_check_depends_on_is_ALL_LIVE` prescribes in its own failure
+# message — *"if a caller was renamed, rename it here"*.
 _ATTRIBUTED_BY_ANOTHER_MECHANISM: dict[tuple[str, str], _Exemption] = {
-    ("store/_txn.py", "execute_transaction"): (
+    ("store/_txn.py", "_run_verified_transaction"): (
         (
             "calls `_log_rollback` on the way out (_txn.py:789-801), which logs the failing "
             "statement's INDEX, the full engine result and every failed statement — strictly "
@@ -8477,7 +8486,13 @@ def _seam_module_source() -> str:
 # "no longer claimed" (fine), while a member present-and-labelled means "claimed but false"
 # (the liar). What the reach control DOES pin is that every member is a real driver caller, so
 # a renamed caller cannot leave a dead audit entry that silently checks nothing.
-_DOCUMENTED_SELF_ATTRIBUTING = frozenset({"bootstrap_session", "execute_transaction"})
+# ⚠ RE-KEYED 2026-07-28 (packet 04b-1), for the reason spelled out at
+# ``_ATTRIBUTED_BY_ANOTHER_MECHANISM``: the exempt caller was RENAMED
+# (``execute_transaction`` -> ``_run_verified_transaction``, the ONE attempt body its READ
+# sibling also rides), not retired. The claim under audit is unchanged, and
+# ``test_the_reach_the_liar_check_depends_on_is_ALL_LIVE`` is the pin that DEMANDED this
+# edit rather than tolerating a dead entry — *"if a caller was renamed, rename it here"*.
+_DOCUMENTED_SELF_ATTRIBUTING = frozenset({"bootstrap_session", "_run_verified_transaction"})
 
 
 def _prose_liars(prose: str, audited: frozenset[str], unlabelled: set[str]) -> list[str]:
