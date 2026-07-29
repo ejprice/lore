@@ -135,6 +135,31 @@ WHAT THIS FILE DOES NOT PIN
 * Concurrency.  A racing writer between the candidate read and the blocker read is a real
   TOCTOU for any two-read rewrite; a contract pin is the wrong instrument (≥8-way × 20
   consecutive green runs).  Flagged in the report, NOT silently dropped.
+
+============================================================================
+LEG 1 — WHERE THE SCOPE DIFF FOR THIS FILE'S SURFACE LIVES (added wave r6, 2026-07-28)
+============================================================================
+
+``CLAUDE.md`` § *TRUST — THE HARD DEFINITION* leg 1 asks *"what question did I actually
+answer, and is it the one the consumer thinks they asked?"*  **The row for
+``query_tasks(status=…, owner=…, blocked=…, limit=…)`` lives in ``test_blocks_edge.py``'s
+module docstring**, with the packet's other six surfaces, so the diff can be read as one
+table rather than as fragments.  This pointer exists because a reader who opens the #253
+addendum ALONE would otherwise meet no scope diff at all (delta adversary §LEG1).
+
+Two things that row says which belong in this file's own head:
+
+* the NAMED differences are the one-hop-not-transitive partition and the
+  answer-cap-not-scan-cap semantics — pinned by
+  :class:`TestTheBlockedPartitionIsONEHOPNeverTransitive` and
+  :class:`TestTheCapAppliesToTheANSWERNotTheCandidateScan`;
+* an UNNAMED one remains and is 04b-2's to close: a capped listing is byte-identical to a
+  complete one, MEASURED — see HOLE 8 and
+  :class:`TestACappedListingDISCLOSESNothingAboutItsOwnBOUND` at the foot of this file.
+
+⚠ Leg 1 is sound on *set* and *predicate-as-WRITTEN* only — time, environment and
+*predicate-as-EXECUTED* are BELIEVED, not known (#24 · #107 · #131 · #139).  Only leg 2's
+constructions (HOLE 7, HOLE 8) are claims about what the code DOES.
 """
 
 from __future__ import annotations
@@ -1243,37 +1268,25 @@ class TestTheCapAppliesToTheANSWERNotTheCandidateScan:
         unblocked-and-matching population — which every leg asserts against rather than
         recomputing, because a fixture that silently produced a different population would
         turn a discrimination into a tautology.
+
+        ⚠ **The seeding itself is SHARED, not cloned** (wave r6, repo law #102): the same
+        sandwich has to be built against the DOUBLE as well, because a fake whose ``limit``
+        is never exercised teaches a contract it is never held to (delta adversary §PINS-6).
+        ``_task_fakes.seed_answer_cap_sandwich`` is the one implementation; this method binds
+        it to a live ledger and to THIS file's constants, which the probability analysis in
+        the class docstring is computed from.
         """
-        from loremaster.tasks import TaskSpec
+        from _task_fakes import seed_answer_cap_sandwich
 
         ledger, env = await _fresh_ledger()
-        root = await ledger.create_task(
-            "the root blocker, which is itself unblocked", DESCRIPTION, created_by=CREATOR
-        )
-
-        async def _blocked_noise(tag: str) -> None:
-            await ledger.create_many(
-                [
-                    TaskSpec(
-                        subject=f"blocked backlog item {tag}-{index}",
-                        description=DESCRIPTION,
-                        blocked_by=[root],
-                    )
-                    for index in range(_BLOCKED_NOISE_EACH_SIDE)
-                ],
-                created_by=CREATOR,
-            )
-
-        await _blocked_noise("before")
-        await ledger.create_many(
-            [
-                TaskSpec(subject=f"claimable backlog item {index}", description=DESCRIPTION)
-                for index in range(_ANSWER_CAP)
-            ],
+        root, true_answer_size = await seed_answer_cap_sandwich(
+            ledger,
+            blocked_each_side=_BLOCKED_NOISE_EACH_SIDE,
+            unblocked_filling=_ANSWER_CAP,
             created_by=CREATOR,
+            description=DESCRIPTION,
         )
-        await _blocked_noise("after")
-        return ledger, env, root, _ANSWER_CAP + 1  # + the root, which is unblocked too
+        return ledger, env, root, true_answer_size
 
     async def test_a_capped_BLOCKED_query_serves_the_FULL_cap_when_the_answer_is_bigger(
         self,
@@ -1941,3 +1954,156 @@ class TestNoTOTALIsServedThatWasNotMEASURED:
         finally:
             await ledger.close()
             await drop_database(env)
+
+
+# =========================================================================== #
+# HOLE 8 — THE CAPPED LISTING'S OWN SCOPE, MEASURED AND PINNED AS A BOUND
+# (added 2026-07-28, wave r6, on the delta adversary's §LEG1 row 2 and §PINS-5).
+#
+# ``CLAUDE.md`` § TRUST — THE HARD DEFINITION, **leg 2**: *"CONSTRUCT each state and
+# byte-diff the served response against the healthy one. **Identical bytes = a false clear
+# = STOP.**"*  And § THE CONSUMER LAW: *"lore's clients are AGENTS … every served surface is
+# read by an LLM that learns the contract FROM what is served."*
+#
+# ⚠⚠ **MEASURED LIVE, INSIDE THE PACKET THAT RULED T1** (delta adversary §LEG1 row 2):
+# ``lore_tasks action=query limit=5`` against a ledger holding 40 matching tasks renders
+# FIVE rows and **nothing saying the listing is partial**.  An agent that acts on it without
+# checking concludes the ledger holds five open tasks — wrong in a way the response did not
+# name, which is the hard definition's failure condition verbatim.  Ruling **T1** is titled
+# *"NO SILENT SHORT ANSWERS"*; ruling **R9** rules the counted-elision grammar
+# (*"+K more — re-run with limit=N"*).  Neither is served here.
+#
+# ⚠ **WHY IT IS PINNED AS A BOUND RATHER THAN CLOSED: the RENDER IS NOT 04b-1's.**
+# ``server.py`` is 04b-2's file; R5 (one dispatcher line) and R6 (the cycle policy) are the
+# only named exceptions, and this contract's author may not widen them.  The render half of
+# T1 and the whole of R9's elision line were routed to 04b-2 by an earlier wave
+# (``TestTheCapAppliesToTheANSWERNotTheCandidateScan``'s second leg says so in its own
+# docstring), and 04b-1 DOES NOT DEPLOY — 04b-2 ships it — so no consumer meets this
+# surface before the packet that owes the line.
+#
+# **OWNER: 04b-2.  NAMED DECISION POINT: the wave that builds R9's elision line.**
+# The escalation is `REPORT-contractfix-04b1-r6.md` §ESC-5 — the operator may instead widen
+# 04b-1's writable set by one render, which is the alternative written down there.
+#
+# GREEN at ``b8607c4`` and it asserts a MISS: it goes RED the day the disclosure lands.
+# =========================================================================== #
+
+#: The population a capped listing is drawn from in the false-clear construction, and the
+#: population that same listing would be COMPLETE over.  ``_ANSWER_CAP`` is reused rather
+#: than re-chosen: the two worlds must ask the identical question, and a second cap constant
+#: is a second thing to keep in step.
+_PARTIAL_WORLD_POPULATION = 40
+
+#: Every row in both worlds carries this subject, so the two renders differ ONLY in the
+#: opaque ids — which :func:`_normalise_task_render` then removes.  A fixture whose rows
+#: carried distinct subjects could not be byte-compared at all, and the comparison is the
+#: whole instrument.
+_IDENTICAL_SUBJECT = "claimable backlog item"
+
+
+def _normalise_task_render(rendered: str) -> str:
+    """A rendered task listing with every opaque id replaced by a fixed placeholder.
+
+    The ONLY normalisation applied, and it is the minimum the comparison needs: two
+    ledgers mint different ``uuid4`` ids, so an un-normalised byte-diff would report a
+    difference that says nothing about scope.  Everything else — row count, row text,
+    ordering markers, any disclosure line a build adds — survives verbatim, which is what
+    makes an *identical* result meaningful rather than manufactured.
+    """
+    import re
+
+    return re.sub(r"[0-9a-f]{32}", "<id>", rendered)
+
+
+class TestACappedListingDISCLOSESNothingAboutItsOwnBOUND:
+    """**GREEN at ``b8607c4``, and it asserts a MISS.**  A PINNED BOUND in the
+    *"when you cannot close a hole, pin it"* sense (``CLAUDE.md``, #137/#138) — the hole is
+    real, it is MEASURED here rather than argued, and closing it is 04b-2's render.
+
+    ⚠ **THIS IS A FALSE CLEAR IN THE LAW'S LITERAL SENSE, NOT AN ANALOGY.**  Two genuinely
+    different worlds — a ledger of 40 matching tasks capped to 5, and a ledger holding
+    exactly 5 — serve **byte-identical responses** once the opaque ids are normalised away.
+    The law's stopping rule for that is unambiguous: *"Identical bytes = a false clear =
+    STOP."*  What this class can do, from inside a contract that does not own the render, is
+    make the false clear IMPOSSIBLE TO INHERIT SILENTLY: it is constructed, dated, named, and
+    it reddens the moment anybody fixes it.
+
+    **IF YOU CLOSED IT DELIBERATELY, DELETE THIS CLASS AND SAY SO IN YOUR WAVE REPORT.**
+    Do not weaken it, and do not satisfy it by adding a disclaimer — a bound is a FACT
+    (*"showing the 5 you asked for; there may be more"* needs no count and no extra read),
+    never *"results may be incomplete"*, which names nothing and licenses nothing narrower.
+
+    ⚠ **STATED BOUND ON THIS CLASS ITSELF:** it compares the two renders and nothing else.
+    It does not assert what the disclosure should SAY — R9 already rules that
+    (*"+K more — re-run with limit=N"*, fed by a store-side count) and inventing a second
+    grammar here would be a C-DEF against the packet that owns it.
+    """
+
+    @staticmethod
+    async def _rendered_listing(population: int, *, limit: int | None) -> str:
+        """The tool seam's rendered answer for a ledger of ``population`` identical tasks."""
+        from loremaster.tasks import TaskSpec
+
+        ledger, env = await _fresh_ledger()
+        try:
+            await ledger.create_many(
+                [
+                    TaskSpec(subject=_IDENTICAL_SUBJECT, description=DESCRIPTION)
+                    for _index in range(population)
+                ],
+                created_by=CREATOR,
+            )
+            return str(await _tool_seam(ledger).tasks(action="query", limit=limit))
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_KNOWN_BOUND_a_CAPPED_listing_is_INDISTINGUISHABLE_from_a_COMPLETE_one(
+        self,
+    ) -> None:
+        """⛔ The construction.  Two worlds, one response."""
+        partial = await self._rendered_listing(_PARTIAL_WORLD_POPULATION, limit=_ANSWER_CAP)
+        complete = await self._rendered_listing(_ANSWER_CAP, limit=_ANSWER_CAP)
+        # ⚠ ROW lines only, and that is not cosmetic. A guard counting EVERY line would fire
+        # FIRST on a build that closed the bound — reporting "the construction drifted" at a
+        # builder whose only crime was adding the disclosure this class is waiting for. A
+        # failure message that misnames what happened is the false-gate class (repo law, P2);
+        # MEASURED here, on the very mutation that closes the hole.
+        rendered_rows = [line for line in partial.splitlines() if line.startswith("- ")]
+        assert len(rendered_rows) == _ANSWER_CAP, (
+            f"the capped world rendered {len(rendered_rows)} task rows where the cap is "
+            f"{_ANSWER_CAP}; the construction did not produce the state it is named after, "
+            f"so the comparison below measures nothing. rendered={partial!r}"
+        )
+        assert _normalise_task_render(partial) == _normalise_task_render(complete), (
+            f"a listing CAPPED out of {_PARTIAL_WORLD_POPULATION} matching tasks is no "
+            f"longer byte-identical to a COMPLETE listing of {_ANSWER_CAP} — which means "
+            f"the served surface now discloses its own bound, and the KNOWN BOUND this pin "
+            f"asserts is CLOSED. ✅ That is the ruled behaviour (T1: 'NO SILENT SHORT "
+            f"ANSWERS'; R9: the counted-elision line): DELETE this class and say so in your "
+            f"wave report. Do NOT re-point it at the new render — this pin exists only to "
+            f"stop the hole being inherited silently.\n"
+            f"partial={_normalise_task_render(partial)!r}\n"
+            f"complete={_normalise_task_render(complete)!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_comparison_CAN_see_a_difference(self) -> None:
+        """⛔ Without this, the leg above is satisfied by a normaliser that flattens
+        everything — the probe passing for the WRONG REASON, which this repo has receipts
+        against (a 'closed set is enforced' probe that actually rejected on a parse error).
+
+        So: a world whose answer is genuinely SHORTER renders differently through the very
+        same normaliser.  The instrument can see row-count differences; what it cannot see
+        in the leg above is a difference that is not there.
+        """
+        complete = await self._rendered_listing(_ANSWER_CAP, limit=_ANSWER_CAP)
+        shorter = await self._rendered_listing(_ANSWER_CAP - 1, limit=_ANSWER_CAP)
+        assert _normalise_task_render(complete) != _normalise_task_render(shorter), (
+            f"the normaliser reports a {_ANSWER_CAP}-row listing and a "
+            f"{_ANSWER_CAP - 1}-row listing as identical, so it cannot see ANY difference "
+            f"and the leg above proves nothing: {_normalise_task_render(complete)!r}"
+        )
+        assert len(shorter.splitlines()) == _ANSWER_CAP - 1, (
+            f"the shorter world rendered {len(shorter.splitlines())} lines, not "
+            f"{_ANSWER_CAP - 1}; the control's own fixture drifted"
+        )

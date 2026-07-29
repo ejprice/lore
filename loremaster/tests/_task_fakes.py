@@ -556,3 +556,89 @@ class FakeTaskLedger:
             {"actor": created_by, "action": "supersede", "successor": new_id, "at": now.isoformat()}
         )
         return new_id
+
+
+# --------------------------------------------------------------------------- #
+# THE ANSWER-CAP SANDWICH — ONE seeder, called by BOTH suites that pin ruling T1.
+#
+# Repo law #102 / brief-base §6: *"if two call sites need the same POLICY, it is a FUNCTION
+# THEY CALL — never a pattern they clone."*  The sandwich is policy, not trivia: its SHAPE
+# (blocked noise / unblocked filling / blocked noise) is what makes T1's discrimination
+# deterministic under insertion order AND reverse-insertion order instead of merely
+# improbable, and its sizes are what the caller's probability analysis is computed from.  A
+# second copy would be a second thing to keep in step with that analysis.
+#
+# It lives HERE — beside the double rather than beside either suite — because the two
+# callers are ``test_query_tasks_bounded.py`` (the REAL ledger only) and
+# ``test_task_ledger.py`` (parametrised over the real ledger AND ``FakeTaskLedger``), and
+# this is the one module both may import without dragging a SurrealDB dependency into the
+# fake-only legs.  It is ledger-AGNOSTIC by construction: it touches ``create_task`` and
+# ``create_many`` and nothing else, so the same seeding runs against either implementation.
+#
+# ⚠ Sharing is provable by MUTATION, which is the only proof that distinguishes DRY from
+# looks-DRY: change ``blocked_each_side`` at a call site, or break this function, and pins
+# in BOTH suites move.
+# --------------------------------------------------------------------------- #
+
+
+async def seed_answer_cap_sandwich(
+    ledger: Any,
+    *,
+    blocked_each_side: int,
+    unblocked_filling: int,
+    created_by: str,
+    description: str,
+    root_subject: str = "the root blocker, which is itself unblocked",
+    blocked_subject: str = "blocked backlog item",
+    filling_subject: str = "claimable backlog item",
+) -> tuple[str, int]:
+    """Seed ``ledger`` with blocked noise, unblocked filling, then blocked noise again.
+
+    The unblocked population is therefore a SANDWICH FILLING rather than a prefix or a
+    suffix of insertion order — which is what a cap-applied-to-the-candidate-scan build has
+    to survive, and cannot, under either insertion order or its reverse.
+
+    Args:
+        ledger: Any ledger exposing ``create_task`` and ``create_many`` — the real
+            :class:`~loremaster.tasks.TaskLedger` or :class:`FakeTaskLedger`.
+        blocked_each_side: Blocked noise rows seeded BEFORE and again AFTER the filling.
+        unblocked_filling: Unblocked rows in the middle.
+        created_by: Provenance for every row.
+        description: Body text for every row.
+        root_subject: Subject of the single shared blocker (itself unblocked).
+        blocked_subject: Subject prefix for the noise rows.
+        filling_subject: Subject prefix for the filling rows.
+
+    Returns:
+        ``(root_blocker_id, true_unblocked_population)`` — the second being
+        ``unblocked_filling + 1``, because the root blocker is unblocked too and every
+        caller asserts against it rather than recomputing it (a fixture that silently
+        produced a different population turns a discrimination into a tautology).
+    """
+    from loremaster.tasks import TaskSpec
+
+    root = await ledger.create_task(root_subject, description, created_by=created_by)
+
+    async def _blocked_noise(tag: str) -> None:
+        await ledger.create_many(
+            [
+                TaskSpec(
+                    subject=f"{blocked_subject} {tag}-{index}",
+                    description=description,
+                    blocked_by=[root],
+                )
+                for index in range(blocked_each_side)
+            ],
+            created_by=created_by,
+        )
+
+    await _blocked_noise("before")
+    await ledger.create_many(
+        [
+            TaskSpec(subject=f"{filling_subject} {index}", description=description)
+            for index in range(unblocked_filling)
+        ],
+        created_by=created_by,
+    )
+    await _blocked_noise("after")
+    return root, unblocked_filling + 1

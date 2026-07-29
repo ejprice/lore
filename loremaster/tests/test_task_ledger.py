@@ -547,6 +547,131 @@ class TestQueryTasks:
         assert await task_ledger.query_tasks(owner=AGENT_A) == []
 
 
+#: The cap the ``limit`` legs below ask for, and the blocked noise on each side of the
+#: unblocked filling.  Both are SEPARATE constants from ``test_query_tasks_bounded.py``'s
+#: on purpose: that file's probability analysis is computed from ITS numbers, and a shared
+#: constant would silently re-open its argument the day someone tuned this suite's cost.
+#: The SHAPE is shared (``_task_fakes.seed_answer_cap_sandwich``); the sizes are each
+#: caller's own.
+_LIMIT_CAP = 5
+_LIMIT_BLOCKED_NOISE_EACH_SIDE = 30
+
+
+class TestQueryTasksHonoursTheLIMIT:
+    """Ruling **R5**/**T1**'s cap, pinned against **BOTH** the real ledger and the DOUBLE.
+
+    ⚠⚠ **THE DOUBLE WAS TEACHING A CONTRACT IT WAS NEVER HELD TO** (delta adversary
+    §PINS-6, measured 2026-07-28).  ``_task_fakes.FakeTaskLedger.query_tasks`` gained a
+    ``limit`` parameter and a slice — and its docstring teaches *"THE CAP APPLIES TO THE
+    ANSWER, NEVER TO THE CANDIDATE SCAN"* — while **deleting the slice entirely left
+    ``test_mcp_server.py`` + ``test_task_ledger.py`` at 875 passed / 0 failed**.  The loss
+    was directional: the two pins that had driven ``tasks(action="query", limit=5)`` were
+    re-pointed to ``action="create"`` in the same wave, so the ``[fake]`` seam LOST its only
+    ``limit`` coverage and GAINED an unexercised slice.  A control proves the parametrisation
+    is not decoration in general — deleting the fake's ``status`` filter reddens two pins —
+    so what was missing was a pin, not a mechanism.
+
+    ⚠ **STATED BOUND, and it is inherited from the surface, not invented here.**
+    ``query_tasks`` promises NO ordering (the fake deliberately reorders to prove it), so
+    the *short-answer* direction of T1 — a candidate-cap build spending its window on rows
+    the ``blocked`` filter then drops — is deterministic under insertion order and its
+    reverse, and PROBABILISTIC under record-id order: ``C(6,5)/C(66,5)`` ≈ 7e-7 per run with
+    these sizes.  That is the same analysis ``test_query_tasks_bounded.py::
+    TestTheCapAppliesToTheANSWERNotTheCandidateScan`` states for the live ledger, and it is
+    restated rather than assumed because these constants differ from that file's.
+    """
+
+    @staticmethod
+    async def _sandwich(ledger: TaskLedger) -> tuple[str, int]:
+        """Seed the answer-cap sandwich on ``ledger``; returns ``(root, true_population)``.
+
+        ONE seeder, shared with ``test_query_tasks_bounded.py`` (repo law #102) — see
+        ``_task_fakes.seed_answer_cap_sandwich``.  Sharing is provable by MUTATION: break
+        that function and pins in BOTH suites move.
+        """
+        from _task_fakes import seed_answer_cap_sandwich
+
+        return await seed_answer_cap_sandwich(
+            ledger,
+            blocked_each_side=_LIMIT_BLOCKED_NOISE_EACH_SIDE,
+            unblocked_filling=_LIMIT_CAP,
+            created_by=CREATOR,
+            description=DESCRIPTION_LEDGER,
+        )
+
+    async def test_the_limit_WINDOWS_the_answer(self, task_ledger: TaskLedger) -> None:
+        """⛔ The leg that kills *"the parameter is accepted and ignored"* — the mutation the
+        adversary ran (delete the fake's slice) and the whole contract stayed green.
+
+        Deterministic on both backends: the population is strictly larger than the cap, so
+        *"served exactly the cap"* and *"served everything"* are different numbers whatever
+        the ordering.
+        """
+        await self._sandwich(task_ledger)
+        population = len(await task_ledger.query_tasks())
+        assert population > _LIMIT_CAP, (
+            f"the sandwich left {population} tasks, not more than the cap of {_LIMIT_CAP}; "
+            f"a windowed answer and a whole answer are the same size here, so this leg "
+            f"discriminates nothing"
+        )
+        capped = await task_ledger.query_tasks(limit=_LIMIT_CAP)
+        assert len(capped) == _LIMIT_CAP, (
+            f"query_tasks(limit={_LIMIT_CAP}) served {len(capped)} of {population} tasks. "
+            f"The cap is not being applied at all — a parameter accepted and ignored is "
+            f"worse than one refused, because the caller believes it bounded its answer"
+        )
+
+    async def test_the_cap_applies_to_the_ANSWER_never_to_the_CANDIDATE_scan(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        """⛔ Ruling **T1** at the LEDGER layer, on both backends.
+
+        The ``blocked`` partition is decided over the candidate set, so a build that caps
+        candidates first spends the caller's window on rows it then drops — and serves a
+        short answer with no signal.  Every served row must also MATCH: a build that caps
+        first and back-fills from the wrong side would pass a pure count assertion.
+        """
+        await self._sandwich(task_ledger)
+        unlimited = {task.id for task in await task_ledger.query_tasks(blocked=False)}
+        assert len(unlimited) > _LIMIT_CAP, (
+            f"only {len(unlimited)} tasks are unblocked, which does not exceed the cap of "
+            f"{_LIMIT_CAP}; the sandwich did not come out as intended"
+        )
+        capped = await task_ledger.query_tasks(blocked=False, limit=_LIMIT_CAP)
+        assert len(capped) == _LIMIT_CAP, (
+            f"query_tasks(blocked=False, limit={_LIMIT_CAP}) served {len(capped)} tasks "
+            f"while {len(unlimited)} genuinely qualify. The cap was applied to the CANDIDATE "
+            f"SCAN, so rows the `blocked` filter then dropped were spent out of the caller's "
+            f"budget — and the caller is told nothing (ruling T1: NO SILENT SHORT ANSWERS). "
+            f"Keep drawing candidates until the cap fills or the scan is exhausted"
+        )
+        assert {task.id for task in capped} <= unlimited, (
+            f"the capped answer is not a SUBSET of the uncapped one — it served "
+            f"{sorted({task.id for task in capped} - unlimited)}, which the same query "
+            f"without a cap does not. A cap must window an answer, never change it"
+        )
+
+    async def test_POSITIVE_CONTROL_the_sandwich_really_holds_blocked_rows(
+        self, task_ledger: TaskLedger
+    ) -> None:
+        """⛔ Both legs above rest on the noise being genuinely BLOCKED.  If it were not, a
+        candidate-cap build would never spend its window on it and the T1 leg would pass
+        while the defect stayed wide open.
+        """
+        root, true_population = await self._sandwich(task_ledger)
+        blocked = await task_ledger.query_tasks(blocked=True)
+        expected_noise = 2 * _LIMIT_BLOCKED_NOISE_EACH_SIDE
+        assert len(blocked) == expected_noise, (
+            f"{len(blocked)} rows are blocked where the sandwich seeded {expected_noise}; "
+            f"the noise is not blocked, so nothing above discriminates. root={root!r}"
+        )
+        unblocked = await task_ledger.query_tasks(blocked=False)
+        assert len(unblocked) == true_population, (
+            f"{len(unblocked)} rows are unblocked where the seeder reports "
+            f"{true_population}; the fixture and its own return value disagree"
+        )
+
+
 class TestAtomicClaim:
     """The compare-and-set claim: succeeds ONLY from open/unowned/unblocked; a
     losing claim is a RESULT (claimed=False + current state), never an exception,

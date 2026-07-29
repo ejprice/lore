@@ -66,35 +66,96 @@ identical bytes = a false clear = STOP).
 the code actually answers (set / predicate / time) beside the question a consumer thinks
 it asked.  A row with a difference names where that difference is carried.
 
+⚠⚠ **ROWS 1 AND 2 WERE MEASURABLY FALSE AS FIRST WRITTEN, AND THE CORRECTIONS ARE THE
+INTERESTING PART** (delta adversary §LEG1, 2026-07-28; both re-derived here).  Row 1 said the
+edge-vs-column difference was *"CLOSED"* — a one-word claim about a whole set, contradicted by
+two builds that pass this contract entire (§P1 WB-E, WB-O).  Row 2 said *"no unnamed difference
+remains"* — contradicted by a live measurement.  **Leg 1 is a claim about the RESPONSE, so a
+row may state only what the response is TRUE of; where a guarantee depends on something having
+happened, the row names that something as a FACT rather than asserting the difference away.**
+
 * ``transitive_blockers(task_id)``
-  — **answers:** *"the tasks reachable UPSTREAM over ``blocks`` EDGES from this task, to a
-  depth of at most ``max_depth_used``, as of this read."*
+  — **answers:** *"the tasks reachable UPSTREAM over the ``blocks`` EDGES **this ledger's last
+  completed ``ensure_ready`` mirrored**, from this task, to a depth of at most
+  ``max_depth_used``, **at this ledger**, as of this read."*
   — **asked:** *"what blocks this task?"*
   — **DIFFERENCES, and where each is carried:** (a) *edges vs the ``blocked_by`` COLUMN* —
-  **CLOSED by ruling R11's backfill**, and pinned as an AGREEMENT in SECTION K rather than
-  disclosed in the render; before R11 this was the packet's worst defect (sidecar S3), a
-  confident ``ids=[] truncated=False`` on production's actual rows.  (b) *the depth bound*
-  — carried by ``truncated`` + ``max_depth_used`` on the result itself
-  (``TestTheReadIsHONESTAtItsBound``, ``TestTheResultIsSELFDESCRIBING``).  (c) *a
-  ``blocked_by`` entry that names NO task row* — a PHANTOM, which ``ENFORCED`` forbids as
-  an edge and R11's backfill therefore SKIPS; the residue is legacy-only (new writes are
-  refused by the pre-check) and is carried by the helper's own docstring
-  (``TestTheScopeOfTheTransitiveReadIsSTATED``).
+  R11's backfill is what makes the two agree, and the agreement is pinned in SECTION K
+  (``TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS``) rather than disclosed in the render.  ⚠ The
+  predicate above says *"a COMPLETED migration"* because a migration that ran PARTIALLY, or
+  failed and was swallowed, re-opens this difference exactly — a confident
+  ``ids=[] truncated=False`` on production's real rows, which is sidecar S3, the packet's worst
+  defect.  Those two states are now CONSTRUCTED, not argued
+  (``TestTheBackfillCoversALegacyStoreLARGERThanEveryOtherFIXTURE``,
+  ``TestANYBackfillFailureMakesEnsureReadyLOUD``).  (b) *the depth bound* — carried by
+  ``truncated`` + ``max_depth_used`` on the result itself (``TestTheReadIsHONESTAtItsBound``,
+  ``TestTheResultIsSELFDESCRIBING``).  (c) *a ``blocked_by`` entry that names NO task row* — a
+  PHANTOM, which ``ENFORCED`` forbids as an edge and R11's backfill therefore SKIPS; the
+  residue is legacy-only (new writes are refused by the pre-check) and is carried by the
+  helper's own docstring (``TestTheScopeOfTheTransitiveReadIsSTATED``).  (d) *a mis-set
+  ``database``* serves the same bytes from a different store — named by *"at this ledger"*,
+  the treatment row 3 already had and this row did not.
 * ``query_tasks(status=…, owner=…, blocked=…, limit=…)``
   — **answers:** *"tasks matching the store-side filters, partitioned by a ONE-HOP blocked
   predicate resolved against the candidate set's blockers, windowed to ``limit`` ANSWERS."*
   — **asked:** *"what work matches this?"*
-  — **DIFFERENCES:** the one-hop-not-transitive partition and the answer-cap-not-scan-cap
-  semantics, both pinned in ``test_query_tasks_bounded.py``
+  — **NAMED DIFFERENCES:** the one-hop-not-transitive partition and the
+  answer-cap-not-scan-cap semantics, both pinned in ``test_query_tasks_bounded.py``
   (``TestTheBlockedPartitionIsONEHOPNeverTransitive``,
-  ``TestTheCapAppliesToTheANSWERNotTheCandidateScan``).  No unnamed difference remains.
+  ``TestTheCapAppliesToTheANSWERNotTheCandidateScan``).
+  — ⚠ **AN UNNAMED DIFFERENCE REMAINS, AND IT IS THE ONE A CONSUMER ACTUALLY MEETS.**
+  MEASURED 2026-07-28: ``lore_tasks action=query limit=5`` against a ledger of 40 matching
+  tasks renders five rows and **nothing saying the listing is partial** — nor which five (this
+  contract deliberately pins no ORDER, so the choice is arbitrary and unstable).  The reader is
+  an AGENT; one that acts without checking concludes the ledger holds five open tasks, which
+  is wrong in a way the response did not name.  **It is a RENDER, and the render is 04b-2's**
+  (T1's rendered half + R9's counted-elision line), so 04b-1 pins the false clear as a BOUND
+  rather than closing it: ``test_query_tasks_bounded.py::
+  TestACappedListingDISCLOSESNothingAboutItsOwnBOUND`` constructs both worlds and reddens the
+  day the disclosure lands.  Owner **04b-2**; escalation §ESC-5 of
+  ``REPORT-contractfix-04b1-r6.md``.
 * the blocker pre-check refusal — **answers:** *"these ids name no LIVE task row at this
   ledger, as of the check"*; **asked:** *"is this dependency valid?"*  Difference: a
   SUPERSEDED blocker exists but is never legitimate, and is named separately with its
   successor (R10(ii), ``TestASupersededBlockerIsNotASilentBlackHole``).
+  ⚠ **This row is the model for the other four** — *"at this ledger"* names the wrong-instance
+  difference (a mis-set ``database`` serves the same bytes) and *"as of the check"* names the
+  TOCTOU window, both as FACTS, with no disclaimer word anywhere.  Do not weaken it.
 * the ``send`` sender guard — **answers:** *"this sender id names no ``agent`` row"*, in the
   message ledger's OWN vocabulary (E-4), so a refusal cannot be misread as being about a
   recipient.
+* the **cycle refusal** (``format_cycle_refusal`` / ``TaskCycleError``)
+  — **answers:** *"these ids close a cycle in the ``blocked_by`` COLUMN, over the rows this
+  guard read, as of that read."*
+  — **asked:** *"why was my create refused?"*
+  — **DIFFERENCES:** (a) it walks the COLUMN, so a cycle present only in the EDGES is invisible
+  to it — which is a difference and not a defect, because R7's rider establishes that the
+  closing dependency of a cycle CANNOT carry an edge; (b) the batch-KEY and PERSISTED-ID
+  vocabularies deliberately differ (R6 permits it: *"the vocabularies may still differ because
+  they name different things"*), so the ids in the refusal are the ids of the world the caller
+  addressed, never a translation.
+* the **migration's operator record** (the WARNING stream: phantom skips and legacy cycles)
+  — **answers:** *"the phantom blockers this boot skipped, and every ``blocked_by`` cycle it
+  mirrored, in the rows this boot read."*
+  — **asked:** *"what is wrong with my store?"*
+  — **DIFFERENCE, and it was a real hole:** it is per-BOOT and per-READ, not a survey of the
+  store; and it used to name only the FIRST cycle, which is a claim about one loop read as a
+  claim about the store's loops.  Now ∀ cycles
+  (``TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST``), with the decomposition bound stated
+  there.  The record's consumer is the OPERATOR (ESC-1 reading A); the AGENT-facing bound is
+  the read surface's own scope statement, which is a separate row above.
+* ``ensure_ready()``'s **normal return**
+  — **answers:** *"the task schema is applied and every ``blocked_by`` column this boot read
+  is mirrored onto ``blocks``."*
+  — **asked, by the booting service:** *"is this store migrated?"*
+  — **DIFFERENCE:** none is carried, and none needs to be — **because the claim is enforced
+  rather than disclosed**: any failure of the backfill, at ANY of its doors, makes the call
+  RAISE (``TestANYBackfillFailureMakesEnsureReadyLOUD``, ∀ over
+  ``BACKFILL_FAILURE_DOORS``), and the coverage is ∀ rows rather than ∀ rows-up-to-a-fixture
+  (``TestTheBackfillCoversALegacyStoreLARGERThanEveryOtherFIXTURE``).  ⚠ Both pins exist
+  **because a build that returned normally over a silently absent edge set passed this
+  contract whole** (WB-O, 234 passed / 0 failed) — this row would have been false, and no pin
+  could see it.
 
 ⚠ **LEG 1'S OWN STATED BOUND, from the law:** it is sound on *set* and
 *predicate-as-WRITTEN* only — **time, environment and predicate-as-EXECUTED are BELIEVED,
@@ -1997,7 +2058,126 @@ class TestCreateRefusesToFormACycle:
             await ledger.close()
             await drop_database(env)
 
-    async def test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_size_of_the_LEDGER(
+    @staticmethod
+    async def _blocked_noise_traffic(blocked_pair_count: int) -> tuple[StoreTraffic, int]:
+        """Traffic for ONE ``create_many`` against a ledger of ``blocked_pair_count``
+        DEPENDENCY-BEARING rows that have nothing to do with the dependency under check.
+
+        The sibling helper above seeds UNBLOCKED noise, which is exactly the population the
+        write guard's own read excludes (``WHERE array::len(blocked_by) > 0``).  This one
+        seeds the population it INCLUDES: ``blocked_pair_count`` blockers and one dependent
+        each, so the guard's filtered read genuinely grows.
+        """
+        from loremaster.tasks import TaskSpec
+
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        ledger = TaskLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        try:
+            await ledger.ensure_ready()
+            noise_blockers = await ledger.create_many(
+                [
+                    TaskSpec(subject=f"noise blocker {index}", description=DESCRIPTION)
+                    for index in range(blocked_pair_count)
+                ],
+                created_by=CREATOR,
+            )
+            await ledger.create_many(
+                [
+                    TaskSpec(
+                        subject=f"noise dependent {index}",
+                        description=DESCRIPTION,
+                        blocked_by=[blocker],
+                    )
+                    for index, blocker in enumerate(noise_blockers)
+                ],
+                created_by=CREATOR,
+            )
+            blocker = await ledger.create_task(
+                "a real blocker", DESCRIPTION, created_by=CREATOR
+            )
+            created: list[str] = []
+
+            async def _run() -> None:
+                created.extend(
+                    await ledger.create_many(
+                        [
+                            TaskSpec(
+                                subject=SUBJECT,
+                                description=DESCRIPTION,
+                                blocked_by=[blocker],
+                            )
+                        ],
+                        created_by=CREATOR,
+                    )
+                )
+
+            traffic = await measure_store_traffic(ledger, _run)
+            return traffic, len(created)
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population(
+        self,
+    ) -> None:
+        """**GREEN at ``b8607c4``, and it asserts a MISS.**  ⛔ **#253's residue on the write
+        path, PINNED rather than left for the next auditor to rediscover from an incident.**
+
+        ``CLAUDE.md`` § *WHEN YOU CANNOT CLOSE A HOLE, PIN IT*: *"an unpinned known limitation
+        is indistinguishable from an unknown one."*  Its sibling leg below measures growth
+        against the UNBLOCKED population — which is precisely the population the guard's own
+        ``WHERE array::len(blocked_by) > 0`` excludes — so nothing in this contract had ever
+        varied the population the read actually returns.  MEASURED here and independently by
+        the delta adversary (§PINS-4): the guard reads ~one row per DEPENDENCY-BEARING row in
+        the ledger, whatever the new dependency is.
+
+        **THIS PIN GOES RED THE DAY SOMEONE CLOSES THE HOLE, and that is the point.**  If you
+        closed it deliberately, DELETE this pin and say so in your wave report — do not
+        weaken it, and do not widen its sibling to cover this axis without a ruling.
+
+        ⚠ **WHY IT IS A BOUND AND NOT SIMPLY A DEFECT — the design fork is REAL and is
+        escalated, not settled here** (`REPORT-contractfix-04b1-r6.md` §ESC-1).  R7's rider
+        forces the acyclicity guard to walk the ``blocked_by`` COLUMN client-side, because the
+        closing dependency of a cycle CANNOT carry an edge (``ENFORCED`` rejects a ``RELATE``
+        to a task that does not exist yet), so an engine traversal returns *"acyclic"*; and R7
+        puts that walk inside ONE round trip.  Whether a bound exists that satisfies both — an
+        ancestor-closure seed, say — is a DESIGN question, and a builder must not be handed
+        *"invent the general form"*.
+        **NAMED RE-OPEN TRIGGER:** the first ledger whose dependency-bearing population makes
+        a ``create_many`` measurably slow, or any ruling that supersedes R7's rider.
+        """
+        small, small_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_SMALL)
+        large, large_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_LARGE)
+        assert small_created == large_created == 1, (
+            f"the two measurements created {small_created} and {large_created} tasks; each "
+            f"must create the ONE item, or the comparison is between two different amounts "
+            f"of work"
+        )
+        assert small.rows > 0, (
+            f"the instrument counted ZERO rows for a create that landed a task — it is not "
+            f"observing this call path, so this bound is unmeasured rather than confirmed: "
+            f"{small}"
+        )
+        assert large.rows > small.rows, (
+            f"a create_many naming ONE blocker read {small.rows} rows against "
+            f"{UNRELATED_TASK_COUNT_SMALL} unrelated BLOCKED pairs and {large.rows} against "
+            f"{UNRELATED_TASK_COUNT_LARGE} — it did NOT grow, so the known bound this pin "
+            f"asserts no longer exists. ⚠ THIS IS A KNOWN BOUND (see this test's docstring "
+            f"and §ESC-1 of the r6 contract wave): the write-time acyclicity guard reads "
+            f"every dependency-bearing row on every create. If you CLOSED it deliberately, "
+            f"DELETE this pin and say so in your wave report — a bound that is pinned is a "
+            f"bound the next engineer meets deliberately, and one that is silently fixed "
+            f"leaves a pin nobody can interpret. small={small.statements} "
+            f"large={large.statements}"
+        )
+
+    async def test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population(
         self,
     ) -> None:
         """**GREEN at ``bfea1f8``, and GREEN after — the one leg of this class that is not
@@ -2024,9 +2204,20 @@ class TestCreateRefusesToFormACycle:
         THE DISCRIMINATION IS A GROWTH COMPARISON, never a threshold, for the reason its
         sibling states: a magic number is a fixture value a builder can tune until it passes.
 
+        ⚠⚠ **RENAMED 2026-07-28 (wave r6) — IT USED TO PROMISE "the size of the LEDGER" AND
+        MEASURE SOMETHING NARROWER, WHICH IS THE FALSE-GATE CLASS THIS REPO ALREADY NAMES.**
+        ``_seed_unrelated_tasks`` mints UNBLOCKED rows, and the guard's read is filtered
+        ``WHERE array::len(blocked_by) > 0`` — so the population this leg varies is exactly
+        the one the read EXCLUDES.  The old name and the old failure message both claimed a
+        ∀-ledger property the assertion cannot perform (*"a failure message that promises a
+        check the assertion does not perform is a false gate"*), and the residue is real:
+        against BLOCKED noise the read DOES grow, which is now asserted as a KNOWN BOUND by
+        :meth:`test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population`.
+        The two legs together are the honest statement of what this build does.
+
         ⚠ **STATED SCOPE:** the guard legitimately reads more rows for a DEEPER dependency
         chain — that is the answer's cost, not the ledger's — so the chain is held constant at
-        one hop and only the UNRELATED population varies.
+        one hop, and this leg varies ONLY the dependency-free population.
         """
         small, small_created = await self._create_many_traffic(UNRELATED_TASK_COUNT_SMALL)
         large, large_created = await self._create_many_traffic(UNRELATED_TASK_COUNT_LARGE)
@@ -2042,19 +2233,24 @@ class TestCreateRefusesToFormACycle:
         )
         assert large.rows == small.rows, (
             f"a create_many naming ONE blocker read {small.rows} rows against a ledger of "
-            f"{UNRELATED_TASK_COUNT_SMALL} unrelated tasks and {large.rows} against one of "
-            f"{UNRELATED_TASK_COUNT_LARGE}. The work is identical at both sizes, so the "
-            f"write path is scaling with the LEDGER — that is #253, on the WRITE side. The "
-            f"acyclicity walk must be bounded by the dependency graph it is walking, never "
-            f"seeded with the whole task table. ⚠ Do NOT fix this by moving the walk onto an "
-            f"ENGINE traversal of the blocks edge: the closing dependency of a cycle cannot "
-            f"carry an edge (see this class's docstring), so an engine detector returns "
-            f"'acyclic'. small={small.statements} large={large.statements}"
+            f"{UNRELATED_TASK_COUNT_SMALL} unrelated DEPENDENCY-FREE tasks and {large.rows} "
+            f"against one of {UNRELATED_TASK_COUNT_LARGE}. The work is identical at both "
+            f"sizes, so the write path is scaling with rows it does not even need to look "
+            f"at — a walk seeded with the whole task table (#253's shape, on the WRITE "
+            f"side). The acyclicity walk must at minimum be filtered to the "
+            f"dependency-BEARING rows. ⚠ This assertion measures the DEPENDENCY-FREE "
+            f"population ONLY; growth with the dependency-BEARING population is a separate, "
+            f"currently-OPEN bound asserted by "
+            f"test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population. "
+            f"⚠ Do NOT fix this by moving the walk onto an ENGINE traversal of the blocks "
+            f"edge: the closing dependency of a cycle cannot carry an edge (see this class's "
+            f"docstring), so an engine detector returns 'acyclic'. small={small.statements} "
+            f"large={large.statements}"
         )
         assert large.rows < UNRELATED_TASK_COUNT_LARGE, (
             f"the write path touched {large.rows} rows, at least as many as the "
-            f"{UNRELATED_TASK_COUNT_LARGE} unrelated tasks that have nothing to do with the "
-            f"dependency it was asked to check: {large.statements}"
+            f"{UNRELATED_TASK_COUNT_LARGE} unrelated dependency-free tasks that have nothing "
+            f"to do with the dependency it was asked to check: {large.statements}"
         )
 
 
@@ -7228,6 +7424,580 @@ class TestTheBackfillRoutesThroughTheSHAREDExistencePolicy:
         )
 
 
+#: The row count SECTION K's coverage pin seeds, **DERIVED from this file's own fixtures**
+#: rather than typed.
+#:
+#: ⚠⚠ **THE FIXTURE CEILING *WAS* THE DEFECT** (delta adversary §PINS-1, measured
+#: 2026-07-28 at ``0782450``).  Every legacy fixture in SECTION K topped out at
+#: :data:`LEGACY_BACKFILL_EDGES_LARGE` = 30 rows, so a backfill carrying a single
+#: ``LIMIT 50`` on its pending read passed the WHOLE contract — **234 passed / 0 failed** —
+#: while serving **10 of 60** legacy rows a confident ``ids=[] truncated=False`` that the
+#: claim CAS refuses.  That is sidecar S3's exact false clear, restored at a scale no
+#: fixture in this file reached.  ONE pin fired at ``LIMIT 25``, and only through its own
+#: *fixture-drift* guard — a check written for a different purpose.
+#:
+#: So the floor is computed from this file's row-count constants rather than typed: it RISES
+#: the day someone raises a fixture, and a hard-coded 61 that nobody re-derives cannot rot
+#: into a number a cap comes to sit just above.
+#:
+#: ⚠ **STATED BOUND ON THE FLOOR ITSELF, because a hand-list is the instrument shape this
+#: repo has the most receipts against.**  The ``max()`` below is a LIST of names, not a
+#: derivation over the module — so a future fixture constant that nobody adds here leaves the
+#: floor stale.  That bound is affordable ONLY because the floor is not what carries the
+#: discrimination: the pins below compare TWO sizes (``floor`` and ``2 × floor``) with an
+#: EXACT-SET assertion at each, so a cap tuned to pass at either dies at the other.  The floor
+#: decides where the comparison starts, never whether it can be tuned past — which is why it
+#: is deliberately not a threshold assertion (a magic number is a value a builder can tune
+#: until it passes; its sibling round-trip pin states the same reasoning).
+#: Constants surveyed 2026-07-28 by ``grep -nE '^[A-Z_]+ = [0-9]+'`` over this file: the only
+#: larger integer is ``ENGINE_RECURSION_CEILING`` (256), which is a DEPTH bound the engine
+#: imposes and never a seeded row population — excluded deliberately, not overlooked.
+_LARGEST_LEGACY_ROW_FIXTURE = max(
+    LEGACY_BACKFILL_EDGES_LARGE,
+    LEGACY_BACKFILL_EDGES_SMALL,
+    UNRELATED_TASK_COUNT_LARGE,
+    UNRELATED_TASK_COUNT_SMALL,
+    len(LEGACY_COLUMN_DAG) + 2,
+)
+LEGACY_BACKFILL_SCALE_FLOOR = _LARGEST_LEGACY_ROW_FIXTURE + 1
+
+
+class TestTheBackfillCoversALegacyStoreLARGERThanEveryOtherFIXTURE:
+    """GREEN at ``b8607c4``.  ⛔ **THE SCALE AXIS — the third monoculture this section had.**
+
+    Its siblings are ∀ over SHAPE (five of them), ∀ over blocker LIFECYCLE STATE and ∀ over
+    cycle ARITY.  **None of them is ∀ over SCALE**, and
+    :class:`TestTheTRANSITIVEReadAGREESWithTheCLAIMCAS` says in its own docstring that *"any
+    backfill filter — present, future, or not yet imagined — whose skip makes the traversal
+    disagree with the CAS dies here"* while holding a SIX-row fixture.  A ``LIMIT 50`` walked
+    straight through it (delta adversary §P1 WB-E, 234 passed / 0 failed).
+
+    **Why a cap is the single most plausible wrong build in this packet, which is what makes
+    the hole expensive:** 04b-1 is *about* bounded reads — #253, R9, R7 — so a builder who has
+    just been told *"no read may scale with the ledger"* writes one here too.  The backfill is
+    the ONE read in this ledger that must be unbounded, and nothing said so.
+
+    ⚠ **STATED BOUND, so this class does not over-claim.**  It measures COVERAGE (which rows
+    the migration reached), never round trips — its sibling
+    :class:`TestTheBackfillIsONETransaction` owns that question, and the two are independent:
+    a build can be perfectly bounded to one transaction and still cover only half the store.
+    """
+
+    @staticmethod
+    async def _seed_star(
+        connection: SurrealConnection, env: SurrealEnv, count: int
+    ) -> tuple[str, list[str]]:
+        """``count`` legacy rows, each blocked by ONE shared root, columns only, no edges.
+
+        A STAR rather than a chain: every dependent carries exactly one blocker, so the
+        expected edge set is ``count`` pairs a reader can check by counting rows, and the
+        dependency-bearing population the backfill's own read filters on is exactly
+        ``count`` — one row per edge, which is what makes a row-cap visible as a missing edge.
+        """
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        root = f"scaleroot_{uuid.uuid4().hex}"
+        await _seed_legacy_task(connection, root, blocked_by=[], status=STATUS_OPEN)
+        dependents = [f"scalewait{index}_{uuid.uuid4().hex}" for index in range(count)]
+        for task_id in dependents:
+            await _seed_legacy_task(
+                connection, task_id, blocked_by=[root], status=STATUS_OPEN
+            )
+        return root, dependents
+
+    @classmethod
+    async def _backfill_at_scale(
+        cls, count: int, *, probe_served: bool = False
+    ) -> tuple[str, list[str], set[tuple[str, str]], dict[str, str]]:
+        """Boot ONE fresh ledger over a ``count``-row legacy star and report what landed.
+
+        Returns ``(root, dependents, minted_pairs, served)`` where ``served`` maps each
+        dependent to its rendered :func:`_served_shape` — empty unless ``probe_served``,
+        because that probe costs one round trip PER ROW and only one leg needs it.
+        """
+        env = make_env(database=unique_database(), dim=MIGRATION_DIM)
+        connection = await connect_admin(env)
+        try:
+            root, dependents = await cls._seed_star(connection, env, count)
+            ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+            served: dict[str, str] = {}
+            try:
+                await ledger.ensure_ready()
+                minted = await _blocks_edge_pairs(connection)
+                if probe_served:
+                    for task_id in dependents:
+                        served[task_id] = await _served_outcome(
+                            _transitive_blockers(ledger, task_id)
+                        )
+            finally:
+                await ledger.close()
+            return root, dependents, minted, served
+        finally:
+            await connection.close()
+            await drop_database(env)
+
+    async def test_a_legacy_store_LARGER_than_every_other_fixture_is_backfilled_ENTIRELY(
+        self,
+    ) -> None:
+        """⛔ WB-E and every other partial backfill, whatever its cause.
+
+        TWO sizes, and the assertion is EXACT-SET at each — not a growth ratio, not a
+        threshold.  A cap tuned to pass at :data:`LEGACY_BACKFILL_SCALE_FLOOR` dies at twice
+        it; a cap set above both dies the day the derived floor rises past it; and an exact
+        set (rather than a count) also kills the closure-minting build the section's other
+        exact-set pins exist for.
+        """
+        floor = LEGACY_BACKFILL_SCALE_FLOOR
+        assert floor > LEGACY_BACKFILL_EDGES_LARGE, (
+            f"the derived scale floor {floor} does not exceed this file's largest legacy "
+            f"fixture ({LEGACY_BACKFILL_EDGES_LARGE}), so this class adds no scale at all "
+            f"and every leg below is a duplicate of a pin that already exists"
+        )
+        for count in (floor, 2 * floor):
+            root, dependents, minted, _served = await self._backfill_at_scale(count)
+            expected = {(root, task_id) for task_id in dependents}
+            assert len(expected) == count, (
+                f"the fixture built {len(expected)} distinct dependencies where it asked "
+                f"for {count}; a coverage comparison against a fixture that did not come "
+                f"out as intended measures nothing"
+            )
+            assert minted == expected, (
+                f"a boot over {count} legacy dependency-bearing rows minted "
+                f"{len(minted)} blocks edges where the COLUMNS call for {len(expected)}. "
+                f"The backfill is not covering the whole store — a cap, a page, a batch "
+                f"bound, or any other partial read — and every row it missed is served "
+                f"'ids=[] truncated=False' by transitive_blockers while the claim CAS "
+                f"refuses it: sidecar S3's confident lie, on production's real rows. The "
+                f"backfill's pending read is the ONE read in this ledger that must be "
+                f"UNBOUNDED. missing={sorted(expected - minted)[:5]} "
+                f"unexpected={sorted(minted - expected)[:5]}"
+            )
+
+    async def test_NO_row_of_a_LARGE_legacy_store_is_served_a_CONFIDENT_EMPTY(self) -> None:
+        """⛔ The same defect stated as the CONSUMER's experience rather than the store's.
+
+        The pin above compares edge sets; this one asks what an agent is actually told.  A
+        partially back-filled store answers ``OK ids=[] truncated=False`` for every row the
+        migration missed — a positive assertion of completeness, not a missing bound — and
+        the delta adversary MEASURED exactly that shape on 10 of 60 rows.
+
+        Both legs are needed and neither implies the other: an edge set can be complete while
+        the read is broken, and a read can be honest (raising) while the edge set is short.
+        """
+        _root, dependents, _minted, served = await self._backfill_at_scale(
+            LEGACY_BACKFILL_SCALE_FLOOR, probe_served=True
+        )
+        assert len(served) == len(dependents) == LEGACY_BACKFILL_SCALE_FLOOR, (
+            f"the probe collected {len(served)} outcomes for {len(dependents)} legacy rows; "
+            f"it is not observing every row, so its verdict is worthless"
+        )
+        confident_empties = sorted(
+            task_id for task_id, shape in served.items() if shape.startswith("OK ids=[] ")
+        )
+        assert not confident_empties, (
+            f"{len(confident_empties)} of {len(dependents)} legacy rows were served a "
+            f"CONFIDENT EMPTY — 'ids=[] truncated=False' — while their blocked_by COLUMN "
+            f"names a live blocker the claim CAS still refuses them for. That is not a "
+            f"missing bound, it is a false statement of completeness (sidecar S3), and it "
+            f"is what a partial backfill leaves behind at a scale no other fixture in this "
+            f"file reaches. first={confident_empties[:3]} "
+            f"sample={served[confident_empties[0]]!r}"
+        )
+
+
+#: The DOORS through which the backfill can fail, as a set rather than as the one that was
+#: debugged.
+#:
+#: ⚠⚠ **THE QUANTIFIER LAW, CAUGHT IN THIS SECTION'S OWN CODE** (delta adversary §P1 WB-O).
+#: :class:`TestTheBackfillRoutesThroughTheSHAREDExistencePolicy` pins *"a failure of the
+#: EXISTENCE READ makes ``ensure_ready`` raise"* — the invariant conditioned on the failure
+#: mode that was debugged.  The invariant the packet NEEDS is *"ANY failure of the backfill
+#: makes ``ensure_ready`` raise"*, and a ``try/except`` around the MINT alone passed the whole
+#: contract (**234 passed / 0 failed**) while booting a service whose legacy edge set is
+#: entirely absent — the single most-written defensive line in any migration (*"the backfill
+#: must never stop the service booting"*), and the exact false clear R11 exists to delete.
+#:
+#: Stated as a PARAMETRISATION so the next door added here is an entry rather than a hole.
+BACKFILL_FAILURE_DOORS = ("existence-read", "mint")
+
+
+class TestANYBackfillFailureMakesEnsureReadyLOUD:
+    """GREEN at ``b8607c4``.  ⛔ **WB-O, and the class of build it belongs to.**
+
+    A boot that survives its own failed migration is worse than a boot that dies: the service
+    comes up, every legacy row is served a confident empty, and there is no moment at which
+    anybody learns the migration did not happen.  ``ensure_ready``'s consumer is the booting
+    service, and it reads a normal return as *"this store is migrated"* — so a normal return
+    over a failed backfill is a forged response in the trust definition's exact sense.
+
+    ⚠ **HOW THE MINT DOOR IS DEGRADED, and why it is not a method name.**  The existence-read
+    door is reached through :func:`_patch_every_shared_policy_COROUTINE` (derived, name-free).
+    The mint door has no such derivation available — so it is keyed on a property of the
+    STATEMENT instead: a transaction whose text names the ``blocks`` relation table and
+    contains no ``DEFINE`` is an edge WRITE, whatever the builder called the method that
+    composed it.  ``ENFORCED`` gives that property for free: an edge cannot be minted without
+    naming its own table.  The degradation FAILS CLOSED — if no such statement is ever seen,
+    the leg reddens as vacuous rather than passing because nothing was degraded.
+    """
+
+    @staticmethod
+    def _fail_the_MINT_only(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Make every edge-MINT transaction fail and let everything else through.
+
+        Returns the (initially empty) list of statements that were REFUSED, so the caller can
+        assert the degradation actually reached the door it is named after.
+        """
+        import importlib
+
+        tasks_module = importlib.import_module("loremaster.tasks")
+        real = tasks_module.execute_transaction
+        refused: list[str] = []
+
+        async def _selective(statement: str, *args: Any, **kwargs: Any) -> Any:
+            if BLOCKS_RELATION_NAME in statement and "DEFINE" not in statement.upper():
+                refused.append(statement)
+                raise SurrealStoreError("the edge mint was rejected by the engine")
+            return await real(statement, *args, **kwargs)
+
+        monkeypatch.setattr(tasks_module, "execute_transaction", _selective, raising=True)
+        return refused
+
+    @pytest.mark.parametrize("door", BACKFILL_FAILURE_DOORS)
+    async def test_a_FAILED_backfill_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL(
+        self,
+        door: str,
+        monkeypatch: pytest.MonkeyPatch,
+        legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]],
+    ) -> None:
+        """⛔ ∀ door, not just the one that was debugged."""
+        connection, env, _ids = legacy_column_store
+        refused: list[str] = []
+        if door == "existence-read":
+
+            async def _rejecting(*_args: Any, **_kwargs: Any) -> None:
+                raise SurrealStoreError("the existence read was rejected by the engine")
+
+            _patch_every_shared_policy_COROUTINE(monkeypatch, _rejecting)
+        elif door == "mint":
+            refused = self._fail_the_MINT_only(monkeypatch)
+        else:  # pragma: no cover - a parametrisation entry with no degradation
+            raise AssertionError(
+                f"{door!r} is in BACKFILL_FAILURE_DOORS but this test degrades nothing for "
+                f"it, so the leg would pass vacuously. Add its construction here"
+            )
+
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with pytest.raises(Exception) as caught:  # noqa: B017 - vocabulary is the builder's
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert not isinstance(caught.value, AssertionError), (
+            f"ensure_ready raised the test's own AssertionError rather than propagating the "
+            f"{door} failure — the pin is measuring itself: {caught.value!r}"
+        )
+        if door == "mint":
+            assert refused, (
+                f"no transaction naming {BLOCKS_RELATION_NAME!r} and free of DEFINE was ever "
+                f"issued, so the MINT door was never degraded and this leg passed for a "
+                f"reason having nothing to do with the invariant. Either the backfill minted "
+                f"nothing (the fixture drifted) or the edge write no longer names its own "
+                f"table, in which case re-derive this degradation in the same commit"
+            )
+            assert not await _blocks_edge_pairs_or_NO_TABLE(connection), (
+                f"the mint was refused at the engine and yet edges exist: "
+                f"{sorted(await _blocks_edge_pairs_or_NO_TABLE(connection))}"
+            )
+
+    async def test_POSITIVE_CONTROL_an_UNDEGRADED_boot_over_the_same_fixture_COMPLETES(
+        self,
+        legacy_column_store: tuple[SurrealConnection, SurrealEnv, dict[str, str]],
+    ) -> None:
+        """⛔ Without this, every leg above is satisfied by an ``ensure_ready`` that raises
+        unconditionally — and by a fixture whose backfill has nothing to do, which would make
+        the MINT door unreachable and its assertion vacuous.
+
+        So: the SAME fixture, no degradation at all, must complete AND must mint the edges
+        the mint leg's degradation is aimed at.
+        """
+        connection, env, ids = legacy_column_store
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        assert await _blocks_edge_pairs(connection) == _expected_backfilled_pairs(ids), (
+            f"an undegraded boot over this fixture did not mint the expected edge set, so "
+            f"the MINT door the legs above degrade is not on this path: "
+            f"got={sorted(await _blocks_edge_pairs(connection))}"
+        )
+
+
+#: The legacy cycle TOPOLOGIES the record pin runs over, as ``{task: its blocked_by}`` specs.
+#:
+#: ⚠⚠ **CYCLE COUNT WAS THE THIRD MONOCULTURE AXIS** (delta adversary §PINS-3).  Every cycle
+#: fixture in this file — :class:`TestALEGACYCycleIsMINTEDAndRECORDED` and
+#: :class:`TestALegacyCycleOfEVERYARITYIsMINTEDAndRECORDED` alike — holds **exactly one
+#: cycle**, so *"the cycle is RECORDED"* was ∀ over ARITY and ∀ over LIFECYCLE STATE and
+#: silent about a store holding TWO.  MEASURED on a reference build: a legacy store with two
+#: disjoint cycles left **2 of 4 members unnamed**, and the operator record — the surface
+#: ESC-4 exists to create — served *"ONE cycle I found"* where the operator reads *"the
+#: cycles in your store"*.
+#:
+#: ⚠ **AND IT IS NOT BAD LUCK: it is what the RECOMMENDED LIBRARY DOES.**
+#: ``graphlib.CycleError`` reports exactly ONE cycle by construction (``prepare()``'s own
+#: docstring: *"If any cycle is detected, CycleError will be raised"*) — correct for the
+#: WRITE-time guard, where one witness is a complete refusal, and insufficient at migration
+#: time, where the record is a claim about the whole store.  Enumeration is a DIFFERENT
+#: mechanism from detection, and this contract pins the PROPERTY (every cycle recorded), never
+#: a library.
+#:
+#: The three topologies are the axis this pin is ∀ over — a build that records only the first
+#: cycle fails ALL THREE (measured 2026-07-28), and each fails it differently:
+#: disjoint components, a shared-node overlap, and a fully-connected component.
+LEGACY_CYCLE_TOPOLOGIES: dict[str, dict[str, tuple[str, ...]]] = {
+    "disjoint-1-2-3": {
+        "solo": ("solo",),
+        "pairA": ("pairB",),
+        "pairB": ("pairA",),
+        "triA": ("triC",),
+        "triB": ("triA",),
+        "triC": ("triB",),
+    },
+    "overlapping": {"ova": ("ovb", "ovc"), "ovb": ("ova",), "ovc": ("ovb",)},
+    "complete-triangle": {
+        "cta": ("ctb", "ctc"),
+        "ctb": ("cta", "ctc"),
+        "ctc": ("cta", "ctb"),
+    },
+}
+
+#: The disjoint topology's cycles, as member SETS — the only topology whose cycles can be
+#: demanded one record each (see the class docstring's stated bound).
+LEGACY_DISJOINT_CYCLE_MEMBERS: tuple[frozenset[str], ...] = (
+    frozenset({"solo"}),
+    frozenset({"pairA", "pairB"}),
+    frozenset({"triA", "triB", "triC"}),
+)
+
+
+class TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST:
+    """GREEN at ``b8607c4``.  ⛔ **ESC-4's load-bearing half, over the whole set it governs.**
+
+    ESC-4's ruling is *"the backfill MINTS legacy cycles **and RECORDS them**"* — plural — and
+    its stated reason is that *"the RECORD is what stops it being silent."*  A record naming
+    one loop in a store holding three is itself a confident partial: the operator repairs what
+    it names, re-boots, and is told the same thing about a store that is still broken.
+
+    ⚠ **STATED BOUND, MEASURED 2026-07-28 and stated as a FACT rather than assumed away.**
+    This class pins **MEMBER COVERAGE ∀ topology** (every member of every cycle is named
+    somewhere at WARNING) and **ONE RECORD PER CYCLE only on the DISJOINT topology**.  It does
+    NOT demand that the recorded cycle set equal ``networkx.simple_cycles``: on the
+    ``complete-triangle`` topology the shipped enumeration records 4 loops where
+    ``simple_cycles`` finds 5, while naming all 3 members — and pinning simple-cycle equality
+    would make a correct-and-honest build RED, which is a C-DEF, not a catch.  What an
+    operator needs is *which rows to repair*; what a cycle-count pin would demand is a
+    particular decomposition of an overlapping component.  **RE-OPEN TRIGGER:** the day the
+    record grows a per-cycle CONSUMER (a repair tool, a count served to an agent), that
+    consumer's needs make the decomposition load-bearing and this bound must be re-argued.
+
+    ⚠ **The independent enumerator is ``networkx``, and it is the TEST's oracle, never the
+    build's mechanism** (operator-authorised at ``54d0585``).  Two independent enumerations
+    are DIFFED — the contract does not hand the build its own answer key.
+    """
+
+    @staticmethod
+    async def _seed_topology(
+        connection: SurrealConnection, env: SurrealEnv, spec: dict[str, tuple[str, ...]]
+    ) -> dict[str, str]:
+        """Seed ``spec`` as legacy COLUMN rows, cycles and all; returns ``{name: row key}``.
+
+        Every row is created with an EMPTY ``blocked_by`` and then closed by a raw ``UPDATE``,
+        for :meth:`TestALEGACYCycleIsMINTEDAndRECORDED._cyclic_legacy_store`'s reason: after
+        this packet lands no public verb mints a closing dependency, and ``ENFORCED`` could
+        not carry one at creation time anyway.  Production holds such rows because they were
+        legal when they were written.
+        """
+        await apply_ddl(connection, _task_ddl_without_blocks(), url=env.url)
+        ids = {name: f"{name}_{uuid.uuid4().hex}" for name in spec}
+        for name in spec:
+            await _seed_legacy_task(connection, ids[name], blocked_by=[], status=STATUS_OPEN)
+        for name, blockers in spec.items():
+            await run(
+                connection,
+                f"UPDATE type::record('{TASK_TABLE}', $id) SET blocked_by = $blocked_by",
+                {"id": ids[name], "blocked_by": [ids[blocker] for blocker in blockers]},
+            )
+        return ids
+
+    @classmethod
+    async def _boot_and_capture(
+        cls,
+        caplog: pytest.LogCaptureFixture,
+        store: tuple[SurrealConnection, SurrealEnv],
+        spec: dict[str, tuple[str, ...]],
+    ) -> tuple[dict[str, str], list[str]]:
+        """Seed ``spec``, boot once, and return ``(ids, the WARNING+ records' full text)``.
+
+        ⚠ The parameter is ``store``, not ``migration_db``: this module RE-EXPORTS the
+        ``migration_db`` fixture at import, so a helper parameter of that name is an F811
+        redefinition (ruff) rather than a readable echo of the caller's fixture.
+        """
+        connection, env = store
+        ids = await cls._seed_topology(connection, env, spec)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        loud = [
+            _recorded_text(record)
+            for record in caplog.records
+            if record.levelno >= logging.WARNING
+        ]
+        return ids, loud
+
+    @staticmethod
+    def _independent_cycles(spec: dict[str, tuple[str, ...]]) -> list[frozenset[str]]:
+        """Every simple cycle of ``spec``, as member sets, enumerated by ``networkx``.
+
+        The oracle is a SECOND implementation, deliberately: a contract that derived the
+        expected set with the production detector would be grading a build against its own
+        answer, and this section already has receipts against exactly that shape.
+
+        ONE import site for the oracle, called by every leg that needs it — the alternative
+        was the same four lines in three places, i.e. copy #2 of a policy (repo law #102).
+        """
+        # ⚠ ``types-networkx`` is not a dependency of this workspace; the house idiom for
+        # that is a ``[[tool.mypy.overrides]]`` block in ``pyproject.toml`` (as ``astroid``
+        # and ``kubernetes`` have), which is OUTSIDE this contract's writable set. Flagged in
+        # ``REPORT-contractfix-04b1-r6.md`` §RESIDUALS with the exact edit; this inline
+        # ignore is the version a test file may make on its own.
+        import networkx  # type: ignore[import-untyped]
+
+        graph = networkx.DiGraph()
+        for node, blockers in spec.items():
+            graph.add_node(node)
+            for blocker in blockers:
+                graph.add_edge(node, blocker)
+        return [frozenset(cycle) for cycle in networkx.simple_cycles(graph)]
+
+    @classmethod
+    def _independent_cycle_members(cls, spec: dict[str, tuple[str, ...]]) -> set[str]:
+        """Every node lying on SOME cycle of ``spec``, per the independent oracle."""
+        members: set[str] = set()
+        for cycle in cls._independent_cycles(spec):
+            members.update(cycle)
+        return members
+
+    @pytest.mark.parametrize("topology", sorted(LEGACY_CYCLE_TOPOLOGIES))
+    async def test_EVERY_MEMBER_of_EVERY_legacy_cycle_is_NAMED_in_the_record(
+        self,
+        topology: str,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ The property, ∀ topology: an operator can repair EVERY row that is in a loop.
+
+        A build that records only the first cycle fails all three legs (measured): it names
+        2 of 6 members on the disjoint topology and 2 of 3 on each of the other two.
+        """
+        spec = LEGACY_CYCLE_TOPOLOGIES[topology]
+        expected_names = self._independent_cycle_members(spec)
+        assert expected_names, (
+            f"the {topology!r} spec holds NO cycle at all according to the independent "
+            f"enumerator, so this leg asserts nothing: {spec}"
+        )
+        ids, loud = await self._boot_and_capture(caplog, migration_db, spec)
+        named = {name for name in expected_names if any(ids[name] in text for text in loud)}
+        assert named == expected_names, (
+            f"the backfill mirrored the {topology!r} legacy cycles and left "
+            f"{len(expected_names - named)} of {len(expected_names)} cycle members UNNAMED "
+            f"at WARNING or above. ESC-4's ruling is that the backfill mints legacy cycles "
+            f"AND RECORDS them, because 'the RECORD is what stops it being silent' — and a "
+            f"record naming one loop in a store holding several is itself a confident "
+            f"partial: the operator repairs what it names, re-boots, and is told the same "
+            f"thing about a store that is still broken. ⚠ graphlib.CycleError reports "
+            f"exactly ONE cycle by construction; DETECTION (one witness suffices) and "
+            f"ENUMERATION (every loop) are different mechanisms. "
+            f"unnamed={sorted(expected_names - named)} loud={loud!r}"
+        )
+
+    async def test_EVERY_DISJOINT_legacy_cycle_gets_its_OWN_record(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ Member coverage alone would be satisfied by ONE record listing every member of
+        every loop — which tells an operator that some subset of six rows is tangled, not
+        which three loops to break.  On DISJOINT components the decomposition is unambiguous,
+        so it is demanded there and nowhere else (see the class's stated bound).
+        """
+        spec = LEGACY_CYCLE_TOPOLOGIES["disjoint-1-2-3"]
+        ids, loud = await self._boot_and_capture(caplog, migration_db, spec)
+        unrecorded = []
+        for members in LEGACY_DISJOINT_CYCLE_MEMBERS:
+            row_keys = {ids[name] for name in members}
+            if not any(
+                all(key in text for key in row_keys)
+                and not any(
+                    ids[other] in text for other in ids if other not in members
+                )
+                for text in loud
+            ):
+                unrecorded.append(sorted(members))
+        assert not unrecorded, (
+            f"{len(unrecorded)} of {len(LEGACY_DISJOINT_CYCLE_MEMBERS)} DISJOINT legacy "
+            f"cycles have no record of their own — no WARNING names that loop's members and "
+            f"only that loop's members. The three components share no row, so there is one "
+            f"unambiguous decomposition and an operator is owed it per loop: 'these two rows "
+            f"block each other' is actionable, 'six of your rows are tangled' is not. "
+            f"unrecorded={unrecorded} loud={loud!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_DISJOINT_fixture_really_holds_THREE_cycles(
+        self,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """⛔ Both legs above rest on the fixture holding more than one cycle.  If it held
+        one, *"every cycle was recorded"* would be true of the record-the-first build this
+        class exists to kill, and the whole class would be decoration.
+
+        Asserted against the INDEPENDENT enumerator, at the arities the sibling classes pin
+        one at a time — so this fixture is also the first place all three co-exist.
+        """
+        spec = LEGACY_CYCLE_TOPOLOGIES["disjoint-1-2-3"]
+        cycles = self._independent_cycles(spec)
+        assert sorted(cycles, key=len) == sorted(
+            LEGACY_DISJOINT_CYCLE_MEMBERS, key=len
+        ), (
+            f"the disjoint fixture does not hold the three declared cycles: got "
+            f"{[sorted(cycle) for cycle in cycles]}"
+        )
+        assert sorted(len(cycle) for cycle in cycles) == [1, 2, 3], (
+            f"the three cycles are not one of each arity: "
+            f"{sorted(len(cycle) for cycle in cycles)}"
+        )
+        connection, env = migration_db
+        ids = await self._seed_topology(connection, env, spec)
+        ledger = TestTheLedgersOwnMigrationPathLandsTheGuard._ledger_on(env)
+        try:
+            await ledger.ensure_ready()
+        finally:
+            await ledger.close()
+        expected_edges = {
+            (ids[blocker], ids[task])
+            for task, blockers in spec.items()
+            for blocker in blockers
+        }
+        assert await _blocks_edge_pairs(connection) == expected_edges, (
+            f"the backfill did not MIRROR all three legacy cycles onto the edge table "
+            f"(ESC-4 reading A), so the RECORD legs above are measuring a store whose "
+            f"cycles were refused rather than minted: "
+            f"got={sorted(await _blocks_edge_pairs(connection))}"
+        )
+
+
 # =========================================================================== #
 # SECTION L — THE LEG-2 FORGERY CONSTRUCTIONS 04b-1 OWES.
 #
@@ -8084,8 +8854,14 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 # PROOF 11 — WB-D (MEASURED to survive the pre-r5 contract: rows read 10 → 65): #253 ON THE
 #   WRITE PATH.  Drop the dependency-bearing filter from the write-time cycle guard's single
 #   read, so the client-side walk is seeded with the whole task table.  DECLARED RED (1):
-#     --expect-red "$E2::test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_size_of_the_LEDGER"
+#     --expect-red "$E2::test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population"
 #         (E2="$F::TestCreateRefusesToFormACycle")
+#   ⚠ RENAMED in wave r6 (was "…_with_the_size_of_the_LEDGER"): the old name promised a
+#   ∀-ledger property the assertion cannot perform — see the test's own docstring. The
+#   MUTATION and its declared red set are unchanged; only the node id moved.
+#   ⚠ ``$E2::test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population``
+#   must stay GREEN under this mutation: dropping the filter makes the read grow with EVERY
+#   population, and that pin asserts growth. It is a KNOWN-BOUND pin, not a boundedness one.
 #   ⚠ ``$E2::test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`` must stay GREEN —
 #   the walk is still ONE round trip, it simply reads the whole ledger inside it. That a
 #   round-trip pin cannot see a rows defect is exactly why the rows pin had to exist.
