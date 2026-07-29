@@ -675,6 +675,30 @@ The sidecar's recommendation is ADOPTED in full. Fix the defect; do not disclose
   docstring states, explicitly, that a docstring asserting the OPPOSITE passes this pin** — that
   is the WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT rule applied to a bound we are keeping deliberately.
 
+### ✅ r6's TWO ESCALATIONS — RULED (lead, 2026-07-28)
+- **ESC-5 — 04b-2 CLOSES THE CAPPED-LISTING FALSE CLEAR (reading (i)), and it is an ENTRY
+  CONDITION of that packet, not a hope.** The author escalated rather than weigh trust against
+  scope, which was right — but it stated the decisive fact without leaning on it: **the harm
+  requires a DEPLOY, 04b-1 has none, and 04b-2 deploys BOTH halves.** So there is **no window in
+  which any consumer can meet this false clear** — the fix lands in the same deploy that first
+  exposes the surface. That makes (i) *consistent with* the trust doctrine rather than a
+  concession against it: T1 forbids serving a silent short answer, and nothing is served until
+  04b-2. Rejected (ii) (widen 04b-1 again and close it now): a store-side count is a **second
+  read on the served query path** — a real performance decision, on the exact axis #253 and R7
+  have been fighting all packet, taken under close-out pressure in a packet already green.
+  ⚠ The pin r6 wrote is what makes this safe: the hole **cannot be inherited silently**.
+- **ESC-1 — DEFERRED, deliberately, with a NAMED decision point** (deferral shape 1:
+  measure-then-tune). The half that needed no ruling is **already done** — the false gate is
+  closed by narrowing the pin's name and message to what it actually measures, and the residual
+  growth is pinned as a KNOWN BOUND with a re-open trigger. What remains is *"is a
+  ledger-independent write-path cycle read achievable under R7's rider?"* — and per the routing
+  rule (`CLAUDE.md`: **a design problem never reaches a builder**) that is a property to INVENT,
+  not a spec to implement. **DECISION POINT: 04b-2's kickoff**, which opens the same seams.
+  **MEASUREMENT OWED FIRST, and it decides the answer:** whether the ancestor closure of the NEW
+  dependencies is fully PERSISTED at write time — if it is, only the batch-local part need stay
+  client-side, the property is achievable, and the known-bound pin becomes a defect report to be
+  DELETED WITH THE FIX rather than a bound to keep.
+
 ## SIDECAR SELF-CORRECTIONS UNDER THE NEW DEFINITION (§11.3) — both ACCEPTED
 - **OVERRULE-1 gains a FOURTH leg, and the distinction is the useful part:** *ran-and-empty*
   silence is a TRUE clear; *check-FAILED* silence is a FALSE clear **in the same bytes**. So a
