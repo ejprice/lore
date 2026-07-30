@@ -716,8 +716,9 @@ def _make_store() -> SurrealStore:
 def _make_embedder() -> Embedder:
     # ⚠ THIS IS A COMPOSITION ROOT (#233 / ruling R31). It builds the loresigil
     # config DIRECTLY rather than through ``loremaster.embedding.to_loresigil_config``,
-    # so it is one of only two production construction sites of that model — and the
-    # one no type gate can see, because ``scripts/`` is not a typecheck member. The
+    # so it is one of only two production construction sites of that model. It USED to
+    # be the one no type gate could see; ``scripts`` became a ``scripts/typecheck.sh``
+    # root on 2026-07-29 (#188), so this site is now typechecked like any other. The
     # credential is therefore resolved HERE, by the shared resolver, and arrives
     # already wrapped: ``loresigil`` reads no environment variable (#222).
     config = EmbeddingConfig(

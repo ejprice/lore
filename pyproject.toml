@@ -215,9 +215,17 @@ testpaths = [
     # never added; but tooling that silently rots is worse than no tooling,
     # because its presence is read as coverage.
     #
-    # NOTE: this adds the PYTEST gate only. ``scripts/`` is still outside
-    # ``scripts/typecheck.sh`` (#188 measured 41 mypy errors there) — a separate
-    # work item, deliberately not conflated with this one.
+    # ⚠ CORRECTED 2026-07-29 (packet 44, #188 DISCHARGED). This note used to read
+    # "this adds the PYTEST gate only — ``scripts/`` is still outside
+    # ``scripts/typecheck.sh`` (#188 measured 41 mypy errors there)". BOTH HALVES ARE
+    # NOW FALSE, and the second was already wrong when written: ``scripts`` is a
+    # ``MEMBERS`` root of ``scripts/typecheck.sh`` (with a leg-scoped
+    # ``MYPYPATH=scripts``), and the debt was never 41. Re-measured at ``f033a87``
+    # over ``git ls-files 'scripts/*.py'``: **45 errors bare, 24 under
+    # ``MYPYPATH=scripts``** — the 21-error gap is the scripts-imports-scripts
+    # resolution artifact, not type debt. The 24 real errors are fixed; the tree is
+    # mypy-zero. The inherited "41" matched neither invocation shape, which is why
+    # #188's own resolution demanded a re-measure before anyone acted on it.
     "scripts",
     # ``docs/eval/`` carries the DEPLOY SMOKE's own suite — the tests guarding
     # smoke_p8b.py, the instrument that caught #107 and #131, each time as the

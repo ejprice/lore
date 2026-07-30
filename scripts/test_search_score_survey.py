@@ -569,12 +569,20 @@ class TestTheRealStoreFactoryBuildsSdkEncodableCredentials:
 
     * ``scripts/`` was not in ``testpaths`` (#199), so the main suite never ran
       this module;
-    * ``scripts/`` is not a ``typecheck.sh`` member (#221), so mypy — which DOES
-      diagnose the exact error, ``Argument "user" to "SurrealStore" has
+    * ``scripts/`` was not a ``typecheck.sh`` member (#221/#188), so mypy — which
+      DOES diagnose the exact error, ``Argument "user" to "SurrealStore" has
       incompatible type "SecretStr"`` — was never pointed at it;
     * and the one test that exercises this area **monkeypatches ``_make_store``
       away entirely** (``TestRunSurvey``), so the covering test replaced the
       thing it would have covered.
+
+    ⚠ TWO OF THE THREE BLINDNESSES ARE NOW CLOSED (packet 44): ``scripts`` is a
+    ``testpaths`` entry (#199, 2026-07-26) AND a ``scripts/typecheck.sh`` root
+    (#188, 2026-07-29). **This pin does not become redundant.** The third blindness
+    is untouched — the covering test still monkeypatches the factory away — and the
+    property asserted below is a RUNTIME one the SDK imposes (CBOR-encodability of
+    every signin value), which no type checker states. Past-tensed rather than
+    deleted because the union-of-blind-gates reasoning is why this class exists.
 
     So this pin calls the REAL factory. It is safe to do so without a server:
     ``SurrealStore.__init__`` opens no socket (it sets ``_connection = None`` and
