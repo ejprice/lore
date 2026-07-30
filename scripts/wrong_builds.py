@@ -29,8 +29,15 @@ THE TWO GUARDS THAT MAKE THE OUTPUT MEAN SOMETHING, both of which have fired for
      *"If step N silently no-opped, would step N+1 still print something that reads as success?"*
   2. **Every run's COLLECTED TOTAL is compared to the baseline's.** A mutation that breaks the
      syntax collects nothing, exits 1, and prints `1 error` — which a count of failures reads as
-     "killed" when in truth nothing was measured. Those runs are reported NOT COMPARABLE. This
-     fired on the first outing (a wrong build whose replacement was not valid Python).
+     "killed" when in truth nothing was measured. Those runs are reported NOT COMPARABLE, in
+     their own summary category and with a non-zero exit. This fired on the first outing (a wrong
+     build whose replacement was not valid Python) — and then AGAIN, on the committed set:
+     `WB19` shipped with an escaped quote inside a triple-quoted replacement, so it had never
+     parsed and had never measured anything, while the summary line
+     (`len(names) - len(survivors)`) counted it as one of 20 kills. Found by `coldaudit-44-1`
+     (D13) 2026-07-29, repaired 2026-07-30. **The per-build guard was right and the SUMMARY was
+     the lie** — which is why the summary now counts three outcomes and not two: *"if step N
+     silently no-opped, would step N+1 still print something that reads as success?"*
 
 HOW TO RUN IT. The scratch repository must NOT be a copy of a git WORKTREE (#284): a worktree's
 ``.git`` is a FILE naming the real gitdir, so a copy's ``git add`` mutates the real index while
@@ -39,16 +46,31 @@ every receipt reads as isolated. Build it from an ARCHIVE instead:
     mkdir -p /somewhere/refrepo
     git archive HEAD -o /somewhere/head.tar
     tar -xf /somewhere/head.tar -C /somewhere/refrepo
-    cp scripts/gated_ground.py scripts/test_gated_ground.py /somewhere/refrepo/scripts/
+    # THIS FILE goes in too, and it is not optional: the contract pins that every build declared
+    # here LANDS and PARSES against the instrument
+    # (`TestTheCommittedWrongBuildsCanActuallyRun`), so a scratch carrying a stale copy of this
+    # harness grades a registry that is not the one being run, and the baseline fails for a
+    # reason that has nothing to do with the tree.
+    cp scripts/gated_ground.py scripts/test_gated_ground.py scripts/wrong_builds.py \
+       /somewhere/refrepo/scripts/
     git -C /somewhere/refrepo init -q -b main . && git -C /somewhere/refrepo add -A
     git -C /somewhere/refrepo -c user.name=s -c user.email=s@e.invalid commit -q -m base
     ln -s "$PWD/.venv" /somewhere/refrepo/.venv
     test -d /somewhere/refrepo/.git || exit 1       # PROVENANCE: a DIRECTORY, not a worktree file
 
-    ./scripts/wrong_builds.py --scratch /somewhere/refrepo            # all 21
-    ./scripts/wrong_builds.py --scratch /somewhere/refrepo WB1_... WB2_...   # a subset
+    .venv/bin/python scripts/wrong_builds.py --scratch /somewhere/refrepo          # all 21
+    .venv/bin/python scripts/wrong_builds.py --scratch /somewhere/refrepo WB1_... WB2_...
 
-Exit 0 means every requested build was killed; exit 1 means at least one survived and is named.
+⚠ RUN IT WITH THE PROJECT'S VENV PYTHON, NOT THROUGH ITS SHEBANG. The child is
+``sys.executable -m pytest``, so a bare ``./scripts/wrong_builds.py`` inherits
+``/usr/bin/env python3`` — which on this host has no pytest. Measured 2026-07-30: every child
+then printed nothing, the baseline collected 0, and three builds were reported ❗SURVIVED
+against a contract that had never run. That specific hole is now a hard refusal (see the
+baseline anti-vacuity check in ``main``), but the invocation above is the one that WORKS.
+
+Exit 0 means every requested build was MEASURED and killed. Exit 1 means at least one survived —
+or at least one was NOT COMPARABLE, which is a build with no result rather than a kill, and is
+named as its own category for exactly that reason (D13).
 
 ⚠ BOUNDS, stated because an instrument that hides its own bound converts "unproven" into "proven":
 
@@ -276,12 +298,22 @@ WRONG_BUILDS["WB18_refusal_bypasses_the_door_helper"] = [(
     'not the tree clean")')]
 
 # WB19 — the clean render over-claims: one axis named, two measured.
+#
+# ⚠ THIS BUILD HAD NEVER MEASURED ANYTHING (D13, `coldaudit-44-1`, 2026-07-29). Its replacement
+# was written as a triple-quoted literal ending in an ESCAPED quote, which Python resolves — so
+# the text it installed ended in TWO quotes, the patched module never parsed, and the run
+# collected `1 error` instead of the contract. Guard #2 fired correctly on the per-build line;
+# the SUMMARY folded that unmeasured run into the kill count, which is this file's own diagnosed
+# failure mode shipped as an instance. Both halves are repaired: the replacement is a plain
+# single-quoted string with NO escape (an escaped quote inside a triple-quoted literal is a
+# defect generator, not a style choice), and NOT COMPARABLE is now its own summary category.
+# The measurement it was always supposed to yield: killed, comparable at 315 == 315.
 WRONG_BUILDS["WB19_clean_render_over_claims"] = [(
     """                return (
                     "GATED GROUND — every tracked module is registered with the type gate, and "
                     "every tracked test-shaped file is one the collector reaches."
                 )""",
-    """                return "GATED GROUND: every committed .py is registered on both axes."\"""")]
+    '                return "GATED GROUND: every committed .py is registered on both axes."')]
 
 # WB20 — _is_test_shaped answers for the process cwd rather than repo_root (the seventh call site
 # of the repo_root property, now that the matcher needs an absolute path).
@@ -326,10 +358,20 @@ def run_contract(scratch: Path, contract: str) -> tuple[int, int, int, str]:  # 
         check=False,
     )
     lines = completed.stdout.strip().splitlines()
-    tail = lines[-1] if lines else "<no output>"
+    tail = lines[-1] if lines else ""
     passed = int(match.group(1)) if (match := re.search(r"(\d+) passed", tail)) else 0
     failed = int(match.group(1)) if (match := re.search(r"(\d+) failed", tail)) else 0
     errors = int(match.group(1)) if (match := re.search(r"(\d+) error", tail)) else 0
+    if not (passed or failed or errors):
+        # ⚠ NOTHING COUNTABLE CAME BACK, so pytest never started or died before its summary —
+        # and stderr is the ONLY place that says why. Discarding it is how a failed-to-start run
+        # became a silent zero: measured 2026-07-30, this file's own HOW TO RUN recipe
+        # (`./scripts/wrong_builds.py`) executes under the SHEBANG interpreter, whose `python3`
+        # has no pytest, so every child printed nothing on stdout — and three builds were
+        # reported ❗SURVIVED against a baseline that had collected NOTHING.
+        stderr_lines = completed.stderr.strip().splitlines()
+        why = stderr_lines[-1] if stderr_lines else "<no output on stdout or stderr>"
+        tail = f"exit={completed.returncode}: {tail or why}"
     return passed, failed, errors, tail
 
 
@@ -377,25 +419,61 @@ def main(argv: list[str] | None = None) -> int:
     print(f"REF => {tail}   [collected total: {baseline}]")
     if failed or errors:
         raise SystemExit("the correct build is not green in the scratch — nothing below is comparable")
+    # ⚠ ANTI-VACUITY ON THE BASELINE ITSELF, and it is not hypothetical (found 2026-07-30 while
+    # repairing D13, by running this harness exactly as its own docstring said to). Guard #2
+    # compares each build's collected total to the BASELINE's — so a baseline of ZERO makes every
+    # build comparable to it, failure-free, and therefore ❗SURVIVED. Three builds were reported
+    # as survivors against a contract that had never run; over all 21 the line would have read
+    # `21 survived`, i.e. "this contract catches nothing", which is the most alarming output this
+    # file can print and it would have been an artifact of a missing pytest. A guard that
+    # compares two numbers must first know that either number is a measurement.
+    if not baseline:
+        raise SystemExit(
+            f"the baseline collected NOTHING, so every build below would compare 0 to 0 and read "
+            f"as a SURVIVOR — the contract never ran. Tail: {tail!r}. The usual cause is the "
+            f"interpreter: the child runs {sys.executable!r} -m pytest, so invoke this harness "
+            f"with the project's venv python rather than through its shebang."
+        )
 
     survivors: list[str] = []
+    killed: list[str] = []
+    unmeasured: list[str] = []
     for name in names:
         instrument.write_text(apply(name, pristine), encoding="utf-8")
         passed, failed, errors, tail = run_contract(scratch, arguments.contract)
         total = passed + failed + errors
         comparable = "" if total == baseline else f"  ⚠ NOT COMPARABLE ({total} != {baseline})"
-        survived = failed == 0 and errors == 0 and not comparable
-        if survived:
+        # THREE outcomes, not two. A run whose collected total does not match the baseline
+        # measured NOTHING, and `len(names) - len(survivors)` counted it as a KILL — the exact
+        # over-reading guard #2 exists to prevent, in the summary line of the file that
+        # diagnosed it (D13, `coldaudit-44-1`, 2026-07-29: WB19 had never parsed, so its kill
+        # was reported and had never been obtained).
+        if comparable:
+            unmeasured.append(name)
+            outcome = "⚠ NOT MEASURED"
+        elif failed == 0 and errors == 0:
             survivors.append(name)
-        print(f"{name:52s} {tail:34s} {'❗SURVIVED' if survived else 'killed'}{comparable}")
+            outcome = "❗SURVIVED"
+        else:
+            killed.append(name)
+            outcome = "killed"
+        print(f"{name:52s} {tail:34s} {outcome}{comparable}")
         instrument.write_text(pristine, encoding="utf-8")
         if instrument.read_text(encoding="utf-8") != pristine:
             raise SystemExit(f"{name}: the restore is not byte-exact — STOP and restore by hand")
 
-    print(f"\n{len(names)} built · {len(names) - len(survivors)} killed · {len(survivors)} survived")
+    print(
+        f"\n{len(names)} built · {len(killed)} killed · {len(survivors)} survived · "
+        f"{len(unmeasured)} NOT COMPARABLE (nothing measured)"
+    )
     for name in survivors:
         print(f"  SURVIVOR: {name} — needs a written verdict; an equivalent build is not a pass")
-    return 1 if survivors else 0
+    for name in unmeasured:
+        print(
+            f"  NOT MEASURED: {name} — the patched module did not collect the baseline's tests, "
+            f"so this build has no result at all. Repair the mutation and re-run it."
+        )
+    return 1 if survivors or unmeasured else 0
 
 
 if __name__ == "__main__":
