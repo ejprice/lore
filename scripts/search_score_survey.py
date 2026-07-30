@@ -68,7 +68,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 # The percentile math is committed, unit-tested and pinned in token_survey.py;
 # it lives beside this script in scripts/, not an installed package.
@@ -93,6 +93,7 @@ from loremaster.search import (
 )
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import SurrealStore
+from loresigil.base import Embedder
 from loresigil.factory import BACKEND_TEI, EmbeddingConfig, make_embedder
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -326,7 +327,21 @@ def every_nth(items: Sequence[str], count: int) -> list[str]:
 # real, unchanged production function, used internally on the ident_text
 # side) for any future direct caller; ``__all__`` below keeps that
 # now-internal-only re-export from reading as an unused import.
-__all__ = ["query_tokens"]
+#
+# ⚠ ``__all__`` NAMES ALL THREE, NOT JUST ``query_tokens`` (#188, 2026-07-29).
+# Under mypy's ``no_implicit_reexport`` (part of ``strict``) an aliased import
+# — ``_x as y`` — is NOT an export, so ``test_search_score_survey.py``'s six
+# ``sss.<name>`` reads were ``attr-defined`` errors for the two names this list
+# omitted. They were always as public as ``query_tokens``: the comment above
+# says all three are re-exported, and ``TestPredicateParityWithProduction``
+# pins all three by identity. The list was narrow only because it had been
+# written for ruff's unused-import rule, which the other two did not trip.
+# ``__all__`` affects ``import *`` alone, so this changes no runtime behaviour.
+__all__ = [
+    "cosine_absence_verdict_fires",
+    "has_verbatim_identifier_anchor",
+    "query_tokens",
+]
 
 
 @dataclass(frozen=True)
@@ -698,7 +713,7 @@ def _make_store() -> SurrealStore:
     )
 
 
-def _make_embedder():  # type: ignore[no-untyped-def]
+def _make_embedder() -> Embedder:
     # ⚠ THIS IS A COMPOSITION ROOT (#233 / ruling R31). It builds the loresigil
     # config DIRECTLY rather than through ``loremaster.embedding.to_loresigil_config``,
     # so it is one of only two production construction sites of that model — and the
@@ -706,7 +721,17 @@ def _make_embedder():  # type: ignore[no-untyped-def]
     # credential is therefore resolved HERE, by the shared resolver, and arrives
     # already wrapped: ``loresigil`` reads no environment variable (#222).
     config = EmbeddingConfig(
-        backend=BACKEND_TEI,
+        # ⚠ THE CAST IS A WORKAROUND FOR AN UPSTREAM ANNOTATION, NOT A SILENCER (#188,
+        # 2026-07-29). ``loresigil.factory`` declares ``BACKEND_TEI: str = "tei"`` — an
+        # explicit ``str`` that WIDENS away from ``EmbeddingConfig.backend``'s
+        # ``Literal["tei", "voyage-cloud", "voyage-context"]``, so passing the constant
+        # is an ``arg-type`` error. The constants' own comment there says they are
+        # "kept as constants so dispatch and the schema agree"; at type level they do
+        # not. The real fix is upstream — annotate the three discriminators
+        # ``Literal[...]`` in ``loresigil/loresigil/factory.py`` — which was outside
+        # packet 44's writable set; DELETE THIS CAST the day that lands. The VALUE still
+        # comes from the constant, so a renamed backend is still a one-place change.
+        backend=cast(Literal["tei"], BACKEND_TEI),
         api_key=resolve_secret(DEFAULT_TEI_API_KEY_ENV),
         base_url=DEFAULT_TEI_BASE_URL,
         model=DEFAULT_TEI_MODEL,

@@ -83,6 +83,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from pydantic import SecretStr
+
 # --------------------------------------------------------------------------- #
 # 1. MEASUREMENT PINS
 #
@@ -397,7 +399,7 @@ class LiveSurfaceProvider:
         app_context = getattr(cls._server_module(), "AppContext", None)
         if app_context is None:
             raise RenderSeamUnavailable("loremaster.server has no AppContext")
-        helper = getattr(app_context, name, None)
+        helper: Callable[..., Any] | None = getattr(app_context, name, None)
         if helper is None:
             raise RenderSeamUnavailable(
                 f"AppContext.{name} does not exist — the packet-03b render build has "
@@ -947,10 +949,21 @@ class LiveSurfaceProvider:
                 namespace="unused-no-connection-is-opened",
                 database="unused",
                 user="unused",
-                password="unused",
+                # ``AgentRegistry`` declares ``password: SecretStr`` and hands it
+                # straight to ``signin_credentials`` (#211). No connection is ever
+                # opened here, so this is a typing correction, not a behaviour change
+                # — but a bare ``str`` was the shape that raised ``BufferError`` at
+                # signin the day something DID connect.
+                password=SecretStr("unused"),
             )
 
-            async def _canned(_statement: str, _params: dict[str, Any] | None = None) -> Any:
+            # Parameter NAMES mirror ``AgentRegistry._query(self, statement, params)``
+            # exactly: a stand-in whose names drift is only substitutable positionally,
+            # and mypy reports the mismatch as ``[assignment]`` — an error code the
+            # ``[method-assign]`` ignore below never covered (#188). Every production
+            # call site passes positionally, so this widens compatibility and changes
+            # nothing that runs.
+            async def _canned(statement: str, params: dict[str, Any] | None = None) -> Any:
                 return rows
 
             registry._query = _canned  # type: ignore[method-assign]  # the store IS the stand-in
@@ -2044,7 +2057,7 @@ class BatteryRunner:
 
     def _grader(self, name: str) -> Grader:
         """Resolve a grader by name, loudly."""
-        grader = getattr(self._graders, name, None)
+        grader: Grader | None = getattr(self._graders, name, None)
         if grader is None:
             raise RuntimeError(f"no grader named {name!r}")
         return grader

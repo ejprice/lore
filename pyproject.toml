@@ -159,6 +159,29 @@ disallow_any_unimported = false
 module = ["networkx", "networkx.*"]
 ignore_missing_imports = true
 
+# ``anthropic`` is DELIBERATELY NOT A PROJECT DEPENDENCY — it is an OVERLAY, supplied
+# per-invocation by ``uv run --with anthropic python scripts/comms_consumer_eval.py …``.
+# That was a ruled packet-03b decision (rationale + the alternatives weighed:
+# ``docs/plans/v2/receipts/2026-07-25-packet03b/REPORT-eval-author-03b-1.md`` §D), taken so
+# the live consumer-acceptance battery — the ONE surface that talks to a paid API — cannot
+# be pulled into every developer's and every container's dependency closure. Verified
+# 2026-07-29: the string ``anthropic`` appears in no ``*.toml`` in this repo, and the
+# package is absent from ``.venv``.
+#
+# So the import is unresolvable BY DESIGN, and its absence is HANDLED, not ignored:
+# ``AnthropicConsumerClient.__init__`` catches the ``ImportError`` and re-raises naming
+# the exact ``uv run --with`` line to use. This override exists only so that deliberate,
+# guarded, optional import is not a hard ``import-not-found`` under the ``scripts``
+# typecheck leg added for #188 — it does not weaken anything the project ships.
+#
+# Blast radius: ONE class in ONE script. Nothing else in the workspace imports
+# ``anthropic``, and nothing served is typed by this relaxation. The re-open trigger, if
+# ``anthropic`` is ever added to a real dependency group, is to DELETE this block rather
+# than keep both.
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
