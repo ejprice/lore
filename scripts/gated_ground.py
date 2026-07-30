@@ -8,9 +8,9 @@ Two legs, each quantified over INPUTS (the files git tracks), never over gate se
   measured by a ``--collect-only`` subprocess over the same tree, or is exempt.
 
 The legs are SEPARATE because the instances that prompted this instrument were HALF-gaps —
-covered on one axis and naked on the other (#188, #233 and #261 each in a different direction).
-The union of the two gate sets is green over exactly those trees, so a guard that collapses the
-legs into one question is a wrong build that ships green.
+covered on one axis and naked on the other (#188, #233, #261). The union of the two gate sets is
+green over exactly those trees, so a guard that collapses the legs into one question is a wrong
+build that ships green.
 
 LEG B asks the COLLECTOR rather than parsing pytest's exclusion surface, because that surface
 includes arbitrary code in a ``conftest.py`` (``collect_ignore``, ``collect_ignore_glob``) — an
@@ -61,12 +61,16 @@ indistinguishable from an unknown one.
   Their open hole is the execution axis alone.
 * ``exemption-scope``:
   An exemption claims REGISTRATION on one axis, never that the exempted tree is correct.
+* ``inherited-pytest-environment``:
+  The collector child inherits this environment, so an inherited PYTEST_ADDOPTS changes what it measures.
+  Clearing it would mean reading the environment outside this repository's one secret-resolution
+  entry point — a design decision, and not this guard's to take. The anti-vacuity leg is what
+  keeps the consequence LOUD instead of a wrong verdict.
 """
 
 from __future__ import annotations
 
 import fnmatch
-import os
 import re
 import shlex
 import subprocess
@@ -216,7 +220,11 @@ class Exemption:
 
     def __post_init__(self) -> None:
         self._validate_root()
-        if not _FINDING_NUMBER.match(self.finding):
+        # ``fullmatch``, never ``match`` (#210): Python's ``$`` also matches immediately before a
+        # TRAILING NEWLINE, so ``.match`` accepts "#188\n" against a pattern that reads as closed —
+        # and a finding number carrying a line break is a row that injects a line into every
+        # message rendering it. Measured before the fix: such a row constructed.
+        if not _FINDING_NUMBER.fullmatch(self.finding):
             raise InvalidExemption(
                 f"exemption for {self.root!r} carries finding {self.finding!r}, which is not a "
                 f"finding number: without one, the reasoning behind the row is unfindable"
@@ -375,6 +383,17 @@ STATED_BOUNDS: tuple[StatedBound, ...] = (
         reopen_trigger=(
             "a row is ever proposed for a tree a gate does read; then the row is the wrong "
             "instrument and the gate's scope is the right one"
+        ),
+    ),
+    StatedBound(
+        identifier="inherited-pytest-environment",
+        summary=(
+            "The collector child inherits this environment, so an inherited PYTEST_ADDOPTS changes "
+            "what it measures."
+        ),
+        reopen_trigger=(
+            "the environment-read seam gains an evidence-backed entry for an operational knob, "
+            "or pytest gains a flag that neutralises an inherited PYTEST_ADDOPTS"
         ),
     ),
 )
@@ -646,9 +665,12 @@ def collected_test_files(repo_root: Path) -> frozenset[str]:
     """The files pytest ACTUALLY collects items from, measured by a subprocess over ``repo_root``.
 
     A subprocess and not the live session's items: under ``xdist`` a worker sees only its shard,
-    so a live reading would invent a finding for every file another worker holds. The
-    environment's own ``PYTEST_ADDOPTS`` is cleared because this asks one specific question and an
-    inherited option can change the shape of the answer.
+    so a live reading would invent a finding for every file another worker holds.
+
+    The child INHERITS this process's environment untouched — see the
+    ``inherited-pytest-environment`` bound. Neutralising ``PYTEST_ADDOPTS`` here would mean
+    reading the environment outside this repository's one secret-resolution entry point, and an
+    allowlist entry there is a DESIGN decision rather than a convenience for this guard.
     """
     command = [
         sys.executable,
@@ -662,15 +684,9 @@ def collected_test_files(repo_root: Path) -> frozenset[str]:
         "-p",
         "no:randomly",
     ]
-    environment = {**os.environ, "PYTEST_ADDOPTS": ""}
     try:
         completed = subprocess.run(
-            command,
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=environment,
+            command, cwd=repo_root, capture_output=True, text=True, check=False
         )
     except OSError as error:
         raise _blind(f"the guard could not run the collector subprocess ({error})") from error
