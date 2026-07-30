@@ -4221,56 +4221,13 @@ class TestEveryStatedBoundIsTrueOfItsMechanism:
 
 # ---------------------------------------------------------------------------
 # 21. The committed attack harness must be able to MEASURE (D13)
+#
+# ⚠ MOVED to `scripts/test_wrong_builds.py` (operator-ruled 2026-07-30). The pin is about
+# `wrong_builds.py`'s own registry, not about this instrument's behaviour, and the repository's
+# idiom is a committed contract per committed tool (`scripts/test_mutation_proof.py`). It stays
+# under `scripts/`, which is both a testpaths entry and a MEMBERS root, so it is gated on both
+# axes from birth — the alternative is a guard nobody runs.
 # ---------------------------------------------------------------------------
-
-
-class TestTheCommittedWrongBuildsCanActuallyRun:
-    """Every build in ``scripts/wrong_builds.py`` must LAND and PARSE against this instrument.
-
-    ⚠ **THE CLASS THIS PINS, MEASURED (D13, ``coldaudit-44-1``, 2026-07-29).** ``WB19`` — the
-    over-claiming clean render, the build ruling R9 was written to kill — shipped with an escaped
-    quote inside a triple-quoted replacement. The text it installed ended in TWO quotes, so the
-    patched module never parsed, the run collected ``1 error`` instead of the contract, and the
-    census printed ``21 built · 20 killed``. **The kill was reported and had never been
-    obtained.** The harness's own per-build guard fired correctly; nothing checked that a build
-    was RUNNABLE at all, and a build that cannot run is a measurement nobody has.
-
-    TWO failure modes, one pin, because they are the same defect at different times: a
-    replacement that is not valid Python (the mutation cannot be graded) and an ANCHOR that no
-    longer matches exactly once (the mutation cannot land, so the CORRECT build is graded and
-    reads as a survivor). Both are silent in a census; both are one string comparison here.
-
-    ⚠ **AND THE TRADE, STATED SO IT IS MET DELIBERATELY:** this pin couples the contract to the
-    harness's anchors, so a refactor of ``gated_ground.py`` that moves an anchored line reddens
-    it. That is the intended direction — an attack harness whose anchors have rotted measures
-    nothing while still printing a census — and the repair is to re-anchor the build, never to
-    delete this pin. It runs no subprocess: it is string substitution and :func:`ast.parse`.
-    """
-
-    def test_every_committed_wrong_build_lands_exactly_once_and_parses(self) -> None:
-        import wrong_builds
-
-        pristine = Path(gg.__file__).read_text(encoding="utf-8")
-        assert wrong_builds.WRONG_BUILDS, (
-            "the attack harness declares no builds at all, so this ∀ is vacuous and the census "
-            "it guards would be a count of nothing"
-        )
-        broken: dict[str, str] = {}
-        for name in sorted(wrong_builds.WRONG_BUILDS):
-            try:
-                patched = wrong_builds.apply(name, pristine)
-            except SystemExit as anchor_failure:
-                broken[name] = f"cannot LAND — {anchor_failure}"
-                continue
-            try:
-                ast.parse(patched)
-            except SyntaxError as syntax_failure:
-                broken[name] = f"does not PARSE — {syntax_failure}"
-        assert not broken, (
-            f"{len(broken)} of {len(wrong_builds.WRONG_BUILDS)} committed wrong build(s) cannot "
-            f"measure anything, so the census counts them without ever having graded them:\n"
-            + "\n".join(f"  {name}: {why}" for name, why in sorted(broken.items()))
-        )
 
 
 # ---------------------------------------------------------------------------

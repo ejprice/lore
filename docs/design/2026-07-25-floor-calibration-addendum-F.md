@@ -465,6 +465,25 @@ this table adds this addendum's own, so the ledger stays one list.
    > not type defects** — the same thing that made #261 look 6× larger than it was, and the same
    > fix (a leg-scoped `MYPYPATH`, as packet 44 gave `docs/eval`). Whoever picks up #188 should
    > re-measure in the LEG shape before sizing it; 24 is a different job from 45.
+   >
+   > ⚠⚠ **CORRECTION, 2026-07-30 (fixer-44-audit-1, D6 of `coldaudit-44-1`): EVERY FORWARD-LOOKING
+   > CLAIM IN THE TWO PARAGRAPHS ABOVE WAS FALSIFIED BY THE SAME PACKET, ON THE SAME DAY, HOURS
+   > LATER.** The original text is left standing because a design note is a record of what was
+   > believed when it was written; what follows is what is TRUE at `9377af5`, each item
+   > re-derived here rather than inherited:
+   > * **`scripts/` is INSIDE `scripts/typecheck.sh` MEMBERS** since `bd6fb73`, and `#188` went to
+   >   **zero** at `4bf4399`. **Both** axes are closed. Nobody needs to "pick up #188", and the
+   >   45-vs-24 sizing advice describes a job that no longer exists — keep it as the measurement
+   >   it is (the leg-shape lesson generalises), not as a work item.
+   > * **"a bare gated run collects 352 nodes from that tree" is stale by construction**: it was
+   >   measured before the packet's own instrument landed in the same tree. Re-derived by
+   >   `uv run pytest --collect-only -q scripts`, that number has read **352**, then **667** (at
+   >   `9377af5`, 2026-07-29, `coldaudit-44-1`), then **669**, then **670** — the last two inside
+   >   this single fix wave as it added pins, with `scripts/test_gated_ground.py` going
+   >   **315 → 318**. **Four values in two days.** A collected-node count of a tree the packet is
+   >   ACTIVELY ADDING TESTS TO has a shelf life of hours: derive it at the moment you need it,
+   >   never cite it — and note that this very bullet was written with **669** in it and was
+   >   falsified by its own author's next commit-worth of work, which is the point.
    > *(The identical raise is logged as `F12.2 — SURVIVES UNCHANGED` in the r2 amendment ledger;
    > that row was not edited here — see this packet's builder report for the flagged edit.)*
 3. **`capture_git_identity`'s silent `(None, None)`** — live production defect, four

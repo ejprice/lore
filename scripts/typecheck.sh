@@ -49,8 +49,15 @@ set -uo pipefail
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." || exit 1
 
 # ``MEMBERS`` IS A LIST OF TYPECHECK ROOTS, NOT OF WORKSPACE MEMBERS — the name is
-# historical and two of the entries are not members at all. Read it as "every tree mypy
-# must cover".
+# historical, and the entries that are not workspace members at all are exactly the ones
+# bulleted immediately below. Read it as "every tree mypy must cover".
+#
+# ⚠ The count that used to sit in that sentence said "two" and the bullets said three: it was
+# true at ``2bc7e97`` and falsified by ``bd6fb73`` — the SAME PACKET, which added ``scripts``
+# and updated the list but not the number (D4, ``coldaudit-44-1``, 2026-07-29). A free numeric
+# in taught prose is restated rather than derived; the sentence now points AT the list, so the
+# next entry cannot falsify it. Re-derive with:
+#   python3 -c 'import re,tomllib;m=tomllib.load(open("pyproject.toml","rb"))["tool"]["uv"]["workspace"]["members"];r=re.search(r"^MEMBERS=\(([^)]*)\)\s*$",open("scripts/typecheck.sh").read(),re.M).group(1).split();print([x for x in r if x not in m])'
 #
 # * ``skills`` is the deploy skill's script tree (ruling R9, packet 42). It was ungated
 #   ground in every other respect WHEN R9 WAS WRITTEN, and packet 42 audits a resolver
@@ -99,8 +106,9 @@ MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval scripts)
 #
 # ``scripts`` is the SAME SHAPE at larger scale (#188, 2026-07-29). ``scripts/`` is not a
 # package: its modules import each other as top-level names behind the house
-# ``sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`` idiom — eleven sites
-# use it — which resolves at runtime and is invisible to mypy from the repo root under
+# ``sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`` idiom — every contract
+# in this directory opens with it, and several of the tools do — which resolves at runtime
+# and is invisible to mypy from the repo root under
 # ``explicit_package_bases``. Measured 2026-07-29 at ``f033a87``: 45 errors bare, 24 with
 # the env var, so **21 of the 45 were import-resolution noise, not type defects**. The same
 # leg-scoped-not-global reasoning applies with the same force: on the GLOBAL ``mypy_path``,
@@ -112,6 +120,15 @@ MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval scripts)
 # ``uv run mypy scripts`` reports 21-ish spurious import errors AND the follow-on
 # ``unused-ignore`` noise they mask. The invocation that matches this gate is
 # ``MYPYPATH=scripts uv run mypy scripts``.
+#
+# ⚠ THE SITE COUNT THAT USED TO SIT IN THE PARAGRAPH ABOVE SAID "eleven sites" AND MATCHED
+# NOTHING (D5, ``coldaudit-44-1``, 2026-07-29) — falsified by this packet's own additions.
+# Derived 2026-07-30 at ``9377af5``, WITH ITS SCOPE STATED because the paragraph is about
+# ``scripts/``: **9** files under ``scripts/`` carry the idiom verbatim and **12** carry any
+# ``sys.path.insert``; repository-wide the same two readings give **10** and **31**. Four
+# numbers for one sentence, which is why the prose no longer carries one. Re-derive with:
+#   git grep -l 'sys\.path\.insert(0, os\.path\.dirname(os\.path\.abspath(__file__)))' -- 'scripts/*.py' | wc -l
+#   git grep -l 'sys\.path\.insert' -- 'scripts/*.py' | wc -l
 declare -A MEMBER_MYPYPATH=(
     [docs/eval]="docs/eval"
     [scripts]="scripts"
