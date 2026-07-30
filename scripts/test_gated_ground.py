@@ -2928,6 +2928,31 @@ class TestTheServedSurfaceIsOneDerivation:
 # ---------------------------------------------------------------------------
 
 
+def _environment_variables_the_instrument_reads() -> set[str]:
+    """Every environment variable name the instrument reads, DERIVED from its own AST.
+
+    Used to check a stated bound against the code rather than against prose: a bound enumerating
+    what the memo key does not cover must not name a variable the key demonstrably reads.
+    """
+    names: set[str] = set()
+    for node in ast.walk(_instrument_ast()):
+        if not isinstance(node, ast.Call):
+            continue
+        target = node.func
+        reads_environment = (
+            isinstance(target, ast.Attribute)
+            and target.attr == "get"
+            and isinstance(target.value, ast.Attribute)
+            and target.value.attr == "environ"
+        ) or (isinstance(target, ast.Attribute) and target.attr == "getenv")
+        if not reads_environment or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            names.add(first.value)
+    return names
+
+
 def _instrument_ast() -> ast.Module:
     """The instrument's own source, parsed. Read from ``gg.__file__``, never from a path."""
     return ast.parse(Path(gg.__file__).read_text(encoding="utf-8"))
@@ -3786,6 +3811,54 @@ class TestTheCollectorIsMemoisedAndTheMemoInvalidates:
                 f"the file was silenced and the answer still contains it: {after}"
             )
 
+    def test_an_inherited_pytest_addopts_moves_the_memo_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # R10's rider, paid in full (ruling 2026-07-30). The collector child INHERITS this
+        # process's environment, so an inherited PYTEST_ADDOPTS decides what it answers — and a
+        # value that CHANGES inside one process altered the answer while the key stood still. That
+        # was a documented BOUND until the operator granted the one allowlist entry that lets the
+        # fingerprint read it; a bound is what you pin when you cannot close the hole, and this one
+        # is now closed rather than described.
+        #
+        # TWO LEGS, because either alone passes for the wrong reason: the first proves the answer
+        # actually changes (so the pin is measuring collection and not a hash), the second proves
+        # the KEY moves even for a value whose effect on the answer is nil (so the pin is measuring
+        # the variable and not a coincidence downstream of it).
+        repository = _minimal_repository(
+            tmp_path, extra_files=["loremaster/tests/probes/test_probe.py"]
+        )
+        monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+        calls = self._counting_collector(monkeypatch)
+        before = gg.collected_test_files(repository.root)
+        assert "loremaster/tests/probes/test_probe.py" in before, "precondition"
+
+        monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=loremaster/tests/probes")
+        after = gg.collected_test_files(repository.root)
+        assert "loremaster/tests/probes/test_probe.py" not in after, (
+            f"the inherited PYTEST_ADDOPTS now hides that directory from the collector, and the "
+            f"memo served the answer from before it changed — a stale healthy verdict with a "
+            f"fresh receipt: {sorted(after)}"
+        )
+        assert len(calls) == 2, (
+            f"the environment changed what the child measures and no second subprocess ran, so "
+            f"the key does not cover it: {len(calls)} collector call(s)"
+        )
+
+        # LEG 2 — the key must move for the VARIABLE, not only for its consequences.
+        testpaths = gg.pytest_testpaths(repository.root)
+        tracked = gg.tracked_python_files(repository.root)
+        monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:randomly")
+        inert = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+        monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:cacheprovider")
+        other_inert = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+        assert inert != other_inert, (
+            "two DIFFERENT inherited PYTEST_ADDOPTS values produced the same fingerprint, so the "
+            "key is blind to the variable — it would only ever notice a change whose effect it "
+            "could already see in the files, which is precisely the change it does not need to "
+            "notice"
+        )
+
     def test_a_refusal_is_never_memoised(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3969,15 +4042,40 @@ class TestEveryStatedBoundIsTrueOfItsMechanism:
             f"missing from it is a gate this guard cannot see being switched off."
         )
 
-    def test_the_memoisation_bound_states_what_the_key_does_not_cover(self) -> None:
-        # PIN THE MISS. The memo's key is filesystem state; an in-process change to the inherited
-        # PYTEST_ADDOPTS would not move it, and closing that would mean reading the environment
-        # from this instrument — which this repository's ONE secret-resolution entry point governs
-        # (an allowlist entry there is a DESIGN decision, not this guard's to take). An unpinned
-        # known limitation is indistinguishable from an unknown one.
+    def test_the_memoisation_bound_never_names_a_variable_the_key_already_covers(self) -> None:
+        # ⚠ **A BOUND DESCRIBING A HOLE ALREADY CLOSED IS THE NATURAL-LANGUAGE DEFECT INVERTED** —
+        # false in the safe direction is still false, and this is that rule turned on my own bound.
+        # Until 2026-07-30 this bound named PYTEST_ADDOPTS as the residual; the operator then
+        # granted the one allowlist entry that let the fingerprint read it, so naming it as OPEN
+        # would now teach a reader that a closed door is open.
+        #
+        # DERIVED, never matched against prose: the environment variables the instrument actually
+        # reads come from its own AST, and none of them may appear in the trigger that enumerates
+        # what is still uncovered. The trigger must also name something the instrument does NOT
+        # read, or the bound describes nothing at all.
         bound = self._bound("collector-memoisation")
         assert "fingerprint" in bound.summary.lower() or "memo" in bound.summary.lower()
-        assert bound.reopen_trigger.strip()
+        covered = _environment_variables_the_instrument_reads()
+        assert covered, (
+            "the instrument reads no environment variable, so either the allowlist-granted read "
+            "was removed (and this bound must go back to naming PYTEST_ADDOPTS as open) or this "
+            "derivation is broken"
+        )
+        stale = sorted(name for name in covered if name in bound.reopen_trigger)
+        assert not stale, (
+            f"the re-open trigger enumerates what the memo key does NOT cover, and it names "
+            f"{stale} — variables the fingerprint demonstrably reads. A bound teaching a closed "
+            f"hole as open is false in the safe direction, which is still false."
+        )
+        residual = [
+            token.strip(",.;")
+            for token in bound.reopen_trigger.split()
+            if token.strip(",.;").isupper() and "_" in token
+        ]
+        assert residual, (
+            f"the trigger names no uncovered variable at all, so this bound states nothing a "
+            f"reader can watch for: {bound.reopen_trigger!r}"
+        )
 
     def test_the_pattern_platform_bound_matches_the_port_that_was_written(self) -> None:
         # The port reproduces the POSIX branch of pytest's matcher; the Windows branch is absent

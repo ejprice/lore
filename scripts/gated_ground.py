@@ -74,10 +74,16 @@ indistinguishable from an unknown one.
   the sidecar's CONTENT: presence alone is the refusal, because a model of another tool's
   precedence rules is a second place to be wrong.
 * ``collector-memoisation``:
-  The collector answer is memoised behind a fingerprint of its file inputs.
-  The fingerprint covers the gate configuration files, every tracked ``.py`` and every ``.py``
-  under a collection root — so a change it cannot see (an inherited PYTEST_ADDOPTS altered inside
-  one process; an installed plugin, which cannot change mid-process) would serve a stale answer.
+  The memo's fingerprint covers the collector's file inputs and PYTEST_ADDOPTS, and no other variable.
+  It covers the gate configuration files, every tracked ``.py``, every ``.py`` under a collection
+  root, and the inherited PYTEST_ADDOPTS (closed 2026-07-30 under the narrow allowlist grant).
+  MEASURED over the installed pytest's own source, the residual is three further variables it
+  reads that can change what a collection produces — PYTEST_PLUGINS,
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD and PY_IGNORE_IMPORTMISMATCH — none of which any gate run in
+  this repository sets. Covering them needs no new allowlist entry (the scan keys per FUNCTION,
+  and this function already has one); it needs a ruling, which is why this bound is stated rather
+  than deleted. An installed plugin is NOT in the residual: the memo lives for one process, and a
+  package set cannot change inside one.
 * ``collection-pattern-platform``:
   LEG B ports the POSIX branch of pytest's path matcher; the Windows branch is absent.
   Every path here comes from ``git ls-files``, which emits POSIX separators, and the port is
@@ -470,11 +476,15 @@ STATED_BOUNDS: tuple[StatedBound, ...] = (
     ),
     StatedBound(
         identifier="collector-memoisation",
-        summary="The collector answer is memoised behind a fingerprint of its file inputs.",
+        summary=(
+            "The memo's fingerprint covers the collector's file inputs and PYTEST_ADDOPTS, and no "
+            "other variable."
+        ),
         reopen_trigger=(
-            "the collector gains a way to report the inputs it actually read, or the "
-            "environment-read seam admits an operational knob for this guard; then the memo key "
-            "can cover what this one cannot"
+            "a gate run ever sets PYTEST_PLUGINS, PYTEST_DISABLE_PLUGIN_AUTOLOAD or "
+            "PY_IGNORE_IMPORTMISMATCH — the three further variables the installed pytest reads "
+            "that can change what a collection produces; covering them needs a ruling, not a new "
+            "allowlist entry"
         ),
     ),
     StatedBound(
@@ -841,6 +851,14 @@ def _collector_input_fingerprint(
     the inputs collides with the healthy one, which is a stale answer wearing a fresh receipt —
     the memo serving the very false clear it was cheap enough to avoid.
 
+    ``PYTEST_ADDOPTS`` is hashed with the files, and the distinction is the whole of the ruling
+    that allowed it: it is read as a CACHE KEY, never as configuration. The inherited value is
+    passed to the child untouched and still decides what the collector answers — this guard
+    neither neutralises nor resolves it. Without the read, a value that CHANGES inside one process
+    alters the answer while the key stands still, and the memo serves a stale healthy verdict.
+    (Granted 2026-07-30 as a narrow one-entry extension of this repository's ONE-secret-resolution
+    seam; the entry and its reasoning live in that seam's own allowlist, not here.)
+
     ⚠ **WHICH HALF OF THE MEMO KEY IS LOAD-BEARING, measured rather than assumed.** The paths hashed
     here are ABSOLUTE, so this digest already distinguishes two byte-identical trees at different
     roots — and the ``repo_root`` component of the key is therefore redundant, kept as defence in
@@ -850,6 +868,8 @@ def _collector_input_fingerprint(
     becomes the only thing carrying that property and this note is the trigger to re-pin it.
     """
     digest = hashlib.blake2b()
+    digest.update(os.environ.get("PYTEST_ADDOPTS", "").encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0")
     for path in _collector_input_paths(repo_root, testpaths, tracked):
         try:
             content = path.read_bytes()

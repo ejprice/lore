@@ -1017,6 +1017,18 @@ ENV_READ_ALLOWLIST: dict[str, str] = {
     "loremaster/server.py::main": (
         "LORE_CONFIG default for the --config argument — a filesystem path."
     ),
+    "scripts/gated_ground.py::_collector_input_fingerprint": (
+        "an operational knob read as a CACHE KEY, never as configuration — the inherited value "
+        "still decides what is measured. The gated-ground guard memoises its collector subprocess "
+        "behind a fingerprint of that subprocess's inputs, and PYTEST_ADDOPTS is one of those "
+        "inputs: the child inherits it, so a value that CHANGES inside one process alters what the "
+        "collector answers while the key stands still, and the memo then serves a stale healthy "
+        "verdict. Reading it here neither resolves nor neutralises anything — the inherited value "
+        "is passed through untouched and still governs the child. Granted 2026-07-30 as a NARROW "
+        "one-entry scope extension under packet 44 ruling R10, whose rider is that a memo's "
+        "invalidation pin is the price of its speed; pinned by "
+        "TestTheCollectorIsMemoisedAndTheMemoInvalidates."
+    ),
     "scripts/mutation_proof.py::main": (
         "forwards the PARENT environment into a pytest subprocess (``{**os.environ, ...}``); "
         "reads no named variable and resolves nothing."
