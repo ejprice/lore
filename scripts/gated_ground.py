@@ -7,10 +7,10 @@ Two legs, each quantified over INPUTS (the files git tracks), never over gate se
 * **LEG B (execution)** — every tracked test-shaped file is one pytest ACTUALLY COLLECTS,
   measured by a ``--collect-only`` subprocess over the same tree, or is exempt.
 
-The legs are SEPARATE because three of the four historical instances of this defect class were
-HALF-gaps — covered on one axis and naked on the other. The union of the two gate sets is green
-over exactly those trees, so a guard that collapses the legs into one question is a wrong build
-that ships green.
+The legs are SEPARATE because the instances that prompted this instrument were HALF-gaps —
+covered on one axis and naked on the other (#188, #233 and #261 each in a different direction).
+The union of the two gate sets is green over exactly those trees, so a guard that collapses the
+legs into one question is a wrong build that ships green.
 
 LEG B asks the COLLECTOR rather than parsing pytest's exclusion surface, because that surface
 includes arbitrary code in a ``conftest.py`` (``collect_ignore``, ``collect_ignore_glob``) — an
@@ -229,8 +229,9 @@ class Exemption:
             raise InvalidExemption("an exemption names no root, so it is a claim about nothing")
         if _widens_to_whole_tree(self.root):
             raise InvalidExemption(
-                f"exemption root {self.root!r} widens to the whole repository, which turns the "
-                f"allowlist into an off switch for an entire axis"
+                f"exemption root {self.root!r} widens to the whole repository, or escapes it: the "
+                f"first turns the allowlist into an off switch for an entire axis, and the second "
+                f"exempts ground this repository does not contain"
             )
 
     def _validate_reason(self) -> None:
@@ -459,8 +460,9 @@ def typecheck_roots(repo_root: Path) -> list[str]:
     for root in roots:
         if _widens_to_whole_tree(root):
             raise _blind(
-                f"MEMBERS entry {root!r} widens to the whole tree, which would mark every file "
-                f"covered and report no gap at all"
+                f"MEMBERS entry {root!r} widens to the whole tree, or escapes the repository "
+                f"altogether: either way it would mark files covered that this guard cannot "
+                f"reason about, and report no gap at all"
             )
         if not (repo_root / root).exists():
             raise _blind(
@@ -559,8 +561,9 @@ def pytest_testpaths(repo_root: Path) -> list[str]:
     for testpath in testpaths:
         if _widens_to_whole_tree(testpath):
             raise _blind(
-                f"testpaths entry {testpath!r} widens to the whole tree, which would make every "
-                f"test-shaped file read as covered and report no execution gap at all"
+                f"testpaths entry {testpath!r} widens to the whole tree, or escapes the repository "
+                f"altogether: either way it would make test-shaped files read as covered that "
+                f"this guard cannot reason about, and report no execution gap at all"
             )
         if not (repo_root / testpath).is_dir():
             raise _blind(
