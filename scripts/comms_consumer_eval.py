@@ -83,8 +83,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Protocol
 
-from pydantic import SecretStr
-
 # --------------------------------------------------------------------------- #
 # 1. MEASUREMENT PINS
 #
@@ -949,12 +947,30 @@ class LiveSurfaceProvider:
                 namespace="unused-no-connection-is-opened",
                 database="unused",
                 user="unused",
-                # ``AgentRegistry`` declares ``password: SecretStr`` and hands it
-                # straight to ``signin_credentials`` (#211). No connection is ever
-                # opened here, so this is a typing correction, not a behaviour change
-                # — but a bare ``str`` was the shape that raised ``BufferError`` at
-                # signin the day something DID connect.
-                password=SecretStr("unused"),
+                # ⚠ TWO REPO INVARIANTS COLLIDE ON THIS LINE, AND THE SECURITY ONE WINS
+                # (#188, 2026-07-29). ``AgentRegistry`` declares ``password: SecretStr``,
+                # so a bare ``str`` is an ``arg-type`` error under the ``scripts``
+                # typecheck leg. The obvious fix — ``SecretStr("unused")`` — is
+                # FORBIDDEN here: ``test_secret_typing.py::
+                # test_secretstr_is_minted_only_where_a_credential_ORIGINATES`` allows a
+                # ``SecretStr(...)`` mint ONLY in ``loremaster/config.py`` and
+                # ``scripts/survey_txn_contention_102.py``, because minting one at a call
+                # site is attack shape S6 — the type then proves the value is wrapped AT
+                # the call, never that it was not bare the whole way. Writing the wrap
+                # here turns that pin RED (measured: it did).
+                #
+                # So the error is suppressed NARROWLY, by code, with the reason attached —
+                # never with a blanket ignore. This registry NEVER CONNECTS: its URL is
+                # ``ws://127.0.0.1:1`` and ``_query`` is replaced below, so the value is
+                # inert and no credential is being laundered.
+                #
+                # THE FORK, surfaced rather than settled: the consistent alternative is to
+                # add this file to that pin's ``allowed`` origins, exactly as
+                # ``survey_txn_contention_102.py`` already is. That EXPANDS a security
+                # allowlist, which is a design decision for the operator, not a builder's
+                # — and it is a test file outside packet 44's writable set. If that ruling
+                # lands, delete this ignore and write the ``SecretStr``.
+                password="unused",  # type: ignore[arg-type]
             )
 
             # Parameter NAMES mirror ``AgentRegistry._query(self, statement, params)``
