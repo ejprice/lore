@@ -74,16 +74,24 @@ indistinguishable from an unknown one.
   the sidecar's CONTENT: presence alone is the refusal, because a model of another tool's
   precedence rules is a second place to be wrong.
 * ``collector-memoisation``:
-  The memo's fingerprint covers the collector's file inputs and PYTEST_ADDOPTS, and no other variable.
-  It covers the gate configuration files, every tracked ``.py``, every ``.py`` under a collection
-  root, and the inherited PYTEST_ADDOPTS (closed 2026-07-30 under the narrow allowlist grant).
-  MEASURED over the installed pytest's own source, the residual is three further variables it
-  reads that can change what a collection produces — PYTEST_PLUGINS,
-  PYTEST_DISABLE_PLUGIN_AUTOLOAD and PY_IGNORE_IMPORTMISMATCH — none of which any gate run in
-  this repository sets. Covering them needs no new allowlist entry (the scan keys per FUNCTION,
-  and this function already has one); it needs a ruling, which is why this bound is stated rather
-  than deleted. An installed plugin is NOT in the residual: the memo lives for one process, and a
-  package set cannot change inside one.
+  The memo key covers a DERIVED address set plus PYTEST_ADDOPTS; every other collector input is outside it.
+  The address set is the one :func:`_collector_input_paths` derives — the gate configuration
+  files, every tracked ``.py``, every ``.py`` under a collection root, and the ``conftest.py``
+  chain from the root down to each collection root — plus the inherited ``PYTEST_ADDOPTS``
+  (closed 2026-07-30 under the narrow allowlist grant). **The residual is the COMPLEMENT of that
+  set, stated as a property because the ROSTER form of this bound was false:** it named three
+  environment variables as the whole residual while an untracked ancestor ``conftest.py`` — a
+  FILE, loaded by a mechanism the roster's reasoning never reached — sat outside the key, and the
+  memo served a byte-identical healthy render over a silenced tree (D1, ``coldaudit-44-1``,
+  2026-07-29; the chain closed it 2026-07-30). Enumerating what is uncovered is the shape this
+  repository has the most receipts against, and this bound was an instance of it.
+  Known INSTANCES of the complement, measured over the installed pytest's own source and recorded
+  as instances rather than as its extent: ``PYTEST_PLUGINS``, ``PYTEST_DISABLE_PLUGIN_AUTOLOAD``
+  and ``PY_IGNORE_IMPORTMISMATCH``, none of which any gate run in this repository sets. Closing
+  any of them needs no new allowlist entry (the environment-read scan keys per FUNCTION, and this
+  function already has one); it needs a ruling, which is why this bound is stated rather than
+  deleted. An installed plugin is a WEAK instance: the memo lives for one process, and a package
+  set cannot change inside one.
 * ``collection-pattern-platform``:
   LEG B ports the POSIX branch of pytest's path matcher; the Windows branch is absent.
   Every path here comes from ``git ls-files``, which emits POSIX separators, and the port is
@@ -341,6 +349,16 @@ class Exemption:
 #: to exempt. A row here is a design decision requiring a ruling — and read the history before
 #: proposing a tree-root one, because a whole-tree row is an enumeration of an OPEN set whose
 #: staleness is silent, which is why resolving the debt was ruled better than exempting it.
+#:
+#: ⚠ **THE TABLE IS EMPTY; THE MECHANISM IS NOT ABSENT** (D8, ``coldaudit-44-1``, 2026-07-29 —
+#: ruled R13, reword rather than delete). The served failure messages used to say *"there is no
+#: exemption mechanism, deliberately"*, pinned as a required substring, while this module ships
+#: :class:`Exemption`, :class:`InvalidExemption`, :attr:`Fate.EXEMPT_TABLE`, the public
+#: ``exemptions=`` parameter on :func:`classify` and :func:`ungated_ground`, seven validation
+#: branches and roughly thirty pins exercising them. Under THE CONSUMER LAW an agent learns the
+#: contract FROM that message, and would have concluded the parameter it can see does not exist.
+#: The operational advice was right and the sentence about the code was false; the messages now
+#: state the TREE FACT (the table is empty) and the GATE on changing it (an operator ruling).
 EXEMPTIONS: tuple[Exemption, ...] = ()
 
 
@@ -477,14 +495,17 @@ STATED_BOUNDS: tuple[StatedBound, ...] = (
     StatedBound(
         identifier="collector-memoisation",
         summary=(
-            "The memo's fingerprint covers the collector's file inputs and PYTEST_ADDOPTS, and no "
-            "other variable."
+            "The memo key covers a DERIVED address set plus PYTEST_ADDOPTS; every other collector "
+            "input is outside it."
         ),
         reopen_trigger=(
-            "a gate run ever sets PYTEST_PLUGINS, PYTEST_DISABLE_PLUGIN_AUTOLOAD or "
-            "PY_IGNORE_IMPORTMISMATCH — the three further variables the installed pytest reads "
-            "that can change what a collection produces; covering them needs a ruling, not a new "
-            "allowlist entry"
+            "the collector's answer is ever made to depend, within ONE process, on state outside "
+            "the address set _collector_input_paths derives — a second environment variable, an "
+            "installed distribution, a non-.py file. The residual here is the COMPLEMENT of a "
+            "derived set and not a roster of names: the roster form of this bound named three "
+            "environment variables while a file-shaped hole sat outside it (D1, coldaudit-44-1), "
+            "which is this repository's instrument lesson in the bound that describes an "
+            "instrument"
         ),
     ),
     StatedBound(
@@ -805,7 +826,7 @@ _COLLECTOR_MEMO: dict[tuple[str, str], frozenset[str]] = {}
 def _collector_input_paths(repo_root: Path, testpaths: Sequence[str], tracked: Sequence[str]) -> list[Path]:
     """Every file whose CONTENT can change what the collector answers, in a stable order.
 
-    Three populations, each for a reason read out of pytest's own source rather than guessed:
+    Four populations, each for a reason read out of pytest's own source rather than guessed:
 
     * **the gate configuration files** — ``locate_config`` consults the invocation directory and
       its ANCESTORS only, never a subdirectory, so the candidates at ``repo_root`` are the whole
@@ -815,7 +836,18 @@ def _collector_input_paths(repo_root: Path, testpaths: Sequence[str], tracked: S
     * **every ``.py`` under a collection root, tracked or not** — pytest collects UNTRACKED files,
       which is exactly why ``scripts/tree_fingerprint.sh`` cannot be reused here: it fingerprints
       the TRACKED tree (index blobs plus the unstaged diff) and by its own stated bound a
-      brand-new untracked file does not move it.
+      brand-new untracked file does not move it;
+    * **the ``conftest.py`` CHAIN from ``repo_root`` down to each collection root** — CONFTEST
+      LOADING IS A SECOND MECHANISM, and reasoning about ``locate_config`` alone does not reach
+      it. pytest walks rootdir → the collection target loading every ``conftest.py`` on the way,
+      so an UNTRACKED conftest in a directory that is an ANCESTOR of a testpath but is neither
+      ``repo_root`` nor itself under a testpath is loaded and is in none of the three populations
+      above. Such a file can silence the whole tree (``pytest_ignore_collect``), and the memo
+      then served a byte-identical HEALTHY render over a silenced tree — measured, with both
+      controls, by ``coldaudit-44-1`` (D1); ``loremaster/``, ``lorescribe/``, ``loresigil/``,
+      ``lorerunes/``, ``docs/``, ``skills/`` and ``skills/lore-deploy/`` are all live instances of
+      that shape in this checkout, and an untracked ``loremaster/conftest.py`` is an ordinary
+      thing for the honest engineer of the THREAT MODEL to add.
 
     A non-``.py`` file under a collection root is excluded deliberately: pytest's python plugin
     turns ``.py`` files into modules and nothing else, so no other file can become a collected
@@ -831,6 +863,11 @@ def _collector_input_paths(repo_root: Path, testpaths: Sequence[str], tracked: S
         )
     }
     paths.update(repo_root / relative for relative in tracked)
+    for testpath in testpaths:
+        ancestor = repo_root
+        for component in PurePosixPath(testpath).parts:
+            ancestor = ancestor / component
+            paths.add(ancestor / CONFTEST_FILENAME)
     for testpath in testpaths:
         for directory, subdirectories, filenames in os.walk(repo_root / testpath):
             subdirectories.sort()
@@ -896,11 +933,17 @@ def collected_test_files(repo_root: Path) -> frozenset[str]:
     measurement that justifies it and the reason the key is not the root alone.
 
     The child INHERITS this process's environment untouched — see the
-    ``inherited-pytest-environment`` bound. Neutralising ``PYTEST_ADDOPTS`` here would mean
-    reading the environment outside this repository's one secret-resolution entry point, and an
-    allowlist entry there is a DESIGN decision rather than a convenience for this guard. The same
-    boundary bounds the memo: an inherited value that CHANGES inside one process moves what the
-    collector would answer without moving this key (the ``collector-memoisation`` bound).
+    ``inherited-pytest-environment`` bound. NEUTRALISING ``PYTEST_ADDOPTS`` is a separate DESIGN
+    decision this guard has not taken: the granted allowlist entry lets the fingerprint READ the
+    value, never lets this function rewrite what the child inherits.
+
+    ⚠ **THIS PARAGRAPH USED TO SAY THE OPPOSITE, AND WAS FALSE FROM THE MOMENT THE GRANT LANDED**
+    (found 2026-07-30, fixer-44-audit-1; not in ``coldaudit-44-1``'s list): it read *"an inherited
+    value that CHANGES inside one process moves what the collector would answer without moving
+    this key"*, which is exactly what :meth:`test_an_inherited_pytest_addopts_moves_the_memo_key`
+    now proves FALSE — the fingerprint hashes the value, so the key moves with it. A docstring
+    teaching a hole its own contract has closed is the natural-language defect inverted; the
+    residual bound is the ``collector-memoisation`` COMPLEMENT, not this variable.
     """
     memo_key = (
         str(repo_root.resolve()),
@@ -1427,8 +1470,9 @@ def _types_message(path: str, scopes: _Scopes) -> str:
         f"{', '.join(scopes.typecheck_roots)}.\n"
         f"This pins REGISTRATION in the gates' configuration — it does not prove that mypy ran, "
         f"or passed; the gate's own exit code proves that.\n"
-        f"Fix: add its tree to the MEMBERS array in {RUNNER_RELATIVE_PATH}, or ESCALATE — there "
-        f"is no exemption mechanism, deliberately. Do not widen the receipts class to admit it."
+        f"Fix: add its tree to the MEMBERS array in {RUNNER_RELATIVE_PATH}, or ESCALATE — the "
+        f"exemption table is EMPTY and a row requires an operator ruling. Do not widen the "
+        f"receipts class to admit it."
     )
 
 
@@ -1441,8 +1485,8 @@ def _execution_message(path: str, scopes: _Scopes) -> str:
         f"This pins REGISTRATION in the gates' configuration — it does not prove that pytest "
         f"ran, or passed; the gate's own exit code proves that.\n"
         f"Fix: add its tree to testpaths in {MANIFEST_RELATIVE_PATH} and check the collector "
-        f"reaches it, or ESCALATE — there is no exemption mechanism, deliberately. Do not widen "
-        f"the receipts class to admit it."
+        f"reaches it, or ESCALATE — the exemption table is EMPTY and a row requires an operator "
+        f"ruling. Do not widen the receipts class to admit it."
     )
 
 

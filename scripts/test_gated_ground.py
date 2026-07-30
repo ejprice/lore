@@ -203,11 +203,18 @@ WHOLE_TREE_SCOPE_SPELLINGS: tuple[str, ...] = (
 MESSAGE_MUST_MENTION_REGISTRATION = "registration"
 MESSAGE_MUST_DISCLAIM_EXECUTION = "does not prove"
 #: ⚠ R4 — THESE REPLACE `finding number` / `re-open trigger`, WHICH WERE A FALSE GATE IN THE
-#: INSTRUMENT'S OWN MOUTH. Under F1 there is no exemption mechanism, so a message offering "add a
-#: pinned exemption row" named a route the system does not perform — this repo's false-gate law
-#: turned inward. The sanctioned outs are now: gate-cover it, or escalate.
+#: INSTRUMENT'S OWN MOUTH. F1 emptied the exemption TABLE, so a message offering "add a pinned
+#: exemption row" named a route no reader may take unilaterally — this repo's false-gate law
+#: turned inward. The sanctioned outs are: gate-cover it, or escalate.
 MESSAGE_MUST_DEMAND_ESCALATION = "escalate"
-MESSAGE_MUST_DENY_AN_EXEMPTION_MECHANISM = "there is no exemption mechanism"
+#: ⚠ **THIS USED TO PIN `"there is no exemption mechanism"`, AND THAT SENTENCE WAS FALSE** (D8,
+#: `coldaudit-44-1`, 2026-07-29; ruled R13 — reword, keep the machinery). The module ships
+#: `Exemption`, `InvalidExemption`, `Fate.EXEMPT_TABLE`, the public `exemptions=` parameter and
+#: seven validation branches, all exercised by this file. F1 emptied the TABLE; it did not delete
+#: the MECHANISM, and a pin held the wrong sentence in place. Under THE CONSUMER LAW the failure
+#: message is where an agent learns this contract, so it now states the tree fact and the gate on
+#: changing it: the table is EMPTY, and a row requires an operator ruling.
+MESSAGE_MUST_STATE_THE_EXEMPTION_TABLE_IS_EMPTY = "the exemption table is empty"
 MESSAGE_MUST_REFUSE_RECEIPTS_WIDENING = "do not widen the receipts class"
 
 #: A realistic module body. Not ``x = 1``: fixture files stand in for real committed
@@ -560,8 +567,28 @@ def findings_of(repo_root: Path, *, exemptions: Sequence[gg.Exemption] = ()) -> 
     ``ungated_ground`` returns a :class:`gg.Verdict`, not a list, precisely so a blind state
     cannot be served as a clean one (:class:`TestBlindnessIsMonotoneToTheServedSurface`). This
     helper keeps that design change from obscuring the pins that are about findings.
+
+    ⚠ **AND IT USED TO RE-INTRODUCE EXACTLY THE OBSCURING ITS OWN DOCSTRING PROMISED TO PREVENT**
+    (D2, ``coldaudit-44-1``, 2026-07-29). A blind verdict carries NO findings — the both-at-once
+    shape is refused at construction — so every caller reading "no findings" as "nothing wrong"
+    was satisfied by a guard that had read nothing. Two of those callers were the real-tree pins
+    (now on ``is_clean`` directly); the rest are fixture pins asserting a path is ABSENT from the
+    report, which a blind verdict satisfies vacuously.
+
+    **The refusal lives HERE and not at thirteen call sites**, because thirteen copies of one
+    decision is how a fix reaches twelve of them: any pin that only cares about findings gets
+    the guarantee that findings are a MEASUREMENT, and a pin that genuinely wants a blind tree
+    reads ``blind_sources`` off the verdict instead. Pinned by
+    :meth:`TestBlindnessIsMonotoneToTheServedSurface.test_the_findings_helper_refuses_a_blind_verdict`.
     """
-    return list(gg.ungated_ground(repo_root, exemptions=exemptions).findings)
+    verdict = gg.ungated_ground(repo_root, exemptions=exemptions)
+    assert not verdict.blind_sources, (
+        f"findings_of was asked for the findings of a BLIND verdict over {repo_root}. There are "
+        f"none, and their absence means nothing was measured — so any assertion about this list "
+        f"would pass for the wrong reason. Read the verdict's blind_sources instead:\n"
+        f"{verdict.render()}"
+    )
+    return list(verdict.findings)
 
 
 def fates_of(verdicts: Sequence[gg.FileVerdict], path: str) -> dict[gg.GateAxis, gg.Fate]:
@@ -1456,10 +1483,14 @@ class TestTheExemptionTableIsAnAllowlistOfTheSafe:
             f"set whose staleness is SILENT, which is why the frozen-roster design existed and "
             f"why resolving the debt was ruled better than exempting it."
         )
+        # ⚠ `is_clean`, NOT `.findings` (D2, `coldaudit-44-1`): a BLIND verdict carries no
+        # findings, so the truthiness form was satisfied by a guard that had read nothing — and
+        # "the tree is clean without the table" is exactly the claim a blind answer cannot make.
         with_none = gg.ungated_ground(REPO_ROOT, exemptions=())
-        assert not with_none.findings, (
+        assert with_none.is_clean, (
             f"the table is empty but the tree is not clean without it, so the emptiness is an "
-            f"artifact of the reader rather than a fact about the tree:\n{with_none.render()}"
+            f"artifact of the reader rather than a fact about the tree "
+            f"(state={with_none.state.name}):\n{with_none.render()}"
         )
 
     def test_the_validation_rules_survive_the_table_being_empty(self) -> None:
@@ -1906,6 +1937,20 @@ class TestTheArchivedReceiptsClass:
         served = gg.ungated_ground(repository.root, exemptions=())
         assert served.blind_sources and not served.is_clean
 
+    def test_the_findings_helper_refuses_a_blind_verdict(self, tmp_path: Path) -> None:
+        # D2's class, closed at the SEAM rather than at each call site. `findings_of` is the one
+        # helper every findings-only pin routes through, and a blind verdict's findings are an
+        # empty list that reads exactly like a clean tree — so "the path I am hunting is not in
+        # the report" passes vacuously on a guard that read nothing. The helper now refuses, and
+        # this is the pin that proves the refusal is live rather than a docstring promise.
+        repository = _minimal_repository(tmp_path, ruff_extend_exclude=["scratchpad"])
+        assert gg.ungated_ground(repository.root, exemptions=()).blind_sources, (
+            "precondition: this fixture makes the guard BLIND (the receipts root is not among "
+            "ruff's exclusions), which is the state the helper must refuse"
+        )
+        with pytest.raises(AssertionError, match="BLIND verdict"):
+            findings_of(repository.root, exemptions=())
+
     def test_a_receipts_class_matching_nothing_is_blind_not_clean(self, tmp_path: Path) -> None:
         repository = FixtureRepository(tmp_path)
         repository.write_typecheck_runner(members=["loremaster"], include_decoy_comment=False)
@@ -2344,7 +2389,7 @@ class TestTheFailureMessage:
             MESSAGE_MUST_MENTION_REGISTRATION,
             MESSAGE_MUST_DISCLAIM_EXECUTION,
             MESSAGE_MUST_DEMAND_ESCALATION,
-            MESSAGE_MUST_DENY_AN_EXEMPTION_MECHANISM,
+            MESSAGE_MUST_STATE_THE_EXEMPTION_TABLE_IS_EMPTY,
             MESSAGE_MUST_REFUSE_RECEIPTS_WIDENING,
         ],
     )
@@ -2356,8 +2401,11 @@ class TestTheFailureMessage:
             assert required in finding.message.lower(), (
                 f"{key}'s message omits {required!r}. §Q3.7: a message that does not state the "
                 f"registration/execution distinction promises a check this assertion does not "
-                f"perform — and one still offering 'add a pinned exemption row' names a route F1 "
-                f"DELETED, which is the same law turned inward.\n{finding.message}"
+                f"perform — and one offering 'add a pinned exemption row' names a route no reader "
+                f"may take unilaterally, which is the same law turned inward. The message states "
+                f"the TREE FACT (the table is empty) and the GATE on changing it (an operator "
+                f"ruling) — never that the mechanism is absent, which is D8's false "
+                f"sentence.\n{finding.message}"
             )
 
     def test_the_disclaimer_is_one_contiguous_claim_not_scattered_keywords(
@@ -3917,6 +3965,65 @@ class TestTheCollectorIsMemoisedAndTheMemoInvalidates:
             f"rather than serve the memoised answer from before the break: {raised.value}"
         )
 
+    def test_an_untracked_conftest_in_an_ANCESTOR_of_a_collection_root_moves_the_key(
+        self, tmp_path: Path
+    ) -> None:
+        # ⚠ D1, the BLOCKER `coldaudit-44-1` constructed: the memo served BYTE-IDENTICAL healthy
+        # bytes over a silenced tree. CONFTEST LOADING IS A SECOND MECHANISM — pytest walks
+        # rootdir → the collection target loading every `conftest.py` on the way — and the memo
+        # key's docstring reasoned only about `locate_config`, which consults the invocation
+        # directory and its ancestors. So an UNTRACKED conftest in a directory that is an ANCESTOR
+        # of a testpath, and is neither the root nor under a testpath, was in NONE of the three
+        # hashed populations, and one `pytest_ignore_collect` silenced the whole tree without
+        # moving the fingerprint. `loremaster/`, `lorescribe/`, `loresigil/`, `lorerunes/`,
+        # `docs/`, `skills/` and `skills/lore-deploy/` are all that shape in this checkout.
+        #
+        # THREE LEGS, because each kills a build the others wave through: the ADDRESS SET must
+        # contain the file (a build that fixed this by never memoising passes the other two), the
+        # KEY must move (a build that hashed the address list rather than its CONTENT passes the
+        # first), and the SERVED BYTES must differ (the false clear itself, which is the only leg
+        # a consumer can see).
+        repository = _minimal_repository(tmp_path)
+        testpaths = gg.pytest_testpaths(repository.root)
+        tracked = gg.tracked_python_files(repository.root)
+        healthy = gg.ungated_ground(repository.root, exemptions=())
+        assert healthy.is_clean, (
+            f"precondition: the fixture starts clean and this ask warms the memo:\n"
+            f"{healthy.render()}"
+        )
+        before = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+
+        ancestor_conftest = repository.root / "loremaster" / gg.CONFTEST_FILENAME
+        assert not any(
+            gg.is_under("loremaster", testpath) for testpath in testpaths
+        ), "precondition: the conftest's directory is an ANCESTOR of a testpath, not one itself"
+        ancestor_conftest.write_text(
+            "def pytest_ignore_collect(collection_path, config):\n    return True\n",
+            encoding="utf-8",
+        )
+        assert str(ancestor_conftest.relative_to(repository.root)) not in gg.tracked_python_files(
+            repository.root
+        ), "precondition: the silencer is UNTRACKED, so no tracked population can see it"
+
+        assert ancestor_conftest in gg._collector_input_paths(repository.root, testpaths, tracked), (
+            f"{ancestor_conftest} is loaded by the collector and is not in the derived address "
+            f"set, so its content cannot reach the key"
+        )
+        after = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+        assert after != before, (
+            "an untracked conftest in an ANCESTOR of a collection root did not move the "
+            "fingerprint, so the memo will serve the answer from before it appeared"
+        )
+        silenced = gg.ungated_ground(repository.root, exemptions=())
+        assert silenced.render() != healthy.render(), (
+            f"THE FALSE CLEAR: a conftest that silences the whole tree served bytes IDENTICAL to "
+            f"the healthy render. A consumer acting on this cannot know the tree it describes was "
+            f"never collected — the one failure this instrument may not have.\n{silenced.render()}"
+        )
+        assert not silenced.is_clean, (
+            f"the tree collects nothing and the verdict is still clean:\n{silenced.render()}"
+        )
+
     def test_two_different_trees_never_share_an_answer(self, tmp_path: Path) -> None:
         # The wrong-instance verb, at the memo: a key that ignored repo_root would serve one
         # tree's collection for another's, and every fixture case in this file would grade the
@@ -4067,14 +4174,34 @@ class TestEveryStatedBoundIsTrueOfItsMechanism:
             f"{stale} — variables the fingerprint demonstrably reads. A bound teaching a closed "
             f"hole as open is false in the safe direction, which is still false."
         )
-        residual = [
+        # ⚠ **THIS LEG USED TO DEMAND THE OPPOSITE, AND THE DEMAND WAS THE DEFECT** (D1,
+        # `coldaudit-44-1`, 2026-07-29). It required the trigger to NAME an uncovered variable —
+        # so the bound enumerated three environment variables and called that the residual, while
+        # an untracked ancestor `conftest.py`, a FILE, sat outside the key and let the memo serve
+        # a byte-identical healthy render over a silenced tree. A pin keyed on a roster of
+        # variable NAMES is structurally blind to a file-shaped hole: this repository's instrument
+        # lesson (the forbidden set is unbounded; the safe set is small and enumerable), reached
+        # by a pin that was enforcing the roster.
+        #
+        # So the direction is inverted. The residual is the COMPLEMENT of a derived address set,
+        # and a variable-shaped token in the trigger is the roster form growing back.
+        roster = [
             token.strip(",.;")
             for token in bound.reopen_trigger.split()
             if token.strip(",.;").isupper() and "_" in token
         ]
-        assert residual, (
-            f"the trigger names no uncovered variable at all, so this bound states nothing a "
-            f"reader can watch for: {bound.reopen_trigger!r}"
+        assert not roster, (
+            f"the trigger names {roster} — it is enumerating the residual again. The uncovered "
+            f"set is the COMPLEMENT of the address set {gg._collector_input_paths.__name__} "
+            f"derives, and the roster form of this bound named three environment variables while "
+            f"a file-shaped hole sat outside it (D1). State the property, not the members."
+        )
+        # ANTI-VACUITY, in the direction that survives the inversion: a complement states nothing
+        # unless it names the set it is the complement OF. Pinned as a SYMBOL, so renaming the
+        # derivation reddens the bound that describes it rather than silently stranding it.
+        assert gg._collector_input_paths.__name__ in bound.reopen_trigger, (
+            f"the trigger describes a complement without naming the derivation it complements, so "
+            f"a reader cannot tell what IS covered: {bound.reopen_trigger!r}"
         )
 
     def test_the_pattern_platform_bound_matches_the_port_that_was_written(self) -> None:
@@ -4093,6 +4220,60 @@ class TestEveryStatedBoundIsTrueOfItsMechanism:
 
 
 # ---------------------------------------------------------------------------
+# 21. The committed attack harness must be able to MEASURE (D13)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCommittedWrongBuildsCanActuallyRun:
+    """Every build in ``scripts/wrong_builds.py`` must LAND and PARSE against this instrument.
+
+    ⚠ **THE CLASS THIS PINS, MEASURED (D13, ``coldaudit-44-1``, 2026-07-29).** ``WB19`` — the
+    over-claiming clean render, the build ruling R9 was written to kill — shipped with an escaped
+    quote inside a triple-quoted replacement. The text it installed ended in TWO quotes, so the
+    patched module never parsed, the run collected ``1 error`` instead of the contract, and the
+    census printed ``21 built · 20 killed``. **The kill was reported and had never been
+    obtained.** The harness's own per-build guard fired correctly; nothing checked that a build
+    was RUNNABLE at all, and a build that cannot run is a measurement nobody has.
+
+    TWO failure modes, one pin, because they are the same defect at different times: a
+    replacement that is not valid Python (the mutation cannot be graded) and an ANCHOR that no
+    longer matches exactly once (the mutation cannot land, so the CORRECT build is graded and
+    reads as a survivor). Both are silent in a census; both are one string comparison here.
+
+    ⚠ **AND THE TRADE, STATED SO IT IS MET DELIBERATELY:** this pin couples the contract to the
+    harness's anchors, so a refactor of ``gated_ground.py`` that moves an anchored line reddens
+    it. That is the intended direction — an attack harness whose anchors have rotted measures
+    nothing while still printing a census — and the repair is to re-anchor the build, never to
+    delete this pin. It runs no subprocess: it is string substitution and :func:`ast.parse`.
+    """
+
+    def test_every_committed_wrong_build_lands_exactly_once_and_parses(self) -> None:
+        import wrong_builds
+
+        pristine = Path(gg.__file__).read_text(encoding="utf-8")
+        assert wrong_builds.WRONG_BUILDS, (
+            "the attack harness declares no builds at all, so this ∀ is vacuous and the census "
+            "it guards would be a count of nothing"
+        )
+        broken: dict[str, str] = {}
+        for name in sorted(wrong_builds.WRONG_BUILDS):
+            try:
+                patched = wrong_builds.apply(name, pristine)
+            except SystemExit as anchor_failure:
+                broken[name] = f"cannot LAND — {anchor_failure}"
+                continue
+            try:
+                ast.parse(patched)
+            except SyntaxError as syntax_failure:
+                broken[name] = f"does not PARSE — {syntax_failure}"
+        assert not broken, (
+            f"{len(broken)} of {len(wrong_builds.WRONG_BUILDS)} committed wrong build(s) cannot "
+            f"measure anything, so the census counts them without ever having graded them:\n"
+            + "\n".join(f"  {name}: {why}" for name, why in sorted(broken.items()))
+        )
+
+
+# ---------------------------------------------------------------------------
 # 15. THE INVARIANT
 # ---------------------------------------------------------------------------
 
@@ -4107,16 +4288,37 @@ class TestTheRealRepositoryIsFullyGated:
 
     ⚠ **THIS DOCSTRING USED TO OFFER A THIRD ROUTE** — *"do not add an exemption row without a
     finding number and a named re-open trigger"* — while
-    :data:`MESSAGE_MUST_DENY_AN_EXEMPTION_MECHANISM` is asserted into every failure message this
-    class can produce. F1 deleted the mechanism; a reader who meets the failure meets the
-    docstring, so the prose beside a pinned string is part of the served surface and was
-    contradicting it. There is no exemption mechanism: a row is a DESIGN decision requiring an
-    operator ruling, and the archived-receipts class is not to be widened to admit anything.
+    :data:`MESSAGE_MUST_STATE_THE_EXEMPTION_TABLE_IS_EMPTY` is asserted into every failure message
+    this class can produce. A reader who meets the failure meets the docstring, so the prose
+    beside a pinned string is part of the served surface and was contradicting it.
+
+    ⚠ **AND THE REPLACEMENT PROSE WAS FALSE IN THE OTHER DIRECTION** (D8, `coldaudit-44-1`,
+    2026-07-29; ruled R13). It read *"there is no exemption mechanism"* — but F1 emptied the
+    TABLE, and the mechanism (`Exemption`, `exemptions=`, its validation rules and the pins
+    exercising them) is shipped, exported and exercised by this very file. The true statement is
+    both halves at once: the table is EMPTY, and a row is a DESIGN decision requiring an operator
+    ruling. The archived-receipts class is not to be widened to admit anything.
     """
 
     def test_no_committed_python_is_ungated_on_either_axis(self) -> None:
-        findings = findings_of(REPO_ROOT, exemptions=())
-        assert not findings, (
-            f"{len(findings)} committed file/axis pair(s) are ungated ground:\n\n"
-            + "\n\n".join(finding.message for finding in findings)
+        # ⚠ **THIS ASSERTION USED TO READ `.findings`, AND SO IT PASSED ON A BLIND VERDICT** (D2,
+        # `coldaudit-44-1`, 2026-07-29). A blind verdict carries NO findings by construction —
+        # `Verdict.__post_init__` refuses the both-at-once shape — so `assert not findings` was
+        # satisfied by a guard that had read nothing at all, at the one pin this class calls THE
+        # assertion. Measured with `scripts/mutation_proof.py` against a forced-blind derivation:
+        # `2 passed in 0.04s`, both real-tree pins green over a guard that saw nothing.
+        #
+        # `is_clean` is the identity test against the single classifier (R9), so it is the only
+        # form that cannot be satisfied by an answer that does not exist; `render()` is the served
+        # surface, which names findings OR blind sources depending on which one happened.
+        #
+        # AND THE DEFAULT IS THE SHIPPED ONE (residual R-8): this is the invariant a consumer
+        # actually runs, so it exercises `EXEMPTIONS` rather than a stricter `()` no gate uses.
+        # The empty-table pin above re-derives the same tree with NO exemptions, which is the leg
+        # that keeps this one honest if a row is ever ruled in.
+        verdict = gg.ungated_ground(REPO_ROOT)
+        assert verdict.is_clean, (
+            f"the repository's verdict is {verdict.state.name}, not GATED_GROUND: "
+            f"{len(verdict.findings)} committed file/axis pair(s) are ungated ground and "
+            f"{len(verdict.blind_sources)} input(s) could not be read.\n\n{verdict.render()}"
         )
