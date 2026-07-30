@@ -60,9 +60,26 @@ cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." || exit 1
 # * ``docs/eval`` is the deploy smoke — ``smoke_p8b.py``, the instrument that caught #107
 #   and #131, each time as the only thing looking — plus that smoke's own suite (#238 put
 #   those tests in ``testpaths``; this is the other half, #261).
+# * ``scripts`` IS NO LONGER UNGATED GROUND (#188, discharged 2026-07-29, packet 44).
+#   It holds the repo's committed instruments — ``mutation_proof.py``, ``scratch_copy.sh``'s
+#   decision rule in ``scratch_provenance.py``, ``registration_sites.py``,
+#   ``forgery_door_sweep.py``, ``comms_consumer_eval.py`` (packet 03b's ACCEPTANCE
+#   AUTHORITY) — plus the surveys whose measured numbers this repo's law cites. Every one
+#   of them was outside every type gate: the tree CLAUDE.md orders agents to verify WITH
+#   was the tree nothing verified. ``search_score_survey.py::_make_embedder`` still carries
+#   the ⚠ marking it a composition root; the half of that warning reading "the one no type
+#   gate can see" is what this entry retires.
+#
+# ⚠ THE MEASUREMENT, so the next reader does not re-derive it (2026-07-29, at ``f033a87``,
+# over ``git ls-files 'scripts/*.py'`` so an in-flight untracked file cannot inflate it):
+# a BARE ``uv run mypy <those files>`` reported **45 errors in 7 files**; the same files
+# under ``MYPYPATH=scripts`` reported **24**. The 21-error gap is not debt — it is the
+# ``scripts``-imports-``scripts`` resolution artifact the map below fixes, and #188's own
+# inherited "41" was a THIRD number, measured under neither shape. The 24 were the real
+# debt and are now zero. Re-derive before citing; do not inherit any of the three.
 #
 # Every entry is its own iteration, never merged into one ``mypy`` call (see the header).
-MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval)
+MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval scripts)
 
 # Per-root MYPYPATH additions. A root absent from this map runs with the ``mypy_path``
 # declared in ``pyproject.toml`` and nothing more.
@@ -79,8 +96,25 @@ MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval)
 #
 # ⚠ FOR THE HAND-RUNNER: a bare ``uv run mypy docs/eval`` still shows those 7. The
 # invocation that matches this gate is ``MYPYPATH=docs/eval uv run mypy docs/eval``.
+#
+# ``scripts`` is the SAME SHAPE at larger scale (#188, 2026-07-29). ``scripts/`` is not a
+# package: its modules import each other as top-level names behind the house
+# ``sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`` idiom — eleven sites
+# use it — which resolves at runtime and is invisible to mypy from the repo root under
+# ``explicit_package_bases``. Measured 2026-07-29 at ``f033a87``: 45 errors bare, 24 with
+# the env var, so **21 of the 45 were import-resolution noise, not type defects**. The same
+# leg-scoped-not-global reasoning applies with the same force: on the GLOBAL ``mypy_path``,
+# a stray ``import snapshot_gc`` inside ``loremaster`` would type-check clean here and
+# ``ImportError`` in the deployed image — a mypy-made false clear of the #131 shape, which
+# is exactly what packet 44 exists to stop, not to manufacture.
+#
+# ⚠ FOR THE HAND-RUNNER, and this one bites harder than ``docs/eval``'s: a bare
+# ``uv run mypy scripts`` reports 21-ish spurious import errors AND the follow-on
+# ``unused-ignore`` noise they mask. The invocation that matches this gate is
+# ``MYPYPATH=scripts uv run mypy scripts``.
 declare -A MEMBER_MYPYPATH=(
     [docs/eval]="docs/eval"
+    [scripts]="scripts"
 )
 
 status=0
