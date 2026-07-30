@@ -678,3 +678,187 @@ it reads as dangling. It is a lead-generator, not an oracle.
   in the header. The full suite was run twice — the first without an exit capture (a gap I noticed
   and closed rather than reported around), the second with `FULL_SUITE_EXIT=0` — same counts both
   times.
+
+---
+
+# ADDENDUM r2 — the lead's rulings on §7, executed (2026-07-30)
+
+**Appended here rather than written as a separate `-r2` file, deliberately:** the citation law
+prefers ONE durable address over two, and every pointer already written at
+`REPORT-author-44-monotonic-1.md` keeps resolving. Everything above this line is the state at
+`7ad1b0a`; everything below is what changed after it, in commits **`13bbe84`** (E1), **`1430aa5`**
+(E4) and **`9c0f2da`** (this addendum).
+
+⚠ **One more deviation, disclosed because a receipt about commits should not be the one thing left
+unreceipted:** my first attempt landed E1 and E4 as ONE commit — `scripts/wrong_builds.py` had been
+`git add`-ed earlier so the guard would see it as TRACKED (that is how §E4's fates were measured),
+and it was still staged when E1 was committed. Caught by reading `git show --stat`, split into the
+three commits above with `git reset --soft` (nothing pushed), and the four frozen md5s re-verified
+against `git show HEAD:<path>` afterwards — they match the working tree exactly.
+
+## FROZEN FOR THE AUDITOR
+
+| artifact | md5 | lines |
+|---|---|---|
+| `scripts/gated_ground.py` | **`ce80544260f45ece25b939437581ca2e`** | 1481 |
+| `scripts/test_gated_ground.py` | **`7fb8f86f68dad8005f6734278a379001`** | 4122 (**315 collected**) |
+| `scripts/wrong_builds.py` *(new, E4)* | **`00d9adf8244175c19e1d617b514071bc`** | 402 |
+| `loremaster/tests/test_secret_resolution_seam.py` *(one allowlist entry, E1)* | **`aa5366a53a1a0ac872be9974f811ce9a`** | — |
+
+Full suite **8747 collected**. The guard's own verdict on this tree: `GATED_GROUND`, exit 0,
+**293 of 293** tracked `.py` classified (292 + `wrong_builds.py`), zero findings.
+
+## E1 — GRANTED and executed, with ONE deviation I am escalating rather than deciding
+
+**Done as ruled:** the allowlist entry is added at exactly the granted key
+`scripts/gated_ground.py::_collector_input_fingerprint` with the reason verbatim from §7 plus the
+grant's provenance; `_collector_input_fingerprint` now hashes
+`os.environ.get("PYTEST_ADDOPTS", "")`; and the invalidation it buys is pinned by
+`test_an_inherited_pytest_addopts_moves_the_memo_key` — **two legs**, because either alone passes
+for the wrong reason:
+
+- **Leg 1 (the answer):** with `PYTEST_ADDOPTS=--ignore=loremaster/tests/probes` the collector stops
+  seeing a registered test file, the memo lets go, and **a second subprocess runs** (asserted, not
+  inferred) — so the pin is measuring collection rather than a hash.
+- **Leg 2 (the key):** two DIFFERENT but behaviourally INERT values (`-p no:randomly` vs
+  `-p no:cacheprovider`) must still produce different fingerprints — so the key is covering the
+  VARIABLE, not a consequence of it that it could already see in the files.
+
+**Not touched:** anything else in `loremaster/`. The seam's own suite passes —
+`pytest -q loremaster/tests/test_secret_resolution_seam.py` → **64 passed in 6.75s** — which
+matters because that file holds the pins that would reject a bad entry
+(`test_every_environment_read_is_the_entry_point_or_allowlisted`,
+`test_no_allowlist_entry_is_stale`, `test_every_allowlist_entry_carries_a_reason`).
+
+### ⚠ THE ONE THING I DID NOT DO, AND WHY — the bound is RESTATED, not retired
+
+The ruling's premise was **one door**. I measured **four**. Derived from the installed pytest's own
+source (`grep -rhoE 'environ(\.get)?\(?\[?"[A-Z_]+"' .venv/…/_pytest/`), the variables it reads that
+can change what a collection produces are **`PYTEST_ADDOPTS`** (closed today), **`PYTEST_PLUGINS`**,
+**`PYTEST_DISABLE_PLUGIN_AUTOLOAD`** and **`PY_IGNORE_IMPORTMISMATCH`**.
+
+**Retiring `collector-memoisation` would therefore state a closed hole as closed while three doors
+stand open — the exact defect class this packet exists to close, in the direction that is FALSE IN
+THE DANGEROUS SENSE.** (A bound describing an already-closed hole is false in the safe direction;
+deleting a bound whose hole is open is false in the other.) So the bound is **restated to name the
+measured residual**, its re-open trigger now enumerates the three variables, and the retirement of
+its old PYTEST_ADDOPTS clause is recorded here as the ruled decision — closed, not forgotten.
+
+And the restatement is itself **mechanically guarded**, because prose about a mechanism is exactly
+what no gate checks: `test_the_memoisation_bound_never_names_a_variable_the_key_already_covers`
+AST-derives the environment variables the instrument reads and asserts **none of them appears in
+the re-open trigger**, plus that the trigger names at least one variable it does not read. A future
+agent that closes `PYTEST_PLUGINS` and forgets the prose goes RED.
+
+**E6 — the fork, with the patch ready and a recommendation.** Covering all four costs **zero extra
+allowlist entries**: the seam's scan keys per `path::function`, and this function already holds the
+granted key — so reading three more variables inside it produces the same single entry. The change
+is three lines in `_collector_input_fingerprint` plus widening the existing pin's parametrization.
+**My recommendation: do it** — the three are strictly more dangerous than the one that was closed
+(`PYTEST_DISABLE_PLUGIN_AUTOLOAD` can silence an entire plugin's collection hooks), and the residual
+would then be only *"the installed package set, which cannot change inside one process"*, which is
+an argument rather than a hope. **It is a scope decision and therefore yours, not mine** — and I
+have deliberately NOT widened it, because making the ruling moot by pre-empting it is the same error
+as ignoring it.
+
+## E4 — GRANTED and executed: `scripts/wrong_builds.py`
+
+Committed with a docstring that states what it is (an ATTACK harness), that it is **hand-run and
+wired into no gate**, how to build the #284-safe scratch repository, how to re-run the 21-build
+attack, and its own three BOUNDS — including the one that matters most: *a SURVIVOR is not
+automatically a defect, and "all remaining survivors are equivalent" is banned output.*
+
+Rewritten for a committed home rather than pasted: `argparse` (`--scratch`, `--instrument`,
+`--contract`, optional build names) instead of hardcoded paths, `sys.executable` instead of an
+absolute venv path, and **a refusal to run at all if `<scratch>/.git` is not a DIRECTORY** — the
+#284 landmine, enforced by the tool rather than remembered by its user. The 21 build definitions
+are carried over **verbatim** from the run that produced §4's census; a re-typed table would be a
+different instrument reporting the same numbers.
+
+**The lead's question — did my own guard flag it?** No, and the reason is the mechanism working
+rather than luck:
+
+```
+tracked .py: 293 (was 292)      wrong_builds tracked? True
+its fates: {'TYPES': 'COVERED', 'EXECUTION': 'NOT_APPLICABLE'}
+state: GATED_GROUND | exit: 0 | findings: 0
+```
+
+`scripts` is a `MEMBERS` typecheck root, so LEG A covers the new file **because the tree is
+registered, not because anything knows its name**; and it is not test-shaped, so LEG B correctly
+declines to judge it. It type-checks under that root: `MYPYPATH=scripts uv run mypy
+scripts/wrong_builds.py` → *Success: no issues found in 1 source file*, and the `scripts` leg of
+`typecheck.sh` is green.
+
+**Smoke-tested from its committed home**, against the live scratch:
+
+```
+$ .venv/bin/python scripts/wrong_builds.py --scratch <scratch>/refrepo WB1_… WB2_… WB21_…
+=== baseline (correct build) ===
+REF => 315 passed in 89.54s (0:01:29)   [collected total: 315]
+WB1_blindness_only_for_five_named_doors              59 failed, 256 passed   killed
+WB2_served_surface_ignores_findings                  2 failed, 313 passed    killed
+WB21_memo_written_before_the_anti_vacuity_check      1 failed, 314 passed    killed
+3 built · 3 killed · 0 survived
+HARNESS EXIT=0
+```
+
+(WB1 now dies on **59** pins rather than 57 — the two new memo pins added since §4's census. The
+number is re-derived here rather than carried forward.)
+
+## E2 / E3 — noted
+
+E2 accepted as I resolved it; no change made. E3 routed to the cold audit; I add nothing.
+
+## A defect this addendum's own pins caught, in this addendum's own work
+
+Restating the `collector-memoisation` bound broke
+`test_every_stated_bound_carries_a_named_re_open_trigger_and_appears_in_the_docstring`: my new
+summary was **111 characters**, so it wrapped in the module docstring and stopped being a
+contiguous substring of it — a bound declared in `STATED_BOUNDS` that a reader of the file would
+never meet. One failed / 314 passed, fixed by shortening the summary. *The pin exists because a
+bound nobody meets is a bound nobody has, and it fired on its author within an hour of the author
+writing the law about it.*
+
+## GATES, re-run fresh after both grants landed
+
+```
+$ uv run pytest -q scripts/test_gated_ground.py -p no:randomly      # run 1 of 2
+315 passed in 80.33s (0:01:20)
+
+$ uv run pytest -q scripts/test_gated_ground.py -p no:randomly      # run 2 of 2 (determinism)
+315 passed in 80.42s (0:01:20)
+
+$ ./scripts/typecheck.sh ; echo "TYPECHECK EXIT=$?"
+… typecheck: scripts OK
+typecheck: shellcheck OK (7 tracked .sh)
+TYPECHECK EXIT=0
+
+$ uv run ruff check . ; echo "RUFF EXIT=$?"
+All checks passed!
+RUFF EXIT=0
+
+$ uv run pytest -n auto -q ; echo "FULL_SUITE_EXIT=$?"
+8708 passed, 36 skipped, 3 xfailed, 1 warning in 220.82s (0:03:40)
+FULL_SUITE_EXIT=0
+$ uv run pytest -q --collect-only
+8747 tests collected
+# 8708 + 36 + 3 = 8747 == collected. EXACT reconciliation, no failures, no errors.
+
+$ uv run pytest -q loremaster/tests/test_secret_resolution_seam.py -p no:randomly
+64 passed in 6.75s
+```
+
+**There are 0 failing tests unrelated to our present scope.**
+
+RIDER, re-run: the guard on this repository → `GATED_GROUND`, exit 0, **293/293** classified, zero
+findings, `blind_sources ()`.
+
+## FOR THE COLD AUDIT
+
+The four md5s above are frozen. The two claims I would attack first if I were the auditor:
+
+1. **The derived door set is only as complete as the derivation.** `test_no_refusal_bypasses_the_
+   one_door_helper` is what stops it degenerating into a name list — break it and check it fires.
+2. **E6's three uncovered environment variables.** I measured them by grepping the installed
+   `_pytest`; re-derive rather than inherit, and check whether any gate path in this repo sets one.
