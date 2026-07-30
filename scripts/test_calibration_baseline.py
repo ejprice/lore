@@ -17,7 +17,7 @@ from typing import Any
 # ``scripts/test_token_survey.py``.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import calibration_baseline as cb  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
+import calibration_baseline as cb  # noqa: E402  (scripts/ is not a package)
 from loremaster.calibration import baseline as bl  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 

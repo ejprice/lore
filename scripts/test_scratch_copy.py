@@ -35,7 +35,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest  # noqa: E402
-from scratch_provenance import (  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
+from scratch_provenance import (  # noqa: E402  (scripts/ is not a package)
     WORKSPACE_MEMBERS,
     MemberProvenance,
     ProvenanceGuard,

@@ -71,7 +71,11 @@ def _unique_database() -> str:
     return f"survey102_{os.getpid()}_{uuid.uuid4().hex}"
 
 
-async def _connect(database: str) -> AsyncSurreal:
+async def _connect(database: str) -> _SurrealConnection:
+    # ``AsyncSurreal`` is a FACTORY FUNCTION, not a class — annotating with it is a
+    # ``valid-type`` error, and every attribute read off the result then reports as
+    # missing. ``loremaster.store._txn._SurrealConnection`` is exactly the factory's
+    # return union and is already the house alias for a live connection (#188).
     connection = AsyncSurreal(URL)
     # Through the ONE shared seam, not a hand-rolled copy of the payload (#211/#102).
     await connection.signin(signin_credentials(user=USER, password=PASSWORD))
@@ -85,7 +89,7 @@ class _CountingConnection:
     after a call is the seam's true attempt count for that call, no estimate.
     """
 
-    def __init__(self, inner: AsyncSurreal) -> None:
+    def __init__(self, inner: _SurrealConnection) -> None:
         self._inner = inner
         self.calls = 0
 

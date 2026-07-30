@@ -17,7 +17,7 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest  # noqa: E402
-import snapshot_gc as gc  # type: ignore[import-not-found]  # noqa: E402  (scripts/ is not a package)
+import snapshot_gc as gc  # noqa: E402  (scripts/ is not a package)
 from loremaster.diff import SnapshotSummary  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 
