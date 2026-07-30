@@ -68,7 +68,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 # The percentile math is committed, unit-tested and pinned in token_survey.py;
 # it lives beside this script in scripts/, not an installed package.
@@ -732,7 +732,7 @@ def _make_embedder() -> Embedder:
         # ``Literal[...]`` in ``loresigil/loresigil/factory.py`` — which was outside
         # packet 44's writable set; DELETE THIS CAST the day that lands. The VALUE still
         # comes from the constant, so a renamed backend is still a one-place change.
-        backend=cast(Literal["tei"], BACKEND_TEI),
+        backend=BACKEND_TEI,
         api_key=resolve_secret(DEFAULT_TEI_API_KEY_ENV),
         base_url=DEFAULT_TEI_BASE_URL,
         model=DEFAULT_TEI_MODEL,

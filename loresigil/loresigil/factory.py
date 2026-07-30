@@ -25,7 +25,7 @@ rejected at config construction — loud failure, no half-built client.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
 
@@ -42,10 +42,23 @@ from loresigil.voyage_context import DEFAULT_CONCURRENCY as CONTEXT_DEFAULT_CONC
 from loresigil.voyage_context import DEFAULT_MODEL as CONTEXT_DEFAULT_MODEL
 from loresigil.voyage_context import VoyageContextEmbedder
 
-# Backend discriminators (kept as constants so dispatch and the schema agree).
-BACKEND_TEI: str = "tei"
-BACKEND_VOYAGE_CLOUD: str = "voyage-cloud"
-BACKEND_VOYAGE_CONTEXT: str = "voyage-context"
+# Backend discriminators. The annotations are LOAD-BEARING, not decoration: each one
+# is exactly one member of :attr:`EmbeddingConfig.backend`'s ``Literal`` below, so
+# "dispatch and the schema agree" is a fact the TYPE CHECKER ENFORCES rather than a
+# claim this comment makes. ``Final`` pins the other half — that they are constants —
+# so a reassignment is an error instead of a silent redefinition.
+#
+# ⚠ DO NOT "SIMPLIFY" THESE BACK TO ``str`` (#188, 2026-07-29). They were `` : str``
+# until packet 44, and this very comment ALREADY CLAIMED they were "kept as constants
+# so dispatch and the schema agree" — which was FALSE at type level, 17 lines above the
+# ``Literal`` it claimed to agree with. A bare ``str`` widens away from that
+# ``Literal``, so passing a constant into ``EmbeddingConfig(backend=...)`` became an
+# ``arg-type`` error and callers were pushed toward a ``cast`` — re-stating the literal
+# by hand at every construction site, which is precisely the duplication the constants
+# exist to prevent. Prose asserting a property is not the property; the annotation is.
+BACKEND_TEI: Final[Literal["tei"]] = "tei"
+BACKEND_VOYAGE_CLOUD: Final[Literal["voyage-cloud"]] = "voyage-cloud"
+BACKEND_VOYAGE_CONTEXT: Final[Literal["voyage-context"]] = "voyage-context"
 
 _TEI_DEFAULT_CONCURRENCY: int = 2
 
