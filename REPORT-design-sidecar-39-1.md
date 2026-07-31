@@ -109,7 +109,7 @@ consulted for graph verdicts, so no staleness exposure; no friction to file.
   the correction lives in the tracked doc.
 - **`test_mcp_server.py::_MUTATING_TOOLS` omission confirmed at source** (set lacks
   lore_claim_task/lore_tasks while `_TASK_TOOL_ANNOTATIONS` registers both non-read-only).
-  In-scope for the build; named in design §7.
+  In-scope for the build; named in design §7; filed by the lead as **finding #291**.
 - **Cert expiry 2026-11-25** is now a connector-availability dependency (two consumers:
   labs edge + lore-caddy). Runbook + calendar line in design §10.
 - **Client secret is on NO disk we can read** (grepped the mcp deploy tree) — the claude.ai
@@ -146,5 +146,33 @@ consulted for graph verdicts, so no staleness exposure; no friction to file.
    posture pins (a wrongly-flipped annotation reds a named behavior pin, not a derived
    expectation). The `lore_claim_task`/`lore_tasks` omission stands recorded as a
    confirmed in-flight defect, found independently twice.
+
+## 7. Revision ping (third lead message, 2026-07-31) — applied, with one ground-truth flag
+**Flag, stated plainly because the comms record matters:** the revision asserted the R12
+override "was silently lost" and that the doc still carried `allowed_emails: list[str]`,
+the recreate-based kill switch, and the future-trigger sentence. **A grep of the actual
+file immediately before revising showed otherwise** — the first override HAD landed and
+was applied in the prior turn (receipt: `grep -n "allowed_emails" docs/design/2026-07-31-
+packet39-google-oauth.md` → only `allowed_emails_file` at the config model and F4 legs;
+19 `R12` references; §10 already roster-based). The lead's verification read was of a
+stale state, not the file at revision time. Report §6 documents the original application.
+No harm done — but the inverted narrative ("your ping was lost") should not enter the
+packet record uncorrected.
+
+**Genuinely new content in the revision, applied:**
+- **Freshness floor adopted as ruled:** one `stat` per CACHE-MISS (my prior text
+  deliberately exceeded the floor with a per-verification stat; that strengthening is
+  withdrawn in favor of the override's letter). Admission still evaluates on every
+  verification against the in-memory roster (zero syscalls), and the **residual exposure
+  window is now stated as a FACT**: a revoked-but-cached principal is denied no later
+  than the positive-cache TTL, sooner if any other miss reloads the roster. Two
+  discrimination pins replace the old cached-token pin (design R12, §4, §9 group 1).
+- **The verified `~/docker/mcp/lore-secrets/` idiom** (0700 dir, per-slug 0600 `.env`,
+  `build_envfile.py`, `LORE_SECRETS_DIR`/`_resolve_env_file`) cited concretely in R12 as
+  the mount-sibling home.
+- **#165 status** ("acknowledged, routed to packet 19") added to R12's facts paragraph.
+- **#291 cited** in design §7 in place of the restated defect.
+- **Kill switches restructured** — per-principal roster edit is now switch 1, above all
+  whole-service switches; §1's threat-model verdict reworded to match the TTL fact.
 
 STANDING BY for follow-up design questions via SendMessage, per brief.
