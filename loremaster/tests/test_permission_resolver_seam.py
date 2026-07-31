@@ -218,7 +218,7 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
         # A resolver that is injected and never called passes every pass-through pin,
         # because the default's identity behaviour is indistinguishable from silence.
         # The call log is what makes the wiring observable.
-        from test_hosted_readonly_posture import as_principal, call_and_capture
+        from _auth_fixtures import as_principal, call_and_capture
 
         resolver = _AllowOnlyResolver(frozenset({PERMITTED_READ_TOOL, FILTERED_READ_TOOL}))
         mcp = hosted_server(tmp_path, resolver)
@@ -235,8 +235,8 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
         # THE PROOF THE FAKE CAN FAIL. Both tools are read-only, so the posture guard
         # permits both; the ONLY thing that can distinguish them is the resolver's
         # narrowed set.
+        from _auth_fixtures import as_principal, call_and_capture
         from loremaster.server import PermissionFilteredToolError
-        from test_hosted_readonly_posture import as_principal, call_and_capture
 
         resolver = _AllowOnlyResolver(frozenset({PERMITTED_READ_TOOL}))
         mcp = hosted_server(tmp_path, resolver)
@@ -254,8 +254,8 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
         # The CONTROL, and it is the whole reason the pin above means anything: with
         # the SAME resolver, a permitted tool must NOT be refused. Without this, a
         # build that refused every tool would pass the filter pin.
+        from _auth_fixtures import as_principal, call_and_capture
         from loremaster.server import PermissionFilteredToolError
-        from test_hosted_readonly_posture import as_principal, call_and_capture
 
         resolver = _AllowOnlyResolver(frozenset({PERMITTED_READ_TOOL}))
         mcp = hosted_server(tmp_path, resolver)
@@ -268,8 +268,8 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
         # build that writes ``if context.permitted:`` reads the empty set as falsy and
         # grants EVERYTHING — the F4 fail-open shape reproduced one layer up, in the
         # seam the Odoo ACL resolver will plug into.
+        from _auth_fixtures import as_principal, call_and_capture
         from loremaster.server import PermissionFilteredToolError
-        from test_hosted_readonly_posture import as_principal, call_and_capture
 
         resolver = _AllowOnlyResolver(frozenset())
         mcp = hosted_server(tmp_path, resolver)
@@ -285,13 +285,13 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
     ) -> None:
         # No resolver injected ⇒ the shipping default, and nothing is filtered. This is
         # what "seam only, no behaviour change" MEANS, asserted rather than assumed.
+        from _auth_fixtures import as_principal, call_and_capture
         from loremaster.config import LoreConfig
         from loremaster.server import (
             LoreServer,
             PermissionFilteredToolError,
             build_mcp_server,
         )
-        from test_hosted_readonly_posture import as_principal, call_and_capture
 
         roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
         payload = base_config_payload(slug(), tmp_path / "live")
@@ -315,8 +315,8 @@ class TestTheSeamIsConsultedAtDispatchAndCanFilter:
         # whether the whole posture forbids the tool (never retry) or their own
         # permissions do (an operator can grant it) — collapsing them into one error
         # teaches the wrong remedy.
+        from _auth_fixtures import as_principal, call_and_capture
         from loremaster.server import HostedToolRefusedError, PermissionFilteredToolError
-        from test_hosted_readonly_posture import as_principal, call_and_capture
 
         resolver = _AllowOnlyResolver(frozenset({PERMITTED_READ_TOOL}))
         mcp = hosted_server(tmp_path, resolver)

@@ -2,7 +2,7 @@
 
 brief-base v9 read
 
-- **state:** done-with-deviations. **REVISED THREE TIMES — §14 (rulings), §16 (adversary pass 1), §17 (DELTA adversary + design R13/R14/R15).** Current counts **472 collected / 439 RED / 33 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
+- **state:** done-with-deviations. **REVISED FOUR TIMES — §14 (rulings), §16 (adversary 1), §17 (adversary 2 + R13/R14/R15), §18 (adversary 3 + R16: the posture pins moved ONTO THE WIRE).** Current counts **473 collected / 432 RED / 41 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
 - **deviation 1:** `mypy` reports **170 errors, ALL of the "symbol does not exist yet" class**, all in the 11 files this contract authored. Zero errors of any other class. Enumerated + classified in §6. `ruff` is CLEAN repo-wide.
 - **deviation 2 — RESOLVED by the lead 2026-07-31:** `cachetools` is now installed (**7.1.6**, verified via `importlib.metadata`) and declared at `loremaster/pyproject.toml:39`. §7-B1 is closed.
 - **deviation 3:** three files the builder MUST edit are outside my writable set; exact edits in §8.
@@ -809,3 +809,122 @@ it**: a 32-bit positive-cache key means a token colliding with a previously-ADMI
 served that principal's verdict, and no cheap behavioural pin exists because a collision is not
 constructible without a preimage. The honest options are a structural pin that the key
 expression is a full `hexdigest()`, or accept-and-ledger with a named re-open trigger.
+
+---
+
+## 18. R16 — the wire-dead-shadowing CLASS, killed three ways (fourth revision, 2026-07-31)
+
+`REPORT-adversary-39-auth-3.md` (`f5b7c0d`) §4.1 and design R16/§17 (`fa94589`), both read
+in full. **WB93 took WB30's shape onto the `tools/list` route R13 had just made
+load-bearing** — the filter installed as `mcp.list_tools = _scoped` after construction.
+All 472 pins green; on the wire a hosted Google principal was offered **15 tools including
+all six mutating ones** (correct build: 9).
+
+### One root cause, three doors, and why I stopped writing door pins
+
+`FastMCP.__init__` calls `_setup_handlers`, which registers the **bound** method. Anything
+installed afterwards as an instance attribute is **live in-process and dead on the wire**,
+and an in-process pin cannot tell the difference:
+
+| wave | door | my pin at the time |
+|---|---|---|
+| 1 | `mcp.call_tool = _guarded` (WB30) | in-process `call_tool` — green |
+| 2 | guard placed after `super().call_tool` (WB48) | wire `tools/call` — green, **byte-identical body** |
+| 3 | `mcp.list_tools = _scoped` (WB93) | in-process `list_tools` — green |
+
+Each fix pinned the route that had just been broken. **`tools/list` became
+security-relevant the moment R13 shipped and inherited none of the wire discipline
+`tools/call` had earned.** R16 kills the class.
+
+### The three instruments
+
+1. **No-handler-shadowing** (`test_auth_composition::TestNoInstanceAttributeShadowsABoundHandler`, 5 pins) — `name not in vars(mcp)` ∀ derived handler, ∀ posture. **The handler set is AST-parsed out of the installed SDK's own `_setup_handlers`** (7 names at `mcp` 1.27.2, verified by execution), never hand-listed — a hand-list here is the next name-list, and it would miss the eighth handler an SDK upgrade binds. Plus a derivation-honesty pin: if the parse drifts and loses `call_tool`/`list_tools`, the ∀ pins would go quietly **vacuous rather than red**, so that is asserted separately.
+2. **The wire-only invariant** — new module `test_wire_discipline.py`, **inside `testpaths`** because *a guard nobody runs is a hope with a filename*. AST-scans every posture module (glob-derived, not listed) for calls to any derived handler name, **receiver-blind**: `mcp.call_tool(`, `self.mcp.list_tools(`, `server.call_tool(` are one defect, and a receiver-name gate falls to the first author who renames a variable. It carries **both controls** — a positive one proving it flags an in-process call *on a receiver it was never told about*, and a negative one proving it does not flag the honest wire spelling (a gate that refuses honest code gets switched off).
+3. **The sanctioned unscoped accessor** — `all_registered_tools()` pinned as the one full-registry view, because the adversary showed its *absence* was the friction pushing a builder past the override. Every derivation in the posture module now consumes it.
+
+### What this cost, honestly: the posture module was RESTRUCTURED, not extended
+
+**Every posture assertion now drives a real MCP session** through the new
+`_auth_fixtures.wire_session` harness (`initialize` → `notifications/initialized` →
+`tools/list` / `tools/call` over the assembled app). The in-process helpers
+(`as_principal`, `call_and_capture`) moved to `_auth_fixtures` for the permission-resolver
+seam — the one module where in-process dispatch is the SUBJECT rather than a shortcut —
+and the posture module imports neither. `test_wire_discipline` enforces that mechanically.
+
+So the counts do **not** reconcile additively this time, and here is the derivation rather
+than a hand-wave (previous per-module counts taken from `git show HEAD:<path>` collected in
+place, then removed):
+
+| module | HEAD | now | why |
+|---|---|---|---|
+| `test_hosted_readonly_posture.py` | 70 | **49** | in-process pins deleted; wire pins replace them at coarser parametrisation (one session per tool rather than per tool × per principal-object) |
+| `test_auth_composition.py` | 65 | **81** | +5 no-shadowing, +11 the R15 127/8 grid |
+| `test_wire_discipline.py` | — | **6** | new |
+| **total** | 472 | **473** | net +1 |
+
+**Fewer pins, strictly more discrimination**: the 49 wire pins cover what the 70 in-process
+ones did *and* the three routes that defeated them.
+
+### The other three survivors
+
+- **WB72** → `TestServedAndRefusedArePartitioned`: `served ∩ refused = ∅` over the full
+  registry, on the wire, **with an adversarially UNANNOTATED fixture tool** so the
+  partition cannot lean on an annotation existing — plus an anti-vacuity pin that
+  `served ∪ refused` is the whole registry, or a build could satisfy disjointness by
+  serving nothing.
+- **WB71** → R15 pinned as a **PREDICATE over a 127/8 grid**, never spellings:
+  `127.0.0.2`, `127.0.1.1`, `127.255.255.254` must resolve; `126.255.255.255` and
+  `128.0.0.1` — the addresses immediately either side of the block — must refuse, which
+  also kills a `startswith("127")` prefix match. Ask: *"would a hand-list of every
+  loopback spelling I tested still pass this?"*
+- **WB74** → exact-EQUALITY on `_EXTENSION_TOOL_ANNOTATIONS` (worst case on **every**
+  field), plus the same equality on each registered extension tool's annotations object.
+
+### Counts
+
+```
+CONTRACT="lorerunes/tests loremaster/tests/test_auth.py loremaster/tests/test_google_token_verifier.py \
+ loremaster/tests/test_allowlist_roster.py loremaster/tests/test_auth_composition.py \
+ loremaster/tests/test_auth_identity_seam.py loremaster/tests/test_hosted_readonly_posture.py \
+ loremaster/tests/test_permission_resolver_seam.py loremaster/tests/test_wire_discipline.py"
+
+uv run pytest $CONTRACT --collect-only -q   →  473 tests collected
+uv run pytest $CONTRACT -n auto -q --tb=no  →  432 failed, 41 passed
+uv run ruff check .                         →  All checks passed!
+./scripts/typecheck.sh                      →  186 errors, ALL the "symbol does not exist yet"
+                                               class, all in authored files
+uv run pytest <6 sibling modules> -n auto   →  1018 passed
+```
+
+**GREEN moved 33 → 41 for the first time, and every one of the 8 is accounted for
+individually** (a green count that moves without an explanation is exactly the kind of
+drift this contract exists to catch):
+
+- **6 × `test_wire_discipline`** — meta-invariants over TEST SOURCE, not production, so
+  they are green by design. Both of its controls are among them, which is the point: the
+  instrument is observed *firing* and observed *not* false-positiving.
+- **1 × `test_no_shadowing_in_any_posture[loopback]`** — today's loopback build shadows
+  nothing because there is no guard at all yet. It becomes load-bearing after the build;
+  its `hosted`/`lan_bearer` siblings are RED.
+- **1 × `test_the_derivation_sees_the_routes_that_have_receipts`** — a pure SDK-derivation
+  check with no production dependency.
+
+One typing defect of mine surfaced and was fixed rather than suppressed (`WireSession._rpc`
+returned `Any`, which laundered into `call()`'s declared `str`).
+
+### For the fourth pass — where I would attack this
+
+1. **The wire-only invariant's stated bounds are real.** It governs modules matching the
+   posture glob; a posture claim proven in-process in a module that evades the pattern is
+   invisible to it. The import check closes the helper-indirection door for the one module
+   that could realistically supply it (`_auth_fixtures`), but a posture module defining its
+   own in-process helper under a different name is caught only by the receiver-blind call
+   check — which does see it, since that helper's body is in the same file. I believe that
+   closes it; **I have not proved it**.
+2. **`test_the_composed_server_installs_a_SCOPED_tool_manager` asserts a subclass, not a
+   behaviour.** A subclass that overrides nothing passes it, and only the wire pins catch
+   that. Deliberate pairing, still the seam I would probe first.
+3. **`N9` remains open and unpinned** — the truncated-cache-key ruling (adversary pass 1,
+   §10-R1) is an operator call. A 32-bit positive-cache key means a token colliding with a
+   previously-ADMITTED one is served that principal's verdict; no cheap behavioural pin
+   exists because a collision needs a preimage.

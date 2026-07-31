@@ -33,9 +33,10 @@ the derived ``expires_at`` lands in an absolute-time sanity band.
 
 from __future__ import annotations
 
+import contextlib
 import time
 import uuid
-from collections.abc import Callable, Coroutine, MutableMapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -710,3 +711,248 @@ def mcp_session_id(response: AsgiResponse) -> str:
         f"the ownership pin would pass vacuously"
     )
     return session_id
+
+
+# --------------------------------------------------------------------------- #
+# R16 — ONE handler-set derivation, feeding BOTH of R16's instruments.
+# --------------------------------------------------------------------------- #
+
+
+def sdk_bound_handler_names() -> frozenset[str]:
+    """The handler methods `FastMCP.__init__` BINDS to the low-level server, DERIVED.
+
+    ⚠ DERIVED, NEVER HAND-LISTED, and that is the whole point. Three wrong builds in
+    three waves (WB30 `call_tool`, WB48 dispatch order, WB93 `list_tools`) all exploited
+    one root cause: ``_setup_handlers`` registers the BOUND method at construction, so a
+    post-construction instance attribute is live in-process and DEAD ON THE WIRE. A
+    hand-listed set of handler names would be the next name-list — the artifact this repo
+    has the most receipts against — and would miss the eighth handler an SDK upgrade
+    binds. So the set is AST-parsed out of the installed SDK's own source.
+
+    The parse: ``_setup_handlers``'s body is ``self._mcp_server.<x>()(self.<x>)`` per
+    handler, so every non-private ``self.<name>`` attribute in it is a bound handler, and
+    ``self._mcp_server`` is excluded by the underscore rule rather than by being named.
+
+    Returns:
+        Every handler name the installed SDK binds (seven at ``mcp`` 1.27.2).
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from mcp.server.fastmcp import FastMCP
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(FastMCP._setup_handlers)))
+    names = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and not node.attr.startswith("_")
+    }
+    assert names, (
+        "the handler-set derivation found NOTHING in FastMCP._setup_handlers. The SDK's "
+        "shape changed and both R16 instruments are now vacuous — fix the derivation, do "
+        "not hand-list the names."
+    )
+    return frozenset(names)
+
+
+# --------------------------------------------------------------------------- #
+# The WIRE harness. Under R16 every posture/refusal assertion drives a real MCP
+# session, because an in-process `mcp.<handler>(...)` call cannot tell a live guard
+# from one that is dead on the wire.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class WireSession:
+    """One live, authenticated MCP session. The ONLY posture-assertion surface.
+
+    Attributes:
+        app: The composed ASGI app (its lifespan is running).
+        token: The Bearer credential, or ``None`` for the unauthenticated LOOPBACK shape.
+        session_id: The `mcp-session-id` the server minted.
+        mcp: The composed FastMCP, for STRUCTURAL assertions only — never for driving a
+            posture claim, which is exactly what R16's AST invariant enforces.
+    """
+
+    app: Any
+    token: str | None
+    session_id: str
+    mcp: Any
+
+    async def _rpc(
+        self, method: str, params: dict[str, Any] | None = None
+    ) -> AsgiResponse:
+        import json
+
+        headers: list[tuple[bytes, bytes]] = [
+            (b"host", PUBLIC_HOSTNAME.encode("ascii")),
+            *MCP_POST_HEADERS,
+            (b"mcp-session-id", self.session_id.encode("ascii")),
+        ]
+        if self.token is not None:
+            headers.append(bearer(self.token))
+        body: dict[str, Any] = {"jsonrpc": "2.0", "id": 7, "method": method}
+        if params is not None:
+            body["params"] = params
+        return await drive(
+            self.app,
+            method="POST",
+            path=MCP_PATH,
+            headers=headers,
+            body=json.dumps(body).encode("utf-8"),
+        )
+
+    async def served_tool_names(self) -> set[str]:
+        """The tool names this principal is OFFERED, read off the wire `tools/list`."""
+        import json
+
+        response = await self._rpc("tools/list")
+        assert response.status == 200, (
+            f"tools/list failed on the wire: {response.status} {response.body[:300]!r}"
+        )
+        payload = json.loads(response.body)
+        assert "result" in payload, f"tools/list returned no result: {payload}"
+        return {tool["name"] for tool in payload["result"]["tools"]}
+
+    async def call(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+        """Dispatch `name` over the wire; return the decoded response body."""
+        response = await self._rpc(
+            "tools/call", {"name": name, "arguments": arguments or {}}
+        )
+        return response.body.decode("utf-8", "replace")
+
+
+@contextlib.asynccontextmanager
+async def wire_session(
+    tmp_path: Path,
+    *,
+    posture: str,
+    principal: str | None,
+    with_extension: bool = False,
+    prepare: Callable[[Any], None] | None = None,
+) -> AsyncIterator[WireSession]:
+    """Open a real MCP session against a composed server and yield the wire surface.
+
+    NOTHING IS DEFAULTED THAT THE CODE BRANCHES ON: ``posture`` and ``principal`` are
+    required keyword arguments, so every call site states the shape it is exercising.
+
+    Args:
+        tmp_path: Per-test directory for the roster and the live root.
+        posture: ``"hosted"`` | ``"lan_bearer"`` | ``"loopback"``.
+        principal: ``"google"`` | ``"api_key"`` | ``None`` (unauthenticated).
+        with_extension: Register one extension, so the second registration path is live.
+        prepare: Called with the composed FastMCP before the app is built — used to
+            register adversarial fixture tools (an UNANNOTATED one, for WB72).
+
+    Yields:
+        A :class:`WireSession` whose `initialize` handshake has completed.
+    """
+    from loremaster.config import LoreConfig
+    from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
+
+    roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
+    payload = base_config_payload(slug(), tmp_path / "live")
+    if posture == "hosted":
+        payload["auth"] = hosted_auth_block(roster)
+    elif posture == "lan_bearer":
+        payload["auth"] = lan_bearer_auth_block()
+    elif posture != "loopback":  # pragma: no cover - guards the caller
+        raise AssertionError(f"unknown posture {posture!r}")
+    config = LoreConfig.model_validate(payload)
+
+    google_token = google_access_token("wire-principal")
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if google_token.encode() in request.content:
+            return httpx.Response(
+                200, json=admitted_payload(email=OPERATOR_EMAIL, sub=OPERATOR_SUBJECT)
+            )
+        return httpx.Response(401)
+
+    spy = TokeninfoSpy(responder=_respond)
+    server = LoreServer(config)
+    if with_extension:
+        from _extension_helpers import CounterExtension
+
+        server.register_extension(CounterExtension())
+    mcp = build_mcp_server(server, http_client=spy.client())
+    mcp.settings.json_response = True
+    if prepare is not None:
+        prepare(mcp)
+    stub_heavy_startup(mcp)
+    app = build_asgi_app(mcp, config)
+
+    token = {
+        "google": google_token,
+        "api_key": API_KEY_VALUE_LOCAL_AGENT,
+        None: None,
+    }[principal]
+
+    async with running_asgi_app(app):
+        headers: list[tuple[bytes, bytes]] = [
+            (b"host", PUBLIC_HOSTNAME.encode("ascii")),
+            *MCP_POST_HEADERS,
+        ]
+        if token is not None:
+            headers.append(bearer(token))
+        opened = await drive(
+            app, method="POST", path=MCP_PATH, headers=headers, body=json_rpc_initialize()
+        )
+        assert opened.status == 200, (
+            f"initialize failed ({opened.status}); a posture pin cannot say anything "
+            f"about the wire without a session: {opened.body[:300]!r}"
+        )
+        session = WireSession(
+            app=app, token=token, session_id=mcp_session_id(opened), mcp=mcp
+        )
+        await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[*headers, (b"mcp-session-id", session.session_id.encode("ascii"))],
+            body=b'{"jsonrpc":"2.0","method":"notifications/initialized"}',
+        )
+        yield session
+
+
+# --------------------------------------------------------------------------- #
+# IN-PROCESS dispatch helpers. LEGITIMATE ONLY OUTSIDE THE POSTURE MODULES.
+#
+# ⚠ R16 part 2 bans in-process handler calls in the posture test modules, because an
+# in-process call cannot distinguish a live guard from one that is dead on the wire
+# (WB30/WB48/WB93, three waves, one root cause). These two helpers exist for the modules
+# where in-process dispatch is the SUBJECT rather than a shortcut — the permission-resolver
+# seam, whose contract is about the resolver being consulted, not about a served posture.
+# The R16 AST invariant treats any posture module importing them as a violation.
+# --------------------------------------------------------------------------- #
+
+
+@contextlib.contextmanager
+def as_principal(token: Any) -> Iterator[None]:
+    """Install ``token`` as the request's authenticated principal (or none at all)."""
+    from mcp.server.auth.middleware.auth_context import auth_context_var
+    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+
+    reset = auth_context_var.set(AuthenticatedUser(token) if token is not None else None)
+    try:
+        yield
+    finally:
+        auth_context_var.reset(reset)
+
+
+async def call_and_capture(mcp: Any, tool_name: str) -> BaseException | None:
+    """Call ``tool_name`` IN PROCESS and return whatever it raised, or ``None``.
+
+    ``pytest.raises(Exception)`` is the wrong instrument for a "was NOT refused" pin: it
+    fails when nothing is raised, so a build that made a tool succeed would red a pin that
+    has nothing to say about success. This captures instead of demanding.
+    """
+    try:
+        await mcp.call_tool(tool_name, {})
+    except BaseException as exception:  # noqa: BLE001 - the pin classifies, never swallows
+        return exception
+    return None

@@ -875,6 +875,51 @@ class TestTheBootRefusalReachesTheThingThatActuallyBoots:
             LoreServer(config).run()
         assert not served, "a refused config must never reach uvicorn at all"
 
+    @pytest.mark.parametrize(
+        "host",
+        ["127.0.0.1", "127.0.0.2", "127.0.1.1", "127.255.255.254", "::1", "localhost"],
+    )
+    def test_the_loopback_PREDICATE_holds_across_the_whole_127_8_grid(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # ⚑ R15 SHARPENED BY WB71 — PIN THE PREDICATE, NEVER ITS SPELLINGS. A build that
+        # spelled ``host_is_loopback`` as a LITERAL SET — ``{localhost, 127.0.0.1, ::1}``
+        # — passed every host pin the previous wave wrote and then REFUSED TO BOOT on
+        # ``127.0.0.2``, which is loopback. The whole of 127/8 is loopback, and the
+        # implementation must delegate to ``ipaddress.ip_address(...).is_loopback`` rather
+        # than enumerate.
+        #
+        # Ask: *"would a hand-list of every loopback spelling I tested still pass this?"*
+        # If yes, the grid is too small. This grid is chosen so no plausible literal set
+        # survives it.
+        from loremaster.config import LoreConfig, resolve_posture
+
+        from lorerunes import Posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        assert resolve_posture(LoreConfig.model_validate(payload)) is Posture.HOSTED_OAUTH
+
+    @pytest.mark.parametrize(
+        "host", ["10.0.0.1", "192.168.64.100", "0.0.0.0", "128.0.0.1", "126.255.255.255"]
+    )
+    def test_the_loopback_PREDICATE_rejects_addresses_just_outside_127_8(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # The negative half of the same grid, including the two addresses immediately
+        # either side of 127/8 — a predicate implemented as a sloppy prefix match
+        # (``host.startswith("127")``) or an off-by-one range check dies here.
+        from loremaster.config import LoreConfig, PostureConfigError, resolve_posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        with pytest.raises(PostureConfigError):
+            resolve_posture(LoreConfig.model_validate(payload))
+
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
     def test_every_loopback_SPELLING_still_resolves_to_hosted_oauth(
         self, tmp_path: Path, host: str
@@ -892,6 +937,72 @@ class TestTheBootRefusalReachesTheThingThatActuallyBoots:
         payload["server"]["host"] = host
         payload["auth"] = hosted_auth_block(roster)
         assert resolve_posture(LoreConfig.model_validate(payload)) is Posture.HOSTED_OAUTH
+
+
+class TestNoInstanceAttributeShadowsABoundHandler:
+    """R16 part 1 — the STRUCTURAL half that kills the wire-dead-shadowing CLASS.
+
+    ``FastMCP.__init__`` calls ``_setup_handlers``, which registers the **bound** method
+    with the low-level server. So ``mcp.<handler> = something`` after construction is live
+    for every in-process caller and **DEAD ON THE WIRE**. Three wrong builds used exactly
+    that, on three different handlers, in three consecutive waves — WB30 (`call_tool`),
+    WB48 (dispatch order on the same route), WB93 (`list_tools`). Each fix pinned the door
+    that had just been opened; this pins the CLASS.
+
+    ⚠ THE HANDLER SET IS DERIVED FROM THE INSTALLED SDK, NEVER HAND-LISTED. A hand-list is
+    the next name-list — the artifact this repo has the most receipts against (six
+    instruments, six defeats) — and it would miss the eighth handler an SDK upgrade binds.
+
+    **Coverage, stated honestly rather than over-claimed:** this catches attribute
+    SHADOWING of bound handlers, which is the dead-on-wire class. It does not need to
+    catch wire-LIVE replacements — a swapped ``_tool_manager`` (caught by the
+    scoped-manager identity pin), a rewritten low-level handler table (wire-visible, so
+    the wire pins catch it), or a subclass override (the sanctioned spelling, wire-live by
+    construction).
+    """
+
+    def test_no_derived_handler_name_is_shadowed_on_the_composed_server(
+        self, tmp_path: Path
+    ) -> None:
+        from _auth_fixtures import sdk_bound_handler_names
+        from loremaster.server import LoreServer, build_mcp_server
+
+        mcp = build_mcp_server(LoreServer(hosted_config(tmp_path)))
+        shadowed = sorted(name for name in sdk_bound_handler_names() if name in vars(mcp))
+        assert not shadowed, (
+            f"instance attributes shadow bound handlers: {shadowed}. "
+            f"``_setup_handlers`` registered the BOUND originals at construction, so these "
+            f"overrides are live in process and DEAD ON THE WIRE — the WB30/WB48/WB93 "
+            f"class. The sanctioned spelling is a SUBCLASS override (wire-live by "
+            f"construction) or the scoped ToolManager."
+        )
+
+    @pytest.mark.parametrize("posture", ["hosted", "lan_bearer", "loopback"])
+    def test_no_shadowing_in_any_posture(self, tmp_path: Path, posture: str) -> None:
+        # ∀ postures — a filter installed only for the hosted branch is exactly the shape
+        # WB93 took, and a single-posture pin would not see it.
+        from _auth_fixtures import sdk_bound_handler_names
+        from loremaster.server import LoreServer, build_mcp_server
+
+        config = {
+            "hosted": hosted_config,
+            "lan_bearer": lan_bearer_config,
+            "loopback": loopback_config,
+        }[posture](tmp_path)
+        mcp = build_mcp_server(LoreServer(config))
+        assert not [name for name in sdk_bound_handler_names() if name in vars(mcp)]
+
+    def test_the_derivation_sees_the_routes_that_have_receipts(self) -> None:
+        # The instrument's own honesty check: if the AST parse of ``_setup_handlers``
+        # drifts and returns a smaller set, the pins above go quietly vacuous rather than
+        # red. Both routes with a wrong-build receipt against them must be in the set.
+        from _auth_fixtures import sdk_bound_handler_names
+
+        handlers = sdk_bound_handler_names()
+        assert {"call_tool", "list_tools"} <= handlers, (
+            f"the SDK handler derivation lost a route with a WRONG-BUILD receipt against "
+            f"it; got {sorted(handlers)}"
+        )
 
 
 class TestLoopbackPostureIsUnchanged:
