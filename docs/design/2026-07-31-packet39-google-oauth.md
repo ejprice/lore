@@ -13,7 +13,11 @@ fourth ping **REVERSED**: the strong per-verification ruling is RESTORED — no 
 window (§3-R12) — plus the §4 scope-check property fix, §8 row 15 (ruling S1), and §15
 (contract-pass rulings S2–S6/B1/B4). A fifth ping (the adversary-pass DESIGN escalation,
 `REPORT-adversary-39-auth-2.md` at `003e856`) produced **R13–R15 and rewrote §7's
-enforcement mechanism**: the guard becomes a scoped LOOKUP, not a wrapper (§7, §16).
+enforcement mechanism**: the guard becomes a scoped LOOKUP, not a wrapper (§7, §16). A
+sixth ping (second escalation, `REPORT-adversary-39-auth-3.md` at `f5b7c0d`, WB93 —
+the wire-dead-shadowing class's THIRD instance) produced **R16** (§17): the class is
+killed by a derived no-handler-shadowing pin + a wire-only discipline invariant + the
+friction removal that was pushing builders through the door.
 **Inputs:** the approved investigation (`~/.claude/plans/check-and-see-if-polymorphic-pebble.md`
 — an unrecoverable address by standing law; its load-bearing content is restated or superseded
 HERE, and this doc is the durable record) · `docs/plans/v2/39-hosted-security.md` ·
@@ -42,7 +46,8 @@ measurements (2026-07-31, §2 — they **falsify part of the investigation's Pha
 | R12 | Allowlist substrate (operator override, 2026-07-31) | **mtime-watched flat file, outside the repo AND the image**, bind-mounted ro; `lore.yaml` carries only its PATH; add/revoke requires NO recreate and NO rebuild |
 | R13 | Read-only guard structure (adversary escalation, WB48) | **Scoped LOOKUP, not a wrapper**: a posture-scoped `get_tool`/`list_tools`; enforcement ORDER lives in upstream SDK dispatch, so "placement" stops being a builder variable — plus a derived ∀ effect pin at the `Tool.run` entry boundary |
 | R14 | Extension tools under `HOSTED_OAUTH` (adversary §4.5) | Refused wholesale, made EXPLICIT: `_register_extension_tools` synthesizes `readOnlyHint=False` on every extension tool (the core cannot verify a project-authored callable's read-onlyness, so it must not claim it); the ∀ classification pin becomes true over BOTH registration paths |
-| R15 | `host_is_loopback` on a non-IP bind (WB51) | Fail CLOSED: `True` iff the host is the literal `localhost` (lowercased) or parses as an IP whose `.is_loopback` holds; anything unparseable is `False` — never `True` on exception |
+| R15 | `host_is_loopback` on a non-IP bind (WB51; sharpened by WB71) | Fail CLOSED: `True` iff the host is the literal `localhost` (lowercased) or parses as an IP whose `.is_loopback` holds; anything unparseable is `False` — never `True` on exception. Pinned as a PREDICATE over a 127/8 grid, never as spellings |
+| R16 | The wire-dead-shadowing CLASS (WB30→WB48→WB93, second escalation) | Killed three ways at once: a no-handler-shadowing structural pin whose handler set is DERIVED from the installed SDK's `_setup_handlers` · a wire-only AST invariant over the posture test modules · an explicitly-named unscoped accessor that removes the friction pushing builders through the door (§17) |
 
 **What is operator-side and cannot be done without them:** §12. **Bounds of this design
 (what I could not measure tonight):** §13.
@@ -550,6 +555,14 @@ boot on a non-loopback bind. **Rider:** name-form pins — `localhost` → True 
 `127.0.0.1`/`::1`/`127.0.0.2` → True · `myhost.lan` / `""` / `evil` / `[::1]`
 (bracketed, unparseable) → False — plus the WB51 mutation itself (swap the ValueError arm
 to `True`) as a declared-RED proof.
+**Sharpened by WB71 (a build that spelled the predicate as a LITERAL SET —
+`{localhost, 127.0.0.1, ::1}` — passed every pin and refused to boot on `127.0.0.2`):
+pin the PREDICATE, never its spellings.** The implementation delegates to
+`ipaddress.ip_address(...).is_loopback`; the contract pins a parametrised GRID across
+127/8 that no plausible literal set survives (`127.0.0.2`, `127.0.1.1`,
+`127.255.255.254`, plus `::1` and the negatives `10.0.0.1`, `192.168.64.100`), with the
+WB71 build itself as a declared-RED perturbation. Ask: *"would a hand-list of every
+loopback spelling I tested still pass this?"* — if yes, the grid is too small.
 
 **⚠ Operational consequence, stated where it bites:** in `HOSTED_OAUTH` the SDK gates
 `/mcp` for EVERYONE — local agents on this box included. Local sessions therefore
@@ -662,6 +675,15 @@ unclassified new tool is born refused.
   fixture MUST register at least one extension (the adversary's finding was a fixture
   monoculture — no-extension-only); one pin asserts a registered extension tool carries
   `readOnlyHint=False` and is refused hosted while remaining callable via api-key.
+  **Sharpened by WB74 (the annotation CLASS was spec-silent — only `readOnlyHint` was
+  ruled, leaving every other field a free variable):** the synthesized annotations are a
+  NAMED module-level constant, `_EXTENSION_TOOL_ANNOTATIONS = ToolAnnotations(
+  readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)`
+  — the WORST-CASE value on EVERY field, for the same reason on each: the core can
+  verify none of them for a project-authored callable, and a hint it cannot verify must
+  claim the conservative direction (Consumer Law: an optimistic hint on unaudited code
+  is an over-claim). **Rider:** an exact-EQUALITY pin on a registered extension tool's
+  full annotations object — any drift in any field reds, not just the read-only bit.
   **Re-open trigger** (also in §1): an extension needing hosted exposure ⇒ `ToolSpec`
   gains an explicit NO-DEFAULT read-only declaration plus a verification story for the
   claim — a design escalation, never a field addition.
@@ -709,7 +731,13 @@ unclassified new tool is born refused.
   names equal the partition's refused set exactly, both directions (membership-only
   checking is what waved WB50 through) — plus one flip-one-annotation mutation that must
   move the tool across all three surfaces at once (guard outcome, list membership,
-  rendered section) or the pin reds.
+  rendered section) or the pin reds. **Sharpened by WB72 (a hosted `list_tools` that
+  ADVERTISED an unannotated tool the guard then refused — a served surface contradicting
+  itself):** the listing filter and the refusal predicate must BE the one partition
+  function, and the contract adds the wire invariant **served ∩ refused = ∅** — for the
+  same principal, every tool the wire lists is callable and every tool it refuses is
+  unlisted — driven with an adversarially UNANNOTATED tool in the fixture (WB72's exact
+  case), asserted over the full registry, on the wire.
 - **Ask mid-build (the askable forms):** *"if I registered a new tool right now with no
   annotations, which pin reds and which guard refuses it?"* If either answer is "nothing",
   the derivation has been rebuilt as a list. And R13's question: *"can this tool's body
@@ -809,11 +837,19 @@ Groups (each pin mutation-proven; expected-RED ids from `--collect-only` before 
    `arguments={}` cannot mask an executed body) · its positive control: the synthetic
    no-required-args mutating tool with a body counter, proving the harness sees
    execution · the scoped-`ToolManager` structural pin · the annotations-exhaustiveness
-   pin with ≥1 EXTENSION registered in its fixture (R14) · the WB50 EQUALITY pin: the
-   rendered refused-set equals the partition both directions, and one annotation flip
-   moves the tool across guard, list, and render at once · the R15 host-form pins
-   (`localhost`/IPs True; names/garbage/bracketed False; ValueError-arm mutation
-   declared-RED) · refusal prose enumerates posture names from the enum.
+   pin with ≥1 EXTENSION registered in its fixture (R14) · the WB74 exact-equality pin
+   on `_EXTENSION_TOOL_ANNOTATIONS`, every field · the WB50 EQUALITY pin: the rendered
+   refused-set equals the partition both directions, and one annotation flip moves the
+   tool across guard, list, and render at once · the WB72 wire invariant: served ∩
+   refused = ∅ over the full registry, with an adversarially unannotated fixture tool ·
+   **the R16 pair, both fed by ONE handler-set derivation from the installed SDK's
+   `_setup_handlers`**: the no-shadow structural pin (`name not in vars(mcp)` ∀ derived
+   handlers, WB93's own line declared-RED) and the wire-only AST invariant over the
+   posture test modules (itself inside `testpaths`) · the R15 host-form pins AS A GRID
+   (`localhost`/IPs incl. `127.0.0.2`, `127.0.1.1`, `127.255.255.254` True;
+   names/garbage/bracketed False; the WB51 ValueError-arm and WB71 literal-set
+   perturbations both declared-RED) · refusal prose enumerates posture names from the
+   enum.
 
 The contract ships with a **satisfiability receipt** (0-failed against the adversary's
 reference build, INCLUDING after the ruff-driven orphaned-import cleanup that deleting
@@ -916,7 +952,9 @@ via api-key (the probe can demonstrably see writes). In-image conformance run as
 | Google claim validation | `google-auth` **2.x, MEASURED 2026-07-31 by the lead** (was an empty read column on BOTH the design's and the contract's side — an inherited claim neither had verified; the adversary flagged it) | **Executed** `uv run --with google-auth python -c …`: `google.oauth2.id_token`'s public surface is `fetch_id_token`, `fetch_id_token_credentials`, `verify_firebase_token`, `verify_oauth2_token`, `verify_token`; `verify_oauth2_token(id_token, request, audience=None, clock_skew_in_seconds=0)` documents itself *"Verifies an ID Token issued by Google's OAuth 2.0 authorization server."* A search of `google.oauth2.{utils,credentials}` and `google.auth.transport.requests` for `tokeninfo`/`introspect` helpers returned **NONE**. | **bespoke** (the gap only: tokeninfo call + claim checks; provenance carried in docstring). **The inherited claim is CONFIRMED, now measured rather than repeated** — the package genuinely cannot validate the opaque ACCESS token the connector presents, so this is packages-over-hand-rolling side 2, not a hand-roll around an available API. |
 | Running an ASGI **lifespan** in a test | `asgi-lifespan` **2.1.0 — RESOLVED by the lead 2026-07-31**, added to the `dev` group (test-only; NOT a runtime dep — precedent `f0f4561`, where the adversary caught exactly that error) | `LifespanManager(app, startup_timeout=5, shutdown_timeout=5)` is an async context manager — verified by import. The contract author had MEASURED the gap first: the string `lifespan` does not appear in `httpx/_transports/asgi.py`, so `ASGITransport` drives HTTP scopes only. | **replace** the ~30-line hand-rolled `running_asgi_app` in `loremaster/tests/_auth_fixtures.py`. The package additionally supplies startup/shutdown timeouts the hand-roll lacks. **Never maintain both** — the twin is deleted in the build wave. |
 | Blankness / email normalisation / posture predicate / roster parser | `lorerunes` (in-repo shared home) | `lorerunes/blankness.py::is_blank` | **extend** (normaliser + posture enum + scope constants + roster parser join it; stdlib-only preserved) |
+| Roster address parsing/validation | `email-validator` | NOT READ — the package is not installed in this tree (`import email_validator` → ModuleNotFoundError, this session) and neither side had surveyed it | **bespoke, FORCED by the `lorerunes` stdlib-only law** (`lorerunes/pyproject.toml`: *"Shared stdlib-only primitives"*), NOT by any capability claim: the parser lives beside the normaliser in `lorerunes`, which may import no third-party package by construction. The bespoke surface is minimal and deliberately narrow — R7's local@domain shape check, one `@`, non-empty parts — never a full RFC 5322 grammar; the trade is the packages-over-hand-rolling exception's *"the package does not fit OUR constraint"* leg, and the constraint is the shared-home rule, stated so a future reader does not "helpfully" add the dep and break `lorerunes`' importability. Re-open: if address validation ever needs RFC-5322 rigor, it moves OUT of `lorerunes` into `loremaster` and adopts `email-validator` there |
 | Roster change detection (R12) | `watchdog` (already a dep) | Its observer model — a thread + event queue per watched tree, the indexer's instrument | **bespoke, deliberately minimal**: one `os.stat` mtime compare per VERIFICATION for a single file (restored ruling — no residual window); an observer thread for one file is machinery without a gap to fill; re-open if the roster ever becomes a directory of files |
+| Roster address parsing (R12/R7) | `email-validator` | **Not read — not installed in this venv.** The verdict rests on a CONSTRAINT, not a capability claim: the parser lives in `lorerunes`, whose stdlib-only bound is law (its own `
 
 ---
 
@@ -988,6 +1026,68 @@ extension gap; 9 new wrong builds passing all 448 pins).
 - Not re-decided here (lead retained): the `asgi-lifespan` `keep_with_trigger` re-run,
   and routing the remaining missing pins to the contract author — deliberately AFTER
   these rulings, since pins written first would pin a design about to change.
+
+---
+
+## 17. Second adversary escalation (2026-07-31, `REPORT-adversary-39-auth-3.md` at `f5b7c0d`) — R16: kill the wire-dead-shadowing CLASS
+
+WB93 is WB30's shape moved onto `tools/list` — the route R13 made security-relevant for
+the first time: the scoped manager stops filtering, and the filter returns as a
+post-construction instance attribute (`mcp.list_tools = _scoped_list_tools`) — live for
+every in-process pin, DEAD on the wire, because `_setup_handlers` registered the BOUND
+original at construction. Hosted `tools/list` on the wire: 15 tools including all six
+mutating; correct build: 9. Third instance of one root cause, so per the instrument
+lesson the CLASS is killed, not the door: **any mechanism installed on the server as a
+post-construction instance attribute is live in process and dead on the wire, and
+in-process pins cannot tell the difference.**
+
+R13's structure is CONFIRMED, not re-invented — `FastMCP.list_tools` reads
+`self._tool_manager` at call time (source), so the scoped manager genuinely governs the
+wire; WB93 survives precisely by NOT USING the ruled structure. **R16, three parts:**
+
+1. **No instance attribute may shadow a bound handler — pinned structurally, with the
+   handler set DERIVED from the installed SDK, never a hand-list:** the pin AST-parses
+   `inspect.getsource(FastMCP._setup_handlers)` for the `self.<name>` methods it
+   registers on the low-level server (seven in the installed SDK, read at source this
+   session: `list_tools`, `call_tool`, `list_resources`, `read_resource`,
+   `list_prompts`, `get_prompt`, `list_resource_templates` — but the DERIVATION is the
+   spec, so an SDK upgrade that binds an eighth handler is covered the day it lands) and
+   asserts `name not in vars(mcp)` for every derived name on the COMPOSED production
+   server; mutation proof — WB93's own `mcp.list_tools = …` line, declared-RED.
+   **Coverage stated honestly:** this catches the dead-on-wire class (attribute
+   shadowing of bound handlers). It does not and need not catch wire-LIVE replacements —
+   a swapped `_tool_manager` (caught by the scoped-manager identity pin), a rewritten
+   low-level handler table (wire-visible, caught by the wire pins), or a subclass
+   override (the sanctioned spelling, wire-live by construction).
+2. **Every posture/refusal assertion drives the WIRE — enforced as ONE contract-level
+   invariant, not per-pin discipline:** an AST check, itself a test inside `testpaths`
+   (a guard nobody runs is a hope with a filename), asserting no test in the posture
+   test modules calls any derived handler name in-process on a FastMCP instance
+   (`mcp.list_tools(`, `mcp.call_tool(`, … — the SAME derived set as part 1, one
+   derivation feeding both instruments); mutation — add one in-process posture
+   assertion, the invariant reds. **Scope stated honestly:** the invariant's module set
+   is derived from the posture-test naming pattern on the filesystem, not a hand-list;
+   in-process calls stay legitimate in non-posture modules (registration-set pins). The
+   residual it cannot see — a posture CLAIM proven in-process inside a module that
+   evades the naming pattern — is named here as the bound.
+3. **Remove the friction that pushed builders through the door** (the adversary named
+   it: the instructions render needs the UNSCOPED registry, and under a scoped
+   `list_tools` the reference build itself had to reach past the override with an
+   unbound `ToolManager.list_tools(mcp._tool_manager)` call): the scoped manager
+   exposes an explicitly-named unscoped accessor — `all_registered_tools()` — as the
+   ONE sanctioned full-registry view; the partition function and the instructions
+   renderer consume IT. **Rider:** sharing proven by mutation — perturb
+   `all_registered_tools()`'s output in scratch and the partition, render, and
+   list-projection pins must ALL red; a caller that stays green is a private copy. A
+   gate that makes honest code awkward gets switched off — this gives the honest path
+   a name so nobody re-derives the workaround.
+
+Also ruled this pass: WB71 → R15 sharpened (§5: pin the predicate over a 127/8 grid,
+never spellings) · WB72 → served ∩ refused = ∅ wire invariant with an unannotated-tool
+fixture (§7) · WB74 → `_EXTENSION_TOOL_ANNOTATIONS` exact-equality pin, worst-case on
+every field (§7) · `email-validator` → §14 row: **bespoke, forced by the lorerunes
+stdlib-only law, not by any capability claim** (the package is not installed here and
+was not read; the verdict does not rest on what it can or cannot do).
 
 ---
 

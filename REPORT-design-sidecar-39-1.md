@@ -1,7 +1,7 @@
 brief-base v9 read
 state: done
 deviations: none — all seven forks RULED under the operator's explicit override; no code/config/test touched; sole writable path honored
-Packages considered: mcp SDK ≥1.27 (replace — hand-rolled Bearer middleware/ABC deleted), mcp.server.transport_security (replace_with_adapter — one EdgePolicy derivation), cachetools.TTLCache (replace, new direct dep), httpx (keep), google-auth (bespoke gap — access tokens need tokeninfo, not id_token JWTs), lorerunes (extend). Full read-column table: design doc §14
+Packages considered: mcp SDK ≥1.27 (replace — hand-rolled Bearer middleware/ABC deleted), mcp.server.transport_security (replace_with_adapter — one EdgePolicy derivation), cachetools.TTLCache (replace, installed 7.1.6), httpx (keep), google-auth (bespoke gap — access tokens need tokeninfo, not id_token JWTs), watchdog (bespoke — one os.stat over a thread), email-validator (bespoke, FORCED by lorerunes stdlib-only law — package not installed, not read; verdict rests on the constraint, not a capability claim), lorerunes (extend). Full read-column table: design doc §14
 decisions-needed: none for the design (operator override); operator-side go-live items listed honestly in design doc §12 (claude.ai connector + client secret is the one hard blocker)
 receipt pointers:
 - DELIVERABLE: docs/design/2026-07-31-packet39-google-oauth.md (rulings table §0 · threat model §1 · measured topology §2 · rulings §3 · verifier §4 · config/postures §5 · composition §6 · read-only derivation §7 · removed-behavior inventory §8 · contract groups §9 · kill switches §10 · #137/#138 receipt §11 · operator-side §12 · bounds §13 · packages §14)
@@ -242,5 +242,43 @@ doc (§0 rows R13–R15, §7 rewritten, §5 R15, §16 escalation record):
 
 Not re-decided (lead retained): asgi-lifespan trigger re-run; routing remaining pins to
 the contract author after these rulings.
+
+## 10. Second adversary escalation (sixth lead message, 2026-07-31) — R16 + four survivors
+Grounded in `REPORT-adversary-39-auth-3.md` at `f5b7c0d` §4.1 and the installed SDK's
+`_setup_handlers` source (the handler-derivation source) before ruling.
+
+**R16 — the wire-dead-shadowing CLASS is killed, not the third instance** (WB30→call_tool,
+WB48→dispatch, WB93→list_tools all one root cause: a mechanism installed as a
+post-construction instance attribute is live in-process, dead on the wire, and in-process
+pins can't tell). R13's structure CONFIRMED at source (FastMCP reads `self._tool_manager`
+at call time), so WB93 survives by NOT using it. Three-part kill (design §17):
+(1) a no-instance-attribute-shadows-a-bound-handler structural pin, handler set DERIVED
+from `_setup_handlers` (seven today, read at source; the derivation is the spec so an
+eighth is covered on arrival), WB93's own line declared-RED — coverage stated honestly
+(catches dead-on-wire shadowing; wire-live replacements are the scoped-manager identity
+pin + wire pins + the sanctioned subclass override); (2) a wire-only AST invariant, itself
+inside `testpaths`, over the posture test modules — one derivation feeds both instruments;
+(3) an explicitly-named `all_registered_tools()` unscoped accessor that REMOVES the
+friction pushing builders to the attribute door (the render needs the unscoped registry;
+the reference build was reaching past its own override), sharing proven by mutation.
+This is the allowlist-the-safe law: three forbidden placements enumerated is three too
+many; make the safe path the only one and watch the wire.
+
+**Four survivors also ruled:**
+- **WB71** → R15 sharpened (§5): the loopback predicate is pinned over a 127/8 GRID
+  (`127.0.0.2`, `127.0.1.1`, `127.255.255.254`, …), never a spelling set that refuses to
+  boot on an untested loopback address; the literal-set build is declared-RED.
+- **WB72** → served ∩ refused = ∅ wire invariant (§7), driven with an adversarially
+  unannotated fixture tool — the listing filter and the refusal predicate must BE one
+  partition, or the served surface contradicts itself.
+- **WB74** → the extension annotation CLASS pinned (§7): `_EXTENSION_TOOL_ANNOTATIONS` is
+  worst-case on EVERY field (destructive/openWorld true, idempotent false), reasoned from
+  "the core can verify none of them, so each claims the conservative direction"; exact-
+  equality pin, any field drift reds.
+- **email-validator** → §14 row: **bespoke, FORCED by the lorerunes stdlib-only law, not a
+  capability claim.** The package is not installed here and was not read; the verdict rests
+  on the shared-home constraint (`lorerunes` may import no third-party dep), the bespoke
+  surface is deliberately narrow (R7's shape check, not RFC 5322), and the row states this
+  so a future reader does not add the dep and break lorerunes' importability.
 
 STANDING BY for follow-up design questions via SendMessage, per brief.
