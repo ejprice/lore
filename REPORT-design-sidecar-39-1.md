@@ -175,4 +175,32 @@ packet record uncorrected.
 - **Kill switches restructured** — per-principal roster edit is now switch 1, above all
   whole-service switches; §1's threat-model verdict reworded to match the TTL fact.
 
+## 8. Contract-pass corrections (fourth lead message, 2026-07-31) — applied
+1. **Strong R12 freshness ruling RESTORED** (the lead reversed its own per-cache-miss
+   floor, calling it a carelessly-written performance sentence): stat on EVERY
+   verification, cache hits included; a revoked principal is denied on the FIRST
+   verification after the roster edit; **the residual-window "fact" is deleted from §1
+   and R12** — replaced by the stronger property with the cache-HIT/call-count pin and
+   the stat-to-miss-only mutation proof. The ruling's two reversals are recorded IN R12
+   so the history cannot be re-litigated from stale copies. (Doc: §0 header, §1 verdict,
+   §3-R12, §4, §9 group 1, §10 switch 1, §14 stat row.)
+2. **§4 scope-check DESIGN BUG fixed** (contract-caught): "require `"email"` in the
+   scope set" implemented verbatim would refuse every real token — Google's tokeninfo
+   echoes scope values in its own form (plausibly full URIs). Now stated as the superset
+   PROPERTY, parametrised over full-URI and bare-alias forms, with the honest bound that
+   neither design nor contract verified which form production returns (build-leg live
+   probe settles it; §13 extended).
+3. **Ruling S1 recorded** — anonymous path enumeration (unknown paths 404 instead of the
+   old blanket 401; observable in `LAN_BEARER`, masked at the public edge): ACCEPTED as
+   a KNOWN BOUND with re-open trigger, added as §8 row 15 (my table already had 14 rows —
+   the lead's "row 14" was off by one against the file; noted, not silently renumbered)
+   and as a docstring bound in §1.
+4. **Records:** B1 resolved (cachetools 7.1.6 installed, in pyproject — §14 updated) ·
+   B4 accepted (`build_mcp_server` gains keyword-only `http_client=` +
+   `permission_resolver=`, named in §4/§6) · S2/S3/S4/S6 ratified as the contract
+   author's readings and recorded with their content in NEW §15 (read from
+   `REPORT-contract-39-auth-1.md` §7 so the builder gets substance, not dangling ids) ·
+   S5 superseded by the restored ruling (§15 notes the pin inversion the lead is
+   directing separately).
+
 STANDING BY for follow-up design questions via SendMessage, per brief.

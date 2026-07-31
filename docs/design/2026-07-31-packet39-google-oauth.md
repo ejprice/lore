@@ -815,11 +815,45 @@ via api-key (the probe can demonstrably see writes). In-image conformance run as
 |---|---|---|---|
 | Token verification protocol, 401/`resource_metadata` challenge, session identity, `.well-known` route | `mcp` SDK ≥1.27 (installed) | `mcp/server/auth/provider.py` (`TokenVerifier`, `AccessToken` incl. `subject`/`claims`), `bearer_auth.py::authorization_context`, `auth/settings.py::AuthSettings`, FastMCP `token_verifier=` wiring | **replace** (the hand-rolled `BearerAuthMiddleware`/`AuthVerifier` are deleted) |
 | Host/Origin DNS-rebinding validation | `mcp.server.transport_security` (installed) | `TransportSecuritySettings` + middleware source (absent-Origin allowed, `:*` wildcards, 421 on bad Host) | **replace_with_adapter** (one `EdgePolicy` derivation feeds it AND the kept outermost Origin middleware — §5) |
-| Token/negative caches with TTL | `cachetools.TTLCache` | odoo-code's production use of the same (`code_mcp/auth.py`); cachetools API | **replace** hand-rolled dict-with-timestamps (new direct dep `cachetools>=5`) |
+| Token/negative caches with TTL | `cachetools.TTLCache` | odoo-code's production use of the same (`code_mcp/auth.py`); cachetools API | **replace** hand-rolled dict-with-timestamps (direct dep `cachetools>=5` — RESOLVED by lead 2026-07-31: installed 7.1.6, added to `loremaster/pyproject.toml`) |
 | Google token validation transport | `httpx` (already a direct dep) | odoo-code's `_validate_google_token` POST-body idiom; httpx `MockTransport`/`Limits` | **keep** |
 | Google claim validation | `google-auth` | Its `id_token` verifier targets ID-token JWTs; the connector presents opaque ACCESS tokens — tokeninfo introspection is the correct instrument (odoo-code production-proven) | **bespoke** (the gap only: tokeninfo call + claim checks; provenance carried in docstring) |
 | Blankness / email normalisation / posture predicate / roster parser | `lorerunes` (in-repo shared home) | `lorerunes/blankness.py::is_blank` | **extend** (normaliser + posture enum + scope constants + roster parser join it; stdlib-only preserved) |
-| Roster change detection (R12) | `watchdog` (already a dep) | Its observer model — a thread + event queue per watched tree, the indexer's instrument | **bespoke, deliberately minimal**: one `os.stat` mtime compare per cache-miss for a single file — an observer thread for one file is machinery without a gap to fill; re-open if the roster ever becomes a directory of files |
+| Roster change detection (R12) | `watchdog` (already a dep) | Its observer model — a thread + event queue per watched tree, the indexer's instrument | **bespoke, deliberately minimal**: one `os.stat` mtime compare per VERIFICATION for a single file (restored ruling — no residual window); an observer thread for one file is machinery without a gap to fill; re-open if the roster ever becomes a directory of files |
+
+---
+
+## 15. Contract-pass rulings (2026-07-31) — recorded so the builder does not re-decide
+
+The contract author escalated six spec-silent readings plus four blockers
+(`REPORT-contract-39-auth-1.md` §7 — archived under `docs/plans/v2/receipts/` at wave
+close-out per standing law; cite the archived path thereafter). Ruled:
+
+- **S1 — anonymous path enumeration: ACCEPT as a KNOWN BOUND** — §8 row 15 and the §1
+  docstring bound carry the full ruling and re-open trigger.
+- **S2 — duplicate roster lines: merge-and-report** (contract's reading, lead-ratified).
+  A duplicate is not malformed; the parser returns `RosterParse(entries, merged)` so the
+  merge is OBSERVABLE — the forbidden shape is the SILENT shortening, never the merge
+  itself. Pinned by the contract's merge-fate test.
+- **S3 — `mode` while `enabled: false`: allowlist-the-safe.** `LOOPBACK` requires the
+  default `api_key` mode; `enabled: false` + `mode: google_oauth` is a diagnosable
+  refusal — an operator cannot believe hosted auth is on while nothing is gated.
+- **S4 — posture refusal shape: union return from the pure function.** `lorerunes`'
+  `derive_posture` returns `Posture | PostureRefusal` (pure, testable, no control flow in
+  the shared home); the impure `loremaster.config.resolve_posture(config) -> Posture`
+  raises `PostureConfigError` and is ALSO the home of R12's boot-time roster check.
+- **S5 — superseded by the restored R12 ruling** (§3-R12): there is no residual window to
+  pin as a KNOWN BOUND. The lead is instructing the contract author to INVERT the
+  `TestTheResidualWindowIsAKnownBound` pin — it currently ASSERTS the hole exists — into
+  the immediate-revocation pin (cache-HIT fixture, R12's rider).
+- **S6 — `realm="loremaster"` on the 401 challenge: dropped-deliberately** under §8
+  row 1's shape supersession (the SDK emits `error=`/`error_description=`/
+  `resource_metadata=`, no `realm`; the contract's grep found no consumer keying on it).
+- **B1 — `cachetools` RESOLVED:** installed (7.1.6), added to `loremaster/pyproject.toml`
+  by the lead; §14's verdict stands.
+- **B4 — `build_mcp_server` gains keyword-only `http_client=` and `permission_resolver=`**
+  (both optional and additive; existing callers unaffected) — named in §4 and §6 so the
+  builder implements a ruled signature rather than inventing one.
 
 ---
 

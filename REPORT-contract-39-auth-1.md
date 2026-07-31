@@ -2,13 +2,13 @@
 
 brief-base v9 read
 
-- **state:** done-with-deviations (contract written; 4 blockers + 6 open rulings for the operator)
+- **state:** done-with-deviations. **REVISED 2026-07-31 after the lead's rulings — see §14.** S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
 - **deviation 1:** `mypy` reports **170 errors, ALL of the "symbol does not exist yet" class**, all in the 11 files this contract authored. Zero errors of any other class. Enumerated + classified in §6. `ruff` is CLEAN repo-wide.
-- **deviation 2:** `cachetools` (design §14, §4) is **NOT INSTALLED** — the builder cannot satisfy the ruled cache mechanism without an install authorization. §7-B1.
+- **deviation 2 — RESOLVED by the lead 2026-07-31:** `cachetools` is now installed (**7.1.6**, verified via `importlib.metadata`) and declared at `loremaster/pyproject.toml:39`. §7-B1 is closed.
 - **deviation 3:** three files the builder MUST edit are outside my writable set; exact edits in §8.
 - **deviation 4:** design §4's literal *"require `"email"` in tokeninfo's returned `scope` set"* would deny **every real Google token**. My contract pins the superset property instead. §7-B2.
 - **Packages considered:** `mcp` 1.27.2 → **replace** (read `provider.py`, `bearer_auth.py`, `settings.py`, `fastmcp/server.py::streamable_http_app`, `streamable_http_manager.py`) · `mcp.server.transport_security` → **replace_with_adapter** (read `TransportSecuritySettings` + middleware source) · `httpx` 0.28.1 → **keep** (read `httpx/_transports/mock.py`, `_transports/asgi.py`) · `cachetools` → **replace, BLOCKED on install** (not installed; `importlib.metadata` raises) · `google-auth` → **bespoke, claim INHERITED not verified** (not installed; I did not read it) · `email-validator` → **bespoke, forced by workspace law** (not installed; the constraint I read is `lorerunes/pyproject.toml`'s empty `dependencies`) · `watchdog` 6.0.0 → **bespoke, deliberately minimal** · `asgi-lifespan` → **escalate for install** (not installed; hand-rolled ~30-line stand-in ships so the contract is runnable today) · `httpx.ASGITransport` → **keep_with_trigger**. Full table + read-column in §2.
-- **decisions-needed:** 4 blockers (§7-B1..B4) · 6 spec-silent rulings (§7-S1..S6). The sharpest: **an unauthenticated caller can now enumerate lore's path surface** (§7-S1) — a removed behaviour design §8 does not list.
+- **decisions-needed:** ALL TEN RULED — see §14. **One open item: the satisfiability receipt** (§13), which only the adversary's reference build can produce. The design-doc consistency flag I raised (§14.4) was re-checked on disk and is **already fixed** by the lead's `591c00c`.
 - **receipts:** pin inventory §3 · wrong-build discrimination §4 · RED/GREEN counts §5 · mypy §6 · escalations §7 · out-of-scope edits §8 · adversary brief §9 · checklist §10 · adjudication §11.
 
 ---
@@ -47,7 +47,7 @@ Domain logic (not a library question): the roster admission predicate, the postu
 
 ## 3. Pin inventory by group, with the ∀-property each forces
 
-11 files, **413 new pins** (414 collected including the pre-existing `lorerunes/tests/test_smoke.py`).
+11 files, **421 new pins** (was 413 before the S5/S1 revision) (414 collected including the pre-existing `lorerunes/tests/test_smoke.py`).
 
 | # | file | pins | ∀-property forced |
 |---|---|---|---|
@@ -56,8 +56,8 @@ Domain logic (not a library question): the roster admission predicate, the postu
 | 3 | `lorerunes/tests/test_posture.py` | 70 | ∀ point of the 2×2×3×2×2 = **48-point** input cross-product → exactly one of three postures or a diagnosable refusal. Allowlist-the-safe: the expectation is written as three ACCEPT rules, so an unanticipated combination lands in "refuse" by construction. |
 | 4 | `loremaster/tests/test_auth.py` (rewrite) | 53 | ∀ retired name → absent from `loremaster.auth`; ∀ preserved `ApiKeyVerifier`/`Origin` behaviour → unchanged; ∀ blank config shape → unconstructible. |
 | 5 | `loremaster/tests/test_google_token_verifier.py` | 73 | **AUTH ∀:** ∀ `(token, tokeninfo-response, allowlist)` → `None` OR a complete `AccessToken` whose email the allowlist admits and whose `subject`/`claims`/`expires_at` are populated. Shared helper `assert_verification_outcome_is_total`, applied to **every** verification in the module. |
-| 6 | `loremaster/tests/test_allowlist_roster.py` | 41 | ∀ principal × ∀ **six** broken roster states → DENIED and LOUD. Not conditioned on a cause. |
-| 7 | `loremaster/tests/test_auth_composition.py` | 32 | ∀ posture → the discovery document is present-iff-hosted; ∀ posture → Origin is the OUTERMOST layer. |
+| 6 | `loremaster/tests/test_allowlist_roster.py` | 43 | ∀ principal × ∀ **six** broken roster states → DENIED and LOUD. Not conditioned on a cause. |
+| 7 | `loremaster/tests/test_auth_composition.py` | 38 | ∀ posture → the discovery document is present-iff-hosted; ∀ posture → Origin is the OUTERMOST layer. |
 | 8 | `loremaster/tests/test_auth_identity_seam.py` | 16 | ∀ ordered pair of distinct principals (google×google, google×api-key, api-key×api-key, anonymous×google) → B cannot resume A's session. |
 | 9 | `loremaster/tests/test_hosted_readonly_posture.py` | 55 | **POSTURE ∀:** ∀ registered tool → classified; ∀ (mutating tool × non-write principal) → refused; ∀ (read tool × hosted principal) → NOT refused. |
 | 10 | `loremaster/tests/test_permission_resolver_seam.py` | 14 | ∀ resolver output → enforced (a narrowed `permitted` actually filters; an EMPTY set permits nothing). |
@@ -97,7 +97,9 @@ Domain logic (not a library question): the roster admission predicate, the postu
 | **W16** | **Guard that refuses everything.** | Passes all 12 refusal pins. Hosted principals get nothing, which is the whole point of admitting them. | `test_a_google_principal_is_NOT_refused_a_read_only_tool` × 9 read tools + `test_a_newly_registered_read_only_tool_is_permitted`. |
 | **W17** | **Resolver seam injected and never called.** | The default is identity, so "called" and "not called" are indistinguishable. | `test_the_injected_resolver_is_called_on_every_tool_dispatch` (call log) + `test_a_tool_outside_the_resolved_permitted_set_is_refused` (the fake must be able to FAIL) + `test_an_empty_permitted_set_permits_NOTHING` (F4's shape one layer up). |
 | **W18** | **Roster read once at boot.** | Passes every in-memory pin. The operator's revocation requires a recreate — the one thing R12 exists to prevent. | `test_an_uncached_principal_added_mid_process_is_admitted` / `…_revoked_mid_process_is_denied`, both mutating a REAL file mid-process. |
-| **W19** | **`stat` on every request.** | Correct but violates the ruled floor; a syscall on lore's hottest path. | `test_a_cache_hit_performs_no_roster_stat` (an `os.stat` spy, verified observable through `pathlib.Path.stat` on this interpreter). ⚠ It also reds `TestTheResidualWindowIsAKnownBound` — deliberately; see §7-S5. |
+| **W19** | ~~`stat` on every request~~ → **REVERSED BY THE S5 RULING (§14.1).** The wrong build is now the OPPOSITE: **`stat` on the cache-MISS path only.** | Correct for an uncached principal, and it leaves a revoked-but-CACHED principal admitted until something unrelated happens to miss. Passes every uncached-revocation pin. | `TestRevocationIsEffectiveOnTheVeryNextVerification::test_a_revoked_principal_with_a_cached_token_is_denied_immediately` (NO intervening miss; the denial is asserted to cost ZERO outbound calls, so it cannot pass because caching is broken) + `TestRosterFreshnessOnEveryVerification::test_every_verification_stats_the_roster_including_cache_hits` (mechanism). |
+| **W19b** | **Revocation "fixed" by FLUSHING the token cache on every roster edit.** | Passes the denial pin. It is a different, much weaker mechanism: every live token is re-validated with Google whenever an operator saves the file — a thundering herd triggered by a text editor. | `test_the_token_cache_is_not_flushed_by_a_roster_edit` — a still-listed principal's warm token must survive an unrelated edit with ZERO outbound calls. |
+| **W19c** | **Re-reading the whole roster file on every verification.** | Satisfies S5's freshness ruling perfectly and puts a file read on lore's hottest path (design R12 rules the re-read conditional on mtime). | `test_an_unchanged_roster_is_not_re_read` — implementation-agnostic instrument: the file is made unreadable with its **mtime untouched** (`chmod` moves ctime, never mtime), so a stat-and-compare build keeps serving and a re-read build denies. Control: `test_a_changed_roster_IS_re_read`. |
 | **W20** | **`ApiKeyVerifier.verify` re-implemented inline.** | Every behavioural api-key pin passes while the branch carries its own timing behaviour and empty-key policy. | `test_the_api_key_branch_routes_through_ApiKeyVerifier` — neuter `ApiKeyVerifier.verify`, the branch must go dark (ROUTING IS NOT SHARING, proven by mutation inside the pin). |
 | **W21** | **Token in the URL.** | Works perfectly; leaks every token into the journal at INFO. | `test_the_token_is_posted_in_the_body_and_never_in_the_url` — asserts on the RECORDED request URL and body. |
 | **W22** | **`realm`-style 401 with no `resource_metadata`.** | A compliant client has no way to discover where to authenticate. The upstream branch is `# pragma: no cover`, so nothing upstream covers it either. | `test_the_401_carries_a_resource_metadata_url_that_resolves` — asserts the parameter AND fetches the URL. |
@@ -117,13 +119,21 @@ uv run pytest $CONTRACT --collect-only -q | tail -2      # the expected-RED id s
 uv run pytest $CONTRACT -n auto -q --tb=no -rp
 ```
 
-Measured **2026-07-31**, working tree at parent commit `eeaca99`:
+Measured **2026-07-31**, working tree at parent commit `eeaca99`. **Both measurements are
+kept** — the pre-ruling one because §4's wrong-build table was written against it, the
+post-ruling one because it is the current state:
 
-| metric | value |
-|---|---|
-| collected | **414** (413 new + 1 pre-existing `lorerunes/tests/test_smoke.py`) |
-| **RED** | **381** |
-| GREEN | **33** |
+| metric | pre-ruling | **post-ruling (CURRENT)** |
+|---|---|---|
+| collected | 414 | **422** (421 new + 1 pre-existing `lorerunes/tests/test_smoke.py`) |
+| **RED** | 381 | **389** |
+| GREEN | 33 | **33** (the same 33 — no new pin passes by accident) |
+
+**The +8 delta is DERIVED, not observed** (a count read off the output is the tautology
+this repo has the most receipts against): −1 deleted `TestTheResidualWindowIsAKnownBound`
+· −2 the two old cached-revocation pins it depended on · +4 `TestRevocationIsEffective
+OnTheVeryNextVerification` · +1 `TestRosterFreshnessOnEveryVerification` (2 → 3 pins)
+· +6 the S1 known-bound class (5 parametrised + 1 control) = **+8**. It reconciles exactly.
 
 **Every one of the 33 GREEN is a preserved-behaviour pin or a fixture self-control** — verified by listing them, not by assuming:
 - 12 × `TestApiKeyVerifierIsPreservedVerbatim` (design §8 rows 3/11)
@@ -196,7 +206,7 @@ Today `BearerAuthMiddleware` gates **every** HTTP path, so `POST /anything` with
 
 **S4 — `PostureRefusal`: return value or exception?** §5 says *"returning a `Posture` enum **or** a typed refusal"*. **I chose a union return** from the pure `lorerunes` function (testable, keeps `lorerunes` free of control flow), with a separate impure `loremaster.config.resolve_posture(config) -> Posture` that raises `PostureConfigError` — which is also where R12's boot-time roster check lives. Alternative: `derive_posture` raises directly.
 
-**S5 — the residual exposure window is pinned as a KNOWN BOUND, which means a "tightening" is now a RED test.** Design §1 states it as a fact; R12 sets the floor at one `stat` per cache MISS. `TestTheResidualWindowIsAKnownBound::test_a_cached_principal_survives_until_the_next_cache_miss` **asserts the hole exists** and carries the message *"if you closed this deliberately, delete this pin and say so"* (the WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT law, #137/#138's form). Confirm this is the intended trade before the builder meets it.
+**S5 — ⚑ RULED AND INVERTED (lead, 2026-07-31). SUPERSEDED; see §14.1.** I originally pinned the residual window OPEN as a KNOWN BOUND, faithfully following design §1 + §3-R12. The operator has **overruled that wording** — it was a performance floor, never a licence to cap revocation speed. The window is now **CLOSED**: stat on EVERY verification, denial on the FIRST verification after the edit. `TestTheResidualWindowIsAKnownBound` is **DELETED** and four inverse pins take its place. **Escalating this was the right call and the outcome proves it** — had I implemented the design silently, the packet would have shipped a capped revocation speed nobody chose.
 
 **S6 — `WWW-Authenticate: Bearer realm="loremaster"`.** §8 row 1 supersedes the 401 *shape*; the SDK emits `error=` / `error_description=` / `resource_metadata=` and **no `realm`**. I did **not** pin `realm` (adjudication: dropped-deliberately under row 1). Grep found no consumer keying on it. Named here so the drop is a decision rather than an omission.
 
@@ -238,7 +248,7 @@ I read `auth.py` in full and greped every consumer independently **before** read
 4. **The `EdgePolicy` seam.** Build one that computes the policy and feeds only the outer middleware. W7/W8 claim the live-transport pins catch it; that claim is untested against a real wrong build.
 5. **Fixture perturbation (P2).** The values most worth mutating: `GOOGLE_ACCESS_TOKEN_LIFETIME_S` (3599), the two `*_SUBJECT` strings, `GRANTED_SCOPE_STRING`, `PUBLIC_HOSTNAME`. If perturbing a subject does not red the identity pins, they are not discriminating.
 6. **SATISFIABILITY RECEIPT (the C-DEF class).** The adversary must build the reference implementation anyway — prove all 413 pins go 0-failed on it, **including after the ruff-driven orphaned-import cleanup that deleting `BearerAuthMiddleware` forces**. Two pins I am least confident are satisfiable as written: `test_a_cache_hit_performs_no_roster_stat` (an unrelated `os.stat` on the roster path inside a logging/`pathlib` call would inflate the count) and `test_an_expired_token_is_not_served_from_the_positive_cache` (a 2.5 s real sleep).
-7. **The three-second question:** is `TestTheResidualWindowIsAKnownBound` satisfiable *simultaneously* with `test_a_cache_hit_performs_no_roster_stat`? They pin the two halves of one trade and a wrong build could make them mutually unsatisfiable. If so, that is a CONTRACT defect and it routes back to me.
+7. **The mutual-satisfiability question, RE-AIMED after S5.** The old form asked whether the residual-window pin and the zero-stat pin could both hold; the S5 inversion deleted that tension. The question that replaces it is sharper: are `test_an_unchanged_roster_is_not_re_read` (unreadable + mtime UNCHANGED ⇒ keeps serving) and `test_an_unreadable_roster_denies_everyone` (unreadable + mtime MOVED ⇒ denies) simultaneously satisfiable? They are designed to be — the distinguishing input is the mtime, and a cross-reference comment sits on both — but they are the closest thing to a contradiction in this contract and the reference build should be checked against them FIRST. If they cannot both hold, that is a CONTRACT defect and it routes back to me.
 
 **Expected-RED node ids** for `scripts/mutation_proof.py` come from `--collect-only` (§5's command), never transcribed from a run's output.
 
@@ -266,8 +276,8 @@ I read `auth.py` in full and greped every consumer independently **before** read
 | `loremaster/tests/_auth_fixtures.py` | — | new — shared instrument (constants, `TokeninfoSpy`, ASGI driver + lifespan runner, config builders) |
 | `loremaster/tests/test_auth.py` | 53 | **REWRITTEN** — the old 29 pins certified a world that is going away; `_drive`/`_RecordingApp` preserved verbatim for 4 external call sites |
 | `loremaster/tests/test_google_token_verifier.py` | 73 | new — carries the Auth-∀ helper |
-| `loremaster/tests/test_allowlist_roster.py` | 41 | new — real files, mutated mid-process |
-| `loremaster/tests/test_auth_composition.py` | 32 | new |
+| `loremaster/tests/test_allowlist_roster.py` | **43** | new — real files, mutated mid-process; **S5-inverted** |
+| `loremaster/tests/test_auth_composition.py` | **38** | new; **+6 for the S1 known bound** |
 | `loremaster/tests/test_auth_identity_seam.py` | 16 | new — the F3 module; runs the real lifespan |
 | `loremaster/tests/test_hosted_readonly_posture.py` | 55 | new — #291's fix |
 | `loremaster/tests/test_permission_resolver_seam.py` | 14 | new |
@@ -335,3 +345,127 @@ task 2 is **this file plus the eleven test files**, not a ledger state. The unde
 (a contract-authoring agent required by project law to prefer an indexed code tool while
 lacking the tool to reach one) is the same class as the 2026-07-28 `contract-adversary`
 finding and wants an agent-definition fix, not a smaller brief.
+
+---
+
+## 14. REVISION — the lead's rulings applied (2026-07-31, after the first delivery)
+
+Ten escalations ruled. One required a contract change; nine confirmed readings I had already
+taken. Every edit below is in the test tree only; no production file, design doc or git state
+was touched.
+
+### 14.1 ⚑ S5 — INVERTED. The residual window is pinned CLOSED.
+
+**Ruling:** stat on EVERY verification, cache hits included; a revoked principal is denied on
+the FIRST verification after the edit; there is no residual window. The earlier
+*"one `stat` per cache-MISS"* wording was a performance floor the operator wrote carelessly,
+not a licence to cap revocation speed.
+
+| action | detail |
+|---|---|
+| **DELETED** | `TestTheResidualWindowIsAKnownBound::test_a_cached_principal_survives_until_the_next_cache_miss`, including its `#137/#138`-style *"if you closed this deliberately"* message — **that message is now FALSE**, because the closure IS deliberate. A pin asserting a hole that is closed is a false statement about the system, so it is deleted rather than skipped or inverted in place. A short historical note survives in the replacing class's docstring so a future reader knows the pin existed and why it went. |
+| **ADDED** | `TestRevocationIsEffectiveOnTheVeryNextVerification` — 4 pins: the cached-principal denial with **no intervening miss**; the token cache is **not flushed** by a roster edit (W19b); immediate re-admission after a re-add; a roster going empty denying a warm token at once. |
+| **ADDED** | `TestRosterFreshnessOnEveryVerification` — 3 pins: every verification stats (mechanism); an unchanged roster is **not re-read** (the surviving performance property); a changed roster **IS** re-read (its control). |
+| **REPLACED** | `_RosterProbe.force_a_cache_miss` → `_RosterProbe.verify_expecting_a_cache_hit`. The old helper existed only to work around the residual window. The new one **asserts the outbound call-count did not move**, so every denial pin proves it was served from a genuine cache HIT — the lead's *"asserted by outbound call-count so the pin cannot pass because caching is broken"*, applied at the helper so it holds for every call site rather than one bespoke test. |
+| **SIMPLIFIED** | `TestRosterFailsClosedAtRuntime::test_every_principal_is_denied_when_the_roster_is_broken` no longer drives a miss, and now asserts the denial is a cache HIT — which **strengthens** it: a broken roster must not send every live token back to Google (an operator's bad edit must not become an outbound stampede). |
+| **DOCSTRING** | The module's "freshness model" section rewritten to state the ruling, cite that design §9 group 1 already carried the strong form, and name the two consequences every fixture depends on. |
+
+**Mutation rider, written INTO the test file** (`TestRevocationIsEffectiveOnTheVeryNext
+Verification`'s docstring) so it travels with the pin rather than living only here:
+
+```
+mutation: move the roster `stat` to the token-cache MISS path only
+expected RED   : …TestRevocationIsEffectiveOnTheVeryNextVerification::
+                     test_a_revoked_principal_with_a_cached_token_is_denied_immediately
+                 …TestRosterFreshnessOnEveryVerification::
+                     test_every_verification_stats_the_roster_including_cache_hits
+expected GREEN : …TestRosterIsLiveRuntimeStateNotBootConfig::
+                     test_an_uncached_principal_revoked_mid_process_is_denied
+                 …TestRosterFreshnessOnEveryVerification::test_an_unchanged_roster_is_not_re_read
+```
+
+The GREEN half is not decoration: **a mutation that reds everything proves nothing about
+WHICH property is guarded.** Ids come from `--collect-only`, diffed both ways
+(`scripts/mutation_proof.py`). The builder owes the run — I cannot mutate production code
+that does not exist yet.
+
+⚠ **The one place two pins nearly contradict, flagged for the adversary.**
+`test_an_unchanged_roster_is_not_re_read` asserts an unreadable roster **keeps serving**;
+`test_an_unreadable_roster_denies_everyone` asserts an unreadable roster **denies**. They pin
+the two sides of design R12's mtime rule — the distinguishing input is whether the mtime
+MOVED — and a cross-reference comment now sits on both so neither can be "simplified" into the
+other. §9 item 7 tells the adversary to check these first.
+
+### 14.2 S1 — ACCEPTED, and pinned (you said a pin was welcome)
+
+`TestUnknownPathsAre404NotChallenged`, 6 pins: 5 unknown paths answer **404** for an anonymous
+caller, plus the control that `/mcp` is still **401**. The control is what stops the bound
+widening — a build that 404'd `/mcp` would otherwise pass the whole class. The docstring cites
+the ruling and design §8 row 14 (`dropped-deliberately`), and says plainly that a future
+re-gating must update pin and design row together.
+
+### 14.3 B1 — verified, not taken on trust
+
+`cachetools` **7.1.6** installed (`importlib.metadata.version`), declared at
+`loremaster/pyproject.toml:39`, `import cachetools; cachetools.TTLCache` resolves. Cache pins
+unchanged — they assert behaviour and name no library, which is what let this ruling land
+without touching a single test.
+
+### 14.4 The design-doc consistency sweep — RAISED, then VERIFIED ALREADY FIXED
+
+I flagged that §3-R12 was not the only site carrying the weak form, and that the dangerous
+one was **§1's threat-model verdict** — the sentence an auditor is explicitly told to reason
+from (*"so an auditor need not re-litigate intent"*). Left stale, it would have meant a future
+auditor correctly identifying an immediate-revocation failure and **classifying it as
+accepted**.
+
+**Re-checked on disk after the lead's `591c00c` rather than assumed** (a fix you are told
+about is a rumour until you read it):
+
+| site | state |
+|---|---|
+| §1 threat-model verdict | ✅ **FIXED** — now reads *"a principal removed from the roster file is admitted on ANY later verification — BLOCKER. There is no residual window (R12, restored ruling): the roster mtime is `stat`-checked on EVERY verification, cache hits included…"* |
+| §3-R12 freshness bullet | ✅ FIXED |
+| §9 group 1 | ✅ needed no change — it carried the strong form all along |
+| §14 packages table (`watchdog` row) | ✅ FIXED — *"one `os.stat` mtime compare per VERIFICATION"* |
+| §10 kill switches, §4, §12 | ✅ consistent |
+
+`grep -n "residual" docs/design/2026-07-31-packet39-google-oauth.md` returns **9 hits, all of
+them now asserting the STRONG form or explicitly recording the supersession**. Nothing left to
+do; recorded so the sweep is on the record rather than remembered.
+
+**The durable lesson, which is the part worth keeping:** the design contradicted ITSELF before
+this packet started — §9 carried the strong form while §1 and §3-R12 carried the weak one — and
+a contract author following the doc faithfully will pin whichever half they read first. I read
+§1 and §3-R12, so I pinned the hole OPEN. This is CLAUDE.md's #1 defect class (*natural-language
+surfaces whose consistency with code no gate checks*) occurring **inside the spec that governs
+the packet**, where no gate of any kind was ever going to see it. The only instrument that
+caught it was escalating rather than choosing silently.
+
+### 14.5 §8 re-verified after S5 (you asked)
+
+**The out-of-scope edit list is UNCHANGED — no new items, none removed.** Re-derived rather
+than assumed: S5 moves work inside `LoreTokenVerifier`'s roster/cache seam, which is production
+code the builder writes from scratch, so it creates no new obligation in a file I cannot touch.
+Re-checked all five entries by bare anchor-free grep. Items 1–3 (`test_eager_startup.py`'s
+bearer-outermost pin · `test_mcp_server.py`'s `_MUTATING_TOOLS` · `test_retired_symbols.py`'s
+`_RETIRED_SYMBOLS`) stand exactly as written. Item 4 (`cachetools` in `pyproject.toml`) is
+**DONE** by you. Item 5 remains a no-edit note. §14.4's design-doc sites are lead/design work,
+not builder work, so they are listed there rather than folded into §8.
+
+### 14.6 Gates re-run after the revision
+
+```
+uv run ruff check .                                              → All checks passed!
+./scripts/typecheck.sh                                           → 170 errors, ALL the
+                                                                   "symbol does not exist yet"
+                                                                   class, all in authored files
+                                                                   (unchanged classes; §6)
+uv run pytest loremaster/tests/test_eager_startup.py \
+              loremaster/tests/test_mcp_server.py -n auto -q      → 657 passed in 104.39s
+uv run pytest $CONTRACT --collect-only -q                        → 422 tests collected
+uv run pytest $CONTRACT -n auto -q --tb=no                       → 389 failed, 33 passed
+```
+
+Nothing outside the contract moved. The 33 GREEN are the same 33 as before the revision —
+verified, not assumed — so no new pin passes by accident.
