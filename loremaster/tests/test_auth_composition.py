@@ -1,0 +1,620 @@
+"""CONTRACT — the ASSEMBLED app: discovery, the 401 challenge, and the edge policy.
+
+Design ``docs/design/2026-07-31-packet39-google-oauth.md`` §6 + §9 group 5. Every pin
+here drives the app ``build_asgi_app`` actually returns, because **the MCP SDK's whole
+auth branch is ``# pragma: no cover`` upstream** — a verifier-level unit test proves
+nothing about what the composed Starlette app serves. Verified at the installed SDK
+(``mcp`` 1.27.2): ``FastMCP.streamable_http_app`` guards its auth wiring, its
+``RequireAuthMiddleware`` wrap and its ``.well-known`` route registration behind three
+separate ``# pragma: no cover`` blocks.
+
+Pins here do NOT run the ASGI lifespan; they exercise the routes and middleware that
+answer before the streamable session manager is reached (discovery, 401, Origin).
+The pins that need a LIVE session manager — api-key admission through ``/mcp``, the
+Host/Origin enforcement inside the transport, and the F3 session-ownership property —
+live in ``test_auth_identity_seam``, which runs the real lifespan.
+
+------------------------------------------------------------------------------
+THE WRONG BUILDS THESE PINS DISCRIMINATE AGAINST
+
+* **F2 — a Bearer-gated discovery document.** The retired ``BearerAuthMiddleware``
+  gated the WHOLE app, so ``/.well-known/oauth-protected-resource/mcp`` would 401.
+  RFC 9728 §3.1 requires it to be anonymous; a 401 there means claude.ai's connector
+  can never begin the flow. Design §8 row 7 adjudicates this a DELIBERATE DROP.
+* **Discovery served in the wrong posture.** ``LAN_BEARER`` sets
+  ``resource_server_url=None`` so the route is ABSENT — advertising an OAuth flow that
+  does not exist is a discovery fiction a connecting agent will act on.
+* **Origin no longer outermost.** Today Bearer is outermost. Design §6 inverts it so a
+  cross-origin request is refused BEFORE any credential is parsed — a browser-borne
+  attacker must not be able to make lore dial Google. The zero-outbound-call assertion
+  is what makes that property real rather than an ordering claim.
+* **A loopback-only ``TransportSecuritySettings``.** ⚠ MEASURED AT THE SDK: FastMCP
+  AUTO-ENABLES DNS-rebinding protection whenever ``host`` is loopback, with
+  ``allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"]``. lore binds ``127.0.0.1``
+  in EVERY posture, so a build that leaves ``transport_security`` unset inherits that
+  default — and every hosted request, which arrives through lore-caddy carrying
+  ``Host: lore.firehawktransam.org``, is answered **421**. That build passes every
+  loopback test in this suite and is 100% broken in production. The ``EdgePolicy``
+  pins below are the instrument for it.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from _auth_fixtures import (
+    API_KEY_ENV_LAN_CLIENT,
+    API_KEY_ENV_LOCAL_AGENT,
+    API_KEY_VALUE_LAN_CLIENT,
+    API_KEY_VALUE_LOCAL_AGENT,
+    CLAUDE_AI_ORIGIN,
+    CLAUDE_COM_ORIGIN,
+    HOSTILE_ORIGIN,
+    LOOPBACK_HOST,
+    MCP_PATH,
+    OPERATOR_EMAIL,
+    PUBLIC_HOSTNAME,
+    SERVER_PORT,
+    WELL_KNOWN_PATH,
+    TokeninfoSpy,
+    base_config_payload,
+    bearer,
+    drive,
+    google_access_token,
+    hosted_auth_block,
+    lan_bearer_auth_block,
+    slug,
+    write_roster,
+)
+
+# RFC 9728 §3.1's URL construction, derived independently of the SDK's helper:
+# ``https://{netloc}/.well-known/oauth-protected-resource{resource path}``.
+EXPECTED_METADATA_URL = f"https://{PUBLIC_HOSTNAME}{WELL_KNOWN_PATH}"
+
+# The Host header a hosted request actually carries. lore-caddy reverse-proxies to
+# 127.0.0.1:9202 while FORWARDING the original Host — so this, not the loopback bind,
+# is what the SDK's transport-security layer sees in production.
+HOSTED_HOST_HEADER = PUBLIC_HOSTNAME.encode("ascii")
+LOOPBACK_HOST_HEADER = f"{LOOPBACK_HOST}:{SERVER_PORT}".encode("ascii")
+
+
+@pytest.fixture(autouse=True)
+def _api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Export the api-key env vars every posture fixture's ``keys`` block references."""
+    monkeypatch.setenv(API_KEY_ENV_LOCAL_AGENT, API_KEY_VALUE_LOCAL_AGENT)
+    monkeypatch.setenv(API_KEY_ENV_LAN_CLIENT, API_KEY_VALUE_LAN_CLIENT)
+
+
+def _config(tmp_path: Path, auth_block: dict[str, Any] | None) -> Any:
+    from loremaster.config import LoreConfig
+
+    payload = base_config_payload(slug(), tmp_path / "live")
+    if auth_block is not None:
+        payload["auth"] = auth_block
+    return LoreConfig.model_validate(payload)
+
+
+def hosted_config(tmp_path: Path) -> Any:
+    """A validated ``HOSTED_OAUTH`` config over a real one-principal roster."""
+    roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+    return _config(tmp_path, hosted_auth_block(roster))
+
+
+def lan_bearer_config(tmp_path: Path) -> Any:
+    """A validated ``LAN_BEARER`` config (today's networked multi-dev deployment)."""
+    return _config(tmp_path, lan_bearer_auth_block())
+
+
+def loopback_config(tmp_path: Path) -> Any:
+    """A validated ``LOOPBACK`` config — today's default, no auth block at all."""
+    return _config(tmp_path, None)
+
+
+def build_app(config: Any, *, http_client: Any = None) -> Any:
+    """Build the production-composed ASGI app for ``config``.
+
+    Args:
+        config: The validated :class:`LoreConfig`.
+        http_client: An optional injected ``httpx.AsyncClient`` for the verifier, so a
+            pin can assert an outbound Google call did NOT happen.
+    """
+    from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
+
+    server = LoreServer(config)
+    mcp = build_mcp_server(server, http_client=http_client)
+    return build_asgi_app(mcp, config)
+
+
+class TestDiscoveryDocumentIsAnonymousInHostedPosture:
+    """RFC 9728 §3.1 (design §8 row 7, dropped-deliberately with pins)."""
+
+    async def test_the_well_known_document_is_served_without_any_credential(
+        self, tmp_path: Path
+    ) -> None:
+        # THE F2 PIN. Under the retired whole-app Bearer gate this is a 401 and the
+        # claude.ai connector can never start the flow.
+        response = await drive(
+            build_app(hosted_config(tmp_path)), method="GET", path=WELL_KNOWN_PATH
+        )
+        assert response.status == 200, (
+            f"the protected-resource metadata must be world-readable (RFC 9728 §3.1); "
+            f"got {response.status}"
+        )
+
+    async def test_the_well_known_document_is_served_with_a_claude_ai_origin(
+        self, tmp_path: Path
+    ) -> None:
+        # claude.ai's connector may or may not send Origin (design R6, M-1 unmeasured).
+        # BOTH shapes must work, so both are pinned — a build that allows only the
+        # absent-Origin shape breaks discovery for the one client that matters.
+        response = await drive(
+            build_app(hosted_config(tmp_path)),
+            method="GET",
+            path=WELL_KNOWN_PATH,
+            headers=[(b"origin", CLAUDE_AI_ORIGIN.encode("ascii"))],
+        )
+        assert response.status == 200
+
+    async def test_the_well_known_document_names_the_resource_and_the_issuer(
+        self, tmp_path: Path
+    ) -> None:
+        # A 200 with an empty or wrong body is a discovery fiction. The expected values
+        # come from the CONFIG the fixture declared and the issuer design §4 hardcodes.
+        import json
+
+        from _auth_fixtures import GOOGLE_ISSUER, RESOURCE_SERVER_URL
+
+        response = await drive(
+            build_app(hosted_config(tmp_path)), method="GET", path=WELL_KNOWN_PATH
+        )
+        document = json.loads(response.body)
+        assert document["resource"].rstrip("/") == RESOURCE_SERVER_URL.rstrip("/")
+        assert any(
+            str(server).rstrip("/") == GOOGLE_ISSUER
+            for server in document["authorization_servers"]
+        ), f"the metadata must name Google as the authorization server; got {document}"
+
+    async def test_the_well_known_document_is_absent_in_lan_bearer_posture(
+        self, tmp_path: Path
+    ) -> None:
+        # Design §5: ``LAN_BEARER`` sets ``resource_server_url=None`` precisely so the
+        # route is NOT registered. Serving discovery for an OAuth flow that does not
+        # exist teaches a connecting agent a lie it will act on.
+        response = await drive(
+            build_app(lan_bearer_config(tmp_path)), method="GET", path=WELL_KNOWN_PATH
+        )
+        assert response.status == 404
+
+    async def test_the_well_known_document_is_absent_in_loopback_posture(
+        self, tmp_path: Path
+    ) -> None:
+        response = await drive(
+            build_app(loopback_config(tmp_path)), method="GET", path=WELL_KNOWN_PATH
+        )
+        assert response.status == 404
+
+
+class TestUnauthenticatedRequestsAreChallenged:
+    """Design §8 rows 1, 6 and 8 — 401 before the wrapped app, with a usable challenge."""
+
+    @pytest.mark.parametrize("posture", ["hosted", "lan_bearer"])
+    async def test_an_unauthenticated_mcp_request_is_401(
+        self, tmp_path: Path, posture: str
+    ) -> None:
+        config = hosted_config(tmp_path) if posture == "hosted" else lan_bearer_config(tmp_path)
+        response = await drive(build_app(config), method="POST", path=MCP_PATH)
+        assert response.status == 401
+
+    async def test_the_401_advertises_the_bearer_scheme(self, tmp_path: Path) -> None:
+        # Design §8 row 1: the SHAPE is superseded by the SDK's, but the property —
+        # a challenge naming the scheme (RFC 7235) — is preserved.
+        response = await drive(
+            build_app(hosted_config(tmp_path)), method="POST", path=MCP_PATH
+        )
+        assert "bearer" in response.header("www-authenticate").lower()
+
+    async def test_the_401_carries_a_resource_metadata_url_that_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        # RFC 9728 §5.1, and the branch the SDK marks ``# pragma: no cover``: without
+        # ``resource_metadata=`` in the challenge, a compliant client has no way to
+        # discover WHERE to authenticate, and the connector dead-ends at the 401.
+        app = build_app(hosted_config(tmp_path))
+        response = await drive(app, method="POST", path=MCP_PATH)
+        challenge = response.header("www-authenticate")
+        assert "resource_metadata=" in challenge, (
+            f"the 401 challenge must carry resource_metadata= (RFC 9728 §5.1); got "
+            f"{challenge!r}"
+        )
+        assert EXPECTED_METADATA_URL in challenge, (
+            f"the advertised metadata URL must be {EXPECTED_METADATA_URL!r} — derived "
+            f"from RFC 9728 §3.1's construction over the configured resource URL; got "
+            f"{challenge!r}"
+        )
+
+        # And the URL it advertises must actually be served by this same app: a
+        # challenge pointing at a 404 is worse than no challenge.
+        followed = await drive(app, method="GET", path=WELL_KNOWN_PATH)
+        assert followed.status == 200
+
+    async def test_an_unknown_bearer_token_is_401_and_never_reaches_a_session(
+        self, tmp_path: Path
+    ) -> None:
+        # Fail closed BEFORE the wrapped app (design §8 row 6). If this reached the
+        # streamable app it would raise (no lifespan has run), so a 401 is also proof
+        # the request stopped at the gate.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[bearer(google_access_token("unknown"))],
+        )
+        assert response.status == 401
+
+    @pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER", "BeArEr"])
+    async def test_the_bearer_scheme_is_matched_case_insensitively(
+        self, tmp_path: Path, scheme: str
+    ) -> None:
+        # Design §8 row 2 — RFC 7235 §2.1 makes the scheme case-insensitive, and the
+        # retired middleware honoured that. The pin is on the ASSEMBLED app because the
+        # SDK now owns the parse; if the SDK were case-SENSITIVE that is a FINDING to
+        # surface, not a silent regression. All four casings must reach the verifier,
+        # which is observable as an outbound tokeninfo attempt.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[bearer(google_access_token("casing"), scheme=scheme)],
+        )
+        assert response.status == 401
+        assert spy.call_count == 1, (
+            f"the {scheme!r} scheme did not reach the token verifier ("
+            f"{spy.call_count} outbound attempts) — RFC 7235 §2.1 makes the scheme "
+            f"case-insensitive and the retired middleware honoured it"
+        )
+
+    async def test_a_non_bearer_scheme_is_401_without_an_outbound_call(
+        self, tmp_path: Path
+    ) -> None:
+        # The CONTROL for the casing pin: ``Basic`` must NOT reach the verifier, so the
+        # call-count assertion above is measuring scheme matching rather than "any
+        # header reaches Google".
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[(b"authorization", b"Basic ZWpwcmljZTpodW50ZXIy")],
+        )
+        assert response.status == 401
+        assert spy.call_count == 0
+
+    async def test_a_non_ascii_token_is_a_clean_401_not_a_500(
+        self, tmp_path: Path
+    ) -> None:
+        # Design §8 row 3. The header is decoded latin-1, so a non-ASCII token is
+        # reachable; a str-mode ``compare_digest`` raises TypeError and the client gets
+        # a 500 instead of the 401 contract.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[(b"authorization", "Bearer ééé".encode("latin-1"))],
+        )
+        assert response.status == 401
+
+
+def _unauthorised() -> Any:
+    """A 401 tokeninfo reply (the only outcome the composition pins need)."""
+    import httpx
+
+    return httpx.Response(401)
+
+
+class TestUnknownPathsAre404NotChallenged:
+    """S1 — an ACCEPTED KNOWN BOUND (operator ruling, 2026-07-31), pinned so it stays deliberate.
+
+    The retired ``BearerAuthMiddleware`` gated EVERY HTTP path, so an unauthenticated
+    ``POST /anything`` was ``401``. The SDK wraps only the streamable route, so an
+    unknown path is now ``404`` — which means an anonymous caller can enumerate which
+    paths exist. Design §8 row 7 adjudicates the DISCOVERY path deliberately; it did not
+    adjudicate the rest of the surface, so this was surfaced as spec-silent and the
+    operator ACCEPTED it: the disclosure is a route list, not data, the two-route surface
+    is already public in the design, and re-gating everything would break RFC 9728
+    discovery all over again. Recorded as design §8 row 14, ``dropped-deliberately``.
+
+    The pin exists so a future engineer meets the bound DELIBERATELY. If a later change
+    re-gates unknown paths (or narrows the surface), this reds and the change is a
+    decision rather than an accident.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/admin", "/metrics", "/.well-known/openid-configuration", "/mcp/internal"],
+    )
+    async def test_an_unknown_path_is_404_for_an_anonymous_caller(
+        self, tmp_path: Path, path: str
+    ) -> None:
+        response = await drive(
+            build_app(hosted_config(tmp_path)), method="GET", path=path
+        )
+        assert response.status == 404, (
+            f"{path} answered {response.status}. If unknown paths are now CHALLENGED "
+            f"again, that is a deliberate re-gating — update this pin and design §8 "
+            f"row 14 together."
+        )
+
+    async def test_the_protected_route_is_still_challenged(self, tmp_path: Path) -> None:
+        # THE CONTROL, and it is what stops the bound from widening: the 404 shape must
+        # apply to paths that do not exist, never to the one that does. A build that
+        # 404'd ``/mcp`` for an anonymous caller would pass every pin above while
+        # silently un-gating nothing and confusing every client.
+        response = await drive(
+            build_app(hosted_config(tmp_path)), method="POST", path=MCP_PATH
+        )
+        assert response.status == 401
+
+
+class TestOriginIsOutermost:
+    """Design §6 + §8 row 13 — the REWRITTEN pin (never silently deleted)."""
+
+    async def test_the_composed_app_is_not_wrapped_in_the_retired_bearer_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        # The old pin asserted ``isinstance(app, BearerAuthMiddleware)``. The name is
+        # gone; the property that replaces it is that the OUTERMOST layer is the Origin
+        # guard, in EVERY posture — so the ordering cannot silently invert back.
+        from loremaster.auth import OriginValidationMiddleware
+
+        for config in (
+            hosted_config(tmp_path),
+            lan_bearer_config(tmp_path),
+            loopback_config(tmp_path),
+        ):
+            app = build_app(config)
+            assert isinstance(app, OriginValidationMiddleware), (
+                f"the composed app's OUTERMOST layer must be the Origin guard so a "
+                f"cross-origin request is refused before any credential is parsed; "
+                f"got {type(app).__name__}"
+            )
+
+    async def test_a_hostile_origin_is_403_with_ZERO_outbound_google_calls(
+        self, tmp_path: Path
+    ) -> None:
+        # THE ARGUED IMPROVEMENT, made measurable. With Bearer outermost, a
+        # browser-borne attacker's request would be token-parsed FIRST — so a hostile
+        # page could make lore dial Google once per request, from lore's own IP, with
+        # an attacker-chosen token. Origin-outermost makes that impossible, and the
+        # spy's call count is the proof rather than the layer ordering.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[
+                (b"origin", HOSTILE_ORIGIN.encode("ascii")),
+                bearer(google_access_token("attacker")),
+            ],
+        )
+        assert response.status == 403
+        assert spy.call_count == 0, (
+            f"a disallowed Origin made {spy.call_count} outbound Google call(s). "
+            f"Origin must be refused BEFORE any credential is parsed, or a hostile "
+            f"page can drive traffic to Google from lore's IP with a token it chose."
+        )
+
+    @pytest.mark.parametrize("origin", [CLAUDE_AI_ORIGIN, CLAUDE_COM_ORIGIN])
+    async def test_the_hosted_default_origins_are_allowed(
+        self, tmp_path: Path, origin: str
+    ) -> None:
+        # Design R6: in ``HOSTED_OAUTH`` the effective allow-set gains
+        # ``https://claude.ai`` and ``https://claude.com`` from a module CONSTANT — not
+        # from anyone's yaml. Both are pinned because M-1 (does claude.ai send Origin,
+        # and which value) is UNMEASURED; the design is correct under both outcomes and
+        # so is this pin.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[
+                (b"origin", origin.encode("ascii")),
+                bearer(google_access_token("claude")),
+            ],
+        )
+        assert response.status == 401, (
+            f"{origin} must pass the Origin guard and be judged on its CREDENTIAL "
+            f"(401), not refused at the edge (403)"
+        )
+        assert spy.call_count == 1
+
+    async def test_the_hosted_default_origins_are_NOT_allowed_in_lan_bearer_posture(
+        self, tmp_path: Path
+    ) -> None:
+        # The union is applied in the POSTURE derivation, not baked into the middleware
+        # for everyone. A LAN deployment has no business trusting claude.ai's origin.
+        app = build_app(lan_bearer_config(tmp_path))
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[(b"origin", CLAUDE_AI_ORIGIN.encode("ascii"))],
+        )
+        assert response.status == 403
+
+    async def test_an_absent_origin_is_allowed_in_hosted_posture(
+        self, tmp_path: Path
+    ) -> None:
+        # Design R6: absent-Origin stays ALLOWED — a server-side proxy (which is what
+        # claude.ai most plausibly is) sends none, and so does every non-browser client.
+        spy = TokeninfoSpy(responder=lambda _request: _unauthorised())
+        app = build_app(hosted_config(tmp_path), http_client=spy.client())
+        response = await drive(
+            app,
+            method="POST",
+            path=MCP_PATH,
+            headers=[bearer(google_access_token("no-origin"))],
+        )
+        assert response.status == 401
+        assert spy.call_count == 1
+
+    async def test_the_discovery_route_is_also_origin_guarded(
+        self, tmp_path: Path
+    ) -> None:
+        # Origin is outermost, so it covers discovery too. A hostile origin must not be
+        # able to read the metadata document from a victim's browser session — and,
+        # more importantly, the guard must not have been narrowed to ``/mcp`` only.
+        response = await drive(
+            build_app(hosted_config(tmp_path)),
+            method="GET",
+            path=WELL_KNOWN_PATH,
+            headers=[(b"origin", HOSTILE_ORIGIN.encode("ascii"))],
+        )
+        assert response.status == 403
+
+
+class TestEdgePolicyIsOneDerivationFeedingBothLayers:
+    """R9 — two enforcement points, ONE derivation, so they cannot disagree by memory."""
+
+    def test_the_composed_server_uses_the_derived_transport_security_settings(
+        self, tmp_path: Path
+    ) -> None:
+        # The equality pin design R9's rider names. A build that computes an EdgePolicy
+        # for the Origin middleware and leaves ``transport_security`` at FastMCP's
+        # loopback auto-default passes every Origin pin above and 421s every hosted
+        # request in production.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+        from loremaster.server import LoreServer, build_mcp_server
+
+        config = hosted_config(tmp_path)
+        mcp = build_mcp_server(LoreServer(config))
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert mcp.settings.transport_security == policy.to_transport_security(), (
+            "the composed FastMCP's transport_security must BE the EdgePolicy's "
+            "output — two independently-written settings objects are two policies "
+            "that must agree by memory"
+        )
+
+    def test_the_hosted_edge_policy_allows_the_public_hostname(
+        self, tmp_path: Path
+    ) -> None:
+        # ⚠ THE PRODUCTION-BREAKING DEFAULT. lore binds 127.0.0.1 in every posture, so
+        # FastMCP auto-enables DNS-rebinding protection with loopback-only
+        # ``allowed_hosts``. Hosted requests arrive through lore-caddy carrying
+        # ``Host: lore.firehawktransam.org`` and are answered 421. The derived policy
+        # must include the resource URL's netloc.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        config = hosted_config(tmp_path)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert any(host.split(":")[0] == PUBLIC_HOSTNAME for host in policy.allowed_hosts), (
+            f"the hosted edge policy must allow the public hostname "
+            f"{PUBLIC_HOSTNAME!r} (derived from resource_server_url's netloc); "
+            f"allowed_hosts was {sorted(policy.allowed_hosts)}. Without it every "
+            f"request through lore-caddy is answered 421."
+        )
+
+    def test_the_hosted_edge_policy_still_allows_the_loopback_bind(
+        self, tmp_path: Path
+    ) -> None:
+        # The CONTROL: widening for the public hostname must not drop loopback, or a
+        # local agent hitting 127.0.0.1:9202 with an api key gets a 421.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        config = hosted_config(tmp_path)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert any(host.split(":")[0] == LOOPBACK_HOST for host in policy.allowed_hosts), (
+            f"loopback must stay allowed; allowed_hosts was {sorted(policy.allowed_hosts)}"
+        )
+
+    def test_the_hosted_edge_policy_carries_the_claude_origins(
+        self, tmp_path: Path
+    ) -> None:
+        # The same ONE derivation feeds the SDK's Origin check, which runs INSIDE the
+        # transport. A build that adds the claude origins only to the outer middleware
+        # passes every pin in ``TestOriginIsOutermost`` and 403s at the inner layer the
+        # moment a real session is created.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        config = hosted_config(tmp_path)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert CLAUDE_AI_ORIGIN in policy.allowed_origins
+        assert CLAUDE_COM_ORIGIN in policy.allowed_origins
+
+    def test_the_lan_bearer_edge_policy_does_not_carry_the_claude_origins(
+        self, tmp_path: Path
+    ) -> None:
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        config = lan_bearer_config(tmp_path)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert CLAUDE_AI_ORIGIN not in policy.allowed_origins
+        assert CLAUDE_COM_ORIGIN not in policy.allowed_origins
+
+    def test_dns_rebinding_protection_is_enabled_in_every_non_loopback_posture(
+        self, tmp_path: Path
+    ) -> None:
+        # Design R9: leaving ``transport_security`` unset repeats #206's shape inside
+        # the packet that cites it. Host validation is the half lore's hand-rolled
+        # middleware never covered.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        for config in (hosted_config(tmp_path), lan_bearer_config(tmp_path)):
+            settings = derive_edge_policy(config, resolve_posture(config)).to_transport_security()
+            assert settings.enable_dns_rebinding_protection is True
+            assert settings.allowed_hosts, "an empty allowed_hosts denies every request"
+
+    def test_the_edge_policy_is_hashable_and_frozen(self, tmp_path: Path) -> None:
+        # It is shared by two layers; a mutable policy is a policy one layer can edit
+        # out from under the other — the ONE-IMPLEMENTATION failure with extra steps.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import resolve_posture
+
+        config = hosted_config(tmp_path)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert hash(policy) == hash(derive_edge_policy(config, resolve_posture(config)))
+        with pytest.raises((AttributeError, TypeError)):
+            setattr(policy, "allowed_hosts", frozenset())
+
+
+class TestLoopbackPostureIsUnchanged:
+    """The existing single-user deployment must not acquire a gate it never had."""
+
+    async def test_no_auth_settings_are_configured(self, tmp_path: Path) -> None:
+        from loremaster.server import LoreServer, build_mcp_server
+
+        mcp = build_mcp_server(LoreServer(loopback_config(tmp_path)))
+        assert mcp.settings.auth is None, (
+            "the LOOPBACK posture installs NO auth — a local single-user deploy that "
+            "suddenly 401s is a self-inflicted outage"
+        )
+
+    async def test_no_token_verifier_is_wired(self, tmp_path: Path) -> None:
+        # The other half: FastMCP raises if a token_verifier is supplied without auth
+        # settings, so this cannot be inferred from the pin above. A LOOPBACK build
+        # that wires a verifier would gate the local deploy on Google being reachable.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        mcp = build_mcp_server(LoreServer(loopback_config(tmp_path)))
+        assert getattr(mcp, "_token_verifier", None) is None
+
+    # The behavioural half — an unauthenticated ``initialize`` actually SUCCEEDS in the
+    # LOOPBACK posture — needs a running session manager and lives in
+    # ``test_auth_identity_seam::TestLoopbackPostureServesWithoutCredentials``.
