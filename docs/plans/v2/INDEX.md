@@ -209,7 +209,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 11-ii | floor-calibration: CUTOVER (chokepoint wiring + serving swap + retirement sweep; resolves #83/#87/#161/#179) | PKT-02 | L | 0.15 | 11-i landed | open |
 | 42 | **PREVENT THE LEAK, DELETE THE SANITIZER** — `SecretStr` everywhere + ONE resolver + a typed auth-header seam, then DELETE the entropy catch-all. Kills audit R2 (12.4% of function names erased from tracebacks), #227 and both its accepted bounds. | — | L | 0.20 →0.55 | — (independent) | **✅ DONE + DEPLOYED 2026-07-28** (`915b7b8`; image `e91e37b9`). Suite **7980/0**, typecheck 0 across **five** members, ruff, smoke all-PASS. Contract 11 revisions, adversary **SUFFICIENT after 5 passes**, 43 rulings. **12 defects green at every gate**, incl. a live production leak (#235), an instrument testing a COPY of its own gate, and 4 scanners silently narrowed. Mints **`lorerunes`** (4th member, the home for shared code). #222 #226 #227 #233 #235 #251 closed. |
 | 43 | **DERIVATION-SOURCE UNIFICATION** (design pass FIRST) — `_derive_nodes` reads the caller's chunk set while `_derive_edges` re-reads the file fresh; a save between them makes the fragment RELATE from a node it never created. **Then** the `refers`/`answers_to` `ENFORCED` flip, which was blocked ONLY on this. + #248 `_bare_id` ONE-IMPLEMENTATION (separable at kickoff) | — | L | 0.20 | — (independent) | **open — minted 2026-07-26** (operator ruled the ROOT fix over the two local patches). Split out of 04; store facts already measured on 3.2.1 — do NOT re-probe. **DESIGN problem → Opus author who attacks its own design, never a builder.** |
-| 44 | **UNGATED GROUND** — every committed instrument rides a gate: #261 docs/eval typecheck strategy + #270 markdown-it-py adoption + tool gating; sibling sweep by DERIVATION, never a list | — | L ∥ | 0.15 | — (independent) | open — MINTED by the 2026-07-29 sweep; **operator-CONFIRMED same day** (kept as-is over demote/fold) |
+| 44 | **UNGATED GROUND** — every committed instrument rides a gate: #261 docs/eval typecheck strategy + #270 markdown-it-py adoption + tool gating; sibling sweep by DERIVATION, never a list | — | L ∥ | 0.15 | — (independent) | **✅ DONE 2026-07-30, MERGED `02b0142` (ff, 29 commits) — NOT DEPLOYED (gates + tooling only).** Suite **8711/0** (36 skip, 3 xfail, reconciled to collected), typecheck **EXIT=0 across 8 legs**, ruff clean — identical pre- and post-merge. **#188 CLOSED**: 41 believed → 45 bare → **24 real** → **0**; `scripts` is now a plain typecheck root (`MYPYPATH`-scoped). `docs/eval` (the production deploy smoke) type-gated, 6 p8a relics archived; `skills` +117 into testpaths; a DERIVED shellcheck leg (caught `typecheck.sh`'s own unguarded `cd`). Instrument `scripts/gated_ground.py` + 318 pins: per-axis (LEG A types / LEG B **collector-derived**), monotonicity **STRUCTURAL** not pinned. **THREE adversary passes** (11, 12, 6 survivors — each a different class, all prior closed) + cold audit **NO-GO on 2 blockers, both fixed**. Findings #188 #261 #270 #280–#283 resolved; **#284 #285 #286 #292 #293** filed. 15 reports → `receipts/2026-07-29-packet44/`. |
 | 11a | embedding-reconciliation CONTRACT (#171 FULLY-RULED design ⊃ #168/#169, adopts #170) | — | L | 0.20 | — (design ruled) | open |
 | 11b | embedding-reconciliation BUILD (reconciler + resolve extraction + #170 hash; `rebuild_all` retires, hard-cutover rename) | — | L | 0.25 →split if 11a measures over | 11a ruled | open |
 | 12 | detection-contract (#10, #11, #27; rides 11b's extracted resolve seam) | PKT-04 | L | 0.15 | 11b rec. | open |
@@ -278,8 +278,18 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 12. **Spectron**: the DOCS are now PUBLIC + indexed as lore tier `spectron-docs` (2026-07-23, 143 .mdx) — the design half of the re-decision is UNBLOCKED: run the spike list (MASTER-PLAN §6 P7) against the REAL docs, not the 2026-07-02 Fable study. The `ghcr.io/surrealdb/spectron` BINARY may still be gated (the "on invite" trigger applies only to RUNNING it). Superseded verdict: `lore_recall("spectron status update")`.
 13. **DI doc-content import** (DECISIONS.md/GOTCHAS.md → kind-tagged memories) — separate content migration, schedule ad hoc.
 14. ~~#55 investigation row~~ **MINTED by packet 01** (row a6f38fc0, pairs #22 + #55): fresh-session
-    ToolSearch can't resolve lore tools. NB it resolved FINE this session with a healthy container — the
-    failure is INTERMITTENT, which is the hardest shape and why it has recurred twice unrooted.
+    ToolSearch can't resolve lore tools. ⚠ **"INTERMITTENT" IS WRONG AND WAS THE REASON IT STAYED
+    UNROOTED — ROOTED 2026-07-30 by packet 44 (#292, supersedes #287).** It is perfectly
+    DETERMINISTIC, 8/8 in one session, split by AGENT TYPE: a definition with an explicit `tools:`
+    allowlist (`tdd-contract`, `contract-adversary`) gets NO `mcp__lore_lore__*` tools; one granted
+    `Tools: *` (`general-purpose`) gets them. Zero exceptions. **`ToolSearch` is necessary but NOT
+    sufficient** — `tdd-contract.md` already grants it, above a comment asserting it is "the gateway
+    to deferred MCP tools … see lore finding #266", and that comment is FALSE: the MCP surface must
+    itself be in the grant. So #266 was diagnosed, fixed, documented and **never verified**; the
+    first measurement happened in packet 44. Fix the grants, then VERIFY (the step #266 skipped),
+    and fix or delete the false comment. Every untested type — `tdd-implementer`/`-stub`/
+    `-refactorer`, `tdd-light-contract`, `Explore`, `Plan`, `package-scout` — is UNMEASURED, not
+    assumed clear.
 15. **Upstream report** of the mcp-builder TextContent serialization bug (docs/eval/2026-07-04-p8a-baseline.md:123).
 16. ~~Response/render caching~~ **RULED (operator, 2026-07-11):** flavor (a) render
     memoization DROPPED — no latency need at this time; do not build. Flavor (b)
@@ -1289,3 +1299,38 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   wait-surface / 05b verbs+hooks · 09 → 09a served-surface / 09b testing-hygiene · 16 split
   guidance (16b probes→reference) · 04b-2 fenced.** State: 04b-1 DONE 8256/0 TEST-ONLY; the
   deployed image is still `e91e37b9` — 04b-2 ships next and carries everything since.
+- 2026-07-30 · **PACKET 44 DONE — UNGATED GROUND, merged `02b0142` (ff, 29 commits, NOT deployed).**
+  Suite **8711/0** · typecheck **EXIT=0 across 8 legs** · ruff clean — identical pre- and post-merge.
+  **#188 CLOSED and its number was the packet's own lesson: 41 believed → 45 bare → 24 real → 0.**
+  21 of the 45 were import-resolution artifacts, the SAME illusion that made #261 look 6× its size
+  — so `docs/eval` cost a `git mv` plus one leg-scoped `MYPYPATH`, not a cleanup. **Measure an
+  ungated tree's debt WITH the leg's intended MYPYPATH, never bare** (memory saved). Landed:
+  `docs/eval` (the PRODUCTION DEPLOY SMOKE) type-gated + 6 p8a relics archived · `skills` +117 into
+  testpaths · a **DERIVED** shellcheck leg which on day one caught `typecheck.sh`'s OWN unguarded
+  `cd` — the file whose header explains that a wrong cwd makes its output lie · `loresigil`
+  discriminators → `Final[Literal[…]]` (invisible while `scripts/` was ungated; **the thesis
+  producing a receipt on first application**) · `scripts/gated_ground.py` + 318 pins.
+  **THE INSTRUMENT'S HISTORY IS THE FINDING.** Three adversary passes — 11, 12, then 6 survivors at
+  a green contract — each a DIFFERENT class with every prior one closed. Pass 3's diagnosis stopped
+  the loop: *the wave fixed the INSTANCES named, not the QUANTIFIER* (blindness pinned for 5 doors,
+  holding 6/26; its dual unpinned, so a build serving `findings=1` + `is_clean=True` + a clean
+  render passed all 171). That tripped the "same class survives TWO waves ⇒ escalate the DESIGN"
+  rule → **R9: monotonicity by CONSTRUCTION** (`is_clean`/`exit_code`/`render()` DERIVED from
+  `findings`+`blind_sources`, so an inconsistent verdict is UNREPRESENTABLE). Its author attacked
+  its own design: 21 wrong builds, 6 survived, **4 were real missing pins in its own contract**.
+  Cold audit then returned **NO-GO on two blockers, both inside the class the packet exists to
+  close** — a CONSTRUCTED byte-identical false clear from the memo (an untracked `conftest.py` in a
+  testpath ANCESTOR, loaded by a mechanism the docstring never reasoned about), and the headline
+  invariant passing on a BLIND verdict. Both fixed; the second was closed AT THE SEAM (13 call
+  sites), not at the two named — the fixer generalising where the audit had specified instances.
+  **ROOTED EN ROUTE: the "intermittent" ToolSearch failure (open row 14) is DETERMINISTIC** — 8/8 by
+  agent type; an explicit `tools:` allowlist gets no MCP tools, `Tools: *` does. `ToolSearch` is
+  necessary but NOT sufficient, so **#266's fix was applied, documented with a comment asserting it
+  worked, and never verified** (#292 supersedes #287). Filed: #284 (a `cp -a`/`scratch_copy.sh` of a
+  WORKTREE inherits a `.git` FILE naming the original gitdir — a scratch `git add` MUTATES THE REAL
+  TREE, silently) · #285 (**this repo has NO CI**, and packet 44's own Exit criterion was written
+  against that phantom) · #286 · #292 · #293 (the peer instrument's deletion trigger has FIRED —
+  frozen by operator ruling, edit recorded). 15 reports → `receipts/2026-07-29-packet44/`.
+  ⚠ Worked in a git WORKTREE by operator override of the standing NO-WORKTREES directive (a peer
+  session held the shared tree); #134 was N/A (no deploy), **#125 bit** — lore's index is blind to a
+  worktree, so every structural answer came from `git grep`, said out loud in each report.
