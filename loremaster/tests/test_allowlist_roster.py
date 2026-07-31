@@ -129,6 +129,16 @@ THIRD_PRINCIPAL_EMAIL = "marcus.olabode@firehawktransam.org"
 # A replacement address with the SAME BYTE LENGTH as SECOND_PRINCIPAL_EMAIL, so a build
 # that detects roster change by ``st_size`` alone sees nothing move (M6 / WB41).
 SAME_LENGTH_REPLACEMENT = "dana.whitfield@pricepaper.net"
+
+# A COMPATIBILITY spelling of the operator's address: U+FF45 FULLWIDTH LATIN SMALL LETTER
+# E. NFKC folds it onto plain ``e``; ``casefold()`` alone does not. It is the only shape
+# of input on which the ruled normaliser and a hand-rolled ``casefold().strip()``
+# DISAGREE — which is exactly why it is the fixture that proves the two sides share one
+# implementation (N7 / WB61c).
+FULLWIDTH_OPERATOR_EMAIL = "ejpric\uff45@firehawktransam.org"
+assert FULLWIDTH_OPERATOR_EMAIL != OPERATOR_EMAIL, (
+    "the compatibility fixture must NOT already equal the ASCII address, or N7 is vacuous"
+)
 assert len(SAME_LENGTH_REPLACEMENT) == len(SECOND_PRINCIPAL_EMAIL), (
     "the same-length fixture must actually be the same length, or M6 tests nothing"
 )
@@ -763,6 +773,36 @@ class TestRosterNormalisationAtTheLoremasterSeam:
         roster.write_text(f"   {OPERATOR_EMAIL}\t\n", encoding="utf-8")
         probe = _RosterProbe(roster, {})
         assert await probe.verify(probe.token_for(OPERATOR_EMAIL, "whitespace")) is not None
+
+    async def test_a_COMPATIBILITY_form_google_email_matches_an_ascii_roster_line(
+        self, tmp_path: Path
+    ) -> None:
+        # N7 / WB61c — ⚑ THE MUTATION PROOF THIS SEAM WAS OWED, as behaviour.
+        # ``test_a_capitalised_roster_line_admits_the_lowercase_google_email`` differs
+        # from a hand-rolled ``.casefold().strip()`` on NO input: ASCII capitals fold
+        # identically either way. So every seam fixture in this module was blind to a
+        # private copy, and a build that hand-rolled BOTH loremaster-side normalisation
+        # sites passed all 448 pins. (Breaking either site ALONE is invisible because the
+        # other re-normalises — which is why only the both-sites build is the honest
+        # wrong build, and why single-site mutation proofs would have said "equivalent".)
+        #
+        # The ONLY inputs that distinguish the ruled normaliser (NFKC → casefold → strip)
+        # from a private copy are COMPATIBILITY forms. U+FF45 FULLWIDTH LATIN SMALL
+        # LETTER E folds onto plain ``e`` under NFKC and not under casefold alone.
+        #
+        # ⚠ BOUNDED HONESTLY: Google does not normally emit compatibility spellings, so
+        # this is a ONE-IMPLEMENTATION violation with a bounded live consequence, not an
+        # authentication bypass. It is pinned because it is #102's exact shape — routing
+        # is not sharing, and the only instrument that tells them apart is a mutation the
+        # contract must actually perform.
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        probe = _RosterProbe(roster, {})
+        token = probe.token_for(FULLWIDTH_OPERATOR_EMAIL, "nfkc-seam")
+        assert await probe.verify(token) is not None, (
+            "Google reported a compatibility (NFKC-foldable) spelling of a LISTED "
+            "address and the principal was denied. A side of the seam that only "
+            "casefolds is a private copy wearing the shared name."
+        )
 
     async def test_a_plus_alias_of_a_listed_principal_is_NOT_admitted(
         self, tmp_path: Path

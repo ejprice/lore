@@ -2,7 +2,7 @@
 
 brief-base v9 read
 
-- **state:** done-with-deviations. **REVISED TWICE — §14 (lead's rulings) and §16 (adversary INSUFFICIENT → all nine missing pins closed).** Current counts **448 collected / 415 RED / 33 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
+- **state:** done-with-deviations. **REVISED THREE TIMES — §14 (rulings), §16 (adversary pass 1), §17 (DELTA adversary + design R13/R14/R15).** Current counts **472 collected / 439 RED / 33 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
 - **deviation 1:** `mypy` reports **170 errors, ALL of the "symbol does not exist yet" class**, all in the 11 files this contract authored. Zero errors of any other class. Enumerated + classified in §6. `ruff` is CLEAN repo-wide.
 - **deviation 2 — RESOLVED by the lead 2026-07-31:** `cachetools` is now installed (**7.1.6**, verified via `importlib.metadata`) and declared at `loremaster/pyproject.toml:39`. §7-B1 is closed.
 - **deviation 3:** three files the builder MUST edit are outside my writable set; exact edits in §8.
@@ -678,3 +678,134 @@ defect of mine surfaced and was fixed rather than ignored (`hosted_refusal_marke
 a 774-line 45-entry wrong-build registry at an **unrecoverable address by standing law**, and
 it is the instrument behind this whole grade. Finding #278 is the receipt for what happens
 otherwise: the better the instrument, the more likely it dies unremarked.
+
+---
+
+## 17. DELTA adversary + the design change (R13/R14/R15) — third revision, 2026-07-31
+
+`REPORT-adversary-39-auth-2.md` (`003e856`) and design `R13/R14/R15` (`d615648`), both read
+in full. **10 of the 12 prior survivors killed; all nine of my previous pins discriminate.**
+Insufficient again because 9 new wrong builds passed all 448 pins — and because **the design
+changed underneath the posture pins, so this was a RESHAPE, not an extension.**
+
+### The lesson, which is the whole packet in one line (finding #295)
+
+> **Every refusal pin observed the EXCEPTION. None observed the EFFECT.**
+
+WB48 put the guard *after* `super().call_tool`: 448/448 green, **including my new wire pin**,
+whose response body carried the `HOSTED_OAUTH` marker **byte-identically to the correct
+build's** — and the tool body had already executed (`invocations=1` vs `0`). Same exception,
+same bytes, opposite reality. The memory row is written and the caller is then politely told
+it may not write.
+
+M1 asked *"does the guard run on the SERVED path?"* and answered it. **It never asked "does
+the guard run BEFORE the thing it guards?"** — and order is not observable from a message.
+
+**The askable form, now written into the test class so it travels with the pin:**
+*"if the guard ran AFTER the thing it guards, would this pin still pass?"*
+
+### R13 — reshaped, not extended
+
+The design's answer is to stop guarding invocation: the guard is a **scoped LOOKUP**. Upstream
+`ToolManager.call_tool` is `tool = self.get_tool(name); … await tool.run(...)` — **read at the
+installed SDK** — so the run's operand *is* the lookup's return value and enforcement order is
+a data dependency the SDK writes, not a sequence a builder authors. Placement stops being a
+free variable after two waves in which placement was the entire defect.
+
+| new class | what it pins |
+|---|---|
+| `TestARefusedToolNeverRUNS` (4) | the **derived ∀ EFFECT pin** — wraps `Tool.run` at its ENTRY (upstream of argument validation, so `arguments={}` can no longer mask a body that ran), iterates the FULL registry, asserts refusal **and** zero entries. Plus **two controls**: a synthetic no-required-arguments mutating tool proving the recorder can SEE a body execute, and a read tool proving dispatch still happens. |
+| `TestTheScopedLookupIsTheEnforcementSeam` (4) | a hosted principal's `list_tools` omits refused tools · unauthenticated lookup is **unfiltered** (protects `test_mcp_server`'s exact-set pin and the local deploy) · api-key sees the full surface · the composed `_tool_manager` is a **subclass** of the SDK's, never the stock one |
+| `TestExtensionToolsAreRefusedWholesale` (3) | R14 |
+
+The ∀ effect pin is derived over the registry, so there is no "tool nobody wrote a counter
+for" — and its **positive control is not optional**: a recorder that never fires would make
+the ∀ vacuous on every build, WB48 included.
+
+### R14 — a ∀ pin of mine that was FALSE on the correct build
+
+`test_every_registered_tool_carries_an_explicit_read_only_hint` passed **only because its
+fixture registered no extensions**. `_register_extension_tools` calls `add_tool(...)` with no
+`annotations=`, and `ToolSpec` is `extra="forbid"` with no field to carry one. That is the
+quantifier law's own shape — *a ∀ evaluated only where the branch cannot fire* — and it was in
+**my** contract, in the pin whose whole job is exhaustiveness. It is now **parametrised over
+the registration path** (`core-only` / `with-extension`), and `hosted_server` gained a
+`with_extension` leg whose docstring records why it exists.
+
+### R15 — the unknown branch
+
+WB51's `except ValueError: return True` passed **all six** host pins from the previous wave.
+Every one of those six is a value any classifier is certain to recognise. **The generalisable
+shape, now written into the pin:** *when a contract pins only values a classifier certainly
+knows, the UNKNOWN branch is unpinned — and the unknown branch is where the fail-open default
+lives.* Five unrecognised hosts now refuse (including `""`, uvicorn's all-interfaces
+spelling), with `LOCALHOST`/`LocalHost` as the control against over-tightening — a gate that
+refuses honest configs is a gate that gets switched off.
+
+### WB50/WB50b — a served surface that LIES, in the direction nobody pinned
+
+My M7 pin computed `missing = [n for n in derived if n not in section]`: a **membership** check
+in one direction, which a **superset** satisfies trivially. A build naming all fifteen tools as
+refused served a paragraph calling `lore_search` refused *and* available in the same breath.
+
+Both clauses are now pinned by **EQUALITY against the derivation** — over-claim and under-claim
+both red. That required one new exported constant, `HOSTED_READ_LADDER_MARKER`, so the clause
+split is owned by production prose rather than hardcoded in the test.
+
+### The lead's item — the twin is deleted
+
+`running_asgi_app`'s ~30 hand-rolled lines are gone; it is now
+`asgi_lifespan.LifespanManager(app, startup_timeout=5, shutdown_timeout=5)`. It stays a
+one-line **policy function** rather than being inlined at 16 call sites — one home for the
+timeout policy, which the hand-roll never had at all. **Verified by execution, not inspection:**
+`test_an_unauthenticated_initialize_succeeds` (the one lifespan pin green today) still passes.
+My original `keep_with_trigger` verdict named the trigger; the package was installed at
+`93bd193` and the trigger fired without anyone re-running the decision. Fair catch.
+
+### Not adopted verbatim — one place, declared
+
+The adversary's N2/N3 split the section on the literal string `"The read ladder"`, binding
+production prose into a test. Mine splits on the exported `HOSTED_READ_LADDER_MARKER` and
+asserts **set equality** rather than two one-directional membership checks — so a build that
+names an extra tool in the *available* clause also reds. Strictly wider, and it forces no prose.
+
+### Counts
+
+```
+CONTRACT="lorerunes/tests loremaster/tests/test_auth.py loremaster/tests/test_google_token_verifier.py \
+ loremaster/tests/test_allowlist_roster.py loremaster/tests/test_auth_composition.py \
+ loremaster/tests/test_auth_identity_seam.py loremaster/tests/test_hosted_readonly_posture.py \
+ loremaster/tests/test_permission_resolver_seam.py"
+
+uv run pytest $CONTRACT --collect-only -q   →  472 tests collected
+uv run pytest $CONTRACT -n auto -q --tb=no  →  439 failed, 33 passed
+uv run ruff check .                         →  All checks passed!
+./scripts/typecheck.sh                      →  200 errors, ALL the "symbol does not exist yet"
+                                               class, all in the 11 authored files
+uv run pytest <6 sibling modules> -n auto   →  1018 passed
+```
+
+**+24, and the delta reconciles exactly:** N1 4 · scoped-lookup 4 · extension 3 · N2/N3 2 ·
+∀-classification parametrisation +1 · N4 7 · N8 1 · N6 1 · N7 1 = **24**; 448 + 24 = 472.
+**33 GREEN, unchanged for the third revision running** — no new pin passes by accident.
+
+### For the third delta pass
+
+Two things I would attack if I were grading this:
+
+1. **The `Tool.run` recorder is a monkeypatch on an SDK class.** Its positive control proves
+   it fires, but a build that dispatches through something other than `Tool.run` would be
+   invisible to it. I could not find such a path in the installed SDK (`ToolManager.call_tool`
+   is the only caller), but I did not prove the negative.
+2. **`test_the_composed_server_installs_a_SCOPED_tool_manager` asserts a subclass, not a
+   behaviour.** It is the cheap structural half R13 asks for; the behavioural half is the
+   effect pin. If a build subclasses `ToolManager` and overrides nothing, the structural pin
+   passes — and the effect pin is what must catch it. That pairing is deliberate, but it is
+   the seam I would probe first.
+
+**Still open and unchanged:** N5's design gap is now ruled (R14) and adopted. **N9 — the
+truncated-cache-key ruling (adversary §10-R1) — remains an operator call and I have NOT pinned
+it**: a 32-bit positive-cache key means a token colliding with a previously-ADMITTED one is
+served that principal's verdict, and no cheap behavioural pin exists because a collision is not
+constructible without a preimage. The honest options are a structural pin that the key
+expression is a full `hexdigest()`, or accept-and-ledger with a named re-open trigger.

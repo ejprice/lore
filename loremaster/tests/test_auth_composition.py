@@ -655,6 +655,22 @@ class TestEdgePolicyIsOneDerivationFeedingBothLayers:
         )
         assert CLAUDE_COM_ORIGIN not in policy.allowed_origins
 
+    def test_the_lan_bearer_auth_settings_require_the_read_scope_too(
+        self, tmp_path: Path
+    ) -> None:
+        # N6 / WB55 — the previous wave's M9 pinned ``required_scopes`` for HOSTED_OAUTH
+        # only, so the same deletion one posture over went unseen. Behaviourally inert
+        # today (every minted token carries lore:read) and a silently removed
+        # defence-in-depth layer the day any branch mints a scopeless token. The property
+        # is "every GATED posture", not "the posture I was thinking about".
+        from loremaster.server import LoreServer, build_mcp_server
+
+        from lorerunes import SCOPE_READ
+
+        mcp = build_mcp_server(LoreServer(lan_bearer_config(tmp_path)))
+        assert mcp.settings.auth is not None
+        assert mcp.settings.auth.required_scopes == [SCOPE_READ]
+
     def test_the_hosted_auth_settings_require_the_read_scope(self, tmp_path: Path) -> None:
         # M9 / WB45. Design §6 names the value. With ``required_scopes=[]`` the SDK's
         # RequireAuthMiddleware enforces nothing — behaviourally identical TODAY (every
@@ -772,6 +788,92 @@ class TestTheBootRefusalReachesTheThingThatActuallyBoots:
         payload["auth"] = hosted_auth_block(roster)
         with pytest.raises(PostureConfigError):
             build_mcp_server(LoreServer(LoreConfig.model_validate(payload)))
+
+    @pytest.mark.parametrize(
+        "host",
+        ["lore.firehawktransam.org", "lore-internal", "example.com", "", "not a host"],
+    )
+    def test_a_bind_host_the_mapping_does_not_RECOGNISE_refuses_to_boot(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # N4 / WB51 / R15 — ⚑ THE UNKNOWN BRANCH, which the previous wave left free.
+        # That wave widened this pin from one host to six, and every one of the six is a
+        # value any classifier is CERTAIN to recognise: three canonical loopback
+        # spellings, three canonical non-loopback addresses. Nothing pinned what happens
+        # to a host the mapping does not recognise — and the natural implementation has
+        # exactly that branch, because ``localhost`` is not an IP literal and
+        # ``ipaddress.ip_address`` raises on it. A build whose ``except ValueError`` arm
+        # returns True passed all six and booted HOSTED_OAUTH with lore bound to a
+        # HOSTNAME that resolves to a LAN or public address — design R4 /
+        # investigation M-2's "instant whole-LAN exposure", one spelling over from the
+        # value the previous wave fixed.
+        #
+        # ⚑ THE GENERALISABLE SHAPE, worth more than the pin: when a contract pins only
+        # values a classifier is certain to recognise, the UNKNOWN branch is unpinned —
+        # and the unknown branch is exactly where the fail-open/fail-closed default
+        # lives. R15 rules it CLOSED: True iff literal ``localhost`` or an IP whose
+        # ``.is_loopback`` holds; anything unparseable is False, never True on exception.
+        # ``""`` is included deliberately — it is uvicorn's all-interfaces spelling.
+        from loremaster.config import LoreConfig, PostureConfigError, resolve_posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        with pytest.raises(PostureConfigError):
+            resolve_posture(LoreConfig.model_validate(payload))
+
+    @pytest.mark.parametrize("host", ["LOCALHOST", "LocalHost"])
+    def test_a_loopback_spelling_in_a_DIFFERENT_CASE_still_resolves(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # R15 says "the literal ``localhost`` (lowercased)". A yaml carrying ``LOCALHOST``
+        # is an honest config, and refusing it would be the gate insulting honest code —
+        # which is how a gate gets switched off. The CONTROL against over-tightening the
+        # fix for WB51.
+        from loremaster.config import LoreConfig, resolve_posture
+
+        from lorerunes import Posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        assert resolve_posture(LoreConfig.model_validate(payload)) is Posture.HOSTED_OAUTH
+
+    def test_the_container_entry_point_propagates_the_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # N8 / WB54 — THE THIRD BOOT SITE. ``build_mcp_server`` and ``build_asgi_app`` are
+        # pinned above; what the CONTAINER actually runs is
+        # ``CMD ["python","-m","loremaster.server"]`` → ``main()`` → ``LoreServer.run()``,
+        # which no pin touched. A try/except there that degrades to a no-auth config
+        # serves an unauthenticated internet-facing lore with every other pin green.
+        # uvicorn is stubbed to a class that FAILS if it is ever constructed, so the
+        # assertion is "serving was never reached" rather than "an exception happened".
+        import uvicorn
+        from loremaster.config import LoreConfig, PostureConfigError
+        from loremaster.server import LoreServer
+
+        served: list[Any] = []
+
+        class _NeverServes:
+            def __init__(self, config: Any) -> None:
+                served.append(config)
+
+            def run(self) -> None:
+                raise AssertionError("uvicorn must never be reached for a refused config")
+
+        monkeypatch.setattr(uvicorn, "Server", _NeverServes)
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["auth"] = hosted_auth_block(roster)
+        config = LoreConfig.model_validate(payload)
+        roster.unlink()
+
+        with pytest.raises(PostureConfigError):
+            LoreServer(config).run()
+        assert not served, "a refused config must never reach uvicorn at all"
 
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
     def test_every_loopback_SPELLING_still_resolves_to_hosted_oauth(

@@ -33,16 +33,15 @@ the derived ``expires_at`` lands in an absolute-time sanity band.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine, MutableMapping, Sequence
+from collections.abc import Callable, Coroutine, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
+from asgi_lifespan import LifespanManager
 
 # --------------------------------------------------------------------------- #
 # Identity / endpoint constants
@@ -541,41 +540,39 @@ async def drive(
     )
 
 
-@contextlib.asynccontextmanager
-async def running_asgi_app(app: Any) -> AsyncIterator[None]:
-    """Run an ASGI app's lifespan for the duration of the block.
+# The bound on lifespan startup/shutdown in a contract pin. The hand-rolled predecessor
+# had NO timeout at all: an app whose startup never completed hung the suite instead of
+# failing it.
+LIFESPAN_TIMEOUT_S = 5.0
 
-    The MCP session manager's task group is entered by the app's lifespan, so any pin
-    that drives a REAL MCP session (the F3 session-ownership pin) must hold the
-    lifespan open across its requests. ``lifespan.startup`` is awaited to completion
-    before the block runs, and shutdown is driven on the way out.
 
-    Raises:
-        RuntimeError: If the app reports ``lifespan.startup.failed``.
+def running_asgi_app(app: Any) -> LifespanManager:
+    """Run an ASGI app's lifespan for the duration of an ``async with`` block.
+
+    ⚠ THIS IS `asgi_lifespan.LifespanManager`, NOT A HAND-ROLL (lead ruling, 2026-07-31).
+    An earlier revision of this module carried ~30 lines that drove the ASGI lifespan
+    protocol by hand, with a `keep_with_trigger` verdict whose trigger was *"the first pin
+    needing lifespan state the stand-in does not model"*. `asgi-lifespan` 2.1.0 was then
+    installed (`93bd193`) and the trigger fired without anyone re-running the decision —
+    the delta adversary caught it. The twin is deleted rather than kept beside the package:
+    NEVER MAINTAIN BOTH.
+
+    This wrapper is a POLICY function, not a second implementation — it exists so the
+    timeout policy has one home rather than being re-typed at each of the call sites
+    (ONE IMPLEMENTATION: if two call sites need the same policy, it is a function they
+    call). `httpx.ASGITransport` cannot do this job: its source carries no lifespan
+    handling at all (read, `httpx/_transports/asgi.py`).
+
+    Args:
+        app: The composed ASGI application.
+
+    Returns:
+        An async context manager that completes `lifespan.startup` on entry and drives
+        `lifespan.shutdown` on exit, both bounded by :data:`LIFESPAN_TIMEOUT_S`.
     """
-    inbox: asyncio.Queue[MutableMapping[str, Any]] = asyncio.Queue()
-    outbox: asyncio.Queue[MutableMapping[str, Any]] = asyncio.Queue()
-
-    async def receive() -> MutableMapping[str, Any]:
-        return await inbox.get()
-
-    async def send(message: MutableMapping[str, Any]) -> None:
-        await outbox.put(message)
-
-    task = asyncio.create_task(app({"type": "lifespan", "state": {}}, receive, send))
-    await inbox.put({"type": "lifespan.startup"})
-    startup = await outbox.get()
-    if startup["type"] != "lifespan.startup.complete":
-        task.cancel()
-        raise RuntimeError(f"ASGI lifespan startup failed: {startup!r}")
-    try:
-        yield
-    finally:
-        await inbox.put({"type": "lifespan.shutdown"})
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(outbox.get(), timeout=30)
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=30)
+    return LifespanManager(
+        app, startup_timeout=LIFESPAN_TIMEOUT_S, shutdown_timeout=LIFESPAN_TIMEOUT_S
+    )
 
 
 def bearer(token: str, *, scheme: str = "Bearer") -> tuple[bytes, bytes]:

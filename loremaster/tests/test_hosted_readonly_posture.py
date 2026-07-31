@@ -87,6 +87,7 @@ from _auth_fixtures import (
 from mcp.server.auth.middleware.auth_context import auth_context_var
 from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.auth.provider import AccessToken
+from mcp.types import ToolAnnotations
 
 # The BEHAVIOURAL anchor (design §7). Each name here gets its own refusal fixture, so a
 # wrongly-flipped annotation reds a pin BY NAME rather than being blessed by a derived
@@ -127,6 +128,11 @@ EXPECTED_READ_ONLY_TOOLS = frozenset(
 # A tool name that does not exist, used to prove the guard refuses by ANNOTATION rather
 # than by membership of any list of known names.
 UNANNOTATED_PROBE_TOOL = "lore_probe_unannotated"
+
+# The whole registered surface. The section pins scan for tool names inside a rendered
+# clause, so they need the universe to scan FOR — derived from the two named sets rather
+# than re-listed, so a tool cannot be added to one and forgotten here.
+ALL_TOOL_NAMES = EXPECTED_READ_ONLY_TOOLS | EXPECTED_MUTATING_TOOLS
 
 
 def google_principal(*, email: str, subject: str) -> AccessToken:
@@ -204,6 +210,11 @@ async def mutating_tool_names(mcp: Any) -> frozenset[str]:
     Deny-by-default — ``annotations is None`` counts as mutating, so a tool registered
     without annotations is born refused rather than silently hosted-callable. This is
     the derivation that replaces #291's hand-list.
+
+    ⚠ CALL THIS UNAUTHENTICATED. Under R13 the lookup is posture-SCOPED: with a hosted
+    principal ambient, ``list_tools`` returns only the read ladder, so this would derive
+    the empty set and every ∀ over it would be vacuous. Every call site here runs outside
+    an ``as_principal`` block deliberately.
     """
     tools = await mcp.list_tools()
     return frozenset(
@@ -220,15 +231,33 @@ def _api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(API_KEY_ENV_LAN_CLIENT, API_KEY_VALUE_LAN_CLIENT)
 
 
-def hosted_server(tmp_path: Path) -> Any:
-    """A ``build_mcp_server`` result in the ``HOSTED_OAUTH`` posture."""
+def hosted_server(tmp_path: Path, *, with_extension: bool = False) -> Any:
+    """A ``build_mcp_server`` result in the ``HOSTED_OAUTH`` posture.
+
+    ⚠ ``with_extension`` EXISTS BECAUSE ITS ABSENCE WAS A DEFECT. The ∀ classification pin
+    below was FALSE on a correct build the moment one extension registered, and it passed
+    only because this fixture registered none — a ∀ evaluated on the one registration path
+    where it holds. R14 now rules that ``_register_extension_tools`` synthesizes
+    ``readOnlyHint=False``, and the fixture must be able to reach that path.
+
+    Args:
+        tmp_path: The per-test directory for the roster and live root.
+        with_extension: Register one extension, so the SECOND registration path is
+            covered. No default was possible on the ∀ pin itself — it is parametrised
+            over both values.
+    """
     from loremaster.config import LoreConfig
     from loremaster.server import LoreServer, build_mcp_server
 
     roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
     payload = base_config_payload(slug(), tmp_path / "live")
     payload["auth"] = hosted_auth_block(roster)
-    return build_mcp_server(LoreServer(LoreConfig.model_validate(payload)))
+    server = LoreServer(LoreConfig.model_validate(payload))
+    if with_extension:
+        from _extension_helpers import CounterExtension
+
+        server.register_extension(CounterExtension())
+    return build_mcp_server(server)
 
 
 def lan_bearer_server(tmp_path: Path) -> Any:
@@ -253,12 +282,22 @@ def loopback_server(tmp_path: Path) -> Any:
 class TestEveryRegisteredToolIsClassified:
     """Posture ∀, half one: no tool is unclassified — the derivation has no gaps."""
 
+    @pytest.mark.parametrize("with_extension", [False, True], ids=["core-only", "with-extension"])
     async def test_every_registered_tool_carries_an_explicit_read_only_hint(
-        self, tmp_path: Path
+        self, tmp_path: Path, with_extension: bool
     ) -> None:
         # The classification IS the security boundary now, so an unset hint is not a
         # missing nicety — it is a tool whose posture nobody decided.
-        mcp = hosted_server(tmp_path)
+        #
+        # ⚑ PARAMETRISED OVER THE REGISTRATION PATH, because that is where this ∀ was
+        # FALSE ON A CORRECT BUILD (delta adversary §4.5). ``_register_extension_tools``
+        # called ``mcp.add_tool(...)`` with no ``annotations=``, and ``ToolSpec`` has no
+        # field to carry one — so an extension tool reached the served surface
+        # unclassified, and this pin passed only because its fixture registered no
+        # extensions. That is the quantifier law's own shape: a ∀ evaluated only where
+        # the branch cannot fire. R14 rules the synthesis; this parametrisation is what
+        # makes the ∀ true over BOTH paths instead of over the convenient one.
+        mcp = hosted_server(tmp_path, with_extension=with_extension)
         for tool in await mcp.list_tools():
             assert tool.annotations is not None, (
                 f"{tool.name} carries no ToolAnnotations. Under R8 the hosted posture "
@@ -458,6 +497,287 @@ class TestHostedPrincipalsAreRefusedEveryMutatingTool:
         )
 
 
+class TestARefusedToolNeverRUNS:
+    """N1 / WB48 — ⚑ THE BLOCKER, and the sharpest lesson of this packet (finding #295).
+
+    **Every refusal pin in this contract observed the EXCEPTION. None observed the
+    EFFECT.** A build that dispatches the tool and refuses afterwards therefore passed all
+    448 pins — including the wire pin added in the previous wave, whose response body
+    carried the ``HOSTED_OAUTH`` marker **byte-identically to the correct build's** — while
+    the mutating tool's body had already executed (`invocations=1` vs the reference
+    build's `0`). Same exception, same bytes, opposite reality: the memory row is written
+    and the caller is then politely told it may not write.
+
+    Two wrapper placements, two waves, both green: WB30 put the guard where the wire never
+    reached it; WB48 put it after ``super().call_tool``. **ORDER is not observable from a
+    message**, which is why R13 stops guarding invocation at all and scopes the LOOKUP
+    instead — upstream ``ToolManager.call_tool`` is ``tool = self.get_tool(name); … await
+    tool.run(...)`` (read at the installed SDK), so the run's operand IS the lookup result
+    and the enforcement order is a data dependency the SDK writes, not a sequence a
+    builder authors.
+
+    **The askable form, and it applies to every refusal pin anyone writes from here:**
+    *"if the guard ran AFTER the thing it guards, would this pin still pass?"*
+
+    The instrument is the CALL COUNT, never the message. ``Tool.run``-entry is the effect
+    boundary UPSTREAM of argument validation, so ``arguments={}`` can no longer mask a
+    body that ran — which was the adversary's exact blind spot.
+    """
+
+    def _run_entry_recorder(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Wrap ``Tool.run`` at its ENTRY and record every tool that reaches it.
+
+        Deliberately at ``Tool.run`` rather than inside each tool body: it is the one
+        boundary every dispatch must cross, upstream of argument validation, so no tool
+        can be "the one nobody wrote a counter for".
+        """
+        from mcp.server.fastmcp.tools.base import Tool
+
+        entered: list[str] = []
+        original = Tool.run
+
+        async def _recording_run(tool_self: Any, *args: Any, **kwargs: Any) -> Any:
+            entered.append(tool_self.name)
+            return await original(tool_self, *args, **kwargs)
+
+        monkeypatch.setattr(Tool, "run", _recording_run)
+        return entered
+
+    async def test_no_refused_tool_body_is_ever_entered_for_a_hosted_principal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # THE DERIVED ∀ EFFECT PIN (design R13 rider 1). Iterates the FULL registry rather
+        # than a sample, so a newly added mutating tool is covered the day it is
+        # registered — no "tool nobody wrote a counter for".
+        from loremaster.server import HostedToolRefusedError
+
+        entered = self._run_entry_recorder(monkeypatch)
+        mcp = hosted_server(tmp_path)
+        refused = await mutating_tool_names(mcp)
+        assert refused, "the ∀ must range over a non-empty set, or it proves nothing"
+
+        for tool_name in sorted(refused):
+            with as_principal(google_principals("operator")):
+                outcome = await call_and_capture(mcp, tool_name)
+            assert isinstance(outcome, HostedToolRefusedError), (
+                f"{tool_name} was not refused for a hosted principal; got {outcome!r}"
+            )
+
+        assert entered == [], (
+            f"the bodies of {entered} were ENTERED while being refused. The caller sees a "
+            f"correct refusal and the side effect has already happened — the read-only "
+            f"posture is cosmetic. Ask: 'if the guard ran AFTER the thing it guards, "
+            f"would this pin still pass?' This one would not, which is the point."
+        )
+
+    async def test_the_recorder_CAN_see_a_body_execute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ⚑ THE POSITIVE CONTROL FOR THE INSTRUMENT ITSELF (design R13 rider 2), and it is
+        # not optional: a recorder that never fires would make the ∀ above pass on every
+        # build, including WB48. A synthetic mutating tool with NO REQUIRED ARGUMENTS —
+        # so argument validation can never be the reason a body did not run — proves the
+        # recorder sees real execution.
+        invocations: list[int] = []
+
+        def probe_write() -> str:
+            """A mutating tool with no required arguments."""
+            invocations.append(1)
+            return "contract-probe-ok"
+
+        entered = self._run_entry_recorder(monkeypatch)
+        mcp = hosted_server(tmp_path)
+        mcp.add_tool(
+            probe_write,
+            name="lore_probe_write",
+            annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
+        )
+        # With NO principal (the LOOPBACK shape) the tool is permitted and must run.
+        with as_principal(None):
+            await call_and_capture(mcp, "lore_probe_write")
+        assert invocations, "the synthetic tool's body must be reachable at all"
+        assert "lore_probe_write" in entered, (
+            "the Tool.run recorder did not observe a body that demonstrably executed — "
+            "the instrument is blind and every ∀ effect assertion above is vacuous"
+        )
+
+    async def test_the_same_synthetic_tool_is_refused_WITHOUT_running_when_hosted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The two halves meet: the SAME no-required-arguments mutating tool the recorder
+        # just watched execute must now be refused with its body untouched. This is the
+        # adversary's WB48 probe, kept as a contract fixture.
+        from loremaster.server import HostedToolRefusedError
+
+        invocations: list[int] = []
+
+        def probe_write() -> str:
+            """A mutating tool with no required arguments."""
+            invocations.append(1)
+            return "contract-probe-ok"
+
+        entered = self._run_entry_recorder(monkeypatch)
+        mcp = hosted_server(tmp_path)
+        mcp.add_tool(
+            probe_write,
+            name="lore_probe_write",
+            annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
+        )
+        with as_principal(google_principals("operator")):
+            outcome = await call_and_capture(mcp, "lore_probe_write")
+        assert isinstance(outcome, HostedToolRefusedError)
+        assert not invocations, (
+            "the refused tool's body ran before the refusal was raised — and its "
+            "arguments were valid, so the write really happened"
+        )
+        assert "lore_probe_write" not in entered
+
+    async def test_a_permitted_read_tool_body_IS_entered_for_a_hosted_principal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # THE OTHER CONTROL: a build that dispatched NOTHING would pass every pin above,
+        # and the hosted read surface — the entire reason a Google principal is admitted —
+        # would be dead.
+        def probe_read() -> str:
+            """A read-only tool with no required arguments."""
+            return "contract-probe-ok"
+
+        entered = self._run_entry_recorder(monkeypatch)
+        mcp = hosted_server(tmp_path)
+        mcp.add_tool(
+            probe_read,
+            name="lore_probe_read",
+            annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        )
+        with as_principal(google_principals("operator")):
+            await call_and_capture(mcp, "lore_probe_read")
+        assert "lore_probe_read" in entered, (
+            "a read-only tool must actually reach its body for a hosted principal"
+        )
+
+
+class TestTheScopedLookupIsTheEnforcementSeam:
+    """R13 — the guard is a scoped LOOKUP, so a refused tool is not RETURNED at all.
+
+    The structural half of the R13 ruling. Because upstream ``ToolManager.call_tool``
+    binds ``tool = self.get_tool(name)`` and then awaits ``tool.run(...)``, a lookup that
+    withholds the tool cannot be "moved after" the run — there is no run without the
+    lookup's return value. That is what takes PLACEMENT out of the builder's hands, after
+    two waves in which placement was the defect.
+    """
+
+    async def test_a_hosted_principal_does_not_see_refused_tools_in_list_tools(
+        self, tmp_path: Path
+    ) -> None:
+        mcp = hosted_server(tmp_path)
+        refused = await mutating_tool_names(mcp)
+        with as_principal(google_principals("operator")):
+            visible = {tool.name for tool in await mcp.list_tools()}
+        assert not (visible & refused), (
+            f"a hosted principal was offered tools it cannot call: "
+            f"{sorted(visible & refused)}. Under R13 the lookup is posture-scoped, so a "
+            f"refused tool is not returned — advertising it is the served surface "
+            f"over-claiming, and the agent learns the contract from what is served."
+        )
+        assert visible == EXPECTED_READ_ONLY_TOOLS, (
+            f"the hosted principal's visible surface must be exactly the read ladder; "
+            f"got {sorted(visible)}"
+        )
+
+    async def test_an_unauthenticated_lookup_is_unfiltered(self, tmp_path: Path) -> None:
+        # THE CONTROL, and it protects the EXISTING deployment: with no ambient principal
+        # (the LOOPBACK shape, and what every registration pin in test_mcp_server.py
+        # drives) the lookup must be unfiltered, or the exact-set surface pin there breaks
+        # and a local single-user deploy silently loses two thirds of its tools.
+        mcp = hosted_server(tmp_path)
+        with as_principal(None):
+            visible = {tool.name for tool in await mcp.list_tools()}
+        assert visible == EXPECTED_READ_ONLY_TOOLS | EXPECTED_MUTATING_TOOLS
+
+    async def test_an_api_key_principal_sees_the_full_surface(self, tmp_path: Path) -> None:
+        # Design §1: api keys are the local/LAN trust anchor and retain the FULL surface.
+        mcp = hosted_server(tmp_path)
+        with as_principal(api_key_principals("local-agent")):
+            visible = {tool.name for tool in await mcp.list_tools()}
+        assert visible == EXPECTED_READ_ONLY_TOOLS | EXPECTED_MUTATING_TOOLS
+
+    def test_the_composed_server_installs_a_SCOPED_tool_manager(
+        self, tmp_path: Path
+    ) -> None:
+        # The cheap structural pin R13 asks for. It names no class of ours — only that the
+        # composed manager is a SUBCLASS of the SDK's, never the SDK's own. A build that
+        # reverted to the stock manager and re-added a wrapper elsewhere reds here.
+        from mcp.server.fastmcp.tools.tool_manager import ToolManager
+
+        manager = hosted_server(tmp_path)._tool_manager
+        assert isinstance(manager, ToolManager)
+        assert type(manager) is not ToolManager, (
+            "the composed FastMCP must install the posture-scoped ToolManager subclass; "
+            "it is carrying the SDK's stock manager, so enforcement has moved back out "
+            "into a wrapper whose placement is a free variable again (WB30/WB48)"
+        )
+
+
+class TestExtensionToolsAreRefusedWholesale:
+    """R14 — the core cannot audit a project-authored callable, so it must not CLAIM it."""
+
+    async def test_an_extension_tool_is_annotated_non_read_only(
+        self, tmp_path: Path
+    ) -> None:
+        # R14: ``_register_extension_tools`` synthesizes the annotation. Not an accident
+        # of a missing ``annotations=`` — a stated design property, so it cannot be
+        # "fixed" back into an unclassified tool by a tidy-up.
+        mcp = hosted_server(tmp_path, with_extension=True)
+        tools = {tool.name: tool for tool in await mcp.list_tools()}
+        extension_tools = set(tools) - EXPECTED_READ_ONLY_TOOLS - EXPECTED_MUTATING_TOOLS
+        assert extension_tools, (
+            "the fixture registered no extension tool — this pin would be vacuous"
+        )
+        for name in sorted(extension_tools):
+            annotations = tools[name].annotations
+            assert annotations is not None, f"{name} carries no ToolAnnotations"
+            assert annotations.readOnlyHint is False, (
+                f"{name} is extension-contributed and must be annotated "
+                f"readOnlyHint=False: the core cannot verify a project-authored "
+                f"callable's read-onlyness, so it must not claim it (R14)"
+            )
+
+    async def test_an_extension_tool_is_refused_for_a_hosted_principal(
+        self, tmp_path: Path
+    ) -> None:
+        from loremaster.server import HostedToolRefusedError
+
+        mcp = hosted_server(tmp_path, with_extension=True)
+        extension_tools = (
+            {tool.name for tool in await mcp.list_tools()}
+            - EXPECTED_READ_ONLY_TOOLS
+            - EXPECTED_MUTATING_TOOLS
+        )
+        for name in sorted(extension_tools):
+            with as_principal(google_principals("operator")):
+                outcome = await call_and_capture(mcp, name)
+            assert isinstance(outcome, HostedToolRefusedError)
+
+    async def test_an_extension_tool_remains_callable_via_an_api_key(
+        self, tmp_path: Path
+    ) -> None:
+        # THE CONTROL: refusing extensions on the HOSTED surface must not break them for
+        # the local/LAN principals who are the reason extensions exist.
+        from loremaster.server import HostedToolRefusedError
+
+        mcp = hosted_server(tmp_path, with_extension=True)
+        extension_tools = (
+            {tool.name for tool in await mcp.list_tools()}
+            - EXPECTED_READ_ONLY_TOOLS
+            - EXPECTED_MUTATING_TOOLS
+        )
+        assert extension_tools
+        for name in sorted(extension_tools):
+            with as_principal(api_key_principals("local-agent")):
+                outcome = await call_and_capture(mcp, name)
+            assert not isinstance(outcome, HostedToolRefusedError)
+
+
 class TestTheRefusalTeaches:
     """A refusal a consumer cannot act on is a dead end (the Consumer Law)."""
 
@@ -601,6 +921,64 @@ class TestInstructionsAreHonestAboutThePosture:
             f"are refused but unnamed. The section is a HAND-LIST, not a derivation — "
             f"so the day a tool is added or an annotation flips, the instructions teach "
             f"a refused set that has drifted from what the server actually does."
+        )
+
+    def test_the_refused_clause_names_EXACTLY_the_refused_set(self, tmp_path: Path) -> None:
+        # N2 / WB50 — ⚑ A SERVED SURFACE THAT LIES, in the direction nobody pinned.
+        # Every section pin so far checked MEMBERSHIP: "is each refused tool named?".
+        # A build that drops the annotation filter names ALL FIFTEEN tools as refused and
+        # satisfies every one of them, because a superset has nothing missing. The served
+        # paragraph then says `lore_search` is refused AND available in the same breath,
+        # and under the Consumer Law the reader is a model that learns the contract from
+        # what is served: it stops calling the read ladder and routes around the MCP.
+        #
+        # EQUALITY, both directions, against the DERIVATION rather than a literal — so the
+        # render is checked against the same classification it claims to describe.
+        from loremaster.server import (
+            HOSTED_READ_LADDER_MARKER,
+            HOSTED_REFUSAL_SECTION_HEADING,
+        )
+
+        mcp = hosted_server(tmp_path)
+        refused = asyncio.run(mutating_tool_names(mcp))
+        instructions = mcp.instructions or ""
+        section = instructions.split(HOSTED_REFUSAL_SECTION_HEADING, 1)[1]
+        refused_clause = section.split(HOSTED_READ_LADDER_MARKER, 1)[0]
+
+        named = {name for name in ALL_TOOL_NAMES if name in refused_clause}
+        assert named == refused, (
+            f"the served refused-set clause does not match the derivation. Named but not "
+            f"refused: {sorted(named - refused)} (the surface OVER-claims — an agent told "
+            f"a read tool is refused stops using it). Refused but not named: "
+            f"{sorted(refused - named)} (the surface UNDER-claims — the agent discovers "
+            f"the boundary by failing calls)."
+        )
+
+    def test_the_read_ladder_clause_names_EXACTLY_the_readable_set(
+        self, tmp_path: Path
+    ) -> None:
+        # N3 / WB50b — the same equality on the other clause. A build whose read-ladder
+        # list is EMPTY serves "The read ladder remains fully available: ." and passes
+        # every shipped pin, telling a hosted principal it has no surface at all. The
+        # refusal's whole job is to leave the caller a next move.
+        from loremaster.server import (
+            HOSTED_READ_LADDER_MARKER,
+            HOSTED_REFUSAL_SECTION_HEADING,
+        )
+
+        mcp = hosted_server(tmp_path)
+        refused = asyncio.run(mutating_tool_names(mcp))
+        readable = ALL_TOOL_NAMES - refused
+        assert readable, "the derivation must leave a non-empty read ladder"
+
+        instructions = mcp.instructions or ""
+        section = instructions.split(HOSTED_REFUSAL_SECTION_HEADING, 1)[1]
+        ladder_clause = section.split(HOSTED_READ_LADDER_MARKER, 1)[1]
+
+        named = {name for name in ALL_TOOL_NAMES if name in ladder_clause}
+        assert named == readable, (
+            f"the served read-ladder clause does not match the derivation. Missing: "
+            f"{sorted(readable - named)}; wrongly offered: {sorted(named - readable)}."
         )
 
     def test_the_section_is_absent_in_loopback_posture(self, tmp_path: Path) -> None:
