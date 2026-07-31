@@ -49,6 +49,7 @@ dev = [
     # here and cannot pass on one machine and be absent on another. That absence is
     # #131 verbatim — code that shells out to a binary the environment does not have.
     "shellcheck-py",
+    "asgi-lifespan>=2",
 ]
 
 # ---------------------------------------------------------------------------
