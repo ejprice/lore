@@ -203,4 +203,44 @@ packet record uncorrected.
    S5 superseded by the restored ruling (§15 notes the pin inversion the lead is
    directing separately).
 
+## 9. Adversary-pass DESIGN escalation (fifth lead message, 2026-07-31) — ruled
+Grounded in `REPORT-adversary-39-auth-2.md` at `003e856` (§4.1, §4.5) and the INSTALLED
+SDK's dispatch source before ruling. Three rulings + one render law, all in the design
+doc (§0 rows R13–R15, §7 rewritten, §5 R15, §16 escalation record):
+
+1. **R13 — guard placement (WB48): ruled (b) STRUCTURAL, with (a) as a DERIVED
+   instrument, not per-site pins.** The guard stops being a wrapper: a posture-scoped
+   `ToolManager` subclass whose `get_tool` raises the teaching refusal and whose
+   `list_tools` filters by the same predicate. The load-bearing fact (read at source):
+   upstream `ToolManager.call_tool` obtains the callable ONLY as `get_tool`'s return
+   value — enforcement order is a DATA DEPENDENCY the SDK wrote, so "before or after
+   `super().call_tool`" ceases to exist as a builder decision. Riders: a derived ∀
+   EFFECT pin asserting `Tool.run` never ENTERED for refused calls (run-entry is
+   upstream of argument validation, killing the `arguments={}` mask the adversary
+   named), its positive control (the WB48 synthetic no-arg mutating tool with a body
+   counter), the WB48 re-order mutation as declared-RED, and a structural
+   scoped-manager identity pin. Neither (a) nor (b) alone: (b) leaves the raw-`_tools`
+   side door (named as an honest bound), (a) alone is "the counter nobody wrote".
+   Contract-wide law added to §9: **every refusal pin pairs with an effect assertion.**
+2. **R14 — extensions (adversary §4.5): refused wholesale, made EXPLICIT.**
+   `_register_extension_tools` synthesizes `readOnlyHint=False` on every extension tool
+   — the core cannot verify a project-authored callable's read-onlyness and must not
+   claim it (the registration comment's own strongest-capability law). The ∀
+   classification pin becomes TRUE over both registration paths; the fixture must
+   register ≥1 extension. Re-open (in §1's docstring bounds): hosted exposure for an
+   extension = an explicit no-default `ToolSpec` declaration PLUS a verification story
+   — a design escalation, never a field addition.
+3. **R15 — `host_is_loopback` (WB51): fail closed on non-IP input.** True iff literal
+   `localhost` (lowercased) or a parsed IP with `.is_loopback`; an exception path may
+   NEVER yield the permissive answer. Fails closed in both consuming directions
+   (LOOPBACK won't arm no-auth on a name; HOSTED won't boot on one). Name-form pins +
+   the WB51 mutation declared-RED.
+4. **WB50 — served-surface derivation:** one partition function feeds guard, filtered
+   list, AND the instructions refused-set section; equality-both-directions pin plus a
+   three-surface annotation-flip mutation (membership-only checking is what waved the
+   lying render through).
+
+Not re-decided (lead retained): asgi-lifespan trigger re-run; routing remaining pins to
+the contract author after these rulings.
+
 STANDING BY for follow-up design questions via SendMessage, per brief.

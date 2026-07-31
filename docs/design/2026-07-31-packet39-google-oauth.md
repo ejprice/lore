@@ -11,7 +11,9 @@ confirmed against the FastMCP signature; the test hand-list is deleted, not corr
 filed as finding **#291**) · an R12 freshness revision (per-cache-miss floor) that the
 fourth ping **REVERSED**: the strong per-verification ruling is RESTORED — no residual
 window (§3-R12) — plus the §4 scope-check property fix, §8 row 15 (ruling S1), and §15
-(contract-pass rulings S2–S6/B1/B4).
+(contract-pass rulings S2–S6/B1/B4). A fifth ping (the adversary-pass DESIGN escalation,
+`REPORT-adversary-39-auth-2.md` at `003e856`) produced **R13–R15 and rewrote §7's
+enforcement mechanism**: the guard becomes a scoped LOOKUP, not a wrapper (§7, §16).
 **Inputs:** the approved investigation (`~/.claude/plans/check-and-see-if-polymorphic-pebble.md`
 — an unrecoverable address by standing law; its load-bearing content is restated or superseded
 HERE, and this doc is the durable record) · `docs/plans/v2/39-hosted-security.md` ·
@@ -38,6 +40,9 @@ measurements (2026-07-31, §2 — they **falsify part of the investigation's Pha
 | R10 | Identity (F3) | Google branch mints `subject` + `claims={"iss": …}` + `expires_at`; api-key branch mints `client_id="api_key:<name>"`, `subject=<name>` |
 | R11 | Allowlist fail mode (F4) | Fail CLOSED at every leg: blank path unconstructible; missing/empty/invalid roster at boot ⇒ refuse to boot; at runtime ⇒ deny ALL, loudly — each leg pinned separately |
 | R12 | Allowlist substrate (operator override, 2026-07-31) | **mtime-watched flat file, outside the repo AND the image**, bind-mounted ro; `lore.yaml` carries only its PATH; add/revoke requires NO recreate and NO rebuild |
+| R13 | Read-only guard structure (adversary escalation, WB48) | **Scoped LOOKUP, not a wrapper**: a posture-scoped `get_tool`/`list_tools`; enforcement ORDER lives in upstream SDK dispatch, so "placement" stops being a builder variable — plus a derived ∀ effect pin at the `Tool.run` entry boundary |
+| R14 | Extension tools under `HOSTED_OAUTH` (adversary §4.5) | Refused wholesale, made EXPLICIT: `_register_extension_tools` synthesizes `readOnlyHint=False` on every extension tool (the core cannot verify a project-authored callable's read-onlyness, so it must not claim it); the ∀ classification pin becomes true over BOTH registration paths |
+| R15 | `host_is_loopback` on a non-IP bind (WB51) | Fail CLOSED: `True` iff the host is the literal `localhost` (lowercased) or parses as an IP whose `.is_loopback` holds; anything unparseable is `False` — never `True` on exception |
 
 **What is operator-side and cannot be done without them:** §12. **Bounds of this design
 (what I could not measure tonight):** §13.
@@ -93,6 +98,12 @@ measurements (2026-07-31, §2 — they **falsify part of the investigation's Pha
 >   closing it would re-wrap the app in the blanket gate whose removal RFC 9728
 >   discovery requires. Re-open trigger: the day lore serves a route whose mere
 >   existence is sensitive, or a posture ships without an edge in front of it.
+> - **Extension tools are never hosted-servable** (R14): the core cannot audit a
+>   project-authored extension callable, so every extension tool is registered
+>   non-read-only and refused to hosted principals — explicitly, not by accident of a
+>   missing annotation. Re-open trigger: an extension needing hosted exposure, which
+>   requires an explicit no-default read-only declaration on `ToolSpec` AND a story for
+>   how the core VERIFIES that claim — a design escalation, never a field addition.
 
 Self-check applied (the askable form): *"does this safety claim hold on every table/type/
 branch this ruling touches, or only the one I derived it on?"* — the read-only claim is
@@ -528,6 +539,18 @@ declared from `--collect-only` BEFORE the run (`scripts/mutation_proof.py`, diff
 ways) · an in-image conformance leg asserting NON-ZERO EXIT on an incoherent config
 (#131/#139 — only the running artifact proves the cake).
 
+**R15 — the `host_is_loopback` primitive itself (WB51: `except ValueError: return True`
+passed every host pin and booted `HOSTED_OAUTH` on a hostname bind):** the predicate
+returns `True` iff the host string, lowercased, is the literal `localhost`, OR
+`ipaddress.ip_address(host)` parses and `.is_loopback` holds. **Everything else —
+hostnames, empty strings, bracketed forms, garbage — is `False`, and an exception path
+may NEVER produce `True`.** `False` fails closed in BOTH consuming directions: `LOOPBACK`
+(no-auth) refuses to arm on a name that might resolve wide, and `HOSTED_OAUTH` refuses to
+boot on a non-loopback bind. **Rider:** name-form pins — `localhost` → True ·
+`127.0.0.1`/`::1`/`127.0.0.2` → True · `myhost.lan` / `""` / `evil` / `[::1]`
+(bracketed, unparseable) → False — plus the WB51 mutation itself (swap the ValueError arm
+to `True`) as a declared-RED proof.
+
 **⚠ Operational consequence, stated where it bites:** in `HOSTED_OAUTH` the SDK gates
 `/mcp` for EVERYONE — local agents on this box included. Local sessions therefore
 authenticate with an API key (the `keys` list stays populated; `.mcp.json` gains the
@@ -571,7 +594,7 @@ OriginValidation( _EagerStartupLifespan( mcp.streamable_http_app() ) )   # no Be
   not deleted** (§8 item 13): the new pin asserts a disallowed Origin 403s with ZERO
   outbound Google calls and no session touched.
 - Scope constants `"lore:read"` / `"lore:write"` live in `lorerunes` beside the posture
-  enum (shared policy: the verifier mints them, the dispatch guard checks them, the
+  enum (shared policy: the verifier mints them, the scoped lookup (R13) checks them, the
   instructions renderer names them — one home).
 
 ---
@@ -588,12 +611,60 @@ agree by memory. **The rule: a tool is hosted-callable iff its registered
 is refused for principals without `lore:write`. Fail-closed by construction: an
 unclassified new tool is born refused.
 
-- **Enforcement:** one guard installed once in `build_mcp_server` at tool dispatch: if
-  `get_access_token()` yields a token lacking `"lore:write"` and the target tool's
-  registered `readOnlyHint is not True` → a STRUCTURED tool error (never an unhandled
-  exception) teaching: the posture name (from the enum), the tool name, why it is refused,
-  and that the read surface remains available. No token at all (LOOPBACK posture) ⇒ full
-  surface, unchanged.
+- **Enforcement (R13 — REWRITTEN after the adversary escalation; supersedes this doc's
+  earlier "one guard at tool dispatch" wrapper):** two waves of wrapper-shaped guards were
+  each defeated by a different PLACEMENT (WB30: dead on the wire; WB48: guard after
+  `super().call_tool`, so the refused tool's body EXECUTED and then the correct refusal
+  was served — `invocations=1` vs the reference build's `0`, identical response bytes).
+  The adversary's one-sentence diagnosis: *every refusal pin observes the EXCEPTION; none
+  observes the EFFECT* — and placement is not a property a pin can see. **Ruling: the
+  guard is a scoped LOOKUP, not a wrapper.** `build_mcp_server` installs a
+  posture-scoped `ToolManager` (subclassing
+  `mcp.server.fastmcp.tools.tool_manager.ToolManager`) whose `get_tool` raises the
+  structured teaching refusal — posture name from the enum, tool name, why, and the
+  remaining read surface — when the ambient principal (via `get_access_token()`) lacks
+  `"lore:write"` and the tool's registered `readOnlyHint is not True`; `list_tools`
+  filters by the same predicate. **Why placement stops being a free variable:** upstream
+  `ToolManager.call_tool` is `tool = self.get_tool(name); if not tool: raise; return
+  await tool.run(...)` (read at source, installed SDK) — the callable EXISTS only as the
+  lookup's return value, so the enforcement order is a DATA DEPENDENCY written by the
+  SDK, not a sequence the builder authors. A builder cannot move a lookup "after" the
+  run, because the run's operand IS the lookup result. No token at all (LOOPBACK) ⇒
+  unfiltered lookup, full surface, unchanged.
+  **Riders (same sentence, three instruments):** (1) **the derived ∀ EFFECT pin** — a
+  harness iterates the FULL registry, wraps every tool's `run` entry, and asserts that a
+  hosted principal's call to each non-read-only tool yields the refusal AND that
+  `Tool.run` was NEVER ENTERED (`run`-entry is the effect boundary UPSTREAM of argument
+  validation, so `arguments={}` can no longer mask a body that ran — the adversary's
+  exact blind spot); derived over the registry, so there is no "tool nobody wrote a
+  counter for"; (2) **its positive control** — one synthetic mutating tool with NO
+  required arguments carrying a body-invocation counter, proving the harness can SEE a
+  body execute (the WB48 probe, kept as a contract fixture); (3) the WB48 mutation
+  itself (re-order enforcement to post-run in scratch) as a declared-RED proof, plus a
+  cheap structural pin that the composed FastMCP's `_tool_manager` IS the scoped class.
+  **Honest bound:** a builder reading the raw `_tools` dict from a side path bypasses
+  the scoped lookup — that is exactly what instrument (1) catches; the lookup makes the
+  correct shape structural, the effect pin makes the bypass visible. Belt AND braces,
+  because neither alone survived two waves.
+- **Extension tools (R14 — the adversary's §4.5: the ∀ pin was FALSE on the correct
+  build the moment one extension registered):** `_register_extension_tools` currently
+  calls `mcp.add_tool(...)` with no annotations, and `ToolSpec` (`extra="forbid"`) has no
+  field to carry one — an extension author CANNOT declare read-onlyness, and the core
+  could not verify the claim if they did (the handler is a project-authored callable
+  outside the audited surface). **Ruling: refused wholesale, made EXPLICIT —
+  `_register_extension_tools` synthesizes `ToolAnnotations(readOnlyHint=False, ...)` on
+  every extension tool.** This is the registration comment's own strongest-capability
+  law applied at the seam: the core cannot verify an extension's read-onlyness, so it
+  must not CLAIM it. Consequences: the ∀ classification pin becomes TRUE over BOTH
+  registration paths (core and extension); every extension tool is structurally refused
+  to hosted principals; and the refusal is a stated design property (§1 docstring
+  bound), not an accident of a missing annotation. **Rider:** the ∀ classification
+  fixture MUST register at least one extension (the adversary's finding was a fixture
+  monoculture — no-extension-only); one pin asserts a registered extension tool carries
+  `readOnlyHint=False` and is refused hosted while remaining callable via api-key.
+  **Re-open trigger** (also in §1): an extension needing hosted exposure ⇒ `ToolSpec`
+  gains an explicit NO-DEFAULT read-only declaration plus a verification story for the
+  claim — a design escalation, never a field addition.
 - **Granularity is the TOOL, deliberately:** `lore_index` (can reconcile), `lore_tasks`,
   `lore_findings`, `lore_comms` are multiplexed read+write tools and are refused WHOLE for
   hosted principals — the annotation comment in `server.py` already states the law ("a
@@ -624,17 +695,27 @@ unclassified new tool is born refused.
   annotations to `readOnlyHint=False` in scratch → its hosted-refusal pin reds; flip one
   mutating tool to `True` → the cross-product posture pin reds; both runs via
   `scripts/mutation_proof.py` with expected-RED ids from `--collect-only`.
-- **Instructions honesty (Consumer Law):** in `HOSTED_OAUTH` the served `instructions`
-  block gains a section GENERATED from the registered annotations (never prose beside
-  them): the refused tool names, the reason, and the read-ladder that remains. The
-  existing pins interact: `test_the_registered_surface_is_exactly_the_expected_set` and
-  `test_instructions_names_every_tool` stay green (tools remain REGISTERED and listed —
-  refusal happens at call, honestly taught). **Rider:** a hosted-posture instructions pin
-  asserts each mutating tool name appears inside the refused-set section, with the
-  expectation derived from the same test-side exhaustive mapping.
-- **Ask mid-build (the askable form):** *"if I registered a new tool right now with no
+- **Served-surface honesty (Consumer Law; sharpened by WB50, a wrong build whose served
+  refused-set section named ALL FIFTEEN tools — telling a hosted agent `lore_search` was
+  refused — while the derivation pin, checking membership only, stayed green):** ONE
+  partition function (classification → `(visible, refused)`) feeds ALL THREE consumers —
+  the scoped `get_tool` guard, the filtered `list_tools`, and the `instructions` block's
+  refused-set section. The render is DERIVED from the same partition it describes, never
+  assembled beside it. Registration itself remains FULL and unchanged
+  (`test_the_registered_surface_is_exactly_the_expected_set` still checks the registered
+  set; the hosted `list_tools` view is a per-principal PROJECTION of it, and
+  `test_instructions_names_every_tool` stays satisfiable because refused tools are named
+  inside the refused-set section). **Riders:** an EQUALITY pin — the rendered refused
+  names equal the partition's refused set exactly, both directions (membership-only
+  checking is what waved WB50 through) — plus one flip-one-annotation mutation that must
+  move the tool across all three surfaces at once (guard outcome, list membership,
+  rendered section) or the pin reds.
+- **Ask mid-build (the askable forms):** *"if I registered a new tool right now with no
   annotations, which pin reds and which guard refuses it?"* If either answer is "nothing",
-  the derivation has been rebuilt as a list.
+  the derivation has been rebuilt as a list. And R13's question: *"can this tool's body
+  run before my refusal fires — and does the answer depend on code I WROTE rather than
+  on the SDK's own dispatch order?"* If it depends on your code, placement is still a
+  free variable and WB48 is still alive.
 
 ---
 
@@ -678,11 +759,17 @@ FORCE each fate with a fixture):
 - **Auth ∀:** every `(token, tokeninfo-response, allowlist)` triple yields EITHER `None`
   OR an `AccessToken` whose email the allowlist admits and whose `subject`/`claims`/
   `expires_at` are populated — no third fate, regardless of WHICH field was hostile.
-- **Posture ∀:** every registered tool is classified (readOnlyHint explicitly set), and in
-  `HOSTED_OAUTH` every non-read-only tool is refused for every non-write principal — no
-  tool unclassified, no principal-shape untested (google-token AND api-key AND no-token
-  fixtures; the value-monoculture law: at least two distinct emails, two distinct key
-  names).
+- **Posture ∀:** every registered tool — over BOTH registration paths, core and extension
+  (R14) — is classified (readOnlyHint explicitly set), and in `HOSTED_OAUTH` every
+  non-read-only tool is refused for every non-write principal — no tool unclassified, no
+  principal-shape untested (google-token AND api-key AND no-token fixtures; the
+  value-monoculture law: at least two distinct emails, two distinct key names).
+
+**And the WB48 law, contract-wide: every refusal/denial pin PAIRS with an effect
+assertion** — the refused operation's side-effect surface demonstrably unchanged, with a
+positive control proving the harness can see an effect when one occurs. A pin that
+observes only the exception or the response body certifies the refusal PROSE, not the
+refusal.
 
 Groups (each pin mutation-proven; expected-RED ids from `--collect-only` before the run):
 1. **Allowlist predicate + roster substrate (R12)** — case-fold admission ·
@@ -716,8 +803,17 @@ Groups (each pin mutation-proven; expected-RED ids from `--collect-only` before 
    non-ASCII token → clean 401.
 6. **Posture gate** — the cross-product table (§5) · each mutating tool refused for a
    google principal AND permitted for an api-key principal AND permitted with no auth
-   (LOOPBACK) · the annotations-exhaustiveness pin (§7) · instructions honesty pin in
-   hosted posture (§7) · refusal prose enumerates posture names from the enum.
+   (LOOPBACK), each refusal PAIRED with its effect assertion (the WB48 law) · **the
+   derived ∀ EFFECT pin**: for every non-read-only tool in the registry, hosted refusal
+   AND `Tool.run` never entered (run-entry is upstream of argument validation, so
+   `arguments={}` cannot mask an executed body) · its positive control: the synthetic
+   no-required-args mutating tool with a body counter, proving the harness sees
+   execution · the scoped-`ToolManager` structural pin · the annotations-exhaustiveness
+   pin with ≥1 EXTENSION registered in its fixture (R14) · the WB50 EQUALITY pin: the
+   rendered refused-set equals the partition both directions, and one annotation flip
+   moves the tool across guard, list, and render at once · the R15 host-form pins
+   (`localhost`/IPs True; names/garbage/bracketed False; ValueError-arm mutation
+   declared-RED) · refusal prose enumerates posture names from the enum.
 
 The contract ships with a **satisfiability receipt** (0-failed against the adversary's
 reference build, INCLUDING after the ruff-driven orphaned-import cleanup that deleting
@@ -855,6 +951,43 @@ close-out per standing law; cite the archived path thereafter). Ruled:
 - **B4 — `build_mcp_server` gains keyword-only `http_client=` and `permission_resolver=`**
   (both optional and additive; existing callers unaffected) — named in §4 and §6 so the
   builder implements a ruled signature rather than inventing one.
+
+---
+
+## 16. Adversary-pass design escalation (2026-07-31) — R13/R14/R15
+
+Escalated by the lead under its own tell — *the same defect class survived TWO waves, so
+the DESIGN escalates rather than a third pin-patch* — on
+`REPORT-adversary-39-auth-2.md` (committed `003e856`; §4.1 the WB48 blocker, §4.5 the
+extension gap; 9 new wrong builds passing all 448 pins).
+
+- **R13 — the guard becomes a scoped lookup** (§7, full ruling there). The choice was
+  between (a) pin the effect per site and (b) make bypass structural. Ruled: **(b) as
+  the mechanism AND (a) as a DERIVED ∀ instrument, not per-site pins** — (b) alone
+  leaves the raw-dict side door, (a) alone is the "next counter nobody wrote". The
+  structural half rides an upstream data dependency
+  (`ToolManager.call_tool` obtains the callable ONLY from `get_tool` — read at source),
+  which is the one place placement cannot be re-decided by a builder. This is the
+  instrument lesson's shape: stop enumerating wrong placements (unbounded); make the
+  safe path the only path that type-checks the data flow, then watch the effect
+  boundary at runtime.
+- **R14 — extensions refused wholesale, explicitly** (§7, §1 bound). Deny-by-default was
+  already SAFE; it was undesigned and it broke the ∀ pin on the correct build. The
+  ruling makes the classification explicit at the registration seam (synthesized
+  `readOnlyHint=False` — the core must not claim what it cannot verify) rather than an
+  accident of absence, and names the re-open (an explicit no-default `ToolSpec`
+  declaration PLUS a verification story).
+- **R15 — `host_is_loopback` fails closed on non-IP input** (§5). WB51's
+  `except ValueError: return True` is the fail-open arm of the same coin F4 was: an
+  exception path that GRANTS. The predicate's law: an exception may never produce the
+  permissive answer.
+- **WB50 — the served refused-set derives from the one partition** (§7's served-surface
+  bullet): membership-only checking waved through a render that lied to every hosted
+  consumer; the equality-both-directions pin plus the three-surface annotation-flip
+  mutation replace it.
+- Not re-decided here (lead retained): the `asgi-lifespan` `keep_with_trigger` re-run,
+  and routing the remaining missing pins to the contract author — deliberately AFTER
+  these rulings, since pins written first would pin a design about to change.
 
 ---
 
