@@ -2,7 +2,7 @@
 
 brief-base v9 read
 
-- **state:** done-with-deviations. **REVISED FOUR TIMES — §14 (rulings), §16 (adversary 1), §17 (adversary 2 + R13/R14/R15), §18 (adversary 3 + R16: the posture pins moved ONTO THE WIRE).** Current counts **473 collected / 432 RED / 41 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
+- **state:** done-with-deviations. **REVISED FIVE TIMES — §14, §16, §17, §18, and §19 (the REGRESSION wave: my own restructure dropped six pins, and I owed the inventory that finds them).** Current counts **486 collected / 444 RED / 42 GREEN**. Earlier revision: S5 INVERTED (the residual window is now pinned CLOSED, not open); S1 accepted and pinned; B1 resolved (`cachetools` 7.1.6 installed, verified). Counts re-measured: **422 collected / 389 RED / 33 GREEN**.
 - **deviation 1:** `mypy` reports **170 errors, ALL of the "symbol does not exist yet" class**, all in the 11 files this contract authored. Zero errors of any other class. Enumerated + classified in §6. `ruff` is CLEAN repo-wide.
 - **deviation 2 — RESOLVED by the lead 2026-07-31:** `cachetools` is now installed (**7.1.6**, verified via `importlib.metadata`) and declared at `loremaster/pyproject.toml:39`. §7-B1 is closed.
 - **deviation 3:** three files the builder MUST edit are outside my writable set; exact edits in §8.
@@ -928,3 +928,124 @@ returned `Any`, which laundered into `call()`'s declared `str`).
    §10-R1) is an operator call. A 32-bit positive-cache key means a token colliding with a
    previously-ADMITTED one is served that principal's verdict; no cheap behavioural pin
    exists because a collision needs a preimage.
+
+---
+
+## 19. THE REMOVED-BEHAVIOUR ADJUDICATION I OWED — and the six pins my restructure lost
+
+`REPORT-adversary-39-auth-4.md` (`3b183d4`) §4. Scope this round is the lead's: **fix the
+regressions; the shadowing class is stopped and escalated, and I have not touched it.**
+
+### The finding against me, stated plainly
+
+My §18 wrote that the 49 wire pins *"cover what the 70 in-process ones did"*. **That claim
+was false and I did not measure it.** It is precisely the removed-behaviour class this
+repo's dual-rule exists to catch — *tests written for a NEW design certify only the new
+world; nothing checks that the old world's virtues survived* — and asserting parity
+instead of deriving it is what made four regressions invisible. "The restructure covers
+it" is the banned reason, and I used its exact shape.
+
+### Re-derived by me, not taken from the report (the rider)
+
+```
+git show af74611:loremaster/tests/test_hosted_readonly_posture.py \
+  > loremaster/tests/test_zzzprev_posture.py
+uv run pytest loremaster/tests/test_zzzprev_posture.py --collect-only -q   →  70 collected
+uv run pytest loremaster/tests/test_hosted_readonly_posture.py --collect-only -q → 49
+rm loremaster/tests/test_zzzprev_posture.py       # untracked temp; no git state mutated
+```
+
+**70 → 49 confirmed independently**, then diffed by test-function name (`comm` over the
+sorted node-id sets): **24 functions dropped, 20 added, 10 kept.**
+
+### The adjudication — every one of the 24 dropped functions
+
+| # | dropped function | verdict |
+|---|---|---|
+| 1 | `…::test_no_refused_tool_body_is_ever_entered_for_a_hosted_principal` | **preserved-with-pin** → `…_on_the_wire` (renamed, strictly stronger: same ∀, now over the wire) |
+| 2 | `…::test_the_same_synthetic_tool_is_refused_WITHOUT_running_when_hosted` | **preserved-with-pin** → `test_a_no_argument_mutating_tool_is_refused_without_running` |
+| 3 | `…::test_a_permitted_read_tool_body_IS_entered_for_a_hosted_principal` | **preserved-with-pin** → `test_the_recorder_CAN_see_a_body_execute` (kept; same property, and it is the instrument's own control) |
+| 4 | `…::test_the_read_surface_is_exactly_the_named_read_only_tools` | **preserved-with-pin** → `test_the_derived_readable_set_equals_the_named_read_tools` |
+| 5 | `…::test_the_registered_surface_is_the_same_in_every_posture` | ⚑ **LOST-BY-ACCIDENT → RESTORED.** Not among the four the adversary named — **my own diff found it.** Protects `test_mcp_server`'s exact-set pin. |
+| 6 | `…::test_an_extension_tool_is_annotated_non_read_only` | **preserved-with-pin, stronger** → `test_an_extension_tool_carries_the_exact_worst_case_annotations` (exact equality ⊃ the read-only bit) |
+| 7–8 | extension refused / callable-via-api-key | **preserved-with-pin** → the `_on_the_wire` pair |
+| 9–11 | google-refused / google-read-permitted / api-key-permitted | **preserved-with-pin** → the three `_on_the_wire` parametrised pins |
+| 12 | `…::test_a_newly_registered_read_only_tool_is_permitted` | ⚑ **LOST → RESTORED** (WB109). Deny-by-default had become deny-everything-NEW. |
+| 13 | `…::test_a_tool_registered_with_no_annotations_is_born_refused` | **preserved-with-pin** → `test_an_unannotated_tool_is_born_refused_on_the_wire` |
+| 14 | `…::test_a_write_scope_is_what_permits_not_the_client_id_shape` | ⚑ **LOST → RESTORED (WB106, SECURITY).** A forged `client_id` reached `lore_remember`. |
+| 15 | `…::test_no_token_at_all_is_not_refused` | ⚑ **LOST → RESTORED** (WB111). Would have refused every unauthenticated LOCAL call. |
+| 16 | `…::test_every_refused_tool_is_named_inside_that_section` | **preserved-with-pin, stronger** → the two EQUALITY clause pins |
+| 17 | `…::test_the_instructions_still_name_every_registered_tool_in_hosted_posture` | **preserved-with-pin** (renamed) |
+| 18 | `…::test_the_refused_set_section_is_DERIVED_from_the_annotations` | ⚑ **LOST → RESTORED** (WB40). ⚠ **And equality did NOT subsume it** — on the stock registry a hand-list of the same six names EQUALS the derivation. Only the MUTATION (flip the shared annotation constant, rebuild, the section must follow) kills a hand-list. |
+| 19 | `…::test_the_section_is_absent_in_lan_bearer_posture` | ⚑ **LOST-BY-ACCIDENT → RESTORED.** Also not named by the adversary — **my own diff.** Only the loopback absence survived. |
+| 20 | `…::test_the_refusal_is_a_structured_tool_error_not_an_unhandled_exception` | **preserved-with-pin** (renamed) |
+| 21 | `…::test_the_refusal_names_the_posture_from_the_enum` | **preserved-with-pin, stronger** → `test_the_refusal_names_the_posture_and_the_tool` |
+| 22–24 | the three `TestTheScopedLookupIsTheEnforcementSeam` in-process pins | **preserved-with-pin** → the three `_on_the_wire` pins (this was the POINT of R16) |
+
+**Six lost, not four.** The adversary named four; the inventory found two more. That is the
+whole argument for doing the inventory rather than fixing the reported list.
+
+### WB105 — a pin of mine that was VACUOUS, and the fix is structural
+
+`test_the_accessor_is_unaffected_by_an_ambient_hosted_principal` called
+`all_registered_tools()` with **no ambient principal installed** — the one condition under
+which a scoped accessor and an unscoped one are indistinguishable. It passed on WB105 by
+never exercising what it was written for. It could not be fixed in place: a posture module
+may not import `as_principal` (R16 part 2). **So the class moved to
+`test_auth_composition.py`**, where in-process context is legitimate, and now really
+installs the principal. Every derivation in this contract consumes that accessor; scoped,
+they go **vacuous rather than red**.
+
+### WB103 — cheap, so pinned rather than ledgered
+
+`resources/read` and `prompts/get` are ungoverned (R13 scopes the TOOL lookup only). Today
+that is harmless for one **measured** reason: lore registers **zero** resources and
+**zero** prompts. `TestUngovernedMcpRoutesAreUnreachable` pins that CONDITION, so the day
+someone registers the first one the governance question is forced at that moment — rather
+than by an adversary, or by a hosted principal reading something the tool guard would have
+refused. *An unpinned known limitation is indistinguishable from an unknown one.*
+
+### The `WireSession` correction — the SDK client, verified by execution
+
+Deleted the hand-rolled JSON-RPC. `WireSession` now drives
+`mcp.client.streamable_http.streamable_http_client(url, http_client=…)` + `ClientSession`.
+**I did not assume it could drive an in-process ASGI app — I measured it**, and the probe
+also produced the fact that made it work:
+
+```
+base_url="http://lore.test"        → httpx.HTTPStatusError: 421 Misdirected Request
+base_url="http://127.0.0.1:9202"   → SDK CLIENT WORKS over ASGITransport — tools: 15
+```
+
+The 421 is the SDK's own transport-security layer refusing an unexpected Host — the very
+mechanism W7 exists for, confirming itself in passing. The harness now sends the
+**production Host** per posture (public hostname when hosted, the bind otherwise), so every
+wire pin keeps that layer in its path. A second change fell out of this: the tokeninfo spy
+is injected **only where a Google branch exists**, which keeps the loopback and LAN wire
+pins runnable TODAY — and that is what let me prove the harness end-to-end
+(`test_the_loopback_posture_serves_the_full_surface_unauthenticated` → **1 passed**) rather
+than shipping it unexercised.
+
+### Counts
+
+```
+uv run pytest $CONTRACT --collect-only -q   →  486 tests collected
+uv run pytest $CONTRACT -n auto -q --tb=no  →  444 failed, 42 passed
+uv run ruff check .                         →  All checks passed!
+./scripts/typecheck.sh                      →  191 errors, ALL the "symbol does not exist yet"
+                                               class, all in authored files
+uv run pytest <6 sibling modules> -n auto   →  1018 passed
+```
+
+Posture module **49 → 58**. GREEN 41 → 42 (+1: the second WB103 tripwire leg —
+`test_no_prompts_are_registered`; its sibling is RED only because the hosted config model
+does not exist yet). The restored pins are RED for the expected reason, verified:
+`ImportError: cannot import name 'Posture' from 'lorerunes'`.
+
+### What I did NOT do, per scope
+
+No pin for the shadowing class. WB100 rebinds `FastMCP.list_tools` on the **class**, so
+`vars(mcp)` is clean and R16's structural pin is blind by construction. That is the
+lead's escalation to the operator and I have left it alone.
+
+**Still open:** N9 (truncated cache key) — operator call, unpinned.

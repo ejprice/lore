@@ -64,7 +64,6 @@ THE ∀-PROPERTIES
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -241,6 +240,27 @@ class TestEveryRegisteredToolIsClassified:
             f"{sorted(EXPECTED_MUTATING_TOOLS - derived)}."
         )
 
+    def test_the_registered_surface_is_the_same_in_every_posture(
+        self, tmp_path: Path
+    ) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE, and NOT among the four the adversary
+        # named; my own 70→49 diff found it. Design §7: tools stay REGISTERED in every
+        # posture and refusal happens at CALL. A build that unregistered the mutating
+        # tools in hosted posture would break ``test_mcp_server``'s exact-set pin and make
+        # the served surface depend on the deployment.
+        from loremaster.config import LoreConfig
+        from loremaster.server import LoreServer, build_mcp_server
+
+        config = LoreConfig.model_validate(base_config_payload(slug(), tmp_path / "live"))
+        loopback = {
+            tool.name
+            for tool in build_mcp_server(LoreServer(config))._tool_manager.all_registered_tools()
+        }
+        hosted = {
+            tool.name for tool in hosted_server(tmp_path)._tool_manager.all_registered_tools()
+        }
+        assert hosted == loopback == ALL_TOOL_NAMES
+
     def test_the_derived_readable_set_equals_the_named_read_tools(
         self, tmp_path: Path
     ) -> None:
@@ -301,6 +321,97 @@ class TestHostedPrincipalsAreRefusedEveryMutatingTool:
         ) as wire:
             body = await wire.call(UNANNOTATED_PROBE_TOOL)
         assert refusal_marker() in body
+
+
+    async def test_a_write_scope_is_what_permits_not_the_client_id_SHAPE(
+        self, tmp_path: Path
+    ) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE (WB106, a SECURITY regression).
+        # The guard's rule is ``lore:write`` in the token's SCOPES (design §7), never a
+        # string test on ``client_id``. A build that keyed on
+        # ``client_id.startswith("api_key:")`` passes every other pin in this class and
+        # admits anything that merely SPELLS its client id that way — here, a forged
+        # principal holding read scope only reaches ``lore_remember``.
+        #
+        # The forged identity is injected at the VERIFIER, because a real principal's
+        # client_id is whatever the verifier mints — which is precisely the surface a
+        # wrong build would get wrong.
+        import time
+
+        from _auth_fixtures import (
+            GOOGLE_ACCESS_TOKEN_LIFETIME_S,
+            GOOGLE_ISSUER,
+            OPERATOR_SUBJECT,
+            google_access_token,
+        )
+        from mcp.server.auth.provider import AccessToken
+
+        from lorerunes import SCOPE_READ
+
+        forged = AccessToken(
+            token=google_access_token("forged-client-id"),
+            client_id="api_key:not-really-a-key",
+            scopes=[SCOPE_READ],
+            expires_at=int(time.time()) + GOOGLE_ACCESS_TOKEN_LIFETIME_S,
+            subject=OPERATOR_SUBJECT,
+            claims={"iss": GOOGLE_ISSUER, "email": OPERATOR_EMAIL},
+        )
+        async with wire_session(
+            tmp_path, posture="hosted", principal="google", verdict_override=forged
+        ) as wire:
+            body = await wire.call("lore_remember")
+        assert refusal_marker() in body, (
+            "a principal whose client_id merely LOOKS like an api-key principal reached a "
+            "mutating tool. The guard must key on the SCOPES the verifier minted, never "
+            "on the shape of a string."
+        )
+
+    async def test_a_newly_registered_READ_ONLY_tool_is_permitted_on_the_wire(
+        self, tmp_path: Path
+    ) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE (WB109). Deny-by-default must not mean
+        # deny-everything-NEW: an extension or a future tool that DOES declare itself
+        # read-only has to be hosted-callable, or the read ladder can never grow. This is
+        # the control for ``test_an_unannotated_tool_is_born_refused_on_the_wire``, and
+        # without it a build that refused every unfamiliar tool passes that pin.
+        def _prepare(mcp: Any) -> None:
+            def probe_read() -> str:
+                """A newly contributed read-only tool."""
+                return "contract-probe-ok"
+
+            mcp.add_tool(
+                probe_read,
+                name="lore_probe_readonly",
+                annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+            )
+
+        async with wire_session(
+            tmp_path, posture="hosted", principal="google", prepare=_prepare
+        ) as wire:
+            served = await wire.served_tool_names()
+            body = await wire.call("lore_probe_readonly")
+        assert "lore_probe_readonly" in served, (
+            "a newly registered READ-ONLY tool must be OFFERED to a hosted principal"
+        )
+        assert refusal_marker() not in body, (
+            "a newly registered READ-ONLY tool must be CALLABLE by a hosted principal — "
+            "deny-by-default must not become deny-everything-new"
+        )
+
+    @pytest.mark.parametrize("tool_name", sorted(EXPECTED_MUTATING_TOOLS))
+    async def test_no_token_at_all_is_not_refused(
+        self, tmp_path: Path, tool_name: str
+    ) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE (WB111). Design §7: "No token at all
+        # (LOOPBACK posture) ⇒ full surface, unchanged." A guard that refused on a MISSING
+        # principal rather than on a non-write one breaks EVERY unauthenticated local call
+        # on this box the day it ships — the existing deployment, not a hypothetical.
+        async with wire_session(tmp_path, posture="loopback", principal=None) as wire:
+            body = await wire.call(tool_name)
+        assert refusal_marker() not in body, (
+            f"`{tool_name}` was refused for an UNAUTHENTICATED caller. The LOOPBACK "
+            f"posture installs no auth and must keep the full surface. Body: {body[:300]!r}"
+        )
 
 
 class TestServedAndRefusedArePartitioned:
@@ -490,35 +601,6 @@ class TestTheScopedLookupIsTheEnforcementSeam:
         )
 
 
-class TestTheUnscopedAccessorIsTheSanctionedFullRegistryView:
-    """R16 part 3 — remove the friction that pushed builders through the door."""
-
-    def test_the_scoped_manager_exposes_all_registered_tools(self, tmp_path: Path) -> None:
-        # The adversary named the friction precisely: the instructions render needs the
-        # UNSCOPED registry, and under a scoped ``list_tools`` even the reference build had
-        # to reach past its own override. A builder who finds that awkward moves the filter
-        # somewhere wire-dead. Giving the honest path a NAME is what stops that.
-        manager = hosted_server(tmp_path)._tool_manager
-        assert {tool.name for tool in manager.all_registered_tools()} == ALL_TOOL_NAMES, (
-            "all_registered_tools() must return the FULL registry regardless of posture "
-            "or ambient principal — it is the one sanctioned unscoped view"
-        )
-
-    def test_the_accessor_is_unaffected_by_an_ambient_hosted_principal(
-        self, tmp_path: Path
-    ) -> None:
-        # If the accessor were itself scoped, every derivation built on it would silently
-        # narrow and the ∀ pins would go vacuous rather than red.
-        async def _check() -> None:
-            async with wire_session(tmp_path, posture="hosted", principal="google") as wire:
-                registered = {
-                    tool.name for tool in wire.mcp._tool_manager.all_registered_tools()
-                }
-                assert registered == ALL_TOOL_NAMES
-
-        asyncio.run(_check())
-
-
 class TestExtensionToolsAreRefusedWholesale:
     """R14 + WB74 — the core cannot audit a project-authored callable, so it may not CLAIM."""
 
@@ -692,6 +774,59 @@ class TestInstructionsAreHonestAboutThePosture:
             f"the served read-ladder clause does not match the derivation. Missing: "
             f"{sorted(readable - named)}; wrongly offered: {sorted(named - readable)}."
         )
+
+    def test_the_refused_set_section_is_DERIVED_from_the_annotations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE (WB40). The two EQUALITY pins above
+        # compare the section against the derivation, but on the STOCK registry a
+        # hand-list of the same six names EQUALS the derivation — so equality alone does
+        # not kill a hand-list. Only a MUTATION does: change the shared annotation
+        # constant the read tools register with, rebuild, and a derived section follows
+        # while a hand-list does not. PROVE SHARING BY MUTATION.
+        import loremaster.server as server_module
+        from loremaster.server import (
+            HOSTED_READ_LADDER_MARKER,
+            HOSTED_REFUSAL_SECTION_HEADING,
+        )
+
+        monkeypatch.setattr(
+            server_module,
+            "_READ_ONLY_ANNOTATIONS",
+            ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False),
+        )
+        mcp = hosted_server(tmp_path)
+        refused = mutating_tool_names(mcp)
+        assert refused > EXPECTED_MUTATING_TOOLS, (
+            "the fixture must actually widen the refused set — if flipping the shared "
+            "read-only annotation changed nothing, the mutation did not land and this pin "
+            "is inert"
+        )
+        section = (mcp.instructions or "").split(HOSTED_REFUSAL_SECTION_HEADING, 1)[1]
+        refused_clause = section.split(HOSTED_READ_LADDER_MARKER, 1)[0]
+        missing = sorted(name for name in refused if name not in refused_clause)
+        assert not missing, (
+            f"the served refused-set section did not follow the annotations: {missing} "
+            f"are refused but unnamed. The section is a HAND-LIST, not a derivation."
+        )
+
+    def test_the_section_is_absent_in_lan_bearer_posture(self, tmp_path: Path) -> None:
+        # ⚑ RESTORED — LOST IN THE R16 RESTRUCTURE, and also not among the four named.
+        # Only the loopback absence survived the rewrite; LAN_BEARER is a gated posture
+        # with the FULL surface, so teaching it a hosted refused set would be a lie in the
+        # other direction.
+        from _auth_fixtures import lan_bearer_auth_block
+        from loremaster.config import LoreConfig
+        from loremaster.server import (
+            HOSTED_REFUSAL_SECTION_HEADING,
+            LoreServer,
+            build_mcp_server,
+        )
+
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["auth"] = lan_bearer_auth_block()
+        mcp = build_mcp_server(LoreServer(LoreConfig.model_validate(payload)))
+        assert HOSTED_REFUSAL_SECTION_HEADING not in (mcp.instructions or "")
 
     def test_the_section_is_absent_in_loopback_posture(self, tmp_path: Path) -> None:
         from loremaster.config import LoreConfig

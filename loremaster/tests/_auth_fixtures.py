@@ -768,62 +768,38 @@ def sdk_bound_handler_names() -> frozenset[str]:
 
 @dataclass
 class WireSession:
-    """One live, authenticated MCP session. The ONLY posture-assertion surface.
+    """One live, authenticated MCP session driven by the SDK's OWN CLIENT.
+
+    ⚠ NOT A HAND-ROLLED JSON-RPC CLIENT (lead ruling, 2026-07-31). An earlier revision of
+    this harness assembled ``tools/list`` / ``tools/call`` envelopes by hand. The SDK ships
+    ``mcp.client.streamable_http.streamable_http_client(url, *, http_client=)`` plus
+    ``ClientSession``, and — MEASURED, not assumed — it drives an in-process ASGI app
+    perfectly when handed an ``httpx.AsyncClient`` over ``httpx.ASGITransport``: real
+    handshake, real protocol, typed results. Packages over hand-rolling, in its ordinary
+    direction, in test code. The hand-roll is deleted rather than kept beside it.
 
     Attributes:
-        app: The composed ASGI app (its lifespan is running).
-        token: The Bearer credential, or ``None`` for the unauthenticated LOOPBACK shape.
-        session_id: The `mcp-session-id` the server minted.
-        mcp: The composed FastMCP, for STRUCTURAL assertions only — never for driving a
-            posture claim, which is exactly what R16's AST invariant enforces.
+        session: The SDK ``ClientSession``.
+        mcp: The composed FastMCP, for STRUCTURAL assertions only — never to drive a
+            posture claim, which R16's AST invariant enforces mechanically.
+        token: The Bearer credential, or ``None`` for the unauthenticated shape.
     """
 
-    app: Any
-    token: str | None
-    session_id: str
+    session: Any
     mcp: Any
-
-    async def _rpc(
-        self, method: str, params: dict[str, Any] | None = None
-    ) -> AsgiResponse:
-        import json
-
-        headers: list[tuple[bytes, bytes]] = [
-            (b"host", PUBLIC_HOSTNAME.encode("ascii")),
-            *MCP_POST_HEADERS,
-            (b"mcp-session-id", self.session_id.encode("ascii")),
-        ]
-        if self.token is not None:
-            headers.append(bearer(self.token))
-        body: dict[str, Any] = {"jsonrpc": "2.0", "id": 7, "method": method}
-        if params is not None:
-            body["params"] = params
-        return await drive(
-            self.app,
-            method="POST",
-            path=MCP_PATH,
-            headers=headers,
-            body=json.dumps(body).encode("utf-8"),
-        )
+    token: str | None
 
     async def served_tool_names(self) -> set[str]:
         """The tool names this principal is OFFERED, read off the wire `tools/list`."""
-        import json
-
-        response = await self._rpc("tools/list")
-        assert response.status == 200, (
-            f"tools/list failed on the wire: {response.status} {response.body[:300]!r}"
-        )
-        payload = json.loads(response.body)
-        assert "result" in payload, f"tools/list returned no result: {payload}"
-        return {tool["name"] for tool in payload["result"]["tools"]}
+        listing = await self.session.list_tools()
+        return {tool.name for tool in listing.tools}
 
     async def call(self, name: str, arguments: dict[str, Any] | None = None) -> str:
-        """Dispatch `name` over the wire; return the decoded response body."""
-        response = await self._rpc(
-            "tools/call", {"name": name, "arguments": arguments or {}}
+        """Dispatch `name` over the wire; return the rendered text of the result."""
+        result = await self.session.call_tool(name, arguments or {})
+        return "".join(
+            getattr(block, "text", "") for block in result.content
         )
-        return response.body.decode("utf-8", "replace")
 
 
 @contextlib.asynccontextmanager
@@ -834,11 +810,12 @@ async def wire_session(
     principal: str | None,
     with_extension: bool = False,
     prepare: Callable[[Any], None] | None = None,
+    verdict_override: Any = None,
 ) -> AsyncIterator[WireSession]:
-    """Open a real MCP session against a composed server and yield the wire surface.
+    """Open a real MCP session against the composed server and yield the wire surface.
 
     NOTHING IS DEFAULTED THAT THE CODE BRANCHES ON: ``posture`` and ``principal`` are
-    required keyword arguments, so every call site states the shape it is exercising.
+    required keyword arguments, so every call site states the shape it exercises.
 
     Args:
         tmp_path: Per-test directory for the roster and the live root.
@@ -847,12 +824,18 @@ async def wire_session(
         with_extension: Register one extension, so the second registration path is live.
         prepare: Called with the composed FastMCP before the app is built — used to
             register adversarial fixture tools (an UNANNOTATED one, for WB72).
+        verdict_override: An ``AccessToken`` the verifier is forced to mint for any
+            credential. The ONLY way to drive an adversarially-shaped principal (a forged
+            ``client_id``) all the way to the wire, since a real principal's identity is
+            whatever the verifier decides.
 
     Yields:
         A :class:`WireSession` whose `initialize` handshake has completed.
     """
     from loremaster.config import LoreConfig
     from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
 
     roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
     payload = base_config_payload(slug(), tmp_path / "live")
@@ -879,8 +862,22 @@ async def wire_session(
         from _extension_helpers import CounterExtension
 
         server.register_extension(CounterExtension())
-    mcp = build_mcp_server(server, http_client=spy.client())
+    # The tokeninfo spy is injected ONLY where a Google branch exists. Passing it to a
+    # posture with no google block would be meaningless — and it keeps the loopback and
+    # LAN wire pins runnable TODAY, which is what proves this harness works at all rather
+    # than leaving every wire pin red for an unrelated reason.
+    mcp = (
+        build_mcp_server(server, http_client=spy.client())
+        if posture == "hosted"
+        else build_mcp_server(server)
+    )
     mcp.settings.json_response = True
+    if verdict_override is not None:
+
+        async def _forced(_token: str) -> Any:
+            return verdict_override
+
+        mcp._token_verifier.verify_token = _forced
     if prepare is not None:
         prepare(mcp)
     stub_heavy_startup(mcp)
@@ -892,31 +889,27 @@ async def wire_session(
         None: None,
     }[principal]
 
+    # The Host the wire actually carries. Hosted traffic arrives through lore-caddy with
+    # the PUBLIC hostname; loopback/LAN traffic carries the bind. Using the real Host
+    # keeps the SDK's transport-security layer in the path of every wire pin.
+    origin_url = (
+        f"https://{PUBLIC_HOSTNAME}" if posture == "hosted"
+        else f"http://{LOOPBACK_HOST}:{SERVER_PORT}"
+    )
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+
     async with running_asgi_app(app):
-        headers: list[tuple[bytes, bytes]] = [
-            (b"host", PUBLIC_HOSTNAME.encode("ascii")),
-            *MCP_POST_HEADERS,
-        ]
-        if token is not None:
-            headers.append(bearer(token))
-        opened = await drive(
-            app, method="POST", path=MCP_PATH, headers=headers, body=json_rpc_initialize()
+        http_client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url=origin_url,
+            headers=headers,
         )
-        assert opened.status == 200, (
-            f"initialize failed ({opened.status}); a posture pin cannot say anything "
-            f"about the wire without a session: {opened.body[:300]!r}"
-        )
-        session = WireSession(
-            app=app, token=token, session_id=mcp_session_id(opened), mcp=mcp
-        )
-        await drive(
-            app,
-            method="POST",
-            path=MCP_PATH,
-            headers=[*headers, (b"mcp-session-id", session.session_id.encode("ascii"))],
-            body=b'{"jsonrpc":"2.0","method":"notifications/initialized"}',
-        )
-        yield session
+        async with streamable_http_client(
+            f"{origin_url}{MCP_PATH}", http_client=http_client
+        ) as (read_stream, write_stream, _get_session_id):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                yield WireSession(session=session, mcp=mcp, token=token)
 
 
 # --------------------------------------------------------------------------- #

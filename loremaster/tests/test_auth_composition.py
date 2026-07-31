@@ -1005,6 +1005,112 @@ class TestNoInstanceAttributeShadowsABoundHandler:
         )
 
 
+class TestTheUnscopedAccessorIsTheSanctionedFullRegistryView:
+    """R16 part 3 / WB105 — the sanctioned accessor must not itself become a door.
+
+    ⚠ THIS CLASS LIVES HERE, NOT IN THE POSTURE MODULE, AND THAT IS THE FIX.
+    My previous revision put it there and set no ambient principal, so
+    ``all_registered_tools()`` was called with an EMPTY auth context — where a scoped
+    accessor and an unscoped one are indistinguishable. **The pin passed on WB105, which
+    scopes the accessor, because it never exercised the condition it was written for.**
+    A posture module may not import ``as_principal`` (R16 part 2 forbids the in-process
+    shortcut there), so the pin belongs where in-process context IS legitimate.
+
+    Why it matters: every derivation in the contract — the refused set, the read ladder,
+    the rendered instructions — consumes this accessor. If it silently narrows under a
+    hosted principal, those derivations go VACUOUS rather than red, and the ∀ pins built
+    on them stop proving anything.
+    """
+
+    def test_the_accessor_returns_the_full_registry_with_no_principal(
+        self, tmp_path: Path
+    ) -> None:
+        from loremaster.server import LoreServer, build_mcp_server
+        from test_hosted_readonly_posture import ALL_TOOL_NAMES
+
+        manager = build_mcp_server(LoreServer(hosted_config(tmp_path)))._tool_manager
+        assert {tool.name for tool in manager.all_registered_tools()} == ALL_TOOL_NAMES
+
+    def test_the_accessor_is_UNAFFECTED_by_an_ambient_hosted_principal(
+        self, tmp_path: Path
+    ) -> None:
+        # THE PIN WB105 SURVIVES WITHOUT. The ambient principal is really installed this
+        # time, so a scoped accessor returns only the read ladder and reds here.
+        import time
+
+        from _auth_fixtures import (
+            GOOGLE_ACCESS_TOKEN_LIFETIME_S,
+            GOOGLE_CLIENT_ID,
+            GOOGLE_ISSUER,
+            OPERATOR_SUBJECT,
+            as_principal,
+            google_access_token,
+        )
+        from loremaster.server import LoreServer, build_mcp_server
+        from mcp.server.auth.provider import AccessToken
+        from test_hosted_readonly_posture import ALL_TOOL_NAMES
+
+        from lorerunes import SCOPE_READ
+
+        principal = AccessToken(
+            token=google_access_token("accessor"),
+            client_id=GOOGLE_CLIENT_ID,
+            scopes=[SCOPE_READ],
+            expires_at=int(time.time()) + GOOGLE_ACCESS_TOKEN_LIFETIME_S,
+            subject=OPERATOR_SUBJECT,
+            claims={"iss": GOOGLE_ISSUER, "email": OPERATOR_EMAIL},
+        )
+        manager = build_mcp_server(LoreServer(hosted_config(tmp_path)))._tool_manager
+        with as_principal(principal):
+            visible = {tool.name for tool in manager.all_registered_tools()}
+        assert visible == ALL_TOOL_NAMES, (
+            f"all_registered_tools() NARROWED under an ambient hosted principal; it is "
+            f"the one sanctioned UNSCOPED view and every derivation in the contract "
+            f"consumes it. Scoped, those derivations go vacuous rather than red. Got "
+            f"{sorted(visible)}"
+        )
+
+
+class TestUngovernedMcpRoutesAreUnreachable:
+    """WB103 — a TRIPWIRE for two routes the posture guard does not govern.
+
+    ``resources/read`` and ``prompts/get`` are served MCP routes with their own bound
+    handlers, and R13's scoped lookup governs TOOLS only. Today that is harmless for one
+    measured reason: **lore registers no resources and no prompts at all**, so the routes
+    have nothing to expose. That is a property of the current build, not of the design.
+
+    Rather than leave the bound un-pinned (an unpinned known limitation is
+    indistinguishable from an unknown one) this asserts the CONDITION that makes it
+    harmless. The day someone registers the first resource or prompt, this reds and the
+    governance question is FORCED at that moment instead of being discovered by an
+    adversary — or by a hosted principal reading something the tool guard would have
+    refused.
+
+    If you are here because you added one deliberately: the answer is to extend the
+    posture scoping to that route, not to delete this pin.
+    """
+
+    async def test_no_resources_are_registered(self, tmp_path: Path) -> None:
+        from loremaster.server import LoreServer, build_mcp_server
+
+        mcp = build_mcp_server(LoreServer(hosted_config(tmp_path)))
+        assert await mcp.list_resources() == [], (
+            "lore now registers a RESOURCE, and `resources/read` is not governed by the "
+            "hosted read-only posture (R13 scopes the TOOL lookup only). Extend the "
+            "scoping to that route before shipping it."
+        )
+        assert await mcp.list_resource_templates() == []
+
+    async def test_no_prompts_are_registered(self, tmp_path: Path) -> None:
+        from loremaster.server import LoreServer, build_mcp_server
+
+        mcp = build_mcp_server(LoreServer(hosted_config(tmp_path)))
+        assert await mcp.list_prompts() == [], (
+            "lore now registers a PROMPT, and `prompts/get` is not governed by the hosted "
+            "read-only posture. Extend the scoping to that route before shipping it."
+        )
+
+
 class TestLoopbackPostureIsUnchanged:
     """The existing single-user deployment must not acquire a gate it never had."""
 
