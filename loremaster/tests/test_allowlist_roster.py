@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,13 @@ DOMAIN_SHAPED_LINE = "firehawktransam.org"
 
 # A third principal, used where a refusal must be shown NOT to dump the whole roster.
 THIRD_PRINCIPAL_EMAIL = "marcus.olabode@firehawktransam.org"
+
+# A replacement address with the SAME BYTE LENGTH as SECOND_PRINCIPAL_EMAIL, so a build
+# that detects roster change by ``st_size`` alone sees nothing move (M6 / WB41).
+SAME_LENGTH_REPLACEMENT = "dana.whitfield@pricepaper.net"
+assert len(SAME_LENGTH_REPLACEMENT) == len(SECOND_PRINCIPAL_EMAIL), (
+    "the same-length fixture must actually be the same length, or M6 tests nothing"
+)
 
 _SUBJECTS = {
     OPERATOR_EMAIL: OPERATOR_SUBJECT,
@@ -408,6 +416,66 @@ class TestRevocationIsEffectiveOnTheVeryNextVerification:
         assert await probe.verify(warm) is not None
         break_roster(roster, "empty")
         assert await probe.verify_expecting_a_cache_hit(warm) is None
+
+
+class TestRosterChangeDetectionSurvivesASameLengthEdit:
+    """M6 / WB41 — every shipped revocation fixture changes the file's LENGTH."""
+
+    async def test_swapping_one_address_for_another_of_equal_length_revokes(
+        self, tmp_path: Path
+    ) -> None:
+        # An operator replacing one principal with another — the ordinary membership
+        # edit, not an exotic one — can leave the byte count unchanged. A build whose
+        # change detection is keyed on ``st_size`` then never reloads, and the departed
+        # principal keeps read access to the whole corpus indefinitely.
+        #
+        # ⚠ THE FIXTURE IS THE PIN. Every other revocation fixture in this module
+        # DELETES a line, so the size always moves and a size-keyed build passes them
+        # all. This one asserts the size did NOT move before asserting the revocation.
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
+        probe = _RosterProbe(roster, {})
+        warm = probe.token_for(SECOND_PRINCIPAL_EMAIL, "same-length")
+        assert await probe.verify(warm) is not None
+
+        before = roster.stat()
+        roster.write_text(
+            "# lore hosted-read allowlist — one Google identity per line.\n"
+            "# Revoke by deleting a line; effective on the next verification.\n\n"
+            f"{OPERATOR_EMAIL}\n{SAME_LENGTH_REPLACEMENT}\n",
+            encoding="utf-8",
+        )
+        forced = max(time.time(), before.st_mtime + 1.0)
+        os.utime(roster, (forced, forced))
+        assert roster.stat().st_size == before.st_size, (
+            "the fixture must leave the file SIZE unchanged, or it is exercising the "
+            "size-changed path that every other revocation pin already covers"
+        )
+
+        assert await probe.verify_expecting_a_cache_hit(warm) is None, (
+            "a principal replaced by a DIFFERENT address of the same byte length must "
+            "still be revoked. Change detection keyed on st_size alone never reloads, "
+            "and the departed principal keeps access indefinitely."
+        )
+
+    async def test_the_replacement_principal_is_admitted(self, tmp_path: Path) -> None:
+        # The CONTROL: the same-length edit must be seen in BOTH directions. A build
+        # that reloaded but then admitted nobody would pass the pin above.
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
+        probe = _RosterProbe(roster, {})
+        assert await probe.verify(probe.token_for(OPERATOR_EMAIL, "pre-swap")) is not None
+
+        before = roster.stat()
+        roster.write_text(
+            "# lore hosted-read allowlist — one Google identity per line.\n"
+            "# Revoke by deleting a line; effective on the next verification.\n\n"
+            f"{OPERATOR_EMAIL}\n{SAME_LENGTH_REPLACEMENT}\n",
+            encoding="utf-8",
+        )
+        forced = max(time.time(), before.st_mtime + 1.0)
+        os.utime(roster, (forced, forced))
+
+        newcomer = probe.token_for(SAME_LENGTH_REPLACEMENT, "post-swap")
+        assert await probe.verify(newcomer) is not None
 
 
 class TestRosterFreshnessOnEveryVerification:

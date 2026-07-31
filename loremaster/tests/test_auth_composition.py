@@ -330,7 +330,10 @@ class TestUnknownPathsAre404NotChallenged:
     adjudicate the rest of the surface, so this was surfaced as spec-silent and the
     operator ACCEPTED it: the disclosure is a route list, not data, the two-route surface
     is already public in the design, and re-gating everything would break RFC 9728
-    discovery all over again. Recorded as design §8 row 14, ``dropped-deliberately``.
+    discovery all over again. Recorded as design §8 **row 15**, ``dropped-deliberately``
+    (verified against the doc on disk — the ruling message said "row 14", but row 14 is the
+    retired-``__all__`` row; citing it would have pointed a future reader at the wrong
+    adjudication).
 
     The pin exists so a future engineer meets the bound DELIBERATELY. If a later change
     re-gates unknown paths (or narrows the surface), this reds and the change is a
@@ -350,7 +353,7 @@ class TestUnknownPathsAre404NotChallenged:
         assert response.status == 404, (
             f"{path} answered {response.status}. If unknown paths are now CHALLENGED "
             f"again, that is a deliberate re-gating — update this pin and design §8 "
-            f"row 14 together."
+            f"row 15 together."
         )
 
     async def test_the_protected_route_is_still_challenged(self, tmp_path: Path) -> None:
@@ -520,11 +523,22 @@ class TestEdgePolicyIsOneDerivationFeedingBothLayers:
 
         config = hosted_config(tmp_path)
         policy = derive_edge_policy(config, resolve_posture(config))
-        assert any(host.split(":")[0] == PUBLIC_HOSTNAME for host in policy.allowed_hosts), (
-            f"the hosted edge policy must allow the public hostname "
-            f"{PUBLIC_HOSTNAME!r} (derived from resource_server_url's netloc); "
-            f"allowed_hosts was {sorted(policy.allowed_hosts)}. Without it every "
-            f"request through lore-caddy is answered 421."
+        # ⚠ BOTH FORMS ARE REQUIRED, and the reason is a measured SDK fact neither the
+        # contract's nor the adversary's first survey carried. ``_validate_host`` tries
+        # an EXACT match, then wildcards via ``host.startswith(base + ":")`` — so an
+        # entry of ``"h:*"`` matches ONLY a Host that carries a colon. A reverse proxy
+        # forwarding port 443 sends a PORT-LESS ``Host: lore.firehawktransam.org``,
+        # which a `:*`-only policy answers 421. A bare-only policy conversely 421s any
+        # explicit-port request. Emit both or one shape of real traffic breaks.
+        assert PUBLIC_HOSTNAME in policy.allowed_hosts, (
+            f"the hosted edge policy must allow the BARE public hostname "
+            f"{PUBLIC_HOSTNAME!r} — the SDK's wildcard form requires a colon in the "
+            f"presented Host, so a port-less Host (what a proxy forwards for :443) is "
+            f"421ed by a `:*`-only policy. allowed_hosts was {sorted(policy.allowed_hosts)}"
+        )
+        assert f"{PUBLIC_HOSTNAME}:*" in policy.allowed_hosts, (
+            f"the hosted edge policy must ALSO allow the explicit-port form "
+            f"{PUBLIC_HOSTNAME}:* ; allowed_hosts was {sorted(policy.allowed_hosts)}"
         )
 
     def test_the_hosted_edge_policy_still_allows_the_loopback_bind(
@@ -581,6 +595,79 @@ class TestEdgePolicyIsOneDerivationFeedingBothLayers:
             assert settings.enable_dns_rebinding_protection is True
             assert settings.allowed_hosts, "an empty allowed_hosts denies every request"
 
+    def test_a_lan_bearer_deployment_on_a_real_lan_address_is_not_421ed(
+        self, tmp_path: Path
+    ) -> None:
+        # M4 / WB28. ⚑ A PARAMETER-VALUE MONOCULTURE IN THIS CONTRACT'S OWN FIXTURES:
+        # every EdgePolicy pin above binds 127.0.0.1, so a policy that hardcodes the
+        # loopback forms and ignores ``config.server.host`` passes all of them. Design §5
+        # rules LAN_BEARER legal on a NON-loopback bind — ``lorerunes``'
+        # ``test_todays_enabled_api_key_config_is_lan_bearer`` asserts exactly that — and
+        # with rebinding protection ON, every LAN request carries
+        # ``Host: 192.168.64.100:9202`` and is answered 421. That is the W7 trap, one
+        # posture over, on the deployment shape that exists TODAY.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import LoreConfig, resolve_posture
+
+        lan_host = "192.168.64.100"
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = lan_host
+        payload["auth"] = lan_bearer_auth_block()
+        config = LoreConfig.model_validate(payload)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert any(entry.split(":")[0] == lan_host for entry in policy.allowed_hosts), (
+            f"the derived edge policy must allow the CONFIGURED bind host {lan_host!r}; "
+            f"allowed_hosts was {sorted(policy.allowed_hosts)}"
+        )
+
+    @pytest.mark.parametrize("lan_host", ["192.168.64.100", "10.0.0.7", "0.0.0.0"])
+    def test_the_configured_bind_host_is_allowed_whatever_it_is(
+        self, tmp_path: Path, lan_host: str
+    ) -> None:
+        # The same property over THREE distinct values, because one value is how a
+        # monoculture starts. A build that special-cased the one address in the pin above
+        # would pass it and fail here.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import LoreConfig, resolve_posture
+
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = lan_host
+        payload["auth"] = lan_bearer_auth_block()
+        config = LoreConfig.model_validate(payload)
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert any(entry.split(":")[0] == lan_host for entry in policy.allowed_hosts)
+
+    def test_the_loopback_posture_does_not_allow_the_claude_origins(
+        self, tmp_path: Path
+    ) -> None:
+        # M8 / WB35. LOOPBACK installs NO auth at all. Trusting ``https://claude.ai``
+        # there means a page served from that origin can reach an unauthenticated local
+        # lore through the browser. Every other posture's origin set is asserted; this
+        # one never was.
+        from loremaster.auth import derive_edge_policy
+        from loremaster.config import LoreConfig, resolve_posture
+
+        config = LoreConfig.model_validate(base_config_payload(slug(), tmp_path / "live"))
+        policy = derive_edge_policy(config, resolve_posture(config))
+        assert CLAUDE_AI_ORIGIN not in policy.allowed_origins, (
+            "the LOOPBACK posture must not trust claude.ai's origin — it installs no "
+            "auth, so an allowed cross-origin is an unauthenticated door"
+        )
+        assert CLAUDE_COM_ORIGIN not in policy.allowed_origins
+
+    def test_the_hosted_auth_settings_require_the_read_scope(self, tmp_path: Path) -> None:
+        # M9 / WB45. Design §6 names the value. With ``required_scopes=[]`` the SDK's
+        # RequireAuthMiddleware enforces nothing — behaviourally identical TODAY (every
+        # minted token carries lore:read) and a silently deleted defence-in-depth layer
+        # the day any verifier branch mints a scopeless token.
+        from loremaster.server import LoreServer, build_mcp_server
+
+        from lorerunes import SCOPE_READ
+
+        mcp = build_mcp_server(LoreServer(hosted_config(tmp_path)))
+        assert mcp.settings.auth is not None
+        assert mcp.settings.auth.required_scopes == [SCOPE_READ]
+
     def test_the_edge_policy_is_hashable_and_frozen(self, tmp_path: Path) -> None:
         # It is shared by two layers; a mutable policy is a policy one layer can edit
         # out from under the other — the ONE-IMPLEMENTATION failure with extra steps.
@@ -592,6 +679,117 @@ class TestEdgePolicyIsOneDerivationFeedingBothLayers:
         assert hash(policy) == hash(derive_edge_policy(config, resolve_posture(config)))
         with pytest.raises((AttributeError, TypeError)):
             setattr(policy, "allowed_hosts", frozenset())
+
+
+class TestTheBootRefusalReachesTheThingThatActuallyBoots:
+    """M2 + M3 — the adversary's verdict, in one sentence: *pinned at the seam where it was
+    reasoned about, not at the seam where it is enforced.*
+
+    R11/R12 say ``HOSTED_OAUTH`` REFUSES TO BOOT unless the roster loads with at least one
+    valid entry, and design R4 says lore must never itself listen off loopback. The
+    original contract pinned both on ``resolve_posture`` — **a function that is not what
+    boots**. Two wrong builds walked straight through:
+
+    * **WB34** — ``build_mcp_server`` catches ``PostureConfigError`` and degrades to
+      ``LOOPBACK``. An incoherent config, or a roster that will not load, then yields a
+      server with **NO auth wired at all**; if lore-caddy is already pointed at it, that is
+      an unauthenticated, internet-facing lore. Ask the repo's own question: *"if step N
+      silently no-opped, would step N+1 still print something that reads as success?"*
+      Here step N+1 prints a perfectly healthy server.
+    * **WB33** — ``resolve_posture`` hardcodes ``host_is_loopback=True``. ``lorerunes``
+      pins ``derive_posture(host_is_loopback=False)`` → refusal, but **nothing pinned the
+      MAPPING** from ``config.server.host`` to that boolean, and every loremaster fixture
+      binds ``127.0.0.1``.
+    """
+
+    def test_build_mcp_server_refuses_a_hosted_config_whose_roster_will_not_load(
+        self, tmp_path: Path
+    ) -> None:
+        from loremaster.config import LoreConfig, PostureConfigError
+        from loremaster.server import LoreServer, build_mcp_server
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["auth"] = hosted_auth_block(roster)
+        config = LoreConfig.model_validate(payload)
+        roster.unlink()
+        with pytest.raises(PostureConfigError):
+            build_mcp_server(LoreServer(config))
+
+    def test_build_asgi_app_refuses_it_too(self, tmp_path: Path) -> None:
+        # The OTHER boot entry point. ``build_asgi_app`` is what uvicorn actually calls,
+        # and a refusal that exists in only one of the two is a door.
+        from loremaster.config import LoreConfig, PostureConfigError
+        from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["auth"] = hosted_auth_block(roster)
+        config = LoreConfig.model_validate(payload)
+        mcp = build_mcp_server(LoreServer(config))
+        roster.unlink()
+        with pytest.raises(PostureConfigError):
+            build_asgi_app(mcp, config)
+
+    def test_a_healthy_hosted_config_still_builds(self, tmp_path: Path) -> None:
+        # THE CONTROL: the refusal must not be a blanket one, or every pin above passes
+        # on a build that refuses to boot at all.
+        from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
+
+        config = hosted_config(tmp_path)
+        mcp = build_mcp_server(LoreServer(config))
+        assert mcp is not None
+        assert build_asgi_app(mcp, config) is not None
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.64.100", "::"])
+    def test_a_hosted_config_on_a_NON_loopback_bind_refuses_to_boot(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # M3 at the resolution seam. Design R4 / investigation M-2: a wide bind is
+        # "instant whole-LAN exposure" — lore stays on loopback and the proxy comes to it.
+        from loremaster.config import LoreConfig, PostureConfigError, resolve_posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        with pytest.raises(PostureConfigError):
+            resolve_posture(LoreConfig.model_validate(payload))
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.64.100", "::"])
+    def test_build_mcp_server_also_refuses_a_non_loopback_hosted_bind(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # M3 at the ENFORCEMENT seam — the whole lesson of this class. A build that maps
+        # the host correctly inside ``resolve_posture`` but never calls it from the boot
+        # path is WB34 and WB33 combined.
+        from loremaster.config import LoreConfig, PostureConfigError
+        from loremaster.server import LoreServer, build_mcp_server
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        with pytest.raises(PostureConfigError):
+            build_mcp_server(LoreServer(LoreConfig.model_validate(payload)))
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+    def test_every_loopback_SPELLING_still_resolves_to_hosted_oauth(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        # THE CONTROL, and the other half of the monoculture: three spellings of the same
+        # bind. A build recognising only the literal "127.0.0.1" refuses a legitimate
+        # ``localhost`` or IPv6-loopback deployment at boot — a self-inflicted outage
+        # that the refusal pins above would never catch.
+        from loremaster.config import LoreConfig, resolve_posture
+
+        from lorerunes import Posture
+
+        roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL)
+        payload = base_config_payload(slug(), tmp_path / "live")
+        payload["server"]["host"] = host
+        payload["auth"] = hosted_auth_block(roster)
+        assert resolve_posture(LoreConfig.model_validate(payload)) is Posture.HOSTED_OAUTH
 
 
 class TestLoopbackPostureIsUnchanged:

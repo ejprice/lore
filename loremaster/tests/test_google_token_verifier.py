@@ -823,6 +823,56 @@ class TestTokenSecrecy:
             assert token not in rendered, f"the raw token leaked into a log record: {rendered!r}"
             assert token not in str(record.args), "the raw token leaked into a record's args"
 
+    async def test_the_raw_token_never_appears_in_a_log_record_ON_SUCCESS(
+        self, roster_of_two: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # M5 / WB42+WB42b — THE QUANTIFIER LAW, caught in this contract's own pins.
+        # Design §8 row 5's property is "the presented credential value is NEVER logged":
+        # a universal over VERIFICATIONS. The pin above drives only a 401, so it guards
+        # the failure door and leaves the success door open — and the success path is the
+        # one that runs on every hosted request.
+        #
+        # It is not theoretical. lore's own scrubber redacts only LABELLED shapes
+        # (`token=<v>`, `Authorization: Bearer <v>`); an UNLABELLED credential in free
+        # prose — `logger.info("google.admitted %s for subject %s", token, subject)` —
+        # passes through it VERBATIM into the container log.
+        spy = always_json(admitted_payload(email=OPERATOR_EMAIL, sub=OPERATOR_SUBJECT))
+        verifier_probe = probe(spy, roster_of_two, api_keys=None)
+        token = google_access_token("admitted-never-logged")
+
+        with caplog.at_level(logging.DEBUG):
+            admitted = await verifier_probe.verify(token)
+        assert admitted is not None, (
+            "the POSITIVE CONTROL: this verification must SUCCEED, or the pin passes "
+            "because nothing was ever admitted and no success path ran"
+        )
+        for record in caplog.records:
+            rendered = record.getMessage()
+            assert token not in rendered, (
+                f"the raw token leaked into a log record on the ADMITTED path — the "
+                f"path that runs on every hosted request: {rendered!r}"
+            )
+            assert token not in str(record.args), (
+                "the raw token leaked into a record's ARGS on the admitted path; "
+                "lazy %-formatting still reaches any handler that renders it"
+            )
+
+    async def test_the_raw_api_key_never_appears_in_a_log_record_on_success(
+        self, roster_of_two: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The same universal on the OTHER branch. An api-key principal authenticates on
+        # every local call; a key logged once sits in the journal forever, and rotation
+        # is the only remedy.
+        spy = always_json(admitted_payload())
+        verifier_probe = probe(spy, roster_of_two, api_keys=dict(DEFAULT_API_KEYS))
+
+        with caplog.at_level(logging.DEBUG):
+            admitted = await verifier_probe.verify(API_KEY_VALUE_LOCAL_AGENT)
+        assert admitted is not None
+        for record in caplog.records:
+            assert API_KEY_VALUE_LOCAL_AGENT not in record.getMessage()
+            assert API_KEY_VALUE_LOCAL_AGENT not in str(record.args)
+
     async def test_the_raw_token_never_appears_in_the_verifier_repr(
         self, roster_of_two: Path
     ) -> None:

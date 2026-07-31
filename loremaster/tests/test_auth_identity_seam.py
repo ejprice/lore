@@ -48,6 +48,7 @@ THE WRONG BUILDS THESE PINS DISCRIMINATE AGAINST
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,19 @@ EXCHANGE_TIMEOUT_S = 20.0
 # The MCP session header, spelled once.
 SESSION_HEADER = b"mcp-session-id"
 
+def hosted_refusal_marker() -> str:
+    """The substring proving the POSTURE GUARD produced a response, not the tool.
+
+    Taken from the posture NAME on the enum rather than a hand-typed literal, so a
+    rename cannot leave these pins silently matching nothing and going green — the
+    dead-marker failure this repo has receipts for. Imported lazily because the
+    contract is written before ``lorerunes`` exports the enum, and a module-level
+    import would collapse every pin in this file into one collection error.
+    """
+    from lorerunes import Posture
+
+    return str(Posture.HOSTED_OAUTH.name)
+
 
 class _TwoPrincipalEdge:
     """The hosted app plus two live Google principals, each with their own token."""
@@ -141,6 +155,57 @@ class _TwoPrincipalEdge:
                 ),
             )
         return httpx.Response(401)
+
+
+async def open_session_and_call_tool(
+    app: Any, *, token: str, tool_name: str, arguments: dict[str, Any] | None = None
+) -> str:
+    """Drive a REAL MCP session to `tools/call` and return the decoded response body.
+
+    ⚠ THIS IS THE SEQUENCE THE CONTRACT WAS MISSING (adversary M1 / WB30). The hosted
+    read-only guard was pinned only through the in-process ``mcp.call_tool(...)`` entry
+    point — and ``FastMCP.__init__`` calls ``_setup_handlers``, which registers the BOUND
+    ``self.call_tool`` with the lowlevel server. So a guard installed after construction
+    as an instance attribute is live for a test and DEAD on the wire, with all 422 pins
+    green. Only a real ``tools/call`` can tell the two apart.
+
+    Args:
+        app: The assembled ASGI app, with its lifespan already running.
+        token: The Bearer credential to authenticate as.
+        tool_name: The tool to dispatch.
+        arguments: The tool arguments (default empty — the guard must refuse BEFORE
+            argument validation, and an argument-validation error in the body is
+            precisely how WB30 was caught).
+
+    Returns:
+        The decoded response body of the ``tools/call``.
+    """
+    opened = await post_mcp(app, token=token)
+    assert opened.status == 200, (
+        f"initialize failed ({opened.status}) — the wire pin cannot say anything about "
+        f"dispatch if no session exists: {opened.body[:300]!r}"
+    )
+    session = mcp_session_id(opened)
+    await post_mcp(
+        app,
+        token=token,
+        session_id=session,
+        body=b'{"jsonrpc":"2.0","method":"notifications/initialized"}',
+    )
+    called = await post_mcp(
+        app,
+        token=token,
+        session_id=session,
+        body=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments or {}},
+            }
+        ).encode("utf-8"),
+    )
+    return called.body.decode("utf-8", "replace")
 
 
 async def post_mcp(
@@ -299,6 +364,82 @@ class TestSessionsAreBoundToTheCredentialThatCreatedThem:
                 body=b'{"jsonrpc":"2.0","id":6,"method":"ping"}',
             )
             assert anonymous.status == 401
+
+
+class TestTheReadOnlyGuardFiresOnTheSERVEDPath:
+    """M1 / WB30 — THE BLOCKER. The guard must run where production dispatches, not where a test does.
+
+    ⚑ WHY THIS CLASS EXISTS, stated plainly because it is the sharpest lesson of the
+    packet. Every one of the 55 pins in ``test_hosted_readonly_posture`` calls
+    ``mcp.call_tool(...)`` directly. ``FastMCP.__init__`` calls ``_setup_handlers``,
+    which registers the **bound** ``self.call_tool`` with the lowlevel server
+    (SDK ``server/fastmcp/server.py``), so a guard installed after construction as an
+    instance attribute — ``mcp.call_tool = _guarded`` — is live for those 55 pins and
+    **completely dead on the wire**. The adversary built exactly that (WB30) and it
+    passed all 422 pins while dispatching straight into ``lore_remember``.
+
+    This is CLAUDE.md's own law, verbatim: *"a runtime gate is an invariant only over
+    code it actually RUNS — so check coverage as a variable."* The contract checked the
+    gate and never checked its REACH.
+
+    The generalisable question, which is worth more than the pin: **"does this exercise
+    the SERVED path, or a path only a test uses?"** The SDK's auth branch being
+    ``# pragma: no cover`` upstream is the same warning from the other side.
+
+    All three pins below drive a REAL session over the assembled app. The two controls
+    are not optional: a build that refused EVERYTHING over the wire would pass the first
+    pin alone.
+    """
+
+    async def test_a_hosted_principal_is_refused_a_mutating_tool_over_the_WIRE(
+        self, tmp_path: Path
+    ) -> None:
+        # The pin WB30 survives. A real Google principal, admitted by the real verifier,
+        # holding a real MCP session, calls a real mutating tool over the real transport.
+        edge = _TwoPrincipalEdge(tmp_path)
+        async with running_asgi_app(edge.app):
+            body = await open_session_and_call_tool(
+                edge.app, token=edge.operator_token, tool_name="lore_remember"
+            )
+        assert hosted_refusal_marker() in body, (
+            f"a hosted Google principal reached the MUTATING tool `lore_remember` over "
+            f"the SERVED path. The read-only posture is decorative in production. "
+            f"(WB30's tell is an argument-validation error in this body — that is the "
+            f"tool itself answering, which means the guard never ran.) Body: {body[:500]!r}"
+        )
+
+    async def test_a_hosted_principal_is_NOT_refused_a_READ_tool_over_the_wire(
+        self, tmp_path: Path
+    ) -> None:
+        # CONTROL 1. Without it, a build that refuses every wire dispatch passes the pin
+        # above — and hosted principals, whose whole purpose is reading, get nothing.
+        edge = _TwoPrincipalEdge(tmp_path)
+        async with running_asgi_app(edge.app):
+            body = await open_session_and_call_tool(
+                edge.app, token=edge.operator_token, tool_name="lore_search"
+            )
+        assert hosted_refusal_marker() not in body, (
+            f"`lore_search` is read-only and must reach dispatch for a hosted principal; "
+            f"it was refused by the posture guard. Body: {body[:500]!r}"
+        )
+
+    async def test_an_api_key_principal_is_NOT_refused_a_mutating_tool_over_the_wire(
+        self, tmp_path: Path
+    ) -> None:
+        # CONTROL 2, on the other axis: design §1's mechanical verdict — "an api-key
+        # principal can call mutating tools through the hosted port" — is INTENDED. A
+        # guard that keyed on the posture rather than the principal's SCOPES would pass
+        # both pins above and lock every local agent out of its own machine.
+        edge = _TwoPrincipalEdge(tmp_path)
+        async with running_asgi_app(edge.app):
+            body = await open_session_and_call_tool(
+                edge.app, token=API_KEY_VALUE_LOCAL_AGENT, tool_name="lore_remember"
+            )
+        assert hosted_refusal_marker() not in body, (
+            f"an api-key principal was refused a mutating tool over the wire; api keys "
+            f"are the local/LAN trust anchor and retain the FULL surface. "
+            f"Body: {body[:500]!r}"
+        )
 
 
 class TestApiKeyPrincipalsStillWorkInHostedPosture:

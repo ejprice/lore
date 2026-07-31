@@ -48,6 +48,7 @@ key name would otherwise pass the entire group.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from collections.abc import Iterator
@@ -558,6 +559,49 @@ class TestInstructionsAreHonestAboutThePosture:
                 f"served refused-set section; the instructions would be teaching a "
                 f"capability the server does not provide"
             )
+
+    def test_the_refused_set_section_is_DERIVED_from_the_annotations(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # M7 / WB40 — PROVE SHARING BY MUTATION, because the pin above is a tautology on
+        # the stock tool set. ``test_every_refused_tool_is_named_inside_that_section``
+        # compares the served section against ``EXPECTED_MUTATING_TOOLS``, and a wrong
+        # build that HARDCODES those same six names into the section satisfies it
+        # exactly. Design §7 requires the section be "GENERATED from the registered
+        # annotations (never prose beside them)"; a hand-listed section teaches a stale
+        # refused set the day a tool is added or an annotation flips.
+        #
+        # The instrument: change the SHARED annotation constant the read tools register
+        # with, then rebuild. A derived section follows the annotations and names all
+        # fifteen tools; a hand-list still names six. This is the repo's own rule —
+        # *change the shared thing and every caller must change with it* — applied to a
+        # served natural-language surface, which is the class no gate can otherwise see.
+        import loremaster.server as server_module
+        from loremaster.server import HOSTED_REFUSAL_SECTION_HEADING
+        from mcp.types import ToolAnnotations
+
+        monkeypatch.setattr(
+            server_module,
+            "_READ_ONLY_ANNOTATIONS",
+            ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=False),
+        )
+        mcp = hosted_server(tmp_path)
+        derived = asyncio.run(mutating_tool_names(mcp))
+        assert derived > EXPECTED_MUTATING_TOOLS, (
+            "the fixture must actually widen the refused set — if flipping the shared "
+            "read-only annotation changed nothing, this pin is inert and the mutation "
+            "did not land"
+        )
+
+        instructions = mcp.instructions or ""
+        section = instructions.split(HOSTED_REFUSAL_SECTION_HEADING, 1)[1]
+        missing = sorted(name for name in derived if name not in section)
+        assert not missing, (
+            f"the served refused-set section did not follow the annotations: {missing} "
+            f"are refused but unnamed. The section is a HAND-LIST, not a derivation — "
+            f"so the day a tool is added or an annotation flips, the instructions teach "
+            f"a refused set that has drifted from what the server actually does."
+        )
 
     def test_the_section_is_absent_in_loopback_posture(self, tmp_path: Path) -> None:
         # A local single-user deployment has the FULL surface; telling it otherwise is
