@@ -1411,3 +1411,27 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   before any 04b-2 work. Open bounds in #298: the grant is per-project (`lore_lore` slug, fails
   CLOSED elsewhere) · `Grep`/`Glob` listed by 7 definitions and delivered to none · `SendMessage`
   not grantable to an allowlist agent · `~/.claude` unversioned, so the GRANT half has no guard.
+- 2026-08-01 (same session, CORRECTION) · **The agent fix SHIPPED IN THE WRONG SHAPE FIRST, and
+  the sidecar overturned it.** The lead, blocked ~30 min with no sidecar reply, ruled A1 itself
+  and shipped **literal `mcp__lore_lore__*` names inside the preserved allowlists** (`ff3b2c4`),
+  reasoning that it kept `tdd-contract`'s deliberate no-`Edit` isolation. `design-agentfix-1` then
+  returned — **by writing a report file, never by replying** (all four agents this session
+  produced artifacts but never reached a turn boundary; the lead's SendMessage-based protocol saw
+  nothing, which is #50779's shape from the other side) — and ruled the OPPOSITE, correctly:
+  literal names are right for exactly one project and **silently wrong in every other, in a way
+  byte-identical to the bug being fixed**; and the isolation being protected is INFORMATIONAL, was
+  never enforced by the grant at all (`tdd-contract` already holds Write+Bash, so withholding
+  `Edit` bought nothing). `security-auditor.md` — same artifact class — already ships with no
+  `tools:` key. **Re-shipped as ruled: all seven lose `tools:` entirely** (`4729fb5`); the odoo
+  scouts keep theirs (Odoo is not on lore; re-open trigger = a `lore.yaml` landing there); an
+  EXCLUSION list was REJECTED for the blocking path as measured only on built-ins — adopting it
+  unproven would re-commit #266 exactly. Accepted delta: `Agent`/nested spawning, with a named
+  re-open trigger. **Acceptance is SERVER-SIDE, per standing comms law — the recipient's own
+  artifact, never the agent's claim:** all seven types spawned in parallel, each called
+  `lore_index` + `lore_comms register/drain`, and the lead's own `lore_comms action=fleet` shows
+  **7/7 registered**. Bare sweep: zero hits for `266` and for "gateway to deferred" across
+  `~/.claude/agents` + `~/.claude/skills`. Filed **#299** — standardise the MCP server name to a
+  fixed `lore` (the allowlist-the-safe-set shape; `odoo-code`'s invariant name is the working
+  existence proof), ADOPTED IN PRINCIPLE, **not executed**: MCP config binds at session start, so
+  a mid-session rename cannot be acceptance-tested — shipping it unverified would be #266 a third
+  time. **Operator ratifies on return; until then the seven stay unrestricted.**
