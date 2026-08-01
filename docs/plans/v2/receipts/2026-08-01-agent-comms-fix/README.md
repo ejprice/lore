@@ -29,9 +29,30 @@ The broken population is exactly and only the **allowlist** shape.
 over-generalisation** — corrected the same day by the acceptance probe
 (`REPORT-accept-tddcontract-comms-1.md` §5). The pool is empty **only when the allowlist names
 no `mcp__*` entry**, which was true of every agent measured *before* the fix. Once entries are
-added, the pool holds exactly those names. The distinction is load-bearing rather than pedantic:
-an allowlisted MCP tool arrives **DEFERRED, not up-front**, so a correctly-fixed agent still sees
-an opening schema with no lore tools in it and **must run the `ToolSearch "select:…"` load line**.
+added, the pool holds exactly those names. The distinction is load-bearing rather than pedantic.
+
+⚠⚠ **AND THE CORRECTION TO THE CORRECTION, caught by the design sidecar reading these very
+receipts** — the fix's prose then over-claimed in the *other* direction, asserting that an
+allowlisted MCP tool always arrives **DEFERRED, not up-front**, so `ToolSearch` is always
+required. **The two measurements in this directory disagree, and the disagreement is the
+finding:**
+- `REPORT-probe-literal-mcp-1.md` §1a and `REPORT-probe-confound-leg3-1.md` — `odoo-consumer-scout`
+  on sonnet AND opus — found their seven `mcp__odoo-code__*` tools **UP-FRONT in the opening
+  schema, directly callable, with NO `ToolSearch` granted at all**.
+- `REPORT-accept-tddcontract-comms-1.md` §5 — `tdd-contract`, granted 15 lore tools **and**
+  `ToolSearch` — found them **DEFERRED**, in a pool scoped to exactly its own `mcp__*` entries.
+
+The reconciliation — *granting `ToolSearch` is what flips arrival from up-front to deferred* —
+fits every observation, but **it is an INFERENCE; no probe varied `ToolSearch` alone.** It is
+recorded as the working model, not as a measurement. Left unscoped, the "ToolSearch is REQUIRED"
+wording would have taught someone to add `ToolSearch` to the odoo scouts for a reason these
+receipts measure as false.
+
+That makes **three** corrections in one session, all the same class — a narrow measurement
+written up as a general rule — and the third was caught only because a reader checked the prose
+against the receipts it cited. What survives as the practical rule is the part that is measured:
+for any shape that defers, a correctly-fixed agent still sees an opening schema with no lore
+tools in it and **must run the load line before concluding it has none**.
 An agent that believed the original wording would reason *"my schema has no lore tools and
 ToolSearch reaches nothing, so I have none"* and never issue the one call that hands them over —
 **reproducing #292/#294 by BELIEF, on a correctly-granted definition, with no gate able to see
