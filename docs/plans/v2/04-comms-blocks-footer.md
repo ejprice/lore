@@ -759,6 +759,32 @@ boundedness property stays *"does not grow with UNRELATED ledger size"* — fill
 answer-cap legitimately requires scanning past non-matching candidates.
 
 ## 04b-2 — the comms surface · ~0.25 wu · DEPLOYS (carries 04b-1)
+
+> ⚠⚠ **READ FIRST — 04b-2 WAS DESIGN-RULED ON 2026-08-01 AND THE RULING IS BINDING OVER
+> EVERYTHING BELOW THAT IT TOUCHES:**
+> **`docs/plans/v2/receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md`**
+> (design sidecar, Fable, under the operator's delegated authority while offline).
+> The headlines, so a session that reads only this box is not misled:
+> - **§B1 splits the work into three levels.** Level 2 is the 04b-2 wave proper — ONE
+>   contract→adversary→build→audit→deploy — with the scope consolidated from Scope IN + the
+>   ten INHERITED rows + the SWEEP ADDITIONS. **Level 3 mints packet 04b-3** (see the INDEX
+>   row): **#273/#272**, **ESC-1's mechanism**, **CA-11**, **CA-12** are NO LONGER 04b-2's.
+> - **§B6 — THIS PACKET STILL DEPLOYS, but the 2026-08-01 session deliberately did NOT**, and
+>   not merely for capacity: **deploying HEAD would ship 04b-1's listing surface WITHOUT
+>   ESC-5's fix**, opening exactly the false-clear window whose provable absence is what made
+>   deferring ESC-5 legal (*"nothing is served until 04b-2 deploys"*). A deploy before ESC-5
+>   lands is a **DEFECT, not a convenience**. Production stays on image `e91e37b9`. The deploy
+>   is this wave's EXIT, behind §B6's seven-line precondition gate — fresh backup (the
+>   2026-07-28 one is NOT the rollback for a migration run days later), both `CreateCommand`s
+>   **re-derived at deploy time** and diffed against #165's known-good mount shape, never
+>   `lore-deploy start`, rollback receipts written into the Log BEFORE the recreate. Its named
+>   riskiest line: **the R11 backfill executes against the PRODUCTION store at that boot.**
+> - **§B2** rules ESC-1's measurement (the decision point this file names as "THIS kickoff");
+>   **§B3** rules #279 unified in the build wave; **§B5** rules the `_comms_footer` D2 type
+>   fork this file explicitly refused to decide.
+> - **#274/#276 adoption is DONE in substance** — `scripts/forgery_door_sweep.py` is committed
+>   and gated inside `testpaths`. **Resolve both with that receipt; re-derive nothing.**
+
 **Scope IN:** the blocked-chain / critical-path render; the fleet unread + unacked-directive
 columns (R4's reading), counted over the WHOLE set each label claims — counts come from the
 row-UNLIMITED `roster()`, never the capped `fleet()` window, and every cap
