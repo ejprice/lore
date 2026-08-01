@@ -108,6 +108,27 @@ UNACKED_DIRECTIVE_COUNT = 3
 #: trigger evaluated only where the count is 0 or 5 cannot see an off-by-one.
 BATCH_SIZE = 5
 
+#: A near-miss of :data:`OWNER_VALUE` that is itself a LEGAL agent name — a
+#: proper PREFIX, so it survives the charset gate and actually reaches the
+#: resolver, where a ``startswith`` / substring / fuzzy build resolves it and an
+#: EXACT one does not.
+#:
+#: ⚠ **DERIVED, not chosen for looks.** Once Ruling 5.2 put a charset gate in
+#: front of the registry read, every case/whitespace near-miss stopped reaching
+#: the resolver at all — so the exactness pin could no longer see a heuristic
+#: build. A discriminating fixture for exactness must now satisfy
+#: ``AGENT_NAME_PATTERN`` and still not equal a registered name. Proven by
+#: mutation (`REPORT-refbuild-c3-1.md` §9.2): a prefix-matching resolver reddens
+#: on THIS value and stayed green on the old one.
+_CHARSET_LEGAL_NEAR_MISS = OWNER_VALUE[: len(OWNER_VALUE) - 5]
+
+#: R8's priced ceiling, as a constant rather than a literal in an assertion:
+#: *"one charset-gated registry read per identity-less write"* (§RULINGS ROUND 3,
+#: verbatim). Named here so the number the failure message quotes IS the number
+#: the assertion checks — a message promising a check the assertion does not
+#: perform is this repo's documented false-gate class.
+_MAX_REGISTRY_READS_PER_CALL = 1
+
 #: The ``lore_findings`` READ actions that address ONE finding and therefore
 #: require an ``id_or_number``. Named rather than inlined at the call site so the
 #: harness's own list cannot drift from the dispatcher's requirement — the drift
@@ -263,19 +284,26 @@ class TestAHostileIdentityCannotReachTheFooterAtAll:
     async def test_the_footer_identity_is_the_REGISTERED_name_never_the_RAW_caller_string(
         self,
     ) -> None:
-        """⛔ **THE LOAD-BEARING PIN, and the one the neutralisation framing hid.**
+        """⛔ **The PROVENANCE pin — belt, not the closure.**
 
-        The whole safety argument above rests on the rendered identity coming FROM THE
-        REGISTRY. A build that matched exactly but then rendered the caller's own raw
-        string would re-open the vector completely while passing the leg above — and it is
-        an easy build to write, because the raw string is right there in the parameters.
+        ⚠⚠ **CORRECTED 2026-08-01 (design-sidecar Ruling 5.1, correcting finding #305's
+        own residual).** An earlier version of this docstring called raw-echo-after-exact-
+        match *"re-opening the vector completely"*. **That is FALSE, and a false threat
+        model mis-spends the next auditor's attention** (a gate needs a threat model — this
+        repo's own law). After a TRUE exact match the caller's raw string is byte-EQUAL to
+        a registered name, and registered names are charset-clean by construction (link 1),
+        so raw-echo and registry-echo emit the same bytes. **The real vectors are (i) a
+        render with NO successful resolution and (ii) a match that is not exact** — links 3
+        and 2, pinned by their own legs.
 
-        This is the DD-3.c lesson applied (`CLAUDE.md`): *does this safety claim hold on
-        every branch the ruling touches, or only the one I derived it on?*
+        This pin still earns its place: it makes the safety argument LOCAL. Reading
+        ``_comms_footer``'s call site you can see the identity came from a registry row,
+        instead of having to prove a fact about a caller two frames up — the property that
+        keeps link 2 from being silently deleted by someone who cannot see why it matters.
 
-        The fixture uses an owner value that differs from the registered name only by
-        SURROUNDING WHITESPACE — so an exact-match build renders the registry's clean name,
-        while a raw-echo build renders the padded one, and the two are distinguishable.
+        The fixture uses an owner value differing from the registered name only by
+        SURROUNDING WHITESPACE, so an exact-match build and a raw-echo build are
+        distinguishable — and a strict build refusing it outright is also correct.
         """
         padded = f" {OWNER_VALUE} "
         served = await _tasks_call(
@@ -478,7 +506,7 @@ class TestNoTrafficMeansNoFooter:
 class TestAnOmittedIdentityIsHonestSILENCEAndASuppliedOneIsNOT:
     """⛔ **R1 and R8(1) together — and they rule OPPOSITE ways on purpose.**
 
-    * R1: ``agent`` **omitted** ⇒ NO footer. *"honest silence, never a guess."*
+    * R1: ``agent`` **omitted** ⇒ no GUESS. *"honest silence, never a guess."*
     * R8(1): ``agent`` **supplied but UNRESOLVABLE** ⇒ **TEACHES LOUDLY.** *"a silent typo
       earns a permanent route-around."*
 
@@ -486,23 +514,170 @@ class TestAnOmittedIdentityIsHonestSILENCEAndASuppliedOneIsNOT:
     ``UnknownAgentError`` fall through to no footer. That build is *correct for the
     omitted case* and silently wrong for the typo case, which is the case a real agent
     actually hits.
+
+    ⚠ **R1's "silence" is SCOPED, and getting that wrong cost this class a dead pin**
+    (C-DEF 5, design-sidecar Ruling 5.2). An omitted ``agent=`` is silent when nothing
+    RESOLVES — not unconditionally: R8(2) reinstates the exact-match fallback, so a
+    REGISTERED ``created_by`` legitimately footers third-person. What R1 actually forbids
+    is GUESSING, and that survives here as the read BUDGET rather than as an absolute.
     """
 
-    async def test_an_OMITTED_agent_serves_no_footer_and_reads_NO_registry(self) -> None:
-        """⛔ Silence AND no cost. The second half matters: R1 rules a footer needs a real
-        identity, so an omitted one must not spend a registry round trip discovering that.
+    #: The identity-less write's REGISTRY-READ BUDGET, one row per world, each
+    #: FORCED by its own ``created_by`` fixture below.
+    #:
+    #: ⚠ **RE-AUTHORED 2026-08-01 (C-DEF 5 — design-sidecar Ruling 5.2).** The
+    #: pin here used to assert ``registry_reads == 0`` for an omitted ``agent=``.
+    #: That contradicted the OPERATOR ruling it derives from, in that ruling's
+    #: own words — R8 prices its own cost as *"one charset-gated registry read
+    #: per identity-less write"* — so the pin forbade exactly the read the
+    #: ruling bought. **Proven unsatisfiable by construction, both directions:**
+    #: with R8(2)'s fallback present that pin was RED; with the fallback deleted
+    #: it went green and R8(2)'s three legs went RED. No build satisfied both.
+    #: (`REPORT-refbuild-c3-1.md` §3.5.)
+    #:
+    #: The pin YIELDED; what it PROTECTED did not. R1 rejects per-attribution
+    #: SCANS and heuristic sweeps, and that survives as a BUDGET — with the
+    #: quantifier law applied, so every world is forced by a fixture rather than
+    #: asserted over the one the author happened to try.
+    READ_BUDGET_WORLDS = (
+        # (label, created_by, expected reads, may a footer appear)
+        ("charset-FAIL — cannot BE a name, so it is never looked up", "the release train", 0, False),
+        ("charset-pass, UNREGISTERED", "buidler-04b2-wavec-3", 1, False),
+        ("charset-pass, REGISTERED", OWNER_VALUE, 1, True),
+    )
+
+    @pytest.mark.parametrize(
+        ("label", "created_by", "expected_reads", "may_footer"), READ_BUDGET_WORLDS
+    )
+    async def test_the_identity_less_write_spends_ONE_registry_read_AT_MOST(
+        self, label: str, created_by: str, expected_reads: int, may_footer: bool
+    ) -> None:
+        """⛔ **The BUDGET pin (R8's cost line, quantified over worlds).**
+
+        ⚠ **WHAT WRONG BUILD DOES THIS KILL?** Two, and they fail on different rows:
+
+        * a build that resolves EVERY attribution in turn (``owner``, then ``actor``,
+          then ``created_by``) — the per-attribution SCAN R1 rejects. It spends up to
+          three reads on every identity-less write and fails the ceiling.
+        * a build that reads the registry for a value that could never be a name — the
+          ungated build. It fails row 1, where a free-text owner like ``"the release
+          train"`` costs a round trip to discover what the charset already knew.
+          **"Charset-gated" is not decoration: it is what makes the COMMON case free.**
         """
         served, registry_reads = await _tasks_call_counting_registry(
-            action="create", agent=None, pending=True
+            action="create", agent=None, pending=True, created_by=created_by
+        )
+        assert registry_reads <= _MAX_REGISTRY_READS_PER_CALL, (
+            f"world {label!r} cost {registry_reads} registry reads; the ceiling is "
+            f"{_MAX_REGISTRY_READS_PER_CALL} on EVERY path (R8: 'one charset-gated "
+            f"registry read per identity-less write'). More than one means the build is "
+            f"SCANNING attributions for somebody to attribute the write to — which is the "
+            f"guessing R1 forbids, wearing a budget"
+        )
+        assert registry_reads == expected_reads, (
+            f"world {label!r} cost {registry_reads} registry read(s), expected "
+            f"{expected_reads}. Row 1 is the load-bearing one: a value that fails "
+            f"AGENT_NAME_PATTERN cannot BE a registered name, so looking it up buys "
+            f"nothing and costs a round trip on the most common shape of all (free-text "
+            f"owner columns)"
+        )
+        assert _has_footer(served) is may_footer, (
+            f"world {label!r} {'served' if _has_footer(served) else 'served NO'} footer. "
+            f"R8(2) reinstates the EXACT-match fallback (so a REGISTERED name footers, "
+            f"third-person) and nothing else resolves (so an unregistered or "
+            f"charset-illegal value is silent — never a guess).\nserved={served!r}"
+        )
+
+    async def test_a_SECOND_attribution_is_NEVER_consulted_after_the_first(self) -> None:
+        """⛔ **THE CEILING'S ONLY DISCRIMINATING FIXTURE — and the parametrised rows above
+        cannot supply it.**
+
+        ⚠⚠ **ADDED 2026-08-01 AFTER A MUTATION CAME BACK GREEN** (`REPORT-refbuild-c3-1.md`
+        §9.2, M3). Replacing the single-candidate resolution with a per-attribution SCAN —
+        the exact build R1 rejects and the ceiling exists to kill — left **all 47 pins
+        GREEN.** The reason is this repo's most-repeated fixture defect: every row above
+        supplies exactly ONE non-``None`` attribution, so "read the first eligible
+        candidate" and "read them all until one resolves" are the same execution. The
+        assertion said ``<= 1`` and meant it; the fixture could never produce 2.
+
+        This leg forces the discriminating world: TWO charset-legal attributions where the
+        FIRST is unregistered and the SECOND is a real agent.
+
+        * a CEILING build reads ``owner``, gets nothing, and stops — 1 read, NO footer;
+        * a SCAN build reads ``owner``, then ``created_by``, resolves it — 2 reads, footer.
+
+        Both observable properties diverge, so this cannot pass for a fixture reason.
+
+        **The deliberate consequence, stated because it looks like a bug and is not:** a
+        registered ``created_by`` sitting behind an unregistered ``owner`` gets NO footer.
+        Hunting through attributions for somebody to attribute the write to IS the guessing
+        R1 forbids — the fallback identifies a caller, it does not search for one.
+        """
+        served, registry_reads = await _tasks_call_counting_registry(
+            action="create",
+            agent=None,
+            pending=True,
+            owner="buidler-04b2-wavec-3",  # charset-legal, NOT registered — and FIRST
+            created_by=OWNER_VALUE,  # registered — reachable only by a SCAN
+        )
+        assert registry_reads <= _MAX_REGISTRY_READS_PER_CALL, (
+            f"two attributions cost {registry_reads} registry reads. The ceiling is "
+            f"{_MAX_REGISTRY_READS_PER_CALL} per call on EVERY path (R8's cost line), so "
+            f"the build is SCANNING attributions — trying each in turn until one resolves. "
+            f"That is R1's rejected guess wearing a budget, and it taxes every "
+            f"identity-less write with a round trip per attribution"
         )
         assert not _has_footer(served), (
-            f"a call with NO agent= served a footer, so the identity was GUESSED. R1 "
-            f"rejects heuristic resolution of owner/actor/created_by precisely because a "
-            f"guessed identity serves a WRONG footer. served={served!r}"
+            f"a footer was served for an agent named by the SECOND attribution, which a "
+            f"one-read build never reaches. The fallback identifies the caller from the "
+            f"first eligible value; it does not search the row for somebody who happens to "
+            f"be registered.\nserved={served!r}"
+        )
+
+    async def test_a_READ_spends_NO_registry_read_even_with_an_attribution(self) -> None:
+        """⛔ The zero-read floor, and the world the table above cannot reach.
+
+        ⚠ **STATED BOUND, because this pin is NOT the ruled world it stands in for.**
+        Ruling 5.2's table opens with *"no attribution value supplied at all ⇒ 0 reads"*.
+        **That world is UNREACHABLE through these three dispatchers**: every WRITE action
+        requires an attribution argument (``tasks`` create/create_many/supersede need
+        ``created_by``, transition needs ``actor``, ``claim_task`` needs ``owner``,
+        ``findings`` report needs ``created_by`` and the batch verbs need ``actor``), so a
+        write with all attribution slots empty cannot be constructed at this seam —
+        DERIVED by reading the dispatchers, not assumed. Flagged to the lead rather than
+        quietly dropped.
+
+        What IS constructible, and is the property the row protects: the trigger
+        short-circuits on OUTCOME before any resolution happens, so a READ costs nothing
+        no matter what attribution it carries.
+        """
+        served, registry_reads = await _tasks_call_counting_registry(
+            action="query", agent=None, pending=True, created_by=OWNER_VALUE
         )
         assert registry_reads == 0, (
-            f"an omitted agent= still cost {registry_reads} registry read(s). There is no "
-            f"identity to resolve, so there is nothing to look up"
+            f"a READ spent {registry_reads} registry read(s). The footer trigger is "
+            f"per-ACTION-OUTCOME, so a call that wrote nothing must resolve nothing — "
+            f"resolving first and discarding the answer is a cost paid on every query"
+        )
+        assert not _has_footer(served), f"a READ served a footer. served={served!r}"
+
+    async def test_an_OMITTED_agent_with_an_UNRESOLVABLE_attribution_is_SILENT(self) -> None:
+        """⛔ **The silence half of the retired pin, kept and CORRECTLY SCOPED.**
+
+        ⚠ The old pin asserted silence for an omitted ``agent=`` UNCONDITIONALLY, which
+        re-contradicts R8(2) one world over: a REGISTERED ``created_by`` legitimately
+        footers third-person (the row above pins that). Silence is owed when the
+        attribution resolves to NOBODY — which is the case that matters, because it is the
+        one where a build is tempted to guess.
+        """
+        served, _reads = await _tasks_call_counting_registry(
+            action="create", agent=None, pending=True, created_by="contract-04b2-wavec-1"
+        )
+        assert not _has_footer(served), (
+            f"a call with NO agent= and an UNREGISTERED created_by served a footer, so the "
+            f"identity was GUESSED. R1 rejects heuristic resolution of "
+            f"owner/actor/created_by precisely because a guessed identity serves a WRONG "
+            f"footer — to a real agent, about an inbox that is not theirs.\nserved={served!r}"
         )
 
     async def test_a_SUPPLIED_but_UNRESOLVABLE_agent_TEACHES_rather_than_falling_silent(
@@ -629,16 +804,60 @@ class TestTheFallbackIsThirdPersonWithNoDrainImperative:
         A build normalising case, trimming, or fuzzy-matching would resolve this and serve
         a footer to the WRONG agent — R1's named rejection (*"a guessed identity serves a
         WRONG footer — a trust-doctrine hazard"*).
+
+        ⚠⚠ **THIS IS LINK 2 OF THE FORGERY CLOSURE, AND IT WAS VACUOUS UNTIL 2026-08-01**
+        (design-sidecar Ruling 5.1). While ``_footer_harness`` registered NOBODY (C-DEF 1),
+        NOTHING resolved, so this pin passed on a build with no matching rule at all — it
+        was measuring the absence of an answer. It is non-vacuous only because
+        ``OWNER_VALUE`` is now a REAL registered row that this near-miss REALLY misses.
+        Its non-vacuity is not assumed: it was proven by MUTATION (case-fold + strip the
+        resolver ⇒ this pin goes RED), receipt in ``REPORT-refbuild-c3-1.md`` §9.2.
+
+        **Why it is load-bearing and not merely tidy:** a heuristic match lets an ARBITRARY
+        caller string resolve, so the value reaching the render is no longer charset-clean
+        — and for a footer a forged value is an INSTRUCTION agents obey. Link 1 (the
+        charset at registration) only guards what may be REGISTERED; this link is what
+        keeps an unregistered string from borrowing a registered identity.
         """
-        near_miss = f"  {OWNER_VALUE.upper()}  "
+        near_miss = _CHARSET_LEGAL_NEAR_MISS
         served = await _tasks_call(
             action="create", agent=None, owner=near_miss, pending=True, fallback=True
         )
         assert not _has_footer(served), (
             f"owner={near_miss!r} resolved to the agent registered as {OWNER_VALUE!r}, so "
-            f"the fallback is matching heuristically (case-folding and/or trimming) rather "
-            f"than EXACTLY. R1 rejects heuristic resolution: a guessed identity serves a "
-            f"WRONG footer.\nserved={served!r}"
+            f"the fallback is matching heuristically (a prefix / substring / fuzzy match) "
+            f"rather than EXACTLY. R1 rejects heuristic resolution: a guessed identity "
+            f"serves a WRONG footer — to a real agent, about an inbox that is not "
+            f"theirs.\nserved={served!r}"
+        )
+
+    async def test_the_CHARSET_GATE_refuses_a_value_that_could_never_be_a_name(self) -> None:
+        """⛔ The OTHER half, split out because it fails for a different reason.
+
+        ⚠⚠ **THIS LEG USED TO BE THE EXACTNESS LEG, AND MEASUREMENT MOVED IT** (2026-08-01,
+        `REPORT-refbuild-c3-1.md` §9.2). Its fixture — ``"  LEAD-04B2-WAVEC  "`` — was
+        chosen to catch a case-folding or trimming resolver. Then Ruling 5.2 put a CHARSET
+        GATE in front of the registry read, and this value **fails that gate**: uppercase
+        and spaces, so it is refused before the resolver is ever reached. **It therefore
+        stopped testing exactness while still passing** — the pin's meaning changed
+        underneath it and nothing said so.
+
+        Caught by MUTATION, not by reading: making the resolver case-fold AND strip left
+        all 46 pins GREEN. So the leg is KEPT, because gate coverage is worth pinning —
+        and RENAMED for what it now measures, with exactness moved to a fixture that can
+        actually reach the resolver (the sibling above).
+
+        **The generalisable lesson, since this is a durable artifact:** a fixture proves
+        what it reaches, and a new guard upstream can silently shorten that reach. Two
+        pins passing is not two properties held.
+        """
+        served, registry_reads = await _tasks_call_counting_registry(
+            action="create", agent=None, pending=True, created_by=f"  {OWNER_VALUE.upper()}  "
+        )
+        assert not _has_footer(served), f"a charset-illegal identity footered: {served!r}"
+        assert registry_reads == 0, (
+            f"a value that cannot match AGENT_NAME_PATTERN still cost {registry_reads} "
+            f"registry read(s) — the gate is not in front of the read"
         )
 
 
@@ -1479,22 +1698,48 @@ async def _tasks_call(
 
 
 async def _tasks_call_counting_registry(
-    *, action: str, agent: tuple[str, str] | None, pending: bool
+    *,
+    action: str,
+    agent: tuple[str, str] | None,
+    pending: bool,
+    created_by: str = "contract-04b2-wavec-1",
+    owner: str | None = None,
 ) -> tuple[str, int]:
-    """As :func:`_tasks_call`, plus the number of agent-registry reads the call made."""
+    """As :func:`_tasks_call`, plus the number of agent-registry reads the call made.
+
+    ``created_by`` is a REQUIRED CHOICE for the budget pin and has no business
+    being a monoculture: the read budget BRANCHES on it (charset-illegal ⇒ no
+    read at all; charset-legal ⇒ at most one), so a fixture that always passed
+    the same value would test exactly one of the three worlds and certify the
+    other two by silence. It keeps a default only because six other call sites
+    do not care which unregistered value they carry.
+
+    ⚠ The registry double counts ``get_agent`` specifically. That is the seam
+    identity resolution rides (design-sidecar Ruling 5.3: the REGISTRY is the one
+    resolution seam), so a build that resolved through some other registry method
+    would read 0 here and pass — a known bound of the instrument, not a claim
+    that no registry access happened. It is acceptable because Ruling 5.3 also
+    makes any second resolution path a #102 escalation in its own right.
+    """
     from loremaster.server import AppContext
 
     harness = _footer_harness(
         unread=UNREAD_COUNT if pending else 0,
         unacked=UNACKED_DIRECTIVE_COUNT if pending else 0,
+        owner_identity=OWNER_VALUE,
         count_registry_reads=True,
     )
     kwargs: dict[str, Any] = {
         "action": action,
         "subject": "a real subject",
         "description": "a real description",
-        "created_by": "contract-04b2-wavec-1",
+        "created_by": created_by,
     }
+    if owner is not None:
+        # The FIRST attribution the fallback considers — supplied only by the
+        # ceiling leg, which needs TWO eligible candidates to discriminate a
+        # one-read build from a scan.
+        kwargs["owner"] = owner
     if agent is not None:
         kwargs["agent"], kwargs["session"] = agent
     served = str(await AppContext.tasks(harness, **kwargs))

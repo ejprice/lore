@@ -37,16 +37,30 @@ brief project v7 read
   `-O/--output json` → **bespoke text parse, gated by an exact count cross-check** — using
   it would require re-invoking mypy directly, cloning `typecheck.sh`'s `MEMBERS`/`MYPYPATH`
   policy, a registration site `CLAUDE.md` names. §7 carries the trigger.
-- **decisions-needed (4):** register the 12th file or leave the gate red? (§6.1) · accept
-  falsifier (b)'s stated residual? (§6.2) · teach `typecheck.sh` an opt-in machine-readable
-  mode, retiring the bespoke parse? (§7) · who fixes `_surreal_harness`'s `45`→`46`
-  docstring count — it is another agent's file (§10b, finding #308)?
+- **decisions — ALL FOUR RULED by the lead (directive #2022, acked):** C3's file NOT
+  registered *and by the same logic C1's not either* (a contract-first file SHOULD be red
+  until its build lands) · falsifier (b) accepted as invoked, COUNT leg kept · `-O json`
+  deferred to 04b-3 with a trigger · #308 routed to `contract-04b2-wavec-2`.
+- **ANSWER TO #2022's ONE QUESTION (§10c): the 36 are 35 + 1, and your assumption is
+  REFUTED on exactly one.** 35 are C1's contract, CONFIRMED contract-first by per-CAUSE
+  evidence (every failure names an unbuilt symbol / action / parameter / field / behaviour;
+  not one is shipped behaviour failing). The 36th is `test_surreal_harness.py`'s derived
+  docstring count — **not a contract-first pin**, but **not a new defect either**: it is
+  #308, which you routed in the same message. **No new defect; the wave is not stopped by
+  anything I found.**
 - **findings filed:** **#307** (two of #306's headline numbers do not reproduce) ·
   **#308** (the non-contract RED pins) · **#312** (a SECOND canonical gate red at HEAD, and
   the wrapper's own missing leg) · one `lore_remember` gotcha (the junit family).
 - **receipts:** §4 unit contract **41/41** · §5 nine live controls, all fired · §5.7 leg-4
   in isolation · §8.1 full run · §8.1b the missing gate · §8.2 the defect the full run
-  found · §9 gates (ruff now clean repo-wide) · §10b the unrelated-failure flag.
+  found · §9 gates (ruff now clean repo-wide) · §10b the unrelated-failure flag ·
+  **§10c the identification of the 36**.
+- **⚠ ONE THING THE LEAD MUST ACT ON BEFORE THE DEPLOY RUN (§10c.3):** at `d5c8958` the
+  gate's `444 failed registered` is packet-39 EXACTLY and `self-destruct: 0 findings`
+  (the registry is neither stale nor over-broad) — **but that run measured the WORKING
+  TREE, not HEAD**: `test_comms_footer.py` is uncommitted-modified, `+275/−30`, `36→40`
+  test defs, mid-edit. **The deploy receipt must be taken on a clean tree**, or the tail
+  is measuring an editor's buffer.
 - **files:** `scripts/pending_contract_gate.py` · `scripts/pending_contracts.yaml` ·
   `scripts/test_pending_contract_gate.py` · a 2-line lint fix in
   `scripts/lore_tool_name_currency.py` (§8.1b). **No `pyproject.toml` edit was needed** —
@@ -790,6 +804,100 @@ FLAG with the exact edit attached, not an edit.
 **There is 1 failing test unrelated to our present scope (514 total, of which 513 are
 contracts committed RED ahead of their builds — 444 packet-39 + 69 wave-C). Do you want to
 examine it more closely?**
+
+---
+
+## §10c · IDENTIFYING THE 36 UNREGISTERED PYTEST FAILURES (lead directive #2022)
+
+**Question:** are the 36 unregistered failures all C1's contract (`test_task_read_surface.py`,
+48 pins, red by design pending its build)? **Answer: NO — 35 are, 1 is not. The assumption is
+REFUTED on exactly one test**, and that one is already ledgered as **#308**.
+
+### 10c.1 · The split, measured
+
+```
+$ uv run pytest loremaster/tests/test_task_read_surface.py \
+                loremaster/tests/test_surreal_harness.py -q --tb=no -rf
+36 failed, 69 passed in 42.32s
+```
+
+| count | file | verdict |
+|---|---|---|
+| **35** | `loremaster/tests/test_task_read_surface.py` | **CONFIRMED** contract-first, pending C1's build — per-cause evidence in §10c.2 |
+| **1** | `loremaster/tests/test_surreal_harness.py::TestTheHarnessDeclaresNoRetryPolicyOfItsOwn::test_the_harnesss_docstring_counts_are_the_DERIVED_counts` | **REFUTED — NOT a contract-first pin.** A stale derived count in a *shipped* docstring (`45` stated, `46` actual). It is a real defect, but **not a new one**: it is #308, which you routed to `contract-04b2-wavec-2` in the same message that asked this question. |
+
+**So: no new defect, and the wave is not stopped by anything I found — but the gate stays red
+until #308's one-character fix lands.** That is a deploy-ordering fact, not a defect finding.
+
+Independent-count receipt, and the ORDERING matters: I measured `35 failed / 13 passed` out
+of 48 collected in my **first full-suite run**, and only afterwards read
+`REPORT-contract-04b2-wavec-2.md` §3.3b, which declares `35 failed / 13 passed`. The numbers
+were not transcribed from each other.
+
+### 10c.2 · Why all 35 are contract-first — per CAUSE, not per file
+
+*"All remaining hits are X" is banned output*, so the 35 are not classified by their filename.
+Every failure's actual exception was captured and grouped; **the counts sum to 35 with no
+remainder**:
+
+| n | observed cause | what it names |
+|---|---|---|
+| 14 | `AttributeError: 'AppContext' object has no attribute '_task_listing'` | an unbuilt **method** |
+| 5 | `ImportError: cannot import name 'TaskListing' from 'loremaster.tasks'` | an unbuilt **type** |
+| 5 | `ValueError: unknown task action 'blockers'; valid actions are ['create', 'query', 'transition', 'supersede', 'rollup', 'create_many']` | an unbuilt **action** — the error enumerates the served set and `blockers` is absent |
+| 3 | `TypeError: AppContext.tasks() got an unexpected keyword argument 'max_depth'` | an unbuilt **parameter** |
+| 1 | `AttributeError: 'ClaimResult' object has no attribute 'superseded_blockers'` | an unbuilt **field** |
+| 7 | `AssertionError`, each naming an unbuilt disclosure/render behaviour (the capped-listing disclosure line ×2, the supersede stranded-dependent warning ×2, the action-set equality, `superseded_blockers` as typed state, the superseded-blocker claim render) | unbuilt **behaviour** |
+
+**`14 + 5 + 5 + 3 + 1 + 7 = 35`.** THE DISCRIMINATOR: **every one names something that does
+not exist yet. Not one is a failure of shipped behaviour.** A regression would present as an
+existing symbol behaving wrongly; none does.
+
+Cross-check against C1's own declared mypy enumeration (`TaskListing`,
+`_render_task_listing`, `superseded_blockers`): three of my six runtime causes match those
+declared names. ⚠ Precisely: mypy names `_render_task_listing`, the runtime raises on
+`_task_listing` — **two distinct unbuilt names**, both owed by the builder; they are not the
+same symbol and should not be read as one.
+
+The command, so this is re-runnable rather than a claim (brief-base §1):
+
+```bash
+uv run pytest loremaster/tests/test_task_read_surface.py -q --tb=line -p no:randomly 2>&1 \
+  | grep -E '^E ' | sort | uniq -c | sort -rn
+```
+
+### 10c.3 · ⚠ AND THE CURRENT HEAD PICTURE IS DIFFERENT — with a tree caveat you need
+
+Re-run at `d5c8958` with the **committed** registry (i.e. under your ruling: neither C1's nor
+C3's file registered):
+
+```
+registry     : packet-39-pending-build (11 files, 45 symbols)
+mypy         : 207 errors · 191 registered · 16 UNREGISTERED
+ruff         : 0 violation(s)
+pytest       : 8786 passed · 444 failed registered · 74 failed UNREGISTERED
+self-destruct: 41 symbol(s) import-checked absent · 4 UNCHECKED
+VERDICT      : FAIL — 90 unaccounted item(s)
+```
+
+- **`444 failed registered` is packet-39 EXACTLY** — the ruled end state, reproduced.
+- **`self-destruct: 0 findings`** — the committed registry is exactly current at HEAD: no
+  file has gone green, no symbol has been discharged, no code count has moved. That is the
+  cheapest possible confirmation that the registry is neither stale nor over-broad.
+- The 74 unregistered pytest failures are `38` `test_comms_footer.py` + `35`
+  `test_task_read_surface.py` + `1` `test_surreal_harness.py`; the 16 unregistered mypy
+  errors are `5` + `11` across the same two contract files.
+
+⚠ **THE CAVEAT, and it is the "prove which tree you are testing" law: that run measured the
+WORKING TREE, not `d5c8958`.** `loremaster/tests/test_comms_footer.py` is
+uncommitted-modified and being actively extended right now — **`+275 / −30` lines, `36 → 40`
+test definitions**. Its committed state claims `1 failed / 41 passed` (d5c8958's message);
+the working tree gives `40 failed / 8 passed`. **Those are not in conflict — they are two
+different files.** So C3's contribution to the 74 is a transient, not a measurement.
+
+**The operational consequence for the deploy:** *the wrapper cannot produce a settled receipt
+while an agent is mid-edit.* The deploy run must be taken on a clean tree, after C1's and
+C3's builds land and after #308 — otherwise the tail is measuring an editor's buffer.
 
 ---
 

@@ -1,29 +1,33 @@
-# REPORT-refbuild-c3-1 — C3: five C-DEFs found by building, four repaired under grant, and the receipt
+# REPORT-refbuild-c3-1 — C3's satisfiability receipt: **PRODUCED (0 failed)**, after seven defects found by executing
 
-**Two phases, in one report.** PHASE 1 (§§0–7) refused the receipt and diagnosed five
-C-DEFs against the contract as committed at `533d917`. PHASE 2 (§8) repaired C-DEFs 1–4 in
-the contract file under the lead's explicit scope grant and produced the real receipt.
-C-DEF 5 is **held RED by ruling** — it is with the design sidecar.
+**Three phases, one report.** PHASE 1 (§§0–7) REFUSED the receipt and diagnosed five C-DEFs
+against the contract as committed at `533d917`. PHASE 2 (§8) repaired C-DEFs 1–4 under the
+lead's scope grant. PHASE 3 (§9) applied design-sidecar **Ruling 5**, which settled C-DEF 5
+and corrected #305 — and whose mutation proofs exposed **two further defects a green suite
+could not see**. C3 now goes **0-failed**.
 
 ## SUMMARY BLOCK
 
 ```
 brief-base v9 read
 brief project v7 read
-state: done — C-DEFs 1-4 repaired IN the contract; C-DEF 5 held RED by lead ruling.
-  THE RECEIPT (§8.3): 1 failed, 2600 passed, 14 skipped, 3 xfailed across the 11 seam
-  suites — the single failure IS C-DEF 5, the pin the lead ruled untouchable. C3 alone:
-  1 failed, 41 passed. Zero mypy errors in the C3 file set; ruff clean.
-  ⚠ NOT a wave-level gates-green claim — scoped in §8.4, and typecheck.sh is RED at HEAD
-  from packet 39 (finding #306), which is not mine and which I did not touch.
+state: done — ⛔ THE SATISFIABILITY RECEIPT IS PRODUCED (§9.4).
+  C3 alone: 48 passed, 0 failed. The 11 seam suites: 2607 passed, 14 skipped, 3 xfailed,
+  ZERO FAILURES. Zero mypy errors in the C3 file set; ruff clean. C3 is builder-ready.
+  ⚠ NOT a wave-level gates-green claim — scoped in §9.5; typecheck.sh is RED at HEAD from
+  packet 39 (finding #306), which is not mine and which I did not touch.
+  SEVEN defects total, every one found by EXECUTING rather than reading: five C-DEFs (§3),
+  plus two that survived the repairs and only a MUTATION could see (§9.2).
 deviation: PHASE 1 ran with test_comms_footer.py NOT writable and produced the refusal via
-  an out-of-tree plugin (§6). PHASE 2 landed those same repairs in the file itself after
-  the grant, and the plugin is now REDUNDANT — the §8 receipt uses no plugin at all.
+  an out-of-tree plugin (§6). Phases 2-3 landed everything in the file itself under grant;
+  the plugin is REDUNDANT and no receipt run uses it.
 deviation: the build's co-edit to test_blocks_edge.py::_tool_seam lives in SCRATCH ONLY —
-  the grant named one repo file and I did not widen it myself. The exact diff is in §8.2
-  so the real builder cannot lose it.
+  the grant named one repo file and I did not widen it myself. Exact diff in §8.2.
 deviation: I synced the repo's contract file into the scratch tree — the prepared copy was
   STALE (it predated §4.5.3c's TestAHostileIdentity… rewrite). §1.
+deviation: Ruling 5.2's world (i) is UNREACHABLE at these dispatchers (every write action
+  requires an attribution). Derived, pinned in its constructible form, and SAID rather
+  than silently dropped. §9.1.
 Packages considered: none — no new mechanism. Every seam this build needed already exists
   in-tree and was CALLED, not re-implemented: loremaster.render.render_line (read its
   source + the four-instrument docstring; the footer is assembled through it, prefix passed
@@ -31,13 +35,11 @@ Packages considered: none — no new mechanism. Every seam this build needed alr
   signature: str -> SafeLine) · MessageLedger._as_rows/_query (read drain's body for the
   TO_RELATION statement idiom) · pydantic BaseModel + ConfigDict(extra="forbid") (the house
   value-object idiom, copied from MessageDrainResult). Verdict on all: replace (use in-tree).
-decisions-needed:
-  1. C-DEF 5 — a RULING conflict, with the design sidecar. HELD RED, untouched. §3.5.
-  2. Whether registry-resolved identity stands. The old harness was quietly voting for a
-     ledger-side second copy of name resolution; my §8.1 repair removes that vote but does
-     not decide the question. §3.1b.
-receipt pointers: THE RECEIPT §8.3 · repairs landed §8.1-§8.2 · provenance §1 + §8.0 ·
-  build shape §2 · the five C-DEFs §3 · cross-file co-edits §4 · Phase-1 tails §5.
+decisions-needed: none — C-DEF 5 and #305 were ruled (sidecar §5) and are applied. Nothing
+  held, no fork open, no RED handed back.
+receipt pointers: ⛔ THE RECEIPT §9.4 · Ruling 5 applied §9.1 · the two mutation-found
+  defects §9.2 · mutation table §9.3 · gate scope §9.5 · still-open §9.6 · the original
+  five C-DEFs §3 · cross-file co-edits §4 · the diagnostic plugin, verbatim §6.1.
 ```
 
 ---
@@ -791,12 +793,162 @@ load-bearing claim, per brief-base §1 — not as a live dependency.
 
 ---
 
+---
+
+# §9 · PHASE 3 — RULING 5 APPLIED, AND **THE RECEIPT** (0 failed)
+
+Design-sidecar **Ruling 5** (`REPORT-design-sidecar-04b2-wavec-1.md` §5) unblocked C-DEF 5
+and corrected #305. Applying it produced a real satisfiability receipt — **and two more
+defects that only a mutation could see.**
+
+## 9.1 · What Ruling 5 changed
+
+**Q2 / C-DEF 5 — the contract yielded (§5.2).** `registry_reads == 0` is replaced by the
+BUDGET pin: three parametrised worlds, each forced by its own `created_by` fixture
+(charset-FAIL ⇒ 0 reads · charset-pass+UNREGISTERED ⇒ 1 read, no footer · charset-pass+
+REGISTERED ⇒ 1 read, third-person footer), plus the ceiling **≤ 1 read on every path**
+(`_MAX_REGISTRY_READS_PER_CALL`, a named constant so the message quotes the number the
+assertion checks). The silence half is kept and correctly scoped — silence when nothing
+RESOLVES, not unconditionally, because a registered `created_by` legitimately footers.
+
+⚠ **The ruling implied a BUILD change nobody had written down:** *charset-gated* is a
+behaviour, not an adjective. The build now runs `AGENT_NAME_PATTERN.fullmatch` **in front
+of** the registry read, so a free-text owner like `"the release train"` costs ZERO reads —
+and it resolves **one** candidate, never a loop.
+
+⚠ **Ruling 5.2's world (i) — *"no attribution value supplied at all ⇒ 0 reads"* — is
+UNREACHABLE at these dispatchers, and I did not quietly drop it.** Every write action
+requires an attribution argument (`tasks` create/create_many/supersede need `created_by`,
+transition needs `actor`, `claim_task` needs `owner`, `findings` report needs `created_by`,
+the batch verbs need `actor`), so a write with all attribution slots empty cannot be
+constructed. Derived by reading the dispatchers. The pin stands in for it with the
+constructible zero-read floor (a READ short-circuits on OUTCOME before resolution) and
+**says so in its own docstring** rather than implying it tested the ruled world.
+
+**Q1 / #305 — the corrected threat model is now IN the contract (§5.1).** The docstring
+claiming raw-echo-after-exact-match *"re-opens the vector completely"* is replaced: after a
+true exact match that string is byte-equal to a charset-clean registered name, so it is not
+a vector. The pin stays as **belt** — it keeps the safety argument local — and the real
+chain is documented link by link, in `_resolve_footer_identity`'s docstring and on link 2's
+pin.
+
+**Q3 — the registry is the one resolution seam.** Already what the build did; the harness
+repair removed the fixture's vote for Reading B.
+
+## 9.2 · ⚠ TWO DEFECTS THE MUTATIONS FOUND — both invisible to a green suite
+
+Ruling 5.1 said link 2 *"must be made REAL, not assumed."* I tried to assume it, then
+mutated instead. Both times the mutation disagreed with me.
+
+**(a) Link 2 was STILL vacuous after the C-DEF 1 repair — my own fix had shadowed it.**
+Making the resolver case-fold AND strip left **all 46 pins GREEN**. Cause: the exactness
+fixture was `"  LEAD-04B2-WAVEC  "`, and Ruling 5.2's new charset gate refuses that value
+*before the resolver is reached*. The pin never reached the code it was named for. **Two
+rulings, each right, combining to silently disarm a pin** — and nothing in either says so.
+
+*Repair:* the exactness leg now uses `_CHARSET_LEGAL_NEAR_MISS` — a **proper prefix** of a
+registered name, derived from the constraint (must satisfy `AGENT_NAME_PATTERN`, must not
+equal a registered name) rather than picked for looks. The old fixture is KEPT as its own
+leg, renamed for what it actually measures now: **charset-gate coverage**.
+
+**(b) The one-read CEILING was unpinned — a per-attribution SCAN passed all 47 pins.**
+The build R1 explicitly rejects, and every assertion said `<= 1` while no fixture could
+ever produce 2: each row supplied exactly ONE non-`None` attribution, so *"read the first
+eligible candidate"* and *"read them all"* were the same execution. **This repo's
+most-repeated fixture defect, in a pin written the same hour to enforce a budget.**
+
+*Repair:* `test_a_SECOND_attribution_is_NEVER_consulted_after_the_first` forces two
+charset-legal attributions where the FIRST is unregistered and the SECOND is real. A
+ceiling build reads once and serves nothing; a scan build reads twice and footers — both
+observables diverge.
+
+## 9.3 · The mutation table (declared BEFORE each run, diffed both ways)
+
+| # | mutation | expected RED | observed |
+|---|---|---|---|
+| M1 | resolver does a heuristic PREFIX scan | link 2 (exactness) | ✅ `fallback_matches_EXACTLY_never_heuristically` + the REGISTERED budget row |
+| M2 | charset gate removed | the charset-FAIL row + the gate leg | ✅ both |
+| M3 | per-attribution SCAN (ceiling removed) | the ceiling leg | ❌ **GREEN — defect (b)**; ✅ RED after the repair |
+| M4 | footer built as a bare f-string | SECTION A's type pin | ✅ `test_the_footer_helper_returns_Rendered_not_a_bare_str` |
+
+M4 is Ruling 5.1's **re-pointed** §B5 declared-RED set, verified: with the neutralisation
+pin retired, the bare-f-string build is caught by the isinstance/type pin — so §B5's seam
+discipline still has a live instrument rather than a retired one.
+
+Every mutation was made in the scratch tree against a `cp` content backup and restored
+byte-exact; the baseline was re-measured green after each.
+
+## 9.4 · ⛔ THE RECEIPT
+
+Scratch tree, reference build + repaired contract, **no plugin, no mutation in place**,
+`-n auto`.
+
+```
+loremaster.__file__ = /home/ejprice/scratch-c3-ref/loremaster/loremaster/__init__.py
+```
+
+**C3 alone:**
+```
+48 passed in 1.96s
+```
+
+**The 11 suites this seam touches (#133's leg)** — `test_comms_footer` · `test_comms_tool` ·
+`test_mcp_server` · `test_message_ledger` · `test_task_ledger` · `test_findings` ·
+`test_query_tasks_bounded` · `test_blocks_edge` · `test_render_seam_pins` · `test_render` ·
+`test_comms_render_architecture`:
+```
+2607 passed, 14 skipped, 3 xfailed in 143.91s (0:02:23)
+```
+
+**ZERO FAILURES. C3 goes 0-failed against a known-correct build, and every pre-existing
+suite its seam touches stays green. THE SATISFIABILITY RECEIPT IS PRODUCED.** C3 is
+builder-ready.
+
+The contract grew 42 → **48** pins across the three phases (four harness repairs, the
+budget pin's three worlds + ceiling + zero-read floor + scoped silence, and the split of
+exactness from charset-gate coverage).
+
+## 9.5 · Gate scope — stated, because HEAD is RED
+
+**No wave-level "gates green" claim.** `scripts/typecheck.sh` is RED at HEAD (finding #306,
+packet 39, operator-held behind #296) and I did not touch those files.
+
+```
+$ uv run mypy loremaster/tests/test_comms_footer.py loremaster/tests/test_comms_tool.py \
+              loremaster/tests/test_blocks_edge.py loremaster/tests/_message_fakes.py \
+              loremaster/loremaster/server.py loremaster/loremaster/messages.py
+Success: no issues found in 6 source files
+
+$ uv run ruff check loremaster lorerunes loresigil lorescribe
+All checks passed!
+```
+
+The eleven files carrying mypy errors in a full canonical run are enumerated in §8.4; every
+one is a packet-39/auth file and none is in the C3 file set.
+
+**Repo vs scratch: `test_comms_footer.py` is byte-identical**, so this receipt grades the
+file as it will be committed.
+
+## 9.6 · What is still open
+
+- **The §8.2 co-edit** (`test_blocks_edge.py::_tool_seam`, +2 lines +2 `type: ignore`)
+  remains SCRATCH-ONLY and must land with the real build. It is in the receipt above
+  because the scratch tree carries it.
+- **The build itself** is still scratch-only by design — the real builder writes it. The
+  scratch tree is the diff oracle; per Ruling 5.3, keep until that build lands.
+- **Nothing else.** No held pin, no unresolved fork, no RED I am handing back.
+
+---
+
 # §7 · WHAT I DID NOT DO
 
 - **PHASE 1:** I did not edit `loremaster/tests/test_comms_footer.py` at all — the refusal and
   every C-DEF in §3 were established against the file exactly as committed.
 - **PHASE 2:** I edited it, and ONLY it, under the lead's explicit grant — C-DEFs 1–4 (§8.1).
-  **I did not touch C-DEF 5's pin**, its class, or anything the ruling could move.
+  **I did not touch C-DEF 5's pin**, its class, or anything the ruling could move, until
+  Ruling 5 arrived and settled it.
+- **PHASE 3:** I re-authored C-DEF 5's pin and corrected #305's threat model — both because
+  the sidecar RULED them, not on my own judgement. §9.1 cites the clause behind each change.
 - I did not modify any other repo file except this report. No git write commands were run.
 - I did not touch `scripts/**` or any packet-39 file.
 - I did not widen my own writable set: `test_blocks_edge.py`'s required co-edit stayed in
