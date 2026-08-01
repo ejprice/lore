@@ -1378,3 +1378,36 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   "vendor-unwritten" claim on int-vs-string ids being FALSE (`record-ids.mdx` documents it) —
   correction header on the archived report. Session ended by host reboot; handoff state in
   `2026-08-01-dnd-rag-RESUME.md` (beside this INDEX). Forks 1–9 await the operator.
+- 2026-08-01 · **AGENT COMMS FIXED — #294 + #292 resolved, superseded by #298. Packet 04b-2 NOT
+  started.** Operator asked to fix agent comms first, then run the next comms packet, then went
+  offline delegating design calls to Fable. Five probes settled the mechanism by EXECUTION: an
+  agent's `tools:` block has **three** shapes, not the two #292 assumed — `*`/unrestricted and
+  EXCLUSION lists (`Explore`/`Plan`, never broken, measured not assumed) both get the full
+  deferred pool; an **ALLOWLIST** gets exactly its own `mcp__*` entries. So **literal
+  fully-qualified MCP names inside a PRESERVED allowlist work** — the third option #292 did not
+  know it had, and the one shipped, because it keeps `tdd-contract`'s deliberate no-`Edit`
+  isolation. 15 lore tools (DERIVED from the live `tools/list`, never typed) added to the 5
+  tdd-family agents + `contract-adversary` + `package-scout`; the false *"ToolSearch is the
+  gateway (see #266)"* comment — applied, documented as working, never verified — removed from all
+  7. Acceptance by execution: a real `tdd-contract` agent spawned after the edit called
+  `lore_index` / `lore_comms register,send,drain` / `lore_search` with live returns, `Edit`
+  absent. **SECOND, independent breakage found and fixed:** the canonical load line at
+  `~/.claude/CLAUDE.md:344` named **3 tools that do not exist** — 35 dead names across 4 files
+  (`CLAUDE.md`, `tdd`, `tdd-light`, `odoo-dev` skills), now 0, guarded by
+  `scripts/lore_tool_name_currency.py` (asks the running server; mutation-proven both ways).
+  ⚠ **TWO FALSE CLEARS PRODUCED AND CAUGHT IN-SESSION, same class both times — a narrow
+  measurement written up as a general rule:** the currency instrument's first version reported a
+  CLEAN `CLAUDE.md` (its `\b` anchor cannot match inside `mcp__lore_<slug>__lore_search_code`),
+  and the fix's own teaching prose claimed *"ToolSearch reaches NOTHING"* when the truth is
+  ToolSearch is **required-not-sufficient** and MCP entries arrive **DEFERRED** — left standing,
+  an agent would have reasoned itself out of the tools it now has, reproducing #294 by BELIEF on a
+  correctly-granted definition. Commits `d5ea7b0` · `e89bfa4` · `ff3b2c4`; receipts (6 reports +
+  post-fix agent snapshot, since `~/.claude` is NOT version-controlled) →
+  `receipts/2026-08-01-agent-comms-fix/`. **04b-2 remains `open` and unstarted** — both Fable
+  sidecars and a `claude-code-guide` agent ran 60/31/17 min without returning a single reply
+  (alive, ~2 min CPU, blocked in `epoll_wait`), so its design forks (B1 split · ESC-1 · #279 ·
+  #273/#272 · footer `Rendered`-vs-`str` · **whether to deploy at all with the operator offline
+  and `lore-lore` not restart-durable**) are ALL still unruled. Next session: re-run the sidecar
+  before any 04b-2 work. Open bounds in #298: the grant is per-project (`lore_lore` slug, fails
+  CLOSED elsewhere) · `Grep`/`Glob` listed by 7 definitions and delivered to none · `SendMessage`
+  not grantable to an allowlist agent · `~/.claude` unversioned, so the GRANT half has no guard.
