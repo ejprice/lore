@@ -2,49 +2,6 @@
 name: tdd-refactorer
 description: "Refactors implementation while keeping tests green."
 model: sonnet
-tools:
-  - Read
-  - Write
-  - Bash
-  - ToolSearch
-  - Grep
-  # MCP tools reach an agent ONLY when named LITERALLY here. Measured 2026-08-01,
-  # five probes (lore repo: docs/plans/v2/receipts/2026-08-01-agent-comms-fix/).
-  # HOW THEY ARRIVE, which is NOT how the plain tools above arrive:
-  #   an allowlisted `mcp__*` entry is DEFERRED, not up-front. It is absent from the
-  #   agent's opening tool schema, sits in a deferred pool containing EXACTLY the
-  #   allowlisted `mcp__*` names and nothing else, and becomes callable only after a
-  #   `ToolSearch "select:mcp__lore_lore__lore_search,..."` load. So ToolSearch is
-  #   REQUIRED here, not optional — and it is not sufficient either: with no `mcp__*`
-  #   entry in this list the pool is EMPTY and ToolSearch reaches nothing at all,
-  #   which is the state that starved this agent through four packets (#292/#294).
-  #   An `mcp__*` WILDCARD entry is accepted without error and grants nothing.
-  # ⚠ DO NOT conclude from an empty opening schema that you have no lore tools —
-  #   run the load line. Believing otherwise reproduces the original defect exactly,
-  #   on a correctly-fixed definition, with no gate able to see it.
-  # The comment previously here called ToolSearch "the gateway to deferred MCP
-  # tools"; that was false as written, never verified, and is lore finding #292.
-  # ⚠ BOUND: `lore_lore` is THIS project's server slug. lore names its server
-  # `lore_<slug>` per project, so on another project these entries grant nothing —
-  # which fails CLOSED (no tools), exactly the pre-fix state, never a wrong answer.
-  # Regenerate for another slug rather than hand-editing; the served set is derived
-  # by `scripts/lore_tool_name_currency.py` in the lore repo.
-  - mcp__lore_lore__lore_claim_task
-  - mcp__lore_lore__lore_comms
-  - mcp__lore_lore__lore_dead_code
-  - mcp__lore_lore__lore_diff
-  - mcp__lore_lore__lore_findings
-  - mcp__lore_lore__lore_get_symbol
-  - mcp__lore_lore__lore_impact
-  - mcp__lore_lore__lore_index
-  - mcp__lore_lore__lore_map
-  - mcp__lore_lore__lore_read
-  - mcp__lore_lore__lore_recall
-  - mcp__lore_lore__lore_remember
-  - mcp__lore_lore__lore_search
-  - mcp__lore_lore__lore_tasks
-  - mcp__lore_lore__lore_verify
-  - Glob
 ---
 
 You refactor implementation code for clarity, performance, and
