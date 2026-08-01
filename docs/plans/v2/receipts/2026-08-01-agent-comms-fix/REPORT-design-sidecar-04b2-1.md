@@ -150,10 +150,27 @@ which were written for the mirror, not for the guard's read visibility:
 **Verdict semantics:** YES ⇒ the write-path cycle read is achievable ledger-independent;
 04b-3 builds it and the known-bound pin is a defect report DELETED WITH THE FIX (ESC-1's own
 clause). NO ⇒ ESC-1 closes permanently as measured-NO; the bound and its pin stay.
-**Status at write time: probe running; deliverable `REPORT-probe-esc1-closure-1.md` at the
-repo root.** Whoever closes this session archives it beside this file and records the
-verdict in the packet's ESC-1 row. If the probe dies unreported, the next session re-runs it
-from the spec above before touching ESC-1 — the spec is the instrument; do not re-derive it.
+**AMENDED post-archive, same day (2026-08-01, by the sidecar) — THE VERDICT LANDED: YES.**
+58 PASS / 0 FAIL, three consecutive green runs on fresh throwaway DBs, tree `f72e538`,
+negative control discriminating (a deleted edge row caught by BOTH instruments, naming the
+exact pair). Full report + the verbatim instrument:
+`REPORT-probe-esc1-closure-1.md`, archived beside this file (persisted by the sidecar — the
+harness refused the Agent-tool subagent's own report-file Write with a "return findings as
+text" policy; the teammate-spawned probes earlier this session were NOT so blocked — a new
+harness-behaviour datum, disclosed in that report's persistence note). Two enumerated
+residues, both expected: batch-local `create_many` siblings (no row exists pre-commit —
+client-side is the only place they CAN live) and legacy phantom entries (no row, no
+ancestors, `ENFORCED` forbids the edge, skip recorded at WARNING). A scoping fact widens
+the verdict honestly: NO ledger verb mutates `blocked_by` after birth (checked at
+`f72e538`), so the constructed verbs are the complete column-writing surface.
+**Consequence, now unconditional: ESC-1's mechanism is ACHIEVABLE.** 04b-3 builds the
+ledger-independent write-path cycle read (edges for every persisted ancestor + the
+client-side batch-local part — exactly R7's-rider shape), and the known-bound pin becomes a
+defect report DELETED WITH THE FIX, per ESC-1's own clause. The packet's ESC-1 row and the
+04b-3 row record this verdict.
+Bonus fact for whoever builds it (probe §5.1): the backfill mints legacy-cycle edges, and a
+cycle member's edge closure contains ITSELF (`truncated=False`) — self-reachability is the
+usable cycle signal on the edge read.
 
 ## B3 — #279: UNIFY the store-seam derivation, in the 04b-2 build wave
 
