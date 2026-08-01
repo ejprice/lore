@@ -14,11 +14,13 @@ brief project v7 read
   seams (grep's honest territory).
 - Packages considered: none — no mechanism specified beyond those already ruled
   (`networkx`/`graphlib` routed by predecessor §B4; the footer seam ruled §B5).
-- decisions-needed: none for the lead; three ⚠ OPERATOR-REVIEWABLE items in §4.
+- decisions-needed: none for the lead; six ⚠ OPERATOR-REVIEWABLE items in §5.
 - receipt pointers: §1 the split · §2 ESC-5's mechanism + the (b)-elimination derivation ·
-  §3 the #268 instrument · §4 operator-reviewable · findings #300/#301 (the forks, filed by
-  `contract-04b2-wavec-1`) · `REPORT-contract-04b2-wavec-1.md` (the escalation this rules
-  on; archive both under `docs/plans/v2/receipts/` at wave close-out).
+  §3 the #268 instrument · §4 the gate-definition ruling (added same day, thread
+  `q:04b2-gate-definition`, on the lead's §L-4 measurement) · §5 operator-reviewable ·
+  findings #300/#301 (the forks, filed by `contract-04b2-wavec-1`) ·
+  `REPORT-contract-04b2-wavec-1.md` and `REPORT-lead-04b2-wavec.md` §L-4 (the escalations
+  this rules on; archive all under `docs/plans/v2/receipts/` at wave close-out).
 
 **Authority:** operator-delegated design authority (same delegation as
 `receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md`). These are RULINGS.
@@ -181,7 +183,99 @@ derived-constant form, derivation shown in the docstring, never transcribed from
 
 ---
 
-# §4 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §4 · RULING 4 (follow-up, 2026-08-01, thread `q:04b2-gate-definition`) — THE GATE STAYS ABSOLUTE; THE PACKET-39 BOUND BECOMES AN INSTRUMENT, NOT A NARROWING; ZERO PACKET-39 FILES ARE TOUCHED
+
+**The question (lead's §L-4, their measurement):** `./scripts/typecheck.sh` FAILED at HEAD,
+102 errors / 11 files merged, every one packet-39 territory, every error `attr-defined` on
+symbols that do not exist yet; the full suite additionally carries packet-39's **444
+designed-RED pins** (INDEX row: 480 pins / 444 RED / 36 GREEN, *rest of suite 7705
+passed / 0 failed*). Predecessor §B6 line 1 ("full gates green") read literally means
+04b-2 can never deploy until packet 39 builds — which is BLOCKED on operator decision
+#296, indefinitely. The lead declined to narrow the gate and routed the definition here.
+⚠ The lead's four candidate readings never arrived (ledger drain empty — a second
+channel-loss datum this session); the candidates below are enumerated independently.
+
+**Two ground-truth facts that decide the shape (read this session, `04ede45`+):**
+1. The INDEX packet-39 row records **four adversary passes, ALL INSUFFICIENT, and an
+   operator override holding the door rather than running a fifth**. Those 11 contract
+   files are **operator-held territory pending #296** — any remedy that edits them
+   trespasses on an operator fork.
+2. The packet-39 close-out line records suite state and `ruff clean` but **never
+   adjudicated mypy** — the red typecheck at HEAD is an UNRECORDED bound, silently
+   inherited, not a ruled acceptance. (Its contract files import the missing symbols
+   function-locally — read at `test_hosted_readonly_posture.py` — so collection survives
+   and the 444 are behavioral REDs; only mypy is structurally red.)
+
+**RULED:**
+1. **The gate DEFINITION does not move.** "Zero mypy errors including test trees" stays
+   absolute law; no config override, no per-line ignores, no testpaths quarantine, no
+   redefinition of green. The lead's refusal to narrow is confirmed.
+2. **The red state is adjudicated as an ACCEPTED BOUND of the out-of-authority shape**
+   (deferral shape 2): the only clean closure — building packet 39, or re-authoring its
+   contract to the mypy-clean idiom `test_query_tasks_bounded` documents (`_ids(**filters)`
+   pattern) — lives inside operator-held files behind #296. **Named decision point: #296 /
+   packet-39 build start.** Per standing law, an accepted bound is PINNED, never prose.
+3. **The pin is a GATE WRAPPER + PENDING-CONTRACT REGISTRY, committed under `scripts/`,
+   touching ZERO packet-39 files:**
+   - a registry file naming: the exempted FILES (the 11), the missing SYMBOLS
+     (`loremaster.config.resolve_posture` / `PostureConfigError` / `lorerunes.Posture` /
+     `SCOPE_READ`, completed by the builder from the mypy output), the owning packet, and
+     the re-open trigger (#296) — a bound stated as FACTS, not a disclaimer;
+   - a wrapper that runs the canonical gates and enforces, DENY-BY-DEFAULT: every mypy
+     error line must name a registered file AND a registered symbol; every pytest failure
+     must lie inside a registered file; anything else ⇒ FAIL loud. Counts served in the
+     tail (*"7705+wave passed · 444 pending-build(packet-39/#296) · mypy 0 outside the
+     registered set"*) — the §B6 line-1 receipt in its explicit form;
+   - **self-destruction:** if a registered file stops erroring/failing (the build
+     started), the wrapper REFUSES until the registry entry is deleted with the fix —
+     the bound cannot outlive its premise, per the #137/#138 pattern;
+   - positive controls owed by its builder: an injected error OUTSIDE the registry must
+     fail the wrapper; an injected unregistered-symbol error INSIDE a registered file
+     must fail it; a correct-tree run must pass. A probe needs a control.
+4. **§B6 line 1 is AMENDED to its explicit form** (same-authority amendment, flagged
+   operator-reviewable): *"full gates green under the pending-contract wrapper, with the
+   partition counts in the pasted tail."* The lead's interim corollary (every green claim
+   scoped-and-said) stays in force until the wrapper lands, and the wrapper is
+   **deploy-critical** (the gate is literally unsatisfiable without it), hence
+   fence-legal for this wave. Its second consumer is already minted: 04b-3 deploys after
+   this and inherits the same red HEAD.
+5. **A finding is owed** (lead or wrapper-builder files it): packet-39's close-out never
+   adjudicated the mypy-red it left at HEAD — the unrecorded-bound defect this wave
+   discovered. Provenance, not blame.
+
+**Candidates REJECTED, each with its reason:** (A) scope-exclude packet-39 from
+`typecheck.sh`/`testpaths` — a silent quarantine; ungated instruments are hopes with
+filenames, and packet-39's 36 GREEN pins would stop being enforced. (B) literal reading,
+deploy blocked until packet 39 builds — transfers the ruled deploy's authority to an
+unrelated packet's timeline; a gate that can never be green stops informing anyone and is
+already dead in practice (every wave-C agent scopes its greens). (C) per-line
+`type: ignore` ×102 or mypy config overrides — line/config-level narrowing that also masks
+FUTURE defects in those files, uncounted. (D) re-author packet-39's contract to the
+mypy-clean house idiom — the remedy I would otherwise prefer, REJECTED HERE because the
+files are operator-held after four INSUFFICIENT adversary passes and will be revised at
+build anyway; editing them now trespasses on #296. (E-manual) the lead hand-diffs observed
+failures against the packet-39 file list at deploy time — honest once, but a diagnosis is
+not an instrument, and 04b-3 re-derives or inherits silently. (F) revert packet-39's
+contract commit — overturns a deliberate operator-adjacent commit and makes the contract
+invisible to every index and sweep; scope grab, named not taken.
+
+**Falsifiers:** (a) any packet-39 record proving the mypy-red state WAS explicitly
+adjudicated with a different mechanism ⇒ defer to it; (b) the wrapper's per-symbol
+discrimination proving unbuildable from mypy's output ⇒ fall back to file-exact +
+error-code-exact with the residual stated in the registry; (c) #296 resolving before this
+wave's deploy ⇒ the registry empties at the build and the wrapper degrades to a
+pass-through over the plain gates (keep it — 04b-3 and every future pending contract are
+its consumers).
+
+**Bounds on this ruling's own inputs:** the gate measurement is the lead's (§L-4, canonical
+runner), not re-run here; I read ONE packet-39 contract file's import shape and the INDEX
+row — the wrapper-builder re-derives the full 11-file shape and the symbol set before
+committing the registry. Where the lead's four unseen candidates contain a reading not
+covered by A–F, the lead should resend it — this ruling is open to a candidate it never saw.
+
+---
+
+# §5 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2
@@ -193,6 +287,15 @@ derived-constant form, derivation shown in the docstring, never transcribed from
 3. **Predecessor §B1 Level 2 narrowed** (two contracts; fleet surface → 04b-3) on the
    sizing fence + the author's measurement — flagged because it re-scopes a
    same-authority ruling.
+4. **§B6 line 1 amended to its explicit form** (Ruling 4): "full gates green" is now
+   "green under the pending-contract wrapper, partition counts in the pasted tail". This
+   grazes the operator-ruled "zero mypy errors" sentence — I judge it instrumentation of
+   an already-unmeetable reading, not narrowing, but the operator should see it.
+5. **Packet-39's files were left untouched and #296 un-waited-for** (Ruling 4) — the
+   bound self-destructs at the build. If the operator prefers the contract re-authored to
+   the mypy-clean idiom NOW (option D), that is their fork to re-open.
+6. **Packet-39's close-out left an unadjudicated red typecheck at HEAD** — a process
+   finding about an operator-adjacent packet, owed a ledger row (Ruling 4 item 5).
 
 ---
 *Written 2026-08-01 by `design-sidecar-04b2-wavec-1` (Fable, long-running design sidecar)
