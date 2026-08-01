@@ -1435,3 +1435,18 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   existence proof), ADOPTED IN PRINCIPLE, **not executed**: MCP config binds at session start, so
   a mid-session rename cannot be acceptance-tested — shipping it unverified would be #266 a third
   time. **Operator ratifies on return; until then the seven stay unrestricted.**
+- 2026-08-01 (same session, APPENDED CORRECTION to packet 44's entry — the Log is append-only, so
+  the old line stands and this supersedes it) · **44's clause *"an explicit `tools:` allowlist gets
+  no MCP tools, `Tools: *` does"* OVERGENERALISED from a wildcard-only probe.** Measured this
+  session: **literal fully-qualified MCP names inside a preserved allowlist DO grant** (present and
+  callable, sonnet and opus — the odoo scouts have been relying on exactly this all along); it is
+  the `mcp__*` WILDCARD that expands to nothing. And a third shape exists that 44 never
+  considered — EXCLUSION lists (`Explore`/`Plan`), which carry the full deferred pool. Corrected
+  mechanism table in finding **#298**; receipts `receipts/2026-08-01-agent-comms-fix/`.
+  ⚠ Also correcting THIS session's own first Log entry above: it says both Fable sidecars ran
+  without returning. **They did return — by writing report files and by replying into an inbox that
+  did not drain until the session's end**, so the lead saw silence while finished rulings sat
+  undelivered. Both independently ruled A1 identically (delete `tools:`), which the lead had
+  already shipped in the WRONG shape and then re-shipped correctly. The delivery failure is
+  #50779's shape from the lead's side, and it is the packet-04b-2 subsystem's own reason for
+  existing — worth treating as evidence for that packet rather than as session noise.
