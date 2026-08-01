@@ -334,6 +334,24 @@ The house rules for reading and writing rows. Each one was found the hard way.
   column (the `name`-table idiom).
 - **[PROBED]** `string::starts_with` = TableScan (*"unsupported predicate"*, the index is ignored).
   A range predicate `value >= $p AND value < $p_hi` = IndexScan, identical results. Use the range.
+- **⚠ Indexing an ARRAY column: the element path `<field>.*` is the ONLY spelling that serves
+  containment — and the plain spelling builds an index that answers a DIFFERENT question, silently.**
+  [VENDOR] the DEFINE INDEX page documents array-element composite indexes since 3.1.0
+  (`DEFINE INDEX tag_age ON article FIELDS tags.*, age`, accelerating `CONTAINS` / `CONTAINSANY` /
+  `ANYINSIDE` — `define/indexes.mdx` §*Array-element composite indexes*). [PROBED 2026-08-01, 3.2.1 —
+  receipts + verbatim instrument:
+  `docs/plans/v2/receipts/2026-08-01-dnd-rag-scoping/REPORT-graph-scout-1.md` §3.1]:
+  - `DEFINE INDEX … FIELDS classes` (no `.*`) on an `array<string>`: **every containment spelling**
+    (`'x' INSIDE classes`, `classes CONTAINS 'x'`, `CONTAINSANY`) **TableScans** — useless.
+  - ⚠ The one predicate that plain index DOES accelerate is `WHERE classes = 'x'` — which
+    **IndexScans and returns `[]`**. No error; the plan proves the index fired; the answer is wrong.
+    The natural-looking index plus the natural-looking equality = a fast, silent, empty result.
+  - `FIELDS classes.*` (probed as a SINGLE-field element path, beyond the vendor's composite
+    example): all three containment spellings IndexScan and return correct rows.
+  - Composite indexes are **leading-column only** — probed on both an element-path composite
+    (`FIELDS classes.*, level`) and a scalar one (`FIELDS name, source_book UNIQUE`): a
+    trailing-column-only predicate TableScans. Useful corollary: ONE `UNIQUE(name, source_book)`
+    serves both cross-book uniqueness and the leading-column exact-name lookup.
 - **`UPSERT`** is insert-first ("INSERT, otherwise UPDATE"). Gotcha: `UPSERT <id> … WHERE` on an
   existing id whose WHERE fails **cannot create** a row.
 - **`record<t>` links do NOT auto-clean on target delete** — but graph RELATION edges **do**
@@ -472,6 +490,20 @@ The house rules for reading and writing rows. Each one was found the hard way.
   - ⚠ Because `UNIQUE(in, out)` makes a duplicate a **loud ERR**, a fan-out that may repeat a
     recipient must **dedupe before the RELATE loop** (or catch it) — the index is a correctness
     backstop, not a de-duplicator you can lean on silently.
+- **⚠ A graph TRAVERSAL NEVER uses a secondary index.** [PROBED 2026-08-01, 3.2.1 — receipt
+  `docs/plans/v2/receipts/2026-08-01-dnd-rag-scoping/REPORT-graph-scout-1.md` §3.3, probe 5 J4]
+  Every traversal plan is a `GraphEdgeScan` from the start record, with filters applied as per-row
+  predicates — a defined index on the filtered field provably never appears in the plan for
+  `SELECT VALUE <-edge<-(node WHERE field = $v) FROM start:id`. Bounded by the start node's degree,
+  which is usually what you want — but **you cannot index your way out of a traversal.** For an
+  indexable read, query the edge table AS A PLAIN TABLE (`SELECT VALUE in.* FROM edge WHERE
+  out = $node AND in.field = $v`, with an index on `out`) — which is how `graph_surreal.py` already
+  reads the code graph (plain SELECTs on `refers`; not one arrow traversal in its read surface).
+  **This fact decides FIELD-vs-EDGE-HOP modelling questions:** a scalar attribute (a level, a rank)
+  filtered through a hop is un-indexable by construction — keep scalars as indexed fields and spend
+  edges on real relationships. ⚠ Return-shape corollary, same probes: the traversal spelling
+  returns `[[…]]` (one array per start record) where the edge-table spelling returns a flat list —
+  a render-consistency trap if both feed one served tool.
 - **Recursive graph paths** — `@.{n}` fixed, `@.{1..n}` bounded, `@.{..}` open (cap 256); nested
   shapes `@.{1..n}.{ id, kids: ->edge->t.@ }`. **Add a `TIMEOUT`** and assert DAG acyclicity (3.1.5
   fixed min-depth>1 node drops on cycles).
@@ -701,6 +733,23 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
     documented missing-**projection**-reads-`None` behaviour (§2). The vendor addresses neither, and
     our own §2 sentence was silent about `SELECT *` for months. [PROBED 2026-07-24, 3.2.1]
     ⚠ Load-bearing for every `option<>` column: **a reader must not assume presence.**
+13. **A `WHERE` over a subquery-`FROM` that yields an ARRAY is evaluated ONCE over the whole
+    array, not per element** — all-or-nothing, in BOTH directions: a field predicate finds no such
+    field on the array and returns `[]` (false-empty); a traversal predicate flattens over every
+    member and keeps them ALL (**false-INCLUDE** — a "level 4" filter serving a level-1 row, no
+    error anywhere). [PROBED 2026-08-01, 3.2.1, seven controlled legs —
+    `docs/plans/v2/receipts/2026-08-01-dnd-rag-scoping/REPORT-graph-scout-1.md` §6.2] The vendor
+    documents per-row `WHERE` over a **plain** subquery (`from.mdx`:
+    `SELECT * FROM (SELECT age >= 18 AS adult FROM user) WHERE adult = true`) and is silent on the
+    single-value/array shape (`SELECT VALUE <-edge<-node FROM ONLY x` — `UnwrapExactlyOne` makes
+    the outer `FROM` one array). **Rule: never put a traversal-producing subquery in a `FROM`** —
+    use the node-side parenthesised filter (`<-edge<-(node WHERE …)`) or read the edge table as a
+    plain table; both measured correct.
+14. **The plain-array-index silent-`[]` equality trap** (§2): `DEFINE INDEX … FIELDS <array_col>`
+    (no `.*`) + `WHERE <array_col> = 'x'` IndexScans and returns `[]` with no error. The vendor
+    documents the correct `.*` element-path form (since 3.1.0) but nowhere says the plain spelling
+    is useless for containment, nor that the one predicate it accelerates answers a different
+    question. [PROBED 2026-08-01, 3.2.1]
 
 ---
 
@@ -725,6 +774,7 @@ Small, sharp, and each one cost somebody an hour. All [PROBED 2026-07-12] unless
 | Compare `INFO FOR TABLE` output against the DDL you emitted [PROBED 2026-07-25, 3.2.1] | pin the **EMITTED** statement (house idiom) | the stored echo is **NORMALISED and will not match**: a closure `\|$r\|` comes back `\|$r: any\|`, and `option<array<string>>` comes back `none \| array<string>`. Any pin diffing the echo against emitted DDL mismatches on closure- or `option<>`-bearing definitions. |
 | Put a `RecordID` in a `set` or use it as a dict key [PROBED 2026-07-27, SDK 2.0.0] | decode first — `str(record.id)` (the SDK's own rendering) and key on the `str` | **`RecordID` is UNHASHABLE** — `__hash__ is None` on SDK 2.0.0, so a `set()` / dict key raises `TypeError` at runtime. **Two independent agents hit this within one packet** (a probe script raised mid-body; a builder measured it deliberately), which is why it is here. ⚠ And decode with **`str(record.id)`, never `str(row["id"]).split(":", 1)[-1]`** — the split is right for `agent:abc` and **WRONG for a uuid-shaped id**, which the SDK renders `agent:⟨0199c4f1-7d2a-…⟩`. That exact guess cost **130 red pins** across two suites (finding #248: seven hand-rolled copies of this parse exist package-wide). |
 | Decode a record id **SERVER-SIDE** in a `SELECT` whose **FROM is an ARRAY of bound RecordIDs** that may contain a ghost [PROBED 2026-07-28, 3.2.1] | project the **BARE `id`** and decode CLIENT-SIDE (`str(record.id)`): a RecordID naming no row is then **silently dropped** from the result, which is the fail-CLOSED behaviour a bounded read wants — `SELECT id, status FROM array::map([…], \|$v\| type::record('task',$v))` | **`record::id(id)` is an ENGINE ERROR**: *"Incorrect arguments for function `record::id()`. Argument 1 was the wrong type. Expected `record` but found `NONE`"*. The FROM-clause dereference yields `NONE` for the ghost and the function refuses it — **and inside a `BEGIN…COMMIT` this rolls the WHOLE transaction back**, turning the exact phantom-endpoint case the read exists to serve into a failure. ⚠ **Scope, measured:** `record::id()` on a FIELD VALUE (e.g. `record::id(in)` over an edge table holding a dangling endpoint) is **UNAFFECTED** — the value is a RecordID whether or not the row exists; only the FROM-clause dereference produces `NONE`. (#267, cost a rolled-back migration in packet 04b-1.) |
+| Address a row whose id the SDK minted as `RecordID("t", "4")` — a numeric-LOOKING **string** id [PROBED 2026-08-01, 3.2.1] | bind the `RecordID` as a parameter (always sound) — or the documented backtick literal `` t:`4` `` ([VENDOR] `record-ids.mdx`: a number-as-string id is stored backticked **precisely because `article:10` and `` article:`10` `` are DIFFERENT records** — the int-vs-string distinctness is vendor-documented, not ours) | `SELECT * FROM t:4` — that literal names the **INT-id** record, a different row entirely; with only the string-id row present it reads as **`[]`**, no error. And `t:'4'` is a **PARSE ERROR** (*"Unexpected token `a strand`"*) — the single-quote escape does not exist. Corollary: **never mint numeric-looking ids** (levels, CRs, page numbers, editions) — prefer non-numeric slugs or always-bound RecordIDs. This nearly shipped as a false "nested traversal filters return empty" engine bound; only a positive control caught it. |
 
 ---
 
@@ -907,3 +957,17 @@ probe to confirm them and to find what they omit.**
 Receipts: `REPORT-probe-pkt03-store.md` · `REPORT-docs-surreal-31-reconcile.md` ·
 `REPORT-probe-enforced-clause.md` · `REPORT-audit-edge-preflight.md` (all preserved under
 `docs/plans/v2/receipts/2026-07-19-packet03/`).
+
+**Addition pass 2026-08-01** (D&D-graph scoping — six probes on spike-surreal 3.2.1, throwaway
+namespaces, verbatim instruments preserved in
+`docs/plans/v2/receipts/2026-08-01-dnd-rag-scoping/REPORT-graph-scout-1.md` §7; each claim checked
+against `surrealdb-docs` / `surrealql-tests` tiers before landing here). §2 gained the
+array-index element-path rule (vendor-corroborated) with its silent-`[]` equality trap · §4 gained
+**"a traversal never uses a secondary index"** plus the `[[…]]`-vs-flat return-shape note · §6.6
+gained items 13–14 · §7 gained the SDK string-id vs SurrealQL int-id literal row. **And the
+docs-first check caught the scout over-claiming novelty:** its report calls the int-vs-string id
+face *"not written down anywhere I can find"* — FALSE; `record-ids.mdx` documents it explicitly
+(the backtick storage rule exists *because* `article:10` ≠ `` article:`10` ``). Only the SDK-mint
+face and the `t:'4'` parse error are ours. The archived report carries a correction header. Same
+lesson as 2026-07-19, running in both directions: probe to find what the docs omit, and read the
+docs to find what your probe wrongly claims to have discovered.

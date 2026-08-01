@@ -24,6 +24,15 @@ brief-base v9 read
   G4a / probe 5 J1a) · §3.5 + §6.2 (two SILENT wrong-answer hazards, probes 3–4) · §4.3 (SurrealQL
   for the three target queries) · §5 (DDL) · §7 (instruments verbatim)
 
+> ⚠ **CORRECTION (lead, 2026-08-01, on archiving):** §6.3's claim that the int-vs-string record-id
+> face is *"not written down anywhere I can find"* is **WRONG about vendor silence** — the vendor
+> documents it explicitly (`surrealdb-docs` tier, `record-ids.mdx`: a number-as-string id is stored
+> backticked *because* `article:10` ≠ `` article:`10` `` are different records), which also supplies
+> the working literal escape (backticks) that §6.3 believed closed. The SDK-mint face
+> (`RecordID("t","4")` → string id) and the `t:'4'` parse error remain probe-only. Folded into
+> `docs/reference/surrealdb-31-capabilities.md` (§2 · §4 · §6.6 items 13–14 · §7) 2026-08-01; that
+> file is the authority over this report where they differ.
+
 ---
 
 ## 1. Capability check (brief-base §4)
