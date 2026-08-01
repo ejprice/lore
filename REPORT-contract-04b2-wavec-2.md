@@ -543,6 +543,76 @@ pins a query-path `LIMIT` value, so rider 6's re-authoring clause was never trig
 
 ---
 
+# §10 · POST-HANDOFF — #308 FIXED, AND THE INHERITED DIAGNOSIS WAS HALF RIGHT
+
+Lead directive (2026-08-01, thread `q:04b2-c1-contract`): *"#308 IS YOURS TO FIX — a
+one-character change. `_surreal_harness`'s docstring states a DERIVED importer count of 45;
+the true count is now 46, and the cause is your own `test_task_read_surface.py` joining the
+importers."* Correct about the cause, and **incomplete about the fix** — caught by
+re-deriving rather than by typing what I was told.
+
+## 10.1 The measurement
+
+`test_surreal_harness.py::TestTheHarnessDeclaresNoRetryPolicyOfItsOwn::test_the_harnesss_docstring_counts_are_the_DERIVED_counts`
+checks the docstring against **TWO** AST-derived populations, and its own failure message
+says why: *"Do not collapse this into the importer count — they are different populations
+(audit-150 R2)."* Run through the pin's own helpers at `f67a219` + my files:
+
+```
+DERIVED importers: 46          STATED: 45
+DERIVED connect_admin callers: 29   STATED: 28
+test_task_read_surface.py in importers: True
+test_task_read_surface.py in callers:   True     <-- the half nobody named
+```
+
+**`test_task_read_surface.py` joined BOTH populations**, because
+`TestTheChainRenderNAMESTheBlockersThatCarryNoEDGE._seed_phantom_blocked` calls
+`connect_admin` to raw-seed the legacy phantom-blocked row. So both numbers drifted, and
+**45→46 alone would have left the pin RED on the second assertion.**
+
+## 10.2 The fix, and the positive control proving its second half was load-bearing
+
+Both counts corrected in `_surreal_harness.py`'s docstring (46 importers · 29
+`connect_admin` callers). Pin green: `tests/test_surreal_harness.py -n auto` → **57 passed**.
+The pin was NOT loosened — the directive was explicit about that and it is right; the pin
+did exactly its job and caught a real drift within minutes of the file landing.
+
+Then the check that separates a fix from a coincidence — revert ONLY the caller count and
+require the pin to redden:
+
+```
+./scripts/mutation_proof.py --file loremaster/tests/_surreal_harness.py \
+  --anchor '29 test files — calls ``connect_admin``' \
+  --replacement '28 test files — calls ``connect_admin``' ...
+E   assert 28 == 29
+1 failed
+tree restored byte-exact (md5 1505580ffafac350281357f269d55596)
+PROOF HELD — the declared RED set fired EXACTLY
+```
+
+**So the second half of the fix is not tidying: without it #308 stays open**, and the
+"single remaining non-contract-first failure" the gate wrapper isolated would still have
+been failing after a fix that looked complete.
+
+## 10.3 Why this is in the report and not just in a reply
+
+*"Re-derive every number you inherit — from a report, from a doc, from this brief"* is the
+standing brief's own line, and this is the cheapest possible receipt for it: the inherited
+number (45→46) was true, and acting on it verbatim would have shipped a still-red gate. Two
+populations, one named — the #102/#120 conflation shape, one level down, in a one-line
+docstring fix. Recorded here because a correction that lives only in a message body is one
+the next session never meets (#303).
+
+## 10.4 Scratch tree — lead ruling recorded
+
+`/home/ejprice/scratch-c1-ref` **KEPT**, and it does **NOT** go to the builder: it is a
+known-correct implementation, so handing it over would turn the build phase into a
+transcription and destroy the builder-≠-grader independence. It stays as evidence and as a
+cross-check available to the cold audit; the lead calls its disposal at wave close-out.
+This supersedes §9 item 5's open question.
+
+---
+
 *Written 2026-08-01 by `contract-04b2-wavec-2` (Opus) against `feat/surreal-unification`
 @ `f67a219`. Every number here was derived this session by the command shown beside it;
 nothing is inherited, including from the predecessor's report. No git command was run; the
