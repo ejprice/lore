@@ -108,6 +108,13 @@ UNACKED_DIRECTIVE_COUNT = 3
 #: trigger evaluated only where the count is 0 or 5 cannot see an off-by-one.
 BATCH_SIZE = 5
 
+#: The ``lore_findings`` READ actions that address ONE finding and therefore
+#: require an ``id_or_number``. Named rather than inlined at the call site so the
+#: harness's own list cannot drift from the dispatcher's requirement — the drift
+#: that made C-DEF 2 (REPORT-refbuild-c3-1.md §3.2) invisible until a correct
+#: build raised ValueError on both of them.
+_FINDING_ACTIONS_NEEDING_A_REF = ("get", "chain_head")
+
 
 # --------------------------------------------------------------------------- #
 # T3's HOSTILE IDENTITY — the fixture the whole type ruling rests on.
@@ -1337,6 +1344,52 @@ async def _pending_traffic_for(
 # --------------------------------------------------------------------------- #
 
 
+def _registered_agent(name: str, session: str) -> tuple[str, Any]:
+    """A registry row for ``name``, keyed by the id the REGISTRY ITSELF would mint.
+
+    ⚠ **REPAIRED 2026-08-01 (``refbuild-c3-1``, C-DEF 1 of five found by BUILDING
+    against this contract — REPORT-refbuild-c3-1.md §3.1).** The first version of
+    :func:`_footer_harness` registered NOBODY: it built an empty
+    ``FakeAgentRegistry`` and seeded only the MESSAGE ledger's id->name map, which
+    is that fake's stand-in for the ``agent`` table's EXISTENCE check, not a
+    registry. No identity could resolve, so **seven pins — every leg asserting a
+    footer IS served — were RED against a correct build.**
+
+    And registering was only half the fix. The old harness keyed the inbox on
+    ``f"agent:{name}"``, a shape nothing in this system mints, while the registry
+    mints ``uuid5(NAMESPACE_URL, f"lore://agent/{session}/{name}").hex``. A build
+    that resolved an identity and then counted
+    ``pending_traffic(agent_id=row.id)`` would have counted an **EMPTY** inbox —
+    resolution green, traffic zero, no footer, the same seven reds with a
+    completely different cause. **The two fakes must agree on the agent id**, and
+    the registry's is the real one: in production the ``to`` edge points at the
+    ``agent`` ROW.
+
+    ⚠ It is also the reason that old id shape was load-bearing in the WRONG
+    direction: ``f"agent:{name}"`` is exactly what a reverse lookup over
+    ``FakeMessageLedger.db.agents`` returns, so the harness was quietly
+    prescribing an architecture in which identity resolves through the MESSAGE
+    LEDGER — a SECOND copy of name resolution (#102's shape). Keying on the
+    registry's own id removes the fixture's vote on that design.
+    """
+    from datetime import UTC, datetime
+
+    from _comms_fakes import FakeAgentRegistry
+    from loremaster.agents import STATUS_ACTIVE, Agent
+
+    agent_id = FakeAgentRegistry._agent_id(session, name)
+    now = datetime.now(UTC)
+    return agent_id, Agent(
+        id=agent_id,
+        name=name,
+        session=session,
+        role="builder",
+        status=STATUS_ACTIVE,
+        registered_at=now,
+        heartbeat_at=now,
+    )
+
+
 def _footer_harness(
     *,
     unread: int,
@@ -1346,23 +1399,30 @@ def _footer_harness(
     count_registry_reads: bool = False,
 ) -> Any:
     """An ``AppContext``-shaped double wired for the footer's dependencies."""
+    from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
     from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
     from _message_fakes import FakeMessageDatabase, FakeMessageLedger
     from _task_fakes import FakeTaskDatabase, FakeTaskLedger
-    from test_comms_tool import FakeAgentDatabase, FakeAgentRegistry
 
     message_ledger = FakeMessageLedger(db=FakeMessageDatabase())
     registry = FakeAgentRegistry(db=FakeAgentDatabase())
     reads = {"count": 0}
 
-    if registered is not None:
-        agent_id = f"agent:{registered[0]}"
-        message_ledger.db.agents[agent_id] = registered[0]
+    def _enrol(name: str, session: str) -> None:
+        """Register ``name`` and seed ITS inbox under the SAME id — see
+        :func:`_registered_agent` for why both halves are required.
+        """
+        agent_id, row = _registered_agent(name, session)
+        registry.db.agents[agent_id] = row
+        message_ledger.db.agents[agent_id] = name
         _seed_inbox(message_ledger, agent_id, unread=unread, unacked=unacked)
+
+    if registered is not None:
+        _enrol(*registered)
     if owner_identity is not None:
-        owner_id = f"agent:{owner_identity}"
-        message_ledger.db.agents[owner_id] = owner_identity
-        _seed_inbox(message_ledger, owner_id, unread=unread, unacked=unacked)
+        # R8(2)'s fallback matches EXACTLY against a REGISTERED AGENT NAME, so an
+        # owner value must name a registry row too — not only a ledger key.
+        _enrol(owner_identity, CALLER_A[1])
 
     if count_registry_reads:
         inner = registry.get_agent
@@ -1457,6 +1517,21 @@ async def _findings_call(
     if batch_writes is not None:
         kwargs["items"] = await _batch_items(harness, writes=batch_writes)
         kwargs["actor"] = "contract-04b2-wavec-1"
+    elif action in _FINDING_ACTIONS_NEEDING_A_REF:
+        # ⚠ REPAIRED 2026-08-01 (C-DEF 2, REPORT-refbuild-c3-1.md §3.2). These two
+        # actions were driven with NO ``id_or_number``, and every correct build
+        # REFUSES that (``server._require_finding_ref`` — *"never a lookup on an
+        # empty id"*), so both pins died on a ValueError before any footer
+        # decision was reached. A READ needs something to read: the finding is
+        # filed HERE, through the ledger, so the id is real rather than invented.
+        seeded = await harness.finding_ledger.report(
+            subject="a real subject",
+            body="",
+            area="test_comms_footer",
+            category="contract_gap",
+            created_by="contract-04b2-wavec-1",
+        )
+        kwargs["id_or_number"] = seeded.id
     elif action == "report":
         kwargs.update(
             subject="a real subject",
@@ -1494,6 +1569,15 @@ async def _claim_call(*, agent: tuple[str, str] | None, pending: bool, wins: boo
     ``wins=False`` is produced by CLAIMING THE TASK FIRST with a different owner, so the
     loss is the ledger's own CAS outcome rather than a stubbed branch — the losing
     branch's "wrote nothing" property is then a real fact about a real call.
+
+    ⚠ **REPAIRED 2026-08-01 (C-DEF 3, REPORT-refbuild-c3-1.md §3.3).** This helper
+    called ``task_ledger.create(subject=…, description=…)`` and then read
+    ``task.id``. **Neither exists.** The verb is ``create_task(subject,
+    description, *, created_by)`` — POSITIONAL — and it returns the opaque **id
+    STRING**, not a ``Task``, so the wrong return type was a second error waiting
+    behind the first ``AttributeError``. The cost was not two pins: it was the
+    ENTIRE outcome-vs-verb distinction, which this class calls *"the leg that
+    distinguishes outcome-keyed from verb-keyed"* — it had never once executed.
     """
     from loremaster.server import AppContext
 
@@ -1501,14 +1585,14 @@ async def _claim_call(*, agent: tuple[str, str] | None, pending: bool, wins: boo
         unread=UNREAD_COUNT if pending else 0,
         unacked=UNACKED_DIRECTIVE_COUNT if pending else 0,
     )
-    task = await harness.task_ledger.create(
-        subject="a real subject",
-        description="a real description",
+    task_id = await harness.task_ledger.create_task(
+        "a real subject",
+        "a real description",
         created_by="contract-04b2-wavec-1",
     )
     if not wins:
-        await harness.task_ledger.claim_task(task.id, "someone-else")
-    kwargs: dict[str, Any] = {"task_id": task.id, "owner": "contract-04b2-wavec-1"}
+        await harness.task_ledger.claim_task(task_id, "someone-else")
+    kwargs: dict[str, Any] = {"task_id": task_id, "owner": "contract-04b2-wavec-1"}
     if agent is not None:
         kwargs["agent"], kwargs["session"] = agent
     return str(await AppContext.claim_task(harness, **kwargs))

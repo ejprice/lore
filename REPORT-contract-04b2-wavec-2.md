@@ -292,6 +292,23 @@ tests/test_mcp_server.py tests/test_txn_contention.py   -n auto
   `type: ignore[call-arg]` on the extra-field rejection, which is *unused* at HEAD and
   *used* on the build.
 
+## 3.3b The OTHER half of "green before AND after" — measured at HEAD
+
+The receipt above proves the contract is satisfiable on a correct build. The complementary
+claim — that nothing this slice put into the working tree reddens anything **today** — is a
+separate measurement, and it is the one that decides whether a builder walks into a trap:
+
+```
+pytest tests/test_mcp_server.py tests/test_blocks_edge.py tests/test_task_ledger.py \
+       tests/test_txn_contention.py tests/test_query_tasks_bounded.py -n auto
+1149 passed in 219.98s (0:03:39)                       # at f67a219 + my three files
+```
+
+So `FakeTaskLedger.direct_dependents` and the #268 tightening are **green before the
+production verbs land and green after** (1149/0 here, inside the 1197/0 above). The only
+red anywhere attributable to this slice is inside `test_task_read_surface.py` itself, by
+design.
+
 ## 3.4 Gate state AT HEAD, scoped, with no unqualified green claim
 
 ⚠ The canonical typecheck is RED at HEAD for reasons that are not mine (finding #306).
@@ -499,10 +516,13 @@ pins a query-path `LIMIT` value, so rider 6's re-authoring clause was never trig
 
 # §9 · FLAGGED — NOTICED, OUT OF MY SCOPE, NOT BURIED
 
-1. **`scripts/lore_tool_name_currency.py` carries 2 ruff errors at `f67a219`** (unused
+1. **`scripts/lore_tool_name_currency.py` carried 2 ruff errors at `f67a219`** (unused
    `subprocess` import, `PLW2901`). Pre-existing, in a path my brief marks do-not-touch
-   (a gate-wrapper builder is working there). Whoever owns that file should sweep it —
-   `uv run ruff check .` is a committed gate and it is red for this alone.
+   (a gate-wrapper builder is working there). `uv run ruff check .` is a committed gate and
+   it was red for this alone. Filed as **finding #311**. ⚠ **Scope note, so the finding is
+   not read as current forever:** measured 2026-08-01 at `f67a219`; by the end of this
+   session that file showed as MODIFIED in the shared working tree by another agent, so it
+   may already be fixed — re-derive before acting on #311.
 2. **R9's DEFAULT display cap is unimplemented and unpinned** — decision-needed #3.
 3. **A defect CLASS worth an invariant, from §1.1's `TestTheCALLERSOwnLimitIsWhatGetsVALIDATED`:**
    *a seam that ADJUSTS a caller's parameter before the layer that validates it destroys

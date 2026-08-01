@@ -14,13 +14,15 @@ brief project v7 read
   seams (grep's honest territory).
 - Packages considered: none — no mechanism specified beyond those already ruled
   (`networkx`/`graphlib` routed by predecessor §B4; the footer seam ruled §B5).
-- decisions-needed: none for the lead; six ⚠ OPERATOR-REVIEWABLE items in §5.
+- decisions-needed: none for the lead; eight ⚠ OPERATOR-REVIEWABLE items in §6.
 - receipt pointers: §1 the split · §2 ESC-5's mechanism + the (b)-elimination derivation ·
-  §3 the #268 instrument · §4 the gate-definition ruling (added same day, thread
-  `q:04b2-gate-definition`, on the lead's §L-4 measurement) · §5 operator-reviewable ·
-  findings #300/#301 (the forks, filed by `contract-04b2-wavec-1`) ·
-  `REPORT-contract-04b2-wavec-1.md` and `REPORT-lead-04b2-wavec.md` §L-4 (the escalations
-  this rules on; archive all under `docs/plans/v2/receipts/` at wave close-out).
+  §3 the #268 instrument · §4 the gate-definition ruling (thread `q:04b2-gate-definition`,
+  on the lead's §L-4 measurement) · §5 the footer-seam rulings (thread `q:04b2-footer-seam`:
+  §B5 pin overturned on #305, C-DEF 5 resolved for R8, the resolution architecture ruled) ·
+  §6 operator-reviewable · findings #300/#301/#305 (filed by `contract-04b2-wavec-1`) ·
+  `REPORT-contract-04b2-wavec-1.md`, `REPORT-lead-04b2-wavec.md` §L-4 and
+  `REPORT-refbuild-c3-1.md` (the escalations this rules on; archive all under
+  `docs/plans/v2/receipts/` at wave close-out).
 
 **Authority:** operator-delegated design authority (same delegation as
 `receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md`). These are RULINGS.
@@ -275,7 +277,116 @@ covered by A–F, the lead should resend it — this ruling is open to a candida
 
 ---
 
-# §5 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §5 · RULING 5 (follow-up, 2026-08-01, thread `q:04b2-footer-seam`) — THE NEUTRALISATION PIN RETIRES; THE CONTRACT PIN YIELDS TO R8; THE REGISTRY IS THE ONE RESOLUTION SEAM
+
+Grounds read this session: finding #305 (the by-construction measurement) ·
+`REPORT-refbuild-c3-1.md` in full (the five C-DEFs, the both-ways C-DEF-5 construction,
+§2.2/§3.1b) · packet §RULINGS ROUND 3 R8 verbatim · predecessor §B5.
+
+## 5.1 · Q1 (#305) — §B5's neutralisation pin is OVERTURNED; the closure is provenance, and it is now pinned as a CHAIN
+
+**Predecessor §B5 pin (1) — "a footer-shaped forgery renders NEUTRALISED" — is overturned,
+explicitly and with the reason said aloud:** it fails every §B5-compliant build, measured by
+construction (#305: `sanitise_line` collapses CONTROL characters and does nothing to
+same-line text — the forged instruction survives verbatim, backticks included). §B5 derived
+"neutralised" from the row-forgery case (multi-line stored text, where the seam DOES
+defang) and stated it over the footer case — DD-3.c's quantifier shape, exactly as the
+finding says. A pin that is RED on every correct build is the C-DEF class; it cannot stand.
+
+**#305 option (a) is ADOPTED — with one correction to the finding's own residual claim.**
+The finding says a build that *"exact-matches then renders the CALLER'S RAW STRING re-opens
+the vector completely."* **Overstated:** after a TRUE exact match, the raw string is
+byte-equal to a registered name, and registered names are charset-clean by construction
+(`AGENT_NAME_PATTERN` fullmatch at registration — the #210 fix). Raw-echo-after-exact-match
+is therefore byte-identical to registry-echo and is NOT a vector. **The real vectors are
+(i) a render WITHOUT a successful resolution and (ii) a match that is not exact
+(normalised / heuristic / fuzzy).** The load-bearing invariant is a three-link CHAIN, each
+link pinned:
+1. **Registration enforces the charset** (`fullmatch`, no space/backtick/`=`/newline) —
+   already pinned in the comms contract (#210's receipts);
+2. **The match is EXACT, never heuristic** — `test_the_fallback_matches_EXACTLY_never_
+   heuristically`, which refbuild measured VACUOUS today (C-DEF 1) and which MUST be made
+   non-vacuous by the harness repair;
+3. **No resolution ⇒ no footer** (unmatched silence) + the positive control that a benign
+   REGISTERED identity DOES reach the footer — without which "cannot reach" is satisfied
+   by "nothing ever reaches", the exact vacuous state refbuild caught live.
+The provenance pin (`…REGISTERED_name_never_the_RAW_caller_string`) STAYS as belt — it
+makes the safety argument local — but the contract's docstring must not claim raw-echo-
+post-match is exploitable; it is not, and a false threat model mis-spends the next
+auditor's attention (a gate needs a threat model).
+
+**§B5's seam CONSTRUCTION stands; its role is demoted from closure to discipline.** The
+footer still builds through `render_line`/`Rendered` with the isinstance pin and the
+mutation proof — but the mutation proof's declared-RED set is RE-POINTED (the forgery pin
+is dead; the swap-to-bare-f-string now reddens the isinstance pin and the template-literal
+pin). Rationale for keeping it: uniformity (every served comms line rides one seam — a
+bare-f-string footer is a new pattern inviting #102-style cloning), and the runtime
+control-char assert is free. **Named re-open trigger, generalising #305(b):** the day any
+footer slot carries text that is not (a registry-charset-gated name ∨ a derived int ∨ a
+literal constant), the containment question re-opens as a footer-specific decision — the
+seam alone is KNOWN-insufficient for same-line text, measured.
+
+**T3's packet text is amended at close-out** per #305(a): the footer's forgery is closed
+by the identity charset + provenance chain, not by the render seam.
+
+## 5.2 · Q2 (C-DEF 5) — the CONTRACT yields; R8(2) stands; the dead pin is re-authored as the BUDGET pin
+
+`registry_reads == 0` contradicts an OPERATOR ruling whose cost line prices the exact read
+it forbids (*"one charset-gated registry read per identity-less write"* — R8, verbatim).
+The hierarchy is not close: **the pin yields.** But what the pin PROTECTED survives —
+R1's rejection of per-attribution scans and heuristic sweeps — restated as the budget pin,
+with the quantifier law applied (every world forced by a fixture, not one):
+
+| world | reads | footer |
+|---|---|---|
+| no attribution value supplied at all | **0** | none |
+| value FAILS the charset gate (space/`=`/backtick/…) | **0** — the gate is what "charset-gated" MEANS: no read for a value that cannot be a name | none |
+| value passes charset, UNREGISTERED | **≤ 1** | none |
+| value passes charset, REGISTERED | **≤ 1** | third-person, no drain imperative, coupling disclosed on the field (R8(2) verbatim) |
+
+Plus the ceiling: **at most ONE registry read per call, on every path** — that is the pin
+that still kills the build R1 rejects. ⚠ The "silence half" of the old pin is kept but
+CORRECTLY SCOPED: an omitted `agent=` is silent only when the attribution value resolves
+to nothing — under R8(2) a registered `created_by` legitimately footers third-person; a
+pin asserting unconditional silence for omitted `agent=` would re-contradict the ruling
+one world over.
+
+## 5.3 · Q3 — the ARCHITECTURE is ruled: the REGISTRY is the one resolution seam; the harness is a defect, not a design
+
+**Reading A stands: identity resolution goes through `agent_registry.get_agent`** — R1
+verbatim ("resolved through the registry"), R8's cost line names a REGISTRY read, and ONE
+IMPLEMENTATION: name→row resolution has exactly one home. Reading B (resolution via the
+message ledger's view of the `agent` table) would mint a SECOND copy of name resolution —
+#102's shape — and is REJECTED. Refbuild's sentence is adopted as the finding: *"the
+harness, not the ruling, is currently deciding the architecture"* — as of this ruling it
+no longer does. **The C3 harness's id convention (`f"agent:{name}"`) and its empty
+registry are adjudicated CONTRACT DEFECTS** (C-DEFs 1–3, plus C-DEF 4's one-line import),
+to be landed IN the contract by its author per refbuild §6's plugin — including the second
+half of C-DEF 1 (the two fakes must agree on the registry's uuid5 id; in production the
+`to` edge points at the `agent` row). The three pins refbuild measured as passing
+VACUOUSLY are re-read by the author after the repair, per its list.
+
+**Riders routed to the builder's brief** (refbuild found them; a brief that omits them
+buys a fix wave): the `test_comms_tool` charset-prose constraint (§4.1 — keep *"must stay
+in the safe charset"*, drop the false clause), the `test_blocks_edge::_tool_seam` wiring
+co-edit (§4.2 — empty fakes, NOT a missing-service guard; a silently-skipped footer is
+confident silence), the CL1 vocabulary constraint (§4.3 — the footer paragraph may use
+none of the seven duty words), and the 23-call-site unbound-dispatcher rewrite (§2.1).
+
+**The scratch tree** `/home/ejprice/scratch-c3-ref` holds the only copy of the reference
+build (worktree-abandonment law, applied to scratch): **keep it until the real C3 build
+lands** — it is the diff oracle — then discard; the load-bearing instrument
+(`c3_harness_repair.py`) is already pasted verbatim in refbuild §6 and survives either way.
+
+**Falsifiers:** 5.1 — a footer path found rendering ANY value that did not ride the
+three-link chain (⇒ the containment question re-opens immediately, not at the trigger);
+5.2 — a measured R8(2) path needing a second read (⇒ back here, the ceiling is ruled, not
+assumed); 5.3 — a production consumer found resolving names outside the registry (⇒ #102
+escalation, not a quiet third copy).
+
+---
+
+# §6 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2
@@ -296,6 +407,13 @@ covered by A–F, the lead should resend it — this ruling is open to a candida
    the mypy-clean idiom NOW (option D), that is their fork to re-open.
 6. **Packet-39's close-out left an unadjudicated red typecheck at HEAD** — a process
    finding about an operator-adjacent packet, owed a ledger row (Ruling 4 item 5).
+7. **Predecessor §B5's neutralisation pin overturned** (Ruling 5.1) — a same-authority
+   overturn, on a by-construction measurement (#305). The seam construction itself stands,
+   demoted to discipline; the closure is the charset+provenance chain.
+8. **T3's packet text amended at close-out** (Ruling 5.1) — the footer's forgery closure
+   is re-attributed from the render seam to the identity chain. T3 was ruled under the
+   operator's trust principle; the amendment narrows its mechanism claim to what is
+   measured, not its requirement.
 
 ---
 *Written 2026-08-01 by `design-sidecar-04b2-wavec-1` (Fable, long-running design sidecar)
