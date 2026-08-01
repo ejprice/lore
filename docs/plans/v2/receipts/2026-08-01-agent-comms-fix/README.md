@@ -21,9 +21,22 @@ gets."* These four probes are that step.
 |---|---|---|---|
 | `tools: *` / unrestricted | `general-purpose`, `claude` | full | present |
 | **EXCLUSION** list (*"all tools except …"*) | `Explore`, `Plan` | **~130 names, every server** | **reachable via `ToolSearch`; no literal naming needed** |
-| **ALLOWLIST** (explicit `tools:`) | 5 tdd-family, `contract-adversary`, `package-scout`, 2 odoo scouts | **EMPTY** | **only what is named LITERALLY** |
+| **ALLOWLIST** (explicit `tools:`) | 5 tdd-family, `contract-adversary`, `package-scout`, 2 odoo scouts | **exactly the allowlisted `mcp__*` names — nothing else** | **only what is named LITERALLY** |
 
 The broken population is exactly and only the **allowlist** shape.
+
+⚠ **The allowlist row was first written here as "deferred pool: EMPTY", and that was an
+over-generalisation** — corrected the same day by the acceptance probe
+(`REPORT-accept-tddcontract-comms-1.md` §5). The pool is empty **only when the allowlist names
+no `mcp__*` entry**, which was true of every agent measured *before* the fix. Once entries are
+added, the pool holds exactly those names. The distinction is load-bearing rather than pedantic:
+an allowlisted MCP tool arrives **DEFERRED, not up-front**, so a correctly-fixed agent still sees
+an opening schema with no lore tools in it and **must run the `ToolSearch "select:…"` load line**.
+An agent that believed the original wording would reason *"my schema has no lore tools and
+ToolSearch reaches nothing, so I have none"* and never issue the one call that hands them over —
+**reproducing #292/#294 by BELIEF, on a correctly-granted definition, with no gate able to see
+it.** `ToolSearch` is REQUIRED for these agents and is NOT sufficient; both halves are true, and
+the earlier text asserted only the second.
 
 ## The probes
 
