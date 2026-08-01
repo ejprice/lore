@@ -344,6 +344,30 @@ class FakeTaskLedger:
             rows = rows[:limit]
         return [task.model_copy(deep=True) for task in rows]
 
+    async def direct_dependents(self, task_id: str) -> list[str]:
+        """The ids of the tasks whose ``blocked_by`` column names ``task_id``.
+
+        ⚠ **ADDED 2026-08-01 (04b-2 wave C, slice C1) AHEAD of the production verb, and
+        the reason is a MEASURED one, not a courtesy.**  Ruling **R10(iii)** makes the
+        ``supersede`` render warn about the dependents it strands, and the dispatcher
+        therefore asks the LEDGER for them — so a double that lacks the method turns a
+        CORRECT build into an ``AttributeError`` in every test that drives this fake.  That
+        was measured on the C1 reference build (two reds in
+        ``test_mcp_server.py::TestTasksTool``), which is the same ripple 04b-1's contract
+        hit with ``query_tasks``' ``limit``: a contract's removed-behaviour inventory has
+        to survey the DOUBLES as well as the callers.  Green before the production verb
+        lands and after it, so a builder meets no red test here.
+
+        ⚠ **ONE HOP, deliberately** — the tasks whose OWN ``blocked_by`` names this id, not
+        the transitive downstream reach.  The warning exists to tell a caller which rows to
+        re-point; the claim CAS that strands them is itself a strictly one-hop predicate,
+        so a transitive answer would name rows the supersession did not strand.
+        """
+        await asyncio.sleep(0)
+        return sorted(
+            task.id for task in self.db.tasks.values() if task_id in task.blocked_by
+        )
+
     # -- the atomic claim -----------------------------------------------------
 
     async def claim_task(self, task_id: str, owner: str) -> ClaimResult:

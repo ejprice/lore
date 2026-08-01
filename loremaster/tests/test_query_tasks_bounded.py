@@ -153,13 +153,17 @@ Two things that row says which belong in this file's own head:
   answer-cap-not-scan-cap semantics — pinned by
   :class:`TestTheBlockedPartitionIsONEHOPNeverTransitive` and
   :class:`TestTheCapAppliesToTheANSWERNotTheCandidateScan`;
-* an UNNAMED one remains and is 04b-2's to close: a capped listing is byte-identical to a
-  complete one, MEASURED — see HOLE 8 and
-  :class:`TestACappedListingDISCLOSESNothingAboutItsOwnBOUND` at the foot of this file.
+* an UNNAMED one remained and was 04b-2's to close — a capped listing is byte-identical to
+  a complete one, MEASURED.  ✅ **CLOSED by 04b-2 wave C (escalation ESC-5, 2026-08-01):**
+  the KNOWN-BOUND class that lived at the foot of this file is DELETED per its own
+  instruction, and its successor is
+  ``test_task_read_surface.py::TestTheRenderedListingDISCLOSESItsOwnBOUND``.  See the
+  HOLE 8 block below, which is kept as the record of what was measured.
 
 ⚠ Leg 1 is sound on *set* and *predicate-as-WRITTEN* only — time, environment and
 *predicate-as-EXECUTED* are BELIEVED, not known (#24 · #107 · #131 · #139).  Only leg 2's
-constructions (HOLE 7, HOLE 8) are claims about what the code DOES.
+constructions (HOLE 7, and the deleted HOLE 8's successor) are claims about what the code
+DOES.
 """
 
 from __future__ import annotations
@@ -1339,10 +1343,36 @@ class TestTheCapAppliesToTheANSWERNotTheCandidateScan:
         though that cap is far larger than the answer: it spends its window on blocked rows,
         serves short, and its shortness is a lie about the ledger rather than a fact about it.
 
-        ⚠ The RENDERED half of T1 — the counted-elision line R9 rules for the no-limit
-        display cap (``+K more — re-run with limit=N``) — is 04b-2's surface and is NOT
-        pinned here.  This is the ledger half, and it is the half that has to be TRUE before
-        any render of it can be honest.
+        ⚠ The RENDERED half of T1 — the disclosure a capped listing owes about its own
+        bound — is 04b-2's surface and is NOT pinned here; it lives in
+        ``test_task_read_surface.py`` SECTION A (ESC-5, mechanism (c)).  This is the ledger
+        half, and it is the half that has to be TRUE before any render of it can be honest.
+
+        ⚠⚠ **FINDING #268 — THE OUTCOME LEG ALONE CANNOT SEE THE DEFECT IT IS NAMED FOR,
+        AND THE FINDING'S OWN "CHEAPEST FIX" IS BACKWARDS.**  #268 measured that the
+        outcome comparison below (``capped == unlimited``) passes a candidate-scan build
+        ≈55% of runs, because with ``generous_cap = 60`` against 66 candidates the wrong
+        build's window usually still happens to contain all ``true_answer_size`` unblocked
+        rows.  The finding names as its cheapest fix *"raise generous_cap past the candidate
+        population"* — which makes the leg **PERMANENTLY VACUOUS**: at a cap of 120 nothing
+        is discarded by either build, so the wrong build passes 100% of runs rather than 55%
+        (derivation: ``REPORT-contract-04b2-wavec-1.md`` §3.1, escalated as finding **#300**;
+        the design sidecar ruled option (ii) and this instrument).  **Do NOT implement #268
+        as written.**
+
+        **THE TIGHTENED FORM IS COMPARATIVE, NEVER A TRANSCRIBED CONSTANT.**
+        ``rows_read(status=open, blocked=False, limit=generous_cap)`` **==**
+        ``rows_read(status=open, blocked=False)`` — *the cap did not shrink the scan*.  A
+        constant (``rows_read == 66``) would be derived from the whole transaction's shape
+        (the ``LET``, the ``$rows`` echo, the blocker read) and would redden on innocent
+        refactors carrying a message about scan truncation — the P2 false-gate shape, and
+        the #194 tautology wearing a number.  The comparative form is self-normalising, it
+        contains no ``f(limit)`` at all (so SIDECAR CAUTION C1's ban on a
+        *"rows-read ≤ f(limit)"* upper bound is not touched — this DEMANDS the scan rather
+        than forbidding it), and it reddens DETERMINISTICALLY against #268's named
+        mutation: a build that pushes the cap into ``_candidate_statement`` emits
+        ``LIMIT 60`` and reads strictly fewer rows than the uncapped ``SELECT``, while a
+        correct build emits BYTE-IDENTICAL statements on both calls.
         """
         generous_cap = 2 * _BLOCKED_NOISE_EACH_SIDE
         ledger, env, root, true_answer_size = await self._sandwich_ledger()
@@ -1351,20 +1381,104 @@ class TestTheCapAppliesToTheANSWERNotTheCandidateScan:
                 f"this pin needs a cap the answer cannot fill ({generous_cap} vs "
                 f"{true_answer_size}); the fixture constants have drifted apart"
             )
-            capped = await _ids(ledger, status=STATUS_OPEN, blocked=False, limit=generous_cap)
-            unlimited = await _ids(ledger, status=STATUS_OPEN, blocked=False)
-            assert len(capped) < generous_cap, (
-                f"the fixture filled a cap of {generous_cap} with {len(capped)} rows, so this "
-                f"measurement never reaches the short-answer case it exists to test. "
+            capped_ids: set[str] = set()
+            unlimited_ids: set[str] = set()
+            capped_traffic = await measure_store_traffic(
+                ledger,
+                lambda: _collect(
+                    ledger, capped_ids, status=STATUS_OPEN, blocked=False, limit=generous_cap
+                ),
+            )
+            unlimited_traffic = await measure_store_traffic(
+                ledger,
+                lambda: _collect(ledger, unlimited_ids, status=STATUS_OPEN, blocked=False),
+            )
+            assert len(capped_ids) < generous_cap, (
+                f"the fixture filled a cap of {generous_cap} with {len(capped_ids)} rows, so "
+                f"this measurement never reaches the short-answer case it exists to test. "
                 f"root={root!r}"
             )
-            assert capped == unlimited, (
-                f"a capped query served {len(capped)} tasks and the SAME query with no cap "
-                f"served {len(unlimited)} — so the short answer was not the scan running out, "
-                f"it was rows being thrown away inside the cap. That is a silent truncation "
-                f"of a served answer (ruling T1, DESIGN-LAW §1.4's cardinal class): the caller "
-                f"cannot distinguish 'that is all there is' from 'that is all I looked at'. "
-                f"missing={sorted(unlimited - capped)}"
+            # ⚠ ORDER IS LOAD-BEARING, AND IT WAS MEASURED WRONG FIRST. An earlier draft
+            # asserted "both answers == true_answer_size" BEFORE the truncation leg, so
+            # under #268's own mutation the run that lost rows reported *"the fixture, not
+            # the pin, is wrong"* — a failure message that misnames what happened, which is
+            # the P2 FALSE-GATE class, aimed at a builder whose fixture is perfect. The
+            # DEFECT leg now speaks first; the drift guard below is scoped to the UNCAPPED
+            # read, which is the only one that cannot be truncated by construction.
+            assert capped_ids == unlimited_ids, (
+                f"a capped query served {len(capped_ids)} tasks and the SAME query with no "
+                f"cap served {len(unlimited_ids)} — so the short answer was not the scan "
+                f"running out, it was rows being thrown away inside the cap. That is a "
+                f"silent truncation of a served answer (ruling T1, DESIGN-LAW §1.4's "
+                f"cardinal class): the caller cannot distinguish 'that is all there is' "
+                f"from 'that is all I looked at'. missing={sorted(unlimited_ids - capped_ids)}"
+            )
+            assert len(unlimited_ids) == true_answer_size, (
+                f"the UNCAPPED read served {len(unlimited_ids)} tasks where the fixture "
+                f"built {true_answer_size}. This read carries no cap at all, so it cannot "
+                f"have been truncated — the sandwich itself came out wrong, and a traffic "
+                f"comparison against it would measure nothing. root={root!r}"
+            )
+            assert unlimited_traffic.rows > 0, (
+                f"the instrument counted ZERO rows for a read that served "
+                f"{len(unlimited_ids)} tasks, so it is not observing this call path and its "
+                f"equality verdict below is worthless: {unlimited_traffic}"
+            )
+            assert capped_traffic.rows == unlimited_traffic.rows, (
+                f"the blocked-partition scan read {capped_traffic.rows} rows under a cap of "
+                f"{generous_cap} and {unlimited_traffic.rows} rows with no cap, for the "
+                f"IDENTICAL answer. The cap SHRANK THE SCAN — it was pushed into the "
+                f"candidate statement — so rows the client-side `blocked` filter would have "
+                f"kept were never read, and the short answer is a lie about the ledger "
+                f"rather than a fact about it (ruling T1). ⚠ This is finding #268's leg: the "
+                f"OUTCOME comparison above passes such a build ≈55% of runs, because a "
+                f"window of {generous_cap} out of {2 * _BLOCKED_NOISE_EACH_SIDE + true_answer_size} "
+                f"candidates usually still happens to contain every unblocked row. On a "
+                f"correct build both statements are byte-identical. "
+                f"capped={capped_traffic.statements} unlimited={unlimited_traffic.statements}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_POSITIVE_CONTROL_the_traffic_instrument_CAN_see_a_cap_shrink_a_scan(
+        self,
+    ) -> None:
+        """⛔⛔ **THE CONTROL WITHOUT WHICH #268's EQUALITY LEG IS DECORATION.**
+
+        ``capped_traffic.rows == unlimited_traffic.rows`` is a NEGATIVE result, and a
+        negative result from an instrument that cannot see the difference is
+        indistinguishable from one from a working instrument.  The repo has receipts: a
+        *"closed set is enforced"* probe that actually rejected on a parse error passed for
+        the WRONG REASON.
+
+        So the same instrument, on the same ledger, is shown a cap that genuinely DOES
+        shrink the scan — the ``blocked is None`` path, where ruling **R5** requires the
+        ``LIMIT`` to ride the statement.  If those two readings are equal, the instrument
+        cannot see a cap at all and the leg above proves nothing.
+        """
+        ledger, env, root, _true_answer_size = await self._sandwich_ledger()
+        try:
+            capped_ids: set[str] = set()
+            unlimited_ids: set[str] = set()
+            capped_traffic = await measure_store_traffic(
+                ledger, lambda: _collect(ledger, capped_ids, status=STATUS_OPEN, limit=_ANSWER_CAP)
+            )
+            unlimited_traffic = await measure_store_traffic(
+                ledger, lambda: _collect(ledger, unlimited_ids, status=STATUS_OPEN)
+            )
+            assert len(capped_ids) == _ANSWER_CAP < len(unlimited_ids), (
+                f"the control's own fixture drifted: a cap of {_ANSWER_CAP} served "
+                f"{len(capped_ids)} rows out of a candidate set of {len(unlimited_ids)}. "
+                f"root={root!r}"
+            )
+            assert capped_traffic.rows < unlimited_traffic.rows, (
+                f"a cap that ruling R5 REQUIRES to ride the statement read "
+                f"{capped_traffic.rows} rows where the uncapped read read "
+                f"{unlimited_traffic.rows} — they are equal or larger, so this instrument "
+                f"cannot distinguish a capped scan from an uncapped one and every "
+                f"rows-read equality in this file is vacuous. "
+                f"capped={capped_traffic.statements} unlimited={unlimited_traffic.statements}"
             )
         finally:
             await ledger.close()
@@ -1957,13 +2071,28 @@ class TestNoTOTALIsServedThatWasNotMEASURED:
 
 
 # =========================================================================== #
-# HOLE 8 — THE CAPPED LISTING'S OWN SCOPE, MEASURED AND PINNED AS A BOUND
-# (added 2026-07-28, wave r6, on the delta adversary's §LEG1 row 2 and §PINS-5).
+# HOLE 8 — CLOSED BY 04b-2 WAVE C.  THE KNOWN BOUND THAT LIVED HERE IS DELETED.
 #
-# ``CLAUDE.md`` § TRUST — THE HARD DEFINITION, **leg 2**: *"CONSTRUCT each state and
-# byte-diff the served response against the healthy one. **Identical bytes = a false clear
-# = STOP.**"*  And § THE CONSUMER LAW: *"lore's clients are AGENTS … every served surface is
-# read by an LLM that learns the contract FROM what is served."*
+# ``TestACappedListingDISCLOSESNothingAboutItsOwnBOUND`` asserted a MISS: that a listing
+# CAPPED out of 40 matching tasks and a COMPLETE listing of 5 serve byte-identical
+# responses once opaque ids are normalised away.  It carried its own deletion instruction
+# — *"if you closed it deliberately, DELETE this class and say so in your wave report"* —
+# and escalation **ESC-5** ruled the closure an ENTRY CONDITION of packet 04b-2 rather
+# than a hope.
+#
+# **DELETED 2026-08-01 (04b-2 wave C, slice C1), together with the ``_normalise_task_render``
+# helper and the ``_PARTIAL_WORLD_POPULATION`` / ``_IDENTICAL_SUBJECT`` constants that
+# served only it** — an orphaned normaliser is the next reader's puzzle.  Its SUCCESSOR is
+# ``test_task_read_surface.py::TestTheRenderedListingDISCLOSESItsOwnBOUND``, which asserts
+# the opposite in BOTH directions: the partial world renders a line the complete world does
+# not, and the complete world renders none (the direction that kills the *"say it whenever
+# the window is full"* mechanism, which renders identically in both worlds and closes
+# nothing).  The disclosure grammar ruled for it is EXISTENCE, never quantity, purchased by
+# an over-fetch of ONE ROW on the same read.
+#
+# The remainder of this comment is kept VERBATIM as the record of what was measured, since
+# a deleted pin's evidence is the only thing that stops the hole being re-opened by someone
+# who never met it.
 #
 # ⚠⚠ **MEASURED LIVE, INSIDE THE PACKET THAT RULED T1** (delta adversary §LEG1 row 2):
 # ``lore_tasks action=query limit=5`` against a ledger holding 40 matching tasks renders
@@ -1985,125 +2114,5 @@ class TestNoTOTALIsServedThatWasNotMEASURED:
 # The escalation is `REPORT-contractfix-04b1-r6.md` §ESC-5 — the operator may instead widen
 # 04b-1's writable set by one render, which is the alternative written down there.
 #
-# GREEN at ``b8607c4`` and it asserts a MISS: it goes RED the day the disclosure lands.
+# GREEN at ``b8607c4`` and it asserted a MISS: it went RED the day the disclosure landed.
 # =========================================================================== #
-
-#: The population a capped listing is drawn from in the false-clear construction, and the
-#: population that same listing would be COMPLETE over.  ``_ANSWER_CAP`` is reused rather
-#: than re-chosen: the two worlds must ask the identical question, and a second cap constant
-#: is a second thing to keep in step.
-_PARTIAL_WORLD_POPULATION = 40
-
-#: Every row in both worlds carries this subject, so the two renders differ ONLY in the
-#: opaque ids — which :func:`_normalise_task_render` then removes.  A fixture whose rows
-#: carried distinct subjects could not be byte-compared at all, and the comparison is the
-#: whole instrument.
-_IDENTICAL_SUBJECT = "claimable backlog item"
-
-
-def _normalise_task_render(rendered: str) -> str:
-    """A rendered task listing with every opaque id replaced by a fixed placeholder.
-
-    The ONLY normalisation applied, and it is the minimum the comparison needs: two
-    ledgers mint different ``uuid4`` ids, so an un-normalised byte-diff would report a
-    difference that says nothing about scope.  Everything else — row count, row text,
-    ordering markers, any disclosure line a build adds — survives verbatim, which is what
-    makes an *identical* result meaningful rather than manufactured.
-    """
-    import re
-
-    return re.sub(r"[0-9a-f]{32}", "<id>", rendered)
-
-
-class TestACappedListingDISCLOSESNothingAboutItsOwnBOUND:
-    """**GREEN at ``b8607c4``, and it asserts a MISS.**  A PINNED BOUND in the
-    *"when you cannot close a hole, pin it"* sense (``CLAUDE.md``, #137/#138) — the hole is
-    real, it is MEASURED here rather than argued, and closing it is 04b-2's render.
-
-    ⚠ **THIS IS A FALSE CLEAR IN THE LAW'S LITERAL SENSE, NOT AN ANALOGY.**  Two genuinely
-    different worlds — a ledger of 40 matching tasks capped to 5, and a ledger holding
-    exactly 5 — serve **byte-identical responses** once the opaque ids are normalised away.
-    The law's stopping rule for that is unambiguous: *"Identical bytes = a false clear =
-    STOP."*  What this class can do, from inside a contract that does not own the render, is
-    make the false clear IMPOSSIBLE TO INHERIT SILENTLY: it is constructed, dated, named, and
-    it reddens the moment anybody fixes it.
-
-    **IF YOU CLOSED IT DELIBERATELY, DELETE THIS CLASS AND SAY SO IN YOUR WAVE REPORT.**
-    Do not weaken it, and do not satisfy it by adding a disclaimer — a bound is a FACT
-    (*"showing the 5 you asked for; there may be more"* needs no count and no extra read),
-    never *"results may be incomplete"*, which names nothing and licenses nothing narrower.
-
-    ⚠ **STATED BOUND ON THIS CLASS ITSELF:** it compares the two renders and nothing else.
-    It does not assert what the disclosure should SAY — R9 already rules that
-    (*"+K more — re-run with limit=N"*, fed by a store-side count) and inventing a second
-    grammar here would be a C-DEF against the packet that owns it.
-    """
-
-    @staticmethod
-    async def _rendered_listing(population: int, *, limit: int | None) -> str:
-        """The tool seam's rendered answer for a ledger of ``population`` identical tasks."""
-        from loremaster.tasks import TaskSpec
-
-        ledger, env = await _fresh_ledger()
-        try:
-            await ledger.create_many(
-                [
-                    TaskSpec(subject=_IDENTICAL_SUBJECT, description=DESCRIPTION)
-                    for _index in range(population)
-                ],
-                created_by=CREATOR,
-            )
-            return str(await _tool_seam(ledger).tasks(action="query", limit=limit))
-        finally:
-            await ledger.close()
-            await drop_database(env)
-
-    async def test_KNOWN_BOUND_a_CAPPED_listing_is_INDISTINGUISHABLE_from_a_COMPLETE_one(
-        self,
-    ) -> None:
-        """⛔ The construction.  Two worlds, one response."""
-        partial = await self._rendered_listing(_PARTIAL_WORLD_POPULATION, limit=_ANSWER_CAP)
-        complete = await self._rendered_listing(_ANSWER_CAP, limit=_ANSWER_CAP)
-        # ⚠ ROW lines only, and that is not cosmetic. A guard counting EVERY line would fire
-        # FIRST on a build that closed the bound — reporting "the construction drifted" at a
-        # builder whose only crime was adding the disclosure this class is waiting for. A
-        # failure message that misnames what happened is the false-gate class (repo law, P2);
-        # MEASURED here, on the very mutation that closes the hole.
-        rendered_rows = [line for line in partial.splitlines() if line.startswith("- ")]
-        assert len(rendered_rows) == _ANSWER_CAP, (
-            f"the capped world rendered {len(rendered_rows)} task rows where the cap is "
-            f"{_ANSWER_CAP}; the construction did not produce the state it is named after, "
-            f"so the comparison below measures nothing. rendered={partial!r}"
-        )
-        assert _normalise_task_render(partial) == _normalise_task_render(complete), (
-            f"a listing CAPPED out of {_PARTIAL_WORLD_POPULATION} matching tasks is no "
-            f"longer byte-identical to a COMPLETE listing of {_ANSWER_CAP} — which means "
-            f"the served surface now discloses its own bound, and the KNOWN BOUND this pin "
-            f"asserts is CLOSED. ✅ That is the ruled behaviour (T1: 'NO SILENT SHORT "
-            f"ANSWERS'; R9: the counted-elision line): DELETE this class and say so in your "
-            f"wave report. Do NOT re-point it at the new render — this pin exists only to "
-            f"stop the hole being inherited silently.\n"
-            f"partial={_normalise_task_render(partial)!r}\n"
-            f"complete={_normalise_task_render(complete)!r}"
-        )
-
-    async def test_POSITIVE_CONTROL_the_comparison_CAN_see_a_difference(self) -> None:
-        """⛔ Without this, the leg above is satisfied by a normaliser that flattens
-        everything — the probe passing for the WRONG REASON, which this repo has receipts
-        against (a 'closed set is enforced' probe that actually rejected on a parse error).
-
-        So: a world whose answer is genuinely SHORTER renders differently through the very
-        same normaliser.  The instrument can see row-count differences; what it cannot see
-        in the leg above is a difference that is not there.
-        """
-        complete = await self._rendered_listing(_ANSWER_CAP, limit=_ANSWER_CAP)
-        shorter = await self._rendered_listing(_ANSWER_CAP - 1, limit=_ANSWER_CAP)
-        assert _normalise_task_render(complete) != _normalise_task_render(shorter), (
-            f"the normaliser reports a {_ANSWER_CAP}-row listing and a "
-            f"{_ANSWER_CAP - 1}-row listing as identical, so it cannot see ANY difference "
-            f"and the leg above proves nothing: {_normalise_task_render(complete)!r}"
-        )
-        assert len(shorter.splitlines()) == _ANSWER_CAP - 1, (
-            f"the shorter world rendered {len(shorter.splitlines())} lines, not "
-            f"{_ANSWER_CAP - 1}; the control's own fixture drifted"
-        )

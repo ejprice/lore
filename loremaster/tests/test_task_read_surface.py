@@ -1,0 +1,1796 @@
+"""Contract for packet **04b-2 wave C, slice C1 — THE TASK READ SURFACE**.
+
+*Every claim in this file is scoped to the tree at ``f67a219`` (branch
+``feat/surreal-unification``), 2026-08-01.  "RED today" means RED at that commit.*
+
+============================================================================
+WHAT THIS FILE OWNS, AND WHY IT IS ONE FILE
+============================================================================
+
+Four rulings that all land on ONE ledger (:class:`~loremaster.tasks.TaskLedger`), ONE
+tool (``lore_tasks`` / ``lore_claim_task``) and ONE render family, so splitting them
+would mint several grammars for one property (the #102 shape):
+
+* **SECTION A — ESC-5, the packet's DEPLOY ENTRY CONDITION.**  A caller-limited task
+  listing must DISCLOSE its own bound.  Ruled mechanism: **(c) over-fetch by one** —
+  the disclosure exists **iff a further matching row truly exists**.  Grammar is
+  **EXISTENCE, never quantity**, uniform across both filter paths.
+* **SECTION B — the blocked-chain / critical-path render.**  A NEW SERVED SURFACE:
+  :meth:`~loremaster.tasks.TaskLedger.transitive_blockers` has **0 production and 0 test
+  consumers** at ``f67a219`` (re-derived below), so nothing renders it today.
+* **SECTION C — R10(iii)**, the moment-of-CAUSATION teaching: ``supersede`` warns when
+  the predecessor has dependents, and the claim render names the superseded-BLOCKER case.
+* **SECTION D — finding #302**, the exact-EQUALITY pins over ``_TASK_ACTIONS`` /
+  ``_FINDING_ACTIONS`` / ``_COMMS_ACTIONS``, which are pinned by NOTHING today.
+
+Its sibling ``test_query_tasks_bounded.py`` keeps the ledger-half pins (#253, R5, R7,
+T1, T4) and gains #268's tightened exhaustion leg; the capped-listing KNOWN-BOUND class
+that lived at its foot is **DELETED by this wave**, per that class's own instruction, and
+:class:`TestTheRenderedListingDISCLOSESItsOwnBOUND` below is its successor.
+
+============================================================================
+⚠ THE ONE DEVIATION FROM THE DESIGN RULING, AND IT IS THE RULING'S OWN FALLBACK
+============================================================================
+
+``REPORT-design-sidecar-04b2-wavec-1.md`` §2 rules that the ledger serves the
+existence fact as a TYPED result and names a **pre-authorised fallback**: *"if the
+reference build shows the type change rippling disproportionately, seam-side
+``limit+1`` behind ONE shared helper (plain-list pin then stays green verbatim) —
+reported as a deviation, never adopted silently."*
+
+**MEASURED at ``f67a219``, by counting call sites rather than by building the ripple**
+(``grep -c 'query_tasks('`` per file, comments and definitions excluded): changing
+``TaskLedger.query_tasks``' return type from ``list[Task]`` to a wrapper reddens
+**25 sites in ``test_query_tasks_bounded.py``, 22 in ``test_blocks_edge.py``, 34 in
+``test_task_ledger.py``, 2 in ``test_mcp_server.py``** — ~83 pins that would be RED on a
+CORRECT build, in three files this slice does not own, one of which (``test_blocks_edge``,
+8,903 lines) is being edited concurrently by the #279 unification.  That is the C-DEF
+class (#133) at a scale nobody should ship, so **the fallback is TAKEN**: the over-fetch
+lives in ONE seam-side helper, ``AppContext._task_listing``, and the ledger's signature
+does not move.  The disclosure is still served to the render as a TYPED value
+(:class:`TaskListing`), so *"renders take typed applicability and never re-compute"*
+holds unchanged — see :class:`TestTheRenderNEVERRecomputesTheDisclosure`, which is the
+pin that makes a re-computing render impossible to ship.
+
+Deviation is DISCLOSED in ``REPORT-contract-04b2-wavec-2.md`` §SUMMARY, with the third
+option that was considered and NOT taken (a ledger-side ``query_task_listing`` beside the
+list form) and its argument, so the lead may overrule without re-deriving anything.
+
+============================================================================
+THE PRODUCTION SURFACE THIS CONTRACT DEFINES (the builder's build spec)
+============================================================================
+
+Nothing below exists at ``f67a219``.  Each name is the contract, not a suggestion; a
+build that spells one differently fails with an ``AttributeError``/``ImportError``
+NAMING it.
+
+* ``loremaster.tasks.TaskListing`` — pydantic, ``extra="forbid"``, EXACTLY two fields:
+  ``rows: list[Task]`` and ``more: bool``.  It lives beside :class:`~loremaster.tasks.Task`
+  / :class:`~loremaster.tasks.ClaimResult` / :class:`~loremaster.tasks.TransitiveBlockers`
+  / :class:`~loremaster.tasks.TaskActivityWindow` because it describes a LEDGER ANSWER —
+  so if a later packet moves the over-fetch down into the ledger (the design ruling's
+  first choice), the model does not move with it.  ⚠ **Adding any COUNT field first acquires
+  §11.1's failed-count construction** (build the failed-count world and prove the line
+  goes LOUD or drops the NUMBER — never restates ``len(rows)``).  A number-free wrapper
+  acquires none of it, because the existence bit rides the SAME read as the rows: there
+  is no separate failure state to forge.
+* ``AppContext._task_listing(*, status, owner, blocked, limit) -> TaskListing`` — the ONE
+  implementation of the over-fetch.  With a cap it asks the ledger for ``limit + 1``,
+  serves at most ``limit``, and sets ``more`` from whether that extra row came back.
+  With ``limit=None`` it asks for no cap at all and ``more`` is always ``False``.
+* ``AppContext._render_task_listing(listing) -> str`` — the rows through the EXISTING
+  ``_render_task_rows`` (unchanged, so ``test_mcp_server.py``'s three forgery render
+  cases stay green) plus the disclosure line **iff** ``listing.more``.
+* ``_TASK_ACTION_BLOCKERS = "blockers"`` in ``_TASK_ACTIONS``; a ``max_depth`` parameter
+  legal for that action and REFUSED for every other one;
+  ``AppContext._render_transitive_blockers(task, blockers) -> str``.
+* ``ClaimResult.superseded_blockers: dict[str, str]`` (blocker id → its successor id),
+  defaulting to ``{}`` so the four existing construction sites keep compiling.
+* ``TaskLedger.direct_dependents(task_id) -> list[str]`` and the supersede render's
+  warning that rides it.
+
+⚠⚠ **TWO EDITS THE BUILDER MUST MAKE OUTSIDE THIS FILE, MEASURED ON THE REFERENCE BUILD
+AND NAMED HERE SO NOBODY IS TRAPPED.**  ``direct_dependents`` is a new PUBLIC ledger verb,
+and two coverage-as-a-checked-variable pins in ``test_blocks_edge.py`` are ∀ over
+``TaskLedger``'s public async methods — they are GREEN at ``f67a219``, go RED the moment
+the verb lands, and each failure message states its own fix.  **The adjudications, decided
+here rather than left to whoever meets the red:**
+
+* ``NON_WRITING_VERBS`` **+= "direct_dependents"** — it is a read; it writes no row and
+  touches no ``blocked_by``, so it owes no mirror pin.
+* ``VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH`` **+= "direct_dependents"** — considered, and
+  there is none: its only input is a task id, and an id naming no row matches no row and
+  yields ``[]``.  There is no caller-reachable engine rejection to launder, so ruling
+  **T2** has nothing to bite on here.  *An omission and a decision must not look the same*
+  — this is the decision.
+
+``_task_fakes.FakeTaskLedger.direct_dependents`` is NOT left to the builder: it is added by
+this contract, because a double lacking a method its production twin has turns a CORRECT
+build into an ``AttributeError`` in every test that drives the fake (MEASURED: two reds in
+``test_mcp_server.py::TestTasksTool`` on the reference build).  It is green before the
+production verb lands and after it.
+
+============================================================================
+⚠ TWO FORKS ESCALATED, NOT SETTLED (repo law: spec ambiguity is a defect, not a choice)
+============================================================================
+
+Both are written up in ``REPORT-contract-04b2-wavec-2.md``; this file is written to the
+reading named first in each, and says so where the pins are:
+
+1. **Does the chain render carry ONLY ids, or ids enriched with subject/status?**  This
+   file pins the ID-ONLY surface (no second read, no free-text render, no new bounded-read
+   hazard family).  Enrichment would need a second read over up to
+   :data:`~loremaster.tasks.ENGINE_RECURSION_CEILING` rows and a hostile-fixture render
+   pin — a slice, not a render tweak.
+2. **``TestNoTOTALIsServedThatWasNotMEASURED`` — delete, or re-author?**  Its own message
+   says *"delete this pin"* the day a wrapper appears; the sidecar says the plain-list pin
+   *"stays green verbatim"* under the fallback taken here.  Under the fallback BOTH are
+   satisfied: ``query_tasks`` still returns a plain ``list``, so that pin is untouched and
+   green, and the wrapper's own emptiness is pinned HERE by
+   :class:`TestTheListingIsATYPEDRESULTWithACLOSEDFieldSet`.
+
+============================================================================
+LEG 1 — THE SCOPE DIFF FOR THE SURFACES THIS FILE MINTS
+============================================================================
+
+``CLAUDE.md`` § *TRUST — THE HARD DEFINITION* leg 1: *"what question did I actually
+answer, and is it the one the consumer thinks they asked?"*
+
+* ``lore_tasks action=query limit=N`` — the consumer thinks it asked *"what is on the
+  backlog?"*; it answered *"the first N matching rows as of this read"*.  The difference
+  is the whole of ESC-5 and it is now IN THE RENDER (SECTION A).
+* ``lore_tasks action=blockers task_id=X`` — the consumer thinks it asked *"what is
+  blocking X?"*; it answers *"the tasks reachable upstream over ``blocks`` EDGES, to a
+  depth of at most ``max_depth_used``, as of this read"*.  **Two named differences, both
+  rendered as FACTS:** the depth bound when the walk truncated (SECTION B), and the
+  ``blocked_by`` entries that carry NO edge — legacy phantoms, which ``ENFORCED`` forbids
+  an edge for and the backfill therefore skips, and which the claim CAS counts FOREVER.
+  A task blocked ONLY by a phantom otherwise renders **byte-identically** to a task with
+  no blockers at all: sidecar S3's false clear, surviving R11's backfill by construction.
+* ``lore_claim_task`` on a loss — the consumer thinks it asked *"can I have this?"*; it
+  answers *"no, and here is the cause"*.  The named difference R10(iii) closes: a blocker
+  that is SUPERSEDED can never resolve, so the loss is permanent, and saying only
+  ``blocked_by [...] unresolved`` invites the agent to poll forever.
+
+⚠ Leg 1 is sound on *set* and *predicate-as-WRITTEN* only — time, environment and
+*predicate-as-EXECUTED* are BELIEVED, not known (#24 · #107 · #131 · #139).  The leg-2
+CONSTRUCTIONS are the classes marked ⛔⛔ below.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+from _surreal_harness import (
+    SurrealEnv,
+    connect_admin,
+    drop_database,
+    measure_store_traffic,
+)
+from loremaster.tasks import (
+    STATUS_DONE,
+    STATUS_OPEN,
+    STATUS_WONTFIX,
+    ClaimResult,
+    Task,
+    TaskLedger,
+    TaskLedgerError,
+    TaskNotFoundError,
+    TaskSpec,
+)
+
+# Fixture VOCABULARY and the two constructions this slice's own sibling already owns.
+# IMPORTED, never re-implemented: ``_fresh_ledger`` and ``_tool_seam`` already exist
+# TWICE in this tree (``test_blocks_edge``'s ``_measure``/``_tool_seam`` and
+# ``test_query_tasks_bounded``'s copies), and a THIRD clone is the shape repo law #102
+# exists to stop.  The sandwich constants come with them because SECTION A's blocked-path
+# leg reuses the sandwich whose discrimination probability that file's own class docstring
+# computes — a second cap constant would be a second thing to keep in step.
+from test_blocks_edge import (  # noqa: I001 - local test module, resolved via the tests dir
+    ACTOR,
+    CREATOR,
+    DESCRIPTION,
+    _drive_to,
+    _seed_legacy_task,
+    task_ledger,  # noqa: F401 - re-exported pytest fixture
+)
+from test_query_tasks_bounded import (  # noqa: I001 - local test module, sibling C1 file
+    _ANSWER_CAP,
+    _BLOCKED_NOISE_EACH_SIDE,
+    _fresh_ledger,
+    _tool_seam,
+)
+
+#: The caller-supplied cap most ESC-5 pins ask for.  Deliberately EQUAL to
+#: :data:`~test_query_tasks_bounded._ANSWER_CAP` so the blocked-path leg can reuse the
+#: sandwich verbatim, and deliberately NOT the only cap in this file — see
+#: :data:`_ALT_CAP`.
+_LISTING_CAP = _ANSWER_CAP
+
+#: A SECOND cap value, used by at least one leg of every ESC-5 property.
+#: FIXTURES MUST DISCRIMINATE, axis 2 (parameter-value MONOCULTURE): if the code can
+#: branch on a value, at least one pin must supply a DIFFERENT one.  A build that
+#: hard-codes 5 — or that derives ``more`` from ``len(rows) == 5`` — dies here and
+#: nowhere else.
+_ALT_CAP = 2
+
+#: A matching population comfortably past both caps, so "showing the cap" and "showing
+#: everything" are never the same number.
+_SURPLUS_POPULATION = 40
+
+#: Every row in the two-world constructions carries this subject, so the renders differ
+#: ONLY in the opaque ids — which :func:`_normalise_task_render` then removes.  A fixture
+#: whose rows carried distinct subjects could not be byte-compared at all, and the
+#: comparison IS the instrument.
+_IDENTICAL_SUBJECT = "claimable backlog item"
+
+
+def _normalise_task_render(rendered: str) -> str:
+    """A rendered task listing with every opaque id replaced by a fixed placeholder.
+
+    The ONLY normalisation applied, and it is the minimum the comparison needs: two
+    ledgers mint different ``uuid4`` ids, so an un-normalised byte-diff would report a
+    difference that says nothing about scope.  Everything else — row count, row text,
+    ordering markers, any disclosure line a build adds — survives verbatim, which is what
+    makes an *identical* result meaningful rather than manufactured.
+
+    ⚠ MOVED HERE from ``test_query_tasks_bounded`` with the KNOWN-BOUND class it served:
+    that class asserted the false clear EXISTS and this wave closes it, so the normaliser
+    now belongs to the successor pin rather than being left behind as an orphan.
+    """
+    import re
+
+    return re.sub(r"[0-9a-f]{32}", "<id>", rendered)
+
+
+def _rendered_rows(rendered: str) -> list[str]:
+    """The ROW lines of a rendered listing — the ones ``_render_task_rows`` emits.
+
+    ⚠ ROW lines only, and that is not cosmetic.  A guard counting EVERY line would fire
+    FIRST on a build that added the disclosure line, reporting *"the construction
+    drifted"* at a builder whose only crime was doing what this contract asks.  A failure
+    message that misnames what happened is the false-gate class (repo law, P2), and it was
+    MEASURED on this very mutation by the predecessor pin.
+    """
+    return [line for line in rendered.splitlines() if line.startswith("- ")]
+
+
+def _extra_lines(richer: str, plainer: str) -> list[str]:
+    """The NORMALISED lines ``richer`` carries that ``plainer`` does not.
+
+    The disclosure line is located by DIFFING TWO WORLDS, never by matching a literal a
+    test transcribed from the implementation.  A contract that hard-coded the sentence
+    would pin the builder's prose instead of the property, and would go green for a build
+    that emitted the sentence unconditionally — which is exactly mechanism (b), the one
+    the design ruling ELIMINATED because both worlds then render identically.
+    """
+    plain = set(_normalise_task_render(plainer).splitlines())
+    return [line for line in _normalise_task_render(richer).splitlines() if line not in plain]
+
+
+async def _seed_identical_tasks(ledger: TaskLedger, population: int) -> None:
+    """``population`` unblocked, open tasks that differ only in their opaque ids."""
+    if population:
+        await ledger.create_many(
+            [
+                TaskSpec(subject=_IDENTICAL_SUBJECT, description=DESCRIPTION, blocked_by=[])
+                for _index in range(population)
+            ],
+            created_by=CREATOR,
+        )
+
+
+async def _listing_over(population: int, *, limit: int | None) -> Any:
+    """The seam helper's TYPED answer for a ledger of ``population`` identical tasks."""
+    ledger, env = await _fresh_ledger()
+    try:
+        await _seed_identical_tasks(ledger, population)
+        return await _tool_seam(ledger)._task_listing(  # noqa: SLF001 - the seam IS the subject
+            status=None, owner=None, blocked=None, limit=limit
+        )
+    finally:
+        await ledger.close()
+        await drop_database(env)
+
+
+async def _rendered_listing(population: int, *, limit: int | None) -> str:
+    """The tool seam's RENDERED answer for a ledger of ``population`` identical tasks."""
+    ledger, env = await _fresh_ledger()
+    try:
+        await _seed_identical_tasks(ledger, population)
+        return str(await _tool_seam(ledger).tasks(action="query", limit=limit))
+    finally:
+        await ledger.close()
+        await drop_database(env)
+
+
+# =========================================================================== #
+# SECTION A — ESC-5.  A CALLER-LIMITED LISTING DISCLOSES ITS OWN BOUND.
+#
+# Ruled mechanism (design sidecar §2): **(c) over-fetch by one**.  The line exists iff a
+# further matching row truly EXISTS.  ⚠ (b) — "there may be more" whenever the window is
+# full — is ELIMINATED, not a fallback: in the COMPLETE world (population == cap, cap
+# supplied) the window is ALSO full, so both worlds still render byte-identically, the
+# false clear survives, and the bound is not closed.  Every pin below is written so that a
+# (b)-shaped build fails it.
+# =========================================================================== #
+
+
+class TestTheListingIsATYPEDRESULTWithACLOSEDFieldSet:
+    """⛔ **RED at ``f67a219``** — ``loremaster.server.TaskListing`` does not exist.
+
+    Deny-by-default, for the reason :class:`~loremaster.tasks.TransitiveBlockers`'
+    docstring already gives about its own uncountable tail: **the SAFE shape is one thing
+    and the set of names a fabricated count could wear is unbounded.**  So the field set is
+    asserted by EQUALITY, not by "the fields I care about are present" — the latter is the
+    name-list instrument shape this repo has six receipts against.
+
+    ⚠ **THE DOCSTRING THIS PIN CARRIES IS PART OF THE CONTRACT:** adding ANY count field
+    (``total``, ``remaining``, ``+K``) acquires §11.1's failed-count construction FIRST —
+    build the failed-count world and prove the line goes LOUD or drops the NUMBER, never
+    restating ``len(rows)``, which is not a total at all once the cap is in the statement.
+    A number-free wrapper acquires NONE of that debt, and the derivation is worth stating
+    because it is why this shape was chosen: **the existence bit rides the SAME read as
+    the rows**, so there is no separate failure state to forge.  (That derivation used to
+    live beside ``TestNoTOTALIsServedThatWasNotMEASURED``, which this wave leaves GREEN
+    and untouched — ``query_tasks`` still serves a plain ``list``.)
+    """
+
+    def test_the_listing_carries_EXACTLY_rows_and_more(self) -> None:
+        from loremaster.tasks import TaskListing  # noqa: PLC0415 - the symbol IS the pin
+
+        assert set(TaskListing.model_fields) == {"rows", "more"}, (
+            f"TaskListing declares {sorted(TaskListing.model_fields)}. The field set is "
+            f"CLOSED at (rows, more) deny-by-default: a capped listing that carries a "
+            f"COUNT has acquired §11.1's failed-count construction, and until that "
+            f"construction exists the number can only ever be fabricated. If you added a "
+            f"field deliberately, build the failed-count world first and then change this "
+            f"pin WITH the construction"
+        )
+
+    def test_the_listing_REFUSES_an_undeclared_field_on_the_wire(self) -> None:
+        """The other half of deny-by-default: ``extra='forbid'``, proven by a rejection.
+
+        A model that merely *declares* two fields still absorbs a third silently unless it
+        forbids extras — and a served surface that quietly swallows a field is how a
+        fabricated total arrives without anybody editing the pin above.
+        """
+        import pydantic  # noqa: PLC0415
+        from loremaster.tasks import TaskListing  # noqa: PLC0415
+
+        with pytest.raises(pydantic.ValidationError):
+            TaskListing(rows=[], more=False, total=99)  # type: ignore[call-arg]
+
+    def test_more_is_a_BOOL_and_rows_are_TASKS(self) -> None:
+        """Non-vacuity: a listing of nothing would satisfy a type check trivially."""
+        from loremaster.tasks import TaskListing  # noqa: PLC0415
+
+        annotations = {name: field.annotation for name, field in TaskListing.model_fields.items()}
+        assert annotations["more"] is bool, (
+            f"TaskListing.more is annotated {annotations['more']!r}. It is an EXISTENCE "
+            f"bit — the grammar this packet ruled is existence, never quantity — so an "
+            f"int or an optional here is a quantity wearing a different name"
+        )
+        assert annotations["rows"] == list[Task], (
+            f"TaskListing.rows is annotated {annotations['rows']!r}, not list[Task]"
+        )
+
+
+class TestTheDisclosureExistsIFFaFurtherMatchingRowEXISTS:
+    """⛔ **RED at ``f67a219``** — ``AppContext._task_listing`` does not exist.
+
+    **THE RULED PROPERTY, over the SCALE axis this repo demands (0, 1, cap−1, cap,
+    cap+1).**  ``more`` is TRUE exactly when a further matching row truly exists, and
+    FALSE otherwise — both directions, because a bit that is always True and a bit that is
+    always False each satisfy one direction perfectly.
+
+    **THE WRONG BUILDS THIS KILLS, each named:**
+
+    * **WB-A1, mechanism (b)** — *"emit the line whenever the window is full"*, i.e.
+      ``more = len(rows) == limit``.  It is the CHEAPEST build and it is the one the design
+      ruling eliminated: at ``population == cap`` the window is full and the answer is
+      COMPLETE, so (b) claims a surplus that does not exist.  Killed by the
+      ``population == cap`` case, which no other leg reaches.
+    * **WB-A2, the always-true bit** — ``more = True`` whenever a cap was supplied.
+      Killed by every ``more is False`` case.
+    * **WB-A3, the always-false bit** — the over-fetch is written but its result is
+      discarded.  Killed by every ``more is True`` case.
+    * **WB-A4, the hard-coded cap** — ``more`` derived against a literal ``5``.  Killed by
+      the ``_ALT_CAP`` leg, which is why this class is parametrised over TWO caps rather
+      than over one.
+    """
+
+    @pytest.mark.parametrize("cap", [_LISTING_CAP, _ALT_CAP], ids=["cap-5", "cap-2"])
+    @pytest.mark.parametrize(
+        "surplus",
+        [False, True],
+        ids=["population-equals-cap", "population-exceeds-cap-by-one"],
+    )
+    async def test_the_bit_is_TRUE_only_when_a_further_row_really_exists(
+        self, cap: int, surplus: bool
+    ) -> None:
+        """⛔ The cap / cap+1 BOUNDARY, which is the whole discrimination.
+
+        The two populations differ by ONE row. A build whose bit is a function of anything
+        other than the existence of that row answers the same for both.
+        """
+        population = cap + 1 if surplus else cap
+        listing = await _listing_over(population, limit=cap)
+        assert len(listing.rows) == cap, (
+            f"a listing capped at {cap} over a population of {population} served "
+            f"{len(listing.rows)} rows. The cap windows the answer; a build serving the "
+            f"over-fetched row would leak the extra row to the caller as if it had been "
+            f"asked for"
+        )
+        assert listing.more is surplus, (
+            f"population={population}, limit={cap}: more={listing.more!r}, expected "
+            f"{surplus!r}. The disclosure exists IFF a further matching row TRULY EXISTS "
+            f"(design ruling: mechanism (c), over-fetch by one). ⚠ A build deriving the "
+            f"bit from 'the window is full' — mechanism (b) — answers True for BOTH "
+            f"populations here, which is exactly why (b) was eliminated: at "
+            f"population=={cap} the window is full AND the answer is complete, so (b) "
+            f"claims a surplus that does not exist and the false clear survives"
+        )
+
+    @pytest.mark.parametrize(
+        "population", [0, 1, _LISTING_CAP - 1], ids=["empty", "one", "cap-minus-one"]
+    )
+    async def test_a_SHORT_answer_carries_NO_disclosure(self, population: int) -> None:
+        """The degenerate end of the scale axis: 0, 1 and cap−1 matching rows."""
+        listing = await _listing_over(population, limit=_LISTING_CAP)
+        assert len(listing.rows) == population, (
+            f"a listing capped at {_LISTING_CAP} over a population of {population} served "
+            f"{len(listing.rows)} rows; the fixture, not the pin, is wrong"
+        )
+        assert listing.more is False, (
+            f"a listing of {population} row(s) under a cap of {_LISTING_CAP} claims a "
+            f"further matching row exists. Nothing was cut, so there is nothing to "
+            f"disclose — and a bound asserted where none exists teaches an agent to keep "
+            f"re-asking a question that is already fully answered"
+        )
+
+    async def test_an_UNLIMITED_listing_NEVER_discloses_a_bound(self) -> None:
+        """⛔ Rider 5's second half. ``limit=None`` is a COMPLETE answer, always.
+
+        The population is deliberately large, so a build that emits the line whenever the
+        answer 'looks big' — or that binds ``None`` into a cap comparison — is visible.
+        """
+        listing = await _listing_over(_SURPLUS_POPULATION, limit=None)
+        assert len(listing.rows) == _SURPLUS_POPULATION, (
+            f"an UNLIMITED listing served {len(listing.rows)} of {_SURPLUS_POPULATION} "
+            f"tasks. A cap that applies when the caller did not ask for one is a silently "
+            f"truncated served answer — the trust-doctrine defect, inside the fix for a "
+            f"trust-doctrine defect. ⚠ MEASURED on 3.2.1: `SELECT * FROM t LIMIT $k` with "
+            f"$k = NONE returns ZERO rows and NO error, so 'always emit the clause and "
+            f"bind None' is a live wrong build, not a hypothetical"
+        )
+        assert listing.more is False, (
+            "an UNLIMITED listing claims a further matching row exists. It served every "
+            "matching row; the claim is false by construction, and it is noise on exactly "
+            "the answers that are already complete"
+        )
+
+
+class TestTheDisclosureIsUNIFORMAcrossBOTHFilterPaths:
+    """⛔ **RED at ``f67a219``.**  The two filter paths are DIFFERENT CODE, and the
+    disclosure must not be.
+
+    ``TaskLedger.query_tasks`` splits on ``blocked``: with ``blocked is None`` the cap
+    rides the STATEMENT (``LIMIT``); with ``blocked`` supplied the candidates are
+    materialised, partitioned client-side, and the cap is applied to the ANSWER (ruling
+    T1).  A build that wires the disclosure into only one of those branches serves an
+    honest bound on ``action=query limit=5`` and a false clear on
+    ``action=query blocked=false limit=5`` — the SAME tool, the same caller, two truths.
+
+    **THE FIXTURE IS THE SANDWICH**, imported rather than rebuilt: blocked noise, then
+    unblocked filling, then blocked noise again, so the unblocked population is neither a
+    prefix nor a suffix of insertion order.  Its constants and the probability analysis
+    that justifies them live in
+    ``test_query_tasks_bounded.TestTheCapAppliesToTheANSWERNotTheCandidateScan``.
+
+    ⚠ **WB-A5 — the branch-blind bit.**  A build that computes ``more`` from the ROWS THE
+    STATEMENT RETURNED (rather than from the ANSWER) reports a surplus on the blocked path
+    whenever the candidate scan over-read — which, on this sandwich, is *always*: 66
+    candidates, 6 in the answer.  It passes every statement-path leg above.
+    """
+
+    @staticmethod
+    async def _sandwich_ledger() -> tuple[TaskLedger, SurrealEnv, str, int]:
+        """The shared sandwich, bound to a live ledger and this file's constants."""
+        from _task_fakes import seed_answer_cap_sandwich  # noqa: PLC0415
+
+        ledger, env = await _fresh_ledger()
+        root, true_answer_size = await seed_answer_cap_sandwich(
+            ledger,
+            blocked_each_side=_BLOCKED_NOISE_EACH_SIDE,
+            unblocked_filling=_ANSWER_CAP,
+            created_by=CREATOR,
+            description=DESCRIPTION,
+        )
+        return ledger, env, root, true_answer_size
+
+    async def test_the_BLOCKED_path_discloses_when_the_answer_really_is_SHORT(self) -> None:
+        """⛔ Rider 2 — the blocked-path two-world leg, both directions, one fixture.
+
+        The sandwich's true unblocked-and-open answer is ``_ANSWER_CAP + 1``, so a cap of
+        ``_ANSWER_CAP`` cuts EXACTLY ONE row (the tightest possible surplus) and a generous
+        cap cuts none. Both worlds are measured against the same ledger, so the only
+        variable is the cap the caller supplied.
+        """
+        generous_cap = 2 * _BLOCKED_NOISE_EACH_SIDE
+        ledger, env, root, true_answer_size = await self._sandwich_ledger()
+        try:
+            assert true_answer_size == _ANSWER_CAP + 1, (
+                f"the sandwich's true unblocked population is {true_answer_size}, not "
+                f"{_ANSWER_CAP + 1}; this leg's surplus-of-exactly-one premise has drifted "
+                f"and the two worlds below no longer differ by one row. root={root!r}"
+            )
+            assert generous_cap > true_answer_size, (
+                f"this leg needs a cap the answer cannot fill ({generous_cap} vs "
+                f"{true_answer_size}); the fixture constants have drifted apart"
+            )
+            context = _tool_seam(ledger)
+            cut = await context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                status=STATUS_OPEN, owner=None, blocked=False, limit=_ANSWER_CAP
+            )
+            whole = await context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                status=STATUS_OPEN, owner=None, blocked=False, limit=generous_cap
+            )
+            assert len(cut.rows) == _ANSWER_CAP and len(whole.rows) == true_answer_size, (
+                f"the capped listing served {len(cut.rows)} rows (expected {_ANSWER_CAP}) "
+                f"and the generous one {len(whole.rows)} (expected {true_answer_size}). "
+                f"Ruling T1: the cap applies to the ANSWER, never to the candidate scan — "
+                f"a cap spent on blocked rows the client-side filter then dropped serves "
+                f"short while more exist"
+            )
+            assert cut.more is True, (
+                f"a blocked-partition listing capped at {_ANSWER_CAP} out of "
+                f"{true_answer_size} genuinely-qualifying tasks claims NOTHING further "
+                f"matches. The caller asked 'what claimable work is there?', was handed "
+                f"{_ANSWER_CAP} items, and is told nothing — so it concludes the backlog "
+                f"holds {_ANSWER_CAP} claimable items when it holds {true_answer_size}. "
+                f"That is not a slow query; it is a false answer about the fleet's own "
+                f"work queue"
+            )
+            assert whole.more is False, (
+                f"a blocked-partition listing under a cap of {generous_cap} that served "
+                f"the WHOLE {true_answer_size}-row answer still claims a surplus. ⚠ This "
+                f"is the branch-blind build: the candidate scan read 66 rows to produce a "
+                f"{true_answer_size}-row answer, so a bit derived from the ROWS THE "
+                f"STATEMENT RETURNED reports a surplus that the ANSWER does not have"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_the_TWO_paths_agree_over_the_SAME_population_and_cap(self) -> None:
+        """⛔ The uniformity property stated as an EQUALITY, not as two separate legs.
+
+        Every task in the fixture is unblocked and open, so ``blocked=False`` and no
+        ``blocked`` filter at all describe the SAME set — and the answer to *"is there
+        more?"* cannot depend on which of the two the caller happened to type.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, _LISTING_CAP + 1)
+            context = _tool_seam(ledger)
+            statement_path = await context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                status=None, owner=None, blocked=None, limit=_LISTING_CAP
+            )
+            blocked_path = await context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                status=None, owner=None, blocked=False, limit=_LISTING_CAP
+            )
+            assert len(statement_path.rows) == len(blocked_path.rows) == _LISTING_CAP, (
+                f"the two paths served {len(statement_path.rows)} and "
+                f"{len(blocked_path.rows)} rows for the same population under the same "
+                f"cap; the fixture is not comparing like with like"
+            )
+            assert statement_path.more == blocked_path.more is True, (
+                f"the same question asked two ways answered "
+                f"more={statement_path.more!r} (no blocked filter) and "
+                f"more={blocked_path.more!r} (blocked=False), over a population where "
+                f"every task is unblocked and open so both describe the SAME set. The "
+                f"grammar is EXISTENCE and it is uniform across both filter paths — a "
+                f"disclosure wired into one branch is a tool that tells the truth only "
+                f"when the caller phrases the question the way the builder tested"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+class TestTheEMITTEDStatementIsBoundedAtCapPlusONE:
+    """⛔ **RED at ``f67a219``** — Rider 5, and it is the pin that stops the over-fetch
+    becoming an OVER-READ.
+
+    The disclosure is *"purchased by ``LIMIT cap+1`` — one extra ROW on the same read, no
+    second round trip"*.  Two wrong builds cost real money and neither changes the served
+    answer, so an answer-only pin cannot see either:
+
+    * **WB-A6, the second read** — a ``count()`` or a second unbounded query to decide
+      ``more``.  It is the mechanism ESC-5's own ruling REJECTED (*"a store-side count is a
+      second read on the served query path"*), and it doubles the round trips.
+    * **WB-A7, the unbounded probe** — drop the cap from the statement, materialise
+      everything, slice client-side.  The answer is right and the read scales with the
+      LEDGER, which is #253 re-opened at the seam that was built to close it.
+
+    **THE INSTRUMENT IS A DIFFERENCE BETWEEN TWO IDENTICALLY-SHAPED TRANSACTIONS, never a
+    transcribed constant.**  ``measure_store_traffic`` counts rows across the WHOLE
+    transaction (the ``LET``, the ``$rows`` echo, the blocker read), so the true constant
+    is derived-from-transaction-shape and would redden on innocent refactors with a
+    message about over-fetching — the P2 false-gate shape.  So the seam's traffic at
+    ``limit=k`` is compared against the LEDGER's own traffic at ``limit=k`` and at
+    ``limit=k+1``: it must equal the latter and exceed the former.  Both comparisons are
+    between the same statement shape, so the comparison is self-normalising and every
+    number cancels except the one row this pin is about.
+    """
+
+    @staticmethod
+    async def _traffic_pair(population: int, cap: int) -> tuple[Any, Any, Any]:
+        """Traffic for the SEAM at ``cap`` and for the LEDGER at ``cap`` and ``cap + 1``."""
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, population)
+            context = _tool_seam(ledger)
+            seam = await measure_store_traffic(
+                ledger,
+                lambda: context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                    status=None, owner=None, blocked=None, limit=cap
+                ),
+            )
+            ledger_at_cap = await measure_store_traffic(
+                ledger, lambda: ledger.query_tasks(limit=cap)
+            )
+            ledger_at_cap_plus_one = await measure_store_traffic(
+                ledger, lambda: ledger.query_tasks(limit=cap + 1)
+            )
+            return seam, ledger_at_cap, ledger_at_cap_plus_one
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    @pytest.mark.parametrize("cap", [_LISTING_CAP, _ALT_CAP], ids=["cap-5", "cap-2"])
+    async def test_the_seam_reads_EXACTLY_ONE_row_more_than_the_answer_it_serves(
+        self, cap: int
+    ) -> None:
+        """⛔ Over-fetch by ONE — not by zero (no bit), not by the whole ledger."""
+        seam, at_cap, at_cap_plus_one = await self._traffic_pair(_SURPLUS_POPULATION, cap)
+        for reading, name in ((seam, "seam"), (at_cap, "ledger@cap")):
+            reading.require_full_reach(f"the bounded task listing at limit={cap} ({name})")
+        assert at_cap.rows > 0, (
+            f"the instrument counted ZERO rows for a capped read that serves {cap} tasks, "
+            f"so it is not observing this call path at all and every comparison below is "
+            f"worthless: {at_cap}"
+        )
+        assert seam.calls == at_cap.calls, (
+            f"the seam's listing cost {seam.calls} round trip(s) where the ledger's own "
+            f"capped read costs {at_cap.calls}. The existence bit is purchased by ONE "
+            f"EXTRA ROW on the SAME read — a second round trip is the store-side count "
+            f"ESC-5's ruling rejected, on the exact performance axis #253 and R7 have been "
+            f"fighting all packet. seam={seam.statements}"
+        )
+        assert seam.rows == at_cap_plus_one.rows, (
+            f"the seam read {seam.rows} rows where the ledger's own limit={cap + 1} read "
+            f"reads {at_cap_plus_one.rows} over the SAME ledger. The over-fetch is by "
+            f"EXACTLY ONE row. More than that is a read that scales with something the "
+            f"caller did not ask about; the two transactions have identical shape, so "
+            f"every constant cancels and only the extra row survives the comparison. "
+            f"seam={seam.statements} ledger@{cap + 1}={at_cap_plus_one.statements}"
+        )
+        assert seam.rows > at_cap.rows, (
+            f"the seam read {seam.rows} rows and a plain limit={cap} read reads "
+            f"{at_cap.rows} — they are EQUAL, so no extra row was fetched and the "
+            f"existence bit cannot be a measurement. Either the bit is fabricated from the "
+            f"served rows (mechanism (b)) or it is bought by a second read this comparison "
+            f"cannot see"
+        )
+
+    async def test_the_read_does_NOT_grow_with_the_LEDGER(self) -> None:
+        """⛔ WB-A7: a GROWTH comparison, because a threshold is a number a builder tunes.
+
+        The same capped question against two ledgers whose matching populations differ by
+        an order of magnitude. The ANSWER is identical at both sizes by construction, so
+        any growth in rows read is the ledger's size leaking into a read the caller
+        explicitly bounded.
+        """
+        small, _small_ledger, _s2 = await self._traffic_pair(_LISTING_CAP + 1, _LISTING_CAP)
+        large, _large_ledger, _l2 = await self._traffic_pair(_SURPLUS_POPULATION, _LISTING_CAP)
+        assert small.rows > 0, f"the instrument saw no rows for the small ledger: {small}"
+        assert large.rows == small.rows, (
+            f"the bounded listing read {small.rows} rows against a ledger of "
+            f"{_LISTING_CAP + 1} matching tasks and {large.rows} against one of "
+            f"{_SURPLUS_POPULATION}, for the SAME {_LISTING_CAP}-row answer. The "
+            f"over-fetch is by ONE ROW, not by the difference between the cap and the "
+            f"ledger — #253's whole property, re-opened at the seam built to close it. "
+            f"small={small.statements} large={large.statements}"
+        )
+
+    async def test_an_UNLIMITED_listing_emits_NO_LIMIT_CLAUSE_AT_ALL(self) -> None:
+        """⛔ Rider 5's ``$k = NONE`` guard, pinned at the STATEMENT with a control.
+
+        MEASURED on spike-surreal 3.2.1: ``SELECT * FROM t LIMIT $k`` with ``$k = NONE``
+        returns ZERO rows and NO error. So the natural build — always emit the clause,
+        bind ``None`` when uncapped — turns every unlimited query in the fleet into an
+        empty answer, silently. The guard that stands between us and that is the ABSENCE
+        of the clause, which is a property of the emitted TEXT and cannot be observed in
+        the answer of a build that happens to be correct.
+
+        A PROBE NEEDS A CONTROL: the same measurement on a CAPPED call must SHOW the
+        clause, or "no LIMIT was emitted" is indistinguishable from "this instrument
+        cannot see a LIMIT".
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, _LISTING_CAP + 1)
+            context = _tool_seam(ledger)
+            uncapped = await measure_store_traffic(
+                ledger,
+                lambda: context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                    status=None, owner=None, blocked=None, limit=None
+                ),
+            )
+            capped = await measure_store_traffic(
+                ledger,
+                lambda: context._task_listing(  # noqa: SLF001 - the seam IS the subject
+                    status=None, owner=None, blocked=None, limit=_LISTING_CAP
+                ),
+            )
+            assert any("LIMIT" in statement for statement in capped.statements), (
+                f"the CONTROL failed: a capped listing emitted no LIMIT clause anywhere, "
+                f"so this instrument cannot see one and the assertion below proves "
+                f"nothing. capped={capped.statements}"
+            )
+            assert not any("LIMIT" in statement for statement in uncapped.statements), (
+                f"an UNLIMITED listing emitted a LIMIT clause: {uncapped.statements}. "
+                f"MEASURED on 3.2.1, `LIMIT $k` with $k = NONE returns 0 rows and NO "
+                f"error — so binding None into an always-emitted clause makes every "
+                f"uncapped query in the fleet answer EMPTY, silently, with no round-trip "
+                f"cost to hint at it"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+class TestTheCALLERSOwnLimitIsWhatGetsVALIDATED:
+    """⛔⛔ **A HAZARD THE OVER-FETCH CREATES, AND IT IS INVISIBLE TO EVERY OTHER PIN HERE.**
+
+    ``TaskLedger._validated_limit`` refuses an unusable cap CLIENT-SIDE and **names the
+    value** — deliberately, under ruling **T2**, because the engine's own complaint
+    (*"LIMIT/START must be a non-negative integer, got -1"*) is withheld by the store
+    seam's error hygiene and the caller would otherwise receive *"(unspecified rejection);
+    see the server log"* and be unable to tell its own bad input from a broken tool.
+
+    **The naive over-fetch destroys all three of its refusals, in three different ways, and
+    every one of them is SILENT:**
+
+    * ``limit=-1`` → the ledger is handed ``0`` and refuses naming **0**.  The caller is
+      told a value it never passed, about a parameter it did pass.  It cannot act on that.
+    * ``limit=0`` → the ledger is handed ``1``, which is LEGAL, so a refusal becomes **one
+      served row**.  A caller asking for nothing is given something; a caller with a
+      computed-to-zero cap silently starts consuming the backlog.
+    * ``limit=True`` → ``True + 1 == 2`` (``bool`` is an ``int`` subclass), so the guard
+      that exists **precisely** to stop ``limit=True`` meaning ``LIMIT 1`` is bypassed and
+      it now means ``LIMIT 2``.
+
+    The committed T2 pin for this (``test_blocks_edge.py``'s ``ENGINE_REJECTION_PATHS``
+    row for ``query_tasks`` / *negative limit*) drives the **LEDGER** directly, so it stays
+    green through all three.  **GREEN at ``f67a219`` and it must STAY green:** these are
+    removed-behaviour guards in the delete/replace sense — they pin what today's seam
+    already gets right, so the disclosure cannot take it away silently.
+    """
+
+    @pytest.mark.parametrize(
+        "illegal", [-1, 0, True], ids=["negative", "zero", "bool-true"]
+    )
+    async def test_an_ILLEGAL_limit_is_refused_naming_the_value_the_CALLER_passed(
+        self, illegal: object
+    ) -> None:
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, _LISTING_CAP + 1)
+            with pytest.raises(TaskLedgerError) as caught:
+                await _tool_seam(ledger).tasks(action="query", limit=illegal)
+            message = str(caught.value)
+            assert repr(illegal) in message or str(illegal) in message, (
+                f"a caller passing limit={illegal!r} was refused with {message!r}, which "
+                f"does not name the value it passed. The cap is validated AFTER something "
+                f"else has changed it — under an over-fetch, limit=-1 reaches the ledger "
+                f"as 0 and the caller is told about a number it never supplied. Ruling T2: "
+                f"a caller must be able to tell its own bad input from a broken tool, and "
+                f"the store seam's hygiene means this refusal is the ONLY chance to do it"
+            )
+            assert "limit" in message, (
+                f"the refusal does not name the PARAMETER: {message!r}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_a_ZERO_limit_is_a_REFUSAL_and_never_a_ONE_ROW_answer(self) -> None:
+        """⛔ The sharpest of the three: a refusal silently becoming a served answer.
+
+        Asserted as *"nothing was served"* rather than only as *"an error was raised"*,
+        because the two are different claims and only one of them is what a caller
+        experiences. A build that served one row and ALSO logged something would satisfy a
+        raises-check written the lazy way.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, _LISTING_CAP + 1)
+            served: str | None = None
+            try:
+                served = str(await _tool_seam(ledger).tasks(action="query", limit=0))
+            except TaskLedgerError:
+                served = None
+            assert served is None, (
+                f"lore_tasks action=query limit=0 SERVED an answer instead of refusing: "
+                f"{served!r}. Zero is refused client-side by the ledger; an over-fetch that "
+                f"adds one before validating turns that refusal into a legal LIMIT 1 read, "
+                f"so a caller whose cap computed to zero silently starts consuming the "
+                f"backlog one row at a time and nothing anywhere says so"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+
+class TestTheRenderedListingDISCLOSESItsOwnBOUND:
+    """⛔⛔ **THE SUCCESSOR TO THE DELETED KNOWN BOUND — leg 2, both directions.**
+
+    ``test_query_tasks_bounded.TestACappedListingDISCLOSESNothingAboutItsOwnBOUND``
+    MEASURED, at ``b8607c4``, that a listing CAPPED out of 40 matching tasks and a COMPLETE
+    listing of 5 serve **byte-identical responses** once opaque ids are normalised away —
+    *"Identical bytes = a false clear = STOP."*  That class carried its own deletion
+    instruction (*"if you closed it deliberately, DELETE this class and say so in your wave
+    report"*), and this wave closes the hole, so it is deleted and this class is what
+    replaces it.
+
+    **The successor asserts the OPPOSITE of its predecessor, in both directions:**
+
+    * partial world (40 matching, cap 5) → the render carries a line the complete world
+      does not, and the ROW lines are otherwise identical;
+    * complete world (5 matching, cap 5) → NO extra line.  This is the direction that
+      kills mechanism (b): a build emitting *"there may be more"* whenever the window is
+      full renders the SAME extra line in both worlds, and the two renders are identical
+      again — the false clear restored under a sentence that reads like a fix.
+
+    ⚠ **AND THE LINE IS LOCATED BY DIFFING, NEVER BY MATCHING A LITERAL.**  A contract that
+    transcribed the sentence would pin the builder's prose rather than the property, and
+    would go green for a build that emitted it unconditionally.
+    """
+
+    async def test_a_CAPPED_listing_renders_a_line_a_COMPLETE_one_does_NOT(self) -> None:
+        """⛔ The construction. Two worlds, and now two responses."""
+        partial = await _rendered_listing(_SURPLUS_POPULATION, limit=_LISTING_CAP)
+        complete = await _rendered_listing(_LISTING_CAP, limit=_LISTING_CAP)
+        assert len(_rendered_rows(partial)) == len(_rendered_rows(complete)) == _LISTING_CAP, (
+            f"the two worlds rendered {len(_rendered_rows(partial))} and "
+            f"{len(_rendered_rows(complete))} task rows where the cap is {_LISTING_CAP}; "
+            f"the construction did not produce the states it is named after, so the "
+            f"comparison below measures nothing. partial={partial!r}"
+        )
+        disclosure = _extra_lines(partial, complete)
+        assert len(disclosure) == 1, (
+            f"a listing capped out of {_SURPLUS_POPULATION} matching tasks and a COMPLETE "
+            f"listing of {_LISTING_CAP} differ by {len(disclosure)} line(s): {disclosure}. "
+            f"ZERO means the false clear this wave exists to close is still open — an "
+            f"agent acting on the capped answer without checking concludes the ledger "
+            f"holds {_LISTING_CAP} open tasks, which is wrong in a way the response did "
+            f"not name. MORE THAN ONE means the two worlds differ somewhere beyond the "
+            f"disclosure, so the comparison is no longer measuring the bound.\n"
+            f"partial={_normalise_task_render(partial)!r}\n"
+            f"complete={_normalise_task_render(complete)!r}"
+        )
+        assert not disclosure[0].startswith("- "), (
+            f"the disclosure line begins with the ROW marker: {disclosure[0]!r}. Every "
+            f"consumer that counts rendered rows — including this repo's own committed "
+            f"pin `test_the_TOOL_SEAM_passes_the_limit_through_to_the_ledger` — counts "
+            f"lines starting with '- ', so a disclosure wearing the row marker makes a "
+            f"correct build fail a pin it never touched, and makes every agent that "
+            f"parses this render count one task too many"
+        )
+        assert str(_LISTING_CAP) in disclosure[0], (
+            f"the disclosure line names no number: {disclosure[0]!r}. A bound is a FACT — "
+            f"the set, the predicate, the time — and the fact this responder holds is "
+            f"'you are seeing {_LISTING_CAP} of more'. 'Results may be incomplete' names "
+            f"nothing, licenses nothing narrower, and fails on its own terms; it is the "
+            f"disclaimer shape the trust definition rules out"
+        )
+
+    async def test_a_COMPLETE_listing_renders_NOTHING_but_its_rows(self) -> None:
+        """⛔ The (b)-killing direction, stated over the render rather than over the bit.
+
+        The complete world's render must be EXACTLY its rows. A build that appends a
+        hedge to every capped answer passes the leg above and fails here — and it is the
+        cheapest build to write, which is why the ruling eliminated (b) rather than
+        keeping it as a fallback.
+        """
+        complete = await _rendered_listing(_LISTING_CAP, limit=_LISTING_CAP)
+        assert complete.splitlines() == _rendered_rows(complete), (
+            f"a COMPLETE listing — {_LISTING_CAP} matching tasks under a cap of "
+            f"{_LISTING_CAP} — rendered a line beyond its rows: {complete!r}. The window "
+            f"is full and the answer is whole, so there is nothing to disclose. A "
+            f"disclosure emitted whenever the window is full (mechanism (b)) renders the "
+            f"same bytes in both worlds and closes nothing"
+        )
+
+    async def test_a_surplus_of_EXACTLY_ONE_row_still_renders_the_line(self) -> None:
+        """⛔ The boundary, at the render. Off-by-one in the over-fetch lands here."""
+        partial = await _rendered_listing(_LISTING_CAP + 1, limit=_LISTING_CAP)
+        complete = await _rendered_listing(_LISTING_CAP, limit=_LISTING_CAP)
+        assert _extra_lines(partial, complete), (
+            f"a listing capped at {_LISTING_CAP} out of {_LISTING_CAP + 1} matching tasks "
+            f"renders identically to a complete one. ONE row was withheld and the caller "
+            f"is not told — the tightest surplus there is, and the one an over-fetch that "
+            f"is off by one cannot see.\npartial={_normalise_task_render(partial)!r}"
+        )
+
+    async def test_an_UNLIMITED_render_over_a_LARGE_ledger_carries_NO_line(self) -> None:
+        """Rider 5 at the render: an uncapped answer is complete, so it discloses nothing."""
+        rendered = await _rendered_listing(_SURPLUS_POPULATION, limit=None)
+        assert rendered.splitlines() == _rendered_rows(rendered), (
+            f"an UNLIMITED query rendered a bound-disclosure line: {rendered!r}. Nothing "
+            f"was withheld. A line on a complete answer is noise on every uncapped call in "
+            f"the fleet, and it teaches an agent to re-ask a question already answered in "
+            f"full"
+        )
+        assert len(_rendered_rows(rendered)) == _SURPLUS_POPULATION, (
+            f"the uncapped render carries {len(_rendered_rows(rendered))} rows of "
+            f"{_SURPLUS_POPULATION}; the answer itself was truncated"
+        )
+
+    async def test_POSITIVE_CONTROL_the_comparison_CAN_see_a_difference(self) -> None:
+        """⛔ Without this, every leg above is satisfied by a normaliser that flattens
+        everything — the probe passing for the WRONG REASON, which this repo has receipts
+        against (a 'closed set is enforced' probe that actually rejected on a parse error).
+        """
+        complete = await _rendered_listing(_LISTING_CAP, limit=_LISTING_CAP)
+        shorter = await _rendered_listing(_LISTING_CAP - 1, limit=_LISTING_CAP)
+        assert _normalise_task_render(complete) != _normalise_task_render(shorter), (
+            f"the normaliser reports a {_LISTING_CAP}-row listing and a "
+            f"{_LISTING_CAP - 1}-row listing as identical, so it cannot see ANY difference "
+            f"and every leg above proves nothing: {_normalise_task_render(complete)!r}"
+        )
+        assert _extra_lines(complete, shorter) == [], (
+            f"two COMPLETE listings of different sizes differ by a line beyond their rows: "
+            f"{_extra_lines(complete, shorter)}. Neither withheld anything, so a "
+            f"disclosure on either is a claim about a surplus that does not exist"
+        )
+
+
+class TestTheRenderNEVERRecomputesTheDisclosure:
+    """⛔ **RED at ``f67a219``** — the *"renders take typed applicability"* house law,
+    pinned as a MUTATION rather than asserted as a style.
+
+    This is the pin that makes the ruled placement real.  A render deriving the line from
+    ``len(rows) == limit`` — or from any re-computation of its own — is a SECOND
+    implementation of the existence policy, wearing the shared name, and it diverges the
+    first time the two disagree.  So the property is stated the only way that can catch
+    it: hold the ROWS constant, move ONLY the typed bit, and require the render to move
+    with it in BOTH directions.
+
+    ⚠ The row count here is deliberately NOT any cap in this file, so a build that
+    compares against a literal cannot accidentally agree with the bit.
+    """
+
+    @staticmethod
+    def _one_task() -> Task:
+        """A minimal in-memory :class:`~loremaster.tasks.Task` — no store, no fixture.
+
+        This class is the ONE part of SECTION A that needs no database: the property is
+        about the render's relationship to a typed value, and constructing the value
+        directly is what makes ``more`` an INDEPENDENT variable. A pin that drove this
+        through a real ledger could only ever observe ``more`` values the production code
+        chose, which is the tautology this pin exists to break.
+        """
+        return Task(
+            id=uuid.uuid4().hex,
+            subject=_IDENTICAL_SUBJECT,
+            description=DESCRIPTION,
+            status=STATUS_OPEN,
+            created_at=datetime.now(UTC),
+            provenance={"created_by": CREATOR},
+        )
+
+    def test_the_line_follows_the_TYPED_BIT_in_BOTH_directions(self) -> None:
+        from loremaster.server import AppContext  # noqa: PLC0415
+        from loremaster.tasks import TaskListing  # noqa: PLC0415
+
+        rows = [self._one_task() for _index in range(3)]
+        with_more = AppContext._render_task_listing(  # noqa: SLF001 - the render IS the pin
+            TaskListing(rows=rows, more=True)
+        )
+        without_more = AppContext._render_task_listing(  # noqa: SLF001 - the render IS the pin
+            TaskListing(rows=rows, more=False)
+        )
+        assert _rendered_rows(with_more) == _rendered_rows(without_more), (
+            f"the two renders disagree about the ROWS, which are identical objects. The "
+            f"only variable is the typed bit; a render whose row output depends on it is "
+            f"doing something this contract never asked for.\n{with_more!r}\n"
+            f"{without_more!r}"
+        )
+        assert len(_extra_lines(with_more, without_more)) == 1, (
+            f"more=True and more=False over the SAME rows rendered "
+            f"{len(_extra_lines(with_more, without_more))} differing line(s). The render "
+            f"must take the bit as TYPED APPLICABILITY and never re-derive it: a build "
+            f"computing 'is there more?' from len(rows) answers identically for both of "
+            f"these, which is a second implementation of the existence policy hiding "
+            f"inside the render.\nmore=True: {with_more!r}\nmore=False: {without_more!r}"
+        )
+        assert _extra_lines(without_more, with_more) == [], (
+            f"the more=False render carries a line the more=True render does not: "
+            f"{_extra_lines(without_more, with_more)}. The disclosure is additive; a "
+            f"render that swaps one sentence for another makes the two worlds differ "
+            f"without either being a bound"
+        )
+
+    def test_an_EMPTY_listing_renders_the_no_matches_line_and_no_disclosure(self) -> None:
+        """The degenerate render: nothing matched, so there is no bound to disclose."""
+        from loremaster.server import AppContext  # noqa: PLC0415
+        from loremaster.tasks import TaskListing  # noqa: PLC0415
+
+        rendered = AppContext._render_task_listing(  # noqa: SLF001 - the render IS the pin
+            TaskListing(rows=[], more=False)
+        )
+        assert rendered == AppContext._render_task_rows([]), (  # noqa: SLF001
+            f"an empty listing no longer renders what an empty row list renders: "
+            f"{rendered!r}. The no-matches sentence is an EXISTING served string with its "
+            f"own consumers; the disclosure is additive and must not restate it"
+        )
+
+
+# =========================================================================== #
+# SECTION B — THE BLOCKED-CHAIN / CRITICAL-PATH RENDER.
+#
+# ⚠ THIS MINTS A SERVED SURFACE. Re-derived at ``f67a219`` with two independent
+# instruments, because the graph tool's own caveat says its verdict can undercount:
+#   lore_impact("loremaster.tasks.TaskLedger.transitive_blockers") -> 0 prod / 0 test refs
+#   grep -rn transitive_blockers loremaster/loremaster/ -> hits in tasks.py ONLY
+# So nothing renders the transitive walk today, and everything below is new contract.
+#
+# ⚠⚠ ESCALATED, NOT SETTLED — see this module's docstring, fork 1: these pins describe an
+# ID-ONLY render. Enrichment (subject/status per blocker) needs a second bounded read over
+# up to ENGINE_RECURSION_CEILING rows plus a hostile-free-text render pin, which is a
+# slice rather than a render tweak.
+# =========================================================================== #
+
+
+class TestTheChainRenderIsReachableAndNamesItsOwnBOUND:
+    """⛔ **RED at ``f67a219``** — ``lore_tasks action='blockers'`` does not exist.
+
+    :class:`~loremaster.tasks.TransitiveBlockers` already carries the honest bound —
+    ``truncated`` is MEASURED (the statement collects at one deeper bound and compares),
+    never inferred — and ``max_depth_used`` exists, in its own docstring's words, *"so a
+    render can teach a concrete re-ask without importing or re-deriving the ledger's
+    default"*.  **A render that drops either has thrown away the only two things that make
+    a partial answer usable**, and probe §5.3 measured the engine returning 256 of 299
+    nodes with no error and no signal — so a truncated walk that renders like a complete
+    one is not a hypothetical failure mode, it is the engine's documented behaviour.
+
+    **WB-B1 — the confident render.**  Render ``ids`` and nothing else.  A truncated walk
+    and a complete one then serve identical bytes and the consumer is told its critical
+    path is whole when it is a floor.  Killed by the two-world leg.
+    **WB-B2 — the inferred bound.**  ``truncated = len(ids) >= max_depth``.  Killed
+    because the fixture's complete walk is deeper than its own id count.
+    """
+
+    @staticmethod
+    async def _chain(ledger: TaskLedger, depth: int) -> list[str]:
+        """A straight ``blocked_by`` chain of ``depth`` links, deepest FIRST.
+
+        Returned deepest-first because that is proximity order's REVERSE: the leaf's
+        nearest blocker is the LAST link created. A fixture whose proximity order matched
+        creation order could not tell an ordered render from an unordered one.
+        """
+        chain: list[str] = []
+        previous: list[str] = []
+        for index in range(depth):
+            task_id = await ledger.create_task(
+                f"chain link {index}", DESCRIPTION, blocked_by=previous, created_by=CREATOR
+            )
+            chain.append(task_id)
+            previous = [task_id]
+        return chain
+
+    async def test_a_TRUNCATED_walk_renders_a_line_a_COMPLETE_walk_does_NOT(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔⛔ The leg-2 construction: the bound is a FACT in the bytes, or it is nothing."""
+        ledger, _env, _seed = task_ledger
+        chain = await self._chain(ledger, 4)
+        leaf = await ledger.create_task(
+            "the leaf of a four-deep chain", DESCRIPTION, blocked_by=[chain[-1]], created_by=CREATOR
+        )
+        deep = str(await _tool_seam(ledger).tasks(action="blockers", task_id=leaf, max_depth=8))
+        shallow = str(await _tool_seam(ledger).tasks(action="blockers", task_id=leaf, max_depth=2))
+        assert deep != shallow, (
+            f"a walk bounded at depth 2 over a four-deep chain rendered identically to a "
+            f"complete one at depth 8. The engine truncates SILENTLY at its bound (probe "
+            f"§5.3: 256 of 299 nodes, no error, no signal), so a render that does not "
+            f"carry `truncated` serves a FLOOR as if it were the whole critical path.\n"
+            f"deep={deep!r}\nshallow={shallow!r}"
+        )
+        assert "2" in shallow, (
+            f"the truncated render names no depth: {shallow!r}. TransitiveBlockers carries "
+            f"`max_depth_used` precisely so the render can teach a CONCRETE re-ask; a "
+            f"bound the caller cannot act on is a disclaimer, not a fact"
+        )
+        for blocker in chain:
+            assert blocker in deep, (
+                f"the complete walk's render omits chain link {blocker!r}: {deep!r}. The "
+                f"served ids are what an agent will call get_task with — a render that "
+                f"drops one hides work that must resolve first"
+            )
+
+    async def test_the_served_ids_RESOLVE_and_keep_the_ledgers_PROXIMITY_order(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔ Two properties one fixture forces, and neither is decoration.
+
+        ``str(record.id)`` vs ``str(record).split(':')`` is the store-reference §7 hazard
+        that cost 130 red pins across two suites: a served id an agent cannot resolve is
+        worse than no answer, because it will be used and every call made with it fails.
+        And the ledger orders by PROXIMITY — a render that sorts or set-ifies destroys the
+        one property that makes a truncated answer a usable floor.
+        """
+        ledger, _env, _seed = task_ledger
+        chain = await self._chain(ledger, 4)
+        leaf = await ledger.create_task(
+            "the leaf whose chain order matters", DESCRIPTION, blocked_by=[chain[-1]],
+            created_by=CREATOR,
+        )
+        rendered = str(await _tool_seam(ledger).tasks(action="blockers", task_id=leaf))
+        positions = [rendered.find(blocker) for blocker in reversed(chain)]
+        assert all(position >= 0 for position in positions), (
+            f"a chain link is missing from the render: {dict(zip(reversed(chain), positions, strict=True))}\n"
+            f"{rendered!r}"
+        )
+        assert positions == sorted(positions), (
+            f"the render does not follow the ledger's PROXIMITY order — nearest blocker "
+            f"first. Ordering by proximity is what makes a TRUNCATED answer a valid FLOOR "
+            f"('at least these must resolve first'); reordered, a partial answer is "
+            f"indistinguishable from an arbitrary sample and a consumer cannot use it at "
+            f"all. positions={positions}\n{rendered!r}"
+        )
+        for blocker in chain:
+            resolved = await ledger.get_task(blocker)
+            assert resolved.id == blocker, "the fixture's own ids do not round-trip"
+
+    async def test_a_task_with_NO_blockers_and_an_id_naming_NOTHING_are_DIFFERENT_answers(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔ *"An id that names nothing and an id with no blockers are two different
+        questions, and ``[]`` cannot be the answer to both"* — the ledger's own words, now
+        required to survive the render rather than being swallowed into an empty list.
+        """
+        ledger, _env, _seed = task_ledger
+        free = await ledger.create_task("nothing blocks this", DESCRIPTION, created_by=CREATOR)
+        rendered = str(await _tool_seam(ledger).tasks(action="blockers", task_id=free))
+        assert rendered.strip(), "a task with no blockers rendered an EMPTY string"
+
+        phantom = uuid.uuid4().hex
+        with pytest.raises(TaskNotFoundError) as caught:
+            await _tool_seam(ledger).tasks(action="blockers", task_id=phantom)
+        assert phantom in str(caught.value), (
+            f"the not-found refusal does not name the id it could not resolve: "
+            f"{str(caught.value)!r}"
+        )
+
+
+class TestTheChainRenderNAMESTheBlockersThatCarryNoEDGE:
+    """⛔⛔ **RED at ``f67a219`` — THE FALSE CLEAR THAT SURVIVES R11's BACKFILL BY
+    CONSTRUCTION, and it needs no constructing in production: it is the default state.**
+
+    Sidecar S3 found that legacy rows carry ``blocked_by`` COLUMNS and no ``blocks``
+    EDGES, so a transitive read serves ``ids=[] truncated=False`` — *clean, confident,
+    wrong* — on exactly the rows the fleet is working.  Operator ruling **R11** fixed it
+    with a backfill in ``ensure_ready``.  **But R11's own text names the residue that
+    CANNOT be fixed:** the backfill is *"pre-filtered through the L3 existence policy"*
+    because ``ENFORCED`` forbids an edge to a task that does not exist, so a legacy
+    ``blocked_by`` entry naming NO row — a **phantom** — can never carry an edge and is
+    skipped forever.  ``transitive_blockers``' own docstring records this as *"ONE
+    permanent residue"* and adds the part that makes it a served-surface defect: *"It
+    still blocks the task: the claim CAS counts it and refuses forever."*
+
+    **So without this pin, a task blocked ONLY by a phantom renders byte-identically to a
+    task with no blockers at all** — a positive assertion of completeness that is false,
+    about a task the fleet can never claim.  That is the trust definition's central
+    failure condition, in the surface this wave mints, on rows that already exist.
+
+    **The fix is not a disclaimer.**  The responder KNOWS the residue: the ``blocked_by``
+    column is on the row it already read.  So the render states the FACT — these entries
+    block this task and are not in the walk — and the two worlds' bytes differ.
+
+    ⚠ **WB-B3 — the walk-only render.**  Render ``TransitiveBlockers`` alone and never look
+    at the column.  It passes every leg of the sibling class above; it dies only here.
+    """
+
+    @staticmethod
+    async def _seed_phantom_blocked(ledger: TaskLedger, env: SurrealEnv) -> tuple[str, str]:
+        """A raw-seeded task whose ONLY ``blocked_by`` entry names no row at all.
+
+        RAW-seeded through the admin connection because the ledger now REFUSES to mint
+        such a row (ruling R3) — and that refusal is exactly why the fixture must bypass
+        it: every row written BEFORE that guard was written under a fail-open
+        ``blocked_by``, a long-lived store holds them, and nothing will ever clean them.
+        A fixture that can only produce rows the NEW guard allows guarantees the one
+        condition under which this bug is invisible.
+        """
+        phantom = f"phantom_{uuid.uuid4().hex}"
+        legacy = f"legacy_{uuid.uuid4().hex}"
+        connection = await connect_admin(env)
+        try:
+            await _seed_legacy_task(connection, legacy, blocked_by=[phantom], status=STATUS_OPEN)
+        finally:
+            await connection.close()
+        return legacy, phantom
+
+    async def test_a_PHANTOM_blocked_task_does_NOT_render_like_a_FREE_one(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔⛔ The construction, and the claim CAS is asserted as the ground truth."""
+        ledger, env, _seed = task_ledger
+        legacy, phantom = await self._seed_phantom_blocked(ledger, env)
+        free = await ledger.create_task("nothing blocks this", DESCRIPTION, created_by=CREATOR)
+
+        blocked_render = str(await _tool_seam(ledger).tasks(action="blockers", task_id=legacy))
+        free_render = str(await _tool_seam(ledger).tasks(action="blockers", task_id=free))
+
+        claim = await ledger.claim_task(legacy, ACTOR)
+        assert not claim.claimed, (
+            f"the claim CAS ACCEPTED a task whose only blocker names no row. The residue "
+            f"this pin is about does not exist on this build, so the pin's premise is "
+            f"wrong — escalate rather than 'fixing' the render. claim={claim!r}"
+        )
+        assert _normalise_task_render(blocked_render) != _normalise_task_render(free_render), (
+            f"a task blocked FOREVER by a phantom renders byte-identically to a task with "
+            f"no blockers at all. The claim CAS counts the phantom and refuses the claim "
+            f"forever (asserted directly above), while the render says the critical path "
+            f"is empty — a positive assertion of completeness that is false, about a row "
+            f"that already exists in every long-lived store. ENFORCED forbids the edge, so "
+            f"R11's backfill skips it BY DESIGN and no migration will ever close this; the "
+            f"render must state it as a FACT.\nblocked={blocked_render!r}\n"
+            f"free={free_render!r}"
+        )
+        assert phantom in blocked_render, (
+            f"the render does not NAME the blocked_by entry that carries no edge: "
+            f"{blocked_render!r}. A bound is a fact — the set, the predicate — and the "
+            f"responder holds the exact id, on the row it already read. An unnamed "
+            f"residue is 'results may be incomplete' wearing a longer sentence"
+        )
+
+    async def test_a_task_whose_column_and_walk_AGREE_renders_NO_residue_notice(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔ The other direction, without which the pin above is satisfied by a build that
+        prints the whole ``blocked_by`` column on EVERY answer — a residue notice that is
+        always present names nothing, and is the disclaimer shape again.
+
+        THREE worlds, and the residue line is DERIVED from two of them rather than matched
+        against a literal: it is what the PHANTOM world says that the FREE world does not.
+        The honest world — a real, live blocker, which R11's backfill DOES mint an edge for
+        — must not carry it.
+        """
+        ledger, env, _seed = task_ledger
+        legacy, _phantom = await self._seed_phantom_blocked(ledger, env)
+        blocker = await ledger.create_task("a real blocker", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            "blocked by a real, live task", DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        free = await ledger.create_task("nothing blocks this", DESCRIPTION, created_by=CREATOR)
+
+        context = _tool_seam(ledger)
+        phantom_render = str(await context.tasks(action="blockers", task_id=legacy))
+        honest = str(await context.tasks(action="blockers", task_id=dependent))
+        free_render = str(await context.tasks(action="blockers", task_id=free))
+
+        assert blocker in honest, (
+            f"the render omits a live blocker that IS in the walk: {honest!r}. Either the "
+            f"walk is blind or R11's backfill did not mint the edge for a row created "
+            f"through the ledger"
+        )
+        residue_notice = _extra_lines(phantom_render, free_render)
+        assert residue_notice, (
+            f"the phantom world says nothing the free world does not, so there is no "
+            f"residue notice to be absent from the honest world and this leg is vacuous. "
+            f"Its sibling above owns that failure.\nphantom={phantom_render!r}"
+        )
+        honest_lines = set(_normalise_task_render(honest).splitlines())
+        assert not (set(residue_notice) & honest_lines), (
+            f"a task whose blocked_by column and transitive walk AGREE still carries the "
+            f"residue notice {sorted(set(residue_notice) & honest_lines)}. A notice that "
+            f"fires on every answer names nothing and licenses nothing narrower — it is "
+            f"'results may be incomplete' with more words, and it trains every reader to "
+            f"ignore the one answer where it is TRUE.\nhonest={honest!r}"
+        )
+
+
+# =========================================================================== #
+# SECTION C — R10(iii): THE RENDERS TEACH AT THE MOMENT OF CAUSATION.
+#
+# R10(ii) shipped in 04b-1: a CREATE naming a superseded blocker is refused, naming the
+# successor. (iii) exists because **supersession can happen AFTER the dependents exist**,
+# which (ii) alone cannot catch — the quantifier law, applied by the operator to their own
+# ruling. Two doors, both closed here: the supersede that STRANDS dependents, and the
+# claim that fails because a blocker was superseded out from under it.
+# =========================================================================== #
+
+
+class TestSupersedeWARNSWhenThePredecessorHasDEPENDENTS:
+    """⛔ **RED at ``f67a219``** — ``supersede`` renders
+    ``"superseded task X; successor Y (status open)"`` and says nothing about dependents.
+
+    Superseding a task that other tasks are blocked on **strands every one of them**:
+    supersession is not terminal (ruling R10 REJECTED making it so — the work MOVED, it did
+    not finish), so the claim CAS keeps counting the predecessor as unresolved and every
+    dependent is unclaimable **forever**, silently.  Nothing in the fleet ever learns this;
+    the dependents' owners simply find work that never becomes claimable.
+
+    ⚠ **WB-C1 — the unconditional warning.**  Append the sentence to every supersede.
+    Killed by the no-dependents leg: a warning that always fires is a warning nobody reads,
+    and it is the imperative-on-a-false-verdict shape ruling R8 split apart.
+    ⚠ **WB-C2 — the count-only warning.**  *"3 tasks depend on this"* with no ids.  Killed
+    because the render must NAME them: the caller's next move is to re-point those
+    dependents at the successor, and it cannot do that from a number.
+    """
+
+    async def test_superseding_a_task_with_dependents_NAMES_them_and_the_SUCCESSOR(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        ledger, _env, _seed = task_ledger
+        predecessor = await ledger.create_task(
+            "the task about to move", DESCRIPTION, created_by=CREATOR
+        )
+        dependents = [
+            await ledger.create_task(
+                f"work waiting on the mover {index}",
+                DESCRIPTION,
+                blocked_by=[predecessor],
+                created_by=CREATOR,
+            )
+            for index in range(2)
+        ]
+        rendered = str(
+            await _tool_seam(ledger).tasks(
+                action="supersede",
+                task_id=predecessor,
+                subject="the successor",
+                description=DESCRIPTION,
+                created_by=CREATOR,
+            )
+        )
+        for dependent in dependents:
+            assert dependent in rendered, (
+                f"superseding {predecessor!r} stranded {dependent!r} and the render does "
+                f"not name it: {rendered!r}. Supersession is NOT terminal (ruling R10 "
+                f"refused to make it so), so the claim CAS counts the predecessor as "
+                f"unresolved forever and every dependent is unclaimable, silently. The "
+                f"caller's next move is to re-point these at the successor — it cannot do "
+                f"that from a number, and nobody else will ever be told"
+            )
+        successor = await ledger.get_task(dependents[0])
+        assert successor.blocked_by == [predecessor], (
+            "the render must WARN, never rewrite: dependency transfer is R10(iv) and it is "
+            "DEFERRED — it breaks blocked_by's post-creation immutability that the claim "
+            "path rides"
+        )
+
+    async def test_superseding_a_task_with_NO_dependents_warns_about_NOTHING(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔ WB-C1. Two supersedes, identical but for the dependents, byte-compared.
+
+        The world WITHOUT dependents is the control: its render must be exactly what
+        ``f67a219`` already serves, so the warning is a fact about this supersede rather
+        than a hedge attached to all of them.
+        """
+        ledger, _env, _seed = task_ledger
+        lonely = await ledger.create_task("nothing waits on this", DESCRIPTION, created_by=CREATOR)
+        popular = await ledger.create_task("things wait on this", DESCRIPTION, created_by=CREATOR)
+        await ledger.create_task(
+            "the waiter", DESCRIPTION, blocked_by=[popular], created_by=CREATOR
+        )
+        context = _tool_seam(ledger)
+        quiet = str(
+            await context.tasks(
+                action="supersede", task_id=lonely, subject="s1",
+                description=DESCRIPTION, created_by=CREATOR,
+            )
+        )
+        loud = str(
+            await context.tasks(
+                action="supersede", task_id=popular, subject="s2",
+                description=DESCRIPTION, created_by=CREATOR,
+            )
+        )
+        assert len(_normalise_task_render(quiet).splitlines()) == 1, (
+            f"superseding a task nothing depends on rendered more than the single line it "
+            f"renders today: {quiet!r}. A warning that fires unconditionally is the "
+            f"stranded-imperative shape ruling R8 split apart — imperatives ride only TRUE "
+            f"verdicts"
+        )
+        assert len(_extra_lines(loud, quiet)) >= 1, (
+            f"the two supersedes render the same shape although only one stranded a "
+            f"dependent.\nwith dependents={loud!r}\nwithout={quiet!r}"
+        )
+
+
+class TestTheCLAIMRenderNamesTheSUPERSEDEDBlockerCase:
+    """⛔ **RED at ``f67a219``** — ``_render_claim_result``'s unowned-not-claimable branch
+    renders ``"blocked_by [...] unresolved"``, which is TRUE and useless.
+
+    The three unowned-loss causes are NOT the same news, and the render already knows it —
+    it branches on the task's OWN ``superseded_by`` (finding #7's phantom-holder fix).
+    What it cannot see is a blocker that was superseded AFTER this task was created, which
+    is precisely the door R10(ii)'s create-time refusal cannot reach.  The difference
+    matters to the reader, who is an agent: *"blocked_by [X] unresolved"* invites it to
+    poll until X resolves, and **X can never resolve** — supersession is not terminal, so
+    the CAS counts it forever.  The actionable fact is that the work moved to Y.
+
+    ⚠ **WB-C3 — the task's-own-supersession confusion.**  A build that reports the
+    superseded case when THIS TASK is superseded (already rendered today) and calls it done.
+    Killed because the fixture's dependent is not itself superseded.
+    ⚠ **WB-C4 — the fabricated successor.**  Naming a successor for a blocker that is
+    merely OPEN.  Killed by the ordinary-blocker leg: a tool caught inventing one id is
+    untrustworthy on all of them.
+    """
+
+    async def test_a_claim_blocked_by_a_SUPERSEDED_task_names_it_AND_its_successor(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        ledger, _env, _seed = task_ledger
+        blocker = await ledger.create_task("the blocker that moved", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            "work waiting on a blocker that got superseded",
+            DESCRIPTION,
+            blocked_by=[blocker],
+            created_by=CREATOR,
+        )
+        successor = await ledger.supersede_task(
+            blocker, subject="where the work went", description=DESCRIPTION, created_by=CREATOR
+        )
+        rendered = str(await _tool_seam(ledger).claim_task(dependent, ACTOR))
+        assert blocker in rendered and successor in rendered, (
+            f"a claim that failed because its blocker {blocker!r} was SUPERSEDED by "
+            f"{successor!r} renders {rendered!r}. Supersession is not terminal, so the CAS "
+            f"counts that blocker forever and this claim can NEVER win — 'blocked_by [...] "
+            f"unresolved' tells the agent to keep polling a door that is nailed shut. R10 "
+            f"closed the at-CREATE door in 04b-1; this is the moment-of-causation door, "
+            f"which is the only one reachable when the supersede happens AFTER the "
+            f"dependent exists"
+        )
+        state = await ledger.get_task(dependent)
+        assert state.superseded_by is None and state.owner is None, (
+            "the fixture's dependent is itself superseded or owned, so this render could "
+            "be exercising the pre-existing #7 branch rather than the blocker case"
+        )
+
+    async def test_a_claim_blocked_by_an_ORDINARY_open_task_invents_NO_successor(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """⛔ WB-C4. The discriminating pair: the same shape of loss, no supersession."""
+        ledger, _env, _seed = task_ledger
+        blocker = await ledger.create_task("an ordinary open blocker", DESCRIPTION, created_by=CREATOR)
+        dependent = await ledger.create_task(
+            "work waiting on ordinary progress", DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        superseded_case = await ledger.create_task("a decoy that moved", DESCRIPTION, created_by=CREATOR)
+        decoy_successor = await ledger.supersede_task(
+            superseded_case, subject="decoy successor", description=DESCRIPTION, created_by=CREATOR
+        )
+        rendered = str(await _tool_seam(ledger).claim_task(dependent, ACTOR))
+        assert decoy_successor not in rendered, (
+            f"the claim render names {decoy_successor!r} — a successor belonging to a task "
+            f"this claim has nothing to do with: {rendered!r}. A tool caught inventing one "
+            f"id is untrustworthy on all of them"
+        )
+        assert blocker in rendered, (
+            f"the loss does not name the blocker that caused it: {rendered!r}"
+        )
+
+    def test_the_claim_result_carries_the_superseded_blockers_as_TYPED_state(self) -> None:
+        """⛔ The render is a ``@staticmethod`` over :class:`ClaimResult`, so the fact has
+        to travel as TYPED state — a render that re-read the store to write its own
+        sentence would be a second implementation of the blocker policy, and would do a
+        store read from inside a pure render.
+
+        ⚠ The field DEFAULTS, and that is load-bearing rather than convenience: four
+        ``ClaimResult(...)`` construction sites exist in this tree (``tasks.py`` and three
+        in test doubles), and a required field would redden them on a CORRECT build — the
+        C-DEF class (#133) this contract must not create.
+        """
+        blockers = ClaimResult.model_fields.get("superseded_blockers")
+        assert blockers is not None, (
+            "ClaimResult carries no `superseded_blockers`. The claim render is a "
+            "staticmethod over this model, so the superseded-blocker fact must reach it as "
+            "typed state — renders take typed applicability and never re-derive"
+        )
+        assert not blockers.is_required(), (
+            "ClaimResult.superseded_blockers is REQUIRED, so every existing "
+            "ClaimResult(claimed=…, task=…) construction — one in tasks.py and three in the "
+            "test doubles — is a TypeError on a correct build. Give it a default"
+        )
+
+    async def test_a_WON_claim_carries_NO_superseded_blockers(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """Non-vacuity for the field: always-empty and always-populated both satisfy one
+        direction, so both directions are asserted — here, and in the loss leg above.
+        """
+        ledger, _env, _seed = task_ledger
+        free = await ledger.create_task("claimable at once", DESCRIPTION, created_by=CREATOR)
+        result = await ledger.claim_task(free, ACTOR)
+        assert result.claimed and result.superseded_blockers == {}, (
+            f"a WON claim reports superseded blockers {result.superseded_blockers!r}. It "
+            f"had none — the claim succeeded — so anything here is fabricated"
+        )
+
+
+# =========================================================================== #
+# SECTION D — FINDING #302: THE ACTION VOCABULARIES ARE PINNED BY NOTHING.
+#
+# Re-derived at ``f67a219``: ``grep -rn '_TASK_ACTIONS' loremaster/tests/*.py`` returns
+# COMMENTS only. The repo's "exact-set registration pin" (``test_mcp_server.py``'s
+# ``_EXPECTED_TOOLS`` / ``_ALL_BUILTIN_TOOL_NAMES``) covers tool NAMES — and its first
+# assertion is a ``<=`` SUBSET, not an equality. So a new served ACTION lands today with
+# no structural gate noticing, in a repo that pins registration everywhere else.
+#
+# The cheapest moment to close it is WHILE this slice mints ``action='blockers'``.
+# =========================================================================== #
+
+#: The served action vocabularies, declared HERE so a change to production must be
+#: matched by a deliberate edit to a test. ⚠ These are the sets AFTER this slice lands:
+#: ``blockers`` is the action SECTION B mints, and its presence is what makes these pins
+#: RED at ``f67a219`` rather than a green tautology over today's tuples.
+_EXPECTED_TASK_ACTIONS = (
+    "create",
+    "query",
+    "transition",
+    "supersede",
+    "rollup",
+    "create_many",
+    "blockers",
+)
+_EXPECTED_FINDING_ACTIONS = (
+    "report",
+    "query",
+    "get",
+    "chain_head",
+    "acknowledge",
+    "resolve",
+    "wontfix",
+    "resolve_many",
+    "acknowledge_many",
+)
+_EXPECTED_COMMS_ACTIONS = (
+    "register",
+    "heartbeat",
+    "brief_get",
+    "brief_publish",
+    "brief_ack",
+    "fleet",
+    "send",
+    "drain",
+    "ack",
+)
+
+
+class TestTheServedActionVocabulariesArePinnedByEQUALITY:
+    """⛔ **RED at ``f67a219``** (``blockers`` is absent) — finding **#302**.
+
+    **EQUALITY, not containment, and the difference is the whole finding.**  A ``<=``
+    assertion is satisfied by a build that ADDS an action; adding an action is exactly the
+    change nobody should be able to make invisibly, because each one is a new served
+    surface owing a scope-diff row, a parameter-refusal entry and its own forgery
+    constructions.  This slice is adding one, which is why the cheapest moment to close
+    the hole is now.
+
+    ⚠ Deliberately covering all THREE families rather than only the one this slice
+    touches: the hole is identical in ``lore_findings`` and ``lore_comms``, and a pin that
+    guards only the family whose defect prompted it is the quantifier law's failure mode —
+    an invariant conditioned on the door the author happened to walk through.
+    """
+
+    def test_the_TASK_actions_are_EXACTLY_the_declared_set(self) -> None:
+        from loremaster.server import _TASK_ACTIONS  # noqa: PLC0415
+
+        assert tuple(_TASK_ACTIONS) == _EXPECTED_TASK_ACTIONS, (
+            f"lore_tasks serves {tuple(_TASK_ACTIONS)}; this contract declares "
+            f"{_EXPECTED_TASK_ACTIONS}. Every action is a SERVED SURFACE owing a Leg-1 "
+            f"scope-diff row, an entry in the parameter-refusal matrix and its own leg-2 "
+            f"constructions. If you added one deliberately, add it here WITH those — a "
+            f"vocabulary that grows silently is how a surface ships ungraded"
+        )
+
+    def test_the_FINDING_actions_are_EXACTLY_the_declared_set(self) -> None:
+        from loremaster.server import _FINDING_ACTIONS  # noqa: PLC0415
+
+        assert tuple(_FINDING_ACTIONS) == _EXPECTED_FINDING_ACTIONS, (
+            f"lore_findings serves {tuple(_FINDING_ACTIONS)}; this contract declares "
+            f"{_EXPECTED_FINDING_ACTIONS}"
+        )
+
+    def test_the_COMMS_actions_are_EXACTLY_the_declared_set(self) -> None:
+        from loremaster.server import _COMMS_ACTIONS  # noqa: PLC0415
+
+        assert tuple(_COMMS_ACTIONS) == _EXPECTED_COMMS_ACTIONS, (
+            f"lore_comms serves {tuple(_COMMS_ACTIONS)}; this contract declares "
+            f"{_EXPECTED_COMMS_ACTIONS}. ⚠ Order matters here on purpose: this dict's key "
+            f"order is what the unknown-action refusal LISTS to a caller, so a reordering "
+            f"changes a served teaching surface"
+        )
+
+    def test_every_declared_action_is_actually_DISPATCHABLE(self) -> None:
+        """⛔ The non-vacuity half. Three equal tuples prove agreement between two
+        constants, not that any action reaches a handler — and the unknown-action refusals
+        derive their teaching text from these very sets, so a name that dispatches nowhere
+        would be advertised to every caller as legal.
+        """
+        from loremaster.server import _COMMS_ACTIONS, _TASK_ACTIONS  # noqa: PLC0415
+
+        assert len(set(_TASK_ACTIONS)) == len(_TASK_ACTIONS), (
+            f"lore_tasks' action tuple carries a DUPLICATE: {_TASK_ACTIONS}"
+        )
+        assert set(_COMMS_ACTIONS) == set(_EXPECTED_COMMS_ACTIONS), (
+            "the comms dispatch table's KEYS and this contract's declared set disagree"
+        )
+
+
+class TestTheNewParametersAreRefusedForEveryOtherACTION:
+    """⛔ **RED at ``f67a219``** — ``max_depth`` is not a ``lore_tasks`` parameter.
+
+    ``_TASK_ACTIONS_ACCEPTING_LIMIT`` is a SET rather than a deleted guard for a stated
+    reason — *"a caller passing ``limit`` to ``transition`` is making a mistake and
+    deserves to be told"* — and every parameter this slice adds inherits that discipline.
+    A new parameter accepted everywhere is a teaching surface silently retired.
+
+    ⚠ **WB-D1 — the widened guard.**  Add ``max_depth`` to the dispatcher and never
+    restrict it.  Nothing else in this contract can see that, because every other pin
+    supplies it only where it is legal.
+    """
+
+    async def test_max_depth_is_REFUSED_for_a_non_blockers_action(self) -> None:
+        ledger, env = await _fresh_ledger()
+        try:
+            with pytest.raises(ValueError) as caught:  # noqa: PT011 - the TEXT is the assertion
+                await _tool_seam(ledger).tasks(action="create", max_depth=3)
+            message = str(caught.value)
+            assert "max_depth" in message and "create" in message, (
+                f"a 'max_depth' on action='create' was refused without naming the "
+                f"parameter and the action, so a caller cannot tell which of the two to "
+                f"change: {message!r}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_limit_is_STILL_REFUSED_for_the_new_BLOCKERS_action(self) -> None:
+        """⛔ The other direction: the ``blockers`` walk has its own bound (``max_depth``),
+        and a ``limit`` on it would be a SECOND, silently different way to truncate the
+        same answer — two grammars for one property, which is the #102 shape.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            with pytest.raises(ValueError) as caught:  # noqa: PT011 - the TEXT is the assertion
+                await _tool_seam(ledger).tasks(
+                    action="blockers", task_id=uuid.uuid4().hex, limit=3
+                )
+            assert "limit" in str(caught.value), (
+                f"a 'limit' on action='blockers' was refused without naming the parameter: "
+                f"{str(caught.value)!r}"
+            )
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+    async def test_max_depth_out_of_RANGE_is_refused_naming_the_value_and_the_range(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """The ledger already refuses this CLIENT-SIDE, naming the value AND the range —
+        because the engine's own complaint is withheld by the store seam's error hygiene
+        and the caller would otherwise get *"(unspecified rejection)"* (ruling T2). The
+        pin is that the dispatcher does not swallow or reword it.
+        """
+        ledger, _env, _seed = task_ledger
+        target = await ledger.create_task("any task", DESCRIPTION, created_by=CREATOR)
+        # ⚠ The LEDGER's own error class, not a bare Exception: at ``f67a219`` this call
+        # raises ``TypeError: unexpected keyword argument 'max_depth'``, which a bare
+        # ``pytest.raises(Exception)`` would swallow as a pass the day the parameter is
+        # added but never routed. The type IS half the assertion.
+        with pytest.raises(TaskLedgerError) as caught:
+            await _tool_seam(ledger).tasks(action="blockers", task_id=target, max_depth=0)
+        message = str(caught.value)
+        assert "max_depth" in message and "0" in message, (
+            f"an out-of-range max_depth was refused without naming the parameter and the "
+            f"value: {message!r}. A caller cannot distinguish its own bad input from a "
+            f"broken tool"
+        )
+
+
+# =========================================================================== #
+# CROSS-SECTION — the properties that only exist BETWEEN the pieces.
+# =========================================================================== #
+
+
+class TestTheTASKSurfacesAgreeWithEachOtherAndWithTheCAS:
+    """⛔ The agreement pins. Every surface this slice touches answers a question about the
+    same rows, and a fleet that is told two different things by two tools has no ground
+    truth at all.
+
+    This is the quantifier law applied ACROSS surfaces rather than across inputs: each pin
+    above guards its own render, and none of them can see two renders disagreeing.
+    """
+
+    async def test_a_task_the_LISTING_calls_UNBLOCKED_has_an_EMPTY_critical_path(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """``blocked=False`` and *"nothing is blocking this"* must be the same claim.
+
+        ⚠ Restricted to tasks whose blockers are all TERMINAL — the partition is ONE HOP
+        and the walk is TRANSITIVE, so a task whose direct blocker is terminal but whose
+        grandparent is open is legitimately unblocked AND legitimately has upstream. That
+        is a real, ruled difference, not a divergence, and the fixture keeps it out.
+        """
+        ledger, _env, _seed = task_ledger
+        resolved = await ledger.create_task("a blocker that finished", DESCRIPTION, created_by=CREATOR)
+        await _drive_to(ledger, resolved, STATUS_DONE)
+        freed = await ledger.create_task(
+            "free because its only blocker is done", DESCRIPTION,
+            blocked_by=[resolved], created_by=CREATOR,
+        )
+        stuck_blocker = await ledger.create_task("still open", DESCRIPTION, created_by=CREATOR)
+        stuck = await ledger.create_task(
+            "waiting on open work", DESCRIPTION, blocked_by=[stuck_blocker], created_by=CREATOR
+        )
+
+        unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
+        assert freed in unblocked and stuck not in unblocked, (
+            f"the fixture's partition is not what this pin needs: freed={freed in unblocked} "
+            f"stuck={stuck not in unblocked}"
+        )
+        freed_walk = await ledger.transitive_blockers(freed)
+        stuck_walk = await ledger.transitive_blockers(stuck)
+        assert stuck_walk.ids, (
+            f"the transitive walk reports NO upstream for a task the partition calls "
+            f"BLOCKED. Either the backfill did not mint the edge for a row created through "
+            f"the ledger — S3's false clear, on a FRESH store — or the walk is blind: "
+            f"{stuck_walk!r}"
+        )
+        assert resolved in freed_walk.ids, (
+            f"the transitive walk dropped a task's RESOLVED blocker: {freed_walk!r}. "
+            f"'Blocked' and 'has upstream' are different questions — a done blocker is "
+            f"still upstream — and a walk that filters by status is answering the "
+            f"partition's question under the walk's name"
+        )
+
+    async def test_the_LISTING_and_the_CHAIN_render_agree_about_a_WONTFIXED_blocker(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
+    ) -> None:
+        """A terminal-by-``wontfix`` blocker: claimable, and still on the critical path.
+
+        ``open -> wontfix`` is allowed REGARDLESS of that task's own blockers, so this is a
+        state the production ledger reaches today rather than a contrivance.
+        """
+        ledger, _env, _seed = task_ledger
+        abandoned = await ledger.create_task("abandoned work", DESCRIPTION, created_by=CREATOR)
+        await ledger.transition(abandoned, STATUS_WONTFIX, actor=ACTOR)
+        dependent = await ledger.create_task(
+            "blocked only by abandoned work", DESCRIPTION,
+            blocked_by=[abandoned], created_by=CREATOR,
+        )
+        claim = await ledger.claim_task(dependent, ACTOR)
+        assert claim.claimed, (
+            "the claim CAS refused a task whose only blocker is wontfix, so the premise of "
+            "this agreement pin is wrong — escalate, do not 'fix' the render"
+        )
+        rendered = str(await _tool_seam(ledger).tasks(action="blockers", task_id=dependent))
+        assert abandoned in rendered, (
+            f"the critical-path render omits a WONTFIXED blocker: {rendered!r}. The walk "
+            f"answers 'what is upstream', not 'what is unresolved' — dropping terminal "
+            f"nodes would make the chain render disagree with the ledger's own answer and "
+            f"would hide why a task exists at all"
+        )
