@@ -68,10 +68,16 @@ RETIRED_VOCABULARY = {
 _LORE_PREFIXED = re.compile(r"lore_[a-z]+(?:_[a-z]+)*")
 _BARE_VOCAB = re.compile(r"(" + "|".join(map(re.escape, RETIRED_VOCABULARY)) + r")")
 
-# The MCP server slug `lore_lore` is not a tool name; it is the only known non-tool token
-# the unanchored scan produces. Named explicitly so the exemption is visible and auditable,
-# rather than hidden inside the pattern where nobody can see what was excluded.
-_NOT_TOOL_NAMES = frozenset({"lore_lore"})
+# Tokens the unanchored scan produces that are not tool references at all: the MCP server
+# slug, and this script's own name. Named explicitly so each exemption is visible and
+# auditable, rather than hidden inside the pattern where nobody can see what was excluded.
+_NOT_TOOL_NAMES = frozenset({"lore_lore", "lore_tool_name_currency"})
+
+# A line may legitimately name a retired tool — a decoder teaching `search_code`->`lore_search`
+# must SAY `search_code`. Such a line carries this marker, so the exemption is explicit, visible
+# at the site, and greppable. This is an allowlist of SAFE lines, never a pattern that guesses
+# intent: repo CLAUDE.md's instrument lesson is that enumerating the forbidden always loses.
+_TEACHES_RETIRED_NAMES = "lore-tool-currency: teaches-retired-names"
 
 
 @dataclass(frozen=True)
@@ -159,6 +165,8 @@ def scan_instructions() -> list[Hit]:
             for line_no, line in enumerate(
                 path.read_text(errors="replace").splitlines(), 1
             ):
+                if _TEACHES_RETIRED_NAMES in line:
+                    continue
                 tokens = set(_LORE_PREFIXED.findall(line)) - _NOT_TOOL_NAMES
                 # Bare vocabulary is scanned on EVERY line — no "is this line about lore"
                 # gate, because the corpses live in prose that never says "lore".
