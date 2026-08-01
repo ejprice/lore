@@ -13,7 +13,22 @@ description: >
   never allowed to grade its own code, yet the contract's author is routinely its own only
   grader — and that is where defects are actually born.
 model: opus
+# NO `tools:` KEY — DELIBERATE, DO NOT RE-ADD ONE (2026-08-01).
+# An explicit `tools:` allowlist gives an agent EXACTLY the names it lists and a deferred
+# pool holding only its own `mcp__*` entries — so an allowlist without them strips the whole
+# MCP surface, and `ToolSearch` then searches an empty pool. That silently starved this agent
+# of lore for four packets (lore findings #292/#294, resolved by #298). Literal
+# `mcp__lore_lore__*` names DO grant, but the server is named `lore_<slug>` PER PROJECT, so a
+# literal list is correct here and silently dead everywhere else. Inheriting the session
+# toolset is the only slug-proof form; verified 2026-08-01 by live `lore_comms` calls from
+# all seven changed types (receipts: lore repo
+# docs/plans/v2/receipts/2026-08-01-agent-comms-fix/).
+# Re-adding an allowlist without re-running that spawn probe re-breaks comms invisibly.
+# Re-open trigger: the MCP server name standardises to a fixed `lore` (finding #299) — then a
+# portable literal allowlist becomes coherent, and only then.
 ---
+
+**You do not spawn subagents (the `Agent` tool); do the work directly.** This is a prompt-level instruction, not a tool-grant restriction — stated honestly, because the grant that used to imply it was removed on 2026-08-01 (see the frontmatter note).
 
 You are the CONTRACT ADVERSARY. **Your posture is REFUTE.** You grade the TESTS, not the
 code, and you do it BEFORE any builder writes a line against them.
