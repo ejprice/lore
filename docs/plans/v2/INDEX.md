@@ -241,7 +241,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 36 | role-wiring (all\|mcp\|scout + creds; regains role verbs from 19; #206 session-binding fix) | PKT-07 | S | 0.30 →split | — | open |
 | 37 | containerfile-roles + image slimming | PKT-08b | S | 0.20 | 36 | open |
 | 38 | split-topology-e2e | PKT-10b | S | 0.20 | 36, 37 | open |
-| 39 | hosted-security (design first; REQUIRED before off-LAN) | PKT-21 | S | 0.30 →split | 35 | open |
+| 39 | hosted-security (design first; REQUIRED before off-LAN) | PKT-21 | S | 0.30 →split | 35 (waived, R1) | **DESIGN RULED + CONTRACT WRITTEN; BLOCKED on an OPERATOR DECISION (#296).** Design `docs/design/2026-07-31-packet39-google-oauth.md` (R1–R16, twelve+ rulings). Contract **480 pins / 444 RED / 36 GREEN**, rest of suite **7705 passed / 0 failed**, ruff clean; satisfiability re-discharged 0-failed on every revision. **FOUR adversary passes, all INSUFFICIENT**, each finding a real blocker every prior gate passed — one root cause (`_setup_handlers` binds at construction ⇒ post-construction installs are live in-process, DEAD ON THE WIRE): WB30 `call_tool` → WB48 guard *after* the tool body → WB93 instance attr on `list_tools` → WB100 **class** attr (flaky-green 5/10). **Build never started, deliberately.** #296 is the fork; its answer is scoped in `docs/design/2026-08-01-multi-user-lore-proposal.md` §2. Filed #291 #294 #295 #296. Receipts → `receipts/2026-07-31-packet39/`. Operator-side and untouched: hades SNI route · claude.ai client secret · the posture flip. |
 | 40 | ui-foundation | PKT-22 | G | 0.30 →split | 35, 39 | open |
 | 41 | ui-graph-chat (+ Agent-SDK chat) | PKT-23 | G | 0.35 →split | 39, 40 | open |
 
@@ -1334,3 +1334,31 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   ⚠ Worked in a git WORKTREE by operator override of the standing NO-WORKTREES directive (a peer
   session held the shared tree); #134 was N/A (no deploy), **#125 bit** — lore's index is blind to a
   worktree, so every structural answer came from `git grep`, said out loud in each report.
+- 2026-07-31/08-01 · **packet 39 (Google OAuth) — design RULED, contract WRITTEN, build never
+  started, BLOCKED on operator decision #296.** Investigation first: lore had **no** Google auth
+  at all (not dormant — absent; `pricepaper` appears zero times). Ported odoo-code's *validation*
+  shape, not its identity mint — that mints a constant `client_id` and discards the login it
+  holds, collapsing every keyholder to one identity. **FOUR adversary passes, every one
+  INSUFFICIENT, every one finding a blocker all prior gates passed**, and all four share ONE root
+  cause: `FastMCP._setup_handlers` binds handlers at construction, so a post-construction install
+  is live in-process and **dead on the wire** — WB30 (`call_tool`) → WB48 (guard ran *after* the
+  tool body; refusal raised, effect not prevented) → WB93 (instance attr on `list_tools`, the route
+  the prior fix had just made load-bearing) → WB100 (**class** attr; `vars(mcp)` clean, **flaky-green
+  5/10 runs**). Two design escalations (R13, R16) both walked around. **Lead stopped at the fourth
+  door by prior commitment rather than run a fifth round** — #296 is now the operator's fork, and
+  its answer is scoped in `docs/design/2026-08-01-multi-user-lore-proposal.md` §2 (never REGISTER
+  the tool: verified at SDK source that `list_tools`/`call_tool` both read `ToolManager._tools` at
+  call time, so the class cannot recur). Final: **480 pins / 444 RED / 36 GREEN**, rest of suite
+  **7705 passed / 0 failed**, ruff clean, satisfiability 0-failed on every revision. Filed **#291**
+  (`_MUTATING_TOOLS` hand-list already drifted — would have left `lore_claim_task`/`lore_tasks`
+  writable to remote principals) · **#294** (tdd-family agents lack the lore MCP tools —
+  reproduced on **all four** agents; wants an agent-definition-family fix) · **#295** (a refusal
+  pin that observes the EXCEPTION does not test that anything was PREVENTED; askable form: *"if the
+  guard ran AFTER the thing it guards, would this pin still pass?"*) · **#296**. Operator override
+  landed mid-flight: the user roster is **operational data, not deploy config** — mtime-watched file
+  outside repo and image; the later request to store users in the DB is that ruling's own named
+  re-open trigger firing, not an override. 7 reports → `receipts/2026-07-31-packet39/`. No
+  worktree used. ⚠ Untouched by design, all operator-side: hades SNI route (the router also fronts
+  Nextcloud, JupyterLab and odoo-code's live connector) · the claude.ai connector's client secret
+  (GCP console only; Google has no DCR) · the posture flip (401s every local session unless key
+  wiring ships atomically).
