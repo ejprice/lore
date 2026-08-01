@@ -1362,3 +1362,19 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Nextcloud, JupyterLab and odoo-code's live connector) · the claude.ai connector's client secret
   (GCP console only; Google has no DCR) · the posture flip (401s every local session unless key
   wiring ships atomically).
+- 2026-08-01 · **D&D rules RAG — scoped, proposal WRITTEN, nothing ruled.** Operator asked for
+  extend-vs-reuse proposals for a rules RAG over the dndlorescraper corpus (SurrealDB-native
+  graph, multi-user, per-deploy tool allowlist). Three parallel read-only scouts (corpus /
+  architecture reuse map / graph modelling, 6 live probes on spike-surreal 3.2.1) →
+  `docs/design/2026-08-01-dnd-rules-rag-proposal.md` (`5b243ec`), reports archived at
+  `receipts/2026-08-01-dnd-rag-scoping/`. Recommendation: **option C** — wire the
+  complete-but-UNWIRED extension framework (0 production `register_extension` sites), D&D as its
+  first real extension, second instance `lore-dnd` gated by the multi-user proposal's Part 2
+  allowlist; the one new design item is the missing ingest entity-fragment seam ("twelfth seam").
+  Corpus verified graph-ready (987/987 spell↔class edges from two independent sources agreeing).
+  Ten forks in proposal §9; fork 10 (capabilities-doc additions) ruled + DONE at `b3ba703` — §2
+  array-index `.*` rule + silent-`[]` trap · §4 "a traversal never uses a secondary index" ·
+  §6.6 items 13–14 · §7 SDK string-id vs int-id row; the docs-first check caught the scout's
+  "vendor-unwritten" claim on int-vs-string ids being FALSE (`record-ids.mdx` documents it) —
+  correction header on the archived report. Session ended by host reboot; handoff state in
+  `2026-08-01-dnd-rag-RESUME.md` (beside this INDEX). Forks 1–9 await the operator.
