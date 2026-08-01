@@ -1498,3 +1498,27 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   hit no such policy. **Spawn shape decides whether an agent can write its own receipt**, so a brief
   that says "write REPORT-x.md" is not portable across both; brief the text-return path, or expect
   the spawner to persist it.
+- 2026-08-01 · **SESSION CLOSE — 12 commits, tree clean, no strays at root.** Delivered: the agent
+  comms fix (#294/#292 → #298, spawn-verified 7/7 server-side), the retired-tool-name sweep (35 → 0
+  across four `~/.claude` files, guarded by `scripts/lore_tool_name_currency.py`), packet 04b-2
+  design-ruled end to end, 04b-3 minted, ESC-1 measured YES and discharged. Not started, by ruling:
+  the 04b-2 build wave. **Next session starts at §B1 LEVEL 2** of
+  `receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md`.
+  **⚠ OPERATOR DECISION SET awaiting return — surface these at the next kickoff, none silently
+  inherited:** (1) **#296** — packet 39 BLOCKED; per-principal tool gating inside FastMCP is
+  undefendable (4 wrong builds, 1 root cause: handlers bind at construction, so post-construction
+  installs are dead on the wire); recommendation is role-splitting so the hosted surface REGISTERS
+  only read tools — structural, not enforced. (2) **D&D RAG forks 1–9** (`docs/design/2026-08-01-
+  dnd-rules-rag-proposal.md` §9), fork 1 = the whole shape, recommendation C. (3) **#299** — rename
+  the MCP server to a fixed `lore`; adopted in principle, execution deliberately deferred because
+  MCP config binds at session start so a mid-session rename cannot be acceptance-tested. (4) **the
+  04b-2 deploy runs the R11 production data migration, possibly unattended** — one-transaction
+  additive, fresh-backup precondition, named rollback; **if production migrations should never run
+  unattended, that is a standing preference worth setting once.**
+  ⚠ **Posture change made under delegation, stated so it is met deliberately:** the seven fixed
+  definitions now inherit the FULL session toolset (`Edit`, `Agent`, `WebFetch`, …) — grant-level
+  restriction traded for prompt-level. Judged acceptable because the tdd isolation was always
+  INFORMATIONAL and every one of those definitions already carried `Write`+`Bash`, so the allowlist
+  was never an enforcement boundary. Re-tighten triggers: first harmful nested spawn in a tdd wave,
+  or #299 landing (which makes a portable literal allowlist coherent).
+  ⚠ Branch is **66 commits ahead of upstream** — not pushed this session; the operator pushes.
