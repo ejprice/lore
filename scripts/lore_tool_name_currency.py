@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -144,8 +143,8 @@ def served_tool_names(url: str) -> frozenset[str]:
     ) as response:
         payload = response.read().decode()
 
-    for line in payload.splitlines():
-        line = line.removeprefix("data: ").strip()
+    for raw_line in payload.splitlines():
+        line = raw_line.removeprefix("data: ").strip()
         if line.startswith("{"):
             document = json.loads(line)
             if "result" in document:
