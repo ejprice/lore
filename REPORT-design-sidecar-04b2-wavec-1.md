@@ -14,15 +14,17 @@ brief project v7 read
   seams (grep's honest territory).
 - Packages considered: none — no mechanism specified beyond those already ruled
   (`networkx`/`graphlib` routed by predecessor §B4; the footer seam ruled §B5).
-- decisions-needed: none for the lead; eight ⚠ OPERATOR-REVIEWABLE items in §6.
+- decisions-needed: none for the lead; eleven ⚠ OPERATOR-REVIEWABLE items in §8.
 - receipt pointers: §1 the split · §2 ESC-5's mechanism + the (b)-elimination derivation ·
   §3 the #268 instrument · §4 the gate-definition ruling (thread `q:04b2-gate-definition`,
   on the lead's §L-4 measurement) · §5 the footer-seam rulings (thread `q:04b2-footer-seam`:
   §B5 pin overturned on #305, C-DEF 5 resolved for R8, the resolution architecture ruled) ·
-  §6 operator-reviewable · findings #300/#301/#305 (filed by `contract-04b2-wavec-1`) ·
-  `REPORT-contract-04b2-wavec-1.md`, `REPORT-lead-04b2-wavec.md` §L-4 and
-  `REPORT-refbuild-c3-1.md` (the escalations this rules on; archive all under
-  `docs/plans/v2/receipts/` at wave close-out).
+  §6 the C1 decisions (thread `q:04b2-c1-decisions`: id-only confirmed, #309 routed) ·
+  §7 the gate-currency instrument (thread `q:04b2-gate-currency`, operator-granted) ·
+  §8 operator-reviewable · findings #300/#301/#305/#306/#309/#312 ·
+  `REPORT-contract-04b2-wavec-1.md`/`-2.md`, `REPORT-lead-04b2-wavec.md` §L-4,
+  `REPORT-refbuild-c3-1.md` and `REPORT-builder-gatewrapper-1.md` (the escalations this
+  rules on; archive all under `docs/plans/v2/receipts/` at wave close-out).
 
 **Authority:** operator-delegated design authority (same delegation as
 `receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md`). These are RULINGS.
@@ -386,7 +388,153 @@ escalation, not a quiet third copy).
 
 ---
 
-# §6 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §6 · RULING 6 (follow-up, 2026-08-01, thread `q:04b2-c1-decisions`) — ID-ONLY STANDS THIS WAVE, ENRICHMENT IS 04b-3's SLICE; #309 ROUTES TO 04b-3 WITH ITS GRAMMAR CLAUSE ATTACHED
+
+Grounds: `REPORT-contract-04b2-wavec-2.md` §5 (read verbatim) · findings #309/#310 ·
+C1's landed receipt (1197/0, both-ways mutation proofs — the author's numbers, cited).
+
+## 6.1 · Q1 — the chain render: ID-ONLY is CONFIRMED for this wave; enrichment is a ruled 04b-3 slice, not a dropped wish
+
+**The trust-legs test decides the category, and the category decides the fence verdict.**
+An id-only chain passes both trust legs: Leg 1 — it answers exactly the question its label
+claims (which tasks block you, in what structure), no scope diff; Leg 2 — bare ids
+introduce no forgeable slot. So enrichment is a CONSUMER-ERGONOMICS upgrade under the
+consumer law, **not a trust repair** — and the operator's trust-principle tiebreaker
+("retires forks that touch a served surface") governs trust questions, not capability
+ones. What remains is the sizing fence against a **landed, receipted contract**: re-opening
+C1 to enrich means a re-authored contract, a new adversary pass and a new build for a
+surface that is honest as it stands. **04b-3, as its own slice** — the author designed for
+exactly this ("additive to every pin except the ID-ONLY assumption itself").
+
+**Three riders on the routing, so the deferral is a plan and not a can-kick:**
+1. **The id-only render TEACHES its follow-up** in this wave — the render names how to get
+   detail for an id (the house recovery-affordance grammar, R9's own shape). An honest
+   answer with a named next step is trust-compatible; seven bare hexes with no affordance
+   is the route-around seed. A-few-lines-cheap, fence-legal, and it is the difference
+   between "honest" and "honestly taught".
+2. **04b-3's enrichment slice MEASURES FIRST what the closure read already holds** before
+   buying any second read: if the traversal already materialises status, status-enrichment
+   is free and only SUBJECT needs the second bounded read — serve what you hold (Ruling
+   2's grammar law); do not price the whole upgrade at the cost of its most expensive
+   field. Subjects are free text ⇒ the sanitiser seam + hostile fixtures apply (§5.1's
+   re-open trigger fires: a footer/render slot carrying non-charset text).
+3. **Acceptance is the routing probe** (the packet's own instrument): a consumer-agent
+   battery ending in CALL_AGAIN vs ROUTE_AROUND on the id-only-with-teaching render. If
+   agents measurably route around it, enrichment's priority rises from ergonomics to
+   trust-adjacent and 04b-3 takes it early. That is the falsifier for this ruling, built
+   in rather than hoped for.
+
+**#310 acknowledged** (FYI item): the naive-over-fetch hazard is pinned where it bit; the
+GENERAL form ("a derived +1 computed before validation") is recorded as 04b-3-or-later
+material — do not grow a guard family mid-wave for a hazard already pinned at its one
+live site.
+
+## 6.2 · Q2 — #309: R9's display cap routes to 04b-3, carrying two clauses so its taker cannot resurrect what this wave ruled out
+
+**Not this wave.** The fence test: not deploy-critical — the whole-ledger render on the
+no-limit path is COMPLETE and honest (both trust legs pass; the cost is context, not a
+lie), and production already serves it today, so the deploy mints nothing new. Not
+a-few-lines-cheap — a display cap + counted line is a real pin family (two-world
+discrimination, derived-K mutation proof, grammar pin). And C1 just landed its receipt on
+the very render this would edit. **04b-3's row gains #309** with these attached:
+1. **K IS DERIVED, NEVER COUNTED** — R9's parenthetical "honest total from a store-side
+   count" is already OVERRULED by Ruling 2: the no-limit ledger read materialises the full
+   set, so K = len(materialised) − shown, and no `count()` read may exist. 04b-3's taker
+   reads Ruling 2 §"R9's counted grammar" before building.
+2. **The degrade rider travels with it** (already in #309's body, kept): if any future
+   packet bounds the no-limit READ itself, the counted line degrades to the existence
+   grammar in the same edit — two grammars may never both be live for one property.
+Until then, my Ruling-2 reservation of the counted grammar governs nothing and says so —
+that is the designed state, not a gap: the reservation exists precisely so the first
+elision built must come here for its grammar instead of inventing one.
+
+---
+
+# §7 · RULING 7 (follow-up, 2026-08-01, thread `q:04b2-gate-currency`, OPERATOR-GRANTED: "Close the gap") — THE MANIFEST BECOMES CANONICAL; THE INSTRUMENT ENFORCES ADJUDICATION, NOT GREENNESS; THIS WAVE
+
+Grounds: findings #306/#312 (both read in full, including #312's resolve note) ·
+`scripts/pending_contract_gate.py` structure (ALL_LEGS · GateRunner · PendingContractRegistry
+· is_deploy_receipt) · the lead's four questions verbatim (#2026).
+
+## 7.1 · Q1 — the claimed-gate set is NOT derived from prose; the BINDING IS INVERTED
+
+**Prose cannot be derived from, and pretending otherwise is the enumeration antipattern one
+level up** — a regex over English law is a name-list keyed on sentence shapes, with six
+receipts against its class. **RULED: invert the binding. A machine-readable manifest
+(`scripts/gates.yaml` — house prefers YAML for config) becomes the CANONICAL definition of
+the claimed-gate set**, one entry per gate: id · command · green-predicate (exit code PLUS
+a per-leg anti-vacuity check in #312's pattern — the tool's own count line, so
+"ran-and-empty" can never impersonate "passed") · red-policy (which registry/bound may own
+a red). **`CLAUDE.md`'s gate section is amended to CITE the manifest and is thereby demoted
+from authority to commentary** — the same move this repo already made for
+`registration_sites.py` ("annotations on the script's output, not a substitute for running
+it") and for the store reference (cite, never re-transcribe). Drift then has a direction:
+a gate exists iff it is in the manifest; prose that names an unmanifested gate binds
+nothing. **One cheap pin on the binding itself:** a test asserting the CLAUDE.md gate
+section contains the literal manifest path — a single citation-presence check (a safe-set
+anchor, not prose parsing). **Honest bound, stated:** prose-only drift (a sentence added
+without a manifest entry) is not machine-catchable; it is ruled not to matter because the
+close-out enumeration (7.3) is GENERATED from the manifest, so an unmanifested "gate" is
+visibly absent from every receipt the first time anyone reads one.
+
+## 7.2 · Q2 — ONE IMPLEMENTATION: the seam is ALL_LEGS, and currency is a MODE, never a second runner
+
+`pending_contract_gate.py` already runs all three legs, partitions registered/unregistered,
+and mints `is_deploy_receipt`. **RULED: ALL_LEGS stops being a hand-tuple and is DERIVED
+from the manifest** (the #312 lesson as a mechanism: a gate added to the manifest reaches
+the runner in the same edit or the runner fails to parse — "added to ALL_LEGS in the same
+diff" stops being remembered and starts being enforced). The currency check is **a mode of
+the SAME tool** (an adjudication layer over the same GateRunner — new flag or thin verb,
+builder's choice of spelling), sharing legs, readers, and anti-vacuity checks. A second
+runner is forbidden; if the builder finds the existing runner cannot host the mode, that
+is a STOP-and-return, not a fork.
+
+## 7.3 · Q3 — the invariant is ADJUDICATION, not GREENNESS — the lead's instinct is confirmed and made exact
+
+Per-gate verdict set: **GREEN · RED-ADJUDICATED(owner, trigger) · RED-ORPHANED** — and
+**only RED-ORPHANED fails the currency check.** Packet-39's red is the worked example:
+red-and-adjudicated is a ruled bound doing its job. Exactness riders:
+1. **An adjudication is a MACHINE-CHECKABLE registry/bound entry** (the pending-contract
+   registry is the first citizen; the manifest's red-policy names which registry may own
+   which gate's reds). A finding row is provenance, never the adjudication — prose cannot
+   be the owner (#306: omission has no grep).
+2. **Adjudications must be CURRENT** — the self-destruct already built stays load-bearing:
+   a registered red going green forces registry deletion with the fix. An expired
+   adjudication is RED-ORPHANED, not grandfathered.
+3. **The DEPLOY receipt is unchanged and stricter** — `is_deploy_receipt` keeps requiring
+   all legs OK under the partition. Currency answers "is every claimed gate green-or-owned
+   at HEAD"; the deploy receipt answers "may this ship". Two verdicts, one runner, named
+   apart so neither impersonates the other.
+4. **Both measured failure modes covered, by construction:** claimed-but-never-run dies
+   with manifest-derived legs + per-leg anti-vacuity; run-but-red-with-no-owner dies with
+   RED-ORPHANED failing loud.
+
+**When it runs (an instrument nobody runs is a hope with a filename):** REQUIRED at every
+wave close-out — the close-out's gate enumeration (#306's rule: which gates, verdict each)
+is now GENERATED by the currency mode, making the omission class unwritable — and at the
+deploy (already). A cheap always-on leg lives in the suite: a pin that validates the
+MANIFEST itself (parses, commands resolve, registry entries current) without executing
+gates. **Honest bound, named:** between close-outs a fresh red can sit unnoticed — this
+instrument bounds the orphan window to one wave, which is the achievable property without
+CI; re-open trigger: the day this repo gains CI, the currency mode becomes its first job.
+
+## 7.4 · Q4 — sizing: THIS WAVE
+
+The operator's grant ("Close the gap") IS the scope ruling — the fence does not apply
+against an explicit operator instruction, and the deploy's honesty depends on the gate set
+being derived rather than remembered. Scope, tightly: the manifest · the ALL_LEGS
+derivation refactor · the adjudication/currency mode · the close-out wiring · the CLAUDE.md
+citation amendment + its presence pin · positive controls per #312's pattern (injected
+out-of-manifest gate, injected orphaned red, correct-tree pass). Nothing else rides in.
+
+**Falsifiers:** 7.1 — a gate genuinely unexpressible as command+predicate (none of the
+three is) ⇒ back here before the manifest schema grows; 7.2 — the runner structurally
+unable to host the mode ⇒ STOP, return; 7.3 — a red class with no registry able to own it
+⇒ that is a NEW adjudication citizen and a design question, not a builder improvisation.
+
+---
+
+# §8 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2
@@ -414,6 +562,18 @@ escalation, not a quiet third copy).
    is re-attributed from the render seam to the identity chain. T3 was ruled under the
    operator's trust principle; the amendment narrows its mechanism claim to what is
    measured, not its requirement.
+9. **Chain-render enrichment routed to 04b-3** (Ruling 6.1) against the consumer-law lean
+   — id-only-with-teaching is honest but costs consumers follow-up calls until 04b-3. The
+   routing probe is the built-in falsifier; if the operator wants enrichment sooner, it is
+   additive by the author's own design.
+10. **#309 (R9's ruled display cap) stays unimplemented one more packet** (Ruling 6.2) —
+    an operator ruling routed to 04b-3 with its grammar clauses attached, including that
+    R9's "store-side count" parenthetical stays overruled in favour of derived K.
+11. **`CLAUDE.md`'s gate prose is demoted to manifest-commentary** (Ruling 7.1) — the
+    canonical claimed-gate set moves to `scripts/gates.yaml`, which the operator-ruled law
+    text will cite instead of define. This edits the reading of operator-ruled law; the
+    operator granted "close the gap", and this is the closure's load-bearing move — but
+    they should see it stated plainly.
 
 ---
 *Written 2026-08-01 by `design-sidecar-04b2-wavec-1` (Fable, long-running design sidecar)
