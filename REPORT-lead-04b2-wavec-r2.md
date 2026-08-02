@@ -1,6 +1,6 @@
 # REPORT-lead-04b2-wavec-r2 — the RESUME lead's orchestration log, packet 04b-2 wave C
 
-lead-base v2 read (opened on v1; authored the v1→v2 opus-4.8 bump this session — R2-8)
+lead-base v3 read (opened on v1; authored v1→v2→v3 this session — R2-8, R2-10; v2's spawn mechanism was wrong and v3 corrects it)
 brief project v7 read
 
 Resume of `REPORT-lead-04b2-wavec.md` (§L-1..§L-6, still standing). §L-6 is the entry point.
@@ -203,9 +203,11 @@ opus 5"* and *"Put the opus 4.8 ruling in the lead brief."* Done:
   claude-opus-4-8; omit the Agent-tool `model` override so they inherit the lead's model
   (`model: "opus"` can resolve to opus 5); verify the agent's self-reported model, respawn if wrong.
 - Also stored in lore memory (decision, topic=orchestration/model-selection).
-- **Mechanism change going forward:** I stop passing `model: "opus"` and instead omit the override
-  so spawns inherit my claude-opus-4-8, and I brief each agent to state its actual model in its
-  report so I can verify.
+- ~~**Mechanism (WRONG, corrected in R2-10):** omit the override so spawns inherit my 4.8.~~
+  **CORRECTED:** omitting resolved to `claude-opus-5` (measured — the cold audit ran on opus-5).
+  The operator confirmed the correct mechanism: PASS the full id `model: "claude-opus-4-8"`. And an
+  agent cannot read its own model from its system prompt, so attestation is brief-carried + echoed,
+  never introspected. Now lead-base **v3** (v2's mechanism was the wrong one this bullet described).
 - **Already-spawned agents:** builder-c3-2 and cdef-1 (done) had their outputs independently
   verified by me (gates re-run, diffs reviewed); riders-04b2-r11-1 predates the directive and is
   nearly done (low-stakes docs/pins) — I verify its output on receipt. The COLD AUDIT (the critical
@@ -229,7 +231,38 @@ non-tautology, R8(2) split) + the diff frame (what the branch-chain reshape coul
 the four flagged residuals. GO/NO-GO + residual table. Not rushed (42 wrong builds passed
 satisfiability receipts this wave; nothing was found by reading).
 
-## NEXT (not started)
+## R2-10 · COLD AUDIT → GO (operator-accepted); residuals triaged
+
+Audit graded `60f83f0` = HEAD (SAME). **GO, receipt-backed and rigorous** — refuted every claim
+by EXECUTION with positive controls, caught its OWN vacuous cycle probe and fixed it, and went
+beyond the brief to DISCHARGE the C-DEF fix's stated "no fake-vs-real parity leg" bound (31
+differential cases + raw-seeded cycles + phantom vs the live store, zero divergence, with an
+injected-drift control). Gates re-run: **225 · 1759 · 677 passed**, ruff GREEN, currency PASS with
+ZERO RED_ORPHANED (an incidental FULL-suite receipt — the repo's only failures are the 444 pkt-39
+pins), typecheck RED_ADJUDICATED with zero wave files (derived two ways).
+
+**MODEL (R-7): the audit ran on claude-opus-5** (my omit-the-override mechanism was wrong; ps
+confirmed). The audit's verdicts rest on re-runnable, model-independent receipts, so the **operator
+RULED: accept the GO**; and confirmed the go-forward mechanism: **pass the full id
+`model: "claude-opus-4-8"`** (lead-base v3 + memory corrected; attestation is brief-carried + echoed,
+per the audit's own R-7). The audit's own instruments are preserved to `scripts/` (they establish
+R-2/D-2 and must stay re-runnable — brief-base §1).
+
+**Residual dispositions (8; 0 blocking):**
+| R | disposition |
+|---|---|
+| R-1 (#323) | Docs-only: "6 consumers" is wrong (3 import `FakeTaskLedger`; `test_comms_footer` omitted). Nothing escaped. Acknowledged; the cdef report gets a correction note at close-out. |
+| R-2 | Fake-vs-real parity bound DISCHARGED by the audit's measurement. Probe preserved to `scripts/`; pin-promotion routed to 04b-3. |
+| R-3 | REAL, PRE-EXISTING gap: `findings` dispatcher has no branch-scan (only `tasks` does). Not this wave (pre-existing, non-blocking, ship-priority). Ledgered → 04b-3: derive the scanned set from a verb list (#302/#314 family), never clone the scan. |
+| R-4 | `name`/`to` defaults — NO live gap (no dispatcher carries those params), future hazard only. Ledgered → 04b-3: make them keyword-required. |
+| R-5 | link-2 name-mismatch SILENCE — NOT a defect (guard holds on all 3 dispatchers under a hostile lenient registry). Builder's reading accepted; visibility, if ever wanted, is telemetry not a served line. No action. |
+| R-6 | `_registry_reads` procedural bound — accurate, disclosed. Ruling 5.3 (2nd resolution path = #102 escalation) is the mechanism. No action. |
+| R-7 | Model attestation — FIXED (lead-base v3). |
+| R-8 | Currency gate runs the FULL suite (~12 min, silent until done) — operational note, `lore_remember`ed so no future session kills it as a hang. |
+
+R-2/R-3/R-4 filed as ONE 04b-3-routed finding (the audit §D/§E is the derivation).
+
+## NEXT — DEPLOY (operator-accepted GO; final recreate confirm owed) then CLOSE-OUT
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
 - COLD AUDIT (fresh context, re-runs gates). Do not rush — 42 wrong builds passed contracts
