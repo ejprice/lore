@@ -140,7 +140,7 @@ wave (69 pins) · gate-currency mode.
 ### STATE, per slice
 | slice | state | owner |
 |---|---|---|
-| **C1 contract** | fix wave landed, 69 pins, ref build 1275/0. **OWES**: `lore_tasks action=get` per Ruling 8, then a **DELTA ADVERSARY** | `contract-04b2-wavec-2` (live, standing by) |
+| **C1 contract** | ~~fix wave landed, 69 pins~~ → **COMPLETE at 81 pins**; `action=get` MINTED (Ruling 8, all six riders), ref build **81/0**, seam suites **1572/0** (`f4a9f52`). **DELTA ADVERSARY IN FLIGHT**, not pending | `contract-04b2-wavec-2` (live, standing by for delta findings) · `adversary-c1-delta-1` (live) |
 | **C3 contract** | INSUFFICIENT — 26 wrong builds. Fix wave running | `contract-04b2-c3fix-1` (live) |
 | **gate currency** | DONE, committed | closed |
 | **C2 (fleet columns)** | ruled OUT of this wave → 04b-3 | 04b-3 |
