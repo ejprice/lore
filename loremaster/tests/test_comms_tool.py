@@ -603,7 +603,18 @@ class TestCommsDispatchCharsetValidation:
             await AppContext.comms(harness, action="heartbeat", agent=self._BAD_NAME)
         message = str(exc_info.value)
         assert "agent name" in message
-        assert repr(self._BAD_NAME) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert self._BAD_NAME in message
         assert AGENT_NAME_PATTERN.pattern in message
         assert "safe charset" in message
         assert registry.calls == [], (
@@ -618,7 +629,18 @@ class TestCommsDispatchCharsetValidation:
             )
         message = str(exc_info.value)
         assert "session" in message
-        assert repr(self._BAD_NAME) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert self._BAD_NAME in message
         assert AGENT_NAME_PATTERN.pattern in message
 
     async def test_bad_brief_name_is_rejected(self) -> None:
@@ -627,7 +649,18 @@ class TestCommsDispatchCharsetValidation:
             await AppContext.comms(harness, action="brief_get", agent="fixer-b", name=self._BAD_NAME)
         message = str(exc_info.value)
         assert "brief name" in message
-        assert repr(self._BAD_NAME) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert self._BAD_NAME in message
 
     async def test_a_legal_charset_name_is_not_rejected_by_charset_validation(self) -> None:
         # Positive control, two ways: hyphens/digits/underscores are legal
@@ -667,7 +700,18 @@ class TestCommsDispatchCharsetValidation:
             await AppContext.comms(harness, action="heartbeat", agent=value)
         message = str(exc_info.value)
         assert "agent name" in message
-        assert repr(value) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert value in message
         assert "safe charset" in message
         # THE class invariant, and the load-bearing half of this pin: the store
         # is never reached for a malformed identity. #210's pre-fix build
@@ -688,7 +732,18 @@ class TestCommsDispatchCharsetValidation:
             )
         message = str(exc_info.value)
         assert "session" in message
-        assert repr(value) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert value in message
         assert "safe charset" in message
 
     @pytest.mark.parametrize("value", _TRAILING_NEWLINE_NAMES)
@@ -698,7 +753,18 @@ class TestCommsDispatchCharsetValidation:
             await AppContext.comms(harness, action="brief_get", agent="fixer-b", name=value)
         message = str(exc_info.value)
         assert "brief name" in message
-        assert repr(value) in message
+        # ⚠ WAS ``repr(<value>) in message`` UNTIL 2026-08-02, and the change is a
+        # RULING, not a tidy-up (packet 04b-2 slice C3, design-sidecar Ruling 10
+        # link 4, carried here by C3's contract because this file is in its
+        # writable set). **repr() IS NOT A NEUTRALISER**: it escapes newlines and
+        # leaves SAME-LINE text intact, so a footer-shaped instruction inside a
+        # repr survives fully readable on a bare line and an agent obeys it. The
+        # refusal still NAMES the value — that teaching is load-bearing and is what
+        # this line pins — but it now names it inside a ``render_fenced`` block.
+        # The FENCING itself is pinned where link 4 lives
+        # (test_comms_footer.TestAHostileIdentityIsREFUSEDAtEveryLink0Member), so
+        # the fence policy has ONE home rather than a copy in each file.
+        assert value in message
         assert "safe charset" in message
 
 
