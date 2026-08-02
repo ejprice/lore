@@ -3958,15 +3958,37 @@ class AppContext:
         own author read a task description with a RAW SELECT against the production store.
         ``query`` is UNCHANGED (still the summarised row, deliberately without the body).
 
-        ⚠ **The archetype, verbatim: the BODY is FENCED, the single-line trailers are
-        SANITISED.** ``description`` is agent-supplied and normally multi-line, so it
-        renders VERBATIM inside :func:`~loremaster.render.render_fenced`'s backtick fence —
-        the ONE implementation of that wrap, sized strictly wider than any backtick run
-        already inside, so a body carrying its own fence cannot close ours early and let a
-        row-shaped line escape into this render's structure. It is deliberately NOT
-        sanitised: a fence PRESERVES text, and stripping it would lose exactly the content
-        the caller drilled in for while still not stopping a forgery. The trailers get the
-        opposite treatment — a newline reaching a one-line field forges a whole new line.
+        **The shape, and what each half of it actually buys: the BODY is FENCED, the
+        single-line trailers are SANITISED.** ``description`` is agent-supplied and
+        normally multi-line, so it renders VERBATIM inside
+        :func:`~loremaster.render.render_fenced`'s backtick fence — the ONE implementation
+        of that wrap, sized strictly wider than any backtick run already inside, so a body
+        carrying its own fence cannot close ours early and let a row-shaped line escape
+        into this render's structure. It is deliberately NOT sanitised: a fence PRESERVES
+        text, and stripping it would lose exactly the content the caller drilled in for
+        while still not stopping a forgery. The trailers get the opposite treatment — a
+        newline reaching a one-line field forges a whole new line.
+
+        ⚠⚠ **THIS SHAPE IS NOT A COMPLETE CONTAINMENT, SO DO NOT CLONE IT AS ONE**
+        (finding **#321**, Ruling 11 §11.1, measured 2026-08-02). This docstring used to
+        open *"the archetype, verbatim"* — an instruction to copy a shape whose second
+        half has a measured hole, which is how a defect propagates faster than its fix.
+        The body/line distinction is right and stands; the completeness claim was false.
+
+        **What SANITISED does NOT buy: it is a CONTROL-CHARACTER policy, not a PROVENANCE
+        one.** :func:`~loremaster.sanitise.sanitise_line` stops a trailer from breaking the
+        render's line structure — a newline, a bidi mark, an invisible separator. It does
+        NOT mark the bytes as the CALLER's rather than lore's. A same-line instruction
+        inside ``owner``/``created_by`` carries no control character and no row shape, so
+        it survives the sanitiser intact and reaches the consuming agent as this server's
+        own prose. Both this render's ``owner`` trailer and its ``provenance`` blob are
+        measured doors of that class.
+
+        That is a **DELIBERATE, PINNED KNOWN BOUND** until 04b-3's link-5 slice, which
+        introduces the containment seam for caller-attributed inline values; a partial,
+        per-site containment is ruled WORSE than none (Ruling 11 §11.4), so do not add one
+        here. The bound is asserted — and goes RED the day it is closed — by
+        ``test_attribution_bound.py`` in this repo's test tree.
         """
         return (
             f"{cls._render_task_rows([task])}\n"

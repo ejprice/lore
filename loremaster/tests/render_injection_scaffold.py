@@ -5,11 +5,19 @@ REPORT-comms-c0-audit.md) as ``TestRenderInjectionRegistry`` inline in
 ``test_mcp_server.py``; extracted here (PKT-28 Phase 0 render-safety ruling,
 §REGISTRY-MIGRATION) so future comms battery modules (C1's dispatch-table
 completeness pin) can build their OWN ``RenderCase`` registry against the SAME
-threat corpus and the SAME acceptance oracle rather than re-deriving either.
-Not ``test_``-prefixed -- pytest never collects this as its own test module;
-importers (``test_mcp_server.py`` today; the C1 comms battery next) pull in
-the threat-char corpus, the row-forge payload, the ``RenderCase`` record, and
-the three-assertion acceptance oracle.
+threat corpus and the SAME control-character/row-shape check rather than
+re-deriving either. Not ``test_``-prefixed -- pytest never collects this as its
+own test module; importers (``test_mcp_server.py`` today; the C1 comms battery
+next) pull in the threat-char corpus, the row-forge payload, the ``RenderCase``
+record, and :func:`assert_render_injection_safe`.
+
+⚠⚠ **READ :func:`assert_render_injection_safe`'S OWN DOCSTRING FOR WHAT THIS
+ORACLE DOES NOT COVER BEFORE TREATING A GREEN RUN AS CLOSURE.** Its scope is
+CONTROL CHARACTERS AND ROW SHAPE. It is measurably BLIND to same-line
+instruction forgery -- a caller value that reads as lore's own prose passes all
+three assertions on every registered render family (finding **#321**, Ruling
+11 §11.1, measured 2026-08-02 at `cab7c12`). A registry name is not a coverage
+claim, and this one is not one.
 
 ``_INJECTION_THREAT_CHARS`` is built from explicit codepoints (never
 hand-typed invisible glyphs in source -- a transcription slip there would
@@ -72,13 +80,39 @@ class RenderCase:
 
 
 def assert_render_injection_safe(baseline: str, hostile_out: str) -> None:
-    """The three-assertion acceptance oracle a served render must pass.
+    """Three assertions about CONTROL CHARACTERS AND ROW SHAPE. **NOT a general
+    acceptance oracle for a served render, and it must not be read as one.**
 
     ``baseline`` is the render's output for a BENIGN value in the field under
     test; ``hostile_out`` is its output for the SAME field carrying one threat
     character plus :data:`_ROW_FORGE_PAYLOAD`. Mirrors PKT-06's original
     ``TestRenderInjectionRegistry`` assertions byte-for-byte (moved, not
     reimplemented -- see the module docstring).
+
+    ⚠⚠ **WHAT THIS ORACLE DOES NOT COVER (finding #321, Ruling 11 §11.1,
+    measured 2026-08-02 at `cab7c12`; this docstring previously called itself
+    "the three-assertion acceptance oracle a served render must pass", which was
+    FALSE in the direction of closure).** All three assertions below are about
+    LINE STRUCTURE: a hostile value may not add a line, may not smuggle a
+    line-breaking or invisible character, and may not start a forged row. None
+    of them looks at what the surviving text SAYS.
+
+    So this oracle is BLIND to **same-line instruction forgery** -- a
+    caller-supplied free-text value that carries no control character and no row
+    shape, and simply reads as lore's own prose to the agent consuming the
+    answer (``owner=``, ``created_by=``, a ``task_id`` reaching a ``!r``
+    teaching error). Six such doors were measured leaking while GREEN here,
+    including two already-registered ``RenderCase`` families -- so a green run
+    of this oracle is evidence about control characters and row shape, and
+    about nothing else.
+
+    That gap is a **DELIBERATE, PINNED KNOWN BOUND** until 04b-3's link-5 slice
+    (Ruling 11 §11.4: a PARTIAL containment is worse than none, so the fix is
+    deferred whole). The bound is asserted -- and goes RED the day it is closed
+    -- by ``test_attribution_bound.py``. **Do not widen these assertions to
+    cover the class without reading that file first**: the same-line class is a
+    provenance problem, not a charset problem, and its instrument is a derived
+    containment sweep rather than a fourth assertion here.
     """
     # 1. the hostile field cannot ADD a line versus the benign baseline.
     #    (also catches a survived literal "\n" from the hostile field -- the
