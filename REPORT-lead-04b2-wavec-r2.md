@@ -1,6 +1,6 @@
 # REPORT-lead-04b2-wavec-r2 — the RESUME lead's orchestration log, packet 04b-2 wave C
 
-lead-base v1 read
+lead-base v2 read (opened on v1; authored the v1→v2 opus-4.8 bump this session — R2-8)
 brief project v7 read
 
 Resume of `REPORT-lead-04b2-wavec.md` (§L-1..§L-6, still standing). §L-6 is the entry point.
@@ -194,6 +194,22 @@ Landing before the cold audit so the audit grades the complete wave. Single-writ
    - The OTHER deploy-shape items (gate instrument, CLAUDE.md manifest inversion, new served
      `action=get`) are improvements/additions, not risks — I will state them at the deploy gate for
      a final nod, but they are not blockers.
+
+## R2-8 · OPERATOR DIRECTIVE — opus agents run claude-opus-4-8, and it is now LEAD LAW
+
+Operator (2026-08-02): *"any freshly spawned agents of opus class must be claude-opus-4-8 not
+opus 5"* and *"Put the opus 4.8 ruling in the lead brief."* Done:
+- Added to `~/.claude/orchestration/lead-base.md` (bumped v1 → v2, DO list): spawn opus agents on
+  claude-opus-4-8; omit the Agent-tool `model` override so they inherit the lead's model
+  (`model: "opus"` can resolve to opus 5); verify the agent's self-reported model, respawn if wrong.
+- Also stored in lore memory (decision, topic=orchestration/model-selection).
+- **Mechanism change going forward:** I stop passing `model: "opus"` and instead omit the override
+  so spawns inherit my claude-opus-4-8, and I brief each agent to state its actual model in its
+  report so I can verify.
+- **Already-spawned agents:** builder-c3-2 and cdef-1 (done) had their outputs independently
+  verified by me (gates re-run, diffs reviewed); riders-04b2-r11-1 predates the directive and is
+  nearly done (low-stakes docs/pins) — I verify its output on receipt. The COLD AUDIT (the critical
+  fresh-context grader) will run on 4.8 and re-grades everything as a backstop.
 
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
