@@ -410,14 +410,27 @@ like: neither an always-true nor an always-false bit survives.
    pay the ≈83-site ripple for the ruled first choice. My recommendation: **confirm the
    fallback**; it satisfies every rider and every stated property of the ruling, and the
    ripple is a real, measured, collision-prone cost paid for nothing a pin can see.
-2. **The chain render: ID-ONLY or ENRICHED?** I pinned ID-ONLY. Enrichment (subject/status
+2. ✅ **SETTLED by Ruling 6 — ID-ONLY confirmed, and its rider is BUILT (§11).** ⚠ The rider
+   uncovered a NEW fork that is still open: **`lore_tasks` has no single-record read verb at
+   all**, so the follow-up the render can honestly teach is a WALK, not a READ. §11.4 carries
+   the measurement, the recommendation (`action=get`), and the exact one-line switch. The
+   original text of this item is kept below because the reasoning is what Ruling 6 ruled on.
+   *I pinned ID-ONLY. Enrichment (subject/status
    per blocker) needs a second bounded read over up to `ENGINE_RECURSION_CEILING` (256) rows
    — a new bounded-read hazard family, in the packet that just spent a wave on one — plus a
    hostile-free-text render pin routed through the sanitiser seam. **I judge that a slice,
    not a render tweak**, and I did not take it. ⚠ The honest counter-argument, which I am
-   not qualified to settle: an agent handed seven bare hex ids must make seven `get_task`
+   not qualified to settle: an agent handed seven bare hex ids must make seven follow-up
    calls, and the consumer law says the reader is an agent. If the operator wants
-   enrichment, it is additive to every pin I wrote except the ID-ONLY assumption itself.
+   enrichment, it is additive to every pin I wrote except the ID-ONLY assumption itself.*
+
+   ⚠⚠ **ONE CLAIM IN THE PARAGRAPH ABOVE WAS WRONG AND I AM CORRECTING IT RATHER THAN
+   EDITING IT AWAY.** It originally read *"must make seven `get_task` calls"* — implying
+   that resolving an id is merely tedious. **It is not possible at all:** `get_task` is a
+   LEDGER method with **zero** call sites in `server.py`, so no consumer can reach it
+   (§11.1). I wrote that sentence from the ledger's surface without checking the SERVED
+   one, which is the *"prose describing behaviour must be DERIVED from the behaviour"*
+   failure, in my own report. The rider is what forced the check.
 3. **R9's DEFAULT display cap appears UNBUILT.** R9 rules *"`limit` becomes legal for
    `query`, **and the no-limit path gets a DEFAULT display cap** with the house
    counted-elision grammar"*. MEASURED at `f67a219`: `AppContext._render_task_rows` renders
@@ -610,6 +623,204 @@ known-correct implementation, so handing it over would turn the build phase into
 transcription and destroy the builder-≠-grader independence. It stays as evidence and as a
 cross-check available to the cold audit; the lead calls its disposal at wave close-out.
 This supersedes §9 item 5's open question.
+
+---
+
+# §11 · RULING 6's RIDER — BUILT, AND IT UNCOVERED A MISSING VERB
+
+Lead **Ruling 6** (2026-08-01): ID-ONLY confirmed on the trust legs; enrichment is consumer
+ergonomics and goes to 04b-3. **Rider, this wave, judged few-lines-cheap:** *"the id-only
+render must TEACH ITS FOLLOW-UP — how a consumer gets detail for an id."*
+
+## 11.1 What I found before writing the pin
+
+⚠ **There is no follow-up to teach.** Measured at `025c2a9`, two ways:
+
+```
+grep -c 'task_ledger.get_task' loremaster/loremaster/server.py   ->  0
+_TASK_ACTIONS = create · query · transition · supersede · rollup · create_many   (+ blockers, minted here)
+```
+
+**No served `lore_tasks` verb resolves a task id to its detail.** `lore_findings` has
+`get`; `lore_comms` has `brief_get`; `lore_tasks` has nothing. That is an **asymmetry, not
+a design choice**, and it bites wider than this render: an agent handed an id by *any*
+surface — this chain render, a task row's `blocked_by`, a claim refusal naming its blocker —
+has no read verb to point at.
+
+**Why that changes the rider rather than just complicating it:** the obvious way to satisfy
+it is to render `lore_tasks action=get task_id=<id>`, which returns *"unknown task action
+'get'"*. That is a **fabricated affordance**, and under the consumer law it is worse than
+the bare ids it replaces — the measured behaviour of an agent on an undiagnosable failure
+is to blame the tool and route around it. The rider aimed at usability would have bought a
+route-around.
+
+## 11.2 The pin, written to the PROPERTY so the open fork cannot invalidate it
+
+`TestTheIdOnlyChainRenderTEACHESItsFOLLOWUP` (2 tests) does not look for a sentence. It
+**extracts every `action=<name>` the render teaches and requires each to be a real member of
+`_TASK_ACTIONS`**, plus: at least one taught action; one line carrying both a taught action
+and an id **this answer served** (R9's concrete re-ask, not a generic pointer); and — killing
+**WB-B4** — a render with NO ids teaches NOTHING (imperatives ride only true verdicts, R8's
+split, which this packet already applies to the fleet columns and the supersede warning).
+
+So the class is **unchanged whichever way §11.4's fork is ruled**; only the render's own
+text moves.
+
+## 11.3 Receipts
+
+- **Reference build, whole contract: `50 passed` / 0 failed** (48 → 50 with the rider).
+  Follow-up implemented conservatively — no new action — as
+  `↳ walk any of these with: lore_tasks action=blockers task_id=<first served id>`.
+- **Mutation proof of the fabricated-affordance guard**, which is the load-bearing half, and
+  the mutation is *the most plausible wrong build a builder would actually write*:
+
+```
+--replacement 'f"  ↳ read any of these with: lore_tasks action=get "'
+E  the render teaches action(s) ['get'] that lore_tasks does not serve; the legal set is
+   [... 'blockers']. A taught call that returns 'unknown task action' is a FABRICATED
+   AFFORDANCE — strictly worse than the bare ids it replaced ...
+1 failed, 49 passed
+tree restored byte-exact (md5 34fc1991db7e8c2b32e294ce2f25492b)
+PROOF HELD — the declared RED set fired EXACTLY
+```
+
+- At `025c2a9` + my files: `tests/test_task_read_surface.py -n auto` → **37 failed / 13
+  passed**, both new pins RED by design; ruff clean.
+
+## 11.4 ⚠ ESCALATED — the follow-up I shipped is the WEAK one, and I recommend the other
+
+`action=blockers task_id=<id>` **exists** and proves an id resolves (or raises
+`TaskNotFoundError` naming it) — so the pin is honestly satisfied. But it renders that
+task's *own critical path*; it does **not** give subject or status. Teaching it as *"how you
+get detail"* would overstate it, so the shipped text says **"walk"**, not "read".
+
+**MY RECOMMENDATION: mint `lore_tasks action=get task_id=<id>`, rendering
+`_render_task_rows([task])`.** It is the missing member of a grammar the sibling tools
+already have, not a new one; the ledger verb (`get_task`) and the render both exist; the
+whole change is a dispatch branch, one `_EXPECTED_TASK_ACTIONS` entry in this contract, and
+the refusal-matrix row #302's pins already demand. It is genuinely few-lines-cheap — and it
+is the difference between *"walk this id"* and *"read this id"*.
+
+**I did NOT take it, and the reason is scope, not doubt:** minting a served action is a
+scope decision, and #302 — which this slice exists partly to close — is precisely the pin
+that says an action must never appear without deliberate adjudication. Doing it unilaterally
+inside the wave that closes that hole would be the wrong shape. **If ruled, the change is:
+one dispatch branch + `_EXPECTED_TASK_ACTIONS += "get"` + the render's verb word.** The
+reference build switches in one line; no pin above moves.
+
+⚠ If it is NOT ruled, this residue should carry forward as a named bound rather than
+evaporating: **the chain render can teach a WALK but not a READ, because `lore_tasks` has no
+single-record read verb.** That sentence is the honest scope of what shipped.
+
+---
+
+# §12 · ADVERSARY VERDICT **INSUFFICIENT** — ALL EIGHT GAPS CLOSED
+
+`adversary-c1-1` graded C1 INSUFFICIENT: **seven wrong builds passed 48/48**. Every finding
+was correct and every one was measured, not argued. The verdict is right and I am recording
+what it teaches before what I did about it.
+
+## 12.1 The lesson, because it generalises past this slice
+
+**A satisfiability receipt proves a contract SATISFIABLE. It never proved it SUFFICIENT.**
+I produced the wave's first real receipt and then treated 1197/0 as if it graded coverage.
+It grades the opposite direction.
+
+And **every one of the three blockers is the same shape**: *the pin drove the seam I was
+thinking about rather than the seam a consumer reaches.*
+
+* ESC-5's uniformity class called `_task_listing` **directly** — and a helper cannot be
+  non-uniform with itself, so it proved the helper's arithmetic and nothing about the
+  dispatcher's routing. A build routing only `blocked is None` through it serves
+  `action=query blocked=false limit=5` with **no disclosure at all**: the packet's DEPLOY
+  ENTRY CONDITION, defeated, at 48/48.
+* The chain render's two worlds were **byte-identical**: `deep != shallow` was satisfied by
+  the id COUNT (4 ids vs 2), and `"2" in shallow` by a hex digit inside an opaque id —
+  P(vacuous pass) = **0.998**, on a build naming no depth at all, under a message reading
+  *"the truncated render names no depth"*.
+* The whole surface was **unreachable through the registered MCP tool** — 48/48 here AND
+  641/641 in the served-surface suite while `lore_tasks` exposed no `max_depth` and its
+  served description never named `blockers`. **That is finding #302's own quantifier
+  failure, inside the slice that closes #302:** I pinned the INTERNAL tuple by equality —
+  the door I walked through — and left the SERVED half open. Finding #314.
+
+Four more, all fair: a hard-coded cap rendering *"showing 5"* while serving 2 (`_ALT_CAP`
+existed for the monoculture law and never reached the RENDER) · `max_depth` refused for
+`create` alone · an always-empty `superseded_blockers` satisfying every leg I wrote · the
+supersede render dropping the successor id, in a test whose own NAME promised to check it.
+
+## 12.2 What I did
+
+All eight adopted into `test_task_read_surface.py` **SECTION E**, re-homed in this file's
+idiom with the measurement that justifies each kept in its docstring. Two decisions of mine:
+
+* **MP-1's placement (the adversary left it open):** the served-tool pins live HERE, not in
+  `test_mcp_server.py` — they import only that module's fixture helpers, and keeping C1
+  self-contained avoids a second agent's file in a five-agent tree.
+* **`test_every_declared_action_is_actually_DISPATCHABLE` RE-AUTHORED** rather than adopted.
+  It was **my own false gate**: its docstring said *"three equal tuples prove agreement
+  between two constants, not that any action reaches a handler"* and its assertions were
+  agreement between two constants. It now resolves every `_COMMS_ACTIONS` key to a callable
+  handler and drives every `_TASK_ACTIONS` name through the dispatcher, requiring the
+  failure never to be *"unknown task action"*.
+
+## 12.3 ⚠ MY REPLACEMENT FOR MP-7 WAS ITSELF A FALSE GATE, AND THE TOOLING CAUGHT IT
+
+The adversary FALSIFIED my report's §8 claim that `TestTheCALLERSOwnLimitIsWhatGetsVALIDATED`
+*"makes a private second copy impossible to ship green"* (measured: shared predicate
+neutralised → reference build 4 failed, private-copy build 4 **passed**). So I wrote
+`TestTheCapPredicateHasONEImplementationPROVENByMutation`, replacing the shared predicate
+with a **raising sentinel** and requiring the seam call to raise.
+
+**It went GREEN on the private-copy build — `PROOF FAILED, 69 passed`.** Because the seam's
+over-fetch calls `query_tasks(limit=cap + 1)`, and the **LEDGER** then calls the shared
+predicate downstream, so the sentinel fired anyway *from the wrong call site*. A pin that
+cannot tell *"the seam called it"* from *"something the seam called called it"* is the P2
+class — written into the fix for a P2 finding, by the author who had just been shown one.
+
+**The discriminating instrument is a CALL RECORDER, not a raise.** One seam call must
+validate **twice with different values** — the caller's cap at the seam, `cap + 1` at the
+ledger — and a private copy records only the ledger's one. That difference exists *only*
+because the over-fetch makes the two values differ.
+
+```
+control (correct build):                     69 passed
+private-copy build (adversary's wb-private-limit):
+  1 failed, 68 passed   PROOF HELD — the declared RED set fired EXACTLY
+  tree restored byte-exact (md5 671aca01df8b4799713f87ae4028e226)
+```
+
+⚠ A second self-inflicted defect fixed in the same class: its first draft asserted
+`server.validated_task_limit is tasks.validated_task_limit`, which would have failed a
+correct build that spells the import differently — **and tripped mypy's *"does not
+explicitly export attribute"***, the only mypy error my file has ever carried on a correct
+build. The recorder patches both bindings and requires neither style.
+
+## 12.4 Receipts after the fix
+
+```
+reference build, contract alone                                    69 passed / 0 failed
+reference build, + test_query_tasks_bounded + test_blocks_edge
+  + test_task_ledger + test_mcp_server + test_txn_contention
+  + test_surreal_harness            -n auto                      1275 passed in 136.66s
+reference build, ruff (contract + server.py + tasks.py)            All checks passed
+reference build, mypy on the contract                              0 errors
+HEAD (025c2a9 + my files)                                          52 failed / 17 passed
+HEAD, ruff on the contract                                         All checks passed
+HEAD, mypy on the contract   14 errors, ALL attr-defined naming build symbols + 1 consequential unused-ignore
+```
+
+48 → 69 pins. The 17 greens at HEAD are removed-behaviour guards: three of them are NEW and
+named — the supersede render already names its successor, the served description already
+names today's six actions, and the tool already forwards `owner` — each of which this wave's
+rewrite could silently take away.
+
+## 12.5 What the reference build gained
+
+The MCP tool wiring MP-1 demanded: `max_depth` exposed as an annotated parameter **and
+forwarded**, and the served `action` description extended to name `'blockers'` with what it
+does. Everything else the adversary found was a missing PIN over behaviour my reference
+build already had — which is precisely why 48/48 was never evidence of sufficiency.
 
 ---
 
