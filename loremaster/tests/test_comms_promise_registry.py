@@ -252,6 +252,18 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "NOT re-ack is correct — the ack stamp is WRITE-ONCE, so a second ack is an "
         "already_acked no-op that returns the SAME stamp"
     ),
+    "— pending traffic for {identity}: {unread} unread, {unacked} unacked directives "
+    "— lore_comms action=drain agent={identity}": (
+        "the RESOLVED pending-traffic footer (packet 04b-2 slice C3, R8(1)) — the ONE "
+        "footer render that names a call. §9.7 litmus: it is emitted IFF the caller "
+        "supplied agent=, the registry RESOLVED it, and the returned row's name EQUALS "
+        "what was asked for — so the {identity} it interpolates into 'action=drain "
+        "agent=' is a registered agent name by construction, and the drain it names is "
+        "the caller's OWN inbox, which is the same inbox the two counts were read from "
+        "(pending_traffic(agent_id=row.id), same row, same call). The imperative rides a "
+        "TRUE verdict: R8(2) forbids it on the fallback path precisely because a merely "
+        "MATCHED identity could send the reader into somebody else's inbox"
+    ),
     "note recorded on the {acked} newly acked message(s)": (
         "ack note durability (§B5.3) — emitted IFF the call carried a note AND acked_count > 0. "
         "§9.7 litmus: the ledger writes ack_note ONLY on the edges its CAS actually WON, so "
@@ -267,6 +279,26 @@ _PROMISE_REGISTRY: dict[str, str] = {
 # not silence — the default is still FAIL.
 # --------------------------------------------------------------------------- #
 _PROMISE_FREE: dict[str, str] = {
+    "— pending traffic for {identity}: {unread} unread, {unacked} unacked directives "
+    "(matched on a write attribution, not an authenticated caller)": (
+        "measurement, no mechanism (packet 04b-2 slice C3, R8(2)) — the FALLBACK footer. "
+        "It names NO call and issues no imperative, which is the whole of R8(2): this "
+        "identity was matched EXACTLY against a free-text owner/actor/created_by column, "
+        "never authenticated, so telling THIS reader to drain could send them into an "
+        "inbox that is not theirs. The counts are a real measurement of the matched "
+        "agent's own inbox, and the parenthetical DISCLOSES the basis of the match rather "
+        "than letting the reader assume authentication"
+    ),
+    "(no pending-traffic line: {reason})": (
+        "frame only (packet 04b-2 slice C3, R8(1)) — the teaching served when a SUPPLIED "
+        "agent= did not resolve. The template's own text promises nothing: it states that "
+        "no footer is owed and hands the whole explanation to {reason}, which is the "
+        "AgentRegistry's OWN classification (unknown vs. registered-in-two-sessions), "
+        "re-served rather than re-derived so this surface cannot disagree with "
+        "lore_comms' answer to the identical question (#102). ⚠ Any remedy the reader "
+        "acts on therefore rides in a render VALUE, which is this module's separately "
+        "pinned bound (TestSafeStrLiteralCoverageBound) — stated rather than implied"
+    ),
     "registered {name} (session {session}, role {role}) — status active": "status report",
     "re-registered {name} (session {session}, role {role}) — status active "
     "(first registered {age} ago)": "status report",
@@ -1129,6 +1161,28 @@ def _render_ack_03b(*, outcomes: list[tuple[int, str]], note: str | None) -> str
     )
 
 
+def _render_footer_c3(*, authenticated: bool) -> str:
+    """The REAL :meth:`AppContext._comms_footer`, driven at BOTH sides of R8's split.
+
+    ``authenticated`` **is** the registered predicate, carried into the render as
+    one typed argument rather than re-derived from the identity's shape: it is
+    ``True`` exactly when the caller supplied ``agent=`` and the registry
+    resolved it to a row whose ``name`` equals the request, and ``False`` on
+    R8(2)'s exact-match attribution fallback. Everything else is held identical
+    across the two legs, so the only thing that can move the marker is the
+    predicate.
+    """
+    from loremaster.messages import PendingTraffic
+
+    return str(
+        AppContext._comms_footer(
+            identity="builder-04b2-wavec-3",
+            traffic=PendingTraffic(unread=7, unacked_directives=3),
+            authenticated=authenticated,
+        )
+    )
+
+
 _PROOF_LIST: list[PromiseProof] = [
     # --- register (§9.7 #1/#2/#3): brief present vs the bootstrap path. -------
     PromiseProof(
@@ -1566,6 +1620,22 @@ _PROOF_LIST: list[PromiseProof] = [
         render_no_emit=lambda: _render_ack_03b(
             outcomes=[(101, "already_acked")], note="picked it up"
         ),
+    ),
+    PromiseProof(
+        literal="— pending traffic for {identity}: {unread} unread, {unacked} unacked "
+        "directives — lore_comms action=drain agent={identity}",
+        marker="— lore_comms action=drain agent=builder-04b2-wavec-3",
+        # Packet 04b-2 slice C3 / R8. The NO-EMIT leg is the FALLBACK render, not
+        # a quiet inbox: a quiet inbox proves only that a footer can be withheld
+        # entirely, while R8's actual split is between two footers that BOTH
+        # appear and differ by exactly this imperative. A build reusing the
+        # resolved text for the fallback path — the most natural and most
+        # DRY-looking implementation, and measured wrong build W21's mirror —
+        # emits the marker on the fallback leg and fails NO-EMIT here.
+        # MUTATION-PROOF OBLIGATION: drop the ``authenticated`` branch in
+        # ``_comms_footer`` -> NO-EMIT RED.
+        render_emit=lambda: _render_footer_c3(authenticated=True),
+        render_no_emit=lambda: _render_footer_c3(authenticated=False),
     ),
 ]
 

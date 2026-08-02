@@ -73,6 +73,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from loremaster.agent_ref import AgentRefLike as _AgentRefLike
 from loremaster.agents import AGENT_NAME_PATTERN
 from loremaster.agents import STATUS_RETIRED as _AGENT_STATUS_RETIRED
+from loremaster.agents import AgentRegistryError as _AgentRegistryError
 from loremaster.agents import UnknownAgentError as _UnknownAgentError
 from loremaster.briefs import BRIEF_NAME_PROJECT, STANDING_BRIEF
 from loremaster.briefs import UnknownBriefError as _UnknownBriefError
@@ -1218,6 +1219,30 @@ COMMS_FOOTER_PREFIX = "— pending traffic"
 _COMMS_FOOTER_UNREAD_ROLE = "unread"
 _COMMS_FOOTER_UNACKED_ROLE = "unacked directives"
 
+# R8's LOAD-BEARING rider: the ``agent=``/``session=`` parameter descriptions are
+# ONE policy shared by the three ledger tools, never three blurbs that drift
+# (#102). They are long on purpose — R8 MEASURED that with a terse description
+# NEITHER Sonnet 5 NOR Opus 5 passes ``agent=`` at all, and a parameter nobody
+# passes is a feature that never fires. The PAYOFF and R8(2)'s coupling are both
+# stated here because the field description is the only place a caller meets them.
+_COMMS_IDENTITY_AGENT_DESCRIPTION = (
+    "YOUR registered agent name (the one you passed to lore_comms action=register). "
+    "Pass it and any call that actually WRITES ends with one extra pending-traffic "
+    "line telling you how much is waiting for you in lore_comms — so you find out a "
+    "teammate is blocked on you at the moment you act, not at your next catch-up. "
+    "Omit it and lore says nothing rather than guessing who you are, with one "
+    "disclosed exception: an owner/actor/created_by value that EXACTLY equals a "
+    "registered agent name is taken as that agent (matched, never authenticated, so "
+    "that line is worded in the third person)."
+)
+_COMMS_IDENTITY_SESSION_DESCRIPTION = (
+    "The orchestration session your agent= name is registered under. Optional, and "
+    "only needed when that name is not unique: an agent name is unique only WITHIN a "
+    "session (the registry mints its row id from the pair), so if the same name is "
+    "registered in two sessions lore cannot tell which of you it is and says so "
+    "instead of guessing. Pass this to disambiguate; omit it when your name is unique."
+)
+
 _COMMS_ACTION_REGISTER = "register"
 _COMMS_ACTION_HEARTBEAT = "heartbeat"
 _COMMS_ACTION_BRIEF_GET = "brief_get"
@@ -1575,6 +1600,26 @@ _INSTRUCTIONS = (
     "question. A question is answered only by a teammate's reply delivered to "
     "you on that thread — your own follow-ups and self-notes never count; lore "
     "does not report that state back to you yet, so track it yourself.\n"
+    "\n"
+    # Packet 04b-2 slice C3, ruling R1's closing sentence: the footer's teaching
+    # lands through CL3's DECLARED PARAGRAPH allowlist — never by growing
+    # _COMMS_DUTY_VOCABULARY, whose own docstring forbids it (growing the
+    # recogniser would weaken four unrelated teaching gates to ship one
+    # paragraph). It is a paragraph and not a note in a brief because the
+    # feature is OPT-IN BY CONSTRUCTION: agent= omitted means no footer, so a
+    # caller that is never TOLD the parameter exists never passes it.
+    #
+    # ⚠ It uses NONE of the seven duty words ("inbox", "ack", "drain", "seq",
+    # "thread", "directive", "unread") — CL1 allows exactly ONE paragraph to
+    # make duty claims about the message surface, and it is the ruled block
+    # above, not this one. The natural phrasing ("how many unread messages and
+    # unacked directives await you") uses three of them, which is why the
+    # constraint is pinned rather than remembered.
+    "PENDING TRAFFIC: pass agent= (and session= when your name is not unique) to "
+    "lore_tasks / lore_claim_task / lore_findings. Any such call that actually WRITES "
+    "then ends with one extra line telling you how much is waiting for you in "
+    "lore_comms, so you learn a teammate is blocked on you at the moment you act. "
+    "Omit agent= and lore says nothing rather than guessing who you are.\n"
     "\n"
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
@@ -3043,7 +3088,7 @@ class AppContext:
             rows.append(f"(showing {len(summaries)} of {total} — raise limit for more)")
         return "\n".join(rows)
 
-    async def findings(  # noqa: PLR0911 - P8d rewrites this render; restructuring now would churn
+    async def findings(
         self,
         *,
         action: str,
@@ -3060,8 +3105,24 @@ class AppContext:
         limit: int = _DEFAULT_FINDINGS_QUERY_LIMIT,
         supersedes: int | str | None = None,
         items: list[dict[str, Any]] | None = None,
+        agent: str | None = None,
+        session: str | None = None,
     ) -> str:
         """Dispatch a finding-ledger action, rendering SUMMARISED results as a string.
+
+        Packet 04b-2 slice C3 adds the optional identity pair (R1) and the
+        pending-traffic footer, in exactly the shape :meth:`tasks` uses and for
+        the reasons stated there: the link-1b charset validation is the FIRST
+        statement, the ``action ==`` chain stays in THIS method (so a structural
+        scan of the dispatcher still reads it), each branch ASSIGNS ``(rendered,
+        writes)``, and the SINGLE ``return`` appends the footer.
+
+        ``findings`` is the dispatcher with the most return points and TWO
+        attribution columns — which is precisely why the trigger, the read
+        budget and the teaching live in the shared
+        :meth:`_with_comms_footer` seam rather than in each branch. Wrong build
+        W15 kept the one-read ceiling on ``tasks`` and broke it here; wrong
+        builds W5/W24 exempted six of this tool's write actions.
 
         A thin dispatcher over the durable :class:`~loremaster.findings.FindingLedger`
         (dispatch style mirrors :meth:`tasks`), over the nine actions:
@@ -3089,6 +3150,8 @@ class AppContext:
         every SINGLE-item action; the two batch actions instead CATCH a per-item
         domain failure and render it (see :meth:`_resolve_or_acknowledge_many`).
         """
+        # Ruling 10 link 1b — FIRST statement, before any use of an identity.
+        AppContext._validate_comms_identities(agent, session=session)
         if action not in (
             _FINDING_ACTION_RESOLVE_MANY,
             _FINDING_ACTION_ACKNOWLEDGE_MANY,
@@ -3097,13 +3160,20 @@ class AppContext:
                 f"'items' applies only to action='resolve_many'/'acknowledge_many' "
                 f"— omit it for {action!r}"
             )
+        # Each branch ASSIGNS ``(rendered, writes)``; the ONE return below appends
+        # the footer. ``writes`` is the OUTCOME, never the verb — and for the two
+        # BEST-EFFORT batches it is a COUNT rather than a flag, because they may
+        # write 5, 3 or 0 of 5 and L2 footers iff at least ONE item wrote.
+        rendered: str
+        writes: int
         if action in (_FINDING_ACTION_RESOLVE_MANY, _FINDING_ACTION_ACKNOWLEDGE_MANY):
-            return await self._resolve_or_acknowledge_many(
+            rendered, writes = await AppContext._resolve_or_acknowledge_many(
+                self,
                 action=action,
                 items=items or [],
                 actor=_require_finding_arg(actor, "actor"),
             )
-        if action == _FINDING_ACTION_REPORT:
+        elif action == _FINDING_ACTION_REPORT:
             report = await self.finding_ledger.report(
                 _require_finding_arg(subject, "subject"),
                 # body is OPTIONAL (audit-waveb-1 finding #1): the schema + ledger
@@ -3118,19 +3188,22 @@ class AppContext:
                 created_by=_require_finding_arg(created_by, "created_by"),
                 supersedes=supersedes,
             )
-            return f"reported finding #{report.number} (id {report.id}, status open)"
-        if action == _FINDING_ACTION_QUERY:
+            rendered, writes = (
+                f"reported finding #{report.number} (id {report.id}, status open)",
+                1,
+            )
+        elif action == _FINDING_ACTION_QUERY:
             rows = await self.finding_ledger.query(
                 status=status, kind=kind, area=area, limit=limit
             )
-            return self._render_finding_rows(rows)
-        if action == _FINDING_ACTION_GET:
+            rendered, writes = AppContext._render_finding_rows(rows), 0
+        elif action == _FINDING_ACTION_GET:
             finding = await self.finding_ledger.get(_require_finding_ref(id_or_number))
-            return self._render_finding_detail(finding)
-        if action == _FINDING_ACTION_CHAIN_HEAD:
+            rendered, writes = AppContext._render_finding_detail(finding), 0
+        elif action == _FINDING_ACTION_CHAIN_HEAD:
             head = await self.finding_ledger.chain_head(_require_finding_ref(id_or_number))
-            return self._render_chain_head(head)
-        if action == _FINDING_ACTION_ACKNOWLEDGE:
+            rendered, writes = AppContext._render_chain_head(head), 0
+        elif action == _FINDING_ACTION_ACKNOWLEDGE:
             # PKT-06 §3: the single ``acknowledge`` verb now forwards its
             # existing ``note`` param too (previously dropped — the ledger's
             # ``acknowledge(note=)`` already threads it, matching
@@ -3140,23 +3213,34 @@ class AppContext:
                 _require_finding_arg(actor, "actor"),
                 note,
             )
-            return self._render_finding_transition(acked, actor)
-        if action == _FINDING_ACTION_RESOLVE:
+            rendered, writes = AppContext._render_finding_transition(acked, actor), 1
+        elif action == _FINDING_ACTION_RESOLVE:
             resolved = await self.finding_ledger.resolve(
                 _require_finding_ref(id_or_number),
                 _require_finding_arg(actor, "actor"),
                 note,
             )
-            return self._render_finding_transition(resolved, actor)
-        if action == _FINDING_ACTION_WONTFIX:
+            rendered, writes = AppContext._render_finding_transition(resolved, actor), 1
+        elif action == _FINDING_ACTION_WONTFIX:
             closed = await self.finding_ledger.wontfix(
                 _require_finding_ref(id_or_number),
                 _require_finding_arg(actor, "actor"),
                 note,
             )
-            return self._render_finding_transition(closed, actor)
-        raise ValueError(
-            f"unknown findings action {action!r}; valid actions are {list(_FINDING_ACTIONS)}"
+            rendered, writes = AppContext._render_finding_transition(closed, actor), 1
+        else:
+            raise ValueError(
+                f"unknown findings action {action!r}; "
+                f"valid actions are {list(_FINDING_ACTIONS)}"
+            )
+        return await AppContext._with_comms_footer(
+            self,
+            rendered,
+            writes=writes,
+            agent=agent,
+            session=session,
+            # R8(2)'s fallback considers the FIRST supplied one and stops.
+            attributions=(actor, created_by),
         )
 
     @staticmethod
@@ -3180,9 +3264,16 @@ class AppContext:
 
     async def _resolve_or_acknowledge_many(
         self, *, action: str, items: list[dict[str, Any]], actor: str
-    ) -> str:
+    ) -> tuple[str, int]:
         """PKT-06 §3 (L2b): ``resolve_many`` / ``acknowledge_many`` — BEST-EFFORT
         sequential batch transitions with a per-item outcome render.
+
+        Returns ``(rendered, writes)``. **L2 requires the count, not the call:**
+        these verbs may write 5, 3 or 0 of 5, and the pending-traffic footer
+        appears iff at least ONE item actually wrote — so the count that already
+        drives the summary line is handed back rather than re-derived by the
+        caller (#102: a caller re-counting the rendered lines is a second
+        implementation of "did this batch write?", free to disagree).
 
         ALL client-side validation (empty list, over-cap, per-item shape) is
         checked BEFORE any ledger call. Once processing starts, items run
@@ -3221,7 +3312,7 @@ class AppContext:
         success_count = 0
         aborted = False
         for ref_item in parsed_items:
-            ref_label = self._format_finding_ref(ref_item.id_or_number)
+            ref_label = AppContext._format_finding_ref(ref_item.id_or_number)
             if aborted:
                 outcome_lines.append(
                     f"- {ref_label} ABORTED — store connection lost; retry these"
@@ -3252,7 +3343,7 @@ class AppContext:
             )
 
         header = f"{verb} {success_count} of {len(parsed_items)}:"
-        return "\n".join([header, *outcome_lines])
+        return "\n".join([header, *outcome_lines]), success_count
 
     @classmethod
     def _render_chain_head(cls, head: ChainHead) -> str:
@@ -3468,7 +3559,14 @@ class AppContext:
             blocks.append("\n".join(lines))
         return "\n".join(blocks)
 
-    async def claim_task(self, task_id: str, owner: str) -> str:
+    async def claim_task(
+        self,
+        task_id: str,
+        owner: str,
+        *,
+        agent: str | None = None,
+        session: str | None = None,
+    ) -> str:
         """Atomically claim ``task_id`` for ``owner`` (the fleet-coordination primitive).
 
         Delegates to the durable :class:`~loremaster.tasks.TaskLedger`'s
@@ -3476,9 +3574,35 @@ class AppContext:
         time; a LOSS names the current holder and mutates nothing. An unknown id
         surfaces the ledger's typed :class:`~loremaster.tasks.TaskNotFoundError`
         (naming the id) unchanged.
+
+        Packet 04b-2 slice C3 adds the optional identity pair (R1) and the
+        pending-traffic footer. **The LOSING branch is the whole reason the
+        trigger is keyed on the OUTCOME rather than on the verb**: ``claim_task``
+        is a write verb by name, but a loss names the current holder and mutates
+        NOTHING, so it is a read by outcome and carries no footer. A build keyed
+        on the verb passes every other footer pin and fails exactly there.
+
+        Args:
+            task_id: The task to claim.
+            owner: The identity recorded on a winning claim. Free text, and also
+                the single attribution R8(2)'s exact-match fallback considers.
+            agent: The CALLER's registered name (R1, optional) — see
+                :data:`_COMMS_IDENTITY_AGENT_DESCRIPTION`.
+            session: The session scoping ``agent``.
+
+        Raises:
+            ValueError: ``agent``/``session`` violate ``AGENT_NAME_PATTERN``
+                (Ruling 10 link 1b — refused at the tool seam, before any use).
         """
+        AppContext._validate_comms_identities(agent, session=session)
         result = await self.task_ledger.claim_task(task_id, owner)
-        return self._render_claim_result(result)
+        return await AppContext._with_comms_footer(self, 
+            AppContext._render_claim_result(result),
+            writes=int(result.claimed),
+            agent=agent,
+            session=session,
+            attributions=(owner,),
+        )
 
     @staticmethod
     def _render_claim_result(result: ClaimResult) -> str:
@@ -3536,7 +3660,7 @@ class AppContext:
             reason = f"status {task.status}"
         return f"not claimed: task {task.id} is unowned but not claimable ({reason})"
 
-    async def tasks(  # noqa: PLR0911,PLR0912 - a dispatch-on-action verb; splitting churns every action's own test
+    async def tasks(  # noqa: PLR0912 - a dispatch-on-action verb; the chain must stay HERE (see the docstring)
         self,
         *,
         action: str,
@@ -3555,8 +3679,30 @@ class AppContext:
         items: list[dict[str, Any]] | None = None,
         summary: str | None = None,
         report_path: str | None = None,
+        agent: str | None = None,
+        session: str | None = None,
     ) -> str:
         """Dispatch a fleet task action (create|query|transition|supersede|rollup|create_many|blockers|get).
+
+        ⚠ **THE BRANCH CHAIN STAYS IN THIS METHOD, AND THAT IS A CONSTRAINT
+        RATHER THAN A STYLE CHOICE.** Extracting it into a private
+        ``_tasks_dispatch`` was the first shape of packet 04b-2 slice C3's
+        build, and it silently blinded
+        ``test_task_read_surface.py::TestTheServedActionVocabulariesArePinnedBy
+        EQUALITY``, which AST-scans **this function's own source** for
+        ``action == <NAME>`` comparisons: every declared action read as DEAD
+        while every action still worked. Adding a footer must not be able to
+        turn a live dispatcher into an unreadable one, so the dispatch stays
+        where the instrument looks.
+
+        **The footer rides ONE exit.** Each branch ASSIGNS ``(rendered,
+        writes)`` instead of returning, and the single ``return`` below appends
+        the pending-traffic line. A dispatcher with nine ``return`` statements
+        appending per branch is how one inbox comes to be described twice, or
+        not at all on the branch nobody drove. ``writes`` is how many ledger
+        writes the action ACTUALLY performed — the trigger reads that count and
+        never the verb (see :meth:`_with_comms_footer`), so every READ branch
+        carries 0 and every WRITE branch carries what it really wrote.
 
         A thin dispatcher over :class:`~loremaster.tasks.TaskLedger` that renders
         SUMMARISED results (never a raw SurrealDB row) and lets the ledger's typed
@@ -3585,6 +3731,12 @@ class AppContext:
         through :meth:`_task_listing`, so a CAPPED listing DISCLOSES that more matches
         exist rather than reading as a complete answer.
         """
+        # Ruling 10 link 1b: charset-validate EVERY supplied identity at the TOOL
+        # SEAM, BEFORE any use — resolution, teaching or embedding — by extending
+        # the ONE seam's call set rather than cloning the check (#102). It is the
+        # FIRST statement so no argument refusal below can reorder it behind a
+        # store touch.
+        AppContext._validate_comms_identities(agent, session=session)
         # ⚠ THE GUARD IS SPLIT, NOT DELETED (operator ruling **R9**, 2026-07-28). ``limit``
         # is now legal for ``query`` too — it is the documented way for an agent to bound
         # its own answer, and with no cap available an unfiltered ``query`` served a
@@ -3612,37 +3764,52 @@ class AppContext:
             raise ValueError(
                 f"'items' applies only to action='create_many' — omit it for {action!r}"
             )
+        # Each branch ASSIGNS ``(rendered, writes)``; the ONE return below appends
+        # the footer. ``writes`` is the OUTCOME, never the verb.
+        rendered: str
+        writes: int
         if action == _TASK_ACTION_ROLLUP:
-            return await self._rollup(since=since, limit=limit)
-        if action == _TASK_ACTION_CREATE_MANY:
-            return await self._create_many(
-                items=items or [], created_by=_require_arg(created_by, "created_by")
+            rendered, writes = await AppContext._rollup(self, since=since, limit=limit), 0
+        elif action == _TASK_ACTION_CREATE_MANY:
+            batch = items or []
+            # ALL-OR-NOTHING (one atomic ``execute_transaction``), so reaching
+            # the assignment means every item was created — unlike the findings
+            # batches, which are best-effort and must report a real count.
+            rendered = await AppContext._create_many(
+                self, items=batch, created_by=_require_arg(created_by, "created_by")
             )
-        if action == _TASK_ACTION_CREATE:
+            writes = len(batch)
+        elif action == _TASK_ACTION_CREATE:
             new_id = await self.task_ledger.create_task(
                 _require_arg(subject, "subject"),
                 _require_arg(description, "description"),
                 blocked_by=blocked_by,
                 created_by=_require_arg(created_by, "created_by"),
             )
-            return f"created task {new_id} (status open)"
-        if action == _TASK_ACTION_QUERY:
+            rendered, writes = f"created task {new_id} (status open)", 1
+        elif action == _TASK_ACTION_QUERY:
             # ⚠ EVERY filter combination routes through the ONE helper, and that is the
             # whole of ESC-5's deploy entry condition. A dispatcher that sent only SOME
             # branches through it would serve an honest bound on one spelling of a
             # question and the false clear on another — the same tool, the same caller,
             # two truths. The cap is still PUSHED DOWN (ruling **R5**); the helper adds
             # exactly ONE over-fetched row to the same read.
-            return self._render_task_listing(
-                await self._task_listing(
-                    status=status, owner=owner, blocked=blocked, limit=limit
-                )
+            rendered, writes = (
+                AppContext._render_task_listing(
+                    await AppContext._task_listing(
+                        self, status=status, owner=owner, blocked=blocked, limit=limit
+                    )
+                ),
+                0,
             )
-        if action == _TASK_ACTION_GET:
-            return self._render_task_detail(
-                await self.task_ledger.get_task(_require_arg(task_id, "task_id"))
+        elif action == _TASK_ACTION_GET:
+            rendered, writes = (
+                AppContext._render_task_detail(
+                    await self.task_ledger.get_task(_require_arg(task_id, "task_id"))
+                ),
+                0,
             )
-        if action == _TASK_ACTION_BLOCKERS:
+        elif action == _TASK_ACTION_BLOCKERS:
             target = _require_arg(task_id, "task_id")
             # The walk FIRST: it refuses an out-of-range ``max_depth`` client-side, so a
             # bad bound costs no round trip at all, and an id naming no row raises the
@@ -3650,10 +3817,13 @@ class AppContext:
             blockers = await self.task_ledger.transitive_blockers(
                 target, max_depth=max_depth
             )
-            return self._render_transitive_blockers(
-                await self.task_ledger.get_task(target), blockers
+            rendered, writes = (
+                AppContext._render_transitive_blockers(
+                    await self.task_ledger.get_task(target), blockers
+                ),
+                0,
             )
-        if action == _TASK_ACTION_TRANSITION:
+        elif action == _TASK_ACTION_TRANSITION:
             task = await self.task_ledger.transition(
                 _require_arg(task_id, "task_id"),
                 _require_arg(status, "status"),
@@ -3661,8 +3831,8 @@ class AppContext:
                 summary=summary,
                 report_path=report_path,
             )
-            return self._render_task_transition(task, actor)
-        if action == _TASK_ACTION_SUPERSEDE:
+            rendered, writes = AppContext._render_task_transition(task, actor), 1
+        elif action == _TASK_ACTION_SUPERSEDE:
             predecessor = _require_arg(task_id, "task_id")
             successor_id = await self.task_ledger.supersede_task(
                 predecessor,
@@ -3670,13 +3840,26 @@ class AppContext:
                 description=_require_arg(description, "description"),
                 created_by=_require_arg(created_by, "created_by"),
             )
-            return self._render_supersede_result(
-                predecessor,
-                successor_id,
-                await self.task_ledger.direct_dependents(predecessor),
+            rendered, writes = (
+                AppContext._render_supersede_result(
+                    predecessor,
+                    successor_id,
+                    await self.task_ledger.direct_dependents(predecessor),
+                ),
+                1,
             )
-        raise ValueError(
-            f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
+        else:
+            raise ValueError(
+                f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
+            )
+        return await AppContext._with_comms_footer(
+            self,
+            rendered,
+            writes=writes,
+            agent=agent,
+            session=session,
+            # R8(2)'s fallback considers the FIRST supplied one and stops.
+            attributions=(owner, actor, created_by),
         )
 
     async def _task_listing(
@@ -3918,7 +4101,7 @@ class AppContext:
         ``status == 'done'`` and ``summary is not None``, so it is automatically
         consistent with leg 1's own truncation).
         """
-        effective_since = self._parse_rollup_since(since)
+        effective_since = AppContext._parse_rollup_since(since)
         effective_limit = limit if limit is not None else _DEFAULT_ROLLUP_LEG_LIMIT
         task_window = await self.task_ledger.updated_since(
             effective_since, limit=effective_limit
@@ -3926,7 +4109,7 @@ class AppContext:
         finding_window = await self.finding_ledger.filed_since(
             effective_since, limit=effective_limit
         )
-        return self._render_rollup(effective_since, task_window, finding_window)
+        return AppContext._render_rollup(effective_since, task_window, finding_window)
 
     @staticmethod
     def _parse_rollup_since(since: str | None) -> datetime:
@@ -5037,6 +5220,175 @@ class AppContext:
             peek=peek,
         )
 
+    async def _with_comms_footer(
+        self,
+        rendered: str,
+        *,
+        writes: int,
+        agent: str | None,
+        session: str | None,
+        attributions: tuple[str | None, ...],
+    ) -> str:
+        """Append the pending-traffic line to ``rendered`` — the ONE exit that does.
+
+        The three ledger dispatchers call THIS rather than each appending their
+        own line: the trigger, the read budget, the resolution order and the
+        teaching are one POLICY, and a dispatcher re-deciding any of them
+        underneath a shared name is a private copy wearing it (#102 — and
+        *routing is not sharing*). It is also why the append happens at exactly
+        one place per call: a per-branch append is how one inbox comes to be
+        described twice.
+
+        **The trigger is per-ACTION-OUTCOME, and it short-circuits FIRST.** A
+        call that wrote nothing — a read, a losing claim, a batch in which every
+        item failed — gets its own render back untouched: no footer, no
+        identity teaching, and (the half a budget pin can see) NO REGISTRY READ
+        AT ALL. Resolving first and discarding the answer is a round trip
+        charged to every ``query`` in the fleet.
+
+        Args:
+            rendered: The dispatcher's OWN answer. It is never rewritten,
+                reflowed or replaced — the footer ANNOTATES an answer, and a
+                caller that just created a task still has to be told its id.
+            writes: How many ledger writes this call actually performed. L2's
+                best-effort batches footer iff **≥1** item wrote, so this is a
+                COUNT rather than a boolean: ``write_count == len(items)``
+                ("footer when the batch fully succeeded") passes both the 0-of-5
+                and 5-of-5 fixtures and is wrong on every partial batch.
+            agent: The caller's ``agent=``, already charset-validated at the
+                dispatcher's entry (link 1b). ``None`` means R8(2)'s fallback.
+            session: The caller's ``session=``, scoping resolution.
+            attributions: This dispatcher's attribution columns, in the order
+                R8(2)'s fallback considers them. **Only the FIRST supplied one
+                is ever consulted** — see :meth:`_comms_traffic_line`.
+
+        Returns:
+            ``rendered`` unchanged, or ``rendered`` plus ONE appended line (a
+            footer, or R8(1)'s teaching about why there is no footer).
+        """
+        if writes < 1:
+            return rendered
+        line = await AppContext._comms_traffic_line(self, 
+            agent=agent, session=session, attributions=attributions
+        )
+        if line is None:
+            return rendered
+        return f"{rendered}\n{line}"
+
+    async def _comms_traffic_line(
+        self,
+        *,
+        agent: str | None,
+        session: str | None,
+        attributions: tuple[str | None, ...],
+    ) -> str | None:
+        """The one line a WRITING call may end with, or ``None`` for silence.
+
+        Two identity paths, ruled opposite ways on purpose:
+
+        * **``agent=`` supplied (R8(1))** — resolve it, and TEACH LOUDLY when it
+          does not resolve. *"A silent typo earns a permanent route-around."*
+        * **``agent=`` omitted (R1 + R8(2))** — no guess, and no lecture either:
+          the caller made no claim about who it is, so an attribution that
+          resolves to nobody is honest SILENCE.
+
+        **The read budget is R8's own cost line — at most ONE registry read per
+        call, on every path.** Two mechanisms hold it, and both are load-bearing:
+        the charset gate in FRONT of the read (a value that cannot BE a name is
+        never looked up, so the common ``owner="the release train"`` shape costs
+        no round trip at all), and taking only the FIRST supplied attribution.
+        Trying each attribution in turn until one resolves is R1's rejected
+        GUESS wearing a budget: it taxes every identity-less write with a round
+        trip per column, and it hunts for somebody to attribute the write to.
+        The deliberate consequence — a REGISTERED ``created_by`` behind an
+        UNREGISTERED ``owner`` gets no footer — looks like a bug and is not: the
+        fallback identifies a caller, it does not search for one.
+        """
+        if agent is not None:
+            return await AppContext._resolved_comms_traffic_line(self, agent=agent, session=session)
+        attribution = next((value for value in attributions if value is not None), None)
+        if attribution is None or not AppContext._is_comms_charset_legal(attribution):
+            return None
+        try:
+            row = await self.agent_registry.get_agent(attribution, session=session)
+        except _AgentRegistryError:
+            # R1: honest silence. The caller named no identity, so an
+            # attribution that resolves to nobody (or to two somebodies) is not
+            # a mistake it can be taught about — it is free text that happens
+            # not to be an agent name.
+            return None
+        if row.name != attribution:
+            return None
+        traffic = await self.message_ledger.pending_traffic(agent_id=row.id)
+        return AppContext._comms_footer(
+            identity=row.name, traffic=traffic, authenticated=False
+        )
+
+    async def _resolved_comms_traffic_line(
+        self, *, agent: str, session: str | None
+    ) -> str | None:
+        """R8(1)'s path: the caller named itself, so it is owed an ANSWER.
+
+        Every failure the registry can classify is served back as the registry's
+        OWN classification, never re-derived here — that is what stops the
+        AMBIGUOUS case (a name registered in two sessions) being told it *"is
+        not registered"*, which is a served falsehood whose only named remedy —
+        register again — is guaranteed to fail. ``lore_comms action=fleet``
+        already answers that case correctly; the same fact must not get two
+        answers, one of them false. So there is ONE classifier (the registry)
+        and this method renders what it said.
+
+        ⚠ **Link 2 of the forgery closure, and it is a check on OUR OWN
+        registry.** After a successful resolve the row's ``name`` must EQUAL
+        what was asked for. Today's registry resolves exactly, so this cannot
+        fire — which is precisely why it is written down and pinned: a
+        normalising, caching or fuzzy registry would hand back a row the caller
+        never named, and the footer's whole safety argument is that the identity
+        it renders is a registered, charset-clean name that the caller asked for
+        BY NAME. A mismatch is a defect in the registry rather than in the
+        caller's input, so it serves SILENCE — teaching the caller anything here
+        would be a claim about their arguments that is not true.
+        """
+        try:
+            row = await self.agent_registry.get_agent(agent, session=session)
+        except _AgentRegistryError as error:
+            # ONE except, deliberately: :class:`AmbiguousAgentError` and
+            # :class:`UnknownAgentError` are both handled by SERVING WHAT THE
+            # REGISTRY SAID. Branching per subclass here would re-introduce the
+            # second classifier this method's docstring refuses.
+            return AppContext._comms_identity_teaching(error)
+        if row.name != agent:
+            return None
+        traffic = await self.message_ledger.pending_traffic(agent_id=row.id)
+        return AppContext._comms_footer(
+            identity=row.name, traffic=traffic, authenticated=True
+        )
+
+    @staticmethod
+    def _comms_identity_teaching(error: _AgentRegistryError) -> Rendered:
+        """R8(1)'s LOUD teaching, carrying the registry's own words.
+
+        The registry already distinguishes *"no such agent"* from *"that name
+        lives in two sessions — pass session= to disambiguate"*, and both of its
+        messages already name the offending value and the remedy. Re-writing
+        that classification here would be a second copy of it, free to disagree
+        with ``lore_comms``' answer to the identical question (#102) — which is
+        exactly the defect this teaching exists to close.
+
+        ⚠ Its lead-in is deliberately NOT :data:`COMMS_FOOTER_PREFIX`: no
+        identity resolved, so no inbox was counted, and any number on this line
+        would be an invented measurement. The frame is a plain template literal
+        rather than an interpolated constant so the comms render-literal scan
+        (``test_comms_promise_registry``) can read and classify the sentence a
+        consumer actually meets. Built through the render seam like every other
+        served line — the value inside the registry's message is charset-clean
+        by construction (link 1b refused anything else before this code was
+        reached), so naming it is safe under Ruling 10 link 4.
+        """
+        return render_line(
+            "(no pending-traffic line: {reason})", reason=sanitise_line(str(error))
+        )
+
     @staticmethod
     def _comms_footer(
         *, identity: str, traffic: PendingTraffic, authenticated: bool
@@ -5102,7 +5454,11 @@ class AppContext:
 
     @staticmethod
     def _validate_comms_identities(
-        agent: str, *, session: str | None, name: str | None, to: list[str] | None
+        agent: str | None,
+        *,
+        session: str | None,
+        name: str | None = None,
+        to: list[str] | None = None,
     ) -> None:
         """Charset-validate EVERY identity a call carries, BEFORE any store touch.
 
@@ -5119,12 +5475,25 @@ class AppContext:
         call site that validated its own names would be a private copy of this
         rule wearing the shared surface's name.
 
+        ⚠ **Ruling 10 link 1b WIDENED this seam rather than cloning it.**
+        ``lore_tasks`` / ``lore_findings`` / ``lore_claim_task`` accept an
+        OPTIONAL ``agent=``, so ``agent`` is now ``str | None`` and an OMITTED
+        identity validates vacuously — there is no value to constrain, and R1
+        rules an omitted identity honest silence rather than an error. Every
+        SUPPLIED value still meets exactly the same predicate, at every member,
+        which is the property the in-suite mutation proof
+        (``test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal``)
+        checks: perturb ``AGENT_NAME_PATTERN`` and every link-0 member's refusal
+        must move together. ``lore_comms`` is unaffected — its ``agent`` is a
+        required ``str`` at the tool seam, so it can never take this branch.
+
         Raises:
             ValueError: Any identity violates ``AGENT_NAME_PATTERN``. The reject
                 names ONLY the offending value — echoing the whole list back
                 leaves the caller unable to tell which name to fix.
         """
-        AppContext._validate_comms_charset(agent, "agent name")
+        if agent is not None:
+            AppContext._validate_comms_charset(agent, "agent name")
         if session is not None:
             AppContext._validate_comms_charset(session, "session")
         if name is not None:
@@ -5173,7 +5542,7 @@ class AppContext:
         Raises:
             ValueError: ``value`` does not match ``AGENT_NAME_PATTERN``.
         """
-        if not AGENT_NAME_PATTERN.fullmatch(value):
+        if not AppContext._is_comms_charset_legal(value):
             raise ValueError(
                 str(
                     render_compose(
@@ -5187,6 +5556,44 @@ class AppContext:
                     )
                 )
             )
+
+    @staticmethod
+    def _is_comms_charset_legal(value: str) -> bool:
+        """Whether ``value`` could BE a comms identity — the ONE charset predicate.
+
+        **TWO POLICIES read this, and they are different policies over the SAME
+        question — which is exactly why the question has one home.**
+
+        * :meth:`_validate_comms_charset` REFUSES an illegal value. Its inputs are
+          ``agent=``/``session=``/``name=``/``to[]`` — parameters that CLAIM to
+          be identities, so a value that cannot be one is a caller error.
+        * :meth:`_comms_traffic_line` merely SKIPS one. Its inputs are the
+          ``owner``/``actor``/``created_by`` attribution columns, which are
+          legitimately free text — ``owner="the release train"`` is an honest
+          caller, and refusing it would break every one of them (Ruling 10's own
+          falsifier names this distinction). There the predicate is the cheap
+          GATE in front of the registry read (Ruling 5.2): a value that cannot BE
+          a name is never looked up, which is what makes the common case free.
+
+        Splitting *"is this in the charset"* from *"what do I do about it"* is
+        what keeps the second site from becoming a private copy of the first
+        (#102 — routing is not sharing, and a second ``AGENT_NAME_PATTERN``
+        call site deciding for itself is a clone wearing the shared constant).
+        Both now move with ONE edit, which is the property
+        ``test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal``
+        proves by mutation.
+
+        Args:
+            value: The candidate identity string.
+
+        Returns:
+            Whether ``value`` matches ``AGENT_NAME_PATTERN`` in full.
+            ``fullmatch``, never ``match`` (finding #210): Python's ``$`` also
+            matches immediately before a TRAILING NEWLINE, so ``.match`` accepted
+            ``"scout\\n"`` — a second identity rendering identically to
+            ``"scout"`` wherever a trailing newline is invisible.
+        """
+        return AGENT_NAME_PATTERN.fullmatch(value) is not None
 
     @staticmethod
     def _comms_foreign_param_error(param_name: str, action: str) -> ValueError:
@@ -8794,8 +9201,16 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ],
+        agent: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_AGENT_DESCRIPTION)
+        ] = None,
+        session: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_SESSION_DESCRIPTION)
+        ] = None,
     ) -> str:
-        return await _app_context(context).claim_task(task_id, owner)
+        return await _app_context(context).claim_task(
+            task_id, owner, agent=agent, session=session
+        )
 
     @mcp.tool(
         name="lore_tasks",
@@ -8987,6 +9402,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        agent: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_AGENT_DESCRIPTION)
+        ] = None,
+        session: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_SESSION_DESCRIPTION)
+        ] = None,
     ) -> str:
         return await _app_context(context).tasks(
             action=action,
@@ -9005,6 +9426,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             items=items,
             summary=summary,
             report_path=report_path,
+            agent=agent,
+            session=session,
         )
 
     @mcp.tool(
@@ -9520,6 +9943,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        agent: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_AGENT_DESCRIPTION)
+        ] = None,
+        session: Annotated[
+            str | None, Field(description=_COMMS_IDENTITY_SESSION_DESCRIPTION)
+        ] = None,
     ) -> str:
         return await _app_context(context).findings(
             action=action,
@@ -9536,6 +9965,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             limit=limit,
             supersedes=supersedes,
             items=items,
+            agent=agent,
+            session=session,
         )
 
     @mcp.tool(

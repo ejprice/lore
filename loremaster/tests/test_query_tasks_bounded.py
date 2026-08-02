@@ -1051,10 +1051,26 @@ def _tool_seam(ledger: TaskLedger) -> Any:
     address for another.  It carries no policy — see that function's docstring for the
     ``__new__``-without-``__init__`` rationale and its stated bound.
     """
+    from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
+    from _message_fakes import FakeMessageDatabase, FakeMessageLedger
     from loremaster.server import AppContext
 
     context = AppContext.__new__(AppContext)
     context.task_ledger = ledger
+    # ⚠ THE SIBLING'S STATED BOUND, FIRING ON *THIS* COPY (packet 04b-2 slice C3).
+    # The C3 contract's R-4 co-edit wired these two services into
+    # ``test_blocks_edge._tool_seam`` — and this function is the SECOND copy of that
+    # construction, which the co-edit did not reach, so ``lore_tasks`` writes driven
+    # through here raised ``AttributeError: 'AppContext' object has no attribute
+    # 'agent_registry'`` the moment the dispatcher gained the pending-traffic footer.
+    # That is #102's shape in a fixture: two copies of one seam, and the fix reached
+    # one. Mirrored VERBATIM rather than re-decided — see that function's docstring
+    # for the full rationale, including why EMPTY fakes and not a missing-service
+    # guard (a silently-skipped footer is confident silence). Nothing is registered,
+    # so the fallback resolves nothing and no footer is served for the RIGHT reason,
+    # keeping these pins about the ``limit`` cap and nothing else.
+    context.agent_registry = FakeAgentRegistry(db=FakeAgentDatabase())  # type: ignore[assignment]
+    context.message_ledger = FakeMessageLedger(db=FakeMessageDatabase())  # type: ignore[assignment]
     return context
 
 
