@@ -248,6 +248,26 @@ and `loremaster/tests/_message_fakes.py`. **Establish who wrote `_message_fakes.
 it** — the lead ruled it OUTSIDE the builder's writable set (the fake OBSERVES the build), so if the
 builder authored it, that edit must be redone contract-side.
 
+### TWO MORE ITEMS FOR THE CONTRACT-SIDE FIX ROUND (both landed at the stop)
+1. **THE PARTITION COLLISION — fix this in the same edit as the C-DEF.** C1's build added
+   `blockers` and `get` to `_TASK_ACTIONS` at `0ff05ed`, **BEFORE** C3's contract committed at
+   `0d24c12`, so the contract's WRITE/READ partition does not cover the production action set it
+   faces and `TestTheFooterRidesTheOUTCOMENotTheVERB` reddens. **THE PIN IS CORRECT** — it exists
+   to stop a new action being silently exempt from the footer property, which is exactly how six
+   of nine write actions became exempt. Fix: `TASK_READ_ACTIONS` gains `("get","blockers")` (both
+   are reads: `get` is a plain read verb per Ruling 8, `blockers` a dependency walk). ⚠ A contract
+   pinned against a MOVING production surface is the same class as a build graded against a moving
+   contract — it is evidence FOR the C-DEF verdict, not a separate nuisance.
+2. **`_message_fakes.py`'s `pending_traffic` was authored by the BUILDER, disclosed not
+   discovered.** The lead had ruled that file outside the builder's writable set (the fake
+   OBSERVES the build) but the explicit do-not-touch list never named it, and the builder said so
+   rather than assuming consent. **The edit STANDS pending contract-side review** — SECTION D
+   mandates the independent count and leaves no latitude to game it. Review it; do not
+   reflexively revert it.
+
+⚠ **`server.py` is PARTIAL** at `d3b8d88` — the builder was halted mid-footer. `messages.py`'s
+`PendingTraffic` + `pending_traffic` IS complete and live-verified (5 passed against a real store).
+
 ### ⛔ THE SINGLE BLOCKER — resolve this first
 `FakeMessageLedger` has **no `pending_traffic` method**, and SECTION D's "fake" leg calls it
 via `_pending_traffic_for`. **Without it C3 cannot COLLECT** — not fail, *collect*.
