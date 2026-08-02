@@ -175,6 +175,26 @@ shape, retire the injection-oracle over-claim, fix the `_render_task_detail` arc
 Landing before the cold audit so the audit grades the complete wave. Single-writer preserved
 (builder + cdef done, sidecar standing by).
 
+## R2-7 · OPERATOR RULINGS (2026-08-02) — orphan killed; injection exposure ACCEPTED for local
+
+1. **Orphan `adversary-c3-delta-1` (pid 1758364) SIGKILLed** on operator authorization — confirmed
+   dead. Prior-session debris cleared.
+2. **§11.7 item 1 RULED by the operator — the injection exposure is ACCEPTED for now.** Verbatim
+   intent: *"I'm not worried about injection attacks. I'm worried about comms being functional.
+   Right now Lore is being used locally by me and my agents. Before we let comms out in the wild
+   we'll address it. For now, we document and ledger."* This is the threat model, stated by the
+   authority (the "A GATE NEEDS A THREAT MODEL" law satisfied): **local operator + own agents, not
+   a hostile author.** Consequence:
+   - The 04b-2 deploy PROCEEDS with the bound pinned — the injection half of the deploy question is
+     CLOSED. The full Link-5 fix stays routed to 04b-3 (finding #321), re-open trigger = comms
+     exposed beyond the local context ("in the wild").
+   - Document + ledger IS the plan already in motion: finding #321 (filed) + riders 1-3 (landing:
+     bound pin, oracle over-claim retirement, archetype-docstring fix). The riders are exactly the
+     "document" half; #321 + its 04b-3 routing is the "ledger" half. No change to the riders agent.
+   - The OTHER deploy-shape items (gate instrument, CLAUDE.md manifest inversion, new served
+     `action=get`) are improvements/additions, not risks — I will state them at the deploy gate for
+     a final nod, but they are not blockers.
+
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
