@@ -854,33 +854,10 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   number. The global Working Discipline carries the canonical wording.
 - lore_tasks state machine: claimed → in_progress → done (claimed→done is illegal).
 
-## THE LEAD DELIVERS A RULING AS AN ARTIFACT + A POINTER (retro, 2026-08-02)
-**There is no brief-base for leads** — every spawned agent gets a versioned binding protocol
-with required output fields; the lead gets this file. So this is prose, and it is honest about
-being prose: it is auto-loaded every session, which is the strongest channel available, not a
-guard.
-
-**THE PATTERN, and it collapses three separate wastes into one habit:**
-1. **Write the ruling to your report FIRST** (`REPORT-lead-<name>.md`), then
-2. send a **SHORT pointer** on the ledger (`lore_comms`, refs naming the report), then
-3. send a **3-line wake** on the native inbox — *"drain #NNNN"* — **never a second copy of
-   the prose.**
-
-**WHY, measured in one packet (04b-2 wave C):** the lead sent ~15 directives as FULL PROSE on
-BOTH channels, and bounced off `lore_comms`' 2000-char cap ~8 times — each bounce costing a
-full recompose. The tool taught the fix in its own refusal text *every single time*
-(*"messages carry POINTERS: put the content in a report and reference it in refs"*) and the
-lead obeyed it once. Following step 1 makes the cap **structurally non-binding**: a pointer is
-never 2000 chars.
-
-⚠ **Both channels are still required — they do different jobs.** The ledger is DURABLE but
-PULL-ONLY; the native inbox is the WAKE but drops silently (#50779). Three losses were
-confirmed in that one session, each survived only because the content was on the ledger — and
-separately, a ruling sat unread for HOURS because the lead sent the durable copy with **no
-wake**. Content on the ledger, wake on the inbox, and never the prose twice.
-
-**And the same economy applies to the lead's own output:** report the DECISION and the NUMBER,
-not a re-narration of what was just committed. The operator can read commits.
+## LEAD PROTOCOL — read it, don't re-derive it
+The lead of any multi-agent wave reads `~/.claude/orchestration/lead-base.md` at wave start
+and opens its wave report with `lead-base v<N> read`. It carries the required report fields
+and the DO / DO NOT list. Do not restate it here.
 
 ## Deploy
 - Rebuild + recreate, never restart, after loremaster changes (the container bakes the
