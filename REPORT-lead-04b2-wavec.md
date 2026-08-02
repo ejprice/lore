@@ -108,3 +108,71 @@ the operator's.
 unqualified. Every green claim in this wave is SCOPED to its own file set and says so —
 an unscoped green claim here would be false, and *"I verified it" is a claim about a
 SCOPE, not a fact*.
+
+---
+
+## L-5 · STRUCTURED HANDOFF — written deliberately, not at exhaustion
+
+Written at `801125c`+ by `lead-04b2-wavec`. **The next phase (two builders, a cold
+audit, a production deploy) is where a degraded lead does real damage, and all of it
+is still ahead.** Per the deferral law this is capacity exhaustion answered by handoff
+rather than a quiet fade: everything load-bearing is committed, every ruling lives in a
+tracked report rather than a message body, and every open item is on the ledger with an
+owner.
+
+### What LANDED (12 commits, all on `feat/surreal-unification`)
+`04ede45` #263 · `a88e7c5` the sizing escalation + rulings 1–3 · `f67a219` lead rulings
+L-1..L-4 · `025c2a9` C1 contract + receipt · `6974bdc` pending-contract gate + #312 ·
+`d5c8958` C3 C-DEFs repaired · `f6d8e47` C3 builder-ready · `c5ca6f2` #308 ·
+`f00923e` C1 graded INSUFFICIENT · `3488517` C3 graded INSUFFICIENT · `801125c` C1 fix
+wave (69 pins) · gate-currency mode.
+
+### STATE, per slice
+| slice | state | owner |
+|---|---|---|
+| **C1 contract** | fix wave landed, 69 pins, ref build 1275/0. **OWES**: `lore_tasks action=get` per Ruling 8, then a **DELTA ADVERSARY** | `contract-04b2-wavec-2` (live, standing by) |
+| **C3 contract** | INSUFFICIENT — 26 wrong builds. Fix wave running | `contract-04b2-c3fix-1` (live) |
+| **gate currency** | DONE, committed | closed |
+| **C2 (fleet columns)** | ruled OUT of this wave → 04b-3 | 04b-3 |
+| **builders (C1, C3)** | NOT STARTED | — |
+| **cold audit** | NOT STARTED | — |
+| **deploy** | NOT STARTED — see the open question below | — |
+
+### THE OPEN OPERATOR QUESTION — do not deploy without an answer
+The operator authorised the deploy early, with sequencing: *"After the gate, back up.
+Then deploy."* **What is being deployed has since changed shape**, and they were asked
+but had not answered when this was written. The wave now also carries: a new gate
+instrument, a **manifest inversion demoting `CLAUDE.md`'s gate section to a citation**,
+and a **newly-minted served MCP action** (`lore_tasks action=get`). Ask again before the
+recreate; do not treat the original nod as covering the new shape.
+
+### THE DEPLOY SEQUENCE, as amended this wave
+§B6's seven receipts stand, **plus an EIGHTH derived twice this wave**: the gate run
+happens on a **QUIET, COMMITTED tree**. Measured cause — with five agents editing, the
+same file gave 1 failed/41 passed committed and 40 failed/8 passed in the working tree
+four minutes apart; and the currency mode's first runs caught three true-but-transient
+orphans. **Noise is how an instrument gets switched off.** Order: full gates green on a
+clean tree + cold audit GO → **fresh `surreal export` backup** (EXIT=0, table count,
+engine success line) → rollback receipts into the Log → recreate → smoke. Never
+`lore-deploy start` (#165/#166). Both `CreateCommand`s **re-derived at deploy time**.
+Production was on image `e91e37b9` at kickoff.
+
+### LEDGER RESOLVES OWED AT CLOSE-OUT
+#219 · #247 (already closed in code by ruling R2 — resolve with that receipt) · #253
+(verify in the deployed artifact) · #260 (`lore.yaml` lorerunes include, applied AT the
+recreate) · #268 + #300 (resolve together; #268's own "cheapest fix" is PROVEN
+BACKWARDS — do not implement as written) · #277 · #305 · #309/#310/#311/#313/#314/#315
+route per their rulings · #89 resolves on Ruling 8's receipt, its packet-05 routing
+OVERRULED. **Archive every `REPORT-*.md` by `git mv` into
+`docs/plans/v2/receipts/2026-08-01-packet04b2-wavec/` — never `rm` (#152).**
+
+### WHAT THE NEXT LEAD SHOULD KNOW, in one paragraph
+**Both contracts passed their own satisfiability receipts and were then graded
+INSUFFICIENT** — C1 by 7 wrong builds, C3 by 26. A receipt proves a contract
+SATISFIABLE; it never proved it SUFFICIENT, and nothing in this wave was found by
+reading. Five separate defects were found by *executing*: a contract calling a verb
+that does not exist, a finding whose own prescribed fix would have made its pin
+permanently vacuous, a chain link left vacuous by a correct neighbouring guard (#313),
+a false gate inside the fix for a false gate, and a served surface unreachable through
+its own registered tool (#314). **So: run the adversary on every contract revision,
+including fix waves, and never let a receipt stand in for a grade.**
