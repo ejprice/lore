@@ -16,7 +16,7 @@ Written against `feat/surreal-unification` @ `379c2c5` (HEAD at resume).
 | `Verdicts acted on:` | §L-6 written at `0d24c12`; `git merge-base --is-ancestor 0d24c12 379c2c5` = SAME (ancestor). Not STALE. C-DEF retraction (`c131686`/`8b0933d`) landed; not resurrected. |
 | `Directives:` | 0 ledger / 0 wake / 0 prose-duplicated (spawns carry full briefs via the Agent prompt, the guaranteed-read channel) |
 | `Rulings:` | 0 body-only (this file is the artifact) |
-| `Agents:` | 4 spawned (sidecar-r2, builder-c3-2, cdef-1, riders-r11-1) / 0 ledger-retired / sidecar standing-by · builder-c3-2 + cdef-1 done · riders running |
+| `Agents:` | 5 spawned (sidecar-r2, builder-c3-2, cdef-1, riders-r11-1, coldaudit-r2) / 0 ledger-retired / sidecar + riders standing-by · builder-c3-2 + cdef-1 done · coldaudit running |
 | `Uncommitted at stop:` | 0 (tree clean at resume) |
 
 ## R2-1 · RESUME ENTRY — state verified, not inherited
@@ -210,6 +210,24 @@ opus 5"* and *"Put the opus 4.8 ruling in the lead brief."* Done:
   verified by me (gates re-run, diffs reviewed); riders-04b2-r11-1 predates the directive and is
   nearly done (low-stakes docs/pins) — I verify its output on receipt. The COLD AUDIT (the critical
   fresh-context grader) will run on 4.8 and re-grades everything as a backstop.
+
+## R2-9 · BUILD PHASE COMPLETE; COLD AUDIT SPAWNED (opus 4.8)
+
+All wave-C build work landed and lead-verified:
+- C1 build `0ff05ed` (prior session) · C3 build `46a5933` · C-DEF fix `8933a18` (225/225) ·
+  Ruling-11 riders `0bb662a` + D1/D2 `60f83f0` (all four riders complete).
+- D1/D2 verified: diffs match the riders' supplied edits exactly, AST docstring-only, 731 passed
+  on the two files.
+
+**Cold audit spawned — `coldaudit-04b2-wavec-r2`, general-purpose, model omitted so it inherits
+claude-opus-4-8 (operator directive; briefed to report its actual model on line 1).** Fresh REFUTE
+frame, DIFF-framed. Scope: re-run all gates (C3 225/0, neighbours, the 6 FakeTaskLedger consumers,
+render/injection suites, the bound pin, currency gate) + probe the risky hunks by EXECUTING (the
+shared-double `transitive_blockers` extension, MP-6's single except-clause over both registry
+classifications, link-1b shared-predicate mutation, footer outcome-keying fates, the bound pin's
+non-tautology, R8(2) split) + the diff frame (what the branch-chain reshape could have dropped) +
+the four flagged residuals. GO/NO-GO + residual table. Not rushed (42 wrong builds passed
+satisfiability receipts this wave; nothing was found by reading).
 
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
