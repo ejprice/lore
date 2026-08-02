@@ -824,6 +824,96 @@ build already had — which is precisely why 48/48 was never evidence of suffici
 
 ---
 
+# §13 · RULING 8 — `lore_tasks action=get` MINTED, ALL SIX RIDERS CARRIED
+
+Lead **Ruling 8** (sidecar §8) adjudicated §11.4's fork: mint `action=get` this wave, inside
+the #314 fix wave. **The sidecar retracted its own premise** — Ruling 6.1's *"teach the
+follow-up"* rider assumed a teachable read verb existed, and finding **#89** carries the
+receipt for what happens when one does not: #89's own author **fell back to a raw SELECT
+against the production store** to read a task description. Not a hypothesis about
+route-around — a measurement, and walk-only teaching would have pointed a brand-new
+surface's consumers straight at it.
+
+## 13.1 ⚠ THE FALSIFIER — CHECKED AND **NOT** INVOKED, with the measurement
+
+Ruling 8 asked me to invoke it rather than push through if the fenced-body reuse rippled
+past the #314 repair set. Measured at `025c2a9` before writing anything:
+
+```
+grep -rn '_fence_width' loremaster/loremaster
+  search.py:1423  the definition
+  search.py:1460  ONE real call site
+  server.py:2746 · server.py:3277   PROSE references only
+```
+
+So the extraction is four one-line touch points. **Cost held; falsifier not invoked**, and
+the check is recorded in the contract file's own SECTION F header so nobody re-derives it.
+
+⚠ The rule was already duplicated **twice** before I arrived — `SearchPipeline._fence_width`
+and an inline copy in `_render_finding_detail`. Mine would have been the third. That is
+rider 2's actual justification: the *"a fence must be one wider than the longest run
+inside"* rule is POLICY, and a policy in three places is a fix that reaches one of them.
+
+## 13.2 The six riders, each with what discharges it
+
+| rider | discharged by |
+|---|---|
+| 1 · #302 pin REDDENS and updates in the SAME diff | `_EXPECTED_TASK_ACTIONS` now carries `"get"`, with the adjudication trail in its own `#:` comment — *"this comment is the 'say so'"* its failure message demands. The pin was its own first real test and the path was executed, not bypassed. |
+| 2 · new render of stored free text | `TestTheTaskDetailBodyCannotFORGEStructure` — hostile fixture with newlines, a row byte-identical to `_render_task_rows`' shape, a chain-render header, and **two** backtick runs of different widths. Plus `TestTheFencedBodyRenderHasONEImplementation`: `loremaster.sanitise.fence_width` / `fenced_block` extracted, `SearchPipeline._fence_width` delegating, both detail renders routed through it, **proven by a call RECORDER** (not a sentinel — §12.3's lesson applied on its first opportunity). |
+| 3 · refusal-matrix rows; unknown id TEACHES | `test_the_refusal_MATRIX_covers_the_new_action` ∀ `limit`/`since`/`max_depth`; `test_an_id_naming_NO_row_TEACHES_rather_than_rejecting`; `test_get_without_a_task_id_names_the_MISSING_ARGUMENT`. ⚠ Measured: **no new guard CODE was needed** — `get` is outside all three accepting-sets already, so the existing matrix refuses it. The pins are what make that a fact rather than an accident. |
+| 4 · #314's generic invariant endorsed | already carried by `TestTheNewSurfaceIsREACHABLEThroughTheREGISTEREDTool`; `get` lands inside its coverage, and the served description now names it. |
+| 5 · teaching rider completes; property pin permanent | the chain render's follow-up is now `lore_tasks action=get task_id=<served id>` — **"read"**, not "walk". The property pin (*every taught action ∈ `_TASK_ACTIONS`*) is untouched and stays: the property outlives the sentence, which is exactly why this was a text edit. |
+| 6 · #89 resolves; packet-05 routing overruled | the lead's to file on this receipt; recorded here so the overrule is not a silent contradiction. |
+
+## 13.3 ⚠ THE POST-LINT LEG CAUGHT A BUILDER TRAP — this is what that leg is *for*
+
+Running `ruff check .` on the reference build after the extraction surfaced **two errors
+that did not exist before it**, both mine:
+
+```
+loremaster/loremaster/server.py:192   F401  `_max_backtick_run` imported but unused
+loremaster/loremaster/server.py:3489  PLR0912 Too many branches (13 > 12)   <-- AppContext.tasks
+```
+
+The first is the orphaned-import cleanup #133's harder leg predicts. **The second is a
+trap:** `AppContext.tasks` gains two actions this wave and crosses the branch cap, so a
+builder would land a correct implementation and be caught between ruff and a contract it
+may not edit — the C-DEF class exactly. Resolved the way that function's *existing* `noqa`
+already resolves the identical complaint about its return count
+(`# noqa: PLR0911,PLR0912 - a dispatch-on-action verb; splitting churns every action's own
+test`), and **named in the contract's build spec so the builder is not left to discover
+it**. Without the post-lint leg this ships as somebody else's dead end.
+
+## 13.4 Receipts
+
+```
+reference build, contract alone                                    81 passed / 0 failed
+reference build, + query_tasks_bounded + blocks_edge + task_ledger
+  + mcp_server + txn_contention + surreal_harness
+  + sanitise + search + findings          -n auto                1572 passed in 116.52s
+reference build, ruff check .        2 errors, BOTH pre-existing in scripts/ (finding #311)
+reference build, mypy on the contract                              0 errors
+HEAD (025c2a9 + my files)                                          62 failed / 19 passed
+HEAD, ruff on the contract                                         All checks passed
+HEAD, mypy on the contract    18 errors: 15 attr-defined naming build symbols,
+                              + 2 no-any-return and 1 unused-ignore that are CONSEQUENCES
+                              of those symbols being absent (all 18 are 0 on the build)
+```
+
+69 → **81 pins**. The three suites added to the satisfiability set (`test_sanitise`,
+`test_search`, `test_findings`) are there because the fence extraction newly touches those
+seams — #133's leg is about the suites a change reaches, and this change reached three more
+than it did yesterday.
+
+## 13.5 Two actions born covered by the same instruments
+
+`blockers` and `get` both land inside: #302's equality pin, #314's served-text and
+inputSchema invariants, the refusal matrix, and the Leg-1 scope-diff table. That was Ruling
+8's stated reason for doing them in one wave, and it held — the only *new* guard code either
+action needed was the MCP schema wiring #314 already demanded.
+
+---
+
 *Written 2026-08-01 by `contract-04b2-wavec-2` (Opus) against `feat/surreal-unification`
 @ `f67a219`. Every number here was derived this session by the command shown beside it;
 nothing is inherited, including from the predecessor's report. No git command was run; the
