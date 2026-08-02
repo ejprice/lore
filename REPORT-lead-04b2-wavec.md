@@ -240,6 +240,51 @@ Do NOT hand it to the builder.
 | **cold audit / deploy / close-out** | ❌ not started |
 | **C2 (fleet columns)** | ruled OUT → 04b-3 |
 
+### ⚠ THE FLEET DOES NOT SURVIVE THIS SESSION — RE-SPAWN, do not look for them
+Every agent named here is an in-session teammate. **A resuming lead in a NEW session inherits
+NONE of them.** Their REPORTS are committed and are the durable artifact; the agents are not.
+Re-spawn from the briefs described in those reports. In particular `builder-c3-1` is *mid-build*
+as this is written — its work exists only in its own context, so **assume C3's build must be
+re-run from `0d24c12`** unless a later commit says otherwise.
+
+### ⚠⚠ SPAWN THE FABLE DESIGN SIDECAR FIRST — before any design question arises
+**This is operator-directed and it is not optional.** Design questions in this repo do NOT go
+to the operator; they go to a **long-running Fable design sidecar**. The operator corrected the
+lead on exactly this, twice, in this session — *"I'm not the lore consumer. Agents are. So stop
+asking me questions like this. Start a long running Fable design side car. Ask it."*
+
+**How to spawn it (the pattern is standing law, `CLAUDE.md` THE FABLE-SIDECAR PATTERN):**
+- **ONCE per session**, as a **`general-purpose` agent on `fable`** — **NEVER a fork** (forks
+  inherit orchestrator identity).
+- **LONG-RUNNING for the whole packet.** Front-load its brief: the design question, exact file
+  pointers, and a standing instruction to **STAND BY** after each answer. Never respawn per
+  question; if you must respawn, suffix the name.
+- Its idle-between-questions state is **BENIGN — never wake-loop it**.
+- ⚠ **It must PERSIST to `REPORT-design-sidecar-<name>.md` and then send a SHORT ledger
+  message pointing at it.** This session lost an entire set of its rulings because the brief
+  said *"reply in TEXT (no file)"* — see #303. A ruling that exists only in a message body is
+  a ruling the next session never meets.
+- ⚠ **It needs a WAKE.** The ledger is durable but pull-only; a directive sent without a native
+  `SendMessage` sits unread. The lead lost hours to exactly this on the D-6 ruling.
+
+**WHAT TO ASK IT, AND ON WHAT BASIS — THE CONSUMER LAW:**
+**lore's clients are AGENTS — Claude/Sonnet/Opus/Fable — never humans.** Every served surface
+(renders, counts, errors, teaching prose, tool descriptions) is read by an LLM that learns the
+contract FROM what is served. **Frame every question to the sidecar in those terms**, and require
+its rulings to be justified the same way: *what does a Claude consumer learn from these bytes,
+and can it act on them without checking?* This session's best rulings all turned on that framing
+— ESC-5's grammar (existence, not quantity), the chain render staying id-only because enrichment
+is ERGONOMICS not a TRUST repair, minting `action=get` because #89's own author had fallen back to
+a raw SELECT against production, and #319's false `limit` description that teaches agents away from
+the very affordance ESC-5 makes honest. **Its acceptance instrument is the routing probe —
+CALL_AGAIN vs ROUTE_AROUND — and a ROUTE_AROUND on an honestly-rendered surface is a FAILED
+acceptance to fix, never a waived answer.**
+
+**It has already ruled 10 times this wave** (`REPORT-design-sidecar-04b2-wavec-1.md` §§1–10).
+Read those before asking anything — three of them (7, 9, 10) converged independently on the same
+answer, and it twice took accountability for its own defective riders rather than editing them
+silently.
+
 ### RESUME SEQUENCE
 1. Unblock + land **C3's build** (`builder-c3-1` is live and holding; brief is in its report §4f).
 2. Collect **`adversary-c3-delta-2`**'s verdict — it graded the committed `58f2786` in scratch.
