@@ -581,6 +581,62 @@ because that edits `AppContext.tasks`' signature.
 
 ---
 
+# §9 · ⛔⛔ THE C-DEF VERDICT'S **B1 DOES NOT REPRODUCE** AT `0d24c12` — measured, with a control
+
+**Relayed to me as decisive: *"no Ruling-10-compliant build can satisfy this contract"*, because
+leg 1 has three asserts, `render_fenced` fails its `"\n" not in message"` leg and
+constraint-only fails its `"mallory" in message` leg. I built the `render_fenced` shape, so I
+could TEST that rather than relay it. It does not reproduce.**
+
+**Receipt 1 — leg 1's actual asserts at `0d24c12`, read from the commit, not the working tree:**
+
+```
+$ git show 0d24c12:…/test_comms_footer.py | sed -n '/def test_a_charset_illegal_identity_is_REFUSED_before_any_use/,…/p' | grep -E "assert|pytest.raises"
+        with pytest.raises(ValueError) as caught:
+        message = str(caught.value)
+        assert _agent_name_pattern_text() in message, (
+```
+
+**ONE assert.** And a grep of that whole test body for `\n`, `mallory`, or `HOSTILE_OWNER in`
+returns **0**. There is no newline assert and no value-naming assert in leg 1.
+
+**Receipt 2 — my `render_fenced` build PASSES leg 1 on the member that reaches the validator:**
+
+```
+$ uv run pytest -k "test_a_charset_illegal_identity_is_REFUSED_before_any_use" -q
+6 failed, 2 passed, 217 deselected in 1.13s
+```
+
+**The 2 that PASS are `lore_comms` × {agent, session}** — the ONE link-0 member wired to
+`_validate_comms_charset` today, i.e. the only one that actually exercises my fenced refusal.
+**The 6 failures are the three ledger dispatchers, and they fail because I never wired link 1b
+— they raise no `ValueError` at all**, so `pytest.raises` fails. That is my unbuilt work, not a
+contract defect. **The claimed trap is not reachable at `0d24c12`.**
+
+**My diagnosis of where B1 came from, offered as a lead not a verdict:** those three asserts are
+verbatim the **SECOND-wave** class `TestAHostileAgentValueIsREFUSEDBeforeItReachesAnyRender`,
+described in `REPORT-contract-04b2-c3fix-1.md` §11.3 as *"raises ValueError; the message carries
+no raw newline; the raw multi-line value is not embedded verbatim; and it still names the
+offending value."* `0d24c12` **replaced** that class with
+`TestAHostileIdentityIsREFUSEDAtEveryLink0Member`, whose leg 1 keeps only the constraint assert
+and moves containment to leg 2's `_unfenced` helper — which `render_fenced` satisfies **by
+construction**, since `_unfenced` exists precisely to strip fenced regions. **B1 appears to have
+been graded against the superseded contract.**
+
+⚠ **STATED BOUNDS, so this refutation does not over-claim:**
+* I refute **B1's leg-1 trap only.** I do **not** refute the other two findings, and one of them
+  I can partly **corroborate**: link 1b is genuinely unwired on the three ledger dispatchers —
+  that is exactly my §6.3 unbuilt work — so `lore_claim_task` really does lack the gate today.
+* I could not exercise my fenced refusal through the three ledger dispatchers, because wiring
+  them is the unbuilt step. My evidence is the `lore_comms` leg, which is the same validator on
+  the same value; extending it to the others is an inference from ONE implementation, not a
+  measurement of three.
+* If leg 1 is re-authored later to add the two asserts B1 describes, the trap becomes real. My
+  claim is scoped to the contract **as committed at `0d24c12`**.
+
+**Consequence if this holds:** the C-DEF is not a C-DEF, and the contract does not need the
+rewrite. The two remaining findings are real build/contract work, not an unsatisfiability.
+
 # §8 · ⚠ PROVENANCE CORRECTION AT CLOSE-OUT — where my work actually lives
 
 **Re-derived at close-out rather than asserted from memory, and it CHANGED the answer.** My
