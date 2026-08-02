@@ -659,7 +659,75 @@ ruling failing.
 
 ---
 
-# §10 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §10 · RULING 10 (follow-up, 2026-08-02, on the C3 delta adversary's fourth-render measurement) — THE CHAIN IS RE-RULED, NOT SCOPE-RESTATED: IT GAINS A DERIVED LINK 0 AND A NEW LINK 4, BECAUSE THE FOURTH RENDER CANNOT SATISFY THE CHAIN AS STATED
+
+Grounds: the lead's relay of the C3 delta adversary's measurement (correct build; T3's
+hostile fixture driven at `owner=` only; at `agent=` on the three ledger tools the forged
+instruction reaches the consumer VERBATIM through R8(1)'s unresolvable-teaching, with an
+`owner=` control refusing the identical input; mechanism: `_validate_comms_identities`
+called at exactly ONE site, `AppContext.comms`). I did not re-run the measurement; it is
+the adversary's, with a control, and nothing I hold contradicts it.
+
+**The accountability, again mine before anyone's:** Ruling 5.1 stated *"both identity
+paths resolve against a REGISTERED name"* — derived over the FOOTER's two paths, stated
+as if the identity surface had two paths. That is the DD-3.c askable question — *"does
+this safety claim hold on every branch this ruling TOUCHES, or only the one I DERIVED it
+on?"* — which §5.1 itself quotes, unasked over the render set. Third instance this wave
+of a chain link weaker than its statement, and the second landing on me. #305's own
+*"closed upstream by construction"* claim carries the same over-narrow scope (true of the
+footer, false of the teaching render) — the c3fix contract should note that beside it.
+
+**Why a scope restatement is NOT enough, which is the substantive answer to the lead's
+question:** links 1–3 close hostile values by CHARSET and PROVENANCE — a rendered
+identity either came from the registry or was never rendered. But R8(1)'s teaching for a
+supplied-but-unresolvable `agent=` renders a value that BY DEFINITION has no registry
+provenance — the teaching's whole job is to name a string that resolved to nothing. The
+chain as stated cannot extend over it; no quantifier widening fixes that. The chain needs
+a new link governing renders of UNRESOLVED caller input.
+
+**THE RE-RULED CHAIN:**
+- **Link 0 (new) — the surface is DERIVED, never enumerated** (the Ruling 7/9 correction,
+  third use, now on the security argument itself): the identity-parameter inventory is a
+  SCAN — every tool parameter that is resolved against the registry, fed to R8(2)'s
+  fallback, or named `agent`/`session` on any dispatcher signature; derived from the
+  signatures plus the consumers of `get_agent`/`_validate_comms_identities`. Every member
+  must route through the ONE validation seam; a member outside it is a DOOR named
+  `file:line`. Pinned as a repo-local scan in the house idiom.
+- **Link 1a — charset at REGISTRATION** (unchanged; it held and holds).
+- **Link 1b (was implicit, now explicit) — charset at EVERY identity-accepting parameter,
+  AT THE TOOL SEAM, BEFORE ANY USE — resolution, teaching, or embedding.** Mechanism:
+  the existing `_validate_comms_identities`, CALLED at every link-0 member — ONE
+  IMPLEMENTATION, extend the call set, never clone the validation. Mutation proof:
+  perturb the charset predicate → every member's refusal must move together.
+- **Links 2–3 — exact match, and no-resolution ⇒ no FOOTER** (unchanged, with their
+  positive controls).
+- **Link 4 (new) — a render of UNRESOLVED caller input renders no raw value on a bare
+  line.** With link 1b in place, the unresolvable-teaching only ever fires on
+  charset-CLEAN values (no space, backtick, `=`, newline — a forged instruction is
+  inexpressible), so it may name them. The charset-REFUSAL teaching, whose input is by
+  definition hostile-capable, renders the CONSTRAINT — never the bare raw value; if
+  naming the value is judged essential, the only safe shape is `render_fenced` (Ruling
+  9's one implementation). ⚠ **Named wrong build, so the contract kills it explicitly:
+  `repr()` is NOT a neutraliser** — a footer-shaped instruction inside a repr survives
+  same-line and readable; a build that "escapes" the value with repr passes a
+  newline-only fixture and serves the forgery. The hostile fixture drives EVERY link-0
+  member (the parameter-value-monoculture lesson: T3's fixture at `owner=` only is how
+  this survived), with the `owner=`-style control per parameter.
+
+**Consequences confirmed:** the build-spec consequence the lead already routed (ledger
+tools validating `agent=`/`session=` when supplied) is exactly link 1b's mechanism; the
+c3fix contract builds to THIS statement. Cost is the cheap horn: the seam exists, the
+edit is call sites plus the scan and fixtures.
+
+**Falsifiers:** a link-0 member found whose value is legitimately non-identity free text
+(e.g. a future attribution field) ⇒ it does not belong in the inventory and the scan's
+predicate needs sharpening HERE, not a silent exemption; a teaching found that genuinely
+must name a charset-failing value bare ⇒ that is a design contradiction to bring back,
+because under this ruling no such render may exist.
+
+---
+
+# §11 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2

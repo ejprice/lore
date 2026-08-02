@@ -1463,6 +1463,12 @@ MIRROR_IMMUTABLE_VERBS = frozenset({"transition", "claim_task"})
 #: The ``TaskLedger`` verbs that write no task row at all.  ``transitive_blockers`` is
 #: 04b-1's new READ and is declared here, which is what makes the exact-set pin below RED
 #: until it exists.
+#:
+#: ⚠ ``direct_dependents`` joins it in packet 04b-2 wave C, and the adjudication is
+#: RECORDED rather than assumed: it is a READ — it writes no row and touches no
+#: ``blocked_by`` — so it owes no mirror pin. (Decided by ``test_task_read_surface.py``'s
+#: build spec, which names this edit as the builder's; an omission and a decision must not
+#: look the same.)
 NON_WRITING_VERBS = frozenset(
     {
         "ensure_ready",
@@ -1470,6 +1476,7 @@ NON_WRITING_VERBS = frozenset(
         "get_task",
         "query_tasks",
         "updated_since",
+        "direct_dependents",
         TRANSITIVE_BLOCKERS_ATTR,
     }
 )
@@ -5547,6 +5554,11 @@ ENGINE_REJECTION_PATHS: tuple[tuple[str, str, str, str, Callable[..., Any]], ...
 #: test_a_FAILED_existence_read_makes_ensure_ready_LOUD_not_SILENTLY_PARTIAL`` — rather
 #: than bent into this table's ``(verb, offending token, provoke)`` shape, which would have
 #: required inventing a token no caller ever types.
+#: ⚠ ``direct_dependents`` (packet 04b-2 wave C) is here by DECISION, not by omission:
+#: its only input is a task id, and an id naming no row matches no row's ``blocked_by``
+#: and yields ``[]``. There is no caller-reachable engine rejection to launder, so ruling
+#: **T2** has nothing to bite on. (Adjudicated in ``test_task_read_surface.py``'s build
+#: spec, which names this edit as the builder's.)
 VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH = frozenset(
     {
         "close",
@@ -5556,6 +5568,7 @@ VERBS_WITH_NO_NEW_ENGINE_REJECTION_PATH = frozenset(
         "transition",
         "supersede_task",
         "updated_since",
+        "direct_dependents",
     }
 )
 
