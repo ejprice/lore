@@ -202,3 +202,93 @@ permanently vacuous, a chain link left vacuous by a correct neighbouring guard (
 a false gate inside the fix for a false gate, and a served surface unreachable through
 its own registered tool (#314). **So: run the adversary on every contract revision,
 including fix waves, and never let a receipt stand in for a grade.**
+
+---
+
+## L-6 · RESUME POINT (supersedes L-5's state table) — stop before the cold audit
+
+Written at `0d24c12` by `lead-04b2-wavec` on an operator instruction to **stop before the
+cold audit**. L-5's rulings L-1..L-4 still stand; **this section replaces its STATE table
+and its owed-items list.** Read this one.
+
+### THE ONE-LINE STATE
+**Both contracts are complete and adversary-graded. C1 is BUILT. C3's build is blocked on a
+single missing test-double method.** Nothing has been deployed; production is still on image
+`e91e37b9`, unchanged since kickoff.
+
+### ⛔ THE SINGLE BLOCKER — resolve this first
+`FakeMessageLedger` has **no `pending_traffic` method**, and SECTION D's "fake" leg calls it
+via `_pending_traffic_for`. **Without it C3 cannot COLLECT** — not fail, *collect*.
+
+**RULED (lead): it belongs to the CONTRACT side (`contract-04b2-c3fix-1`), NOT the builder.**
+`loremaster/tests/_message_fakes.py` is **out of `builder-c3-1`'s writable set**. The reason
+is load-bearing: SECTION D's own clause says a delegating double *"cannot launder a wrong
+production statement"*, so the fake must carry an **INDEPENDENT** count — and the fake is
+what OBSERVES the build, so a builder authoring it would be grading its own work and that
+independence would be fictional. Same law that kept the reference build away from the builder.
+If `contract-04b2-c3fix-1` is gone when you resume, spawn a **contract-side** agent to add it.
+Do NOT hand it to the builder.
+
+### WHAT IS BUILT vs NOT
+| | state |
+|---|---|
+| **C1 contract** | ✅ 90 pins, 2 adversary passes + delta, `54a29dd` |
+| **C1 BUILD** | ✅ **90 passed / 0 failed, first attempt, zero contract edits** — `0ff05ed` (`server.py` +379, `tasks.py` +195) |
+| **C3 contract** | ✅ 217 collected, 3 adversary passes, `0d24c12` ⚠ *collected ≠ passed — no run-count was ever produced for the third pass* |
+| **C3 BUILD** | ⛔ blocked on the fake above |
+| **gate currency** | ✅ `6974bdc` + the currency mode |
+| **cold audit / deploy / close-out** | ❌ not started |
+| **C2 (fleet columns)** | ruled OUT → 04b-3 |
+
+### RESUME SEQUENCE
+1. Unblock + land **C3's build** (`builder-c3-1` is live and holding; brief is in its report §4f).
+2. Collect **`adversary-c3-delta-2`**'s verdict — it graded the committed `58f2786` in scratch.
+3. **COLD AUDIT** — fresh context, re-runs the gates. **Do not skip or rush it.** In this wave
+   **42 wrong builds passed contracts that had already passed their own satisfiability
+   receipts.** A receipt proves SATISFIABLE, never SUFFICIENT.
+4. **DEPLOY** — ⚠ **ASK THE OPERATOR AGAIN.** They authorised it ("after the gate, back up,
+   then deploy") *before* the wave grew a gate instrument, a `CLAUDE.md` manifest inversion,
+   and a newly-minted served MCP action (`lore_tasks action=get`). The original nod does not
+   cover the current shape. Sequence: clean-tree gate + cold audit GO → **fresh `surreal
+   export` backup** → rollback receipts into the Log → recreate → smoke. Never `lore-deploy
+   start` (#165/#166); both `CreateCommand`s **re-derived at deploy time**.
+   ⚠ **EIGHTH RECEIPT, derived twice this wave: the gate run happens on a QUIET, COMMITTED
+   TREE.** The same file measured 1 failed/41 passed committed and 40 failed/8 passed in the
+   working tree four minutes apart.
+5. **CLOSE-OUT** — below.
+
+### CLOSE-OUT CHECKLIST (nothing here is done)
+- **INDEX row + Log entry** — neither written. The packet has NO Log line for this wave.
+- **Ledger resolves owed:** #219 · #247 (already closed in code by ruling R2 — resolve with
+  that receipt) · #253 (verify in the deployed artifact) · #260 (`lore.yaml` lorerunes include,
+  applied AT the recreate) · #268 + #300 (resolve together — ⚠ #268's own "cheapest fix" is
+  PROVEN BACKWARDS; do not implement as written) · #277 · #305 (note its over-narrow scope per
+  Ruling 10) · #301 #309 #310 #311 #313 #314 #315 #316 #318 #319 route per their rulings.
+- **ARCHIVE all `REPORT-*.md` by `git mv`** into
+  `docs/plans/v2/receipts/2026-08-01-packet04b2-wavec/` — **never `rm`** (#152). Required
+  before any image build.
+- **RESCUE the wrong-build DRIVER** — it exists ONLY in scratch trees and is now in **THREE
+  copies** (R-9, flagged three times). It is pasted verbatim in
+  `REPORT-contract-04b2-c3fix-1.md` §9/§9b, so it is recoverable — `git mv` ONE canonical copy
+  into `scripts/` before those trees are discarded.
+- **Scratch trees to dispose of:** `/home/ejprice/scratch-c1-ref`, `scratch-c3-ref`,
+  `scratch-adv-c1`, `scratch-adv-c1d`. Keep until their builds land, then discard.
+- **#319's UNSWEPT residual** — one false served tool description was found by accident; the
+  others were never swept.
+
+### FOUR THINGS THE NEXT LEAD SHOULD NOT RE-LEARN
+1. **A satisfiability receipt proves SATISFIABLE, never SUFFICIENT.** Both contracts passed
+   their own receipts and were then graded INSUFFICIENT — C1 by 7 then 5 more, C3 by 26 then 4.
+2. **Nothing this wave was found by reading.** Every defect came from EXECUTING: a contract
+   calling a verb that does not exist, a finding whose own prescribed fix would have made its
+   pin permanently vacuous, a chain link vacuous because a *correct* neighbouring guard
+   shadowed its fixture (#313), three false gates an author caught in its own work, a served
+   surface unreachable through its own registered tool (#314), and a forgery reaching the
+   consumer verbatim on the CORRECT build (DELTA-3).
+3. **Four independent rulings converged on ONE answer** (Rulings 7, 9, 10, and #319): stop
+   enumerating the members you can see; **DERIVE the surface by scan** and treat anything
+   outside the seam as a door named `file:line`. Every time someone wrote a list instead, it
+   was wrong.
+4. **The ledger is the durable channel; the native inbox is the WAKE.** Three confirmed losses
+   this session, every one survived because the content was also on the ledger. A directive
+   sent to only one of them either vanishes or is never read — the lead did both, once each.
