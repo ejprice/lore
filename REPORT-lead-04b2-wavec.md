@@ -216,37 +216,41 @@ and its owed-items list.** Read this one.
 single missing test-double method.** Nothing has been deployed; production is still on image
 `e91e37b9`, unchanged since kickoff.
 
-### ⛔⛔ SUPERSEDING BLOCKER (2026-08-02, `adversary-c3-delta-2`): C3's CONTRACT IS A C-DEF
-**This outranks everything else below and it changes the resume order. The builder is STOPPED.**
+### ✅ RETRACTED — THE C-DEF WAS FALSE, AND THE ERROR WAS THE LEAD'S
+**The section that stood here declared C3's contract a C-DEF and halted its builder. It was
+WRONG. Left as a correction rather than deleted, because the mistake is the instructive part.**
 
-C3's third adversary pass returned **INSUFFICIENT with three blockers, TWO OF THEM LIVE ON THE
-CORRECT BUILD.** Graded at `58f2786`; instruments verbatim in `REPORT-adversary-c3-delta-2.md`.
+`adversary-c3-delta-2` graded **`58f2786`**, which `git merge-base --is-ancestor` confirms is an
+**ANCESTOR** of `0d24c12`. It **named its base honestly in its own report.** The lead acted on the
+verdict without checking that base was current — halted a builder and wrote a false headline
+blocker into this handoff.
 
-- **B1 — C-DEF: NO RULING-10-COMPLIANT BUILD CAN SATISFY THIS CONTRACT.** `_validate_comms_charset`
-  renders `{value!r}`, and **repr keeps the forgery SAME-LINE**, so the refusal itself serves
-  `lore_comms action=drain agent=victim`. Leg 1's three asserts all PASS on that wrong build and
-  leg 3 does `except ValueError: return`, never reading the refusal. **Both** compliant shapes FAIL
-  leg 1 — constraint-only fails `"mallory" in message`, `render_fenced` fails `"\n" not in message`.
-  The contract MANDATES the build Ruling 10 named wrong and FORBIDS both correct ones.
-- **B2 — Link 1b's mutation rider was DROPPED.** Leg 2 pins the MESSAGE, not the PREDICATE: a
-  private regex with a stolen shared message passes **201/0**. The rider (perturb the predicate;
-  every refusal moves together) was specified and never built.
-- **B3 — Link 0 has NO DERIVED SCAN, and it LEAKS TODAY.** `lore_claim_task(owner=HOSTILE)` serves
-  the forgery **VERBATIM on the correct build** — no refusal, `has_footer=False` so footer-scoped
-  pins are blind, newlines collapse to 0 so newline fixtures are blind. `created_by=` and `actor=`
-  were **never driven hostile at all**. ⚠ **DELTA-3 was never one hole; it is a CLASS**, and Ruling
-  10's link 0 (*derive the surface by SCAN*) was specified but not built — the FOURTH time this wave
-  a list stood in for a derivation.
-- **W25's restated bound is FALSE AGAIN** — do not re-accept it at that width.
+**Re-derived by the lead, not relayed:**
+| assertion | at `58f2786` (graded) | at `0d24c12` (shipped) |
+|---|---|---|
+| `"mallory" in message` | 1 | **0** |
+| `"\n" not in message` | 1 | **0** |
+| `_unfenced` | — | **2** |
 
-**RESUME ORDER CHANGES TO:** fix C3's contract (a contract-side agent, then ANOTHER adversary pass —
-this is round four and the base rate of a fix wave leaving gaps is now 3 for 3) → *then* C3's build →
-then the cold audit. **Do not release a builder against `0d24c12`.**
+Both of B1's load-bearing assertions lived in the DELTA-3 class that `contract-04b2-c3fix-1`
+**replaced** under Ruling 10. Current leg 1 asserts the CONSTRAINT only; containment runs through
+`_unfenced()`, which admits constraint-only AND `render_fenced` while rejecting `repr` — and
+DELTA3b **is** the repr build. B2's rider exists as DELTA3c. B3's scan is built.
 
-⚠ Two items were in flight when this landed and are UNCOMMITTED: `loremaster/loremaster/messages.py`
-and `loremaster/tests/_message_fakes.py`. **Establish who wrote `_message_fakes.py` before committing
-it** — the lead ruled it OUTSIDE the builder's writable set (the fake OBSERVES the build), so if the
-builder authored it, that edit must be redone contract-side.
+⚠ **THIS IS THE MOVING-BASE CLASS, THIRD INSTANCE THIS WAVE** — a contract graded against a moving
+base (here), a contract pinned against a moving production surface (the partition collision), and
+a build graded against a moving contract, **which `builder-c3-1` REFUSED this morning for exactly
+this reason.** The lead did the thing its own builder declined to do. **Whenever you act on an
+adversary verdict, check the commit it graded against HEAD first.**
+
+### ⛔ WHAT IS STILL GENUINELY OPEN FROM THAT PASS — B3's ATTRIBUTION LEAK
+**Real, not closed, and it is a DESIGN question for the sidecar — not a contract edit.**
+`owner=` / `actor=` / `created_by=` are **FREE TEXT**, so they are un-charset-refusable by link 1b.
+But they remain **unresolved caller input reaching a render**, which is **link 4's subject**, and
+that render is the dispatcher's **own answer** — so the footer-scoped pins are structurally blind
+to it. `lore_claim_task(owner=HOSTILE)` was measured serving a forgery verbatim.
+**It re-opens what link 4 RANGES OVER.** `contract-04b2-c3fix-1` escalated rather than extending,
+which was correct. **Ask the sidecar.**
 
 ### TWO MORE ITEMS FOR THE CONTRACT-SIDE FIX ROUND (both landed at the stop)
 1. **THE PARTITION COLLISION — fix this in the same edit as the C-DEF.** C1's build added
