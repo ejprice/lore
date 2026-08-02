@@ -67,6 +67,16 @@ combined `mypy` invocation, which this repo documents as false-erroring), at `04
 plus the wave's doc/receipt commits: `typecheck: loremaster FAILED`, **exit 1**,
 `Found 102 errors in 8 files (checked 180 source files)`.
 
+> ⚠ **CORRECTED BY FINDING #307, and the correction is against ME.** That `102 / 8 files`
+> is **ONE LEG's summary**, not the total — merged across the runner's legs it is **191
+> errors across the 11 files** in the table below, which is why the table does not sum to
+> 102. My "every error is `attr-defined`" is also too strong: it is **190 of 198**. I took
+> a number off a runner tail and promoted it to the headline of a finding whose entire
+> lesson is that unverified numbers propagate — with the contradicting table sitting
+> directly underneath it. A builder re-derived it and caught me. The per-file table below
+> is correct and is the number to use; #307 is the durable record. Left in place rather
+> than silently rewritten, because the failure is the point.
+
 Per-file, merged across the runner's legs (11 files):
 
 | file | errors |
