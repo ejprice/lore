@@ -76,11 +76,15 @@ from typing import Any, cast
 from uuid import uuid4
 
 from loremaster.tasks import (
+    ENGINE_RECURSION_CEILING,
+    TASK_BLOCKER_MAX_DEPTH,
     ClaimResult,
     IllegalTransitionError,
     Task,
+    TaskLedgerError,
     TaskNotFoundError,
     TaskStatus,
+    TransitiveBlockers,
 )
 
 # --- the domain's status vocabulary + legal-transition matrix ---------------
@@ -366,6 +370,98 @@ class FakeTaskLedger:
         await asyncio.sleep(0)
         return sorted(
             task.id for task in self.db.tasks.values() if task_id in task.blocked_by
+        )
+
+    def _upstream_reach(self, task_id: str, depth: int) -> list[str]:
+        """The ids reachable UPSTREAM from ``task_id`` within ``depth`` hops.
+
+        Breadth-first, so the result is ordered by PROXIMITY and a truncated answer is
+        still a valid FLOOR — the property
+        :meth:`~loremaster.tasks.TaskLedger.transitive_blockers` states about its own
+        ``+collect`` closure. ``task_id`` itself appears only if it genuinely lies on a
+        cycle, because the walk never seeds it into the seen set.
+
+        ⚠ **A ``blocked_by`` entry naming NO row is SKIPPED, and that is fidelity, not
+        laziness.** Production walks the ``blocks`` EDGE, and ``ENFORCED`` forbids an edge
+        to a phantom, so such an entry is in the COLUMN and never in the walk's answer
+        (that residue is named in ``transitive_blockers``' own scope paragraph). It still
+        blocks the task — :meth:`_is_blocked` counts it, fail-closed, exactly as the real
+        claim CAS does.
+        """
+        reached: list[str] = []
+        seen: set[str] = set()
+        frontier = [task_id]
+        for _hop in range(depth):
+            next_frontier: list[str] = []
+            for current in frontier:
+                task = self.db.tasks.get(current)
+                if task is None:
+                    continue
+                for blocker_id in task.blocked_by:
+                    if blocker_id in seen or blocker_id not in self.db.tasks:
+                        continue
+                    seen.add(blocker_id)
+                    reached.append(blocker_id)
+                    next_frontier.append(blocker_id)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return reached
+
+    async def transitive_blockers(
+        self, task_id: str, *, max_depth: int | None = None
+    ) -> TransitiveBlockers:
+        """Every task ``task_id`` is transitively waiting on, HONEST at its bound.
+
+        ⚠ **ADDED 2026-08-02 (04b-2 wave C, the C-DEF fix wave) for the reason
+        :meth:`direct_dependents` records one slice earlier, and it was MEASURED here
+        too, not anticipated:** ``AppContext.tasks(action='blockers')`` asks the LEDGER
+        for this walk, so a double lacking the method turns a CORRECT build into an
+        ``AttributeError`` — four reds in
+        ``test_comms_footer.py::TestTheUNRESOLVABLETeachingIsUSEFULAndStaysOffREADS`` and
+        its sibling, on the committed build, once the fixture gap that hid them behind an
+        earlier ``ValueError`` was closed. Green with the production verb present, which
+        it is.
+
+        The bounds and the value object come FROM ``loremaster.tasks``
+        (:data:`~loremaster.tasks.TASK_BLOCKER_MAX_DEPTH`,
+        :data:`~loremaster.tasks.ENGINE_RECURSION_CEILING`,
+        :class:`~loremaster.tasks.TransitiveBlockers`) rather than being re-declared here
+        — the module docstring's Fidelity rule, and load-bearing for this verb in
+        particular: ``max_depth_used`` travels back to a RENDER, so a double carrying its
+        own private default would serve a number production never would.
+
+        ⚠ **STATED BOUND — this method has no fake-vs-real parity pin.** The
+        ``task_ledger_factory`` parity suite (``test_task_ledger.py``) runs only the
+        contract legs that exist, and none of them drives this verb; the real walk is
+        graded against the live store in ``test_blocks_edge.py`` instead. So the two
+        implementations agree by CONSTRUCTION (same bounds, same value object, same
+        phantom rule, same proximity order) and not by MEASUREMENT. Re-open trigger: the
+        day any pin asserts on ``ids``/``truncated`` content through this fake, it needs a
+        parity leg first.
+        """
+        await asyncio.sleep(0)
+        depth = TASK_BLOCKER_MAX_DEPTH if max_depth is None else max_depth
+        if (
+            isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or not (1 <= depth < ENGINE_RECURSION_CEILING)
+        ):
+            raise TaskLedgerError(
+                f"max_depth={depth} is out of range — it must be at least 1 and strictly "
+                f"below the engine's recursion ceiling of {ENGINE_RECURSION_CEILING}"
+            )
+        # ``_require`` FIRST: an id naming no row and an id with no blockers are two
+        # different questions, and ``[]`` cannot be the answer to both (the real verb
+        # raises ``TaskNotFoundError`` for the same reason).
+        self._require(task_id)
+        # TRUNCATION IS MEASURED, NEVER INFERRED — the same comparison production makes,
+        # for the same reason: ``len(ids) >= depth`` cannot tell a complete answer from a
+        # cut one at the boundary.
+        within = self._upstream_reach(task_id, depth)
+        deeper = set(self._upstream_reach(task_id, depth + 1))
+        return TransitiveBlockers(
+            ids=within, truncated=deeper != set(within), max_depth_used=depth
         )
 
     # -- the atomic claim -----------------------------------------------------

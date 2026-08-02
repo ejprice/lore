@@ -3892,8 +3892,26 @@ async def _task_action_kwargs(harness: Any, action: str) -> dict[str, Any]:
             "description": "a real successor description",
             "created_by": _UNREGISTERED_ATTRIBUTION,
         }
-    if action == "rollup":
-        return {}
+    if action in ("get", "blockers"):
+        # ⚠ REPAIRED 2026-08-02 (C-DEF 3, this wave). ``get`` and ``blockers`` joined
+        # ``TASK_READ_ACTIONS`` at the partition fix and fell straight through to the bare
+        # ``return {}`` below, so all EIGHT pins parametrised over them drove the
+        # dispatcher with NO ``task_id`` and died on ``server._require_arg``'s ValueError
+        # BEFORE any footer decision was reached — a fixture-reason red wearing the
+        # costume of a build defect, and the exact shape C-DEF 2 repaired in
+        # :func:`_finding_action_kwargs` one wave earlier. A READ needs something to
+        # read: the task is created HERE, through the ledger, so the id is real rather
+        # than invented, and ``blockers``' walk starts from a row that genuinely exists
+        # (a phantom id raises ``TaskNotFoundError`` before any render).
+        task_id = await harness.task_ledger.create_task(
+            "a real subject", "a real description", created_by=_UNREGISTERED_ATTRIBUTION
+        )
+        return {"task_id": task_id}
+    # ``query`` and ``rollup`` are the whole of the fall-through, and it is a DECISION
+    # rather than an omission: both are unfiltered reads that take no required argument,
+    # so an empty mapping IS their fixture. (They had a branch of their own until the
+    # ``get``/``blockers`` seeding above made this function's seventh return trip
+    # ruff's PLR0911; two identical returns is not information worth a lint suppression.)
     return {}
 
 
