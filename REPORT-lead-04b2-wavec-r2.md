@@ -16,7 +16,7 @@ Written against `feat/surreal-unification` @ `379c2c5` (HEAD at resume).
 | `Verdicts acted on:` | §L-6 written at `0d24c12`; `git merge-base --is-ancestor 0d24c12 379c2c5` = SAME (ancestor). Not STALE. C-DEF retraction (`c131686`/`8b0933d`) landed; not resurrected. |
 | `Directives:` | 0 ledger / 0 wake / 0 prose-duplicated (spawns carry full briefs via the Agent prompt, the guaranteed-read channel) |
 | `Rulings:` | 0 body-only (this file is the artifact) |
-| `Agents:` | 3 spawned (sidecar-r2, builder-c3-2, cdef-1) / 0 ledger-retired / sidecar standing-by · builder-c3-2 done · cdef-1 running |
+| `Agents:` | 4 spawned (sidecar-r2, builder-c3-2, cdef-1, riders-r11-1) / 0 ledger-retired / sidecar standing-by · builder-c3-2 + cdef-1 done · riders running |
 | `Uncommitted at stop:` | 0 (tree clean at resume) |
 
 ## R2-1 · RESUME ENTRY — state verified, not inherited
@@ -145,6 +145,35 @@ undefended for `findings` (no structural scan — a future extraction goes undet
 `create_many` write-count rides a docstring atomicity claim not empirically proven; §9.8
 `_validate_comms_identities` gained defaults for name/to (surface widening). None blocking; the
 cold audit scrutinises them.
+
+## R2-6 · C-DEF CLOSED (`8933a18`); #322 invariant routed to 04b-3; riders spawned
+
+`contract-04b2-cdef-1` closed the fixture gap. **C3 is now 225 passed / 0 failed** (lead re-run
+confirmed, not relayed). The 8 pins are proven non-vacuous (mutation exit 0, both ways, server.py
+restored byte-exact). Diffs reviewed (judgment read):
+- `test_comms_footer.py` — seeds get/blockers mirroring the vetted transition/supersede branch;
+  query/rollup fold is a documented decision.
+- `_task_fakes.py` — `FakeTaskLedger.transitive_blockers` added (the blockers backend is the FAKE,
+  measured, not the store). Faithful: bounds + value object imported FROM `loremaster.tasks` (not a
+  private copy — the Fidelity rule; `max_depth_used` reaches a render), production phantom-skip +
+  measured-truncation semantics, and it STATES its bound (no fake-vs-real parity leg) with a named
+  re-open trigger. Follows the existing `direct_dependents` pattern. Ripple: 1297 passed across all
+  6 consumer suites of the shared double. Committed `8933a18`; report `cab7c12`.
+
+**#322 — the fixture-completeness invariant — ROUTED to 04b-3 (lead call, structured deferral).**
+This is the SECOND instance of one class (C-DEF 2 = `_finding_action_kwargs`, C-DEF 3 =
+`_task_action_kwargs` — a `_<x>_action_kwargs` helper not seeding a newly-added action). Repo law
+says an audit-caught class becomes an invariant — but this class's failure mode is LOUD reds
+(pins raise, never a false green), both instances are now fixed, and a derived ∀ pin needs an
+adversary it cannot get mid-wave (building a discriminating pin without one is this wave's recurring
+sin). Named decision point: **04b-3's contract phase builds the name-free ∀ invariant**; #322 carries
+the derivation. The fix-agent correctly did NOT build it past "strictly needed". Acknowledged on
+#322 with the routing.
+
+**Riders 1-3 (Ruling 11 attribution guardrails) → `riders-04b2-r11-1` spawned** (bound pin #137/#138
+shape, retire the injection-oracle over-claim, fix the `_render_task_detail` archetype docstring).
+Landing before the cold audit so the audit grades the complete wave. Single-writer preserved
+(builder + cdef done, sidecar standing by).
 
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
