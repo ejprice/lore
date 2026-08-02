@@ -275,6 +275,46 @@ class MessageDrainResult(BaseModel):
     peeked: bool
 
 
+class PendingTraffic(BaseModel):
+    """R4's TWO counts for one agent's inbox — the ONE implementation.
+
+    R4 (``docs/plans/v2/04-comms-blocks-footer.md``, §The four operator rulings)
+    defines *"unacked directive"* as ``acked_at IS NONE`` **AND**
+    ``grade = 'directive'`` on the ``to`` edge. The two numbers are deliberately
+    NOT nested: an unacked directive is not *"a filtered restatement of the
+    unread column"* — a message can be SEEN and still owe an ack, which is the
+    state a blocked teammate is waiting on.
+
+    Two consumers need these numbers: the pending-traffic FOOTER (slice C3) and
+    the fleet render's unread/unacked columns (slice C2). They share ONE
+    counting seam — :meth:`MessageLedger.pending_traffic` — because a policy two
+    call sites need is a function they CALL, never a pattern they clone (#102).
+    A caller that re-derives either number is a private copy wearing the shared
+    name, and it will drift the first time R4's predicate changes.
+
+    Attributes:
+        unread: Messages whose ``to`` edge is UNSTAMPED (``seen_at IS NONE``).
+        unacked_directives: Directives whose ``to`` edge is UNACKED
+            (``acked_at IS NONE`` AND ``grade = 'directive'``), whether or not
+            they have been seen.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    unread: int
+    unacked_directives: int
+
+    @property
+    def pends(self) -> bool:
+        """Whether ANY traffic pends — the footer's trigger, as a disjunction.
+
+        Named rather than left to each call site as ``unread or unacked``: the
+        trigger is a policy, and a caller re-spelling it is how the ``(0, 3)``
+        world (nothing new to read, three acks owed) came to serve nothing.
+        """
+        return bool(self.unread or self.unacked_directives)
+
+
 class MessageAckEntry(BaseModel):
     """One requested seq's ack fate (packet 03a-2).
 
@@ -966,6 +1006,51 @@ class MessageLedger:
             directive_pending=directive_pending,
             stamped_seqs=stamped_seqs,
             peeked=peek,
+        )
+
+    async def pending_traffic(self, *, agent_id: str) -> PendingTraffic:
+        """R4's two counts for ``agent_id``'s WHOLE inbox — the shared seam.
+
+        ⚠ **The counts are over the whole set, never a capped window.** :meth:`drain`
+        serves ``limit`` rows; this counts every ``to`` edge. A footer riding the
+        drain cap would under-report the moment an inbox exceeded it, which is a
+        served MEASUREMENT that is false — worse than no footer, because an agent
+        that learns the numbers lie stops reading the line.
+
+        The two predicates are independent by construction (R4):
+
+        * ``unread`` — the edge is UNSTAMPED (``seen_at IS NONE``), any grade;
+        * ``unacked_directives`` — ``acked_at IS NONE`` AND ``grade = 'directive'``,
+          **with no clause about ``seen_at``**, so a SEEN directive still owed an
+          ack counts. An UNSEEN directive is therefore counted in BOTH, and a
+          SEEN, UNACKED *signal* in NEITHER.
+
+        ONE round trip: the rows are projected minimally and tallied here, mirroring
+        :meth:`drain`'s own whole-set arithmetic rather than issuing a second query
+        per count.
+
+        Args:
+            agent_id: The agent's opaque row id (the ``agent`` ROW the ``to`` edge
+                points at — the registry's id, not a name).
+
+        Returns:
+            The :class:`PendingTraffic` for that inbox.
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT in.grade AS grade, seen_at, acked_at "
+                f"FROM {TO_RELATION} WHERE out = $agent",
+                {"agent": RecordID(AGENT_TABLE, agent_id)},
+            )
+        )
+        return PendingTraffic(
+            unread=sum(1 for row in rows if row.get("seen_at") is None),
+            unacked_directives=sum(
+                1
+                for row in rows
+                if row.get("acked_at") is None
+                and row.get("grade") == MESSAGE_GRADE_DIRECTIVE
+            ),
         )
 
     def _row_to_inbox_entry(self, row: dict[str, Any]) -> InboxEntry:

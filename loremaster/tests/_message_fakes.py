@@ -58,6 +58,7 @@ from loremaster.messages import (
     MessageGrade,
     MessageLedger,
     MessageSendResult,
+    PendingTraffic,
     UnknownRecipientError,
     WaitingOnAnswer,
 )
@@ -295,6 +296,40 @@ class FakeMessageLedger:
         ]
         pending.sort(key=lambda message: message.id, reverse=True)
         return pending
+
+    async def pending_traffic(self, *, agent_id: str) -> PendingTraffic:
+        """R4's two counts, computed INDEPENDENTLY of production.
+
+        ⚠ **This deliberately does NOT delegate to
+        :meth:`~loremaster.messages.MessageLedger.pending_traffic`, and that
+        independence is the whole point of the fake leg.** A double that called
+        production would launder a wrong production statement: whatever
+        predicate production used, the fake would agree with it by
+        construction, and SECTION D's two backends would stop being two
+        opinions. The counts are re-derived here from the edge state directly,
+        so a production build that drops R4's ``grade = 'directive'`` conjunct
+        disagrees with this double and the ``"fake"`` leg reddens.
+
+        The predicates mirror R4 as WRITTEN, not as production spells it:
+        ``unread`` is an unstamped edge (any grade); ``unacked_directives`` is
+        an unacked edge on a directive, **with no clause about ``seen_at``** —
+        so an unseen directive counts in BOTH and a seen, unacked signal in
+        NEITHER.
+        """
+        await asyncio.sleep(0)
+        edges = [
+            (self.db.messages[message_id], edge)
+            for (message_id, edge_agent_id), edge in self.db.edges.items()
+            if edge_agent_id == agent_id
+        ]
+        return PendingTraffic(
+            unread=sum(1 for _message, edge in edges if edge.seen_at is None),
+            unacked_directives=sum(
+                1
+                for message, edge in edges
+                if edge.acked_at is None and message.grade == MESSAGE_GRADE_DIRECTIVE
+            ),
+        )
 
     async def drain(self, *, agent_id: str, limit: int, peek: bool = False) -> MessageDrainResult:
         await asyncio.sleep(0)

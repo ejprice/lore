@@ -178,6 +178,7 @@ from loremaster.messages import (
     MessageDrainResult,
     MessageLedger,
     MessageSendResult,
+    PendingTraffic,
 )
 from loremaster.render import render_compose, render_fenced, render_join, render_line
 from loremaster.sanitise import safe_str, sanitise_line
@@ -1201,6 +1202,22 @@ _TASK_ID_SHAPE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 # verbs plus packet 03b's three message-surface verbs; await/story remain
 # growth points (design doc §FORWARD-COMPAT) that widen ``_COMMS_ACTIONS``
 # deliberately in a later packet.
+# --------------------------------------------------------------------------- #
+# The pending-traffic FOOTER (packet 04b-2 slice C3, ruling R1/R4/R8/L1/L2).
+# --------------------------------------------------------------------------- #
+
+# The footer's LEAD-IN, and the marker every consumer (and the contract) keys on.
+# Exported rather than transcribed at each reader: a literal copied into a test
+# would let the footer's shape drift while every placement pin silently stopped
+# discriminating. ONE implementation of "what a footer looks like".
+COMMS_FOOTER_PREFIX = "— pending traffic"
+
+# R4's two counts, in the ROLE words the footer renders them in. Named because
+# the mapping from ledger value to role is the property that matters — a footer
+# whose numbers are SWAPPED passes every containment test in the world.
+_COMMS_FOOTER_UNREAD_ROLE = "unread"
+_COMMS_FOOTER_UNACKED_ROLE = "unacked directives"
+
 _COMMS_ACTION_REGISTER = "register"
 _COMMS_ACTION_HEARTBEAT = "heartbeat"
 _COMMS_ACTION_BRIEF_GET = "brief_get"
@@ -5008,6 +5025,69 @@ class AppContext:
             set_status=set_status,
             seqs=seqs,
             peek=peek,
+        )
+
+    @staticmethod
+    def _comms_footer(
+        *, identity: str, traffic: PendingTraffic, authenticated: bool
+    ) -> Rendered | None:
+        """ONE line telling ``identity`` what is waiting, or ``None`` if nothing is.
+
+        The trigger lives HERE rather than at each dispatcher so *"traffic pends"*
+        has one spelling: it is a DISJUNCTION (:attr:`PendingTraffic.pends`), and a
+        caller re-deriving it as ``unread > 0`` silently kills the world R4 exists
+        to surface — an inbox with nothing new to read and directives still owed to
+        blocked teammates.
+
+        ⚠ **Built through the render seam, never a bare f-string** (§B5/L1). The
+        footer carries an identity-derived value onto a served surface, and for a
+        FOOTER a forged value is an INSTRUCTION agents obey, not a row they
+        misread. ``render_line`` also makes the line structurally single-line: this
+        string is appended to another tool's render, so a second line would forge a
+        row boundary in whatever output it lands under.
+
+        **The two renders differ deliberately, and R8(2) is why** (``authenticated``
+        is the whole distinction):
+
+        * **RESOLVED** — the caller authenticated via ``agent=``, so the footer may
+          address it directly and NAME the drain call.
+        * **FALLBACK** — the identity was matched EXACTLY against a free-text
+          ``owner``/``actor``/``created_by`` column. It is a match, not an
+          authentication, so the line is THIRD-PERSON with **no drain imperative**:
+          telling this reader to drain may send them into an inbox that is not
+          theirs, and a drained message is marked seen for its real owner, who then
+          never sees it. Imperatives ride only TRUE verdicts.
+
+        Args:
+            identity: The REGISTERED agent name (never the caller's raw string).
+            traffic: The counts from :meth:`MessageLedger.pending_traffic` — CALLED,
+                never re-derived here (#102: two call sites, one policy).
+            authenticated: Whether ``identity`` came from a resolved ``agent=``
+                rather than R8(2)'s exact-match fallback.
+
+        Returns:
+            The rendered footer, or ``None`` when no traffic pends — a footer on a
+            quiet inbox is a signal that fires on the healthy state, which is noise
+            an agent learns to skim past, killing the surface for every later call.
+        """
+        if not traffic.pends:
+            return None
+        name = sanitise_line(identity)
+        if authenticated:
+            return render_line(
+                "— pending traffic for {identity}: {unread} unread, "
+                "{unacked} unacked directives — lore_comms action=drain agent={identity}",
+                identity=name,
+                unread=traffic.unread,
+                unacked=traffic.unacked_directives,
+            )
+        return render_line(
+            "— pending traffic for {identity}: {unread} unread, "
+            "{unacked} unacked directives (matched on a write attribution, "
+            "not an authenticated caller)",
+            identity=name,
+            unread=traffic.unread,
+            unacked=traffic.unacked_directives,
         )
 
     @staticmethod

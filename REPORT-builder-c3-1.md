@@ -321,6 +321,92 @@ Asked as a single-item ping rather than stacked with anything else. Defaulting s
 would be me writing test-tree code my brief never granted; defaulting to (ii) and being wrong
 means C3 cannot collect at all.
 
+---
+
+# §6 · THE BUILD (against `0d24c12`) — what landed, with receipts
+
+## 6.1 · SECTION D — the shared counting seam. **COMPLETE and LIVE-VERIFIED.**
+
+**`loremaster/loremaster/messages.py`:**
+* **`PendingTraffic`** — a `BaseModel`, `extra="forbid"` per house law, carrying R4's two
+  counts plus a `pends` property. The property exists so the footer's trigger — a
+  **disjunction** — has ONE home: a caller re-spelling `unread or unacked` is how the `(0, 3)`
+  world (nothing new to read, three acks owed) came to serve nothing (W23).
+* **`MessageLedger.pending_traffic(*, agent_id)`** — keyword-only, matching every sibling verb
+  (`send`/`drain`/`ack`/`awaiting_answer`), which the contract pins explicitly. ONE round trip:
+  a minimal projection over `TO_RELATION` tallied in Python, mirroring `drain`'s own whole-set
+  arithmetic. **Counts the WHOLE inbox, never a capped window** — a footer riding `drain`'s cap
+  would under-report the moment an inbox exceeded it.
+  * Predicates are R4 **as written**: `unread` = `seen_at IS NONE` (any grade);
+    `unacked_directives` = `acked_at IS NONE AND grade = 'directive'`, **no `seen_at` clause** —
+    so an unseen directive counts in BOTH and a seen, unacked signal in NEITHER.
+  * **Bound parameters throughout** (`$agent`, a `RecordID`) — store reference §2's idiom.
+
+**`loremaster/tests/_message_fakes.py`: `FakeMessageLedger.pending_traffic`** — deliberately
+**does NOT delegate** to production. That independence is the entire value of the fake leg: a
+delegating double agrees with whatever predicate production used *by construction*, so the two
+backends would stop being two opinions. Re-derived from edge state directly.
+
+**RECEIPT — the live-store leg, which is the only instrument that can see production's own
+predicate** (a build dropping R4's conjunct or riding `drain`'s cap is invisible to every fake):
+
+```
+$ uv run pytest test_comms_footer.py -k "PendingTrafficCountIsONEImplementation and real" -q
+5 passed, 212 deselected in 9.25s
+```
+
+And with both backends plus the existence/conformance pins:
+
+```
+$ uv run pytest test_comms_footer.py -k "PendingTrafficCountIsONEImplementation or ProductionSeamEXISTS" -q
+7 failed, 12 passed, 198 deselected in 3.47s
+```
+
+**The 12 passed are SECTION D's own property. All 7 failures are `ImportError:
+COMMS_FOOTER_PREFIX`** — the footer itself, not yet built. Scope stated rather than implied.
+
+## 6.2 · ⛔⛔ ESCALATION — a CROSS-SLICE COLLISION between C1's build and C3's contract
+
+**`TestTheFooterRidesTheOUTCOMENotTheVERB::test_the_declared_action_PARTITION_covers_the_
+dispatchers_OWN_action_set` is RED, and I cannot fix it without editing the contract.**
+
+Measured:
+
+```
+_TASK_ACTIONS = ('create','query','transition','supersede','rollup','create_many','blockers','get')
+contract declares: WRITE=(create,create_many,transition,supersede)  READ=(query,rollup)
+undeclared in tasks: ['blockers', 'get']
+_FINDING_ACTIONS: partition matches production -> True   (only `tasks` collides)
+```
+
+**Provenance, derived with `git log -S`:** both `blockers` and `get` were added by
+**C1's build at `0ff05ed`** — which landed **BEFORE** the contract's `0d24c12`. So the contract
+was committed against a production action set it does not cover.
+
+**The pin is CORRECT and is doing exactly its job.** Its own docstring: *"A future action added
+to `_TASK_ACTIONS`/`_FINDING_ACTIONS` and NOT adjudicated here reddens this pin — it cannot be
+silently exempt from the footer property, which is exactly how six of nine write actions became
+exempt."* This is that mechanism firing on a real, new, unadjudicated pair.
+
+**Why it is an ESCALATION and not an edit:** the adjudication has to land in the CONTRACT's
+`TASK_READ_ACTIONS`, and my brief forbids me touching it (*"a pin that looks wrong is an
+ESCALATION, never an edit"*). It is also **not cosmetic** — `TASK_READ_ACTIONS` is the sweep for
+*"a READ action NEVER footers"*, so until `get`/`blockers` are adjudicated in, **neither is
+covered by that property at all**, which is the exact silent-exemption the pin exists to stop.
+
+**My recommendation, for the author or the lead to ratify:** both are **READS**.
+`get` is a plain read verb (Ruling 8 mints it mirroring `lore_findings action=get`) and
+`blockers` is a dependency walk. So `TASK_READ_ACTIONS = ("query", "rollup", "get", "blockers")`,
+which makes the partition equal production and extends the never-footers sweep over both. I have
+**not** made that edit.
+
+## 6.3 · NOT YET BUILT (the remaining work, named honestly)
+
+`COMMS_FOOTER_PREFIX` · `AppContext._comms_footer` · the trigger/resolution wiring at the three
+dispatchers' single exits · Ruling 10 link 1b (extending `_validate_comms_identities`'s call set)
+· link 4 (the fenced refusal; `repr()` killed) · #219's four prose sites · R-5's `Raises:` ·
+MP-6's ambiguity classification. §4c carries the design for each; none of it is started.
+
 # §5 · STATE
 
 **Blocked, cleanly, with nothing written and nothing at risk.** I am standing by. Unblock me
