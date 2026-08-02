@@ -1,7 +1,12 @@
 # Proposal — a D&D rules RAG: extend lore, reuse its components, or both
 
-**Status:** PROPOSAL, not ruled. Operator requested proposals ("evaluate both extending or
-reusing components"); no forks are ruled and no contract exists.
+**Status:** ~~PROPOSAL, not ruled~~ → **RULED 2026-08-02: option C** (fork 1), slotted into
+the plan of record as wave D (INDEX packets 45–54). Forks 2/4/9 also ruled, fork 6
+OVERRIDDEN (monsters + class architecture IN), fork 10 done earlier at `b3ba703`; forks
+3/5/7/8 + D3 route to packet 50's kickoff. The rulings, the graph-scope edge catalog, and
+the closed tool enumeration live in `2026-08-02-dnd-graph-scope-rulings.md` (which amends
+§9 of this doc); deep-scout receipts at
+`docs/plans/v2/receipts/2026-08-01-dnd-graph-scope/`.
 **Author:** design lead (Fable), 2026-08-01, at `a049118` on `feat/surreal-unification`.
 **Provenance:** three parallel read-only scouts, every claim `file:symbol`-cited in their
 reports, archived at `docs/plans/v2/receipts/2026-08-01-dnd-rag-scoping/`:

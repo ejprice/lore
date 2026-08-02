@@ -1,5 +1,10 @@
 # RESUME — D&D rules RAG scoping session (2026-08-01, pre-reboot handoff)
 
+> **⚠ SUPERSEDED 2026-08-02 — this file is history.** Its §2 OPEN items were ruled by the
+> slot-in session: option C ruled, wave D (packets 45–54) minted into the INDEX, forks
+> 1/2/4/6/9 closed. Current state: the INDEX table + Log (2026-08-02 entry) +
+> `docs/design/2026-08-02-dnd-graph-scope-rulings.md`. Kept per the archive law.
+
 **PHASE STATE ONLY.** Process law lives in `CLAUDE.md` (repo root) + `~/.claude/CLAUDE.md`;
 spawn protocol in `~/.claude/orchestration/brief-base.md`; store law in
 `docs/reference/surrealdb-31-capabilities.md`. Nothing in this file overrides any of those.

@@ -174,9 +174,12 @@ Corollary: when one class of defect survives TWO waves, STOP briefing a third fi
 escalate the DESIGN.
 
 ## Sequence + status
-**Operator-ruled order (2026-07-14, local-first), numbered as it runs:** 01 ledger
-triage → 02–06 comms completion (wave C) → 07–17 local correctness (wave L:
-results-impacting / LLM-impeding bugs) → 18–22 DI local = **v1.0 SHIP at 22**,
+**Operator-ruled order (2026-07-14, local-first; wave D inserted 2026-08-02), numbered as
+it runs:** 01 ledger triage → 02–06 comms completion (wave C) → **45–54 the D&D-extension
+track (wave D, ruled 2026-08-02: 45 allowlist → 46 extension wiring → 47 ingest seam →
+48/49 principals+keys → 39 [pulled from wave S] → 50–53 the dnd extension → 07/07a
+[pulled from wave L] → 54 deploy `lore-dnd`)** → 08–17 remaining local correctness
+(wave L: results-impacting / LLM-impeding bugs) → 18–22 DI local = **v1.0 SHIP at 22**,
 single-node (wave M) → 23–27 Odoo local (wave O) → 28–35 remaining features (wave F)
 → 36–39 cloud for Odoo (wave S — pull-forward on operator call) → 40–41 UI (wave G,
 lowest). `∥` = parallel-safe with its wave. `→split` = splits at kickoff per the
@@ -199,8 +202,19 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 04b-3 | **comms residue — MINTED 2026-08-01 by the 04b-2 design ruling (B1 level 3).** Each row carries its own decision point, per the deferral law: **#273 + #272** (`networkx.simple_cycles` replacing a MEASURED NON-DEFECT hand-roll, ONE edit — it moves networkx from test-oracle to production import, changing both the dependency group and the mypy-override scope, and it becomes a production IMAGE dep; trigger = 04b-3 kickoff or any earlier wave touching `loremaster.tasks`) · **ESC-1's MECHANISM** — ⚠ **NO LONGER CONDITIONAL: measured YES on 2026-08-01** (58 PASS / 0 FAIL, counts DERIVED, three consecutive green runs on fresh spike-surreal throwaway DBs, discriminating negative control, tree provenance printed; receipt `receipts/2026-08-01-agent-comms-fix/REPORT-probe-esc1-closure-1.md`). The ancestor closure IS persisted at write time, so the **ledger-independent write-path cycle read is ACHIEVABLE**: 04b-3 BUILDS it, and per ESC-1's own clause the known-bound pin becomes a **defect report DELETED WITH THE FIX**, not a bound to keep. Residue enumerated and expected: batch-local `create_many` siblings (no row exists pre-commit) and legacy phantoms (skip recorded at WARNING). Two facts for its builder, already measured — **no ledger verb mutates `blocked_by` after birth** (so the constructed verbs are the COMPLETE column-writing surface), and **a cycle member's edge closure contains ITSELF** (`truncated=False`), making self-reachability the usable cycle signal on the edge read · **CA-11** (write-time cycle-guard TOCTOU vs a concurrent racer — real, correctly characterised, closing it is a contract change) · **CA-12** (the cycle-graph read has no supporting index; trigger = first measured claim/cycle-read latency, or ledger growth past the dependency-bearing population) · plus anything 04b-2's SIZING FENCE ejects, recorded in its close-out with a receipt | — | C | ~0.20 | 04b-2 | open — **minted, not started.** Rulings: `receipts/2026-08-01-agent-comms-fix/REPORT-design-sidecar-04b2-1.md` §B1 L3, §B3, §B4 |
 | 05 | comms-await-story — **SPLIT RULED 2026-07-29 (sizing directive)**: 05a wait-surface (await/story/rollup/CLI + DD-2.a/DD-4.c/R1 + #183 #190 #214; deploys) / 05b verbs+hooks (#89 #174 **#256 #262** + idle-gate v2 #121 #149 + #195 settle) — see file §SPLIT | PKT-28 C3 | C | ~0.30 + ~0.20 (two sessions) | 04b-2 | open |
 | 06 | comms-protocol-drill (brief-base v3 + THE DRILL; #193 retention, #228 watcher rule) | PKT-28 C4 | C | 0.25 | 05 | open |
-| 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) | PKT-30 | L ∥ | 0.20 | — | open |
-| 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce + **#250 its PRODUCTION reproduction**, #128; #126/#127 adjudication) | — | L ∥ | 0.20 | 07 rec. (same seam) | open — **PROMOTED 2026-07-27 to ENABLING work** (#250: #164 live in prod; blocks #249's only mitigation) |
+| 45 | **tool allowlist** (= multi-user proposal Part 2; resolves **#296**, gates `lore-dnd`; served prose becomes a function of the enabled set; collision-guard universe fix) | — | **D** | 0.25–0.35 →split | wave C done | open — **DEPLOYS BOTH** |
+| 46 | **extension discovery wiring** (`extensions:` in lore.yaml → `register_extension`; unknown name fails boot LOUDLY) | — | D | 0.15 | 45 | open |
+| 47 | **twelfth seam: ingest entity-fragment** DESIGN + build (extension-contributed typed records + RELATE edges in the per-file chunk transaction; purge-by-scope) — ⚠ DESIGN packet, roster law | — | D | 0.15 design + build | 46 | open |
+| 48 | **principals substrate** — `build_store(config)` extraction FIRST (3-way copy today), then the `principal` table (never `user`) | — | D | 0.20–0.25 | 45 (∥ 46/47) | open |
+| 49 | **principal CLI (1B) + per-user API keys (1C)** — 39 §4's mint, never odoo-code's; hashed keys; revocation beats cache | — | D | 0.25 | 48 | open — DEPLOYS (CLI in image) |
+| 39 | hosted-security (design first; REQUIRED before off-LAN) — **PULLED FORWARD to wave D (operator, 2026-08-02): #296 is ANSWERED by packet 45's allowlist; the contract is RE-CUT against the principal substrate (48/49 replace R12's roster file — the standing Log override) and the revision gets a FRESH adversary pass (standing law)** | PKT-21 | **D** (was S) | 0.30 →split | 45, 48, 49 | **DESIGN RULED + CONTRACT WRITTEN; was BLOCKED on #296 — now UNBLOCKED by 45.** Design `docs/design/2026-07-31-packet39-google-oauth.md` (R1–R16, twelve+ rulings). Contract **480 pins / 444 RED / 36 GREEN**, rest of suite **7705 passed / 0 failed**, ruff clean; satisfiability re-discharged 0-failed on every revision. **FOUR adversary passes, all INSUFFICIENT**, each finding a real blocker every prior gate passed — one root cause (`_setup_handlers` binds at construction ⇒ post-construction installs are live in-process, DEAD ON THE WIRE): WB30 `call_tool` → WB48 guard *after* the tool body → WB93 instance attr on `list_tools` → WB100 **class** attr (flaky-green 5/10). **Build never started, deliberately.** #296's answer is scoped in `docs/design/2026-08-01-multi-user-lore-proposal.md` §2. Filed #291 #294 #295 #296. Receipts → `receipts/2026-07-31-packet39/`. Operator-side and untouched: hades SNI route · claude.ai client secret · the posture flip. |
+| 50 | **dnd DESIGN SPEC** — extraction grammars + graph model v2 over the SEVEN ruled families; edition-ranking policy derived from the corpus's own 2024 rules (operator rider). Ruled input: `docs/design/2026-08-02-dnd-graph-scope-rulings.md` — ⚠ DESIGN packet, roster law; mints the 52-series | — | D | 0.15 design | 47 | open |
+| 51 | **dnd schema slice + domain store** (every edge ENFORCED + UNIQUE(in,out) + `source_book` scope from birth; scalars as indexed fields; graph-probe scripts → `scripts/`) | — | D | 0.25 | 50 ruled | open |
+| 52 | **dnd extractor builds** (52a spells / 52b monsters+casts / 52c class architecture / 52d cross-cutting — **minted by 50**; every located A/B oracle ships as a permanent build-time pin) | — | D | ≤0.25 each | 50, 51 | open — minted by 50 |
+| 53 | **dnd domain tools** — rules retrieval + general graph FILTERS, client-side composition (NO per-mechanic composed tools); both trust legs per served surface | — | D | 0.20 | 50, 51, 52 | open |
+| 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) — **pulled into wave D (operator, 2026-08-02): precedes 54 go-live** | PKT-30 | **D** (was L ∥) | 0.20 | — | open |
+| 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce + **#250 its PRODUCTION reproduction**, #128; #126/#127 adjudication) — **pulled into wave D (operator, 2026-08-02): outside users must never meet #164** | — | **D** (was L ∥) | 0.20 | 07 rec. (same seam) | open — **PROMOTED 2026-07-27 to ENABLING work** (#250: #164 live in prod; blocks #249's only mitigation) |
+| 54 | **deploy `lore-dnd` + go-live** — second instance, slug `dnd`, ruled allowlist (`2026-08-02-dnd-graph-scope-rulings.md` §4 → instance lore.yaml), quadlet always-on posture; **#236/#138 consult MANDATORY before exposure** | — | D | 0.15 | 39, 49, 53, 07a | open — **DEPLOYS the new instance** |
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
 | 09 | surface-residues — **SPLIT RULED 2026-07-29 (sizing directive)**: 09a served-surface + docs truth (#15 #64 #80 #82 #84–#86 #88 #92 #197 #208) / 09b testing hygiene (#230 #231 #244) — see file header | PKT-03 | L ∥ | ~0.20 + ~0.15 (two sessions) | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
@@ -242,7 +256,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 36 | role-wiring (all\|mcp\|scout + creds; regains role verbs from 19; #206 session-binding fix) | PKT-07 | S | 0.30 →split | — | open |
 | 37 | containerfile-roles + image slimming | PKT-08b | S | 0.20 | 36 | open |
 | 38 | split-topology-e2e | PKT-10b | S | 0.20 | 36, 37 | open |
-| 39 | hosted-security (design first; REQUIRED before off-LAN) | PKT-21 | S | 0.30 →split | 35 (waived, R1) | **DESIGN RULED + CONTRACT WRITTEN; BLOCKED on an OPERATOR DECISION (#296).** Design `docs/design/2026-07-31-packet39-google-oauth.md` (R1–R16, twelve+ rulings). Contract **480 pins / 444 RED / 36 GREEN**, rest of suite **7705 passed / 0 failed**, ruff clean; satisfiability re-discharged 0-failed on every revision. **FOUR adversary passes, all INSUFFICIENT**, each finding a real blocker every prior gate passed — one root cause (`_setup_handlers` binds at construction ⇒ post-construction installs are live in-process, DEAD ON THE WIRE): WB30 `call_tool` → WB48 guard *after* the tool body → WB93 instance attr on `list_tools` → WB100 **class** attr (flaky-green 5/10). **Build never started, deliberately.** #296 is the fork; its answer is scoped in `docs/design/2026-08-01-multi-user-lore-proposal.md` §2. Filed #291 #294 #295 #296. Receipts → `receipts/2026-07-31-packet39/`. Operator-side and untouched: hades SNI route · claude.ai client secret · the posture flip. |
+*(packet 39's row moved into the wave-D block above — pulled forward 2026-08-02; number and history unchanged.)*
 | 40 | ui-foundation | PKT-22 | G | 0.30 →split | 35, 39 | open |
 | 41 | ui-graph-chat (+ Agent-SDK chat) | PKT-23 | G | 0.35 →split | 39, 40 | open |
 
@@ -1522,3 +1536,13 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   was never an enforcement boundary. Re-tighten triggers: first harmful nested spawn in a tdd wave,
   or #299 landing (which makes a portable literal allowlist coherent).
   ⚠ Branch is **66 commits ahead of upstream** — not pushed this session; the operator pushes.
+- 2026-08-02 · **D&D track RULED + SLOTTED: wave D (45–54) inserted after wave C; 39, 07, 07a
+  pulled forward.** Option C ruled · comms completes first · hosted ON-BOX via hades to
+  claude.ai (⇒ 39 + principals/keys pre-go-live) · NO dnd memory · full-power graph (fork 6
+  OVERRIDDEN), seven edge families picked · composition CLIENT-SIDE (rules retrieval + graph
+  filters; no per-mechanic composed tools) · edition policy = 5.0 downranked, read-the-2024-
+  rules rider · dnd tool surface enumerated (5 generic + `dnd_*`; `lore_findings` ENABLED).
+  Three graph-scope scouts (class/monster/crosscut) archived → `receipts/2026-08-01-dnd-graph-scope/`;
+  rulings + edge catalog → `docs/design/2026-08-02-dnd-graph-scope-rulings.md`; packet files
+  45–51/53/54 minted (52-series minted by 50). Forks 1/2/4/6/9 CLOSED; 3/5/7/8 + D3 at 50's
+  kickoff.
