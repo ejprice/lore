@@ -595,7 +595,71 @@ and the property pin already in place makes that retreat a text edit, not a re-c
 
 ---
 
-# §9 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §9 · RULING 9 (follow-up, 2026-08-02, thread `q:04b2-fence-ruling`) — SECTION F RETIRES; `render_fenced` IS THE ONE IMPLEMENTATION; RULING 8 RIDER 2 IS SUPERSEDED, AND ITS OWN DEFECT IS NAMED
+
+Grounds: directive #2044 · `REPORT-adversary-c1-delta-1.md` §1.6 (Δ-6, read verbatim —
+the mutation receipt 12-vs-5, the three `server.py` call sites, the dependency note that
+`render.py` imports the fence primitives FROM `sanitise`) ·
+`render.render_fenced` source read via `lore_get_symbol` · the author's independent §14.5
+concurrence (cited by the lead, not re-read).
+
+**First, the accountability, said aloud — this defect is MINE before it is anyone
+else's.** Ruling 8 rider 2 said *"if the fenced-body logic is inline, EXTRACT it"* —
+sanctioning a mint on an UNVERIFIED premise, without demanding the reuse-search that
+brief-base §6 makes the FIRST action before any helper is written. The author then
+checked the premise against the wrong symbol (`_fence_width` — a name-keyed falsifier,
+the instrument lesson one level up), and the rider's sanction became a contract pin
+FORBIDDING the correct build. #102's shape, inside a rider written to prevent #102,
+authored by the sidecar whose §5.3 had ruled against exactly this shape hours earlier.
+**Rider 2 is SUPERSEDED by this section** (superseded aloud, never silently edited —
+rulings are append-only here for the same reason the Log is).
+
+**RULED:**
+1. **SECTION F RETIRES AS WRITTEN.** `sanitise.fenced_block` is never minted;
+   `test_the_shared_fenced_block_helper_EXISTS` dies with it. The detail render (and any
+   new fenced body this wave serves) **CALLS `render.render_fenced`** — the implementation
+   with the type discipline (`Rendered`), the contract class (verbatim round-trip ·
+   widen-past-longest-run · hostile fence-escape), and three live callers. The contract's
+   *"exists TWICE"* count is corrected to the adversary's derived **≥ THREE**.
+2. **The lead's option (b) dissolves on a false premise, so neither option is taken as
+   framed:** "render_fenced migrating onto fenced_block" was priced as moving three call
+   sites plus a test class — but callers never move under ONE IMPLEMENTATION; only the
+   WIDTH LINE inside `render_fenced` would change. The wrap has one home and it already
+   exists (`render_fenced`); what is genuinely spelled ≥3 times is the WIDTH RULE
+   (`max(MIN_FENCE_WIDTH, max_backtick_run(body) + 1)`), and its primitives ALREADY live
+   in `sanitise` (the adversary's dependency note). So SECTION F's instinct survives as
+   exactly one clause, routed: **04b-3 mints `sanitise.fence_width` (the RULE, not a
+   wrap), `render_fenced`'s internal line consumes it, `SearchPipeline._fence_width` is
+   DELETED onto it, and sharing is proven by mutation over ALL consumers both ways** —
+   the adversary's 12-vs-5 receipt, inverted to green, attached as the spec so nobody
+   re-derives.
+3. **THIS wave, cheap and in already-open files:** the SECTION F re-authoring (contract
+   author) · the detail render calling `render_fenced` · **`_render_finding_detail`'s
+   inline copy migrates onto `render_fenced`** — same file, few lines, and it is the very
+   idiom `render_fenced`'s docstring says it was extracted from; leaving the parent copy
+   inline beside its own extraction is the drift seed. `search.py` is NOT opened this
+   wave (fence: an untouched subsystem in a packet driving to completion).
+4. **The falsifier is re-derived on the PROPERTY, and pinned as the invariant** (the same
+   correction Ruling 7 made for gates): the fence-site inventory is DERIVED, name-blind,
+   as (a) every consumer of the `sanitise` primitives (`max_backtick_run` /
+   `MIN_FENCE_WIDTH` / `FENCE_CHAR`) ∪ (b) every production literal constructing a
+   backtick run — and every member must resolve to `render_fenced` (wrap) or, post-04b-3,
+   `sanitise.fence_width` (width-only); anything else is a DOOR named `file:line`.
+   Lands THIS wave as a repo-local scan with exactly ONE dated, ledgered exemption
+   (`SearchPipeline._fence_width`, expiring at 04b-3's unification, which shrinks the
+   allowlist to empty). Deny-by-default with an explicit dated exemption — Ruling 4/7's
+   pattern, third use.
+
+**Falsifiers:** if `search.py`'s fence use turns out to be a full WRAP (not width-only),
+04b-3's spec simplifies further — it migrates onto `render_fenced` and `fence_width` may
+not need public minting at all (the taker measures first, per Ruling 6.1 rider 2's
+measure-what-you-hold discipline); if the derived inventory finds a FOURTH spelling the
+adversary's three miss, the scan just named it — that is the instrument working, not the
+ruling failing.
+
+---
+
+# §10 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2

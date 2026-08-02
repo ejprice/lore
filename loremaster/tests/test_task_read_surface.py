@@ -2692,13 +2692,16 @@ _FORGED_ROW_LINE = _HOSTILE_TASK_BODY.splitlines()[1]
 def _fence_bounds(rendered: str, body: str) -> tuple[int, int]:
     """The indices of the fence lines wrapping ``body`` inside ``rendered``.
 
-    The width is taken from PRODUCTION (``loremaster.sanitise.fence_width``), never
-    re-derived here: a test that computed its own fence rule would agree with a build that
-    got the rule wrong, which is the whole failure mode the fence exists to prevent.
+    The marker is taken from PRODUCTION by RENDERING the body through the very helper the
+    render must use (``loremaster.render.render_fenced``) and reading its first line —
+    never re-derived here. A test that computed its own fence rule would agree with a build
+    that got the rule wrong, which is the whole failure mode the fence exists to prevent;
+    and reading it off the helper's OUTPUT keeps this name-blind about the width rule,
+    which is the half routed to 04b-3.
     """
-    from loremaster.sanitise import FENCE_CHAR, fence_width  # noqa: PLC0415
+    from loremaster.render import render_fenced  # noqa: PLC0415
 
-    marker = FENCE_CHAR * fence_width(body)
+    marker = str(render_fenced(body)).splitlines()[0]
     lines = rendered.splitlines()
     positions = [index for index, line in enumerate(lines) if line == marker]
     assert len(positions) == 2, (
@@ -2903,56 +2906,56 @@ class TestTheTaskDetailBodyCannotFORGEStructure:
 
 
 class TestTheFencedBodyRenderHasONEImplementation:
-    """⛔ **RED at ``025c2a9``** — Rider 2's second half, and it is a DESIGN decision the
-    ruling sanctioned rather than a tidy-up I chose.
+    """⛔ **RE-AUTHORED under RULING 9 (2026-08-02). `render.render_fenced` IS the one
+    implementation; nothing new is minted.**
 
-    The fence rule already exists TWICE at ``025c2a9`` — ``SearchPipeline._fence_width`` and
-    an INLINE copy in ``AppContext._render_finding_detail`` — and this render would be the
-    THIRD.  *A pattern to clone is a defect to clone* (#102): the rule that a fence must be
-    one wider than the longest run inside is POLICY, and a policy in three places is a fix
-    that reaches one of them.
+    ⚠⚠ **THIS CLASS PREVIOUSLY DEMANDED A HELPER THE REPO ALREADY HAD, AND THE STORY IS THE
+    LESSON — it is the instrument lesson landing on the falsifier written to prevent it.**
+    Ruling 8 rider 2 sanctioned extracting the inline fenced-body logic; I checked the
+    premise with ``grep -rn '_fence_width'`` — **a NAME** — and concluded the rule existed
+    *twice*. It exists at least **THREE** times, because ``loremaster.render.render_fenced``
+    spells the same policy differently, and it is the copy with the type discipline
+    (:class:`~loremaster.render.Rendered`), its own contract class in ``test_render.py``
+    (verbatim round-trip · widen-past-longest-run · hostile fence-escape) and **three live
+    callers in ``server.py``, which already imports it**. A contract demanding a NEW helper
+    would have made the correct build — call ``render_fenced`` — go RED on a pin the builder
+    may not edit. *A falsifier keyed on a name cannot see a policy spelled differently.*
 
-    So the shared helper lands in ``loremaster.sanitise``, beside the primitives it is built
-    from, and **sharing is proven by MUTATION, never by inspection**: move the shared thing
-    and both renders must move with it.
+    **So: the detail renders CALL ``render_fenced``, and ``_render_finding_detail``'s inline
+    copy migrates onto it too** — same file, and ``render_fenced``'s own docstring says it
+    was extracted from that very idiom, so leaving the parent inline beside its own
+    extraction is the drift seed. **What is genuinely duplicated ≥3× is the WIDTH RULE, not
+    the wrap**, and unifying that (including ``SearchPipeline._fence_width``) is routed to
+    **04b-3** with its spec attached. ``search.py`` is not opened this wave.
 
-    ⚠ **A RECORDER, NOT A RAISING SENTINEL, and that is a lesson bought earlier in this same
-    contract:** a sentinel proves only that *something* on the call path reached the shared
-    symbol — measured here, in this file, when such a pin went GREEN on a private-copy build
-    because a callee raised it on the clone's behalf. The recorder names WHICH texts were
-    fenced, so a render that fences its own way is visible.
+    ⚠ **A RECORDER, NOT A RAISING SENTINEL** — a lesson bought earlier in this same
+    contract, where such a pin went GREEN on a private-copy build because a callee raised
+    the sentinel on the clone's behalf. The recorder names WHICH texts were fenced, so a
+    render that fences its own way is visible.
     """
 
     @staticmethod
     def _record_the_shared_fence(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-        """Replace the shared fenced-block helper with a recording pass-through."""
-        import loremaster.sanitise as sanitise_module  # noqa: PLC0415
+        """Replace ``render_fenced`` with a recording pass-through, wherever it is bound.
+
+        Both bindings, so the pin requires no import STYLE — ``server.py`` holds it by
+        from-import today, and a build that reached it as ``render.render_fenced`` would be
+        equally correct.
+        """
+        import loremaster.render as render_module  # noqa: PLC0415
         import loremaster.server as server_module  # noqa: PLC0415
 
         seen: list[str] = []
-        real = sanitise_module.fenced_block
+        real = render_module.render_fenced
 
-        def _recording(text: str) -> str:
-            seen.append(text)
-            return real(text)
+        def _recording(body: str) -> Any:
+            seen.append(body)
+            return real(body)
 
-        monkeypatch.setattr(sanitise_module, "fenced_block", _recording)
-        if hasattr(server_module, "fenced_block"):
-            monkeypatch.setattr(server_module, "fenced_block", _recording)
+        monkeypatch.setattr(render_module, "render_fenced", _recording)
+        if hasattr(server_module, "render_fenced"):
+            monkeypatch.setattr(server_module, "render_fenced", _recording)
         return seen
-
-    def test_the_shared_fenced_block_helper_EXISTS(self) -> None:
-        import loremaster.sanitise as sanitise_module  # noqa: PLC0415
-
-        assert callable(getattr(sanitise_module, "fenced_block", None)), (
-            "loremaster.sanitise exposes no `fenced_block`. The fence rule is POLICY and "
-            "already exists twice; a third inline copy is the #102 shape, and Ruling 8 "
-            "sanctions the extraction precisely so nobody clones the pattern"
-        )
-        assert callable(getattr(sanitise_module, "fence_width", None)), (
-            "loremaster.sanitise exposes no `fence_width` — the width rule SearchPipeline "
-            "and the finding render each compute today"
-        )
 
     async def test_the_TASK_detail_render_routes_through_the_shared_helper(
         self,
@@ -2964,10 +2967,10 @@ class TestTheFencedBodyRenderHasONEImplementation:
         target = await ledger.create_task("a task", _HOSTILE_TASK_BODY, created_by=CREATOR)
         await _tool_seam(ledger).tasks(action="get", task_id=target)
         assert _HOSTILE_TASK_BODY in seen, (
-            f"the task detail render fenced its body WITHOUT the shared helper (it recorded "
-            f"{len(seen)} call(s)). Routing is not sharing: a render carrying its own fence "
-            f"arithmetic diverges the first time the rule is corrected, and the rule is "
-            f"exactly what stops a body closing its own fence"
+            f"the task detail render fenced its body WITHOUT `render.render_fenced` (it "
+            f"recorded {len(seen)} call(s)). Routing is not sharing: a render carrying its "
+            f"own fence arithmetic diverges the first time the rule is corrected, and that "
+            f"rule is exactly what stops a body closing its own fence early"
         )
 
     def test_the_FINDING_detail_render_routes_through_it_TOO(
@@ -2996,9 +2999,164 @@ class TestTheFencedBodyRenderHasONEImplementation:
         )
         AppContext._render_finding_detail(finding)  # noqa: SLF001 - the render IS the pin
         assert _HOSTILE_TASK_BODY in seen, (
-            "the FINDING detail render still fences inline rather than through the shared "
-            "helper, so the extraction left two implementations of the fence rule standing "
-            "and a correction to one will never reach the other"
+            "the FINDING detail render still fences INLINE rather than through "
+            "`render.render_fenced`. Ruling 9 item 3: `render_fenced`'s own docstring "
+            "records that it was extracted FROM this very idiom, so the parent copy sitting "
+            "beside its own extraction is the drift seed — same file, few lines, migrate it"
+        )
+
+
+#: The ONE dated exemption from the fence-site invariant (Ruling 9 item 4).
+#:
+#: ``SearchPipeline._fence_width`` computes the width rule privately. It is NOT unified this
+#: wave — ``search.py`` is an untouched subsystem in a packet driving to completion — and
+#: unifying it is routed to **04b-3** with its spec: mint the WIDTH RULE (never a second
+#: wrap), have ``render_fenced``'s internal line consume it, DELETE this private copy onto
+#: it, and prove sharing by mutation over all consumers both ways.
+#:
+#: ⚠ **DENY-BY-DEFAULT WITH A DATED EXEMPTION, and it SELF-DESTRUCTS:** the pin below
+#: requires the exemption to still be USED. The day 04b-3 lands, this entry stops matching
+#: anything and the pin goes RED carrying its own deletion instruction — a bound cannot
+#: outlive its premise (#137/#138's pattern).
+_FENCE_SITE_EXEMPTION = "search.py"
+_FENCE_SITE_EXEMPTION_EXPIRES = "04b-3"
+
+#: Where the ONE implementation of the fenced wrap lives. Not an allowlist of names — the
+#: module that DEFINES ``render_fenced``, derived below from the function itself.
+_FENCE_IMPLEMENTATION_MODULE = "render.py"
+
+
+class TestEveryFenceSiteInProductionResolvesToTheONEImplementation:
+    """⛔⛔ **RULING 9 item 4 — THE FALSIFIER, RE-DERIVED ON THE PROPERTY.**
+
+    ⚠⚠ **THIS PIN EXISTS BECAUSE MY FALSIFIER FAILED, AND FAILED IN THIS REPO'S MOST
+    DOCUMENTED WAY.** Ruling 8 asked me to check whether extracting a fenced-body helper
+    rippled. I ran ``grep -rn '_fence_width'`` — **keyed on a NAME** — concluded the policy
+    existed twice, and missed ``loremaster.render.render_fenced``, which spells the same
+    policy differently and is the copy with the type discipline, the contract class and
+    three live callers **in the very file I was adding to**. The contract then demanded a
+    helper the repo already had, and would have failed the correct build.
+
+    *"When you catch yourself enumerating what is FORBIDDEN, you have already lost. The
+    forbidden set is unbounded; the SAFE set is small and enumerable — allowlist the safe."*
+    So the inventory is **DERIVED, name-blind**, from what a fence site actually IS:
+
+    * every production call of the ``max_backtick_run`` primitive (the width rule), **and**
+    * every production expression multiplying ``FENCE_CHAR`` (the fence itself), **and**
+    * every bare backtick-run string literal (a hand-typed fence).
+
+    Every member must live in the module that DEFINES ``render_fenced`` — or in the ONE
+    dated exemption. Anything else is a DOOR, reported by ``file:line``. A fourth spelling
+    nobody has thought of joins this set the day it is written, with nobody editing a list.
+    """
+
+    @staticmethod
+    def _fence_sites() -> dict[str, list[str]]:
+        """``{module path: [what makes it a fence site]}`` across production.
+
+        Derived by AST, over a PROPERTY rather than over a vocabulary — the whole point.
+        """
+        import ast  # noqa: PLC0415
+        import pathlib  # noqa: PLC0415
+
+        import loremaster  # noqa: PLC0415
+
+        # ⚠ The scan root is derived from the IMPORTED PACKAGE, never from the working
+        # directory: a CWD-relative glob silently found NOTHING under pytest's rootdir
+        # (MEASURED — `found=[]`, which would have made this whole invariant vacuously
+        # green had its own non-vacuity guard not fired first). It also pins WHICH TREE is
+        # being scanned, which is the #140 discipline applied to a static analysis.
+        root = pathlib.Path(loremaster.__file__).resolve().parent
+        width_rule = {"max_backtick_run", "_max_backtick_run"}
+        fence_char = {"FENCE_CHAR", "_FENCE_CHAR"}
+        sites: dict[str, list[str]] = {}
+
+        def _record(path: pathlib.Path, line: int, why: str) -> None:
+            module = path.relative_to(root).as_posix()
+            sites.setdefault(module, []).append(f"{module}:{line} — {why}")
+
+        for path in sorted(root.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Call):
+                    function = node.func
+                    name = (
+                        function.attr
+                        if isinstance(function, ast.Attribute)
+                        else getattr(function, "id", None)
+                    )
+                    if name in width_rule:
+                        _record(path, node.lineno, f"calls the width rule {name!r}")
+                elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+                    for side in (node.left, node.right):
+                        spelled = (
+                            side.attr
+                            if isinstance(side, ast.Attribute)
+                            else getattr(side, "id", None)
+                        )
+                        if spelled in fence_char:
+                            _record(path, node.lineno, f"constructs a fence from {spelled!r}")
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    stripped = node.value.strip()
+                    if len(stripped) >= 3 and set(stripped) == {"`"}:
+                        _record(path, node.lineno, "a bare backtick-run literal")
+        return sites
+
+    def test_every_derived_fence_site_is_the_ONE_implementation_or_the_DATED_exemption(
+        self,
+    ) -> None:
+        sites = self._fence_sites()
+        assert _FENCE_IMPLEMENTATION_MODULE in sites, (
+            f"the derived scan found NO fence construction in "
+            f"{_FENCE_IMPLEMENTATION_MODULE}, which is where `render_fenced` lives — so it "
+            f"is not seeing fence sites at all and every verdict below is vacuous. "
+            f"found={sorted(sites)}"
+        )
+        doors = [
+            entry
+            for module, entries in sites.items()
+            if module not in {_FENCE_IMPLEMENTATION_MODULE, _FENCE_SITE_EXEMPTION}
+            for entry in entries
+        ]
+        assert doors == [], (
+            "these production sites construct a fence or compute its width OUTSIDE the one "
+            "implementation:\n  " + "\n  ".join(doors) + f"\n"
+            f"`loremaster.render.render_fenced` is the ONE wrap — it carries the Rendered "
+            f"type discipline, its own contract class, and every live caller. A second "
+            f"spelling is #102's shape, and the fence rule is exactly the kind of policy a "
+            f"fix reaches one copy of. ⚠ This inventory is DERIVED from what a fence site "
+            f"IS, not from a list of names, because the name-keyed falsifier that preceded "
+            f"it missed `render_fenced` entirely and nearly shipped a contract forbidding "
+            f"the correct build. The ONE exemption is {_FENCE_SITE_EXEMPTION}, expiring at "
+            f"{_FENCE_SITE_EXEMPTION_EXPIRES}"
+        )
+
+    def test_the_DATED_exemption_still_has_a_premise_and_SELF_DESTRUCTS_when_it_does_not(
+        self,
+    ) -> None:
+        """⛔ **This is D-5's closure**, and it is the *"when you cannot close a hole, pin
+        it"* form rather than the delegation pin the delta adversary asked for.
+
+        D-5 was *"`SearchPipeline` delegation pinned by nothing"*. Ruling 9 rules that
+        `search.py` is NOT unified this wave, so there is no delegation to pin — what was
+        an UNPINNED hole becomes a PINNED, DATED bound instead. An unpinned known limitation
+        is indistinguishable from an unknown one; this one carries its own expiry.
+
+        **And it cannot outlive its premise:** the day 04b-3 deletes that private width
+        copy, this exemption stops matching anything and this pin goes RED carrying the
+        instruction to delete it.
+        """
+        sites = self._fence_sites()
+        assert _FENCE_SITE_EXEMPTION in sites, (
+            f"the dated exemption {_FENCE_SITE_EXEMPTION!r} no longer constructs a fence or "
+            f"computes its width — so its premise is gone. If {_FENCE_SITE_EXEMPTION_EXPIRES}"
+            f" landed and unified it onto the shared width rule: ✅ that is the ruled "
+            f"outcome. DELETE this exemption and this pin, and say so in your wave report. "
+            f"Do NOT widen it. found={sorted(sites)}"
+        )
+        assert len(sites) == 2, (
+            f"the fence-site inventory now spans {sorted(sites)}. Exactly two modules are "
+            f"sanctioned — the implementation and the ONE dated exemption — and a third is "
+            f"a door, not a new exemption to add here"
         )
 
 

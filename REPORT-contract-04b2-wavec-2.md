@@ -1014,7 +1014,104 @@ a seam this contract now provably touches — whether or not the ruling moves an
 
 ---
 
-*Written 2026-08-01 by `contract-04b2-wavec-2` (Opus) against `feat/surreal-unification`
+# §15 · RULING 9 — SECTION F RETIRED; `render_fenced` IS THE ONE IMPLEMENTATION; D-5 CLOSED
+
+Sidecar **Ruling 9** (§9) supersedes Ruling 8's rider 2 aloud and takes the defect as the
+sidecar's own: rider 2 sanctioned a mint on an **unverified premise**, without demanding the
+reuse-search brief-base §6 makes the first action. My §14.5 self-correction is confirmed.
+
+## 15.1 What changed
+
+* **`sanitise.fenced_block` is never minted; `test_the_shared_fenced_block_helper_EXISTS` is
+  DELETED.** The task detail render calls **`loremaster.render.render_fenced`** — the
+  implementation that already carries the `Rendered` type discipline, its own contract class
+  in `test_render.py`, and three live callers in the very file the new render lives in.
+* **`_render_finding_detail`'s INLINE copy migrates onto `render_fenced` too** (reference
+  build, same file). `render_fenced`'s own docstring records that it was extracted from that
+  idiom — leaving the parent inline beside its own extraction is the drift seed.
+* **`search.py` was NOT opened.** The reference build's earlier delegation edit was reverted
+  to pristine; `sanitise.py` likewise.
+* The *"exists TWICE"* count is corrected to **≥ THREE** wherever it appeared.
+
+## 15.2 The falsifier, re-derived on the PROPERTY (Ruling 9 item 4)
+
+`TestEveryFenceSiteInProductionResolvesToTheONEImplementation` — the correction for the
+failure that produced this whole round. My original check was
+`grep -rn '_fence_width'`, **keyed on a NAME**, and `render_fenced` spells the same policy
+differently. *"When you catch yourself enumerating what is FORBIDDEN, you have already
+lost — allowlist the safe."*
+
+The inventory is now **derived from what a fence site IS**: every production call of the
+`max_backtick_run` width primitive ∪ every expression multiplying `FENCE_CHAR` ∪ every bare
+backtick-run string literal. Every member must live in the module defining `render_fenced`,
+or in the ONE dated exemption. Anything else is a door named `file:line`. Derived output on
+the correct build — **4 sites, 2 modules, zero doors**:
+
+```
+render.py:243  constructs a fence from 'FENCE_CHAR' · calls the width rule 'max_backtick_run'
+search.py:1460 constructs a fence from '_FENCE_CHAR'
+search.py:1430 calls the width rule '_max_backtick_run'
+```
+
+⚠ **A CWD BUG IN MY OWN SCAN, caught by its own non-vacuity guard.** The first version
+globbed a CWD-relative path and found **nothing** (`found=[]`) — an invariant that would have
+been vacuously green over an empty set. The guard *"the scan must find the implementation
+module"* fired first. The root is now derived from `loremaster.__file__`, which is
+CWD-independent **and** pins which tree is scanned (#140's discipline applied to a static
+analysis).
+
+## 15.3 D-5 CLOSED — as a pinned, dated, self-destructing bound
+
+D-5 was *"`SearchPipeline` delegation pinned by nothing"*. Ruling 9 rules `search.py` is not
+unified this wave, so **there is no delegation to pin** — the honest closure is the
+*"when you cannot close a hole, pin it"* form. `_FENCE_SITE_EXEMPTION` names it, with
+`_FENCE_SITE_EXEMPTION_EXPIRES = "04b-3"`, and
+`test_the_DATED_exemption_still_has_a_premise_and_SELF_DESTRUCTS_when_it_does_not` requires
+the exemption to **still be used**: the day 04b-3 deletes that private width copy, the pin
+goes RED carrying its own deletion instruction. A bound cannot outlive its premise
+(#137/#138). The second leg holds the inventory to exactly two modules, so a third is a
+door rather than a new exemption someone quietly adds.
+
+## 15.4 Mutation proofs — declared before each run, diffed both ways, tree byte-exact
+
+| mutation | declared | result |
+|---|---|---|
+| the task render hand-rolls its own fence (a DOOR) | 5 | `5 failed, 85 passed` — **PROOF HELD**, fired EXACTLY |
+| the finding render keeps its INLINE copy (the drift seed) | 3 | `3 failed, 87 passed` — **PROOF HELD**, fired EXACTLY |
+
+The first is the load-bearing one: it proves the derived scan **names a door it was never
+told about**, which is the property a name-keyed falsifier could not have.
+
+## 15.5 Receipts
+
+```
+reference build, contract alone                                    90 passed / 0 failed
+reference build, + query_tasks_bounded + blocks_edge + task_ledger
+  + mcp_server + txn_contention + surreal_harness + sanitise
+  + search + findings + render + render_seam_pins
+                                        -n auto           1742 passed, 3 xfailed in 117.94s
+reference build, ruff check .        2 errors, BOTH pre-existing in scripts/ (finding #311)
+reference build, mypy on the contract                              0 errors
+HEAD (54e719d + my files)                                          63 failed / 27 passed
+HEAD, ruff on the contract                                         All checks passed
+```
+
+89 → **90 pins** (one deleted, two added). `test_render.py` and `test_render_seam_pins.py`
+are in the satisfiability set because `render_fenced` is now a seam this contract provably
+touches.
+
+## 15.6 Routed to 04b-3, with its spec attached, so nobody re-derives it
+
+The genuinely-duplicated thing is the **WIDTH RULE**
+(`max(MIN_FENCE_WIDTH, max_backtick_run(body) + 1)`), spelled ≥3 times, whose primitives
+already live in `sanitise`. 04b-3: mint the RULE (never a second wrap), have `render_fenced`'s
+internal line consume it, DELETE `SearchPipeline._fence_width` onto it, prove sharing by
+mutation over all consumers both ways — the adversary's 12-vs-5 receipt inverted to green.
+The dated exemption above is what makes that arrival impossible to forget.
+
+---
+
+*Written 2026-08-01/02 by `contract-04b2-wavec-2` (Opus) against `feat/surreal-unification`
 @ `f67a219`. Every number here was derived this session by the command shown beside it;
 nothing is inherited, including from the predecessor's report. No git command was run; the
 only files this agent modified in the working tree are the three test files named in §1 and
