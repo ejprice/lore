@@ -1,0 +1,94 @@
+# gates.yaml — THE CANONICAL DEFINITION OF THIS REPO'S GATE SET.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS FILE IS THE AUTHORITY. CLAUDE.md's gate section is COMMENTARY.
+# ─────────────────────────────────────────────────────────────────────────────
+# Sidecar Ruling 7.1 (operator-granted, "Close the gap"), grounds #306 + #312.
+#
+# The obvious design was to DERIVE the claimed-gate set from CLAUDE.md's prose.
+# It was ruled out, and the reason is the most expensive lesson this repo has:
+# **a regex over English law is the enumeration antipattern one level up.** Six
+# instruments in CLAUDE.md's own table each died to the next name their author had
+# not thought of; a gate-set scanner keyed on sentence shapes would be the seventh.
+#
+# So the binding is INVERTED instead. A gate EXISTS iff it has an entry here.
+# Prose naming an unmanifested gate binds nothing. This is the same move the repo
+# already made for `registration_sites.py` ("annotations on the script's output,
+# not a substitute for running it") and for the store reference (cite, never
+# re-transcribe) — drift stops being a reading and becomes structural.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT READS IT
+# ─────────────────────────────────────────────────────────────────────────────
+#   uv run python scripts/pending_contract_gate.py --currency
+#       → per-gate GREEN / RED_ADJUDICATED(owner, trigger) / RED_ORPHANED.
+#         ONLY RED_ORPHANED fails. Required at every wave close-out: #306's rule
+#         ("enumerate WHICH gates ran and the verdict of EACH") is GENERATED from
+#         this file, which makes the omission class unwritable.
+#   uv run python scripts/pending_contract_gate.py
+#       → the deploy receipt. Different question, deliberately different verdict.
+#
+# The runner's leg set is DERIVED from `gates`. There is no hand-maintained tuple
+# to forget — #312 was exactly that defect (a wrapper shipped missing its own ruff
+# leg, so its receipt read full-gate while a third of the set never ran), and
+# "remember to add it to ALL_LEGS" is a hope, not a mechanism.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# FIELDS
+# ─────────────────────────────────────────────────────────────────────────────
+#   id              the gate's name. Appears in every served verdict.
+#   description     what it is FOR. Prose here describes intent, never behaviour —
+#                   behaviour is the reader's, and is rendered FROM the reader.
+#   command         argv. `{junit_xml}` is substituted with a temp path at run time.
+#   reader          which output reader parses it. ALLOWLISTED: an unknown name is
+#                   a PARSE FAILURE, not a skipped gate. That is the mechanism —
+#                   a gate added here reaches the runner in the same edit, or the
+#                   runner refuses to start. Each reader owns its own anti-vacuity
+#                   guards (a tool's own count line, so "ran-and-empty" can never
+#                   impersonate "passed"); the runner RENDERS those guards from the
+#                   reader class rather than restating them here, because prose
+#                   describing behaviour must be derived from it, never re-stated
+#                   beside it.
+#   adjudicated_by  WHICH registry may own this gate's reds.
+#                     `pending-contracts` → scripts/pending_contracts.yaml may
+#                        adjudicate a red as an accepted, owned, triggered bound.
+#                     `none` → ZERO TOLERANCE. Any red is RED_ORPHANED.
+#                   An unknown adjudicator is a PARSE FAILURE: a red class with no
+#                   registry able to own it is a NEW adjudication citizen and a
+#                   DESIGN question (falsifier 7.3), never a builder improvisation.
+
+version: 1
+
+gates:
+  - id: typecheck
+    description: >-
+      The canonical static-analysis runner: one mypy iteration per typecheck root
+      plus a shellcheck leg over every tracked .sh. Named `typecheck`, not `mypy`,
+      because it is both — the wrapper's earlier `mypy` label under-described the
+      shell leg it was already reporting.
+    command: ["./scripts/typecheck.sh"]
+    reader: typecheck_transcript
+    adjudicated_by: pending-contracts
+
+  - id: ruff
+    description: >-
+      The lint gate. ZERO TOLERANCE by ruling: the pending-contract registry can
+      express a pending CONTRACT — symbols a build will create, pins designed RED
+      until it lands — and no such category exists for a lint violation. A lint
+      error is never "a name the build will add later".
+    command: ["uv", "run", "ruff", "check", "."]
+    reader: ruff
+    adjudicated_by: none
+
+  - id: pytest
+    description: >-
+      The suite, run with -n auto per CLAUDE.md's measured 9.6x. `junit_family=xunit1`
+      is LOAD-BEARING, not decoration: pytest's default xunit2 DROPS the per-testcase
+      `file` attribute, and without it the partition can attribute no failure to any
+      file — measured on a real 8779-test run, where 444 correctly-registered pins
+      rendered as UNREGISTERED with nothing about the run looking wrong.
+    command:
+      ["uv", "run", "pytest", "-q", "-n", "auto",
+       "-o", "junit_family=xunit1", "--junit-xml={junit_xml}"]
+    reader: pytest_junit
+    adjudicated_by: pending-contracts

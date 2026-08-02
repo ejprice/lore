@@ -81,6 +81,33 @@ none** — an `n` restated beside a claim rather than DERIVED from the computati
 produced it is a false clear *wearing* verifiability, armoured by compliance.
 
 ## Quality gates (operator-ruled, every commit)
+
+⚠ **THIS SECTION IS COMMENTARY. `scripts/gates.yaml` IS THE AUTHORITY** (sidecar
+Ruling 7.1, operator-granted 2026-08-01 — "Close the gap"; grounds #306 + #312).
+**A gate EXISTS iff it has an entry in that manifest**; a gate named only in the prose
+below binds nothing and appears in no receipt. The binding is INVERTED deliberately:
+deriving the gate set from THIS FILE would mean a regex over English law, which is the
+enumeration antipattern one level up — the same class as the six defeated instruments
+below, and as the registration-site list that was wrong four times. So the manifest is
+canonical and this prose annotates it, exactly as `registration_sites.py` is run rather
+than read and the store reference is cited rather than re-transcribed.
+- **The gate set is DERIVED, and the currency check is how you read it:**
+  `uv run python scripts/pending_contract_gate.py --currency` renders every manifested
+  gate as **GREEN / RED_ADJUDICATED(owner, trigger) / RED_ORPHANED**, and **only
+  RED_ORPHANED fails.** The invariant is ADJUDICATION, not greenness: packet 39's red
+  typecheck is a ruled, owned bound doing its job; red-with-nobody's-name-on-it is the
+  disease. **REQUIRED at every wave close-out** — #306's rule ("enumerate WHICH gates
+  ran and the verdict of EACH") is now GENERATED from the manifest, which makes the
+  omission class unwritable. An adjudication is a machine-checkable registry entry
+  (`scripts/pending_contracts.yaml`); a finding row is provenance, never the adjudication.
+  ⚠ Named bound: between close-outs a fresh red can sit unnoticed. This bounds the orphan
+  window to one wave — re-open trigger: **the day this repo gains CI, currency is its first job.**
+- **WHY, measured, twice.** #306 — a gate RUN and RED with no owner, no trigger, no
+  ledger row, inherited silently by every session. #312 — a gate CLAIMED and NEVER RUN:
+  the wrapper built to pin #306 shipped without its own ruff leg, so its receipt read
+  full-gate while a third of the set never executed, *and* `ruff` turned out to be red
+  at HEAD too. Both were found by agents tripping over them mid-task. Neither was
+  findable by reading this file.
 - `scripts/typecheck.sh` — zero mypy errors including test trees. This runner is
   canonical; a single combined `mypy` invocation false-errors on `tests.conftest`.
 - `uv run ruff check .` — clean. The PL family is live under the 2026-07-05 curation

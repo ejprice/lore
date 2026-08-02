@@ -50,11 +50,26 @@ brief project v7 read
   anything I found.**
 - **findings filed:** **#307** (two of #306's headline numbers do not reproduce) ·
   **#308** (the non-contract RED pins) · **#312** (a SECOND canonical gate red at HEAD, and
-  the wrapper's own missing leg) · one `lore_remember` gotcha (the junit family).
+  the wrapper's own missing leg) · **#316** (gate currency shipped; supersedes #312) ·
+  one `lore_remember` gotcha (the junit family).
 - **receipts:** §4 unit contract **41/41** · §5 nine live controls, all fired · §5.7 leg-4
   in isolation · §8.1 full run · §8.1b the missing gate · §8.2 the defect the full run
   found · §9 gates (ruff now clean repo-wide) · §10b the unrelated-failure flag ·
   **§10c the identification of the 36**.
+- **SECOND SCOPE GRANT — sidecar Ruling 7 / directive #2030 — DELIVERED (§12).**
+  `scripts/gates.yaml` is now canonical; **`ALL_LEGS` is DELETED** and the leg set derives
+  from it (my own #312 defect is now unwritable, proved by mutation); `--currency` renders
+  GREEN / RED_ADJUDICATED(owner, trigger) / RED_ORPHANED with only orphaned failing;
+  CLAUDE.md's gate section is demoted to commentary citing the manifest, with a
+  citation-presence pin. **Falsifier 7.2 answered: the runner HOSTS the mode — no fork.**
+  21 new pins. **ONE DEVIATION from 7.3's verdict set: a fourth state `NOT_RUN` (§12.3)** —
+  a control caught the render calling an unrun gate `RED_ORPHANED`, which asserts a fact not
+  in evidence. It still fails; it no longer over-claims.
+- **⚠ THE CURRENCY MODE'S FIRST TWO GENUINE RUNS EACH CAUGHT AN UNOWNED RED (§12.5)** —
+  4 × `F821` in one agent's uncommitted file, then a collection `NameError` in another's.
+  Both real at the moment of measurement, both unowned, both named with file+id, neither
+  mine, both since moved. **Run currency at close-out on a QUIET, COMMITTED tree** — mid-wave
+  it yields true-but-transient orphans, which is how an instrument teaches people to ignore it.
 - **⚠ ONE THING THE LEAD MUST ACT ON BEFORE THE DEPLOY RUN (§10c.3):** at `d5c8958` the
   gate's `444 failed registered` is packet-39 EXACTLY and `self-destruct: 0 findings`
   (the registry is neither stale nor over-broad) — **but that run measured the WORKING
@@ -1041,3 +1056,158 @@ echo "################ ALL CONTROLS DONE"
 git status --porcelain
 ```
 
+---
+
+# §12 · GATE CURRENCY — sidecar Ruling 7, operator-granted ("Close the gap")
+
+Second scope grant, directive **#2030**. Spec: `REPORT-design-sidecar-04b2-wavec-1.md` §7,
+read in full. Grounds: #306 + #312, including #312's resolve note, which names the gap:
+*"nothing systematically checks whether a gate named in CLAUDE.md is actually green at HEAD
+… the question 'is every gate we CLAIM to run actually passing, and if not who owns it' has
+no derived answer."*
+
+## 12.1 · ⚠ FALSIFIER 7.2 ANSWERED FIRST — the runner CAN host the mode. No fork.
+
+The ruling required a **STOP-and-return** if the existing runner could not host currency,
+because forking would be #102's shape inside the instrument built to close #306. **It hosts
+it.** Currency is an adjudication layer over the *same* `GateRunner`, the *same* readers,
+and the *same* partition the deploy receipt already computes: `partition_mypy` /
+`partition_pytest` already separate registered from unregistered residuals, which is
+precisely the owned-vs-orphaned distinction. **One new function (`gate_currency`), one new
+dataclass, one flag. No second runner, no duplicated policy.**
+
+## 12.2 · What changed
+
+| file | change |
+|---|---|
+| `scripts/gates.yaml` | **NEW — the canonical gate set.** id · description · command · reader · adjudicated_by |
+| `scripts/pending_contract_gate.py` | `ALL_LEGS` **DELETED**; leg set derives from the manifest; `GateRunner` runs manifested commands generically; `--currency` mode; `NOT_RUN` verdict |
+| `CLAUDE.md` | gate section **demoted to commentary** citing `scripts/gates.yaml`, with the why and the named CI re-open trigger |
+| `scripts/test_gate_currency.py` | **NEW — 21 pins**, inside `testpaths` on arrival |
+
+### The seam (7.2), and why it is a mechanism rather than a rule
+
+`ALL_LEGS` is **gone**, and its absence is the point. The constant's *first version was
+missing the ruff gate* — that is #312. Its remedy was written as *"any future gate must be
+added to `ALL_LEGS` in the same diff"*, i.e. a thing to remember. Now:
+
+- the manifest is canonical; the leg set is `manifest.ids`;
+- a gate's `reader` is **allowlisted** — an unimplemented reader is a **parse failure**, so
+  a gate reaches the runner in the same edit or the runner refuses to start;
+- proved by **MUTATION, not inspection**
+  (`test_adding_a_gate_to_the_manifest_reaches_the_runner_with_no_code_edit`): add a fourth
+  gate to a fixture manifest, and the runner's leg set moves with it. A build keeping a
+  private tuple passes every other test in the file and fails that one.
+
+**The defect is not fixed. It is unwritable.**
+
+### The invariant (7.3) — adjudication, not greenness
+
+`GREEN` · `RED_ADJUDICATED(owner, trigger)` · `RED_ORPHANED`, and only orphaned fails.
+Riders honoured: an adjudication is a **machine-checkable registry entry** (a finding row is
+provenance, never the adjudication); `adjudicated_by: none` means **no registry may own that
+gate's reds** (ruff, zero-tolerance) — read from the gate's own POLICY, not from whether the
+registry happens to name the file; an **expired** adjudication (any self-destruct finding) is
+ORPHANED, **not grandfathered**; and `is_deploy_receipt` is untouched.
+
+## 12.3 · ⚠ ONE DEVIATION FROM 7.3's VERDICT SET — a FOURTH state, `NOT_RUN`
+
+**Found by a control, not by reasoning.** The first build mapped *"claimed by the manifest,
+never executed"* onto `RED_ORPHANED`. That **fails correctly** — an unmeasured gate cannot
+satisfy *"every claimed gate is green-or-owned"*, and it is #312's half of the disease — but
+the rendered line **asserted the gate was RED**, which is a fact not in evidence. A served
+surface that over-claims is the one thing the trust doctrine forbids outright.
+
+So the state is named for what it is: it still fails, it just no longer lies about why.
+Pinned in **both directions** (`test_a_CLAIMED_but_UNRUN_gate_is_NOT_RUN_and_fails_without_
+claiming_it_is_RED`) — one assertion that it fails (or #312 returns), one that the render
+contains no `RED` (or the over-claim returns). **Flagged for the lead: this adds a member to
+a verdict set the ruling enumerated.**
+
+## 12.4 · Positive controls (7.4) — all live runs
+
+| control | injected condition | observed | exit |
+|---|---|---|---|
+| **A** | a 4th gate CLAIMED in the manifest and not run | `a_gate_nobody_runs NOT_RUN — claimed by the manifest, never executed` | 1 |
+| **B** | packet-39's OWNED red retagged `adjudicated_by: none` — one policy bit, same tree, same reds | `typecheck RED_ORPHANED — 16 residual(s) with NO owner` | 1 |
+| **D** | `gates: []` | `MANIFEST ERROR … a manifest with NO gates makes the currency check vacuously true` | 2 |
+| **E** | `reader: telepathy` | `MANIFEST ERROR … unknown reader 'telepathy' — the implemented set is [...]` | 2 |
+| **validity leg** | none — runs no gate at all | manifest parses, 3 gates, per-gate anti-vacuity guards rendered FROM the reader classes | 0 |
+| **C (healthy)** | none — all gates run, every red owned | see §12.5 | — |
+
+**Control B is the sharpest:** the tree, the reds and the registry are all identical to the
+passing case; the *only* difference is one policy field. A build that read greenness-plus-
+registry instead of the gate's own policy passes everything else and fails exactly there.
+
+⚠ **And control C caught the over-claim in §12.3** — my first attempt ran `--legs
+typecheck,ruff` to save eight minutes, which made `pytest` an unrun gate and exposed the
+mislabelling. **The control I designed badly found a real defect the well-designed ones did
+not.**
+
+## 12.5 · The healthy path — and what trying to demonstrate it actually found
+
+**A currency PASS on a live run, deterministic** (single-gate manifest, that gate executed):
+
+```
+GATE CURRENCY — is every CLAIMED gate green, or owned?
+  manifest   : ('ruff',) (1 gates)
+  ruff         GREEN
+CURRENCY   : PASS — every claimed gate is GREEN or OWNED
+EXIT=0
+```
+
+So the instrument demonstrably says **yes**. The GREEN and RED_ADJUDICATED pass-paths are
+also pinned at unit level (`test_ONLY_orphaned_fails_across_the_whole_verdict_set` asserts
+all three verdicts and all three `ok` values in one place).
+
+**⚠ THE FULL THREE-GATE HEALTHY RUN DID NOT REACH PASS — TWICE, FOR TWO DIFFERENT REASONS,
+NEITHER OF THEM MINE. And that is the most useful thing in this section.** Both attempts
+used a registry that OWNS all three contract-first files, so every *expected* red was
+adjudicated:
+
+| attempt | typecheck | ruff | pytest | what broke it |
+|---|---|---|---|---|
+| 1 | `RED_ADJUDICATED` (214 owned) | **`RED_ORPHANED` ×4** | `RED_ADJUDICATED` (536 owned) | `F821 Undefined name 'OTHER_OWNER'` ×4 in another agent's **uncommitted** `test_task_read_surface.py` |
+| 2 | `RED_ADJUDICATED` (209 owned) | `GREEN` | **`RED_ORPHANED` ×3** | `scripts/test_gated_ground.py`, cascading from a **collection error** — `NameError: PENDING_TRAFFIC_BACKENDS is not defined` in another agent's **uncommitted** `test_comms_footer.py` |
+
+**Both were real reds at the moment of measurement** (`ruff check .` genuinely reported the
+four F821s; pytest genuinely could not collect), **both were unowned, and the instrument
+named them with file and test id.** Both were gone or moved by the next run. Verified not
+mine: `PENDING_TRAFFIC_BACKENDS` appears **0 times in HEAD and 5 times in the working tree**,
+and everything I wrote lives in `scripts/`.
+
+**So the mode's first two genuine runs each caught an unowned red that nobody had noticed.**
+That is the instrument working, not failing — and it is the direct answer to #312's resolve
+note, which said the question *"is every gate we CLAIM to run actually passing, and if not
+who owns it"* had no derived answer. It has one now, and its first two answers were both
+findings.
+
+**AND IT SHARPENS §10c.3's DEPLOY-ORDERING POINT INTO A RULE:** with five agents editing, a
+whole-tree gate reading the WORKING TREE cannot settle — I have now watched it move under
+three separate measurements. **Currency must be run at close-out on a quiet, committed
+tree.** Run it mid-wave and you will get true-but-transient orphans, which is noise that
+teaches people to ignore the instrument — the exact way a gate gets switched off.
+
+## 12.6 · Honest notes
+
+- **`mypy` → `typecheck` in the served tail.** The manifest is canonical, its id is
+  `typecheck`, and the leg was always both mypy AND shellcheck — the old label
+  under-described a gate whose shellcheck failures it was already reporting. Renamed so the
+  receipt and the authority agree.
+- **7.1's stated bound holds and I did not close it.** Prose-only drift (a sentence naming
+  an unmanifested gate) is not machine-catchable; the ruling accepts this because the
+  close-out enumeration is GENERATED. I added the cheap reverse check —
+  `test_the_shipped_manifest_names_every_gate_claude_md_still_spells_out` — so a manifest
+  entry nobody documented is visible too. Neither direction is a proof.
+- **A THIRD transient, minutes after the second.** While finalising, `uv run ruff check .`
+  went from clean to **7 errors** — 6 `F821`/`F401` in the same uncommitted
+  `test_comms_footer.py`, none in anything I wrote (`uv run ruff check scripts/` → *All
+  checks passed*, mypy → *27 source files*, 62 pins green). Recorded not as a complaint but
+  as the third independent measurement of the same fact: **the whole-tree gates are being
+  read against a tree five agents are writing.** Any number in this report is a measurement
+  at a moment.
+- **I nearly filed a false finding.** My first drain after the wake returned *"no unread"*,
+  and I was about to record a third channel-loss datum. A `peek` before writing it showed
+  the directive present as **#2030** — my drain had simply preceded the send. **There was no
+  channel loss. Verify before you report, including when the thing you are about to report
+  is a known bug you have already seen twice.**
