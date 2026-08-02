@@ -16,7 +16,7 @@ Written against `feat/surreal-unification` @ `379c2c5` (HEAD at resume).
 | `Verdicts acted on:` | §L-6 written at `0d24c12`; `git merge-base --is-ancestor 0d24c12 379c2c5` = SAME (ancestor). Not STALE. C-DEF retraction (`c131686`/`8b0933d`) landed; not resurrected. |
 | `Directives:` | 0 ledger / 0 wake / 0 prose-duplicated (spawns carry full briefs via the Agent prompt, the guaranteed-read channel) |
 | `Rulings:` | 0 body-only (this file is the artifact) |
-| `Agents:` | 2 spawned / 0 ledger-retired / 2 running |
+| `Agents:` | 3 spawned (sidecar-r2, builder-c3-2, cdef-1) / 0 ledger-retired / sidecar standing-by · builder-c3-2 done · cdef-1 running |
 | `Uncommitted at stop:` | 0 (tree clean at resume) |
 
 ## R2-1 · RESUME ENTRY — state verified, not inherited
@@ -110,6 +110,41 @@ widened exposure unacceptable before deploy, that is a packet-sized scope grant 
 waits** — it cannot be bought as a rider (§11.4). Recommendation: accept-with-bound-pinned (routing
 is sound; the C3 build + cold audit proceed regardless, only the deploy gate turns on this). To be
 formally confirmed at the deploy gate with full context.
+
+## R2-5 · C3 BUILD ACCEPTED (`46a5933`); the C-DEF is REAL and routed contract-side
+
+`builder-c3-2` reported C3 BUILT: 217 passed / 8 failed of 225. Verified, not relayed:
+- **Random receipt re-run (lead):** `test_comms_footer.py` → 217 passed / 8 failed, reproduced
+  exactly. The build is solid — good ONE-IMPLEMENTATION discipline (`_is_comms_charset_legal`
+  extracted, not cloned; MP-6 serves the registry's OWN classification; footer at a single exit;
+  counts CALLED). Mutation proofs honest (MP-B's prediction-miss reported as a miss, exit 4, not
+  re-declared — #194/#196 respected).
+- **Deviations reviewed + RATIFIED (judgment read on the diffs):** (1) `test_query_tasks_bounded.py`
+  `_tool_seam` — the SECOND copy of the seam the ruled R-4 co-edit missed (#102 in a fixture);
+  mirrored the ruled fix verbatim (empty fakes, not a missing-service guard). (2)
+  `test_comms_promise_registry.py` — three new served literals classified through the file's
+  designed deny-by-default workflow + a `PromiseProof` whose NO-EMIT leg is the fallback render
+  (catches W21). Both are build-necessitated and correct.
+- **Currency gate (builder-run):** 202 C3 orphans → 8, ZERO non-C3 orphans repo-wide, ruff green.
+- Build committed `46a5933`; report `cbe1982`.
+
+**THE C-DEF — VERIFIED REAL (not a repeat of the stale-base false C-DEF).** Read
+`_task_action_kwargs` at HEAD: it seeds create/create_many/transition/supersede/rollup and falls
+through to `return {}` for the NEW `get`/`blockers` read actions, so `_require_arg` raises before
+any footer decision. The 8 pins are un-drivable on ANY build — a satisfiability/fixture defect, not
+a build defect. It is CONTRACT-side (`test_comms_footer.py`, builder's do-not-touch) — routed to a
+fresh contract agent `contract-04b2-cdef-1`, NOT the builder (independence: the fixture that grades
+the build cannot be authored by the build's author). The fix-agent must PROVE the 8 pins pass AND
+still discriminate (mutation non-vacuity), and settle the `blockers`/`transitive_blockers` backend
+question (that method lives only on the real `TaskLedger`, not the fakes).
+
+**Residuals carried to the cold audit / close-out (builder §9, committed):** §4.4 link-2
+name-mismatch serves SILENCE (I accept the builder's reading A — teaching a false claim about a
+misbehaving registry would be worse); §4.1/§9.5 the branch-chain-in-dispatcher constraint is
+undefended for `findings` (no structural scan — a future extraction goes undetected); §9.6
+`create_many` write-count rides a docstring atomicity claim not empirically proven; §9.8
+`_validate_comms_identities` gained defaults for name/to (surface widening). None blocking; the
+cold audit scrutinises them.
 
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
