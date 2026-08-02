@@ -61,6 +61,56 @@ the real tree; its session is dead so nothing drives it to wake). Flagged to the
    design (builder-c3-1 §4c/§6.3/§7; c3fix §5.2/§7; sidecar Ruling 10/8/5.3). Reference build
    withheld (builder ≠ grader).
 
+## R2-4 · RULING 11 (sidecar, B3 attribution leak) — ADOPTED; routed 04b-3; four riders owed
+
+The sidecar re-measured (did not relay) and the door is WIDER than B3 reported: **six free-text
+render doors leak**, all with clean controls, **all green under the existing render-injection
+oracle** (`assert_render_injection_safe` checks control-chars + row-shape only — blind to
+same-line instruction forgery, and its docstring reads as completeness). **Two doors are MINTED
+THIS WAVE** by C1's `_render_task_detail` (`action=get`, `0ff05ed`); the `repr` teaching Ruling 10
+forbade by name is live at 8 tasks.py sites. Sidecar graded `1486cb2` = HEAD (SAME, not stale).
+
+**RULING (adopted under delegation):** Link 4 NAMES the door as a predicate but cannot CLOSE it —
+its naming allowance is bought entirely by Link 1b's charset gate, which free text cannot have. The
+chain gains **LINK 5**: every caller-supplied string reaching a served answer is EITHER
+charset-gated (Link 1b) OR render-contained; the two sets PARTITION the registered string params;
+the partition is DERIVED (complement of the Link-0 scan over the inputSchema universe); a param in
+neither half is a door. Seam = a NEW inline primitive `render.render_attributed` (composes
+`sanitise_line` + `render_fenced`'s width rule; second consumer of Ruling 9's `sanitise.fence_width`)
+— NOT `sanitise_line` (control-char policy, 122 accidental sites) and NOT `render_fenced`
+(line-structural, destroys inline rows).
+
+**ROUTING: the FIX is 04b-3-or-later, ONE indivisible, all-or-nothing slice** — recommended as
+04b-3's FIRST slice ahead of C2/#309. Decisive reason is CONSUMER LAW, not cost: a partial
+containment MANUFACTURES a false clear on every surface it skips (the delimiter becomes a trust
+signal the consumer then applies to bare renders). I adopt this; it is sound.
+
+**Builder-c3-2 is UNAFFECTED** — Ruling 11 explicitly forbids touching attribution renders this
+wave; the builder's scope is footer/identity-params only. No correction sent to the busy builder.
+
+**Four riders land THIS WAVE (§11.6), all cheap, minting nothing:**
+1. asserted-bound pin (#137/#138 shape) — RED the day someone closes the hole — **OWED (post-builder)**
+2. retire `assert_render_injection_safe`'s over-claim docstring + `TestRenderInjectionRegistry` — **OWED (post-builder)**
+3. `_render_task_detail`'s archetype docstring ("BODY fenced, trailers SANITISED" instructs cloning
+   a shape with a measured hole — #102) — amend to state what SANITISED does NOT buy — **OWED (post-builder; server.py single-writer)**
+4. file the finding with the derivation — **DONE: finding #321.**
+Riders 1-3 sequenced AFTER `builder-c3-2` lands (rider 3 edits server.py; single-writer discipline).
+Adversary note: rider 1 is a bound pin on a SEPARATE attribution surface, not a C3-contract edit —
+it does not move the contract `builder-c3-2` builds against.
+
+**§11.7 item 2** (Ruling 10 Link 4 amended in scope, not overturned) — the sidecar did not re-read
+every c3fix pin; it asserts none is invalidated because C3's Link-4 legs are all identity-param.
+I will spot-verify after the build. Low risk.
+
+**§11.7 item 1 — OPERATOR DECISION, surfaced (not mine):** a measured prompt-injection vector ships
+with this deploy KNOWINGLY, and the deploy WIDENS its reach (`action=get`'s detail render + two new
+repr consumers). Pre-existing (production has served the class since before this packet), so the
+sidecar's routing defers it whole to 04b-3 with the bound pinned. But if the operator judges the
+widened exposure unacceptable before deploy, that is a packet-sized scope grant and **the deploy
+waits** — it cannot be bought as a rider (§11.4). Recommendation: accept-with-bound-pinned (routing
+is sound; the C3 build + cold audit proceed regardless, only the deploy gate turns on this). To be
+formally confirmed at the deploy gate with full context.
+
 ## NEXT (not started)
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
