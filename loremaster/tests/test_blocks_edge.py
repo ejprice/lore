@@ -626,10 +626,31 @@ def _tool_seam(ledger: TaskLedger) -> Any:
     surfaces here as ``AttributeError``, which is a LOUD failure naming the attribute — not
     a silent skip.
     """
+    from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
+    from _message_fakes import FakeMessageDatabase, FakeMessageLedger
     from loremaster.server import AppContext
 
     context = AppContext.__new__(AppContext)
     context.task_ledger = ledger
+    # ⚠ THE STATED BOUND ABOVE, FIRING EXACTLY AS PREDICTED (packet 04b-2 slice C3,
+    # adversary R-4 — carried here by C3's contract so the builder does not meet a
+    # red pin in a file it was not told it may edit). The dispatcher gained the
+    # pending-traffic footer, and R8(2)'s exact-match fallback reads the registry on
+    # EVERY identity-less write — so this seam now touches two more services.
+    #
+    # Wired to EMPTY fakes ON PURPOSE, and the alternative was considered and
+    # rejected: leaving the attributes absent would make the footer path raise
+    # AttributeError, which a dispatcher could legitimately swallow into "no
+    # footer" — and a silently-skipped footer is confident silence, which is the
+    # failure mode this whole slice exists to remove. Nothing is registered here,
+    # so the fallback resolves nothing and no footer is served for the RIGHT
+    # reason, keeping these pins about the CYCLE refusal and nothing else.
+    #
+    # ``type: ignore`` for the same reason the rest of this tree drives handlers
+    # with doubles: the fakes match the PUBLIC surface exactly but are not nominal
+    # subclasses, and ``AppContext`` annotates the real classes.
+    context.agent_registry = FakeAgentRegistry(db=FakeAgentDatabase())  # type: ignore[assignment]
+    context.message_ledger = FakeMessageLedger(db=FakeMessageDatabase())  # type: ignore[assignment]
     return context
 
 

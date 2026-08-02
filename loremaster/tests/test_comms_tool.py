@@ -4902,8 +4902,9 @@ def _taught_ack_seqs(trailer_line: str) -> list[int]:
 class TestEveryRecipientNameIsCharsetValidatedBeforeAnyStoreTouch:
     """§B2.1 (NEW) + §B1 step 2. A recipient IS an agent name — the fourth
     member of the identity class ``_validate_comms_charset``'s own docstring
-    says shares ONE charset because all of them are inlined into live WHERE
-    clauses. Admitting ``to[]`` unvalidated now means finding the gap in a later
+    says shares ONE charset because each of them is RENDERED into fleet-visible
+    output, where an unconstrained value forges structure a reader obeys.
+    Admitting ``to[]`` unvalidated now means finding the gap in a later
     packet, on a surface that by then writes edges.
 
     The reject is a SHAPE error, so it fires PRE-touch (the shipped v7/#97
@@ -7165,6 +7166,20 @@ def _ruled_comms_block(cap: int) -> str:
 # The comms member is DERIVED from _RULED_INSTRUCTION_CLAUSES via
 # _ruled_comms_block(), never re-typed here — the exact-block pin's own idiom,
 # one level up. Only the paragraphs this contract does NOT own are literal.
+#: Packet 04b-2 slice C3's ``_INSTRUCTIONS`` paragraph, declared ONCE.
+#:
+#: Slice C3's contract (``test_comms_footer.py``) imports THIS constant to assert
+#: the paragraph actually landed in the served document and came through CL3's
+#: declared allowlist rather than around it. Re-typing the text there would put
+#: the same prose in two files and let them drift — one home, two assertions.
+_FOOTER_INSTRUCTIONS_PARAGRAPH: str = (
+    "PENDING TRAFFIC: pass agent= (and session= when your name is not unique) to "
+    "lore_tasks / lore_claim_task / lore_findings. Any such call that actually WRITES "
+    "then ends with one extra line telling you how much is waiting for you in "
+    "lore_comms, so you learn a teammate is blocked on you at the moment you act. "
+    "Omit agent= and lore says nothing rather than guessing who you are."
+)
+
 _DECLARED_NON_COMMS_PARAGRAPHS: tuple[str, ...] = (
     (
         "IDENTITY: lore is this repo's code+docs+graph RAG, durable memory, and fleet ledgers "
@@ -7203,6 +7218,24 @@ _DECLARED_NON_COMMS_PARAGRAPHS: tuple[str, ...] = (
         "brief skew, action=brief_get/brief_publish/brief_ack for standing instructions, "
         "action=fleet to see who else is active."
     ),
+    # ⚠ CO-EDIT LANDED BY PACKET 04b-2 SLICE C3's CONTRACT (adversary R-4), not by
+    # this file's own packet. CL3's documented outcome #2 — "another packet
+    # legitimately edited _INSTRUCTIONS — then update _DECLARED_NON_COMMS_PARAGRAPHS
+    # and move on" — happening exactly as CL3's docstring predicts, so a red here at
+    # HEAD is the CONTRACT waiting for its build, never a misfire.
+    #
+    # The paragraph is DECLARED here rather than described, because CL3's terminating
+    # pin compares the served document byte-for-byte: a contract that said "a footer
+    # paragraph exists" and left the words to the builder would let the served
+    # teaching say anything at all. It is named (:data:`_FOOTER_INSTRUCTIONS_PARAGRAPH`)
+    # so slice C3's own pins can assert it landed WITHOUT re-transcribing it — one
+    # home for the text, two files asserting different things about it.
+    #
+    # ⚠ It deliberately uses NONE of _COMMS_DUTY_VOCABULARY (CL1's rider, routed by
+    # design-sidecar Ruling 5.3): "unread", "directive", "inbox", "ack", "drain",
+    # "seq" and "thread" all belong to the ONE paragraph allowed to make duty claims
+    # about the message surface, and this is not that paragraph.
+    _FOOTER_INSTRUCTIONS_PARAGRAPH,
     (
         "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's tools first; "
         "batch independent calls in one turn, not serial turns."
