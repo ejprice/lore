@@ -332,6 +332,18 @@ _QUERY_ROWS_VAR = "qt_rows"
 _QUERY_STATUS_PARAM = "qt_status"
 _QUERY_OWNER_PARAM = "qt_owner"
 _QUERY_LIMIT_PARAM = "qt_limit"
+
+# --- packet 04b-2 wave C: the two reads ruling R10(iii)'s renders ride -----------
+#: :meth:`TaskLedger.direct_dependents`' bound id. The predicate is
+#: ``blocked_by CONTAINS $dep_task_id`` — the vendor-documented containment spelling
+#: (store reference §2, *"Indexing an ARRAY column"*), PROBED 2026-08-02 on spike-surreal
+#: 3.2.1 against this very schema with a positive control (2 of 6 rows selected, exactly
+#: the two naming the target; an id nothing names selects ZERO, so the predicate is not
+#: matching everything). ⚠ Never ``blocked_by = $id``: on an array column that spelling
+#: IndexScans and returns ``[]`` — fast, silent and wrong.
+_DEPENDENTS_ID_PARAM = "dep_task_id"
+#: :meth:`TaskLedger._superseded_among`'s bound id list.
+_SUPERSEDED_AMONG_PARAM = "sup_among_ids"
 _BACKFILL_IN_KEY = "blocker"
 _BACKFILL_OUT_KEY = "blocked"
 _RELATE_FROM_PARAM_FMT = "rel{index}_from"
@@ -453,12 +465,25 @@ class ClaimResult(BaseModel):
         claimed: Whether THIS call won the claim.
         task: The task's state after the call — the freshly-claimed state on a
             win, or the current (unmodified) state on a loss.
+        superseded_blockers: On a LOST claim, the ``blocked_by`` entries that have
+            themselves been SUPERSEDED, mapped to their successor ids; empty otherwise.
+            Ruling **R10(iii)**: supersession is NOT terminal, so the claim CAS counts
+            such a blocker forever and the loss is PERMANENT — *"blocked_by [...]
+            unresolved"* alone invites an agent to poll a door that is nailed shut, while
+            the actionable fact is that the work moved. It travels as TYPED STATE because
+            the render is a pure ``staticmethod`` over this model: a render that re-read
+            the store to write the sentence would be a second implementation of the
+            blocker policy, and every non-MCP consumer of :meth:`TaskLedger.claim_task`
+            would get nothing. ⚠ It DEFAULTS deliberately — a required field would be a
+            ``TypeError`` at every existing construction site on an otherwise-correct
+            build.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     claimed: bool
     task: Task
+    superseded_blockers: dict[str, str] = Field(default_factory=dict)
 
 
 class TaskLedgerError(RuntimeError):
@@ -531,6 +556,76 @@ class TransitiveBlockers(BaseModel):
     ids: list[str] = Field(default_factory=list)
     truncated: bool = False
     max_depth_used: int
+
+
+class TaskListing(BaseModel):
+    """A CALLER-LIMITED task listing, and whether the cap cut anything off (ESC-5).
+
+    ⚠ **THE FIELD SET IS CLOSED AT TWO, DENY-BY-DEFAULT**, for the reason
+    :class:`TransitiveBlockers`' docstring gives about its own uncountable tail: the SAFE
+    shape is one thing and the set of names a fabricated count could wear is unbounded.
+    Adding ANY count field (``total`` / ``remaining`` / ``+K``) first acquires the
+    failed-count construction — build the world where the count read FAILS and prove the
+    line goes LOUD or drops the NUMBER, never restating ``len(rows)``, which is not a total
+    at all once the cap is in the statement. **A number-free wrapper acquires none of that
+    debt, and that is why this shape was chosen: the existence bit rides the SAME read as
+    the rows, so there is no separate failure state to forge.**
+
+    The grammar is **EXISTENCE, never quantity** (design ruling: mechanism (c), over-fetch
+    by one) and it is uniform across both of :meth:`TaskLedger.query_tasks`' filter paths.
+
+    Attributes:
+        rows: The tasks actually SERVED — at most the caller's cap.
+        more: Whether a further MATCHING row truly exists beyond ``rows``. It is a
+            MEASUREMENT (the over-fetched row either came back or it did not), never an
+            inference from ``len(rows) == limit``: at ``population == cap`` the window is
+            full AND the answer is complete, so a window-fullness bit claims a surplus
+            that does not exist. Always ``False`` for an uncapped listing, which is
+            complete by construction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[Task]
+    more: bool
+
+
+def validated_task_limit(limit: int | None) -> int | None:
+    """Refuse an unusable task ``limit`` CLIENT-SIDE, naming the value (ruling **T2**).
+
+    **THE ONE IMPLEMENTATION of "what counts as a legal cap?"**, module-level rather than
+    private to the ledger so the LEDGER and the DISPATCHER share one answer instead of the
+    dispatcher growing a private copy that agrees today and drifts tomorrow
+    (:meth:`TaskLedger._validated_limit` delegates here). It matters because the
+    disclosure's over-fetch validates the CALLER's cap and then asks the ledger for
+    ``cap + 1``: two rule sets would make ``limit=0`` a refusal at one seam and a legal
+    ``LIMIT 1`` read at the other.
+
+    ``bool`` is excluded explicitly because it is an ``int`` subclass and ``limit=True``
+    would otherwise silently mean ``LIMIT 1`` — and, under an over-fetch, ``LIMIT 2``.
+    Nothing is bound into a statement until this passes, so an out-of-range cap costs no
+    round trip at all.
+
+    Args:
+        limit: The caller's cap, or ``None`` for every match.
+
+    Returns:
+        The validated cap, or ``None`` when the caller supplied none.
+
+    Raises:
+        TaskLedgerError: ``limit`` is not a positive integer. Refused client-side naming
+            the value, because the engine's own complaint (*"LIMIT/START must be a
+            non-negative integer"*) is withheld by the store seam's error hygiene and the
+            caller could not otherwise tell its own bad input from a broken tool.
+    """
+    if limit is None:
+        return None
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise TaskLedgerError(
+            f"limit={limit!r} is out of range — it must be a positive integer "
+            f"naming how many tasks to serve, or be omitted for every match"
+        )
+    return limit
 
 
 def find_blocked_by_cycle(edges: Mapping[str, Iterable[str]]) -> list[str] | None:
@@ -1223,20 +1318,15 @@ class TaskLedger:
 
     @staticmethod
     def _validated_limit(limit: int | None) -> int | None:
-        """Refuse an unusable ``limit`` CLIENT-SIDE, in this ledger's own words.
+        """Refuse an unusable ``limit`` CLIENT-SIDE — DELEGATED, never re-decided here.
 
-        ``bool`` is excluded explicitly because it is an ``int`` subclass and
-        ``limit=True`` would silently mean ``LIMIT 1``. Nothing is bound into a statement
-        until this passes, so an out-of-range cap costs no round trip at all.
+        The rule itself lives in :func:`validated_task_limit` because the dispatcher's
+        over-fetch validates the CALLER's cap before this ledger ever sees ``cap + 1``, and
+        two seams deciding *"what counts as a legal cap?"* separately is the duplicated
+        policy #102 exists to stop. This stays as the ledger's own in-vocabulary entry
+        point (its callers read better for it) and carries no rule of its own.
         """
-        if limit is None:
-            return None
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise TaskLedgerError(
-                f"limit={limit!r} is out of range — it must be a positive integer "
-                f"naming how many tasks to serve, or be omitted for every match"
-            )
-        return limit
+        return validated_task_limit(limit)
 
     @staticmethod
     def _candidate_statement(
@@ -1274,6 +1364,75 @@ class TaskLedger:
             statement = f"{statement} LIMIT ${_QUERY_LIMIT_PARAM}"
             params[_QUERY_LIMIT_PARAM] = limit
         return statement, params
+
+    async def direct_dependents(self, task_id: str) -> list[str]:
+        """The ids of the tasks whose OWN ``blocked_by`` column names ``task_id``.
+
+        Ruling **R10(iii)**: superseding a task STRANDS everything blocked on it —
+        supersession is not terminal (R10 refused to make it so), so the claim CAS keeps
+        counting the predecessor as unresolved and every dependent is unclaimable
+        **forever**, silently. This is the read the supersede render's warning rides, so
+        the caller learns WHICH rows to re-point at the successor. It only reports; the
+        dependency transfer itself is R10(iv) and is DEFERRED, because ``blocked_by`` is
+        immutable after creation and the claim path leans on that.
+
+        **ONE HOP, deliberately** — the rows whose own column names this id, never the
+        transitive downstream reach. The CAS that strands them is itself a strictly one-hop
+        predicate, so a transitive answer would name rows this supersession did not strand.
+
+        ⚠ **Store-side containment, not a whole-graph read.** Reusing
+        :meth:`_read_dependency_graph` would have answered the same question by shipping
+        every dependency-bearing row to the client and filtering here; this narrows in the
+        statement instead, so the payload scales with the ANSWER. See
+        :data:`_DEPENDENTS_ID_PARAM` for the probed predicate and the spelling that is
+        silently wrong.
+
+        Args:
+            task_id: The task whose direct dependents to list.
+
+        Returns:
+            The dependents' opaque ids, sorted, or ``[]`` when nothing depends on it. ⚠ An
+            id naming NO row also yields ``[]`` — it matches no row's ``blocked_by``, and
+            there is no caller-reachable engine rejection to launder here.
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY} FROM {TASK_TABLE} "
+                f"WHERE {_COL_BLOCKED_BY} CONTAINS ${_DEPENDENTS_ID_PARAM}",
+                {_DEPENDENTS_ID_PARAM: task_id},
+            )
+        )
+        return sorted(str(row.get(_ID_KEY)) for row in rows)
+
+    async def _superseded_among(self, task_ids: Sequence[str]) -> dict[str, str]:
+        """Which of ``task_ids`` are SUPERSEDED, mapped to their successor ids.
+
+        The fact behind :attr:`ClaimResult.superseded_blockers`: a blocker that moved can
+        never resolve, so a claim losing to one has lost PERMANENTLY and *"blocked_by [...]
+        unresolved"* would teach an agent to poll forever. Read here, in the ledger, rather
+        than in a render — the render is a pure function over :class:`ClaimResult`, and a
+        store read from inside it would be a second implementation of the blocker policy
+        that every non-MCP consumer of :meth:`claim_task` would miss.
+
+        An EMPTY input short-circuits: an unblocked loss (already owned, or a status that
+        is simply not claimable) must not buy a round trip to learn nothing.
+        """
+        if not task_ids:
+            return {}
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_SUPERSEDED_BY} "
+                f"FROM {TASK_TABLE} "
+                f"WHERE record::id({_ID_KEY}) IN ${_SUPERSEDED_AMONG_PARAM} "
+                f"AND {_COL_SUPERSEDED_BY} IS NOT NONE",
+                {_SUPERSEDED_AMONG_PARAM: list(task_ids)},
+            )
+        )
+        return {
+            str(row.get(_ID_KEY)): str(row.get(_COL_SUPERSEDED_BY))
+            for row in rows
+            if row.get(_COL_SUPERSEDED_BY) is not None
+        }
 
     # -- the atomic claim ---------------------------------------------------
 
@@ -1326,7 +1485,17 @@ class TaskLedger:
         # genuine winner's status away from ``claimed`` and wrongly report a loss.
         updated = await self._get_or_raise(task_id)
         won = updated.owner == owner
-        return ClaimResult(claimed=won, task=updated)
+        # Ruling R10(iii): a LOSS to a SUPERSEDED blocker is PERMANENT, and only the
+        # ledger can say so — the CAS counts that blocker forever. Read only on a loss
+        # that HAS blockers: a win owes the caller nothing to poll, and an unblocked loss
+        # (already held, or an unclaimable status) must not buy a round trip to learn
+        # nothing. ``_superseded_among`` short-circuits the empty case for the same reason.
+        superseded_blockers = (
+            {} if won else await self._superseded_among(updated.blocked_by)
+        )
+        return ClaimResult(
+            claimed=won, task=updated, superseded_blockers=superseded_blockers
+        )
 
     @staticmethod
     def _claim_fragment(task_id: str, owner: str, blocked_by: list[str]) -> TxnFragment:

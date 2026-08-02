@@ -189,7 +189,6 @@ from loremaster.search import (
     NOTICE_KIND,
     DetailSelector,
     SearchResult,
-    _max_backtick_run,
     _sanitise_line,
     apply_cosine_floor_drift_check,
 )
@@ -209,8 +208,10 @@ from loremaster.symbols import (
 from loremaster.tasks import (
     CYCLE_NOUN_BATCH_KEYS,
     STATUS_DONE,
+    TaskListing,
     find_blocked_by_cycle,
     raise_cycle_refusal,
+    validated_task_limit,
 )
 from loremaster.tasks import TaskSpec as _TaskSpec
 from loresigil import backoff
@@ -245,7 +246,13 @@ if TYPE_CHECKING:
     from loremaster.store.surreal import SurrealStore
     from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
-    from loremaster.tasks import ClaimResult, Task, TaskActivityWindow, TaskLedger
+    from loremaster.tasks import (
+        ClaimResult,
+        Task,
+        TaskActivityWindow,
+        TaskLedger,
+        TransitiveBlockers,
+    )
 
 # The parent-context ``state`` key under which the per-extension lifespan-state
 # namespaces live (fix B / §A1.10). ``ctx.state[_EXTENSION_STATE_KEY][name]`` is
@@ -1115,6 +1122,13 @@ _NO_TASKS_MATCHED = "(no tasks matched this query)"
 _NO_SNAPSHOTS_FOUND = "(no snapshots recorded yet)"
 _NO_FINDINGS_MATCHED = "(no findings matched this query)"
 
+# Packet 04b-2 wave C: the critical-path render's fixed lines. The empty-walk line is the
+# same honest "nothing matched" convention as the constants above; the two-space indent is
+# shared so a consumer can tell a detail line from a top-level one, and it is a CONSTANT
+# rather than a literal typed at four call sites.
+_TASK_DETAIL_INDENT = "  "
+_NO_UPSTREAM_BLOCKERS = f"{_TASK_DETAIL_INDENT}(nothing upstream — the walk found no blockers)"
+
 # lore_diff's default snapshot-listing page size (the DiffEngine clamps out-of-range
 # values to its own [1, 500] bound, so this is a best-effort default, not a hard cap).
 _DEFAULT_DIFF_LIST_LIMIT = 20
@@ -1136,6 +1150,15 @@ _TASK_ACTION_TRANSITION = "transition"
 _TASK_ACTION_SUPERSEDE = "supersede"
 _TASK_ACTION_ROLLUP = "rollup"
 _TASK_ACTION_CREATE_MANY = "create_many"
+# Packet 04b-2 wave C ADDS two READ verbs, each ADJUDICATED rather than merely written
+# (finding #302, whose equality pin this widening had to redden and update in the same
+# diff): ``blockers`` — the transitive critical-path render, the packet's Scope IN —
+# and ``get`` — ONE task's full detail by id, RULED by the lead on finding #89's measured
+# route-around (its author read a task description with a RAW SELECT against production,
+# because ``lore_findings`` had ``get``, ``lore_comms`` had ``brief_get``, and
+# ``lore_tasks`` had nothing that resolved an id).
+_TASK_ACTION_BLOCKERS = "blockers"
+_TASK_ACTION_GET = "get"
 _TASK_ACTIONS = (
     _TASK_ACTION_CREATE,
     _TASK_ACTION_QUERY,
@@ -1143,6 +1166,8 @@ _TASK_ACTIONS = (
     _TASK_ACTION_SUPERSEDE,
     _TASK_ACTION_ROLLUP,
     _TASK_ACTION_CREATE_MANY,
+    _TASK_ACTION_BLOCKERS,
+    _TASK_ACTION_GET,
 )
 # The actions ``limit`` is legal for (operator ruling **R9**, 2026-07-28). It WIDENED by
 # exactly one action and one parameter: ``query`` gained a cap because an agent had no way
@@ -1150,6 +1175,13 @@ _TASK_ACTIONS = (
 # refuses both. A SET rather than a deleted guard — a caller passing ``limit`` to
 # ``transition`` is making a mistake and deserves to be told.
 _TASK_ACTIONS_ACCEPTING_LIMIT = (_TASK_ACTION_ROLLUP, _TASK_ACTION_QUERY)
+# The actions ``max_depth`` is legal for — a SET for the same reason, and a NEW parameter
+# inherits the discipline in BEHAVIOUR rather than in prose: a guard hard-coded to the one
+# action a pin happened to drive accepts and silently IGNORES the parameter everywhere
+# else, so a caller believes it bounded a walk and nothing was bounded. ⚠ ``limit`` stays
+# refused for ``blockers``: that walk has its OWN bound, and a second way to truncate the
+# same answer is two grammars for one property (#102).
+_TASK_ACTIONS_ACCEPTING_MAX_DEPTH = (_TASK_ACTION_BLOCKERS,)
 
 # PKT-06 §1: the rollup's bootstrap epoch (an omitted ``since`` starts a full-
 # history bootstrap) and its default per-leg row cap (U3, strikeable).
@@ -3272,24 +3304,26 @@ class AppContext:
         (:func:`~loremaster.search._sanitise_line`'s docstring: *"Source
         bodies are NOT run through this — they stay verbatim inside a
         backtick fence"*): ``body`` renders VERBATIM inside a backtick fence
-        sized longer than any backtick run already inside it (the same
-        CommonMark rule :func:`~loremaster.search._max_backtick_run` /
-        ``SearchPipeline._fence_width`` apply to a source body), so an
+        sized longer than any backtick run already inside it, so an
         embedded fence-shaped line can never escape early. The single-line
         trailers (``created_at`` is a safe ISO timestamp; ``provenance`` is a
         dict repr that can carry agent notes) run through
         :func:`~loremaster.search._sanitise_line` — the same cross-module
         pattern ``diff.py`` adopted this wave (finding #34) for the identical
         archetype.
+
+        ⚠ **The INLINE fence MIGRATED onto :func:`~loremaster.render.render_fenced`**
+        (packet 04b-2 wave C, ruling 9). That function's own docstring records that it was
+        extracted FROM this very idiom, so the parent copy sitting beside its own
+        extraction was the drift seed: the fence WIDTH RULE is POLICY, and a policy spelled
+        in several places is a fix that reaches one of them. Same rule, same bytes, one
+        implementation.
         """
         row = cls._render_finding_rows([finding])
-        fence = _FENCE_CHAR * max(_MIN_FENCE_WIDTH, _max_backtick_run(finding.body) + 1)
         return (
             f"{row}\n"
             f"body:\n"
-            f"{fence}\n"
-            f"{finding.body}\n"
-            f"{fence}\n"
+            f"{render_fenced(finding.body)}\n"
             f"created_at: {_sanitise_line(finding.created_at.isoformat())}\n"
             f"provenance: {_sanitise_line(str(finding.provenance))}"
         )
@@ -3464,13 +3498,28 @@ class AppContext:
             )
         if task.superseded_by is not None:
             reason = f"superseded by {task.superseded_by}"
+        elif result.superseded_blockers:
+            # Ruling R10(iii), the moment-of-CAUSATION door: a blocker that was SUPERSEDED
+            # after this task was created can never resolve — supersession is not terminal,
+            # so the CAS counts it forever and this claim can NEVER win. "blocked_by [...]
+            # unresolved" is true and useless: it invites the agent to poll a door that is
+            # nailed shut, when the actionable fact is that the work moved.
+            moved = ", ".join(
+                f"{blocker} → {successor}"
+                for blocker, successor in sorted(result.superseded_blockers.items())
+            )
+            reason = (
+                f"blocked_by {task.blocked_by} unresolved, and {moved} — a SUPERSEDED "
+                f"blocker can never resolve, so this claim can never win: block on the "
+                f"successor instead"
+            )
         elif task.blocked_by:
             reason = f"blocked_by {task.blocked_by} unresolved"
         else:
             reason = f"status {task.status}"
         return f"not claimed: task {task.id} is unowned but not claimable ({reason})"
 
-    async def tasks(  # noqa: PLR0911 - a dispatch-on-action verb; splitting churns every action's own test
+    async def tasks(  # noqa: PLR0911,PLR0912 - a dispatch-on-action verb; splitting churns every action's own test
         self,
         *,
         action: str,
@@ -3485,11 +3534,12 @@ class AppContext:
         blocked_by: list[str] | None = None,
         since: str | None = None,
         limit: int | None = None,
+        max_depth: int | None = None,
         items: list[dict[str, Any]] | None = None,
         summary: str | None = None,
         report_path: str | None = None,
     ) -> str:
-        """Dispatch a fleet task action (create|query|transition|supersede|rollup|create_many).
+        """Dispatch a fleet task action (create|query|transition|supersede|rollup|create_many|blockers|get).
 
         A thin dispatcher over :class:`~loremaster.tasks.TaskLedger` that renders
         SUMMARISED results (never a raw SurrealDB row) and lets the ledger's typed
@@ -3508,6 +3558,15 @@ class AppContext:
         ``summary``/``report_path`` ride the EXISTING ``transition`` action (the
         done-transition's mandatory completion record, enforced ledger-side by
         :meth:`~loremaster.tasks.TaskLedger._validate_done_summary`).
+
+        Packet 04b-2 wave C ADDS two READ actions and one parameter:
+        ``blockers`` — the transitive critical-path walk, bounded by ``max_depth``
+        (strict to that action) and rendered by
+        :meth:`_render_transitive_blockers` — and ``get``, ONE task's full detail by
+        id (:meth:`_render_task_detail`), which is the verb every id this tool hands
+        out had nowhere to be resolved by. ``action='query'`` now serves its answer
+        through :meth:`_task_listing`, so a CAPPED listing DISCLOSES that more matches
+        exist rather than reading as a complete answer.
         """
         # ⚠ THE GUARD IS SPLIT, NOT DELETED (operator ruling **R9**, 2026-07-28). ``limit``
         # is now legal for ``query`` too — it is the documented way for an agent to bound
@@ -3524,6 +3583,12 @@ class AppContext:
             raise ValueError(
                 f"'limit' applies only to "
                 f"{' and '.join(f'action={name!r}' for name in _TASK_ACTIONS_ACCEPTING_LIMIT)}"
+                f" — omit it for {action!r}"
+            )
+        if action not in _TASK_ACTIONS_ACCEPTING_MAX_DEPTH and max_depth is not None:
+            raise ValueError(
+                f"'max_depth' applies only to "
+                f"{' and '.join(f'action={name!r}' for name in _TASK_ACTIONS_ACCEPTING_MAX_DEPTH)}"
                 f" — omit it for {action!r}"
             )
         if action != _TASK_ACTION_CREATE_MANY and items is not None:
@@ -3545,14 +3610,32 @@ class AppContext:
             )
             return f"created task {new_id} (status open)"
         if action == _TASK_ACTION_QUERY:
-            # ⚠ The cap is PUSHED DOWN (operator ruling **R5**), never applied here: a
-            # bounded ``query_tasks`` that still materialises every matching row before
-            # the dispatcher slices is a half-fix that READS as a fix — the trust hazard,
-            # not merely an inefficiency.
-            rows = await self.task_ledger.query_tasks(
-                status=status, owner=owner, blocked=blocked, limit=limit
+            # ⚠ EVERY filter combination routes through the ONE helper, and that is the
+            # whole of ESC-5's deploy entry condition. A dispatcher that sent only SOME
+            # branches through it would serve an honest bound on one spelling of a
+            # question and the false clear on another — the same tool, the same caller,
+            # two truths. The cap is still PUSHED DOWN (ruling **R5**); the helper adds
+            # exactly ONE over-fetched row to the same read.
+            return self._render_task_listing(
+                await self._task_listing(
+                    status=status, owner=owner, blocked=blocked, limit=limit
+                )
             )
-            return self._render_task_rows(rows)
+        if action == _TASK_ACTION_GET:
+            return self._render_task_detail(
+                await self.task_ledger.get_task(_require_arg(task_id, "task_id"))
+            )
+        if action == _TASK_ACTION_BLOCKERS:
+            target = _require_arg(task_id, "task_id")
+            # The walk FIRST: it refuses an out-of-range ``max_depth`` client-side, so a
+            # bad bound costs no round trip at all, and an id naming no row raises the
+            # ledger's own TaskNotFoundError before anything is rendered.
+            blockers = await self.task_ledger.transitive_blockers(
+                target, max_depth=max_depth
+            )
+            return self._render_transitive_blockers(
+                await self.task_ledger.get_task(target), blockers
+            )
         if action == _TASK_ACTION_TRANSITION:
             task = await self.task_ledger.transition(
                 _require_arg(task_id, "task_id"),
@@ -3563,15 +3646,232 @@ class AppContext:
             )
             return self._render_task_transition(task, actor)
         if action == _TASK_ACTION_SUPERSEDE:
+            predecessor = _require_arg(task_id, "task_id")
             successor_id = await self.task_ledger.supersede_task(
-                _require_arg(task_id, "task_id"),
+                predecessor,
                 subject=_require_arg(subject, "subject"),
                 description=_require_arg(description, "description"),
                 created_by=_require_arg(created_by, "created_by"),
             )
-            return f"superseded task {task_id}; successor {successor_id} (status open)"
+            return self._render_supersede_result(
+                predecessor,
+                successor_id,
+                await self.task_ledger.direct_dependents(predecessor),
+            )
         raise ValueError(
             f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
+        )
+
+    async def _task_listing(
+        self,
+        *,
+        status: str | None,
+        owner: str | None,
+        blocked: bool | None,
+        limit: int | None,
+    ) -> TaskListing:
+        """The ONE implementation of ESC-5's over-fetch: rows PLUS *"is there more?"*.
+
+        **Mechanism (c), over-fetch by one.** With a cap, the ledger is asked for
+        ``limit + 1`` and at most ``limit`` is served; ``more`` is whether that extra row
+        actually came back. So the disclosure exists **iff a further matching row truly
+        EXISTS** — a MEASUREMENT riding the same read, never an inference.
+
+        ⚠ **Why not *"the window is full"* (mechanism (b)), which is cheaper to write:** at
+        ``population == cap`` the window is full AND the answer is complete, so (b) claims
+        a surplus that does not exist, renders the same bytes in the partial and the
+        complete world, and closes nothing while reading like a fix.
+
+        ⚠ **The CALLER's own cap is validated FIRST, and that ordering is load-bearing.**
+        Adding one before validating destroys all three of the ledger's refusals, silently:
+        ``limit=-1`` would reach it as ``0`` and be refused naming a number the caller
+        never passed; ``limit=0`` would become a legal ``LIMIT 1``, turning a refusal into
+        one served row; and ``limit=True`` would become ``LIMIT 2``, bypassing the guard
+        that exists precisely to stop ``bool`` meaning a cap. Both seams call the SHARED
+        :func:`~loremaster.tasks.validated_task_limit`, so *"what counts as a legal cap?"*
+        has one answer rather than two that agree today.
+
+        ⚠ **No cap ⇒ no clause and no disclosure.** An uncapped listing is complete by
+        construction, so a line on it is noise on exactly the answers that are already
+        whole; and ``limit`` must not be forwarded as ``None+1`` — MEASURED on 3.2.1,
+        ``LIMIT $k`` with ``$k = NONE`` returns ZERO rows and NO error.
+
+        Args:
+            status: The exact-status filter, or ``None``.
+            owner: The exact-owner filter, or ``None``.
+            blocked: The dependency partition, or ``None`` for no partition.
+            limit: The caller's own cap, or ``None`` for every match.
+
+        Returns:
+            The :class:`~loremaster.tasks.TaskListing` the render takes as TYPED
+            applicability.
+
+        Raises:
+            TaskLedgerError: ``limit`` is not a positive integer (refused before any
+                statement, naming the value the CALLER passed).
+        """
+        cap = validated_task_limit(limit)
+        if cap is None:
+            return TaskListing(
+                rows=await self.task_ledger.query_tasks(
+                    status=status, owner=owner, blocked=blocked
+                ),
+                more=False,
+            )
+        over_fetched = await self.task_ledger.query_tasks(
+            status=status, owner=owner, blocked=blocked, limit=cap + 1
+        )
+        return TaskListing(rows=over_fetched[:cap], more=len(over_fetched) > cap)
+
+    @classmethod
+    def _render_task_listing(cls, listing: TaskListing) -> str:
+        """Render a task listing, DISCLOSING its own bound when one was hit (ESC-5).
+
+        The rows go through the UNCHANGED :meth:`_render_task_rows`, and the disclosure is
+        strictly ADDITIVE — a render that swapped one sentence for another would make the
+        two worlds differ without either being a bound, and every consumer that counts
+        ``"- "`` lines would still be right about the row count.
+
+        ⚠ **The line takes ``listing.more`` as TYPED APPLICABILITY and never re-derives
+        it.** A render computing *"is there more?"* from ``len(rows) == limit`` would be a
+        SECOND implementation of the existence policy wearing the shared name, and it
+        diverges the first time the two disagree. The NUMBER it names is derived from the
+        rows actually served, so it is a fact about this answer rather than a literal that
+        is right for whichever cap the author happened to test.
+        """
+        rendered = cls._render_task_rows(listing.rows)
+        if not listing.more:
+            return rendered
+        return (
+            f"{rendered}\n"
+            f"showing {len(listing.rows)} matching task(s) — MORE MATCH than were served: "
+            f"re-run with a larger limit, or narrow with status/owner/blocked"
+        )
+
+    @classmethod
+    def _render_task_detail(cls, task: Task) -> str:
+        """Render ONE task's FULL detail: the summary row + description + provenance.
+
+        The read verb finding **#89** measured the absence of: every task-side surface
+        hands agents opaque ids — a critical path, a row's ``blocked_by``, a claim refusal
+        naming its blocker — and until this action existed nothing resolved one, so #89's
+        own author read a task description with a RAW SELECT against the production store.
+        ``query`` is UNCHANGED (still the summarised row, deliberately without the body).
+
+        ⚠ **The archetype, verbatim: the BODY is FENCED, the single-line trailers are
+        SANITISED.** ``description`` is agent-supplied and normally multi-line, so it
+        renders VERBATIM inside :func:`~loremaster.render.render_fenced`'s backtick fence —
+        the ONE implementation of that wrap, sized strictly wider than any backtick run
+        already inside, so a body carrying its own fence cannot close ours early and let a
+        row-shaped line escape into this render's structure. It is deliberately NOT
+        sanitised: a fence PRESERVES text, and stripping it would lose exactly the content
+        the caller drilled in for while still not stopping a forgery. The trailers get the
+        opposite treatment — a newline reaching a one-line field forges a whole new line.
+        """
+        return (
+            f"{cls._render_task_rows([task])}\n"
+            f"description:\n"
+            f"{render_fenced(task.description)}\n"
+            f"created_at: {sanitise_line(task.created_at.isoformat())}\n"
+            f"provenance: {safe_str(task.provenance)}"
+        )
+
+    @staticmethod
+    def _render_transitive_blockers(task: Task, blockers: TransitiveBlockers) -> str:
+        """Render a task's critical path — ID-ONLY, ordered, and honest at BOTH its bounds.
+
+        The served ids are what an agent will call ``action='get'`` with, so they are
+        served in the ledger's PROXIMITY order (nearest blocker first): that ordering is
+        what makes a TRUNCATED answer a valid FLOOR — *"at least these must resolve
+        first"* — instead of an arbitrary sample nobody can use.
+
+        **Two bounds, and each is a FACT this responder actually holds rather than a
+        disclaimer:**
+
+        * ``truncated`` — the walk stopped at its depth bound with more upstream
+          reachable. It is MEASURED by the ledger (the statement collects one deeper and
+          compares), never inferred, because the engine truncates SILENTLY at its bound
+          (probe §5.3: 256 of 299 nodes, no error, no signal). The line names
+          ``max_depth_used`` so the re-ask is CONCRETE.
+        * the RESIDUE — ``blocked_by`` entries carrying no ``blocks`` EDGE. ``ENFORCED``
+          forbids an edge to a task that does not exist, so R11's backfill skips a legacy
+          entry naming NO row forever; the claim CAS still counts it and refuses forever.
+          Without this line a task blocked ONLY by such a phantom renders byte-identically
+          to a task with no blockers at all — a positive assertion of completeness that is
+          false, about a row the fleet can never claim.
+
+        ⚠ **Every line rides a TRUE verdict.** The follow-up affordance is emitted only
+        when there is an id to resolve, and the residue notice only when the column and the
+        walk actually disagree: a notice that fires on every answer names nothing, licenses
+        nothing narrower, and trains every reader to skip the one answer where it is true.
+        And the follow-up names a REAL action — a taught call that returns *"unknown task
+        action"* is a fabricated affordance, strictly worse than the bare ids it replaced,
+        because the reader is an agent and the measured behaviour on an undiagnosable
+        failure is to blame the tool and route around it.
+        """
+        lines = [f"critical path for task {task.id}:"]
+        if blockers.ids:
+            lines.extend(
+                f"{_TASK_DETAIL_INDENT}{position}. {blocker}"
+                for position, blocker in enumerate(blockers.ids, start=1)
+            )
+        else:
+            lines.append(_NO_UPSTREAM_BLOCKERS)
+        if blockers.truncated:
+            lines.append(
+                f"{_TASK_DETAIL_INDENT}⚠ the walk STOPPED at "
+                f"max_depth={blockers.max_depth_used} and more upstream is still "
+                f"reachable — this is a FLOOR; re-run with a larger max_depth"
+            )
+        residue = [
+            blocker for blocker in task.blocked_by if blocker not in set(blockers.ids)
+        ]
+        if residue:
+            lines.append(
+                f"{_TASK_DETAIL_INDENT}⚠ {len(residue)} blocked_by entr"
+                f"{'y' if len(residue) == 1 else 'ies'} carr"
+                f"{'ies' if len(residue) == 1 else 'y'} NO edge and cannot be walked — "
+                f"they still block this task and the claim CAS counts them forever: "
+                f"{[safe_str(blocker) for blocker in residue]}"
+            )
+        if blockers.ids:
+            lines.append(
+                f"{_TASK_DETAIL_INDENT}↳ read any of these with: "
+                f"lore_tasks action={_TASK_ACTION_GET} task_id={blockers.ids[0]}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_supersede_result(
+        task_id: str, successor_id: str, dependents: list[str]
+    ) -> str:
+        """Render a supersession, WARNING about the dependents it just stranded (R10(iii)).
+
+        Supersession is NOT terminal (ruling R10 refused to make it so — the work MOVED,
+        it did not finish), so the claim CAS keeps counting the predecessor as unresolved
+        and every task blocked on it becomes unclaimable **forever**, silently: nobody in
+        the fleet ever learns it, and those tasks' owners simply find work that never
+        becomes claimable. R10(ii) closed the at-CREATE door; this is the door reachable
+        only when the supersede happens AFTER the dependents already exist.
+
+        ⚠ It **NAMES** them rather than counting them: the caller's next move is to
+        re-point those rows at the successor, and it cannot do that from a number. And it
+        **WARNS, never rewrites** — dependency transfer is R10(iv) and is DEFERRED,
+        because it would break the post-creation immutability of ``blocked_by`` that the
+        claim path rides.
+
+        ⚠ The warning fires only when something was actually stranded. A sentence appended
+        to every supersede is an imperative riding a verdict that is not true — the shape
+        ruling R8 split apart — and a warning that always fires is a warning nobody reads.
+        """
+        superseded = f"superseded task {task_id}; successor {successor_id} (status open)"
+        if not dependents:
+            return superseded
+        return (
+            f"{superseded}\n"
+            f"⚠ {len(dependents)} task(s) blocked on {task_id} are now STRANDED — it can "
+            f"never resolve, so they can never become claimable: re-point them at "
+            f"{successor_id}: {[safe_str(dependent) for dependent in dependents]}"
         )
 
     @staticmethod
@@ -8379,7 +8679,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         description=(
             "Manage the project's shared, durable fleet task ledger: dispatch on "
             "'action' to CREATE a task, CREATE_MANY (batch-create with caller-temp-key "
-            "blocked_by wiring), QUERY the ledger (by status / owner / blocked), "
+            "blocked_by wiring), QUERY the ledger (by status / owner / blocked — a "
+            "capped listing DISCLOSES when more rows match), GET one task's full detail "
+            "by id (the read verb every opaque id this tool serves is resolved with), "
+            "BLOCKERS — the transitive critical path a task is waiting on, honest about "
+            "its own depth bound and about blocked_by entries it cannot walk, "
             "TRANSITION a task through its legal state machine (the done edge requires "
             "'summary', a one-line completion digest; 'report_path' is optional), "
             "SUPERSEDE (reframe) a task, or ROLLUP — a one-call, cursor-based fleet "
@@ -8398,7 +8702,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "The operation: 'create' (mint an open task), 'create_many' (batch "
-                    "create via 'items'), 'query' (list tasks), 'transition' (drive a "
+                    "create via 'items'), 'query' (list tasks), 'get' (ONE task's full "
+                    "detail — subject, status, owner, blocked_by and the whole "
+                    "description — by its opaque id), 'blockers' (the transitive "
+                    "upstream critical path for a task id, bounded by 'max_depth'), "
+                    "'transition' (drive a "
                     "legal status edge), 'supersede' (reframe a task, minting a "
                     "successor), or 'rollup' (one-call fleet catch-up since 'since')."
                 )
@@ -8408,8 +8716,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "The target task id — required for 'transition' and 'supersede'. "
-                    "Omit for 'create' / 'query' / 'rollup' / 'create_many'."
+                    "The target task id — required for 'transition', 'supersede', "
+                    "'get' and 'blockers'. Omit for 'create' / 'query' / 'rollup' / "
+                    "'create_many'."
                 )
             ),
         ] = None,
@@ -8500,9 +8809,24 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             int | None,
             Field(
                 description=(
-                    "For 'rollup' ONLY (rejected for every other action): the per-leg "
-                    f"row cap (default {_DEFAULT_ROLLUP_LEG_LIMIT} when omitted; must be "
-                    "a positive int)."
+                    "For 'rollup' and 'query' ONLY (rejected for every other action; "
+                    "must be a positive int). On 'rollup' it is the per-leg row cap "
+                    f"(default {_DEFAULT_ROLLUP_LEG_LIMIT} when omitted). On 'query' it "
+                    "caps the rows SERVED, and a listing that hit the cap says so — its "
+                    "absence means the answer is complete."
+                )
+            ),
+        ] = None,
+        max_depth: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "For 'blockers' ONLY (rejected for every other action): how many "
+                    "'blocked_by' hops upstream to walk. Omitted ⇒ the ledger's default; "
+                    "must be at least 1 and strictly below the engine's recursion "
+                    "ceiling. A walk that STOPS at this bound says so and names the "
+                    "depth it ran at, so the answer is an honest FLOOR rather than a "
+                    "silently short list."
                 )
             ),
         ] = None,
@@ -8554,6 +8878,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             blocked_by=blocked_by,
             since=since,
             limit=limit,
+            max_depth=max_depth,
             items=items,
             summary=summary,
             report_path=report_path,
