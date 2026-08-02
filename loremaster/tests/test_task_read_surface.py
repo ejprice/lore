@@ -193,6 +193,7 @@ from _surreal_harness import (
     measure_store_traffic,
 )
 from loremaster.tasks import (
+    STATUS_CLAIMED,
     STATUS_DONE,
     STATUS_OPEN,
     STATUS_WONTFIX,
@@ -242,6 +243,10 @@ _ALT_CAP = 2
 #: A second identity, so the served OWNER filter has something to be WRONG about: a
 #: single-owner fixture makes "owner=X" and "every owned task" indistinguishable.
 OTHER_OWNER = "reviewer-c1"
+
+#: The population every ∀-over-filters leg uses: strictly past the cap, so the disclosure
+#: fires, and small enough that the owner leg's per-task claims stay cheap.
+_FILTER_POPULATION = 8
 
 #: A matching population comfortably past both caps, so "showing the cap" and "showing
 #: everything" are never the same number.
@@ -1757,7 +1762,7 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
             f"changes a served teaching surface"
         )
 
-    async def test_every_declared_action_is_actually_DISPATCHABLE(self) -> None:
+    def test_every_declared_action_is_actually_DISPATCHABLE(self) -> None:
         """⛔ The non-vacuity half — **RE-AUTHORED 2026-08-01 after `adversary-c1-1` §3.6(b)
         measured that its first version was a FALSE GATE, and the correction is the lesson.**
 
@@ -1770,12 +1775,11 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
         that promises a check the assertion does not perform is the P2 false-gate class, and
         I wrote the diagnosis into the docstring and then failed to perform it.
 
-        **The check it now performs:** every declared action is RESOLVED. For ``lore_comms``
-        each key must carry a real ``CommsActionSpec`` with a callable handler; for
-        ``lore_tasks`` each name must survive the dispatcher's unknown-action refusal —
-        driving it with no other arguments must fail for a MISSING-ARGUMENT reason, never
-        with *"unknown task action"*, which is the one error that proves a name reaches no
-        branch at all.
+        **The check it now performs:** every declared ``lore_comms`` action RESOLVES to a
+        real ``CommsActionSpec`` with a callable handler. ⚠ The ``lore_tasks`` half moved OUT
+        of this method after the DELTA adversary (Δ-4) defeated its behavioural form too —
+        it lives in :meth:`test_every_declared_action_BRANCHES_in_the_dispatcher`, which
+        reads the dispatcher's STRUCTURE instead of its prose.
         """
         from loremaster.server import _COMMS_ACTIONS, _TASK_ACTIONS  # noqa: PLC0415
 
@@ -1794,25 +1798,88 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
             f"only when somebody uses it"
         )
 
-        ledger, env = await _fresh_ledger()
-        try:
-            context = _tool_seam(ledger)
-            dead: list[str] = []
-            for action in _TASK_ACTIONS:
-                try:
-                    await context.tasks(action=action)
-                except Exception as refusal:  # noqa: BLE001 - the TEXT is the assertion
-                    if "unknown task action" in str(refusal):
-                        dead.append(action)
-            assert dead == [], (
-                f"these declared lore_tasks actions reach NO dispatch branch — the "
-                f"dispatcher's own unknown-action refusal names them: {dead}. That refusal "
-                f"derives its teaching text from this very tuple, so such a name is served "
-                f"to every caller as legal while nothing can ever handle it"
-            )
-        finally:
-            await ledger.close()
-            await drop_database(env)
+    @staticmethod
+    def _dispatched_action_values() -> set[str]:
+        """The action values ``AppContext.tasks`` STRUCTURALLY branches on.
+
+        An AST scan for ``action == <NAME>`` over the dispatcher's own source, with each
+        ``<NAME>`` resolved to its value through the module. **No served prose is
+        load-bearing**, which is the entire point: the previous version of this pin matched
+        the literal ``"unknown task action"`` in a refusal message, and rewording that
+        message made the pin GREEN over a genuinely dead ``rollup`` — this repo's own
+        instrument lesson (*a gate keyed on a label's literal, defeated by a substring*)
+        reproduced inside the fix for a false gate.
+        """
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+        import textwrap  # noqa: PLC0415
+
+        import loremaster.server as server_module  # noqa: PLC0415
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(server_module.AppContext.tasks)))
+        values: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            if not isinstance(node.ops[0], ast.Eq):
+                continue
+            if not (isinstance(node.left, ast.Name) and node.left.id == "action"):
+                continue
+            target = node.comparators[0]
+            if isinstance(target, ast.Name):
+                resolved = getattr(server_module, target.id, None)
+                if isinstance(resolved, str):
+                    values.add(resolved)
+            elif isinstance(target, ast.Constant) and isinstance(target.value, str):
+                values.add(target.value)
+        return values
+
+    def test_every_declared_action_BRANCHES_in_the_dispatcher(self) -> None:
+        """⛔ **RE-AUTHORED A SECOND TIME (delta adversary Δ-4), and structurally this time.**
+
+        Version 1 compared two constants and passed over a comms table dispatching to
+        ``None``. Version 2 keyed on the refusal message's literal — and a build that
+        REWORDED that message while deleting the ``rollup`` branch passed it, with the
+        dispatcher saying *"unsupported task action 'rollup'"* in its own words. Version 3
+        reads the dispatcher's STRUCTURE, so no served sentence can defeat it.
+        """
+        from loremaster.server import _TASK_ACTIONS  # noqa: PLC0415
+
+        dispatched = self._dispatched_action_values()
+        dead = [action for action in _TASK_ACTIONS if action not in dispatched]
+        assert dead == [], (
+            f"these declared lore_tasks actions reach NO dispatch branch: {dead}. The "
+            f"unknown-action refusal enumerates this very tuple to every caller, so such a "
+            f"name is advertised as legal while nothing can handle it. Derived from the "
+            f"dispatcher's own source, not from its prose — rewording a refusal must never "
+            f"be able to make this pin green. dispatched={sorted(dispatched)}"
+        )
+
+    def test_POSITIVE_CONTROL_the_scan_does_NOT_see_an_action_that_does_not_exist(
+        self,
+    ) -> None:
+        """⛔ Without this, the leg above is satisfied by a scan that returns EVERYTHING.
+
+        A detector that cannot say *no* is indistinguishable from one that always says yes,
+        and Δ-4's whole lesson is that a green verdict from a blind instrument reads exactly
+        like a green verdict from a working one.
+        """
+        dispatched = self._dispatched_action_values()
+        assert "definitely_not_an_action" not in dispatched, (
+            f"the dispatch scan reports a branch for an action nobody wrote, so it cannot "
+            f"distinguish a live action from a dead one: {sorted(dispatched)}"
+        )
+        assert dispatched, (
+            "the dispatch scan found NO branches at all — it is not reading the dispatcher, "
+            "and an empty result would make the leg above vacuously green in the other "
+            "direction"
+        )
+        # ⚠ NO restatement of the leg above here, and that is deliberate: an earlier draft
+        # re-asserted `set(_TASK_ACTIONS) <= dispatched` in this control, so a mutation that
+        # killed one dispatch branch reddened BOTH tests and the control stopped being
+        # independent evidence. MEASURED on the Δ-4 mutation (2 failed where 1 was declared,
+        # PROOF FAILED). A control must fail for its OWN reason or it is a second copy of
+        # the thing it is controlling.
 
 
 class TestTheNewParametersAreRefusedForEveryOtherACTION:
@@ -1958,6 +2025,107 @@ class TestTheNewSurfaceIsREACHABLEThroughTheREGISTEREDTool:
             f"consumer can call"
         )
 
+    async def test_the_registered_tool_FORWARDS_every_parameter_it_DECLARES(
+        self, tmp_path: Any
+    ) -> None:
+        """⛔⛔ **BLOCKER (delta adversary Δ-1) — MP-1 measured TWO facts and I pinned ONE.**
+
+        ```
+        MCP tool exposes 'max_depth' parameter: False   <- pinned
+        MCP tool forwards 'max_depth':          False   <- pinned by NOTHING
+        ```
+
+        Both lines were in the same measurement block, three lines apart. The build that
+        exploits it declares the parameter and drops it on the floor: an agent asks for
+        ``max_depth=2``, gets a walk to depth 32, **and the render tells it "walked to depth
+        32"** — so the served answer contradicts the caller's own request IN WRITING, which
+        is worse than a silently-ignored parameter and is a Leg-1 scope diff this contract's
+        module docstring claims to have closed.
+
+        ⚠ **∀ OVER PARAMETERS, not over `max_depth`** — MP-Δ1's own instruction, and the
+        only form that survives the NEXT parameter somebody adds. The registered function's
+        forwarding call is read STRUCTURALLY: every property the served schema declares must
+        be passed on, under its own name. A pin naming `max_depth` would be the
+        written-to-the-example shape that produced this whole delta pass.
+        """
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+        import textwrap  # noqa: PLC0415
+
+        from loremaster.server import LoreServer, build_mcp_server  # noqa: PLC0415
+        from test_mcp_server import _config, _slug  # noqa: PLC0415
+
+        mcp = build_mcp_server(LoreServer(_config(_slug(), tmp_path / "live")))
+        registered = mcp._tool_manager.get_tool("lore_tasks").fn  # noqa: SLF001 - the SEAM is the pin
+        declared = set((await self._registered_task_tool(tmp_path)).inputSchema.get("properties", {}))
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(registered)))
+        forwarded: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not (isinstance(function, ast.Attribute) and function.attr == "tasks"):
+                continue
+            forwarded |= {
+                keyword.arg
+                for keyword in node.keywords
+                if keyword.arg is not None
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == keyword.arg
+            }
+        assert forwarded, (
+            "no forwarding call to `.tasks(...)` was found in the registered tool's source, "
+            "so this pin cannot see what it passes on at all"
+        )
+        dropped = sorted(declared - forwarded)
+        assert dropped == [], (
+            f"the registered lore_tasks tool DECLARES {dropped} in its served schema and "
+            f"never forwards them to the dispatcher. A caller's bound is accepted and "
+            f"discarded — and because the render is honest about the depth it ACTUALLY "
+            f"used, the served answer then contradicts the caller's own request in writing. "
+            f"declared={sorted(declared)} forwarded={sorted(forwarded)}"
+        )
+
+    async def test_the_TOP_LEVEL_description_alone_names_every_action(
+        self, tmp_path: Any
+    ) -> None:
+        """⛔ **RED on the correct build (delta adversary Δ-7)** — measured, not argued.
+
+        The sibling leg below concatenates the tool description **and every parameter
+        description** before searching, so naming a new action in the ``action`` parameter
+        alone satisfies it. But the top-level sentence is a CLOSED enumeration — *"… or
+        ROLLUP — …"* — and it is the summary an agent reads FIRST. On the reference build
+        that sentence still lists six actions while eight dispatch.
+
+        In the sibling's own words: *"a description enumerating a CLOSED list that excludes
+        it teaches that it does not exist."* Correct — and it was not enforced where the
+        sentence actually lives.
+
+        ⚠ **Matched as a WORD, case-insensitively, not as a quoted literal.** The existing
+        sentence names its actions in bare upper case (``CREATE``, ``ROLLUP``), so a pin
+        demanding ``'create'`` would be dictating a prose STYLE rather than checking the
+        property — and would fail the correct build for a reason that has nothing to do with
+        what a reader learns. The property is *"the summary names the action"*.
+        """
+        import re  # noqa: PLC0415
+
+        from loremaster.server import _TASK_ACTIONS  # noqa: PLC0415
+
+        tool = await self._registered_task_tool(tmp_path)
+        summary = tool.description or ""
+        missing = [
+            action
+            for action in _TASK_ACTIONS
+            if not re.search(rf"\b{re.escape(action)}\b", summary, re.IGNORECASE)
+        ]
+        assert missing == [], (
+            f"the lore_tasks TOP-LEVEL description — the summary an agent reads before any "
+            f"parameter — enumerates its actions and omits {missing}. It reads as a closed "
+            f"list ('… or ROLLUP —'), so an action absent from it is an action a reader "
+            f"concludes does not exist. description={summary!r}"
+        )
+
     async def test_every_declared_action_is_NAMED_in_the_served_text(
         self, tmp_path: Any
     ) -> None:
@@ -1997,58 +2165,116 @@ class TestTheDisclosureSurvivesTheFILTERSAtTheSERVEDSeam:
     it, because no pin ever passed a filter through the tool.
     """
 
-    async def test_a_BLOCKED_filtered_TOOL_call_discloses_its_bound(self) -> None:
+    #: Every filter the query branch accepts. ⚠ **∀ OVER THE DOORS, and that is the whole
+    #: correction:** the first version of this class drove ``blocked`` — the door the
+    #: adversary's exploit walked through — and the DELTA adversary then walked through
+    #: ``status`` and defeated the packet's deploy entry condition for a SECOND consecutive
+    #: pass. A pin written to the EXAMPLE it was shown kills one build; a pin written to the
+    #: PROPERTY kills the class. Derived from `query_tasks`' own filter parameters, so a
+    #: fourth filter joins these legs the day it is added.
+    _FILTER_DOORS = ("blocked", "status", "owner")
+
+    @staticmethod
+    async def _make_the_filter_a_NO_OP(ledger: TaskLedger, door: str) -> dict[str, Any]:
+        """Shape the ledger so ``door``'s filter selects the WHOLE population.
+
+        The disclosure comparison needs two spellings of ONE question; if the filter
+        narrowed the set, the two calls would legitimately render differently and the
+        comparison would measure nothing.
+        """
+        if door == "blocked":
+            return {"blocked": False}
+        if door == "status":
+            return {"status": STATUS_OPEN}
+        for task in await ledger.query_tasks():
+            claim = await ledger.claim_task(task.id, OTHER_OWNER)
+            assert claim.claimed, f"the fixture could not claim {task.id!r}"
+        return {"owner": OTHER_OWNER}
+
+    @pytest.mark.parametrize("door", _FILTER_DOORS)
+    async def test_a_FILTERED_TOOL_call_discloses_its_bound(self, door: str) -> None:
         ledger, env = await _fresh_ledger()
         try:
-            await _seed_identical_tasks(ledger, _SURPLUS_POPULATION)
+            await _seed_identical_tasks(ledger, _FILTER_POPULATION)
+            filters = await self._make_the_filter_a_NO_OP(ledger, door)
             context = _tool_seam(ledger)
             plain = str(await context.tasks(action="query", limit=_LISTING_CAP))
             filtered = str(
-                await context.tasks(action="query", blocked=False, limit=_LISTING_CAP)
+                await context.tasks(action="query", limit=_LISTING_CAP, **filters)
             )
         finally:
             await ledger.close()
             await drop_database(env)
         assert len(_rendered_rows(plain)) == len(_rendered_rows(filtered)) == _LISTING_CAP, (
             f"the two tool calls served {len(_rendered_rows(plain))} and "
-            f"{len(_rendered_rows(filtered))} rows over a population where every task is "
-            f"unblocked, so the two questions describe the SAME set and the comparison "
-            f"below would not be like-for-like"
+            f"{len(_rendered_rows(filtered))} rows over a population the {door!r} filter "
+            f"selects entirely, so the two questions describe the SAME set and the "
+            f"comparison below would not be like-for-like"
         )
         assert _extra_lines(plain, filtered) == [] and _extra_lines(filtered, plain) == [], (
-            f"the SAME question asked two ways renders differently AT THE TOOL: "
-            f"blocked=False lacks {_extra_lines(plain, filtered)} and carries "
-            f"{_extra_lines(filtered, plain)}. A dispatcher that routes only ONE filter "
-            f"branch through the disclosure helper leaves the other serving ESC-5's false "
-            f"clear on a live call — the packet's DEPLOY ENTRY CONDITION. ⚠ The uniformity "
-            f"class one section up calls _task_listing DIRECTLY and cannot see this: a "
-            f"helper is never non-uniform with itself"
+            f"the SAME question asked two ways renders differently AT THE TOOL: the "
+            f"{door!r} path lacks {_extra_lines(plain, filtered)} and carries "
+            f"{_extra_lines(filtered, plain)}. A dispatcher that routes only SOME filter "
+            f"branches through the disclosure helper leaves the rest serving ESC-5's false "
+            f"clear on a live call — the packet's DEPLOY ENTRY CONDITION, which has now "
+            f"been defeated through two different doors on two consecutive adversary "
+            f"passes. ⚠ The uniformity class one section up calls _task_listing DIRECTLY "
+            f"and cannot see any of them: a helper is never non-uniform with itself"
         )
 
-    async def test_the_tool_passes_the_OWNER_filter_THROUGH(self) -> None:
-        """⛔ The removed-behaviour leg: the rewritten branch must still forward filters."""
+    @staticmethod
+    async def _make_the_filter_BITE(ledger: TaskLedger, door: str) -> dict[str, Any]:
+        """Shape the ledger so ``door``'s filter selects EXACTLY ONE of the population.
+
+        One match, and strictly more than the cap in total — so a build that DROPS the
+        filter serves the cap's worth of rows instead of one, and the difference is
+        unmissable rather than an off-by-one.
+        """
+        if door == "blocked":
+            blocker = await ledger.create_task("a blocker", DESCRIPTION, created_by=CREATOR)
+            await ledger.create_task(
+                "the one blocked task", DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+            )
+            return {"blocked": True}
+        target = (await ledger.query_tasks())[0]
+        claim = await ledger.claim_task(target.id, OTHER_OWNER)
+        assert claim.claimed, "the fixture could not claim its one target"
+        return {"status": STATUS_CLAIMED} if door == "status" else {"owner": OTHER_OWNER}
+
+    @pytest.mark.parametrize("door", _FILTER_DOORS)
+    async def test_the_tool_passes_the_FILTER_THROUGH(self, door: str) -> None:
+        """⛔ The removed-behaviour leg, ∀ over the filters its own message names.
+
+        This pin's first version named THREE filters in its failure message and drove ONE.
+        A build dropping `status` then served 5 rows where 1 matched — under a bound
+        disclosure about a population the caller never asked about, which is a false claim
+        wearing an honest mechanism.
+        """
         ledger, env = await _fresh_ledger()
         try:
-            await _seed_identical_tasks(ledger, 6)
-            rows = await ledger.query_tasks(limit=None)
-            claim = await ledger.claim_task(rows[0].id, OTHER_OWNER)
-            assert claim.claimed, "the fixture could not claim a task"
+            await _seed_identical_tasks(ledger, _FILTER_POPULATION)
+            filters = await self._make_the_filter_BITE(ledger, door)
             served = str(
                 await _tool_seam(ledger).tasks(
-                    action="query", owner=OTHER_OWNER, limit=_LISTING_CAP
+                    action="query", limit=_LISTING_CAP, **filters
                 )
             )
-            truth = await ledger.query_tasks(owner=OTHER_OWNER)
+            truth = await ledger.query_tasks(**filters)
+            population = len(await ledger.query_tasks())
         finally:
             await ledger.close()
             await drop_database(env)
+        assert population > _LISTING_CAP, (
+            f"the fixture holds {population} tasks against a cap of {_LISTING_CAP}, so a "
+            f"build that DROPPED the {door!r} filter would serve the same count as one that "
+            f"honoured it and this pin could not tell them apart"
+        )
         assert len(_rendered_rows(served)) == len(truth) == 1, (
-            f"lore_tasks action=query owner={OTHER_OWNER!r} served "
-            f"{len(_rendered_rows(served))} rows where the ledger says {len(truth)} match. "
-            f"This wave REPLACES the query dispatch branch, so 'it forwards "
-            f"status/owner/blocked' is a removed-behaviour item — and a build that drops "
-            f"`owner` also serves a bound disclosure about a population the caller never "
-            f"asked about, which is a false claim wearing an honest mechanism"
+            f"lore_tasks action=query {door}=… served {len(_rendered_rows(served))} rows "
+            f"where the ledger says {len(truth)} match, out of a population of "
+            f"{population}. This wave REPLACES the query dispatch branch, so 'it forwards "
+            f"status/owner/blocked' is a removed-behaviour item — ∀ the three, not whichever "
+            f"one a pin happened to drive"
         )
 
 

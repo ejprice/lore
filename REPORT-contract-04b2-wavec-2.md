@@ -914,6 +914,106 @@ action needed was the MCP schema wiring #314 already demanded.
 
 ---
 
+# §14 · DELTA VERDICT **INSUFFICIENT** — SIX OF SEVEN CLOSED, D-6 HELD BY RULING
+
+`adversary-c1-delta-1` confirmed all nine of the original wrong builds **dead** (each killed
+by its own pin, zero collateral) and re-attacked the #268 instrument, which **held at 6/6
+deterministic RED**. Then it found five more wrong builds passing 81/81, plus two defects in
+the reference build itself.
+
+## 14.1 The pattern diagnosis, which is the thing worth keeping
+
+**Every gap was a pin written to the EXAMPLE I was shown, not to the PROPERTY.** Its
+sharpest instance: `adversary-c1-1` §3.1 measured **two** facts three lines apart —
+
+```
+MCP tool exposes 'max_depth': False    <- I pinned this
+MCP tool forwards 'max_depth': False   <- I pinned nothing
+```
+
+I fixed the half whose evidence line was quoted. The surviving build declares the parameter
+and drops it, so an agent asks for `max_depth=2`, gets depth 32, **and the render says
+"walked to depth 32"** — the served answer contradicting the caller's own request in
+writing. This is the same family as §12.1's *"the pin drove the seam I was thinking about"*,
+one level down: the pin drove the **example** I was handed.
+
+And ESC-5's false clear survived a **second consecutive pass**, through `status` — because
+the adopted pin drove `blocked`, the door the first exploit walked through.
+
+## 14.2 What I fixed, and how each was re-proved
+
+| Δ | fix | mutation proof (declared before the run, diffed both ways) |
+|---|---|---|
+| **D-1** ⛔⛔ | `test_the_registered_tool_FORWARDS_every_parameter_it_DECLARES` — **∀ over `inputSchema` properties**, read structurally from the registered function's forwarding call, so the next parameter cannot reopen it | delete `max_depth=max_depth` → `1 failed, 88 passed`, **PROOF HELD** |
+| **D-2** ⛔⛔ | the disclosure pin **parametrized over `_FILTER_DOORS` = blocked · status · owner**, each with a population the filter selects entirely | route only `status is None` through `_task_listing` → `1 failed, 88 passed`, **PROOF HELD** |
+| **D-3** | the forward-through pin parametrized over the same three, each with a population where the filter AND the cap both bite (1 match, 8 rows, cap 5) | drop `status` inside `_task_listing` → `1 failed, 88 passed`, **PROOF HELD** |
+| **D-4** | `test_every_declared_action_BRANCHES_in_the_dispatcher` — **an AST scan for `action == <NAME>` over the dispatcher's own source.** No served prose is load-bearing at all | disable the `rollup` branch → `1 failed, 88 passed`, **PROOF HELD** |
+| **D-7** | `test_the_TOP_LEVEL_description_alone_names_every_action` — the summary an agent reads FIRST, matched as a WORD case-insensitively rather than as a quoted literal | RED on the reference build until its closed six-action list was opened up; now green |
+| **D-5** | ⚠ **HELD — see §14.4** | — |
+| **D-6** | ⚠ **NOT MINE.** SECTION F untouched per the lead's instruction | — |
+
+## 14.3 ⚠ A THIRD SELF-INFLICTED DEFECT, CAUGHT BY THE BOTH-WAYS DIFF
+
+D-4's first re-authoring declared one RED and produced **two**: my *positive control* had
+restated `set(_TASK_ACTIONS) <= dispatched`, so a mutation killing one dispatch branch
+reddened the control as well. **A control that fails for the same reason as the thing it
+controls is a second copy of it, not evidence.** `PROOF FAILED` caught it; the restatement is
+gone and the control now fails only for its own reason (`del`-free, comment at the site). The
+re-proof is the `1 failed, 88 passed` in the table.
+
+This is the third false gate this contract has produced and the third caught by
+`mutation_proof.py`'s both-ways diff rather than by me reading the pin. The instrument is
+carrying more of my weight than my judgement is.
+
+## 14.4 D-5 HELD DELIBERATELY, and why that is not a skip
+
+MP-Δ5 asks me to extend `TestTheFencedBodyRenderHasONEImplementation` with a recorder leg
+over `SearchPipeline._fence_width`. **That class is in SECTION F**, whose subject —
+`sanitise.fenced_block` versus the pre-existing `render.render_fenced` — is exactly what D-6
+re-opens and what the lead has told me to leave alone pending the sidecar's ruling.
+
+Writing the leg now means keying a new pin on `sanitise.fence_width`, a symbol the ruling may
+delete. **One edit lands D-5 the moment the ruling arrives**, and its shape is
+ruling-independent (the same recorder, over whichever symbol ends up holding the policy).
+Flagged rather than silently deferred, per the deferral law: **named decision point = the
+D-6 ruling.**
+
+## 14.5 ⚠ A FALSE COUNT IN MY OWN §13.1, CORRECTED HERE RATHER THAN EDITED AWAY
+
+§13.1 states *"The fence rule already exists TWICE at `025c2a9`"*. **That is FALSE.** It
+exists at least **three** times — `SearchPipeline._fence_width`, `_render_finding_detail`'s
+inline copy, and `loremaster.render.render_fenced`, the one with the type discipline, its own
+contract class in `test_render.py`, and **three live call sites in `server.py`, which already
+imports it**.
+
+My falsifier check greped for `_fence_width` — **a NAME** — and `render_fenced` spells the
+same policy differently. That is this repo's instrument lesson landing on me verbatim:
+*"seam enumerator · keyed on `async def _query` · defeated by `scout.py`, which spells it
+differently."* I ran the falsifier and it was structurally incapable of seeing the thing it
+was looking for.
+
+The remedy is a ruling, not a pin (a builder who did the right thing — call `render_fenced` —
+would go RED on a pin it may not edit), so SECTION F stays as written until the sidecar
+rules. **What is mine is the false number, and it is corrected here.**
+
+## 14.6 Receipts
+
+```
+reference build, contract alone                                    89 passed / 0 failed
+reference build, + query_tasks_bounded + blocks_edge + task_ledger
+  + mcp_server + txn_contention + surreal_harness + sanitise
+  + search + findings + render          -n auto           1714 passed, 3 xfailed in 121.22s
+reference build, ruff check .        2 errors, BOTH pre-existing in scripts/ (finding #311)
+reference build, mypy on the contract                              0 errors
+HEAD (54e719d + my files)                                          62 failed / 27 passed
+HEAD, ruff on the contract                                         All checks passed
+```
+
+81 → **89 pins**. `test_render.py` joins the satisfiability set because D-6's subject makes it
+a seam this contract now provably touches — whether or not the ruling moves anything.
+
+---
+
 *Written 2026-08-01 by `contract-04b2-wavec-2` (Opus) against `feat/surreal-unification`
 @ `f67a219`. Every number here was derived this session by the command shown beside it;
 nothing is inherited, including from the predecessor's report. No git command was run; the
