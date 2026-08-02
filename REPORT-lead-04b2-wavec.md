@@ -167,6 +167,22 @@ engine success line) → rollback receipts into the Log → recreate → smoke. 
 `lore-deploy start` (#165/#166). Both `CreateCommand`s **re-derived at deploy time**.
 Production was on image `e91e37b9` at kickoff.
 
+### ⚠ FOUR CONCRETE ITEMS OWED FROM THE C3 FIX WAVE (`39db35c`, its §5.2/§6.1/§9/§7)
+1. **The wrong-build DRIVER lives ONLY in the scratch tree** at `/home/ejprice/scratch-c3-ref`.
+   It carries **25 receipts and exits 0**, and it is the instrument that proves C3 kills what
+   the adversary found. It is pasted VERBATIM in `REPORT-contract-04b2-c3fix-1.md` §9, which
+   is committed — **so it is recoverable, not lost.** But `git mv` it into `scripts/` before
+   that tree is discarded: a driver that exists only in a scratch directory is unrecoverable
+   by construction the moment someone cleans up. Its author could not commit it (`scripts/**`
+   was outside its writable set).
+2. **A BUILD REQUIREMENT the contract now imposes** (§5.2): the receipt required one repair
+   to the reference build — MP-6's ambiguity classification. The builder must land it.
+3. **R-4's co-edit** (§6.1) lands the `_INSTRUCTIONS` paragraph byte-exact in
+   `test_comms_tool.py`, so **CL3's terminating pin is RED at HEAD until the builder ships**.
+   Shared file; other agents will see that red and must not "fix" it.
+4. **SECTION D now drives a LIVE store** (§7.4) — a new test dependency, ~12s under `-n auto`.
+   Plus four non-blocking decisions in §7 for whoever takes the build.
+
 ### LEDGER RESOLVES OWED AT CLOSE-OUT
 #219 · #247 (already closed in code by ruling R2 — resolve with that receipt) · #253
 (verify in the deployed artifact) · #260 (`lore.yaml` lorerunes include, applied AT the

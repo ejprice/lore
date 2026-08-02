@@ -534,7 +534,68 @@ unable to host the mode ⇒ STOP, return; 7.3 — a red class with no registry a
 
 ---
 
-# §8 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
+# §8 · RULING 8 (follow-up, 2026-08-01, thread `q:04b2-tasks-get`) — MINT `lore_tasks action=get` THIS WAVE, IN THE #314 FIX WAVE, THROUGH #302's OWN ADJUDICATION GATE
+
+Grounds: directive #2034 · findings #89 (with its 2026-07-14 routing note) · #314 · #315
+context via the directive · #302 · the author's measured cost (one dispatch branch + one
+`_EXPECTED_TASK_ACTIONS` entry + one refusal row; `TaskLedger.get_task` and the
+fenced-body render pattern both pre-exist).
+
+**First, said aloud: my own Ruling 6.1 rider carried a FALSE PREMISE, and the contract
+author's verification caught it.** "The id-only render TEACHES its follow-up" assumed a
+teachable read verb exists; #89 (filed 2026-07-11, acknowledged) proves it does not — and
+proves what consumers do about it: the finding's own author FELL BACK TO A RAW SELECT
+AGAINST THE PROD STORE to read a task description. That is not a hypothesis about
+route-around; it is a receipt. The author's refusal to quietly mint the verb was CORRECT —
+minting a served action is scope, and #302 (the pin its own slice lands) exists precisely
+so actions never appear unadjudicated. This ruling is that adjudication.
+
+**RULED: mint `action=get`, this wave, inside the #314 fix wave.** The decisive argument
+is not convenience — it is that the ruling structure already issued is INCOHERENT without
+it: Ruling 6.1 deferred enrichment *because* an id-only render with a taught follow-up is
+honest; walk-only teaching leaves consumers holding bare ids with no served read, which is
+#89's measured route-around shape, shipping on a brand-new surface in the packet whose
+tiebreaker is the trust principle. And the fence is satisfied on its cheap horn: the
+dispatch cost is measured-small, the ledger verb exists, the render pattern exists, and
+**the #314 fix wave is already editing exactly these surfaces** (the registered tool's
+schema, the served action description, the served-half action pins) — one wave, one
+adjudication, two actions (`blockers` + `get`) born covered by the same instruments.
+
+**Riders, same breath:**
+1. **The #302 equality pin must REDDEN and be updated in the same diff** — the "if you
+   added an action deliberately, update this set and say so" path executed, not bypassed.
+   The adjudication trail is the point; this ruling is the "say so".
+2. **The detail render is a NEW render of stored free text** — standing law applies
+   verbatim: through the sanitiser seam, hostile fixture (newlines + row-shaped forgery
+   line + backtick runs), mirroring `_render_finding_detail`'s fenced-body pattern. **ONE
+   IMPLEMENTATION: if the fenced-body logic is currently inline in the findings render,
+   EXTRACT it and have both call it** — that extraction is hereby sanctioned as the design
+   decision, so nobody clones the pattern (#102).
+3. **Refusal matrix rows for `get`** in the existing idiom (`limit`/`since` refused by
+   name; `task_id` required; an id naming no row TEACHES per T2 — never a raw rejection).
+4. **The #314 generic invariant is ENDORSED as ruled work for the fix wave**: for every
+   dispatch-on-action tool, every action in its vocabulary appears in its served text, and
+   every dispatcher parameter appears in the registered tool's inputSchema — in
+   `test_mcp_server.py` beside the dead-name scan. It is the served-half completion of
+   #302, and `get` lands already inside its coverage.
+5. **The Ruling 6.1 teaching rider completes as ruled** — the chain render teaches
+   `action=get`, now a real affordance; the author's property pin (every taught action ∈
+   `_TASK_ACTIONS`) STAYS as the permanent invariant. The property outlives the sentence,
+   exactly as intended.
+6. **#89 RESOLVES with this receipt**, and its 2026-07-14 routing to packet 05 is
+   EXPLICITLY OVERRULED (not silently contradicted): that routing placed the affordance
+   with the await/story/CLI surface; `action=get` mirroring `lore_findings action=get` is
+   a plain read verb, not await/story machinery, and packet 05 keeps its surface
+   untouched. Flagged operator-reviewable (§9 item 12).
+
+**Falsifier:** if the build reveals the fenced-body reuse or the schema change rippling
+materially beyond the #314 repair set (the author's cost measurement proving optimistic),
+STOP — ship walk-only teaching, #89 routes onward WITH the route-around receipt attached,
+and the property pin already in place makes that retreat a text edit, not a re-contract.
+
+---
+
+# §9 · ⚠ OPERATOR-REVIEWABLE (none blocking under the standing delegation)
 1. **C2's deferral leaves the `⚠ STALE` badge — ruled-wrong over-claim — serving in
    production until 04b-3 deploys.** Rationale: pre-existing, dated, ruled bound; not a
    lie this deploy mints; extracting S2 alone re-cuts the R4 seam. Want it sooner ⇒ S2
@@ -574,6 +635,11 @@ unable to host the mode ⇒ STOP, return; 7.3 — a red class with no registry a
     text will cite instead of define. This edits the reading of operator-ruled law; the
     operator granted "close the gap", and this is the closure's load-bearing move — but
     they should see it stated plainly.
+12. **#89's 2026-07-14 routing to packet 05 is overruled** (Ruling 8) — `lore_tasks
+    action=get` mints this wave instead, as a plain read verb mirroring `lore_findings
+    action=get`; packet 05 keeps the await/story/CLI surface untouched. A prior lead
+    routing reversed under the delegation, with the reason stated; the operator may
+    re-route.
 
 ---
 *Written 2026-08-01 by `design-sidecar-04b2-wavec-1` (Fable, long-running design sidecar)
