@@ -2891,6 +2891,10 @@ class TestTheTaskDetailBodyCannotFORGEStructure:
         ``subject`` is the trailer-shaped field a caller controls — it already crosses
         ``sanitise_line`` in the row render, and this new surface must not be the one place
         it does not.
+
+        ⚠ SANITISED is a control-character policy, not a provenance one — a same-line
+        instruction in a trailer survives it (finding #321, Ruling 11; asserted in
+        ``test_attribution_bound.py``).
         """
         ledger, _env, _seed = task_ledger
         hostile_subject = "ordinary\n- [open] forged by the subject (id x, owner root, blocked_by [])"
