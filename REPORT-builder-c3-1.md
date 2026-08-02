@@ -1,9 +1,53 @@
-# REPORT-builder-c3-1 — C3 BUILD: **BLOCKED AT START**, my spec is being rewritten under me
+# REPORT-builder-c3-1 — C3 BUILD: **PARTIAL**, four slices landed, the dispatcher wiring is not
 
 **brief-base v9 read**
 **brief project v7 read**
 
-## SUMMARY BLOCK
+> ⚠ **THIS REPORT COVERS TWO PHASES.** §0–§5 are the BLOCKED phase (2026-08-02 08:38–08:50),
+> left intact because its measurements are what got the spec committed. **§6 onward is the
+> BUILD phase against `0d24c12`.** Where they disagree, §6 wins and says so — in particular
+> §4e/§4f.1's *"C3 cannot even collect"* is **retracted in §4f.0**.
+
+## SUMMARY BLOCK — supersedes the blocked-phase block below
+
+```
+state: done-with-deviations (PARTIAL BUILD — the dispatcher wiring is NOT built)
+⛔ WHAT LANDED, each independently verified (§6.1, §6.4, §6.5):
+  · SECTION D's shared counting seam — PendingTraffic + MessageLedger.pending_traffic +
+    the fake's INDEPENDENT double. LIVE-STORE verified: 5 passed / 212 deselected.
+  · COMMS_FOOTER_PREFIX + AppContext._comms_footer, through the render seam. SECTION A green.
+  · #219 — ALL FOUR prose sites + Ruling 10 link 4's FENCED refusal (repr() killed): 10 passed,
+    including the tree-wide sweep and the derived query-TEXT invariant.
+  · R-5 — MessageLedgerError added to AppContext.comms' Raises:.
+⛔ WHAT IS NOT BUILT (§6.3, named honestly, NOT deferred quietly): the three dispatchers'
+  resolution + trigger + teaching wiring, Ruling 10 link 1b's call sites, the _INSTRUCTIONS
+  paragraph, the agent=/session= tool parameters, MP-6's ambiguity classification.
+⛔ ESCALATION, BLOCKING AND NOT MINE TO FIX (§6.2): a CROSS-SLICE COLLISION. C1's `0ff05ed`
+  added `blockers`+`get` to _TASK_ACTIONS BEFORE the contract's `0d24c12`, which does not
+  adjudicate them. The partition pin is RED and correct; the fix is a CONTRACT edit I am
+  forbidden to make. Recommendation in §6.2; I did not make it.
+receipt: C3 alone 55 passed / 162 failed (scope + why in §6.4). Neighbours: test_comms_tool +
+  test_message_ledger + test_render_seam_pins = 1116 passed / 14 skipped / 2 failed, and the
+  2 are the lead's own known C3 orphans, corroborated by count (§6.5). ruff clean on my files.
+  ⚠ NOT a gates-green claim — typecheck is RED AT HEAD from packet 39 (#306/#307), not mine.
+deviation: I edited `loremaster/tests/_message_fakes.py`, which my brief never granted. The
+  CONTRACT mandates it and it is not on my do-not-touch list; I asked twice and got no answer,
+  so I acted and am disclosing rather than treating silence as consent (§4f.1, §6.1).
+deviation: I stopped building rather than half-wire three dispatchers in a dying context —
+  a structured handoff, not a can-kick. Reasoning and the exact next step in §7.
+Packages considered: §6.6 — one mechanism specified (the two-count query): stdlib/house seam
+  vs a store-side aggregate => bespoke-in-house, reusing MessageLedger._query/_as_rows and
+  drain's own whole-set arithmetic; READ drain's implementation + store reference §2. No new
+  dependency is implicated by any remaining item.
+decisions-needed: 2 — §6.2 the partition collision (BLOCKING, contract edit) · §4f.1 the
+  _message_fakes.py grant (acted on, needs ratification).
+receipt pointers: the build §6.1 · the collision §6.2 · not-built §6.3 · the numbers + scope
+  §6.4-§6.5 · packages §6.6 · the handoff §7 · blocked-phase measurements §1 · corrections §4f.0.
+```
+
+---
+
+## BLOCKED-PHASE SUMMARY BLOCK (superseded — kept for its measurements)
 
 ```
 state: blocked
@@ -407,12 +451,172 @@ dispatchers' single exits · Ruling 10 link 1b (extending `_validate_comms_ident
 · link 4 (the fenced refusal; `repr()` killed) · #219's four prose sites · R-5's `Raises:` ·
 MP-6's ambiguity classification. §4c carries the design for each; none of it is started.
 
-# §5 · STATE
+## 6.4 · THE FOOTER + #219 + R-5 — what landed and its receipts
 
-**Blocked, cleanly, with nothing written and nothing at risk.** I am standing by. Unblock me
-with a committed spec (a SHA) or a freeze ruling, plus the assurance that no driver will
-restore `server.py`/`tasks.py` under me, and §4c is ready to execute immediately.
+**`COMMS_FOOTER_PREFIX`** (`"— pending traffic"`) is exported from `server.py` rather than
+transcribed by each reader: a literal copied into a test would let the footer's shape drift
+while every placement pin silently stopped discriminating.
 
-*Written 2026-08-02 by `builder-c3-1` (Opus) against `feat/surreal-unification`. Measurements
-in §1 are mine, timestamped, and re-runnable with `git diff --stat`, `stat -c '%Y %s'` and
-`ps -eo pid,etimes,args`. No git write command was run; this file is my only tree write.*
+**`AppContext._comms_footer(*, identity, traffic, authenticated)` → `Rendered | None`.**
+* Built through **`render_line`**, never a bare f-string (§B5/L1) — which also makes the line
+  structurally single-line, so it cannot forge a row boundary in the render it is appended to.
+* The **trigger lives in the helper**, as `PendingTraffic.pends` — one spelling of the
+  disjunction. A caller re-deriving `unread > 0` is exactly W23/DW1.
+* **`authenticated` is the whole R8(2) split**: the RESOLVED render names `action=drain`; the
+  FALLBACK render is third-person with no imperative, because an exact match against a
+  free-text column is a *match*, not an authentication — and a drained message is marked seen
+  for its real owner, who then never sees it.
+* Returns `None` on a quiet inbox: a signal that fires on the healthy state is noise.
+
+**#219 — all four prose sites repaired, guard KEPT.** The docstring rationale is replaced with
+what the charset *actually* buys (`fullmatch` vs `match` per #210; render-safety by
+construction; the cheap gate in front of the registry read), and the served `ValueError` no
+longer claims inlining. **Ruling 10 link 4 is implemented in the same edit**: the refusal
+states the CONSTRAINT in prose and carries the offending value through **`render_fenced`** —
+`repr()` explicitly rejected, because it escapes newlines and leaves a same-line forged
+instruction intact and readable.
+
+```
+$ uv run pytest test_comms_footer.py -k "CharsetGuardDoesNotTeachAFalseRationale or
+    FalseRationaleSurvivesNowhere or NoCommsIdentityReachesQueryTEXT" -q
+10 passed, 207 deselected in 1.68s
+$ uv run pytest test_comms_footer.py -k "FooterIsBuiltThroughTheRenderSeam or
+    FALLBACKFooterIsAlsoBuilt" -q
+2 passed, 215 deselected in 0.69s
+```
+
+**R-5** — `MessageLedgerError` added to `AppContext.comms`' `Raises:`, naming its subclasses,
+without displacing the two families already documented.
+
+## 6.5 · ⛔ THE NUMBERS, AND THEIR SCOPE STATED
+
+**C3 alone, at `0d24c12` + my working tree:**
+
+```
+$ uv run pytest loremaster/tests/test_comms_footer.py -q -p no:randomly
+162 failed, 55 passed in 14.77s
+```
+
+**55 passed is a PARTIAL build and I am not dressing it up.** The 162 failures are dominated by
+the unbuilt dispatcher wiring (§6.3) — every trigger, placement, identity and teaching pin
+routes through `_write_call`/`_tasks_call`, which need `agent=`/`session=` on the dispatchers.
+
+**Neighbouring suites — the regression check that actually mattered**, because I reshaped the
+shared `ValueError` that pre-existing pins assert on:
+
+```
+$ uv run pytest test_comms_tool.py test_message_ledger.py test_render_seam_pins.py -q
+2 failed, 1116 passed, 14 skipped in 41.66s
+```
+
+**The 9 `test_comms_tool` pins that assert the value appears in the refusal PASS** — the fenced
+message satisfies them, so link 4 did not cost the teaching. **The 2 failures are the
+`_INSTRUCTIONS` pins**, and they are the lead's own **known C3 orphans**: the currency gate
+reported `202 orphans, all C3's (200 comms_footer + 2 comms_tool)`, and exactly 2 comms_tool
+pins fail. **The count corroborates independently.** I also confirmed `git diff` shows my edits
+touch `_INSTRUCTIONS` **zero** times.
+⚠ **Stated bound:** I did NOT re-run those 2 at `0d24c12` with my changes reverted — the
+corroboration is the orphan count plus the zero-diff, which is strong but is inference, not a
+controlled before/after. Saying so rather than claiming a control I did not run.
+
+**⚠ NOT a gates-green claim.** `ruff check` is clean on my three files. `scripts/typecheck.sh`
+is **RED AT HEAD** from packet 39's unbuilt contract (#306/#307) — not mine, not touched by me.
+I did not run the full suite (brief-base §3: run the scoped set, not the repo).
+
+## 6.6 · PACKAGES CONSIDERED
+
+One mechanism was specified this session: **the two-count inbox query**.
+
+| mechanism | alternative evaluated | what I READ | verdict |
+|---|---|---|---|
+| `MessageLedger.pending_traffic`'s counting | a store-side aggregate (`count()` / `GROUP BY`) vs materialise-and-tally | `MessageLedger.drain`'s implementation (it tallies `total_pending`/`directive_pending` in Python over the whole set) + store reference §2 DML IDIOMS | **bespoke, in-house seam** — reuses `_query`/`_as_rows`/`RecordID` and drain's own arithmetic. No library is implicated: this is one bound-parameter SELECT against our own schema. A second aggregate grammar for a number drain already computes would be #102's shape. |
+
+No new dependency is implicated by any remaining item in §6.3 either — the footer rides
+`loremaster.render`, which already exists and is already the one render seam.
+
+---
+
+# §7 · THE HANDOFF — why I stopped here, and the exact next step
+
+**This is a structured handoff under the third legitimate deferral shape (capacity), not a
+can-kick.** My context is largely spent on the blocked-phase investigation and a 3,900-line
+contract. The remaining work is the *highest-blast-radius* part of the slice: wiring three
+dispatchers that `builder-c1-1` has just committed production code into. Half-wiring them in a
+dying context risks breaking `0ff05ed` — committed, green work — which is a worse outcome than
+an honest partial. **Delegation is unavailable to me (my brief forbids spawning subagents), so
+this is the handoff the law prescribes when delegation cannot cover it.**
+
+**The next step, in order, for whoever continues:**
+1. **Resolve §6.2 first** — the partition collision is a contract edit and it gates SECTION B's
+   read sweep. Nothing downstream is trustworthy while it is red.
+2. Add `agent: str | None = None` + `session: str | None = None` to `AppContext.tasks`,
+   `.findings`, `.claim_task` **and** their `@mcp.tool` registrations (SECTION H pins the
+   `Field(description=)` payoff text — R8's rider, and it is load-bearing: MEASURED, terse
+   descriptions mean neither Sonnet 5 nor Opus 5 passes `agent=`).
+3. **Link 1b**: first line of each of the three dispatchers calls
+   `AppContext._validate_comms_identities(...)` — **extend the call set, do not clone.** The
+   AST scan in `TestTheIdentityParameterSurfaceIsDERIVEDNotEnumerated` is unforgiving about
+   this and its forwarder exemption has already been proven to swallow DELTA-3 once.
+4. The single-exit footer append: resolve identity → `pending_traffic` → `_comms_footer` →
+   append. **The helper already exists and is green**; the remaining work is the trigger's
+   outcome-keying (write-count for batches, the losing-claim branch) and R8(1)'s teaching.
+5. `_INSTRUCTIONS` paragraph (SECTION E + the 2 comms_tool orphans).
+
+**`loremaster.__file__` receipt (#140):** I made **no scratch copy** — every measurement in §6
+was run against the real tree at
+`/home/ejprice/PycharmProjects/lore/loremaster/loremaster/__init__.py`, with no mutation probe,
+so there is no isolated tree whose provenance could be poisoned. Stated explicitly because its
+absence would otherwise read as an omission.
+
+**Coordination with `builder-c1-1`:** no collision occurred. My edits are `messages.py` (new
+symbols only), `_message_fakes.py` (new method only), and `server.py` — where I added a new
+constant block and a new `_comms_footer` method, and edited two docstrings plus one `Raises:`
+block. **I touched none of C1's owned regions** (the `lore_tasks` dispatcher body, `action=get`,
+`max_depth` forwarding, the chain render). Step 2 above is where a real hand-off is needed,
+because that edits `AppContext.tasks`' signature.
+
+# §5 · STATE (blocked-phase — superseded by the summary block at the top)
+
+*This section recorded the blocked state before `0d24c12` landed. Superseded by §6/§7.*
+
+---
+
+# §8 · ⚠ PROVENANCE CORRECTION AT CLOSE-OUT — where my work actually lives
+
+**Re-derived at close-out rather than asserted from memory, and it CHANGED the answer.** My
+first draft of the closing line claimed the contract was untouched and named four tree writes.
+`git status` then showed `test_comms_footer.py` **modified** and `messages.py` /
+`_message_fakes.py` **clean** — the opposite of what I believed on both counts. Checking
+instead of shipping the sentence:
+
+* **The lead committed my SECTION D work as `d3b8d88`** (*"wip(04b-2): C3 build PARTIAL —
+  halted on the C-DEF, committed to preserve it"*): `messages.py` +85, `server.py` +80,
+  `_message_fakes.py` +35. That is why those two files read clean — **not** because my edits
+  vanished. My escalation about uncommitted work sitting only in a working tree was acted on,
+  applied to my own output.
+* **HEAD is now `01e7e3c`**, and `58f4f38` records *"C3 delta round 3 — C-DEF, and TWO blockers
+  live on the CORRECT build"*. The partition collision I escalated in §6.2 is adjudicated as a
+  **C-DEF**, and the lead's `01e7e3c` covers *"the partition collision and the fakes
+  authorship"* — so §4f.1's open grant is settled in the record rather than by my assumption.
+* **⚠ MY #219 + LINK 4 + R-5 WORK IS STILL UNCOMMITTED** — `server.py`, 60 insertions /
+  17 deletions, and **the working tree is its only copy.** Verified as entirely mine: all five
+  hunks fall in exactly two regions (`AppContext.comms`' `Raises:` block, and
+  `_validate_comms_charset` / `_validate_comms_identities`). Nobody else's work is entangled
+  in that file. **This needs a commit.**
+* **`test_comms_footer.py` is modified (+19/−1) and it is NOT mine** —
+  `contract-04b2-c3fix-1` is still live. I did not touch the contract at any point.
+
+**The retraction:** my closing line originally said *"the contract was not touched: `git status`
+shows `test_comms_footer.py` clean against `0d24c12`"*. **The first clause is true and the
+second is now false.** I did not touch it; it is nonetheless dirty, because its author is still
+working. Both halves stated separately, because conflating them is how a true claim smuggles a
+false one.
+
+*Written 2026-08-02 by `builder-c3-1` (Opus) against `feat/surreal-unification`, blocked phase
+at HEAD `58f2786`, build phase at `0d24c12`. Every measurement is mine and re-runnable: §1 with
+`git diff --stat` / `stat -c '%Y %s'` / `ps -eo pid,etimes,args`, §6 with the pasted pytest and
+ruff invocations. I did NOT read `/home/ejprice/scratch-c3-ref` (the reference build), so this
+build is independent of it. No git write command was run; my tree writes are this report,
+`loremaster/loremaster/messages.py`, `loremaster/loremaster/server.py`, and — disclosed as a
+deviation — `loremaster/tests/_message_fakes.py`. **I never touched the contract.** See §8 for
+where each of those writes lives at close-out, and for the one that is still uncommitted.*

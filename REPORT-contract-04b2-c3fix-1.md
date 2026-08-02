@@ -3634,3 +3634,142 @@ NEVER REACHES THE RENDER"*) is derived over the footer's two renders and stated 
 identity surface — the same over-narrow shape, one level up, which is what Ruling 10 corrects.
 The finding carries the measured bytes, the control, the derivation of the cause, and the note
 that it was never a production defect because the footer does not exist at HEAD.
+
+---
+---
+
+# §14 · FOURTH-PASS TRIAGE (2026-08-02) — the C-DEF verdict was graded against a SUPERSEDED commit
+
+## 14.0 · The two owed one-liners, first
+
+**DONE** — after the single partition edit in §14.2 I have stopped writing to the tree.
+
+**Passed-count for the third pass: `217 passed in 3.23s` / 0 failed** (and `217 passed in
+3.35s` on the prior run), measured in the provenance-verified scratch tree with the
+reference build. `0d24c12`'s *217 collected* is therefore backed by a run, not a collection.
+
+## 14.1 · ⛔ B1, B2 and B3 DESCRIBE `58f2786`. THE RULING-10 PASS LANDED AT `0d24c12`, AFTER IT.
+
+`REPORT-adversary-c3-delta-2.md` states its own base honestly (*"Graded at `58f2786`"*), and
+that commit is an **ancestor** of the pass it is grading:
+
+```
+$ git merge-base --is-ancestor 58f2786 0d24c12   ->  YES (58f2786 came BEFORE 0d24c12)
+$ git log --oneline 58f2786..0d24c12
+0d24c12 contract(04b-2): C3 third pass — Ruling 10's re-ruled chain, 217 collected
+0e1e19a docs(receipts): C1 builder's report
+0ff05ed feat(04b-2): C1 build — the packet's FIRST production code
+```
+
+Symbol presence, both commits:
+
+| instrument | `58f2786` | `0d24c12` |
+|---|---|---|
+| `TestTheIdentityParameterSurfaceIsDERIVEDNotEnumerated` (link 0's derived scan) | **0** | 2 |
+| `_unfenced(` (link 4's fence-aware check) | **0** | 2 |
+| `test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal` (1b's rider) | **0** | 1 |
+| `TestAHostileAgentValueIsREFUSEDBeforeItReachesAnyRender` (the OLD class) | 1 | **0** |
+
+**Blocker by blocker, measured against the file that shipped:**
+
+* **B1 — the C-DEF.** Its mechanism is leg 1's `"\n" not in message` and `"mallory" in
+  message`, which together mandate repr and forbid both compliant shapes. **Both asserts
+  are 0-occurrence in the shipped contract** — they were in the class I *deleted*. The
+  current leg 1 asserts only the CONSTRAINT (`_agent_name_pattern_text() in message`,
+  read from production), and containment is checked by `_unfenced()`, which **admits
+  constraint-only, admits `render_fenced`, and rejects repr**. The reference build uses
+  `render_fenced` and goes 217/0; `DELTA3b` is the repr build and reddens exactly one pin.
+* **B2 — the dropped rider.** `test_perturbing_the_SHARED_predicate_moves_EVERY_members_
+  refusal` narrows the shared `AGENT_NAME_PATTERN` in-suite and requires every link-0
+  member's refusal to move. `DELTA3c` is the private-regex-behind-a-stolen-message build
+  B2 describes, and it reddens exactly that pin plus the link-0 door pin.
+* **B3 — the derived scan.** Built (`TestTheIdentityParameterSurfaceIsDERIVED
+  NotEnumerated`), with doors named `file:line` and four positive controls.
+
+**I am not claiming the adversary erred** — it graded the base it was given and said so. The
+error is upstream: **a contract was graded against a moving base**, which is the same class
+the lead names for the partition collision one paragraph later. Re-grading `0d24c12` is
+cheap; stopping the builder on `58f2786`'s verdict is not.
+
+## 14.2 · THE PARTITION COLLISION — FIXED, and verified against REAL production
+
+C1's build (`0ff05ed`) added `blockers` and `get` to `_TASK_ACTIONS` **before** this contract
+committed, so the declared partition no longer covered the surface it faces.
+`TASK_READ_ACTIONS` gains both, adjudicated as READS per the lead's ruling (`get` a plain
+read verb, `blockers` a dependency walk). Verified against the repo's actual production:
+
+```
+$ pytest ...::test_the_declared_action_PARTITION_covers_the_dispatchers_OWN_action_set
+1 passed in 0.64s
+$ pytest loremaster/tests/test_comms_footer.py --collect-only -q   ->  225 tests collected
+$ ruff check loremaster/tests/test_comms_footer.py                 ->  All checks passed!
+$ python -m ast <the file>                                          ->  PARSES OK
+```
+
+⚠ **STATED BOUND, because the count moved and I will not claim what I did not measure:** the
+two new actions add 8 parametrised READ rows, and **those 8 are not yet verifiable
+anywhere** — my scratch tree's production predates C1 (`_TASK_ACTION_BLOCKERS`: 0
+occurrences) and the repo's C3 build is PARTIAL (halted at `d3b8d88`). In scratch the file
+now reports **9 failed / 216 passed**, and all nine are `get`/`blockers` rows plus the
+partition pin — pure pre-C1 drift, the same class as §13.5's `direct_dependents`. **I
+deliberately did NOT split a "driven" subset out of `TASK_READ_ACTIONS` to make that number
+green:** a second list would let a future action be swept by the partition pin and exempt
+from the driven legs, which is the exemption the pin exists to forbid.
+
+## 14.3 · `_message_fakes.py` — REVIEWED (it was already written, and not by me), and it STANDS
+
+The lead ruled this mine on independence grounds. **It was already in the tree when I got
+here**, authored by the builder and *disclosed rather than discovered* — the lead's L-6 note
+records that. I did not clobber it; I reviewed it, which restores the substance of the
+independence the ruling wanted (the observer is now checked by someone who did not write the
+build **or** the double).
+
+**Verdict: it STANDS.** Its count is genuinely independent — re-derived from edge state, not
+delegated — and its predicates mirror R4 *as written* (no `seen_at` clause on
+`unacked_directives`, so an unseen directive counts in both). **Proven by mutation** with the
+committed tool, not by reading:
+
+```
+$ uv run python scripts/mutation_proof.py --file loremaster/loremaster/messages.py \
+    --anchor '  and row.get("grade") == MESSAGE_GRADE_DIRECTIVE' --replacement '' \
+    --expect-red '...separately[asyncio-real]' --expect-red '...unacked_directive[asyncio-real]'
+2 failed, 215 passed
+tree restored byte-exact (md5 7fd48e728b8117881db3612de8b494ce)
+PROOF HELD — the declared RED set fired EXACTLY
+```
+
+Dropping R4's conjunct from **production** reddens **only the `real` legs**; every `fake` leg
+stays green. That is exactly SECTION D's *"a delegating double cannot launder a wrong
+production statement"*, demonstrated rather than asserted.
+
+⚠ **AND A CORRECTION TO THE BLOCKER'S PREMISE, measured:** *"Without it C3 cannot COLLECT —
+not fail, collect."* I put HEAD's `_message_fakes.py` into scratch and ran it:
+**`217 tests collected`, then `217 passed`.** The attribute is touched at CALL time by
+`_pending_traffic_for`, so its absence is a RUN failure, never a collection failure. It
+matters because a clean-checkout CI signal looks different for the two.
+
+## 14.4 · ⚠ ESCALATION, NOT EXTENSION — B3's attribution-column leak is REAL and I have NOT closed it
+
+The lead's standing instruction is *"escalate rather than extend"*, so I am stopping here and
+saying what is open.
+
+**B3 names a live defect my contract does not cover, and its reasoning is correct.**
+`lore_claim_task(owner=HOSTILE_OWNER)` serves the forgery on the correct build, and
+`created_by=`/`actor=` were never driven hostile. My `IDENTITY_PARAMETERS` is
+`("agent", "session")` and I **deliberately excluded** the attribution columns, reasoning
+they are legitimately free text — `owner="the release train"` must keep working, and Ruling
+10's own falsifier says such a member *"does not belong in the inventory"*.
+
+**That reasoning is right about REFUSAL and wrong about CONTAINMENT, and the distinction is
+the fix:** those columns cannot be charset-refused, but they are still *unresolved caller
+input reaching a render* — which is **link 4's** subject, not link 1b's. The render is the
+dispatcher's own answer (`_render_claim_result` echoing `owner`), not the footer, which is
+why every footer-scoped pin is blind to it (`has_footer=False`) and why newline fixtures are
+blind too (the value collapses to one line).
+
+**This is a fourth wave and I am not starting it unbidden.** What it needs, so a ruling can
+be cheap: link 4 quantified over *renders of unresolved caller input* rather than over
+*identity parameters*, which is a different derivation from link 0's and probably a second
+scan (which renders echo caller-supplied free text?). **If you want it, say so and name
+whether it is contract-side or a design question** — on the evidence of this wave it is the
+latter, since it re-opens what link 4 ranges over.

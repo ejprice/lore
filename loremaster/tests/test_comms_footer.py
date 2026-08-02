@@ -257,7 +257,25 @@ _FINDING_ACTIONS_NEEDING_A_REF = ("get", "chain_head")
 TASK_WRITE_ACTIONS = ("create", "create_many", "transition", "supersede")
 
 #: ``lore_tasks`` actions that only READ. None may ever footer.
-TASK_READ_ACTIONS = ("query", "rollup")
+#:
+#: ⚠ **``get`` and ``blockers`` WERE ADDED 2026-08-02, AND THE PIN THAT FORCED IT WAS
+#: DOING ITS JOB.** Slice C1's build (`0ff05ed`) added both to production's
+#: ``_TASK_ACTIONS`` BEFORE this contract committed (`0d24c12`), so the declared
+#: partition no longer covered the action set it faces and
+#: ``test_the_declared_action_PARTITION_covers_the_dispatchers_OWN_action_set``
+#: reddened. That RED is the instrument working: a new action must be ADJUDICATED into
+#: a fate, never silently exempt from the footer property — which is exactly how six of
+#: nine write actions came to be exempt in the first place.
+#:
+#: Both are adjudicated READS: ``get`` is a plain read verb (Ruling 8) and ``blockers``
+#: is a dependency walk. Neither mutates, so neither may footer, and both are swept by
+#: the READ legs below rather than merely listed here.
+#:
+#: ⚠ **AND THE COLLISION IS ITSELF A FINDING, not a nuisance:** a contract pinned
+#: against a MOVING production surface is the same class as a build graded against a
+#: moving contract. Recorded here so the next author meets the cause rather than
+#: rediscovering it from a red.
+TASK_READ_ACTIONS = ("query", "rollup", "get", "blockers")
 
 #: ``lore_findings`` actions that MUTATE — including both best-effort batches,
 #: whose footer additionally rides L2's write-COUNT (SECTION B).

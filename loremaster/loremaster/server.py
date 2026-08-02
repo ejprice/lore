@@ -4925,6 +4925,16 @@ class AppContext:
                 #4 — the ledger carries no roster; the server enriches it).
             loremaster.briefs.BriefLedgerError: A domain error from the brief
                 ledger (unknown brief/version) — surfaces unchanged.
+            loremaster.messages.MessageLedgerError: A domain error from the
+                MESSAGE ledger — the family behind ``send``/``drain``/``ack``
+                (``MessageBodyError`` for an over-cap or blank body,
+                ``MessagePointerError`` for over-cap ``refs``,
+                ``UnknownRecipientError``/``UnknownSenderError``,
+                ``EmptyRecipientSetError``, ``IllegalMessageGradeError``) —
+                surfaces unchanged. **04a residual R-5**: this block documented
+                the agent and brief ledgers and silently omitted the third,
+                even though the message actions are the ones an agent calls
+                most. A caller cannot catch a family it is never told about.
         """
         spec = _COMMS_ACTIONS.get(action)
         if spec is None:
@@ -5096,11 +5106,13 @@ class AppContext:
     ) -> None:
         """Charset-validate EVERY identity a call carries, BEFORE any store touch.
 
-        §B1 step 2, extended by §B2.1: a recipient IS an agent name — the fourth
+        §B1 step 2, extended by §B2.1: a recipient IS an agent name — a further
         member of the identity class :meth:`_validate_comms_charset`'s own
-        docstring says shares ONE charset because all of them are inlined into
-        live ``WHERE`` clauses. Admitting ``to[]`` unvalidated now means finding
-        the gap in a later packet, on a surface that by then writes edges.
+        docstring says shares ONE charset (see there for what the charset
+        actually buys; finding #219 corrected the old claim that these values
+        reach live ``WHERE`` clauses as text — they travel as BOUND
+        PARAMETERS). Admitting ``to[]`` unvalidated now means finding the gap in
+        a later packet, on a surface that by then writes edges.
 
         Extracted rather than inlined so the dispatcher's branch count stays
         under the lint ceiling AND so the identity policy has ONE home: a second
@@ -5124,25 +5136,56 @@ class AppContext:
     def _validate_comms_charset(value: str, label: str) -> None:
         """Charset-validate a comms identity value BEFORE any store touch (§0/§7).
 
-        The SAME ``AGENT_NAME_PATTERN`` guards agent names, sessions, AND
-        brief names (design doc §0: "Brief names ... same class as
-        agent.name ... same injection posture") — all three are inlined into
-        C3's live WHERE clauses, so all three share one charset.
+        The SAME ``AGENT_NAME_PATTERN`` guards agent names, sessions AND brief
+        names (design doc §0: "Brief names ... same class as agent.name ...
+        same injection posture"), so all of them share ONE charset — and ONE
+        implementation of the decision. Ruling 10 link 1b: every
+        identity-accepting parameter routes through this seam by EXTENDING its
+        call set, never by cloning the check.
 
-        ``fullmatch``, never ``match`` (finding #210): Python's ``$`` matches
-        at end-of-string OR immediately before a TRAILING NEWLINE, so
-        ``.match`` accepted ``"scout\\n"`` — a second identity that renders
-        identically to ``"scout"`` wherever a trailing newline is invisible.
-        ``fullmatch`` states the intent in the CALL rather than leaning on an
-        anchor, so a later edit to the pattern cannot silently re-open it.
+        ⚠ **WHY, CORRECTED (finding #219).** This guard used to justify itself
+        by claiming identities are interpolated into live ``WHERE`` clauses.
+        **That is false** — every comms identity travels as a BOUND PARAMETER,
+        and ``agents.py``'s own session filter binds ``$session_filter``. The
+        guard is RIGHT and its stated reason was WRONG; a false threat model
+        mis-spends the next auditor's attention, so the REASON is repaired and
+        the guard kept. What the charset actually buys:
+
+        * ``fullmatch``, never ``match`` (finding #210) — Python's ``$``
+          matches at end-of-string OR immediately before a TRAILING NEWLINE, so
+          ``.match`` accepted ``"scout\\n"``: a SECOND identity rendering
+          identically to ``"scout"`` wherever a trailing newline is invisible.
+        * a charset-clean name is what makes every RENDER of a resolved
+          identity safe BY CONSTRUCTION — with no space, backtick, ``=`` or
+          newline admissible, a footer-shaped forged instruction is
+          inexpressible as a name.
+        * it is the cheap gate in FRONT of the registry read: a value that
+          cannot BE a name is never looked up (Ruling 5.2).
+
+        ⚠ **The refusal names the offending value through a FENCE, never bare**
+        (Ruling 10 link 4). This message's input is by definition
+        hostile-capable, so the refusal is itself a served surface carrying
+        attacker-chosen text. ``repr()`` is NOT a neutraliser — it escapes the
+        newlines and leaves a same-line forged instruction intact and readable.
+        So the CONSTRAINT is stated in prose (always safe, and the half the
+        caller actually needs) and the value rides ``render_fenced``.
 
         Raises:
             ValueError: ``value`` does not match ``AGENT_NAME_PATTERN``.
         """
         if not AGENT_NAME_PATTERN.fullmatch(value):
             raise ValueError(
-                f"{label} {value!r} does not match {AGENT_NAME_PATTERN.pattern} — "
-                f"names are inlined into store queries and must stay in the safe charset"
+                str(
+                    render_compose(
+                        render_line(
+                            "{label} does not match {pattern} — names must stay in "
+                            "the safe charset. The rejected value was:",
+                            label=sanitise_line(label),
+                            pattern=sanitise_line(AGENT_NAME_PATTERN.pattern),
+                        ),
+                        render_fenced(value),
+                    )
+                )
             )
 
     @staticmethod
