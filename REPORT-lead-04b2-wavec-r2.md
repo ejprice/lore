@@ -297,7 +297,18 @@ drops the lead's own lore MCP connection (~150s boot) — expected.
 - **Rollback receipts** ✅ in the INDEX Log before the recreate (§B6).
 - ⚠ **HEAD moved under me** mid-deploy (a parallel session committed wave-D planning docs to this branch)
   — verified benign: HEAD `cde2a6c` is a docs-only descendant of my close-out; no code changed.
-- NEXT: recreate lore-lore on the new image (captured CreateCommand) → ~150s boot (drops my lore MCP) → smoke.
+- **Recreate** ✅ removed the outgoing container + ran the captured CreateCommand verbatim → `lore-lore`
+  Up on `a6a4e5a2` (container `468ec3bd`). Data safe (store + mounted volumes untouched).
+- **Boot** ✅ GREEN: `embed.probe.ok` (dim 2048), `startup.probe_gate.pass`, **R11 backfill minted 51
+  blocks-edges against PROD (`task.backfill.blocks_edges_minted`, no error — #107's silent-no-op did NOT
+  recur)**, watcher started + indexing. No tracebacks, no `/source`/git break (#165 held).
+- **Smoke** ✅ GREEN via live MCP handshake to the deployed server: `serverInfo.version=pkt03b-…-gcde2a6c`
+  (new image), 15 lore tools served, the wave's `_INSTRUCTIONS` pending-traffic teaching in the served
+  instructions block, and `lore_tasks action=get` reaches the ledger + teaches on a missing id (Ruling 8
+  live). In-image artifact check GREEN (4 members baked at `/app`).
+- My own lore MCP client **reconnected** (`lore_index` OK, 3258 files, HEAD `db2c999`).
+- **Prod `e91e37b9` → `a6a4e5a2`.** Rollback: image `pre-04b2-20260803` + backup
+  `lore-prod-20260803T141930Z.surql` (3.63 GB). ✅ **FUNCTIONAL COMMS IS LIVE.**
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
 - COLD AUDIT (fresh context, re-runs gates). Do not rush — 42 wrong builds passed contracts
