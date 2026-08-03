@@ -262,7 +262,29 @@ R-2/D-2 and must stay re-runnable — brief-base §1).
 
 R-2/R-3/R-4 filed as ONE 04b-3-routed finding (the audit §D/§E is the derivation).
 
-## NEXT — DEPLOY (operator-accepted GO; final recreate confirm owed) then CLOSE-OUT
+## R2-11 · CLOSE-OUT (pre-deploy half done)
+
+- **Ledger:** 15 findings resolved in one batch (the wave's build + cold-audit GO discharged them):
+  #300 #301 #302 #303 #305 #306 #307 #311 #313 #314 #315 #316 #317 #318 #320. Left OPEN, routed to
+  04b-3 or unaddressed: #304 (fleet input_required badge — not addressed), #309 (R9 display cap),
+  #310 (adjust-before-validate), #319 (limit desc false — UNSWEPT residual), #321/#322/#324
+  (attribution/invariant/audit-residuals, acked). #279/#299/#284-#298 are other packets.
+- **Archive:** 21 REPORT-*.md → `docs/plans/v2/receipts/2026-08-01-packet04b2-wavec/` via `git mv`
+  (never `rm`, #152). My active lead report stays at root until the deploy closes.
+- **Rescued from scratch → `scripts/`:** `c3_wrongbuild_driver.py`, `c3_harness_repair.py` (§L-6 R-9,
+  were only in `scratch-c3-ref`), and the cold-audit `audit_probes/` (R-2/D-2 re-runnable).
+- **INDEX:** 04b-2 row updated (built + audit-GO + deploy-pending) + Log entry appended.
+- **STILL OWED at final close-out (post-deploy):** dispose the 4 C1/C3 scratch trees (keep until the
+  deploy confirms builds landed), retire the fleet in the ledger, #253-verify in the deployed artifact.
+
+## ⚠ THE DEPLOY — awaiting the operator's specific go-ahead (production data migration)
+Per the prior lead's §B6, this deploy is NOT a container swap: it runs the **R11 legacy backfill as a
+production data migration against the prod store at boot**, and §B6 explicitly says to *"offer the
+operator the nod."* Plus the #165/#166 fragility (hand-rolled `/source` mount, not restart-durable —
+NEVER `lore-deploy start`). Sequence, once the operator confirms: fresh `surreal export` backup
+(EXIT=0 + table count) → capture BOTH `CreateCommand`s + diff vs #165's known-good mount shape →
+rollback receipts into the Log → rebuild image → manual recreate → smoke. Recreating lore-lore also
+drops the lead's own lore MCP connection (~150s boot) — expected.
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
 - COLD AUDIT (fresh context, re-runs gates). Do not rush — 42 wrong builds passed contracts
