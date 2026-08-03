@@ -285,6 +285,19 @@ NEVER `lore-deploy start`). Sequence, once the operator confirms: fresh `surreal
 (EXIT=0 + table count) → capture BOTH `CreateCommand`s + diff vs #165's known-good mount shape →
 rollback receipts into the Log → rebuild image → manual recreate → smoke. Recreating lore-lore also
 drops the lead's own lore MCP connection (~150s boot) — expected.
+
+## R2-12 · DEPLOY EXECUTED (operator "Execute the deploy", 2026-08-03)
+- **Backup** ✅ `/backups/lore/lore-prod-20260803T141930Z.surql` (3.63 GB, 22 tables, EXIT=0).
+- **Image built** ✅ `localhost/lore:latest` = `a6a4e5a2` (BUILD_EXIT=0), bakes HEAD `cde2a6c`;
+  loremaster+members+Containerfile+pyproject **byte-identical to the cold-audit `60f83f0`** (`git diff`=0
+  — only `scripts/` rescues + a parallel session's wave-D docs moved since). Rollback image tagged
+  `pre-04b2-20260803` (=`e91e37b9`).
+- **Artifact check** ✅ all 4 members baked at `/app` (not the mount, #139/#140), clean import (no #131),
+  wave surface present.
+- **Rollback receipts** ✅ in the INDEX Log before the recreate (§B6).
+- ⚠ **HEAD moved under me** mid-deploy (a parallel session committed wave-D planning docs to this branch)
+  — verified benign: HEAD `cde2a6c` is a docs-only descendant of my close-out; no code changed.
+- NEXT: recreate lore-lore on the new image (captured CreateCommand) → ~150s boot (drops my lore MCP) → smoke.
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
 - COLD AUDIT (fresh context, re-runs gates). Do not rush — 42 wrong builds passed contracts

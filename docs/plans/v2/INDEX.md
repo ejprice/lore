@@ -1565,6 +1565,17 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   ⚠ **MODEL:** subagents ran opus-5 — no Agent-tool path to 4.8 (full-id rejected by the enum; omit/alias → opus-5);
   `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` now set in `settings.json` for the NEXT session; this wave's work is
   verified by model-independent receipts, so nothing needs redoing.
+- 2026-08-03 · **04b-2 DEPLOY — ROLLBACK RECEIPTS (written BEFORE the recreate, per §B6).** Shipping image
+  `localhost/lore:latest` = `a6a4e5a2` (bakes HEAD `cde2a6c`; **loremaster/lorerunes/loresigil/lorescribe +
+  Containerfile + pyproject are BYTE-IDENTICAL to the cold-audit commit `60f83f0` — verified `git diff` = 0**;
+  the only changes since the audit are `scripts/` rescues + a parallel session's wave-D planning docs). ROLLBACK
+  IMAGE: `localhost/lore:pre-04b2-20260803` (= `e91e37b9`, the outgoing prod). FRESH BACKUP:
+  `/backups/lore/lore-prod-20260803T141930Z.surql` (3.63 GB, 22 tables, EXIT=0) — the rollback for the R11 backfill
+  migration that runs at first boot on this schema. Artifact check GREEN (all 4 members baked at `/app`, wave surface
+  present). RECREATE = the outgoing container's captured `CreateCommand` verbatim (`--network=host --userns=keep-id
+  --user 1000:1000`, `/workspace:ro`, `/source:ro` ×2, state dir, `lore.env`, `LORE_CONFIG`) — #165's known-good
+  shape, NEVER `lore-deploy start`. TO ROLL BACK: `podman rm -f lore-lore` + recreate on `pre-04b2-20260803`; if the
+  migration corrupted data, `surreal import` the backup.
 - 2026-08-03 · **Wave D SPEC'D + RESEQUENCED (auth to the end) + the TRANSMUTE pivot.** Operator
   rulings: corpus splits prose/machine tiers — extraction moves to the SCRAPER as an LLM
   transcriber (HTML-first, recovers the destroyed link anchors; deterministic word-for-word
