@@ -16,7 +16,7 @@ Written against `feat/surreal-unification` @ `379c2c5` (HEAD at resume).
 | `Verdicts acted on:` | §L-6 written at `0d24c12`; `git merge-base --is-ancestor 0d24c12 379c2c5` = SAME (ancestor). Not STALE. C-DEF retraction (`c131686`/`8b0933d`) landed; not resurrected. |
 | `Directives:` | 0 ledger / 0 wake / 0 prose-duplicated (spawns carry full briefs via the Agent prompt, the guaranteed-read channel) |
 | `Rulings:` | 0 body-only (this file is the artifact) |
-| `Agents:` | 5 spawned (sidecar-r2, builder-c3-2, cdef-1, riders-r11-1, coldaudit-r2) / 0 ledger-retired / sidecar + riders standing-by · builder-c3-2 + cdef-1 done · coldaudit running |
+| `Agents:` | 7 spawned (sidecar-r2, builder-c3-2, cdef-1, riders-r11-1, coldaudit-r2, model-check-2, opus48-check-1) / **0 ledger-retired — pass condition UNMEETABLE**: lore_comms exposes no verb to retire another agent (lead-base's "set status on its behalf" is aspirational), filed **#325**; all 7 are terminal-STALE, which is the practical retired state |
 | `Uncommitted at stop:` | 0 (tree clean at resume) |
 
 ## R2-1 · RESUME ENTRY — state verified, not inherited
@@ -309,6 +309,22 @@ drops the lead's own lore MCP connection (~150s boot) — expected.
 - My own lore MCP client **reconnected** (`lore_index` OK, 3258 files, HEAD `db2c999`).
 - **Prod `e91e37b9` → `a6a4e5a2`.** Rollback: image `pre-04b2-20260803` + backup
   `lore-prod-20260803T141930Z.surql` (3.63 GB). ✅ **FUNCTIONAL COMMS IS LIVE.**
+
+## R2-13 · CLOSE-OUT COMPLETE — packet 04b-2 wave C DONE
+- ✅ Deploy live (a6a4e5a2), smoke green, migration ran (51 edges), rollback assets kept.
+- ✅ Index reconciled; deployed server watching HEAD `6425b72`, fresh.
+- ✅ INDEX 04b-2 row → DEPLOYED; three Log entries (wave-C, rollback receipts, deploy-done).
+- ✅ 21 reports archived → `receipts/2026-08-01-packet04b2-wavec/`; this lead log archives last.
+- ✅ 15 findings resolved; #304/#309/#310/#319/#321/#322/#324 → 04b-3; filed #321/#324/#325.
+- ✅ Rescued to `scripts/`: c3_wrongbuild_driver, c3_harness_repair, audit_probes/.
+- ✅ Deploy remembered (lore); pushed to origin (`6425b72`).
+- ✅ Operator model directive → lead-base v3 + `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` in settings.json.
+- ⚠ REMAINING (minor, operator-facing): (1) scratch trees safe to dispose — `rm -rf` is denied by
+  settings, so operator runs it; (2) fleet is STALE-terminal (no admin-retire verb, #325);
+  (3) subagents this session ran opus-5 — the settings fix applies on the NEXT session start
+  (verify a test spawn's `ps --model` shows claude-opus-4-8 after restart).
+- **A parallel session is committing wave-D planning docs to this branch — benign for the deploy
+  (docs-only; loremaster byte-identical to the audited `60f83f0`).**
 - Collect sidecar B3 ruling → route (this-wave contract slice vs 04b-3).
 - Collect `builder-c3-2` receipt → verify (currency gate to zero, seam suites, mutation proof).
 - COLD AUDIT (fresh context, re-runs gates). Do not rush — 42 wrong builds passed contracts
