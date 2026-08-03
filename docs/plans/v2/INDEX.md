@@ -174,11 +174,13 @@ Corollary: when one class of defect survives TWO waves, STOP briefing a third fi
 escalate the DESIGN.
 
 ## Sequence + status
-**Operator-ruled order (2026-07-14, local-first; wave D inserted 2026-08-02), numbered as
-it runs:** 01 ledger triage → 02–06 comms completion (wave C) → **45–54 the D&D-extension
-track (wave D, ruled 2026-08-02: 45 allowlist → 46 extension wiring → 47 ingest seam →
-48/49 principals+keys → 39 [pulled from wave S] → 50–53 the dnd extension → 07/07a
-[pulled from wave L] → 54 deploy `lore-dnd`)** → 08–17 remaining local correctness
+**Operator-ruled order (2026-07-14, local-first; wave D inserted 2026-08-02, resequenced
+2026-08-03 — auth to the end), numbered as it runs:** 01 ledger triage → 02–06 comms
+completion (wave C) → **45–56 the D&D-extension track (wave D: 45 allowlist → 46
+extension wiring → 47 ingest seam → 55 scraper transmute [∥-safe] → 50 contract-prep →
+51–53 the dnd extension → 54 LOCAL deploy + operator soak → 48/49 principals+keys → 39
+[pulled from wave S] → 07/07a [pulled from wave L] → 56 GO-LIVE)** → 08–17 remaining
+local correctness
 (wave L: results-impacting / LLM-impeding bugs) → 18–22 DI local = **v1.0 SHIP at 22**,
 single-node (wave M) → 23–27 Odoo local (wave O) → 28–35 remaining features (wave F)
 → 36–39 cloud for Odoo (wave S — pull-forward on operator call) → 40–41 UI (wave G,
@@ -205,16 +207,18 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 45 | **tool allowlist** (= multi-user proposal Part 2; resolves **#296**, gates `lore-dnd`; served prose becomes a function of the enabled set; collision-guard universe fix) | — | **D** | 0.25–0.35 →split | wave C done | open — **DEPLOYS BOTH** |
 | 46 | **extension discovery wiring** (`extensions:` in lore.yaml → `register_extension`; unknown name fails boot LOUDLY) | — | D | 0.15 | 45 | open |
 | 47 | **twelfth seam: ingest entity-fragment** DESIGN + build (extension-contributed typed records + RELATE edges in the per-file chunk transaction; purge-by-scope) — ⚠ DESIGN packet, roster law | — | D | 0.15 design + build | 46 | open |
+| 55 | **scraper TRANSMUTE build** — the machine tier (`output-graph/**/*.jsonl`): HTML cache + one full re-crawl, LLM transcriber under deterministic word-for-word fidelity gates + the corpus A/B oracles; Agent SDK on the Max subscription (transcribe-craig pattern; refuses a set API key). Executes in dndlorescraper per its `SPEC-transmute.md`; tracked here — 52a/52b entry checks name its outputs. STEP 1 = the one-page link probe | — | D | ~0.25 | — (∥-safe with 45–47) | open |
+| 50 | **dnd CONTRACT-PREP** — the design is RULED (`docs/design/2026-08-03-wave-d-architecture.md` + the transmute pivot); this packet contracts 51/52a/52b/53, runs the contract-adversary on each (standing law), and rules the kickoff forks (proposal §9 3/5/7/8 + D3 + the read-the-2024-rules edition rider) | — | D | 0.15 | 47; 55 receipts | open |
+| 51 | **dnd schema slice + domain store** (every edge ENFORCED + UNIQUE(in,out) + `source_book` scope from birth; scalars as indexed fields; graph-probe scripts → `scripts/`) | — | D | 0.25 | 50 ruled | open |
+| 52 | **dnd extension builds: 52a machine-tier reader** (JSONL → pydantic mirror of the transmute `records` module → node fragments via the 47 seam; tombstones ingest as named bounds) **/ 52b edge resolution** — THE SUPERSESSION FUNCTION (prefer 5.5 → the 59-row rename alias → 5.0 → dangling tombstone; the reference's own edition is IGNORED — cross-edition correctness by construction; D2-pair + rename-row + per-item dangling instruments). Per-dialect grammar work GONE (transmute pivot) | — | D | ≤0.25 each | 50, 51 | open |
+| 53 | **dnd domain tools** — rules retrieval + general graph FILTERS, client-side composition (NO per-mechanic composed tools); both trust legs per served surface | — | D | 0.20 | 50, 51, 52 | open |
+| 54 | **deploy `lore-dnd` LOCALLY** — LAN-only local MCP connection, NO auth; operator soak (ruled 2026-08-03: the identity tail 48/49/39/07/07a moved AFTER this); ruled allowlist + two static roots (prose `output/` + machine `output-graph/`); quadlet always-on | — | D | 0.15 | 53 | open — **DEPLOYS the new instance (LAN-only)** |
 | 48 | **principals substrate** — `build_store(config)` extraction FIRST (3-way copy today), then the `principal` table (never `user`) | — | D | 0.20–0.25 | 45 (∥ 46/47) | open |
 | 49 | **principal CLI (1B) + per-user API keys (1C)** — 39 §4's mint, never odoo-code's; hashed keys; revocation beats cache | — | D | 0.25 | 48 | open — DEPLOYS (CLI in image) |
 | 39 | hosted-security (design first; REQUIRED before off-LAN) — **PULLED FORWARD to wave D (operator, 2026-08-02): #296 is ANSWERED by packet 45's allowlist; the contract is RE-CUT against the principal substrate (48/49 replace R12's roster file — the standing Log override) and the revision gets a FRESH adversary pass (standing law)** | PKT-21 | **D** (was S) | 0.30 →split | 45, 48, 49 | **DESIGN RULED + CONTRACT WRITTEN; was BLOCKED on #296 — now UNBLOCKED by 45.** Design `docs/design/2026-07-31-packet39-google-oauth.md` (R1–R16, twelve+ rulings). Contract **480 pins / 444 RED / 36 GREEN**, rest of suite **7705 passed / 0 failed**, ruff clean; satisfiability re-discharged 0-failed on every revision. **FOUR adversary passes, all INSUFFICIENT**, each finding a real blocker every prior gate passed — one root cause (`_setup_handlers` binds at construction ⇒ post-construction installs are live in-process, DEAD ON THE WIRE): WB30 `call_tool` → WB48 guard *after* the tool body → WB93 instance attr on `list_tools` → WB100 **class** attr (flaky-green 5/10). **Build never started, deliberately.** #296's answer is scoped in `docs/design/2026-08-01-multi-user-lore-proposal.md` §2. Filed #291 #294 #295 #296. Receipts → `receipts/2026-07-31-packet39/`. Operator-side and untouched: hades SNI route · claude.ai client secret · the posture flip. |
-| 50 | **dnd DESIGN SPEC** — extraction grammars + graph model v2 over the SEVEN ruled families; edition-ranking policy derived from the corpus's own 2024 rules (operator rider). Ruled input: `docs/design/2026-08-02-dnd-graph-scope-rulings.md` — ⚠ DESIGN packet, roster law; mints the 52-series | — | D | 0.15 design | 47 | open |
-| 51 | **dnd schema slice + domain store** (every edge ENFORCED + UNIQUE(in,out) + `source_book` scope from birth; scalars as indexed fields; graph-probe scripts → `scripts/`) | — | D | 0.25 | 50 ruled | open |
-| 52 | **dnd extractor builds** (52a spells / 52b monsters+casts / 52c class architecture / 52d cross-cutting — **minted by 50**; every located A/B oracle ships as a permanent build-time pin) | — | D | ≤0.25 each | 50, 51 | open — minted by 50 |
-| 53 | **dnd domain tools** — rules retrieval + general graph FILTERS, client-side composition (NO per-mechanic composed tools); both trust legs per served surface | — | D | 0.20 | 50, 51, 52 | open |
-| 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) — **pulled into wave D (operator, 2026-08-02): precedes 54 go-live** | PKT-30 | **D** (was L ∥) | 0.20 | — | open |
+| 07 | store-error-honesty: CLASSIFICATION (#118, #119, #144 — the #124 rediagnosis) — **pulled into wave D (operator, 2026-08-02): precedes 56 go-live (renumbered 2026-08-03)** | PKT-30 | **D** (was L ∥) | 0.20 | — | open |
 | 07a | store-error-honesty: RECOVERY + DEGRADATION (#164 reconnect-on-bounce + **#250 its PRODUCTION reproduction**, #128; #126/#127 adjudication) — **pulled into wave D (operator, 2026-08-02): outside users must never meet #164** | — | **D** (was L ∥) | 0.20 | 07 rec. (same seam) | open — **PROMOTED 2026-07-27 to ENABLING work** (#250: #164 live in prod; blocks #249's only mitigation) |
-| 54 | **deploy `lore-dnd` + go-live** — second instance, slug `dnd`, ruled allowlist (`2026-08-02-dnd-graph-scope-rulings.md` §4 → instance lore.yaml), quadlet always-on posture; **#236/#138 consult MANDATORY before exposure** | — | D | 0.15 | 39, 49, 53, 07a | open — **DEPLOYS the new instance** |
+| 56 | **`lore-dnd` GO-LIVE** — auth wired (39 posture, 49 keys), hades exposure (operator-side verify), **#236/#138 consult MANDATORY before exposure**, findings write-gating note; smoke: principal → key → Moon-Druid trace via claude.ai → revoked key denied live | — | D (tail) | 0.15 | 54 soak, 49, 39, 07a | open — **DEPLOYS (exposure)** |
 | 08 | astroid-shadow (#24; containerfile roles → 37) | PKT-08 | L ∥ | 0.15 | — | open |
 | 09 | surface-residues — **SPLIT RULED 2026-07-29 (sizing directive)**: 09a served-surface + docs truth (#15 #64 #80 #82 #84–#86 #88 #92 #197 #208) / 09b testing hygiene (#230 #231 #244) — see file header | PKT-03 | L ∥ | ~0.20 + ~0.15 (two sessions) | — | open |
 | 10 | floor-calibration-design (#83, #87, #161, #179) | PKT-01 | L | 0.15 | — | **design DONE 2026-07-24; F3 → client consult** |
@@ -1561,3 +1565,12 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   ⚠ **MODEL:** subagents ran opus-5 — no Agent-tool path to 4.8 (full-id rejected by the enum; omit/alias → opus-5);
   `CLAUDE_CODE_SUBAGENT_MODEL=claude-opus-4-8` now set in `settings.json` for the NEXT session; this wave's work is
   verified by model-independent receipts, so nothing needs redoing.
+- 2026-08-03 · **Wave D SPEC'D + RESEQUENCED (auth to the end) + the TRANSMUTE pivot.** Operator
+  rulings: corpus splits prose/machine tiers — extraction moves to the SCRAPER as an LLM
+  transcriber (HTML-first, recovers the destroyed link anchors; deterministic word-for-word
+  gates; Agent SDK on the Max subscription per the MEASURED transcribe-craig pattern; spec =
+  `dndlorescraper:SPEC-transmute.md`) · order now 45→46→47→55(∥)→50→51→52a/b→53→54 LOCAL
+  soak→48→49→39→07→07a→56 GO-LIVE (54 split: local deploy vs 56 exposure) · cross-edition
+  refs resolve via the SUPERSESSION FUNCTION (5.5 → rename-alias → 5.0 → tombstone; link's
+  own edition ignored). Architecture: `docs/design/2026-08-03-wave-d-architecture.md`;
+  packet 50 reshaped to contract-prep; rows 55/56 minted; rulings doc §1.8 superseded in place.

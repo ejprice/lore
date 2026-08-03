@@ -1,37 +1,32 @@
-# 54 — Deploy `lore-dnd` + go-live (wave-D mint, 2026-08-02)
-size ~0.15 wu · wave D · depends: 39, 49, 53, 07a · DEPLOY: yes (the new instance)
-allowlist rationale: docs/design/2026-08-02-dnd-graph-scope-rulings.md §4 (the ruled 15-tool enumeration — write it into the instance lore.yaml)
+# 54 — Deploy `lore-dnd` LOCALLY (operator soak; no auth) (reshaped 2026-08-03)
+size ~0.15 wu · wave D · depends: 53 only (auth moved to the tail — 56 carries go-live) · DEPLOY: yes (the new instance, LAN-only)
+architecture: docs/design/2026-08-03-wave-d-architecture.md §9 · allowlist rationale: docs/design/2026-08-02-dnd-graph-scope-rulings.md §4
 
 ## Mission
-The second lore instance: slug `dnd` (hyphen-free, slug law), database `dnd` in the
-shared store, existing image, shared TEI embedder; corpus as a `watch: static,
-provider: local_directory` tier over the dndlorescraper output, version-stamped per
-scrape (`.crawl-state.json` is the change detector).
+The second lore instance, LAN-LOCAL: slug `dnd` (hyphen-free), database `dnd` in the
+shared store, existing image, shared TEI embedder. **The operator soaks it via a local
+MCP connection before ANY auth or exposure work** (operator ruling, 2026-08-03 — the
+identity tail 48/49/39/07/07a and go-live 56 all come after this packet).
 
 ## Scope IN
-- Instance `lore.yaml`: the ruled allowlist (5 generic + `dnd_*`; 10 disabled WITH the
-  false-clear rationale recorded — rulings doc §4); `extensions: [dnd]`; auth per packet
-  39 (claude.ai principals; keys minted by 49's CLI).
+- Instance `lore.yaml`: the ruled allowlist (5 generic + `dnd_*`, 10 disabled with the
+  false-clear rationale recorded); `extensions: [dnd]`; TWO static roots, built-in
+  local_directory provider for both (`provider:` is unread — architecture §9): prose
+  tier at `dndlorescraper/output` (`**/*.md`), machine tier at `output-graph`
+  (`**/*.jsonl`, claimed by the extension, never chunked/embedded).
 - **Always-on posture**: a systemd/quadlet unit (surreal-stores precedent) — the
-  on-demand lore-deploy lifecycle does not fit an instance serving claude.ai users. If
-  the packet-19 deploy architecture has landed by then, adopt its shape instead; do not
-  build both.
-- **MANDATORY before exposure: the #236/#138 consult** (standing first-non-local-
-  deployment trigger — dangling-edge ghost sweep + the exec-seam threat model).
-- Smoke: register a real principal, mint a key, run the Moon-Druid acceptance query
-  through the claude.ai path end-to-end; a revoked key denied live.
-- Operator-side (not this packet's build, verify only): hades SNI/Caddy route · claude.ai
-  connector secret.
+  on-demand lore-deploy lifecycle does not fit a soak. If packet 19's deploy
+  architecture has landed by then, adopt its shape instead; never build both.
+- Local `.mcp.json` wiring for the operator's sessions; smoke = the Moon-Druid
+  acceptance trace against the running instance.
 
 ## Scope OUT
-- Any extractor/tool/schema change (50–53 own those). lore-lore's own deploy (#165/#166
-  untouched).
+- ALL auth (48/49/39), hades exposure, #236/#138 consult, findings write-gating — packet
+  56 owns go-live. No off-LAN reachability leaves this packet.
 
 ## Entry check
-39 deployed with write gating live; 07a landed (#164 closed — outside users must not meet
-the reconnect defect); 53's battery green.
+53 landed (battery green); 55's machine tier current for the full corpus; both stores up.
 
 ## Exit
-Instance live and reachable via claude.ai; deploy gates (artifact + workspace-honesty
-probes) green on the new container; `lore_index()` honest on the dnd corpus; go-live Log
-line + findings resolved with production receipts.
+Instance live on LAN; deploy gates green; `lore_index()` honest on the dnd corpus;
+operator-soak handoff note in the Log (what to try, where findings go).

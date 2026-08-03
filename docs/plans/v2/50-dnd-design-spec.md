@@ -1,39 +1,39 @@
-# 50 — dnd DESIGN SPEC: extraction grammars + graph model v2 (wave-D mint, 2026-08-02)
-size ~0.15 wu (design) · wave D · depends: 47 ruled+built · DEPLOY: no · mints the 52-series builds
-⚠ DESIGN PACKET (roster law): Opus author attacks its own design; operator rules the doc.
-inputs: docs/design/2026-08-02-dnd-graph-scope-rulings.md (THE RULED INPUT — picks, composition
-rule, edition policy, tool enumeration) · docs/design/2026-08-01-dnd-rules-rag-proposal.md ·
-the three archived scout reports at docs/plans/v2/receipts/2026-08-01-dnd-graph-scope/ +
-the 2026-08-01-dnd-rag-scoping/ trio (hazard registers H1–H10, M1–M10, C1–C10 + crosscut §6)
+# 50 — dnd CONTRACT-PREP (design is RULED; this packet contracts it) (reshaped 2026-08-03)
+size ~0.15 wu · wave D · depends: 47 built · DEPLOY: no · mints/contracts the 51/52a/52b/53 builds
+ruled inputs (read, do not re-derive): docs/design/2026-08-03-wave-d-architecture.md (THE
+architecture — per-packet, exact symbols) · docs/design/2026-08-02-dnd-graph-scope-rulings.md
+(picks, composition rule, edition policy, tool enumeration) · dndlorescraper:SPEC-transmute.md
+(the machine-tier record format 52a mirrors) · the scout hazard registers at
+receipts/2026-08-01-dnd-graph-scope/ + receipts/2026-08-01-dnd-rag-scoping/
 
 ## Mission
-The operator-required design spec for the dnd extension, over the SEVEN ruled families
-(rulings doc §2). Extraction does the heavy lifting; prose/chunks are untouched (vector
-search never neutered); entities+edges are ADDITIVE via the packet-47 seam.
+The design was produced and RULED in the 2026-08-02/03 operator sessions (architecture
+doc above). This packet turns it into the 51/52a/52b/53 CONTRACTS and runs the
+**contract-adversary on each** (standing law — the ruling shrank the design work, never
+the adversary). History: this file's earlier revision chartered a full design packet;
+superseded by the transmute pivot + the contract-prep ruling.
 
-## The doc must settle (each against the cited hazard registers)
-- Per-dialect extraction grammars per family; dialect A (PHB-2024) first; every located
-  A/B oracle becomes a build-time pin; any family WITHOUT an oracle is a NAMED BOUND.
-- The reference resolver: the measured 8-rule normalization stack + context-cue table +
-  the ~15-name ambiguous deny-list (crosscut report §6 — bare-name matching's hard floor).
-- **Edition policy, derived from the corpus** (operator rider, rulings doc §1.7): READ the
-  2024 rules' own guidance on older material; implement as ranking (5.0 downranked); the
-  2014 base-rules gap is a named render bound.
-- The graph model v2 DDL frame for 51 (edge-vs-field verdicts from the catalog; every
-  edge ENFORCED + UNIQUE(in,out) + `source_book` scope from birth).
-- The acceptance query under CLIENT-SIDE COMPOSITION (rulings doc §6): the level-4 Moon
-  Druid trace, including the retrieval leg NOT surfacing XGtE's 2014 pointer text above
-  the PHB rules.
-- Kickoff forks to get ruled: proposal §9 forks 3, 5, 7, 8 + D3 (degraded 2014 stat
-  blocks) — recommendations already attached there.
+## Scope IN
+- Contracts for 51 (schema+DnDStore), 52a (machine-tier reader), 52b (edge resolution —
+  **the supersession function** with its four-branch fixture legs, the 19 D2 pairs, the
+  59 rename rows, the per-item dangling audit), 53 (domain tools + trust legs + the
+  Moon-Druid acceptance trace incl. retrieval ranking).
+- Satisfiability receipts against the adversary's reference builds (standing law).
+- **Kickoff forks to get RULED** (interviewer, not prose flags): proposal §9 forks 3
+  (MCDM dedupe) / 5 (class-node edition scoping) / 7 (edge-only membership) / 8
+  (ENFORCED from birth — rec stands) + D3 (degraded 2014 stat blocks — largely mooted by
+  the transmute tombstone mechanism; confirm) + the edition-ranking rider: READ the 2024
+  rules in the corpus for how they say to evaluate older material and derive the serving
+  policy from that text.
 
 ## Scope OUT
-- Any build (52-series, minted here). Schema execution (51). Tools (53).
+- Any build (51–53 own those). The transmute stage itself (55, scraper repo). The seam
+  (47, already built by then).
 
 ## Entry check
-47 landed. Rulings doc + all six scout reports read (summaries first, bodies for the
-registers). `lore_findings` open-state sweep for dnd-tagged rows.
+47 landed; 55's machine tier EXISTS with green gate receipts for at least one book
+(contracts need real fixture material); architecture doc + rulings doc read.
 
 ## Exit
-Operator-ruled design doc; contract for the 52-series; **adversary BEFORE any builder**
-(standing law); satisfiability receipt against the adversary's reference build.
+Four contracts, each adversary-graded SUFFICIENT with satisfiability receipts; forks
+ruled and recorded (rulings doc amended); ledger rows for 51/52a/52b/53 minted.

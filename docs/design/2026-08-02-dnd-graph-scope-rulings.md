@@ -38,10 +38,17 @@ their derivations from those reports — anything without a derivation there is 
    older material and derive the final policy from that text.** The 2014 base-rules gap
    (no 2014 PHB/MM in the corpus) is a NAMED BOUND renders state on 2014-mechanic
    queries; no scraper work ruled in.
-8. **Extraction lives in the lore extension under a real DESIGN SPEC** (packet 50);
+8. ~~**Extraction lives in the lore extension under a real DESIGN SPEC** (packet 50);
    vector search is never neutered — chunks embed prose exactly as today; entity rows +
    edges are ADDITIVE beside chunks (the twelfth-seam shape). Producer changes remain a
-   lever only where they do not reduce prose.
+   lever only where they do not reduce prose.~~ **SUPERSEDED 2026-08-03 (operator — the
+   TRANSMUTE ruling):** extraction moves to the SCRAPER as an LLM transcriber stage
+   (`dndlorescraper:SPEC-transmute.md`) — HTML-first, word-for-word fidelity under
+   deterministic gates, Claude Agent SDK on the Max subscription; the corpus splits into
+   a prose tier (unchanged — the never-neuter clause SURVIVES) and a machine-readable
+   `output-graph/**/*.jsonl` tier that the lore extension consumes near-mechanically.
+   Wave-D architecture: `2026-08-03-wave-d-architecture.md` (also carries the
+   auth-to-the-end resequence: local soak at 54, go-live at 56).
 9. **No memory for dnd; the full tool enumeration is ruled** (§4).
 10. **Fork 2: the extension package is an in-repo workspace member** (5th member;
     registration derived by `scripts/registration_sites.py`; Containerfile COPY +
