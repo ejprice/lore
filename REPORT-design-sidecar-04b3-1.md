@@ -507,6 +507,127 @@ callers, the three UPDATE sites). Deletion-exhaustiveness used grep (its honest 
 else used lore reads.*
 
 ---
+
+# §CYCLE-TRILEMMA · 2026-08-04 — ruling MP-1 + MP-2 (adversary INSUFFICIENT)
+
+**Context:** `adversary-cycle-04b3-1` graded the CYCLE contract INSUFFICIENT
+(`REPORT-adversary-cycle-04b3-1.md`, finding #326) with a PROVEN trilemma. Ground-truthed @
+`1164133` before ruling: I read the R6 MUTATION pin (`TestTheCyclePolicyHasONEImplementation`,
+`test_blocks_edge.py:2319`) and confirmed its mechanism — neutralise `find_blocked_by_cycle` and
+BOTH the batch-key shape (dispatcher) AND the persisted-id shape (ledger) must stop being refused.
+R6 is an operator-ruled ONE-IMPLEMENTATION invariant: exactly ONE ledger-owned cycle detector.
+
+**Verdict: the adversary is right, and my §CYCLE-FORKS FORK-B is WRONG. This is my SECOND
+retraction in this chain — and it is the contract→adversary→ruling process working as designed: a
+design error caught by an adversary's scratch build BEFORE a builder built it.**
+
+## The trilemma, and why each horn was proven (I re-verified the pins, not the prose)
+- **(R) my ruled from-minted reachability** — SOUND, but its `_refuse_a_cycle` calls a NEW
+  `_cycle_through`, a SECOND ledger detector. Neutralising `find_blocked_by_cycle` leaves it
+  refusing ⇒ the R6 MUTATION pin goes RED (22 passed / 1 failed). A correct build reddening a
+  HEAD-green operator-ruled pin outside the builder's writable set. **My Fork-B was a
+  ONE-IMPLEMENTATION violation — the exact thing R6 exists to forbid.**
+- **(S) single `find_blocked_by_cycle` + `minted.intersection`** — 0-failed but UNSOUND, proven
+  through the REAL write path (§2 store probe, exit 2): `find_blocked_by_cycle` returns the *legacy*
+  cycle first, `minted∩=∅`, and `create_many` ACCEPTS a create forming a real persisted cycle
+  `N→seed→X→N` when a legacy cycle coexists in the bounded closure → an unclaimable-forever task.
+- **(D) drop-loop through `find_blocked_by_cycle`** — SOUND (it steps over the legacy cycle and
+  keeps looking until it finds the minted one) AND passes the R6 MUTATION pin (routes through the
+  shared detector). Its only "cost": `_drop_one_cycle_edge` stays.
+
+## MP-2 — RULING: R6 STANDS. Elect variant D. From-minted RETRACTED.
+**The question an agent asks itself:** *"Is the ledger's persisted-id cycle detection the ONE
+shared `find_blocked_by_cycle` (R6) — or did I introduce a second detector to save a helper
+deletion?"*
+
+**RULING:** R6 wins — decisively. Option (a) from the adversary's MP-2 (sanction from-minted,
+revise the R6 MUTATION pin's ledger-leg to a corpse) is **REJECTED**: it trades away a hard-won
+operator-ruled ONE-IMPLEMENTATION invariant (#102's law, in cycle-detection clothing) to save a
+helper deletion — the worst trade on the board. **Elect variant D**: `_refuse_a_cycle` keeps its
+drop-loop, which routes through the shared `find_blocked_by_cycle` and is proven sound. This is
+already what HEAD does — so ESC-1's ONLY change to the guard is Fork A's **bounded read**; the
+detection MECHANISM (the drop-loop) is UNCHANGED.
+- **RETRACT my §CYCLE-FORKS FORK-B "reformulate to from-minted reachability, NOT
+  `find_blocked_by_cycle`."** It was doubly wrong: (1) a second detector (violates R6), and (2)
+  even a bounded read still contains legacy cycles when the new task depends on a legacy-cyclic
+  ancestor, so the step-over loop is *required* regardless — which the adversary proved and I
+  should have seen.
+- **ELECT my own pre-authorised Fork-B Reading-2 fallback:** the guard KEEPS `_drop_one_cycle_edge`.
+  After #273, it has ONE legitimate caller (the guard's sound drop-loop). **This is NOT a
+  ONE-IMPLEMENTATION violation** — it is a single-use helper, not a cloned policy; the twin #273
+  targeted was `_record_legacy_cycles`'s enumeration, which the networkx swap kills.
+- **#273 NARROWS (this supersedes §CYCLE-FORKS FORK-B):** swap `_record_legacy_cycles` to
+  `networkx.simple_cycles`; **`_drop_one_cycle_edge` STAYS** (guard's caller). #272 unchanged.
+- **A design option I considered and REJECTED (transparency, ONE-IMPLEMENTATION discipline):**
+  refactor `find_blocked_by_cycle` into a node-scoped detector (`through=N`) so the guard asks "is
+  the minted node on a cycle" through the SHARED detector — deletes the helper AND keeps R6. It is
+  architecturally cleaner but is a speculative redesign of a shared, HEAD-green, R6-pinned function
+  (also used by the dispatcher's batch-key check), and it would likely force revising the MUTATION
+  pin's stub signature. Under the roster law ("never hand a builder invent-the-general-form") and
+  the deferral law, that risk is not worth taking to delete a clean single-use helper. **D is
+  minimal, proven, and preserves every invariant intact.** (If `_drop_one_cycle_edge`'s
+  single-caller status ever becomes a real maintenance concern, the node-scoped refactor is the
+  named future cleanup — not now.)
+
+## MP-1 — RULING: ADD the coexisting-legacy-cycle discrimination pin (REQUIRED blocker).
+**The question:** *"Does the guard stay sound when a MINTED cycle coexists with a LEGACY cycle in
+the bounded closure — or does it only pass because every fixture tested a cycle in ISOLATION?"*
+
+**RULING: ADD the pin — it is mandatory.** The existing
+`test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED` is a ∀-over-inputs claim
+evaluated on the ONE input where every build agrees (QUANTIFIER LAW). Add a
+`TestCreateRefusesToFormACycle` leg that seeds a legacy 2-cycle among the pending blocker's
+persisted ancestors AND a column-only closing link back to the minted id (the adversary's
+`/tmp/unsoundness_probe.py` world — commit it to `scripts/` beside `esc1_write_path_cycle_closure.py`
+so the fixture is durable, brief-base §1 perversity clause), then assert the create is REFUSED and
+writes NO row. **RED on variant S** (the only build that passed the old contract), **GREEN on D**.
+This pin is what makes D's soundness a fact rather than a hope, and it is why S can never masquerade
+as correct again.
+
+## MP-3 — DISSOLVED by the D ruling. Remove the helper-absence pin.
+The name-keyed `test_..._drop_one_cycle_edge_is_GONE` (defeatable by rename — the six-defeats class)
+asserted a deletion that D does not perform. **REMOVE it.** No invariant is lost: the #273
+enumeration-twin deletion is guarded by the networkx-import pin + MP-4 + the member-coverage pin
+(`TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST`), not by a helper-name gate. MP-3's "behavioural
+mechanism pin" is moot — nothing is deleted.
+
+## MP-4 — RULING: ADD the networkx ROUTING mutation pin (cheap; routing-is-not-sharing).
+**RULING: ADD it.** Neutralise `networkx.simple_cycles` and the recorded legacy-cycle set must
+CHANGE — mirroring the R6 MUTATION pin's own move for the detector. This proves `_record_legacy_cycles`
+ROUTES through the library rather than an `import networkx` that satisfies the string pin beside a
+retained hand-roll. Lower severity than MP-1/MP-2 (the count-equality complete-triangle leg already
+forces a real change), but it closes routing-is-not-sharing for #273 and costs one test.
+
+## FORK C — the adversary VERIFIED my deferral is honest (§4). Unchanged.
+The CA-11 tripwire `test_PIN_THE_MISS_a_tasks_blocked_by_is_FIXED_at_birth` is a live wire (proven:
+the future-verb world makes it redden). CA-11 stays DEFERRED on the `blocked_by`-mutating-verb
+trigger. Nothing owed.
+
+## Net CYCLE-session shape after this ruling (supersedes §CYCLE-FORKS FORK-B)
+- **ESC-1 = Fork A's bounded read ONLY** — replace `_read_dependency_graph`'s whole-population read
+  with a closure-bounded read (`_bounded_dependency_graph`: seed from the pending task's persisted
+  blockers, walk the ancestor closure via `blocks` edges, read those bounded nodes' `blocked_by`
+  COLUMNS); **KEEP the drop-loop + `find_blocked_by_cycle` + `_drop_one_cycle_edge`** for detection.
+  The KNOWN_BOUND reshape pin (`large.rows == small.rows`) stands.
+- **#273** = swap `_record_legacy_cycles` to `networkx.simple_cycles`; `_drop_one_cycle_edge` STAYS;
+  #272 dep/override move.
+- **Pins:** KEEP the R6 MUTATION pin (green under D, unedited), the persisted-cycle pin, the
+  bounded-read pin; **ADD MP-1** (coexisting-legacy-cycle discrimination — blocker) **and MP-4**
+  (networkx routing mutation); **REMOVE** the helper-absence pin (MP-3).
+- **CA-11 + CA-12 DEFERRED** (named triggers, unchanged).
+This is satisfiable by a correct build: variant D goes 0-failed once the helper-absence pin is
+removed and MP-1 is added (D refuses the MP-1 case; S does not). The satisfiability receipt turns
+POSITIVE.
+
+---
+*§CYCLE-TRILEMMA ruled 2026-08-04 by `design-sidecar-04b3-1` against `1164133`, on the adversary's
+INSUFFICIENT. This RETRACTS my own §CYCLE-FORKS FORK-B (from-minted) — the second self-retraction
+in this fork chain, each caught by the adversarial layer before a builder built the wrong thing.
+Rests on live reads this session (the R6 MUTATION pin's mechanism `test_blocks_edge.py:2319`, the
+adversary's three proven horns, `_refuse_a_cycle`'s HEAD drop-loop). R6 (ONE detector) is preserved
+intact; no operator-ruled HEAD-green pin is revised.*
+
+---
 *Written 2026-08-03 by `design-sidecar-04b3-1` (Fable 5, general-purpose spawn) against branch
 `feat/surreal-unification` @ `338abe0`. Rulings rest on: the live findings ledger (#321 #304 #309
 #310 #319 #322 #324 #273 #272, read this session), the predecessor handoff (§B1 L3/§B2/§B4/§B5), the
