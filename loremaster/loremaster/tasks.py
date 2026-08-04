@@ -87,6 +87,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn, Protocol, cast
 from uuid import uuid4
 
+import networkx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
@@ -326,6 +327,10 @@ _TRAVERSAL_TIMEOUT = "5s"
 # The bound-parameter names of the new statements (the house idiom: named once each, never
 # a hand-copied literal drifting between the statement and its params).
 _TRAVERSAL_START_PARAM = "tb_start"
+#: The seed list of :meth:`TaskLedger._bounded_dependency_graph`'s closure read (ESC-1 /
+#: FORK A). A LIST of ``RecordID`` starts, distinct from ``_TRAVERSAL_START_PARAM``'s single
+#: start, so the two statements never share a name that means two different shapes.
+_CLOSURE_START_PARAM = "closure_starts"
 _TRAVERSAL_WITHIN_KEY = "within"
 _TRAVERSAL_PROBE_KEY = "probe"
 _QUERY_ROWS_VAR = "qt_rows"
@@ -1018,14 +1023,26 @@ class TaskLedger:
         DATA defect stops being invisible: an operator who is never told cannot repair the
         rows, and the next reader rediscovers it from a task that is stuck forever.
 
-        Every member of every loop is named. The walk drops ONE edge per loop and looks
-        again, so a graph holding several cycles records each of them rather than the first.
+        Every member of every loop is named. ENUMERATION is ``networkx.simple_cycles`` — the
+        packages-over-hand-rolling swap of #273: Johnson's algorithm returns every simple
+        cycle of the directed ``blocked_by`` graph (an edge ``node -> its blocker``), so a
+        component holding several loops records each of them — and it does NOT undercount a
+        fully-connected component the way the retired hand-rolled drop-an-edge decomposition
+        did (4 recorded vs 5 real, #273, measured 2026-07-28).
+
+        ⚠ **The MODULE-attribute call ``networkx.simple_cycles`` is deliberate, not a style
+        choice.** It is what lets ``TestTheEnumerationEQUALSNetworkxAfterTheSwap``'s MP-4
+        mutation prove the LIBRARY is called rather than merely imported beside a retained
+        hand-roll (routing-is-not-sharing, #102) — a ``from networkx import simple_cycles``
+        binding would escape that patch. DETECTION stays the shared ``find_blocked_by_cycle``
+        (R6, one ledger-owned detector); this swaps ENUMERATION only.
         """
-        working = {node: set(refs) for node, refs in columns.items()}
-        while True:
-            cycle = find_blocked_by_cycle(working)
-            if cycle is None:
-                return
+        graph = networkx.DiGraph()
+        for node, blockers in columns.items():
+            graph.add_node(node)
+            for blocker in blockers:
+                graph.add_edge(node, blocker)
+        for cycle in networkx.simple_cycles(graph):
             logger.warning(
                 _BACKFILL_CYCLE_EVENT,
                 extra={
@@ -1034,8 +1051,6 @@ class TaskLedger:
                     "members": sorted(set(cycle)),
                 },
             )
-            if not _drop_one_cycle_edge(working, cycle):
-                return
 
     @staticmethod
     def _row_payloads(results: Sequence[Any]) -> list[list[Any]]:
@@ -1380,10 +1395,10 @@ class TaskLedger:
         transitive downstream reach. The CAS that strands them is itself a strictly one-hop
         predicate, so a transitive answer would name rows this supersession did not strand.
 
-        ⚠ **Store-side containment, not a whole-graph read.** Reusing
-        :meth:`_read_dependency_graph` would have answered the same question by shipping
-        every dependency-bearing row to the client and filtering here; this narrows in the
-        statement instead, so the payload scales with the ANSWER. See
+        ⚠ **Store-side containment, not a whole-graph read.** A client-side whole-graph
+        read would have answered the same question by shipping every dependency-bearing row
+        to the client and filtering here; this narrows in the statement instead, so the
+        payload scales with the ANSWER. See
         :data:`_DEPENDENTS_ID_PARAM` for the probed predicate and the spelling that is
         silently wrong.
 
@@ -2262,23 +2277,31 @@ class TaskLedger:
 
         ⚠ **AND IT COMPOSES WITH RULING R7:** a client-side walk over a chain of depth N
         is N reads, and R7 puts exactly that shape inside ONE snapshot — so the graph
-        arrives in ONE round trip, bounded by the DEPENDENCY-BEARING rows rather than
-        seeded with the whole task table (which would reintroduce #253 on the write path,
-        invisibly: one round trip says nothing about how many rows it reads).
+        arrives in ONE round trip, bounded by the pending dependency's ANCESTOR CLOSURE
+        (ESC-1 / FORK A, :meth:`_bounded_dependency_graph`) rather than seeded with the
+        whole task table OR even the whole dependency-bearing backlog — either of which
+        reintroduces #253 on the write path, invisibly: one round trip says nothing about
+        how many rows it reads.
 
         A cycle among rows this call did NOT write is a pre-existing DATA defect that
         ``ensure_ready``'s backfill has already RECORDED; refusing a caller for it would
         make an unrelated legacy loop block every future create. So such a loop is stepped
         over — one edge at a time, so a DIFFERENT loop through the same rows still
-        surfaces — and only a cycle a ``pending`` task actually lies on is refused.
+        surfaces — and only a cycle a ``pending`` task actually lies on is refused. The
+        step-over drop-loop is UNCHANGED by ESC-1 (variant D): it routes through the shared
+        ``find_blocked_by_cycle`` (R6), and it is what keeps the guard SOUND when a legacy
+        cycle coexists with the minted one in the bounded closure (MP-1) — a single-witness
+        check would return the legacy cycle first and wave the minted create through.
 
         Args:
             pending: ``{the id about to be created: its deduped blocked_by}``.
         """
         if not any(pending.values()):
             return
+        seeds = {blocker for blockers in pending.values() for blocker in blockers}
         graph: dict[str, set[str]] = {
-            node: set(refs) for node, refs in (await self._read_dependency_graph()).items()
+            node: set(refs)
+            for node, refs in (await self._bounded_dependency_graph(seeds)).items()
         }
         for task_id, blockers in pending.items():
             graph[task_id] = set(blockers)
@@ -2292,22 +2315,53 @@ class TaskLedger:
             if not _drop_one_cycle_edge(graph, cycle):
                 return
 
-    async def _read_dependency_graph(self) -> dict[str, list[str]]:
-        """The whole ``blocked_by`` graph, in ONE read bounded by the DEPENDENCY-BEARING rows.
+    async def _bounded_dependency_graph(
+        self, seeds: Iterable[str]
+    ) -> dict[str, list[str]]:
+        """The ``blocked_by`` graph BOUNDED to the ancestor CLOSURE of ``seeds``.
 
-        ``WHERE array::len(blocked_by) > 0`` is the load-bearing clause: without it this
-        single statement is ``SELECT * FROM task`` — one round trip, the whole ledger —
-        which satisfies every round-trip pin while scaling the write path with the size of
-        the backlog. That is finding #253, reintroduced on the side nothing was measuring.
+        ESC-1 / FORK A (packet 04b-3). ``seeds`` are the pending task's persisted blockers.
+        The write guard must not scale with the whole dependency-bearing backlog (#253 on
+        the write path), and it does not need to: every row that could close a cycle THROUGH
+        a pending task ``N`` is an ANCESTOR of one of ``N``'s blockers — a cycle
+        ``N -> a1 -> … -> ak -> N`` has ``ak.blocked_by ∋ N``, so ``ak`` is an ancestor of
+        ``N`` — hence reachable upstream over the persisted ``blocks`` EDGE. That is FORK A's
+        soundness proof, resting on ESC-1's measured YES that every persisted ancestor is
+        edge-reachable after ``ensure_ready``. Bounding to the closure therefore loses no
+        cycle; it is sound, not a heuristic.
+
+        ⚠ **The COLUMN is KEPT, never abandoned for the edge.** The edge walk only BOUNDS
+        which rows to read; the cycle is read from the ``blocked_by`` COLUMN, because the
+        closing link of a would-be cycle names a task that does not exist yet, ``ENFORCED``
+        forbids that ``RELATE`` (store reference §4), so it can only ever be a COLUMN and an
+        edge-only read returns *"acyclic"* — the reason
+        ``test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED`` fails
+        an edge-only guard.
+
+        It is ONE round trip whatever the chain's depth (R7): the seeds, their bounded
+        ancestor closure walked over ``blocks`` (a ``GraphEdgeScan`` per seed, cost bounded
+        by the closure — store reference §4, and ``+collect`` with an explicit depth bound +
+        ``TIMEOUT`` per §4's recursive-path rule), and every closure member's column all
+        arrive together. A phantom seed (a ``create_many`` sibling ref with no row yet)
+        contributes no row and no error — the ESC-1 residue, overlaid by the caller instead.
 
         ``record::id(id)`` decodes the id, never a hand-rolled ``str(row["id"]).split(":")``
         — right for ``task:abc`` and WRONG for a uuid-shaped id, which the SDK renders
         ``task:⟨0199c4f1-…⟩`` (store reference §7, finding #248).
+
+        Args:
+            seeds: The pending task's blocker ids to seed the ancestor-closure walk from.
         """
+        starts = [RecordID(TASK_TABLE, seed) for seed in sorted(seeds)]
         rows = self._as_rows(
             await self._query(
                 f"SELECT record::id({_ID_KEY}) AS {_ID_KEY}, {_COL_BLOCKED_BY} "
-                f"FROM {TASK_TABLE} WHERE array::len({_COL_BLOCKED_BY}) > 0"
+                f"FROM {TASK_TABLE} WHERE {_ID_KEY} IN array::distinct(array::flatten("
+                f"array::concat([${_CLOSURE_START_PARAM}], (SELECT VALUE "
+                f"@.{{1..{TASK_BLOCKER_MAX_DEPTH}+collect}}"
+                f"(<-{BLOCKS_RELATION}<-{TASK_TABLE}) "
+                f"FROM ${_CLOSURE_START_PARAM})))) TIMEOUT {_TRAVERSAL_TIMEOUT}",
+                {_CLOSURE_START_PARAM: starts},
             )
         )
         return {

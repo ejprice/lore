@@ -37,6 +37,14 @@ dependencies = [
     # rest on a version somebody else's dependency happens to resolve.
     "orjson>=3.11",
     "cachetools>=5",
+    # RUNTIME as of #273/#272 (packet 04b-3): ``tasks.py::_record_legacy_cycles`` swaps its
+    # hand-rolled all-cycle enumeration for ``networkx.simple_cycles`` (packages over
+    # hand-rolling; a hand-roll undercounts a fully-connected component 4-vs-5). It is now a
+    # PRODUCTION import of the served artifact — moved here from the dev group so the image's
+    # ``uv sync --locked --all-packages`` bakes it in (the #131/#139 in-image class). The
+    # ``[[tool.mypy.overrides]]`` block for networkx in the ROOT pyproject is re-scoped to
+    # production accordingly.
+    "networkx>=3.6.1",
 ]
 
 [tool.uv.sources]
@@ -47,11 +55,6 @@ loresigil = { workspace = true }
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[dependency-groups]
-dev = [
-    "networkx>=3.6.1",
-]
 
 [tool.hatch.build.targets.wheel]
 packages = ["loremaster"]

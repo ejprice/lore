@@ -145,17 +145,16 @@ ignore_missing_imports = true
 module = ["loremaster.store.lease", "tests.test_store_lease", "test_store_lease"]
 disallow_any_unimported = false
 
-# ``networkx`` (operator-authorised at ``54d0585``, and a DEV dependency of the
-# ``loremaster`` member since ``f0f4561`` — a runtime placement was the error the
-# stage-2 adversary caught) ships no ``py.typed`` marker, and its stubs are a
-# separate distribution this workspace does not install, so ``import networkx``
-# is a hard ``import-untyped`` error. Same shape as the astroid and kubernetes
-# boundaries above, with a NARROWER blast radius: it is a TEST-SIDE ORACLE only —
-# the independent cycle enumerator in ``loremaster/tests/test_blocks_edge.py``,
-# which grades the production detector against a second implementation — and
-# PRODUCTION imports it nowhere, so nothing served is typed by this relaxation.
-# Finding #272; the alternative, if ``types-networkx`` is ever added to the dev
-# group, is to delete this block rather than to keep both.
+# ``networkx`` (operator-authorised at ``54d0585``) ships no ``py.typed`` marker, and its
+# stubs are a separate distribution this workspace does not install, so ``import networkx``
+# is a hard ``import-untyped`` error. Same shape as the astroid and kubernetes boundaries
+# above. ⚠ **RE-SCOPED to PRODUCTION at #273 (packet 04b-3):** it was a TEST-SIDE ORACLE
+# only until ``_record_legacy_cycles`` swapped its hand-rolled enumeration for
+# ``networkx.simple_cycles`` — networkx is now a PRODUCTION import of
+# ``loremaster/loremaster/tasks.py`` (moved dev → runtime in ``loremaster/pyproject.toml``),
+# so this relaxation now covers a served module, not just the independent cycle enumerator
+# in ``loremaster/tests/test_blocks_edge.py``. Findings #272/#273; the alternative, if
+# ``types-networkx`` is ever added, is to delete this block rather than to keep both.
 [[tool.mypy.overrides]]
 module = ["networkx", "networkx.*"]
 ignore_missing_imports = true
