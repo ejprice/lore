@@ -227,8 +227,8 @@ def _normalise(outcome: object) -> object:
 async def probe_fake_real_parity() -> None:
     print("\n=== B1 : FakeTaskLedger.transitive_blockers vs REAL TaskLedger ===")
     cases: list[tuple[str, str, int | None]] = []
-    for name in GRAPHS:
-        start = "d" if "d" in GRAPHS[name] else "a"
+    for name, graph in GRAPHS.items():
+        start = "d" if "d" in graph else "a"
         cases.extend([(name, start, None), (name, start, 1), (name, start, 2), (name, start, 3)])
     # bounds cases on a graph that exists
     cases.extend([("chain4", "d", 0), ("chain4", "d", -1), ("chain4", "d", 10**9)])

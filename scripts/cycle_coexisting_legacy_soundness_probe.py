@@ -31,37 +31,52 @@ receipt.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from loremaster.store._txn import bootstrap_session, signin_credentials
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE
 from loremaster.tasks import STATUS_OPEN, TaskCycleError, TaskLedger, TaskSpec
-from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 import loremaster
 
-URL = os.environ.get("LORE_TEST_SURREAL_URL", "ws://127.0.0.1:18000/rpc")
-USER = os.environ.get("LORE_TEST_SURREAL_USER", "root")
-PASSWORD = SecretStr(os.environ.get("LORE_TEST_SURREAL_PASS", "spikeroot"))
-NAMESPACE = "lore_test"
-assert "18500" not in URL, f"REFUSING: {URL!r} looks like production lore-surreal"
-assert "127.0.0.1:18000" in URL, f"REFUSING: {URL!r} is not the spike test store"
+
+def _repository_root() -> Path:
+    """This checkout's root, derived from this file's location."""
+    return Path(__file__).resolve().parent.parent
 
 
-def unique_database() -> str:
-    return f"test_{os.getpid()}_{uuid.uuid4().hex}"
+def _harness() -> Any:
+    """The suite's real-SurrealDB harness (``scripts/forgery_door_sweep.py::_harness``).
+
+    ``loremaster/tests`` is a plain directory, not a package; the suite reaches its
+    shared helpers as top-level modules by putting that directory on ``sys.path``.
+    This script is not run by pytest, so it does the same insert and reuses the
+    connection topology, unique-database minting, signin + session bootstrap and
+    retry-aware teardown the harness already owns — which is also why the env read
+    and the ``SecretStr`` mint live in the harness (a test module the secret-boundary
+    scans exclude), never here (SEAMS-OVER-HAND-ROLLING; #211).
+    """
+    tests_directory = str(_repository_root() / "loremaster" / "tests")
+    if tests_directory not in sys.path:
+        sys.path.insert(0, tests_directory)
+    import _surreal_harness
+
+    return _surreal_harness
 
 
-async def connect_admin(database: str) -> Any:
-    connection = AsyncSurreal(URL)
-    await connection.signin(signin_credentials(user=USER, password=PASSWORD))
-    await bootstrap_session(connection, NAMESPACE, database, url=URL)
-    return connection
+_HARNESS = _harness()
+_SURREAL_URL = _HARNESS.surreal_url()
+assert "18500" not in _SURREAL_URL, f"REFUSING: {_SURREAL_URL!r} looks like production lore-surreal"
+assert "127.0.0.1:18000" in _SURREAL_URL, f"REFUSING: {_SURREAL_URL!r} is not the spike test store"
+
+
+def _fresh_env() -> Any:
+    """A ``SurrealEnv`` on a fresh unique test database, via the shared harness seam."""
+    return _HARNESS.make_env(database=_HARNESS.unique_database(), dim=_HARNESS.PRODUCTION_DIM)
 
 
 async def create_row(connection: Any, task_id: str, blocked_by: list[str]) -> None:
@@ -93,10 +108,11 @@ async def edge(connection: Any, blocker: str, blocked: str) -> None:
 
 async def probe() -> int:
     print(f"loremaster.__file__ = {loremaster.__file__}  (the REAL tree)")
-    database = unique_database()
-    connection = await connect_admin(database)
+    env = _fresh_env()
+    connection = await _HARNESS.connect_admin(env)
     ledger = TaskLedger(
-        url=URL, namespace=NAMESPACE, database=database, user=USER, password=PASSWORD
+        url=env.url, namespace=env.namespace, database=env.database,
+        user=env.user, password=env.password,
     )
     try:
         await ledger.ensure_ready()  # the blocks table exists (a healthy, long-lived world)
@@ -153,8 +169,8 @@ async def probe() -> int:
         return 3
     finally:
         await ledger.close()
-        await connection.query(f"REMOVE DATABASE IF EXISTS {database}")
         await connection.close()
+        await _HARNESS.drop_database(env)
 
 
 if __name__ == "__main__":

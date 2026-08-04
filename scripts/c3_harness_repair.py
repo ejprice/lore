@@ -31,8 +31,8 @@ def _registered_row(name: str, session: str) -> tuple[str, Any]:
     two fakes must agree on the id, and the registry's is the real one (in
     production the ``to`` edge points at the ``agent`` row).
     """
+    from _comms_fakes import FakeAgentRegistry
     from loremaster.agents import STATUS_ACTIVE, Agent
-    from test_comms_tool import FakeAgentRegistry
 
     agent_id = FakeAgentRegistry._agent_id(session, name)
     now = datetime.now(UTC)
@@ -50,10 +50,10 @@ def _registered_row(name: str, session: str) -> tuple[str, Any]:
 @pytest.fixture(autouse=True)
 def _repair_c3_harness(monkeypatch: pytest.MonkeyPatch) -> None:
     import test_comms_footer as c3
+    from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
     from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
     from _message_fakes import FakeMessageDatabase, FakeMessageLedger
     from _task_fakes import FakeTaskDatabase, FakeTaskLedger
-    from test_comms_tool import FakeAgentDatabase, FakeAgentRegistry
 
     # ---- C-DEF 1: the harness never registers anybody in the registry -------
     def _footer_harness(

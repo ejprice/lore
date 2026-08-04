@@ -35,7 +35,7 @@ class _Malformed:
     description = "d"
 
     @property
-    def subject(self):
+    def subject(self) -> str:
         raise RuntimeError("malformed spec: subject exploded mid-batch")
 
 
@@ -99,7 +99,9 @@ async def main() -> None:
             baseline = len(await ledger.query_tasks())
             outcome = "returned normally"
             try:
-                await ledger.create_many(bad_batch, created_by="coldaudit")
+                # bad_batch DELIBERATELY carries a protocol-violating _Malformed spec —
+                # feeding create_many a non-TaskSpecLike item IS the atomicity probe.
+                await ledger.create_many(bad_batch, created_by="coldaudit")  # type: ignore[arg-type]
             except Exception as error:  # noqa: BLE001
                 outcome = f"{type(error).__name__}"
             settled = len(await ledger.query_tasks())

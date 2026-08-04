@@ -712,7 +712,15 @@ WRONG_BUILDS: list[tuple[str, str, list[Edit], list[str]]] = [
         "LINK 1b REMOVED — the three ledger dispatchers do not charset-gate agent=/"
         "session= (the reference build as first measured: the forged instruction reaches "
         "the consumer verbatim through R8(1)'s teaching)",
-        [(SERVER, "        AppContext._validate_comms_identities(agent, session=session, name=None, to=None)\n", "", 3)],
+        [
+            (
+                SERVER,
+                "        AppContext._validate_comms_identities("
+                "agent, session=session, name=None, to=None)\n",
+                "",
+                3,
+            )
+        ],
         [
             f"{C}::TestTheIdentityParameterSurfaceIsDERIVEDNotEnumerated"
             "::test_every_identity_accepting_ENTRY_POINT_routes_through_the_ONE_seam",
@@ -756,8 +764,22 @@ WRONG_BUILDS: list[tuple[str, str, list[Edit], list[str]]] = [
         [
             (
                 SERVER,
-                '        AppContext._validate_comms_identities(agent, session=session, name=None, to=None)\n        rendered, wrote = await AppContext._tasks_dispatch(self, ',
-                '        _private = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n        for _value, _label in ((agent, "agent name"), (session, "session")):\n            if _value is not None and not _private.fullmatch(_value):\n                raise ValueError(\n                    f"{_label} does not match {_private.pattern} — "\n                    f"an identity is a match key across the registry, the "\n                    f"ledgers and every render, so it gets exactly ONE spelling "\n                    f"and must stay in the safe charset: this is what stops a "\n                    f"value having a second form that renders identically to "\n                    f"another agent\'s\\n"\n                    f"the {_label} received was:\\n{render_fenced(_value)}"\n                )\n        rendered, wrote = await AppContext._tasks_dispatch(self, ',
+                '        AppContext._validate_comms_identities(agent, '
+                'session=session, name=None, to=None)\n'
+                '        rendered, wrote = await AppContext._tasks_dispatch(self, ',
+                '        _private = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n'
+                '        for _value, _label in ((agent, "agent name"), (session, "session")):\n'
+                '            if _value is not None and not _private.fullmatch(_value):\n'
+                '                raise ValueError(\n'
+                '                    f"{_label} does not match {_private.pattern} — "\n'
+                '                    f"an identity is a match key across the registry, the "\n'
+                '                    f"ledgers and every render, so it gets exactly ONE spelling "\n'
+                '                    f"and must stay in the safe charset: this is what stops a "\n'
+                '                    f"value having a second form that renders identically to "\n'
+                '                    f"another agent\'s\\n"\n'
+                '                    f"the {_label} received was:\\n{render_fenced(_value)}"\n'
+                '                )\n'
+                '        rendered, wrote = await AppContext._tasks_dispatch(self, ',
                 1,
             )
         ],
@@ -791,6 +813,7 @@ def _collect() -> set[str]:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
     ids = set()
     for line in proc.stdout.splitlines():
@@ -821,6 +844,7 @@ def _run() -> set[str]:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
     reds = set()
     for line in proc.stdout.splitlines():

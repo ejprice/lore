@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+from typing import Any
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "loremaster" / "tests"))
@@ -85,7 +86,7 @@ async def _fake_cycle(length: int) -> tuple[frozenset[str], bool, int]:
     )
 
 
-def _set_blocked_by(db, task_id: str, blockers: list[str]) -> None:
+def _set_blocked_by(db: Any, task_id: str, blockers: list[str]) -> None:
     """Force a task's ``blocked_by`` column, whatever the model's mutability."""
     task = db.tasks[task_id]
     try:

@@ -36,28 +36,50 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from loremaster.store._txn import bootstrap_session, execute_transaction, signin_credentials
+from loremaster.store._txn import execute_transaction
 from loremaster.store.surreal_schema import BLOCKS_RELATION, TASK_TABLE, generate_task_ddl
 from loremaster.tasks import STATUS_OPEN, TaskLedger
-from pydantic import SecretStr
-from surrealdb import AsyncSurreal, RecordID
+from surrealdb import RecordID
 
 import loremaster
 
-# --- topology (harness conventions; spike defaults; PRODUCTION REFUSED) -------
-URL = os.environ.get("LORE_TEST_SURREAL_URL", "ws://127.0.0.1:18000/rpc")
-USER = os.environ.get("LORE_TEST_SURREAL_USER", "root")
-PASSWORD = SecretStr(os.environ.get("LORE_TEST_SURREAL_PASS", "spikeroot"))
-NAMESPACE = "lore_test"
-assert "18500" not in URL, f"REFUSING: {URL!r} looks like production lore-surreal"
-assert "127.0.0.1:18000" in URL, f"REFUSING: {URL!r} is not the spike test store"
+
+# --- topology (via the shared harness seam; spike defaults; PRODUCTION REFUSED) ---
+def _repository_root() -> Path:
+    """This checkout's root, derived from this file's location."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _harness() -> Any:
+    """The suite's real-SurrealDB harness (``scripts/forgery_door_sweep.py::_harness``).
+
+    ``loremaster/tests`` is a plain directory, not a package; the suite reaches its
+    shared helpers as top-level modules by putting that directory on ``sys.path``.
+    This script is not run by pytest, so it does the same insert and reuses the
+    connection topology, unique-database minting, signin + session bootstrap and
+    retry-aware teardown the harness already owns — which is also why the env read
+    and the ``SecretStr`` mint live in the harness (a test module the secret-boundary
+    scans exclude), never here (SEAMS-OVER-HAND-ROLLING; #211).
+    """
+    tests_directory = str(_repository_root() / "loremaster" / "tests")
+    if tests_directory not in sys.path:
+        sys.path.insert(0, tests_directory)
+    import _surreal_harness
+
+    return _surreal_harness
+
+
+_HARNESS = _harness()
+_SURREAL_URL = _HARNESS.surreal_url()
+assert "18500" not in _SURREAL_URL, f"REFUSING: {_SURREAL_URL!r} looks like production lore-surreal"
+assert "127.0.0.1:18000" in _SURREAL_URL, f"REFUSING: {_SURREAL_URL!r} is not the spike test store"
 
 PHANTOM_BLOCKER = f"phantom_{uuid.uuid4().hex}"  # names NO task row, ever
 FAILURES: list[str] = []
@@ -69,16 +91,9 @@ def check(label: str, ok: bool, detail: str = "") -> None:
         FAILURES.append(label)
 
 
-def unique_database() -> str:
-    """Mirror _surreal_harness.unique_database(): test_<pid>_<uuid4>."""
-    return f"test_{os.getpid()}_{uuid.uuid4().hex}"
-
-
-async def connect_admin(database: str) -> Any:
-    connection = AsyncSurreal(URL)
-    await connection.signin(signin_credentials(user=USER, password=PASSWORD))
-    await bootstrap_session(connection, NAMESPACE, database, url=URL)
-    return connection
+def _fresh_env() -> Any:
+    """A ``SurrealEnv`` on a fresh unique test database, via the shared harness seam."""
+    return _HARNESS.make_env(database=_HARNESS.unique_database(), dim=_HARNESS.PRODUCTION_DIM)
 
 
 def legacy_task_ddl() -> str:
@@ -109,7 +124,7 @@ async def apply_ddl(connection: Any, ddl: str) -> None:
         pass
 
     await execute_transaction(
-        f"BEGIN;\n{ddl}COMMIT;\n", {}, acquire=_acquire, drop=_never_drop, url=URL
+        f"BEGIN;\n{ddl}COMMIT;\n", {}, acquire=_acquire, drop=_never_drop, url=_SURREAL_URL
     )
 
 
@@ -282,21 +297,14 @@ class Spec:
     blocked_by: list[str] = field(default_factory=list)
 
 
-async def teardown(database: str) -> None:
-    connection = AsyncSurreal(URL)
-    await connection.signin(signin_credentials(user=USER, password=PASSWORD))
-    await connection.use(NAMESPACE, database)
-    await connection.query(f"REMOVE DATABASE IF EXISTS {database}")
-    await connection.close()
-
-
 async def legacy_continuum() -> None:  # noqa: PLR0915 - a linear construction+measurement probe
     """DB1: constructions 1–4 + positive control (a)."""
-    database = unique_database()
-    print(f"\n=== DB1 (legacy continuum): {database} ===")
-    connection = await connect_admin(database)
+    env = _fresh_env()
+    print(f"\n=== DB1 (legacy continuum): {env.database} ===")
+    connection = await _HARNESS.connect_admin(env)
     ledger = TaskLedger(
-        url=URL, namespace=NAMESPACE, database=database, user=USER, password=PASSWORD
+        url=env.url, namespace=env.namespace, database=env.database,
+        user=env.user, password=env.password,
     )
     # Capture the backfill's WARNING stream — the phantom skip and the legacy-cycle
     # record are part of what ESC-1's world must show (loud, never silent).
@@ -436,17 +444,18 @@ async def legacy_continuum() -> None:  # noqa: PLR0915 - a linear construction+m
         logging.getLogger("loremaster.tasks").removeHandler(handler)
         await ledger.close()
         await connection.close()
-        await teardown(database)
-        print(f"=== DB1 dropped: {database} ===")
+        await _HARNESS.drop_database(env)
+        print(f"=== DB1 dropped: {env.database} ===")
 
 
 async def negative_control() -> None:
     """DB2: control (b) — prove the instrument SEES a divergence."""
-    database = unique_database()
-    print(f"\n=== DB2 (negative control): {database} ===")
-    connection = await connect_admin(database)
+    env = _fresh_env()
+    print(f"\n=== DB2 (negative control): {env.database} ===")
+    connection = await _HARNESS.connect_admin(env)
     ledger = TaskLedger(
-        url=URL, namespace=NAMESPACE, database=database, user=USER, password=PASSWORD
+        url=env.url, namespace=env.namespace, database=env.database,
+        user=env.user, password=env.password,
     )
     try:
         await ledger.ensure_ready()
@@ -492,14 +501,14 @@ async def negative_control() -> None:
     finally:
         await ledger.close()
         await connection.close()
-        await teardown(database)
-        print(f"=== DB2 dropped: {database} ===")
+        await _HARNESS.drop_database(env)
+        print(f"=== DB2 dropped: {env.database} ===")
 
 
 async def main() -> int:
     print(f"probe-esc1-closure-1  {datetime.now(UTC).isoformat()}")
     print(f"loremaster.__file__ = {loremaster.__file__}  (the REAL tree, deliberately)")
-    print(f"store = {URL}  namespace = {NAMESPACE}")
+    print(f"store = {_SURREAL_URL}  namespace = {_HARNESS.TEST_NAMESPACE}")
     await legacy_continuum()
     await negative_control()
     print(f"\n{'=' * 60}")
