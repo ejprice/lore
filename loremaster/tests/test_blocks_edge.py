@@ -2173,34 +2173,45 @@ class TestCreateRefusesToFormACycle:
             await ledger.close()
             await drop_database(env)
 
-    async def test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population(
+    async def test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE(
         self,
     ) -> None:
-        """**GREEN at ``b8607c4``, and it asserts a MISS.**  ⛔ **#253's residue on the write
-        path, PINNED rather than left for the next auditor to rediscover from an incident.**
+        """RED at ``4b952f3``.  ⛔ **ESC-1's satisfiable pin — the replacement for the deleted
+        KNOWN_BOUND leg** (packet 04b-3; ``REPORT-design-sidecar-04b3-1.md`` §CYCLE-FORKS
+        FORK A, ruled 2026-08-03; ``REPORT-contract-cycle-04b3-1.md`` §ESC-1-FLAGS).
 
-        ``CLAUDE.md`` § *WHEN YOU CANNOT CLOSE A HOLE, PIN IT*: *"an unpinned known limitation
-        is indistinguishable from an unknown one."*  Its sibling leg below measures growth
-        against the UNBLOCKED population — which is precisely the population the guard's own
-        ``WHERE array::len(blocked_by) > 0`` excludes — so nothing in this contract had ever
-        varied the population the read actually returns.  MEASURED here and independently by
-        the delta adversary (§PINS-4): the guard reads ~one row per DEPENDENCY-BEARING row in
-        the ledger, whatever the new dependency is.
+        The pin this replaces — ``test_KNOWN_BOUND_..._rows_READ_DOES_grow_with_the_BLOCKED_
+        population`` — asserted the write-time guard reads ~one row per DEPENDENCY-BEARING row
+        in the ledger, and its own docstring PINNED that as a bound *"escalated, not settled
+        here"*, naming *"an ancestor-closure seed"* as the candidate and *"a builder must not
+        be handed 'invent the general form'"*.  FORK A settled it: ESC-1's real deliverable is
+        to BOUND the guard's read to the ancestor CLOSURE of the pending task's blockers — seed
+        from those blockers, walk the closure via persisted ``blocks`` EDGES (ESC-1's measured
+        YES: every persisted ancestor is edge-reachable after ``ensure_ready``, so edges
+        soundly bound WHICH rows to read), read the ``blocked_by`` COLUMNS of exactly those
+        bounded rows for the closing link, overlay the pending ``create_many`` sibling refs,
+        and run the shared ``find_blocked_by_cycle``.  So the read no longer scales with the
+        blocked backlog — it scales with the new dependency's ancestor closure.
 
-        **THIS PIN GOES RED THE DAY SOMEONE CLOSES THE HOLE, and that is the point.**  If you
-        closed it deliberately, DELETE this pin and say so in your wave report — do not
-        weaken it, and do not widen its sibling to cover this axis without a ruling.
+        ⚠ **NO "columns → RED" pin, deliberately** (FORK A retraction): the guard MUST still
+        read the ``blocked_by`` column — the closing link of a would-be cycle names a
+        not-yet-existent task, ``ENFORCED`` forbids that edge, so it can only be a COLUMN, and
+        an edge-only guard returns *"acyclic"* and FAILS
+        ``test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED``.  This
+        pin asserts the read is BOUNDED, never that it abandons the column.
 
-        ⚠ **WHY IT IS A BOUND AND NOT SIMPLY A DEFECT — the design fork is REAL and is
-        escalated, not settled here** (`REPORT-contractfix-04b1-r6.md` §ESC-1).  R7's rider
-        forces the acyclicity guard to walk the ``blocked_by`` COLUMN client-side, because the
-        closing dependency of a cycle CANNOT carry an edge (``ENFORCED`` rejects a ``RELATE``
-        to a task that does not exist yet), so an engine traversal returns *"acyclic"*; and R7
-        puts that walk inside ONE round trip.  Whether a bound exists that satisfies both — an
-        ancestor-closure seed, say — is a DESIGN question, and a builder must not be handed
-        *"invent the general form"*.
-        **NAMED RE-OPEN TRIGGER:** the first ledger whose dependency-bearing population makes
-        a ``create_many`` measurably slow, or any ruling that supersedes R7's rider.
+        DISCRIMINATION — "what wrong build still passes this?": the whole-dependency-bearing-
+        population scan (the build at HEAD) reads ~one row per blocked pair, so ``large.rows``
+        grows past ``small.rows`` and this pin is RED.  The soundness of bounding is not a
+        heuristic: any row that closes a cycle THROUGH the pending task N is an ancestor of N,
+        hence in ``closure(N.blockers)``, hence its column IS read (FORK A soundness proof).
+
+        ⚠ **Its two siblings STAY GREEN and the ruling requires it:**
+        ``test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population``
+        (the bounded read touches no dependency-free row either) and
+        ``test_the_cycle_WALK_is_ONE_round_trip`` (R7: the bounded read is still ONE round
+        trip, sharing one snapshot).  This leg reuses ``_blocked_noise_traffic`` — the SAME
+        helper the deleted pin used — never a second copy (repo law #102).
         """
         small, small_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_SMALL)
         large, large_created = await self._blocked_noise_traffic(UNRELATED_TASK_COUNT_LARGE)
@@ -2214,16 +2225,15 @@ class TestCreateRefusesToFormACycle:
             f"observing this call path, so this bound is unmeasured rather than confirmed: "
             f"{small}"
         )
-        assert large.rows > small.rows, (
+        assert large.rows == small.rows, (
             f"a create_many naming ONE blocker read {small.rows} rows against "
             f"{UNRELATED_TASK_COUNT_SMALL} unrelated BLOCKED pairs and {large.rows} against "
-            f"{UNRELATED_TASK_COUNT_LARGE} — it did NOT grow, so the known bound this pin "
-            f"asserts no longer exists. ⚠ THIS IS A KNOWN BOUND (see this test's docstring "
-            f"and §ESC-1 of the r6 contract wave): the write-time acyclicity guard reads "
-            f"every dependency-bearing row on every create. If you CLOSED it deliberately, "
-            f"DELETE this pin and say so in your wave report — a bound that is pinned is a "
-            f"bound the next engineer meets deliberately, and one that is silently fixed "
-            f"leaves a pin nobody can interpret. small={small.statements} "
+            f"{UNRELATED_TASK_COUNT_LARGE} — the guard's read STILL grows with the "
+            f"dependency-bearing population, so it is NOT bounded to the new dependency's "
+            f"ancestor closure. ESC-1 (04b-3 FORK A): seed from the pending blockers, walk "
+            f"the closure via blocks EDGES to bound WHICH rows, read only those rows' "
+            f"blocked_by COLUMNS for the closing link (the column is KEPT, never abandoned), "
+            f"overlay pending sibling refs, run find_blocked_by_cycle. small={small.statements} "
             f"large={large.statements}"
         )
 
@@ -2261,8 +2271,10 @@ class TestCreateRefusesToFormACycle:
         the one the read EXCLUDES.  The old name and the old failure message both claimed a
         ∀-ledger property the assertion cannot perform (*"a failure message that promises a
         check the assertion does not perform is a false gate"*), and the residue is real:
-        against BLOCKED noise the read DOES grow, which is now asserted as a KNOWN BOUND by
-        :meth:`test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population`.
+        against BLOCKED noise the read DOES grow today — a bound ESC-1 (packet 04b-3) CLOSES,
+        asserted (RED until the bounded-closure read lands) by
+        :meth:`test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`, which REPLACED
+        the deleted known-bound leg (§CYCLE-FORKS FORK A).
         The two legs together are the honest statement of what this build does.
 
         ⚠ **STATED SCOPE:** the guard legitimately reads more rows for a DEEPER dependency
@@ -2289,9 +2301,9 @@ class TestCreateRefusesToFormACycle:
             f"at — a walk seeded with the whole task table (#253's shape, on the WRITE "
             f"side). The acyclicity walk must at minimum be filtered to the "
             f"dependency-BEARING rows. ⚠ This assertion measures the DEPENDENCY-FREE "
-            f"population ONLY; growth with the dependency-BEARING population is a separate, "
-            f"currently-OPEN bound asserted by "
-            f"test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population. "
+            f"population ONLY; growth with the dependency-BEARING population is a separate bound "
+            f"that ESC-1 (04b-3) CLOSES, asserted (RED until the bounded-closure read lands) by "
+            f"test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE. "
             f"⚠ Do NOT fix this by moving the walk onto an ENGINE traversal of the blocks "
             f"edge: the closing dependency of a cycle cannot carry an edge (see this class's "
             f"docstring), so an engine detector returns 'acyclic'. small={small.statements} "
@@ -7855,6 +7867,12 @@ class TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST:
     particular decomposition of an overlapping component.  **RE-OPEN TRIGGER:** the day the
     record grows a per-cycle CONSUMER (a repair tool, a count served to an agent), that
     consumer's needs make the decomposition load-bearing and this bound must be re-argued.
+    ⚠ **RE-OPENED 2026-08-03 by a DIFFERENT trigger (#273, packet 04b-3):** once
+    ``_record_legacy_cycles`` IS ``networkx.simple_cycles``, count-equality is no longer a
+    C-DEF — it is the SWAP's discriminator, and RED-on-the-hand-rolled-build is the intended
+    contract-first drive.  That count pin lives in
+    :class:`TestTheEnumerationEQUALSNetworkxAfterTheSwap`; THIS class stays scoped to member
+    coverage (green both sides of the swap).
 
     ⚠ **The independent enumerator is ``networkx``, and it is the TEST's oracle, never the
     build's mechanism** (operator-authorised at ``54d0585``).  Two independent enumerations
@@ -8052,6 +8070,78 @@ class TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST:
             f"(ESC-4 reading A), so the RECORD legs above are measuring a store whose "
             f"cycles were refused rather than minted: "
             f"got={sorted(await _blocks_edge_pairs(connection))}"
+        )
+
+
+class TestTheEnumerationEQUALSNetworkxAfterTheSwap:
+    """RED at ``4b952f3`` on the ``complete-triangle`` leg.  ⛔ **#273's behavioural
+    discriminator** (packet 04b-3; ``REPORT-design-sidecar-04b3-1.md`` §CYCLE-FORKS FORK B,
+    ruled 2026-08-03; finding #273).
+
+    #273 swaps ``_record_legacy_cycles``'s hand-rolled drop-an-edge enumeration for
+    ``networkx.simple_cycles``.  The sibling ``TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST``
+    pins MEMBER COVERAGE ∀ topology and stays GREEN across the swap (both enumerators cover
+    every member), so it does NOT discriminate the swap from a no-op.  This class does: it
+    pins that the RECORDED cycle COUNT equals ``networkx.simple_cycles`` ∀ topology.  On the
+    disjoint and overlapping topologies the hand-rolled walk already agrees with networkx
+    (green today and after).  On the ``complete-triangle`` — a fully-connected component — the
+    hand-rolled walk records **4** loops where ``simple_cycles`` finds **5** (finding #273,
+    measured 2026-07-28), so this leg is RED until ``_record_legacy_cycles`` IS
+    ``networkx.simple_cycles``.
+
+    ⚠ **This RE-ARGUES the sibling's stated bound, on purpose.**  The sibling refuses
+    count-equality because it would make the CORRECT hand-rolled build RED — a C-DEF.  #273
+    REPLACES that build: once the enumerator IS networkx, count-equality is exactly the swap's
+    discriminator and RED-on-the-hand-rolled-build is the intended contract-first drive, not a
+    C-DEF.  The oracle is ``networkx.simple_cycles`` computed IN THE SAME run (the sibling's
+    ``_independent_cycles``), so the pin is robust to networkx VERSION changes — it always
+    compares the record to the current library, and after the swap the two are the same call.
+
+    ⚠ It REUSES the sibling's ``_boot_and_capture`` + ``_independent_cycles`` — ONE oracle,
+    never copy #2 (repo law #102).  DETECTION (``find_blocked_by_cycle``, one witness) is
+    UNCHANGED by #273; this pins ENUMERATION only.
+    """
+
+    @staticmethod
+    def _recorded_cycle_count(loud: list[str]) -> int:
+        """How many legacy-cycle RECORDS the backfill emitted (not phantom skips).
+
+        ``_recorded_text`` renders each record as ``f"{getMessage()} {extras!r}"`` and
+        ``_record_legacy_cycles`` logs the event NAME as the message, so a cycle record's text
+        begins with the marker.  Counting the marker — not ``len(loud)`` — keeps this honest on
+        any topology that also emits a phantom-skip WARNING.
+        """
+        from loremaster.tasks import _BACKFILL_CYCLE_EVENT
+
+        return sum(1 for text in loud if text.startswith(_BACKFILL_CYCLE_EVENT))
+
+    @pytest.mark.parametrize("topology", sorted(LEGACY_CYCLE_TOPOLOGIES))
+    async def test_the_RECORDED_cycle_count_equals_networkx_simple_cycles(
+        self,
+        topology: str,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """∀ topology: ``|recorded cycles| == |networkx.simple_cycles|``.  The
+        ``complete-triangle`` leg is RED at ``4b952f3`` (4 recorded vs 5) and GREEN once the
+        swap lands; the disjoint/overlapping legs are green both sides (the enumerators already
+        agree there) and are the POSITIVE CONTROL that this pin is not a build that answers a
+        fixed number to everything.
+        """
+        spec = LEGACY_CYCLE_TOPOLOGIES[topology]
+        expected = len(TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST._independent_cycles(spec))
+        _ids, loud = await TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST._boot_and_capture(
+            caplog, migration_db, spec
+        )
+        recorded = self._recorded_cycle_count(loud)
+        assert recorded == expected, (
+            f"on the {topology!r} topology the backfill RECORDED {recorded} legacy cycles but "
+            f"networkx.simple_cycles finds {expected}. #273 (04b-3 FORK B) swaps "
+            f"_record_legacy_cycles's hand-rolled drop-an-edge walk for networkx.simple_cycles "
+            f"so the recorded ENUMERATION equals the library ∀ topology — on a fully-connected "
+            f"component the hand-rolled walk records one fewer loop (4 vs 5), which is the "
+            f"decomposition difference this pin drives out. DETECTION (find_blocked_by_cycle) "
+            f"is unchanged; only ENUMERATION swaps. loud={loud!r}"
         )
 
 
@@ -8916,9 +9006,11 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #   ⚠ RENAMED in wave r6 (was "…_with_the_size_of_the_LEDGER"): the old name promised a
 #   ∀-ledger property the assertion cannot perform — see the test's own docstring. The
 #   MUTATION and its declared red set are unchanged; only the node id moved.
-#   ⚠ ``$E2::test_KNOWN_BOUND_the_write_paths_rows_READ_DOES_grow_with_the_BLOCKED_population``
-#   must stay GREEN under this mutation: dropping the filter makes the read grow with EVERY
-#   population, and that pin asserts growth. It is a KNOWN-BOUND pin, not a boundedness one.
+#   ⚠ SUPERSEDED BY ESC-1 (04b-3, §CYCLE-FORKS FORK A): this WB-D entry targets the PRE-ESC-1
+#   WHOLE-POPULATION read. The known-bound pin is DELETED and replaced by
+#   ``$E2::test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`` (asserts the read
+#   is bounded to the ancestor CLOSURE, RED until the fix lands). The bounded-closure read has no
+#   whole-table filter to drop, so the builder REVISES this WB-D mutation when landing ESC-1.
 #   ⚠ ``$E2::test_the_cycle_WALK_is_ONE_round_trip_however_DEEP_the_chain`` must stay GREEN —
 #   the walk is still ONE round trip, it simply reads the whole ledger inside it. That a
 #   round-trip pin cannot see a rows defect is exactly why the rows pin had to exist.
