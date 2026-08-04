@@ -1680,7 +1680,10 @@ class TestMessageDdlOffline:
         """
         statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, "body")
         assert "ASSERT" in statement
-        assert "2000" in statement, f"expected the 2000-char pointer bound in {statement!r}"
+        cap = _schema().MESSAGE_BODY_MAX_CHARS
+        assert f"string::len($value) <= {cap}" in statement, (
+            f"expected the body length bound (<= {cap}) in {statement!r}"
+        )
 
     @pytest.mark.parametrize("field", ["seen_at", "acked_at"])
     def test_the_cas_stamp_columns_are_option_datetime(self, field: str) -> None:
@@ -2209,7 +2212,12 @@ class TestMessageSchemaLive:
         connection, _env = admin_db
         await run(connection, generate_message_ddl())
         with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(connection, session="wave7", seq=6, body="z" * 2001)
+            await _create_message(
+                connection,
+                session="wave7",
+                seq=6,
+                body="z" * (_schema().MESSAGE_BODY_MAX_CHARS + 1),
+            )
 
     # --- WAVE 3 / C4: the LIVE leg DD-3.c's rider named ----------------------
     #

@@ -1315,7 +1315,7 @@ _TRACE_BY_TOOL_CAP = 20
 # ceiling (DESIGN-LAW §1.2), never an unbounded "ask for everything".
 _MAX_FLEET_LIMIT = 200
 # §B6.3: ``drain``'s OWN cap, deliberately distinct from fleet's. A drain entry
-# costs a header line plus a >=3-line fence, so 50 entries with the 2000-char
+# costs a header line plus a >=3-line fence, so 50 entries with the 4000-char
 # body cap bounds the worst-case render at a size a consumer can still use —
 # while never making the cap a dead end (the elision line's honest count is the
 # re-ask). Ruled default, strikeable; the CONSTANT is the tunable, the

@@ -551,6 +551,27 @@ class TestCommsToolRegistration:
             f"(design doc §6, finding #97): {limit_schema!r}"
         )
 
+    async def test_body_description_carries_the_LIVE_body_cap_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#327 / O-4 belt-and-braces: the ``body`` parameter description an MCP
+        client reads is DERIVED from ``MESSAGE_BODY_MAX_CHARS`` (f-string
+        interpolated at ``server.py``), so the served cap can never drift from
+        the enforced one. This pin reddens the day a refactor hardcodes the
+        description to a literal while the constant differs — the #319
+        served-prose-not-derived class, guarded at the ``body`` param
+        specifically (the instructions-block cap sentence is pinned separately by
+        ``test_clause_4_the_body_cap_sentence_carries_the_LIVE_constant``).
+        """
+        tools = await _tools_by_name(monkeypatch)
+        body_schema = (tools["lore_comms"].inputSchema or {})["properties"]["body"]
+        description = body_schema.get("description", "")
+        cap = _msg().MESSAGE_BODY_MAX_CHARS
+        assert str(cap) in description, (
+            f"the lore_comms 'body' description must carry the live cap {cap} "
+            f"(derived from MESSAGE_BODY_MAX_CHARS, not a hardcoded literal): {description!r}"
+        )
+
     async def test_all_builtin_tools_still_include_lore_comms(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tools = await _tools_by_name(monkeypatch)
         # A cheap, self-contained echo of the exact-set pin's shape (the

@@ -570,15 +570,15 @@ _MESSAGE_GRADE_ALLOWED = ", ".join(f"'{grade}'" for grade in _MESSAGE_GRADES)
 # teaching reject, and imports THIS constant so the two bounds can never drift —
 # a body over the bound that bypasses the ledger fails LOUDLY at the store rather
 # than landing unbounded (ONE source of truth for the policy value, per the DRY
-# law — 03a must import, never re-declare, 2000).
-MESSAGE_BODY_MAX_CHARS = 2000
+# law — 03a must import, never re-declare the value).
+MESSAGE_BODY_MAX_CHARS = 4000
 
 # The POINTER-class length bound (DD-3.a), applied to EACH ``refs`` entry, to
 # ``thread`` and to ``task_id``. ONE constant for one class of field: all three
 # are pointers/labels, and three separate constants would be three things to
 # drift. Derivation of 256: the longest legitimate house pointer is a receipts
 # path plus a section cite (~80-100 chars), so 256 is that with headroom — and it
-# refuses content-smuggling outright, because a 2000-char "ref" is a BODY wearing
+# refuses content-smuggling outright, because a body-sized "ref" is a BODY wearing
 # a pointer's name. Without it the body cap is theatre: five unbounded refs per
 # row void the render arithmetic the cap exists to protect.
 MESSAGE_POINTER_MAX_CHARS = 256

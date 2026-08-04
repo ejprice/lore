@@ -353,8 +353,8 @@ class TestVocabularies:
             "not_addressed",
         }
 
-    def test_body_cap_is_the_designs_two_thousand_char_pointer_bound(self) -> None:
-        assert _msg().MESSAGE_BODY_MAX_CHARS == 2000
+    def test_body_cap_is_the_designs_pointer_bound(self) -> None:
+        assert _msg().MESSAGE_BODY_MAX_CHARS == 4000
 
     def test_every_domain_error_is_a_message_ledger_error(self) -> None:
         for error_type in (
