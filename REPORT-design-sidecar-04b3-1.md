@@ -628,6 +628,131 @@ adversary's three proven horns, `_refuse_a_cycle`'s HEAD drop-loop). R6 (ONE det
 intact; no operator-ruled HEAD-green pin is revised.*
 
 ---
+
+# §COMMS-CAP · 2026-08-04 — deriving the `lore_comms` body-cap value (#327)
+
+**Context:** a SEPARATE task from CYCLE (operator-routed via lead directive #2087). Derive a
+principled replacement for `MESSAGE_BODY_MAX_CHARS = 2000` under the Consumer Law, and enumerate
+the change's obligations. Ground truth: finding #327 + a repo-wide sweep I ran this session (@
+`1164133`), which surfaced an obligation the directive under-stated (a live-store schema migration).
+
+## The value — RULED: **4000 characters.**
+
+**The question an agent asks itself:** *"Is the cap high enough that a well-formed pointered
+directive never bounces, and low enough that a body can never quietly become where report content
+lives instead of a ref?"*
+
+**Derivation (not a guess) — the two bounds and where 4000 sits between them:**
+- **FLOOR (never bounce a legitimate directive).** Observed legitimate-and-pointered directives
+  that hit the cap: **2019** (lead-04b3, one retry), **2035** and **2780** (packet-44 builder) —
+  none a content-dump (#327). ⚠ This data is **CENSORED**: it is only the sends that *tried* to
+  exceed 2000. Many sends — including my own directive replies this session — were **compressed to
+  fit** under 2000, so the true natural-directive-size distribution's upper tail is *suppressed by
+  the cap itself*. The largest OBSERVED legitimate body is 2780; the uncensored tail is higher.
+  A cap that merely clears 2780 still forces compression on the suppressed tail — and a compressed
+  directive teaches its recipient less, which is a **Consumer-Law harm**, not just an ergonomic one.
+- **CEILING (pointers-not-payloads).** The cap backstops gross payload dumps. A report §section, a
+  finding body, or a pasted instrument runs **≥5000 chars** (the ESC-1 instrument alone is ~15000).
+  The cap must stay comfortably below that floor so a full-content dump still **bounces loudly** —
+  the discipline working, the positive-trust property packet-44's builder praised.
+- **4000 sits in the [~2800, ~5000] gap with margin on both sides:** 2× the current cap (the clean
+  response to "the max legitimate directive is ~1.4× the cap"), ~1.44× the largest observed
+  legitimate body (2780) — enough to swallow the *suppressed* tail so compression stops degrading
+  directives — and still ~20% below the gross-dump floor, so a report/instrument dump still bounces.
+
+**Consumer-Law argument for the SPECIFIC number — 4000, NOT 4096:** the cap is a **POLICY knob, not
+a technical/buffer limit** (#327: SurrealDB holds large bodies fine). The value itself is a served
+surface an agent reads. A round DECIMAL (4000) teaches "a chosen policy bound"; a power-of-two
+(4096) would teach "a technical boundary" — a false signal about the nature of the limit. So 4000
+beats 4096 on Consumer-Law grounds, not merely tidiness.
+
+**Point estimate vs distribution:** an ENFORCED cap is necessarily one integer, so the *value* is a
+point. The distribution reasoning justifies *where the point sits* — above the legitimate upper tail
+(~2800 observed, higher uncensored), below the gross-dump floor (~5000). A fuller ledger histogram
+would refine the observed tail but cannot move 4000 out of that gap, so I derived from the three
+cited data points + the censoring argument; if you want the histogram to confirm the tail, I can
+read the message ledger, but it will not change 4000.
+
+**Unchanged (this is only a threshold move):** the loud-reject (cap + actual length + reason, NEVER
+truncate) and pointers-not-payloads discipline STAY. `MESSAGE_POINTER_MAX_CHARS` (256, the refs
+bound) is untouched — a body cap of 4000 keeps body≠pointer (`test_comms_schema.py:1988` holds).
+Note the constant is SHARED by `body` and `to.ack_note` (both message-grade prose) — raising it
+correctly lifts BOTH bounce points #327 names (body and note); that is ONE-IMPLEMENTATION, not a
+coincidence.
+
+## Obligations — a DERIVED worklist (I ran the sweep; every site has a verdict)
+
+**O-1 · THE CONSTANT (single source of truth):** `store/surreal_schema.py:574`
+`MESSAGE_BODY_MAX_CHARS = 2000` → `4000`. It is imported/re-exported everywhere (messages.py:112,
+server.py:156) and never redefined — so every DERIVED site below auto-follows; only stale LITERALS
+need hand-edits.
+
+**O-2 · ⚠ THE SCHEMA MIGRATION — the #107-class obligation the directive under-stated (but it is
+SAFE here, and I verified why).** The cap is enforced by TWO live-store field ASSERTs:
+`surreal_schema.py:620` (`body`: `ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}`) and
+`:666` (`ack_note`, same). Both are DERIVED from the constant, so the *emitted DDL* auto-follows —
+but the DDL only reaches the LIVE store on `ensure_ready()` at redeploy. **`_define_field` emits
+`DEFINE FIELD OVERWRITE`** (verified `:909-912` — this IS #107's fix), so the live-store ASSERT
+CONVERGES to `<= 4000`; it is NOT a `IF NOT EXISTS` silent-no-op. And because this is a **WIDENING**
+of an upper bound, **no existing row is write-poisoned** (every existing body ≤2000 ≤4000) — the
+opposite of #107's narrowing danger. **So the migration is safe by construction — but "only the
+running artifact proves the cake" (#107/#131): the deploy smoke MUST send a >2000-char body (e.g.
+3000) through the LIVE redeployed comms and confirm it LANDS in the store**, not merely that the
+Python constant changed. This is the load-bearing deploy receipt, and it was NOT in the directive's
+obligation list.
+
+**O-3 · THE PIN — rename VALUE-FREE + keep the literal tripwire (the instrument lesson):**
+- `test_message_ledger.py:356` `test_body_cap_is_the_designs_two_thousand_char_pointer_bound` — the
+  NAME encodes `two_thousand`: a name-keyed instrument that goes stale on every value change (the
+  six-defeats class). **RENAME to a value-FREE name** (e.g. `test_body_cap_is_the_designs_pointer_bound`)
+  so it NEVER needs renaming again — this is the durable fix, not `..._four_thousand_...`.
+- `test_message_ledger.py:357` `assert MESSAGE_BODY_MAX_CHARS == 2000` → `== 4000`. **KEEP** this as
+  a deliberate-change TRIPWIRE (the value in the ASSERT is checkable and forces any future change to
+  be conscious — good). The defect was only ever the value in the NAME, not in the assert.
+
+**O-4 · SERVED TOOL-DESCRIPTION PROSE — already DERIVED (no #319 drift), add cheap insurance.**
+`server.py:1595`, `:9589` (`"…bodies are capped at {N} characters…"`), `:9555` render the cap via
+f-string over `_MESSAGE_BODY_MAX_CHARS` — so the served description an agent reads (currently "capped
+at 2000 characters") AUTO-RENDERS 4000 and CANNOT drift; #319's served-prose-not-derived class is
+NOT violated here (it is already derived, correctly). Owed as belt-and-braces: a pin asserting the
+rendered `lore_comms` `body` description contains `str(MESSAGE_BODY_MAX_CHARS)`, defending against a
+future refactor to a hardcoded literal.
+
+**O-5 · THE BARE "2000" SWEEP (P8d law — every hit file:line + INDIVIDUAL verdict; "all remaining
+are X" banned). My production-tree sweep found these; the builder MUST extend it repo-wide (tests +
+`docs/`):**
+- `surreal_schema.py:573` — comment `"…never re-declare, 2000)"` → **UPDATE** to 4000 (stale prose literal).
+- `surreal_schema.py:574` — the constant → **THE CHANGE** (O-1).
+- `surreal_schema.py:581` — comment `"a 2000-char 'ref' is a BODY wearing…"` → **UPDATE** to 4000, or reword to cite the constant (prose literal).
+- `server.py:1318` — comment `"50 entries with the 2000-char…"` (a drain-listing capacity note) → **UPDATE** to 4000, and sanity-check the illustrative math still reads right at 4000 (50 × 4000 ≈ 200 KB — verify no drain-size assumption depends on the literal; likely pure illustration).
+- `test_message_ledger.py:357` `== 2000` → **CHANGE** to 4000 (O-3 tripwire).
+- `test_message_ledger.py:356` name `two_thousand` → **RENAME** value-free (O-3).
+- **Every `MESSAGE_BODY_MAX_CHARS` reference** (messages.py:678/752 error strings, `_message_fakes.py`, `test_comms_tool.py`, `test_comms_schema.py`, the two schema ASSERTs) → **NO CHANGE — DERIVED, auto-follows.** (Verdicted individually here so this is not a wholesale "all remaining are derived" classification — P8d.) The builder confirms the repo-wide bare "2000" grep surfaces nothing beyond these + any `docs/` citation.
+
+**O-6 · DEPLOY — lore-lore redeploy at a FLEET-QUIET boundary (operator's constraint; I confirm):**
+#165/#166 — lore-lore runs a hand-rolled `/source` mount and is NOT restart-durable: **recreate
+MANUALLY, never `lore-deploy start`** (a normal start re-mounts `/source` and re-breaks boot). The
+redeploy DROPS the live fleet's comms channel, so it waits for a fleet-quiet boundary (no agent
+mid-work depending on comms — e.g. after the CYCLE build's fleet stands down). SEPARATE from
+04b-3's deploy vehicle. The smoke carries O-2's live >2000-char body receipt.
+
+## Where this rides
+This is neither CYCLE (04b-3) nor a served-surface item of the 04b4 SERVED slice — it is a
+standalone comms-policy change with its own tiny deploy. **RULING: mint it as its own micro-item**
+(a `lore_comms`-cap bump) that the lead's small builder executes once ruled (per the directive), and
+deploys at the next fleet-quiet lore-lore recreate — NOT bundled into the CYCLE or SERVED sessions,
+because its deploy vehicle (a lore-lore recreate) and its timing constraint (fleet-quiet) are
+distinct. If a lore-lore recreate is already scheduled for another reason before then, it can ride
+that recreate.
+
+---
+*§COMMS-CAP ruled 2026-08-04 by `design-sidecar-04b3-1` against `1164133`. Value 4000 DERIVED from
+the three cited censored data points + the censoring argument + the [~2800, ~5000] gap; obligations
+DERIVED from a repo-wide sweep I ran this session (grep — non-symbol textual seam + deletion/rename
+exhaustiveness, grep's honest cases). The #107-class schema-migration obligation (O-2) was found by
+the sweep, not the directive; it is SAFE (OVERWRITE + widening) but owes a live-store smoke receipt.*
+
+---
 *Written 2026-08-03 by `design-sidecar-04b3-1` (Fable 5, general-purpose spawn) against branch
 `feat/surreal-unification` @ `338abe0`. Rulings rest on: the live findings ledger (#321 #304 #309
 #310 #319 #322 #324 #273 #272, read this session), the predecessor handoff (§B1 L3/§B2/§B4/§B5), the
