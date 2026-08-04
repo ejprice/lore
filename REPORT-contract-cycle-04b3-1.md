@@ -14,35 +14,79 @@ brief project v7 read
   that is a design fork I ESCALATE (below), not a tooling limit.
 
 ## SUMMARY BLOCK
-- **state: DONE — forks RULED, contract FINALIZED for the adversary.** All three forks were ruled by Fable
-  (§CYCLE-FORKS in `REPORT-design-sidecar-04b3-1.md`, 2026-08-03; directive #2081, acked): the contract
-  author was confirmed right on all three (A/B = Reading 1; C = defer), and §C-A/§C-C were retracted. The
-  contested skip-stubs are converted to the ruled pins; the deferred CA-11 stubs are dropped.
-- deviations: (1) I EDIT `test_blocks_edge.py` (legal under this packet + the FORK-A ruling; disclosed as a
-  one-concern change): DELETE `test_KNOWN_BOUND_..._rows_READ_DOES_grow_with_the_BLOCKED_population`, ADD its
-  bounded-closure replacement `test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE` (reusing
-  `_blocked_noise_traffic`, #102), ADD `TestTheEnumerationEQUALSNetworkxAfterTheSwap` (#273 enumeration
-  discriminator, reusing the existing networkx oracle), and a one-line RE-OPEN note on the sibling class's
-  stated count bound (P8d prose consistency). (2) NO "columns→RED" pin and NO CA-11 atomicity pin exist,
-  deliberately — the ruling confirms both would be C-DEFs (§FORK-A / §FORK-C). (3) The staged harness got 6
-  trivial lint auto-fixes (I001/F541) + one `# noqa: PLR0915` — non-semantic; re-run confirmed 58 PASS/0 FAIL.
+- **state: REVISED per §CYCLE-TRILEMMA (variant D) — re-finalized for a FRESH adversary.** History: the three
+  §C forks were ruled (§CYCLE-FORKS, 2026-08-03; A/B=Reading 1, C=defer); an adversary then graded that
+  revision INSUFFICIENT (`REPORT-adversary-cycle-04b3-1.md`, finding #326) with a PROVEN trilemma, and Fable
+  elected **VARIANT D** + retracted its own FORK-B from-minted reformulation (§CYCLE-TRILEMMA, 2026-08-04;
+  directive #2086, acked). This revision applies D. Details in §TRILEMMA-REVISION.
+- deviations: (1) I EDIT `test_blocks_edge.py` (legal under this packet + the rulings; disclosed): the FORK-A
+  KNOWN_BOUND reshape (DELETE `test_KNOWN_BOUND_...`, ADD `test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`
+  reusing `_blocked_noise_traffic` #102), the #273 enumeration class `TestTheEnumerationEQUALSNetworkxAfterTheSwap`
+  + its **MP-4 routing** leg (reusing the networkx oracle), the **MP-1 soundness pin**
+  `test_a_MINTED_cycle_COEXISTING_with_a_LEGACY_cycle_in_the_closure_is_REFUSED` in `TestCreateRefusesToFormACycle`,
+  a sibling-docstring RE-OPEN note (P8d), and 3 P8d fixes for the deleted-pin name. (2) I COMMIT the durable
+  MP-1 fixture `scripts/cycle_coexisting_legacy_soundness_probe.py` (reconstructed from the adversary's probe —
+  brief-base §1: instrument-is-a-deliverable, never `/tmp`). (3) The helper-absence pin was REMOVED (MP-3
+  dissolved — variant D keeps `_drop_one_cycle_edge`). (4) NO "columns→RED" pin, NO from-minted reformulation,
+  NO CA-11 atomicity pin — all ruled C-DEFs/unsound. (5) The ESC-1 harness got non-semantic lint fixes earlier;
+  re-run 58 PASS/0 FAIL. The MP-1 probe refuses on HEAD (exit 0, sound).
 - **Packages considered:** `networkx` 3.6.1 (installed, operator-authorised @`54d0585`; READ finding #273's
   four-topology oracle table + #272's resolved edit) → **replace** the hand-rolled all-cycle walk in
   `_record_legacy_cycles` (moves it to a PRODUCTION import ⇒ dep dev→runtime + mypy-override re-scope, §273-FLAGS).
-  `graphlib.TopologicalSorter` (stdlib) → **keep** for write-time cycle DETECTION (`find_blocked_by_cycle`,
-  one witness; unchanged by this contract). `_txn.retry_on_conflict` (in-house shared driver) → **keep** — CA-11's
-  atomic check-write must ride it, proved by mutation (§FORK-A pin, skip-stub pending ruling).
-- **Graded:** 4b952f3 · HEAD-at-report: 4b952f3 · SAME. (The §C ruling I execute was graded @`338abe0`; every
-  code fact below I RE-derived live @`4b952f3` — the three `SET` sites, the two `_drop_one_cycle_edge` callers,
-  the ESC-1 harness YES.)
-- decisions-needed: **none** — all three forks ruled (§CYCLE-FORKS). One residual FLAG stands for the
-  builder, not a decision: the FORK-B STOP-and-flag rider — if the guard's from-minted reachability
-  reformulation proves unsound, fall back to Reading 2 (keep `_drop_one_cycle_edge`; #273 deletes only its own
-  loop), NEVER a silent copy #2.
-- receipt pointers: ruling `REPORT-design-sidecar-04b3-1.md` §CYCLE-FORKS · fork escalation record (both
-  readings) §FORKS · finalized RED run §CONTRACT · ESC-1 + #273 reshape in `test_blocks_edge.py` §ESC-1-FLAGS ·
-  #273 prod edits §273-FLAGS · harness `scripts/esc1_write_path_cycle_closure.py` (58 PASS/0 FAIL @`4b952f3`) ·
-  store ref §3/§4/§5/§6.4 · findings #273 #272.
+  `graphlib.TopologicalSorter` (stdlib) → **keep** — it is the shared write-time DETECTOR
+  `find_blocked_by_cycle`, UNCHANGED (variant D: the guard keeps its drop-loop through it; R6 forbids a second
+  detector). `_txn.retry_on_conflict` (in-house shared driver) → **keep** — unchanged; CA-11's atomicity is
+  DEFERRED (no pin). `_drop_one_cycle_edge` → **kept** (variant D — the guard's single legit caller after #273
+  deletes `_record_legacy_cycles`'s use); NOT a #102 violation (single-use helper, not a cloned policy).
+- **Graded:** 9983191 · HEAD-at-report: 9983191 · SAME. (My prior RED contract landed @`1164133`; the trilemma
+  ruling landed @`9983191`. Every code fact re-derived live: the MP-1 world REFUSES on HEAD — exit 0, sound;
+  the 4-RED/16-green revised run.)
+- decisions-needed: **none** — forks + trilemma ruled. Residual FLAGS for the BUILDER (not decisions): (a) the
+  §273-FLAGS production edits (networkx dev→runtime = an IMAGE change; mypy comment re-scope); (b) the
+  networkx-in-production pin drives the `import networkx` MODULE form (MP-4 patches `networkx.simple_cycles`) —
+  a `from networkx import simple_cycles` build would satisfy the import pin but escape MP-4's patch; flagged.
+- receipt pointers: rulings `REPORT-design-sidecar-04b3-1.md` §CYCLE-FORKS + §CYCLE-TRILEMMA · adversary
+  `REPORT-adversary-cycle-04b3-1.md` §2/§6 + finding #326 · trilemma revision §TRILEMMA-REVISION · revised RED
+  run §CONTRACT · MP-1 durable fixture `scripts/cycle_coexisting_legacy_soundness_probe.py` (exit 0 @HEAD) ·
+  ESC-1 harness `scripts/esc1_write_path_cycle_closure.py` · §273-FLAGS · store ref §3/§4/§5/§6.4 · #273 #272.
+
+---
+
+# §TRILEMMA-REVISION — the adversary's INSUFFICIENT, and variant D (2026-08-04)
+
+A fresh adversary (`REPORT-adversary-cycle-04b3-1.md`, finding #326) graded the forks-ruled contract
+INSUFFICIENT with a **proven trilemma** on the FORK-B guard reformulation, and Fable ruled it (§CYCLE-TRILEMMA),
+electing **variant D** and retracting its own from-minted reformulation. What the adversary found and what I
+changed:
+- **The unsoundness (MP-1, the blocker):** the forks-ruled FORK-B reformulated the guard to a from-minted
+  reachability check — but a NAIVE bounded read done as a SINGLE `find_blocked_by_cycle` call (variant S) is
+  **UNSOUND**: when a LEGACY 2-cycle coexists with a minted cycle in the bounded closure, `find_blocked_by_cycle`
+  returns the legacy cycle first, `minted∩=∅`, and the guard ACCEPTS a create forming a real persisted-id cycle
+  `N→seed→X→N` — an unclaimable-forever task. The adversary PROVED it through the real write path (§2, exit 2).
+  My existing `test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED` tested a cycle in
+  ISOLATION — the QUANTIFIER LAW: a ∀-claim evaluated on the one input where every build agrees.
+- **The R6 conflict (MP-2):** from-minted introduces a SECOND ledger cycle-detector, reddening R6's MUTATION
+  pin (one ledger-owned detector = `find_blocked_by_cycle`). Fable ruled R6 STANDS → **variant D**: the guard
+  KEEPS its drop-loop through the shared `find_blocked_by_cycle` (already HEAD's behaviour; sound — it steps
+  over the legacy cycle and finds the minted one). ESC-1's ONLY guard change is FORK-A's bounded read.
+- **The revision I applied:**
+  - **REMOVED** the helper-absence pin (MP-3 dissolved — D keeps `_drop_one_cycle_edge`; the pin was false +
+    name-keyed / rename-defeatable).
+  - **ADDED MP-1** — `test_a_MINTED_cycle_COEXISTING_with_a_LEGACY_cycle_in_the_closure_is_REFUSED` in
+    `TestCreateRefusesToFormACycle`: GREEN at HEAD/variant D, RED on variant S. The load-bearing id-ordering
+    (`aaa*` legacy < `zzz*` minted) makes `find_blocked_by_cycle` return the legacy cycle first. Durable fixture
+    committed: `scripts/cycle_coexisting_legacy_soundness_probe.py` (reconstructed from the adversary's probe;
+    refuses on HEAD, exit 0 — sound).
+  - **ADDED MP-4** — `test_MUTATION_neutralising_networkx_simple_cycles_SILENCES_the_record`: neutralise
+    `networkx.simple_cycles` → a routing build records ZERO cycles; the hand-rolled HEAD loop ignores the patch
+    and records the full set → RED. Closes routing-is-not-sharing (import-string + count-equality don't prove
+    the library is CALLED).
+  - **NARROWED #273** — swap ONLY `_record_legacy_cycles`'s enumeration to `networkx.simple_cycles` (deletes ITS
+    drop-loop); `_drop_one_cycle_edge` STAYS (the guard's single legit caller). Not a #102 violation.
+  - **KEPT** — the FORK-A bounded-read pin, networkx-in-production, count-equality, FORK-C tripwire + 8-way
+    liveness (the adversary VERIFIED the FORK-C deferral is honest, §4).
+
+The §FORKS escalation record below is preserved as history; §CYCLE-TRILEMMA supersedes its FORK-B.
 
 ---
 
@@ -146,39 +190,41 @@ blocker/critical-path render can then show a cycle: a served correctness hole." 
 
 ---
 
-# §CONTRACT — the FINALIZED pins (contract-first; run @`4b952f3`)
+# §CONTRACT — the FINALIZED pins (variant D; contract-first; run @`9983191`)
 
-Two writable files. Run receipt (scoped: the new module + the three edited `test_blocks_edge.py` classes):
+Three writable files (the module + `test_blocks_edge.py` + the two `scripts/` probes). Run receipt (scoped):
 
 ```
 $ .venv/bin/python -m pytest test_cycle_write_path_04b3.py \
     "test_blocks_edge.py::TestCreateRefusesToFormACycle" \
     "test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap" \
     "test_blocks_edge.py::TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST" -n auto -q
-4 failed, 15 passed in 4.92s
+4 failed, 16 passed in 4.91s   # (variant D; @9983191)
 ```
-**The 4 RED pins (each drives one specific build change; RED for the right reason @`4b952f3`):**
+**The 4 RED pins (each drives one specific build change; RED for the right reason @HEAD):**
 1. `test_cycle_..::TestTheAllCycleEnumeratorIsNetworkxInPRODUCTION::test_networkx_is_imported_by_the_PRODUCTION_tasks_module`
-   — `import networkx` absent from production `tasks.py` (only the test-oracle imports it). Drives #273's swap.
-2. `test_cycle_..::…::test_the_hand_rolled_cycle_helper_drop_one_cycle_edge_is_GONE` (FORK B) — `_drop_one_cycle_edge`
-   still defined in `loremaster.tasks` (two callers). Drives the guard's from-minted reformulation + the swap,
-   after which the helper is deleted. Carries the STOP-and-flag rider (Reading 2 fallback if from-minted unsound).
+   — `import networkx` absent from production `tasks.py`. Drives #273's swap (the MODULE-import form MP-4 patches).
+2. `test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap::test_MUTATION_neutralising_networkx_simple_cycles_SILENCES_the_record`
+   (**MP-4, routing**) — neutralise `networkx.simple_cycles` → a routing build records 0 cycles; the hand-rolled
+   HEAD loop records 4 (ignores the patch). Proves the swap ROUTES through the library, not just imports it.
 3. `test_blocks_edge.py::TestCreateRefusesToFormACycle::test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`
-   (FORK A) — `large.rows == small.rows` fails today (the guard scans the whole dependency-bearing population).
+   (FORK A) — `large.rows == small.rows` fails (63≠8: the guard scans the whole dependency-bearing population).
    Drives the bounded-closure read. **No "columns→RED" pin** — the guard keeps the column for closing links.
-4. `test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap::…[complete-triangle]` (FORK B) — recorded
+4. `test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap::…[complete-triangle]` (#273) — recorded
    cycles **4** ≠ networkx **5** on a fully-connected component (exactly #273's measured 4-vs-5). Drives the
-   enumeration to networkx. The `[disjoint-1-2-3]`/`[overlapping]` legs pass — positive controls (the
-   enumerators already agree there).
-**The green pins (guards + controls, must stay green through the build):** `test_PIN_THE_MISS_a_tasks_blocked_by_is_FIXED_at_birth`
-(FORK-C tripwire — reddens the day a `blocked_by`-mutating verb lands, the CA-11 deferral trigger) ·
-`test_LIVENESS_eight_way_concurrent_creates_on_a_SHARED_blocker_all_land` (no-storm/no-loss under ≥8-way;
-its green IS the FORK-C evidence) · the two kept-green ESC-1 siblings (`..._does_NOT_grow_with_the_DEPENDENCY_FREE_population`,
-`test_the_cycle_WALK_is_ONE_round_trip`) · the enumeration positive controls · the member-coverage class
-(`TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST`, unchanged behaviour; docstring RE-OPEN note only).
+   enumeration to networkx; the `[disjoint]`/`[overlapping]` legs pass as positive controls.
+**The green pins (soundness + guards + controls, must stay green through the build):**
+- **MP-1 (the soundness blocker)** `…TestCreateRefusesToFormACycle::test_a_MINTED_cycle_COEXISTING_with_a_LEGACY_cycle_in_the_closure_is_REFUSED`
+  — GREEN at HEAD/variant D (the guard's drop-loop steps over the legacy cycle and refuses the minted one);
+  **RED on variant S** (the single-witness build that passed the pre-revision contract). Durable fixture:
+  `scripts/cycle_coexisting_legacy_soundness_probe.py` (refuses on HEAD, exit 0).
+- `test_PIN_THE_MISS_a_tasks_blocked_by_is_FIXED_at_birth` (FORK-C tripwire) · `test_LIVENESS_eight_way…`
+  (no-storm/no-loss ≥8-way) · the two kept-green ESC-1 siblings · the enumeration positive controls · the
+  member-coverage class (unchanged behaviour).
 
-`ruff check` on both writable files + the harness: **All checks passed.** (Full mypy not run — outside a
-contract author's required scope; the builder/contract-adversary gate it. Flag if you want it re-run.)
+`ruff check` on all three writable files + both `scripts/` probes: **All checks passed.** The MP-1 probe was
+RUN against HEAD (exit 0, REFUSED — sound). (Full mypy not run — outside a contract author's required scope;
+the builder/adversary gate it. Flag if you want it re-run.)
 
 # §ESC-1-FLAGS — the KNOWN_BOUND reshape (DONE, per the FORK-A ruling)
 Executed in `test_blocks_edge.py::TestCreateRefusesToFormACycle` (a one-concern edit, disclosed):
@@ -192,8 +238,10 @@ Executed in `test_blocks_edge.py::TestCreateRefusesToFormACycle` (a one-concern 
    the ruling requires — the bounded read touches no dependency-free row and is still one round trip (R7).
 
 # §273-FLAGS — production edits the builder owes (outside my writable set)
-1. In `loremaster/loremaster/tasks.py`: swap `_record_legacy_cycles`'s drop-an-edge loop for
-   `networkx.simple_cycles` (ADOPT `REPORT-design-sidecar-04b2-1.md` §B4 verbatim; DETECTION stays `graphlib`).
+1. In `loremaster/loremaster/tasks.py`: swap ONLY `_record_legacy_cycles`'s enumeration to
+   `networkx.simple_cycles` (deletes ITS drop-loop). **`_drop_one_cycle_edge` STAYS** (variant D — the write
+   guard `_refuse_a_cycle`'s single legit caller; the guard is NOT reformulated). DETECTION stays `graphlib`
+   via the shared `find_blocked_by_cycle`. ESC-1's ONLY guard change is FORK-A's bounded read (§ESC-1-FLAGS).
 2. `pyproject.toml`: move `networkx` from the dev dependency group to **runtime** (`[project] dependencies`) —
    it becomes a production import. **This makes 04b-3 an IMAGE change** (design §A-deploy): 05a's deploy smoke
    owes an "import networkx in the deployed image" line, and the Containerfile/`conformance_provenance` path
@@ -210,19 +258,20 @@ Executed in `test_blocks_edge.py::TestCreateRefusesToFormACycle` (a one-concern 
 | ESC-1 residue = batch-local siblings + legacy phantoms | covered by the harness (58 PASS) + existing `TestCreateRefusesToFormACycle` refusal pins (batch-local + self) — stay green |
 | ESC-1 deletes the known-bound pin | **DONE** — KNOWN_BOUND deleted, bounded-closure leg added (§ESC-1-FLAGS) |
 | ESC-1 keep dependency-free + one-round-trip pins green | **kept green** (verified in the finalized run) |
-| #273 networkx.simple_cycles in `_record_legacy_cycles` | **RED pin written** (production import) + §273-FLAGS |
-| #273 helper absence (`_drop_one_cycle_edge`) | **RED pin written** — `test_the_hand_rolled_cycle_helper_drop_one_cycle_edge_is_GONE`; STOP-and-flag rider carried |
-| #273 cycle-enumeration equivalence on adversarial shapes | **RED pin written** — `TestTheEnumerationEQUALSNetworkxAfterTheSwap` (count == networkx ∀ topology; complete-triangle 4≠5 RED). Member coverage still pinned by the sibling class (green both sides). |
+| #273 networkx.simple_cycles in `_record_legacy_cycles` (NARROWED, variant D) | **RED pin** (`test_networkx_is_imported_by_the_PRODUCTION_tasks_module`) + §273-FLAGS |
+| #273 ROUTES through the library, not just imports it (MP-4) | **RED pin** — `test_MUTATION_neutralising_networkx_simple_cycles_SILENCES_the_record` (routing-is-not-sharing) |
+| #273 helper absence (`_drop_one_cycle_edge`) | **REMOVED (MP-3 dissolved)** — variant D KEEPS the helper (guard's single caller); it was false + rename-defeatable |
+| #273 cycle-enumeration equivalence on adversarial shapes | **RED pin** — `TestTheEnumerationEQUALSNetworkxAfterTheSwap` (count == networkx ∀ topology; complete-triangle 4≠5). Member coverage still pinned by the sibling class (green both sides). |
+| **MP-1 — coexisting-legacy-cycle soundness (the blocker)** | **GREEN pin** — `test_a_MINTED_cycle_COEXISTING_with_a_LEGACY_cycle_in_the_closure_is_REFUSED` (green@HEAD/D, RED on variant S) + durable fixture `scripts/cycle_coexisting_legacy_soundness_probe.py` |
 | #272 mypy override + dep dev→runtime | **§273-FLAGS** (builder; outside my writable set) |
-| CA-11 check-write atomicity / retry-of-the-unit / served-cycle-under-load | **DEFERRED (FORK C)** — no atomicity pin; ruled unbuildable (verb-unreachable). Tripwire `test_PIN_THE_MISS_a_tasks_blocked_by_is_FIXED_at_birth` (green) reddens the day a `blocked_by`-mutating verb lands. |
-| CA-11 ≥8-way overlapping liveness | **green guard written** — no-storm/no-loss; run-discipline (20 greens) is the builder's |
+| CA-11 atomicity / served-cycle-under-load | **DEFERRED (FORK C, adversary-VERIFIED honest)** — no pin; tripwire `test_PIN_THE_MISS_a_tasks_blocked_by_is_FIXED_at_birth` (green) reddens the day a `blocked_by`-mutating verb lands. |
+| CA-11 ≥8-way overlapping liveness | **green guard** — no-storm/no-loss; run-discipline (20 greens) is the builder's |
 | CA-12 supporting index | **DEFERRED** (§C-CA-12: measure-then-tune) |
 
 ---
-*Written 2026-08-03 by `contract-cycle-04b3-1` (Opus 4.8) against `feat/surreal-unification` @ `4b952f3`;
-FINALIZED same day after §CYCLE-FORKS ruled all three escalated forks (contract author confirmed right on all
-three; A/B=Reading 1, C=defer). Every code fact re-derived live (the three `SET` sites; `_drop_one_cycle_edge`'s
-two callers; `find_blocked_by_cycle`'s three; the ESC-1 harness 58 PASS/0 FAIL; the finalized 4-RED/15-green run).
-No structural claim fell back to grep except deletion-exhaustiveness of `_drop_one_cycle_edge`'s callers (grep's
-honest case, corroborated by lore). The escalation of the three forks — and the fact that every contested pin
-would have reddened the correct build — was the deliverable's core; the ruling vindicated it.*
+*Written 2026-08-03 by `contract-cycle-04b3-1` (Opus 4.8), REVISED 2026-08-04 to **variant D** after an
+adversary (finding #326) proved the forks-ruled FORK-B unsound and Fable ruled §CYCLE-TRILEMMA. Graded against
+`9983191`. Every code fact re-derived live: the MP-1 world REFUSES on HEAD (exit 0 — sound, the fixture is in
+`scripts/`); the revised 4-RED/16-green run; ruff clean on all writable files. This is a fix wave — a FRESH
+adversary re-grades it. The two self-retractions in this fork chain (from-minted, and before it §C-A/§C-C) were
+each caught by the adversarial layer BEFORE a builder built the wrong thing — the process working as designed.*

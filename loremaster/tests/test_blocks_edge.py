@@ -1967,6 +1967,72 @@ class TestCreateRefusesToFormACycle:
             await ledger.create_many(specs, created_by=CREATOR, ids=[new_id])
         assert await _task_row_count(ledger) == before
 
+    async def test_a_MINTED_cycle_COEXISTING_with_a_LEGACY_cycle_in_the_closure_is_REFUSED(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """GREEN at HEAD (and on variant D); RED on variant S.  ⛔ **MP-1 — the coexisting-legacy-
+        cycle SOUNDNESS pin** (packet 04b-3; ``REPORT-design-sidecar-04b3-1.md`` §CYCLE-TRILEMMA
+        MP-1, ruled 2026-08-04; ``REPORT-adversary-cycle-04b3-1.md`` §2; finding #326). Durable
+        fixture: ``scripts/cycle_coexisting_legacy_soundness_probe.py``.
+
+        The sibling ``test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED``
+        tests a cycle in ISOLATION — a ∀-over-inputs claim evaluated on the ONE input where EVERY
+        build agrees (QUANTIFIER LAW).  The adversary proved the pre-fix contract's only 0-failed
+        build (variant S: ESC-1's bounded read with a SINGLE ``find_blocked_by_cycle`` +
+        ``minted.intersection``) is UNSOUND: when a LEGACY 2-cycle coexists with the minted cycle
+        in the bounded closure, ``find_blocked_by_cycle`` returns the LEGACY cycle first,
+        ``minted∩=∅``, and S ACCEPTS a create forming a real persisted-id cycle ``N→seed→X→N`` — an
+        unclaimable-forever task, the silent black hole this class exists to prevent.  Variant D
+        (the RULED build: the bounded read + the KEPT drop-loop through the shared
+        ``find_blocked_by_cycle``) steps over the legacy cycle and refuses, exactly as HEAD's
+        whole-population guard does.  This pin makes D's soundness a FACT and forbids S ever
+        masquerading as correct again.
+
+        ⚠ **The id ordering is LOAD-BEARING:** the ``aaa*`` legacy ids sort BEFORE the ``zzz*``
+        seed/minted ids, so ``find_blocked_by_cycle`` (which sorts) returns the legacy cycle first —
+        the exact condition under which a single-witness build accepts.  DISCRIMINATION: a build
+        detecting via a single ``find_blocked_by_cycle`` witness (no drop-loop) FAILS here.
+        """
+        from loremaster.tasks import TaskSpec
+
+        ledger, env, _blocker = task_ledger
+        tag = uuid.uuid4().hex[:8]
+        legp, legq = f"aaap_{tag}", f"aaaq_{tag}"  # legacy 2-cycle — sorts FIRST
+        seed, node_x, new_id = f"zseed_{tag}", f"zzzx_{tag}", f"zzzn_{tag}"
+        setup = await connect_admin(env)
+        try:
+            # persisted rows (raw — as history / _seed_cycle can); the blocks table exists.
+            await _seed_legacy_task(setup, seed, blocked_by=[node_x], status=STATUS_OPEN)
+            # X.blocked_by names P (a real ancestor) AND new_id (the COLUMN-ONLY closing link).
+            await _seed_legacy_task(setup, node_x, blocked_by=[legp, new_id], status=STATUS_OPEN)
+            await _seed_legacy_task(setup, legp, blocked_by=[legq], status=STATUS_OPEN)
+            await _seed_legacy_task(setup, legq, blocked_by=[legp], status=STATUS_OPEN)
+            # edges so the bounded EDGE-walk from seed reaches {X, P, Q}; NO edge for X->new_id
+            # (ENFORCED forbids an edge to the not-yet-existent new_id — the closing link is column).
+            for blocker, blocked in ((node_x, seed), (legp, node_x), (legp, legq), (legq, legp)):
+                await run(
+                    setup,
+                    f"RELATE $b->{BLOCKS_RELATION_NAME}->$t",
+                    {"b": RecordID(TASK_TABLE, blocker), "t": RecordID(TASK_TABLE, blocked)},
+                )
+        finally:
+            await setup.close()
+        before = await _task_row_count(ledger)
+        specs = [
+            TaskSpec(subject="closes a minted cycle", description=DESCRIPTION, blocked_by=[seed])
+        ]
+        with pytest.raises(TaskLedgerError):
+            await ledger.create_many(specs, created_by=CREATOR, ids=[new_id])
+        assert await _task_row_count(ledger) == before, (
+            "a create forming the persisted-id cycle N->seed->X->N was ACCEPTED while a LEGACY "
+            "cycle (P<->Q) coexisted in the bounded closure. The guard used a SINGLE "
+            "find_blocked_by_cycle witness (variant S): it returned the legacy cycle first, its "
+            "minted-intersection was empty, and it waved the create through — an unclaimable-"
+            "forever task. ESC-1's bounded read must KEEP the drop-loop (variant D) so it steps "
+            "over the legacy cycle and finds the minted one. See "
+            "scripts/cycle_coexisting_legacy_soundness_probe.py and §CYCLE-TRILEMMA MP-1."
+        )
+
     async def test_POSITIVE_CONTROL_a_legal_CHAIN_in_one_batch_LANDS(
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
@@ -8142,6 +8208,42 @@ class TestTheEnumerationEQUALSNetworkxAfterTheSwap:
             f"component the hand-rolled walk records one fewer loop (4 vs 5), which is the "
             f"decomposition difference this pin drives out. DETECTION (find_blocked_by_cycle) "
             f"is unchanged; only ENUMERATION swaps. loud={loud!r}"
+        )
+
+    async def test_MUTATION_neutralising_networkx_simple_cycles_SILENCES_the_record(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        migration_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - the fixture
+    ) -> None:
+        """RED at ``4b952f3``; GREEN post-swap.  ⛔ **MP-4 — routing-is-not-sharing for #273**
+        (§CYCLE-TRILEMMA MP-4, ruled 2026-08-04).
+
+        An ``import networkx`` (the import-string pin) plus a matching COUNT on the 3 fixed
+        topologies (the sibling count pin) do NOT prove ``_record_legacy_cycles`` CALLS the
+        library — a build could ``import networkx`` and keep a hand-rolled enumeration that
+        matches on exactly those shapes (repo #102: routing is not sharing).  Neutralise
+        ``networkx.simple_cycles`` to enumerate NOTHING: a build that ROUTES through it then
+        records ZERO cycles.  The hand-rolled loop at HEAD ignores the patch and records the full
+        set (4 on the complete-triangle), so this is RED until the swap routes through the
+        library — mirroring ``TestTheCyclePolicyHasONEImplementation``'s own mutation move for the
+        shared DETECTOR.
+        """
+        import networkx
+
+        monkeypatch.setattr(networkx, "simple_cycles", lambda *_args, **_kwargs: iter(()))
+        spec = LEGACY_CYCLE_TOPOLOGIES["complete-triangle"]
+        _ids, loud = await TestEVERYLegacyCycleIsRECORDEDNotJustTheFIRST._boot_and_capture(
+            caplog, migration_db, spec
+        )
+        recorded = self._recorded_cycle_count(loud)
+        assert recorded == 0, (
+            f"with networkx.simple_cycles neutralised to enumerate NOTHING, the backfill still "
+            f"RECORDED {recorded} legacy cycles — so _record_legacy_cycles does NOT route through "
+            f"networkx.simple_cycles; it enumerates with a hand-rolled loop that ignores the "
+            f"patch. An `import networkx` beside a retained hand-roll satisfies the import + count "
+            f"pins yet is routing-is-not-sharing (#102). #273 must make the LIBRARY the "
+            f"enumerator. loud={loud!r}"
         )
 
 

@@ -1,13 +1,15 @@
 """Packet 04b-3 — the CYCLE contract (ESC-1 · #273/#272 · CA-11).
 
 Contract author: ``contract-cycle-04b3-1`` (Opus 4.8), session ``pkt04b3``, work order
-``REPORT-design-sidecar-04b3-1.md`` §C + §CYCLE-FORKS.  Contract-first: build-driving pins
-sit RED against the tree at ``4b952f3``; pin-the-miss legs sit green and redden the day the
-invariant they guard is broken.
+``REPORT-design-sidecar-04b3-1.md`` §C + §CYCLE-FORKS + §CYCLE-TRILEMMA.  Contract-first:
+build-driving pins sit RED against HEAD; pin-the-miss / soundness legs sit green and redden the
+day the invariant they guard is broken.
 
-**THE THREE FORKS ARE RULED** (``REPORT-design-sidecar-04b3-1.md`` §CYCLE-FORKS, 2026-08-03;
-the contract author was confirmed right on all three, and Fable retracted its own §C-A/§C-C).
-All three converged on the write-time cycle guard
+**THE FORKS ARE RULED, THEN THE TRILEMMA** (``REPORT-design-sidecar-04b3-1.md`` §CYCLE-FORKS
+2026-08-03 + §CYCLE-TRILEMMA 2026-08-04): the contract author was confirmed right on all three
+forks; then an adversary (finding #326) graded the first revision INSUFFICIENT and Fable elected
+**VARIANT D** (FORK-B narrows; a single-witness bounded read is UNSOUND when a legacy cycle
+coexists — MP-1).  All converged on the write-time cycle guard
 :meth:`loremaster.tasks.TaskLedger._refuse_a_cycle`:
 
   * **FORK A (ESC-1) — Reading 1 CONFIRMED (§C-A RETRACTED).** ESC-1 does NOT ride edges and
@@ -21,15 +23,15 @@ All three converged on the write-time cycle guard
     ``test_the_write_paths_rows_READ_is_BOUNDED_by_the_ancestor_CLOSURE`` (reusing
     ``_blocked_noise_traffic``, repo #102) replaces it — RED at ``4b952f3``.  No "columns → RED"
     pin exists, deliberately.
-  * **FORK B (#273) — Reading 1 CONFIRMED.** The guard reformulates to "is a MINTED task
-    reachable from itself" (cycle-safe from-minted reachability), freeing ``_refuse_a_cycle``'s
-    use of ``_drop_one_cycle_edge``; #273's ``networkx.simple_cycles`` swap frees
-    ``_record_legacy_cycles``'s use; then ``_drop_one_cycle_edge`` is DELETED.
-    ``find_blocked_by_cycle`` (the shared DETECTOR) is UNCHANGED — #273 touches ENUMERATION.
-    Pins here: helper-absence + networkx-in-production; the ENUMERATION-equivalence pin lives in
-    ``test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap``.  **STOP-and-flag
-    rider:** if the from-minted reformulation proves unsound the builder falls back to Reading 2
-    (keep the helper; #273 deletes only its own drop-and-retry loop) — NEVER a silent copy #2.
+  * **FORK B (#273) — NARROWED to VARIANT D** (§CYCLE-TRILEMMA, 2026-08-04; the adversary graded
+    my first revision INSUFFICIENT and Fable RETRACTED its own from-minted reformulation).  #273
+    swaps ONLY ``_record_legacy_cycles``'s enumeration to ``networkx.simple_cycles`` (deleting ITS
+    OWN drop-loop); **``_drop_one_cycle_edge`` STAYS** as the write guard's single legit caller.
+    The guard is NOT reformulated — its detection routes through the SHARED ``find_blocked_by_cycle``
+    with the KEPT drop-loop (R6: exactly ONE ledger-owned detector; a from-minted second detector
+    reddens R6's MUTATION pin, and a single-witness build is UNSOUND — see MP-1).  Pins here:
+    networkx-in-production; ENUMERATION-equivalence + MP-4 (routing) live in
+    ``test_blocks_edge.py``.  The helper-absence pin was REMOVED (MP-3 dissolved).
   * **FORK C (CA-11) — DEFERRED to a named trigger (§C-CA-11 RETRACTED).** A persisted-id joint
     cycle is UNREACHABLE through the verbs (no verb mutates ``blocked_by`` after birth; every
     create is a fresh SINK; the existence pre-check fails CLOSED), so a "served-cycle-under-load"
@@ -104,14 +106,17 @@ async def cycle_env() -> AsyncIterator[SurrealEnv]:
 
 
 class TestTheAllCycleEnumeratorIsNetworkxInPRODUCTION:
-    """RED at ``4b952f3``.  ⛔ §C-#273 + FORK B: ``_record_legacy_cycles`` moves from a
-    hand-rolled drop-an-edge walk to ``networkx.simple_cycles`` (a PRODUCTION import), and the
-    now-unused hand-rolled helper ``_drop_one_cycle_edge`` is DELETED.
+    """RED at ``9983191``.  ⛔ §C-#273 + FORK B (NARROWED by §CYCLE-TRILEMMA, variant D):
+    ``_record_legacy_cycles`` swaps ITS hand-rolled drop-an-edge enumeration for
+    ``networkx.simple_cycles`` (a PRODUCTION import), deleting ITS OWN drop-loop.
 
-    The BEHAVIOURAL equivalence — the recorded ENUMERATION equals ``networkx.simple_cycles``
-    ∀ topology — is pinned in ``test_blocks_edge.py::TestTheEnumerationEQUALSNetworkxAfterTheSwap``
-    (reusing the existing networkx oracle, repo #102).  These two structural legs are its
-    companions.
+    ⚠ **``_drop_one_cycle_edge`` STAYS** — variant D keeps it as the write guard
+    ``_refuse_a_cycle``'s single legitimate caller (the guard's step-over-legacy drop-loop routes
+    through the SHARED ``find_blocked_by_cycle``, which R6 forbids replacing with a second
+    detector).  The earlier helper-absence pin was REMOVED (§CYCLE-TRILEMMA MP-3 dissolved: it
+    was false under D and name-keyed / rename-defeatable — the six-defeats class).  The
+    enumeration-twin deletion is instead guarded by this networkx-import pin + MP-4 (routing) +
+    the count-equality + member-coverage pins in ``test_blocks_edge.py``.
 
     ⚠ **Production FLAG owed to the builder (outside a contract author's writable set), do
     NOT skip it:** moving ``networkx`` from test-oracle to production import flips its
@@ -124,47 +129,19 @@ class TestTheAllCycleEnumeratorIsNetworkxInPRODUCTION:
         """The enumerator is the package, in the served artifact — not a hand-rolled twin.
 
         DISCRIMINATION — "what wrong build still passes this?": a build that keeps the
-        hand-rolled ``find_blocked_by_cycle`` + ``_drop_one_cycle_edge`` loop inside
-        ``_record_legacy_cycles`` and never imports ``networkx`` in production.  That is the
-        build at ``4b952f3``, and it fails here.
+        hand-rolled enumeration inside ``_record_legacy_cycles`` and never imports ``networkx``
+        in production.  That is the build at HEAD, and it fails here.  ⚠ It requires the
+        ``import networkx`` MODULE form (not ``from networkx import simple_cycles``), which is
+        also what MP-4's ``networkx.simple_cycles`` mutation patches.
         """
         assert _TASKS_SOURCE.is_file(), f"production tasks module not found at {_TASKS_SOURCE}"
         source = _TASKS_SOURCE.read_text(encoding="utf-8")
         assert "import networkx" in source, (
             "the #273 swap moves the ALL-CYCLE enumeration of _record_legacy_cycles onto "
             "networkx.simple_cycles, which makes networkx a PRODUCTION import of "
-            "loremaster/loremaster/tasks.py. At 4b952f3 tasks.py imports networkx NOWHERE "
+            "loremaster/loremaster/tasks.py. At HEAD tasks.py imports networkx NOWHERE "
             "(it is imported only by the test-side oracle), so the hand-rolled enumerator is "
             "still live. See §C-#273 and the dev->runtime dependency FLAG in the report."
-        )
-
-    def test_the_hand_rolled_cycle_helper_drop_one_cycle_edge_is_GONE(self) -> None:
-        """RED at ``4b952f3``.  ⛔ FORK B: after the guard's from-minted reachability
-        reformulation frees ``_refuse_a_cycle``'s use of ``_drop_one_cycle_edge`` AND #273's
-        networkx swap frees ``_record_legacy_cycles``'s use, the hand-rolled drop-an-edge
-        helper is DELETED — never maintained beside its replacement (repo ONE-IMPLEMENTATION).
-
-        DISCRIMINATION: at ``4b952f3`` ``_drop_one_cycle_edge`` is defined in
-        ``loremaster.tasks`` with TWO callers (``_record_legacy_cycles`` ``:1037`` and the
-        write guard ``_refuse_a_cycle`` ``:2292``), so this pin is RED.
-
-        ⚠ **STOP-and-flag rider (§CYCLE-FORKS FORK B):** if the builder finds the from-minted
-        reformulation genuinely still needs ``_drop_one_cycle_edge``, that is a STOP-and-flag →
-        Reading 2 is the sanctioned fallback (keep the helper; #273 deletes only its own
-        drop-and-retry loop), and this pin is revised WITH that ruling — it is NEVER satisfied
-        by a silent second copy.  ``find_blocked_by_cycle`` (the shared DETECTOR) is unchanged
-        and its preservation is guarded by ``TestTheCyclePolicyHasONEImplementation``.
-        """
-        import loremaster.tasks as tasks_module
-
-        assert not hasattr(tasks_module, "_drop_one_cycle_edge"), (
-            "loremaster.tasks still defines _drop_one_cycle_edge. FORK B (04b-3): the guard's "
-            "from-minted reachability reformulation frees _refuse_a_cycle's use and #273's "
-            "networkx.simple_cycles swap frees _record_legacy_cycles's use, after which the "
-            "hand-rolled drop-an-edge helper is DELETED (never maintained beside its "
-            "replacement, repo #102). If the from-minted reformulation proved unsound, "
-            "STOP-and-flag to Reading 2 (keep the helper; #273 deletes only its own loop) — "
-            "do not silently keep a copy #2."
         )
 
 
