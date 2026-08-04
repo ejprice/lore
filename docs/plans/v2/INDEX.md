@@ -1610,3 +1610,17 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   lore_comms body-cap 2000→4000** (Fable-derived value, Sonnet-built @ `4d81f76`) — **DEPLOY PENDING**
   (live-store schema migration on :18500, awaits operator go). #330 filed (lore-surreal auto-restart,
   cause unknown). Reports → `receipts/2026-08-04-packet04b3/`. All coordination ran on lore_comms.
+- 2026-08-04 · **#327 cap DEPLOYED + store OOM root-caused & fixed + stores repinned to v3.2
+  (operator-directed, post-04b-3).** Image **9debdd34** (manual lore-lore recreate, #165 hand-rolled
+  `/source` shape — NOT lore-deploy start) bakes the lore_comms body-cap 2000→4000 (#327) AND the
+  cold-audited CYCLE change `496a95e` (commit-only ride-along, now LIVE) + its networkx runtime dep.
+  **O-2 gate PASSED** (a >2000-char body sent #3000 + drained INTACT → `DEFINE FIELD OVERWRITE`
+  widened the live :18500 body/ack_note ASSERTs to 4000; the #107 silent-no-op did NOT recur); boot
+  clean (probe_gate.pass, Uvicorn :9202), in-image provenance GREEN (#139/#140), data intact (3267
+  files). Rollback image `localhost/lore:pre-327-20260804` (=`a6a4e5a2`). #327 resolved.
+  **Store OOM (#331, supersedes #330):** lore-surreal was kernel-OOM-killed mid-session — two
+  co-tenant Surreal stores' uncapped ~62 GiB RocksDB block caches on a 125 GiB **no-swap** box. Both
+  quadlets now set `SURREAL_ROCKSDB_BLOCK_CACHE_SIZE=8 GiB` (UNDOCUMENTED var, verified on spike
+  first) + pin the floating `docker.io/surrealdb/surrealdb:v3.2` (=3.2.4) tag. Load-tested under the
+  exact `-n auto` workload that caused the OOM: spike peaked **1.65 GB / 0 restarts** (was ~11 GB).
+  #331 resolved. Both stores + lore-lore live and healthy.
