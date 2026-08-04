@@ -380,6 +380,133 @@ must land WITH them; if they are UNSHIPPED 04b-2 residue, re-home the columns + 
    confirmed live this session).
 
 ---
+
+# §CYCLE-FORKS · 2026-08-03 (later) — ruling the three forks on `_refuse_a_cycle`
+
+**Context:** `contract-cycle-04b3-1` escalated three interlocking design forks
+(`REPORT-contract-cycle-04b3-1.md §FORKS`), one of which (Fork A) contradicts my own §C ESC-1
+ruling. I ground-truthed before ruling (operator law: verify, don't defend), @ `4b952f3`:
+- `_refuse_a_cycle` source (`tasks.py:2250`) — its docstring already states the column-walk-is-
+  mandatory reasoning.
+- `_drop_one_cycle_edge` (`tasks.py:707`) has **exactly two callers**: `_record_legacy_cycles`
+  (`:1037`) and `_refuse_a_cycle` (`:2292`) (grep — deletion-exhaustiveness, grep's honest case).
+- The three UPDATE sites (`:1533` claim CAS, `:1751` transition, `:1975` supersede) write
+  owner/status/superseded_by — **none writes `blocked_by`** (grep-verified).
+- The contradicting pins exist: `TestCreateRefusesToFormACycle::test_a_create_that_would_close_a_
+  cycle_through_PERSISTED_tasks_is_REFUSED` (`:1931`) constructs a **column-only** closing link
+  (`chain[0].blocked_by=[new_id]` raw-written, no edge) that an edge-walk guard returns "acyclic"
+  on; `test_KNOWN_BOUND_..._rows_READ_DOES_grow_with_the_BLOCKED_population` (`:2176`), whose own
+  docstring names *"an ancestor-closure seed"* as the candidate and says *"a builder must not be
+  handed 'invent the general form'"* — i.e. this fork was PINNED to await exactly this ruling.
+
+**Verdict up front: the contract author is right on all three. I was WRONG on Fork A and Fork C —
+both retracted below.** Escalating a contradiction of my own prior ruling is the system working:
+the write GUARD and the ESC-1 READ probe are different questions, and I conflated them (the MP-4a
+conflation, in a §C sentence).
+
+## FORK A — CONFIRM Reading 1 (bound the read; keep the column). §C-A RETRACTED.
+**The question an agent asks itself:** *"Does the write-time cycle guard detect a cycle whose
+CLOSING link can only be a column (ENFORCED forbids an edge to a not-yet-existent task) — or does an
+edge-only read return 'acyclic' and wave it through?"*
+
+**RETRACTION:** my §C-ESC-1 — "the write-path cycle read rides EDGES not the column ledger; reading
+`blocked_by` columns → RED; self-reachability is the signal" — is WRONG for the write GUARD. It
+took the ESC-1 PROBE's true finding (every persisted ANCESTOR of a new dependency is edge-reachable)
+and mis-applied it to the guard. A cycle a create would FORM closes on a column-only link (a
+persisted row whose `blocked_by` names the id about to be created — no edge exists, because the id
+had no row when that column was written; measured in the `:1931` pin). An edge-only guard returns
+"acyclic" and FAILS `test_a_create_that_would_close_a_cycle_through_PERSISTED_tasks_is_REFUSED`.
+Self-reachability (`truncated=False`) is the READ-path signal of `transitive_blockers` (already
+built, pinned by `TestACycleIsDetectedOverPERSISTEDIds`) — NOT the write guard's signal.
+
+**RULING — ESC-1's real, satisfiable deliverable (Reading 1):** BOUND the guard's read to the
+**ancestor CLOSURE of the pending task's blockers**, and KEEP the column for closing-link detection:
+1. seed from the new/pending task's blockers; compute the ancestor closure via persisted `blocks`
+   edges (this is where ESC-1's measured YES earns its keep — persisted ancestors ARE edge-reachable
+   after `ensure_ready`, so edges soundly BOUND which rows to read);
+2. read the `blocked_by` COLUMNS of exactly those bounded nodes (the closing link is column-only);
+3. overlay the pending columns (`create_many` sibling refs — the ESC-1 residue, no rows yet);
+4. run the shared `find_blocked_by_cycle` over that bounded graph.
+**Soundness (why bounding to the closure loses no cycle):** any row that closes a cycle THROUGH the
+new task N must be an ancestor of N (a cycle `N→a1→…→ak→N` has `ak.blocked_by ∋ N`, and `ak` is an
+ancestor of N by construction), hence in closure(N.blockers), hence its column IS read. Bounding is
+sound, not a heuristic.
+
+**This DELETES the whole-dependency-bearing-population scan (the KNOWN_BOUND), NO "columns→RED"
+pin.** The pin reshape (per §ESC-1-FLAGS of the contract report, which I ADOPT):
+- DELETE `test_KNOWN_BOUND_..._rows_READ_DOES_grow_with_the_BLOCKED_population` and say so in the
+  wave report (its own docstring authorises the deletion).
+- ADD, beside it, reusing `_blocked_noise_traffic` (ONE implementation, #102): a leg asserting the
+  guard's rows-read does **NOT** grow with the dependency-bearing population — `large.rows ==
+  small.rows` where the deleted pin asserted `>`. RED on the whole-population build, GREEN on the
+  bounded-closure build. This is the satisfiable ESC-1 pin.
+- KEEP `test_the_WRITE_paths_rows_READ_does_NOT_grow_with_the_DEPENDENCY_FREE_population` and
+  `test_the_cycle_WALK_is_ONE_round_trip` green (R7's snapshot rider still holds; the read is now
+  bounded to the closure AND still one round trip).
+
+## FORK B — CONFIRM Reading 1 (helpers' fate decided WITH Fork A), with a STOP-and-flag rider.
+**The question:** *"Can `_drop_one_cycle_edge` be deleted, given it has two callers?"*
+
+**RULING:** do #273's swap AND Fork-A's guard rework in the SAME (CYCLE) session — one adversary
+pass. The guard's cycle test is reformulated so it no longer enumerates-all-cycles-and-drops-edges:
+it refuses **iff a pending/minted task is on a cycle**, which is a **cycle-safe reachability check
+from the minted set** (does a minted task reach itself over the bounded column graph, with a visited
+set) — NOT `find_blocked_by_cycle`-in-a-drop-loop. That reformulation frees `_refuse_a_cycle`'s use
+of `_drop_one_cycle_edge`; #273's `networkx.simple_cycles` swap frees `_record_legacy_cycles`'s use;
+then `_drop_one_cycle_edge` is deleted (never maintained beside its replacement).
+**Why the drop-loop must go, not just move:** a bounded read still contains legacy cycles *if the new
+task depends on a legacy-cyclic ancestor*, so a "find one cycle, is-it-minted?, else drop an edge,
+repeat" loop would still be needed to step over them — UNLESS the test is reframed to "is a MINTED
+task reachable from itself," which never needs to step over a legacy cycle it isn't on.
+`find_blocked_by_cycle` (the shared DETECTOR, pinned by `TestTheCyclePolicyHasONEImplementation`,
+also used by `server.py`'s batch-key check) is **unchanged** — #273 touches ENUMERATION, not
+DETECTION.
+**⚠ STOP-and-flag rider:** if the builder finds the guard genuinely still needs `_drop_one_cycle_edge`
+(the from-minted reformulation proves unsound for a case I haven't foreseen), that is a STOP-and-flag
+→ **Reading 2 is the sanctioned fallback** (keep `_drop_one_cycle_edge`; #273 deletes only the
+drop-and-retry loop inside `_record_legacy_cycles`; the §C "delete the helpers" narrows to "delete
+the loop"). It is NEVER a silent copy #2 — duplication is a design decision, escalate it (repo law).
+
+## FORK C — RULE Reading 2 (DEFER CA-11 to a named trigger). §C-CA-11 RETRACTED.
+**The question:** *"Is there a LIVE served-cycle hole under concurrency, or does the verb surface make
+a persisted-id joint cycle unreachable?"*
+
+**RETRACTION:** my §C-CA-11 — "a concurrent racer CAN write a jointly-cyclic edge ⇒ a served
+correctness hole; YES it can" — is WRONG for the current verb surface. The contract author verified
+(and I confirmed by reading the three UPDATE sites): no verb mutates `blocked_by` after birth; every
+create mints a fresh SINK (`uuid4`, or a `create_many` id whose forward refs fail the existence
+pre-check CLOSED). A task's ancestor set is FIXED at birth, so **no create — concurrent or not — can
+place a task on a cycle**. The `:2397` pin agrees by construction. My "served-cycle-under-8-way-load"
+discriminator CANNOT be built: the wrong build serves no cycle either (fixtures-must-discriminate,
+in reverse — a pin for a state production can't reach is a hope with a filename).
+
+**RULING: DEFER CA-11's atomicity to the named trigger — "a verb that mutates `blocked_by` after
+birth lands" (an `add_blocker` / re-parent).** This is a legitimate named-trigger deferral (the
+intervention's value is provably ZERO today and non-zero only when that verb exists), not a
+can-kick, because the tripwire already exists and stays: keep `test_PIN_THE_MISS_a_tasks_blocked_by_
+is_FIXED_at_birth` GREEN — it reddens the day such a verb lands, which is the signal to build the
+atomic guard + its synthetic-adversary pin then. The `create_task` docstring's existing "fold the
+acyclicity walk into the write txn" **latency** re-open trigger also stays. Do NOT build speculative
+check-write atomicity now: the fresh-sink property makes creates cycle-safe under concurrency, so
+neither CA-11 NOR Fork A's rework needs check-write atomicity for correctness. (If Fork A's rework
+independently ends up running the bounded read inside the write `execute_transaction` for its OWN
+reasons, that atomicity is KEPT as a free consequence — but it is not built FOR CA-11's future verb,
+and `execute_transaction` is used, never `.query()`, store ref §3.)
+
+## Scope consequence for §A (this supersedes §A's "CA-11 IN 04b-3")
+The CYCLE session (04b-3) is now LEANER: **ESC-1 (bounded read, Reading 1) + #273/#272 (swap +
+the guard reformulation that frees `_drop_one_cycle_edge`); CA-11 DEFERRED (Fork C) + CA-12 DEFERRED.**
+Two deferrals, each with a named trigger. My §A table's "CA-11 IN 04b-3 (fence-gated)" row is
+superseded by Fork C's DEFER. No new mints change; #304→05a and the 04b4/04b5 decomposition stand.
+
+---
+*§CYCLE-FORKS ruled 2026-08-03 by `design-sidecar-04b3-1` against `4b952f3`, on the contract
+author's escalation. Fork A and Fork C retract my own §C rulings; every retraction rests on a live
+read this session (the `:1931`/`:2176` pins, `_refuse_a_cycle`'s source, the two `_drop_one_cycle_edge`
+callers, the three UPDATE sites). Deletion-exhaustiveness used grep (its honest case); everything
+else used lore reads.*
+
+---
 *Written 2026-08-03 by `design-sidecar-04b3-1` (Fable 5, general-purpose spawn) against branch
 `feat/surreal-unification` @ `338abe0`. Rulings rest on: the live findings ledger (#321 #304 #309
 #310 #319 #322 #324 #273 #272, read this session), the predecessor handoff (§B1 L3/§B2/§B4/§B5), the
