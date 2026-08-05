@@ -598,10 +598,13 @@ def _InboxEntry() -> Any:
 
 
 #: The RENDER-LAYER driver registry: ``{render-method name → (label, driver)}``. Keyed by
-#: the PRODUCTION ``_render_*`` method each driver exercises, so the render reach net below
-#: (:class:`TestEveryRenderSiteThatHandlesCallerTextIsDriven`) can assert — name-blind —
-#: that every render site touching caller free text HAS a driver here. A new render method
-#: that sanitises/fences a caller value but is not registered here reddens that net.
+#: the PRODUCTION ``_render_*`` method each driver exercises. Consumed by
+#: :class:`TestEveryRenderLayerDoorNeutralisesAForgery` (a hand-picked SUBSET neutralisation
+#: net that predates the derived over-drive). ⚠ This is now a SUBSET of what
+#: :func:`_render_probes` / :class:`TestEveryDrivenRenderNeutralisesEveryForgery` drive
+#: name-blind over the full P-U universe; it is retained only for its explicit per-door
+#: labels. Folding it into ``_render_probes()`` is a ONE-IMPLEMENTATION cleanup for the
+#: builder (contract-04b5-5 §residuals) — NOT the completeness net (that is P-U).
 _RENDER_DRIVERS: dict[str, tuple[str, Callable[[str], Awaitable[str]]]] = {
     "_render_task_rows": ("task_rows[subject,owner,blocked_by]", _drive_task_rows),
     "_render_task_detail": ("task_detail[description,created_by]", _drive_task_detail),
