@@ -961,19 +961,20 @@ class TestTheRenderedListingDISCLOSESItsOwnBOUND:
             f"is off by one cannot see.\npartial={_normalise_task_render(partial)!r}"
         )
 
-    async def test_an_UNLIMITED_render_over_a_LARGE_ledger_carries_NO_line(self) -> None:
-        """Rider 5 at the render: an uncapped answer is complete, so it discloses nothing."""
-        rendered = await _rendered_listing(_SURPLUS_POPULATION, limit=None)
-        assert rendered.splitlines() == _rendered_rows(rendered), (
-            f"an UNLIMITED query rendered a bound-disclosure line: {rendered!r}. Nothing "
-            f"was withheld. A line on a complete answer is noise on every uncapped call in "
-            f"the fleet, and it teaches an agent to re-ask a question already answered in "
-            f"full"
-        )
-        assert len(_rendered_rows(rendered)) == _SURPLUS_POPULATION, (
-            f"the uncapped render carries {len(_rendered_rows(rendered))} rows of "
-            f"{_SURPLUS_POPULATION}; the answer itself was truncated"
-        )
+    # ⚰ #309 RETIRED the corpse ``test_an_UNLIMITED_render_over_a_LARGE_ledger_carries_NO_line``
+    # that lived here (contract-fix-04b4-1, adversary FINDING-1). It rendered
+    # ``_SURPLUS_POPULATION`` (40) rows at ``limit=None`` and asserted NO disclosure line —
+    # the PRE-#309 "a no-limit RENDER never discloses" semantics. #309's default display cap
+    # OVERTURNS that at the render: any legal cap < 40 makes the no-limit render serve only
+    # ``cap`` rows plus the counted line, so this pin reddened on every correct build with a
+    # cap below 40 — a C-DEF that TRAPPED the builder and constrained the cap VALUE. Its live
+    # property (a COMPLETE answer discloses nothing) is subsumed, correctly cap-scoped, by
+    # ``TestTheNoLimitReadGetsADefaultDisplayCapWithTheCountedGrammar
+    # ::test_the_no_limit_read_AT_OR_BELOW_the_cap_serves_NO_elision_line``. The SEAM-level
+    # sibling ``test_an_UNLIMITED_listing_NEVER_discloses_a_bound`` (:487) is NOT a corpse:
+    # it drives ``_task_listing`` (typed rows + ``more``), which stays uncapped — the display
+    # cap lands at the RENDER. If a build instead caps the SEAM, :487 turns red and this
+    # placement is escalated (flagged in REPORT-contract-fix-04b4-1.md).
 
     async def test_POSITIVE_CONTROL_the_comparison_CAN_see_a_difference(self) -> None:
         """⛔ Without this, every leg above is satisfied by a normaliser that flattens
@@ -3351,12 +3352,14 @@ def _display_cap() -> int:
     from loremaster import server  # noqa: PLC0415
 
     cap = getattr(server, "_DEFAULT_TASK_QUERY_DISPLAY_CAP", None)
-    assert isinstance(cap, int) and not isinstance(cap, bool) and cap >= 2, (
-        "server._DEFAULT_TASK_QUERY_DISPLAY_CAP is absent or not a sane positive int. "
+    # A positive int is DEFINITIONAL for a display cap (0/negative/bool/non-int is not a
+    # cap) — deliberately NOT a value constraint: any positive value passes, the choice is
+    # the builder's (recommended 50 to match lore's drain cap). Pins assert BEHAVIOUR.
+    assert isinstance(cap, int) and not isinstance(cap, bool) and cap >= 1, (
+        "server._DEFAULT_TASK_QUERY_DISPLAY_CAP is absent or not a positive int. "
         "R9's second clause (packet 04b) rules that the NO-LIMIT `lore_tasks action=query` "
         "read gets a DEFAULT display cap so an unfiltered query stops serving the whole "
-        "ledger. Define it (a positive int >= 2) and apply it on the no-limit path in "
-        "AppContext._task_listing / _render_task_listing."
+        "ledger. Define it (a positive int) and apply it on the no-limit RENDER path."
     )
     return cap
 
@@ -3438,21 +3441,21 @@ class TestTheNoLimitReadGetsADefaultDisplayCapWithTheCountedGrammar:
 
         GREEN at ``5c5ff7a`` and must STAY green — a build that ALWAYS renders a counted
         line (even ``+0 more``) claims a surplus that does not exist on a complete answer.
-        Seeds two rows (< any sane cap, guaranteed by ``_display_cap``'s ``>= 2`` floor), so
-        the read is complete. Deliberately does NOT read the cap constant, so it is a GREEN
-        guard today AND after the fix — reddening only on a build that discloses a phantom
-        surplus on a complete answer.
+        Seeds ONE row, which is ``<=`` ANY positive cap, so the read is complete for EVERY
+        legal cap value — this leg is deliberately cap-VALUE-agnostic (it does not read the
+        cap constant), reddening only on a build that discloses a phantom surplus on a
+        complete answer, never on the builder's choice of cap.
         """
         ledger, env = await _fresh_ledger()
         try:
-            await _seed_identical_tasks(ledger, 2)
+            await _seed_identical_tasks(ledger, 1)
             served = str(await _tool_seam(ledger).tasks(action="query"))
         finally:
             await ledger.close()
             await drop_database(env)
-        assert served.count("(id ") == 2, f"expected both rows served; got {served!r}"
+        assert served.count("(id ") == 1, f"expected the one row served; got {served!r}"
         assert _COUNTED_ELISION.search(served) is None, (
-            f"a COMPLETE no-limit read (2 rows) served a counted-elision line — a surplus "
+            f"a COMPLETE no-limit read (1 row) served a counted-elision line — a surplus "
             f"disclosure on an answer that has no surplus. served={served!r}"
         )
         assert _EXISTENCE_GRAMMAR_MARK not in served, (

@@ -8291,12 +8291,13 @@ class TestServedParamDescriptionsMatchTheRefusalMatrix:
                     value = getattr(server_module, target.id, None)
                     if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
                         return frozenset(value)
-                    return None
-                if isinstance(target, (ast.Tuple, ast.List)):
+                elif isinstance(target, (ast.Tuple, ast.List)):
                     resolved_elements = [_resolve(element) for element in target.elts]
-                    if any(item is None for item in resolved_elements):
-                        return None
-                    return frozenset(item for item in resolved_elements if item is not None)
+                    return (
+                        None
+                        if any(item is None for item in resolved_elements)
+                        else frozenset(item for item in resolved_elements if item is not None)
+                    )
             return None
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
@@ -8488,3 +8489,51 @@ class TestServedParamDescriptionsMatchTheRefusalMatrix:
         }
         assert self._claimed_actions("For 'rollup' ONLY (rejected …)") == {"rollup"}
         assert self._claimed_actions("a free-form description with no ONLY clause") is None
+
+    def test_PIN_THE_MISS_the_derived_319_guard_is_bounded_to_its_class(self) -> None:
+        """⛔ **#319 PIN-THE-MISS (#137/#138) — a ∀ over a SUBSET is a PINNED KNOWN BOUND,
+        not a silent gap (QUANTIFIER LAW; adversary-04b4-1 FINDING-2).**
+
+        The two derived #319 guards cover exactly TWO served-prose classes:
+          * the foreign-refusal ``For '<actions>' ONLY`` matrix
+            (:meth:`test_every_strict_to_action_param_description_matches_its_matrix`), and
+          * the ``note`` recorder set
+            (:meth:`test_the_finding_note_description_names_every_action_that_RECORDS_it`).
+        §D-#319 SCOPED the derived pin to the refusal matrix + a one-time anchor-free sweep
+        (delivered — REPORT-sweep-desc-04b4-1.md), so EXTENDING the derived guard is out of
+        scope this packet. But other served-prose lie classes exist and are NOT
+        derived-guarded — required-for, clamp/range, and value-set/enum prose. The adversary
+        DEMONSTRATED one survives all three #319 pins: ``subject`` made optional for
+        ``supersede`` while its prose still says *"required for … supersede"* passes clean.
+
+        This bound is therefore MET DELIBERATELY, with a reddening WITNESS: a REQUIRED-FOR
+        parameter (``subject`` — required by ``create``/``supersede``) is structurally
+        OUTSIDE the derived strict-to-action matrix, so the derived guard cannot see a false
+        claim about it. That is the gap, pinned.
+
+        ⚠ **NAMED RE-OPEN TRIGGER:** the day a required-for / clamp / value-set served-prose
+        lie ships in production, EXTEND the derived matrix to that class (and retire this
+        known-bound pin). Until then the one-time sweep is the ONLY coverage for those
+        classes, and this pin reddens if a future author brings required-for params under the
+        derived matrix — closing the hole, at which point meet the bound deliberately: extend
+        the guard AND delete this pin, saying so in the wave report.
+        """
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        matrix = self._derived_strict_to_action_matrix(AppContext.tasks)
+        assert "subject" not in matrix, (
+            "`subject` (a REQUIRED-FOR param of create/supersede) is now inside the derived "
+            "strict-to-action matrix — the #319 derived guard has grown to cover the "
+            "required-for class it was pinned as NOT covering. Meet the bound deliberately: "
+            "extend the derived pins to check required-for prose too, then retire this "
+            "PIN-THE-MISS (#137/#138). Do not silently widen coverage without updating the "
+            f"stated bound. matrix params={sorted(matrix)}"
+        )
+        # Witness that required-for params genuinely EXIST on this surface (so the bound is
+        # about a real class, not an empty one): create/supersede require `subject`.
+        from loremaster.server import _TASK_ACTIONS  # noqa: PLC0415
+
+        assert "create" in _TASK_ACTIONS and "supersede" in _TASK_ACTIONS, (
+            "the required-for class this bound names has no members on lore_tasks — "
+            "re-derive the witness param before trusting the bound"
+        )
