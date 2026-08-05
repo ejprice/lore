@@ -181,7 +181,13 @@ from loremaster.messages import (
     MessageSendResult,
     PendingTraffic,
 )
-from loremaster.render import render_compose, render_fenced, render_join, render_line
+from loremaster.render import (
+    render_attributed,
+    render_compose,
+    render_fenced,
+    render_join,
+    render_line,
+)
 from loremaster.sanitise import safe_str, sanitise_line
 from loremaster.search import (
     _ABSENCE_VERDICT_MARKER,
@@ -2352,7 +2358,7 @@ class AppContext:
         if any(result.kind == "hit" for result in results):
             return None
         filter_desc = ", ".join(
-            f"{key}={value!r}"
+            f"{key}={render_attributed(value)}"
             for key, value in (("path", path), ("tier", tier))
             if value is not None
         )
@@ -2391,7 +2397,7 @@ class AppContext:
         """
         valid_tiers = [root.tier for root in self._config.effective_roots]
         valid = ", ".join(repr(name) for name in valid_tiers)
-        return f"{tier!r} is not a configured tier — configured tier(s): {valid}"
+        return f"{render_attributed(tier)} is not a configured tier — configured tier(s): {valid}"
 
     async def _nearest_indexed_paths(
         self, path: str, limit: int = _FILTER_MISS_NEAREST_LIMIT
@@ -3256,7 +3262,10 @@ class AppContext:
     @staticmethod
     def _render_finding_transition(finding: Finding, actor: str | None) -> str:
         """Render a finding status transition (names the number, new status, actor)."""
-        return f"finding #{finding.number} transitioned to {finding.status} by {actor}"
+        return (
+            f"finding #{finding.number} transitioned to {finding.status} "
+            f"by {render_attributed(actor)}"
+        )
 
     @staticmethod
     def _format_finding_ref(ref: int | str) -> str:
@@ -3270,7 +3279,7 @@ class AppContext:
         """
         if isinstance(ref, int) and not isinstance(ref, bool):
             return f"#{ref}"
-        return _sanitise_line(str(ref))
+        return render_attributed(ref)
 
     async def _resolve_or_acknowledge_many(
         self, *, action: str, items: list[dict[str, Any]], actor: str
@@ -3349,7 +3358,7 @@ class AppContext:
             success_count += 1
             note_suffix = " (note recorded)" if ref_item.note is not None else ""
             outcome_lines.append(
-                f"- #{finding.number} {verb} by {sanitise_line(actor)}{note_suffix}"
+                f"- #{finding.number} {verb} by {render_attributed(actor)}{note_suffix}"
             )
 
         header = f"{verb} {success_count} of {len(parsed_items)}:"
@@ -3395,11 +3404,11 @@ class AppContext:
         if not findings:
             return _NO_FINDINGS_MATCHED
         return "\n".join(
-            f"- [#{finding.number} {finding.status}] {sanitise_line(finding.subject)} "
-            f"(id {finding.id}, kind {sanitise_line(finding.kind)}, "
-            f"area {sanitise_line(finding.area)}, "
-            f"category {sanitise_line(finding.category)}, "
-            f"by {sanitise_line(finding.created_by)})"
+            f"- [#{finding.number} {finding.status}] {render_attributed(finding.subject)} "
+            f"(id {finding.id}, kind {render_attributed(finding.kind)}, "
+            f"area {render_attributed(finding.area)}, "
+            f"category {render_attributed(finding.category)}, "
+            f"by {render_attributed(finding.created_by)})"
             for finding in findings
         )
 
@@ -3443,7 +3452,7 @@ class AppContext:
             f"body:\n"
             f"{render_fenced(finding.body)}\n"
             f"created_at: {_sanitise_line(finding.created_at.isoformat())}\n"
-            f"provenance: {_sanitise_line(str(finding.provenance))}"
+            f"provenance: {render_attributed(finding.provenance)}"
         )
 
     async def remember(
@@ -3560,8 +3569,9 @@ class AppContext:
                 for ref in memory.refs
             )
             lines = [
-                f"- {memory.text}",
-                f"  kind: {memory.kind} · importance: {memory.importance:.2f} · "
+                "- memory:",
+                str(render_fenced(memory.text)),
+                f"  kind: {render_attributed(memory.kind)} · importance: {memory.importance:.2f} · "
                 f"score: {memory.score:.4f}",
             ]
             if rendered_refs:
@@ -3639,12 +3649,12 @@ class AppContext:
         task = result.task
         if result.claimed:
             return (
-                f"claimed: task {task.id} is now owned by {safe_str(task.owner)} "
+                f"claimed: task {task.id} is now owned by {render_attributed(task.owner)} "
                 f"(claimed_at {task.claimed_at})"
             )
         if task.owner is not None:
             return (
-                f"not claimed: task {task.id} is already held by {safe_str(task.owner)} "
+                f"not claimed: task {task.id} is already held by {render_attributed(task.owner)} "
                 f"(status {task.status})"
             )
         if task.superseded_by is not None:
@@ -3656,16 +3666,16 @@ class AppContext:
             # unresolved" is true and useless: it invites the agent to poll a door that is
             # nailed shut, when the actionable fact is that the work moved.
             moved = ", ".join(
-                f"{blocker} → {successor}"
+                f"{render_attributed(blocker)} → {render_attributed(successor)}"
                 for blocker, successor in sorted(result.superseded_blockers.items())
             )
             reason = (
-                f"blocked_by {task.blocked_by} unresolved, and {moved} — a SUPERSEDED "
+                f"blocked_by {render_attributed(task.blocked_by)} unresolved, and {moved} — a SUPERSEDED "
                 f"blocker can never resolve, so this claim can never win: block on the "
                 f"successor instead"
             )
         elif task.blocked_by:
-            reason = f"blocked_by {task.blocked_by} unresolved"
+            reason = f"blocked_by {render_attributed(task.blocked_by)} unresolved"
         else:
             reason = f"status {task.status}"
         return f"not claimed: task {task.id} is unowned but not claimable ({reason})"
@@ -4034,33 +4044,29 @@ class AppContext:
         while still not stopping a forgery. The trailers get the opposite treatment — a
         newline reaching a one-line field forges a whole new line.
 
-        ⚠⚠ **THIS SHAPE IS NOT A COMPLETE CONTAINMENT, SO DO NOT CLONE IT AS ONE**
-        (finding **#321**, Ruling 11 §11.1, measured 2026-08-02). This docstring used to
-        open *"the archetype, verbatim"* — an instruction to copy a shape whose second
-        half has a measured hole, which is how a defect propagates faster than its fix.
-        The body/line distinction is right and stands; the completeness claim was false.
+        **Two containment policies, and each caller-origin surface now rides the one that
+        fits it (finding #321's Link-5 slice, packet 04b5, LANDED).** The BODY is fenced;
+        every inline attribution/id value — the ``provenance`` blob here, and the
+        ``subject``/``owner``/``blocked_by`` in the row this render composes — routes
+        through :func:`~loremaster.render.render_attributed`, which wraps the sanitised
+        value in an inline backtick delimiter longer than any run it carries. A same-line
+        instruction inside it therefore reads as the CALLER's quoted text, never as this
+        server's own prose.
 
-        **What SANITISED does NOT buy: it is a CONTROL-CHARACTER policy, not a PROVENANCE
-        one.** :func:`~loremaster.sanitise.sanitise_line` stops a trailer from breaking the
-        render's line structure — a newline, a bidi mark, an invisible separator. It does
-        NOT mark the bytes as the CALLER's rather than lore's. A same-line instruction
-        inside ``owner``/``created_by`` carries no control character and no row shape, so
-        it survives the sanitiser intact and reaches the consuming agent as this server's
-        own prose. Both this render's ``owner`` trailer and its ``provenance`` blob are
-        measured doors of that class.
-
-        That is a **DELIBERATE, PINNED KNOWN BOUND** until 04b-3's link-5 slice, which
-        introduces the containment seam for caller-attributed inline values; a partial,
-        per-site containment is ruled WORSE than none (Ruling 11 §11.4), so do not add one
-        here. The bound is asserted — and goes RED the day it is closed — by
-        ``test_attribution_bound.py`` in this repo's test tree.
+        This CLOSES the control-char-vs-provenance gap the pre-04b5 shape had:
+        :func:`~loremaster.sanitise.sanitise_line` alone is a LINE-STRUCTURE policy (it
+        stops a newline / bidi mark / invisible separator) and never marked bytes as
+        caller-origin — the delimiter does. The DELIBERATE PINNED KNOWN BOUND this docstring
+        used to name (asserted by the now-retired ``test_attribution_bound.py``, whose own
+        re-open trigger was *"the 04b5 link-5 slice"*) is DISCHARGED: that file was deleted
+        with this slice.
         """
         return (
             f"{cls._render_task_rows([task])}\n"
             f"description:\n"
             f"{render_fenced(task.description)}\n"
             f"created_at: {sanitise_line(task.created_at.isoformat())}\n"
-            f"provenance: {safe_str(task.provenance)}"
+            f"provenance: {render_attributed(task.provenance)}"
         )
 
     @staticmethod
@@ -4119,7 +4125,7 @@ class AppContext:
                 f"{'y' if len(residue) == 1 else 'ies'} carr"
                 f"{'ies' if len(residue) == 1 else 'y'} NO edge and cannot be walked — "
                 f"they still block this task and the claim CAS counts them forever: "
-                f"{[safe_str(blocker) for blocker in residue]}"
+                f"{[render_attributed(blocker) for blocker in residue]}"
             )
         if blockers.ids:
             lines.append(
@@ -4151,14 +4157,18 @@ class AppContext:
         to every supersede is an imperative riding a verdict that is not true — the shape
         ruling R8 split apart — and a warning that always fires is a warning nobody reads.
         """
-        superseded = f"superseded task {task_id}; successor {successor_id} (status open)"
+        superseded = (
+            f"superseded task {render_attributed(task_id)}; "
+            f"successor {render_attributed(successor_id)} (status open)"
+        )
         if not dependents:
             return superseded
         return (
             f"{superseded}\n"
-            f"⚠ {len(dependents)} task(s) blocked on {task_id} are now STRANDED — it can "
-            f"never resolve, so they can never become claimable: re-point them at "
-            f"{successor_id}: {[safe_str(dependent) for dependent in dependents]}"
+            f"⚠ {len(dependents)} task(s) blocked on {render_attributed(task_id)} are now "
+            f"STRANDED — it can never resolve, so they can never become claimable: re-point "
+            f"them at {render_attributed(successor_id)}: "
+            f"{[render_attributed(dependent) for dependent in dependents]}"
         )
 
     @staticmethod
@@ -4173,8 +4183,8 @@ class AppContext:
                 if task.report_path is not None
                 else " (summary recorded)"
             )
-            return f"task {task.id} transitioned to done by {actor}{suffix}"
-        return f"task {task.id} transitioned to {task.status} by {actor}"
+            return f"task {task.id} transitioned to done by {render_attributed(actor)}{suffix}"
+        return f"task {task.id} transitioned to {task.status} by {render_attributed(actor)}"
 
     async def _rollup(self, *, since: str | None, limit: int | None) -> str:
         """PKT-06 §1: ``lore_tasks action=rollup`` — the fleet's one-call catch-up.
@@ -4247,27 +4257,27 @@ class AppContext:
         )
         for task in task_rows:
             lines.append(
-                f"- {cls._task_status_marker(task)} {_sanitise_line(task.subject)} "
-                f"(id {task.id}, owner {sanitise_line(str(task.owner))})"
+                f"- {cls._task_status_marker(task)} {render_attributed(task.subject)} "
+                f"(id {task.id}, owner {render_attributed(task.owner)})"
             )
         lines.append(
             cls._rollup_leg_header("findings filed", len(finding_rows), finding_window.total)
         )
         for finding in finding_rows:
             lines.append(
-                f"- [#{finding.number} {finding.status}] {_sanitise_line(finding.subject)} "
-                f"(kind {sanitise_line(finding.kind)}, by {sanitise_line(finding.created_by)})"
+                f"- [#{finding.number} {finding.status}] {render_attributed(finding.subject)} "
+                f"(kind {render_attributed(finding.kind)}, by {render_attributed(finding.created_by)})"
             )
         lines.append(f"reports registered ({len(report_rows)}):")
         for task in report_rows:
             report_tail = (
-                f"report {sanitise_line(task.report_path)}"
+                f"report {render_attributed(task.report_path)}"
                 if task.report_path is not None
                 else "no report file"
             )
             lines.append(
-                f"- task {task.id} by {sanitise_line(str(task.owner))}: "
-                f"{_sanitise_line(task.summary or '')} ({report_tail})"
+                f"- task {task.id} by {render_attributed(task.owner)}: "
+                f"{render_attributed(task.summary or '')} ({report_tail})"
             )
         next_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
         lines.append(f"next cursor: {next_cursor.isoformat()}")
@@ -4410,9 +4420,9 @@ class AppContext:
             resolved_blocked_by = [key_to_id.get(ref, ref) for ref in item.blocked_by]
             parts = [f"id {minted_ids[index]}"]
             if item.key is not None:
-                parts.append(f"key {_sanitise_line(item.key)}")
-            parts.append(f"blocked_by {resolved_blocked_by}")
-            lines.append(f"- [open] {_sanitise_line(item.subject)} ({', '.join(parts)})")
+                parts.append(f"key {render_attributed(item.key)}")
+            parts.append(f"blocked_by {[render_attributed(ref) for ref in resolved_blocked_by]}")
+            lines.append(f"- [open] {render_attributed(item.subject)} ({', '.join(parts)})")
         return "\n".join(lines)
 
     @classmethod
@@ -4443,9 +4453,9 @@ class AppContext:
         if not rows:
             return _NO_TASKS_MATCHED
         return "\n".join(
-            f"- {cls._task_status_marker(task)} {sanitise_line(task.subject)} "
-            f"(id {task.id}, owner {safe_str(task.owner)}, "
-            f"blocked_by {[safe_str(blocker) for blocker in task.blocked_by]})"
+            f"- {cls._task_status_marker(task)} {render_attributed(task.subject)} "
+            f"(id {task.id}, owner {render_attributed(task.owner)}, "
+            f"blocked_by {[render_attributed(blocker) for blocker in task.blocked_by]})"
             for task in rows
         )
 
@@ -6184,7 +6194,7 @@ class AppContext:
                 "(first registered {age} ago)",
                 name=sanitise_line(agent.name),
                 session=sanitise_line(agent.session),
-                role=sanitise_line(agent.role),
+                role=render_attributed(agent.role),
                 age=AppContext._render_age(registered_age_s),
             )
         else:
@@ -6192,7 +6202,7 @@ class AppContext:
                 "registered {name} (session {session}, role {role}) — status active",
                 name=sanitise_line(agent.name),
                 session=sanitise_line(agent.session),
-                role=sanitise_line(agent.role),
+                role=render_attributed(agent.role),
             )
         if brief is None:
             return render_compose(
@@ -6210,7 +6220,7 @@ class AppContext:
                 name=sanitise_line(brief.name),
                 version=brief.version,
                 age=AppContext._render_age(brief_age_s),
-                author=sanitise_line(brief.created_by),
+                author=render_attributed(brief.created_by),
             ),
             render_fenced(brief.body),
             render_line("echo in your report: brief project v{version} read", version=brief.version),
@@ -6408,7 +6418,7 @@ class AppContext:
             name=sanitise_line(brief.name),
             version=brief.version,
             age=AppContext._render_age(brief_age_s),
-            author=sanitise_line(brief.created_by),
+            author=render_attributed(brief.created_by),
         )
         return render_compose(
             header,
@@ -6479,7 +6489,7 @@ class AppContext:
                         "agents ack at register",
                         name=sanitise_line(result.brief.name),
                         version=result.brief.version,
-                        publisher=sanitise_line(result.brief.created_by),
+                        publisher=render_attributed(result.brief.created_by),
                     )
                 ]
             else:
@@ -6489,7 +6499,7 @@ class AppContext:
                         "agents ack with lore_comms action=brief_ack",
                         name=sanitise_line(result.brief.name),
                         version=result.brief.version,
-                        publisher=sanitise_line(result.brief.created_by),
+                        publisher=render_attributed(result.brief.created_by),
                     )
                 ]
         else:
@@ -6498,7 +6508,7 @@ class AppContext:
                     "brief '{name}' v{version} published by {publisher}",
                     name=sanitise_line(result.brief.name),
                     version=result.brief.version,
-                    publisher=sanitise_line(result.brief.created_by),
+                    publisher=render_attributed(result.brief.created_by),
                 )
             ]
         if len(behind) > 0:
@@ -6623,16 +6633,16 @@ class AppContext:
         heartbeat_age_s: int,
     ) -> Rendered:
         """One fleet row (design doc §9.6 worked shape) — cells joined with ' · '."""
-        cells: list[SafeLine] = [render_join(" ", [safe_str("role"), sanitise_line(row.role)])]
+        cells: list[SafeLine] = [render_join(" ", [safe_str("role"), render_attributed(row.role)])]
         if row.model is not None:
-            cells.append(render_join(" ", [safe_str("model"), sanitise_line(row.model)]))
+            cells.append(render_join(" ", [safe_str("model"), render_attributed(row.model)]))
         if row.task_id is not None:
             cells.append(render_join(" ", [safe_str("task"), safe_str(row.task_id[:8] + "…")]))
         brief_cell = AppContext._render_comms_fleet_brief_cell(project_head_version, acked_version)
         if brief_cell is not None:
             cells.append(brief_cell)
         if row.last_note is not None:
-            cells.append(render_join(" ", [safe_str("note:"), sanitise_line(row.last_note)]))
+            cells.append(render_join(" ", [safe_str("note:"), render_attributed(row.last_note)]))
         # Duplicated-call form (not a ternary template) — the AST
         # template-literal pin requires args[0] to be an ast.Constant; a
         # ternary selecting between two literal templates is an ast.IfExp
@@ -6866,7 +6876,7 @@ class AppContext:
                 render_line(
                     "question on thread {thread} — clears when a teammate's reply lands on "
                     "this thread addressed to you; your own follow-ups do not clear it",
-                    thread=sanitise_line(message.thread),
+                    thread=render_attributed(message.thread),
                 )
             )
         return render_compose(*lines)
@@ -7078,7 +7088,7 @@ class AppContext:
         if entry.task_id is not None:
             context = safe_str(f" (task {sanitise_line(entry.task_id)})")
         elif entry.thread != session:
-            context = safe_str(f" (thread {sanitise_line(entry.thread)})")
+            context = safe_str(f" (thread {render_attributed(entry.thread)})")
         else:
             context = safe_str("")
         if not entry.refs:
@@ -7089,7 +7099,9 @@ class AppContext:
                 sender=sanitise_line(entry.sender_name),
                 context=context,
             )
-        shown = [safe_str(ref) for ref in entry.refs[:_COVERAGE_NAMES_CAP]]
+        shown: list[SafeLine | Rendered] = [
+            render_attributed(ref) for ref in entry.refs[:_COVERAGE_NAMES_CAP]
+        ]
         over = len(entry.refs) - len(shown)
         if over > 0:
             shown.append(safe_str(f"+{over} more"))

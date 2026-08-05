@@ -297,7 +297,7 @@ def render_compose(*parts: Rendered) -> Rendered:
     return Rendered("\n".join(parts))
 
 
-def render_join(separator: LiteralString, parts: Iterable[SafeLine]) -> SafeLine:
+def render_join(separator: LiteralString, parts: Iterable[SafeLine | Rendered]) -> SafeLine:
     """Join ``SafeLine`` parts with ``separator``, staying a ``SafeLine``.
 
     Exists precisely so a caller never needs ``", ".join(safe_parts)`` — that

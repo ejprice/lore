@@ -50,6 +50,7 @@ from _surreal_harness import make_env, surreal_password, surreal_url, surreal_us
 from loremaster.agents import AgentRegistry
 from loremaster.briefs import BriefLedger
 from loremaster.config import LoreConfig
+from loremaster.render import render_attributed
 from loremaster.sanitise import FENCE_CHAR, MIN_FENCE_WIDTH, max_backtick_run
 from loremaster.server import AppContext, LoreServer, build_app_context
 from loresigil.testing import FakeEmbedder
@@ -555,7 +556,7 @@ class TestTheFirstVersionLineTeachesTheAckMechanismThatActuallyEXISTS:
                 body="the standing instruction",
             )
         )
-        assert "brief 'wave9' v1 published by lead" in rendered
+        assert f"brief 'wave9' v1 published by {render_attributed('lead')}" in rendered
         assert "first version" in rendered
         assert "agents ack at register" not in rendered, (
             f"registering NEVER acks a non-'project' brief (_comms_register hardcodes "
@@ -598,7 +599,8 @@ class TestTheFirstVersionLineTeachesTheAckMechanismThatActuallyEXISTS:
             )
         )
         assert (
-            "brief 'project' v1 published by lead — first version; agents ack at register"
+            f"brief 'project' v1 published by {render_attributed('lead')} — first version; "
+            "agents ack at register"
         ) in rendered
 
         await ctx.comms(action="register", agent="newbie", session="wave9", role="builder")
@@ -821,7 +823,9 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         rendered = str(
             await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
         )
-        assert "registered lead (session wave7, role lead) — status active" in rendered
+        assert (
+            f"registered lead (session wave7, role {render_attributed('lead')}) — status active"
+        ) in rendered
         assert (
             "no 'project' brief published yet — work from your spawn brief; "
             "re-check with lore_comms action=brief_get"
@@ -846,7 +850,8 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
             )
         )
         assert (
-            "brief 'project' v1 published by lead — first version; agents ack at register"
+            f"brief 'project' v1 published by {render_attributed('lead')} — first version; "
+            "agents ack at register"
         ) in rendered
         assert "skew" not in rendered, (
             f"the sole agent in scope IS the author — the omission clause must fire: {rendered!r}"
@@ -860,9 +865,11 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
                 action="register", agent="fixer-b", session="wave7", role="builder"
             )
         )
-        assert "registered fixer-b (session wave7, role builder) — status active" in rendered
+        assert (
+            f"registered fixer-b (session wave7, role {render_attributed('builder')}) — status active"
+        ) in rendered
         assert "brief 'project' v1 (published " in rendered
-        assert " ago by lead) — ack recorded (via register)" in rendered
+        assert f" ago by {render_attributed('lead')}) — ack recorded (via register)" in rendered
         assert _HOSTILE_BRIEF_BODY in rendered, "the brief body must round-trip verbatim inside the fence"
         assert _expected_fence(_HOSTILE_BRIEF_BODY) in rendered, (
             "the fence must strictly outrun the widest backtick run embedded in the "
@@ -886,7 +893,7 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
                 body="v2 — cite lore_impact in every report",
             )
         )
-        assert "brief 'project' v2 published by lead" in rendered
+        assert f"brief 'project' v2 published by {render_attributed('lead')}" in rendered
         assert "first version" not in rendered
         assert (
             "skew (session wave7): 1 non-retired agents behind head v2 — 1 at v1; "
@@ -954,11 +961,11 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
         ) in rendered
         assert "STALE" not in rendered
         lead_row = _fleet_row(rendered, "lead")
-        assert "role lead" in lead_row
+        assert f"role {render_attributed('lead')}" in lead_row
         assert "project v2" in lead_row
         assert "unbriefed" not in lead_row, "the author's own row renders CURRENT (§9.6, v7)"
         fixer_row = _fleet_row(rendered, "fixer-b")
-        assert "role builder" in fixer_row
+        assert f"role {render_attributed('builder')}" in fixer_row
         assert "project v2" in fixer_row
 
 
@@ -1102,7 +1109,7 @@ class TestConfigKnobBriefBodyWarnCharsIsConsumed:
             )
             assert "exceeds the 10-char warn threshold" in rendered
             assert "prefer a doc + pointer" in rendered
-            assert "brief 'project' v1 published by lead" in rendered, (
+            assert f"brief 'project' v1 published by {render_attributed('lead')}" in rendered, (
                 "an oversize body warns — it must never be rejected (spec §5.2)"
             )
         finally:

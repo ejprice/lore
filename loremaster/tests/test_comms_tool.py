@@ -65,7 +65,7 @@ from loremaster.briefs import (
     UnknownBriefVersionError,
 )
 from loremaster.config import LoreConfig
-from loremaster.render import Rendered, RenderSafetyError
+from loremaster.render import Rendered, RenderSafetyError, render_attributed
 from loremaster.sanitise import CONTROL_CHAR_PATTERN, SafeLine, max_backtick_run
 from loremaster.server import (
     _COMMS_ACTIONS,
@@ -1353,7 +1353,7 @@ class TestBriefPublishAction:
                 body="v1 body",
             )
         )
-        assert "brief 'project' v1 published by fixer-b" in rendered
+        assert f"brief 'project' v1 published by {render_attributed('fixer-b')}" in rendered
         assert "first version" in rendered
 
     async def test_the_publisher_self_acks_at_the_version_it_just_published(self) -> None:
@@ -1499,7 +1499,7 @@ class TestBriefPublishAction:
                 f"nobody is behind and the skew line must be omitted entirely: {rendered!r}"
             )
             assert "behind" not in rendered
-        assert "brief 'project' v2 published by lead" in second
+        assert f"brief 'project' v2 published by {render_attributed('lead')}" in second
 
     async def test_skew_line_counts_non_retired_agents_behind(self) -> None:
         """v2 scoping ruling: this call carries an explicit session='wave7'
@@ -1837,7 +1837,7 @@ class TestTheFirstVersionLineTeachesAnAckMechanismThatACTUALLYEXISTS:
                 body="the standing instruction",
             )
         )
-        assert f"brief '{brief_name}' v1 published by lead" in rendered
+        assert f"brief '{brief_name}' v1 published by {render_attributed('lead')}" in rendered
         assert "first version" in rendered, "the first-version variant must still fire for any name"
         assert (self._REGISTER_PROMISE in rendered) == (brief_name == self._PROJECT), (
             f"the register-time auto-ack exists ONLY for {self._PROJECT!r} "
@@ -8312,7 +8312,7 @@ class TestTheQuestionTeachReachesTheReaderThroughTheDispatcher:
                 set_status="input_required",
             )
         )
-        assert "question on thread q:gate" in rendered, (
+        assert f"question on thread {render_attributed('q:gate')}" in rendered, (
             "the accepted question produced no clearing-rule teach in the SERVED text. The "
             "R1 per-row recipient marker is packet 05, which makes this the ONLY in-band "
             "carrier of the clearing rule in 03b (§B3.3)"

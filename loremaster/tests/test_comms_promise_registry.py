@@ -74,6 +74,7 @@ import pytest
 from _comms_fakes import FakeAgentRegistry, FakeBriefLedger
 from loremaster.agents import Agent, AgentFleetWindow, AgentStatus
 from loremaster.briefs import Brief, BriefAckResult, BriefBehindEntry, BriefPublishResult
+from loremaster.render import render_attributed
 from loremaster.server import _MAX_DRAIN_LIMIT, AppContext
 
 # ONE IMPLEMENTATION: the skew block's surfacing teach has ONE test-side home
@@ -1529,8 +1530,9 @@ _PROOF_LIST: list[PromiseProof] = [
     PromiseProof(
         literal="question on thread {thread} — clears when a teammate's reply lands on this "
         "thread addressed to you; your own follow-ups do not clear it",
-        marker=f"question on thread q:gate {_EM_DASH} clears when a teammate's reply lands on "
-        "this thread addressed to you; your own follow-ups do not clear it",
+        marker=f"question on thread {render_attributed('q:gate')} {_EM_DASH} clears when a "
+        "teammate's reply lands on this thread addressed to you; your own follow-ups do not "
+        "clear it",
         # EMIT / NO-EMIT vary EXACTLY ONE thing: whether the send was accepted
         # as a question. Both legs are otherwise identical, so a build that
         # emits the teach on every send fails NO-EMIT and one that never emits

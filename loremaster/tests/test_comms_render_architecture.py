@@ -61,6 +61,7 @@ from _comms_fakes import (
     FakeBriefLedger,
 )
 from loremaster.briefs import Brief, BriefBehindEntry, BriefPublishResult
+from loremaster.render import render_attributed
 from loremaster.server import AppContext
 
 # The em-dash the render templates use verbatim (U+2014) — pinned as a named
@@ -705,7 +706,7 @@ class TestCreatedByIsGoneFromTheDispatcher:
         rendered = await _comms(
             harness, action="brief_publish", agent="fixer-b", session="wave7", name="project", body="b"
         )
-        assert "published by fixer-b" in rendered, rendered
+        assert f"published by {render_attributed('fixer-b')}" in rendered, rendered
 
 
 # =========================================================================== #
