@@ -50,6 +50,24 @@ dev = [
     # #131 verbatim — code that shells out to a binary the environment does not have.
     "shellcheck-py",
     "asgi-lifespan>=2",
+    # The render-reach BRANCH instrument (packet 04b5, Link-5 injection containment).
+    # test-only — the render-containment sweep (`test_link5_render_containment.py`) drives
+    # every caller-origin field of every served render under coverage measurement and
+    # asserts every BRANCH of each driven render actually EXECUTED, so a caller-byte door
+    # cannot hide in an un-run branch (finding #321's D1 leak lives in exactly such a
+    # branch: `_render_transitive_blockers`' `if residue:` line).
+    #
+    # coverage.py over a stdlib `sys.settrace` hand-roll, OPERATOR-RULED 2026-08-05
+    # (packages-over-hand-rolling): the package is better-tested and shifts the
+    # arc-measurement maintenance burden upstream. It is a DEV/TEST-ONLY dependency:
+    # nothing SHIPPED imports it, so it is NOT a runtime/production dependency. It IS,
+    # however, present in the IMAGE VENV — `Containerfile` runs `uv sync --all-packages`,
+    # baking the whole dev group (pytest, coverage, …) into `/app/.venv` so the #139
+    # in-image conformance suite can run `test_link5_render_containment.py` against the
+    # ARTIFACT. So coverage ships in the image venv exactly like pytest — a test tool
+    # baked for conformance, never a production import (do not read "test-only" as "absent
+    # from the image"). It ships `py.typed`, so no mypy override is needed.
+    "coverage>=7",
 ]
 
 # ---------------------------------------------------------------------------

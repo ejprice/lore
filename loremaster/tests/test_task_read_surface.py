@@ -2961,7 +2961,9 @@ class TestTheTaskDetailBodyCannotFORGEStructure:
         it does not.
 
         ⚠ SANITISED is a control-character policy, not a provenance one — a same-line
-        instruction in a trailer survives it (finding #321, Ruling 11; asserted in
+        instruction in a trailer survives it (finding #321, Ruling 11). The 04b5 link-5
+        slice CONTAINS this class (render_attributed); it is asserted by
+        ``test_link5_render_containment.py`` (which supersedes the retired
         ``test_attribution_bound.py``).
         """
         ledger, _env, _seed = task_ledger
@@ -3078,48 +3080,38 @@ class TestTheFencedBodyRenderHasONEImplementation:
         )
 
 
-#: The ONE dated exemption from the fence-site invariant (Ruling 9 item 4).
-#:
-#: ``SearchPipeline._fence_width`` computes the width rule privately. It is NOT unified this
-#: wave — ``search.py`` is an untouched subsystem in a packet driving to completion — and
-#: unifying it is routed to **04b-3** with its spec: mint the WIDTH RULE (never a second
-#: wrap), have ``render_fenced``'s internal line consume it, DELETE this private copy onto
-#: it, and prove sharing by mutation over all consumers both ways.
-#:
-#: ⚠ **DENY-BY-DEFAULT WITH A DATED EXEMPTION, and it SELF-DESTRUCTS:** the pin below
-#: requires the exemption to still be USED. The day 04b-3 lands, this entry stops matching
-#: anything and the pin goes RED carrying its own deletion instruction — a bound cannot
-#: outlive its premise (#137/#138's pattern).
-_FENCE_SITE_EXEMPTION = "search.py"
-_FENCE_SITE_EXEMPTION_EXPIRES = "04b-3"
-
-#: Where the ONE implementation of the fenced wrap lives. Not an allowlist of names — the
-#: module that DEFINES ``render_fenced``, derived below from the function itself.
-_FENCE_IMPLEMENTATION_MODULE = "render.py"
+#: ⚠ 04b5 REWORK (contract-04b5-1, contract-first — the OLD pins below certified the OLD
+#: world and are REPLACED, not amended; P8d rename-sweep law). The fence policy now has TWO
+#: DERIVED homes and NO dated exemption:
+#:   * the WIDTH-POLICY home — the module that DEFINES ``sanitise.fence_width`` (extracted
+#:     this packet, B-2 step 0: the ``max(MIN_FENCE_WIDTH, max_backtick_run(t)+1)`` rule);
+#:   * the CONSTRUCTION home — the module that DEFINES ``render.render_fenced`` (and, forced
+#:     there by the ``Rendered`` mint pin, ``render_attributed``).
+#: ``search.py``'s private width clone is RETIRED and its ENTIRE fence construction routes
+#: through the shared render seam (operator ruling 2026-08-05: FULL route-through), so
+#: search.py is no longer a distinct fence site — the ONE-IMPLEMENTATION fence property
+#: returns to a single construction home. Both homes are DERIVED from the functions
+#: themselves, never a name list — a fourth spelling joins the door set the day it is
+#: written, with nobody editing a list.
 
 
 class TestEveryFenceSiteInProductionResolvesToTheONEImplementation:
-    """⛔⛔ **RULING 9 item 4 — THE FALSIFIER, RE-DERIVED ON THE PROPERTY.**
+    """⛔⛔ **THE FALSIFIER, RE-DERIVED ON THE PROPERTY — reworked for 04b5's two homes.**
 
-    ⚠⚠ **THIS PIN EXISTS BECAUSE MY FALSIFIER FAILED, AND FAILED IN THIS REPO'S MOST
-    DOCUMENTED WAY.** Ruling 8 asked me to check whether extracting a fenced-body helper
-    rippled. I ran ``grep -rn '_fence_width'`` — **keyed on a NAME** — concluded the policy
-    existed twice, and missed ``loremaster.render.render_fenced``, which spells the same
-    policy differently and is the copy with the type discipline, the contract class and
-    three live callers **in the very file I was adding to**. The contract then demanded a
-    helper the repo already had, and would have failed the correct build.
-
-    *"When you catch yourself enumerating what is FORBIDDEN, you have already lost. The
-    forbidden set is unbounded; the SAFE set is small and enumerable — allowlist the safe."*
-    So the inventory is **DERIVED, name-blind**, from what a fence site actually IS:
+    ⚠⚠ **THIS PIN EXISTS BECAUSE A NAME-KEYED FALSIFIER FAILED IN THIS REPO'S MOST
+    DOCUMENTED WAY** (``grep -rn '_fence_width'`` missed ``render_fenced``, which spells the
+    same policy differently). *"When you catch yourself enumerating what is FORBIDDEN, you
+    have already lost — allowlist the SAFE set."* So the inventory is **DERIVED, name-blind**,
+    from what a fence site actually IS:
 
     * every production call of the ``max_backtick_run`` primitive (the width rule), **and**
     * every production expression multiplying ``FENCE_CHAR`` (the fence itself), **and**
     * every bare backtick-run string literal (a hand-typed fence).
 
-    Every member must live in the module that DEFINES ``render_fenced`` — or in the ONE
-    dated exemption. Anything else is a DOOR, reported by ``file:line``. A fourth spelling
-    nobody has thought of joins this set the day it is written, with nobody editing a list.
+    Every member must live in one of the TWO DERIVED homes (width policy / construction),
+    both read off the functions themselves. Anything else is a DOOR, reported by
+    ``file:line``. RED at HEAD (``5cedb38``): ``fence_width`` is not extracted (the width
+    home does not exist yet) AND ``search.py:1461`` still constructs a fence privately.
     """
 
     @staticmethod
@@ -3173,62 +3165,135 @@ class TestEveryFenceSiteInProductionResolvesToTheONEImplementation:
                         _record(path, node.lineno, "a bare backtick-run literal")
         return sites
 
-    def test_every_derived_fence_site_is_the_ONE_implementation_or_the_DATED_exemption(
-        self,
-    ) -> None:
+    @staticmethod
+    def _sanctioned_homes() -> dict[str, str]:
+        """``{role: module}`` for the TWO derived homes, read off the functions themselves
+        (name-blind). RED at HEAD until ``fence_width`` is extracted (04b5 B-2 step 0)."""
+        import inspect  # noqa: PLC0415
+        import pathlib  # noqa: PLC0415
+
+        import loremaster.sanitise as sanitise  # noqa: PLC0415
+        from loremaster.render import render_fenced  # noqa: PLC0415
+
+        fence_width = getattr(sanitise, "fence_width", None)
+        assert fence_width is not None, (
+            "04b5 B-2 step 0: `sanitise.fence_width` is not extracted — the WIDTH-POLICY "
+            "home does not exist yet, so the fence policy still has its rule inline in "
+            "render_fenced (and cloned in search.py). Extract it before this invariant can "
+            "resolve to two homes."
+        )
+        width_home = pathlib.Path(inspect.getsourcefile(fence_width) or "").name
+        construction_home = pathlib.Path(inspect.getsourcefile(render_fenced) or "").name
+        return {"width_policy": width_home, "construction": construction_home}
+
+    def test_every_derived_fence_site_is_one_of_the_TWO_derived_homes(self) -> None:
         sites = self._fence_sites()
-        assert _FENCE_IMPLEMENTATION_MODULE in sites, (
-            f"the derived scan found NO fence construction in "
-            f"{_FENCE_IMPLEMENTATION_MODULE}, which is where `render_fenced` lives — so it "
-            f"is not seeing fence sites at all and every verdict below is vacuous. "
-            f"found={sorted(sites)}"
+        homes = self._sanctioned_homes()
+        sanctioned = set(homes.values())
+        assert homes["construction"] in sites, (
+            f"the derived scan found NO fence construction in the construction home "
+            f"{homes['construction']!r} (where `render_fenced` lives) — so it is not seeing "
+            f"fence sites at all and every verdict below is vacuous. found={sorted(sites)}"
         )
         doors = [
             entry
             for module, entries in sites.items()
-            if module not in {_FENCE_IMPLEMENTATION_MODULE, _FENCE_SITE_EXEMPTION}
+            if module not in sanctioned
             for entry in entries
         ]
         assert doors == [], (
-            "these production sites construct a fence or compute its width OUTSIDE the one "
-            "implementation:\n  " + "\n  ".join(doors) + f"\n"
-            f"`loremaster.render.render_fenced` is the ONE wrap — it carries the Rendered "
-            f"type discipline, its own contract class, and every live caller. A second "
-            f"spelling is #102's shape, and the fence rule is exactly the kind of policy a "
-            f"fix reaches one copy of. ⚠ This inventory is DERIVED from what a fence site "
-            f"IS, not from a list of names, because the name-keyed falsifier that preceded "
-            f"it missed `render_fenced` entirely and nearly shipped a contract forbidding "
-            f"the correct build. The ONE exemption is {_FENCE_SITE_EXEMPTION}, expiring at "
-            f"{_FENCE_SITE_EXEMPTION_EXPIRES}"
+            "these production sites construct a fence or compute its width OUTSIDE the two "
+            "sanctioned homes:\n  " + "\n  ".join(doors) + "\n"
+            f"The sanctioned homes are the WIDTH POLICY ({homes['width_policy']}, defines "
+            f"`fence_width`) and the CONSTRUCTION ({homes['construction']}, defines "
+            f"`render_fenced`/`render_attributed`). A second spelling is #102's shape; the "
+            f"fence rule is exactly the policy a fix reaches one copy of. This inventory is "
+            f"DERIVED from what a fence site IS, not a list of names."
         )
 
-    def test_the_DATED_exemption_still_has_a_premise_and_SELF_DESTRUCTS_when_it_does_not(
-        self,
-    ) -> None:
-        """⛔ **This is D-5's closure**, and it is the *"when you cannot close a hole, pin
-        it"* form rather than the delegation pin the delta adversary asked for.
-
-        D-5 was *"`SearchPipeline` delegation pinned by nothing"*. Ruling 9 rules that
-        `search.py` is NOT unified this wave, so there is no delegation to pin — what was
-        an UNPINNED hole becomes a PINNED, DATED bound instead. An unpinned known limitation
-        is indistinguishable from an unknown one; this one carries its own expiry.
-
-        **And it cannot outlive its premise:** the day 04b-3 deletes that private width
-        copy, this exemption stops matching anything and this pin goes RED carrying the
-        instruction to delete it.
+    def test_search_py_is_RETIRED_as_a_distinct_fence_site(self) -> None:
+        """⛔ CONTRACT-FIRST — REPLACES the dated-exemption self-destruct pin. The operator
+        ruled a FULL route-through (2026-08-05): search.py's entire fence construction goes
+        through the shared render seam, so it constructs no fence and computes no width of
+        its own. RED at HEAD (``5cedb38``): ``search.py:1461`` still does
+        ``_FENCE_CHAR * self._fence_width(...)`` and ``:1430`` still calls the width rule.
+        A RED here on the fix means the route-through did NOT fully land — a residual
+        private construction is a second home, the exact thing this packet retires.
         """
         sites = self._fence_sites()
-        assert _FENCE_SITE_EXEMPTION in sites, (
-            f"the dated exemption {_FENCE_SITE_EXEMPTION!r} no longer constructs a fence or "
-            f"computes its width — so its premise is gone. If {_FENCE_SITE_EXEMPTION_EXPIRES}"
-            f" landed and unified it onto the shared width rule: ✅ that is the ruled "
-            f"outcome. DELETE this exemption and this pin, and say so in your wave report. "
-            f"Do NOT widen it. found={sorted(sites)}"
+        search_sites = [module for module in sites if module.endswith("search.py")]
+        assert search_sites == [], (
+            f"search.py is STILL a fence site: {sites.get(search_sites[0]) if search_sites else []}. "
+            f"The 2026-08-05 ruling routes its ENTIRE fence construction through the shared "
+            f"render seam (render_fenced) — a surviving `_FENCE_CHAR *` / `_max_backtick_run` "
+            f"in search.py is a private construction home, not a delegation. Route it fully; "
+            f"do NOT re-add a dated exemption."
         )
-        assert len(sites) == 2, (
-            f"the fence-site inventory now spans {sorted(sites)}. Exactly two modules are "
-            f"sanctioned — the implementation and the ONE dated exemption — and a third is "
-            f"a door, not a new exemption to add here"
+
+    def test_the_width_policy_and_construction_homes_are_DISTINCT(self) -> None:
+        """The width rule lives in ONE place and the construction in ONE place — the
+        ONE-IMPLEMENTATION property, now a two-home partition (width policy vs construction).
+        Distinctness is the point: fence_width (sanitise.py) is consumed by render_fenced /
+        render_attributed (render.py), never re-derived at the construction site.
+        """
+        homes = self._sanctioned_homes()
+        assert homes["width_policy"] != homes["construction"], (
+            f"the width policy and the construction resolve to the SAME module "
+            f"({homes['width_policy']}) — the extraction (B-2) puts fence_width in sanitise "
+            f"and its consumers in render; if they collapsed to one module the seam was not "
+            f"extracted as ruled."
+        )
+        assert len(set(homes.values())) == 2, f"expected exactly two homes, got {homes}"
+
+
+class TestSearchOutputFenceBytesArePinnedAcrossTheRouteThrough:
+    """⛔ Q2 (operator ruling 2026-08-05): pin search.py's fence-output BYTES so the full
+    route-through is a KNOWN output change, not a silent one. search.py routes its entire
+    fence construction through ``render_fenced``, so ``render_fenced``'s bytes ARE search's
+    fence bytes — pin them exactly, and characterise that search's CURRENT private width
+    already equals the shared policy (so the reshape preserves bytes).
+    """
+
+    #: A hostile source body: TWO backtick runs of different widths, so a fence that merely
+    #: matched the longest would be closed early by the body itself.
+    _HOSTILE_SOURCE = "def f():\n    return 'a ``` b `````` c'  # runs of 3 and 6"
+
+    def test_render_fenced_source_body_bytes_are_pinned_exactly(self) -> None:
+        """The bytes search.py now emits for a source body, pinned. Longest inner run is 6,
+        so the fence is 7 backticks (independent literal — reddens if the fence FORMAT or
+        the width policy drifts). This is the AFTER byte pin: it survives the fix because
+        ``render_fenced`` is the shared home search now routes through.
+        """
+        from loremaster.render import render_fenced  # noqa: PLC0415
+
+        fence = "`" * 7
+        expected = f"{fence}\n{self._HOSTILE_SOURCE}\n{fence}"
+        assert str(render_fenced(self._HOSTILE_SOURCE)) == expected, (
+            f"render_fenced's source-body bytes changed: {str(render_fenced(self._HOSTILE_SOURCE))!r} "
+            f"!= {expected!r}. search.py routes its fence through this helper, so this IS "
+            f"search's fence output — a change here is a change to every served search result."
+        )
+
+    def test_search_current_private_width_matches_the_shared_formula(self) -> None:
+        """BEFORE characterisation: search.py's private width rule already computes the
+        shared formula, so retiring it onto ``fence_width`` is byte-preserving. SKIPS once
+        the private copy is retired (the fence-site invariant then guarantees search routes
+        through render_fenced) — so this pin can never outlive its own premise.
+        """
+        from loremaster.sanitise import MIN_FENCE_WIDTH, max_backtick_run  # noqa: PLC0415
+        from loremaster.search import SearchPipeline  # noqa: PLC0415
+
+        private_width = getattr(SearchPipeline, "_fence_width", None)
+        if private_width is None:
+            pytest.skip(
+                "search.py's private `_fence_width` is retired — the full route-through "
+                "landed; the fence-site invariant now guarantees search uses render_fenced"
+            )
+        source = self._HOSTILE_SOURCE
+        assert private_width(source) == max(MIN_FENCE_WIDTH, max_backtick_run(source) + 1), (
+            "search.py's CURRENT private width rule does NOT equal the shared formula, so "
+            "the route-through would CHANGE search's output bytes — that is a served-behaviour "
+            "change the operator did not price. STOP and flag before unifying."
         )
 
 

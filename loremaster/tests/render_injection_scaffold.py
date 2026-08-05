@@ -106,13 +106,16 @@ def assert_render_injection_safe(baseline: str, hostile_out: str) -> None:
     of this oracle is evidence about control characters and row shape, and
     about nothing else.
 
-    That gap is a **DELIBERATE, PINNED KNOWN BOUND** until 04b-3's link-5 slice
-    (Ruling 11 §11.4: a PARTIAL containment is worse than none, so the fix is
-    deferred whole). The bound is asserted -- and goes RED the day it is closed
-    -- by ``test_attribution_bound.py``. **Do not widen these assertions to
-    cover the class without reading that file first**: the same-line class is a
-    provenance problem, not a charset problem, and its instrument is a derived
-    containment sweep rather than a fourth assertion here.
+    That gap was a **DELIBERATE, PINNED KNOWN BOUND** (Ruling 11 §11.4: a
+    PARTIAL containment is worse than none, so the fix was deferred whole). It
+    is CLOSED by packet 04b5's link-5 render-site slice: caller free text now
+    routes through the ``render_attributed`` / ``render_fenced`` containment
+    seam, and the derived containment sweep that pins it lives in
+    ``test_link5_render_containment.py`` (which SUPERSEDED the earlier
+    hand-listed ``test_attribution_bound.py``). **Do not widen these assertions
+    to cover the same-line class here**: it is a provenance problem, not a
+    charset problem, and its instrument is that derived sweep, never a fourth
+    assertion in this oracle.
     """
     # 1. the hostile field cannot ADD a line versus the benign baseline.
     #    (also catches a survived literal "\n" from the hostile field -- the

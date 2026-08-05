@@ -7938,9 +7938,10 @@ class TestRenderInjectionRegistry:
     still present), NEVER threat completeness. The oracle this drives checks CONTROL
     CHARACTERS AND ROW SHAPE only and is measurably blind to same-line instruction
     forgery — a registered case can be GREEN while leaking (finding #321, Ruling 11;
-    asserted in ``test_attribution_bound.py``). Read
-    ``assert_render_injection_safe``'s docstring before treating a green run here as
-    closure.
+    the same-line class is CONTAINED by packet 04b5's link-5 slice and pinned by
+    ``test_link5_render_containment.py``, which superseded the earlier
+    ``test_attribution_bound.py``). Read ``assert_render_injection_safe``'s docstring
+    before treating a green run here as closure.
     """
 
     @pytest.mark.parametrize("case", RENDER_CASES, ids=lambda c: c.label)
