@@ -181,6 +181,7 @@ CONSTRUCTIONS are the classes marked ⛔⛔ below.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -1799,16 +1800,28 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
         )
 
     @staticmethod
-    def _dispatched_action_values() -> set[str]:
-        """The action values ``AppContext.tasks`` STRUCTURALLY branches on.
+    def _dispatched_action_values(method: Any) -> set[str]:
+        """The action values ``method`` STRUCTURALLY branches on — ONE scan, fed by
+        BOTH ``AppContext.tasks`` and ``AppContext.findings`` (finding **#324 R-3**).
 
-        An AST scan for ``action == <NAME>`` over the dispatcher's own source, with each
-        ``<NAME>`` resolved to its value through the module. **No served prose is
-        load-bearing**, which is the entire point: the previous version of this pin matched
-        the literal ``"unknown task action"`` in a refusal message, and rewording that
-        message made the pin GREEN over a genuinely dead ``rollup`` — this repo's own
-        instrument lesson (*a gate keyed on a label's literal, defeated by a substring*)
-        reproduced inside the fix for a false gate.
+        An AST scan for ``action == <NAME>`` / ``action in (<NAME>, …)`` over the
+        dispatcher's own source, with each ``<NAME>`` resolved to its value through the
+        module. **No served prose is load-bearing**, which is the entire point: the
+        previous version of this pin matched the literal ``"unknown task action"`` in a
+        refusal message, and rewording that message made the pin GREEN over a genuinely
+        dead ``rollup`` — this repo's own instrument lesson (*a gate keyed on a label's
+        literal, defeated by a substring*) reproduced inside the fix for a false gate.
+
+        ⚠ **THE ``method`` PARAMETER IS #324 R-3, AND ``ast.In`` IS WHY IT IS NOT A
+        CLONE.** The findings branch-scan is DERIVED from this ONE function rather than
+        copied per-tool (#102: a pattern to clone is a defect to clone). And a naive
+        copy of the tasks-only scan would have carried a blind spot: ``AppContext.tasks``
+        dispatches every action with ``action == <NAME>`` (an ``ast.Eq``), but
+        ``AppContext.findings`` dispatches its TWO batch verbs with
+        ``action in (resolve_many, acknowledge_many)`` (an ``ast.In``), so an ``Eq``-only
+        scan would report BOTH as DEAD — a false positive on a live surface. This shared
+        scan reads ``Eq`` AND ``In``, and NEVER the ``NotEq`` / ``NotIn`` PARAMETER-refusal
+        guards (``action != rollup and since is not None`` etc.), which are not dispatch.
         """
         import ast  # noqa: PLC0415
         import inspect  # noqa: PLC0415
@@ -1816,44 +1829,84 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
 
         import loremaster.server as server_module  # noqa: PLC0415
 
-        tree = ast.parse(textwrap.dedent(inspect.getsource(server_module.AppContext.tasks)))
+        def _resolve(node: ast.expr) -> str | None:
+            if isinstance(node, ast.Name):
+                resolved = getattr(server_module, node.id, None)
+                return resolved if isinstance(resolved, str) else None
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            return None
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
         values: set[str] = set()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Compare) or len(node.ops) != 1:
                 continue
-            if not isinstance(node.ops[0], ast.Eq):
-                continue
             if not (isinstance(node.left, ast.Name) and node.left.id == "action"):
                 continue
-            target = node.comparators[0]
-            if isinstance(target, ast.Name):
-                resolved = getattr(server_module, target.id, None)
-                if isinstance(resolved, str):
+            operator, target = node.ops[0], node.comparators[0]
+            if isinstance(operator, ast.Eq):
+                resolved = _resolve(target)
+                if resolved is not None:
                     values.add(resolved)
-            elif isinstance(target, ast.Constant) and isinstance(target.value, str):
-                values.add(target.value)
+            elif isinstance(operator, ast.In) and isinstance(target, (ast.Tuple, ast.List)):
+                # The dispatch ``in`` (findings' batch verbs); the ``not in`` PARAMETER
+                # guards are ``ast.NotIn`` and are deliberately NOT matched here.
+                for element in target.elts:
+                    resolved = _resolve(element)
+                    if resolved is not None:
+                        values.add(resolved)
         return values
 
+    @staticmethod
+    def _dispatch_on_action_scan_targets() -> tuple[tuple[str, Any, tuple[str, ...]], ...]:
+        """The dispatch-on-action tools this branch-scan covers (#302/#314 family).
+
+        A ``(label, dispatcher, declared-actions)`` triple per tool, feeding the ONE
+        shared :meth:`_dispatched_action_values`. ``lore_comms`` is absent BY DESIGN and
+        not by omission: it dispatches through a TABLE (``_COMMS_ACTIONS``), not an
+        ``action ==`` / ``action in`` chain, and
+        :meth:`test_every_declared_action_is_actually_DISPATCHABLE` guards THAT table.
+        Adding a third ``action ==``-style dispatcher means adding a row here — and the
+        vocabulary-equality pins above already redden if its declared set drifts.
+        """
+        from loremaster.server import (  # noqa: PLC0415
+            _FINDING_ACTIONS,
+            _TASK_ACTIONS,
+            AppContext,
+        )
+
+        return (
+            ("lore_tasks", AppContext.tasks, tuple(_TASK_ACTIONS)),
+            ("lore_findings", AppContext.findings, tuple(_FINDING_ACTIONS)),
+        )
+
     def test_every_declared_action_BRANCHES_in_the_dispatcher(self) -> None:
-        """⛔ **RE-AUTHORED A SECOND TIME (delta adversary Δ-4), and structurally this time.**
+        """⛔ **RE-AUTHORED A SECOND TIME (delta adversary Δ-4), and structurally this time;
+        then WIDENED to lore_findings (#324 R-3).**
 
         Version 1 compared two constants and passed over a comms table dispatching to
         ``None``. Version 2 keyed on the refusal message's literal — and a build that
         REWORDED that message while deleting the ``rollup`` branch passed it, with the
         dispatcher saying *"unsupported task action 'rollup'"* in its own words. Version 3
         reads the dispatcher's STRUCTURE, so no served sentence can defeat it.
-        """
-        from loremaster.server import _TASK_ACTIONS  # noqa: PLC0415
 
-        dispatched = self._dispatched_action_values()
-        dead = [action for action in _TASK_ACTIONS if action not in dispatched]
-        assert dead == [], (
-            f"these declared lore_tasks actions reach NO dispatch branch: {dead}. The "
-            f"unknown-action refusal enumerates this very tuple to every caller, so such a "
-            f"name is advertised as legal while nothing can handle it. Derived from the "
-            f"dispatcher's own source, not from its prose — rewording a refusal must never "
-            f"be able to make this pin green. dispatched={sorted(dispatched)}"
-        )
+        ⚠ **#324 R-3 — the asymmetry this closes.** Before, only ``AppContext.tasks`` was
+        scanned: a genuinely dead ``lore_findings`` action was UNDETECTED while its tasks
+        twin went loud-RED. Now ONE shared scan runs over BOTH, derived from
+        :meth:`_dispatch_on_action_scan_targets`, so a dead branch on EITHER served
+        dispatch surface reddens here.
+        """
+        for label, dispatcher, declared in self._dispatch_on_action_scan_targets():
+            dispatched = self._dispatched_action_values(dispatcher)
+            dead = [action for action in declared if action not in dispatched]
+            assert dead == [], (
+                f"{label}: these declared actions reach NO dispatch branch: {dead}. The "
+                f"unknown-action refusal enumerates this very tuple to every caller, so "
+                f"such a name is advertised as legal while nothing can handle it. Derived "
+                f"from the dispatcher's own source, not from its prose — rewording a "
+                f"refusal must never make this pin green. dispatched={sorted(dispatched)}"
+            )
 
     def test_POSITIVE_CONTROL_the_scan_does_NOT_see_an_action_that_does_not_exist(
         self,
@@ -1864,17 +1917,31 @@ class TestTheServedActionVocabulariesArePinnedByEQUALITY:
         and Δ-4's whole lesson is that a green verdict from a blind instrument reads exactly
         like a green verdict from a working one.
         """
-        dispatched = self._dispatched_action_values()
-        assert "definitely_not_an_action" not in dispatched, (
-            f"the dispatch scan reports a branch for an action nobody wrote, so it cannot "
-            f"distinguish a live action from a dead one: {sorted(dispatched)}"
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        for _label, dispatcher, _declared in self._dispatch_on_action_scan_targets():
+            dispatched = self._dispatched_action_values(dispatcher)
+            assert "definitely_not_an_action" not in dispatched, (
+                f"the dispatch scan reports a branch for an action nobody wrote, so it "
+                f"cannot distinguish a live action from a dead one: {sorted(dispatched)}"
+            )
+            assert dispatched, (
+                "the dispatch scan found NO branches at all — it is not reading the "
+                "dispatcher, and an empty result would make the leg above vacuously green "
+                "in the other direction"
+            )
+        # ⚠ The ``ast.In`` control, and it is #324 R-3's OWN non-vacuity guard: the
+        # findings batch verbs are dispatched by ``action in (…)``, so a regression that
+        # dropped ``In`` handling from the shared scan would report them DEAD and redden
+        # the leg above for the WRONG reason. Asserting the scan SEES them proves the
+        # shared instrument's In-branch is live, independently of any findings branch.
+        finding_dispatched = self._dispatched_action_values(AppContext.findings)
+        assert {"resolve_many", "acknowledge_many"} <= finding_dispatched, (
+            f"the shared scan did not see lore_findings' ``action in (resolve_many, "
+            f"acknowledge_many)`` batch dispatch — it is Eq-only again and would call a "
+            f"live batch verb dead: {sorted(finding_dispatched)}"
         )
-        assert dispatched, (
-            "the dispatch scan found NO branches at all — it is not reading the dispatcher, "
-            "and an empty result would make the leg above vacuously green in the other "
-            "direction"
-        )
-        # ⚠ NO restatement of the leg above here, and that is deliberate: an earlier draft
+        # ⚠ NO restatement of the branch leg here, and that is deliberate: an earlier draft
         # re-asserted `set(_TASK_ACTIONS) <= dispatched` in this control, so a mutation that
         # killed one dispatch branch reddened BOTH tests and the control stopped being
         # independent evidence. MEASURED on the Δ-4 mutation (2 failed where 1 was declared,
@@ -3246,4 +3313,264 @@ class TestTheTASKSurfacesAgreeWithEachOtherAndWithTheCAS:
             f"answers 'what is upstream', not 'what is unresolved' — dropping terminal "
             f"nodes would make the chain render disagree with the ledger's own answer and "
             f"would hide why a task exists at all"
+        )
+
+
+# =========================================================================== #
+# #309 — R9's DEFAULT DISPLAY CAP on the NO-LIMIT task read, with the HOUSE
+# counted-elision grammar `+K more — re-run with limit=N`.
+#
+# CONTRACT AUTHOR NOTE (contract-04b4-1, 2026-08-04) — the K-mechanism + the degrade
+# DIRECTION were settled against the AUTHORITY, not the brief's paraphrase:
+#   * K IS DERIVED, NEVER COUNTED. R9's parenthetical "honest total from a store-side
+#     count" is OVERRULED by the wave-C sidecar Ruling 2 (REPORT-design-sidecar-04b2-
+#     wavec-1.md §2 / §6.2 item 1): the no-limit read ALREADY materialises the full set,
+#     so K = len(materialised) − shown and NO `count()` query may exist. These pins assert
+#     the OBSERVABLE honest-K property (K == true-surplus), never the mechanism, so they
+#     are correct whether the builder counts or derives — but the derived path is the
+#     ruled one. #309 therefore introduces NO new store query / DDL (Python-side slice of
+#     an already-materialised set) — store-law names no surface it touches.
+#   * DEGRADE DIRECTION: the wave-C authority says the COUNTED line degrades to the
+#     EXISTENCE grammar as a FUTURE trigger (if a later packet bounds the no-limit read
+#     in-store); the brief's "existence degrades to counted" reads the arrow backwards.
+#     What 04b4 does: the NO-LIMIT read gains the COUNTED grammar; the CALLER-LIMITED read
+#     KEEPS the existence grammar (it over-fetches by one and cannot know K). "Two grammars
+#     never both live FOR ONE PROPERTY" holds because the grammar is a function of the
+#     caller's own visible input (did I pass `limit`?), never of hidden internals (§2).
+#   ⚠ THIS IS A FLAGGED FORK — see REPORT-contract-04b4-1.md §309. If the lead rules the
+#     brief's literal reading, the CALLER-LIMITED guard below (marked ⚑FORK) flips.
+#
+# The display cap value is a PRODUCTION SURFACE THIS CONTRACT DEFINES:
+#   server._DEFAULT_TASK_QUERY_DISPLAY_CAP: int  (a positive int, the no-limit view size).
+# RED today: the constant does not exist and no cap is applied.
+# =========================================================================== #
+
+
+def _display_cap() -> int:
+    """The default no-limit display cap the builder must define, or a clean RED."""
+    from loremaster import server  # noqa: PLC0415
+
+    cap = getattr(server, "_DEFAULT_TASK_QUERY_DISPLAY_CAP", None)
+    assert isinstance(cap, int) and not isinstance(cap, bool) and cap >= 2, (
+        "server._DEFAULT_TASK_QUERY_DISPLAY_CAP is absent or not a sane positive int. "
+        "R9's second clause (packet 04b) rules that the NO-LIMIT `lore_tasks action=query` "
+        "read gets a DEFAULT display cap so an unfiltered query stops serving the whole "
+        "ledger. Define it (a positive int >= 2) and apply it on the no-limit path in "
+        "AppContext._task_listing / _render_task_listing."
+    )
+    return cap
+
+
+_COUNTED_ELISION = re.compile(r"\+(\d+) more — re-run with limit=(\d+)")
+_EXISTENCE_GRAMMAR_MARK = "MORE MATCH than were served"
+
+
+class TestTheNoLimitReadGetsADefaultDisplayCapWithTheCountedGrammar:
+    """⛔⛔ **#309 — R9's ruled DEFAULT DISPLAY CAP, unimplemented since 04b-1.**
+
+    MEASURED at ``5c5ff7a`` (contract-04b4-1): ``AppContext._task_listing``'s ``cap is
+    None`` branch returns ``TaskListing(rows=all, more=False)`` and ``_render_task_listing``
+    emits NO line when ``not more`` — so ``lore_tasks action=query`` with no ``limit``
+    serves the WHOLE ledger, which is the cost R9 was ruled to remove. These pins are RED
+    on that build and go GREEN when the no-limit path caps its view and DISCLOSES the
+    surplus with the HOUSE counted grammar ``+K more — re-run with limit=N`` (the same
+    template ``_render_comms_fleet`` already serves at ``server.py`` — reuse it, do not
+    clone it, #102).
+
+    **WHAT WRONG BUILD DOES THIS KILL?** One that caps the view but renders a CONSTANT or
+    WINDOW-DERIVED surplus (``+1 more`` always, or ``+len(window)``) — a served number that
+    is not the true remainder is a false clear (TRUST doctrine: a count must describe the
+    whole set its label claims). The parametrised ``surplus`` leg forces K to TRACK the
+    real surplus, so a hard-coded or window-derived K reddens.
+    """
+
+    @pytest.mark.parametrize("surplus", [1, 2, 7], ids=["surplus-1", "surplus-2", "surplus-7"])
+    async def test_the_no_limit_read_over_a_surplus_serves_an_HONEST_counted_line(
+        self, surplus: int
+    ) -> None:
+        """⛔ The RED heart of #309: a capped no-limit view names its TRUE remainder."""
+        cap = _display_cap()
+        population = cap + surplus
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, population)
+            served = str(await _tool_seam(ledger).tasks(action="query"))
+        finally:
+            await ledger.close()
+            await drop_database(env)
+
+        shown = served.count("(id ")
+        assert shown == cap, (
+            f"a no-limit query over {population} tasks served {shown} rows; R9's default "
+            f"display cap is {cap}, so the view must hold exactly {cap}. served={served!r}"
+        )
+        match = _COUNTED_ELISION.search(served)
+        assert match is not None, (
+            f"a no-limit query over {population} tasks (cap {cap}) served NO counted-elision "
+            f"line. R9 rules the no-limit path DISCLOSE its surplus with the house grammar "
+            f"`+K more — re-run with limit=N`. served={served!r}"
+        )
+        elided, next_limit = int(match.group(1)), int(match.group(2))
+        assert elided == surplus, (
+            f"the counted line names +{elided} more, but the true surplus is {surplus} "
+            f"({population} matching − {cap} shown). A served count that is not the real "
+            f"remainder is a false clear — K must be DERIVED from the materialised set "
+            f"(len − shown), not a constant or the window size. served={served!r}"
+        )
+        assert shown + elided == population, (
+            f"shown ({shown}) + more ({elided}) != total ({population}) — the arithmetic a "
+            f"reader verifies from the render alone does not close. served={served!r}"
+        )
+        assert next_limit > cap, (
+            f"the re-ask `limit={next_limit}` is not larger than the cap {cap}, so obeying "
+            f"it would serve the same truncated view — a served instruction that reveals "
+            f"nothing new. served={served!r}"
+        )
+        assert _EXISTENCE_GRAMMAR_MARK not in served, (
+            f"the no-limit capped read served the CALLER-LIMITED existence grammar "
+            f"({_EXISTENCE_GRAMMAR_MARK!r}) instead of the counted grammar. The no-limit "
+            f"path materialises the full set and KNOWS K, so it owes the honest count, not "
+            f"the weaker existence bit. served={served!r}"
+        )
+
+    async def test_the_no_limit_read_AT_OR_BELOW_the_cap_serves_NO_elision_line(self) -> None:
+        """⛔ The complete world: no surplus ⇒ no line ⇒ no false disclosure.
+
+        GREEN at ``5c5ff7a`` and must STAY green — a build that ALWAYS renders a counted
+        line (even ``+0 more``) claims a surplus that does not exist on a complete answer.
+        Seeds two rows (< any sane cap, guaranteed by ``_display_cap``'s ``>= 2`` floor), so
+        the read is complete. Deliberately does NOT read the cap constant, so it is a GREEN
+        guard today AND after the fix — reddening only on a build that discloses a phantom
+        surplus on a complete answer.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, 2)
+            served = str(await _tool_seam(ledger).tasks(action="query"))
+        finally:
+            await ledger.close()
+            await drop_database(env)
+        assert served.count("(id ") == 2, f"expected both rows served; got {served!r}"
+        assert _COUNTED_ELISION.search(served) is None, (
+            f"a COMPLETE no-limit read (2 rows) served a counted-elision line — a surplus "
+            f"disclosure on an answer that has no surplus. served={served!r}"
+        )
+        assert _EXISTENCE_GRAMMAR_MARK not in served, (
+            f"a complete read served the existence grammar; served={served!r}"
+        )
+
+    async def test_CALLER_limited_read_KEEPS_the_existence_grammar_not_the_counted_one(
+        self,
+    ) -> None:
+        """⛔ ⚑FORK — the "two grammars, two properties" leg (wave-C §2). ⚑
+
+        GREEN at ``5c5ff7a`` (the wave-C behaviour). It pins that a CALLER-LIMITED listing
+        (the caller passed ``limit``) still uses the EXISTENCE grammar — it over-fetches by
+        ONE and cannot know K, so the counted grammar would be a lie on this path. The
+        grammar is a function of the caller's visible input, not of hidden internals; that
+        is what makes "two grammars never both live FOR ONE PROPERTY" true while both
+        remain live for their OWN properties.
+
+        ⚠ **THIS LEG RESTS ON THE RESOLVED #309 FORK** (REPORT-contract-04b4-1.md §309): the
+        wave-C authority (counted↔existence by input shape) vs the brief's paraphrase
+        ("existence degrades to counted everywhere"). If the lead rules the brief's literal
+        reading, DELETE this leg — the caller-limited path would then also carry the counted
+        grammar (and would need a store-side count the wave-C ruling forbade).
+
+        Uses the EXISTING ``_LISTING_CAP`` (not the new #309 display-cap constant), so it is a
+        GREEN guard on the wave-C caller-limited behaviour today — independent of whether the
+        no-limit display cap has shipped.
+        """
+        ledger, env = await _fresh_ledger()
+        try:
+            await _seed_identical_tasks(ledger, _LISTING_CAP + 3)
+            served = str(await _tool_seam(ledger).tasks(action="query", limit=_LISTING_CAP))
+        finally:
+            await ledger.close()
+            await drop_database(env)
+        assert served.count("(id ") == _LISTING_CAP, (
+            f"caller cap not honoured; served={served!r}"
+        )
+        assert _EXISTENCE_GRAMMAR_MARK in served, (
+            f"a caller-limited listing with a further matching row dropped the existence "
+            f"grammar. A caller-limited read over-fetches by one and knows only that MORE "
+            f"exist, not how many — so it discloses existence, never a (forged) count. "
+            f"served={served!r}"
+        )
+        assert _COUNTED_ELISION.search(served) is None, (
+            f"a caller-limited listing served the COUNTED grammar `+K more — re-run with "
+            f"limit=N`, which claims a remainder count it cannot honestly know (it only "
+            f"over-fetched by one). served={served!r}"
+        )
+
+
+class TestTransformBeforeValidateIsAPinnedKnownBound:
+    """⛔ **#310's CLASS half — a PINNED KNOWN BOUND with a narrow ordering guard, not a
+    general instrument.**
+
+    The concrete defect (a seam that ADDS to a caller's ``limit`` before validating it,
+    destroying every refusal that names the caller's own value — finding #310) is guarded
+    per-instance by :class:`TestTheCALLERSOwnLimitIsWhatGetsVALIDATED` and
+    :class:`TestTheCapPredicateHasONEImplementationPROVENByMutation`. §D-#310 asks whether
+    the CLASS — *"any dispatcher that transforms a parameter it does not own BEFORE the
+    layer that validates it"* — can get a CHEAP DERIVED instrument, or must be PINNED.
+
+    ⚠ **CHOSEN: PIN THE MISS for the general class (#137/#138); build the NARROW ordering
+    guard that IS cheap.** A GENERAL "transform-before-validate" scan is DATA-FLOW analysis,
+    not a syntactic pattern: it must know, per dispatcher, which names are caller-owned
+    params, which calls validate, which operations transform, and the ORDER between a
+    transform and the validation of the SAME value on every path. A syntactic AST scan
+    would be a heuristic with false positives (a legal validate-then-transform) and false
+    negatives (a transform behind a helper). The class has ONE known instance, so a
+    data-flow instrument costs more than the disease (deferral law: cure > disease → PIN).
+    What IS cheap — and built below — is a SOURCE-ORDER guard on that ONE known seam.
+
+    ⚠ **NAMED RE-OPEN TRIGGER** (met DELIBERATELY, not by outage): a SECOND
+    transform-before-validate instance on a dispatch-on-action parameter, OR a new
+    dispatch-on-action numeric parameter a seam ADJUSTS before validating. At two instances
+    the data-flow instrument earns its cost. If you built the general scan, DELETE this
+    class and say so in your wave report.
+    """
+
+    def test_the_KNOWN_over_fetch_seam_validates_BEFORE_it_transforms(self) -> None:
+        """⛔ The cheap narrow instrument: at ``_task_listing`` the caller's cap is validated
+        BEFORE the ``cap + 1`` over-fetch. Reddens if the exact #310 defect is reintroduced
+        at this seam (the ``+1`` moved above the ``validated_task_limit`` call).
+        """
+        import inspect  # noqa: PLC0415
+
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        source = inspect.getsource(AppContext._task_listing)  # noqa: SLF001 - the seam IS the probe
+        validate_at = source.find("validated_task_limit(")
+        transform_at = source.find("cap + 1")
+        assert validate_at != -1, (
+            "AppContext._task_listing no longer calls the shared `validated_task_limit` — "
+            "the caller's cap is validated somewhere else, or by a private copy. #310's "
+            "concrete guard has moved; re-point this pin and TestTheCapPredicateHasONE... ."
+        )
+        assert transform_at != -1, (
+            "AppContext._task_listing no longer over-fetches with `cap + 1`; the ESC-5 "
+            "mechanism (c) this bound is about has changed shape. Re-read #310 and re-point."
+        )
+        assert validate_at < transform_at, (
+            "AppContext._task_listing TRANSFORMS the caller's cap (`cap + 1`) BEFORE it "
+            "validates it (`validated_task_limit`) — this IS finding #310: limit=-1 would "
+            "reach the ledger as 0 and be refused naming a value the caller never passed; "
+            "limit=0 would become a legal LIMIT 1; limit=True would become LIMIT 2. Validate "
+            "the CALLER's value FIRST, then transform."
+        )
+
+    def test_the_class_anchor_predicate_is_present(self) -> None:
+        """⛔ The bound is honest only while the ONE known instance stays guardable: the
+        shared ``validated_task_limit`` is the predicate the seam validates the caller's cap
+        THROUGH before the over-fetch. If it vanishes the class regresses to fully unguarded
+        and this KNOWN BOUND becomes a lie.
+        """
+        import loremaster.tasks as tasks_module  # noqa: PLC0415
+
+        assert callable(getattr(tasks_module, "validated_task_limit", None)), (
+            "loremaster.tasks.validated_task_limit is gone — the transform-before-validate "
+            "class has no anchored guard left. This KNOWN BOUND (#310) is now a lie; either "
+            "restore the shared predicate or re-open #310 and build the general instrument."
         )

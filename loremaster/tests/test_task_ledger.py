@@ -2334,3 +2334,117 @@ class TestTasksDoesNotHoldTheClassificationLabel:
             "text. This is the #93 -> #102 kill chain being rebuilt: a label is a "
             "human-facing summary, and rewording one is invisible to every gate."
         )
+
+
+class TestTransitiveBlockersCycleWalkAgreesFakeVsReal:
+    """⛔ **#324 R-2 — the DIFFERENTIAL fake-vs-real parity pin, promoted from the wave-C
+    cold-audit probe #3 (``scripts/audit_probes/coldaudit_wavec_r2_probe3.py``, cycle leg).**
+
+    DISCHARGES the STATED BOUND on
+    :meth:`~loremaster.tasks.FakeTaskLedger.transitive_blockers` — *"this method has no
+    fake-vs-real parity pin; the two implementations agree by CONSTRUCTION, not by
+    MEASUREMENT. Re-open trigger: the day any pin asserts on ids/truncated content through
+    this fake, it needs a parity leg first."* This IS that leg: it asserts on ids/truncated
+    CONTENT, MEASURED against the live store, so the fake can no longer drift silently.
+
+    A cycle is RAW-seeded on BOTH sides — ``test_blocks_edge._seed_cycle`` writes the
+    ``blocks`` edge and ``blocked_by`` column directly, bypassing the ledger's acyclicity
+    guard, because *"a detector reachable only through the guard that prevents the condition
+    is a detector nobody has tested."* The two walks must agree byte-for-byte on
+    ``(index-mapped ids, truncated, max_depth_used)``.
+    """
+
+    @staticmethod
+    def _force_blocked_by(database: FakeTaskDatabase, task_id: str, blockers: list[str]) -> None:
+        """Force a fake task's ``blocked_by`` column, whatever the model's mutability."""
+        task = database.tasks[task_id]
+        try:
+            object.__setattr__(task, "blocked_by", list(blockers))
+        except Exception:  # noqa: BLE001 - fall back to a model copy if the field is frozen
+            database.tasks[task_id] = task.model_copy(update={"blocked_by": list(blockers)})
+
+    @classmethod
+    async def _real_cycle(cls, length: int) -> tuple[frozenset[str], bool, int]:
+        """A raw-seeded ``blocks`` cycle in the LIVE store, walked by the real ledger."""
+        from test_blocks_edge import _seed_cycle  # noqa: PLC0415 - local test module
+
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        ledger = TaskLedger(
+            url=env.url,
+            namespace=env.namespace,
+            database=env.database,
+            user=env.user,
+            password=env.password,
+        )
+        await ledger.ensure_ready()
+        try:
+            setup = await connect_admin(env)
+            try:
+                ids = await _seed_cycle(setup, length)
+            finally:
+                await setup.close()
+            result = await ledger.transitive_blockers(ids[0])
+        finally:
+            await ledger.close()
+            await drop_database(env)
+        index_of = {task_id: f"n{position}" for position, task_id in enumerate(ids)}
+        return (
+            frozenset(index_of.get(reached, reached) for reached in result.ids),
+            result.truncated,
+            result.max_depth_used,
+        )
+
+    @classmethod
+    async def _fake_cycle(cls, length: int) -> tuple[frozenset[str], bool, int]:
+        """The SAME cycle hand-wired into ``FakeTaskLedger``'s db, walked by the fake."""
+        ledger = FakeTaskLedger(db=FakeTaskDatabase())
+        ids = [
+            await ledger.create_task(f"subject {position}", "a real description", created_by="parity")
+            for position in range(length)
+        ]
+        for position, task_id in enumerate(ids):
+            self_blocker = ids[(position - 1) % length]
+            cls._force_blocked_by(ledger.db, task_id, [self_blocker])
+        result = await ledger.transitive_blockers(ids[0])
+        index_of = {task_id: f"n{position}" for position, task_id in enumerate(ids)}
+        return (
+            frozenset(index_of.get(reached, reached) for reached in result.ids),
+            result.truncated,
+            result.max_depth_used,
+        )
+
+    @pytest.mark.parametrize("length", [1, 2, 3, 5])
+    async def test_the_cycle_walk_AGREES_fake_vs_real(self, length: int) -> None:
+        """⛔ The differential: byte-agreement on cycle content, both implementations."""
+        real = await self._real_cycle(length)
+        fake = await self._fake_cycle(length)
+        assert real == fake, (
+            f"transitive_blockers over a raw-seeded {length}-cycle DIVERGED fake-vs-real:\n"
+            f"  REAL: ids={sorted(real[0])} truncated={real[1]} depth={real[2]}\n"
+            f"  FAKE: ids={sorted(fake[0])} truncated={fake[1]} depth={fake[2]}\n"
+            f"FakeTaskLedger must agree with the live store on cycle content — a friendlier "
+            f"fake lets a consumer bug pass green here and break for real (#324 R-2)."
+        )
+        assert "n0" in real[0] and "n0" in fake[0], (
+            f"a task on a {length}-cycle is transitively blocked by itself, so it must appear "
+            f"in its OWN reach on both sides — the property the real cycle detector rests on: "
+            f"real={sorted(real[0])} fake={sorted(fake[0])}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_parity_comparison_SEES_an_injected_drift(self) -> None:
+        """⛔ The injected-drift control (#324 R-2): without it, the differential above is
+        satisfied by a comparison that cannot tell agreement from divergence.
+
+        The honest 3-cycle agrees; then a drift is injected into the fake's OWN result (the
+        cycle self-reach ``n0`` dropped) and the SAME comparison must now report divergence.
+        """
+        real = await self._real_cycle(3)
+        fake = await self._fake_cycle(3)
+        assert real == fake, "the honest 3-cycle must agree before drift is injected"
+        drifted = (frozenset(fake[0] - {"n0"}), fake[1], fake[2])
+        assert real != drifted, (
+            "the parity comparison did NOT detect an injected drift (a fake walk missing the "
+            "cycle self-reach n0), so the differential leg above would pass even when the "
+            "fake and the live store disagree — a vacuous parity pin. Injected-drift control "
+            "FAILED (#324 R-2)."
+        )

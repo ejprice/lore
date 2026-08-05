@@ -4260,3 +4260,150 @@ async def _tool_param_description(tool_name: str, param_name: str) -> str | None
         properties = (tool.inputSchema or {}).get("properties", {})
         description = properties.get(param_name, {}).get("description")
         return str(description) if description is not None else None
+
+
+class TestEveryDispatchActionIsDrivableWithoutAMissingArgOrMethod:
+    """⛔ **#322 — the name-free ∀ dispatch-fixture invariant, with BOTH faces.**
+
+    A parametrised ∀ pin over an action tuple is only as real as its fixture helper's
+    ability to DRIVE each member. When a new action joins a tuple and the helper falls
+    through to ``return {}``, every pin over that member dies inside ``server._require_arg``
+    with a ValueError — *"a RED that looks like a build defect and measures NOTHING"* — or,
+    once the arg is supplied, on an ``AttributeError`` because the shared ``FakeTaskLedger``
+    lacks a verb its production twin has. Both are the finding's two faces (#322): the
+    KWARGS fall-through and the DOUBLE's missing method. This invariant converts BOTH into a
+    CLEAR fail-closed RED that NAMES the action and the gap.
+
+    ⚠ **NAME-FREE, AND WHY IT CANNOT GO STALE.** The ∀ ranges over
+    ``TASK_WRITE_ACTIONS + TASK_READ_ACTIONS`` (and the findings pair) — the SAME tuples the
+    footer ∀ legs use — and
+    :meth:`TestTheFooterRidesTheOUTCOMENotTheVERB.test_the_declared_action_PARTITION_covers_the_dispatchers_OWN_action_set`
+    (:847) asserts that union EQUALS ``server._TASK_ACTIONS`` / ``server._FINDING_ACTIONS``
+    in both directions. So ranging over the tuples IS ranging over the dispatcher's own
+    action set: a new action added to the production constant and NOT given a fixture branch
+    reddens HERE, fail-closed with its name, instead of dying as an ambiguous ValueError in
+    some unrelated pin.
+
+    ⚠ **THE RIDER — IT MUST DISCRIMINATE.** A fixture that returns ``{}`` for a new
+    arg-requiring action makes this RED (the KWARGS face); a fake missing a verb the
+    dispatcher calls makes this RED (the DOUBLE face). The positive control below proves the
+    no-raise assertion is not vacuous by showing a STRIPPED drive genuinely raises.
+    """
+
+    @pytest.mark.parametrize("action", TASK_WRITE_ACTIONS + TASK_READ_ACTIONS)
+    async def test_every_TASK_action_is_driven_by_its_own_fixture(self, action: str) -> None:
+        """⛔ Drive ``lore_tasks`` through THIS action's own ``_task_action_kwargs`` and
+        require the dispatcher to REACH a rendered string — no missing-arg ValueError, no
+        missing-method AttributeError.
+        """
+        try:
+            served = await _tasks_call(
+                action=action, agent=CALLER_A, traffic=TRAFFIC_PENDING, registered=CALLER_A
+            )
+        except ValueError as exc:
+            pytest.fail(
+                f"lore_tasks action={action!r}: driving it through its own "
+                f"_task_action_kwargs raised a missing-arg ValueError ({exc}). The fixture "
+                f"fell through to `{{}}` (or under-seeded) for an action that REQUIRES an "
+                f"argument — every ∀ pin over it (the footer legs, this invariant) then "
+                f"measures NOTHING while looking like a build defect. Add its branch to "
+                f"_task_action_kwargs (#322, KWARGS face)."
+            )
+        except AttributeError as exc:
+            pytest.fail(
+                f"lore_tasks action={action!r}: FakeTaskLedger lacks a method its production "
+                f"twin has ({exc}). The shared double is missing a verb the dispatcher "
+                f"calls, so a CORRECT build turns into an AttributeError in every test that "
+                f"drives this fake. Add the method to FakeTaskLedger (#322, DOUBLE face; "
+                f"overlaps #324 R-2's parity leg)."
+            )
+        assert isinstance(served, str), (
+            f"lore_tasks action={action!r} did not reach a rendered string: {served!r}"
+        )
+
+    @pytest.mark.parametrize("action", FINDING_WRITE_ACTIONS + FINDING_READ_ACTIONS)
+    async def test_every_FINDING_action_is_driven_by_its_own_fixture(self, action: str) -> None:
+        """⛔ The same invariant on the second dispatcher — the one with the most return
+        points, and where C-DEF 2 (``_finding_action_kwargs`` fall-through) first bit.
+        """
+        try:
+            served = await _findings_call(
+                action=action, agent=CALLER_A, traffic=TRAFFIC_PENDING, registered=CALLER_A
+            )
+        except ValueError as exc:
+            pytest.fail(
+                f"lore_findings action={action!r}: driving it through its own "
+                f"_finding_action_kwargs raised a missing-arg ValueError ({exc}). Fixture "
+                f"fall-through to `{{}}` for an arg-requiring action; add its branch to "
+                f"_finding_action_kwargs (#322, KWARGS face)."
+            )
+        except AttributeError as exc:
+            pytest.fail(
+                f"lore_findings action={action!r}: FakeFindingLedger lacks a method its "
+                f"production twin has ({exc}). Add it (#322, DOUBLE face)."
+            )
+        assert isinstance(served, str), (
+            f"lore_findings action={action!r} did not reach a rendered string: {served!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_a_stripped_drive_DOES_raise_so_the_invariant_can_FIRE(
+        self,
+    ) -> None:
+        """⛔ Without this, the two legs above are satisfied by a dispatcher that NEVER
+        raises for a missing arg — an absence proving nothing. Driving ``transition`` (which
+        needs ``task_id``/``status``/``actor``) with NO kwargs is exactly the state a
+        fixture fall-through to ``{}`` produces, and it must raise — so the no-raise
+        assertion above is a real property, not a vacuous pass.
+        """
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        harness = _footer_harness(traffic=TRAFFIC_PENDING)
+        with pytest.raises((ValueError, TypeError)):
+            await AppContext.tasks(harness, action="transition")
+
+
+class TestTheCommsIdentitySeamHasNoDefaultForNameOrTo:
+    """⛔ **#324 R-4 — ``name``/``to`` are keyword-REQUIRED on ``_validate_comms_identities``.**
+
+    RED at ``5c5ff7a``: the seam signs ``name: str | None = None, to: list[str] | None =
+    None`` (``server.py``:5478), so a FUTURE dispatcher that gains a ``name``/``to`` and
+    FORGETS to pass it bypasses identity validation SILENTLY — the seam validates vacuously
+    over a value it never received. This is the seam that CONTAINS the injection surface
+    (§B); a caller that omits an identity it holds must fail LOUD, never bypass. FIX: remove
+    the defaults so every call site MUST CHOOSE — this repo's *"fixture factories must not
+    default a parameter the code branches on"* law, applied to PRODUCTION. The three current
+    sites that pass neither (``server.py``:3154/3597/3739) gain ``name=None, to=None``; the
+    footer ∀ legs and #322's invariant already drive those dispatchers, so a forgotten call
+    site reddens loud rather than silently skipping validation.
+    """
+
+    def test_name_and_to_are_keyword_required_with_NO_default(self) -> None:
+        """⛔ The signature pin: no default ⇒ a caller cannot omit the identity."""
+        import inspect  # noqa: PLC0415
+
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        signature = inspect.signature(AppContext._validate_comms_identities)
+        for parameter_name in ("name", "to"):
+            parameter = signature.parameters[parameter_name]
+            assert parameter.default is inspect.Parameter.empty, (
+                f"_validate_comms_identities.{parameter_name} defaults to "
+                f"{parameter.default!r}; it must be keyword-REQUIRED so no call site can omit "
+                f"it and validate an identity it holds vacuously. #324 R-4 — remove the "
+                f"default and pass name=None, to=None at the three sites that omit it."
+            )
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, (
+                f"_validate_comms_identities.{parameter_name} must stay KEYWORD-ONLY."
+            )
+
+    def test_omitting_name_and_to_FAILS_LOUD(self) -> None:
+        """⛔ The behavioural half: a caller that omits both must raise, not silently pass.
+
+        RED at ``5c5ff7a`` (the defaults swallow the omission); GREEN once the defaults are
+        gone. A charset-legal ``agent``/``session`` is used so the raise is about the MISSING
+        REQUIRED KEYWORDS, never about a bad value.
+        """
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        with pytest.raises(TypeError):
+            AppContext._validate_comms_identities(CALLER_A[0], session=CALLER_A[1])

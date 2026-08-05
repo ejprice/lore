@@ -8224,3 +8224,267 @@ class TestRecallMemoryFilters:
         assert _IMPACT_FACT_NOTE not in rendered, (
             "wrong labels must be excluded despite matching kind"
         )
+
+
+class TestServedParamDescriptionsMatchTheRefusalMatrix:
+    """⛔ **#319 — the DERIVED served-description guard: matrix canonical, prose a citation.**
+
+    A served tool-parameter description is where an LLM learns the tool's contract (THE
+    CONSUMER LAW). Finding #319: ``lore_tasks.limit`` claimed *"For 'rollup' ONLY"* long
+    after ruling R9 made it legal for ``query`` too — a served lie that TEACHES an agent
+    AWAY from the very affordance ESC-5 exists to make honest, pinned by nothing. The acute
+    instance was corrected in ``0ff05ed``; this is the DURABLE fix the finding asked for: a
+    pin that checks each strict-to-action parameter's served description against the REFUSAL
+    MATRIX it describes, DERIVED so it reddens the day either drifts (the Ruling-7/9/10 move:
+    the code is canonical, the prose is demoted to a citation).
+
+    ⚠ **BOTH the param SET and its accepting-actions are DERIVED FROM THE DISPATCHER, never
+    hand-listed** — a hand-list is the quantifier-law failure mode (a new strict-to-action
+    param would be silently unguarded). The AST reads the dispatcher's OWN refusal guards
+    (``action != X and param is not None`` / ``action not in SET and param is not None``),
+    resolves the accepting-action set through the module, then requires the served prose to
+    name EXACTLY that set in its ``For '<actions>' ONLY`` citation.
+
+    The served text is read from the LIVE registered schema (as
+    :class:`TestNoDeadToolNamesInAgentFacingText` does), so this fails on the ACTUAL served
+    surface, not on plumbing. Covers ``lore_tasks`` AND ``lore_findings`` (the quantifier law
+    across surfaces — a pin guarding only the family whose defect prompted it is the failure
+    mode it exists to catch).
+    """
+
+    # (dispatcher-attr, served tool name) for the dispatch-on-action tools whose refusal
+    # matrix this pin derives. DERIVED companions to test_task_read_surface's branch scan.
+    _DISPATCH_TOOLS = (("tasks", "lore_tasks"), ("findings", "lore_findings"))
+
+    @staticmethod
+    def _derived_strict_to_action_matrix(method: Any) -> dict[str, frozenset[str]]:
+        """{param: accepting-action-set} read from ``method``'s OWN refusal guards.
+
+        Matches ``if <action-compare> and <param> is not None:`` where ``<action-compare>``
+        is ``action != CONST`` (accepting = {CONST}) or ``action not in SET`` (accepting =
+        set(SET)); ``SET`` may be a module constant NAME or a tuple literal of NAMEs. This is
+        the exact shape ``AppContext.tasks``/``findings`` refuse an out-of-scope param with.
+        """
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+        import textwrap  # noqa: PLC0415
+
+        import loremaster.server as server_module  # noqa: PLC0415
+
+        def _resolve(node: ast.expr) -> str | None:
+            if isinstance(node, ast.Name):
+                value = getattr(server_module, node.id, None)
+                return value if isinstance(value, str) else None
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            return None
+
+        def _accepting(node: ast.Compare) -> frozenset[str] | None:
+            if not (isinstance(node.left, ast.Name) and node.left.id == "action"):
+                return None
+            operator, target = node.ops[0], node.comparators[0]
+            if isinstance(operator, ast.NotEq):
+                one = _resolve(target)
+                return frozenset({one}) if one is not None else None
+            if isinstance(operator, ast.NotIn):
+                if isinstance(target, ast.Name):
+                    value = getattr(server_module, target.id, None)
+                    if isinstance(value, tuple) and all(isinstance(item, str) for item in value):
+                        return frozenset(value)
+                    return None
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    resolved_elements = [_resolve(element) for element in target.elts]
+                    if any(item is None for item in resolved_elements):
+                        return None
+                    return frozenset(item for item in resolved_elements if item is not None)
+            return None
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+        matrix: dict[str, frozenset[str]] = {}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.If) and isinstance(node.test, ast.BoolOp)):
+                continue
+            if not isinstance(node.test.op, ast.And) or len(node.test.values) != 2:
+                continue
+            compares = [v for v in node.test.values if isinstance(v, ast.Compare) and len(v.ops) == 1]
+            if len(compares) != 2:
+                continue
+            action_set: frozenset[str] | None = None
+            param_name: str | None = None
+            for compare in compares:
+                accepting = _accepting(compare)
+                if accepting is not None:
+                    action_set = accepting
+                elif (
+                    isinstance(compare.left, ast.Name)
+                    and isinstance(compare.ops[0], ast.IsNot)
+                    and isinstance(compare.comparators[0], ast.Constant)
+                    and compare.comparators[0].value is None
+                ):
+                    param_name = compare.left.id
+            if action_set is not None and param_name is not None:
+                matrix[param_name] = action_set
+        return matrix
+
+    @staticmethod
+    async def _served_descriptions() -> dict[str, dict[str, str]]:
+        """{tool_name: {param: served description}} from the LIVE registered schema."""
+        import tempfile  # noqa: PLC0415
+
+        slug = _slug()
+        config = _config(slug, Path(tempfile.mkdtemp()) / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        served: dict[str, dict[str, str]] = {}
+        for tool in await mcp.list_tools():
+            properties = (tool.inputSchema or {}).get("properties", {})
+            served[tool.name] = {
+                field: (schema.get("description") or "")
+                for field, schema in properties.items()
+            }
+        return served
+
+    @staticmethod
+    def _claimed_actions(description: str) -> set[str] | None:
+        """The action set a ``For '<a>' … ONLY`` citation CLAIMS, or None if absent."""
+        head = re.match(r"For (.+?) ONLY", description)
+        if head is None:
+            return None
+        return set(re.findall(r"'([a-z_]+)'", head.group(1)))
+
+    async def test_every_strict_to_action_param_description_matches_its_matrix(self) -> None:
+        """⛔ The RED-discriminating heart of #319 (GREEN at ``5c5ff7a`` — the acute lie is
+        fixed — but reddens the instant a strict-to-action description drifts from the code).
+        """
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        served = await self._served_descriptions()
+        checked = 0
+        for attribute, tool_name in self._DISPATCH_TOOLS:
+            matrix = self._derived_strict_to_action_matrix(getattr(AppContext, attribute))
+            assert matrix, (
+                f"derived NO strict-to-action refusal guards from AppContext.{attribute}; the "
+                f"scan is not reading the dispatcher's own `action != X and param is not None` "
+                f"guards, so every leg below would pass vacuously"
+            )
+            for param, accepting in matrix.items():
+                description = served.get(tool_name, {}).get(param, "")
+                claimed = self._claimed_actions(description)
+                assert claimed is not None, (
+                    f"{tool_name}.{param}: its served description does not state its "
+                    f"accepting actions in a derivable `For '<actions>' ONLY` citation, so it "
+                    f"cannot be checked against the matrix ({sorted(accepting)}). The matrix "
+                    f"is canonical (#319); keep the prose a derivable citation of it.\n"
+                    f"served={description!r}"
+                )
+                assert claimed == set(accepting), (
+                    f"{tool_name}.{param}: the served description CLAIMS it is accepted for "
+                    f"{sorted(claimed)}, but the dispatcher's refusal matrix accepts it for "
+                    f"{sorted(accepting)}. This is finding #319 — a served description that "
+                    f"lies about which actions accept a parameter teaches an agent the wrong "
+                    f"contract. Repair the PROSE to name exactly the matrix (do not touch the "
+                    f"matrix to match the prose).\nserved={description!r}"
+                )
+                checked += 1
+        assert checked >= 4, (
+            f"only {checked} strict-to-action descriptions were checked; the derivation "
+            f"should cover at least lore_tasks' since/limit/max_depth/items"
+        )
+
+    async def test_the_finding_note_description_names_every_action_that_RECORDS_it(
+        self,
+    ) -> None:
+        """⛔ **#319's live RESIDUAL, found by the anchor-free sweep (sweep-desc-04b4-1).**
+
+        RED at ``5c5ff7a``: ``lore_findings.note`` is served as *"recorded with a 'resolve' /
+        'wontfix' transition. **Ignored by the other actions.**"* — but the dispatcher
+        forwards the top-level ``note`` to ``acknowledge`` TOO (``server.py``:3214, widened at
+        PKT-06 §3), and ``FindingLedger.acknowledge`` RECORDS it. ``acknowledge`` is one of
+        *"the other actions"* and does not ignore the note: a served lie of the #319 class.
+
+        DERIVED, not hand-listed: the set of actions that RECORD ``note`` is read from
+        ``AppContext.findings``' own branches (which ``action == X`` bodies reference the
+        top-level ``note``), so this reddens if a future action starts forwarding ``note``
+        without the description naming it. FIX (builder): the served text must name
+        ``acknowledge`` alongside ``resolve``/``wontfix`` (e.g. *"recorded with an
+        'acknowledge' / 'resolve' / 'wontfix' transition"*).
+        """
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+        import textwrap  # noqa: PLC0415
+
+        import loremaster.server as server_module  # noqa: PLC0415
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(AppContext.findings)))
+        recorders: set[str] = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.If)):
+                continue
+            test = node.test
+            if not (
+                isinstance(test, ast.Compare)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.left, ast.Name)
+                and test.left.id == "action"
+            ):
+                continue
+            references_note = any(
+                isinstance(inner, ast.Name) and inner.id == "note"
+                for statement in node.body
+                for inner in ast.walk(statement)
+            )
+            if not references_note:
+                continue
+            target = test.comparators[0]
+            action_value: str | None = None
+            if isinstance(target, ast.Name):
+                resolved = getattr(server_module, target.id, None)
+                action_value = resolved if isinstance(resolved, str) else None
+            elif isinstance(target, ast.Constant) and isinstance(target.value, str):
+                action_value = target.value
+            if action_value is not None:
+                recorders.add(action_value)
+
+        assert recorders, (
+            "derived NO action branches referencing the top-level `note` in "
+            "AppContext.findings — the scan is not reading the dispatcher, so the leg below "
+            "would pass vacuously"
+        )
+        served = await self._served_descriptions()
+        description = served.get("lore_findings", {}).get("note", "")
+        missing = sorted(action for action in recorders if f"'{action}'" not in description)
+        assert not missing, (
+            f"lore_findings.note is RECORDED by {sorted(recorders)} but its served "
+            f"description does not name {missing}. That is #319: the description teaches an "
+            f"agent that {missing} ignore the note, while the dispatcher forwards it to them "
+            f"and the ledger records it. Name every recording action in the prose.\n"
+            f"served={description!r}"
+        )
+
+    async def test_POSITIVE_CONTROL_the_matrix_derivation_and_parser_DISCRIMINATE(
+        self,
+    ) -> None:
+        """⛔ Without this, the matrix leg is satisfied by a derivation that finds nothing and
+        a parser that matches anything.
+        """
+        from loremaster.server import (  # noqa: PLC0415
+            _TASK_ACTIONS_ACCEPTING_LIMIT,
+            AppContext,
+        )
+
+        matrix = self._derived_strict_to_action_matrix(AppContext.tasks)
+        assert matrix.get("limit") == frozenset(_TASK_ACTIONS_ACCEPTING_LIMIT), (
+            f"the derivation did not recover lore_tasks.limit's accepting set from the "
+            f"dispatcher: {matrix.get('limit')} vs {frozenset(_TASK_ACTIONS_ACCEPTING_LIMIT)}"
+        )
+        assert matrix.get("since") == frozenset({"rollup"}), (
+            f"the derivation misread lore_tasks.since's guard: {matrix.get('since')}"
+        )
+        # The parser distinguishes a TRUE citation from a FALSE one.
+        assert self._claimed_actions("For 'rollup' and 'query' ONLY (rejected …)") == {
+            "rollup",
+            "query",
+        }
+        assert self._claimed_actions("For 'rollup' ONLY (rejected …)") == {"rollup"}
+        assert self._claimed_actions("a free-form description with no ONLY clause") is None

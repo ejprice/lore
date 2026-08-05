@@ -431,14 +431,16 @@ class FakeTaskLedger:
         particular: ``max_depth_used`` travels back to a RENDER, so a double carrying its
         own private default would serve a number production never would.
 
-        ⚠ **STATED BOUND — this method has no fake-vs-real parity pin.** The
-        ``task_ledger_factory`` parity suite (``test_task_ledger.py``) runs only the
-        contract legs that exist, and none of them drives this verb; the real walk is
-        graded against the live store in ``test_blocks_edge.py`` instead. So the two
-        implementations agree by CONSTRUCTION (same bounds, same value object, same
-        phantom rule, same proximity order) and not by MEASUREMENT. Re-open trigger: the
-        day any pin asserts on ``ids``/``truncated`` content through this fake, it needs a
-        parity leg first.
+        ⚠ **BOUND DISCHARGED 2026-08-04 (#324 R-2).** This method USED to carry no
+        fake-vs-real parity pin — the two implementations agreed by CONSTRUCTION (same
+        bounds, same value object, same phantom rule, same proximity order) and not by
+        MEASUREMENT. ``test_task_ledger.py::TestTransitiveBlockersCycleWalkAgreesFakeVsReal``
+        now closes that: it raw-seeds the SAME ``blocks`` cycle in the live store and in
+        this fake, walks both, and asserts byte-agreement on ``(ids, truncated,
+        max_depth_used)`` (with an injected-drift control) — so a drift in this walk is
+        MEASURED, not assumed away. The stated re-open trigger ("the day any pin asserts on
+        ids/truncated content through this fake, it needs a parity leg first") is satisfied
+        by that pin.
         """
         await asyncio.sleep(0)
         depth = TASK_BLOCKER_MAX_DEPTH if max_depth is None else max_depth
