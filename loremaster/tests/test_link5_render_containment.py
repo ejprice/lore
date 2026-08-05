@@ -38,11 +38,11 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
 from loremaster.findings import Finding
 from loremaster.render import Rendered, render_fenced
 from loremaster.sanitise import FENCE_CHAR, MIN_FENCE_WIDTH, max_backtick_run, sanitise_line
 from loremaster.tasks import ClaimResult, Task
+from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------- #
 # LAZY ACCESSORS — the two symbols the builder mints. Reached through these so a
@@ -52,7 +52,7 @@ from loremaster.tasks import ClaimResult, Task
 
 def _fence_width() -> Callable[[str], int]:
     """``sanitise.fence_width`` or a clean, named RED (B-2 step 0 — the extraction)."""
-    import loremaster.sanitise as sanitise  # noqa: PLC0415
+    from loremaster import sanitise  # noqa: PLC0415
 
     fence_width = getattr(sanitise, "fence_width", None)
     assert fence_width is not None, (
@@ -66,7 +66,7 @@ def _fence_width() -> Callable[[str], int]:
 
 def _render_attributed() -> Callable[[str], Rendered]:
     """``render.render_attributed`` or a clean, named RED (B-2 — the inline seam)."""
-    import loremaster.render as render  # noqa: PLC0415
+    from loremaster import render  # noqa: PLC0415
 
     render_attributed = getattr(render, "render_attributed", None)
     assert render_attributed is not None, (
@@ -425,7 +425,7 @@ _AppContext: Any = None
 def _app() -> Any:
     """``loremaster.server.AppContext`` (the class object — its renders are static/class
     methods). Imported lazily so a collection is never coupled to server import order."""
-    global _AppContext
+    global _AppContext  # noqa: PLW0603 — module-level lazy AppContext class cache
     if _AppContext is None:
         from loremaster.server import AppContext  # noqa: PLC0415
 
@@ -898,7 +898,6 @@ class TestTheDerivedPartitionHasNoDoor:
         own SIGNATURE (its parameters ARE the identity class it gates), so a widening of
         Link 1b (a new gated param) or a silent narrowing reddens here rather than letting a
         newly-ungated identity param masquerade as still-gated."""
-        import inspect  # noqa: PLC0415
 
         from loremaster.server import AppContext  # noqa: PLC0415
 
@@ -970,13 +969,15 @@ def _domain_error_names() -> frozenset[str]:
     """Every served-error CLASS NAME — derived by ``issubclass`` off the seven bases, so a
     NEW domain error subclassing any base joins the scanned population automatically (the
     six-defeats lesson: derive by property, never a hand-list of class names)."""
-    import loremaster.agents as agents  # noqa: PLC0415
-    import loremaster.findings as findings  # noqa: PLC0415
-    import loremaster.impact as impact  # noqa: PLC0415
-    import loremaster.messages as messages  # noqa: PLC0415
-    import loremaster.store_read as store_read  # noqa: PLC0415
-    import loremaster.symbols as symbols  # noqa: PLC0415
-    import loremaster.tasks as tasks  # noqa: PLC0415
+    from loremaster import (
+        agents,  # noqa: PLC0415
+        findings,  # noqa: PLC0415
+        impact,  # noqa: PLC0415
+        messages,  # noqa: PLC0415
+        store_read,  # noqa: PLC0415
+        symbols,  # noqa: PLC0415
+        tasks,  # noqa: PLC0415
+    )
 
     bases = _served_error_bases()
     names: set[str] = set()
@@ -1042,7 +1043,7 @@ def _formatted_value_door(fv: ast.FormattedValue, door_vocab: frozenset[str]) ->
     return None
 
 
-def _served_error_door_sites(door_vocab: frozenset[str]) -> dict[str, list[str]]:
+def _served_error_door_sites(door_vocab: frozenset[str]) -> dict[str, list[str]]:  # noqa: PLR0912 — AST site-scan; branch-per-shape
     """``{module: [file:line — why]}`` for every served DOMAIN-ERROR construction that
     interpolates a caller param OUTSIDE the containment seam. Derived by AST over a PROPERTY
     (the fence-site scan's template), NEVER a hand-list of sites.
@@ -1360,7 +1361,6 @@ import inspect  # noqa: E402, PLC0415
 import typing  # noqa: E402, PLC0415
 from collections import abc as _abc  # noqa: E402, PLC0415
 
-
 # -- P-F: THE MODEL-GUARDED FIELD MANIFEST -------------------------------------------------- #
 # Per rendered model, its `str`-ish fields split into DOOR (caller-origin free text — the
 # over-drive tokenises each) and SAFE (system-minted id / closed-vocab enum / charset-gated
@@ -1396,7 +1396,7 @@ _MANIFEST: dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]] | None =
 
 
 def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
-    global _MANIFEST
+    global _MANIFEST  # noqa: PLW0603 — module-level lazy cache for the rendered-model field manifest
     if _MANIFEST is not None:
         return _MANIFEST
     Task = _model("loremaster.tasks", "Task")
@@ -1521,7 +1521,7 @@ def _forge_value(annotation: object, token: str) -> object:
     return token
 
 
-def _typed_default(annotation: object, *, forge: bool) -> object:
+def _typed_default(annotation: object, *, forge: bool) -> object:  # noqa: PLR0911 — return-per-type dispatch
     """A benign, TYPE-appropriate value for a SAFE field / a not-yet-overridden field. Recurses
     into nested pydantic models via :func:`_forge` so a whole model graph is buildable from the
     manifest with no per-model boilerplate. `Optional` defaults to `None` (branch drivers
@@ -1752,8 +1752,14 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_task_detail", lambda g: [_served("_render_task_detail", _forge(Task, forge=g))]),
         P("_render_task_listing", lambda g: [
-            _served("_render_task_listing", TaskListing.model_construct(rows=[_forge(Task, forge=g)], more=False)),
-            _served("_render_task_listing", TaskListing.model_construct(rows=[_forge(Task, forge=g)], more=True)),
+            _served(
+                "_render_task_listing",
+                TaskListing.model_construct(rows=[_forge(Task, forge=g)], more=False),
+            ),
+            _served(
+                "_render_task_listing",
+                TaskListing.model_construct(rows=[_forge(Task, forge=g)], more=True),
+            ),
         ]),
         P("_render_no_limit_task_query", lambda g: [
             _served("_render_no_limit_task_query", [_forge(Task, forge=g)]),
@@ -1761,46 +1767,115 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_transitive_blockers", lambda g: [
             # residue PRESENT (else-branch on ids, the D1 leak) + plural
-            _served("_render_transitive_blockers",
-                    _forge(Task, forge=g, blocked_by=[_tok(g, "Task", "blocked_by"), _tok(g, "Task", "blocked_by") + "2"]),
-                    TransitiveBlockers.model_construct(ids=[], truncated=False, max_depth_used=1)),
+            _served(
+                "_render_transitive_blockers",
+                _forge(
+                    Task, forge=g,
+                    blocked_by=[_tok(g, "Task", "blocked_by"), _tok(g, "Task", "blocked_by") + "2"],
+                ),
+                TransitiveBlockers.model_construct(ids=[], truncated=False, max_depth_used=1),
+            ),
             # residue ABSENT (blocked_by ⊆ ids) + ids present (B1/B4) + truncated (B2)
             _served("_render_transitive_blockers",
                     _forge(Task, forge=g, blocked_by=["walked"]),
                     TransitiveBlockers.model_construct(ids=["walked"], truncated=True, max_depth_used=2)),
         ]),
         P("_render_supersede_result", lambda g: [
-            _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"), []),
+            _served(
+                "_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"), []
+            ),
             _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
                     [_tok(g, "sup", "dependent")]),
         ]),
         P("_render_task_transition", lambda g: [
-            _served("_render_task_transition", _forge(Task, forge=g, status="done",
-                    report_path=(_T("Task", "report_path") if g else "r")), (_T("act", "actor") if g else BENIGN)),
+            _served(
+                "_render_task_transition",
+                _forge(Task, forge=g, status="done", report_path=(_T("Task", "report_path") if g else "r")),
+                (_T("act", "actor") if g else BENIGN),
+            ),
             _served("_render_task_transition", _forge(Task, forge=g, status="done", report_path=None),
                     (_T("act", "actor") if g else BENIGN)),
             _served("_render_task_transition", _forge(Task, forge=g, status="in_progress"),
                     (_T("act", "actor") if g else BENIGN)),
         ]),
         P("_render_claim_result", lambda g: [
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=True, task=_forge(Task, forge=g), superseded_blockers={})),
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=False, task=_forge(Task, forge=g, owner=(_T("Task", "owner") if g else BENIGN), superseded_by=None, blocked_by=[]), superseded_blockers={})),
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=False, task=_forge(Task, forge=g, owner=None, superseded_by="succ"), superseded_blockers={})),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(claimed=True, task=_forge(Task, forge=g), superseded_blockers={}),
+            ),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(
+                    claimed=False,
+                    task=_forge(
+                        Task, forge=g,
+                        owner=(_T("Task", "owner") if g else BENIGN), superseded_by=None, blocked_by=[],
+                    ),
+                    superseded_blockers={},
+                ),
+            ),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(
+                    claimed=False,
+                    task=_forge(Task, forge=g, owner=None, superseded_by="succ"),
+                    superseded_blockers={},
+                ),
+            ),
             # superseded_blockers PRESENT -> the "moved" reason leg (blocked_by + superseded map leak)
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=False, task=_forge(Task, forge=g, owner=None, superseded_by=None, blocked_by=[_tok(g, "Task", "blocked_by")]), superseded_blockers=({(_tok(g, "cr", "k")): _tok(g, "cr", "v")} if g else {"k": "v"}))),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(
+                    claimed=False,
+                    task=_forge(
+                        Task, forge=g, owner=None, superseded_by=None,
+                        blocked_by=[_tok(g, "Task", "blocked_by")],
+                    ),
+                    superseded_blockers=(
+                        {(_tok(g, "cr", "k")): _tok(g, "cr", "v")} if g else {"k": "v"}
+                    ),
+                ),
+            ),
             # superseded_blockers EMPTY + blocked_by PRESENT -> the `elif task.blocked_by` leg (a
             # caller `blocked_by` door on a branch the old shapes never ran — the D1 residue class)
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=False, task=_forge(Task, forge=g, owner=None, superseded_by=None, blocked_by=[_tok(g, "Task", "blocked_by")]), superseded_blockers={})),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(
+                    claimed=False,
+                    task=_forge(
+                        Task, forge=g, owner=None, superseded_by=None,
+                        blocked_by=[_tok(g, "Task", "blocked_by")],
+                    ),
+                    superseded_blockers={},
+                ),
+            ),
             # superseded_blockers EMPTY + blocked_by EMPTY -> the `else` status leg (door-free)
-            _served("_render_claim_result", ClaimResult.model_construct(claimed=False, task=_forge(Task, forge=g, owner=None, superseded_by=None, blocked_by=[]), superseded_blockers={})),
+            _served(
+                "_render_claim_result",
+                ClaimResult.model_construct(
+                    claimed=False,
+                    task=_forge(Task, forge=g, owner=None, superseded_by=None, blocked_by=[]),
+                    superseded_blockers={},
+                ),
+            ),
         ]),
         P("_render_rollup", lambda g: [
             _served("_render_rollup", _NOW, *_tasks_windows(g, empty=True)),
             _served("_render_rollup", _NOW, *_tasks_windows(g, empty=False)),
         ]),
         P("_render_chain_head", lambda g: [
-            _served("_render_chain_head", ChainHead.model_construct(finding=_forge(Finding, forge=g), forked=False, fork_successor_numbers=[])),
-            _served("_render_chain_head", ChainHead.model_construct(finding=_forge(Finding, forge=g), forked=True, fork_successor_numbers=[2, 3])),
+            _served(
+                "_render_chain_head",
+                ChainHead.model_construct(
+                    finding=_forge(Finding, forge=g), forked=False, fork_successor_numbers=[]
+                ),
+            ),
+            _served(
+                "_render_chain_head",
+                ChainHead.model_construct(
+                    finding=_forge(Finding, forge=g), forked=True, fork_successor_numbers=[2, 3]
+                ),
+            ),
         ]),
         P("_task_status_marker", lambda g: [
             _served("_task_status_marker", _forge(Task, forge=g, superseded_by="s")),
@@ -1817,7 +1892,9 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_finding_detail", lambda g: [_served("_render_finding_detail", _forge(Finding, forge=g))]),
         P("_render_finding_transition", lambda g: [
-            _served("_render_finding_transition", _forge(Finding, forge=g), (_T("act", "actor") if g else BENIGN)),
+            _served(
+                "_render_finding_transition", _forge(Finding, forge=g), (_T("act", "actor") if g else BENIGN)
+            ),
         ]),
         P("_format_finding_ref", lambda g: [
             _served("_format_finding_ref", 7),
@@ -1826,27 +1903,69 @@ def _probes() -> list[RenderProbe]:
         # ---- MEMORY render ----
         P("_render_recalled_memories", lambda g: [
             _served("_render_recalled_memories", []),
-            _served("_render_recalled_memories", [_forge(RecalledMemory, forge=g, refs=[RecalledRef.model_construct(chunk_key="ck", key_version=1, drifted=True)])]),
+            _served(
+                "_render_recalled_memories",
+                [
+                    _forge(
+                        RecalledMemory, forge=g,
+                        refs=[RecalledRef.model_construct(chunk_key="ck", key_version=1, drifted=True)],
+                    )
+                ],
+            ),
             _served("_render_recalled_memories", [_forge(RecalledMemory, forge=g, refs=[])]),
         ]),
         # ---- COMMS renders ----
         P("_render_age", lambda g: [_served("_render_age", s) for s in (30, 120, 7200, 200000)]),
         P("_render_comms_register", lambda g: [
-            _served("_render_comms_register", _forge(Agent, forge=g), re_registered=False, registered_age_s=1, brief=None, brief_age_s=0),
-            _served("_render_comms_register", _forge(Agent, forge=g), re_registered=True, registered_age_s=1, brief=_forge(Brief, forge=g), brief_age_s=1),
+            _served(
+                "_render_comms_register",
+                _forge(Agent, forge=g),
+                re_registered=False, registered_age_s=1, brief=None, brief_age_s=0,
+            ),
+            _served(
+                "_render_comms_register",
+                _forge(Agent, forge=g),
+                re_registered=True, registered_age_s=1, brief=_forge(Brief, forge=g), brief_age_s=1,
+            ),
         ]),
         P("_render_comms_heartbeat", lambda g: [
-            _served("_render_comms_heartbeat", _forge(Agent, forge=g), project_head_version=None, project_acked_version=None, subscribed_skew=[]),
-            _served("_render_comms_heartbeat", _forge(Agent, forge=g), project_head_version=3, project_acked_version=1, subscribed_skew=[("agent-y", 3, 1)]),
+            _served(
+                "_render_comms_heartbeat",
+                _forge(Agent, forge=g),
+                project_head_version=None, project_acked_version=None, subscribed_skew=[],
+            ),
+            _served(
+                "_render_comms_heartbeat",
+                _forge(Agent, forge=g),
+                project_head_version=3, project_acked_version=1, subscribed_skew=[("agent-y", 3, 1)],
+            ),
         ]),
         P("_render_comms_skew_lines", lambda g: [
-            _served("_render_comms_skew_lines", project_head_version=None, project_acked_version=None, subscribed_skew=[]),
-            _served("_render_comms_skew_lines", project_head_version=3, project_acked_version=None, subscribed_skew=[("agent-y", 3, 1)]),
-            _served("_render_comms_skew_lines", project_head_version=3, project_acked_version=1, subscribed_skew=[("agent-y", 3, 1), ("agent-z", 3, 2)]),
+            _served(
+                "_render_comms_skew_lines",
+                project_head_version=None, project_acked_version=None, subscribed_skew=[],
+            ),
+            _served(
+                "_render_comms_skew_lines",
+                project_head_version=3, project_acked_version=None, subscribed_skew=[("agent-y", 3, 1)],
+            ),
+            _served(
+                "_render_comms_skew_lines",
+                project_head_version=3, project_acked_version=1,
+                subscribed_skew=[("agent-y", 3, 1), ("agent-z", 3, 2)],
+            ),
             # remainder PRESENT, over == 0 (5 > _HEARTBEAT_SKEW_NAMES_CAP, remainder 2 <= _COVERAGE_NAMES_CAP)
-            _served("_render_comms_skew_lines", project_head_version=3, project_acked_version=1, subscribed_skew=[(f"agent-{i}", 3, 1) for i in range(5)]),
+            _served(
+                "_render_comms_skew_lines",
+                project_head_version=3, project_acked_version=1,
+                subscribed_skew=[(f"agent-{i}", 3, 1) for i in range(5)],
+            ),
             # remainder PRESENT, over > 0 (10 entries -> remainder 7 > _COVERAGE_NAMES_CAP=5)
-            _served("_render_comms_skew_lines", project_head_version=3, project_acked_version=1, subscribed_skew=[(f"agent-{i}", 3, 1) for i in range(10)]),
+            _served(
+                "_render_comms_skew_lines",
+                project_head_version=3, project_acked_version=1,
+                subscribed_skew=[(f"agent-{i}", 3, 1) for i in range(10)],
+            ),
         ]),
         P("_render_comms_behind_entry", lambda g: [
             _served("_render_comms_behind_entry", brief_behind(g, unbriefed=True)),
@@ -1854,24 +1973,77 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_comms_brief_coverage_line", lambda g: [
             # full, no session (6350)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=1, current_count=1, behind=[]), session=None),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=1, current_count=1,
+                    behind=[],
+                ),
+                session=None,
+            ),
             # not full, remainder 0 (1 behind <= _COVERAGE_NAMES_CAP), session (6383)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=2, current_count=1, behind=[brief_behind(g, unbriefed=True)]), session="s"),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=2, current_count=1,
+                    behind=[brief_behind(g, unbriefed=True)],
+                ),
+                session="s",
+            ),
             # full, WITH session (6344)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=1, current_count=1, behind=[]), session="s"),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=1, current_count=1,
+                    behind=[],
+                ),
+                session="s",
+            ),
             # not full, remainder > 0 (7 behind > _COVERAGE_NAMES_CAP=5), session (6363)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=8, current_count=1, behind=[brief_behind(g, unbriefed=True) for _ in range(7)]), session="s"),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=8, current_count=1,
+                    behind=[brief_behind(g, unbriefed=True) for _ in range(7)],
+                ),
+                session="s",
+            ),
             # not full, remainder > 0, no session (6373)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=8, current_count=1, behind=[brief_behind(g, unbriefed=True) for _ in range(7)]), session=None),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=8, current_count=1,
+                    behind=[brief_behind(g, unbriefed=True) for _ in range(7)],
+                ),
+                session=None,
+            ),
             # not full, remainder 0, no session (6392)
-            _served("_render_comms_brief_coverage_line", BriefCoverage.model_construct(name="b", head_version=2, total_agents=2, current_count=1, behind=[brief_behind(g, unbriefed=True)]), session=None),
+            _served(
+                "_render_comms_brief_coverage_line",
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=2, current_count=1,
+                    behind=[brief_behind(g, unbriefed=True)],
+                ),
+                session=None,
+            ),
         ]),
         P("_render_comms_brief_get", lambda g: [
-            _served("_render_comms_brief_get", _forge(Brief, forge=g), 1, BriefCoverage.model_construct(name="b", head_version=2, total_agents=1, current_count=1, behind=[]), session=None),
+            _served(
+                "_render_comms_brief_get",
+                _forge(Brief, forge=g),
+                1,
+                BriefCoverage.model_construct(
+                    name="b", head_version=2, total_agents=1, current_count=1, behind=[]
+                ),
+                session=None,
+            ),
         ]),
         P("_render_comms_skew_breakdown", lambda g: [
             # 1 named version + 1 unbriefed -> unbriefed leg (6448->6449); no remainder
-            _served("_render_comms_skew_breakdown", [brief_behind(g, unbriefed=True), brief_behind(g, unbriefed=False)]),
+            _served(
+                "_render_comms_skew_breakdown",
+                [brief_behind(g, unbriefed=True), brief_behind(g, unbriefed=False)],
+            ),
             # >_SKEW_BREAKDOWN_CAP=3 distinct versions (remainder leg 6445->6446) AND zero
             # unbriefed (the `unbriefed_count > 0` FALSE arc 6448->6450)
             _served("_render_comms_skew_breakdown", [
@@ -1881,22 +2053,67 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_comms_brief_publish", lambda g: [
             # first_version + auto_ack (6474->6475); no behind; body < warn
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=True), session=None, behind=[], body_chars=10, warn_threshold_chars=100, auto_ack_at_register=True),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=True),
+                session=None, behind=[],
+                body_chars=10, warn_threshold_chars=100, auto_ack_at_register=True,
+            ),
             # not first; tail 3 + session (6539); body > warn
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False), session="s", behind=[brief_behind(g, unbriefed=True)], body_chars=200, warn_threshold_chars=100, auto_ack_at_register=False),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False),
+                session="s", behind=[brief_behind(g, unbriefed=True)],
+                body_chars=200, warn_threshold_chars=100, auto_ack_at_register=False,
+            ),
             # first_version + NOT auto_ack (6474->6485)
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=True), session=None, behind=[], body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=True),
+                session=None, behind=[],
+                body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False,
+            ),
             # tail 1/2 (auto_ack True -> 6506 True) + session (6514->6515)
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False), session="s", behind=[brief_behind(g, unbriefed=False)], body_chars=10, warn_threshold_chars=100, auto_ack_at_register=True),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False),
+                session="s", behind=[brief_behind(g, unbriefed=False)],
+                body_chars=10, warn_threshold_chars=100, auto_ack_at_register=True,
+            ),
             # tail 1/2 (not auto_ack but no unbriefed -> 6506 True) + no session (6514->6526)
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False), session=None, behind=[brief_behind(g, unbriefed=False)], body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False),
+                session=None, behind=[brief_behind(g, unbriefed=False)],
+                body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False,
+            ),
             # tail 3 (not auto_ack + unbriefed) + no session (6539->6553)
-            _served("_render_comms_brief_publish", BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False), session=None, behind=[brief_behind(g, unbriefed=True)], body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False),
+            _served(
+                "_render_comms_brief_publish",
+                BriefPublishResult.model_construct(brief=_forge(Brief, forge=g), first_version=False),
+                session=None, behind=[brief_behind(g, unbriefed=True)],
+                body_chars=10, warn_threshold_chars=100, auto_ack_at_register=False,
+            ),
         ]),
         P("_render_comms_brief_ack", lambda g: [
-            _served("_render_comms_brief_ack", BriefAckResult.model_construct(name="b", version=2, head_version=2, already_acked=True, via="explicit")),
-            _served("_render_comms_brief_ack", BriefAckResult.model_construct(name="b", version=2, head_version=2, already_acked=False, via="explicit")),
-            _served("_render_comms_brief_ack", BriefAckResult.model_construct(name="b", version=1, head_version=2, already_acked=False, via="explicit")),
+            _served(
+                "_render_comms_brief_ack",
+                BriefAckResult.model_construct(
+                    name="b", version=2, head_version=2, already_acked=True, via="explicit"
+                ),
+            ),
+            _served(
+                "_render_comms_brief_ack",
+                BriefAckResult.model_construct(
+                    name="b", version=2, head_version=2, already_acked=False, via="explicit"
+                ),
+            ),
+            _served(
+                "_render_comms_brief_ack",
+                BriefAckResult.model_construct(
+                    name="b", version=1, head_version=2, already_acked=False, via="explicit"
+                ),
+            ),
         ]),
         P("_render_comms_fleet_brief_cell", lambda g: [
             _served("_render_comms_fleet_brief_cell", None, None),
@@ -1905,53 +2122,181 @@ def _probes() -> list[RenderProbe]:
             _served("_render_comms_fleet_brief_cell", 2, 1),
         ]),
         P("_render_comms_fleet_row", lambda g: [
-            _served("_render_comms_fleet_row", _forge(Agent, forge=g, model=(_T("Agent", "model") if g else BENIGN), task_id="tid12345", last_note=(_T("Agent", "last_note") if g else BENIGN)), project_head_version=2, acked_version=1, stale_after_s=120, heartbeat_age_s=1),
-            _served("_render_comms_fleet_row", _forge(Agent, forge=g, model=None, task_id=None, last_note=None), project_head_version=None, acked_version=None, stale_after_s=120, heartbeat_age_s=200),
+            _served(
+                "_render_comms_fleet_row",
+                _forge(
+                    Agent, forge=g,
+                    model=(_T("Agent", "model") if g else BENIGN),
+                    task_id="tid12345",
+                    last_note=(_T("Agent", "last_note") if g else BENIGN),
+                ),
+                project_head_version=2, acked_version=1, stale_after_s=120, heartbeat_age_s=1,
+            ),
+            _served(
+                "_render_comms_fleet_row",
+                _forge(Agent, forge=g, model=None, task_id=None, last_note=None),
+                project_head_version=None, acked_version=None, stale_after_s=120, heartbeat_age_s=200,
+            ),
         ]),
         P("_render_comms_fleet", lambda g: [
             # total==0 & retired==0 -> "no agents registered": no session (6711) and session (6708)
-            _served("_render_comms_fleet", AgentFleetWindow.model_construct(rows=[], retired_count=0, total_non_retired=0), session=None, limit=50, stale_after_s=120, project_head_version=None, acked_versions={}, heartbeat_age_seconds={}, status_counts={}),
-            _served("_render_comms_fleet", AgentFleetWindow.model_construct(rows=[], retired_count=0, total_non_retired=0), session="s", limit=50, stale_after_s=120, project_head_version=None, acked_versions={}, heartbeat_age_seconds={}, status_counts={}),
-            # total>0, session header (6720); single-session else path (6760); remainder 0 (6794 skip); retired 0 (6796)
-            _served("_render_comms_fleet", AgentFleetWindow.model_construct(rows=[_forge(Agent, forge=g)], retired_count=0, total_non_retired=1), session="s", limit=50, stale_after_s=120, project_head_version=2, acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 1}),
+            _served(
+                "_render_comms_fleet",
+                AgentFleetWindow.model_construct(rows=[], retired_count=0, total_non_retired=0),
+                session=None, limit=50, stale_after_s=120, project_head_version=None,
+                acked_versions={}, heartbeat_age_seconds={}, status_counts={},
+            ),
+            _served(
+                "_render_comms_fleet",
+                AgentFleetWindow.model_construct(rows=[], retired_count=0, total_non_retired=0),
+                session="s", limit=50, stale_after_s=120, project_head_version=None,
+                acked_versions={}, heartbeat_age_seconds={}, status_counts={},
+            ),
+            # total>0, session header (6720); single-session else path (6760);
+            # remainder 0 (6794 skip); retired 0 (6796)
+            _served(
+                "_render_comms_fleet",
+                AgentFleetWindow.model_construct(
+                    rows=[_forge(Agent, forge=g)], retired_count=0, total_non_retired=1
+                ),
+                session="s", limit=50, stale_after_s=120, project_head_version=2,
+                acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 1},
+            ),
             # total>0, no-session header (6730); MULTI-session grouping (6740->6741, both loops);
             # remainder>0 not at cap (6777->6786); retired>0 (6794->6795)
-            _served("_render_comms_fleet", AgentFleetWindow.model_construct(rows=[_forge(Agent, forge=g, session="s1"), _forge(Agent, forge=g, session="s2")], retired_count=2, total_non_retired=3), session=None, limit=50, stale_after_s=120, project_head_version=None, acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 3, "retired": 2}),
+            _served(
+                "_render_comms_fleet",
+                AgentFleetWindow.model_construct(
+                    rows=[_forge(Agent, forge=g, session="s1"), _forge(Agent, forge=g, session="s2")],
+                    retired_count=2, total_non_retired=3,
+                ),
+                session=None, limit=50, stale_after_s=120, project_head_version=None,
+                acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 3, "retired": 2},
+            ),
             # cap disclosure (6777->6778): len(shown)==_MAX_FLEET_LIMIT(200) with remainder>0. The
             # 201 rows are benign (door-free branch — the door is driven by the shapes above).
-            _served("_render_comms_fleet", AgentFleetWindow.model_construct(rows=[_forge(Agent, forge=False, session="s") for _ in range(201)], retired_count=0, total_non_retired=201), session=None, limit=200, stale_after_s=120, project_head_version=None, acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 201}),
+            _served(
+                "_render_comms_fleet",
+                AgentFleetWindow.model_construct(
+                    rows=[_forge(Agent, forge=False, session="s") for _ in range(201)],
+                    retired_count=0, total_non_retired=201,
+                ),
+                session=None, limit=200, stale_after_s=120, project_head_version=None,
+                acked_versions={}, heartbeat_age_seconds={}, status_counts={"active": 201},
+            ),
         ]),
         P("_render_comms_send", lambda g: [
-            _served("_render_comms_send", MessageSendResult.model_construct(message=_forge(Message, forge=g, question=True, grade="directive"), recipient_names=["agent-x"], recipient_count=1), broadcast=False, session="s"),
-            _served("_render_comms_send", MessageSendResult.model_construct(message=_forge(Message, forge=g, question=False, grade="signal"), recipient_names=["agent-x"], recipient_count=1), broadcast=True, session="s"),
+            _served(
+                "_render_comms_send",
+                MessageSendResult.model_construct(
+                    message=_forge(Message, forge=g, question=True, grade="directive"),
+                    recipient_names=["agent-x"], recipient_count=1,
+                ),
+                broadcast=False, session="s",
+            ),
+            _served(
+                "_render_comms_send",
+                MessageSendResult.model_construct(
+                    message=_forge(Message, forge=g, question=False, grade="signal"),
+                    recipient_names=["agent-x"], recipient_count=1,
+                ),
+                broadcast=True, session="s",
+            ),
             # explicit send, recipient_count > shown -> the "+N more" remainder leg (6838->6839)
-            _served("_render_comms_send", MessageSendResult.model_construct(message=_forge(Message, forge=g, question=False, grade="signal"), recipient_names=["agent-x"], recipient_count=3), broadcast=False, session="s"),
+            _served(
+                "_render_comms_send",
+                MessageSendResult.model_construct(
+                    message=_forge(Message, forge=g, question=False, grade="signal"),
+                    recipient_names=["agent-x"], recipient_count=3,
+                ),
+                broadcast=False, session="s",
+            ),
         ]),
         P("_render_comms_drain", lambda g: [
-            _served("_render_comms_drain", MessageDrainResult.model_construct(entries=[], total_pending=0, directive_pending=0, stamped_seqs=[], peeked=False), agent_name="agent-x", limit=50, session="s"),
-            _served("_render_comms_drain", MessageDrainResult.model_construct(entries=[_forge(InboxEntry, forge=g, grade="directive")], total_pending=1, directive_pending=1, stamped_seqs=[1], peeked=False), agent_name="agent-x", limit=50, session="s"),
+            _served(
+                "_render_comms_drain",
+                MessageDrainResult.model_construct(
+                    entries=[], total_pending=0, directive_pending=0, stamped_seqs=[], peeked=False
+                ),
+                agent_name="agent-x", limit=50, session="s",
+            ),
+            _served(
+                "_render_comms_drain",
+                MessageDrainResult.model_construct(
+                    entries=[_forge(InboxEntry, forge=g, grade="directive")],
+                    total_pending=1, directive_pending=1, stamped_seqs=[1], peeked=False,
+                ),
+                agent_name="agent-x", limit=50, session="s",
+            ),
             # PEEKED header (6934->6935) + remainder>0 (6993) + peek-above-cap fixed-point leg
             # (reachable=total_pending=60 > _MAX_DRAIN_LIMIT -> 7010->7011); peeked -> 7048->7056
-            _served("_render_comms_drain", MessageDrainResult.model_construct(entries=[_forge(InboxEntry, forge=g, grade="signal")], total_pending=60, directive_pending=0, stamped_seqs=[], peeked=True), agent_name="agent-x", limit=50, session="s"),
+            _served(
+                "_render_comms_drain",
+                MessageDrainResult.model_construct(
+                    entries=[_forge(InboxEntry, forge=g, grade="signal")],
+                    total_pending=60, directive_pending=0, stamped_seqs=[], peeked=True,
+                ),
+                agent_name="agent-x", limit=50, session="s",
+            ),
             # STAMPING drain, remainder>0 -> the else re-ask leg (7010->7020); an acked_at entry
             # -> the re-served trailer (7028->7029)
-            _served("_render_comms_drain", MessageDrainResult.model_construct(entries=[_forge(InboxEntry, forge=g, grade="directive", acked_at=_NOW)], total_pending=3, directive_pending=0, stamped_seqs=[1], peeked=False), agent_name="agent-x", limit=50, session="s"),
+            _served(
+                "_render_comms_drain",
+                MessageDrainResult.model_construct(
+                    entries=[_forge(InboxEntry, forge=g, grade="directive", acked_at=_NOW)],
+                    total_pending=3, directive_pending=0, stamped_seqs=[1], peeked=False,
+                ),
+                agent_name="agent-x", limit=50, session="s",
+            ),
         ]),
         P("_render_comms_drain_row", lambda g: [
             # task_id present -> task context (7078); no refs -> 7084
-            _served("_render_comms_drain_row", _forge(InboxEntry, forge=g, task_id="tid", refs=[]), session="s"),
+            _served(
+                "_render_comms_drain_row",
+                _forge(InboxEntry, forge=g, task_id="tid", refs=[]),
+                session="s",
+            ),
             # task_id None, thread != session -> thread context (7080); 1 ref, over 0
-            _served("_render_comms_drain_row", _forge(InboxEntry, forge=g, task_id=None, refs=[_tok(g, "InboxEntry", "refs")]), session="other"),
+            _served(
+                "_render_comms_drain_row",
+                _forge(InboxEntry, forge=g, task_id=None, refs=[_tok(g, "InboxEntry", "refs")]),
+                session="other",
+            ),
             # task_id None, thread == session -> empty context else leg (7081->7082); no refs
-            _served("_render_comms_drain_row", _forge(InboxEntry, forge=g, task_id=None, thread="s", refs=[]), session="s"),
+            _served(
+                "_render_comms_drain_row",
+                _forge(InboxEntry, forge=g, task_id=None, thread="s", refs=[]),
+                session="s",
+            ),
             # > _COVERAGE_NAMES_CAP=5 refs -> the "+N more" refs leg (7093->7094); thread door too
-            _served("_render_comms_drain_row", _forge(InboxEntry, forge=g, task_id=None, refs=[_tok(g, "InboxEntry", "refs") for _ in range(7)]), session="other"),
+            _served(
+                "_render_comms_drain_row",
+                _forge(
+                    InboxEntry, forge=g, task_id=None,
+                    refs=[_tok(g, "InboxEntry", "refs") for _ in range(7)],
+                ),
+                session="other",
+            ),
         ]),
         P("_render_comms_ack", lambda g: [
             # acked group + note tail (note recorded, 7195->7196)
-            _served("_render_comms_ack", MessageAckResult.model_construct(entries=[MessageAckEntry.model_construct(seq=1, outcome="acked", acked_at=_NOW)], acked_count=1, already_acked_count=0), agent_name="agent-x", note=(_T("ack", "note") if g else None)),
+            _served(
+                "_render_comms_ack",
+                MessageAckResult.model_construct(
+                    entries=[MessageAckEntry.model_construct(seq=1, outcome="acked", acked_at=_NOW)],
+                    acked_count=1, already_acked_count=0,
+                ),
+                agent_name="agent-x", note=(_T("ack", "note") if g else None),
+            ),
             # empty-acked else (7158) + not_addressed group (7183->7184); note None
-            _served("_render_comms_ack", MessageAckResult.model_construct(entries=[MessageAckEntry.model_construct(seq=2, outcome="not_addressed", acked_at=None)], acked_count=0, already_acked_count=0), agent_name="agent-x", note=None),
+            _served(
+                "_render_comms_ack",
+                MessageAckResult.model_construct(
+                    entries=[MessageAckEntry.model_construct(seq=2, outcome="not_addressed", acked_at=None)],
+                    acked_count=0, already_acked_count=0,
+                ),
+                agent_name="agent-x", note=None,
+            ),
             # duplicate seq+outcome (`entry.seq not in group` FALSE -> 7139->7131) + already_acked
             # group (7166->7167) + unknown_message group (7174->7175)
             _served("_render_comms_ack", MessageAckResult.model_construct(entries=[
@@ -1965,12 +2310,27 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_comms_footer", lambda g: [
             # pends + authenticated (5524->5525)
-            _served("_comms_footer", identity="agent-x", traffic=PendingTraffic.model_construct(unread=1, unacked_directives=1), authenticated=True),
+            _served(
+                "_comms_footer",
+                identity="agent-x",
+                traffic=PendingTraffic.model_construct(unread=1, unacked_directives=1),
+                authenticated=True,
+            ),
             # pends + NOT authenticated (5524->5532) — the old shape put authenticated=False on a
             # NO-pends traffic, so it early-returned None and never reached this branch
-            _served("_comms_footer", identity="agent-x", traffic=PendingTraffic.model_construct(unread=1, unacked_directives=1), authenticated=False),
+            _served(
+                "_comms_footer",
+                identity="agent-x",
+                traffic=PendingTraffic.model_construct(unread=1, unacked_directives=1),
+                authenticated=False,
+            ),
             # no pending traffic -> return None (5521->5522)
-            _served("_comms_footer", identity="agent-x", traffic=PendingTraffic.model_construct(unread=0, unacked_directives=0), authenticated=True),
+            _served(
+                "_comms_footer",
+                identity="agent-x",
+                traffic=PendingTraffic.model_construct(unread=0, unacked_directives=0),
+                authenticated=True,
+            ),
         ]),
         P("_comms_identity_teaching", lambda g: [
             _served("_comms_identity_teaching", AgentRegistryError("no such agent 'agent-x'")),
@@ -2024,7 +2384,7 @@ _RENDER_PROBES: list[RenderProbe] | None = None
 
 
 def _render_probes() -> list[RenderProbe]:
-    global _RENDER_PROBES
+    global _RENDER_PROBES  # noqa: PLW0603 — module-level lazy cache for the derived render-probe registry
     if _RENDER_PROBES is None:
         _RENDER_PROBES = _probes()
     return _RENDER_PROBES
@@ -2234,7 +2594,7 @@ def _over_drive_under_coverage() -> tuple[Any, dict[str, tuple[int, int]]]:
     """Run the WHOLE over-drive (every probe, every forge shape) ONCE under branch measurement
     and return coverage.py's analysis of server.py plus the method body spans. Cached — the
     over-drive is deterministic and the analysis is sliced per method by the tests below."""
-    global _OVER_DRIVE_COVERAGE
+    global _OVER_DRIVE_COVERAGE  # noqa: PLW0603 — module-level reach accumulator (over-drive observer)
     if _OVER_DRIVE_COVERAGE is not None:
         return _OVER_DRIVE_COVERAGE
     import coverage  # noqa: PLC0415
@@ -2459,7 +2819,7 @@ def _returns_scalar_nonstring(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> boo
     return all(arm in _SCALAR_NONSTRING_RETURNS or arm == "None" for arm in arms)
 
 
-def _fstrings_all_error_routed(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _fstrings_all_error_routed(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:  # noqa: PLR0912 — AST node-shape dispatch
     """The method builds ONLY error strings (the ERROR half owns every caller byte it
     interpolates): every f-string is an argument (directly, or via a name that is raised /
     passed to an exception constructor) to an exception construction — OR the method returns a
@@ -2557,7 +2917,7 @@ class TestTheRenderOutSetIsEarned:
         )
 
 
-def _raw_render_interpolations(
+def _raw_render_interpolations(  # noqa: PLR0912 — AST node-shape dispatch; branch-per-shape is inherent
     fn: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> list[tuple[int, str]]:
     """(lineno, identifier) for every f-string interpolation in `fn` that is NOT contained

@@ -3172,8 +3172,9 @@ class TestEveryFenceSiteInProductionResolvesToTheONEImplementation:
         import inspect  # noqa: PLC0415
         import pathlib  # noqa: PLC0415
 
-        import loremaster.sanitise as sanitise  # noqa: PLC0415
         from loremaster.render import render_fenced  # noqa: PLC0415
+
+        from loremaster import sanitise  # noqa: PLC0415
 
         fence_width = getattr(sanitise, "fence_width", None)
         assert fence_width is not None, (
