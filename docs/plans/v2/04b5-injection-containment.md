@@ -128,3 +128,50 @@ build this session ⇒ the root need not be cleared of `REPORT-*.md` until archi
   derivation-based design; contract + build RE-DERIVE, never inherit a count.
 - Branch is pre-existing RED (191 mypy + 316 pytest, ALL auth WIP pkt 39/45/48/49,
   #333, operator-accepted). 04b5 must add **ZERO NEW** to either.
+
+## RENDER-REACH DESIGN (round-3, 2026-08-05) — the two-waves escalation
+The contract went to a Fable cold audit (operator-directed) then a fix, then a Fable
+delta-audit. History:
+- **Round-1 cold audit INSUFFICIENT** (`REPORT-coldaudit-contract-04b5-1.md`, R1–R7): the
+  per-SITE reach was absent (a build leaving the 19 `task_id!r` sites bare passed green);
+  the partition universe was string-type-only (missed `refs`/`to`/`labels`/`blocked_by`).
+- **Fix** (`REPORT-contract-04b5-2.md`): closed the ERROR half with a name-blind AST reach
+  scan over served domain-error constructions (49 doors/7 modules) + the array universe.
+- **Round-2 delta-audit INSUFFICIENT** (`REPORT-coldaudit-04b5-4.md`, D1/D2): ERROR half
+  CONFIRMED sound; RENDER half is the blocker — **byte-proven** that two EXISTING un-driven
+  production renders (`_render_transitive_blockers` `server.py:4121`,
+  `_render_supersede_result` `server.py:4160`) leak a caller forgery outside any delimiter.
+  Root: render reach is NOT a checked variable (a driven registry, no `_render_*` universe
+  enumeration). **2nd INSUFFICIENT on reach-as-checked-variable → the two-waves tripwire
+  fired → operator ruled a DESIGN SIDECAR first.**
+
+**The ruled instrument** (`REPORT-design-sidecar-04b5-1.md` §4 — build to its pins). Render
+half = 3 COUPLED CHECKED VARIABLES over a RUNTIME over-drive:
+- **P-U** name-blind candidate universe derived by the **INTERPOLATION property**, NOT the
+  `_render_` prefix — the prefix is itself a six-defeats name-list (measured: it misses
+  serving helpers `_comms_traffic_line`/`_format_finding_ref`/…).
+- **P-F** model-guarded field manifest (a `.model_fields` read; a NEW str field → RED).
+- **P-S** branch/site observation — a caller-byte door in an un-exercised branch reddens
+  (D1's own leak lives in exactly such a branch).
+- Containment PROOF is RUNTIME `_leaks` (byte-diff), **never structural** — structural is
+  unsound BOTH ways (measured §P1: over-flags ~40×, and mis-keys doors vs non-doors).
+- Plus the 2 D1 drivers, the OUT-set machine-verified (P-C), and a partition-coherence pin
+  with the error half (every served caller byte in exactly one of {error construction,
+  render site, named B-5 bound}).
+
+### OPERATOR RULINGS (2026-08-05, batch 2)
+1. **Branch coverage = MECHANIZE with `coverage.py` (INSTALLED).** Operator authorized the
+   install over the stdlib `sys.settrace` hand-roll (packages-over-hand-rolling). `coverage.py`
+   is a **dev/test-only dependency** (root `[dependency-groups] dev`), **NOT an image dep**;
+   it ships `py.typed` so no mypy override is needed. It proves an over-drive driver EXERCISED
+   every branch of a render method, so a door cannot hide in an un-run branch.
+2. **code-RAG file renders (map/diff/impact `_render_*`/`_format_*`) = B-5 indexed-source-
+   content OUT for 04b5.** They echo INDEXED content (symbol names, `tier:file_path`) via
+   `_sanitise_line`, not caller PARAMS. The OUT entry MUST state the residual explicitly:
+   `_sanitise_line` is same-line-forgery-blind, so attacker-controlled indexed content is a
+   LIVE surface owned by the **#138 / packet-39** threat-model review — met deliberately, not
+   silently.
+
+The third contract build lands the render-reach instrument to the sidecar §4 pins with
+`coverage.py`; it PRESERVES the error-half scan + the closed R2/R4/R5; the R3 ripple (6
+`test_task_ledger::TestDoneSummaryReportPath` exact-text pins) is a BUILDER update (P8d).
