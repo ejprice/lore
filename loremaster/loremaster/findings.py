@@ -88,6 +88,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -1021,7 +1022,7 @@ class FindingLedger:
             raise IllegalTransitionError(
                 f"lost a concurrent transition race for finding {finding_id!r}: the "
                 f"status moved to {fresh_status!r} before this {current!r} -> "
-                f"{target!r} transition could apply"
+                f"{render_attributed(target)} transition could apply"
             ) from error
 
         updated = await self._select_row_by_id(finding_id)
@@ -1088,12 +1089,12 @@ class FindingLedger:
         if target not in FINDING_STATUSES:
             raise IllegalTransitionError(
                 f"cannot transition finding {finding_id!r} from {current!r} to "
-                f"{target!r}: {target!r} is not one of the valid statuses "
+                f"{render_attributed(target)}: {render_attributed(target)} is not one of the valid statuses "
                 f"{sorted(FINDING_STATUSES)}"
             )
         if (current, target) not in LEGAL_TRANSITIONS:
             raise IllegalTransitionError(
-                f"illegal transition from {current!r} to {target!r} for finding "
+                f"illegal transition from {current!r} to {render_attributed(target)} for finding "
                 f"{finding_id!r}: not a legal state-machine edge"
             )
 
@@ -1113,7 +1114,7 @@ class FindingLedger:
         """Resolve ``id_or_number`` to a raw row, or raise :class:`FindingNotFoundError`."""
         row = await self._resolve_row(id_or_number)
         if row is None:
-            raise FindingNotFoundError(f"no finding addressed by {id_or_number!r}")
+            raise FindingNotFoundError(f"no finding addressed by {render_attributed(id_or_number)}")
         return row
 
     async def _select_row_by_id(self, finding_id: str) -> dict[str, Any] | None:

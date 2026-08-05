@@ -61,6 +61,7 @@ from pydantic import BaseModel, ConfigDict
 from loremaster.index.records import sha512_hex
 from loremaster.index.surreal_manifest import STATE_INDEXED, SurrealManifest
 from loremaster.read_file import ReadFileError, ReadFileTool
+from loremaster.render import render_attributed
 from loremaster.store.surreal import SurrealStore
 
 # The provenance-header format the tool stamps on every result — byte-identical
@@ -301,7 +302,8 @@ class StoreReadTool:
         """
         if os.path.isabs(path) or any(part == ".." for part in path.split("/")):
             raise StoreReadContainmentError(
-                f"path {path!r} in tier {tier!r} is rejected by the containment guard "
+                f"path {render_attributed(path)} in tier {render_attributed(tier)} "
+                f"is rejected by the containment guard "
                 f"(an absolute path or a '../' traversal). Pass a tier-relative path "
                 f"that stays within the tier."
             )
@@ -315,7 +317,8 @@ class StoreReadTool:
         serve. A teaching miss, never a bare error.
         """
         return StoreReadNotFoundError(
-            f"file {path!r} not found in tier {tier!r} (no indexed body in the store). "
+            f"file {render_attributed(path)} not found in tier {render_attributed(tier)} "
+            f"(no indexed body in the store). "
             f"Run lore_search to locate the current file, or lore_index(reconcile=True) "
             f"if the path should exist — the index may be ahead of or behind this path."
         )
@@ -324,7 +327,8 @@ class StoreReadTool:
     def _integrity_error(tier: str, path: str) -> StoreReadIntegrityError:
         """A hard integrity error — names the tier/path, never echoes the body."""
         return StoreReadIntegrityError(
-            f"stored body for {path!r} in tier {tier!r} is CORRUPT: its recomputed "
+            f"stored body for {render_attributed(path)} in tier {render_attributed(tier)} "
+            f"is CORRUPT: its recomputed "
             f"SHA-512 does not match the digest stored with it — refusing to serve a "
             f"corrupted store copy. Reindex the file to repair it."
         )

@@ -46,6 +46,7 @@ from typing import Any, Final, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from loremaster.render import render_attributed
 from loremaster.store.surreal import SurrealStore
 
 # The python_ast chunk types that ARE code symbols (mirrors lorescribe's
@@ -721,15 +722,15 @@ class SymbolTool:
             modules = sorted(await self._resolver.canonical_module_names(siblings))
             if modules:
                 raise GetSymbolError(
-                    f"no Python symbol named {qualified_name!r} is indexed under that "
+                    f"no Python symbol named {render_attributed(qualified_name)} is indexed under that "
                     f"module path, but the bare name is defined in: {', '.join(modules)}. "
                     f"Next step: module-qualify with one of those modules, or try "
-                    f"lore_search({qualified_name!r}). {_INDEX_LAG_HINT}"
+                    f"lore_search({render_attributed(qualified_name)}). {_INDEX_LAG_HINT}"
                 )
         raise GetSymbolError(
-            f"no Python symbol named {qualified_name!r} is indexed "
+            f"no Python symbol named {render_attributed(qualified_name)} is indexed "
             f"(searched chunk types {SYMBOL_CHUNK_TYPES!r}). Next step: try "
-            f"lore_search({qualified_name!r}) for a semantic match, or module-qualify "
+            f"lore_search({render_attributed(qualified_name)}) for a semantic match, or module-qualify "
             f"the name if it collides across files (e.g. 'pkg.mod.Name'). "
             f"{_INDEX_LAG_HINT}"
         )

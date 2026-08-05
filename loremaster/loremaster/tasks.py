@@ -96,6 +96,7 @@ from loremaster.agent_existence import (
     reject_unknown_rows,
     resolve_existing_rows,
 )
+from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -1485,7 +1486,7 @@ class TaskLedger:
         # STATUSES are read inside the claim transaction, not here.
         row = await self._select_row(task_id)
         if row is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         blocked_by = [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
 
         await self._apply([self._claim_fragment(task_id, owner, blocked_by)])
@@ -1634,7 +1635,7 @@ class TaskLedger:
         """
         row = await self._select_row(task_id)
         if row is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         current = str(row.get(_COL_STATUS))
         superseded_by = row.get(_COL_SUPERSEDED_BY)
         self._validate_transition(task_id, current, status, superseded_by)
@@ -1686,7 +1687,7 @@ class TaskLedger:
             # practice) still raises typed ``TaskNotFoundError``.
             fresh = await self._select_row(task_id)
             if fresh is None:
-                raise TaskNotFoundError(f"no task with id {task_id!r}") from error
+                raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}") from error
             fresh_status = str(fresh.get(_COL_STATUS))
             # Refuse from the FRESH edge when it is itself illegal (the common
             # case, e.g. the done -> done self-edge above).
@@ -1697,14 +1698,14 @@ class TaskLedger:
             # exercised by the pins) — still refuse: this call's CAS never
             # landed, so it did not perform the transition it promised.
             raise IllegalTransitionError(
-                f"lost a concurrent transition race for task {task_id!r}: the status "
-                f"moved to {fresh_status!r} before this {current!r} -> {status!r} "
+                f"lost a concurrent transition race for task {render_attributed(task_id)}: the status "
+                f"moved to {fresh_status!r} before this {current!r} -> {render_attributed(status)} "
                 f"transition could apply"
             ) from error
 
         updated = await self._select_row(task_id)
         if updated is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         return self._row_to_task(updated)
 
     @staticmethod
@@ -1804,31 +1805,31 @@ class TaskLedger:
         if target == STATUS_DONE:
             if summary is None or not summary.strip():
                 raise IllegalTransitionError(
-                    f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+                    f"transition to 'done' for task {render_attributed(task_id)} requires 'summary' — a "
                     f"one-line completion digest (max 300 chars) the rollup serves as "
                     f"the fleet's durable completion record; pass report_path= too "
                     f"when a report file exists"
                 )
             if "\n" in summary or "\r" in summary:
                 raise IllegalTransitionError(
-                    f"task {task_id!r} done-summary must be a single line — put "
+                    f"task {render_attributed(task_id)} done-summary must be a single line — put "
                     f"detail in the report file and pass its path as report_path="
                 )
             if len(summary) > _DONE_SUMMARY_MAX_CHARS:
                 raise IllegalTransitionError(
-                    f"task {task_id!r} done-summary is {len(summary)} chars — the cap "
+                    f"task {render_attributed(task_id)} done-summary is {len(summary)} chars — the cap "
                     f"is {_DONE_SUMMARY_MAX_CHARS}; tighten it (detail belongs in the "
                     f"report file)"
                 )
             if report_path is not None:
                 if not report_path.strip():
                     raise IllegalTransitionError(
-                        f"task {task_id!r} done-report_path must be non-empty when "
+                        f"task {render_attributed(task_id)} done-report_path must be non-empty when "
                         f"given — omit report_path= entirely when there is no report file"
                     )
                 if "\n" in report_path or "\r" in report_path:
                     raise IllegalTransitionError(
-                        f"task {task_id!r} done-report_path must be a single line — put "
+                        f"task {render_attributed(task_id)} done-report_path must be a single line — put "
                         f"detail in the report file and pass its path as report_path="
                     )
         elif summary is not None or report_path is not None:
@@ -1854,17 +1855,19 @@ class TaskLedger:
         """
         if superseded_by is not None:
             raise IllegalTransitionError(
-                f"task {task_id!r} is superseded and cannot transition "
-                f"from {current!r} to {target!r}"
+                f"task {render_attributed(task_id)} is superseded and cannot transition "
+                f"from {current!r} to {render_attributed(target)}"
             )
         if target not in TASK_STATUSES:
             raise IllegalTransitionError(
-                f"cannot transition task {task_id!r} from {current!r} to {target!r}: "
-                f"{target!r} is not one of the valid statuses {sorted(TASK_STATUSES)}"
+                f"cannot transition task {render_attributed(task_id)} from {current!r} "
+                f"to {render_attributed(target)}: "
+                f"{render_attributed(target)} is not one of the valid statuses {sorted(TASK_STATUSES)}"
             )
         if (current, target) not in LEGAL_TRANSITIONS:
             raise IllegalTransitionError(
-                f"illegal transition from {current!r} to {target!r} for task {task_id!r}: "
+                f"illegal transition from {current!r} to {render_attributed(target)} "
+                f"for task {render_attributed(task_id)}: "
                 f"not a legal state-machine edge"
             )
 
@@ -1909,7 +1912,7 @@ class TaskLedger:
         """
         row = await self._select_row(task_id)
         if row is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         # Sequential guard: a superseded task is terminal-like (exactly as it
         # refuses transitions), so a second supersede is refused up front. The
         # RACING double-supersede is caught transactionally below (the guarded
@@ -1917,7 +1920,7 @@ class TaskLedger:
         # -settled sequential case.
         if row.get(_COL_SUPERSEDED_BY) is not None:
             raise IllegalTransitionError(
-                f"task {task_id!r} is already superseded by "
+                f"task {render_attributed(task_id)} is already superseded by "
                 f"{row.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
             )
 
@@ -1954,7 +1957,7 @@ class TaskLedger:
             settled = await self._select_row(task_id)
             if settled is not None and settled.get(_COL_SUPERSEDED_BY) is not None:
                 raise IllegalTransitionError(
-                    f"task {task_id!r} is already superseded by "
+                    f"task {render_attributed(task_id)} is already superseded by "
                     f"{settled.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
                 ) from error
             raise
@@ -2447,13 +2450,13 @@ class TaskLedger:
             # a guessed one would be a fabrication), so it names what it CAN: the
             # operation, the task, the bound it ran at, and the recovery.
             raise TaskLedgerError(
-                f"the upstream blocker walk for task {task_id!r} at max_depth={depth} "
+                f"the upstream blocker walk for task {render_attributed(task_id)} at max_depth={depth} "
                 f"was REJECTED by the store, so NO answer is served — a partial reach "
                 f"would be indistinguishable from a complete one. Retry, or retry at a "
                 f"smaller max_depth if the graph is deep"
             ) from error
         if not rows:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         within = [str(record) for record in self._traversal_ids(rows[0], _TRAVERSAL_WITHIN_KEY)]
         deeper = {str(record) for record in self._traversal_ids(rows[0], _TRAVERSAL_PROBE_KEY)}
         return TransitiveBlockers(
@@ -2531,7 +2534,7 @@ class TaskLedger:
         """Fetch ``task_id`` as a :class:`Task`, or raise :class:`TaskNotFoundError`."""
         row = await self._select_row(task_id)
         if row is None:
-            raise TaskNotFoundError(f"no task with id {task_id!r}")
+            raise TaskNotFoundError(f"no task with id {render_attributed(task_id)}")
         return self._row_to_task(row)
 
     def _row_to_task(self, row: dict[str, Any]) -> Task:

@@ -86,6 +86,7 @@ from loremaster.agent_existence import (
     reject_unknown_rows,
 )
 from loremaster.agent_ref import AgentRefLike
+from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -669,7 +670,7 @@ class MessageLedger:
         """
         if grade not in MESSAGE_GRADES:
             raise IllegalMessageGradeError(
-                f"{grade!r} is not a legal message grade; legal grades: "
+                f"{render_attributed(grade)} is not a legal message grade; legal grades: "
                 f"{', '.join(sorted(MESSAGE_GRADES))}"
             )
         trimmed = body.strip()

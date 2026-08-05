@@ -71,6 +71,7 @@ from _surreal_harness import (
     unique_database,
 )
 from _task_fakes import FakeTaskDatabase, FakeTaskLedger
+from loremaster.render import render_attributed
 from loremaster.store._txn import (
     SurrealConnectionError,
     SurrealStoreError,
@@ -2121,7 +2122,7 @@ class TestDoneSummaryReportPath:
         with pytest.raises(IllegalTransitionError) as exc_info:
             await task_ledger.transition(task_id, STATUS_DONE, actor=ACTOR)
         assert str(exc_info.value) == (
-            f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+            f"transition to 'done' for task {render_attributed(task_id)} requires 'summary' — a "
             f"one-line completion digest (max 300 chars) the rollup serves as "
             f"the fleet's durable completion record; pass report_path= too "
             f"when a report file exists"
@@ -2153,7 +2154,7 @@ class TestDoneSummaryReportPath:
                 task_id, STATUS_DONE, actor=ACTOR, summary="line one\nline two"
             )
         assert str(exc_info.value) == (
-            f"task {task_id!r} done-summary must be a single line — put "
+            f"task {render_attributed(task_id)} done-summary must be a single line — put "
             f"detail in the report file and pass its path as report_path="
         )
 
@@ -2177,7 +2178,7 @@ class TestDoneSummaryReportPath:
                 task_id, STATUS_DONE, actor=ACTOR, summary=long_summary
             )
         assert str(exc_info.value) == (
-            f"task {task_id!r} done-summary is 301 chars — the cap is 300; "
+            f"task {render_attributed(task_id)} done-summary is 301 chars — the cap is 300; "
             f"tighten it (detail belongs in the report file)"
         )
 
@@ -2226,7 +2227,7 @@ class TestDoneSummaryReportPath:
                 report_path="reports/one.md\nreports/two.md",
             )
         assert str(exc_info.value) == (
-            f"task {task_id!r} done-report_path must be a single line — put "
+            f"task {render_attributed(task_id)} done-report_path must be a single line — put "
             f"detail in the report file and pass its path as report_path="
         )
 

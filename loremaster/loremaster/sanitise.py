@@ -97,3 +97,21 @@ def sanitise_line(text: str) -> SafeLine:
 def max_backtick_run(text: str) -> int:
     """The length of the longest run of consecutive backticks anywhere in ``text``."""
     return max((len(run) for run in BACKTICK_RUN_PATTERN.findall(text)), default=0)
+
+
+def fence_width(text: str) -> int:
+    """The width of a backtick delimiter that safely contains ``text`` (item 10, #102).
+
+    Strictly longer than any backtick run already inside ``text`` — so an embedded
+    fence-shaped run of backticks can never close the delimiter early and let the rest of
+    the body escape as un-fenced, forgeable text — bounded below by the three-backtick
+    CommonMark minimum (:data:`MIN_FENCE_WIDTH`).
+
+    This is the ONE width policy (finding #102: a pattern to clone is a defect to clone).
+    Every fence/delimiter primitive consumes it rather than re-deriving the ``max(...)``:
+    :func:`~loremaster.render.render_fenced` (the block fence),
+    :func:`~loremaster.render.render_attributed` (the inline attribution delimiter, #321),
+    and ``search.py``'s citation fence. Perturbing this rule reddens every consumer's pin —
+    that mutation is how sharing is proven, not by inspection.
+    """
+    return max(MIN_FENCE_WIDTH, max_backtick_run(text) + 1)

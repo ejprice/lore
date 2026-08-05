@@ -53,6 +53,7 @@ from typing import Any, NamedTuple, TypeVar
 from pydantic import BaseModel, ConfigDict
 
 from loremaster.graph import CodeGraph, GraphNode, ReferenceSummary
+from loremaster.render import render_attributed
 
 # --------------------------------------------------------------------------- #
 # Depth / consumer-cap bounds (plan §5).
@@ -459,9 +460,9 @@ class ImpactEngine:
             summary, covering_tests, direct_consumers, module_rollups, query_target
         ):
             message = (
-                f"no symbol or module named {target!r} appears in the code "
+                f"no symbol or module named {render_attributed(target)} appears in the code "
                 f"graph (never indexed, or indexed under a different "
-                f"qualified name). Next step: try lore_search({target!r}) to "
+                f"qualified name). Next step: try lore_search({render_attributed(target)}) to "
                 f"locate it."
             )
             if "." in target:
@@ -476,8 +477,8 @@ class ImpactEngine:
                 # the right teach even with a resolver wired: it already
                 # tried widening above and found nothing either.)
                 message += (
-                    f" If {target!r} omits its containing module (a bare "
-                    f"Class.method form), lore_get_symbol({target!r}) "
+                    f" If {render_attributed(target)} omits its containing module (a bare "
+                    f"Class.method form), lore_get_symbol({render_attributed(target)}) "
                     f"resolves by identity independent of module "
                     f"qualification -- retry lore_impact with the "
                     f"module-qualified name it names."

@@ -82,6 +82,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -637,8 +638,8 @@ class AgentRegistry:
             )
         if existing.role != role:
             raise AgentIdentityConflictError(
-                f"agent {name!r} is already registered with role {existing.role!r} "
-                f"(you sent {role!r}) — names are never reused; register a fresh name "
+                f"agent {name!r} is already registered with role {render_attributed(existing.role)} "
+                f"(you sent {render_attributed(role)}) — names are never reused; register a fresh name "
                 f"(e.g. {name + '2'!r})"
             )
         if (
@@ -648,7 +649,8 @@ class AgentRegistry:
         ):
             raise AgentIdentityConflictError(
                 f"agent {name!r} is already registered with spawned_by "
-                f"{existing.spawned_by!r} (you sent {spawned_by!r}) — names are never "
+                f"{render_attributed(existing.spawned_by)} (you sent "
+                f"{render_attributed(spawned_by)}) — names are never "
                 f"reused; register a fresh name (e.g. {name + '2'!r})"
             )
 
@@ -797,7 +799,7 @@ class AgentRegistry:
                     f"set; legal statuses: {', '.join(sorted(AGENT_STATUSES))}"
                 )
             raise IllegalAgentStatusError(
-                f"{target!r} is not a legal agent status; legal statuses: "
+                f"{render_attributed(target)} is not a legal agent status; legal statuses: "
                 f"{', '.join(sorted(AGENT_STATUSES))}"
             )
         target_status = cast(AgentStatus, target)

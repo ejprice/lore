@@ -82,9 +82,9 @@ from typing import LiteralString
 from loremaster.sanitise import (
     CONTROL_CHAR_PATTERN,
     FENCE_CHAR,
-    MIN_FENCE_WIDTH,
     SafeLine,
-    max_backtick_run,
+    fence_width,
+    safe_str,
 )
 
 # Reused across calls: ``string.Formatter`` carries no per-call state, and
@@ -144,7 +144,7 @@ def _template_placeholder_names(template: str) -> set[str]:
     return names
 
 
-def render_line(template: LiteralString, /, **values: SafeLine | int) -> Rendered:
+def render_line(template: LiteralString, /, **values: SafeLine | Rendered | int) -> Rendered:
     """Assemble ONE rendered line from a literal template + named, proven-safe
     values (the ruling's §ENFORCEMENT rows 1, 3, 5, 8 — v2).
 
@@ -208,11 +208,11 @@ def render_line(template: LiteralString, /, **values: SafeLine | int) -> Rendere
             f"no matching placeholder in template {template!r}"
         )
     for key, value in values.items():
-        if not isinstance(value, SafeLine | int):
+        if not isinstance(value, SafeLine | Rendered | int):
             raise RenderSafetyError(
-                f"render_line value for {key!r} is not a SafeLine or int "
+                f"render_line value for {key!r} is not a SafeLine, Rendered or int "
                 f"(got {type(value).__name__}) — forgot a sanitise_line/"
-                f"safe_str wrap, or is this a plain str produced by "
+                f"safe_str/render_attributed wrap, or is this a plain str produced by "
                 f"', '.join(...) (use render_join instead)?"
             )
         if isinstance(value, str) and CONTROL_CHAR_PATTERN.search(value):
@@ -235,13 +235,56 @@ def render_fenced(body: str) -> Rendered:
     ``body`` is deliberately RAW, never ``sanitise_line``'d: a fenced body
     (a brief/message body) must round-trip byte-identical, and sanitisation
     is render-time LINE policy, not storage-mutation policy. The fence itself
-    is sized ``max(MIN_FENCE_WIDTH, max_backtick_run(body) + 1)`` — strictly
-    longer than any backtick run already inside ``body`` — so an embedded
+    is sized by :func:`~loremaster.sanitise.fence_width` — strictly longer
+    than any backtick run already inside ``body`` — so an embedded
     fence-shaped run of backticks can never close the fence early and let the
-    rest of the body escape as un-fenced, forgeable text.
+    rest of the body escape as un-fenced, forgeable text. This is the FIRST
+    consumer of the extracted width policy (B-2 step 0, #102); it does NOT
+    re-derive the ``max(...)`` inline.
     """
-    fence = FENCE_CHAR * max(MIN_FENCE_WIDTH, max_backtick_run(body) + 1)
+    fence = FENCE_CHAR * fence_width(body)
     return Rendered(f"{fence}\n{body}\n{fence}")
+
+
+def render_attributed(value: object) -> Rendered:
+    """Contain a single caller-origin attribution / id / teaching-error value in an
+    INLINE provenance delimiter (Link 5, finding #321).
+
+    The #321 injection class: a caller-supplied free-text value
+    (owner/actor/created_by/subject/…, or a caller id/target reprd into a teaching
+    error) reaches another agent's served answer OUTSIDE any provenance delimiter, so it
+    reads as lore's OWN voice — an instruction the consuming agent obeys, not a row it
+    misreads. This is the seam that closes it, and every attribution / id / teaching-error
+    door routes through it (never a bare ``!r`` — control-char sanitisation alone is
+    same-line-forgery-blind).
+
+    Three steps:
+
+    1. :func:`~loremaster.sanitise.sanitise_line` collapses control chars / newlines /
+       bidi / zero-width runs to ONE visually-honest line;
+    2. the sanitised value is wrapped in an inline backtick delimiter of width
+       :func:`~loremaster.sanitise.fence_width` — strictly longer than any backtick run the
+       value carries — so the caller cannot close the delimiter early and escape as
+       forgeable text (the SECOND consumer of the one width policy, #102);
+    3. it is minted :class:`Rendered`.
+
+    ``value`` is accepted as ``object`` and stringified through the existing
+    :func:`~loremaster.sanitise.safe_str` seam (its ``sanitise_line(str(x))`` idiom), so a
+    caller ``str | None`` / ``int | str`` id needs no per-site coercion — the one seam owns
+    the stringify, exactly as ``safe_str`` already does for ``owner: str | None``.
+
+    An empty / whitespace-only value renders as a neutral empty delimited span (no
+    forgeable content, no crash). ⚠ The result is ``Rendered``; when composing it into a
+    served RENDER line, NEVER re-embed it in an f-string
+    (``f"...{render_attributed(x)}"`` re-demotes it to a forgeable ``str``) — assemble it
+    via :func:`render_line` / :func:`render_compose`. (A served ERROR message is a plain
+    ``str`` by construction, so interpolating the already-contained bytes into an
+    exception's message string is the sanctioned idiom there — the containment lives in the
+    delimiter bytes, not the type.)
+    """
+    line = safe_str(value)
+    delimiter = FENCE_CHAR * fence_width(line)
+    return Rendered(f"{delimiter}{line}{delimiter}")
 
 
 def render_compose(*parts: Rendered) -> Rendered:

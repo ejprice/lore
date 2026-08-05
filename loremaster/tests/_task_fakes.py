@@ -75,6 +75,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
+from loremaster.render import render_attributed
 from loremaster.tasks import (
     ENGINE_RECURSION_CEILING,
     TASK_BLOCKER_MAX_DEPTH,
@@ -173,26 +174,26 @@ def _validate_done_extras(
     if target == STATUS_DONE:
         if summary is None or not summary.strip():
             raise IllegalTransitionError(
-                f"transition to 'done' for task {task_id!r} requires 'summary' — a "
+                f"transition to 'done' for task {render_attributed(task_id)} requires 'summary' — a "
                 f"one-line completion digest (max 300 chars) the rollup serves as "
                 f"the fleet's durable completion record; pass report_path= too "
                 f"when a report file exists"
             )
         if "\n" in summary or "\r" in summary:
             raise IllegalTransitionError(
-                f"task {task_id!r} done-summary must be a single line — put "
+                f"task {render_attributed(task_id)} done-summary must be a single line — put "
                 f"detail in the report file and pass its path as report_path="
             )
         if len(summary) > _DONE_SUMMARY_MAX_CHARS:
             raise IllegalTransitionError(
-                f"task {task_id!r} done-summary is {len(summary)} chars — the cap "
+                f"task {render_attributed(task_id)} done-summary is {len(summary)} chars — the cap "
                 f"is 300; tighten it (detail belongs in the report file)"
             )
         if report_path is not None and (
             not report_path.strip() or "\n" in report_path or "\r" in report_path
         ):
             raise IllegalTransitionError(
-                f"task {task_id!r} done-report_path must be a single line — put "
+                f"task {render_attributed(task_id)} done-report_path must be a single line — put "
                 f"detail in the report file and pass its path as report_path="
             )
     elif summary is not None or report_path is not None:

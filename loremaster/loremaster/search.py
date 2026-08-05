@@ -85,6 +85,7 @@ from pydantic import BaseModel, ConfigDict
 
 from loremaster.extension import DetailLevel, ExtensionContext
 from loremaster.index.manifest import STATE_INDEXED
+from loremaster.render import render_fenced
 
 # ``_sanitise_line``/``_max_backtick_run``/etc. are explicitly re-exported
 # under their ORIGINAL private names (see the module-level ``__all__`` below
@@ -1420,15 +1421,6 @@ class SearchPipeline:
         key = self._server.chunk_key(candidate.payload, ctx)
         return key if key is not None else candidate.key
 
-    @staticmethod
-    def _fence_width(source_text: str) -> int:
-        """The backtick-fence width for ``source_text`` (item 10, CommonMark rule).
-
-        Longer than any backtick run inside the source (so an embedded ``` cannot
-        close the fence early), bounded below by the three-backtick minimum.
-        """
-        return max(_MIN_FENCE_WIDTH, _max_backtick_run(source_text) + 1)
-
     def _base_format(
         self, payload: dict[str, Any], key: str, enrichment_lines: list[str]
     ) -> str:
@@ -1456,9 +1448,12 @@ class SearchPipeline:
             ),
             *enrichment_lines,
         ]
-        # The source body: verbatim, wrapped in a fence longer than any run inside.
-        fence = _FENCE_CHAR * self._fence_width(source_text)
-        lines.extend((fence, source_text, fence))
+        # The source body: verbatim, wrapped in the SHARED render fence — the ONE fence
+        # construction home (render_fenced). search.py no longer sizes or builds a fence of
+        # its own (operator ruling 2026-08-05: FULL route-through; #102 one implementation).
+        # render_fenced consumes the SAME sanitise.fence_width policy the old private width
+        # clone did, so this is byte-preserving (pinned in test_task_read_surface.py).
+        lines.append(str(render_fenced(source_text)))
         return "\n".join(lines)
 
     async def _is_stale(self, payload: dict[str, Any]) -> bool:

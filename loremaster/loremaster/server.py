@@ -2846,10 +2846,11 @@ class AppContext:
         source body out of ``result.formatted`` -- the fence is a matched
         PAIR of lines composed entirely of
         :data:`~loremaster.search._FENCE_CHAR`, guaranteed by
-        :meth:`~loremaster.search.SearchPipeline._fence_width`'s "longer
-        than any backtick run inside" invariant to be the two WIDEST such
-        lines in the string (never mistaken for a shorter backtick run
-        inside the body itself) -- while keeping every header line around
+        :func:`~loremaster.sanitise.fence_width`'s "longer than any backtick
+        run inside" invariant (the shared width policy ``render_fenced``
+        consumes, which search.py's citation body now routes through) to be
+        the two WIDEST such lines in the string (never mistaken for a shorter
+        backtick run inside the body itself) -- while keeping every header line around
         it: the ``[SOURCE:...]``/``Key:``/``[S:...]`` citation, any graph
         ref-join / signature enrichment line (:meth:`SearchPipeline.
         _enrichment_lines`), and any trailing stale/cosine/weak-match
