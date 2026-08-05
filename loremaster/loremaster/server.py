@@ -1177,6 +1177,15 @@ _TASK_ACTIONS = (
 # refuses both. A SET rather than a deleted guard — a caller passing ``limit`` to
 # ``transition`` is making a mistake and deserves to be told.
 _TASK_ACTIONS_ACCEPTING_LIMIT = (_TASK_ACTION_ROLLUP, _TASK_ACTION_QUERY)
+# The DEFAULT view size for a NO-LIMIT ``action='query'`` read (operator ruling **R9**'s
+# second clause, 2026-07-28; finding #309). An unfiltered ``query`` with no caller ``limit``
+# used to serve the WHOLE ledger — the cost R9 was ruled to remove. The no-limit RENDER path
+# now caps the view at this many rows and DISCLOSES the true surplus with the house
+# counted-elision grammar (``+K more — re-run with limit=N``). 50 matches lore's own comms
+# drain cap, so the affordance an agent already learned there transfers here unchanged. This
+# caps the RENDER only — the store read still materialises the full set so the disclosed K is
+# a DERIVED fact (``len(materialised) − shown``), never a store-side ``count()``.
+_DEFAULT_TASK_QUERY_DISPLAY_CAP = 50
 # The actions ``max_depth`` is legal for — a SET for the same reason, and a NEW parameter
 # inherits the discipline in BEHAVIOUR rather than in prose: a guard hard-coded to the one
 # action a pin happened to drive accepts and silently IGNORES the parameter everywhere
@@ -3151,7 +3160,7 @@ class AppContext:
         domain failure and render it (see :meth:`_resolve_or_acknowledge_many`).
         """
         # Ruling 10 link 1b — FIRST statement, before any use of an identity.
-        AppContext._validate_comms_identities(agent, session=session)
+        AppContext._validate_comms_identities(agent, session=session, name=None, to=None)
         if action not in (
             _FINDING_ACTION_RESOLVE_MANY,
             _FINDING_ACTION_ACKNOWLEDGE_MANY,
@@ -3594,7 +3603,7 @@ class AppContext:
             ValueError: ``agent``/``session`` violate ``AGENT_NAME_PATTERN``
                 (Ruling 10 link 1b — refused at the tool seam, before any use).
         """
-        AppContext._validate_comms_identities(agent, session=session)
+        AppContext._validate_comms_identities(agent, session=session, name=None, to=None)
         result = await self.task_ledger.claim_task(task_id, owner)
         return await AppContext._with_comms_footer(self, 
             AppContext._render_claim_result(result),
@@ -3736,7 +3745,7 @@ class AppContext:
         # the ONE seam's call set rather than cloning the check (#102). It is the
         # FIRST statement so no argument refusal below can reorder it behind a
         # store touch.
-        AppContext._validate_comms_identities(agent, session=session)
+        AppContext._validate_comms_identities(agent, session=session, name=None, to=None)
         # ⚠ THE GUARD IS SPLIT, NOT DELETED (operator ruling **R9**, 2026-07-28). ``limit``
         # is now legal for ``query`` too — it is the documented way for an agent to bound
         # its own answer, and with no cap available an unfiltered ``query`` served a
@@ -3788,20 +3797,36 @@ class AppContext:
             )
             rendered, writes = f"created task {new_id} (status open)", 1
         elif action == _TASK_ACTION_QUERY:
-            # ⚠ EVERY filter combination routes through the ONE helper, and that is the
-            # whole of ESC-5's deploy entry condition. A dispatcher that sent only SOME
-            # branches through it would serve an honest bound on one spelling of a
-            # question and the false clear on another — the same tool, the same caller,
-            # two truths. The cap is still PUSHED DOWN (ruling **R5**); the helper adds
-            # exactly ONE over-fetched row to the same read.
-            rendered, writes = (
-                AppContext._render_task_listing(
-                    await AppContext._task_listing(
-                        self, status=status, owner=owner, blocked=blocked, limit=limit
-                    )
-                ),
-                0,
-            )
+            # ⚠ TWO GRAMMARS, split by the caller's VISIBLE input (finding #309, ruling R9's
+            # second clause). A CALLER-limited query keeps ESC-5's over-fetch-by-one EXISTENCE
+            # disclosure — every filter combination still routes through the ONE
+            # ``_task_listing`` helper, which is the whole of ESC-5's deploy entry condition
+            # (a dispatcher sending only SOME branches through it would serve an honest bound
+            # on one spelling of a question and the false clear on another — the same tool,
+            # the same caller, two truths). A NO-LIMIT query used to serve the WHOLE ledger;
+            # R9's second clause caps its VIEW at ``_DEFAULT_TASK_QUERY_DISPLAY_CAP`` and
+            # discloses the TRUE surplus with the house COUNTED grammar. That path
+            # materialises the full matching set (no store LIMIT) so the disclosed K is
+            # DERIVED (``len − shown``), never a store ``count()`` — the counted grammar can
+            # only live where K is honestly known, which is exactly the no-limit path.
+            if limit is None:
+                rendered, writes = (
+                    AppContext._render_no_limit_task_query(
+                        await self.task_ledger.query_tasks(
+                            status=status, owner=owner, blocked=blocked
+                        )
+                    ),
+                    0,
+                )
+            else:
+                rendered, writes = (
+                    AppContext._render_task_listing(
+                        await AppContext._task_listing(
+                            self, status=status, owner=owner, blocked=blocked, limit=limit
+                        )
+                    ),
+                    0,
+                )
         elif action == _TASK_ACTION_GET:
             rendered, writes = (
                 AppContext._render_task_detail(
@@ -3947,6 +3972,45 @@ class AppContext:
             f"showing {len(listing.rows)} matching task(s) — MORE MATCH than were served: "
             f"re-run with a larger limit, or narrow with status/owner/blocked"
         )
+
+    @classmethod
+    def _render_no_limit_task_query(cls, rows: list[Task]) -> str:
+        """Render a NO-LIMIT ``action='query'`` answer under R9's DEFAULT display cap (#309).
+
+        The caller passed no ``limit``, so the store read materialised the FULL matching set;
+        this render caps the VIEW at :data:`_DEFAULT_TASK_QUERY_DISPLAY_CAP` and, when the set
+        exceeds the cap, discloses the surplus with the HOUSE counted-elision grammar
+        ``+K more — re-run with limit=N`` — the SAME
+        :func:`~loremaster.render.render_line` template ``_render_comms_fleet`` already
+        serves, REUSED through the shared render seam rather than cloned as a bare f-string
+        (#102). The rows-plus-line composition matches :meth:`_render_task_listing`'s idiom.
+
+        ⚠ **K is a DERIVED fact, never a store count (ruling A, wave-C §2).** Because the full
+        set is already in hand, the remainder is ``len(rows) − shown`` — a measurement of
+        THIS answer, so the arithmetic a reader verifies (``shown + K == total``) closes by
+        construction and no ``count()`` read exists. The no-limit path materialises the whole
+        set and therefore OWES the honest count; the CALLER-limited path
+        (:meth:`_render_task_listing`) only over-fetches by one and cannot know K, so it keeps
+        the weaker EXISTENCE grammar. The grammar is a function of the caller's VISIBLE input
+        (did they pass ``limit``?), which is why the two never both live for one property.
+
+        ⚠ **A COMPLETE answer discloses NOTHING.** When the materialised set fits within the
+        cap there is no surplus, so no line is appended — a phantom ``+0 more`` would claim a
+        remainder that does not exist (TRUST doctrine: a served count describes the whole set
+        its label claims).
+        """
+        cap = _DEFAULT_TASK_QUERY_DISPLAY_CAP
+        shown = rows[:cap]
+        rendered = cls._render_task_rows(shown)
+        surplus = len(rows) - len(shown)
+        if surplus <= 0:
+            return rendered
+        elision = render_line(
+            "+{more} more — re-run with limit={next_limit}",
+            more=surplus,
+            next_limit=len(rows),
+        )
+        return f"{rendered}\n{elision}"
 
     @classmethod
     def _render_task_detail(cls, task: Task) -> str:
@@ -5479,8 +5543,8 @@ class AppContext:
         agent: str | None,
         *,
         session: str | None,
-        name: str | None = None,
-        to: list[str] | None = None,
+        name: str | None,
+        to: list[str] | None,
     ) -> None:
         """Charset-validate EVERY identity a call carries, BEFORE any store touch.
 
@@ -9923,8 +9987,8 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "An optional free-text note recorded with a 'resolve' / 'wontfix' "
-                    "transition. Ignored by the other actions."
+                    "An optional free-text note recorded with an 'acknowledge' / "
+                    "'resolve' / 'wontfix' transition. Ignored by the other actions."
                 )
             ),
         ] = None,

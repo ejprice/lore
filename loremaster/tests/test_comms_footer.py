@@ -4402,8 +4402,17 @@ class TestTheCommsIdentitySeamHasNoDefaultForNameOrTo:
         RED at ``5c5ff7a`` (the defaults swallow the omission); GREEN once the defaults are
         gone. A charset-legal ``agent``/``session`` is used so the raise is about the MISSING
         REQUIRED KEYWORDS, never about a bad value.
+
+        ⚠ **The ``# type: ignore[call-arg]`` is the R-4 satisfiability rider, and it is LOAD-
+        BEARING.** This is a NEGATIVE test: it deliberately omits ``name``/``to`` to assert the
+        RUNTIME ``TypeError``. Once the builder removed their defaults (R-4, now landed), mypy
+        correctly reports the omission as ``[call-arg]`` on this very line — a real gate
+        failure the whole-repo ``scripts/typecheck.sh`` catches but a targeted ``mypy
+        server.py`` cannot. The ignore tells mypy the bad call is INTENTIONAL; it does not
+        weaken the pin — the ``TypeError`` is still asserted at runtime. (Same idiom as the
+        ``TaskListing(..., total=99)  # type: ignore[call-arg]`` negative test.)
         """
         from loremaster.server import AppContext  # noqa: PLC0415
 
         with pytest.raises(TypeError):
-            AppContext._validate_comms_identities(CALLER_A[0], session=CALLER_A[1])
+            AppContext._validate_comms_identities(CALLER_A[0], session=CALLER_A[1])  # type: ignore[call-arg]
