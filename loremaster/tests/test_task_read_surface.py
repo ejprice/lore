@@ -1716,6 +1716,9 @@ _EXPECTED_COMMS_ACTIONS = (
     "send",
     "drain",
     "ack",
+    # packet 05a-iii: ``story`` (task-anchored lineage). Appended in DISPATCH ORDER
+    # (after ``ack``) — this tuple's order is the unknown-action refusal's list.
+    "story",
 )
 
 

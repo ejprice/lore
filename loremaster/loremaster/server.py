@@ -1215,9 +1215,9 @@ _BATCH_ITEMS_MAX = 50
 _TASK_ID_SHAPE_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 # The ``lore_comms`` actions (PKT-28 C1, design doc §SCOPE/§8) — the six C1
-# verbs plus packet 03b's three message-surface verbs; await/story remain
-# growth points (design doc §FORWARD-COMPAT) that widen ``_COMMS_ACTIONS``
-# deliberately in a later packet.
+# verbs, packet 03b's three message-surface verbs, and packet 05a-iii's ``story``
+# (task-anchored lineage); ``await`` remains the one growth point (design doc
+# §FORWARD-COMPAT) that widens ``_COMMS_ACTIONS`` deliberately in a later packet.
 # --------------------------------------------------------------------------- #
 # The pending-traffic FOOTER (packet 04b-2 slice C3, ruling R1/R4/R8/L1/L2).
 # --------------------------------------------------------------------------- #
@@ -1267,6 +1267,7 @@ _COMMS_ACTION_FLEET = "fleet"
 _COMMS_ACTION_SEND = "send"
 _COMMS_ACTION_DRAIN = "drain"
 _COMMS_ACTION_ACK = "ack"
+_COMMS_ACTION_STORY = "story"
 
 # §B2.4: ``set_status``'s CLOSED vocabulary at the surface. The ledger is
 # VALUE-KEYED (``question = set_status == 'input_required'``) and treats every
@@ -5934,6 +5935,50 @@ class AppContext:
             status_counts=roster.status_counts,
         )
 
+    async def _comms_story(
+        self,
+        *,
+        task_id: str | None = None,
+        thread: str | None = None,
+        **_ignored: Any,
+    ) -> Rendered:
+        """story — task-anchored lineage in ONE call (packet 05a-iii).
+
+        ⚠ STUB (RED contract, packet 05a-iii): this does NOT yet reconstruct the
+        arc. It returns a bare scope-naming header so the action is DISPATCHABLE
+        (the non-vacuity pin) while the reconstruction + containment pins in
+        ``test_comms_story.py`` stay RED. The builder composes the arc from the
+        task ledger (created/owner/status/transitions/report_path) + the message
+        and ``to`` edges carrying this ``task_id`` + brief acks, marks questions
+        STRUCTURALLY from ``message.question`` (a legibility gain, not an obedience
+        fix — #195's obedience measurement is 06's drill), and routes EVERY stored
+        free-text field through the shipped ``render_attributed``/``render_fenced``
+        seam (ONE IMPLEMENTATION — never a second containment).
+        """
+        if task_id is None and thread is None:
+            raise ValueError(
+                "story needs a task_id (or thread) to anchor on — it reconstructs "
+                "ONE task's arc"
+            )
+        anchor = task_id if task_id is not None else thread
+        return AppContext._render_comms_story(CommsStory(task_id=str(anchor)))
+
+    @staticmethod
+    def _render_comms_story(story: CommsStory) -> Rendered:
+        """story's render (packet 05a-iii).
+
+        ⚠ STUB (RED contract): renders ONLY the scope-naming header. The full arc
+        and the FENCED message bodies are the builder's — ``test_comms_story.py``
+        pins define the target: the render NAMES its SET (this task's arc) and what
+        it OMITS (Leg-1 scope diff), marks questions from ``message.question``, and
+        every stored free-text field (bodies, refs, ack_notes, descriptions) routes
+        through ``render_attributed``/``render_fenced`` with a hostile-fixture pin.
+        """
+        return render_line(
+            "story: arc of task {task_id} (stub — lineage not yet reconstructed)",
+            task_id=render_attributed(story.task_id),
+        )
+
     async def _comms_send(
         self,
         *,
@@ -7286,6 +7331,55 @@ class AppContext:
         await self.message_ledger.close()
 
 
+class StoryMessage(BaseModel):
+    """One message in a task's story arc (packet 05a-iii, ``story``).
+
+    A projection of the comms ``message`` node + its ``to`` edge onto exactly what
+    the story render needs. ``body`` is agent-authored free text rendered VERBATIM
+    inside ``render_fenced``; single-line attributions route through
+    ``render_attributed``/``sanitise_line``. ``question`` is the STRUCTURAL marker
+    read directly from ``message.question`` — a legibility gain, never an obedience
+    fix. MINIMAL by design: the builder may widen it without loosening
+    ``extra="forbid"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    sender_name: str
+    grade: str
+    body: str
+    refs: list[str] = Field(default_factory=list)
+    question: bool = False
+    thread: str = ""
+
+
+class CommsStory(BaseModel):
+    """The reconstructed lineage of ONE task, composed for the ``story`` action
+    (packet 05a-iii).
+
+    A READ composition over EXISTING edges (created→claim→messages→transitions→
+    report_path); it reshapes no drain SELECT (that is packet 05a-i). The render
+    NAMES its SET (this task's arc) and what it OMITS — the Leg-1 scope diff. This
+    is the MINIMAL surface the contract shapes; the builder extends it (blocks
+    context, brief versions in force, per-recipient seen/ack stamps) without
+    loosening ``extra="forbid"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    subject: str = ""
+    description: str = ""
+    created_by: str = ""
+    owner: str | None = None
+    status: str = ""
+    report_path: str | None = None
+    done_summary: str | None = None
+    blocked_by: list[str] = Field(default_factory=list)
+    messages: list[StoryMessage] = Field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class CommsActionSpec:
     """One ``lore_comms`` action: its handler + its accepted-parameter contract.
@@ -7314,8 +7408,8 @@ class CommsActionSpec:
 # The introspectable dispatch table AppContext.comms() dispatches through and
 # the completeness pin (test_render_seam_pins.py::assert_actions_covered)
 # iterates. Module-level, defined AFTER AppContext (unbound-method
-# references — same file, no import cycle). Exactly six actions in C1
-# (design doc §SCOPE) — send/drain/ack/await/story are C2/C3 growth points.
+# references — same file, no import cycle). C1 shipped six actions; C2/C3 added
+# send/drain/ack and (packet 05a-iii) story — ``await`` is the last growth point.
 _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
     _COMMS_ACTION_REGISTER: CommsActionSpec(
         AppContext._comms_register,
@@ -7363,6 +7457,14 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
         AppContext._comms_ack,
         params=frozenset({"seqs", "note"}),
         required=frozenset({"seqs"}),
+    ),
+    _COMMS_ACTION_STORY: CommsActionSpec(
+        AppContext._comms_story,
+        params=frozenset({"task_id", "thread"}),
+        # Neither is a spec-layer ``required``: the anchor is a ONE-OF (task_id OR
+        # thread) that the AND-semantics ``required`` frozenset cannot express, so
+        # the handler validates "at least one anchor" itself (teaching ValueError).
+        required=frozenset(),
     ),
 }
 
@@ -9555,7 +9657,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "registered fleet (optionally session-scoped). The durable message "
             "surface is 'send' (deliver to named teammates, or broadcast to your "
             "whole session), 'drain' (read your inbox and mark what it serves) and "
-            "'ack' (discharge the directives your drain named). Every agent MUST "
+            "'ack' (discharge the directives your drain named). 'story' "
+            "reconstructs ONE task's arc — created → claim → messages → "
+            "transitions → report_path — in a single call. Every agent MUST "
             "'register' before any other action; every action re-touches the "
             "caller's heartbeat. Returns a rendered summary, never a raw store dump."
         ),

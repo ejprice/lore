@@ -174,6 +174,12 @@ _COL_CHECKPOINT = "checkpoint"
 _COL_LAST_NOTE = "last_note"
 _COL_REGISTERED_AT = "registered_at"
 _COL_HEARTBEAT_AT = "heartbeat_at"
+# #304 (packet 05a-iii): the tz-aware UTC instant the agent's STATUS VALUE was
+# last set — stamped write-side ONLY when the status changes, so the fleet render
+# can age the DECLARATION beside the liveness heartbeat (a latched verdict becomes
+# a dated fact). ``option<datetime>``: every production agent row predates it and
+# reads NONE, so the decode is None-tolerant (never ``_require_aware_utc``).
+_COL_STATUS_SET_AT = "status_set_at"
 
 # The record-id table separator. (The signin credential keys moved to the ONE
 # shared ``store._txn.signin_credentials`` seam — #211/#102.)
@@ -222,6 +228,11 @@ class Agent(BaseModel):
             write-once, never touched again on re-register.
         heartbeat_at: The tz-aware UTC timestamp of the agent's most recent
             fleet-visible activity — touched by every comms action.
+        status_set_at: The tz-aware UTC instant ``status`` last CHANGED value, or
+            ``None`` for a row written before this field existed (#304). Stamped
+            write-side only on a status change — NOT on every heartbeat — so the
+            fleet render can age the declaration. A legacy ``None`` renders as an
+            explicit unknown, never a fabricated zero age.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -238,6 +249,7 @@ class Agent(BaseModel):
     last_note: str | None = None
     registered_at: datetime
     heartbeat_at: datetime
+    status_set_at: datetime | None = None
 
 
 class AgentRegisterResult(BaseModel):
@@ -924,6 +936,12 @@ class AgentRegistry:
             last_note=row.get(_COL_LAST_NOTE),
             registered_at=self._require_aware_utc(row.get(_COL_REGISTERED_AT), _COL_REGISTERED_AT),
             heartbeat_at=self._require_aware_utc(row.get(_COL_HEARTBEAT_AT), _COL_HEARTBEAT_AT),
+            # #304: NONE-tolerant — a legacy row omits the column entirely (store
+            # reference §2: ``SELECT *`` omits a NONE-valued option column), so a
+            # required-datetime decode would wrongly raise. The write-side stamp
+            # (touch/register on a status CHANGE) is the builder's; this stub only
+            # threads the value through so the model round-trips.
+            status_set_at=row.get(_COL_STATUS_SET_AT),
         )
 
     def _require_aware_utc(self, value: Any, column: str) -> datetime:

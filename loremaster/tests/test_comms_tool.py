@@ -74,6 +74,7 @@ from loremaster.server import (
     _MAX_FLEET_LIMIT,
     AppContext,
     CommsActionSpec,
+    CommsStory,
     LoreServer,
     build_mcp_server,
 )
@@ -403,8 +404,8 @@ class TestCommsActionsTable:
     the exact shape spec §8 pins verbatim (six actions, D3: a SANCTIONED
     deviation from the tasks()/findings() if/elif house idiom)."""
 
-    # packet 03 widens the table by three (send/drain/ack) — the growth points
-    # server.py:1097-1099 already names. The set stays EXACT, never a subset.
+    # packet 03 widens the table by three (send/drain/ack); packet 05a-iii adds
+    # ``story``. The set stays EXACT, never a subset.
     _EXPECTED_ACTIONS = {
         "register",
         "heartbeat",
@@ -415,6 +416,7 @@ class TestCommsActionsTable:
         "send",
         "drain",
         "ack",
+        "story",
     }
 
     def test_exact_action_set(self) -> None:
@@ -4111,6 +4113,15 @@ async def _render_send_broadcast_session(value: str, _ctx: Any) -> str:
     )
 
 
+async def _render_story_task_id(value: str, _ctx: Any) -> str:
+    """packet 05a-iii: ``story`` renders its task-id anchor through
+    ``render_attributed`` (the stub already does; the builder adds the arc). ONE
+    agent-controlled field satisfies the per-ACTION completeness pin; story's
+    MULTI-LINE body FENCE case (the hostile-fixture containment requirement) lives in
+    ``test_comms_story.py::TestStoryContainsStoredFreeTextInAFence``."""
+    return str(AppContext._render_comms_story(CommsStory(task_id=value)))
+
+
 # The FENCE cases (register.brief_body / brief_get.body / drain.body) are
 # deliberately NOT in this list -- see TestFencedBodyIntegrity and
 # TestDrainBodiesAreFENCED below, and the report's "genuine spec tension" flag:
@@ -4164,6 +4175,11 @@ C1_RENDER_CASES: list[RenderCase] = [
     RenderCase("drain.sender", _render_drain_sender),
     RenderCase("drain.thread", _render_drain_thread),
     RenderCase("ack.name", _render_ack_agent_name),
+    # packet 05a-iii: ``story`` — one agent-controlled field (the task-id anchor) to
+    # satisfy the per-ACTION completeness pin; the body FENCE case lives in
+    # test_comms_story.py (multi-line/verbatim, so it is a fence case, not this
+    # battery — same split as drain.body).
+    RenderCase("story.task_id", _render_story_task_id),
 ]
 
 # The FENCE-labeled cases, tracked separately (see TestFencedBodyIntegrity and,
@@ -4306,6 +4322,15 @@ class TestNewActionSpecs:
         spec = _COMMS_ACTIONS["ack"]
         assert spec.params == frozenset({"seqs", "note"})
         assert spec.required == frozenset({"seqs"})
+        assert spec.requires_registration is True
+
+    def test_story_params_and_required(self) -> None:
+        # packet 05a-iii: ``story`` anchors on a task_id OR a thread (a ONE-OF the
+        # AND-semantics ``required`` frozenset cannot express), so ``required`` is
+        # empty and the handler validates "at least one anchor" itself.
+        spec = _COMMS_ACTIONS["story"]
+        assert spec.params == frozenset({"task_id", "thread"})
+        assert spec.required == frozenset()
         assert spec.requires_registration is True
 
     def test_grade_is_REQUIRED_for_send(self) -> None:

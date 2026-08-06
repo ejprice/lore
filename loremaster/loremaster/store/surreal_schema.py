@@ -456,6 +456,13 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("last_note", "option<string>", ""),
     ("registered_at", "datetime", ""),
     ("heartbeat_at", "datetime", ""),
+    # #304 (packet 05a-iii): the status-declaration timestamp. ``option<datetime>``
+    # with NO ASSERT — store reference §1.4: a NEW field on the production-POPULATED
+    # ``agent`` table must be ``option<>`` (a required/asserted field poisons every
+    # existing row's next UPDATE; an option no-assert field cannot). Emitted through
+    # ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1, the only clause that lands
+    # a changed definition; ``IF NOT EXISTS`` is the #107 silent no-op).
+    ("status_set_at", "option<datetime>", ""),
 )
 
 # The ``agent`` columns the two indexes are built on: ``(session, status)``
