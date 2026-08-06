@@ -77,6 +77,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from loremaster.graph import KIND_METHOD, KIND_MODULE, CodeGraph
+from loremaster.render import render_attributed
 
 # --------------------------------------------------------------------------- #
 # Budget bounds (contract: floor 200, default 2500, cap 6000).
@@ -503,8 +504,8 @@ class MapEngine:
             return frozenset()
         if self._changed_since_resolver is None:
             raise MapChangedSinceError(
-                f"changed_since={changed_since!r} was given but this map has no "
-                "diff/snapshot engine wired to resolve it"
+                f"changed_since={render_attributed(changed_since)} was given but this map "
+                "has no diff/snapshot engine wired to resolve it"
             )
         return await self._changed_since_resolver(changed_since)
 
@@ -747,9 +748,9 @@ class MapEngine:
         )
         if not focus_modules:
             raise MapFocusNotFoundError(
-                f"no symbol or module named {focus!r} appears in the code "
+                f"no symbol or module named {render_attributed(focus)} appears in the code "
                 f"graph (never indexed, or indexed under a different "
-                f"qualified name). Next step: try lore_search({focus!r}) to "
+                f"qualified name). Next step: try lore_search({render_attributed(focus)}) to "
                 f"locate it."
             )
         weight = 1.0 / len(focus_modules)

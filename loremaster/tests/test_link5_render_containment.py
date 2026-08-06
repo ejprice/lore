@@ -941,15 +941,30 @@ class TestTheDerivedPartitionHasNoDoor:
 
 
 def _served_error_bases() -> tuple[type[BaseException], ...]:
-    """The DERIVED served-error base hierarchy — the seven domain-error roots whose
-    subclasses become an agent-facing teaching error (never an infra `SurrealConnectionError`
-    nor a config `ValueError`). Scoping the AST scan to CONSTRUCTIONS of these classes is
-    what keeps it OFF config/infra `{tier!r}` sites (measured: zero over-reach), so the fix
-    is not trapped into wrapping server-controlled values it does not own (#133)."""
+    """The DERIVED served-error base hierarchy — the ELEVEN caller-boundary error roots
+    whose subclasses become an agent-facing teaching error (never an infra
+    `SurrealConnectionError`/`SurrealStoreError` nor a config `ValueError`). Scoping the AST
+    scan to CONSTRUCTIONS of these classes is what keeps it OFF config/infra `{tier!r}` sites
+    (measured: zero over-reach), so the fix is not trapped into wrapping server-controlled
+    values it does not own (#133).
+
+    The original SEVEN were the ledger/store-read/symbol/impact domain roots. The 2026-08-05
+    operator "literal all-or-nothing" ruling added the FOUR code-RAG-tool caller-boundary
+    error classes that self-echo a caller free-text param but happen NOT to subclass a ledger
+    base: `ReindexTierError` (lore_index `tier`), `MapChangedSinceError` (lore_map/diff
+    `changed_since`), `MapFocusNotFoundError` (lore_map `focus`), `ReadFileError` (lore_read
+    `tier`/`path`). Every one of their raise sites interpolates ONLY a caller param or an int
+    (verified over all sites, closer-04b5-selfecho-1) — so adding them as bases adds real
+    doors and zero false positives, and `SurrealStoreError`/`MapRebuildingError`/
+    `ProbeGateError`/`SchemaRebuildingError` still fall OUTSIDE the set (they subclass none of
+    the eleven), keeping infra off the scan."""
     from loremaster.agents import AgentRegistryError  # noqa: PLC0415
     from loremaster.findings import FindingLedgerError  # noqa: PLC0415
     from loremaster.impact import ImpactTargetNotFoundError  # noqa: PLC0415
+    from loremaster.map import MapChangedSinceError, MapFocusNotFoundError  # noqa: PLC0415
     from loremaster.messages import MessageLedgerError  # noqa: PLC0415
+    from loremaster.read_file import ReadFileError  # noqa: PLC0415
+    from loremaster.server import ReindexTierError  # noqa: PLC0415
     from loremaster.store_read import StoreReadError  # noqa: PLC0415
     from loremaster.symbols import GetSymbolError  # noqa: PLC0415
     from loremaster.tasks import TaskLedgerError  # noqa: PLC0415
@@ -962,26 +977,39 @@ def _served_error_bases() -> tuple[type[BaseException], ...]:
         StoreReadError,
         GetSymbolError,
         ImpactTargetNotFoundError,
+        ReindexTierError,
+        MapChangedSinceError,
+        MapFocusNotFoundError,
+        ReadFileError,
     )
 
 
 def _domain_error_names() -> frozenset[str]:
-    """Every served-error CLASS NAME — derived by ``issubclass`` off the seven bases, so a
+    """Every served-error CLASS NAME — derived by ``issubclass`` off the eleven bases, so a
     NEW domain error subclassing any base joins the scanned population automatically (the
-    six-defeats lesson: derive by property, never a hand-list of class names)."""
+    six-defeats lesson: derive by property, never a hand-list of class names). The three
+    code-RAG-tool boundary modules (`server`/`map`/`read_file`) are scanned too, because the
+    four bases added by the 2026-08-05 ruling are DEFINED there — the ``issubclass`` filter
+    keeps their non-boundary siblings (`ProbeGateError`/`SchemaRebuildingError`/
+    `MapRebuildingError`) OUT (they subclass none of the eleven)."""
     from loremaster import (
         agents,  # noqa: PLC0415
         findings,  # noqa: PLC0415
         impact,  # noqa: PLC0415
         messages,  # noqa: PLC0415
+        read_file,  # noqa: PLC0415
+        server,  # noqa: PLC0415
         store_read,  # noqa: PLC0415
         symbols,  # noqa: PLC0415
         tasks,  # noqa: PLC0415
     )
+    from loremaster import map as map_module  # noqa: PLC0415  (module import; `map` shadows a builtin)
 
     bases = _served_error_bases()
     names: set[str] = set()
-    for module in (tasks, findings, agents, messages, store_read, symbols, impact):
+    for module in (
+        tasks, findings, agents, messages, store_read, symbols, impact, server, map_module, read_file
+    ):
         for obj in vars(module).values():
             if (
                 isinstance(obj, type)
@@ -1140,27 +1168,42 @@ async def _served_error_door_vocab() -> frozenset[str]:
 
 
 class TestNoServedDomainErrorLeavesACallerParamUncontained:
-    """⛔⛔ B-3, the per-SITE reach instrument over the ERROR half (cold-audit-04b5-1 R1).
+    """⛔⛔ B-3, the per-SITE reach instrument over the ERROR half (cold-audit-04b5-1 R1;
+    widened to the ELEVEN-base hierarchy by the 2026-08-05 operator all-or-nothing ruling).
 
-    Every construction of a served DOMAIN error (the seven-base hierarchy) that interpolates
-    a caller free-text param must route it through the containment seam — never a bare
-    ``{p!r}`` / ``{p}`` / ``{sanitise_line(p)}``. The site inventory is DERIVED name-blind by
-    AST (the fence-site scan's template), so a NEW error site interpolating a caller param
-    reddens here until it is contained — reach as a CHECKED VARIABLE, not a hand-list of the
-    19 task_id sites. RED at HEAD (``5cedb38``): 47 door sites (task_id x19, target, path,
-    tier, qualified_name, role, spawned_by, grade, status, id_or_number) repr their caller
-    param bare.
+    Every construction of a served caller-boundary error (the eleven-base hierarchy) that
+    interpolates a caller free-text param must route it through the containment seam — never a
+    bare ``{p!r}`` / ``{p}`` / ``{sanitise_line(p)}``. The site inventory is DERIVED name-blind
+    by AST (the fence-site scan's template), so a NEW error site interpolating a caller param
+    reddens here until it is contained — reach as a CHECKED VARIABLE, not a hand-list. RED at
+    ``5cedb38``: 47 domain-error door sites (task_id x19, target, path, tier, qualified_name,
+    role, spawned_by, grade, status, id_or_number). The four code-RAG-tool boundary classes
+    added 2026-08-05 (`ReindexTierError`/`MapChangedSinceError`/`MapFocusNotFoundError`/
+    `ReadFileError`) contributed the read_file `tier`/`path`, map `changed_since`/`focus`,
+    reindex `tier` and rollup-adjacent doors — all now routed.
 
     ⚠ NAMED BOUNDS (PIN-THE-MISS, trust-doctrine — a scan that hid its bounds would be a
     false clear): (1) a caller value LAUNDERED through a local named outside the registered
     universe (``x = task_id; f"{x!r}"``) is invisible — but the convention is direct-param
     interpolation, and the runtime `served_error` drive backstops the driven sites; re-open
     trigger: a served error reprs a caller value under a non-param name. (2) a served error
-    NOT subclassing the seven bases is unscanned — guarded by
-    :meth:`test_the_seven_served_error_bases_name_the_expected_population`; re-open trigger:
-    a new domain-error base. (3) a served bare ``ValueError`` (not a domain error) is out of
-    the type scope — covered by the render/runtime drives + partition, and small; re-open
-    trigger: a served ValueError reprs a caller param that no driver exercises."""
+    NOT subclassing the eleven bases is unscanned — guarded by
+    :meth:`test_the_served_error_bases_name_the_expected_population`; re-open trigger:
+    a new caller-boundary error base. (3) BARE ``ValueError`` (not one of the eleven bases) is
+    OVERLOADED — it is a caller reject at the tool boundary (comms action/kind/set_status,
+    memory kind, findings action, rollup since) AND an internal invariant (chunker `owner`,
+    ext-tool `param.kind.description`, config `self.tier`, symbols `self.status`, tasks
+    `_validate_done_summary` closed-vocab `target`). A name-blind reddening scan over it is
+    UNSOUND (``tasks.py`` `target` is a bare-Name PARAMETER yet closed-vocab — a spurious
+    collision with lore_impact's free-text `target` that no syntactic property separates from a
+    real `{action!r}`; distinguishing needs validation-gate dataflow = P-F/P-S-scale machinery
+    the operator ruled NOT worth building for a lower-stakes self-echo class). So the bare-
+    ``ValueError`` self-echoes are the sanctioned BOUNDED PIN-THE-MISS: every enumerated site
+    is ROUTED (2026-08-05 all-or-nothing) and behaviourally pinned by
+    :class:`TestBareValueErrorSelfEchoesAreContained`; re-open trigger: a NEW served bare
+    ``ValueError`` (or non-eleven-base custom error) that reprs a caller free-text param must be
+    routed through `render_attributed` — these behavioural pins do NOT auto-detect a new site
+    (closer-04b5-selfecho-1, q:selfecho-enforce)."""
 
     async def test_every_served_domain_error_contains_its_caller_params(self) -> None:
         door_vocab = await _served_error_door_vocab()
@@ -1190,10 +1233,12 @@ class TestNoServedDomainErrorLeavesACallerParamUncontained:
             f"verdict is vacuous. modules={sorted(modules)}"
         )
 
-    def test_the_seven_served_error_bases_name_the_expected_population(self) -> None:
-        """Drift guard for BOUND (2): the seven bases must resolve to a population that
-        includes the canonical served errors. A base renamed/retired (so its subclasses fall
-        out of the scanned set) reddens here rather than silently shrinking the scan."""
+    def test_the_served_error_bases_name_the_expected_population(self) -> None:
+        """Drift guard for BOUND (2): the eleven bases must resolve to a population that
+        includes the canonical served errors — the original ledger/store-read/symbol/impact
+        roots AND the four code-RAG-tool boundary classes added by the 2026-08-05 ruling. A
+        base renamed/retired (so its subclasses fall out of the scanned set) reddens here
+        rather than silently shrinking the scan."""
         names = _domain_error_names()
         expected = {
             "TaskNotFoundError",
@@ -1202,6 +1247,11 @@ class TestNoServedDomainErrorLeavesACallerParamUncontained:
             "GetSymbolError",
             "ImpactTargetNotFoundError",
             "StoreReadNotFoundError",
+            # the four code-RAG-tool boundary classes (2026-08-05 all-or-nothing ruling)
+            "ReindexTierError",
+            "MapChangedSinceError",
+            "MapFocusNotFoundError",
+            "ReadFileError",
         }
         missing = sorted(expected - names)
         assert not missing, (
@@ -1244,6 +1294,69 @@ class TestNoServedDomainErrorLeavesACallerParamUncontained:
             "the predicate flagged `{len(summary)}` — a COUNT is not a forgery carrier; "
             "flagging it would force wrapping an int and trap the builder"
         )
+
+
+class TestBareValueErrorSelfEchoesAreContained:
+    """⛔ BOUNDED PIN-THE-MISS for the OVERLOADED bare-``ValueError`` self-echo class
+    (2026-08-05 operator "literal all-or-nothing" ruling; q:selfecho-enforce). These sites
+    echo a MALFORMED caller param back to the SAME caller (comms action/kind/set_status,
+    memory kind, findings action, rollup ``since``) and are OUT of the eleven-base REDDENING
+    scan above because bare ``ValueError`` is ALSO used for internal invariants a name-blind
+    scan cannot tell apart — see bound (3) on
+    :class:`TestNoServedDomainErrorLeavesACallerParamUncontained`. So the enforcement here is
+    BEHAVIOURAL: drive a hostile forgery through a representative production reject and prove
+    the served bytes NEUTRALISE it. Store-free + self-free (these rejects fire at the top of
+    the handler, before any identity/store touch).
+
+    ⚠ RE-OPEN TRIGGER (the bound this pin declares): a NEW served bare ``ValueError`` (or a
+    non-eleven-base custom error) that reprs a caller free-text param must be routed through
+    ``render_attributed`` — this behavioural pin does NOT auto-detect a new site (that would
+    need the validation-gate dataflow the operator ruled NOT worth building for a lower-stakes
+    self-echo class). Mutation proof: revert any driven site to ``{param!r}`` → RED here."""
+
+    async def test_unknown_comms_action_neutralises_a_forgery_action(self) -> None:
+        """The densest self-echo cluster: ``unknown comms action {action}`` (server.py, the
+        ``spec is None`` reject) fires as the FIRST statement of ``AppContext.comms`` — before
+        any identity or store touch — so a bare ``SimpleNamespace`` drives it. A forgery
+        ``action`` (plain-prose AND a hostile multi-line row-forge) must render NEUTRALISED."""
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        # The reject is the FIRST statement of ``comms`` (before any ``self`` use), so a
+        # bare namespace suffices — typed ``Any`` exactly as the comms suites' ``_harness``.
+        harness: Any = SimpleNamespace()
+        for value in (FORGERY, HOSTILE_MULTILINE):
+            with pytest.raises(ValueError) as exc:
+                await AppContext.comms(harness, action=value, agent="fixer-b")
+            message = str(exc.value)
+            assert "unknown comms action" in message, "drove the wrong reject path"
+            assert not _leaks(message), (
+                "the unknown-comms-action reject echoes a forgery `action` OUTSIDE a "
+                "provenance delimiter (it reads as lore's own prose to the agent that gets "
+                "the reject) — route the action through render_attributed, never `!r`"
+            )
+        # Round-trip (not deletion): the plain-prose marker survives, merely contained.
+        with pytest.raises(ValueError) as exc:
+            await AppContext.comms(harness, action=FORGERY, agent="fixer-b")
+        assert FORGERY_MARKER in str(exc.value), (
+            "the forgery text vanished entirely — render_attributed must round-trip the "
+            "value verbatim inside its delimiter, not delete it"
+        )
+
+    def test_foreign_param_error_neutralises_a_forgery_action(self) -> None:
+        """The pure staticmethod ``_comms_foreign_param_error(param_name, action)`` echoes
+        ``action`` at the tail of its strict-param teaching error. A forgery ``action`` must
+        render NEUTRALISED — a store-free, self-free driver reachable straight from the class."""
+        from loremaster.server import AppContext  # noqa: PLC0415
+
+        for value in (FORGERY, HOSTILE_MULTILINE):
+            error = AppContext._comms_foreign_param_error("version", value)
+            assert isinstance(error, ValueError)
+            assert not _leaks(str(error)), (
+                "the strict-param teaching error echoes a forgery `action` OUTSIDE a "
+                "provenance delimiter — route the action through render_attributed, never `!r`"
+            )
 
 
 # -- The render-layer reach is a CHECKED VARIABLE — see §G below (the render-reach

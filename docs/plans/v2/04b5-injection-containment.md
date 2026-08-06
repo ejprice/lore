@@ -95,6 +95,32 @@ forks put to the operator.
    pin the before/after so the reshape is a KNOWN, not silent, output change). The
    invariant's pins are the OLD world's certification — **update them in the SAME
    diff** (P8d contract-first / rename-sweep law).
+3. **LITERAL ALL-OR-NOTHING → the bare-`ValueError` SELF-ECHO doors are ROUTED**
+   (2026-08-05, operator; closer-04b5-selfecho-1, thread `q:selfecho-enforce`).
+   Ruling 1 declared the per-caller `!r` self-echoes IN by the derivation but "lower-
+   stakes"; this ruling makes the containment UNIFORM. These self-echo a malformed
+   caller param back to the SAME caller (NONE cross-principal): comms
+   action/kind/set_status, memory kind, findings action, rollup `since`, plus the four
+   code-RAG-tool boundary errors read_file `tier`/`path`, map `changed_since`/`focus`,
+   reindex `tier`. **B-5 bound (formerly: "a served bare `ValueError` is wholesale OUT of
+   type scope") is NARROWED**: it now covers only the genuinely-non-caller bare
+   `ValueError` cases the name-blind classification cannot tell apart from a real door —
+   chunker-registration `owner`, ext-tool `param.kind.description`, config `self.tier`,
+   symbols `self.status`, and `tasks._validate_done_summary` closed-vocab `target`
+   (validated by `_validate_transition` first — a spurious collision with lore_impact's
+   free-text `target`), plus the infra `SurrealStoreError` `tier` (a corrupt-row error on
+   a resolved, closed-vocab tier). Enforcement is TWO-CLASS:
+   (a) the four CUSTOM caller-boundary error classes were added to the error-half scan's
+   base set (7→11 in `test_link5_render_containment.py::_served_error_bases`) — a REDDENING
+   scan, so a future un-routed door of those classes reddens; (b) bare `ValueError` is
+   OVERLOADED with internal invariants, so a name-blind reddening scan over it is UNSOUND
+   (the `target` closed-vocab collision has no syntactic tell). Per the operator's "not
+   worth P-F/P-S machinery for a lower-stakes self-echo" it takes the sanctioned BOUNDED
+   PIN-THE-MISS: every site ROUTED + behaviourally pinned (`TestBareValueErrorSelfEchoes
+   AreContained`, forgery→neutralised, mutation-proven) + a NAMED re-open trigger (a new
+   served bare `ValueError` reprfing a caller free-text param must be routed — the
+   behavioural pin does NOT auto-detect a new site). Receipt: `REPORT-closer-04b5-
+   selfecho-1.md`.
 
 ### Lead rulings (within the ruled design + repo law; contract author executes)
 - **`_render_recalled_memories` (scout §6.3):** `memory.text` renders fully bare

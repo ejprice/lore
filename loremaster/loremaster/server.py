@@ -3174,7 +3174,7 @@ class AppContext:
         ) and items is not None:
             raise ValueError(
                 f"'items' applies only to action='resolve_many'/'acknowledge_many' "
-                f"— omit it for {action!r}"
+                f"— omit it for {render_attributed(action)}"
             )
         # Each branch ASSIGNS ``(rendered, writes)``; the ONE return below appends
         # the footer. ``writes`` is the OUTCOME, never the verb — and for the two
@@ -3246,7 +3246,7 @@ class AppContext:
             rendered, writes = AppContext._render_finding_transition(closed, actor), 1
         else:
             raise ValueError(
-                f"unknown findings action {action!r}; "
+                f"unknown findings action {render_attributed(action)}; "
                 f"valid actions are {list(_FINDING_ACTIONS)}"
             )
         return await AppContext._with_comms_footer(
@@ -3308,13 +3308,13 @@ class AppContext:
         """
         if not items:
             raise ValueError(
-                f"{action} requires a non-empty 'items' list of "
+                f"{render_attributed(action)} requires a non-empty 'items' list of "
                 f"{{id_or_number, note?}} objects"
             )
         if len(items) > _BATCH_ITEMS_MAX:
             raise ValueError(
-                f"{action} accepts at most {_BATCH_ITEMS_MAX} items per call, "
-                f"got {len(items)} — split the batch"
+                f"{render_attributed(action)} accepts at most {_BATCH_ITEMS_MAX} items per "
+                f"call, got {len(items)} — split the batch"
             )
         parsed_items: list[FindingRefItem] = []
         for index, raw in enumerate(items):
@@ -3323,7 +3323,8 @@ class AppContext:
             except ValidationError as error:
                 first_error = error.errors()[0]
                 raise ValueError(
-                    f"{action} items[{index}] is invalid: {first_error['msg']}"
+                    f"{render_attributed(action)} items[{index}] is invalid: "
+                    f"{first_error['msg']}"
                 ) from error
 
         verb = _FINDING_BATCH_VERB[action]
@@ -3501,7 +3502,7 @@ class AppContext:
         """
         if kind not in _VALID_MEMORY_KINDS:
             raise ValueError(
-                f"unknown memory kind {kind!r}; valid kinds are "
+                f"unknown memory kind {render_attributed(kind)}; valid kinds are "
                 f"{sorted(_VALID_MEMORY_KINDS)}"
             )
         # An explicit trust rides an operator-note source; no trust ⇒ let the
@@ -3766,23 +3767,25 @@ class AppContext:
         # tool's contract from the sentence.
         if action != _TASK_ACTION_ROLLUP and since is not None:
             raise ValueError(
-                f"'since' applies only to action='rollup' — omit it for {action!r}"
+                f"'since' applies only to action='rollup' — omit it for "
+                f"{render_attributed(action)}"
             )
         if action not in _TASK_ACTIONS_ACCEPTING_LIMIT and limit is not None:
             raise ValueError(
                 f"'limit' applies only to "
                 f"{' and '.join(f'action={name!r}' for name in _TASK_ACTIONS_ACCEPTING_LIMIT)}"
-                f" — omit it for {action!r}"
+                f" — omit it for {render_attributed(action)}"
             )
         if action not in _TASK_ACTIONS_ACCEPTING_MAX_DEPTH and max_depth is not None:
             raise ValueError(
                 f"'max_depth' applies only to "
                 f"{' and '.join(f'action={name!r}' for name in _TASK_ACTIONS_ACCEPTING_MAX_DEPTH)}"
-                f" — omit it for {action!r}"
+                f" — omit it for {render_attributed(action)}"
             )
         if action != _TASK_ACTION_CREATE_MANY and items is not None:
             raise ValueError(
-                f"'items' applies only to action='create_many' — omit it for {action!r}"
+                f"'items' applies only to action='create_many' — omit it for "
+                f"{render_attributed(action)}"
             )
         # Each branch ASSIGNS ``(rendered, writes)``; the ONE return below appends
         # the footer. ``writes`` is the OUTCOME, never the verb.
@@ -3886,7 +3889,8 @@ class AppContext:
             )
         else:
             raise ValueError(
-                f"unknown task action {action!r}; valid actions are {list(_TASK_ACTIONS)}"
+                f"unknown task action {render_attributed(action)}; valid actions are "
+                f"{list(_TASK_ACTIONS)}"
             )
         return await AppContext._with_comms_footer(
             self,
@@ -4222,7 +4226,7 @@ class AppContext:
         normalised = f"{since[:-1]}+00:00" if since.endswith("Z") else since
         teaching_error = ValueError(
             f"rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
-            f"the 'next cursor' value a previous rollup returned; got {since!r}"
+            f"the 'next cursor' value a previous rollup returned; got {render_attributed(since)}"
         )
         try:
             parsed = datetime.fromisoformat(normalised)
@@ -4524,8 +4528,8 @@ class AppContext:
         """
         if tier is not None and not reconcile:
             raise ReindexTierError(
-                f"tier={tier!r} was given but reconcile=False — a status-only "
-                "call never sweeps and would silently ignore it. Pass "
+                f"tier={render_attributed(tier)} was given but reconcile=False — a "
+                "status-only call never sweeps and would silently ignore it. Pass "
                 "reconcile=True to sweep that tier (or omit tier to sweep "
                 "every configured tier)."
             )
@@ -4576,7 +4580,7 @@ class AppContext:
         if tier not in valid_tiers:
             valid = ", ".join(repr(name) for name in valid_tiers)
             raise ReindexTierError(
-                f"unknown tier {tier!r}; the tier must be a configured tier "
+                f"unknown tier {render_attributed(tier)}; the tier must be a configured tier "
                 f"({valid}) or None (all tiers). Check for a typo, or omit the tier "
                 f"to reconcile everything."
             )
@@ -4905,8 +4909,8 @@ class AppContext:
             diff = await self._diff_engine.diff(changed_since)
         except SnapshotNotFoundError as exc:
             raise MapChangedSinceError(
-                f"changed_since {changed_since!r} does not name a known snapshot "
-                f"({exc}). Next step: call lore_diff() with no arguments to list "
+                f"changed_since {render_attributed(changed_since)} does not name a known "
+                f"snapshot ({exc}). Next step: call lore_diff() with no arguments to list "
                 "the real snapshot ids."
             ) from exc
         changed_files = (*diff.added, *diff.removed, *diff.modified)
@@ -5219,7 +5223,8 @@ class AppContext:
         spec = _COMMS_ACTIONS.get(action)
         if spec is None:
             raise ValueError(
-                f"unknown comms action {action!r}; valid actions are {list(_COMMS_ACTIONS)}"
+                f"unknown comms action {render_attributed(action)}; valid actions are "
+                f"{list(_COMMS_ACTIONS)}"
             )
 
         AppContext._validate_comms_identities(agent, session=session, name=name, to=to)
@@ -5253,7 +5258,8 @@ class AppContext:
         for required_name in sorted(spec.required):
             if values.get(required_name) is None:
                 raise ValueError(
-                    f"the {required_name!r} argument is required for action={action!r}"
+                    f"the {required_name!r} argument is required for "
+                    f"action={render_attributed(action)}"
                 )
         # v7 / finding #97: a caller/SHAPE error, so it fires HERE — before the
         # uniform heartbeat touch (§8 step 4) — never inside the fleet handler.
@@ -5268,8 +5274,8 @@ class AppContext:
         if limit is not None and limit < _MIN_COUNT:
             cap = spec.limit_cap if spec.limit_cap is not None else _MAX_FLEET_LIMIT
             raise ValueError(
-                f"limit={limit} is out of range for action={action!r} — the valid range is "
-                f"{_MIN_COUNT}..{cap}; a limit above {cap} clamps to it"
+                f"limit={limit} is out of range for action={render_attributed(action)} — the "
+                f"valid range is {_MIN_COUNT}..{cap}; a limit above {cap} clamps to it"
             )
         # §B2.4: the closed ``set_status`` vocabulary — a SHAPE reject, so it
         # fires before the touch, and it NAMES the one legal value (a reject that
@@ -5277,7 +5283,8 @@ class AppContext:
         if set_status is not None and set_status not in _COMMS_LEGAL_SET_STATUS_VALUES:
             legal = ", ".join(repr(value) for value in _COMMS_LEGAL_SET_STATUS_VALUES)
             raise ValueError(
-                f"set_status={set_status!r} is not a legal value for action={action!r} — "
+                f"set_status={render_attributed(set_status)} is not a legal value for "
+                f"action={render_attributed(action)} — "
                 f"the only legal value is {legal}; it MARKS this send as a question the "
                 f"derived waiting state reads, and it does not change your status row"
             )
@@ -5708,11 +5715,13 @@ class AppContext:
         )
         if len(owners) == 1:
             return ValueError(
-                f"{param_name!r} applies only to action={owners[0]!r} — omit it for {action!r}"
+                f"{param_name!r} applies only to action={owners[0]!r} — omit it for "
+                f"{render_attributed(action)}"
             )
         owners_text = ", ".join(repr(owner) for owner in owners)
         return ValueError(
-            f"{param_name!r} applies only to actions {owners_text} — omit it for {action!r}"
+            f"{param_name!r} applies only to actions {owners_text} — omit it for "
+            f"{render_attributed(action)}"
         )
 
     async def _comms_enrich_unknown_agent(

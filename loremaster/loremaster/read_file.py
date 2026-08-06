@@ -34,6 +34,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from loremaster.render import render_attributed
 from loremaster.source.snapshot import SnapshotLayout
 
 # The provenance-header format the tool stamps on every result: a [SOURCE:...]
@@ -203,8 +204,8 @@ class ReadFileTool:
         """An unknown-tier error that LISTS the configured tiers (a correctable typo)."""
         valid = ", ".join(repr(name) for name in sorted(self._known_tiers))
         return ReadFileError(
-            f"unknown tier {tier!r}; this project's configured tiers are: {valid}. "
-            f"Check for a typo — the tier is the first field of a [SOURCE:tier:...] "
+            f"unknown tier {render_attributed(tier)}; this project's configured tiers are: "
+            f"{valid}. Check for a typo — the tier is the first field of a [SOURCE:tier:...] "
             f"citation."
         )
 
@@ -212,18 +213,19 @@ class ReadFileTool:
     def _missing_file_error(tier: str, path: str) -> ReadFileError:
         """A genuinely-missing-file error naming the tier + a next step (no path leak)."""
         return ReadFileError(
-            f"file {path!r} not found in tier {tier!r}. Verify the path (it is "
-            f"tier-relative), or run lore_index(reconcile=True) / lore_search to "
-            f"locate the current file — the index may be ahead of or behind this path."
+            f"file {render_attributed(path)} not found in tier {render_attributed(tier)}. "
+            f"Verify the path (it is tier-relative), or run lore_index(reconcile=True) / "
+            f"lore_search to locate the current file — the index may be ahead of or behind "
+            f"this path."
         )
 
     @staticmethod
     def _containment_error(tier: str, path: str) -> ReadFileError:
         """A containment-rejection error — its own clear message (never a path leak)."""
         return ReadFileError(
-            f"path {path!r} in tier {tier!r} is rejected by the containment guard "
-            f"(an absolute path, a '../' traversal, or an escaping symlink). Pass a "
-            f"tier-relative path that stays within the tier root."
+            f"path {render_attributed(path)} in tier {render_attributed(tier)} is rejected "
+            f"by the containment guard (an absolute path, a '../' traversal, or an escaping "
+            f"symlink). Pass a tier-relative path that stays within the tier root."
         )
 
     @staticmethod
@@ -244,17 +246,19 @@ class ReadFileTool:
         start = 1 if line_start is None else line_start
         if start < 1:
             raise ReadFileError(
-                f"line_start must be >= 1 (1-based), got {start} for {tier!r}:{path!r}"
+                f"line_start must be >= 1 (1-based), got {start} for "
+                f"{render_attributed(tier)}:{render_attributed(path)}"
             )
         if start > total_lines:
             raise ReadFileError(
                 f"line_start {start} is past end of file "
-                f"({total_lines} lines) for {tier!r}:{path!r}"
+                f"({total_lines} lines) for {render_attributed(tier)}:{render_attributed(path)}"
             )
         end = total_lines if line_end is None else line_end
         if end < start:
             raise ReadFileError(
-                f"line_end {end} is before line_start {start} for {tier!r}:{path!r}"
+                f"line_end {end} is before line_start {start} for "
+                f"{render_attributed(tier)}:{render_attributed(path)}"
             )
         # An end past EOF is a tolerant "from start onward" read: clamp to EOF.
         end = min(end, total_lines)

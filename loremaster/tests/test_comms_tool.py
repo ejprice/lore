@@ -593,7 +593,9 @@ class TestCommsDispatchUnknownAction:
         with pytest.raises(ValueError, match="unknown comms action") as exc_info:
             await AppContext.comms(harness, action="bogus", agent="fixer-b")
         message = str(exc_info.value)
-        assert "'bogus'" in message
+        # 04b5 all-or-nothing: the caller `action` self-echo is CONTAINED (render_attributed),
+        # not `!r` — the value round-trips inside its provenance delimiter.
+        assert str(render_attributed("bogus")) in message
         for action in ("register", "heartbeat", "brief_get", "brief_publish", "brief_ack", "fleet"):
             assert action in message
 
@@ -877,7 +879,8 @@ class TestCommsDispatchRequiredParamLaw:
             await AppContext.comms(harness, action="register", agent="fixer-b", role="builder")
         message = str(exc_info.value)
         assert "'session'" in message
-        assert "action='register'" in message
+        # 04b5 all-or-nothing: the caller `action` self-echo is CONTAINED (render_attributed).
+        assert f"action={render_attributed('register')}" in message
 
     async def test_register_missing_role(self) -> None:
         harness = _harness()

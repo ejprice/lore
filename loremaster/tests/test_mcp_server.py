@@ -6935,10 +6935,13 @@ class TestRollupDispatch:
     ) -> None:
         with pytest.raises(ValueError) as exc_info:
             await getattr(rollup_ctx, "tasks")(action="rollup", since="2026-01-01T00:00:00")
+        # 04b5 all-or-nothing: the caller `since` self-echo routes through
+        # render_attributed (delimited), never `!r` — so the teaching prefix is
+        # verbatim and the value is CONTAINED.
         assert str(exc_info.value) == (
             "rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
             "the 'next cursor' value a previous rollup returned; got "
-            "'2026-01-01T00:00:00'"
+            f"{render_attributed('2026-01-01T00:00:00')}"
         )
 
     async def test_unparseable_since_is_a_teaching_value_error(
@@ -6949,7 +6952,7 @@ class TestRollupDispatch:
         assert str(exc_info.value) == (
             "rollup 'since' must be a timezone-aware ISO-8601 timestamp — pass "
             "the 'next cursor' value a previous rollup returned; got "
-            "'not-a-timestamp'"
+            f"{render_attributed('not-a-timestamp')}"
         )
 
     async def test_since_on_a_non_rollup_action_is_rejected(
@@ -7431,7 +7434,8 @@ class TestCreateManyDispatch:
                 action="query", items=[{"subject": "s", "description": "d"}]
             )
         assert str(exc_info.value) == (
-            "'items' applies only to action='create_many' — omit it for 'query'"
+            f"'items' applies only to action='create_many' — omit it for "
+            f"{render_attributed('query')}"
         )
 
     async def test_hostile_subject_in_create_many_stays_single_line(
@@ -7669,8 +7673,9 @@ class TestResolveManyAcknowledgeManyDispatch:
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many", actor="slate-lead", items=[]
             )
+        # 04b5 all-or-nothing: the `{action}` self-echo routes through render_attributed.
         assert str(exc_info.value) == (
-            "resolve_many requires a non-empty 'items' list of "
+            f"{render_attributed('resolve_many')} requires a non-empty 'items' list of "
             "{id_or_number, note?} objects"
         )
 
@@ -7682,7 +7687,7 @@ class TestResolveManyAcknowledgeManyDispatch:
                 action="acknowledge_many", actor="slate-lead", items=[]
             )
         assert str(exc_info.value) == (
-            "acknowledge_many requires a non-empty 'items' list of "
+            f"{render_attributed('acknowledge_many')} requires a non-empty 'items' list of "
             "{id_or_number, note?} objects"
         )
 
@@ -7695,7 +7700,8 @@ class TestResolveManyAcknowledgeManyDispatch:
                 action="resolve_many", actor="slate-lead", items=items
             )
         assert str(exc_info.value) == (
-            "resolve_many accepts at most 50 items per call, got 51 — split the batch"
+            f"{render_attributed('resolve_many')} accepts at most 50 items per call, "
+            "got 51 — split the batch"
         )
 
     async def test_items_on_a_non_batch_action_is_rejected(
@@ -7708,7 +7714,8 @@ class TestResolveManyAcknowledgeManyDispatch:
             await getattr(rollup_ctx, "findings")(action="query", items=[{"id_or_number": 1}])
         message = str(exc_info.value)
         assert "'items'" in message
-        assert "'query'" in message
+        # 04b5 all-or-nothing: the caller `action` self-echo is CONTAINED, not `!r`.
+        assert str(render_attributed("query")) in message
         assert "resolve_many" in message or "acknowledge_many" in message
 
 
