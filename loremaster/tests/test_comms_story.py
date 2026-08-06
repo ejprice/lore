@@ -178,7 +178,7 @@ class TestStoryReconstructsTheArc:
         lead = await sctx.register("lead")
         worker = await sctx.register("worker")
         task_id = await sctx.task_ledger.create_task(
-            "reticulate the splines", "the long description", created_by="lead"
+            "reticulate the splines", "the long description", created_by="planner"
         )
         await sctx.task_ledger.claim_task(task_id, "worker")
         # claimed → in_progress → done is the LEGAL arc; claimed → done is an ILLEGAL
@@ -205,7 +205,12 @@ class TestStoryReconstructsTheArc:
         rendered = await sctx.story(task_id=task_id, caller=lead)
         for needle in (
             "reticulate the splines",  # subject
-            "lead",  # creator
+            # created_by is "planner" — a NON-sender value. The message sender is
+            # "lead", so this needle discriminates "renders created_by" from
+            # "renders the sender": a build that emits sender-in-place-of-creator
+            # (never reading task.created_by) reddens here. Adversary residual
+            # (REPORT-adversary-05aiii-2.md §A2) — the creator/sender monoculture.
+            "planner",  # creator (distinct from the "lead" message sender)
             "worker",  # claim owner
             "starting on it now",  # a message body
             "REPORT-worker.md",  # report_path
