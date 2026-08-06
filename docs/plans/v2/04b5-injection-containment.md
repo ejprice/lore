@@ -121,6 +121,25 @@ forks put to the operator.
    served bare `ValueError` reprfing a caller free-text param must be routed — the
    behavioural pin does NOT auto-detect a new site). Receipt: `REPORT-closer-04b5-
    selfecho-1.md`.
+4. **`.format()` REACH BLIND SPOT → CLOSED (widen the instruments).** (2026-08-05, operator;
+   closer-04b5-format-1.) The reach instruments detected interpolation via `ast.FormattedValue`
+   (f-strings) ONLY and were **BLIND to `str.format()` renders** — a completeness gap that let a
+   LIVE un-contained caller-byte self-echo door slip the recheck + cold audit:
+   `server.py::_caller_model_note` served `_CALLER_MODEL_NO_RATIO_TEMPLATE.format(model=caller_model)`
+   (a registered served_error-class param) OUTSIDE any delimiter. **BOTH instruments are now
+   `.format()`-aware:** the error-half (`_served_error_door_sites` via extracted `_expr_door` +
+   new `_format_call_door`/`_message_expr_doors`, door_vocab-filtered) and the render-half P-U
+   (`_method_interpolates_a_nonconstant` gains a `.format(non-constant)` leg — so a `.format()`-only
+   AppContext render joins the candidate universe). The two caller-param `.format()` doors are
+   ROUTED through `render_attributed`: `_caller_model_note` (`caller_model`; now DRIVEN +
+   branch-covered under P-S) and `map.py:487` `_CHANGED_SINCE_SUMMARY_TEMPLATE` (`changed_since`;
+   closed-vocab-safe today — a bogus id raises `MapChangedSinceError` upstream — routed for UNIFORM
+   containment, defence-in-depth). **B-5 UPDATE:** the reach-instrument completeness bound now
+   covers `.format()` interpolation, not only f-strings — the class the D2/recheck/cold-audit
+   sequence left open is closed. Every OTHER `.format()` site (24 total, re-derived) is
+   int/float/indexed-source-content (B-5 OUT — `read_file`/`store_read` `_SOURCE_HEADER_TEMPLATE`,
+   `impact`/`search` file renders)/closed-vocab (`detail_level` Literal)/system/the `render.py:227`
+   seam-internal. Finding #335. Receipt: `REPORT-closer-04b5-format-1.md`.
 
 ### Lead rulings (within the ruled design + repo law; contract author executes)
 - **`_render_recalled_memories` (scout §6.3):** `memory.text` renders fully bare

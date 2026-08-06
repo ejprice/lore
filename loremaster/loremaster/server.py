@@ -1057,7 +1057,7 @@ _FILTER_MISS_NEAREST_LIMIT = 3
 # constant instead of BLOCKING the read path on a fresh measurement (offline
 # posture is law).
 _CALLER_MODEL_NO_RATIO_TEMPLATE = (
-    "caller_model {model!r} has no measured ratio — served with the generation constant"
+    "caller_model {model} has no measured ratio — served with the generation constant"
 )
 
 # P8d Wave 4a (finding #31): saves over this length get a render WARNING
@@ -5073,7 +5073,10 @@ class AppContext:
         engine = getattr(self, "_calibration_engine", None)
         if engine is not None and engine.cached_ratio_for_model(caller_model) is not None:
             return None
-        return _CALLER_MODEL_NO_RATIO_TEMPLATE.format(model=caller_model)
+        # Route the caller-supplied model through the containment seam: an un-measured
+        # caller_model reads as lore's own note otherwise (closer-04b5-format-1, the
+        # `.format()` reach blind spot — render_attributed's inline delimiter self-closes).
+        return _CALLER_MODEL_NO_RATIO_TEMPLATE.format(model=render_attributed(caller_model))
 
     # -- extension tools (seam 3) ------------------------------------------
 

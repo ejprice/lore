@@ -161,7 +161,7 @@ _TEST_TAG = "[test]"
 # 2026-07-04-map-test-segregation.md): it never alters ranking, exclusion, or
 # caps, only marks affected lines and appends one optional summary line.
 _CHANGED_TAG = "[changed]"
-_CHANGED_SINCE_SUMMARY_TEMPLATE = "changed since {since!r}: {count} module(s) marked {tag}"
+_CHANGED_SINCE_SUMMARY_TEMPLATE = "changed since {since}: {count} module(s) marked {tag}"
 
 # §3: the always-on, never-silent test-infra elision line. It NAMES the top test
 # hub(s), carries the omitted-module COUNT, and teaches the literal ``tests=true``
@@ -485,7 +485,13 @@ class MapEngine:
                 formatted = (
                     f"{formatted}\n"
                     + _CHANGED_SINCE_SUMMARY_TEMPLATE.format(
-                        since=changed_since, count=changed_rendered, tag=_CHANGED_TAG
+                        # Route the caller-supplied snapshot id through the containment seam
+                        # for UNIFORM containment (operator 2026-08-05; closer-04b5-format-1).
+                        # Closed-vocab-safe today (a bogus id raises MapChangedSinceError
+                        # upstream), so this is defence-in-depth, not a live-door fix.
+                        since=render_attributed(changed_since),
+                        count=changed_rendered,
+                        tag=_CHANGED_TAG,
                     )
                 )
         return MapResult(entries=kept_entries, elided_modules=elided, formatted=formatted)

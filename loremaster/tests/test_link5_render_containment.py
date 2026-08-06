@@ -1045,16 +1045,15 @@ def _identifiers_in(node: ast.AST) -> set[str]:
     return found
 
 
-def _formatted_value_door(fv: ast.FormattedValue, door_vocab: frozenset[str]) -> str | None:
-    """The caller param this ``{...}`` leaks, or ``None`` if it is contained/scalar.
+def _expr_door(value: ast.expr, door_vocab: frozenset[str]) -> str | None:
+    """The caller param an interpolated EXPRESSION leaks, or ``None`` if contained/scalar.
 
-    A value is CONTAINED iff its top-level expression is a seam call (:data:`_SEAM_VERBS`)
-    or a number call (:data:`_INT_CALL_VERBS`). Otherwise, if ANY identifier under it is a
-    door param it is a DOOR — whether that is a bare ``{task_id}``, a ``{task_id!r}`` (the
-    HEAD signature), or a ``{sanitise_line(task_id)}`` evasion (control-char only, not
-    containment). The conversion field is irrelevant: `!r`, `!s` and none all leak a bare
-    caller value equally."""
-    value = fv.value
+    The shared predicate under BOTH interpolation shapes — an f-string ``{...}`` and a
+    ``str.format(...)`` substitution argument. A value is CONTAINED iff its top-level
+    expression is a seam call (:data:`_SEAM_VERBS`) or a number call (:data:`_INT_CALL_VERBS`).
+    Otherwise, if ANY identifier under it is a door param it is a DOOR — whether that is a bare
+    ``task_id``, a ``task_id!r`` (the HEAD signature), or a ``sanitise_line(task_id)`` evasion
+    (control-char only, not containment)."""
     if isinstance(value, ast.Call):
         func = value.func
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
@@ -1071,17 +1070,72 @@ def _formatted_value_door(fv: ast.FormattedValue, door_vocab: frozenset[str]) ->
     return None
 
 
+def _formatted_value_door(fv: ast.FormattedValue, door_vocab: frozenset[str]) -> str | None:
+    """The caller param this f-string ``{...}`` leaks, or ``None`` if contained/scalar. The
+    conversion field is irrelevant: `!r`, `!s` and none all leak a bare caller value equally
+    — see :func:`_expr_door`, the shared predicate."""
+    return _expr_door(fv.value, door_vocab)
+
+
+def _format_call_door(call: ast.Call, door_vocab: frozenset[str]) -> str | None:
+    """The caller param a ``str.format(...)`` leaks, or ``None`` if contained/scalar.
+
+    The ``.format()`` DUAL of :func:`_formatted_value_door` — closer-04b5-format-1, the
+    operator-ruled 2026-08-05 blind spot: the f-string-only scan was blind to a served
+    ``TEMPLATE.format(model=caller_model)`` (a LIVE ``_caller_model_note`` self-echo door that
+    slipped the recheck + cold audit). The template STRING is a constant, so only the
+    substituted ARGUMENTS carry a forgery — each positional/keyword arg is put through the SAME
+    :func:`_expr_door` predicate the f-string path uses. Returns the first door arg's param, or
+    ``None`` when every arg is contained (seam-wrapped) or scalar (int/float/system). ``None``
+    for any call that is not a ``str.format`` (a ``.format(count=int, cap=int)``, a cosine
+    ``float``, an indexed-source header, and a plain call are all NOT interpolation doors)."""
+    func = call.func
+    if not (isinstance(func, ast.Attribute) and func.attr == "format"):
+        return None
+    for arg in [*call.args, *(keyword.value for keyword in call.keywords)]:
+        door = _expr_door(arg, door_vocab)
+        if door is not None:
+            return door
+    return None
+
+
+def _message_expr_doors(expr: ast.expr, door_vocab: frozenset[str]) -> list[tuple[int, str]]:
+    """``(lineno, door)`` for every interpolation in a served-error MESSAGE expression that
+    leaks a caller param — BOTH f-string ``{...}`` (via :func:`_formatted_value_door`) and
+    ``str.format(...)`` (via :func:`_format_call_door`), because production uses both. A
+    ``.format()`` call that is itself the value of an f-string ``{...}`` is reported ONCE via
+    the f-string path, never twice (its node id is skipped in the format-call pass)."""
+    fstring_values = {
+        id(node.value) for node in ast.walk(expr) if isinstance(node, ast.FormattedValue)
+    }
+    doors: list[tuple[int, str]] = []
+    for node in ast.walk(expr):
+        if isinstance(node, ast.FormattedValue):
+            door = _formatted_value_door(node, door_vocab)
+            if door is not None:
+                doors.append((node.lineno, door))
+        elif isinstance(node, ast.Call) and id(node) not in fstring_values:
+            door = _format_call_door(node, door_vocab)
+            if door is not None:
+                doors.append((node.lineno, door))
+    return doors
+
+
 def _served_error_door_sites(door_vocab: frozenset[str]) -> dict[str, list[str]]:  # noqa: PLR0912 — AST site-scan; branch-per-shape
     """``{module: [file:line — why]}`` for every served DOMAIN-ERROR construction that
     interpolates a caller param OUTSIDE the containment seam. Derived by AST over a PROPERTY
     (the fence-site scan's template), NEVER a hand-list of sites.
 
-    Two interpolation shapes are covered, because production uses both:
-      * INLINE  — ``raise TaskNotFoundError(f"...{task_id!r}")``;
+    Two interpolation SHAPES are covered, because production uses both an f-string ``{...}``
+    and a ``str.format(...)`` (closer-04b5-format-1, the operator-ruled 2026-08-05 blind
+    spot); each MESSAGE EXPRESSION is put through :func:`_message_expr_doors`. Two message
+    LOCATIONS are covered:
+      * INLINE  — ``raise TaskNotFoundError(f"...{task_id!r}")`` /
+        ``raise ReadFileError(_T.format(path=path))``;
       * BUILD-THEN-RAISE — ``message = f"...{target!r}"; message += f"...{target!r}";
         raise ImpactTargetNotFoundError(message)`` (impact.py — an inline-only scan would
         MISS all four of impact's target doors).
-    A construction's message f-strings are its inline JoinedStr args PLUS every JoinedStr
+    A construction's message expressions are its inline non-Name args PLUS every expression
     assigned (``=`` / ``+=``) to a Name that construction is passed."""
     import loremaster  # noqa: PLC0415
 
@@ -1095,17 +1149,17 @@ def _served_error_door_sites(door_vocab: frozenset[str]) -> dict[str, list[str]]
             if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             message_names: set[str] = set()
-            joined: list[ast.JoinedStr] = []
+            message_exprs: list[ast.expr] = []
             for node in ast.walk(function):
                 if isinstance(node, ast.Call):
                     func = node.func
                     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
                     if name in domain_names:
                         for arg in node.args:
-                            if isinstance(arg, ast.JoinedStr):
-                                joined.append(arg)
-                            elif isinstance(arg, ast.Name):
+                            if isinstance(arg, ast.Name):
                                 message_names.add(arg.id)
+                            else:
+                                message_exprs.append(arg)
             if message_names:
                 for node in ast.walk(function):
                     target: ast.expr | None = None
@@ -1119,19 +1173,14 @@ def _served_error_door_sites(door_vocab: frozenset[str]) -> dict[str, list[str]]
                         and target.id in message_names
                         and value_expr is not None
                     ):
-                        joined += [
-                            sub for sub in ast.walk(value_expr) if isinstance(sub, ast.JoinedStr)
-                        ]
-            for joined_str in joined:
-                for node in ast.walk(joined_str):
-                    if isinstance(node, ast.FormattedValue):
-                        door = _formatted_value_door(node, door_vocab)
-                        if door is not None:
-                            sites.setdefault(module, []).append(
-                                f"{module}:{node.lineno} — served domain error interpolates "
-                                f"caller param {door!r} OUTSIDE the containment seam (route "
-                                f"it through render_attributed)"
-                            )
+                        message_exprs.append(value_expr)
+            for message_expr in message_exprs:
+                for lineno, door in _message_expr_doors(message_expr, door_vocab):
+                    sites.setdefault(module, []).append(
+                        f"{module}:{lineno} — served domain error interpolates "
+                        f"caller param {door!r} OUTSIDE the containment seam (route "
+                        f"it through render_attributed)"
+                    )
     return sites
 
 
@@ -1295,6 +1344,39 @@ class TestNoServedDomainErrorLeavesACallerParamUncontained:
             "flagging it would force wrapping an int and trap the builder"
         )
 
+        # -- the .format() DUAL (closer-04b5-format-1): the same discrimination for
+        #    `str.format(...)` via `_format_call_door`, on synthetic AST so it fires even
+        #    when the real tree carries no `.format()` error door (the error half's blind
+        #    spot was closed forward-looking — a control that survives the GREEN build). --
+        def only_call(source: str) -> ast.Call:
+            expr = cast("ast.Expr", ast.parse(source).body[0])
+            return next(node for node in ast.walk(expr) if isinstance(node, ast.Call))
+
+        assert _format_call_door(only_call('_T.format(x=task_id)'), vocab) == "task_id", (
+            "the predicate does not flag `.format(x=task_id)` — a served TEMPLATE.format() "
+            "substituting a caller param leaks exactly like a bare f-string, the very "
+            "`_caller_model_note` blind spot this widening closes"
+        )
+        assert _format_call_door(only_call('_T.format(task_id)'), vocab) == "task_id", (
+            "the predicate does not flag a POSITIONAL `.format(task_id)` — a positional "
+            "substitution of a caller param leaks the same as a keyword one"
+        )
+        assert (
+            _format_call_door(only_call('_T.format(x=render_attributed(task_id))'), vocab)
+            is None
+        ), (
+            "the predicate flagged a `.format()` arg ROUTED THROUGH the seam — it would "
+            "false-RED the correct fix (`TEMPLATE.format(model=render_attributed(caller_model))`)"
+        )
+        assert _format_call_door(only_call('_T.format(count=len(summary), cap=5)'), vocab) is None, (
+            "the predicate flagged `.format(count=len(summary), cap=5)` — a COUNT/cap format "
+            "is not a forgery carrier; flagging it would trap every elision render"
+        )
+        assert _format_call_door(only_call('obj.render(x=task_id)'), vocab) is None, (
+            "the predicate flagged a non-`format` method call as an interpolation door — only "
+            "`str.format` substitutions carry a template forgery"
+        )
+
 
 class TestBareValueErrorSelfEchoesAreContained:
     """⛔ BOUNDED PIN-THE-MISS for the OVERLOADED bare-``ValueError`` self-echo class
@@ -1357,6 +1439,63 @@ class TestBareValueErrorSelfEchoesAreContained:
                 "the strict-param teaching error echoes a forgery `action` OUTSIDE a "
                 "provenance delimiter — route the action through render_attributed, never `!r`"
             )
+
+
+class TestChangedSinceRenderSelfEchoIsContained:
+    """⛔ BOUNDED PIN-THE-MISS for the map render self-echo of ``changed_since`` (closer-04b5-
+    format-1; operator uniform-containment ruling 4, 2026-08-05). ``map.py``'s
+    ``_CHANGED_SINCE_SUMMARY_TEMPLATE.format(since=changed_since, …)`` (map.py:487) echoes a
+    caller param, but the render lives on ``MapEngine``, NOT ``AppContext`` — so the P-U
+    candidate universe (scoped to AppContext methods) never reaches it, and the error-half scan
+    does not either (it is a RENDER, not an error construction). It is closed-vocab-safe in
+    PRODUCTION — a bogus ``changed_since`` raises ``MapChangedSinceError`` upstream, before line
+    487 — so this pin is DEFENCE-IN-DEPTH for the operator's uniform-containment ruling.
+
+    Enforcement is BEHAVIOURAL: inject a PERMISSIVE resolver so a HOSTILE ``changed_since``
+    reaches the summary line, then prove the served bytes NEUTRALISE it. Drives the REAL
+    ``MapEngine.map()`` through the map suite's own graph harness (a pure sub-second graph read —
+    no store, no embedder).
+
+    ⚠ RE-OPEN TRIGGER: reverting map.py:487 to a bare ``{since}``/``{since!r}`` → RED here. This
+    pin drives ONE representative ``MapEngine`` render; a NEW ``MapEngine`` render echoing a
+    caller param must ALSO route through ``render_attributed`` — the P-U universe does not scan
+    ``MapEngine``, so it will NOT auto-detect the new site."""
+
+    async def test_the_changed_since_summary_neutralises_a_forgery(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        import importlib  # noqa: PLC0415
+
+        test_map = importlib.import_module("test_map")
+        map_module = importlib.import_module("loremaster.map")
+
+        async def _permissive_resolver(_since: str) -> frozenset[str]:
+            # Bypass the production MapChangedSinceError gate so the forgery reaches line 487.
+            return frozenset({test_map._HUB_MODULE})  # noqa: SLF001 — the map suite's own fixture
+
+        for index, value in enumerate((FORGERY, HOSTILE_MULTILINE)):
+            workdir = tmp_path / f"corpus{index}"
+            workdir.mkdir()
+            trio, _server = await test_map._build_graph(  # noqa: SLF001 — the map suite's harness
+                workdir, test_map._full_corpus()  # noqa: SLF001
+            )
+            engine = map_module.MapEngine(
+                graph=trio.graph,
+                count_tokens=len,
+                changed_since_resolver=_permissive_resolver,
+            )
+            result = await engine.map(changed_since=value)
+            assert not _leaks(result.formatted), (
+                "the map changed-since summary line echoes a forgery `changed_since` OUTSIDE a "
+                "provenance delimiter (map.py:487) — route it through render_attributed, never "
+                f"a bare `.format(since=changed_since)`. formatted={result.formatted!r}"
+            )
+            if value == FORGERY:
+                # Round-trip (not deletion): the plain-prose marker survives, merely contained.
+                assert FORGERY_MARKER in result.formatted, (
+                    "the forgery text vanished entirely — render_attributed must round-trip the "
+                    "value verbatim inside its delimiter, not delete it"
+                )
 
 
 # -- The render-layer reach is a CHECKED VARIABLE — see §G below (the render-reach
@@ -1822,6 +1961,26 @@ def _ack_defensive_raise_bytes() -> str:
         return _served("_render_comms_ack", bogus, agent_name="agent-x", note=None)
     except RuntimeError:
         return ""  # the defensive guard fired — no served bytes, branch observed
+
+
+def _drive_caller_model_note(forge: bool) -> list[str]:
+    """Drive ``_caller_model_note`` (server.py) store-free over its THREE branches (P-S), so
+    the widened-P-U ``.format()`` door is byte-checked AND every branch is exercised:
+      1. ``caller_model`` given + NO calibration engine -> the NO-RATIO note (5076, the forged
+         ``.format(model=render_attributed(caller_model))`` door line);
+      2. ``caller_model`` is ``None`` -> ``None`` (5072);
+      3. ``caller_model`` given + engine HAS a cached ratio -> ``None`` (5075).
+    The door value is passed DIRECTLY (not through a pydantic manifest), so :func:`_tok` keeps
+    the benign shape marker-free (the probe-needs-a-control leg). ``self`` is a bare mock: the
+    note reads only ``self._calibration_engine`` via ``getattr(..., None)``."""
+    token = _tok(forge, "caller_model_note", "caller_model")
+    no_engine = _mock(_calibration_engine=None)
+    with_ratio = _mock(_calibration_engine=_mock(cached_ratio_for_model=lambda _model: 1.78))
+    return [
+        str(_app()._caller_model_note(no_engine, token)),
+        str(_app()._caller_model_note(no_engine, None)),
+        str(_app()._caller_model_note(with_ratio, token)),
+    ]
 
 
 def _probes() -> list[RenderProbe]:
@@ -2454,6 +2613,9 @@ def _probes() -> list[RenderProbe]:
             # a param owned by EXACTLY ONE action -> the single-owner ValueError (5698->5699)
             str(_app()._comms_foreign_param_error("version", "register")),
         ]),
+        # ---- `.format()` caller-param door (closer-04b5-format-1): store-free instance method,
+        #      fully branch-driven (NOT B-α exempt — its branches are pure param/engine shape) ----
+        P("_caller_model_note", _drive_caller_model_note),
         # ---- STORE-BACKED door renders (mock self; neutralisation only, branch-exempt B-α) ----
         P("_tier_miss_teach", lambda g: [_drive_tier_miss_teach(g)]),
         P("_filter_miss_notice", lambda g: [asyncio.run(_adrive_filter_miss_notice(g))]),
@@ -2577,10 +2739,19 @@ def _appcontext_methods() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
 
 def _method_interpolates_a_nonconstant(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """The P-U INTERPOLATION PROPERTY: the method BUILDS a served string by interpolating a
-    non-constant — an f-string `{...}` of a non-constant, OR a call to a control-char guard
-    (`sanitise_line`/`safe_str`/`_sanitise_line`) whose result flows into served output. NOT
-    the `_render_` name prefix (a six-defeats name-list that misses `_format_finding_ref`,
-    `_task_status_marker`, the comms serving helpers)."""
+    non-constant — an f-string `{...}` of a non-constant, a ``str.format(...)`` substituting a
+    non-constant, OR a call to a control-char guard (`sanitise_line`/`safe_str`/`_sanitise_line`)
+    whose result flows into served output. NOT the `_render_` name prefix (a six-defeats
+    name-list that misses `_format_finding_ref`, `_task_status_marker`, the comms serving
+    helpers).
+
+    The ``.format()`` leg is closer-04b5-format-1's blind-spot closure (operator-ruled
+    2026-08-05): a ``TEMPLATE.format(model=caller_model)`` builds a served string exactly as an
+    f-string does, yet the f-string-only property missed ``_caller_model_note`` — an AppContext
+    method whose ONLY interpolation is ``.format()`` — so a LIVE caller-byte self-echo door sat
+    outside the candidate universe. Detected by the SAME non-constant threshold the f-string
+    path uses (door-vs-non-door is decided at classification, driven-or-OUT); a ``.format()`` of
+    only constants/ints is not interpolation."""
     for node in ast.walk(fn):
         if isinstance(node, ast.FormattedValue) and not isinstance(node.value, ast.Constant):
             return True
@@ -2588,6 +2759,15 @@ def _method_interpolates_a_nonconstant(fn: ast.FunctionDef | ast.AsyncFunctionDe
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
             if name in _INTERP_NONCONTAIN:
+                return True
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "format"
+                and any(
+                    not isinstance(arg, ast.Constant)
+                    for arg in [*node.args, *(keyword.value for keyword in node.keywords)]
+                )
+            ):
                 return True
     return False
 
