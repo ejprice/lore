@@ -51,6 +51,7 @@ Tests hit spike-surreal ``ws://127.0.0.1:18000`` ONLY; ``:18500`` is NEVER touch
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -72,6 +73,9 @@ from loremaster.store.surreal_schema import AGENT_TABLE, generate_agent_ddl
 from test_comms_schema import _field_statement
 
 _SESSION = "age-wave"
+# A rendered age token (``0s`` / ``47m`` / ``3h`` / ``2d``) — used by D8/F6 to detect a
+# fabricated numeric declaration age inside a legacy row's status bracket.
+_AGE_TOKEN = re.compile(r"\d+[smhd]")
 
 
 # --------------------------------------------------------------------------- #
@@ -264,14 +268,18 @@ class TestFleetAgesTheDeclaration:
     async def test_none_status_set_at_renders_unknown_not_a_fabricated_zero(
         self, live: _LiveCtx
     ) -> None:
-        """RULING FORK 1 nudge (D8 NONE render honesty) — CONFIRMED, no assertion
-        change. A legacy row (``status_set_at`` NONE) must render an HONEST unknown
+        """RULING FORK 1 nudge (D8 NONE render honesty) + F6 (adversary residual). A
+        legacy row (``status_set_at`` NONE) must render an HONEST unknown
         (``declared: unknown`` / an age-since-hb) — NEVER a fabricated age. The
-        specific wording is builder latitude; the load-bearing pin is that the NONE
-        cell renders DIFFERENTLY from a just-declared 0-second cell (the ``!=``
-        below), which reddens the exact fabricate-zero trap the nudge names. A
-        single-value fixture (only NONE, or only 0s) would pass a fabricate-zero
-        build; the PAIR discriminates."""
+        specific wording is builder latitude. TWO legs, because the first is
+        timing-fragile alone: (1) the NONE cell renders DIFFERENTLY from a
+        just-declared 0-second cell (the ``!=`` below) — reddens a fabricate-zero
+        build sub-second, but on a slow >1s render ``fresh`` becomes "1s" and the
+        fabricated "0s" DIFFERS, false-clearing it (adversary F6); (2) the NONE cell
+        carries an EXPLICIT unknown token / NO age pattern — timing-INDEPENDENT, so a
+        NONE→'0s' build reddens regardless of render latency. A single-value fixture
+        (only NONE, or only 0s) would pass a fabricate-zero build; the PAIR
+        discriminates, and leg (2) closes the timing hole."""
         legacy = await live.register("legacy", status="input_required")
         fresh = await live.register("fresh", status="input_required")
         await live.set_status_set_at(legacy, None)  # a pre-#304 row
@@ -285,6 +293,18 @@ class TestFleetAgesTheDeclaration:
             f"legacy={legacy_cell!r} fresh={fresh_cell!r}"
         )
         assert "input_required" in legacy_cell
+        # F6 (residual fix): the ``!= fresh`` check above is TIMING-FRAGILE — on a slow
+        # (>1s) render ``fresh`` becomes "1s" and a fabricate-zero build's legacy "0s"
+        # DIFFERS from it, false-clearing the exact build D8 targets. This leg is
+        # timing-INDEPENDENT: the legacy (NONE) cell must render an EXPLICIT unknown — it
+        # names "unknown" OR carries NO age token (``\d+[smhd]``) in its status bracket —
+        # so a NONE→"0s" fabricate-zero build reddens REGARDLESS of render timing.
+        assert "unknown" in legacy_cell.lower() or not _AGE_TOKEN.search(legacy_cell), (
+            "a legacy row (status_set_at NONE ⇒ declaration age UNKNOWN) must render an "
+            "EXPLICIT unknown (e.g. 'declared: unknown'), never a fabricated numeric age; a "
+            "NONE→'0s' fabricate-zero build reddens here independent of render timing "
+            f"(unlike the != fresh check above). legacy_cell={legacy_cell!r}"
+        )
 
 
 # --------------------------------------------------------------------------- #

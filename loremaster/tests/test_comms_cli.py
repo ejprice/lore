@@ -10,12 +10,19 @@ Pins:
   store-coordinate overrides). Parser-level; no store. GREEN against the stub.
 - **C-counts** — ``pending`` reports ``unread=<n> unacked=<n> skew=<n>`` for the
   named agent, computed from the live store. RED against the stub (unimplemented).
-- **C-readonly-runtime** — running the CLI against a seeded store leaves every comms
-  table's row COUNT byte-identical (a safety invariant: GREEN now, RED against any
-  build that writes while merely reporting).
+  THREE scenarios (1/1/0, 0/0/0, 2/2/1) — non-monoculture (adversary F5): a build
+  that hardcodes one counts line reddens on a differing scenario.
+- **C-readonly-runtime** — running the CLI against a seeded store leaves the ENTIRE
+  database byte-identical: every table (discovered via ``INFO FOR DB``) and every
+  row's full CONTENT, snapshotted before/after (adversary F3/F4 — a 3-table row COUNT
+  missed typed SDK writes, writes to other tables, and content-only UPDATE/MERGEs). A
+  safety invariant: GREEN now, RED against ANY build that writes while reporting.
 - **C-readonly-source** — the module issues NO SurrealQL write verb
-  (CREATE/UPDATE/DELETE/RELATE/UPSERT/INSERT) in any code string — allowlist SELECT.
-  (The scan EXCLUDES docstrings, which legitimately NAME the forbidden verbs.)
+  (CREATE/UPDATE/DELETE/RELATE/UPSERT/INSERT) in any code string — allowlist SELECT —
+  AND makes NO typed SDK write-method call (``create``/``update``/``merge``/… on a
+  store connection: a typed write carries no verb string, adversary F3), an AST
+  call-scan scoped to ``AsyncSurreal``-bound receivers. (Both scans EXCLUDE
+  docstrings, which legitimately NAME the forbidden verbs.)
 - **C-coordinate-safety** — the production coordinate ``18500`` never appears as a
   code literal; the coordinate is resolved/passed, never baked in. (Docstrings, which
   name ``:18500`` to explain the rule, are excluded.)
@@ -59,11 +66,12 @@ from __future__ import annotations
 
 import ast
 import copy
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Any
 
 import pytest
 import yaml
@@ -78,6 +86,8 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.agents import AgentRegistry
+from loremaster.briefs import BriefLedger
+from loremaster.config import LoreConfig
 from loremaster.messages import MessageLedger
 from test_config import _CANONICAL_CONFIG
 
@@ -85,6 +95,13 @@ from loremaster import comms_cli
 
 _SESSION = "cli-wave"
 _WRITE_VERBS = ("CREATE", "UPDATE", "DELETE", "RELATE", "UPSERT", "INSERT")
+# The SurrealDB SDK write surface (``AsyncSurreal``) — every one a WRITE that carries NO
+# SurrealQL verb string, so the constant-only scan (test_source_issues_no_write_verb) is
+# blind to it. The AST call-scan (test_source_issues_no_typed_write_method) forbids these
+# on a store connection (adversary F3).
+_SDK_WRITE_METHODS = frozenset(
+    {"create", "insert", "insert_relation", "update", "upsert", "merge", "patch", "delete", "relate"}
+)
 
 
 def _source() -> str:
@@ -109,6 +126,30 @@ def _non_docstring_string_constants(source: str) -> list[str]:
                 continue
             out.append(node.value)
     return out
+
+
+def _connection_bound_names(tree: ast.AST) -> set[str]:
+    """Local names bound from an ``AsyncSurreal(...)`` constructor call — the store
+    connection a direct-SELECT CLI opens (``conn = AsyncSurreal(url)``). The typed-write
+    call-scan is SCOPED to these receivers so it catches the exact ``conn.create(...)``
+    shape the adversary's WB-CLI uses while never false-positiving on stdlib
+    ``dict.update`` / ``list.insert`` (an insult that would get the gate switched off)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            callee = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else None
+            )
+            if callee == "AsyncSurreal":
+                names.update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+    return names
 
 
 # --------------------------------------------------------------------------- #
@@ -147,6 +188,35 @@ class TestReadOnlyByConstruction:
         assert not offenders, (
             "comms_cli is READ-ONLY by construction — no SurrealQL write verb "
             f"(CREATE/UPDATE/DELETE/RELATE/UPSERT/INSERT) may appear in a code string; found: {offenders!r}"
+        )
+
+    def test_source_issues_no_typed_write_method(self) -> None:
+        # F3 belt-and-braces: a typed SDK write (conn.create/update/merge/delete/insert/
+        # upsert/patch/relate) carries NO SurrealQL verb string, so the constant-only scan
+        # above is BLIND to it — the adversary's WB-CLI door (conn.create("cli_audit", …)).
+        # This AST CALL-scan forbids any write-method call on a store connection, scoped to
+        # AsyncSurreal-bound receivers so stdlib dict.update / list.insert never trip it.
+        # ⚠ HEURISTIC / early-warning, keyed on a method name-list (the enumerate-the-
+        # forbidden hazard): a connection obtained some OTHER way is invisible HERE but
+        # STILL caught by the runtime full-DB pin (test_pending_is_read_only_full_db_
+        # content_unchanged), which is the exhaustive, method-agnostic guarantee.
+        tree = ast.parse(_source())
+        connections = _connection_bound_names(tree)
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in connections
+                and node.func.attr in _SDK_WRITE_METHODS
+            ):
+                offenders.append(f"{node.func.value.id}.{node.func.attr}")
+        assert not offenders, (
+            "comms_cli is READ-ONLY by construction — no typed SDK WRITE method "
+            "(create/insert/update/upsert/merge/patch/delete/relate) may be called on a store "
+            "connection; a typed write carries no SurrealQL verb string and evades the "
+            f"constant-only scan (adversary F3). Found: {offenders!r}"
         )
 
     def test_source_never_hardcodes_the_production_coordinate(self) -> None:
@@ -282,51 +352,96 @@ class TestDefaultCoordinateResolution:
             f"boot); resolved={resolved!r}"
         )
 
+    def test_default_resolution_routes_through_the_shared_surrealconfig(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F7 / ONE IMPLEMENTATION (Ruling FORK 2): the default path must ROUTE THROUGH the
+        # shared LoreConfig/SurrealConfig resolver — not a cloned yaml.safe_load reader that
+        # returns identical values TODAY and silently diverges the day SurrealConfig's
+        # resolution changes (a new default, a slug-derivation tweak reaches the server and
+        # not this CLI). A value-only assertion cannot tell a clone from the shared resolver
+        # (adversary F7). Prove sharing by MUTATION: monkeypatch the shared
+        # LoreConfig.effective_surreal_database (the surreal.database-or-slug resolver the
+        # ruling names) to a sentinel; a build that derives the database THROUGH it FOLLOWS
+        # (GREEN), a cloned resolver reading the yaml directly IGNORES the monkeypatch and
+        # stays stale (RED) — reddening the exact clone the adversary's F7 build passed.
+        monkeypatch.setenv("COMMS_CLI_TEST_ANTHROPIC_KEY", "dummy-unused")
+        sentinel = "shared_surrealconfig_sentinel_db"
+        monkeypatch.setattr(
+            LoreConfig, "effective_surreal_database", property(lambda _self: sentinel)
+        )
+        config_path = _write_fixture_config(
+            tmp_path,
+            url=_FIXTURE_URL,
+            namespace=_FIXTURE_NAMESPACE,
+            # A VALID SlugStr (underscores, not hyphens) — model_validate still validates
+            # surreal.database even though effective_surreal_database is monkeypatched away.
+            database="ignored_if_shared",
+            anthropic_key_env="COMMS_CLI_TEST_ANTHROPIC_KEY",
+        )
+        args = comms_cli._build_parser().parse_args(["pending", "--agent", "x"])  # noqa: SLF001
+        resolved = comms_cli._resolve_coordinate(args, config_path=config_path)  # noqa: SLF001
+        assert resolved.database == sentinel, (
+            "the default coordinate resolution must derive the database THROUGH the shared "
+            "LoreConfig.effective_surreal_database (ONE IMPLEMENTATION, Ruling FORK 2) — a "
+            "resolver that reads lore.yaml directly (a clone) ignores this monkeypatch and "
+            f"stays stale; resolved.database={resolved.database!r}. Only a build that ROUTES "
+            "through SurrealConfig follows when its resolution changes."
+        )
+
 
 # --------------------------------------------------------------------------- #
 # C-counts / C-readonly-runtime — the live integration pins (spike-surreal :18000).
 # --------------------------------------------------------------------------- #
-async def _seed_one_unread_directive() -> tuple[str, str]:
-    """Register ``lead`` + ``x`` on a fresh throwaway DB and send ``x`` ONE directive.
+async def _seed_scenario(*, directives: int, publish_brief: bool) -> tuple[str, str]:
+    """Register ``lead`` + ``x`` on a fresh throwaway DB, send ``x`` ``directives`` unread
+    DIRECTIVES, and optionally publish a ``project`` brief AFTER ``x`` registered.
 
-    Returns ``(database, x_name)``. The caller reaps the DB. This yields the minimal
-    scenario ``pending --agent x`` must report: ``unread=1 unacked=1 skew=0``.
+    Returns ``(database, "x")``; the caller reaps the DB. ``publish_brief`` publishes the
+    brief AFTER ``x`` registered, so ``x`` is behind the head by one version ⇒ ``skew>0``
+    (register auto-acks the head that EXISTS at register time — none, on a fresh DB). Three
+    scenarios kill the single-fixture monoculture the adversary flagged (F5):
+    ``directives=1``→``1/1/0``, ``directives=0``→``0/0/0``, ``directives=2 publish_brief``→
+    ``2/2/1``.
     """
     database = unique_database()
     env = make_env(database=database, dim=PRODUCTION_DIM)
     setup = await connect_admin(env)
     await setup.close()
-    registry = AgentRegistry(
-        url=env.url,
-        namespace=env.namespace,
-        database=env.database,
-        user=env.user,
-        password=env.password,
-    )
-    messages = MessageLedger(
-        url=env.url,
-        namespace=env.namespace,
-        database=env.database,
-        user=env.user,
-        password=env.password,
-    )
+    coord: dict[str, Any] = {
+        "url": env.url,
+        "namespace": env.namespace,
+        "database": env.database,
+        "user": env.user,
+        "password": env.password,
+    }
+    registry = AgentRegistry(**coord)
+    messages = MessageLedger(**coord)
+    briefs = BriefLedger(**coord)
     try:
         await registry.ensure_ready()
         await messages.ensure_ready()
+        await briefs.ensure_ready()
         await registry.register("lead", session=_SESSION, role="lead")
+        # x registers when NO project brief exists yet → it auto-acks nothing, so a brief
+        # published below leaves it behind the head (skew>0).
         await registry.register("x", session=_SESSION, role="builder")
         lead = await registry.get_agent("lead", session=_SESSION)
         recipient = await registry.get_agent("x", session=_SESSION)
-        await messages.send(
-            sender=lead,
-            session=_SESSION,
-            body="ack this when done",
-            grade="directive",
-            recipients=[recipient],
-        )
+        for _ in range(directives):
+            await messages.send(
+                sender=lead,
+                session=_SESSION,
+                body="ack this when done",
+                grade="directive",
+                recipients=[recipient],
+            )
+        if publish_brief:
+            await briefs.publish("project", "the standing brief body", created_by="lead")
     finally:
         await registry.close()
         await messages.close()
+        await briefs.close()
     return database, "x"
 
 
@@ -358,47 +473,114 @@ def _run_cli(database: str, agent: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-async def _comms_row_counts(database: str) -> dict[str, int]:
+def _assert_pending_counts(
+    database: str, agent: str, *, unread: int, unacked: int, skew: int
+) -> None:
+    """Run ``pending --agent`` and assert it exits 0 and reports the three named counts.
+    Shared by the three C-counts scenarios (ONE IMPLEMENTATION — the monoculture the
+    adversary flagged was a single fixture, not a single helper)."""
+    result = _run_cli(database, agent)
+    assert result.returncode == 0, (
+        f"comms_cli pending must exit 0 on success; got {result.returncode} "
+        f"(stdout={result.stdout!r} stderr={result.stderr!r})"
+    )
+    for token in (f"unread={unread}", f"unacked={unacked}", f"skew={skew}"):
+        assert token in result.stdout, (
+            f"pending --agent {agent} must report {token!r}; got stdout={result.stdout!r}"
+        )
+
+
+def _canonical(value: object) -> str:
+    """Stable, type-tagged serialization so RecordIDs / datetimes / nested structures
+    compare deterministically across two reads of the same store."""
+    return json.dumps(value, sort_keys=True, default=lambda obj: f"{type(obj).__name__}:{obj!s}")
+
+
+def _db_table_names(info: object) -> list[str]:
+    """Table names from an ``INFO FOR DB`` result (``{'tables': {name: ddl}}``), tolerating
+    the SDK wrapping a single statement's result in a one-element list."""
+    if isinstance(info, list) and info:
+        info = info[0]
+    if isinstance(info, dict):
+        tables = info.get("tables")
+        if isinstance(tables, dict):
+            return sorted(tables)
+    return []
+
+
+async def _full_db_content(database: str) -> dict[str, list[str]]:
+    """Snapshot the ENTIRE database — every table (discovered via ``INFO FOR DB``) and every
+    row's full CONTENT. The read-only proof a 3-table row-COUNT cannot give (adversary
+    F3/F4): a typed SDK write (no verb string), a write to a NEW table, or an UPDATE/MERGE
+    that changes no count all surface as a content diff here."""
     env = make_env(database=database, dim=PRODUCTION_DIM)
     conn = await connect_admin(env)
     try:
-        counts: dict[str, int] = {}
-        for table in ("agent", "message", "to"):
-            result = await conn.query(f"SELECT count() AS n FROM {table} GROUP ALL")
-            rows = result if isinstance(result, list) else []
-            counts[table] = int(cast(int, rows[0]["n"])) if rows and isinstance(rows[0], dict) else 0
-        return counts
+        info = await conn.query("INFO FOR DB")
+        content: dict[str, list[str]] = {}
+        for table in _db_table_names(info):
+            rows = await conn.query(f"SELECT * FROM {table}")
+            materialized = rows if isinstance(rows, list) else []
+            content[table] = sorted(_canonical(row) for row in materialized)
+        return content
     finally:
         await conn.close()
 
 
 class TestPendingReportsCounts:
-    async def test_pending_reports_unread_unacked_and_skew(self) -> None:
-        database, agent = await _seed_one_unread_directive()
+    async def test_pending_reports_one_unread_directive(self) -> None:
+        # Scenario A (1/1/0): one unread DIRECTIVE ⇒ unread=1, unacked=1; no brief ⇒ skew=0.
+        database, agent = await _seed_scenario(directives=1, publish_brief=False)
         env = make_env(database=database, dim=PRODUCTION_DIM)
         try:
-            result = _run_cli(database, agent)
-            assert result.returncode == 0, (
-                f"comms_cli pending must exit 0 on success; got {result.returncode} "
-                f"(stdout={result.stdout!r} stderr={result.stderr!r})"
-            )
-            # One unread DIRECTIVE ⇒ unread=1, unacked=1; no brief published ⇒ skew=0.
-            assert "unread=1" in result.stdout, result.stdout
-            assert "unacked=1" in result.stdout, result.stdout
-            assert "skew=0" in result.stdout, result.stdout
+            _assert_pending_counts(database, agent, unread=1, unacked=1, skew=0)
         finally:
             await drop_database(env)
 
-    async def test_pending_is_read_only_row_counts_unchanged(self) -> None:
-        database, agent = await _seed_one_unread_directive()
+    async def test_pending_reports_zero_when_no_traffic(self) -> None:
+        # Scenario B (0/0/0) — F5 monoculture fix: DIFFERENT values. A hardcoded
+        # print("unread=1 unacked=1 skew=0") build (adversary F5) reddens on all three.
+        database, agent = await _seed_scenario(directives=0, publish_brief=False)
         env = make_env(database=database, dim=PRODUCTION_DIM)
         try:
-            before = await _comms_row_counts(database)
+            _assert_pending_counts(database, agent, unread=0, unacked=0, skew=0)
+        finally:
+            await drop_database(env)
+
+    async def test_pending_reports_multiple_unread_and_brief_skew(self) -> None:
+        # Scenario C (2/2/1) — F5 monoculture fix on the skew axis: x registered BEFORE the
+        # brief was published, so it is behind the head by one version ⇒ skew=1. Kills a
+        # build that hardcodes skew=0 (the only value the single fixture ever exercised).
+        database, agent = await _seed_scenario(directives=2, publish_brief=True)
+        env = make_env(database=database, dim=PRODUCTION_DIM)
+        try:
+            _assert_pending_counts(database, agent, unread=2, unacked=2, skew=1)
+        finally:
+            await drop_database(env)
+
+    async def test_pending_is_read_only_full_db_content_unchanged(self) -> None:
+        # F3+F4: snapshot the ENTIRE database (every table via INFO FOR DB, full row
+        # CONTENT — not counts of {agent,message,to}) before and after the CLI run and
+        # assert byte-identical. Subsumes F3 (a typed SDK write carries no verb string) AND
+        # F4 (a write to ANY other table, or an UPDATE/MERGE that changes no count). The
+        # adversary's WB-CLI (conn.create("cli_audit", …)) writes 1 real row → reddens here.
+        database, agent = await _seed_scenario(directives=1, publish_brief=False)
+        env = make_env(database=database, dim=PRODUCTION_DIM)
+        try:
+            before = await _full_db_content(database)
             _run_cli(database, agent)
-            after = await _comms_row_counts(database)
+            after = await _full_db_content(database)
+            deltas = {
+                table: (len(before.get(table, [])), len(after.get(table, [])))
+                for table in set(before) | set(after)
+                if before.get(table) != after.get(table)
+            }
             assert before == after, (
-                "comms_cli must be READ-ONLY at runtime — reporting pending state must "
-                f"not mutate any comms table (before={before} after={after})"
+                "comms_cli must be READ-ONLY at runtime — reporting pending state must not "
+                "mutate ANY table's content (a typed SDK write / a write to a NEW table / an "
+                "UPDATE with no count change all surface here). "
+                f"new tables: {sorted(set(after) - set(before)) or 'none'}; "
+                f"changed (before,after row counts): {deltas!r}"
             )
         finally:
             await drop_database(env)
