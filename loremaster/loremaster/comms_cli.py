@@ -33,6 +33,8 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
+from typing import NamedTuple
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -63,14 +65,68 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _ResolvedCoordinate(NamedTuple):
+    """The store LOCATION a ``pending`` run connects to — the triple that decides
+    WHICH store/database (the safety-relevant identity: never ``:18500`` by
+    accident, and dev/test reads dev/test). Resolved either from explicit
+    ``--url/--namespace/--database`` overrides or (default) from the project's
+    ``lore.yaml`` surreal block via the SHARED
+    :class:`loremaster.config.SurrealConfig` resolver — never a cloned resolver.
+    Credential resolution is a separate connect-time concern and not part of this
+    location triple.
+    """
+
+    url: str | None
+    namespace: str | None
+    database: str | None
+
+
+def _resolve_coordinate(
+    args: argparse.Namespace, *, config_path: Path | None = None
+) -> _ResolvedCoordinate:
+    """Resolve WHICH store ``pending`` reads from.
+
+    Explicit ``--url`` (with its sibling overrides) WINS. Otherwise the DEFAULT
+    path reads the project's ``lore.yaml`` and derives the coordinate from the
+    SHARED :class:`loremaster.config.SurrealConfig` +
+    :attr:`loremaster.config.LoreConfig.effective_surreal_database` resolver —
+    ONE IMPLEMENTATION, never a cloned coordinate resolver (a cloned resolver is
+    where a config change reaches the server and not this CLI). ``config_path``
+    is the discovery injection point tests use; production ``main`` passes the
+    project's resolved ``lore.yaml``.
+
+    ⚠ The default path MUST load the config WITHOUT resolving the REQUIRED
+    Anthropic key. This creds-free read-only bridge never uses it, yet
+    :func:`loremaster.config.load_config` resolves ``anthropic.api_key_env``
+    EAGERLY and ``anthropic:`` is a required section — so ``load_config`` aborts
+    boot when that key is unset (the idle-gate hook's stripped-env reality). Load
+    the surreal block via the env-free
+    :meth:`loremaster.config.LoreConfig.model_validate` (or a surreal-only parse)
+    instead. See ``test_comms_cli.py`` (``TestDefaultCoordinateResolution``) and
+    the Fable ruling FORK 2 rider (3).
+
+    STUB (RED contract, packet 05a-iii): the explicit-override path returns the
+    args coordinate; the DEFAULT path (no ``--url``) is UNBUILT — it returns an
+    EMPTY coordinate so the resolution pins fail BEHAVIOURALLY (an assertion, not
+    a raise) and green once the builder wires the shared ``SurrealConfig``
+    resolver against ``config_path``.
+    """
+    if args.url is not None:
+        return _ResolvedCoordinate(
+            url=args.url, namespace=args.namespace, database=args.database
+        )
+    return _ResolvedCoordinate(url=None, namespace=None, database=None)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. Returns a process exit code (0 = success, non-zero = failure)."""
     args = _build_parser().parse_args(argv)
     if args.command == "pending":
-        # STUB: no store read yet — the builder replaces this with three
-        # SELECT-only reads (unread ``to`` edges / unacked directive edges /
-        # brief-ack skew) against the CONFIGURED coordinate, printing
-        # ``unread=<n> unacked=<n> skew=<n>`` to stdout.
+        # STUB: no store read yet — the builder resolves the coordinate via
+        # ``_resolve_coordinate(args)`` (explicit overrides, else the shared
+        # SurrealConfig default) and replaces this with three SELECT-only reads
+        # (unread ``to`` edges / unacked directive edges / brief-ack skew)
+        # against it, printing ``unread=<n> unacked=<n> skew=<n>`` to stdout.
         print(
             "comms_cli 'pending' is not yet implemented (packet 05a-iii stub)",
             file=sys.stderr,

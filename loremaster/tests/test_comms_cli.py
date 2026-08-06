@@ -19,17 +19,37 @@ Pins:
 - **C-coordinate-safety** — the production coordinate ``18500`` never appears as a
   code literal; the coordinate is resolved/passed, never baked in. (Docstrings, which
   name ``:18500`` to explain the rule, are excluded.)
+- **C-default-resolution** — with NO ``--url`` override, the coordinate resolves from
+  the project's ``lore.yaml`` surreal block via the SHARED
+  :class:`loremaster.config.SurrealConfig` resolver (never a hardcoded default, never
+  a cloned resolver). Tested as a PURE resolution against a FIXTURE config pointed at
+  ``:18000`` — never the default path against a live production store (rider 2). RED
+  against the stub (default path unbuilt).
+- **C-anthropic-independence** — the default coordinate resolution succeeds with the
+  REQUIRED Anthropic key UNSET: this creds-free read-only CLI never uses it, so the
+  surreal block loads via the env-free
+  :meth:`loremaster.config.LoreConfig.model_validate` (or a surreal-only parse), NEVER
+  :func:`loremaster.config.load_config` (which resolves ``anthropic.api_key_env``
+  eagerly and would block boot). RED against the stub; RED against a ``load_config``
+  build.
 
-⚠ ESCALATION (surfaced to lead-05a, NOT silently resolved). The design plan
-(``one-of-claude-codes-nifty-garden.md`` §"Hook bridge") specifies
-``python -m loremaster.comms_cli pending --agent <name>`` + "direct SurrealDB
-SELECTs", but does NOT specify HOW the standalone CLI resolves its store coordinate
-and TARGET DATABASE (lore's config carries ONE configured database; a fleet may live
-in another; the harness mints a unique throwaway DB per test). This contract pins the
-EXPLICIT-override path (``--url/--namespace/--database/--user/--password``, passed
-deterministically by C-counts); the DEFAULT resolution (read lore config? require the
-args? read an env contract?) is a fork for the operator/lead. See
-REPORT-contract-05aiii.md §Escalations.
+RULING — FORK (comms_cli default coordinate/database), RESOLVED. The design plan
+(``one-of-claude-codes-nifty-garden.md`` §"Hook bridge") specified the command +
+"direct SurrealDB SELECTs" but NOT how the standalone CLI resolves its store
+coordinate + TARGET DATABASE with no explicit override. Fable ruling FORK 2
+(2026-08-06, operator-delegated; ``REPORT-fable-design-05a.md`` §Follow-up rulings,
+``lore_recall("Fable rulings 05a-iii forks")``): resolve via the server's OWN
+``SurrealConfig`` — reused, NOT cloned — read off the project ``lore.yaml``; ONE
+IMPLEMENTATION. comms_cli is the idle-gate HOOK BRIDGE, so in a live session it reads
+the REAL fleet (production ``:18500``, read-only SELECTs) — the "tests → :18000, never
+:18500" law binds TEST code, not this production tooling, so the DEFAULT path is
+tested only by pure resolution against a fixture config (never against a live prod
+store). Riders folded: (1) the no-hardcoded-``:18500`` AST guard STAYS
+(C-coordinate-safety); (2) CLI tests assert default-resolution READS config, never
+exercise it against prod, and keep the explicit ``--url`` override to ``:18000``;
+(3) the creds-free CLI must not be blocked by the eager Anthropic key
+(C-anthropic-independence). Contract folded by contract-revise-05aiii; see
+REPORT-contract-revise-05aiii.md.
 
 Tests hit spike-surreal ``ws://127.0.0.1:18000`` ONLY (per-test throwaway DB); the
 production store ``:18500`` is NEVER touched.
@@ -38,6 +58,7 @@ production store ``:18500`` is NEVER touched.
 from __future__ import annotations
 
 import ast
+import copy
 import re
 import subprocess
 import sys
@@ -45,6 +66,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+import yaml
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -57,6 +79,7 @@ from _surreal_harness import (
 )
 from loremaster.agents import AgentRegistry
 from loremaster.messages import MessageLedger
+from test_config import _CANONICAL_CONFIG
 
 from loremaster import comms_cli
 
@@ -146,6 +169,117 @@ class TestReadOnlyByConstruction:
         assert not offenders, (
             "comms_cli must NEVER hardcode the production store coordinate (:18500) — "
             f"the coordinate is config-resolved / passed, never baked in; found: {offenders!r}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# C-default-resolution / C-anthropic-independence — the DEFAULT store-coordinate
+# resolution (RULED FORK 2). PURE resolution against a FIXTURE config pointed at
+# :18000 — NEVER the default path against a live production store (rider 2). No
+# store connection is opened here; these are offline resolution pins.
+# --------------------------------------------------------------------------- #
+def _write_fixture_config(
+    tmp_path: Path,
+    *,
+    url: str,
+    namespace: str,
+    database: str,
+    anthropic_key_env: str,
+) -> Path:
+    """Write a VALID ``lore.yaml`` whose surreal block names ``url``/``namespace``/
+    ``database`` and whose (REQUIRED) anthropic block references
+    ``anthropic_key_env`` by NAME only.
+
+    Reuses ``test_config._CANONICAL_CONFIG`` as the ONE canonical valid config
+    shape (ONE IMPLEMENTATION — never a second hand-rolled full config that would
+    drift from the real schema), overriding only the two blocks these pins turn
+    on. Credentials are referenced by the harness's own env-var NAMES
+    (``SURREAL_USER`` / ``SURREAL_PASS``) — the shared ``SurrealConfig`` discipline.
+    """
+    payload = copy.deepcopy(_CANONICAL_CONFIG)
+    payload["anthropic"] = {"api_key_env": anthropic_key_env}
+    payload["surreal"] = {
+        "url": url,
+        "namespace": namespace,
+        "database": database,
+        "user_env": "SURREAL_USER",
+        "password_env": "SURREAL_PASS",
+    }
+    config_path = tmp_path / "lore.yaml"
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    return config_path
+
+
+# The spike-surreal test coordinate the FIXTURE config names — the resolution pins
+# assert the CLI reads THIS out of config, never a hardcoded default. It is only a
+# fixture value: no connection is opened, so no store (test OR prod) is touched.
+_FIXTURE_URL = "ws://127.0.0.1:18000/rpc"
+_FIXTURE_NAMESPACE = "lore"
+
+
+class TestDefaultCoordinateResolution:
+    """RULED FORK 2 — with no ``--url`` override, the coordinate is READ FROM the
+    project ``lore.yaml`` via the shared ``SurrealConfig`` resolver (never a
+    hardcoded default, never a cloned resolver), and that load never requires the
+    Anthropic key this read-only CLI does not use. Both pins are PURE resolution:
+    they assert the resolved coordinate and open NO connection, so the default
+    path is never exercised against a live production store (rider 2).
+    """
+
+    def test_no_override_resolves_the_config_surreal_coordinate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Isolate the COORDINATE-reading property: set the config's anthropic key
+        # so this pin turns ONLY on "does the default path read the config's
+        # surreal coordinate, or ignore it and hardcode one?" (the anthropic
+        # concern is the sibling pin's, with a DIFFERENT database value).
+        monkeypatch.setenv("COMMS_CLI_TEST_ANTHROPIC_KEY", "dummy-unused")
+        config_path = _write_fixture_config(
+            tmp_path,
+            url=_FIXTURE_URL,
+            namespace=_FIXTURE_NAMESPACE,
+            database="cli_default_probe",
+            anthropic_key_env="COMMS_CLI_TEST_ANTHROPIC_KEY",
+        )
+        args = comms_cli._build_parser().parse_args(["pending", "--agent", "x"])  # noqa: SLF001
+        resolved = comms_cli._resolve_coordinate(args, config_path=config_path)  # noqa: SLF001
+        assert resolved.url == _FIXTURE_URL, (
+            "with NO --url override, comms_cli must resolve its store coordinate "
+            "FROM the project's lore.yaml surreal block (the shared SurrealConfig "
+            f"resolver), never a hardcoded default; resolved={resolved!r}"
+        )
+        assert resolved.namespace == _FIXTURE_NAMESPACE, resolved
+        assert resolved.database == "cli_default_probe", resolved
+
+    def test_default_resolution_does_not_require_an_anthropic_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Rider 3: load_config resolves anthropic.api_key_env EAGERLY and
+        # ``anthropic:`` is REQUIRED (loremaster/config.py load_config + LoreConfig)
+        # — but this creds-free read-only CLI never uses the key. Point the config's
+        # anthropic block at a GUARANTEED-UNSET variable and prove the default
+        # coordinate resolution STILL succeeds: the surreal block must load env-free
+        # (model_validate / surreal-only), never via load_config. A load_config
+        # build raises ValueError on the unset key -> RED.
+        unresolvable = "COMMS_CLI_TEST_ANTHROPIC_KEY_DEFINITELY_UNSET"
+        monkeypatch.delenv(unresolvable, raising=False)
+        config_path = _write_fixture_config(
+            tmp_path,
+            url=_FIXTURE_URL,
+            namespace=_FIXTURE_NAMESPACE,
+            database="cli_credfree_probe",
+            anthropic_key_env=unresolvable,
+        )
+        args = comms_cli._build_parser().parse_args(["pending", "--agent", "x"])  # noqa: SLF001
+        # Must NOT raise about the missing Anthropic key (a load_config build does),
+        # and must still read the surreal coordinate out of config.
+        resolved = comms_cli._resolve_coordinate(args, config_path=config_path)  # noqa: SLF001
+        assert resolved.url == _FIXTURE_URL, (
+            "a creds-free read-only CLI must resolve its store coordinate WITHOUT "
+            "an Anthropic key configured — load the surreal block via env-free "
+            "model_validate / a surreal-only parse, never load_config (which "
+            "eagerly resolves the REQUIRED anthropic.api_key_env and would block "
+            f"boot); resolved={resolved!r}"
         )
 
 

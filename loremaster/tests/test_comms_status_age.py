@@ -32,12 +32,19 @@ Pins (grouped):
   agent row is) survives a subsequent UPDATE — store §1.4: an ``option<>`` no-assert
   field cannot write-poison. GREEN now, RED against a required/asserted-field build.
 
-⚠ FORK surfaced to lead-05a (D/#304 age SCOPE): this contract ages ``input_required``
-specifically. Aging the WHOLE status cell (active/idle too) would break the existing
-green ``test_comms_fleet_grouping.py:124-126`` brackets (a C-DEF trap) and is noisy
-(active/idle churn via the idle→active auto-flip). ``retired`` renders in the ``+K
-retired`` trailer, not a status-bracket row, so it is moot. Recommend input_required
-only; the whole-cell reading is the lead's/operator's call. See REPORT §Escalations.
+RULING — FORK (D/#304 age SCOPE), RESOLVED = **input_required-ONLY** (Fable ruling
+FORK 1, 2026-08-06, operator-delegated; ``REPORT-fable-design-05a.md`` §Follow-up
+rulings, ``lore_recall("Fable rulings 05a-iii forks")``). ``input_required`` is the one
+status that WINS over the idle→active auto-flip, so it alone goes stale WHILE the agent
+works — aging it exposes the CONTRADICTION between fresh liveness and a stale
+self-declaration. ``idle``/``active`` carry no such contradiction (a fresh heartbeat
+keeps them current), and aging them both renders pure churn AND breaks the green
+``test_comms_fleet_grouping`` ``[idle]``/``[active]`` brackets (a C-DEF trap);
+``retired`` renders in the ``+K retired`` trailer, moot. RIDER (property-keying + named
+re-open trigger): the build keys the age-render on the PROPERTY that a status LATCHES,
+NOT a bare ``== "input_required"`` literal — see ``TestFleetAgesTheDeclaration`` and
+``test_input_required_shows_the_declaration_age_beside_the_liveness_age`` for the note
+the builder-brief inherits.
 
 Tests hit spike-surreal ``ws://127.0.0.1:18000`` ONLY; ``:18500`` is NEVER touched.
 """
@@ -206,6 +213,37 @@ class TestStatusSetAtWriteSide:
 # same ``now`` as heartbeat age).
 # --------------------------------------------------------------------------- #
 class TestFleetAgesTheDeclaration:
+    """RULING FORK 1 RIDER (property-keying + named re-open trigger) — the note the
+    builder-brief inherits.
+
+    The build MUST key the age-render conditional on the PROPERTY that a status
+    LATCHES — i.e. it wins over the idle→active auto-flip, so it (and only
+    ``input_required``, today) can go STALE while the agent keeps heartbeating —
+    NOT on a bare ``status == "input_required"`` literal that a future latching
+    status would silently escape (the enumerate-the-forbidden law: the forbidden
+    set is unbounded; key on the property).
+
+    NAMED RE-OPEN TRIGGER: the day any status OTHER than ``input_required`` is made
+    to win over the idle→active auto-flip, it JOINS the aged set — the age-scope
+    re-opens (Fable ruling FORK 1). That trigger is MECHANICAL, not a hope: it is
+    already guarded by the existing suite —
+    ``test_agent_registry.py::TestAgentStatusesConstant`` (reds on ANY change to the
+    closed four-value status domain) and
+    ``test_agent_registry.py::TestIdleAutoFlip`` (``test_input_required_agent_does_not_auto_flip``
+    + ``test_idle_agent_auto_flips_to_active_with_no_explicit_status`` pin the
+    current auto-flip winner-set). A newly-introduced latching status trips BOTH,
+    forcing the "does it latch → re-open the age-scope?" review.
+
+    WHY a docstring note and NOT a new render-side structural guard: with a
+    single-member latch set, a property-keyed render and a literal-keyed render are
+    behaviourally IDENTICAL for every current input — undiscriminable — so a
+    render-side guard could only ban the literal, which is itself the
+    enumerate-the-forbidden antipattern (a property-keyed build may legitimately
+    reference ``"input_required"`` while COMPUTING the latch set). The mechanical
+    re-open trigger already lives in the status-domain pins above; duplicating it
+    here would violate ONE IMPLEMENTATION.
+    """
+
     async def test_input_required_shows_the_declaration_age_beside_the_liveness_age(
         self, live: _LiveCtx
     ) -> None:
@@ -226,6 +264,14 @@ class TestFleetAgesTheDeclaration:
     async def test_none_status_set_at_renders_unknown_not_a_fabricated_zero(
         self, live: _LiveCtx
     ) -> None:
+        """RULING FORK 1 nudge (D8 NONE render honesty) — CONFIRMED, no assertion
+        change. A legacy row (``status_set_at`` NONE) must render an HONEST unknown
+        (``declared: unknown`` / an age-since-hb) — NEVER a fabricated age. The
+        specific wording is builder latitude; the load-bearing pin is that the NONE
+        cell renders DIFFERENTLY from a just-declared 0-second cell (the ``!=``
+        below), which reddens the exact fabricate-zero trap the nudge names. A
+        single-value fixture (only NONE, or only 0s) would pass a fabricate-zero
+        build; the PAIR discriminates."""
         legacy = await live.register("legacy", status="input_required")
         fresh = await live.register("fresh", status="input_required")
         await live.set_status_set_at(legacy, None)  # a pre-#304 row
