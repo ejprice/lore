@@ -4244,10 +4244,11 @@ class AppContext:
         consistent with leg 1's own truncation).
 
         Packet 05a-iii adds three ADDITIVE sections over EXISTING state — fleet-health
-        (the roster's true per-status counts) and brief-ack-skew (agents behind the
-        standing brief head), plus a messages-activity leg PENDING the message-read
-        fork (see :meth:`_story_messages`). Each renders only when it has content, so
-        a rollup with no agents / no standing brief is byte-identical to before.
+        (the roster's true per-status counts), brief-ack-skew (agents behind the
+        standing brief head), and a cursor-bounded messages-activity leg (built B1/B4,
+        via :meth:`~loremaster.messages.MessageLedger.message_activity_since`). Each
+        renders only when it has content, so a rollup with no agents / no standing
+        brief / no messages since the cursor is byte-identical to before.
         """
         effective_since = AppContext._parse_rollup_since(since)
         effective_limit = limit if limit is not None else _DEFAULT_ROLLUP_LEG_LIMIT
@@ -4331,14 +4332,15 @@ class AppContext:
         """Render the rollup's counted-elision grammar (design §1, pinned verbatim).
 
         The task/finding/reports legs and the ``next cursor`` line are UNCHANGED.
-        Packet 05a-iii inserts ``extra_sections`` (the fleet-health + brief-ack-skew
-        lines, already rendered by :meth:`_rollup_extra_sections`) BEFORE the cursor —
+        Packet 05a-iii inserts ``extra_sections`` (the messages-activity + fleet-health
+        + brief-ack-skew lines, already rendered by :meth:`_rollup_extra_sections`)
+        BEFORE the cursor —
         UNCONDITIONALLY, so this render gains no branch a driver cannot reach (the
-        link5 branch-coverage pin). The sections are EMPTY when there are no agents
-        and no standing brief, so a rollup with neither is byte-identical to the
-        pre-05a-iii output, and the pre-05a-iii direct-render callers (which pass no
-        ``extra_sections``) get exactly the old text. (The messages-activity leg is
-        PENDING the message-read fork — REPORT-builder-05aiii.md §Escalation.)
+        link5 branch-coverage pin). The sections are EMPTY when there are no agents,
+        no standing brief and no messages since the cursor, so a rollup with none of
+        them is byte-identical to the pre-05a-iii output, and the pre-05a-iii
+        direct-render callers (which pass no ``extra_sections``) get exactly the old
+        text.
         """
         since_iso = effective_since.isoformat()
         task_rows = task_window.rows
