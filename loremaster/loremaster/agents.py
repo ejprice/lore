@@ -203,6 +203,11 @@ _REG_SPAWNED_BY_PARAM = "reg_spawned_by"
 _TOUCH_STATUS_PARAM = "touch_status"
 _TOUCH_HEARTBEAT_PARAM = "touch_heartbeat_at"
 _TOUCH_NOTE_PARAM = "touch_note"
+# #304 (packet 05a-iii): the status_set_at stamp, threaded through the register
+# re-register UPDATE and the touch UPDATE alike so the "stamp iff the status VALUE
+# changed" policy is written ONCE (``_status_set_at_for``) and CALLED, never cloned.
+_REG_STATUS_SET_AT_PARAM = "reg_status_set_at"
+_TOUCH_STATUS_SET_AT_PARAM = "touch_status_set_at"
 
 
 class Agent(BaseModel):
@@ -630,6 +635,9 @@ class AgentRegistry:
                 _COL_LAST_NOTE: None,
                 _COL_REGISTERED_AT: now,
                 _COL_HEARTBEAT_AT: now,
+                # #304: birth of the ``active`` status IS a status set — stamp it,
+                # so a never-changed agent still has an honest declaration instant.
+                _COL_STATUS_SET_AT: self._status_set_at_for(STATUS_ACTIVE, None, None, now),
             }
             await self._query(
                 f"CREATE type::record('{AGENT_TABLE}', ${_ROW_ID_PARAM}) "
@@ -672,13 +680,20 @@ class AgentRegistry:
         # previously-unset field without conflict (the mismatch case above
         # already refused a differing CONCRETE value).
         new_spawned_by = spawned_by if spawned_by is not None else existing.spawned_by
+        # #304: re-register resets status to ``active`` — stamp status_set_at only
+        # when that is a real CHANGE from the existing stored status (a re-register
+        # of an already-``active`` agent must not reset its declaration age).
+        new_status_set_at = self._status_set_at_for(
+            STATUS_ACTIVE, existing.status, existing.status_set_at, now
+        )
         await self._query(
             f"UPDATE type::record('{AGENT_TABLE}', ${_ROW_ID_PARAM}) SET "
             f"{_COL_STATUS} = ${_REG_STATUS_PARAM}, "
             f"{_COL_HEARTBEAT_AT} = ${_REG_HEARTBEAT_PARAM}, "
             f"{_COL_MODEL} = ${_REG_MODEL_PARAM}, "
             f"{_COL_TASK_ID} = ${_REG_TASK_ID_PARAM}, "
-            f"{_COL_SPAWNED_BY} = ${_REG_SPAWNED_BY_PARAM}",
+            f"{_COL_SPAWNED_BY} = ${_REG_SPAWNED_BY_PARAM}, "
+            f"{_COL_STATUS_SET_AT} = ${_REG_STATUS_SET_AT_PARAM}",
             {
                 _ROW_ID_PARAM: agent_id,
                 _REG_STATUS_PARAM: STATUS_ACTIVE,
@@ -686,6 +701,7 @@ class AgentRegistry:
                 _REG_MODEL_PARAM: new_model,
                 _REG_TASK_ID_PARAM: new_task_id,
                 _REG_SPAWNED_BY_PARAM: new_spawned_by,
+                _REG_STATUS_SET_AT_PARAM: new_status_set_at,
             },
         )
         updated = await self._select_row(agent_id)
@@ -773,22 +789,49 @@ class AgentRegistry:
 
         now = datetime.now(UTC)
         new_note = note if note is not None else agent.last_note
+        # #304: age the DECLARATION, not the heartbeat — stamp status_set_at only
+        # when new_status differs from the stored status (a same-status heartbeat
+        # preserves the prior stamp; a change records ``now``).
+        new_status_set_at = self._status_set_at_for(
+            new_status, agent.status, agent.status_set_at, now
+        )
         await self._query(
             f"UPDATE type::record('{AGENT_TABLE}', ${_ROW_ID_PARAM}) SET "
             f"{_COL_STATUS} = ${_TOUCH_STATUS_PARAM}, "
             f"{_COL_HEARTBEAT_AT} = ${_TOUCH_HEARTBEAT_PARAM}, "
-            f"{_COL_LAST_NOTE} = ${_TOUCH_NOTE_PARAM}",
+            f"{_COL_LAST_NOTE} = ${_TOUCH_NOTE_PARAM}, "
+            f"{_COL_STATUS_SET_AT} = ${_TOUCH_STATUS_SET_AT_PARAM}",
             {
                 _ROW_ID_PARAM: agent.id,
                 _TOUCH_STATUS_PARAM: new_status,
                 _TOUCH_HEARTBEAT_PARAM: now,
                 _TOUCH_NOTE_PARAM: new_note,
+                _TOUCH_STATUS_SET_AT_PARAM: new_status_set_at,
             },
         )
         updated = await self._select_row(agent.id)
         if updated is None:
             raise AgentRegistryError(f"agent {agent.id!r} vanished immediately after touch")
         return self._row_to_agent(updated)
+
+    @staticmethod
+    def _status_set_at_for(
+        new_status: str,
+        prior_status: str | None,
+        prior_stamp: datetime | None,
+        now: datetime,
+    ) -> datetime | None:
+        """The ``status_set_at`` value a write must persist (#304, packet 05a-iii).
+
+        ``now`` iff the status VALUE is changing (a new declaration), else the
+        PRESERVED ``prior_stamp`` — so a same-status heartbeat leaves the
+        declaration age untouched (else every heartbeat would reset it to ~0s, the
+        latch bug inverted). ``prior_status is None`` is the first-registration
+        birth: no prior value to disagree with, so it always stamps. The ONE place
+        this policy lives — the register re-register UPDATE and the touch UPDATE
+        both CALL it (never a cloned ``now if … else …`` at each site).
+        """
+        return now if new_status != prior_status else prior_stamp
 
     @staticmethod
     def _validate_status_edge(name: str, current: AgentStatus, target: str) -> AgentStatus:
