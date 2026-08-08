@@ -73,7 +73,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 from ulid import ULID
 
@@ -364,6 +364,61 @@ class WaitingOnAnswer(BaseModel):
     thread: str
     question_seq: int
     asked_at: datetime
+
+
+class StoredMessage(BaseModel):
+    """A ``message`` ROW projected for READ composition (packet 05a-iii).
+
+    The shape ``story``'s task arc (:meth:`MessageLedger.messages_for_task`) and
+    the rollup's messages-activity leg (:meth:`MessageLedger.message_activity_since`)
+    consume. DISTINCT from :class:`InboxEntry`, which is a per-recipient ``to``-edge
+    projection (drain's surface): this is the message row ITSELF, keyed by
+    ``task_id`` / ``created_at``, never by recipient — so these reads never touch the
+    ``to`` edge, ``drain``, or its SELECT. NONE-tolerant decode (store §2:
+    ``SELECT``/projection reads a NONE ``option`` column as ``None``).
+
+    Attributes:
+        seq: The message's monotonic ordering key.
+        sender_name: The sending agent's name (resolved via the ``sender`` link).
+        grade: The message grade (``signal`` / ``directive``).
+        body: The agent-authored free-text body (rendered verbatim inside a fence).
+        refs: The message's references (may be empty).
+        question: The STRUCTURAL question marker (``message.question``; a legibility
+            gain, never inferred from body prose).
+        thread: The message's thread label.
+        task_id: The task this message concerns, or ``None``.
+        created_at: The tz-aware UTC instant the message was sent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    sender_name: str
+    grade: str
+    body: str
+    refs: list[str] = Field(default_factory=list)
+    question: bool = False
+    thread: str = ""
+    task_id: str | None = None
+    created_at: datetime
+
+
+class MessageActivityWindow(BaseModel):
+    """The rollup's messages-activity leg (packet 05a-iii, scope B): messages sent
+    since a cursor, with an HONEST total so a caller can tell a truncated window from
+    an exhaustive one — mirrors :class:`~loremaster.tasks.TaskActivityWindow`.
+
+    Attributes:
+        rows: The matching messages, oldest-first by ``created_at``, capped at the
+            caller's ``limit``.
+        total: The honest count of messages matching the window (``>= len(rows)``;
+            exceeds it when ``limit`` truncated the result).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[StoredMessage] = Field(default_factory=list)
+    total: int
 
 
 # --- errors ------------------------------------------------------------------
@@ -1391,6 +1446,106 @@ class MessageLedger:
                     asked_at=self._require_aware_utc(question.get("created_at")),
                 )
         return None
+
+    # -- read compositions (packet 05a-iii) --------------------------------
+    #
+    # ⚠ These read the ``message`` ROW directly (like ``awaiting_answer``'s
+    # question read), keyed by task/created_at — NEVER the ``to`` edge, ``drain``,
+    # or its per-recipient SELECT (05a-i owns those; hard fence). ADD-ONLY.
+
+    async def messages_for_task(self, *, task_id: str) -> list[StoredMessage]:
+        """Every message anchored to ``task_id``, OLDEST-FIRST by ``seq`` — the read
+        ``story`` composes a task's message arc over (packet 05a-iii).
+
+        A projection of the ``message`` ROW (``sender.name`` resolves the ``sender``
+        link), NOT the per-recipient ``to`` edge. The STRUCTURAL ``question`` marker
+        rides through untouched.
+
+        Args:
+            task_id: The task whose messages to return.
+
+        Returns:
+            The task's messages, oldest-first (empty when none carry this task_id).
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT seq, grade, body, refs, thread, question, task_id, "
+                f"sender.name AS sender_name, created_at FROM {MESSAGE_TABLE} "
+                f"WHERE task_id = $task_id ORDER BY seq ASC",
+                {"task_id": task_id},
+            )
+        )
+        return [self._row_to_stored_message(row) for row in rows]
+
+    async def message_activity_since(
+        self, since: datetime, *, limit: int
+    ) -> MessageActivityWindow:
+        """The rollup's messages-activity leg — messages CREATED strictly after
+        ``since``, oldest-first by ``created_at``, capped at ``limit``, with an honest
+        ``total`` (packet 05a-iii).
+
+        Cursor-bounded by ``created_at`` exactly like the task/finding legs
+        (``NONE > $since`` is falsy, so a legacy row is excluded by the WHERE itself),
+        and mirrors :meth:`~loremaster.tasks.TaskLedger.updated_since` — a second
+        bounded ``count() … GROUP ALL``, never an unbounded scan. This is a
+        WHOLE-``message``-table activity read; it is deliberately NOT ``drain``'s
+        per-agent ``seen_at`` cursor (05a-i owns that surface).
+
+        Args:
+            since: The EXCLUSIVE lower bound — messages sent STRICTLY after this
+                tz-aware UTC instant.
+            limit: The maximum number of rows to return (a positive int).
+
+        Returns:
+            The window: ``rows`` (ASC by ``created_at``, capped at ``limit``) and the
+            honest ``total`` (``>= len(rows)``).
+
+        Raises:
+            ValueError: ``limit`` is not a positive integer.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        # ``LIMIT`` rides a BOUND param (never string-interpolated) — the validated
+        # positive int can never be NONE (the ``LIMIT $k = NONE ⇒ 0 rows`` gotcha),
+        # and this keeps NO caller-adjacent value in query TEXT.
+        params: dict[str, Any] = {"since": since, "activity_limit": limit}
+        rows_result = await self._query(
+            f"SELECT seq, grade, body, refs, thread, question, task_id, "
+            f"sender.name AS sender_name, created_at FROM {MESSAGE_TABLE} "
+            f"WHERE created_at > $since ORDER BY created_at ASC LIMIT $activity_limit",
+            params,
+        )
+        rows = [self._row_to_stored_message(row) for row in self._as_rows(rows_result)]
+        count_result = await self._query(
+            f"SELECT count() FROM {MESSAGE_TABLE} WHERE created_at > $since GROUP ALL",
+            params,
+        )
+        return MessageActivityWindow(rows=rows, total=self._extract_group_count(count_result))
+
+    @staticmethod
+    def _extract_group_count(result: Any) -> int:
+        """The scalar ``count`` from a ``SELECT count() … GROUP ALL`` result — 0 for an
+        empty window (the ``GROUP ALL`` yields no row when nothing matches)."""
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            value = result[0].get("count")
+            if isinstance(value, int):
+                return value
+        return 0
+
+    def _row_to_stored_message(self, row: dict[str, Any]) -> StoredMessage:
+        """Map a raw ``message``-row dict into a FRESH :class:`StoredMessage`
+        (the house ``_row_to_*`` decoder pattern; NONE-tolerant per store §2)."""
+        return StoredMessage(
+            seq=int(row["seq"]),
+            sender_name=str(row.get("sender_name") or ""),
+            grade=str(row.get("grade") or ""),
+            body=str(row.get("body") or ""),
+            refs=list(row.get("refs") or []),
+            question=bool(row.get("question")),
+            thread=str(row.get("thread") or ""),
+            task_id=row.get("task_id"),
+            created_at=self._require_aware_utc(row.get("created_at")),
+        )
 
     # -- result narrowing / mapping ----------------------------------------
 
