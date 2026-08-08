@@ -860,6 +860,11 @@ class TestNoForwardCompatFieldsOnAgent:
             "last_note",
             "registered_at",
             "heartbeat_at",
+            # #304 (packet 05a-iii): the aged-declaration stamp — a DELIBERATE
+            # addition to the agent surface (verified present on the Agent model),
+            # NOT a forward-compat unread/unacked/orphan-impact creep. Kept in this
+            # exact-set pin so any FURTHER field still reddens here.
+            "status_set_at",
         }
         assert set(Agent.model_fields) == expected
 
