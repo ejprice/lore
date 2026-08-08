@@ -31,8 +31,15 @@ FROM python:3.14-slim
 # binaries the shipped PYTHON execs, and no shipped code execs curl. Keeping it is a
 # deliberate, declared exemption — never a silent one.
 # lore-ungated-binary: curl — kept for in-container debugging and a future healthcheck; no shipped code execs it, so no derived gate can cover it
+
+# tini is the PID-1 INIT declared by the ENTRYPOINT below — it forwards signals
+# (SIGTERM/SIGINT) to the server and reaps zombies, so `podman stop` shuts the
+# process down gracefully instead of the 10s-then-SIGKILL a bare-Python PID 1 gets.
+# Like curl it is NOT a binary the shipped Python execs, so it is NOT derived and
+# no derived-binary gate covers it — a deliberate, declared exemption, never silent.
+# lore-ungated-binary: tini — PID-1 init that forwards signals and reaps zombies for the server; no shipped code execs it, so no derived gate can cover it
 RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends curl git \
+    && apt-get install -y -qq --no-install-recommends curl git tini \
     && rm -rf /var/lib/apt/lists/*
 
 # uv drives the install: it resolves the workspace members against the pinned
@@ -118,7 +125,14 @@ ARG LORE_VERSION=unknown
 ENV LORE_VERSION=${LORE_VERSION}
 
 # ---------------------------------------------------------------------------
-# Entrypoint — the always-the-same MCP server process.
+# Entrypoint — tini (PID 1) wrapping the always-the-same MCP server process.
+#
+# ENTRYPOINT runs tini as PID 1; it execs the CMD below as its child, forwards
+# signals to it (so `podman stop` is a graceful SIGTERM rather than a 10s wait
+# then SIGKILL), and reaps any zombies. A bare-Python PID 1 does neither — this
+# session hit exactly that (a wedged conmon on a graceless shutdown), which is
+# why tini was added. tini is transparent to a command override, so the
+# conformance run's `sh -c ...` still runs correctly — just as tini's child.
 #
 # `python -m loremaster.server` reads LORE_CONFIG, configures structured logging,
 # runs the embedder probe-gate, and serves the FastMCP streamable-http app via
@@ -128,6 +142,7 @@ ENV LORE_VERSION=${LORE_VERSION}
 # --config <lore.yaml>` — invoked by the skill's `setup` (cold index) and each
 # `start` (delta-reconcile), independent of this CMD.
 # ---------------------------------------------------------------------------
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 
 # ---------------------------------------------------------------------------
