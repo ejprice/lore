@@ -53,12 +53,14 @@ from loremaster.messages import (
     Message,
     MessageAckEntry,
     MessageAckResult,
+    MessageActivityWindow,
     MessageBodyError,
     MessageDrainResult,
     MessageGrade,
     MessageLedger,
     MessageSendResult,
     PendingTraffic,
+    StoredMessage,
     UnknownRecipientError,
     WaitingOnAnswer,
 )
@@ -462,3 +464,79 @@ class FakeMessageLedger:
                     asked_at=question.created_at,
                 )
         return None
+
+    # -- read compositions (packet 05a-iii, #322 DOUBLE-face parity) -----------
+    # story's task-arc read and the rollup's messages-activity leg. Mirror the
+    # real ledger's ``messages_for_task`` / ``message_activity_since`` EXACTLY —
+    # same signatures, same ordering, same EXCLUSIVE ``created_at`` cursor, same
+    # HONEST (uncapped) ``total``, same ValueError on a non-positive ``limit`` —
+    # so a surface pin riding this fake sees production's read contract, not a
+    # friendlier one. Re-derived INDEPENDENTLY over ``self.db`` (never a
+    # delegation to production's query), so the fake can still FAIL a wrong build.
+
+    async def messages_for_task(self, *, task_id: str) -> list[StoredMessage]:
+        """Every message anchored to ``task_id``, OLDEST-FIRST by ``seq`` — the
+        read ``story`` composes a task's message arc over (mirrors the real
+        ledger; empty when none carry this ``task_id``).
+
+        NONE-tolerant like the store's ``WHERE task_id = $task_id``: a message
+        whose ``task_id`` reads NONE (``NONE = $task_id`` is false for a concrete
+        id) is EXCLUDED by the predicate, never an error — so a partial stub is
+        skipped exactly as the store skips a NONE row (see ``message_activity_since``).
+        """
+        await asyncio.sleep(0)
+        matching = [
+            message
+            for message in self.db.messages.values()
+            if getattr(message, "task_id", None) == task_id
+        ]
+        matching.sort(key=lambda message: message.seq)
+        return [self._to_stored_message(message) for message in matching]
+
+    async def message_activity_since(
+        self, since: datetime, *, limit: int
+    ) -> MessageActivityWindow:
+        """Messages CREATED strictly after ``since``, oldest-first by
+        ``created_at``, capped at ``limit``, with an HONEST (uncapped) ``total``.
+
+        Mirrors the real ledger, including its ValueError on a bad ``limit`` and
+        its EXCLUSIVE cursor. The filter models the STORE's ``WHERE created_at >
+        $since`` faithfully, NONE-handling included: the real method's docstring
+        relies on ``NONE > $since`` being FALSY (a legacy/absent ``created_at`` is
+        excluded by the WHERE itself, per ``docs/reference/surrealdb-31-capabilities.md``
+        §"a missing SELECT projection reads None"), so a message without a real
+        ``created_at`` is EXCLUDED here rather than crashing the read — this oracle
+        refuses a malformed row the same way production's WHERE would, instead of
+        being friendlier than the store. ``total`` counts every match, not just the
+        capped window.
+        """
+        await asyncio.sleep(0)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(f"limit must be a positive integer, got {limit!r}")
+        matching = [
+            message
+            for message in self.db.messages.values()
+            if isinstance(getattr(message, "created_at", None), datetime)
+            and message.created_at > since
+        ]
+        matching.sort(key=lambda message: message.created_at)
+        return MessageActivityWindow(
+            rows=[self._to_stored_message(message) for message in matching[:limit]],
+            total=len(matching),
+        )
+
+    @staticmethod
+    def _to_stored_message(message: Message) -> StoredMessage:
+        """Project a stored ``Message`` into the ``StoredMessage`` read shape —
+        the fake's stand-in for ``MessageLedger._row_to_stored_message``."""
+        return StoredMessage(
+            seq=message.seq,
+            sender_name=message.sender_name,
+            grade=message.grade,
+            body=message.body,
+            refs=list(message.refs),
+            question=message.question,
+            thread=message.thread,
+            task_id=message.task_id,
+            created_at=message.created_at,
+        )
