@@ -384,6 +384,30 @@ _PROMISE_FREE: dict[str, str] = {
         "status report (ownership rejection); the CAS return alone cannot say this, which is "
         "why the module disambiguates it before rendering (probe 4c)"
     ),
+    # --- packet 05a-iii: story (_render_comms_story) --------------------------
+    # ADJUDICATED (contract-fix-05aiii): every story render literal was read
+    # against ``server.py::_render_comms_story``. Each is a ``label: {value}``
+    # STATUS REPORT or a section header — none names a call, issues an imperative,
+    # or promises a runtime mechanism, so §9.7's litmus has nothing to gate: a
+    # reader who "acts on" ``subject: {subject}`` does nothing, because there is
+    # nothing to do. (The message-arc BODY is a ``render_fenced`` block, and the
+    # per-message header/thread/refs labels live in ``_render_story_message`` —
+    # which the scanner's ``_render_comms``/``_comms_`` prefix filter does not
+    # reach; see REPORT-contractfix-05aiii.md §ESC-2 for that flagged bound.)
+    "story: arc of task {task_id}": (
+        "label — NAMES the story's SET (the arc of THIS task, Leg-1 scope diff); no imperative"
+    ),
+    "subject: {subject}": "status report (story field label)",
+    "created_by: {created_by}": "status report (story field label)",
+    "owner: {owner}": "status report (story field label)",
+    "status: {status}": "status report (story field label)",
+    "blocked_by: {ids}": "status report (story field label)",
+    "description: {description}": "status report (story field label)",
+    "report: {report}": (
+        "status report (story field label) — names the report PATH, promises no fetch mechanism"
+    ),
+    "summary: {summary}": "status report (story field label)",
+    "messages ({count}):": "label (story message-arc section header)",
     ", ": "join separator",
     " ": "join separator",
     " · ": "join separator",
@@ -540,6 +564,12 @@ class TestTheScanReachedEveryCommsRenderHelper:
             "_render_comms_brief_ack",
             "_render_comms_fleet_row",
             "_render_comms_fleet",
+            # packet 05a-iii: story's render is a comms render helper too, so the
+            # coverage checker must KNOW it — otherwise a future edit could make it
+            # vacuously unscanned. (Its per-message sibling ``_render_story_message``
+            # is NOT ``_render_comms``-prefixed and so is out of the scanner's reach;
+            # flagged in REPORT-contractfix-05aiii.md §ESC-2.)
+            "_render_comms_story",
         }
         missing = expected - observed_functions
         assert not missing, (

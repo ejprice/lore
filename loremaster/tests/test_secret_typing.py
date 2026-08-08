@@ -987,7 +987,19 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # value is wrapped AT the call, never that it was never bare — so the
         # MINT is gated too. Cheap: 6 production sites today, and 2 of them retire
         # with the resolver consolidation.
-        allowed = ("loremaster/config.py", "scripts/survey_txn_contention_102.py")
+        # ADJUDICATED (contract-fix-05aiii, packet 05a-iii): comms_cli.py mints
+        # ``SecretStr(args.password)`` from the ``--password`` argv value — a genuine
+        # credential ORIGIN. A CLI ``main()`` reading a credential from argv IS a
+        # composition root (packet 42 law: only composition roots mint SecretStr),
+        # and argv is where that bare value first enters the process, exactly like an
+        # env var at ``config.py::resolve_secret``. It is the ONLY mint in the module
+        # (the sibling ``resolve_secret`` branch wraps inside config.py, an existing
+        # origin). ONE origin added, never a wildcard.
+        allowed = (
+            "loremaster/config.py",
+            "scripts/survey_txn_contention_102.py",
+            "loremaster/comms_cli.py",
+        )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)
         ]
