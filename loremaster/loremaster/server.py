@@ -176,6 +176,7 @@ from loremaster.messages import (
 from loremaster.messages import (
     InboxEntry,
     MessageAckResult,
+    MessageActivityWindow,
     MessageDrainResult,
     MessageLedger,
     MessageSendResult,
@@ -227,7 +228,7 @@ from loresigil import backoff
 if TYPE_CHECKING:
     from loresigil.base import Embedder
 
-    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry
+    from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry, FleetRoster
     from loremaster.briefs import (
         Brief,
         BriefAckResult,
@@ -1205,6 +1206,17 @@ _TASK_ACTIONS_ACCEPTING_MAX_DEPTH = (_TASK_ACTION_BLOCKERS,)
 _ROLLUP_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DEFAULT_ROLLUP_LEG_LIMIT = 20
 
+
+@dataclass(frozen=True)
+class _RollupBriefSkew:
+    """The rollup brief-ack-skew section's data (packet 05a-iii, scope B3): the
+    STANDING brief head version and every agent behind it as ``(name, acked)``.
+    ``None`` (not this) is what a no-standing-brief scope produces, and the
+    section is then omitted entirely."""
+
+    head: int
+    behind: list[tuple[str, int]]
+
 # PKT-06 §2/§3: the shared batch-items cap (U4, strikeable) both
 # ``create_many`` and ``resolve_many``/``acknowledge_many`` enforce.
 _BATCH_ITEMS_MAX = 50
@@ -1268,6 +1280,17 @@ _COMMS_ACTION_SEND = "send"
 _COMMS_ACTION_DRAIN = "drain"
 _COMMS_ACTION_ACK = "ack"
 _COMMS_ACTION_STORY = "story"
+
+# story (packet 05a-iii): the STRUCTURAL question/signal marker is read from
+# ``message.question`` (a typed flag), NEVER inferred from body prose — the lead
+# reads INTENT from typed state (the legibility gain; #195's obedience measurement
+# is 06's drill). The marker word (``[question]`` / ``[signal]``) is baked into
+# ``_render_story_message``'s two templates as a constant, not a runtime value.
+# The task CREATOR: ``Task`` surfaces ``created_by`` only inside its documented
+# ``provenance`` blob (Task.provenance — "who created/changed the task"), never as
+# a top-level field, so story reads it by that key (mirrors the ledger's own
+# ``_PROV_CREATED_BY``; a bare literal here is the one documented seam).
+_STORY_TASK_CREATED_BY_KEY = "created_by"
 
 # §B2.4: ``set_status``'s CLOSED vocabulary at the surface. The ledger is
 # VALUE-KEYED (``question = set_status == 'input_required'``) and treats every
@@ -1349,6 +1372,23 @@ _COMMS_FLEET_STATUS_ORDER: dict[str, int] = {
     "active": 1,
     "idle": 2,
 }
+
+# #304 (packet 05a-iii): the statuses whose DECLARATION the fleet ages beside the
+# liveness heartbeat. Keyed on the PROPERTY that a status LATCHES — i.e. it WINS
+# over the idle→active auto-flip (``AgentRegistry.touch``: a status-less heartbeat
+# flips ``idle``→``active`` but leaves ``input_required`` untouched), so it alone
+# can go STALE while the agent keeps heartbeating. Today that property holds for
+# ``input_required`` ALONE (``active`` is the flip TARGET and a fresh heartbeat
+# keeps it current; ``idle`` flips; ``retired`` is terminal, rendered in the
+# ``+K retired`` trailer, never a status-bracket row). It is a named set, NOT a bare
+# ``== "input_required"`` literal a future latching status would silently escape.
+# NAMED RE-OPEN TRIGGER (Fable ruling FORK 1, 2026-08-06): the day ANY other status
+# is made to win over the auto-flip it JOINS this set, and the age-scope re-opens.
+# That trigger is MECHANICAL, already guarded by the status-domain pins in
+# ``test_agent_registry.py`` (``TestAgentStatusesConstant`` reds on any change to the
+# closed status domain; ``TestIdleAutoFlip`` pins the current auto-flip winner set) —
+# a newly-latching status trips both, forcing the "does it latch → age it?" review.
+_LATCHING_FLEET_STATUSES: frozenset[str] = frozenset({_COMMS_SET_STATUS_INPUT_REQUIRED})
 
 # design doc §9's ``_render_age`` unit-boundary pins: <120s -> s, <120m -> m,
 # <48h -> h, else d (largest fit, one unit, no padding) — named so the
@@ -4202,6 +4242,12 @@ class AppContext:
         leg 3 (reports registered — DERIVED from leg 1's served rows: rows with
         ``status == 'done'`` and ``summary is not None``, so it is automatically
         consistent with leg 1's own truncation).
+
+        Packet 05a-iii adds three ADDITIVE sections over EXISTING state — fleet-health
+        (the roster's true per-status counts) and brief-ack-skew (agents behind the
+        standing brief head), plus a messages-activity leg PENDING the message-read
+        fork (see :meth:`_story_messages`). Each renders only when it has content, so
+        a rollup with no agents / no standing brief is byte-identical to before.
         """
         effective_since = AppContext._parse_rollup_since(since)
         effective_limit = limit if limit is not None else _DEFAULT_ROLLUP_LEG_LIMIT
@@ -4211,7 +4257,43 @@ class AppContext:
         finding_window = await self.finding_ledger.filed_since(
             effective_since, limit=effective_limit
         )
-        return AppContext._render_rollup(effective_since, task_window, finding_window)
+        roster = await self.agent_registry.roster()
+        brief_skew = await AppContext._rollup_brief_skew(self, roster)
+        message_window = await self.message_ledger.message_activity_since(
+            effective_since, limit=effective_limit
+        )
+        extra_sections = AppContext._rollup_extra_sections(roster, brief_skew, message_window)
+        return AppContext._render_rollup(
+            effective_since,
+            task_window,
+            finding_window,
+            extra_sections=extra_sections,
+        )
+
+    async def _rollup_brief_skew(self, roster: FleetRoster) -> _RollupBriefSkew | None:
+        """The rollup's brief-ack-skew section data — agents behind the STANDING
+        brief head — or ``None`` when there is no standing brief (section omitted).
+
+        Reuses the shared ``BriefLedger`` reads (``get_head`` +
+        ``acked_versions_for_ids`` — the ONE grouped read the fleet action already
+        uses, never a per-agent ``acked_version`` loop). Not a NEW skew mechanism.
+        """
+        try:
+            head = (await self.brief_ledger.get_head(STANDING_BRIEF)).version
+        except _UnknownBriefError:
+            return None
+        member_ids = [member.id for member in roster.members]
+        acked = (
+            await self.brief_ledger.acked_versions_for_ids(member_ids, name=STANDING_BRIEF)
+            if member_ids
+            else {}
+        )
+        behind = [
+            (member.name, acked.get(member.id) or 0)
+            for member in roster.members
+            if (acked.get(member.id) or 0) < head
+        ]
+        return _RollupBriefSkew(head=head, behind=behind)
 
     @staticmethod
     def _parse_rollup_since(since: str | None) -> datetime:
@@ -4243,50 +4325,143 @@ class AppContext:
         effective_since: datetime,
         task_window: TaskActivityWindow,
         finding_window: FindingActivityWindow,
+        *,
+        extra_sections: Sequence[str] = (),
     ) -> str:
-        """Render the rollup's counted-elision grammar (design §1, pinned verbatim)."""
+        """Render the rollup's counted-elision grammar (design §1, pinned verbatim).
+
+        The task/finding/reports legs and the ``next cursor`` line are UNCHANGED.
+        Packet 05a-iii inserts ``extra_sections`` (the fleet-health + brief-ack-skew
+        lines, already rendered by :meth:`_rollup_extra_sections`) BEFORE the cursor —
+        UNCONDITIONALLY, so this render gains no branch a driver cannot reach (the
+        link5 branch-coverage pin). The sections are EMPTY when there are no agents
+        and no standing brief, so a rollup with neither is byte-identical to the
+        pre-05a-iii output, and the pre-05a-iii direct-render callers (which pass no
+        ``extra_sections``) get exactly the old text. (The messages-activity leg is
+        PENDING the message-read fork — REPORT-builder-05aiii.md §Escalation.)
+        """
         since_iso = effective_since.isoformat()
         task_rows = task_window.rows
         finding_rows = finding_window.rows
+        lines: list[str]
         if not task_rows and not finding_rows:
-            echoed_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
-            return f"no ledger activity since {since_iso}\nnext cursor: {echoed_cursor.isoformat()}"
-
-        report_rows = [
-            task for task in task_rows if task.status == STATUS_DONE and task.summary is not None
-        ]
-
-        lines = [f"rollup since {since_iso}"]
-        lines.append(
-            cls._rollup_leg_header("tasks transitioned", len(task_rows), task_window.total)
-        )
-        for task in task_rows:
+            lines = [f"no ledger activity since {since_iso}"]
+        else:
+            report_rows = [
+                task for task in task_rows if task.status == STATUS_DONE and task.summary is not None
+            ]
+            lines = [f"rollup since {since_iso}"]
             lines.append(
-                f"- {cls._task_status_marker(task)} {render_attributed(task.subject)} "
-                f"(id {task.id}, owner {render_attributed(task.owner)})"
+                cls._rollup_leg_header("tasks transitioned", len(task_rows), task_window.total)
             )
-        lines.append(
-            cls._rollup_leg_header("findings filed", len(finding_rows), finding_window.total)
-        )
-        for finding in finding_rows:
+            for task in task_rows:
+                lines.append(
+                    f"- {cls._task_status_marker(task)} {render_attributed(task.subject)} "
+                    f"(id {task.id}, owner {render_attributed(task.owner)})"
+                )
             lines.append(
-                f"- [#{finding.number} {finding.status}] {render_attributed(finding.subject)} "
-                f"(kind {render_attributed(finding.kind)}, by {render_attributed(finding.created_by)})"
+                cls._rollup_leg_header("findings filed", len(finding_rows), finding_window.total)
             )
-        lines.append(f"reports registered ({len(report_rows)}):")
-        for task in report_rows:
-            report_tail = (
-                f"report {render_attributed(task.report_path)}"
-                if task.report_path is not None
-                else "no report file"
-            )
-            lines.append(
-                f"- task {task.id} by {render_attributed(task.owner)}: "
-                f"{render_attributed(task.summary or '')} ({report_tail})"
-            )
+            for finding in finding_rows:
+                lines.append(
+                    f"- [#{finding.number} {finding.status}] {render_attributed(finding.subject)} "
+                    f"(kind {render_attributed(finding.kind)}, by {render_attributed(finding.created_by)})"
+                )
+            lines.append(f"reports registered ({len(report_rows)}):")
+            for task in report_rows:
+                report_tail = (
+                    f"report {render_attributed(task.report_path)}"
+                    if task.report_path is not None
+                    else "no report file"
+                )
+                lines.append(
+                    f"- task {task.id} by {render_attributed(task.owner)}: "
+                    f"{render_attributed(task.summary or '')} ({report_tail})"
+                )
+        # 05a-iii ADDITIVE sections — inserted UNCONDITIONALLY (empty in the direct-
+        # render callers), so this render gains no un-reachable branch (link5) while
+        # the existing exact-output pins still hold (empty sections ⇒ old text).
+        lines.extend(extra_sections)
         next_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
         lines.append(f"next cursor: {next_cursor.isoformat()}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _rollup_extra_sections(
+        roster: FleetRoster,
+        brief_skew: _RollupBriefSkew | None,
+        message_window: MessageActivityWindow,
+    ) -> list[str]:
+        """The rollup's 05a-iii ADDITIVE section lines — messages-activity (B1/B4) +
+        fleet-health (B2) + brief-ack-skew (B3) — rendered through the shared
+        ``render_line``/``render_attributed`` seam (NOT bare f-strings, so this is not
+        a new render candidate the link5 architecture pins must govern). Each section
+        is omitted when it has no content (no messages since the cursor / no
+        non-retired agents / no standing brief), so a rollup with none of them yields
+        ``[]`` and stays byte-identical to before.
+        """
+        sections: list[str] = []
+        # messages-activity (B1) — cursor-bounded by the rollup `since` (B4), omitted
+        # when no message was sent after it. A lightweight activity summary (seq /
+        # sender / thread / grade), NOT the full bodies — those are the story surface.
+        if message_window.rows:
+            shown = len(message_window.rows)
+            if message_window.total > shown:
+                header = render_line(
+                    "messages activity (showing {shown} of {total} — raise limit for more):",
+                    shown=shown,
+                    total=message_window.total,
+                )
+            else:
+                header = render_line("messages activity ({shown}):", shown=shown)
+            sections.append(str(header))
+            for message in message_window.rows:
+                sections.append(
+                    str(
+                        render_line(
+                            "- #{seq} {sender} thread {thread} [{grade}]",
+                            seq=message.seq,
+                            sender=render_attributed(message.sender_name),
+                            thread=render_attributed(message.thread),
+                            grade=render_attributed(message.grade),
+                        )
+                    )
+                )
+        counts = roster.status_counts
+        parked = counts.get("input_required", 0)
+        active = counts.get("active", 0)
+        idle = counts.get("idle", 0)
+        retired = counts.get("retired", 0)
+        total = parked + active + idle
+        if total or retired:
+            sections.append(
+                str(
+                    render_line(
+                        "fleet health: {total} non-retired — {parked} input_required, "
+                        "{active} active, {idle} idle ({retired} retired)",
+                        total=total,
+                        parked=parked,
+                        active=active,
+                        idle=idle,
+                        retired=retired,
+                    )
+                )
+            )
+        if brief_skew is not None:
+            sections.append(
+                str(
+                    render_line(
+                        "brief-ack skew: {behind} behind project v{head}",
+                        behind=len(brief_skew.behind),
+                        head=brief_skew.head,
+                    )
+                )
+            )
+            for name, acked in brief_skew.behind:
+                sections.append(
+                    str(render_line("- {name} at v{acked}", name=render_attributed(name), acked=acked))
+                )
+        return sections
 
     @staticmethod
     def _rollup_leg_header(label: str, shown: int, total: int) -> str:
@@ -5913,6 +6088,14 @@ class AppContext:
         heartbeat_age_seconds = {
             row.id: int((now - row.heartbeat_at).total_seconds()) for row in window.rows
         }
+        # #304: the DECLARATION age — seconds since each row's status was last set —
+        # off the SAME ``now`` as the heartbeat age, present only for rows carrying a
+        # ``status_set_at`` (a legacy row is absent ⇒ rendered ``declared: unknown``).
+        status_age_seconds = {
+            row.id: int((now - row.status_set_at).total_seconds())
+            for row in window.rows
+            if row.status_set_at is not None
+        }
         # ONE grouped edge lookup for the whole displayed window (finding
         # #94) — never a per-row ``acked_version`` round-trip. ``.get(row.id)``
         # defaulting to ``None`` is load-bearing: an agent absent from the
@@ -5933,6 +6116,7 @@ class AppContext:
             acked_versions=acked_versions,
             heartbeat_age_seconds=heartbeat_age_seconds,
             status_counts=roster.status_counts,
+            status_age_seconds=status_age_seconds,
         )
 
     async def _comms_story(
@@ -5944,40 +6128,143 @@ class AppContext:
     ) -> Rendered:
         """story — task-anchored lineage in ONE call (packet 05a-iii).
 
-        ⚠ STUB (RED contract, packet 05a-iii): this does NOT yet reconstruct the
-        arc. It returns a bare scope-naming header so the action is DISPATCHABLE
-        (the non-vacuity pin) while the reconstruction + containment pins in
-        ``test_comms_story.py`` stay RED. The builder composes the arc from the
-        task ledger (created/owner/status/transitions/report_path) + the message
-        and ``to`` edges carrying this ``task_id`` + brief acks, marks questions
-        STRUCTURALLY from ``message.question`` (a legibility gain, not an obedience
-        fix — #195's obedience measurement is 06's drill), and routes EVERY stored
-        free-text field through the shipped ``render_attributed``/``render_fenced``
-        seam (ONE IMPLEMENTATION — never a second containment).
+        Reconstructs ONE task's arc as a READ composition over EXISTING edges: the
+        task row (subject/creator/owner/status/blocked_by/report_path/summary) + the
+        messages carrying this ``task_id``. Marks questions STRUCTURALLY from
+        ``message.question`` (a legibility gain, not an obedience fix — #195's
+        obedience measurement is 06's drill), and routes every stored free-text
+        field through the shipped ``render_attributed``/``render_fenced`` seam (ONE
+        IMPLEMENTATION). It reshapes no drain SELECT (that is packet 05a-i).
         """
         if task_id is None and thread is None:
             raise ValueError(
                 "story needs a task_id (or thread) to anchor on — it reconstructs "
                 "ONE task's arc"
             )
-        anchor = task_id if task_id is not None else thread
-        return AppContext._render_comms_story(CommsStory(task_id=str(anchor)))
+        anchor = str(task_id if task_id is not None else thread)
+        # The task detail is a READ over the EXISTING task row; the CREATOR comes
+        # from its provenance blob (``Task`` exposes ``created_by`` only there); the
+        # message ARC from ``_story_messages``. Called via ``AppContext.<method>(self,
+        # …)`` (not ``self.<method>``) so the duck-typed handler harness — which owns
+        # the ledgers but none of AppContext's own methods — resolves correctly.
+        task = await self.task_ledger.get_task(anchor)
+        story = CommsStory(
+            task_id=anchor,
+            subject=task.subject,
+            description=task.description,
+            created_by=str(task.provenance.get(_STORY_TASK_CREATED_BY_KEY, "")),
+            owner=task.owner,
+            status=task.status,
+            report_path=task.report_path,
+            done_summary=task.summary,
+            blocked_by=list(task.blocked_by),
+            messages=await AppContext._story_messages(self, anchor),
+        )
+        return AppContext._render_comms_story(story)
+
+    async def _story_messages(self, task_id: str) -> list[StoryMessage]:
+        """Every message anchored to ``task_id``, oldest-first, projected onto
+        :class:`StoryMessage` with the STRUCTURAL ``question`` marker.
+
+        Reuses the shared :meth:`MessageLedger.messages_for_task` read (ONE
+        IMPLEMENTATION — never a raw message-table query cloned into server.py);
+        the ``StoredMessage`` → ``StoryMessage`` projection drops the fields the
+        render does not use (``task_id``/``created_at``)."""
+        stored = await self.message_ledger.messages_for_task(task_id=task_id)
+        return [
+            StoryMessage(
+                seq=message.seq,
+                sender_name=message.sender_name,
+                grade=message.grade,
+                body=message.body,
+                refs=list(message.refs),
+                question=message.question,
+                thread=message.thread,
+            )
+            for message in stored
+        ]
 
     @staticmethod
     def _render_comms_story(story: CommsStory) -> Rendered:
-        """story's render (packet 05a-iii).
+        """story's render (packet 05a-iii): the task arc as one composed block.
 
-        ⚠ STUB (RED contract): renders ONLY the scope-naming header. The full arc
-        and the FENCED message bodies are the builder's — ``test_comms_story.py``
-        pins define the target: the render NAMES its SET (this task's arc) and what
-        it OMITS (Leg-1 scope diff), marks questions from ``message.question``, and
-        every stored free-text field (bodies, refs, ack_notes, descriptions) routes
-        through ``render_attributed``/``render_fenced`` with a hostile-fixture pin.
+        NAMES its SET (the arc of THIS task — Leg-1 scope diff) and routes EVERY
+        stored free-text field through the shipped containment seam (ONE
+        IMPLEMENTATION): a multi-line message BODY through ``render_fenced``
+        (verbatim, so it round-trips byte-identical and a fence-shaped backtick run
+        cannot forge a row), every single-line attribution/id/description through
+        ``render_attributed`` (collapsed to one delimited line, so a hostile newline
+        can never start a forged output row). Questions are marked STRUCTURALLY from
+        ``message.question`` — never body prose.
         """
-        return render_line(
-            "story: arc of task {task_id} (stub — lineage not yet reconstructed)",
-            task_id=render_attributed(story.task_id),
+        lines: list[Rendered] = [
+            render_line("story: arc of task {task_id}", task_id=render_attributed(story.task_id))
+        ]
+        if story.subject:
+            lines.append(render_line("subject: {subject}", subject=render_attributed(story.subject)))
+        lines.append(
+            render_line("created_by: {created_by}", created_by=render_attributed(story.created_by))
         )
+        if story.owner is not None:
+            lines.append(render_line("owner: {owner}", owner=render_attributed(story.owner)))
+        if story.status:
+            lines.append(render_line("status: {status}", status=render_attributed(story.status)))
+        if story.blocked_by:
+            lines.append(
+                render_line(
+                    "blocked_by: {ids}",
+                    ids=render_join(", ", [render_attributed(dep) for dep in story.blocked_by]),
+                )
+            )
+        if story.description:
+            lines.append(
+                render_line("description: {description}", description=render_attributed(story.description))
+            )
+        if story.report_path is not None:
+            lines.append(render_line("report: {report}", report=render_attributed(story.report_path)))
+        if story.done_summary is not None:
+            lines.append(render_line("summary: {summary}", summary=render_attributed(story.done_summary)))
+        lines.append(render_line("messages ({count}):", count=len(story.messages)))
+        for message in story.messages:
+            lines.extend(AppContext._render_story_message(message))
+        return render_compose(*lines)
+
+    @staticmethod
+    def _render_story_message(message: StoryMessage) -> list[Rendered]:
+        """One message in the arc: a header line (seq / sender / STRUCTURAL marker),
+        optional thread + refs cells, then the body VERBATIM inside a fence — every
+        free-text field routed through the shared containment seam.
+
+        The STRUCTURAL question/signal marker is BAKED into the template as a constant
+        (duplicated-call form, one template per marker — the fleet STALE-variant
+        idiom), never assembled via ``safe_str(marker)``: a constant marker keeps this
+        method off the link5 candidate universe, and the marker is derived from the
+        typed ``message.question`` flag, never body prose.
+        """
+        if message.question:
+            header = render_line(
+                "- #{seq} from {sender} [question]",
+                seq=message.seq,
+                sender=render_attributed(message.sender_name),
+            )
+        else:
+            header = render_line(
+                "- #{seq} from {sender} [signal]",
+                seq=message.seq,
+                sender=render_attributed(message.sender_name),
+            )
+        lines: list[Rendered] = [header]
+        if message.thread:
+            lines.append(render_line("  thread {thread}", thread=render_attributed(message.thread)))
+        if message.refs:
+            lines.append(
+                render_line(
+                    "  refs {refs}",
+                    refs=render_join(", ", [render_attributed(ref) for ref in message.refs]),
+                )
+            )
+        lines.append(render_fenced(message.body))
+        return lines
 
     async def _comms_send(
         self,
@@ -6681,6 +6968,35 @@ class AppContext:
         return safe_str(f"project v{acked_version} (head v{project_head_version})")
 
     @staticmethod
+    def _render_fleet_status_cell(
+        sanitised_status: SafeLine, raw_status: str, status_age_s: int | None, *, age_declaration: bool
+    ) -> SafeLine | Rendered:
+        """The fleet row's status-bracket CONTENT (#304, packet 05a-iii).
+
+        The raw status is sanitised BY THE CALLER (an already-classified render) and
+        passed in as ``sanitised_status``, so THIS method calls no
+        ``sanitise_line``/``safe_str`` — it composes only through ``render_line`` and
+        is therefore not itself a render candidate the link5 architecture pins govern.
+
+        ``age_declaration`` is the opt-in: OFF (the pre-#304 direct-render callers,
+        which pass no age) returns the bare sanitised status exactly as before. ON
+        (the ``_comms_fleet`` handler) ages the DECLARATION for a LATCHING status only
+        (``_LATCHING_FLEET_STATUSES`` — keyed on the auto-flip-winner PROPERTY, not a
+        bare literal): ``status_age_s`` seconds → ``input_required 47m``; a NONE age
+        (a legacy row written before ``status_set_at`` existed) → an EXPLICIT
+        ``declared: unknown``, NEVER a fabricated ``0s`` (#304 / Fable D8). A
+        non-latching status is never aged (a fresh heartbeat keeps it current), so its
+        bracket stays bare — ``[active]`` / ``[idle]``.
+        """
+        if age_declaration and raw_status in _LATCHING_FLEET_STATUSES:
+            if status_age_s is None:
+                return render_line("{status} declared: unknown", status=sanitised_status)
+            return render_line(
+                "{status} {age}", status=sanitised_status, age=AppContext._render_age(status_age_s)
+            )
+        return sanitised_status
+
+    @staticmethod
     def _render_comms_fleet_row(
         row: Agent,
         *,
@@ -6688,8 +7004,18 @@ class AppContext:
         acked_version: int | None,
         stale_after_s: int,
         heartbeat_age_s: int,
+        status_age_s: int | None = None,
+        age_declaration: bool = False,
     ) -> Rendered:
-        """One fleet row (design doc §9.6 worked shape) — cells joined with ' · '."""
+        """One fleet row (design doc §9.6 worked shape) — cells joined with ' · '.
+
+        ``status_age_s``/``age_declaration`` (#304): OFF by default so the pre-#304
+        direct-render callers are byte-unchanged; the ``_comms_fleet`` handler turns
+        it ON to age a latching ``input_required`` declaration in the status bracket.
+        """
+        status_cell = AppContext._render_fleet_status_cell(
+            sanitise_line(row.status), row.status, status_age_s, age_declaration=age_declaration
+        )
         cells: list[SafeLine] = [render_join(" ", [safe_str("role"), render_attributed(row.role)])]
         if row.model is not None:
             cells.append(render_join(" ", [safe_str("model"), render_attributed(row.model)]))
@@ -6708,14 +7034,14 @@ class AppContext:
             return render_line(
                 "- {name} [{status} ⚠ STALE] hb {age} · {cells}",
                 name=sanitise_line(row.name),
-                status=sanitise_line(row.status),
+                status=status_cell,
                 age=AppContext._render_age(heartbeat_age_s),
                 cells=render_join(" · ", cells),
             )
         return render_line(
             "- {name} [{status}] hb {age} · {cells}",
             name=sanitise_line(row.name),
-            status=sanitise_line(row.status),
+            status=status_cell,
             age=AppContext._render_age(heartbeat_age_s),
             cells=render_join(" · ", cells),
         )
@@ -6731,8 +7057,16 @@ class AppContext:
         acked_versions: Mapping[str, int | None],
         heartbeat_age_seconds: Mapping[str, int],
         status_counts: Mapping[str, int],
+        status_age_seconds: Mapping[str, int] | None = None,
     ) -> Rendered:
         """fleet's render (design doc §9.6): header + rows + elision + retired trailer.
+
+        ``status_age_seconds`` (#304, packet 05a-iii): the seconds since each row's
+        status was last DECLARED, keyed by row id, present only for rows carrying a
+        ``status_set_at``. When supplied (the ``_comms_fleet`` handler) a latching
+        ``input_required`` declaration is aged in its status bracket; a row absent
+        from the map is a legacy row and renders ``declared: unknown``. When ``None``
+        (the pre-#304 direct-render callers) no row is aged — byte-unchanged output.
 
         ``status_counts`` is a REQUIRED, TRUSTED true aggregate (e.g.
         ``AgentRegistry.roster().status_counts`` — all four statuses present,
@@ -6821,6 +7155,12 @@ class AppContext:
                         acked_version=acked_versions.get(row.id),
                         stale_after_s=stale_after_s,
                         heartbeat_age_s=heartbeat_age_seconds.get(row.id, 0),
+                        status_age_s=(
+                            status_age_seconds.get(row.id)
+                            if status_age_seconds is not None
+                            else None
+                        ),
+                        age_declaration=status_age_seconds is not None,
                     )
                     for row in groups[group_session]
                 )
@@ -6832,6 +7172,12 @@ class AppContext:
                     acked_version=acked_versions.get(row.id),
                     stale_after_s=stale_after_s,
                     heartbeat_age_s=heartbeat_age_seconds.get(row.id, 0),
+                    status_age_s=(
+                        status_age_seconds.get(row.id)
+                        if status_age_seconds is not None
+                        else None
+                    ),
+                    age_declaration=status_age_seconds is not None,
                 )
                 for row in shown
             ]
