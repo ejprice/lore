@@ -106,9 +106,20 @@ def _harness() -> tuple[Any, FakeAgentRegistry, FakeBriefLedger]:
     documented isolation strategy test_comms_tool.py's ``_harness`` uses)."""
     registry = FakeAgentRegistry(db=FakeAgentDatabase())
     ledger = FakeBriefLedger(db=FakeBriefDatabase())
+
+    async def _no_awaiting_answer(*, agent_id: str) -> None:
+        """05a-i (LEG D): heartbeat now reads ``self.message_ledger.awaiting_answer``
+        (the DD-2.a waiting line, via ``_comms_waiting_lines``). These skew pins set up
+        no question, so it returns ``None`` — the waiting line is empty and the
+        heartbeat renders exactly as before. A handler that gains a dependency needs
+        the harness that exercises it to model that dependency (the dropped rider the
+        cold audit's B4–B8 named)."""
+        return None
+
     harness = SimpleNamespace(
         agent_registry=registry,
         brief_ledger=ledger,
+        message_ledger=SimpleNamespace(awaiting_answer=_no_awaiting_answer),
         config=SimpleNamespace(
             comms=SimpleNamespace(stale_heartbeat_s=600, fleet_limit=20, brief_body_warn_chars=4000)
         ),

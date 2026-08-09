@@ -1730,17 +1730,20 @@ _PROOF_LIST: list[PromiseProof] = [
         render_no_emit=lambda: _render_footer_c3(authenticated=False),
     ),
     # --- packet 05a-i: the DD-2.a waiting line (LEG D). ----------------------
-    # ⚠ DECISION-NEEDED (flagged to the lead in REPORT-contract-05ai-1.md): the
-    # thread is rendered via ``sanitise_line`` here (Fable Q3 — self-authored, low
-    # surface). If the lead prefers ``render_attributed`` (the drain-row context
-    # precedent + the #321 same-line-forgery law), this marker's ``q:gate``
-    # becomes ``` `q:gate` ``` and this ONE line changes. The NO-EMIT leg is the
-    # discrimination: ``waiting=None`` (no derived debt) must render NOTHING — a
-    # build keyed on the STORED status instead of ``awaiting_answer`` would emit
-    # regardless and fail here.
+    # RESOLVED (Fable ruling, directive #4020 — REVERSES the earlier D2 sanitise_line
+    # decision): the thread is caller FREE TEXT rendered SAME-LINE, so it routes
+    # through ``render_attributed``, NOT ``sanitise_line``. ``sanitise_line`` was a
+    # FALSE GATE — control-char collapse is NOT prose containment, so a plain-ASCII
+    # instruction in the thread survived verbatim as lore's own voice (the #321
+    # same-line-forgery leak, proven by Link5's ``_leaks`` predicate). So the thread
+    # renders backtick-wrapped and this marker moved: ``q:gate`` -> ``` ```q:gate``` ```
+    # (render_attributed, MIN_FENCE_WIDTH=3, byte-exact). The NO-EMIT leg is the
+    # discrimination: ``waiting=None`` (no derived debt) must render NOTHING — a build
+    # keyed on the STORED status instead of ``awaiting_answer`` would emit regardless
+    # and fail here.
     PromiseProof(
         literal="waiting: your question #{seq} on thread {thread} has no reply — asked {age} ago",
-        marker="waiting: your question #4141 on thread q:gate has no reply — asked 0s ago",
+        marker="waiting: your question #4141 on thread ```q:gate``` has no reply — asked 0s ago",
         render_emit=lambda: _render_waiting(
             waiting=_waiting(thread="q:gate", question_seq=4141), age_s=0
         ),

@@ -7511,11 +7511,15 @@ class AppContext:
         precedent).
 
         Derived from the typed :class:`WaitingOnAnswer` (#104 law — the seq and
-        thread are READ BACK, never re-derived); the thread is the only free text,
-        length-bounded and passed through ``sanitise_line`` (D2 — the fence is for
-        multi-line stored bodies; a mid-line label wants the control-char collapse
-        so a hostile thread cannot break the line). ``age_s`` is pre-computed so
-        the render is pure.
+        thread are READ BACK, never re-derived); the ``thread`` is caller FREE TEXT
+        (length-bounded but NOT charset-gated — a LABEL, not content), rendered
+        SAME-LINE, so it is routed through ``render_attributed``. ⚠ ``sanitise_line``
+        would be a FALSE GATE here: it collapses control chars but does NOT contain
+        PROSE injection, so a hostile thread (plain-ASCII instruction prose) would
+        survive verbatim as lore's own voice (the #321 same-line-forgery leak).
+        ``render_attributed`` wraps the value in a provenance delimiter, which IS
+        containment — the same seam the drain-row ``{context}`` thread cell uses.
+        ``age_s`` is pre-computed so the render is pure.
         """
         if waiting is None:
             return []
@@ -7523,7 +7527,7 @@ class AppContext:
             render_line(
                 "waiting: your question #{seq} on thread {thread} has no reply — asked {age} ago",
                 seq=waiting.question_seq,
-                thread=sanitise_line(waiting.thread),
+                thread=render_attributed(waiting.thread),
                 age=AppContext._render_age(age_s),
             )
         ]
@@ -7547,8 +7551,14 @@ class AppContext:
         attention on, and the counted remainder is what keeps the cap from being
         a silent truncation.
         """
+        # BOTH {context} slots carry caller FREE TEXT — messages.py bounds task_id AND
+        # thread by LENGTH only (a LABEL, not content; no charset gate) — rendered
+        # SAME-LINE, so BOTH route through render_attributed. ⚠ sanitise_line would be a
+        # FALSE GATE for either: control-char collapse is NOT prose containment, so a
+        # plain-ASCII instruction in a task_id/thread would survive as lore's own voice
+        # (#321 same-line-forgery). render_attributed wraps it in a provenance delimiter.
         if entry.task_id is not None:
-            context = safe_str(f" (task {sanitise_line(entry.task_id)})")
+            context = safe_str(f" (task {render_attributed(entry.task_id)})")
         elif entry.thread != session:
             context = safe_str(f" (thread {render_attributed(entry.thread)})")
         else:

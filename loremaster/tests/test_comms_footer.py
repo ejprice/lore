@@ -3031,6 +3031,19 @@ class TestNoCommsIdentityReachesQueryTEXT:
             ("loremaster/loremaster/tasks.py", "limit"),
             ("loremaster/loremaster/store/_txn.py", "namespace"),
             ("loremaster/loremaster/store/_txn.py", "database"),
+            # packet 05a-i (builder-05ai-1): the drain reshape's HARDCODED query text —
+            # NOT a comms identity, never caller-controlled. Both VERIFIED against the
+            # source (REPORT-builder-05ai-1.md §B1):
+            #   * `self._ENTRY_PROJECTION` — a MODULE-scope CLASS CONSTANT f-string (a fixed
+            #     column list built from `_ID_KEY`, `messages.py::MessageLedger`), never
+            #     assigned from a caller. Two sites (since= read + plain window) share the
+            #     one `(path, expr)` key.
+            #   * `predicate` — `_count_edges`'s parameter, whose ONLY callers (drain, same
+            #     module) pass LITERAL predicates (`"in.seq > $since"`, `"seen_at IS NONE"`,
+            #     …); the caller-varying parts (`$since`/`$grade`) are BOUND params, never
+            #     interpolated.
+            ("loremaster/loremaster/messages.py", "self._ENTRY_PROJECTION"),
+            ("loremaster/loremaster/messages.py", "predicate"),
         }
     )
 

@@ -1736,9 +1736,13 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
                   safe={"id", "sender_id", "sender_name", "session", "task_id"}),
                   # id/sender_id opaque; sender_name/session gated; task_id = task-id ref
             entry(InboxEntry,
-                  door={"thread", "body", "refs", "ack_note"},
-                  safe={"message_id", "sender_name", "task_id"}),
-                  # message_id opaque; sender_name gated; task_id = task-id ref
+                  door={"thread", "body", "refs", "ack_note", "task_id"},
+                  safe={"message_id", "sender_name"}),
+                  # message_id opaque; sender_name gated. task_id is caller FREE TEXT
+                  # (messages.py:865-871 bounds task_id by LENGTH only — "a LABEL, not
+                  # content", no charset gate), rendered SAME-LINE by
+                  # _render_comms_drain_row via render_attributed. Was MIS-CLASSIFIED
+                  # "task-id ref" — the sibling leak Fable named (directive #4020).
             entry(MessageSendResult, door=set(), safe={"recipient_names"}),  # gated agent names
             entry(MessageDrainResult, door=set(), safe=set()),
             entry(MessageAckResult, door=set(), safe=set()),
@@ -2522,10 +2526,12 @@ def _probes() -> list[RenderProbe]:
             ),
         ]),
         P("_render_comms_drain_row", lambda g: [
-            # task_id present -> task context (7078); no refs -> 7084
+            # task_id FORGED (un-hardcoded so the SAME-LINE task slot IS swept —
+            # directive #4020, the sibling leak) -> task context; no refs. The forged
+            # task_id must be CONTAINED by render_attributed (the _leaks grader checks it).
             _served(
                 "_render_comms_drain_row",
-                _forge(InboxEntry, forge=g, task_id="tid", refs=[]),
+                _forge(InboxEntry, forge=g, task_id=_tok(g, "InboxEntry", "task_id"), refs=[]),
                 session="s",
             ),
             # task_id None, thread != session -> thread context (7080); 1 ref, over 0
@@ -2546,6 +2552,24 @@ def _probes() -> list[RenderProbe]:
                 _forge(
                     InboxEntry, forge=g, task_id=None,
                     refs=[_tok(g, "InboxEntry", "refs") for _ in range(7)],
+                ),
+                session="other",
+            ),
+            # 05a-i (LEG C): question=True on BOTH the no-refs and the refs path, so the
+            # two `(question)`-marker render branches are EXECUTED (branch reach is a
+            # CHECKED variable). no-refs+question -> the `…(question)` template; refs+
+            # question -> the `…(question) ({refs})` template. The thread door is forged
+            # on both, so the marker path is also byte-checked for neutralisation.
+            _served(
+                "_render_comms_drain_row",
+                _forge(InboxEntry, forge=g, task_id=None, refs=[], question=True),
+                session="other",
+            ),
+            _served(
+                "_render_comms_drain_row",
+                _forge(
+                    InboxEntry, forge=g, task_id=None,
+                    refs=[_tok(g, "InboxEntry", "refs")], question=True,
                 ),
                 session="other",
             ),
