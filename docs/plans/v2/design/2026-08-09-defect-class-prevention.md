@@ -11,10 +11,15 @@ Graded against HEAD `74694dc` (`feat/surreal-unification`); index fresh (last sw
 > **OPERATOR RULINGS — 2026-08-09 (recorded post-design by `lead-defect-class`).** The three
 > named escalations (§5) and one priority steer are RESOLVED; this note is AUTHORITATIVE over any
 > "operator to decide / recommend" phrasing below.
-> - **Acceptance frame (outranks the security framing throughout this doc):** the goal is NOT
->   security (small user base) — it is (1) do not repeat past mistakes, (2) do NOT make gaps
->   WIDER, (3) TRUST & HONESTY TO AGENTS (Consumer Law). Judge every instrument by whether it
->   could produce a FALSE CLEAR or widen a gap.
+> - **Acceptance frame (outranks the security framing throughout this doc).** The goal is NOT
+>   security (small user base). Priority order (operator, 2026-08-09): **(1) DRY / ONE
+>   IMPLEMENTATION** — several findings are CAUSED by duplication (#279 derivation twice, #291
+>   hand-list beside prod annotations, #344 gate set re-listed per brief, F4 tree-parser
+>   hand-rolled ~14×), so each fix is genuine CONSOLIDATION proven by MUTATION (change the shared
+>   thing → every caller reddens), never a fresh copy or a route-without-share; **(2) TRUST &
+>   HONESTY TO AGENTS** (Consumer Law — no false clears); **(3) do NOT make gaps WIDER**; **(4)
+>   do not repeat past mistakes.** Judge every instrument by whether it could produce a FALSE
+>   CLEAR, widen a gap, or leave two sources of truth for one policy.
 > - **F3 / #337:** KEEP LEDGER-ONLY (no pin cycle); tightened re-open trigger; INSTRUMENT 0's
 >   REACH ATTACK is its standing guard. Finding #337 acknowledged.
 > - **F5 / #279:** the ONE derivation lives as a PRODUCTION `loremaster.store` helper.
@@ -264,24 +269,37 @@ in `test_anchored_pattern_seam._parse_production_trees`) and the **coverage-asse
 `_SCANNED_ROOTS`/parse/coverage. This is the ONE-IMPLEMENTATION defect one level up: if the parse
 or the coverage rule needs to change, it must be found in N files.
 
-**Design:** add to `_logging_fixtures.py` (the existing shared test-support home — this is test
-scaffolding, so it does NOT belong in `lorerunes`, which is stdlib-only PRODUCTION shared code):
-- `parse_production_trees(*, include_scripts=True, include_skills=False) -> dict[str, ast.Module]`
-  — the ONE tree-parser, roots from `workspace_roots`, keyed by repo-relative posix path.
-- `assert_scan_reached_every_member(scanned_trees, *, extra_roots=("scripts",))` — the ONE
-  coverage assertion, oracle = declared members read independently from `pyproject.toml` (the
-  `test_anchored_pattern_seam` shape, lifted verbatim so the "oracle independent of subject"
-  property is preserved).
+**Design (SCOPE REFINED by the DRY review — §7; two primitives, deliberately different grains):**
+add to `_logging_fixtures.py` (the existing shared test-support home — test scaffolding, so it does
+NOT belong in `lorerunes`, which is stdlib-only PRODUCTION shared code):
+- `parse_production_trees(*, include_scripts=True, include_skills=False, include_tests=False)` — the
+  ONE tree-parser, roots from `workspace_roots`/`production_sources` (which already yield `(label,
+  path)`), returning LABELED/grouped trees so per-member callers need not re-group. **The clean
+  consolidation: 5 real adopters** (`test_anchored_pattern_seam`, `test_secret_typing` —
+  also retiring its duplicate `_SCANNED_MEMBERS` list, `test_comms_footer` — needs `include_tests`,
+  `test_backoff_seam` + `test_secret_leak_vectors` — already on `production_sources`). Ship firmly.
+- `assert_covers(observed, derived, *, subject)` — the coverage assertion, oracle read independently
+  from `pyproject.toml`, **SCOPED to the tree-scan reach tier ONLY (2 adopters:
+  `test_anchored_pattern_seam::TestScanCoverage` + `test_secret_typing`'s member-reach pins).** Do NOT
+  route the runtime-site / action / probe / render-candidate reach-checks through it — those keep
+  their bespoke derivations and load-bearing messages; a "one helper for all reach law" is
+  over-consolidation (§7 Q2). A second generic helper for that tier is a POSSIBLE follow-up only on
+  operator call.
 
-Each ∀-scan file (existing #210 scan, new #345-part2, new #337) imports these instead of
-re-deriving. **Prove sharing by MUTATION** (F4's own requirement): change the root-derivation
-(e.g. drop `scripts`) → EVERY scan's coverage pin reddens; a scan that stays green is a private
-copy wearing the shared name.
+**Prove sharing by MUTATION** (F4's own requirement): change the shared parser (drop `scripts` / make
+it return `{}`) → all 5 `parse_production_trees` adopters redden in ONE run; a scan that stays green
+is a private copy wearing the shared name. **PLUS the anti-duplication structural pin** (the meta-DRY
+guard, §7): no test file hand-rolls a whole-tree `rglob("*.py")+ast.parse` or a bare member-reach
+`assert observed==declared` outside the shared helpers, except the NON-ADOPTER ALLOWLIST (§7:
+single-package scanners, `.md`/retired-name sweeps, test-tree scans, the git-tracked NUL scan, the
+indexer corpus) each with its reason — so "migrated" is a checked variable, not the files someone
+remembered.
 
-**Bound:** not every one of the 14 `rglob` files is a ∀-scan (some parse for unrelated reasons);
-the substrate serves the ∀-scan FAMILY (anchored-pattern, backoff, secret-typing, secret-leak,
-and the two new ones), and migrating the non-scan parsers is out of this class's scope — a
-worklist item, flagged, not silently swept.
+**⚠ Do NOT widen the single-package scanners to whole-tree** (`test_render_seam_pins`,
+`test_task_read_surface`, `test_surreal_store`, `test_text_hygiene`, `test_retry_seam`, and
+`test_link5`): several generalise over a `root` arg but are loremaster-scoped TODAY, and widening is a
+SCOPE CHANGE that could widen a gap (priority #3), not consolidation. They are on the anti-dup
+allowlist; any widening candidate is surfaced as a separate scope decision, never silently folded in.
 
 **#289's "for free" corollary (F4-adjacent):** #289's instance is already fixed and already lives
 under `test_anchored_pattern_seam` (it caught #289 because `scripts/` is in the scanned roots).
@@ -644,10 +662,11 @@ to the adversary agent + a CLAUDE.md law line, not a code cycle. No store/schema
 cycle. Each cycle's cold audit re-runs the changed suites + the structural/AST pins (full suite only
 at the phase checkpoint, per gates law).
 
-**Dependency graph:**
-- **A-SUB** (shared AST-scan helpers) must land before **B** (B's part-2 scan uses the shared
-  parse/coverage helpers — inlining then refactoring would be the very anti-pattern).
-- Everything else is INDEPENDENT and parallelizable.
+**Dependency graph (revised after the DRY review — §7):**
+- **ALL EIGHT instrument cycles are INDEPENDENT and parallelizable.** The earlier "A-SUB before B"
+  dependency was WRONG: the DRY classification (§7) shows B extends test_link5's own server.py-scoped
+  P-U/P-F and adopts neither A-SUB helper, so it does not wait on A-SUB. A-SUB is a prerequisite only
+  for FUTURE new WHOLE-TREE scans (none in this batch).
 - **F** is independent but is its own cycle (closed file, own cold audit).
 
 **Wave 1 — parallel, independent (spin concurrently):**
@@ -661,11 +680,11 @@ at the phase checkpoint, per gates law).
 | **H** — baseline anti-vacuity | #290 | `scripts/_harness_guards.py` (new), `scripts/wrong_builds.py`, `scripts/test_wrong_builds.py` | — | tiny; extract + covering test |
 | **D** — observe-the-effect | #295 | a shared test helper (`loremaster/tests/` support) + the refusal-shaped pins swept (name them in the cycle) | packet-39 files (operator-held) | helper + one-time sweep; structural half → pkt 39 |
 
-**Wave 2 — after A-SUB:**
+**Wave 1 (cont.) — B is INDEPENDENT (DRY-review correction, §7 — no longer "after A-SUB"):**
 
 | cycle | finding | writable set | do-not-touch | nature |
 |-------|---------|--------------|--------------|--------|
-| **B** — render slot inventory + `sanitise_line` scan | #345 | `loremaster/tests/test_link5_render_containment.py`, `loremaster/tests/render_injection_scaffold.py` | `render.py`/`sanitise.py` (already have the seams); the code_rag/B-5 owned sites (allowlist or re-pin, don't silently flag) | **design-heavy** — subtle bounds (provenance not name-blind derivable; zero-FormattedValue comms renders; indexed-content bound). Contract-adversary must attack the deriver's REACH. |
+| **B** — render slot inventory + `sanitise_line` scan | #345 | `loremaster/tests/test_link5_render_containment.py`, `loremaster/tests/render_injection_scaffold.py` | `render.py`/`sanitise.py` (already have the seams); the code_rag/B-5 owned sites (allowlist or re-pin, don't silently flag) | **design-heavy** — EXTENDS existing P-U/P-F (no new classifier); subtle bounds (provenance not name-blind derivable; zero-FormattedValue comms renders; indexed-content bound). Contract-adversary must attack the deriver's REACH. |
 
 **Independent — own cycle, any time:**
 
@@ -681,9 +700,9 @@ at the phase checkpoint, per gates law).
 3. **INSTRUMENT B cleanup** — retire the OLD `_RENDER_DRIVERS` hand-net (with the literal `task_id=None`
    hardcodes) now, or leave it as a retained labelled subset? (The file flags this itself.)
 
-**Recommended order if serialised (not required):** INSTRUMENT 0 (cheap, generalises) → G → A-SUB →
-C/E/H/D (parallel) → B → F. G first because it is the enforcement point every subsequent cycle's
-close-out runs through.
+**Recommended order if serialised (not required):** INSTRUMENT 0 (cheap, generalises) → G →
+A-SUB / B / C / E / H / D (all independent, parallel) → F. G first because it is the enforcement point
+every subsequent cycle's close-out runs through. (F any time — own cold audit.)
 
 ---
 
@@ -698,7 +717,216 @@ close-out runs through.
   does not remove the judgement.
 - **#337's promise dimension is not fixed this session** (ledger-only recommended); only its forgery
   dimension is, and that as a side effect of #345.
-- The **F4 substrate serves the ∀-scan family**, not all 14 `rglob` files; migrating non-scan parsers
-  is a flagged worklist item, out of this class's scope.
+- The **F4 consolidation is `parse_production_trees` (5 adopters) + a tree-scan-scoped `assert_covers`
+  (2 adopters)**, NOT all 14 `rglob` files. The rest are ALLOWLISTED non-adopters (single-package
+  scanners, `.md`/retired-name sweeps, test-tree scans, the git-tracked NUL scan, the indexer corpus).
+  Over-consolidating `assert_covers` across every reach-check (render candidates, runtime sites,
+  probes) is DELIBERATELY NOT done — that would be a DRY error in the other direction.
 - Cross-session recurrence between wave close-outs (before CI, #285) remains a bound of the gate
   bundle; re-open trigger named in INSTRUMENT G.
+
+---
+
+## 7. DRY REVIEW (operator, 2026-08-09)
+
+Re-review of every instrument under the re-prioritised lens: **DRY / ONE IMPLEMENTATION is now #1**,
+and several findings are CAUSED by duplication. Each fix must be genuine CONSOLIDATION proven by
+MUTATION — never a fresh copy, never route-without-share, never two sources of truth for one policy.
+
+### The sharpest finding first — the consolidation instrument is subject to its own class
+
+**A-SUB (the shared reach-primitive) is itself an instance of the class this doc is about.** Its
+REACH is *which callers actually adopt it*, and if that reach is a hidden constant — "I migrated the
+files I remembered" — then A-SUB is a 15th copy nobody adopts, and the ~14× duplication survives
+while a green suite says it was fixed. That is the class, reproduced inside the fix for the class.
+
+Two consequences, both design-forcing:
+1. **The design must NOT hardcode an adopter list.** A list of "the files to migrate" in this doc or
+   a brief IS the enumeration antipattern (`registration_sites.py`'s whole reason for existing). The
+   adopter set is DERIVED from a property — *"a test that parses every production tree across
+   workspace roots"* — and the migration's completeness is a CHECKED VARIABLE.
+2. **A-SUB ships with an ANTI-DUPLICATION STRUCTURAL PIN**: no test file hand-rolls
+   `rglob("*.py")+ast.parse` (the whole-tree parser) or a bare `assert observed == declared`
+   reach-assertion OUTSIDE the shared helpers, except an ALLOWLIST of non-adopters each carrying an
+   evidence-backed reason (a file that parses ONE module for an unrelated purpose is a legit
+   non-adopter, not a private copy). This pin is what makes "migrate, don't add a 15th" mechanical.
+
+### Answers to the four review questions
+
+**Q1 — consolidate, or could it add a parallel copy? (per instrument)**
+
+| instrument | duplication it targets | verdict | design change forced |
+|---|---|---|---|
+| **F / #279** | store-seam derivation written TWICE | **CONSOLIDATES** — the core case; one `_txn_coroutines` core, both subsets from one walk | none (already designed as consolidation; placement = prod `loremaster.store` per stamped ruling) |
+| **A-SUB / F4** | tree-parser + coverage-assertion hand-rolled ~14× | **CONSOLIDATES — but ONLY with the anti-dup pin + mutation proof above.** Without them it ADDS a 15th | add anti-duplication pin; derive adopter set by property; prove by mutation (below) |
+| **C / #291** | test hand-list beside prod annotations | **CONSOLIDATES the hand-list — but risks MOVING the duplication** (test-derivation vs a future pkt-39 prod-derivation of the same "which tools mutate" policy) | **expose the derivation as a PRODUCTION helper** (see Q4-flag-1) |
+| **G / #344** | gate set re-listed per spawn-brief | **CONSOLIDATES** — inherits `gates.yaml` via `pending_contract_gate.py`, re-lists nothing | wrapper must INVOKE `pending_contract_gate`, never re-parse `gates.yaml` (Q4-flag-4) |
+| **B / #345** | (not duplication-rooted) | **NEUTRAL, with a copy RISK**: a new slot-coverage/superset-proof could be a 3rd hand-rolled coverage check + a 4th interpolation classifier | route new coverage through `assert_covers`; reuse existing interpolation predicates (Q4-flag-2) |
+| **E / #289** | (not duplication-rooted) | **ADDS NOTHING** — adds discriminating fixture inputs + one wrong-build to an existing matrix | none |
+| **H / #290** | inline baseline-guard, no shared home | **CONSOLIDATES** (inline → `refuse_vacuous_baseline`); single caller today, justified by the named recurring policy | none; but do NOT over-consolidate with `pending_contract_gate`'s reader-anti-vacuity (Q4-flag-5) |
+| **D / #295** | (not duplication-rooted) | **CONSOLIDATES the EFFECT-check** into one helper all refusal pins call | none; but correct the framing (Q2) |
+
+**Q2 — is the reach-check ONE primitive that B, D, and future scans CALL, not clone?**
+
+⚠ **Investigation (a944 agent, HEAD) corrected my first answer, and the correction is itself a DRY
+point: forcing EVERY reach-check through one `assert_covers` would be OVER-CONSOLIDATION — a DRY
+error in the other direction.** The "observed==derived, fail-closed" reach-check is a repo LAW applied
+over HETEROGENEOUS subjects — workspace members, runtime backoff sites, dispatch actions, operation
+probes, render candidates — and most call sites carry LOAD-BEARING bespoke failure messages
+(per-member breakdowns, both-direction diffs). Collapsing those into one generic helper would either
+need an over-parameterised helper or would strip the custom messages, which is a trust cost. **DRY
+means ONE copy per POLICY, not one copy total** (same as Q4-flag-5). So the reach machinery splits
+into a CLEAN shared primitive and a SCOPED one, and B/D are handled by their own right homes:
+
+- **`parse_production_trees()` — the CLEAN shared primitive. 5 real adopters, ~identical
+  member-iteration + `rglob` + `ast.parse`:** `test_anchored_pattern_seam` (`_parse_production_trees`,
+  own), `test_secret_typing` (`_python_sources` + a DUPLICATE `_SCANNED_MEMBERS` member hand-list —
+  a #291-shaped drift killed for free by the migration), `test_comms_footer` (own + a regex
+  member-reader; needs an `include_tests` knob + per-member grouping), and `test_backoff_seam` +
+  `test_secret_leak_vectors` (which ALREADY call the shared `production_sources()` then re-`ast.parse`
+  — they consume parsed trees instead). Lives in `_logging_fixtures.py` beside `production_sources`;
+  yields LABELED/grouped trees (`production_sources` already returns `(label, path)`), so comms_footer's
+  per-member reach and secret_typing's keys are served without re-grouping. **This is the real F4
+  consolidation — ship it firmly.**
+- **`assert_covers(observed, derived, *, subject)` — SCOPED to the TREE-SCAN reach tier only** (the
+  "the workspace scan reached every declared member" case: `test_anchored_pattern_seam::TestScanCoverage`
+  + `test_secret_typing`'s member-reach pins, `derived = pyproject members`). It pairs naturally with
+  `parse_production_trees`. **Do NOT extend it to the runtime-site / action / probe / render-candidate
+  reach-checks** — those keep their bespoke derivations and messages; a "one helper for all reach
+  law" is over-consolidation. (A *second* generic helper for those is a POSSIBLE follow-up only if the
+  operator wants that breadth — surfaced, not assumed.)
+- **B / #345 does NOT adopt either global helper.** Its coverage is over server.py render candidates,
+  the SAME subject as test_link5's EXISTING P-U/P-F — which is already the ONE implementation of
+  render-slot coverage. **B EXTENDS P-U/P-F; it must not add a parallel coverage check or a new
+  interpolation classifier** (Q4-flag-2). That is the DRY-correct "one primitive B calls" — it is
+  test_link5's own apparatus, not a global helper. (Confirmed: P-U/P-F are `ast.parse(server.py)` +
+  AppContext-scoped, NOT whole-tree — so `parse_production_trees` is the wrong tool for B.)
+- **D / #295 shares the EFFECT-check, not a coverage check.** It would be a FALSE CLEAR to claim D
+  routes through `assert_covers`: there is no derivable "refusal-pin set" (F2's stated bound), so D
+  has no permanent coverage-as-checked-variable to share. D's ONE implementation is the effect helper
+  `assert_tool_refused_and_did_not_run` (wire session + invocation-counter==0) that every refusal pin
+  calls. D's un-derivable reach is guarded by INSTRUMENT 0, said plainly — not a pretend coverage pin.
+
+**Net:** the genuinely-shared reach primitive is `parse_production_trees` (5 adopters, proven by
+mutation); `assert_covers` is a small tree-scan-tier helper (2 adopters); B and D each route through
+their OWN correct single implementation (P-U/P-F; the effect-helper). No instrument is forced through
+a helper whose subject it does not share — that restraint is as much DRY as the consolidation is.
+
+**Q3 — does A-SUB actually MIGRATE, proven by mutation?**
+
+Yes, and this is the load-bearing part of the A-SUB cycle (not an afterthought):
+- **Migrate** every whole-tree scanner onto `parse_production_trees`, and every observed==derived
+  reach-check onto `assert_covers`. The adopter set is DERIVED (the property above), not listed here.
+- **Mutation proof (prove sharing, not routing):** change the shared parser (e.g. make it return
+  `{}` / drop `scripts`) → EVERY adopter's coverage pin must redden **in one run**. A caller that
+  stays green is a private copy wearing the shared name (routing-not-sharing) — the mutation names it.
+- **Completeness of the migration is itself a checked variable:** the anti-duplication structural pin
+  (no hand-rolled parser / reach-assertion outside the allowlist) fails if a whole-tree scanner was
+  left un-migrated, or a new one lands hand-rolled later. Without this pin, "migrated" is a claim over
+  the files someone remembered — the exact class. (Current adopter set enumerated as evidence below;
+  the DESIGN binds to the property, not to the count.)
+
+**Q4 — routing-not-sharing traps (two sources of truth for one policy):**
+
+1. **C / #291 — the sharpest trap.** Deriving the mutating set INSIDE test code, while packet-39 auth
+   later derives its own refusal set from the same annotations, is the #102/#120 trap: the policy
+   *"which tools mutate"* written twice, free to diverge. **DESIGN CHANGE: the derivation is a
+   PRODUCTION helper** (e.g. `loremaster` exposes `mutating_tool_names(server)` / a
+   read-only/mutating partition over the registered annotations); the test PINS it, and packet 39
+   CONSUMES it. One derivation of the policy, in production, read by both. (This is cheap and is the
+   ONE-IMPLEMENTATION-correct home even though pkt 39 is de-prioritised — it prevents the second copy
+   from ever being written.)
+2. **B / #345 — two sub-traps.** (a) The retire-old-net **superset proof must route through
+   `assert_covers`** (old-net slot set ⊆ AST-derived inventory), not a bespoke comparison — else the
+   very proof guarding the retirement is a private copy. (b) B must **reuse the existing interpolation
+   predicates** (`_raw_render_interpolations`, `_expr_door`, `_appcontext_methods`) — authoring a new
+   "what is a render slot" classifier makes a 4th copy of that policy in the one file that already has
+   three. Extend; do not fork.
+3. **A-SUB — the TREE-SCAN coverage checks are private copies until migrated; the others are NOT.**
+   `test_anchored_pattern_seam::TestScanCoverage` and `test_secret_typing`'s member-reach pins
+   hand-roll the SAME policy (workspace scan reached every member) → migrate both onto `assert_covers`.
+   But do NOT chase the reach-check pattern into `test_link5`'s P-U/P-F, `test_backoff_seam`'s runtime
+   sites, etc. — those cover DIFFERENT subjects with load-bearing bespoke messages, and routing them
+   through a generic helper is over-consolidation (Q2). The right grain: `parse_production_trees` for
+   the 5 whole-tree parsers, `assert_covers` for the 2 tree-scan reach checks, and everything else
+   keeps its own correct single implementation.
+4. **G / #344 — one gate-set reader.** `wave_gate.py` must INVOKE `pending_contract_gate.py`
+   (`--currency`, inheriting the manifest-derived leg set); it must NOT parse `gates.yaml` itself or a
+   second reader of the manifest exists. The changed-suite selector logic lives in ONE place in the
+   wrapper.
+5. **H / #290 — do NOT over-consolidate.** `refuse_vacuous_baseline` (a COMPARISON's reference
+   measured nothing) is a DIFFERENT policy from `pending_contract_gate`'s reader-anti-vacuity (a
+   gate's OWN output is not a measurement). Forcing them to share would merge two policies into one
+   wrong predicate. DRY means one copy PER policy, not one copy total — flagged so the builder does
+   not "helpfully" unify them.
+
+### Design change to INSTRUMENT 0 (the reach-attack) forced by this review
+
+Add a fourth leg to INSTRUMENT 0's REACH ATTACK, because Q4 shows the class and the DRY trap are the
+same shape observed from two sides: **(5)** *does this instrument leave TWO sources of truth for one
+policy, and is its sharing proven by MUTATION (change the shared thing → every caller reddens)?* A
+guard that routes to a shared driver while hand-rolling the decision underneath it (routing-not-
+sharing) passes every gate that only checks the call — so the adversary must demand the mutation
+proof, not the call site.
+
+### Builder-brief changes the lead needs BEFORE the build wave
+
+These are not cosmetic — they change what the builders build:
+- **A-SUB:** brief is "**consolidate + pin**", not "add a helper". It MUST: ship `parse_production_trees`
+  in `_logging_fixtures.py` (labeled/grouped trees; `include_scripts`/`include_skills` exist, add
+  `include_tests`) and migrate the **5** whole-tree adopters onto it (retiring `test_secret_typing`'s
+  duplicate `_SCANNED_MEMBERS` too); ship `assert_covers` SCOPED to the 2 tree-scan reach checks (NOT
+  the runtime/action/probe/render reach-checks — that is over-consolidation); ship the
+  anti-duplication structural pin (no hand-rolled whole-tree parser / bare member-reach assertion
+  outside the shared helpers, with the non-adopter allowlist + reasons from §7); prove sharing by
+  MUTATION (change the shared parser → all 5 adopters redden in ONE run). MUST NOT widen the
+  single-package scanners to whole-tree (scope change, not consolidation — flag any candidate).
+- **B / #345:** does NOT use A-SUB. MUST EXTEND test_link5's existing P-U/P-F apparatus (the one
+  implementation of render-slot coverage) — no parallel coverage check, no new interpolation
+  classifier (reuse `_raw_render_interpolations`/`_expr_door`/`_appcontext_methods`); the retire-old-net
+  SUPERSET proof extends the same apparatus (old-net slots ⊆ AST-derived inventory).
+- **C / #291:** MUST land the mutating/read-only partition as a **production** derivation the test
+  pins and pkt 39 will consume — not an inline test-only derivation.
+- **D / #295:** MUST land the effect-check as ONE shared helper every refusal pin calls; brief states
+  D has NO permanent coverage pin (honest bound), guarded by INSTRUMENT 0.
+- **INSTRUMENT 0:** add leg (5) above to `contract-adversary.md`'s reach-attack (the P1c already
+  committed) — one edit.
+- **Sequencing correction:** B is INDEPENDENT of A-SUB (it extends test_link5, adopts neither global
+  helper). Only future NEW whole-tree scans depend on A-SUB. See §5 update.
+
+### Current adopter set (EVIDENCE, not the design binding)
+
+*Enumerated (a944 agent, HEAD 74694dc) to size the work and confirm the property is clean; the design
+binds to the PROPERTY + the anti-dup pin, NOT to this list — a hardcoded list is the antipattern.*
+
+**`parse_production_trees` adopters (whole-workspace production `.py` AST scan) — 5:**
+`test_anchored_pattern_seam` (own `_parse_production_trees`), `test_secret_typing` (own
+`_python_sources` + a duplicate `_SCANNED_MEMBERS` list → both retired), `test_comms_footer` (own
+`_scan` + regex member-reader; needs `include_tests` + per-member grouping), `test_backoff_seam`
+(already calls `production_sources()`), `test_secret_leak_vectors` (already calls
+`production_sources()`/`workspace_roots()`). The last two are partial adopters already — the
+migration finishes the job (consume parsed trees, stop re-`ast.parse`-ing).
+
+**`assert_covers` adopters (tree-scan reach tier) — 2:** `test_anchored_pattern_seam::TestScanCoverage`,
+`test_secret_typing`'s member-reach pins. (Other files carry the reach-check PATTERN over non-tree
+subjects — `test_backoff_seam` runtime sites, `test_task_read_surface` actions, `test_surreal_harness`
+probes, `test_retry_seam` seam events, `test_link5` render candidates — but with bespoke derivations
+and load-bearing messages: NOT `assert_covers` adopters; a possible second helper only on operator call.)
+
+**NON-adopters (the anti-dup pin's ALLOWLIST, each with its reason):**
+- *Single-package (loremaster) by design:* `test_render_seam_pins`, `test_task_read_surface`,
+  `test_link5_render_containment`, `test_surreal_store`, `test_text_hygiene`, `test_retry_seam`.
+  ⚠ Several generalise over a `root` arg but are called with the loremaster package TODAY — widening
+  them to whole-tree is a SCOPE CHANGE (could widen a gap, priority #3), NOT consolidation. The A-SUB
+  builder must NOT "helpfully" fold these into the whole-tree scanner; surface any such candidate as a
+  separate scope decision.
+- *Different scope / non-`.py` suffixes (candidates for a DIFFERENT shared "retired-name sweep"
+  primitive, not these):* `test_retired_symbols` (`.py`+`.md`, pkg+tests+docs),
+  `test_floor_calibration_schema` (pkg+tests+doc-globs).
+- *Test-tree scan, not production:* `test_surreal_harness`.
+- *Whole-repo git-tracked-text, not workspace-`.py` AST:* `test_text_hygiene::_tracked_text_files` (NUL scan).
+- *Unrelated purpose (indexer corpus feed):* `test_search`.
+
+Confirmed for F3/B: `test_link5`'s P-U (`TestEveryRenderCandidateIsDrivenOrOut`) and P-F
+(`TestTheFieldManifestCannotSilentlyMissAField`) are `ast.parse(server.py)` + AppContext-scoped, NOT
+whole-tree — so B extends them and adopts neither global helper (Q2).
