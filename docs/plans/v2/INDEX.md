@@ -1687,4 +1687,12 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   containment test strengthened with a real `_leaks` leg → re-audit **GO** (instruments mutation-proven non-vacuous;
   currency PASS zero-orphan; 1705/0/17; only the #333 auth-WIP baseline residual). `d9b151b`→`d509980`→`53e28fc`;
   receipts → `receipts/2026-08-09-packet05ai/`. #336/#342/#343 resolved; filed #341 (floating `v3.2` tag→pkt16);
-  store-ref/INDEX/MEMORY reconciled to the measured 3.2.4. 05a-ii/05b remain — NEXT = 05a-ii (await, Opus-4.8 LIVE leg).
+  store-ref/INDEX/MEMORY reconciled to the measured 3.2.4. ⚠ RETRO (operator-requested): the packet
+  repeated ≥5 previously-instrumented classes (#321 injection ×2, #306/#312 currency, false-gate,
+  #156 "safe by construction", #131 unexercised-path) — ALL caught, nothing shipped; every catch was
+  by CONSTRUCTION (adversary built a wrong impl, audit ran the gate, builder rendered a forgery), every
+  miss by REASONING (the lead's D2 sanitise_line ruling repeated #156). Prevention filed: **#344**
+  (derive ONE gate-bundle from `gates.yaml` so no stage claims green on a subset) + **#345** (Link5
+  derives free-text slots from the render AST + coverage assert). Memories `2380d29b` (retro) +
+  `bcef60f4` (the "argument or probe?" reflex: a containment claim is inadmissible by ruling).
+  05a-ii/05b remain — NEXT = 05a-ii (await, Opus-4.8 LIVE leg).
