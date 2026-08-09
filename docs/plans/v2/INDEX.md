@@ -96,10 +96,13 @@ HERE now** — a packet session must not need to read them.
   retired. Last receipts: 33/35 · 6.46 calls · 1440.8 tok (2026-07-07).
 - Test store: spike-surreal ws://127.0.0.1:18000; production store :18500 — NEVER
   pointed at by tests. Both systemd/quadlet-managed, auto-start on boot.
-- **ENGINE: SurrealDB 3.2.1 on BOTH stores (migrated from 3.1.5 on 2026-07-22)** —
-  receipts in the store reference §0 (ff7128e): prod byte-identical (174,161 rows /
-  20 tables), full suite behaviour-identical across engines, #107 re-probed, SDK 2.0.0
-  unchanged. 3.1.5-probed facts KEEP their provenance labels — re-probe on contact.
+- **ENGINE: SurrealDB 3.2.4 on BOTH stores** (migrated off 3.1.5 → 3.2.1 on 2026-07-22,
+  then carried to 3.2.4 by the quadlets' FLOATING `v3.2` tag; measured host-side 2026-08-08
+  — #336, store-ref header). ⚠ `v3.2` is NOT patch-pinned, so any recreate/pull drifts the
+  version silently; pinning it is an open infra decision on #336. Receipts in the store
+  reference §0 (ff7128e): prod byte-identical (174,161 rows / 20 tables), full suite
+  behaviour-identical across engines, #107 re-probed, SDK 2.0.0 unchanged. Probed facts KEEP
+  their per-version provenance labels — re-probe on contact.
   Sole rollback: the verified 3.1.5 backup at /backups/lore/surreal-pre-3.2.1-20260721
   (RocksDB format is forward-only). New static vendor tiers indexed (`surrealdb-docs`,
   `surrealql-tests` @ v3.2.0 tag) — corpus now 2764 files by design.

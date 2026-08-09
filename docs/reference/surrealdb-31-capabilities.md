@@ -1,16 +1,27 @@
 # SurrealDB — the canonical reference for this project
 
-**Engine: `surrealdb-3.2.1`** (`docker.io/surrealdb/surrealdb:v3.2.1`) — live-read from the
-running stores, 2026-07-22, **migrated from 3.1.5 that day** (both stores; prod data byte-identical,
-full suite regression-free, #107 fact re-probed on 3.2.1 — receipts in [§0](#0-the-321-migration-receipts)).
-Python SDK `surrealdb>=2.0` (installed: 2.0.0; officially supports servers 2.0.0–3.2.0). Server floor
-≥3.1.0 (CVE-2026-49997).
+**Engine: `surrealdb-3.2.4`** (both stores run the **floating** tag `docker.io/surrealdb/surrealdb:v3.2`,
+image id `6e2f7f0134c7`, version-stamped `surrealdb-3.2.4+20260803.93ab219`). History: **migrated off
+3.1.5 on 2026-07-22 to 3.2.1** (both stores; prod data byte-identical, full suite regression-free, #107
+fact re-probed — receipts in [§0](#0-the-321-migration-receipts)), then the floating `v3.2` tag carried
+both stores forward to **3.2.4** (measured host-side 2026-08-08 — finding #336). Python SDK
+`surrealdb>=2.0` (installed: 2.0.0; officially supports servers 2.0.0–3.2.0 — the running 3.2.4 sits
+ABOVE that stated ceiling, as 3.2.1 already did; §0 measured the SDK unaffected, no code change). Server
+floor ≥3.1.0 (CVE-2026-49997).
 
-> **Version-provenance honesty:** most facts below were `[PROBED]` on **3.1.5** and are dated as such.
-> The migration to 3.2.1 was validated to introduce **no behavioural regression** the suite can see
-> (§0), and the load-bearing #107 fact was **re-probed directly on 3.2.1**. But an un-re-probed
-> `[PROBED … 3.1.5]` fact keeps its 3.1.5 provenance — it was **not** silently relabelled to 3.2.1. If
-> you depend on one on 3.2.1, re-probe it (the store IS 3.2.1 now — that is the store to probe).
+> **⚠ FLOATING TAG (finding #336):** the quadlets pin `v3.2`, NOT a patch — so any container recreate or
+> `podman pull` can carry the running engine forward WITHOUT anyone deciding (this is how 3.2.1 → 3.2.4
+> happened, silently). The store version is whatever `v3.2` last resolved to; re-read it host-side
+> (`podman ps`, `connection.version()`) before depending on a version-sensitive fact. Pinning the tag to
+> an exact patch is an open infra decision surfaced on #336, deliberately NOT made in packet 05a-i (a
+> docs-truth pass).
+>
+> **Version-provenance honesty:** most facts below were `[PROBED]` on **3.1.5** and are dated as such; a
+> set was re-probed on **3.2.1** (§0) and a further set on **3.2.4** (the await build-probe, 2026-08-05 —
+> §3, §8). Each `[PROBED … <version>]` label is KEPT at the version it was run on — a fact is **never**
+> silently relabelled to a newer engine. If you depend on an un-re-probed fact on the live 3.2.4 store,
+> re-probe it (3.2.4 is forward within the 3.2 minor, so a 3.2.1 re-probe is a strong but not guaranteed
+> prior).
 
 > ## ⚠ READ THIS BEFORE YOU TOUCH THE STORE
 >
@@ -409,6 +420,11 @@ The house rules for reading and writing rows. Each one was found the hard way.
 - **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
   from SDK 2.0.0's response routing (6/6 futures) — *not* `CancelledError`. The next call heals via
   `ConnectionClosedError`. Classify `KeyError` tightly, at the SDK-await boundary only.
+  **[RE-PROBED 2026-08-05 on 3.2.4 — shape UNCHANGED]** 6/6 in-flight awaits raise
+  `KeyError(request-uuid)`; the next call raises `ConnectionClosedError`. The mechanism is
+  SDK-2.0.0-side (`_recv_task` clears `self.qry` racing `_send`'s `del`), so it is
+  **engine-version-independent** and holds until the SDK version changes (receipt: lore memory
+  `bef131a1`; finding #336).
 - **[PROBED]** One WS connection multiplexes concurrent `query()` safely (uuid-keyed futures).
 
 ---
@@ -816,9 +832,14 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   bullet here, check whether §4 or §6 already settles it** — a summary that contradicts its own
   authority is worse than no summary, because this is the file every store brief is told to read
   FIRST.
-- **[UNVERIFIED] Does an edge-table LIVE SELECT fire on `RELATE`?** Never probed. The
-  contentless-wake design makes an empty payload harmless (so #5014 cannot bite), but the *firing*
-  itself is an assumption.
+- **[PROBED 2026-08-05, surrealdb-3.2.4] An edge-table LIVE SELECT FIRES on `RELATE`.** Both
+  whole-table `.live(<edge>)` and filtered `LIVE SELECT * FROM <edge> WHERE out = <literal>` deliver a
+  normal `CREATE` notification carrying the full edge record `{id,in,out,fields}`; an edge UPDATE
+  re-fires `action=UPDATE` on the whole-table form (the re-dispatch storm `CommandSubscriber` avoids by
+  filtering). Filtered `WHERE out=<literal>` discriminates correctly (spurious + negative controls held).
+  The contentless-wake assumption holds (the payload is non-empty but scout ignores it). **A poll
+  fallback is STILL MANDATORY** — LIVE is best-effort, single-node only (#5070), no replay on reconnect,
+  the SDK silently orphans `live_queues` on a socket drop (receipt: lore memory `bef131a1`; finding #336).
 - ~~[UNVERIFIED] The #7061 cascade-delete interaction with UNIQUE-on-edge~~ — **SETTLED ABSENT**
   [PROBED 2026-07-19], see §4. Endpoint deletion cascades the edge and cleans the UNIQUE entry;
   re-`RELATE` succeeds. Kept struck rather than deleted so a reader who remembers the old ban sees
@@ -843,7 +864,9 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   `WantedBy=default.target` + linger) → they **auto-start on boot**. No manual `podman start`.
   Manage with `systemctl --user {start,stop,restart} {lore-surreal,spike-surreal}.service`
   (after editing a `.container`: `systemctl --user daemon-reload`).
-- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.2.1`,
+- **Recovery** (image + both stores gone): image `docker.io/surrealdb/surrealdb:v3.2` (the FLOATING
+  tag the quadlets actually pin — currently 3.2.4, image `6e2f7f0134c7`; a recovery pulls whatever
+  `v3.2` resolves to at that moment — see the header's #336 note),
   `--network=host`, `--userns=keep-id --user 1000:1000` (the `nonroot` image user + a 0700 data dir
   owned by 1000 → `PermissionDenied` without this), `--env-file ~/docker/mcp/lore-secrets/lore.env`,
   `start --bind 127.0.0.1:<port> rocksdb:/data/store.db`. Then rebuild the lore image and
