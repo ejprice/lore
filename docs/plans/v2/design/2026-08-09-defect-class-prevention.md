@@ -1038,7 +1038,8 @@ attack: the adversary ASKS "is this guard's reach a checked variable?"; §9 is H
 | **H/#290** (`REPORT-adversary-eh`) | correct helper + inline copy KEPT (two copies) — passes green, **BLOCKER** | the "`main` SHARES the helper" property has NO red home |
 | **D/#295** (`REPORT-adversary-cd`, #346) | D-WB2 in-process helper (`wire.mcp.call_tool`), dead on the wire — passes all 6 | the WIRE-driving claim is asserted in a docstring, verified by no pin |
 | **E/#289** | — no survivor (instance mutation-proven) | residual only: Exemption door-field coverage optional (§9 IDIOM 1, operator-optional) |
-| **A-SUB/F4 + B/#345** | adversary-asub-b GRADING (5th) — same class expected (A-SUB's ∀-over-adopters mutation must have a RED home) | slot into IDIOM 1 when it lands |
+| **A-SUB/F4** (`REPORT-adversary-asub-b`) | fix-NOTHING build passes 16/0: 3 of 4 migration files "migrated" by an UNUSED `import … as _asub_route # noqa: F401`; `test_secret_typing._SCANNED_MEMBERS` + 3 private `rglob` clones survive | `_MIGRATION_SET` + the clone-check are HAND-LISTS; routing pin checks import PRESENCE not USE; sharing has no RED home (single-module monkeypatch can't reach a from-import adopter) |
+| **B/#345** (`REPORT-adversary-asub-b`) | contract UNSATISFIABLE without a false clear: Leg-2 false-flags the Ruling-2-correct `[render_attributed(b) for b in blocked_by]`; only green via the Ruling-2-FORBIDDEN `blocked_by`-SAFE entry | Leg-2 containment detector is COMPREHENSION-BLIND (sees only a direct `render_attributed(...)` as the whole value) |
 
 ### 9.1 IDIOM 1 — ∀-MUTATION-PROOF over the LIVE-DERIVED surface (the heart)
 
@@ -1141,8 +1142,8 @@ wire-spy on the effect-helper is this session's.
 | **H** | #290 | IDIOM 1 SHARING specialization: delete-the-call mutation pin in `test_wrong_builds.py` + anti-dup pin | two-copies build (BLOCKER) | — |
 | **D** | #295/#346 | IDIOM 2: wire spy (hand only the callable → proxy unrepresentable); build NOW | D-WB2 in-process | STRUCTURAL (registration gating) → 39; wire-spy built now |
 | **E** | #289 | sufficient; IDIOM 1 door-field coverage OPTIONAL (operator ruling — honest bound) | — (residual only) | — |
-| **A-SUB** | F4 | IDIOM 1: mutate shared parser → EVERY adopter reddens (LEG B) + anti-dup structural pin (LEG A) | pending adversary-asub-b | — |
-| **B** | #345 | IDIOM 1 on slot-drive coverage (every AST-derived slot driven; P-N per-site); extends P-U/P-F | pending adversary-asub-b | — |
+| **A-SUB** | F4 | IDIOM 1: (LEG B) mutate shared `parse_production_trees` → EVERY adopter reddens, via **`_rebind_everywhere`** (by-identity, reaches from-imports) OR a `mutation_proof.py` receipt — NOT a single-module monkeypatch; (LEG A) DERIVED anti-dup scan (retry_seam offender shape) + import-is-USED pin + `_SCANNED_MEMBERS`-retired pin | fix-nothing (3 unused imports), `_MIGRATION_SET` hand-list, new-file clone, routing-not-sharing (§9.7) | — |
+| **B** | #345 | IDIOM 1 slot-drive coverage (every AST slot driven; P-N per-site) extending P-U/P-F **+ Leg-2 made COMPREHENSION-AWARE** (element-wise containment: every vocab leaf under a `_CONTAIN_VERB`) **+ a `_SERVED_SAFE_FIELDS ∩ manifest-DOOR == ∅` pin** (mechanises Ruling 2) | Leg-2 comprehension-blindness false-flagging the Ruling-2-correct render; the forbidden `blocked_by`-SAFE escape (§9.7) | — |
 
 **One line for the reviser:** for every mutation/coverage/liveness pin, re-derive the full surface LIVE
 from production truth, assert the caller EQUALS it (LEG A / `assert_covers`), AND flip EACH member
@@ -1151,3 +1152,90 @@ property is "X shares the ONE implementation," the flip is delete-the-call + an 
 claim is "a wire/effect/entrypoint ran," spy the boundary (hand only the callable). Where a leg is
 scoped, the summary must say so. The single-member proof was never cheaper — the members are few; it
 was a habit, not a constraint.
+
+### 9.6 REUSE MAP (operator: REUSE > RECREATE — the idioms already exist; generalise, don't invent)
+
+Ground-truthed at HEAD `74694dc` + the in-flight (untracked) contracts. **The consistent pattern is a
+GENERALISATION of existing in-repo symbols, not new machinery.** Per idiom: the existing symbol, its
+home, and how each packet reuses it. I searched lore/grep for others beyond the four the lead named and
+found THREE more (`_DECLARED_SITES`, `_all_sdk_call_sites`, the R16 wire-discipline scan) — listed.
+
+**⚠ NAMING CORRECTION (supersedes earlier sections):** where §7/§9.1 say `assert_covers`, the REAL
+coverage helper is **`_logging_fixtures.assert_scan_reached_every_member`** (pinned by the existing
+A-SUB contract `loremaster/tests/test_ast_reach_helpers.py`) — reuse that exact symbol. AND it is
+TREE-SCAN-scoped (oracle = pyproject members); non-tree surfaces (C annotations, F seams) do NOT route
+through it — that would be over-consolidation (§7 ruling). They reuse the coverage *shape* (live
+set-equality, both-direction diff) per-instrument. One policy per surface, not one function total.
+
+| idiom | EXISTING symbol to reuse (home) | how each packet reuses / generalises it | shared home (import ONE) |
+|---|---|---|---|
+| **Coverage — tree scan (LEG A)** | `TestScanCoverage.test_the_scan_reaches_every_production_tree` (`test_anchored_pattern_seam.py`) → extracted as `parse_production_trees` + `assert_scan_reached_every_member` (`_logging_fixtures.py`), pinned by `test_ast_reach_helpers.py` | A-SUB adopters (anchored, secret_typing, comms_footer, backoff, secret_leak) IMPORT both from `_logging_fixtures`; migration proven by `TestTheMigrationSetRoutesThroughTheSharedHelpers` (static anti-private-clone) | **`loremaster/tests/_logging_fixtures.py`** |
+| **Coverage — non-tree surface (LEG A)** | the SHAPE of `test_backoff_seam._DECLARED_SITES` (both-direction diff: `missing = declared − observed`, `undeclared = observed − declared`, fail-closed) | C (annotation surface — its C-9 equality pin already does this), F (`set(doors)==filter(core)` live), G (mode×gate) reuse the shape, recomputed LIVE each run — NOT the tree helper | per-instrument (shape reused, over-consolidation avoided) |
+| **∀-MUTATION — in-test liveness (LEG B)** | `TestSharingProvenByMutation` + `_core_dropping` + `_rebind_everywhere` + the #194 landing assert + `_degrade_reflects_core_drop` (`test_store_seam_one_derivation.py`) | **GENERALISE `_core_dropping` ∀ over the surface** (the exact gap adversary-f/-cd found): F parametrises the drop over EVERY seam; C flips EACH annotation constant; A-SUB drops EACH adopter's parser. Mechanism differs per packet (drop-seam / flip-hint / mutate-parser) → NOT one function; the STRUCTURE + landing-assert + reflects-predicate are reused | `_rebind_everywhere` MAY promote to shared test-support IF ≥2 reuse it (builder judgment, prove by mutation); otherwise per-packet |
+| **∀-MUTATION — scripts CLI receipt** | `scripts/mutation_proof.py` (anchor exact-1-match, declared node ids from `--collect-only`, BOTH-direction diff, #194 anchor-landing guard, content backup) | scripts-side packets (G/#344, H/#290, E/#289) reuse it for the CLI receipt form of the ∀ proof | **`scripts/mutation_proof.py`** (already shared) |
+| **SHARING / call-site reach (the anti-dup tail)** | `test_retry_seam._all_sdk_call_sites` / `_unseamed_sdk_call_sites` (enumerate EVERY call site from the SDK truth; name OFFENDERS — "a call site no test executes is NAMED; coverage stops being a hidden variable") | H (#290) + G-MP2 + the anti-dup pins reuse this SHAPE: enumerate ALL call sites of the shared thing from truth, assert each routes — handles the 3rd-named-copy tail better than a 2-name check (closes C's R1 residual structurally) | per-instrument (shape reused) |
+| **WIRE / EFFECT (IDIOM 2)** | `_auth_fixtures.WireSession` (SDK-driven REAL wire; `.call(name,args)` drives the wire, `.mcp` is "STRUCTURAL assertions ONLY — never to drive a posture claim") + the **R16 AST invariant** in `test_wire_discipline.py` (posture/refusal claims must drive the wire, not in-process `mcp.<handler>`) | D (#295/#346): drive the effect-helper via `WireSession.call`, and **bring the effect-helper UNDER `test_wire_discipline.py`'s existing R16 scan** — which MECHANICALLY forbids D-WB2's in-process door. Reuse the scan; do not invent a bespoke wire-spy. Strongest form (D R4): hand the helper only `WireSession.call`, so `.mcp` is unreachable | reuse `_auth_fixtures.WireSession` + extend `test_wire_discipline.py`'s scan reach to the effect-helper |
+| **SUMMARY HONESTY (IDIOM 3)** | **none found** (searched lore + grep — no existing whole-receipt honesty pin) | genuinely new but small; base on the EXISTING typed-applicability principle (CLAUDE.md "render from typed applicability, never a name compared") — the summary reads per-leg `scoped`/`qualified` flags | new, in G's contract (`test_wave_gate.py`) |
+
+**Net reuse ruling:** only IDIOM 3 (summary honesty) is genuinely new, and it is small and principle-backed. Everything else GENERALISES an existing symbol. The two mandatory shared homes are `_logging_fixtures.assert_scan_reached_every_member`/`parse_production_trees` (tree-scan coverage) and `scripts/mutation_proof.py` (scripts CLI receipt). The ∀-mutation MECHANISM and the non-tree set-equality stay per-instrument (shape reused, not one function) — consistent with the §7 over-consolidation ruling. `_rebind_everywhere` is the one candidate for promotion to shared test-support, gated on ≥2 real reusers + a mutation proof.
+
+### 9.7 Fold of the 5th adversary (adversary-asub-b) — A-SUB + B confirmed one class
+
+`REPORT-adversary-asub-b.md` (graded `405d321`) returned **both INSUFFICIENT, same class**, with three
+reuse-relevant refinements. All 5 adversaries now agree; §9 covers all.
+
+**A-SUB (F4) — confirmed IDIOM 1, with the sharing-mutation mechanism SHARPENED (reuse `_rebind_everywhere`):**
+- **A-SUB-1/-3 (BLOCKER): the sharing proof has no RED home.** A "fix-nothing" build passes 16/0 with 3
+  of 4 files "migrated" by an UNUSED `import … as _asub_route  # noqa: F401` — `test_secret_typing`'s
+  `_SCANNED_MEMBERS` hand-list + THREE private `rglob` clones survive. **KEY REUSE REFINEMENT:** the
+  contract's mutation used a single-module `monkeypatch.setattr(_logging_fixtures, …)`, which does NOT
+  reach a **from-import** adopter (the adopter bound the function object locally). F's
+  **`_rebind_everywhere`** (test_store_seam_one_derivation.py) rebinds BY IDENTITY across `sys.modules`,
+  so it reaches from-import AND module-attribute adopters alike — it is exactly the tool this needs.
+  **So: reuse `_rebind_everywhere` for the in-test ∀-mutation (verify it reaches from-imports as its
+  construction implies), OR use a committed `scripts/mutation_proof.py` receipt (source-edit
+  `parse_production_trees`→`{}`, declare each adopter's coverage node-id expected-RED, both-way diff).
+  Either reaches from-imports; the single-module monkeypatch was the defect.** This VALIDATES the
+  `_rebind_everywhere` promotion (now ≥2 reusers: F + A-SUB) — promote it to shared test-support,
+  proven by mutation. It also DISSOLVES A-SUB-5: with a spelling-agnostic mutation, the routing pin
+  need not mandate the `from`-import spelling (which pushed builders toward the monkeypatch-hostile
+  form) — it just needs the import USED + the anti-dup scan + the ∀-mutation.
+- **A-SUB-2 (BLOCKER): the §7 anti-dup structural pin was NOT built** — `_MIGRATION_SET` (4-file tuple)
+  and the clone-check (anchored-only) are HAND-LISTS; a new-file whole-tree clone is invisible (planted
+  one, 0 new failures). The contract justified dropping it as "the enumerate-the-forbidden antipattern";
+  that justification is WRONG — *deny a hand-rolled parser OUTSIDE an evidence-backed allowlist* is
+  **allowlist-the-safe** (the correct pattern, and §7 specified the allowlist). **Reuse the
+  `test_retry_seam._all_sdk_call_sites`/`_unseamed_sdk_call_sites` offender-enumeration SHAPE** (§9.6):
+  a DERIVED scan naming every hand-rolled `rglob("*.py")+ast.parse` outside the allowlist, fail-closed.
+- **A-SUB-4:** add a pin that `_SCANNED_MEMBERS` (and any per-file member hand-list) is absent from the
+  migrated files — the real consolidation, currently unpinned.
+- SOUND, leave: the two helpers' behaviour pins (fail-closed on `{}`, oracle-independent) all discriminate.
+
+**B (#345) — Ruling 2 CONFIRMED, and the contract's Leg-2 detector is the defect (not the code):**
+- `blocked_by` **IS a forgery door** (Ruling 2 right) AND is **genuinely contained at HEAD** via
+  `[render_attributed(b) for b in task.blocked_by]` (a hostile value does not `_leaks`). But **B-1
+  (BLOCKER): Leg-2 is COMPREHENSION-BLIND** — it marks `contained=True` only for a DIRECT
+  `render_attributed(...)` as the whole value expr, so it false-flags the correct comprehension and
+  cannot distinguish it from a leaking `safe_str`/bare-repr. The ONLY way to green B is the
+  Ruling-2-FORBIDDEN `blocked_by`-SAFE entry — a C-DEF trap AND a false clear reopening the mis-park
+  class. **B is internally inconsistent (Ruling 2 blesses the render Leg-2 flags).** FIX: make
+  `_served_slots` recognise ELEMENT-WISE / collection containment (every vocab-field leaf under a
+  `_CONTAIN_VERB` — comprehension, `", ".join(...)` — is contained; a bare/`safe_str`/`sanitise_line`
+  leaf is not), **reusing/extending the existing `test_link5` interpolation predicates — do not fork**.
+  Then the correct render is GREEN and a `safe_str` revert is RED: the discriminating pin Ruling 2
+  actually mandates, and `blocked_by` never needs allowlisting.
+- **New pin (mechanises Ruling 2):** *no `_SERVED_SAFE_FIELDS` key is a manifest DOOR field in any
+  model* — a checked-variable over the allowlist itself (IDIOM 1 applied to the allowlist), so the B-1
+  escape hatch (park a door SAFE) cannot be taken silently.
+- **B-2 (residual): the field-name-keying collision has a SECOND instance — `kind`** (DOOR
+  `Finding`/`RecalledMemory`, SAFE `MemorySource`), currently moot (not served by a driven render) but
+  the bound text names only `task_id`. This VALIDATES Ruling 3's quantifier concern; name `kind` in the
+  bound (or add a `kind` control like `task_id`'s), re-open trigger = a render serves `MemorySource.kind`.
+- **B-3 (residual, checklist):** Ruling 2's required comment-correction (server.py ~4631 "not
+  live-forgeable") still has no home — served-English, no AST pin, so a builder/cold-audit checklist item.
+- SOUND, leave: Leg-1 mis-park/vacuous-drive discrimination, the retirement superset proof, the hostile
+  fixture — all verified discriminating.
+
+**Design status: COMPLETE — 5/5 adversary verdicts, all one class, §9 (idioms + reuse map + this fold)
+covers every packet.** The reviser applies §9.5/§9.6/§9.7 uniformly; only IDIOM 3 (summary honesty) is
+net-new machinery.
