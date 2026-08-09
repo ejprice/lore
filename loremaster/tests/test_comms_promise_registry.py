@@ -272,6 +272,22 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "a batch that won nothing was recorded NOWHERE, and saying nothing there would imply "
         "it had been"
     ),
+    # --- packet 05a-i: the DD-2.a waiting line (LEG D) -----------------------
+    # A NEW promise line — the instrument GROWING as designed (§B8.1); authored in
+    # the contract phase, graded by the adversary, no operator authorization
+    # needed (registry GROWTH is not a committed-contract weakening). Its render
+    # helper ``_render_comms_waiting_line`` is ``_render_comms``-prefixed so the
+    # scanner READS it (#337) and is coverage-checked in
+    # TestTheScanReachedEveryCommsRenderHelper.
+    "waiting: your question #{seq} on thread {thread} has no reply — asked {age} ago": (
+        "the DERIVED question-debt teach (DD-2.a) — emitted on drain AND heartbeat IFF "
+        "awaiting_answer(agent_id) is not None (the caller asked a question no teammate has "
+        "answered on-thread). §9.7 litmus: a reader who WAITS on the named thread for a "
+        "teammate's reply is correct — that is exactly awaiting_answer's four-conjunct clear "
+        "(03a-2 R2); the seq/thread are read back from the typed WaitingOnAnswer, never "
+        "re-derived (#104). Keyed on the DERIVED debt, NEVER the STORED input_required "
+        "status (the two-vocabulary conflation DD-2 forbids)"
+    ),
 }
 
 # --------------------------------------------------------------------------- #
@@ -359,6 +375,19 @@ _PROMISE_FREE: dict[str, str] = {
     ),
     "#{seq} [{grade}] {sender}→you{context} ({refs})": (
         "drain row structural template (header, refs variant; body is fenced below it — FK-1)"
+    ),
+    # packet 05a-i (LEG C / adversary F3): the per-row question marker is a
+    # STANDALONE token appended to the row header — safe_str STRIPS leading
+    # whitespace, so a context-slot marker can never be a standalone token (F3),
+    # forcing a distinct template literal. A structural label, not an imperative →
+    # promise-FREE. ⚠ The glyph is NOT builder latitude: the registry pins the
+    # EXACT literal, so the marker is fixed as "(question)" (self-explaining under
+    # the Consumer Law) and the render pins in test_comms_waiting_line.py assert it.
+    "#{seq} [{grade}] {sender}→you{context} (question)": (
+        "drain row structural template (question-marked header; body fenced below)"
+    ),
+    "#{seq} [{grade}] {sender}→you{context} (question) ({refs})": (
+        "drain row structural template (question-marked refs variant; body fenced below)"
     ),
     # WAVE 4 — the fence LABEL. A label, not a promise: it names what the block
     # below it IS (quoted text, and whose), and states what it is NOT. It offers
@@ -570,6 +599,11 @@ class TestTheScanReachedEveryCommsRenderHelper:
             # is NOT ``_render_comms``-prefixed and so is out of the scanner's reach;
             # flagged in REPORT-contractfix-05aiii.md §ESC-2.)
             "_render_comms_story",
+            # packet 05a-i: the DD-2.a waiting line (LEG D) is served on drain AND
+            # heartbeat through ONE shared, _render_comms-prefixed helper, so the
+            # scanner reaches it — an off-prefix helper would be silently exempt
+            # from BOTH the guard and this coverage check (#337).
+            "_render_comms_waiting_line",
         }
         missing = expected - observed_functions
         assert not missing, (
@@ -1214,6 +1248,32 @@ def _render_footer_c3(*, authenticated: bool) -> str:
     )
 
 
+# --- packet 05a-i: the DD-2.a waiting line (LEG D) --------------------------
+# The shared render helper is ``_render_comms_waiting_line`` — deliberately
+# ``_render_comms``-prefixed (#337: an off-prefix helper is silently exempt from
+# both the scanner and its coverage check). It takes the typed WaitingOnAnswer
+# and a PRE-COMPUTED ``age_s`` (the read layer computes the age from
+# ``asked_at``; the render stays pure and deterministic — the
+# ``_render_comms_register(registered_age_s=...)`` precedent), which is what makes
+# the proof's FULL-LINE marker deterministic (``age_s=0`` -> ``"0s"``). It
+# returns a LIST (empty when ``waiting`` is None, one line otherwise), like
+# ``_render_comms_skew_lines``, so drain and heartbeat compose it identically.
+
+
+def _waiting(*, thread: str, question_seq: int) -> Any:
+    from loremaster.messages import WaitingOnAnswer
+
+    return WaitingOnAnswer(
+        thread=thread, question_seq=question_seq, asked_at=datetime.now(UTC)
+    )
+
+
+def _render_waiting(*, waiting: Any, age_s: int) -> str:
+    return "\n".join(
+        str(line) for line in AppContext._render_comms_waiting_line(waiting, age_s=age_s)
+    )
+
+
 _PROOF_LIST: list[PromiseProof] = [
     # --- register (§9.7 #1/#2/#3): brief present vs the bootstrap path. -------
     PromiseProof(
@@ -1668,6 +1728,23 @@ _PROOF_LIST: list[PromiseProof] = [
         # ``_comms_footer`` -> NO-EMIT RED.
         render_emit=lambda: _render_footer_c3(authenticated=True),
         render_no_emit=lambda: _render_footer_c3(authenticated=False),
+    ),
+    # --- packet 05a-i: the DD-2.a waiting line (LEG D). ----------------------
+    # ⚠ DECISION-NEEDED (flagged to the lead in REPORT-contract-05ai-1.md): the
+    # thread is rendered via ``sanitise_line`` here (Fable Q3 — self-authored, low
+    # surface). If the lead prefers ``render_attributed`` (the drain-row context
+    # precedent + the #321 same-line-forgery law), this marker's ``q:gate``
+    # becomes ``` `q:gate` ``` and this ONE line changes. The NO-EMIT leg is the
+    # discrimination: ``waiting=None`` (no derived debt) must render NOTHING — a
+    # build keyed on the STORED status instead of ``awaiting_answer`` would emit
+    # regardless and fail here.
+    PromiseProof(
+        literal="waiting: your question #{seq} on thread {thread} has no reply — asked {age} ago",
+        marker="waiting: your question #4141 on thread q:gate has no reply — asked 0s ago",
+        render_emit=lambda: _render_waiting(
+            waiting=_waiting(thread="q:gate", question_seq=4141), age_s=0
+        ),
+        render_no_emit=lambda: _render_waiting(waiting=None, age_s=0),
     ),
 ]
 

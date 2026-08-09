@@ -62,8 +62,10 @@ from loremaster.messages import (
     PendingTraffic,
     StoredMessage,
     UnknownRecipientError,
+    UnknownSenderError,
     WaitingOnAnswer,
 )
+from loremaster.render import render_attributed
 
 STATUS_INPUT_REQUIRED = "input_required"
 
@@ -172,9 +174,15 @@ class FakeMessageLedger:
     def burn_seq(self) -> int:
         """Consume a sequence number without writing a message — exactly what
         an aborted transaction does to a native sequence (probe 3 leg C).
+
+        0-BASED, mirroring ``sequence::nextval`` under the default ``START 0``
+        (store reference §5): returns the value that WOULD have been minted, then
+        advances — so a fresh ledger's first burn is 0, exactly as its first send
+        would have been (F2 parity).
         """
+        burned = self.db.next_seq
         self.db.next_seq += 1
-        return self.db.next_seq
+        return burned
 
     # -- send -----------------------------------------------------------------
 
@@ -193,8 +201,13 @@ class FakeMessageLedger:
     ) -> MessageSendResult:
         await asyncio.sleep(0)
         if grade not in MESSAGE_GRADES:
+            # #190 parity: production contains the caller value through
+            # ``render_attributed`` (never a bare ``!r`` — control-char
+            # sanitisation is same-line-forgery-blind). A ``{grade!r}`` clone here
+            # was the exact drift class #190 names: a surface pin over this oracle
+            # could never see production's actual wording.
             raise IllegalMessageGradeError(
-                f"{grade!r} is not a legal message grade; legal grades: "
+                f"{render_attributed(grade)} is not a legal message grade; legal grades: "
                 f"{', '.join(sorted(MESSAGE_GRADES))}"
             )
         trimmed = body.strip()
@@ -217,9 +230,15 @@ class FakeMessageLedger:
             thread=thread, task_id=task_id, refs=list(refs) if refs is not None else []
         )
         if not recipients:
+            # #190 parity: the LEDGER's OWN wording, not the dispatcher's. The
+            # fake used to serve "no other non-retired agent is registered" (the
+            # dispatcher's framing), so no surface pin could ever observe
+            # production's "is a caller error, not a broadcast" — the exact D4
+            # blind spot #190 names.
             raise EmptyRecipientSetError(
-                "a send needs at least one recipient — no other non-retired agent is "
-                f"registered in session {session!r}"
+                f"a send needs at least one recipient — the ledger never resolves a roster "
+                f"(broadcast is the dispatcher's concern), so an empty recipient set in "
+                f"session {session!r} is a caller error, not a broadcast"
             )
         # EVERY recipient is checked BEFORE any edge is written (probe 1 /
         # consequence #2: a partially-validated fan-out is N-1 good edges plus
@@ -235,6 +254,15 @@ class FakeMessageLedger:
         # ``agent_existence.reject_unknown_agents`` collects them: two agents may share
         # a display name, so a name-keyed set silently merges two bad recipients into
         # one refusal line.
+        # #190 / #247 parity, in PRODUCTION ORDER: the SENDER is validated BEFORE
+        # the recipients (a message FROM a ghost is the worse fault, reported first
+        # and on its own class). Raised via the SHARED refusal formatter, so this
+        # is byte-identical to production's
+        # ``reject_unknown_rows(agent_identities([sender]), error=UnknownSenderError)``.
+        # The fake used to skip this door entirely — it raised NOTHING where
+        # production raises, the parity gap #190's invariant exists to catch.
+        if sender.id not in self.db.agents:
+            raise UnknownSenderError(format_unknown_agent_refusal({sender.id: sender.name}))
         unknown: dict[str, str] = {}
         for ref in recipients:
             if ref.id not in self.db.agents:
@@ -252,8 +280,14 @@ class FakeMessageLedger:
             deduped.append(ref)
         now = _utc_now()
         # --- the mint: an atomic no-``await`` span ---------------------------
-        self.db.next_seq += 1
+        # 0-BASED, mirroring production's ``sequence::nextval`` under the default
+        # ``START 0`` (store reference §5; PROBED real_first_seq=0). A 1-based fake
+        # was finding #190's shape one field over — every ``since=`` behavioural
+        # pin rides this oracle, so a 1-based origin made ``since=0`` a benign
+        # before-the-first sentinel on the fake while a strict-correct build lost
+        # seq 0 on the 0-based real store (F1/F2). Assign THEN advance.
         seq = self.db.next_seq
+        self.db.next_seq += 1
         # --- end mint ---
         message_id = f"{seq:026x}"  # a monotonic, time-clustered stand-in for ulid()
         message = Message(
@@ -333,30 +367,68 @@ class FakeMessageLedger:
             ),
         )
 
-    async def drain(self, *, agent_id: str, limit: int, peek: bool = False) -> MessageDrainResult:
+    def _inbox_entry(self, message: Message, agent_id: str) -> InboxEntry:
+        """One drained row for ``agent_id`` — the ONE construction BOTH the plain
+        window and the ``since=`` recovery read use, so the builder's later R1
+        ``question=message.question`` passthrough is a single-line change here, not
+        two copies that could drift."""
+        edge = self.db.edges[(message.id, agent_id)]
+        return InboxEntry(
+            seq=message.seq,
+            message_id=message.id,
+            grade=message.grade,
+            sender_name=message.sender_name,
+            thread=message.thread,
+            task_id=message.task_id,
+            body=message.body,
+            refs=list(message.refs),
+            created_at=message.created_at,
+            acked_at=edge.acked_at,
+            ack_note=edge.ack_note,
+            question=message.question,
+        )
+
+    def _delivered_after(self, agent_id: str, since: int) -> list[Message]:
+        """DD-4.c recovery set: every message with an edge to ``agent_id`` whose
+        seq is STRICTLY greater than ``since`` (SEEN or unseen), oldest-first."""
+        return sorted(
+            (
+                self.db.messages[message_id]
+                for (message_id, edge_agent_id) in self.db.edges
+                if edge_agent_id == agent_id
+                and self.db.messages[message_id].seq > since
+            ),
+            key=lambda message: message.seq,
+        )
+
+    async def drain(
+        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+    ) -> MessageDrainResult:
         await asyncio.sleep(0)
+        if since is not None:
+            # DD-4.c RECOVERY READ: rows keyed by seq (``seq > since``, STRICT),
+            # SEEN or unseen, oldest-first, bounded at ``limit`` — and NON-stamping,
+            # because a recovery read must not consume the unseen rows a plain drain
+            # still owns (``stamped_seqs`` is empty). This is the fake's INDEPENDENT
+            # LEG-B reference; it does not delegate to production.
+            recovered = self._delivered_after(agent_id, since)
+            window = recovered[:limit]
+            return MessageDrainResult(
+                entries=[self._inbox_entry(message, agent_id) for message in window],
+                total_pending=len(recovered),
+                directive_pending=sum(
+                    1 for message in recovered if message.grade == MESSAGE_GRADE_DIRECTIVE
+                ),
+                stamped_seqs=[],
+                peeked=bool(peek),
+            )
         pending = sorted(self._pending(agent_id), key=lambda message: message.seq)
         total_pending = len(pending)
         directive_pending = sum(
             1 for message in pending if message.grade == MESSAGE_GRADE_DIRECTIVE
         )
         window = pending[:limit]
-        entries = [
-            InboxEntry(
-                seq=message.seq,
-                message_id=message.id,
-                grade=message.grade,
-                sender_name=message.sender_name,
-                thread=message.thread,
-                task_id=message.task_id,
-                body=message.body,
-                refs=list(message.refs),
-                created_at=message.created_at,
-                acked_at=self.db.edges[(message.id, agent_id)].acked_at,
-                ack_note=self.db.edges[(message.id, agent_id)].ack_note,
-            )
-            for message in window
-        ]
+        entries = [self._inbox_entry(message, agent_id) for message in window]
         stamped: list[int] = []
         if not peek:
             now = _utc_now()

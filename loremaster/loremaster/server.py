@@ -181,6 +181,7 @@ from loremaster.messages import (
     MessageLedger,
     MessageSendResult,
     PendingTraffic,
+    WaitingOnAnswer,
 )
 from loremaster.render import (
     render_attributed,
@@ -5989,12 +5990,16 @@ class AppContext:
         subscribed_skew = await self.brief_ledger.subscribed_name_skew(
             agent_id=agent_row.id, exclude=STANDING_BRIEF
         )
-        return AppContext._render_comms_heartbeat(
+        heartbeat = AppContext._render_comms_heartbeat(
             agent_row,
             project_head_version=head_version,
             project_acked_version=acked_version,
             subscribed_skew=subscribed_skew,
         )
+        # The DD-2.a waiting line rides BOTH verbs through the ONE shared read
+        # helper (F4: routing ≠ sharing — a private clone must fail the mutation pin).
+        waiting_lines = await AppContext._comms_waiting_lines(self, agent_row=agent_row)
+        return render_compose(heartbeat, *waiting_lines)
 
     async def _comms_brief_get(
         self, *, agent_row: Agent, session: str | None, name: str | None, **_ignored: Any
@@ -6446,6 +6451,11 @@ class AppContext:
         STAMPED window whose render never reached the caller.
         """
         skew_lines = await AppContext._comms_brief_skew_lines(self, agent_row=agent_row)
+        # L2 (DD-4.b): the awaiting-answer read must PRECEDE the drain STAMP. A
+        # waiting line derived from state read AFTER this agent's own drain
+        # consumed its window would describe a post-stamp world; reading it here
+        # (BEFORE the drain below) pins it to the pre-drain state.
+        waiting_lines = await AppContext._comms_waiting_lines(self, agent_row=agent_row)
         display_limit = min(
             limit if limit is not None else self.config.comms.drain_limit, _MAX_DRAIN_LIMIT
         )
@@ -6458,7 +6468,27 @@ class AppContext:
             limit=display_limit,
             session=agent_row.session,
         )
-        return render_compose(inbox, *skew_lines)
+        return render_compose(inbox, *waiting_lines, *skew_lines)
+
+    async def _comms_waiting_lines(self, *, agent_row: Agent) -> list[Rendered]:
+        """Read the DERIVED question-debt and render it — the ONE read+compose that
+        BOTH ``drain`` and ``heartbeat`` ride (DD-2.a). Keyed on ``awaiting_answer``
+        (the derived debt), NEVER the stored ``input_required`` status (the
+        two-vocabulary conflation DD-2 forbids).
+
+        Both the READ and the RENDER live here rather than being duplicated per
+        verb: a verb that routed to the shared render while hand-rolling its own
+        ``awaiting_answer`` read would be a private copy wearing the shared name,
+        passing every pin that merely checks the line is present (F4 — routing is
+        not sharing; the mutation pin catches the clone).
+        """
+        waiting = await self.message_ledger.awaiting_answer(agent_id=agent_row.id)
+        age_s = (
+            int((datetime.now(UTC) - waiting.asked_at).total_seconds())
+            if waiting is not None
+            else 0
+        )
+        return AppContext._render_comms_waiting_line(waiting, age_s=age_s)
 
     async def _comms_ack(
         self, *, agent_row: Agent, seqs: list[int], note: str | None, **_ignored: Any
@@ -7472,6 +7502,33 @@ class AppContext:
         return render_compose(*lines)
 
     @staticmethod
+    def _render_comms_waiting_line(
+        waiting: WaitingOnAnswer | None, *, age_s: int
+    ) -> list[Rendered]:
+        """The DD-2.a derived question-debt line, as a list of ``Rendered`` (EMPTY
+        when the agent owes no question) — the ONE helper BOTH drain and heartbeat
+        compose, so a template change moves BOTH verbs (the ``_render_comms_skew_lines``
+        precedent).
+
+        Derived from the typed :class:`WaitingOnAnswer` (#104 law — the seq and
+        thread are READ BACK, never re-derived); the thread is the only free text,
+        length-bounded and passed through ``sanitise_line`` (D2 — the fence is for
+        multi-line stored bodies; a mid-line label wants the control-char collapse
+        so a hostile thread cannot break the line). ``age_s`` is pre-computed so
+        the render is pure.
+        """
+        if waiting is None:
+            return []
+        return [
+            render_line(
+                "waiting: your question #{seq} on thread {thread} has no reply — asked {age} ago",
+                seq=waiting.question_seq,
+                thread=sanitise_line(waiting.thread),
+                age=AppContext._render_age(age_s),
+            )
+        ]
+
+    @staticmethod
     def _render_comms_drain_row(entry: InboxEntry, *, session: str) -> Rendered:
         """ONE drain row's HEADER line — the body is fenced beneath it by the caller.
 
@@ -7496,7 +7553,24 @@ class AppContext:
             context = safe_str(f" (thread {render_attributed(entry.thread)})")
         else:
             context = safe_str("")
+        # The R1 per-row question marker (adversary F3) is the STANDALONE token
+        # ``(question)`` appended to the header — safe_str STRIPS leading
+        # whitespace, so a context-slot marker could never be a standalone token,
+        # forcing a distinct template literal. ``context`` is computed ONCE above
+        # and passed to ALL FOUR templates, so a question row NEVER drops its
+        # task/thread label (grade ⊥ question). Four DUPLICATED render_line calls,
+        # not one composed template: the AST literal pin requires args[0] to be an
+        # ast.Constant, and ``test_no_dead_registry_entries`` requires each of the
+        # four classified literals to be emitted verbatim.
         if not entry.refs:
+            if entry.question:
+                return render_line(
+                    "#{seq} [{grade}] {sender}→you{context} (question)",
+                    seq=entry.seq,
+                    grade=sanitise_line(entry.grade),
+                    sender=sanitise_line(entry.sender_name),
+                    context=context,
+                )
             return render_line(
                 "#{seq} [{grade}] {sender}→you{context}",
                 seq=entry.seq,
@@ -7510,6 +7584,15 @@ class AppContext:
         over = len(entry.refs) - len(shown)
         if over > 0:
             shown.append(safe_str(f"+{over} more"))
+        if entry.question:
+            return render_line(
+                "#{seq} [{grade}] {sender}→you{context} (question) ({refs})",
+                seq=entry.seq,
+                grade=sanitise_line(entry.grade),
+                sender=sanitise_line(entry.sender_name),
+                context=context,
+                refs=render_join(", ", shown),
+            )
         return render_line(
             "#{seq} [{grade}] {sender}→you{context} ({refs})",
             seq=entry.seq,

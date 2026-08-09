@@ -3019,3 +3019,677 @@ class TestAnAckedButUNDRAINEDMessageIsServedONCEMore:
         stamping = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
         assert [entry.seq for entry in stamping.entries] == [seq]
         assert stamping.stamped_seqs == [seq]
+
+
+# =========================================================================== #
+# Packet 05a-i — LEG A: #190 ORACLE↔PRODUCTION ERROR-PROSE PARITY (THE ENTRY GATE)
+#
+# THE INVARIANT (finding #190): for EVERY error type the production
+# ``MessageLedger`` raises on the message path, the ``FakeMessageLedger`` oracle
+# raises the SAME exception TYPE with the SAME served PROSE. #190 is the reason
+# the D4 broadcast defect passed certification: every surface pin rides the fake,
+# so a fake whose prose DIVERGES from production hides production's wording from
+# every render pin. The cure is an INVARIANT, never a one-string edit — a new
+# production error added later without an oracle mirror, OR a production prose
+# change without a matching fake update, goes RED here.
+#
+# BOTH-SUITES premise (inherited delta row 6, MEASURED FALSE — a single-consumer
+# oracle is exactly the D4 blind spot): this instrument lives HERE (where a REAL
+# and a FAKE ledger are both constructible so it can COMPARE them), and the
+# builder's oracle fix must ALSO keep ``test_comms_tool.py`` green — verified safe
+# for the divergent legs because the SURFACE ``_comms_send`` raises its OWN
+# ``_EmptyRecipientSetError`` before the ledger's is ever reached
+# (``test_comms_tool.py::_solo_broadcast``), so a fake ledger-prose fix cannot
+# reach the solo-broadcast surface pins.
+#
+# RED-at-authoring, for the RIGHT reason (verify per leg): the fake DIVERGES from
+# production on ``IllegalMessageGradeError`` (prod ``render_attributed(grade)`` vs
+# fake ``{grade!r}``), on ``EmptyRecipientSetError`` (prod "…is a caller error,
+# not a broadcast" vs fake "no other non-retired agent…"), and on
+# ``UnknownSenderError`` (the fake never checks the sender, so it raises NOTHING
+# where production raises). The matching legs (body blank/over-cap, the pointer
+# family, the ack-note cap, the unknown-recipient refusal) already route through
+# shared seams and are pinned so a FUTURE divergence reddens.
+# =========================================================================== #
+
+_PARITY_GHOST = ("ghost-id-parity-99", "ghost")  # deliberately never seeded
+
+
+@pytest_asyncio.fixture()
+async def parity_pair() -> AsyncIterator[tuple[Any, Any]]:
+    """A live REAL ``MessageLedger`` (spike-surreal :18000) AND the FAKE oracle,
+    seeded IDENTICALLY — the #190 comparison instrument.
+
+    Not the ``params=["real","fake"]`` fixture: parity needs BOTH backends in ONE
+    test so it can compare the two productions of the same error. ``lead`` and
+    ``fixer-b`` are registered in both; ``_PARITY_GHOST`` is registered in
+    NEITHER, so the sender/recipient-existence legs resolve to nothing on both.
+    """
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    setup = await connect_admin(env)
+    await setup.close()
+    real = _msg().MessageLedger(
+        url=env.url,
+        namespace=env.namespace,
+        database=env.database,
+        user=env.user,
+        password=env.password,
+    )
+    await real.ensure_ready()
+    fake = _msg_fakes().FakeMessageLedger()
+    await fake.ensure_ready()
+    seed = [_ref(SENDER_LEAD), _ref(AGENT_FIXER_B)]
+    for ledger in (real, fake):
+        await _seed_agents(ledger, seed, session=SESSION_WAVE7)
+    try:
+        yield real, fake
+    finally:
+        await real.close()
+        await fake.close()
+        await drop_database(env)
+
+
+@dataclass(frozen=True)
+class _ParityScenario:
+    """One message-path error the parity invariant covers.
+
+    ``error_name`` names the class on ``loremaster.messages`` this scenario must
+    raise (resolved at call time via ``_msg()``); ``trigger`` performs the op that
+    raises it, on whichever ledger it is handed.
+    """
+
+    label: str
+    error_name: str
+    trigger: Callable[[Any], Awaitable[Any]]
+
+
+async def _grade_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade="bogus-grade",
+        recipients=[_ref(AGENT_FIXER_B)],
+    )
+
+
+async def _blank_body_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body="   \t  ",
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+    )
+
+
+async def _overcap_body_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body="x" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+    )
+
+
+async def _refs_count_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+        refs=["r"] * (_msg().MESSAGE_REFS_MAX_COUNT + 1),
+    )
+
+
+async def _refs_len_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+        refs=["x" * (_msg().MESSAGE_POINTER_MAX_CHARS + 1)],
+    )
+
+
+async def _thread_len_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+        thread="x" * (_msg().MESSAGE_POINTER_MAX_CHARS + 1),
+    )
+
+
+async def _empty_recipients_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[],
+    )
+
+
+async def _unknown_recipient_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(_PARITY_GHOST)],
+    )
+
+
+async def _unknown_sender_trigger(ledger: Any) -> Any:
+    return await ledger.send(
+        sender=_ref(_PARITY_GHOST),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+    )
+
+
+async def _note_overcap_trigger(ledger: Any) -> Any:
+    return await ledger.ack(
+        agent_id=AGENT_FIXER_B[0],
+        seqs=[1],
+        note="x" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
+    )
+
+
+# The scenario set. Each names the error class it must raise; the coverage pin
+# below asserts this set covers EVERY concrete ``MessageLedgerError`` subclass, so
+# a new error type added to production without a parity scenario reddens
+# ``test_the_parity_battery_covers_every_message_ledger_error`` — coverage as a
+# CHECKED variable, never a name-list that silently goes stale.
+_PARITY_SCENARIOS: tuple[_ParityScenario, ...] = (
+    _ParityScenario("illegal_grade", "IllegalMessageGradeError", _grade_trigger),
+    _ParityScenario("blank_body", "MessageBodyError", _blank_body_trigger),
+    _ParityScenario("overcap_body", "MessageBodyError", _overcap_body_trigger),
+    _ParityScenario("refs_count", "MessagePointerError", _refs_count_trigger),
+    _ParityScenario("refs_entry_len", "MessagePointerError", _refs_len_trigger),
+    _ParityScenario("thread_len", "MessagePointerError", _thread_len_trigger),
+    _ParityScenario("empty_recipients", "EmptyRecipientSetError", _empty_recipients_trigger),
+    _ParityScenario("unknown_recipient", "UnknownRecipientError", _unknown_recipient_trigger),
+    _ParityScenario("unknown_sender", "UnknownSenderError", _unknown_sender_trigger),
+    _ParityScenario("ack_note_overcap", "MessageBodyError", _note_overcap_trigger),
+)
+
+
+async def _raised(ledger: Any, trigger: Callable[[Any], Awaitable[Any]]) -> BaseException | None:
+    """Return the exception ``trigger`` raised on ``ledger``, or ``None`` if it
+    completed without raising (the ``UnknownSenderError`` gap manifests HERE — the
+    fake completes the send, so this returns ``None`` where production raised)."""
+    try:
+        await trigger(ledger)
+    except BaseException as error:  # noqa: BLE001 — the invariant is over EVERY raise
+        return error
+    return None
+
+
+def _concrete_message_ledger_errors() -> set[type]:
+    """EVERY concrete subclass of ``MessageLedgerError`` (recursive), the base
+    excluded. Derived structurally from the class tree so the coverage pin is a
+    property, never a hand-list of names to drift."""
+    root = _msg().MessageLedgerError
+    found: set[type] = set()
+    frontier = list(root.__subclasses__())
+    while frontier:
+        cls = frontier.pop()
+        found.add(cls)
+        frontier.extend(cls.__subclasses__())
+    return found
+
+
+class TestTheOracleRendersProductionsErrorProse:
+    """LEG A / #190. Parity is the ENTRY GATE: no message-path surface pin is
+    trustworthy until the oracle serves production's own wording."""
+
+    @pytest.mark.parametrize(
+        "scenario", _PARITY_SCENARIOS, ids=[s.label for s in _PARITY_SCENARIOS]
+    )
+    async def test_the_oracle_raises_the_same_TYPE_and_the_same_PROSE_as_production(
+        self, parity_pair: tuple[Any, Any], scenario: _ParityScenario
+    ) -> None:
+        real, fake = parity_pair
+        expected = getattr(_msg(), scenario.error_name)
+        real_error = await _raised(real, scenario.trigger)
+        fake_error = await _raised(fake, scenario.trigger)
+        assert real_error is not None, (
+            f"the PRODUCTION ledger did not raise for scenario {scenario.label!r} — the "
+            f"scenario no longer triggers {scenario.error_name}; fix the scenario, not the pin"
+        )
+        assert isinstance(real_error, expected), (
+            f"production raised {type(real_error).__name__} for {scenario.label!r}, "
+            f"expected {scenario.error_name}"
+        )
+        assert fake_error is not None, (
+            f"the ORACLE did not raise where production raised {scenario.error_name} for "
+            f"{scenario.label!r} — a fake that stays silent teaches a contract production "
+            f"does not serve (this is the UnknownSenderError gap: the fake never checks the "
+            f"sender). Every surface pin rides this oracle, so the divergence is invisible "
+            f"to them (finding #190)"
+        )
+        assert type(fake_error) is type(real_error), (
+            f"oracle raised {type(fake_error).__name__}, production raised "
+            f"{type(real_error).__name__} for {scenario.label!r} — same TYPE is the first "
+            f"half of parity"
+        )
+        assert str(fake_error) == str(real_error), (
+            f"oracle PROSE diverges from production for {scenario.label!r}:\n"
+            f"  production: {str(real_error)!r}\n"
+            f"  oracle:     {str(fake_error)!r}\n"
+            f"every surface pin rides the oracle, so this wording is what no render pin can "
+            f"see — the #190 blind spot. Route the fake through production's own prose seam "
+            f"(call it, do not clone it)"
+        )
+
+    def test_the_parity_battery_covers_every_message_ledger_error(self) -> None:
+        """Coverage as a CHECKED variable (the instrument-lesson: a name-list is
+        defeated by the name it forgot). A new ``MessageLedgerError`` subclass with
+        no parity scenario reddens HERE, before it can slip a divergent prose past
+        every surface pin."""
+        covered = {getattr(_msg(), scenario.error_name) for scenario in _PARITY_SCENARIOS}
+        every = _concrete_message_ledger_errors()
+        assert covered == every, (
+            f"the parity battery does not cover every message-path error type — "
+            f"uncovered: {sorted(cls.__name__ for cls in every - covered)}; "
+            f"covered-but-nonexistent: {sorted(cls.__name__ for cls in covered - every)}. "
+            f"Add a _ParityScenario for each uncovered type (finding #190)"
+        )
+
+    async def test_a_fresh_ledgers_first_send_has_the_SAME_seq_on_both_backends(
+        self, parity_pair: tuple[Any, Any]
+    ) -> None:
+        """F2 — the SEQ-ORIGIN parity pin (#190 class, one field over from the
+        prose battery). Production mints ``seq`` via ``sequence::nextval`` at
+        ``START 0``; a fresh ledger's FIRST send is seq 0. The oracle must model
+        that origin — a 1-based fake made ``since=0`` a benign before-the-first
+        sentinel on the fake while a strict-correct build lost seq 0 on the 0-based
+        real store (F1). This pin catches the divergence directly: same first seq
+        on both backends, AND that seq is 0."""
+        real, fake = parity_pair
+        real_first = (
+            await real.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body=BODY_SIGNAL,
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                recipients=[_ref(AGENT_FIXER_B)],
+            )
+        ).message.seq
+        fake_first = (
+            await fake.send(
+                sender=_ref(SENDER_LEAD),
+                session=SESSION_WAVE7,
+                body=BODY_SIGNAL,
+                grade=_msg().MESSAGE_GRADE_SIGNAL,
+                recipients=[_ref(AGENT_FIXER_B)],
+            )
+        ).message.seq
+        assert real_first == fake_first, (
+            f"seq-origin divergence: production's first seq is {real_first}, the oracle's is "
+            f"{fake_first} — every since= behavioural pin rides the fake, so a seq-origin "
+            f"gap hides F1's whole loss-recovery class (finding #190, one field over)"
+        )
+        assert real_first == 0, (
+            f"production's first seq is {real_first}, expected 0 (sequence::nextval START 0, "
+            f"store reference §5) — the recover-all cursor is seqs[0]-1, which is only -1 if "
+            f"this origin holds"
+        )
+
+
+# =========================================================================== #
+# Packet 05a-i — LEG C (ledger level): the per-row ``question`` marker on
+# ``InboxEntry`` and the drain SELECT.
+#
+# R1: ``InboxEntry`` gains ``question: bool``; the drain SELECT projects
+# ``in.question AS question`` and ``_row_to_inbox_entry`` populates it. NO DDL —
+# ``message.question`` is already a stored ``bool DEFAULT false``
+# (``surreal_schema.py::_MESSAGE_FIELD_SPECS``) read by ``awaiting_answer``; R1 is
+# a projection + model change only.
+#
+# These pins run on BOTH backends (the parametrized fixture) — so they ARE the
+# #190 parity for ``question``: the oracle's ``InboxEntry`` must carry it too, or
+# the fake leg reddens exactly where the real leg passes.
+# =========================================================================== #
+
+
+class TestTheDrainRowCarriesTheQuestionMarker:
+    async def test_InboxEntry_has_a_question_field(self, message_ledger: Any) -> None:
+        """The model gains ``question``. A build that adds it to ``Message`` (the
+        send side, which already has it) but forgets the RECIPIENT's view leaves
+        the drain unable to mark a question row at all."""
+        assert "question" in _msg().InboxEntry.model_fields, (
+            "InboxEntry has no 'question' field — the recipient's drained view cannot mark "
+            "which rows asked a question (R1); message.question already exists on the send "
+            "side but the per-recipient projection does not carry it"
+        )
+
+    async def test_a_drained_question_row_reports_question_True(
+        self, message_ledger: Any
+    ) -> None:
+        """The drain SELECT must PROJECT ``in.question`` and populate the entry —
+        a build that drops the projection reads NONE→False (store §2) and the
+        entry is silently non-question."""
+        await _ask(message_ledger, thread="q:gate", asker=SENDER_LEAD)
+        drained = await message_ledger.drain(agent_id=SENDER_LEAD[0], limit=_DRAIN_CAP, peek=True)
+        # ``_ask`` sends FROM the asker TO ``SENDER_LEAD``; drain SENDER_LEAD's inbox.
+        assert len(drained.entries) == 1
+        assert drained.entries[0].question is True, (
+            "a message sent with set_status='input_required' drained without question=True — "
+            "the drain SELECT is not projecting in.question, or the entry mapper drops it"
+        )
+
+    async def test_a_question_and_a_NON_question_row_in_ONE_drain_discriminate(
+        self, message_ledger: Any
+    ) -> None:
+        """FIXTURES MUST DISCRIMINATE: a question row AND a non-question row in the
+        SAME drain, so a build that hardcodes ``question=True`` (or ``False``) for
+        every row fails. Parameter-value monoculture is banned."""
+        # A question and an ordinary signal, both delivered to fixer-b.
+        await message_ledger.send(
+            sender=_ref(SENDER_LEAD),
+            session=SESSION_WAVE7,
+            body="please confirm the gate is green",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(AGENT_FIXER_B)],
+            thread="q:gate",
+            set_status="input_required",
+        )
+        await message_ledger.send(
+            sender=_ref(SENDER_LEAD),
+            session=SESSION_WAVE7,
+            body="fyi the deploy finished",
+            grade=_msg().MESSAGE_GRADE_SIGNAL,
+            recipients=[_ref(AGENT_FIXER_B)],
+        )
+        drained = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True
+        )
+        by_question = {entry.question for entry in drained.entries}
+        assert by_question == {True, False}, (
+            f"the drain did not carry BOTH a question row and a non-question row "
+            f"(saw {by_question}) — a build reading a single hardcoded value would pass a "
+            f"one-value fixture and be wrong for the other"
+        )
+        markers = {entry.seq: entry.question for entry in drained.entries}
+        questions = [seq for seq, is_q in markers.items() if is_q]
+        assert len(questions) == 1, (
+            f"exactly one drained row is a question, got {questions} of {markers} — "
+            f"question keys on message.question per ROW, never on a whole-drain flag"
+        )
+
+
+# =========================================================================== #
+# Packet 05a-i — LEG B: the ``since=`` / paging drain reshape (DD-4.c) + #183
+# (bound the pending read) + ``stamped_seqs`` truth (DD-4 Q5 residual). ONE
+# reshape of the drain read path.
+# =========================================================================== #
+
+
+_PAGING_INBOX = 12  # >> _DRAIN_CAP so a bound is observable, > any single window
+
+
+def _entry_rows(result: Any) -> list[dict[str, Any]]:
+    """The drain ENTRY rows in a raw ``_query`` result — rows carrying a ``body``
+    projection (the count() query's row carries ``count``, never ``body``, so this
+    isolates the pending-READ from the count read)."""
+    if not isinstance(result, list):
+        return []
+    return [row for row in result if isinstance(row, dict) and "body" in row]
+
+
+class TestTheDrainPendingReadIsBounded:
+    """#183: the pending read is UNBOUNDED today — every unseen row is read whole
+    before the window is trimmed in Python. Bound it inside this reshape; the
+    counts still describe the WHOLE set (a separate ``count()``), never the window.
+    """
+
+    async def test_the_entries_read_never_materialises_more_than_the_limit(
+        self, message_ledger: Any
+    ) -> None:
+        if not _is_real(message_ledger):
+            pytest.skip(
+                "#183 bounds the STORE read; the fake holds rows in memory and has no "
+                "unbounded-read to bound (its truth is pinned by the count/window pins)"
+            )
+        await _send_n(message_ledger, _PAGING_INBOX)
+        seen_row_counts: list[int] = []
+        original = message_ledger._query
+
+        async def watched(statement: str, params: Any = None) -> Any:
+            result = await original(statement, params)
+            rows = _entry_rows(result)
+            if rows:
+                seen_row_counts.append(len(rows))
+            return result
+
+        message_ledger._query = watched
+        try:
+            drained = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        finally:
+            message_ledger._query = original
+        assert drained.total_pending == _PAGING_INBOX, (
+            "total_pending must still count the WHOLE pending set, not the bounded window"
+        )
+        assert seen_row_counts, "no entry-projecting read was observed — the harness missed it"
+        assert max(seen_row_counts) <= _DRAIN_CAP, (
+            f"the pending read materialised {max(seen_row_counts)} entry rows for a "
+            f"limit of {_DRAIN_CAP} over {_PAGING_INBOX} pending (#183) — it reads the whole "
+            f"mailbox before trimming; bound the read (ORDER BY seq LIMIT) and count "
+            f"separately"
+        )
+
+
+class TestSinceServesAlreadySeenRows:
+    """DD-4.c (#214 is the live receipt): ``drain(since=<seq>)`` is the RECOVERY
+    verb — it serves already-SEEN rows keyed by seq, so a message lost between the
+    at-most-once stamp and the caller receiving bytes is recoverable. A ``since=``
+    that serves only UNSEEN rows leaves D11 fully open — that is the wrong build to
+    stop. Seq semantics: ``seq > since`` (STRICT; ``since`` = the last seq you
+    PROCESSED). A plain drain (no ``since=``) still serves only unseen.
+
+    ⚠ CURSOR ORIGIN (F1/F2): production ``message.seq`` is 0-BASED
+    (``sequence::nextval`` ``START 0``; store reference §5). So the "recover
+    everything" cursor is ``seqs[0]-1`` (= -1 on a fresh ledger), NEVER a
+    hardcoded ``0`` — ``since=0`` on a 0-based store means "everything AFTER seq
+    0", which drops seq 0 itself. The recovery protocol: initial cursor is
+    ``seqs[0]-1``; after processing up to seq K, recover with ``since=K``.
+    """
+
+    async def test_since_re_reads_rows_a_plain_drain_already_stamped(
+        self, message_ledger: Any
+    ) -> None:
+        seqs = await _send_n(message_ledger, 3)
+        first = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert first.stamped_seqs == seqs, "the setup drain did not stamp the window it served"
+        # The plain drain is now empty — the rows are SEEN, unrecoverable without since=.
+        plain = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert plain.entries == [], "a plain drain must still serve only UNSEEN rows"
+        # "recover everything" = the cursor BEFORE the first seq (seqs[0]-1), NEVER
+        # a hardcoded 0 — on the 0-based real store since=0 would drop seq 0 (F1).
+        recover_all = seqs[0] - 1
+        recovered = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, since=recover_all
+        )
+        assert [entry.seq for entry in recovered.entries] == seqs, (
+            f"drain(since={recover_all}) did not re-serve the already-SEEN rows — a since= "
+            f"that serves only unseen rows leaves the at-most-once loss window (D11/#214) "
+            f"permanently open; it must serve seen rows keyed by seq"
+        )
+
+    async def test_since_is_STRICTLY_greater_than_the_cursor(
+        self, message_ledger: Any
+    ) -> None:
+        """``seq > since`` vs ``seq >= since`` is a real fork; pin the strict form
+        (``since`` names the last seq ALREADY processed, so it must not be
+        re-served). FIXTURES MUST DISCRIMINATE — a ``>=`` build re-serves the
+        cursor row itself."""
+        seqs = await _send_n(message_ledger, 3)
+        await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        recovered = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, since=seqs[1]
+        )
+        recovered_seqs = [entry.seq for entry in recovered.entries]
+        assert recovered_seqs == [seqs[2]], (
+            f"drain(since={seqs[1]}) returned {recovered_seqs}, expected only rows with "
+            f"seq > {seqs[1]} (i.e. [{seqs[2]}]) — since= is STRICTLY greater; a >= build "
+            f"re-serves the cursor row the caller said it already processed"
+        )
+
+    async def test_since_0_does_NOT_re_serve_a_processed_seq_0(
+        self, message_ledger: Any
+    ) -> None:
+        """F1(4): kill the muddy ``since==0 ⇒ >=`` special-case — the ONLY build
+        that passed the pre-fix ``since=0`` fixtures. On the 0-based store the first
+        send IS seq 0, so a caller who PROCESSED seq 0 and passes ``since=0`` to
+        fetch newer rows must NOT be re-served seq 0: ``since=`` is uniformly
+        STRICT, at 0 exactly as everywhere else. Without this pin a build could
+        special-case 0 to pass the recover-all fixtures and ship a latent re-serve."""
+        seqs = await _send_n(message_ledger, 3)
+        assert seqs[0] == 0, "a fresh 0-based ledger's first seq must be 0 (F2 origin)"
+        await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)  # process all
+        recovered = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, since=0
+        )
+        recovered_seqs = [entry.seq for entry in recovered.entries]
+        assert recovered_seqs == [seqs[1], seqs[2]], (
+            f"drain(since=0) returned {recovered_seqs}, expected only seq > 0 "
+            f"([{seqs[1]}, {seqs[2]}]) — a since==0 ⇒ >= special-case re-serves seq 0, which "
+            f"the caller said it already PROCESSED; since= is strict at 0 too (F1 muddy-build killer)"
+        )
+
+    async def test_since_does_not_re_stamp_and_does_not_consume_unseen(
+        self, message_ledger: Any
+    ) -> None:
+        """A recovery read is a READ: it must not stamp, so an UNSEEN row it
+        happens to surface is still owed to the next plain drain. A build that
+        stamps inside since= would consume rows the recovery only meant to show."""
+        seqs = await _send_n(message_ledger, 3)
+        # since= over an all-UNSEEN inbox: it surfaces rows > cursor, seen or not…
+        recover_all = seqs[0] - 1
+        recovered = await message_ledger.drain(
+            agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, since=recover_all
+        )
+        assert [entry.seq for entry in recovered.entries] == seqs, (
+            f"since={recover_all} over an unseen inbox did not surface all rows keyed by seq"
+        )
+        assert recovered.stamped_seqs == [], "a since= recovery read must stamp NOTHING"
+        # …and the plain drain still owns them, because since= consumed nothing.
+        plain = await message_ledger.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        assert [entry.seq for entry in plain.entries] == seqs, (
+            "a since= read consumed unseen rows the following plain drain then missed — "
+            "since= is a recovery READ, never a consuming drain"
+        )
+
+    async def test_the_since_read_is_ALSO_bounded(self, message_ledger: Any) -> None:
+        """#183 applies to the since= path too — the reshape must not bound the
+        plain window while leaving the recovery read to scan the whole history."""
+        if not _is_real(message_ledger):
+            pytest.skip("#183 bounds the STORE read; the fake holds rows in memory")
+        seqs = await _send_n(message_ledger, _PAGING_INBOX)
+        recover_all = seqs[0] - 1
+        seen_row_counts: list[int] = []
+        original = message_ledger._query
+
+        async def watched(statement: str, params: Any = None) -> Any:
+            result = await original(statement, params)
+            rows = _entry_rows(result)
+            if rows:
+                seen_row_counts.append(len(rows))
+            return result
+
+        message_ledger._query = watched
+        try:
+            await message_ledger.drain(
+                agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, since=recover_all
+            )
+        finally:
+            message_ledger._query = original
+        assert seen_row_counts, "no entry read observed on the since= path"
+        assert max(seen_row_counts) <= _DRAIN_CAP, (
+            f"the since= read materialised {max(seen_row_counts)} rows for limit "
+            f"{_DRAIN_CAP} — the recovery path is unbounded (#183)"
+        )
+
+
+class TestStampedSeqsIsTheACTUALStampNotTheAttemptedWindow:
+    """DD-4 Q5 residual — CHOICE: TRUTH (``stamped_seqs`` returns the UPDATE's
+    actually-stamped set), NOT delete. Rationale: the field's own docstring already
+    promises "EXACTLY the seqs the served window stamped seen", which today is
+    FALSE under a concurrent same-agent drain — production sets
+    ``stamped_seqs = [row.seq for row in window]`` (the ATTEMPTED window) and
+    ignores what the guarded UPDATE actually stamped, so it OVER-describes when a
+    racer stamped a window row first. TRUTH aligns code with its shipped contract
+    and is the SAFE direction (under a race it UNDER-describes, never claims a row
+    it did not stamp). Leg-1: ``stamped_seqs`` names exactly the rows THIS call
+    transitioned NONE→seen.
+    """
+
+    async def test_stamped_seqs_excludes_a_window_row_stamped_by_a_racer(
+        self, message_ledger_factory: MessageLedgerFactory
+    ) -> None:
+        drainer = await message_ledger_factory()
+        await _seed_agents(
+            drainer,
+            [_ref(SENDER_LEAD), _ref(AGENT_FIXER_B), _ref(AGENT_AUDIT_C), _ref(AGENT_SCOUT_D)],
+            session=SESSION_WAVE7,
+        )
+        if not _is_real(drainer):
+            pytest.skip(
+                "the TOCTOU injection hooks the ledger's _query seam; the fake's drain has "
+                "no such seam and ALREADY models truth (it appends only rows it actually "
+                "stamps), so it passes this property by construction"
+            )
+        injector = await message_ledger_factory()
+        seqs = await _send_n(drainer, 3)
+        # Learn the middle message's id without stamping anything (peek).
+        peeked = await drainer.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP, peek=True)
+        mid_message_id = next(e.message_id for e in peeked.entries if e.seq == seqs[1])
+        # Stamp the middle row out-of-band the instant the real drain issues its
+        # OWN seen-stamp UPDATE — the deterministic form of the concurrent
+        # same-agent race (its SELECT saw all three unseen; the UPDATE now skips
+        # the row a racer stamped between SELECT and UPDATE).
+        original = drainer._query
+        injected = {"done": False}
+
+        async def wrapped(statement: str, params: Any = None) -> Any:
+            head = statement.strip().upper()
+            if not injected["done"] and head.startswith("UPDATE") and "SEEN_AT" in head:
+                injected["done"] = True
+                await injector._query(
+                    f"UPDATE {_schema().TO_RELATION} SET seen_at = $t "
+                    f"WHERE out = $a AND in = $m AND seen_at IS NONE",
+                    {
+                        "t": datetime.now(UTC),
+                        "a": RecordID(AGENT_TABLE, AGENT_FIXER_B[0]),
+                        "m": RecordID(_schema().MESSAGE_TABLE, mid_message_id),
+                    },
+                )
+            return await original(statement, params)
+
+        drainer._query = wrapped
+        try:
+            drained = await drainer.drain(agent_id=AGENT_FIXER_B[0], limit=_DRAIN_CAP)
+        finally:
+            drainer._query = original
+        assert injected["done"], "the injection never fired — the drain issued no seen-stamp UPDATE"
+        assert seqs[1] not in drained.stamped_seqs, (
+            f"stamped_seqs {drained.stamped_seqs} claims seq {seqs[1]}, which THIS drain did "
+            f"NOT stamp (a racer stamped it between SELECT and UPDATE) — stamped_seqs is the "
+            f"ATTEMPTED window, not the actual stamp; it must be read back from the UPDATE "
+            f"result (DD-4 Q5 truth). Over-describing makes the field lie exactly as its "
+            f"docstring forbids"
+        )
+        assert drained.stamped_seqs == [seqs[0], seqs[2]], (
+            f"stamped_seqs {drained.stamped_seqs} is not exactly the rows this call "
+            f"transitioned NONE→seen ([{seqs[0]}, {seqs[2]}])"
+        )

@@ -238,6 +238,10 @@ class InboxEntry(BaseModel):
         created_at: When the message was sent (tz-aware UTC).
         acked_at: When THIS recipient acked it, or ``None`` if unacked.
         ack_note: The note THIS recipient left when acking, or ``None``.
+        question: Whether the underlying message was sent as a QUESTION
+            (``set_status='input_required'`` — ``Message.question``); the R1
+            per-row marker a drain row carries so a recipient sees at a glance
+            which inbox rows asked something. Defaults ``False``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -253,6 +257,7 @@ class InboxEntry(BaseModel):
     created_at: datetime
     acked_at: datetime | None = None
     ack_note: str | None = None
+    question: bool = False
 
 
 class MessageDrainResult(BaseModel):
@@ -1004,58 +1009,132 @@ class MessageLedger:
 
     # -- drain --------------------------------------------------------------
 
-    async def drain(self, *, agent_id: str, limit: int, peek: bool = False) -> MessageDrainResult:
-        """Serve this agent's unread inbox window and (unless ``peek``) stamp
-        EXACTLY the rows served as seen.
+    #: The per-row projection BOTH drain doors (plain window + ``since=`` recovery)
+    #: read. ``in.question`` rides the same projection so the R1 marker reaches the
+    #: entry mapper; ``in.<field>`` walks the ``to`` edge's ``in`` link to the
+    #: message row, while ``acked_at``/``ack_note`` are the edge's OWN columns.
+    _ENTRY_PROJECTION = (
+        f"in.{_ID_KEY} AS message_id, in.seq AS seq, in.grade AS grade, "
+        f"in.sender.name AS sender_name, in.thread AS thread, in.task_id AS task_id, "
+        f"in.body AS body, in.refs AS refs, in.question AS question, "
+        f"in.created_at AS created_at, acked_at, ack_note"
+    )
 
-        Pending = every message carrying an UNSTAMPED (``seen_at IS NONE``) ``to``
-        edge to ``agent_id``. The window is the oldest ``limit`` by ``seq``;
-        ``total_pending``/``directive_pending`` are computed over the WHOLE pending
-        set, never the capped window (a display cap bounds rows rendered, never the
-        numbers beside them). A non-``peek`` drain stamps ONLY the served window,
-        so an elided remainder stays unread — no cursor arithmetic.
+    async def _count_edges(
+        self, agent_rec: RecordID, predicate: str, params: dict[str, Any]
+    ) -> int:
+        """A bounded ``count() … GROUP ALL`` of this agent's ``to`` edges under
+        ``predicate`` — #183: the whole-set counts are read WITHOUT materialising
+        the rows, so a display cap on the entries never under-reports the numbers
+        rendered beside them (store §5.1 ``count()…GROUP ALL`` idiom)."""
+        result = await self._query(
+            f"SELECT count() FROM {TO_RELATION} WHERE out = $agent AND {predicate} GROUP ALL",
+            {"agent": agent_rec, **params},
+        )
+        return self._extract_group_count(result)
+
+    async def drain(
+        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+    ) -> MessageDrainResult:
+        """Serve this agent's inbox window and (unless ``peek``) stamp EXACTLY the
+        rows served as seen.
+
+        Two modes, one return shape:
+
+        * **Plain drain** (``since=None``) — serves the oldest ``limit`` UNSTAMPED
+          (``seen_at IS NONE``) rows. The entries read is BOUNDED (``ORDER BY seq
+          LIMIT``, #183) and ``total_pending``/``directive_pending`` are counted
+          SEPARATELY over the whole pending set (never the capped window — a
+          display cap bounds rows rendered, never the numbers beside them). A
+          non-``peek`` plain drain stamps ONLY the served window; ``stamped_seqs``
+          is read BACK from the guarded ``UPDATE … RETURN AFTER`` — the ACTUAL
+          rows this call won (DD-4 Q5), never the ATTEMPTED window, so a
+          concurrent same-agent racer that stamped a row first cannot make this
+          call CLAIM a seq it did not stamp.
+        * **``since=<seq>`` recovery** (DD-4.c) — serves rows keyed by seq
+          (``seq > since`` STRICT, ``since`` names the last seq the caller ALREADY
+          processed), SEEN or unseen, oldest-first, bounded — and NON-stamping
+          (stamps nothing, consumes nothing, ``stamped_seqs`` empty). This is the
+          re-read an agent uses to recover a delivery it lost; the initial cursor
+          is ``seqs[0] - 1`` (the 0-based store makes the first seq 0, so a
+          hardcoded 0 would drop it).
 
         Args:
             agent_id: The draining agent's opaque row id.
             limit: The display cap on served rows.
-            peek: When ``True``, serve the same rows but stamp NOTHING.
+            peek: When ``True``, serve the plain window but stamp NOTHING. Ignored
+                shape-wise by the ``since=`` recovery read, which never stamps.
+            since: When not ``None``, the recovery cursor — serve ``seq > since``
+                (seen or unseen), stamping nothing.
 
         Returns:
             The :class:`MessageDrainResult` of this call.
         """
         agent_rec = RecordID(AGENT_TABLE, agent_id)
-        rows = self._as_rows(
+        if since is not None:
+            rows = self._as_rows(
+                await self._query(
+                    f"SELECT {self._ENTRY_PROJECTION} FROM {TO_RELATION} "
+                    f"WHERE out = $agent AND in.seq > $since ORDER BY seq LIMIT $limit",
+                    {"agent": agent_rec, "since": since, "limit": limit},
+                )
+            )
+            total_pending = await self._count_edges(agent_rec, "in.seq > $since", {"since": since})
+            directive_pending = await self._count_edges(
+                agent_rec,
+                "in.seq > $since AND in.grade = $grade",
+                {"since": since, "grade": MESSAGE_GRADE_DIRECTIVE},
+            )
+            return MessageDrainResult(
+                entries=[self._row_to_inbox_entry(row) for row in rows],
+                total_pending=total_pending,
+                directive_pending=directive_pending,
+                stamped_seqs=[],
+                peeked=bool(peek),
+            )
+        window_rows = self._as_rows(
             await self._query(
-                f"SELECT in.{_ID_KEY} AS message_id, in.seq AS seq, in.grade AS grade, "
-                f"in.sender.name AS sender_name, in.thread AS thread, in.task_id AS task_id, "
-                f"in.body AS body, in.refs AS refs, in.created_at AS created_at, "
-                f"acked_at, ack_note "
-                f"FROM {TO_RELATION} WHERE out = $agent AND seen_at IS NONE",
-                {"agent": agent_rec},
+                # L1: ORDER BY the PROJECTED ALIAS ``seq`` — ``ORDER BY in.seq`` on a
+                # LINKED field is SILENTLY IGNORED on the edge table (store §4).
+                f"SELECT {self._ENTRY_PROJECTION} FROM {TO_RELATION} "
+                f"WHERE out = $agent AND seen_at IS NONE ORDER BY seq LIMIT $limit",
+                {"agent": agent_rec, "limit": limit},
             )
         )
-        # The real store guarantees no incidental ordering and the adversarial fake
-        # deliberately supplies rows seq-decorrelated, so the order is pinned here.
-        pending = sorted(rows, key=lambda row: int(row["seq"]))
-        total_pending = len(pending)
-        directive_pending = sum(1 for row in pending if row.get("grade") == MESSAGE_GRADE_DIRECTIVE)
-        window = pending[:limit]
+        # The store already orders by ``seq``; the sort re-pins it because the
+        # adversarial fake / a ``_query`` injection may supply rows seq-decorrelated.
+        window = sorted(window_rows, key=lambda row: int(row["seq"]))
+        total_pending = await self._count_edges(agent_rec, "seen_at IS NONE", {})
+        directive_pending = await self._count_edges(
+            agent_rec, "seen_at IS NONE AND in.grade = $grade", {"grade": MESSAGE_GRADE_DIRECTIVE}
+        )
         entries = [self._row_to_inbox_entry(row) for row in window]
         stamped_seqs: list[int] = []
         if not peek and window:
-            window_records = [
-                RecordID(MESSAGE_TABLE, self._bare_id(row["message_id"])) for row in window
-            ]
-            await self._query(
-                f"UPDATE {TO_RELATION} SET seen_at = $seen_at "
-                f"WHERE out = $agent AND in IN $message_ids AND seen_at IS NONE",
-                {
-                    "seen_at": datetime.now(UTC),
-                    "agent": agent_rec,
-                    "message_ids": window_records,
-                },
+            seq_by_message: dict[str, int] = {
+                self._bare_id(row["message_id"]): int(row["seq"]) for row in window
+            }
+            window_records = [RecordID(MESSAGE_TABLE, mid) for mid in seq_by_message]
+            # stamped_seqs = the ACTUAL stamp (DD-4 Q5): read the edges this UPDATE's
+            # CAS won back via RETURN AFTER, never the attempted window. Under a
+            # concurrent same-agent race the attempted window would over-claim.
+            stamped_edges = self._as_rows(
+                await self._query(
+                    f"UPDATE {TO_RELATION} SET seen_at = $seen_at "
+                    f"WHERE out = $agent AND in IN $message_ids AND seen_at IS NONE "
+                    f"RETURN AFTER",
+                    {
+                        "seen_at": datetime.now(UTC),
+                        "agent": agent_rec,
+                        "message_ids": window_records,
+                    },
+                )
             )
-            stamped_seqs = [int(row["seq"]) for row in window]
+            stamped_seqs = sorted(
+                seq_by_message[self._bare_id(edge.get("in"))]
+                for edge in stamped_edges
+                if self._bare_id(edge.get("in")) in seq_by_message
+            )
         return MessageDrainResult(
             entries=entries,
             total_pending=total_pending,
@@ -1123,6 +1202,7 @@ class MessageLedger:
             created_at=self._require_aware_utc(row.get("created_at")),
             acked_at=self._to_aware_utc(row.get("acked_at")),
             ack_note=row.get("ack_note"),
+            question=bool(row.get("question")),
         )
 
     # -- ack / awaiting_answer (packet 03a-2 — the CONSUME path) ------------
