@@ -1399,3 +1399,261 @@ checks `_logging_fixtures` first, so it is promotion-tolerant.
 
 **Fork status: BOTH ruled at design (no operator scope-grant needed). Only lead action: reflect the
 two writable-set additions (server.py already in B; test_comms_footer.py into A-SUB) in the briefs.**
+
+## §11 — G summary-honesty structural redesign (fable-designer-3, 2026-08-09)
+
+**Escalation, not a fix wave.** The G (#344) summary-honesty sub-instrument (IDIOM 3, §9.3)
+has had its class survive THREE rounds — round 1 a 2-token deny-list (`W-summary-alt`
+defeated it with alternate wording), round 2/3 a positive-marker check whose reach is
+`test_wave_gate._summary_line` = the LAST PASS/FAIL line only (`W-summary-double` defeated it
+with an over-claim on a NON-last verdict line), and a standing residual `W-summary-inline`
+(marker + over-claim on the SAME line) defeats even a per-verdict-line marker allowlist.
+Receipts: `REPORT-delta-adversary-g-2.md` (MP-9 + W-summary-double + W-summary-inline),
+`REPORT-delta-adversary-g.md` (the round-1 deny-list survivor MP-7). The lead's-own-tell has
+fired ("same class survives 2 waves → escalate the DESIGN, don't brief a 3rd fix"), so §11
+redesigns the property so the defect is **unrepresentable by construction** rather than
+patched a fourth time. Read at `wave_gate.py` ABSENT (RED contract) · `scripts/test_wave_gate.py`
+uncommitted (`M`) · HEAD `14b62f2`.
+
+### §11.1 — Root cause: string-level honesty IS enumerate-the-forbidden
+
+All three survivors share ONE mechanism, and it is CLAUDE.md's meta-lesson reproduced inside
+the fix for the finding about exactly this: **every round treated the summary as a `str` a
+builder APPENDS to `lines: list[str]`, then INSPECTED THE STRING.** String inspection of a
+builder-authored, open-vocabulary, per-call line is inherently an enumeration of shapes —
+forbidden (deny-list) or safe (marker allowlist) — and the forbidden/safe *shape* set over
+free text is unbounded, so an adversary always finds an uninspected line (`double`), an
+unenumerated wording (`alt`), or a line carrying both marker and lie (`inline`). The reach of
+the guard is a hidden constant (`the last line`, `these two tokens`, `each verdict line`) — the
+7th-defeat shape, keyed on a string property instead of a checked variable.
+
+The lie lives in the **gap between the typed verdict the machinery COMPUTED and the free text a
+builder WROTE beside it**. `pending_contract_gate._render_currency` computes `ok` from typed
+per-gate `GateCurrency` values, then hand-appends `"CURRENCY   : PASS — every claimed gate is
+GREEN or OWNED"` as free text. A DRY-faithful wave build inherits that unqualified line (blind
+to SCOPED, because the machinery computes its verdict from `results`, which shows the scoped
+pytest subset as green) and appends an honest banner — that is `W-summary-double`, born from
+the free-text seam, not from any wording choice.
+
+**The move: lift the honesty property from the STRING level to the TYPE level.** At the type
+level "unqualified pass" is a SINGLE closed enum value and "is this leg qualified" is a typed
+flag — the SAFE set is small, closed and enumerable (allowlist-the-safe / enforce-at-
+construction, exactly the operator frame), and a biconditional over a finite typed domain is
+∀-checkable where an open-text shape-scan is not. This is CLAUDE.md's "render from typed
+applicability, never a name compared" and "prose DERIVED from behaviour, not restated beside
+it," applied to the summary.
+
+### §11.2 — The redesigned property (typed verdict + sole minter)
+
+Introduce a closed summary-verdict type and two pure functions, and make the rendered summary
+string a pure function of the typed verdict — never a value a caller authors.
+
+1. **`SummaryVerdict` — a closed enum, the summary's typed applicability.** The MINIMAL surface
+   that preserves checkpoint behaviour byte-for-byte and adds the one new state SCOPED:
+   - `PASS_FULL` — every leg ran full; any reds all OWNED. The **only** value whose render
+     carries the unqualified currency-clear token ("every claimed gate is GREEN or OWNED").
+     Maps byte-exact to today's `_render_currency` PASS line (extraction, not a behaviour change).
+   - `PASS_SCOPED` — ok for what ran, but ≥1 leg ran a subset (wave pytest) → a full run is
+     OWED. The wave qualified pass.
+   - `FAIL` — ≥1 leg RED_ORPHANED / NOT_RUN. Maps byte-exact to today's FAIL line.
+
+   (`PASS_FULL` collapses today's GREEN-or-OWNED pass — the checkpoint summary already names
+   OWNED honestly, so CLEAN vs OWNED need not split for #344; the lie is *only* SCOPED. A later
+   packet may split OWNED out, but §11 keeps the enum minimal so the production extraction is
+   behaviour-preserving.)
+
+2. **`summary_verdict(leg_quals: Sequence[LegQualification]) -> SummaryVerdict` — a pure, TOTAL
+   function of the typed per-leg states.** The biconditional it must satisfy:
+   - `FAIL`        iff any leg is FAILING (orphaned / not-run);
+   - else `PASS_SCOPED` iff any leg is SCOPED;
+   - else `PASS_FULL`.
+   So **`PASS_FULL` is unreachable whenever any leg is SCOPED** — over-claim is excluded in the
+   RETURN VALUE, before any string exists. `LegQualification` is a closed enum
+   `{CLEAN, OWNED, SCOPED, FAILING}` DERIVED from each gate's existing `GateCurrency.verdict`
+   plus a `scoped: bool` (see §11.3) — reuse the per-gate typed applicability that already
+   exists; do not re-derive it from names.
+
+3. **`render_summary(verdict: SummaryVerdict) -> SummaryLine` — the SOLE minter of a summary
+   string, a total mapping enum → fixed string.** Only `PASS_FULL` maps to a string containing
+   the unqualified-pass token; `PASS_SCOPED`/`FAIL` map to strings that carry their bound. The
+   wording is FIXED here (one canonical string per enum value), never chosen per call — so
+   "alternate wording" is not a degree of freedom a wrong build has.
+
+4. **The receipt is a TYPED value, not a `list[str]` a builder assembles.** `render_wave_receipt`
+   returns (or internally builds) a frozen `WaveReceipt(leg_lines: tuple[str, ...], verdict:
+   SummaryVerdict)` whose `.ok` and `.summary_line` are DERIVED (`.ok = verdict is not FAIL`;
+   `.summary_line = render_summary(verdict)`). The public `-> tuple[list[str], bool]` seam is
+   `(receipt.render(), receipt.ok)` where `render()` is `[*leg_lines, str(summary_line),
+   _NOT_DEPLOY_NOTE]`. **There is no free-text summary-append seam left** — the summary slot is
+   typed and filled only by the sole minter, and `.ok`/summary share the one `verdict` so they
+   can never disagree (this also strengthens the MP-6 `main-exit == renderer-ok` pin).
+
+5. **`SummaryLine` — a `Rendered`-style provenance type (REUSE, do not invent).** Mirror
+   `loremaster.render.Rendered` (a `str` subclass "PROVEN to have been assembled ONLY via" the
+   sanctioned mint verbs, enforced by the `test_render_seam_pins.TestSafeLineRenderedMintPin` AST
+   scan that fails if the constructor appears anywhere else in production). Make `SummaryLine` a
+   `str` subclass minted ONLY by `render_summary`; a `pytest`-time AST scan over `wave_gate.py`
+   (+ the extracted seam) fails if `SummaryLine(...)`/`cast` appears anywhere else, AND if the
+   unqualified-pass token literal appears anywhere outside `render_summary`'s canonical mapping.
+   That AST scan is the enforce-at-construction backstop, the SAME idiom the render package
+   already ships and pins.
+
+**DRY #1 — one implementation, both modes.** `summary_verdict` + `render_summary` live in
+`pending_contract_gate.py` (the shared home — the summary logic already lives there) and are
+consumed by BOTH `_render_currency` (checkpoint; every leg `scoped=False`) and
+`render_wave_receipt` (wave; pytest leg `scoped=True`). Checkpoint can reach PASS_FULL; wave
+with a scoped pytest leg **cannot**. One summary policy, called twice — never a pattern cloned
+(§9.6 IDIOM 3 row said this is "genuinely new but small … the summary reads per-leg
+scoped/qualified flags"; §11 is that, made structural).
+
+### §11.3 — Production-design change (the fork, answered)
+
+**YES — this forces a small, behaviour-preserving change to shipped production code
+(`scripts/pending_contract_gate.py`), and that is the DRY-correct answer, not an accident.**
+The only shipped code is `pending_contract_gate.py` (`wave_gate.py` does not yet exist). Two
+options; the frame (DRY #1) decides:
+
+- **Option A (RECOMMENDED) — extract the summary into a shared typed seam.** Pull the inline
+  PASS/FAIL logic at the tail of `_render_currency` into `summary_verdict` + `render_summary`
+  (+ `SummaryVerdict`/`SummaryLine`), and have `_render_currency` compute a `LegQualification`
+  per gate (all `scoped=False`) and call them. `wave_gate` calls the SAME seam with the pytest
+  leg `scoped=True`. Behaviour-preserving for checkpoint (pinned below); the one new state is
+  SCOPED. This is the ONE-IMPLEMENTATION fix — the summary computed once, consumed twice.
+- **Option B (REJECTED) — `wave_gate` re-implements currency rendering** so `pending_contract_
+  gate.py` is untouched. This CLONES the summary policy into a second module — the exact §9.1
+  SHARING / #102 two-copies defect, and forbidden by the acceptance frame (DRY #1).
+
+The `scoped: bool` per leg: wave_gate derives it from the reader identity (the JUnit reader =
+the scopable leg, exactly as `test_scopable_gate_identified_by_reader_not_literal_id` already
+requires — DERIVED, not keyed on `id == "pytest"`) ∧ `mode == MODE_WAVE`. It does NOT go onto
+`GateCurrency` (which "deliberately carries NO is_deploy_receipt field" — keep its
+currency-vs-deploy separation; carry `scoped` in the new `LegQualification`/`WaveReceipt`
+surface instead).
+
+**Behaviour-preservation guard (the removed-behavior inventory, per the delete/replace law).**
+The extraction MUST reproduce today's checkpoint summary byte-for-byte. Pin it with an
+oracle-equality control: the pre-extraction `_render_currency` output over {all-clean,
+one-owned, one-orphaned, one-not-run} equals the post-extraction output, byte-exact — and the
+EXISTING `test_pending_contract_gate.py` suite (which certifies the OLD world) must stay green
+unchanged. That is the "tests written before a semantic change certify the OLD world" law
+working FOR us: it is the anti-regression net for the extraction.
+
+### §11.4 — How the CONTRACT pins the structural property (no forbidden-shape scan)
+
+Four pins; the first three are typed/structural (they force the form and never inspect an
+open-vocabulary string), the fourth is a biconditional belt keyed to the sole minter.
+
+- **P1 — `summary_verdict` is a pure total function, ∀ over the per-leg-flag combination
+  surface.** Parametrize over the FULL Cartesian product of `LegQualification` across the legs
+  (the surface DERIVED from `LegQualification.__members__` × the manifest leg count — NOT a
+  hand-list), and assert `summary_verdict(combo)` equals the spec'd biconditional
+  (`PASS_FULL` ⟺ no leg SCOPED ∧ no leg FAILING; `PASS_SCOPED` ⟺ ≥1 SCOPED ∧ 0 FAILING;
+  `FAIL` ⟺ ≥1 FAILING). Typed in, typed out — **no string is read.** Coverage-as-checked-
+  variable: a meta-recursion pin asserts the parametrized combination set EQUALS
+  `LegQualification.__members__`-derived surface (mirror the existing
+  `test_enforcement_matrix_covers_every_mode_gate_and_failure_mode` +
+  `_canonical_manifest_ids` idiom) — add a qualification state and the ∀ grows or the coverage
+  pin reddens. This is the "∀ over the per-leg-flag combination surface asserting the summary
+  verdict is a deterministic function of the flags" mechanism.
+
+- **P2 — `render_summary` is the sole minter, mutation-pinned (the summary TYPE cannot carry an
+  unqualified token when scoped).** Assert `PASS_FULL` is the ONLY enum value whose render
+  contains the unqualified-pass token and `PASS_SCOPED`/`FAIL` do not; then MUTATE the
+  `PASS_FULL` string's marker and assert the pin moves (proves the string is DERIVED from the
+  enum in one place). Plus the `Rendered`-style AST mint-scan (§11.2.5): `SummaryLine(...)` and
+  the unqualified-pass token literal appear NOWHERE outside `render_summary`. Together: the only
+  reachable unqualified-token string is `render_summary(PASS_FULL)`, and P1 makes `PASS_FULL`
+  unreachable while scoped. This is the "summary type that cannot carry an unqualified-pass
+  token when a flag is scoped" mechanism.
+
+- **P3 — prove-sharing-by-mutation (DRY #1 / §9.1 SHARING specialization).** Mutate the shared
+  seam (`render_summary`'s output, or `summary_verdict`'s scoped branch) via
+  `_rebind_everywhere`-by-identity or a `scripts/mutation_proof.py` receipt, and assert BOTH
+  `_render_currency`'s AND `render_wave_receipt`'s summaries move. A caller that hand-authors a
+  summary (any wording, any line) stays green under the mutation → RED. **This pin never reads
+  the wrong build's wording; it asks whether the summary is DERIVED from the shared minter.**
+
+- **P4 — receipt biconditional belt, ∀ over the flag surface.** For every leg-qualification
+  combination, render the WHOLE receipt (both modes) and assert the count of unqualified-pass-
+  token lines == (1 iff `verdict is PASS_FULL` else 0). This is allowlist-the-safe (token IFF
+  PASS_FULL), NOT a forbidden-token deny-list, and it is keyed to the sole minter's fixed
+  string (mutation-pinned by P2), so it is a property of a finite closed mapping, not a scan of
+  open text. It is the belt that reddens if any build forges a token line despite P1–P3.
+
+The contract keeps a **positive control** (a genuinely clean FULL checkpoint renders PASS_FULL
+with the unqualified token — this is an honesty check, not a blanket ban) and a **satisfiability
+receipt** (a known-correct reference build goes 0-failed, incl. the byte-exact checkpoint
+oracle). `test_wave_gate._summary_line` (the last-PASS/FAIL-line reach, the round-2/3 hidden
+constant) is RETIRED — the property no longer depends on which line the token lands on.
+
+### §11.5 — How each of the three survivors dies BY CONSTRUCTION
+
+- **`W-summary-alt` (alternate wording, "all gates are clean, tree is green").** To exist it
+  must author a summary string instead of routing through the sole minter. **Dies at P3**
+  (prove-sharing-by-mutation): its hand-authored string does not move when `render_summary` is
+  mutated → RED. The pin never inspects "clean/green/tree" — it inspects derivation.
+  Unrepresentable: any summary not minted by `render_summary` fails the DRY mutation, whatever
+  words it picks.
+
+- **`W-summary-double` (unqualified pass on a non-last line + honest banner last).** Under the
+  redesign the shared summary consumes the SCOPED pytest leg → `summary_verdict` returns
+  PASS_SCOPED → NO PASS_FULL line is ever emitted for a wave receipt; there is nothing to
+  inherit. To reproduce double the builder must forge a PASS_FULL line — **dies at P2/P3** (a
+  forged line isn't minted by `render_summary`; the AST mint-scan forbids the token literal
+  outside the minter) AND **at P4** (verdict is PASS_SCOPED ⟹ 0 token lines expected; double
+  has 1 → RED). Unrepresentable: PASS_FULL is unreachable while pytest is scoped, and the token
+  string exists nowhere but the minter.
+
+- **`W-summary-inline` (marker + over-claim on ONE line).** The summary line is
+  `render_summary(PASS_SCOPED)` — a FIXED string; the builder cannot compose "marker +
+  over-claim" because it does not author the line. **Dies at P2** (an inline hand-authored line
+  is not `render_summary`'s output; the token literal is forbidden outside the minter) and **at
+  P4** (PASS_SCOPED ⟹ 0 token lines; the inline line carries the token → RED). Unrepresentable:
+  there is no per-call free-text seam to compose marker+lie into.
+
+The common death: the redesign **removes the free-text summary seam** and replaces it with
+`(typed leg quals) → summary_verdict → SummaryVerdict → render_summary → SummaryLine`. All
+three survivors require a free-text-authoring seam that no longer exists, and the contract pins
+the pure functions (P1/P2), the routing (P3), and a biconditional belt (P4) — none of which is
+a forbidden-shape scan.
+
+### §11.6 — Reuse map / DRY (Packages considered)
+
+- **`GateCurrency`** (`pending_contract_gate.py`) — reuse the per-gate typed applicability;
+  derive `LegQualification` from its `verdict` + a `scoped` flag. Do not perturb its
+  currency-vs-deploy field separation.
+- **`_render_currency` summary logic** — EXTRACT (not clone) into `summary_verdict` +
+  `render_summary`; the shared home is `pending_contract_gate.py`. DRY #1.
+- **`loremaster.render.Rendered` / `SafeLine`** (`render.py`, pinned by
+  `test_render_seam_pins.TestSafeLineRenderedMintPin`) — reuse the provenance-type + AST
+  mint-scan idiom for `SummaryLine`. Genuinely the same pattern; do not invent a bespoke one.
+- **Meta-recursion coverage idiom** (`test_enforcement_matrix_covers_...`,
+  `_canonical_manifest_ids`, `_FAIL_MATRIX_GATES` in `test_wave_gate.py`) — reuse the shape for
+  the P1 flag-surface coverage-as-checked-variable.
+- **`scripts/mutation_proof.py`** + **`_rebind_everywhere`** — reuse for the P2/P3 mutation
+  receipts (the §9.6 "scripts CLI receipt" + "in-test liveness" rows).
+- **Packages considered:** stdlib `enum` only (`SummaryVerdict`/`LegQualification`); `str`
+  subclass for `SummaryLine` (mirrors `Rendered`). No external dependency — the mechanism is a
+  typed enum + a sole minter, which no library supplies. Verdict: **bespoke (minimal), reusing
+  four in-repo idioms.**
+
+### §11.7 — Recommendation & routing
+
+- **This is a CONTRACT + PRODUCTION-DESIGN change, not a builder patch.** It changes G's contract
+  surface (`render_wave_receipt` gains a typed receipt / the summary is minted, not appended) and
+  makes a small behaviour-preserving extraction in `pending_contract_gate.py`. Route it through
+  the standing order: **contract → adversary → build → cold audit** (a fix wave is exactly where
+  the adversary is cheapest and most needed — operator, 2026-07-28). The reviser writes the
+  contract to §11.4's four pins; the contract-adversary re-attacks with `W-summary-alt/double/
+  inline` (all three MUST be caught) plus a NEW hybrid: a build that routes `_render_currency`
+  through the shared minter but hand-rolls `render_wave_receipt`'s summary (the §9.1 routing-not-
+  sharing shape) — P3 must catch it.
+- **Operator fork (writable set):** the fix touches shipped `scripts/pending_contract_gate.py`
+  (a production-code change, per the escalation trigger "production-touching surprise"). The
+  extraction is behaviour-preserving and guarded by the existing `test_pending_contract_gate.py`
+  + a byte-exact oracle, but it is still a change to the #306/#312 enforcement surface — flag it
+  for the operator/lead to confirm `pending_contract_gate.py` enters G's writable set, rather
+  than deciding it unilaterally.
+- **Named re-open trigger:** if a future packet splits OWNED out of `PASS_FULL` (a distinct
+  `PASS_OWNED` qualified pass), the P1 biconditional and P2 token mapping grow by one enum value
+  — the coverage pin reddens until the ∀ is extended, which is the mechanism working as intended.
