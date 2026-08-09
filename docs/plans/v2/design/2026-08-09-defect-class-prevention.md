@@ -930,3 +930,224 @@ and load-bearing messages: NOT `assert_covers` adopters; a possible second helpe
 Confirmed for F3/B: `test_link5`'s P-U (`TestEveryRenderCandidateIsDrivenOrOut`) and P-F
 (`TestTheFieldManifestCannotSilentlyMissAField`) are `ast.parse(server.py)` + AppContext-scoped, NOT
 whole-tree — so B extends them and adopts neither global helper (Q2).
+
+---
+
+## 8. CONTRACT-ASUB-B RULINGS (fable-designer, 2026-08-09)
+
+Three design judgments surfaced by `contract-asub-b`. Ruled with evidence (HEAD `74694dc`).
+
+### Ruling (1) — `parse_production_trees` test-file inclusion: PER-ADOPTER, not a global policy
+
+**`include_tests` is a per-call PARAMETER, and the migration is BEHAVIOUR-PRESERVING PER ADOPTER —
+each adopter's post-migration scanned FILE SET must equal its pre-migration set EXACTLY, pinned per
+adopter.** There is no single global answer, because the adopters DISAGREE by intent (a944 evidence):
+`test_comms_footer` scans prod AND tests; `test_backoff_seam`/`test_secret_leak_vectors` are prod-only;
+`test_anchored_pattern_seam`/`test_secret_typing` exclude MEMBER tests. A global `include=True` would
+WIDEN the prod-only scans (new files, possibly new REDs); a global `exclude` would NARROW
+comms_footer — both **widen a gap (priority #3)**. So parameterize and preserve.
+
+- "Behaviour-preserving = INCLUDE" is correct ONLY as shorthand for "reproduce each adopter's current
+  reach." For the anchored scan that means keep parsing `scripts/test_*.py` (it does today, because
+  `scripts/` is a FLAT root) — so `include`, for that adopter, is right. It does NOT license a global
+  include on the prod-only adopters.
+- **Mechanism subtlety the builder must honour, not assume:** member tests live at `<member>/tests`,
+  OUTSIDE the package root `<member>/<member>` that `workspace_roots` yields — so member tests are
+  structurally excluded for member roots regardless of any flag, while `scripts/test_*.py` are
+  included because `scripts/` is flat. `include_tests` therefore does not have a uniform meaning
+  across root kinds; the builder VERIFIES each adopter's exact file set (a per-adopter scanned-set
+  equality pin), never trusts the flag to mean the same thing everywhere.
+- **This does NOT conflict with §7's "MUST NOT widen single-package scanners to whole-tree"** — that
+  rule is the ROOTS-SCOPE axis (single-package → all-members); test-inclusion is an ORTHOGONAL axis,
+  governed equally by behaviour-preservation.
+
+### Ruling (2) — `blocked_by` is a forgery DOOR, NOT opaque-IDs-only SAFE
+
+**DOOR. `render_attributed` is REQUIRED (it is already used at every site at HEAD); it must be PINNED
+so a revert to `safe_str` — or to list-`repr()`-only containment — goes RED. Do NOT allowlist it
+SAFE: that classification is FALSE and is exactly the #345 mis-classification (a door parked in
+SAFE).** Evidence (HEAD):
+- `TaskSpecItem.blocked_by` is `list[str] = Field(default_factory=list)` (server.py:1420) —
+  UNCONSTRAINED caller strings at the boundary.
+- `create_many` passes non-sibling-key refs through VERBATIM (`key_to_id.get(ref, ref)`,
+  server.py:4595) — the dispatcher validates keys, cycles, and id-shaped keys, but does NOT constrain
+  a non-key `blocked_by` ref to a task-id shape, so arbitrary caller text can reach the field.
+- `create_task` echoes the caller's supplied blocker VERBATIM into a refusal message
+  (`test_blocks_edge::test_a_create_blocked_on_a_SUPERSEDED_task_is_REFUSED`); `superseded_blockers`
+  dict keys are caller `blocked_by` ids (contract line ~1705).
+- **The B contract's OWN door-set already lists `blocked_by`** (test line ~1701) — SAFE would
+  contradict the contract.
+
+**Trust/don't-widen frame (operator priority: trust + don't-widen > security):** even at a small user
+base, a blocked_by that can carry caller text is a served surface that could read as lore's own voice;
+containment is a TRUST property, not a security-sized one. Allowlisting SAFE would be a FALSE CLEAR
+(priority #2) and widen a gap (priority #3).
+
+**Additional required fix (trust-honesty):** correct the false-safety framing that invites removing
+containment — the `_render_task_rows` comment (server.py:~4631, *"defense-in-depth, though this field
+is NOT live-forgeable"*) and the contract note (test line ~734, *"opaque ids, safe_str"*). The
+list-`repr()` escaping is a FRAGILE secondary property (it holds only while blocked_by is rendered
+inside a `[...]` literal; a future join-into-prose refactor opens the door); `render_attributed` is
+the PRIMARY, required containment and the comments must say so. This is a served-English defect of the
+exact class this doc is about.
+
+### Ruling (3) — SAFE allowlist keyed by field-NAME: CONFIRM, conditional on the drive-all + P-N chain
+
+**CONFIRM field-name keying (DRY-correct — ONE evidence-backed entry per field, vs (method,field)'s N
+copies), CONDITIONAL on three properties that together cover the quantifier risk that field-name
+keying otherwise carries ("safe in the site I examined" asserted over ALL sites):**
+- **(a) B drives EVERY AST-derived interpolated slot with a forgery REGARDLESS of SAFE status.** SAFE
+  must NOT mean un-driven — that was the #345 root cause (`task_id` SAFE ⇒ never tokenised ⇒ never
+  driven ⇒ P-S/P-N blind). This is INSTRUMENT B's core fix (derive the slot inventory from AST; assert
+  each is driven with real content). Without it, field-name keying REOPENS #345 and must instead be
+  (method,field).
+- **(b) P-N (the runtime containment proof, `test_link5` line ~2865) proves containment PER RENDER
+  SITE over every forge shape** — so a field genuinely safe in site X but a door in site Y is caught
+  at Y, which is what makes a GLOBAL (field-name) key sound: the key is a hint, P-N is the per-site
+  verifier.
+- **(c) the documented bound states explicitly** that a field-name SAFE entry asserts the field
+  carries non-forgeable content in EVERY site that interpolates it, with a named re-open trigger (a new
+  render site interpolating that field with a different provenance).
+
+DRY favors field-name (one entry); the quantifier risk is covered by the drive-all + P-N backstop, NOT
+by multiplying entries into (method,field). If for any reason (a) cannot hold (SAFE stays un-driven),
+field-name keying is UNSOUND — but eliminating un-driven SAFE is B's whole purpose, so the condition
+is the design, not an obstacle.
+
+---
+
+## 9. THE ∀-MUTATION-PROOF PATTERN (consolidated, operator-directed 2026-08-09)
+
+All FIVE contract adversaries returned **INSUFFICIENT on ONE class**, each with a surviving wrong
+build. This section is the SINGLE place the contract reviser starts, so the fix is consistent across
+packets rather than five ad-hoc patches. It is the constructive form of INSTRUMENT 0's leg-(5) reach
+attack: the adversary ASKS "is this guard's reach a checked variable?"; §9 is HOW the author ANSWERS.
+
+### 9.0 The class, with the receipt from each report (read the reports; this is the index)
+
+> **A "prove-sharing / coverage / liveness by mutation" pin mutates ONE member of a derived set, so a
+> HYBRID build that routes/derives THAT member but HARDCODES the rest passes the whole contract —
+> reach-is-a-hidden-constant, inside the very contract built to kill it. The mutation-proof must be ∀
+> over the DERIVED surface.**
+
+| packet | surviving wrong build (the hybrid) | why it survived |
+|---|---|---|
+| **F/#279** (`REPORT-adversary-f`) | WB8 `_degrade` routes `run_query`+`bootstrap_session`, HARDCODES the other 2 doors — **BLOCKER, no consistency backstop**; WB7 `store_seams` same shape (residual, backstopped) | mutation drops only `run_query` (+`bootstrap_session`); undropped seams never tested for routing |
+| **C/#291** (`REPORT-adversary-cd`, #347) | C-WB5 derives all tools EXCEPT `lore_findings` (hardcoded) — passes all 10 | liveness proof flips only `_TASK_TOOL_ANNOTATIONS` → reach 2/15 tools |
+| **G/#344** (`REPORT-adversary-g`) | MP-4 wave×ruff orphan waved through; MP-1 `main` runs no gates, returns 0 (BLOCKER); MP-2 `main` re-parses gates.yaml; MP-3 summary over-claims; MP-5 echo monoculture | the fail-matrix is HAND-PICKED cells not ∀(mode×gate); the ENTRYPOINT is never driven; the SUMMARY is never pinned; echo has one value |
+| **H/#290** (`REPORT-adversary-eh`) | correct helper + inline copy KEPT (two copies) — passes green, **BLOCKER** | the "`main` SHARES the helper" property has NO red home |
+| **D/#295** (`REPORT-adversary-cd`, #346) | D-WB2 in-process helper (`wire.mcp.call_tool`), dead on the wire — passes all 6 | the WIRE-driving claim is asserted in a docstring, verified by no pin |
+| **E/#289** | — no survivor (instance mutation-proven) | residual only: Exemption door-field coverage optional (§9 IDIOM 1, operator-optional) |
+| **A-SUB/F4 + B/#345** | adversary-asub-b GRADING (5th) — same class expected (A-SUB's ∀-over-adopters mutation must have a RED home) | slot into IDIOM 1 when it lands |
+
+### 9.1 IDIOM 1 — ∀-MUTATION-PROOF over the LIVE-DERIVED surface (the heart)
+
+**Two complementary legs, BOTH ranging over the SAME surface that is re-derived LIVE from production
+truth inside the test (never a fixture constant, never a hand-list in the test):**
+
+- **LEG A — CONSISTENCY (inherently ∀, the cheap primary guard).** Re-derive the FULL surface from
+  production truth each run and assert the caller's set/behaviour EQUALS it:
+  `assert_covers(caller_set, live_derived_surface)` (fail-closed on empty). Catches a hardcoded or
+  stale member (divergence) **without dropping anything**. This is why F's `store_seams` (which HAS a
+  live consistency pin) was only a residual while `_degrade` (which LACKS one) was the BLOCKER — the
+  consistency pin is the strongest, cheapest catch. **Reach for it FIRST wherever the caller's set is
+  independently observable.** (This reuses the A-SUB `assert_covers` primitive — ONE implementation of
+  the coverage sub-step across every packet; the DRY link.)
+- **LEG B — LIVENESS (must be explicitly ∀).** Flip/drop EACH member of the live surface in turn;
+  assert every dependent caller reddens/moves FOR EACH. Catches a caller that doesn't actually READ
+  truth (a hardcode that happens to agree today — the consistency pin can miss this if the caller's set
+  is not independently observable). This is the leg the class defeats: the failure was always
+  single-member. `@pytest.mark.parametrize("member", sorted(live_derived_surface()))`, with a
+  POSITIVE CONTROL per member (assert present BEFORE the flip, so a shrunk surface can't pass
+  vacuously) and a BOTH-DIRECTION diff (a member that does NOT redden on its flip = a private copy —
+  the #194 mutation_proof.py lesson: declare the expected-RED set from the surface, diff both ways).
+
+**⚠ THE META-RECURSION (the lead's sharpest point — the helper is subject to its own class).** LEG B's
+reach is `sorted(live_derived_surface())`. If that surface is a fixture constant or a hand-list in the
+test, the ∀ is a hand-list wearing a loop — the trap one level up. So: (a) the surface is computed
+LIVE in-test from the same production source the code derives from (`_txn_coroutines()`,
+`mcp.list_tools()`, `manifest.gates`, the shared guard's call sites); (b) LEG A's `assert_covers`
+makes LEG B's reach a CHECKED VARIABLE (the parametrized member-set must EQUAL the live surface —
+grow the surface, the parametrization must grow or the coverage pin reddens); (c) **prove the pattern
+itself by mutation** — mutate the production source (add a member) and confirm BOTH the parametrization
+count moves AND the consistency pin reddens on a stale caller. A shared ∀-helper, IF built, is proven
+the same way: shrink the surface it is handed → its coverage assertion reddens.
+
+**DRY grain (consistent with §7's over-consolidation ruling):** the PATTERN is an idiom applied per
+instrument; it is NOT one function. The mutation MECHANISM differs irreducibly (F flips coroutine
+identity; C flips an annotation hint; G checks gate routing; H deletes a call) — merging them is the
+`assert_covers`-over-everything error. What IS shared: the coverage sub-step (`assert_covers`, LEG A).
+
+**SHARING specialization (H/#290 BLOCKER, G/#344 MP-2 — "X SHARES the ONE implementation").** The
+surface is the CALL SITES; the mutation is DELETE-THE-CALL: delete the caller's call to the shared
+helper → the caller's own covering pin reddens (H: drive `wrong_builds.main`'s zero-baseline path, or
+spy that it invokes `refuse_vacuous_baseline`; G: spy that `main` calls
+`pending_contract_gate._run_selected_gates(manifest.ids)` exactly once). PLUS an anti-duplication pin
+(no second inline copy / no second `yaml.safe_load` of the manifest). **Honest bound:** the anti-dup
+pin is name/pattern-keyed, so a third-named private copy escapes it (C's R1) — that un-derivable tail
+is INSTRUMENT 0's standing guard, stated, not pretended closed.
+
+Closes: F WB7/WB8, C C-WB5/#347, G MP-2/MP-4, H BLOCKER, and (optional) E residual.
+
+### 9.2 IDIOM 2 — WIRE/EFFECT SPY (observe the real boundary, never a proxy)
+
+A pin claiming a WIRE/EFFECT/ENTRYPOINT is driven must OBSERVE it at the real boundary via a SPY, not
+an in-process proxy or a renderer's return value.
+
+- **Instrument the boundary with a spy/counter** (wrap the object handed in so the real call is
+  counted); assert the count moved for the claimed effect (≥1 wire call; invocation-counter==0 for a
+  REFUSED call; exit-code for an ENTRYPOINT; store row absent/present).
+- **STRONGEST FORM — make the proxy unrepresentable by construction** (D's R4): hand the helper ONLY
+  the boundary callable, not the whole session exposing `.mcp`. Then the in-process door is unreachable,
+  not merely pinned. Prefer this where the API allows.
+- **Pos + neg controls:** correct build moves the count; the proxy build (in-process / marker-only /
+  read-before-dispatch / renderer-return) does NOT. Auth-free and DEMONSTRATED in the D loopback
+  setting (`REPORT-adversary-cd` §D.4), so "you can't pin the wire without auth" is FALSE.
+- Covers D-WB2/#346 (wire spy) AND G MP-1 (drive the REAL `main` via a gate-runner spy, assert the
+  EXIT CODE — the over-tested pure renderer is not the enforcement point; the entrypoint is).
+
+**Honesty fork (D):** BUILD the auth-free spy NOW (it does not entangle unbuilt auth — it is a loopback
+wire in the D contract's own setting, and packet 39 will CONSUME this helper and inherit the gap). Only
+DEMOTE the step-1 docstring claim if the spy proves un-constructible — it was demonstrated constructible,
+so build it. The STRUCTURAL answer (gate registration/visibility) stays routed to packet 39; the
+wire-spy on the effect-helper is this session's.
+
+### 9.3 IDIOM 3 — SUMMARY HONESTY (a qualified leg can never render an unqualified pass)
+
+- The summary verdict is DERIVED from the per-leg qualification flags (a typed `scoped: bool` /
+  `qualified: str | None` on each leg), not re-stated — if ANY leg is SCOPED / NOT_RUN / QUALIFIED, the
+  summary carries that bound and cannot render an unqualified PASS. (Same shape as CLAUDE.md's
+  "render from typed applicability, never a name compared".)
+- Pin the WHOLE receipt, not the line: on a receipt with a scoped leg, assert the joined output
+  contains NO unqualified-pass token ("every claimed gate is GREEN", "CURRENCY : PASS").
+- Control: honest line + over-claiming summary → RED; a genuinely-clean full run → unqualified PASS
+  allowed. Covers G MP-3 (the #306/#312 false-clear reproduced at the summary).
+
+### 9.4 Companion laws (fold in, don't skip)
+
+- **Monoculture (P2):** any echoed/forwarded value uses ≥2 DISTINCT values and asserts
+  `echoed == source` (G MP-5 — a hardcoded echo then cannot match). One value is a monoculture.
+- **Entrypoint driven:** every ENTRYPOINT (`main`, a dispatcher) is invoked on its HAPPY path with a
+  spy, asserting the EFFECT (exit code / routed call), never only the no-op refusal door (G MP-1). This
+  is IDIOM 2 applied to the entrypoint.
+
+### 9.5 Per-packet application table
+
+| packet | findings | idioms to apply | the surviving build each closes | pkt-39 |
+|---|---|---|---|---|
+| **F** | #279 | IDIOM 1: ∀-drop over EVERY seam (LEG B) **+ a `_degrade` LIVE set-consistency pin** (LEG A — the missing backstop) | WB8 (BLOCKER), WB7 | — |
+| **C** | #291/#347 | IDIOM 1: LEG B ∀ over the annotation surface (flip EACH constant / synthetic ∀); LEG A = C-9 equality pin already present | C-WB5 hybrid hardcode | helper consumed by 39 later (R2) |
+| **G** | #344 | IDIOM 1 (mode×gate ∀ → MP-4; `main` routes-one-reader spy → MP-2) · IDIOM 2 (drive real `main`, assert exit → MP-1 BLOCKER) · IDIOM 3 (whole-receipt → MP-3) · Companion monoculture (→ MP-5) | W-main-noop, W-DRY-reparse, W-ruff, W-B, W-echo | — |
+| **H** | #290 | IDIOM 1 SHARING specialization: delete-the-call mutation pin in `test_wrong_builds.py` + anti-dup pin | two-copies build (BLOCKER) | — |
+| **D** | #295/#346 | IDIOM 2: wire spy (hand only the callable → proxy unrepresentable); build NOW | D-WB2 in-process | STRUCTURAL (registration gating) → 39; wire-spy built now |
+| **E** | #289 | sufficient; IDIOM 1 door-field coverage OPTIONAL (operator ruling — honest bound) | — (residual only) | — |
+| **A-SUB** | F4 | IDIOM 1: mutate shared parser → EVERY adopter reddens (LEG B) + anti-dup structural pin (LEG A) | pending adversary-asub-b | — |
+| **B** | #345 | IDIOM 1 on slot-drive coverage (every AST-derived slot driven; P-N per-site); extends P-U/P-F | pending adversary-asub-b | — |
+
+**One line for the reviser:** for every mutation/coverage/liveness pin, re-derive the full surface LIVE
+from production truth, assert the caller EQUALS it (LEG A / `assert_covers`), AND flip EACH member
+asserting every caller reddens (LEG B), with the parametrized set pinned == the live surface. Where the
+property is "X shares the ONE implementation," the flip is delete-the-call + an anti-dup pin. Where the
+claim is "a wire/effect/entrypoint ran," spy the boundary (hand only the callable). Where a leg is
+scoped, the summary must say so. The single-member proof was never cheaper — the members are few; it
+was a habit, not a constraint.
