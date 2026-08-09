@@ -1239,3 +1239,163 @@ reuse-relevant refinements. All 5 adversaries now agree; §9 covers all.
 **Design status: COMPLETE — 5/5 adversary verdicts, all one class, §9 (idioms + reuse map + this fold)
 covers every packet.** The reviser applies §9.5/§9.6/§9.7 uniformly; only IDIOM 3 (summary honesty) is
 net-new machinery.
+
+---
+
+## 10 — reviser-asub-b fork rulings (fable-designer-2, 2026-08-09)
+
+Two design forks from `REPORT-reviser-asub-b.md` §"Decisions-needed", ruled with evidence at HEAD
+`3b708e5` (branch `feat/surreal-unification`; index fresh, last sweep 2026-08-09T19:40Z). Plus #3
+confirmed and recorded. Acceptance frame (operator priority): **DRY/ONE-IMPLEMENTATION > TRUST &
+HONESTY (no false clears) > don't-widen-gaps > don't-repeat.** Security de-prioritized; a served
+forgery door is a TRUST issue regardless. Ruled in the same evidence style as §8. Cite symbols;
+line numbers are secondary (stale-prone).
+
+### Ruling (4) — fleet-row `task_id` is a forgery DOOR, un-contained TODAY: a LIVE production fix this session
+
+**DECISION: DOOR — the SAME class as §8 Ruling 2 (`blocked_by`), and it is a LIVE leak, not a
+contained-already regression-pin.** `render_attributed` containment is REQUIRED in production this
+session; a revert to `safe_str`/bare must go RED.
+
+**Evidence (HEAD):**
+- **Provenance — `Agent.task_id` is UNCONSTRAINED CALLER FREE TEXT, not a system id.**
+  `loremaster.agents.AgentRegistry.register` stores the caller's `task_id: str | None` **VERBATIM**
+  into `_COL_TASK_ID` — `CREATE … CONTENT` on first register, `UPDATE … SET` on re-register — with
+  **no charset check, no task-id-shape validation, no length bound.** Same provenance class as
+  `blocked_by` (§8 R2: "UNCONSTRAINED caller strings at the boundary"). The tool description ("the
+  fleet task id this agent is currently working") is advisory INTENT, not a validated constraint.
+- **The manifest's OWN sibling entry corroborates and already documents the mis-classification.**
+  `test_link5_render_containment.py::_manifest` classifies `InboxEntry.task_id` as a **DOOR** with the
+  note: *"task_id is caller FREE TEXT (messages.py:865-871 bounds task_id by LENGTH only — 'a LABEL,
+  not content', no charset gate) … **Was MIS-CLASSIFIED 'task-id ref'** — the sibling leak Fable named
+  (directive #4020)."* That correction was applied to InboxEntry but **NOT** to its two siblings:
+  `Agent` (`safe={…"task_id"}`, reason *"task-id ref … a system id"*) and `Message`
+  (`safe={…"task_id"}`, reason *"task-id ref"*) still carry the FALSE reason. Agent is the LIVE
+  sibling; Message is latent.
+- **Render TODAY — un-contained.** `AppContext._render_comms_fleet_row` serves it via
+  `safe_str(row.task_id[:8] + "…")`. `safe_str` = `sanitise_line(str(x))`: collapses
+  control/newline/bidi/zero-width to one line but is **SAME-LINE-FORGERY-BLIND** (printable ` · `
+  U+00B7 survives). Fleet cells are `" · "`-joined, so an 8-char caller `task_id` like `"x · abcd"`
+  renders `task x · abcd…` — a PHANTOM cell boundary reading as lore's own structural voice. Small
+  (8-char truncation caps forged content; `safe_str` kills newlines → same-line only) but genuine.
+- **The codebase's OWN convention is `render_attributed` for `task_id` at 4 of 5 sites:**
+  `server.py` supersede/blocked notices (`render_attributed(task_id)`), `_render_task_story`
+  (`render_attributed(story.task_id)`), and the drain-inbox context (`render_attributed(entry.task_id)`).
+  `_render_story_message` deliberately does **not** render task_id. The fleet row is the LONE
+  `safe_str` outlier — precisely because the manifest mis-parked `Agent.task_id` SAFE, so `_forge`
+  **HARDCODES `task_id=None`** in the Agent forge (the literal #345 artifact) and the slot is never
+  driven with a forgery. **This is #345 exactly, one model over.**
+
+**RULING — three coupled fixes (owned by the B/#345 cycle; its server.py scope was already required
+for the #345 recovery):**
+1. **PRODUCTION FIX (live):** `_render_comms_fleet_row`'s task cell →
+   `render_join(" ", [safe_str("task"), render_attributed(row.task_id[:8] + "…")])`. Preserves the
+   truncated display, contains the forgery, and is drop-in consistent with the `role`/`model`/`note`
+   cells in the same method (`render_join` already accepts `[SafeLine, Rendered]` there).
+2. **MANIFEST CORRECTION:** move `task_id` from `safe`→`door` in `_manifest`'s **Agent** and
+   **Message** entries, replacing the false "system id / task-id ref" reason with the true "caller
+   free text (register / send store verbatim; length-bounded only) — was mis-classified 'task-id
+   ref'", mirroring the InboxEntry entry. (Message.task_id is NOT served in a driven render, so its
+   correction is latent-honesty like `kind` — still a door by provenance.)
+3. **REGRESSION PINS (already in the B contract):** with drive-all-slots (§8 R3(a)) driving
+   `Agent.task_id` with a forgery, Leg-2/P-N reddens a `safe_str`/bare revert of the render; the
+   mis-park pin (`_SERVED_SAFE_FIELDS ∩ manifest-DOOR == ∅`) forbids silencing it by re-SAFE-listing
+   `task_id`. **Both escape routes closed → mutation-proven.**
+
+**Severity / frame:** LIVE but low-blast (8-char truncation + same-line only). Per operator priority
+#2 (trust/no false clears) and §8 R2's frame — containment of caller text in a served surface is a
+TRUST property, not a security-sized one — it is fixed this session. Not deferred (don't-kick-the-can:
+the fix is loaded, in scope, and rides a cycle that already touches server.py).
+
+### Ruling (5) — KEYING: field-name keying CONFIRMED sound; the collision is PROTECTIVE, not disqualifying
+
+The brief's test: field-name keying is sound only if EVERY model serving that name contains it the
+same way; if `task_id` is a DOOR in one model and SAFE in another **served** render, it is UNSOUND →
+(model,field).
+
+**FINDING: the antecedent "SAFE in another SERVED render" is FALSE.** `task_id` is caller free text
+(a DOOR) in **every** model that carries it — Agent (register, verbatim), Message and InboxEntry (send,
+length-bounded only). The Agent/Message SAFE labels are **MIS-PARKS** (the "system id" reason is
+false — see Ruling 4), not a genuine safe instance; and Message.task_id is not served in a driven
+render at all. Once corrected (Ruling 4.2), `task_id` is a door everywhere → the field-name condition
+is satisfied by construction (4 of 5 renders already contain via `render_attributed`; the fix makes
+it uniform).
+
+**RULING: field-name keying CONFIRMED (consistent with §8 R3; this is its first LIVE test and it
+holds). Do NOT move to (model,field).** Rationale — field-name keying is STRICTLY SAFER here, not
+merely DRY-er:
+- **It makes the mis-park UNREPRESENTABLE.** `_SERVED_SAFE_FIELDS ∩ door == ∅` means a name that is a
+  door in ANY model can never be SAFE-listed → every render serving it MUST contain it (or be driven
+  with a forgery and pass P-N — which, for a truncated caller string, is `render_attributed`). **The
+  remedy for a collision is CONTAIN-everywhere; containment on a genuinely-opaque value is harmless**
+  (§8 R2: "render_attributed on a truncated id is harmless").
+- **(model,field) keying would REGRESS.** It reverses §8 R3's DRY decision AND re-permits SAFE-listing
+  `Agent.task_id` while `InboxEntry.task_id` stays a door — i.e. it makes the #345 mis-park
+  REPRESENTABLE again, one model over. It "resolves" the collision by re-opening the exact class this
+  session exists to close. **Rejected.**
+- **The quantifier risk field-name keying otherwise carries** ("safe in the site I examined, asserted
+  over all sites") is covered by §8 R3's drive-all + P-N backstop, exactly as ruled — no need to
+  multiply entries into (method,field).
+
+**Net: field-name keying stands; the escape valve for a door-name collision is CONTAIN, never
+SPLIT-AND-SAFE-LIST.** (B-2's `kind` collision, currently moot, is governed by the same rule: if
+`MemorySource.kind` ever gets a driven render, it is contained, not (model,field)-split.)
+
+### Ruling (6) — comms_footer scope: a DESIGN classification (RULED), NOT an operator scope-grant
+
+**TRIAGE: this is DESIGN, and I rule it — no operator escalation.** §7 (adopter table), §9.6 (reuse
+map), and §8 Ruling 1 (per-adopter behaviour-preservation) ALREADY classify `test_comms_footer` as a
+`parse_production_trees` adopter. §5's A-SUB writable-set table merely **OMITS** the file — a clerical
+inconsistency with §7/§8, not a deliberate exclusion. Correcting it is design-consistency, squarely
+within the DRY-consolidation scope the operator prioritized (#1). It is NOT a fenced closed-contract
+file (unlike `test_blocks_edge.py` / F5), so it needs no separate sequenced cycle — the migration is
+behaviour-preserving and A-SUB's own cold audit re-runs the migrated suite + the mutation proof.
+
+**Evidence (HEAD) — comms_footer has TWO whole-tree scans with the clone signature, and the second is
+itself an instance of THIS CLASS:**
+- **Scan A** (`test_comms_footer.py`, the link-N footer reach, ~2958-2982): iterates
+  `_workspace_scan_roots(root)` (DERIVED from pyproject `[tool.uv.workspace] members` via a regex
+  reader) × `rglob("*.py")`, scanning **PRODUCTION AND TESTS** (its docstring says so). →
+  `parse_production_trees(include_tests=True)`.
+- **Scan B** (~3144-3165): iterates a **HARDCODED 4-tuple** `("loremaster/loremaster", "lorerunes",
+  "loresigil", "lorescribe")` × `rglob("*.py")`, **PRODUCTION ONLY**. →
+  `parse_production_trees(include_tests=False)` — **AND this migration RETIRES A MEMBER HAND-LIST that
+  is itself an instance of the reach-is-a-hidden-constant class** (a 5th workspace member added to
+  pyproject is silently missed, #291-shape). §7 named only Scan A ("regex member-reader"); **Scan B is
+  an ADDITIONAL adopter surfaced here** — migrating it is a bonus consolidation the DRY priority wants.
+
+**RULING:**
+1. **`test_comms_footer.py` IS in the A-SUB builder's writable set** — remove the reviser's
+   provisional allowlist entry (the dead-entry pin then forces migration). The lead reflects this
+   one-line writable-set addition in the A-SUB brief. It stays WITHIN the A-SUB cycle.
+2. **BOTH scans migrate**, with DIFFERENT `include_tests` (A: True; B: False), each pinned to its
+   EXACT pre/post scanned-file-set per §8 Ruling 1. Scan B additionally retires its hardcoded member
+   tuple (consolidated onto the derived member roots).
+3. **⚠ Behaviour-preservation HAZARD the builder must HONOUR, not assume** (this is §8 R1's
+   root-kind subtlety, live here): comms_footer's own `_workspace_scan_roots` yields the **workspace
+   MEMBER dirs** (e.g. `loremaster/`, which INCLUDES `loremaster/tests`), whereas
+   `_logging_fixtures.workspace_roots` yields the `<member>/<member>` **PACKAGE roots** (which
+   structurally EXCLUDE `<member>/tests`). So `parse_production_trees(include_tests=True)` MUST re-add
+   `<member>/tests` for member roots, or Scan A's reach **NARROWS** (drops every member-test file it
+   scans today) — a widened gap (priority #3) wearing consolidation's clothes. The per-scan
+   scanned-set-equality pin is MANDATORY, not optional, and is the instrument that catches this.
+
+### #3 (confirmed, recorded) — `_rebind_everywhere` promotion APPROVED by the lead
+
+`_rebind_everywhere` (from `test_store_seam_one_derivation.py`) promotes to shared test-support in
+`_logging_fixtures.py` — ≥2 real reusers (F/#279 + A-SUB/F4), DRY #1. Already the design of record:
+§9.6 named it "the one candidate for promotion … gated on ≥2 real reusers + a mutation proof"; §9.7
+A-SUB-1/-3 "VALIDATES the promotion". The builder that lands first (A-SUB or F) does the promotion and
+proves SHARING by mutation (change the shared rebind → BOTH F's and A-SUB's ∀-mutation pins redden;
+a caller that stays green is a private copy). The reviser's accessor `_rebind_everywhere_fn()` already
+checks `_logging_fixtures` first, so it is promotion-tolerant.
+
+### Builder tasks these force (for the lead to route — no operator escalation, no store/schema/DDL)
+- **B/#345 cycle:** the 3 coupled fixes in Ruling 4 (server.py fleet-row containment + Agent/Message
+  manifest correction + confirm the regression pins). server.py in the B writable set (already
+  required by the #345 recovery).
+- **A-SUB cycle:** add `test_comms_footer.py` to the writable set; migrate BOTH scans (Ruling 6,
+  retiring Scan B's hand-list); promote `_rebind_everywhere` (#3).
+
+**Fork status: BOTH ruled at design (no operator scope-grant needed). Only lead action: reflect the
+two writable-set additions (server.py already in B; test_comms_footer.py into A-SUB) in the briefs.**
