@@ -537,6 +537,21 @@ before it lost **6.2%–34.4% of concurrent first-connects** (measured across th
 runs, 16-way; a range, not a point — audit-fix-1 A4 / blindreader-dry-2 F4 caught this section's
 own earlier "13%" as a fourth, unreproducible value alongside two production comments' "16.2%").
 
+**THE ASKABLE FORM, so this lesson installs itself instead of being re-learned a seventh time
+(INSTRUMENT 0, lore #344/#345, 2026-08-09).** All six defeats are ONE class — *a guard certifies
+only the sites it EXECUTES over, and its reach is written as a hidden constant instead of a
+checked variable.* Before shipping ANY guard / gate / scan / sweep, ask it of your own instrument:
+***"What is the SET of sites this guard covers, is that set DERIVED from production truth or a
+name/prefix/hand-list, and does a test go RED when the derived set GROWS but the observed set does
+not? — and would this pin still read as success if the guard ran AFTER the thing it guards, or
+against a baseline that measured nothing?"*** A reach that is a hidden constant is the seventh
+defeat waiting to happen. This is a QUESTION, not a property to remember (per THE LEVER), and it
+has a MECHANICAL home so it is not only a hope: the **`contract-adversary` now forces it
+per-instrument (its REACH ATTACK, P1c)** — a contract that stands up a guard whose reach is a
+hand-list, or whose coverage is not a checked variable, or that observes a proxy, cannot pass the
+adversary, so instance #9 of the class is caught at CONTRACT time rather than by the next agent
+who trips over it.
+
 ## Every artifact gets an adversary — not just the code (PKT-28 C1, 2026-07-12)
 C1 shipped FIVE defects that no builder gate caught. Their provenance, measured: THREE
 were tests that were never written (fleet grouping, the `brief_counter` declaration,
