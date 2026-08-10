@@ -14,10 +14,10 @@ brief project v7 read
 > fixed. Rev-2 addressed the ratified R-1/R-2/R-3; rev-1 the original three forks.
 
 ## SUMMARY BLOCK
-- **State:** done — cold-audit BLOCKER #354 pinned. **The feature is BUILT (HEAD `c111400`); the
-  contract runs against the real artifact — 29 pins VALIDATE it, the 4 PIN-1 legs redden on the
-  #354 crash.** 38 pins/legs across 3 files. Satisfiability 47/47 on the fixed (guarded) build;
-  16 mutation proofs.
+- **State:** done — cold-audit BLOCKER #354 pinned + the adversary-delta PIN-2 reach gap closed.
+  **The feature is BUILT (HEAD `c111400`); the contract runs against the real artifact — 31 pins
+  VALIDATE it, the 4 PIN-1 legs redden on the #354 crash.** PIN 2 is now parametrised over 3 fault
+  sites. Satisfiability 49/49 on the fixed (guarded) build; 19 mutation proofs (incl. per-site PIN 2).
 - **Deviations:** (1) receipts earned by applying the ~3-line #354 guard fix in a DISPOSABLE
   scratch — real production UNTOUCHED (`git status`: only my test files + reports modified; the
   built feature was committed by the builder at `f5aec32`/`c111400`, not by me). (2) scratch `rm`
@@ -145,11 +145,19 @@ wired, await inline) → await-leg mutation **RED** + AST belt **RED**. Neither 
   MODELS a stamping drain, so a `peek=False` build reddens the second-await assertion (proven). The
   `…peek_true` pin remains the primary no-stamp discriminator; idempotency proves the consequence.
 
-## 6. Unrelated pre-existing mypy debt (flagged, not buried)
+## 6. Unrelated pre-existing mypy debt + a BROKEN mypy gate (flagged, not buried)
 
-`uv run mypy loremaster` reports **102 errors** on this branch (`feat/surreal-unification`), ALL in a
-pre-existing AUTH-test cluster — **zero in my four files**. Out of my scope; surfaced per "flag
-unrelated failures, don't bury them". The operator decides.
+Two pre-existing, out-of-my-scope issues on HEAD `c111400`, both surfaced per "flag unrelated
+failures, don't bury them":
+1. **The canonical mypy gate now ABORTS.** `uv run mypy loremaster` (the loremaster leg of
+   `scripts/typecheck.sh`) halts with *"Source file found twice under different module names:
+   'calibration.baseline' and 'loremaster.calibration.baseline'"* — introduced by commit `d7e65bd`
+   (`feat(calibration)`), NOT by me. mypy stops before checking anything, so the gate cannot run to
+   completion on HEAD. (At `d64cd23` it ran fine.) The operator/lead likely needs a `MYPYPATH`/
+   `explicit-package-bases` fix for the calibration member.
+2. **102 pre-existing AUTH-test-cluster errors.** Running mypy with `calibration/baseline.py`
+   excluded restores the full check: **102 errors in 8 files, ALL in the auth-test cluster, ZERO in
+   my four files** (my files are mypy-clean). Pre-existing on this branch, unrelated to await.
 
 ## 7. The #354 cold-audit BLOCKER — two OPPOSITE fates pinned (rev-4)
 
@@ -169,10 +177,16 @@ says establish is best-effort → poll-only. Two fates, opposite, now pinned:
   (satisfiability 47/47); reverting the guard (the current unguarded build) → **RED**.
 - **PIN 2 — `TestADrainFaultRaisesNeverFalseEmpties` (GREEN on the built code — a regression lock).**
   The DRAIN read (the authoritative snapshot/poll/final read) is NOT best-effort: a fault must RAISE
-  (F1=peek makes it loss-free), never a false-empty. The built code already raises (drain unguarded),
-  so this LOCKS that. **Mutation-proven:** a build that catches the drain fault and RETURNS empty →
-  **RED**; the connect guard (PIN 1's fix) stays GREEN — the two pins fence the guard to the connect
-  path ONLY (a builder over-guarding the drain while fixing PIN 1 is caught).
+  (F1=peek makes it loss-free), never a false-empty. **Parametrised over the THREE fault-SITES
+  `{snapshot, poll, final}`** (adversary delta re-grade §later): the original single-site fault hit
+  only the step-1 snapshot, so a build guarding the POLL or FINAL drain passed while genuinely
+  false-emptying on a poll/final read fault (adversary reproduced `entries=[]`). Reach is now a
+  CHECKED variable across all three reads, each with a reach receipt (call #1 = snapshot; call #2 =
+  first poll under `budget>0`, or the final snapshot under `budget==0` — the only clean way to
+  isolate the final read, since with any `budget>0` the last poll and the final read both run at
+  `now≈deadline`). **Mutation-proven per site:** guarding ONLY the snapshot / poll / final drain
+  reddens EXACTLY that leg (1 failed, 2 passed) and no other; PIN 1 stays GREEN through all three —
+  the two pins fence the guard to the connect path ONLY.
 - **PIN 3 — SKIPPED (deliberately).** The early-wake LIVE-reconnect known bound (§R-4). A clean
   in-process pin (`connect.calls==1`) would CONFLICT with PIN 1's latitude (a degradation that
   retries the connect within budget is legal). The bound + re-open trigger are already recorded in

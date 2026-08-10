@@ -831,32 +831,74 @@ class TestConnectFailureDegradesToPoll:
         )
 
 
+class _DrainFaultAtSite:
+    """A drain seam that faults on drain call #1 (the step-1 SNAPSHOT) or call #2
+    (a POLL or the FINAL snapshot), returning empty otherwise. WHICH #2 read is which is
+    the caller's choice of BUDGET: budget>0 makes the loop run so call #2 is the first
+    step-3 POLL re-drain; budget==0 skips the loop so call #2 is the step-4 FINAL snapshot
+    — the ONLY way to isolate the final read (with any budget>0 the last poll and the
+    final read both run at now≈deadline, so a clock condition cannot tell them apart).
+    OSError is a ``_CONNECTION_ERRORS`` member (IN the boundary set a connect guard
+    catches), so a build over-guarding THIS site with the same catch false-empties."""
+
+    def __init__(self, site: str) -> None:
+        self._site = site
+        self.calls = 0
+
+    async def __call__(
+        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+    ) -> Any:
+        self.calls += 1
+        fault = self.calls == (1 if self._site == "snapshot" else 2)
+        if fault:
+            raise OSError(f"authoritative drain read faulted at {self._site}")
+        return _peek_empty()
+
+
 class TestADrainFaultRaisesNeverFalseEmpties:
     """#354 PIN-THE-MISS (cold audit §7 R1 / sidecar). DISTINCT from the connect guard:
     the DRAIN read (the authoritative snapshot/poll/final read on the LEDGER connection)
     is NOT best-effort — a fault there must RAISE an honest error, NEVER a false-empty.
-    F1=peek makes a raise loss-free (nothing was stamped). A build that wraps the drain
-    in an ``except`` and returns empty is the silent degradation this pin forbids — and
-    it is exactly the over-guard a builder ADDS while fixing the connect crash above, so
-    the two pins together fence the guard to the connect path ONLY."""
+    F1=peek makes a raise loss-free. A build that wraps the drain in an ``except`` and
+    returns empty is the silent degradation this pin forbids — and it is exactly the
+    over-guard a builder ADDS while fixing the connect crash above, so the two pins fence
+    the guard to the connect path ONLY.
 
-    async def test_a_drain_fault_propagates_as_an_honest_error(self) -> None:
-        async def raising_drain(
-            *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
-        ) -> Any:
-            # OSError is a _CONNECTION_ERRORS member — i.e. IN the boundary set the
-            # connect guard catches — so a build that over-guards the drain with the
-            # SAME catch swallows this and false-empties. It must NOT.
-            raise OSError("authoritative drain read faulted")
+    ⚠ Parametrised over the THREE fault-sites (adversary delta): a single-site
+    (snapshot-only) fault let a build that guards the POLL or FINAL drain pass while
+    genuinely false-emptying on a poll/final read fault. Reach is now a CHECKED variable
+    across all three authoritative reads (each leg mutation-proven independently)."""
 
+    @pytest.mark.parametrize("site", ["snapshot", "poll", "final"])
+    async def test_a_drain_fault_at_any_authoritative_read_propagates(self, site: str) -> None:
+        clock = _AdvancingClock()
+        drain = _DrainFaultAtSite(site)
+        # budget==0 for the FINAL leg skips the poll loop so drain call #2 is provably the
+        # step-4 final snapshot (no poll can intercept the fault); budget>0 for the POLL
+        # leg makes call #2 a step-3 poll re-drain.
+        budget = 0.0 if site == "final" else _TEST_BUDGET_S
         awaiter = _build_awaiter(
             connect=_connect_factory(_FakeLiveConnection()),
-            drain=raising_drain,
-            sleep=asyncio.sleep,
-            now=lambda: 0.0,
+            drain=drain,
+            sleep=clock.sleep,
+            now=clock.now,
+            budget_s=budget,
         )
         with pytest.raises(OSError):
             await awaiter.await_inbox(agent_id="fixer-b-id", limit=20)
+        # Reach receipt — each leg provably exercises its OWN authoritative read.
+        if site == "snapshot":
+            assert drain.calls == 1, f"the snapshot fault did not fire on drain call #1 ({drain.calls})"
+        elif site == "poll":
+            assert drain.calls == 2 and clock.now() > 0.0, (
+                f"the poll fault did not fire on a re-drain AFTER a wait — the loop must have run "
+                f"(calls={drain.calls}, now={clock.now()})"
+            )
+        else:  # final: budget==0 means NO poll ran, so call #2 is the final snapshot
+            assert drain.calls == 2 and clock.now() == 0.0, (
+                f"the final fault did not fire on the final snapshot with no poll intercepting "
+                f"(calls={drain.calls}, now={clock.now()})"
+            )
 
 
 # --------------------------------------------------------------------------- #
