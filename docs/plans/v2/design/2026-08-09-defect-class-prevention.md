@@ -2162,3 +2162,126 @@ hand-check. Default is the pin; the hand-check is the escape hatch, not the plan
   job so its reach covers the full suite deterministically; and if a NEW sanctioned whole-tree parser
   is ever added beside `parse_production_trees`, Layer 1's SAFE set grows by exactly one named frame
   (a deliberate, reviewed edit), never a spelling.
+
+### §12.7 — A-SUB round 5: the skip-set silent exemption + the negative non-parsing scan (fable-sidecar, 2026-08-09, finding #349)
+
+`delta-adversary-asub-4` (#349): Q(a) — §12.3's restored rider WORKS (kills the anchored `os.walk`-in-fixture
+survivor on the rider alone). Q(b) — FAILS, two coupled holes:
+- **The "4 adopters SKIP" (backoff/secret_typing/secret_leak/comms_footer, reviser-asub-4 §D-2) is a SILENT
+  EXEMPTION.** `backoff` is a PURE DECOY: a blatant private-`os.walk` wrong build passes the whole contract
+  44 passed / 4 skipped, BYTE-IDENTICAL to correct.
+- **A NEGATIVE, NON-PARSING scan escapes L1.** L1 filters by `_is_workspace_tree_result` (the compile
+  chokepoint), so an `os.walk` that checks FILENAMES and never calls `compile` is invisible to it — L1 only
+  catches tree-PRODUCERS that parse. L2 was `{}` (a split-leg source-in-a-helper evaded the 3-legs lint), and
+  the ALL-set is only `parse_production_trees`. ⚠ Because the scan is NEGATIVE (returns None / checks absence),
+  it is UN-REDDENABLE on `parser→{}` — the both-direction mutation diff CANNOT catch it. Structural, not
+  mutation-diff.
+
+Ruled at HEAD `e36c114`; ground truth read directly (contract uncommitted). The lead's steer — *"I'd rather a
+pinned bound than a round 6"* — is the right call, and the threat model makes it the CORRECT one, not a retreat.
+
+#### §12.7.1 — Ask 1: THREAT MODEL / SCOPE — stated IN the instrument, so the verdicts follow mechanically
+
+**A-SUB's anti-dup guards ONE policy: the PARSE of the workspace trees** (root-enumeration + `ast.parse`/
+`compile` of every production module), consolidated in `parse_production_trees`. It catches the HONEST
+DEVELOPER who hand-rolls that PARSE — a private whole-tree `ast.parse`/`compile` derivation — because a private
+parser copy DRIFTS (a new workspace member silently missed, #291-shape). **The operation it guards is PARSING;
+its chokepoint is `compile` (§12.2). It is NOT a security boundary (small user base) and NOT a guard against
+every conceivable private tree-access.**
+
+**A NEGATIVE, NON-PARSING tree-scan (walk filenames, check absence/presence, never `compile`) is NOT the parse
+operation** — it produces no AST and uses no parser. It is therefore **OUT OF SCOPE for A-SUB's parser
+anti-dup, BY DEFINITION of the policy A-SUB consolidates.** Its escaping L1 is not a defect: L1 is a PARSER
+chokepoint, and a non-parser has nothing to route through it. (What a non-parsing walk CAN duplicate is the
+ROOT/FILE enumeration — a DIFFERENT, smaller policy already consolidated separately in `workspace_roots`/
+`production_sources`; see §12.7.3.)
+
+**Verdicts follow mechanically (this is why the model is written IN the instrument):**
+- a private whole-tree PARSE (`ast.parse`/`compile`, ANY spelling) → IN scope → L1 catches (compile chokepoint);
+- a file that PARSES but is in the skip set → the skip-coverage pin catches (§12.7.2 — L1 observed it parsing);
+- a NON-PARSING private tree-walk (os.walk/scandir/iterdir/glob/hardcoded-list) → OUT of parser scope → not a
+  defect; its DRIFT sub-risk is a PINNED KNOWN BOUND (§12.7.3, #349).
+
+#### §12.7.2 — Ask 2: the SKIP-SET becomes a CHECKED VARIABLE (required either way)
+
+The silent exemption is promoted to allowlist-the-safe, reusing the EXISTING dead-entry idiom
+(`_ALLOWED_WHOLE_TREE_CLONE_FILES` in `test_ast_reach_helpers.py`) and L1's own observation — no new mechanism:
+- **`_ASUB_PARSE_SKIP` allowlist** — each entry `{file: evidence-reason}`, the reason being *why it is not a
+  parse-adopter* (e.g. backoff: *"does not parse the tree — it is a runtime-site reach check; its own sharing
+  proof lives in `test_backoff_seam`"*). No file is skipped without a stated reason.
+- **`test_no_skip_set_file_parses_the_tree_unrouted`** (the checked variable — REUSE L1's observation): ∀ file
+  in `_ASUB_PARSE_SKIP`, assert it appears NOWHERE in L1's observed workspace-parse set
+  (`_all_workspace_parse_sites` / the runtime `compile`-chokepoint observation) except routed through
+  `parse_production_trees`. A skip file OBSERVED parsing unrouted → RED: it is either a mis-classified adopter
+  (must adopt) or its "does not parse" reason is FALSE. **This is what makes backoff's classification honest:
+  the skip means "confirmed non-parsing," CHECKED at runtime, not "the reviser decided."** If backoff ever
+  grows a parse, L1 sees it and this pin reddens.
+- **`test_the_parse_skip_allowlist_carries_no_dead_entries`** (dead-entry pin, the `_ALLOWED_*` idiom): a skip
+  entry for a file that no longer exists, or that is now a routed adopter, is a dead exemption → RED, forcing
+  its removal.
+- **Coverage closure:** the universe partitions into ADOPTERS (routed, L1+L3) ∪ SKIPS (confirmed non-parsing,
+  above) ∪ (anything else that parses → an L1 escape, §12.3). No silent third category — that is the checked
+  variable. This closes the "44/4-skip byte-identical" hole: a decoy that parses privately is an L1 escape or a
+  skip-coverage RED; a decoy that does NOT parse is out of parser scope (§12.7.1) and pinned (§12.7.3).
+
+#### §12.7.3 — Ask 3: the negative non-parsing scan — PIN THE BOUND, do not chase spellings
+
+**Honest closability assessment: a non-parsing private tree-walk CANNOT be closed un-defeatably.** Unlike
+`compile` (the one primitive every AST production funnels through), tree-walking has NO single chokepoint —
+`os.walk`, `os.scandir`, `os.listdir`, `Path.iterdir`, `glob`/`rglob`, and a scan that reads a HARDCODED file
+list needs no directory iteration at all. Instrumenting `os.scandir`/`os.listdir` (the nearest thing to a
+chokepoint) is (a) enormously noisy (imports, fixtures, tempfiles all scandir), (b) STILL defeated by a
+hardcoded-list scan, and (c) aimed at a threat the model de-prioritizes. Enumerating walk spellings is the
+enumerate-the-forbidden pattern this whole doc exists to kill — it IS round 6.
+
+**Per CLAUDE.md "WHEN YOU CANNOT CLOSE A HOLE, PIN IT": PIN a KNOWN BOUND (#349), do not chase it.**
+- **`test_asub_nonparsing_tree_walk_is_a_KNOWN_BOUND_349`** — a PIN-THE-MISS test (the #137/#138 idiom):
+  construct a synthetic non-parsing `os.walk` scan and ASSERT A-SUB's L1/L2 do NOT flag it, carrying the
+  message: *"KNOWN BOUND #349 — A-SUB consolidates the PARSER (`parse_production_trees`); a NON-parsing
+  tree-walk has no chokepoint analogous to `compile`, and enumerating walk spellings is the defeated
+  enumerate-the-forbidden pattern. This is out of the parser policy's scope (§12.7.1), not an undetected
+  defect. If you added detection deliberately, DELETE this pin and say so."* It reddens the day someone closes
+  the hole — so the bound is met DELIBERATELY, never silently inherited or silently "fixed."
+- **The residual harm is DRIFT, and it is already MOSTLY mitigated — state this so the bound is honest, not
+  alarming.** A non-parsing walk only DRIFTS (misses a new workspace member) if it HARDCODES its roots; a scan
+  that takes roots from `workspace_roots`/`production_sources` (already ONE implementation, §7) does not drift
+  even if it hand-rolls file iteration. The one known hardcoded-root instance (comms_footer Scan B's 4-tuple)
+  is already being migrated (§10 Ruling 6). So the pinned residual is specifically *a NON-parsing walk that
+  HARDCODES workspace roots* — narrow, with its one instance already closing.
+- **Named re-open trigger (per the deferral law):** reconsider a detection mechanism when ANY of —
+  (a) a hardcoded-root non-parsing walk is found to have caused a real drift (a member silently missed);
+  (b) the threat model changes (untrusted contributors / a hosted deployment — security enters scope, per the
+  #138 trigger); (c) the repo gains CI + a root-enumeration audit (#285). At a trigger, the cheapest honest
+  candidate is a NARROW member-root-path-literal scan (flag a workspace-member-root path literal in a test file
+  outside the shared root helpers — catches the hardcoded-root drift without chasing walk spellings), NOT an
+  `os.scandir` chokepoint. Until a trigger fires, adding either is scope creep against a de-prioritized threat.
+
+#### §12.7.4 — How the #349 survivor is resolved (each part, individually)
+
+- **backoff-as-pure-decoy (non-parsing os.walk, 44/4-skip byte-identical):** NOT an A-SUB parser defect
+  (§12.7.1 — it does not parse); the SKIP is no longer silent (§12.7.2 — evidence-justified + checked against
+  L1's observed-parse set, so a mis-classification can't hide); the non-parsing-walk drift is a pinned bound
+  (§12.7.3). The "byte-identical" is now HONEST: A-SUB legitimately does not police a non-parsing walk, and it
+  says so in the pinned bound instead of pretending to.
+- **a private os.walk that ALSO parses (a real parser hand-roll via a walk):** IN scope — the parse produces a
+  workspace-AST → L1 escape (§12.3), regardless of the walk spelling. Caught.
+- **the negative scan being un-reddenable by mutation:** expected and correct — Layer 3 (∀-mutation) proves
+  PARSE adopters consume the shared parser; a non-parser is not a parse adopter, so Layer 3 correctly does not
+  apply to it. The structural resolution (§12.7.1–3), not the mutation diff, is the answer, exactly as the
+  delta demanded.
+
+#### §12.7.5 — Scope, reuse, packages
+
+- **Scope: TEST-ONLY** (skip allowlist + coverage/dead-entry pins + the pinned-bound test, all in
+  `test_ast_reach_helpers.py`; no production change). **No operator scope-grant needed** — but the operator/lead
+  should ACKNOWLEDGE #349 with the pinned-known-bound disposition (a scope decision the operator owns: is the
+  non-parsing-walk hole accepted as pinned, or does the operator want the narrow member-root-literal scan built
+  now?). I RECOMMEND accept-as-pinned (threat de-prioritized; residual mostly mitigated; the alternative risks
+  the round-6 spelling chase). Flagged for the operator; I do not decide it unilaterally.
+- **Reuse:** the `_ALLOWED_WHOLE_TREE_CLONE_FILES` dead-entry idiom; L1's `_all_workspace_parse_sites`
+  observation (the skip-coverage checked variable rides it — no new mechanism); the #137/#138 PIN-THE-MISS
+  idiom for the bound. **Packages considered:** none — stdlib `ast`/`sys` only, all reuse; **verdict: bespoke
+  minimal, extending the §12 instruments + the pin-the-miss idiom.**
+- **Route:** contract → adversary → build → cold audit; the adversary re-attacks with (1) a skip-set decoy that
+  parses privately (must be caught by the skip-coverage pin), (2) a non-parsing os.walk (must hit the pinned
+  bound, not a false clear), and (3) a mis-classified parse-adopter in the skip set (must redden).
