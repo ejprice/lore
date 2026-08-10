@@ -3,32 +3,42 @@
 brief-base v11 read
 brief project v7 read
 
-> **REVISION 3 (2026-08-10)** — addresses the `contract-adversary` INSUFFICIENT verdict
-> (`REPORT-adversary-05a-ii.md` §4): the R-2 sharing pin was a BEHAVIOR pin (a private inline
-> tuple satisfies it), and `TestThreadNarrowsClientSide` was value-monoculture. Both fixed +
-> re-proven (§2, §3). Rev-2 addressed the ratified R-1/R-2/R-3; rev-1 the original three forks.
+> **REVISION 4 (2026-08-10)** — addresses the cold-audit NO-GO on BLOCKER #354
+> (`REPORT-coldaudit-05a-ii.md` §2). The feature is now BUILT (HEAD `c111400`), so the contract
+> runs against the REAL artifact: 29 pins VALIDATE it, and the 4 new **PIN 1** legs correctly
+> redden on the unguarded LIVE-connect crash. Added PIN 1 (connect-failure → degrade-to-poll) +
+> PIN 2 (drain-fault → raise-not-false-empty); PIN 3 skipped (§7). See §7. Rev-1/2/3 below.
+>
+> **REVISION 3 (2026-08-10)** — addressed the `contract-adversary` INSUFFICIENT verdict §4: the
+> R-2 sharing pin was a BEHAVIOR pin; `TestThreadNarrowsClientSide` was value-monoculture. Both
+> fixed. Rev-2 addressed the ratified R-1/R-2/R-3; rev-1 the original three forks.
 
 ## SUMMARY BLOCK
-- **State:** done — INSUFFICIENT addressed. 33 pins across 3 files (all RED/anchor for the right
-  reason), satisfiability 42/42, 14 mutation proofs (incl. the two routing-≠-sharing builds 7a/7b).
-- **Deviations:** (1) a KNOWN-CORRECT reference of R-1/R-2/R-3 was built in DISPOSABLE scratch
-  copies to earn the receipts — real production UNTOUCHED (`git status`: only test files + reports).
-  (2) scratch `rm` is sandbox-blocked; `/tmp/await-ref{,2,3}-05aii` + `/tmp/r*` remain — disposable,
-  operator may delete.
+- **State:** done — cold-audit BLOCKER #354 pinned. **The feature is BUILT (HEAD `c111400`); the
+  contract runs against the real artifact — 29 pins VALIDATE it, the 4 PIN-1 legs redden on the
+  #354 crash.** 38 pins/legs across 3 files. Satisfiability 47/47 on the fixed (guarded) build;
+  16 mutation proofs.
+- **Deviations:** (1) receipts earned by applying the ~3-line #354 guard fix in a DISPOSABLE
+  scratch — real production UNTOUCHED (`git status`: only my test files + reports modified; the
+  built feature was committed by the builder at `f5aec32`/`c111400`, not by me). (2) scratch `rm`
+  is sandbox-blocked; `/tmp/await-ref{,2,3,4}-05aii` + `/tmp/r*` remain — disposable, operator may
+  delete. (3) 3 `scratch_coldaudit_*.py` at repo root are the cold auditor's leftovers, not mine.
 - **Capability check:** all tools present; only spike-surreal `:18000` reasoned about (no store
-  connected). No production code touched in the real tree.
+  connected — the injected seams open no socket). No production code touched by me.
 - **Packages considered:** none — no mechanism specified (a test contract). await REUSES shipped
   seams (`drain`, `awaiting_answer`, the `_render_comms_drain` fence/row, the `CommandSubscriber`
   connect-injection idiom, the shared `_CONNECTION_ERRORS`); hand-rolls nothing.
-- **Graded:** contract authorship — no builder artifact graded. `git rev-parse HEAD` = `d64cd23`.
-- **Decisions-needed:** none — R-1/R-2/R-3 ruled; the two adversary gaps fixed. Ready for the
-  `contract-adversary` re-run (no revision skips it).
+- **Graded:** contract authorship — the contract now grades the BUILT feature at HEAD `c111400`
+  (29 pins GREEN validate it; 4 PIN-1 legs RED = #354). `git rev-parse HEAD` = `c111400`.
+- **Decisions-needed:** none — #354 pinned; the builder writes the ~3-line connect guard (§7). PIN
+  3 (early-wake reconnect bound) skipped deliberately (§7). Ready for the `contract-adversary` re-run.
 - **Receipt pointers:** RED counts §1 · per-pin discriminators + mutation receipts §2 ·
-  satisfiability §3 · builder requirements §4 · adversary-gaps-closed §5 · unrelated mypy debt §6.
+  satisfiability §3 · builder requirements §4 · adversary-gaps-closed §5 · unrelated mypy debt §6 ·
+  the #354 pins + fix + mutation receipts §7.
 
 ---
 
-## 1. What was written, and the RED receipts (real tree, HEAD `d64cd23`, await UNBUILT)
+## 1. What was written, and the RED receipts (real tree, HEAD `c111400`, feature BUILT)
 
 **Writable set (R-2 SCOPE ADD: `test_scout.py`, lead-granted).** `test_comms_await.py` (28 pins,
 new), `test_comms_tool.py` (exact-set + `test_await_params`), `test_scout.py` (the R-2 scout leg —
@@ -140,6 +150,39 @@ wired, await inline) → await-leg mutation **RED** + AST belt **RED**. Neither 
 `uv run mypy loremaster` reports **102 errors** on this branch (`feat/surreal-unification`), ALL in a
 pre-existing AUTH-test cluster — **zero in my four files**. Out of my scope; surfaced per "flag
 unrelated failures, don't bury them". The operator decides.
+
+## 7. The #354 cold-audit BLOCKER — two OPPOSITE fates pinned (rev-4)
+
+The audit (`REPORT-coldaudit-05a-ii.md` §2) found the socket-DROP path holds (`TestSocketDropNonLoss`
+passes on the built code) but the LIVE-**connect** failure was UNPINNED and the built awaiter
+crashes on it: `inbox_awaiter.py::await_inbox` wraps `connection = await self._connect()` in a
+`try/…/finally` with **no `except`** (real code, lines 151–167). The shared opener re-raises raw SDK
+types by contract (a `_CONNECTION_ERRORS` member) AND `TxnContentionExhaustedError` (#102
+concurrent-first-connect) — the caller MUST catch, as `CommandSubscriber.run` does. Design §A.1 step 2
+says establish is best-effort → poll-only. Two fates, opposite, now pinned:
+
+- **PIN 1 — `TestConnectFailureDegradesToPoll` (4 legs, RED on the built code = the blocker).** A
+  raising `connect` factory — parametrised `OSError` AND `TxnContentionExhaustedError` — must DEGRADE
+  TO POLL: returns pending traffic (`drain.calls≥2`, poll reached) or an honest-empty, never a crash
+  or false-empty. Against HEAD `c111400` all 4 legs RED (the connect error propagates out of
+  `await_inbox`). **Mutation-proven:** on the fixed build (the ~3-line guard below) all 4 go GREEN
+  (satisfiability 47/47); reverting the guard (the current unguarded build) → **RED**.
+- **PIN 2 — `TestADrainFaultRaisesNeverFalseEmpties` (GREEN on the built code — a regression lock).**
+  The DRAIN read (the authoritative snapshot/poll/final read) is NOT best-effort: a fault must RAISE
+  (F1=peek makes it loss-free), never a false-empty. The built code already raises (drain unguarded),
+  so this LOCKS that. **Mutation-proven:** a build that catches the drain fault and RETURNS empty →
+  **RED**; the connect guard (PIN 1's fix) stays GREEN — the two pins fence the guard to the connect
+  path ONLY (a builder over-guarding the drain while fixing PIN 1 is caught).
+- **PIN 3 — SKIPPED (deliberately).** The early-wake LIVE-reconnect known bound (§R-4). A clean
+  in-process pin (`connect.calls==1`) would CONFLICT with PIN 1's latitude (a degradation that
+  retries the connect within budget is legal). The bound + re-open trigger are already recorded in
+  `05-comms-await-story.md` §R-4, so per the lead's "skip if awkward" this is left there.
+
+**Named builder fix (~3 lines):** wrap the connect+establish in the shared boundary catch —
+`try: connection = await self._connect(); live_uuid, consume_task = await self._establish_live(…)
+except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION: connection = None` — so a connect/establish fault
+degrades to poll-only (teardown already tolerates `connection=None`). The drain reads stay UNGUARDED
+(PIN 2). Proven satisfiable in scratch (47/47).
 
 ---
 

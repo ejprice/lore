@@ -428,3 +428,84 @@ pin; R-3 adds one render pin (correct consume-teach) and a typed-applicability f
 on the operator; all three are ratifiable by the lead now.
 
 _Standing by for follow-ups._
+
+---
+
+## Follow-up rulings 05a-ii (2026-08-10, #2) — the builder's §A.6 no-reconnect deviation
+
+The builder (`REPORT-builder-05a-ii.md` §6.2, `f5aec32`) deliberately did NOT give `InboxAwaiter`
+a LIVE-socket reconnect, and flagged the deviation from my §A.6. **I read the built code
+(`inbox_awaiter.py::InboxAwaiter.await_inbox` + `_live_query`/`_establish_live`, at HEAD) before
+ruling — this is grounded, not a "confirm this".** Ruling: **the deviation is CORRECT and in fact
+SUPERIOR to my §A.6; §A.6's reconnect MECHANISM is MOOTED by R-1; its non-loss INTENT is fully
+satisfied — by construction.**
+
+### R-4.1 — R-1's two-connection split MOOTS §A.6's LIVE-reconnect; non-loss INTENT holds
+
+- **§A.6 was written BEFORE R-1 and premised on a SINGLE-connection design.** In that world the
+  drain SELECT and the LIVE share one socket, so a drop poisons the FINAL snapshot too — hence
+  "reconnect and re-drain on a live socket." **R-1 (ruled later, by me) split them**, and that
+  changes the premise: the authoritative drain runs on the LEDGER's connection; the LIVE owns a
+  SEPARATE ephemeral socket. So §A.6's reconnect is now solving a problem the architecture no
+  longer has. **Read §A.6 as: intent (non-loss / no false-empty on a socket drop) STANDS; mechanism
+  (reconnect the LIVE) SUPERSEDED-BY-R-1.**
+- **Confirmed in `await_inbox` (grounded):** the snapshot-first drain, every poll re-drain, AND the
+  final-snapshot drain are `self._drain(...)` on the ledger connection. A LIVE-socket drop cannot
+  touch them — the KeyError from the dead LIVE is caught best-effort in `_establish_live`/the
+  consume task (`_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION` → poll carries the load, store §10),
+  and the poll ticks keep re-draining on the unaffected ledger connection to the deadline. The
+  forgery pin `TestSocketDropNonLoss` is GREEN (28/28) BY CONSTRUCTION, not by luck. **This is
+  §A.6's intent achieved more robustly than a reconnect ladder — the split moves the connection
+  MOST exposed to a mid-wait drop (the one held open 55s) OFF the authoritative path.** Good
+  architecture; ratify it.
+
+### R-4.2 — The one case the LIVE-poll split does NOT cover — and the code already handles it correctly
+
+Honest bound (naming it per the trust doctrine): the split protects against a **LIVE**-socket drop.
+It does not, by itself, protect against a drop of the **LEDGER (drain) connection** — the
+authoritative read. **I checked what happens in that case, and the code is trust-correct:**
+
+- In `await_inbox` the `try` block wrapping the wait has **only a `finally` (teardown), no
+  `except`.** So a connection fault raised by `self._drain` — at the snapshot-first read, a poll
+  re-drain, OR the final snapshot — **PROPAGATES out of `await_inbox` as an error. It is NEVER
+  swallowed into an empty `MessageDrainResult`.** A raised transport fault is HONEST (the consumer
+  sees "transport error", not "no traffic"); a false-EMPTY is the only poison, and that path does
+  not exist here.
+- **F1=peek is what makes the raise safe:** await stamps NOTHING, so a raised await destroys ZERO
+  state — the traffic is still unstamped and the caller simply re-awaits/drains. A ledger-connection
+  blip therefore costs availability (one retry), never loss. This is why peek (F1) and non-loss
+  (§A.6) are the same property from two sides, as flagged in §Forks F1.
+- **Recommended confirming pin (lead-adjudicable, cheap — should-add, not a blocker):** a pin that
+  a drain fault at the FINAL snapshot RAISES rather than returning an empty result — certifying the
+  "authoritative-read failure ≠ false-empty" trust property as an invariant (per "every audit-caught
+  defect CLASS becomes a repo-local invariant"). The code is already correct; the pin stops a future
+  refactor from wrapping the loop in a broad `except` that swallows a drain fault into empty. If the
+  lead judges it covered-by-construction, note it as a KNOWN-GOOD bound; I lean to adding the pin.
+
+### R-4.3 — The latency residual (early-wake LIVE reconnect): DEFER with a named re-open trigger
+
+After a mid-wait LIVE drop, wakes come only from poll ticks until the deadline — a **bounded latency
+add-on (≤ one poll interval up to the remaining budget), never a false-empty.** An optional early-wake
+LIVE reconnect would improve that latency and NOTHING else.
+
+- **Ruling: (b) DEFER with a named re-open trigger — do NOT build it now** (equivalently: PIN THE
+  MISS). It is a latency-only optimization on a RARE degraded path (a transient fault inside a ≤55s
+  window), with ZERO correctness value (non-loss already holds). Building it means cloning
+  CommandSubscriber's reconnect ladder onto the ephemeral LIVE connection — exactly the machinery
+  R-2 ruled we do NOT need to reproduce — for a gain nobody has measured. That is textbook
+  measure-then-tune (deferral-law shape 1): the intervention's value is unknowable before a
+  measurement.
+- **Named re-open trigger (required for a legitimate deferral):** *the day dogfood/production
+  telemetry shows mid-wait LIVE drops are frequent AND the poll-only-wake latency is a measured
+  problem for a real consumer* — then reconsider an early-wake reconnect. Pin the bound now: a
+  comment/known-bound test asserting *"after a mid-wait LIVE drop, wakes are poll-only until the
+  deadline — bounded add-on latency, never a false-empty (#<finding>); re-open trigger above."*
+- **Classification: LEAD-ADJUDICABLE, not operator-level.** Internal latency/robustness trade on a
+  degraded path; no scope/feature implication; correctness is already satisfied.
+
+**Net:** §A.6's reconnect is correctly dropped (mooted by R-1); non-loss intent is satisfied by
+construction and by the raise-not-empty drain path; the only residual is bounded latency on a rare
+fault, disciplined-deferred with a trigger. **Nothing here blocks cold-audit GO / deploy** — one
+optional confirming pin (R-4.2) + one known-bound pin (R-4.3), both cheap, neither operator-level.
+
+_Standing by for follow-ups._

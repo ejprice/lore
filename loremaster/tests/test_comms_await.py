@@ -768,6 +768,97 @@ class TestAwaitSharesTheSdkBoundaryConstantByMutation:
         )
 
 
+# =========================================================================== #
+# #354 (cold audit BLOCKER, REPORT-coldaudit-05a-ii.md §2). The socket-DROP path
+# (establish succeeds, then the op raises) is pinned by TestSocketDropNonLoss. This
+# section pins the TWO fates the audit found UNPINNED — and they are OPPOSITE:
+#   * a LIVE-CONNECT failure is BEST-EFFORT → DEGRADE TO POLL (never crash/false-empty)
+#   * a DRAIN (authoritative read) failure is NOT best-effort → RAISE (never false-empty)
+# The shared connection opener re-raises raw SDK types by contract (a _CONNECTION_ERRORS
+# member) AND TxnContentionExhaustedError (#102 concurrent-first-connect), expecting the
+# caller to catch — as CommandSubscriber.run does; the awaiter must not drop that.
+# =========================================================================== #
+def _txn_contention_error() -> BaseException:
+    """The #102 concurrent-first-connect contention error the shared opener re-raises
+    (a RuntimeError, NOT in _CONNECTION_ERRORS — so a base-set-only catch misses it)."""
+    from loremaster.store._txn import TxnContentionExhaustedError  # noqa: PLC0415
+
+    return TxnContentionExhaustedError(
+        "simulated concurrent first-connect contention", attempts=5, elapsed_seconds=1.0
+    )
+
+
+class TestConnectFailureDegradesToPoll:
+    """#354 STANDING GUARD (design §A.1 step 2: establish is best-effort, falls to
+    poll-only, never aborts await). A raising ``connect`` factory — BOTH a
+    ``_CONNECTION_ERRORS`` member AND ``TxnContentionExhaustedError`` — must DEGRADE
+    TO POLL, not crash and not false-empty."""
+
+    @pytest.mark.parametrize("kind", ["oserror", "contention"])
+    async def test_a_raising_connect_degrades_to_poll_and_returns_pending(self, kind: str) -> None:
+        # entry snapshot EMPTY -> establish (connect RAISES) -> must fall to poll ->
+        # the poll (call>=2) finds the traffic. The audit's repro: connect->OSError and
+        # connect->ContentionExh currently RAISE with drain.calls=1 (poll unreached); the
+        # guarded build reaches the poll (drain.calls>=2).
+        error: BaseException = (
+            OSError("connect refused") if kind == "oserror" else _txn_contention_error()
+        )
+
+        def chooser(call_index: int, now: float) -> Any:
+            return _peek_traffic(55) if call_index >= 2 else _peek_empty()
+
+        result, drain, _clock, _connect = await _drive_awaiter(chooser=chooser, connection=error)
+        assert [entry.seq for entry in result.entries] == [55], (
+            f"a LIVE-connect failure ({kind}) crashed or false-emptied await instead of degrading "
+            f"to poll — the shared opener re-raises by contract and await dropped the catch (#354)"
+        )
+        assert len(drain.calls) >= 2, (
+            f"the poll was UNREACHED (drain.calls={len(drain.calls)}) — the connect failure aborted "
+            f"await at establish instead of falling to poll-only (design §A.1 step 2)"
+        )
+
+    @pytest.mark.parametrize("kind", ["oserror", "contention"])
+    async def test_a_raising_connect_returns_honest_empty_when_no_traffic(self, kind: str) -> None:
+        error: BaseException = (
+            OSError("connect refused") if kind == "oserror" else _txn_contention_error()
+        )
+        result, _drain, _clock, _connect = await _drive_awaiter(
+            chooser=lambda call_index, now: _peek_empty(), connection=error
+        )
+        assert result.entries == [], (
+            f"a LIVE-connect failure ({kind}) on a genuinely-empty inbox produced non-empty / "
+            f"crashed — it must degrade to poll and return the honest-empty (#354)"
+        )
+
+
+class TestADrainFaultRaisesNeverFalseEmpties:
+    """#354 PIN-THE-MISS (cold audit §7 R1 / sidecar). DISTINCT from the connect guard:
+    the DRAIN read (the authoritative snapshot/poll/final read on the LEDGER connection)
+    is NOT best-effort — a fault there must RAISE an honest error, NEVER a false-empty.
+    F1=peek makes a raise loss-free (nothing was stamped). A build that wraps the drain
+    in an ``except`` and returns empty is the silent degradation this pin forbids — and
+    it is exactly the over-guard a builder ADDS while fixing the connect crash above, so
+    the two pins together fence the guard to the connect path ONLY."""
+
+    async def test_a_drain_fault_propagates_as_an_honest_error(self) -> None:
+        async def raising_drain(
+            *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+        ) -> Any:
+            # OSError is a _CONNECTION_ERRORS member — i.e. IN the boundary set the
+            # connect guard catches — so a build that over-guards the drain with the
+            # SAME catch swallows this and false-empties. It must NOT.
+            raise OSError("authoritative drain read faulted")
+
+        awaiter = _build_awaiter(
+            connect=_connect_factory(_FakeLiveConnection()),
+            drain=raising_drain,
+            sleep=asyncio.sleep,
+            now=lambda: 0.0,
+        )
+        with pytest.raises(OSError):
+            await awaiter.await_inbox(agent_id="fixer-b-id", limit=20)
+
+
 # --------------------------------------------------------------------------- #
 # PIN #5 — INJECTION: the emitted LIVE statement inlines ONLY the agent-id record
 # literal — NO thread, NO caller substring, NO bound param. On the InboxAwaiter now.
