@@ -308,3 +308,123 @@ self-defeating, ~zero benefit). §B. Recommend ratifying agent-id-only.
    await's stamps. (§Forks F1)
 
 _This doc proposes; the operator rules, the lead adjudicates. Standing by for follow-ups._
+
+---
+
+## Follow-up rulings 05a-ii (2026-08-10) — the contract author's three seam forks
+
+The Opus-4.8 contract author (`REPORT-contract-05a-ii.md`, 26 RED pins, 35/35 satisfiability +
+8 mutation proofs) ratified my F1=PEEK and F2=fixed-constant, then raised three questions about
+the Python SEAM that HOSTS the wait-machine — my design-of-record specified await's BEHAVIOR
+(§A.1–A.6) but not its structure. **All three settle from HOUSE PRECEDENT (`CommandSubscriber`)
++ standing law (Consumer Law, ONE IMPLEMENTATION, #104 typed-applicability). NONE is
+operator-level** — they need no scope/feature decision, only a structure ruling the lead may
+ratify (ruling authority delegated to the lead per the 05a-iii precedent). Tight rulings so the
+contract-adversary pass is unblocked:
+
+### R-1 — Wait-machine home: STANDALONE primitive, not a `MessageLedger` method (lead-adjudicable)
+
+**Ruling: host the wait-machine in a STANDALONE primitive (e.g. `InboxAwaiter`), constructed with
+the injectable `connect` factory — NOT as `MessageLedger.await_inbox`.** The ledger stays the
+data-access authority; the awaiter CALLS it.
+
+- **House precedent is unambiguous and already made this exact separation:**
+  `scout.py::CommandSubscriber` is the project's LIVE + poll + reconnect wait/dispatch machine, and
+  it is a **standalone class constructed with an injected `connect` factory** — NOT a method on any
+  ledger. await is the same KIND of thing (transport-driven, reconnecting, its own connection
+  lifecycle), bounded instead of infinite. Same concern → same home shape.
+- **The injectable `connect=None` on `await_inbox` is itself the tell.** `MessageLedger` ALREADY
+  owns a connection (its `_query` seam); a ledger method needing a SEPARATE injected `connect`
+  factory is transport orchestration wearing a data-access method's clothes. That parameter is
+  precisely `CommandSubscriber.__init__(connect=...)` — it wants to be a constructor arg on its
+  own object, not a bolt-on to a ledger method that then carries two connection concepts (the
+  ledger's `_query` connection for drain SELECTs + the awaiter's dedicated LIVE connection).
+- **Concern boundary:** `MessageLedger` = request/response rows-and-edges (drain/send/ack/
+  awaiting_answer). A LIVE-subscription + poll + reconnect + budget-clock loop is a different
+  concern; parking it on the ledger blurs the boundary the codebase already keeps in scout.py.
+- **Clean collaboration (concrete):** `InboxAwaiter` takes the `MessageLedger` (or just its
+  `drain` callable) + a `connect` factory; it owns snapshot-first `drain(peek=True)`, LIVE
+  establish, poll re-drain, reconnect, budget clock, final snapshot; returns a `MessageDrainResult`
+  (peek). The **server `_comms_await` handler CONSTRUCTS it, calls it, and owns the RENDER** —
+  including the timeout waiting-line via `ledger.awaiting_answer(caller)` (§A.4). The awaiter need
+  not even know about `awaiting_answer`; the waiting-line is a render concern that lives with the
+  other `_render_comms_*` helpers in server.py. (Reject the "server handler ORCHESTRATES the loop"
+  option — that blurs the server's dispatch/render concern the same way; the handler CONSTRUCTS and
+  CALLS, it does not BE the loop.)
+- **Cost is low** (the observable pins are seam-agnostic — only the entry point the ~13
+  wait-machine pins call moves) and **testability improves** (inject `connect`/`sleep`/`now` on a
+  purpose-built class, the CommandSubscriber idiom, instead of bloating a ledger method signature
+  with transport seams).
+- **Classification: DESIGN recommendation, LEAD-adjudicable — not an operator fork.** Internal
+  module structure is design/lead territory; house precedent settles it. The `MessageLedger`-method
+  form is not *wrong*, just off-pattern — if the lead judges the (small) churn not worth it, it can
+  stand, but I lean firmly to the standalone primitive.
+
+### R-2 — ONE IMPLEMENTATION vs `CommandSubscriber`: share the ERROR-CLASSIFICATION POLICY only; the loop structure is legitimately distinct (mandatory share + mutation pin)
+
+**Ruling: await is a legitimately DISTINCT STRUCTURE (bounded one-shot ≠ infinite dispatcher) — do
+NOT extract a shared wait-machine helper. It MUST share exactly ONE thing: the
+error-classification policy, referenced from a single symbol, PROVEN BY MUTATION.**
+
+- **What is POLICY (must agree) vs STRUCTURE (may differ):**
+  - **POLICY — the connection-error set.** Both must reconnect on the same exceptions. The shared
+    atom is `loremaster.store._txn._CONNECTION_ERRORS` (already a shared constant — `CommandSubscriber`
+    references it) PLUS the documented rule *"add `KeyError` at the SDK-await boundary"* (store §3:
+    "Classify `KeyError` tightly, at the SDK-await boundary only"; probe PROBE 2 re-confirmed the
+    shape on 3.2.4). **Discharge: extract `_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS,
+    KeyError)` in `store._txn`, and have BOTH await AND at least one `CommandSubscriber` catch site
+    (`_safe_close`/`_safe_kill`) reference it.** Today scout.py writes `(*_CONNECTION_ERRORS,
+    KeyError)` inline at several sites — so this DRYs scout's own clones too.
+  - **STRUCTURE — the loop.** `CommandSubscriber.run()` is an infinite reconnect loop;
+    await is a bounded one-shot. A shared `run()`-shaped helper would force one structure onto two
+    genuinely different lifecycles — that is over-abstraction, not sharing. The filtered-LIVE
+    statement builders are ALSO legitimately different (`WHERE status='pending'` vs
+    `WHERE out=agent:<id>`); their shared element is the store-LAW idiom "inline the literal, never
+    a bound param" (§A.5 injection pin), not a shareable function.
+- **`TxnContentionExhaustedError` nuance (builder latitude, recommend YES):** `run()` ALSO unions
+  `TxnContentionExhaustedError` at its reconnect ladder (finding #108) but NOT at teardown. await's
+  drain SELECTs already retry via the shared `retry_on_conflict` driver; recommend await treat an
+  exhaustion as a transient and re-poll within budget (mirror `run()`), i.e. its reconnect-path
+  set = `(*_SDK_AWAIT_BOUNDARY_ERRORS, TxnContentionExhaustedError)`, teardown set =
+  `_SDK_AWAIT_BOUNDARY_ERRORS`. This composition is builder latitude; the SHARED constant is not.
+- **MANDATORY PIN (per ONE IMPLEMENTATION — routing is not sharing):** a prove-sharing-by-mutation
+  pin — mutate `_SDK_AWAIT_BOUNDARY_ERRORS` (e.g. drop `KeyError`) and assert a pin in BOTH await's
+  suite AND `CommandSubscriber`'s suite reddens. A caller that merely re-writes the same tuple inline
+  is a private copy wearing the shared name; only the mutation pin distinguishes share from clone.
+- **Classification: MANDATORY ONE-IMPLEMENTATION mechanic — builder/lead latitude on the seam NAME
+  and the small scout.py touch (a scope call for the lead), but the share + mutation pin is
+  required, not optional. Not operator-level.**
+
+### R-3 — await's non-empty render MUST NOT reuse the peek-teach verbatim: it teaches a false affordance (mandatory Consumer-Law fix + pin)
+
+**Ruling: the shared `_render_comms_drain(peeked=True)` footer is NOT acceptable for await as-is —
+it teaches "re-run WITHOUT peek=true to mark them seen," an instruction await CANNOT honor (await
+has no `peek` param). await's non-empty render MUST teach its REAL consume path: consume via
+`action=drain`.** This is a served-surface TRUST violation, not wording latitude.
+
+- **Why mandatory, not latitude:** a served surface teaching a follow-up action that does not exist
+  on the tool is the #104/#131 class — served English contradicting served behavior, with no
+  mechanical guard. Under the hard trust definition, a consumer acting on "re-run without peek=true"
+  is wrong in a way the response induced. The contract left "the wording as open latitude," but the
+  wording carries a mandatory PROPERTY it did not pin: it must name the true consume action and must
+  NOT teach the nonexistent await-peek re-run.
+- **Fix, ONE-IMPLEMENTATION-compatible (#104 — renders take TYPED applicability, not a name they
+  compare):** REUSE the fence + row rendering (the injection-critical part — §A.4 hostile-fixture
+  pin still applies) and vary ONLY the taught follow-up via typed input. Concretely, the footer's
+  consume-instruction becomes a typed applicability the caller supplies (drain-peek → "re-run
+  without peek=true"; await → "consume via `action=drain`"), rather than a `peeked: bool` that
+  hardcodes the drain wording. Do NOT hand-roll a second full render (that forks the fence); do NOT
+  emit the drain footer verbatim.
+- **MANDATORY PIN:** a render pin asserting await's non-empty output (a) does NOT contain the
+  "peek=true" re-run instruction and (b) DOES name `action=drain` as the consume path — plus the
+  existing fence + verbatim-body round-trip pins. Discriminating fixture: a build that reuses the
+  drain footer verbatim FAILS (a).
+- **Classification: MANDATORY Consumer-Law/trust fix — exact wording is builder latitude WITHIN the
+  pinned property (names `action=drain`, never the peek re-run). Not operator-level.**
+
+**Net for the adversary:** R-1 moves the ~13 wait-machine pins' entry point to a standalone
+`InboxAwaiter` (seam-agnostic, cheap); R-2 adds one shared error constant + a cross-suite mutation
+pin; R-3 adds one render pin (correct consume-teach) and a typed-applicability footer. None blocks
+on the operator; all three are ratifiable by the lead now.
+
+_Standing by for follow-ups._

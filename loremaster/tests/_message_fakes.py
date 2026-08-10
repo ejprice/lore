@@ -36,10 +36,11 @@ The adversarial properties are documented at the class below; they mirror
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from loremaster.agent_existence import format_unknown_agent_refusal
 from loremaster.briefs import AgentRefLike
@@ -536,6 +537,55 @@ class FakeMessageLedger:
                     asked_at=question.created_at,
                 )
         return None
+
+    # -- await (packet 05a-ii — the PEEK-and-wait read) -----------------------
+    # The ORACLE for ``MessageLedger.await_inbox``: it models the OUTCOME the
+    # ``_comms_await`` handler renders (a PEEK of the current unseen pending,
+    # optionally thread-narrowed CLIENT-SIDE), NOT the wait transport. A fake
+    # models what await RETURNS; its socket-level behaviour (LIVE/poll/drop) is
+    # proven by the fake-CONNECTION transport pins that drive the REAL
+    # ``await_inbox`` control flow, and by the live-store build probe — never by
+    # this oracle (the #131 "test environment is a fiction" split: the recipe is
+    # proven against the artifact/socket, never against the double). The
+    # transport seams below are accepted for PUBLIC-SURFACE parity with the real
+    # method and deliberately IGNORED here.
+
+    async def await_inbox(
+        self,
+        *,
+        agent_id: str,
+        limit: int,
+        thread: str | None = None,
+        # Inert in the oracle (it never waits); present for surface parity. The
+        # ≤55s value lives on the PRODUCTION constant, pinned as a PROPERTY (F2).
+        budget_s: float = 55.0,
+        poll_interval_s: float = 1.0,
+        connect: Callable[[], Awaitable[Any]] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        now: Callable[[], float] = time.monotonic,
+    ) -> MessageDrainResult:
+        """F1 PEEK-and-wait: surface this agent's UNSEEN traffic, stamping NOTHING.
+
+        ``stamped_seqs`` is EMPTY and ``peeked`` is True — await consumes nothing;
+        the caller drains for real afterwards (mirrors ``drain(peek=True)``). Two
+        awaits over the same pending BOTH return it (idempotent, retry-safe — the
+        F1 kickoff ruling). ``thread`` narrows CLIENT-SIDE on the authoritative
+        snapshot (F3), never the LIVE WHERE.
+        """
+        await asyncio.sleep(0)
+        pending = sorted(self._pending(agent_id), key=lambda message: message.seq)
+        if thread is not None:
+            pending = [message for message in pending if message.thread == thread]
+        window = pending[:limit]
+        return MessageDrainResult(
+            entries=[self._inbox_entry(message, agent_id) for message in window],
+            total_pending=len(pending),
+            directive_pending=sum(
+                1 for message in pending if message.grade == MESSAGE_GRADE_DIRECTIVE
+            ),
+            stamped_seqs=[],
+            peeked=True,
+        )
 
     # -- read compositions (packet 05a-iii, #322 DOUBLE-face parity) -----------
     # story's task-arc read and the rollup's messages-activity leg. Mirror the

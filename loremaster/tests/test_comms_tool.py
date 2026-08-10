@@ -405,7 +405,9 @@ class TestCommsActionsTable:
     deviation from the tasks()/findings() if/elif house idiom)."""
 
     # packet 03 widens the table by three (send/drain/ack); packet 05a-iii adds
-    # ``story``. The set stays EXACT, never a subset.
+    # ``story``; packet 05a-ii adds ``await`` (the bounded wait). The set stays
+    # EXACT, never a subset — ``await`` is RED here until the builder adds it to
+    # ``_COMMS_ACTIONS`` (the exact-set registration pin).
     _EXPECTED_ACTIONS = {
         "register",
         "heartbeat",
@@ -417,6 +419,7 @@ class TestCommsActionsTable:
         "drain",
         "ack",
         "story",
+        "await",
     }
 
     def test_exact_action_set(self) -> None:
@@ -468,6 +471,30 @@ class TestCommsActionsTable:
         spec = _COMMS_ACTIONS["fleet"]
         assert spec.params == frozenset({"limit"})
         assert spec.required == frozenset()
+
+    def test_await_params(self) -> None:
+        """packet 05a-ii param honesty: ``await`` honours ``agent`` (universal) +
+        an OPTIONAL ``thread`` (F3 client-side narrowing) and declares NO other
+        param — so ``_comms_foreign_param_error`` rejects the rest, mirroring the
+        other read actions. RED (``KeyError``) until the builder registers await.
+        ``thread`` is a PARAM, never ``required``: an await with no thread waits on
+        ALL of the agent's traffic (the common case), so a required thread would
+        break the primary use. NO ``timeout=`` param — the ≤55s bound is a FIXED
+        named constant (F2), never a caller knob."""
+        spec = _COMMS_ACTIONS["await"]
+        assert spec.params == frozenset({"thread"}), (
+            "await must accept ONLY the optional 'thread' narrowing param (plus the "
+            "universal agent/session) — a 'timeout' or other param would violate F2 "
+            "(fixed ≤55s constant) or the strict-param law"
+        )
+        assert spec.required == frozenset(), (
+            "await must have NO required param beyond the universal 'agent' — 'thread' "
+            "is optional (await with no thread waits on all of the agent's traffic)"
+        )
+        assert spec.requires_registration is True, (
+            "await must require a prior register (the uniform heartbeat touch), like "
+            "every non-register action"
+        )
 
     def test_required_is_always_a_subset_of_params_or_universal(self) -> None:
         # 'session'/'role' (register's required set) are NOT re-declared in

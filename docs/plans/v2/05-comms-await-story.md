@@ -43,6 +43,33 @@ reshape/`since=`/#183/#190/R1/DD-2.a helper; 05a-iii: story/rollup/comms_cli/#30
   spawn WITHOUT a per-invocation `model` override). Used for the contract author, cold auditor,
   and the live-leg builder.
 
+### Seam rulings (lead-ratified 2026-08-10 from the Fable sidecar's Follow-up rulings §R-1/R-2/R-3;
+none operator-level — design/mechanics settled by house precedent + standing law)
+- **R-1 — the wait-machine is a STANDALONE primitive (`InboxAwaiter`), NOT a `MessageLedger`
+  method.** The ledger stays the data-access authority; the awaiter is constructed with an injected
+  `connect` factory (mirrors `scout.py::CommandSubscriber`) + the ledger's `drain` seam. The server
+  `_comms_await` handler CONSTRUCTS + CALLS it and owns the RENDER (incl. the timeout waiting-line
+  via `ledger.awaiting_answer`). Rejected: `MessageLedger.await_inbox` (the injectable `connect` on a
+  data-access method is the concern-boundary tell) and "handler IS the loop".
+- **R-2 — ONE IMPLEMENTATION vs `CommandSubscriber`: share the ERROR-CLASSIFICATION POLICY only.**
+  Extract `_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)` in `store._txn`; await AND
+  ≥1 `CommandSubscriber` catch site both reference it (DRYs scout's existing inline clones). Loop
+  structure is legitimately distinct (bounded one-shot ≠ infinite dispatcher) — do NOT extract a
+  shared loop helper. **MANDATORY prove-sharing-by-mutation pin** (mutate the constant → a pin in
+  BOTH await's suite AND `CommandSubscriber`'s suite reddens). Builder latitude: await's reconnect
+  set MAY union `TxnContentionExhaustedError` (recommend yes), teardown set = the base constant.
+  **SCOPE ADD (lead-granted, operator-surfaced): this packet touches `scout.py` + `test_scout.py`
+  to establish the shared seam** — required by ONE IMPLEMENTATION; a private copy is the clone the
+  law forbids.
+- **R-3 — await's non-empty render MUST teach its REAL consume path (`action=drain`), never the
+  drain footer's "re-run without peek=true"** (await has no peek param → a false affordance, the
+  #104/#131 served-English-contradicts-behavior class). Fix via TYPED applicability (#104 — the
+  footer's consume-instruction is a typed input, not a `peeked: bool` hardcoding drain's wording);
+  REUSE the fence + row render (the injection-critical part, §A.4 hostile fixture still applies).
+  **MANDATORY pin**: await non-empty output (a) does NOT contain the "peek=true" re-run, (b) DOES
+  name `action=drain`; discriminating fixture = a verbatim-drain-footer build FAILS (a).
+Design reasoning of record: `REPORT-fable-design-05a-ii.md` §"Follow-up rulings 05a-ii".
+
 ## Mission
 The wait-and-reconstruct half of the surface: bounded await, task-anchored story,
 rollup extension, CLI, and the idle-gate hook rework.
