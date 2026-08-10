@@ -3,6 +3,126 @@
 brief-base v11 read
 brief project v7 read
 
+> **REVISION 3 RE-GRADE (2026-08-10, HEAD `218c13f`) — VERDICT: CONTRACT SUFFICIENT.** The
+> author fixed the rev2 INSUFFICIENT (§R3 below is the delta grade). The rev2 grade is kept
+> UNCHANGED beneath it for provenance (marked SUPERSEDED). Read §R3 first.
+
+---
+
+## R3. REVISION-3 DELTA RE-GRADE — SUFFICIENT (with one pinned-bound recommendation)
+
+### R3 SUMMARY BLOCK
+- **VERDICT: CONTRACT SUFFICIENT.** The rev2 BLOCKER (R-2 sharing) and both secondary pins are
+  fixed and verified; the new guards are the real thing — the scout-leg mutation pin is RED on
+  the unwired real HEAD (the rev2 behaviour pin was GREEN there). One residual escapes every
+  guard but it is a RECEDING gap the lead pre-authorised as a pinned BOUND, not a blocker.
+- **JOB 1 — do the fixes catch the wrong builds? YES, all four:** 7a (scout inline) → AST belt
+  + scout-leg mutation RED; 7b (await inline) → AST belt + await-leg mutation RED; hardcoded
+  `"q:gate"` → the `q:other` parametrize leg RED; stamping build (`peek=False`) → the
+  idempotency pin RED (the `_StampingDrain` now discriminates).
+- **JOB 2 — attacking the new pins:** the runtime-mutation legs observe the EFFECT (await
+  RAISES / scout stops recovering) with non-vacuous positive controls — SOUND. The AST belt is
+  defeatable-by-spelling (concatenation confirmed to escape) **but the mutation pin backstops
+  every inline spelling** (concat confirmed CAUGHT by the mutation) — belt-and-braces holds.
+  ONE residual survives BOTH guards (§R3.3).
+- **Satisfiability:** the correct rev3 reference (2 constants + await + ALL 8 scout sites
+  DRY'd + R-3 render) goes **42/42** — no C-DEF trap from the new pins. Provenance:
+  `loremaster.__file__ = /tmp/adv-r3/loremaster/loremaster/__init__.py`.
+- **RED honesty:** all new pins RED for the right reason on real HEAD — the awaiter-dependent
+  ones via `AttributeError: module 'loremaster.server' has no attribute 'InboxAwaiter'`; the
+  scout-leg mutation via its own `assert 1 == 0` ("subscriber STILL recovered … holds a PRIVATE
+  INLINE tuple") — i.e. it genuinely FAILS on the current inline HEAD, which is exactly what a
+  standing sharing guard must do.
+- **Graded:** HEAD `218c13f` · HEAD-at-report `218c13f` · SAME.
+
+### R3.1 — JOB 1: the rev2 findings are fixed (empirical)
+
+| Wrong build | Pin(s) that now catch it | Result |
+|---|---|---|
+| 7a — await wired, scout keeps private inline clones | AST belt + scout-leg runtime mutation | **both RED** |
+| 7b — await hand-rolls inline, scout wired | AST belt + await-leg runtime mutation | **both RED** |
+| hardcoded `entry.thread == "q:gate"` | `TestThreadNarrowsClientSide[q:other]` | **RED** (`[q:gate]` passes) |
+| stamping build `peek=False` | `test_two_awaits…BOTH_return_it` (on `_StampingDrain`) + `…peek_true` | **both RED** |
+
+The scout-leg mutation is the load-bearing repair: on real HEAD (scout inline, no constant) it
+is **RED** — a private inline tuple is unaffected by the constant mutation, so recovery does not
+break, so the pin fails. That is the standing "prove sharing by mutation" the rev2 behaviour pin
+was not. Positive control (`test_reconnect_recovers…`, unpatched) recovers — non-vacuous.
+
+### R3.2 — JOB 2: the new pins graded for their OWN vacuity/reach (P1c on the new guards)
+
+| New guard | reach DERIVED or hand-list? | coverage CHECKED? | effect or proxy? | one-source by mutation? | verdict |
+|---|---|---|---|---|---|
+| await-leg runtime mutation | patches `awaiter_module._SDK_AWAIT_BOUNDARY_ERRORS[_WITH_CONTENTION]`; asserts `await_inbox` RAISES | YES (RED on inline HEAD; PASS only when the catch NAMES the patched global) | **effect** (recovery breaks) | proves the catch names a PATCHABLE module global — see §R3.3 for the one thing it can't distinguish | SOUND (bounded) |
+| scout-leg runtime mutation | patches `scout._SDK_AWAIT_BOUNDARY_ERRORS[_WITH_CONTENTION]`; asserts gap NOT recovered | YES (RED on inline HEAD) | **effect** | same bound as above | SOUND (bounded) |
+| AST reach belt | **within-module DERIVED** (walks every `ast.ExceptHandler` whose type is a `Tuple` with a `*_CONNECTION_ERRORS` spread + bare `KeyError`); **module set is a 2-item HAND-LIST** `(scout, awaiter_module)` | partial — pattern-derived per module, hand-list across modules | source-shape (proxy) | n/a — backstopped by the mutation pins | defeatable-by-spelling; REDUNDANT to the mutation (§R3.3) |
+| `_StampingDrain` idempotency | shared drain state models a real `to`-edge stamp | YES — a `peek=False` build reddens | effect | n/a | SOUND, no residual monoculture |
+| thread parametrize `{q:gate,q:other}` | two distinct values | YES — a single-value comparand fails one leg | effect | n/a | SOUND, monoculture killed |
+
+Spelling attacks on the AST belt, each with the mutation-pin backstop verdict (empirical where marked):
+
+| Inline clone spelling | AST belt | Runtime-mutation pin | net |
+|---|---|---|---|
+| `(KeyError, *_CONNECTION_ERRORS)` (order) | CATCHES (order-independent `any`) | CATCHES | caught |
+| `_CONNECTION_ERRORS + (KeyError,)` (concat `BinOp`) | **MISSES** (not a `Tuple`) — *confirmed* | **CATCHES** — *confirmed* (await-leg RED) | caught |
+| `(*_CE, KeyError)` aliased import | MISSES (`id != "_CONNECTION_ERRORS"`) | CATCHES (inline ≠ the global) | caught |
+| `_X = (*_CONNECTION_ERRORS, KeyError)`; `except _X:` (differently-named global) | MISSES (`Name`, not `Tuple`) | CATCHES (patch hits `_SDK_…`, not `_X`) | caught |
+| **same-named LOCAL redefinition** of `_SDK_AWAIT_BOUNDARY_ERRORS` in a consumer module | MISSES (`Name`) | **MISSES** (patch hits the local copy) | **ESCAPES — §R3.3** |
+| clone in a THIRD module the belt never opens | MISSES (not scanned) | MISSES (not exercised) | ESCAPES (no third consumer today) |
+
+**The belt is redundant defense — the runtime-mutation pin is the real guard, and it is
+spelling-proof** (it observes the EFFECT of mutating the symbol, not the syntax). Every inline
+spelling that escapes the belt is still caught by the mutation, EXCEPT the two §R3.3 cases.
+
+### R3.3 — RESIDUAL (pinned BOUND, not a blocker — the receding gap the lead pre-authorised)
+
+**One wrong build survives the WHOLE 42-pin contract (confirmed 42/42):** a consumer module
+that DEFINES its own same-named `_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)`
+LOCALLY (instead of `from loremaster.store._txn import …`). The runtime-mutation pin patches
+that consumer's OWN module attribute, so it cannot tell "imported the ONE `_txn` source" from
+"has a private copy that merely shares the NAME" — and the belt sees a `Name`, not a `Tuple`.
+This is a two-source clone that is CORRECT today (same value) but can DRIFT if `_txn`'s
+definition later changes. A THIRD module catching the boundary is the same class (belt's module
+set is a 2-item hand-list = the two R-2 consumers).
+
+**Why this is a BOUND, not a missing pin (per the reach-attack STOP rule + the lead's brief):**
+the clone has receded from *inline tuple* → *same-named module constant*. The next guard (an AST
+import-check that await + scout `from _txn import` the constants) itself recedes to re-export /
+`import _txn; _txn._SDK…` / aliasing. Each round relocates the constant one level deeper without
+closing the class. So:
+- **Recommendation 1 (cheap, do it): tighten the builder requirement** to say *IMPORT both
+  constants from `loremaster.store._txn`; do not RE-DEFINE them in the consumer.* A literal
+  reading of "patchable module attr" could otherwise produce the drifting local copy — this is
+  the realistic path to the residual, and a one-line wording fix removes it.
+- **Recommendation 2 (accept as a pinned bound): drift-only, and correct today.** Pin the bound
+  in a docstring with a **named re-open trigger**: *"the R-2 guards prove each consumer NAMES a
+  patchable module global of this name; they do not prove it is `_txn`'s ONE definition. Re-open
+  if a third module ever catches the SDK-await boundary, or if the constant's value is ever
+  changed in `_txn` (add a same-value drift check then)."*
+- Optional: an AST import-check belt over the SAME derived module set would raise the cost of the
+  local-redefinition escape — but say out loud that it recedes, and carry the re-open trigger; do
+  NOT run another guard round chasing it.
+
+### R3.4 — VERDICT: CONTRACT SUFFICIENT
+
+The flagged rev2 BLOCKER is fixed and independently verified (7a/7b both redden; the scout-leg
+mutation is RED on the unwired HEAD). The runtime-mutation pins are effect-observing standing
+guards with non-vacuous controls; every realistic routing-≠-sharing clone (all inline spellings)
+is caught. Both secondary pins discriminate. Satisfiability holds 42/42. The one surviving
+escape is a receding, drift-only bound the lead pre-authorised me to PIN rather than chase —
+addressed by a one-line builder-req tightening (R3.3 rec 1) plus a re-open trigger (rec 2), not
+a new blocker. Builder may proceed.
+
+_Scratch: `/tmp/adv-r3` (rev3 reference, provenance-verified) + `/tmp/adv-05aii` (rev2).
+`rm` sandbox-blocked; operator may delete both._
+
+---
+
+## (SUPERSEDED) R2 grade — the original INSUFFICIENT verdict, kept for provenance
+
+> The verdict below graded HEAD `251c40f` + the rev2 working tree and returned INSUFFICIENT.
+> It was ADDRESSED at `218c13f`; see §R3 above. Retained unchanged as the audit trail.
+
 ## SUMMARY BLOCK
 - **VERDICT: CONTRACT INSUFFICIENT** — one BLOCKER missing pin (the flagged R-2 sharing
   guard) + one secondary missing pin (thread-value discrimination). Everything else is

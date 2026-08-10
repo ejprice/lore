@@ -146,3 +146,20 @@ Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically
   → add a 2nd thread value. §7 residuals: F1 idempotency/shape vacuous on attack 5 (peek_true covers it —
   verify), hyphenated-uuid5 parse = deploy build-probe (named). Revision handed to warm contract author,
   THEN re-adversary (no revision skips it).
+- Contract fix committed `218c13f`: R-2 sharing now RUNTIME-MUTATION both legs (patch
+  `_SDK_AWAIT_BOUNDARY_ERRORS`→await raises / scout stops recovering) + DERIVED AST reach-check belt
+  (found 8 inline clones vs my hand-count of 7 — derived-reach earns its keep). Mutation-proven: 7a
+  reddens scout-leg+belt, 7b reddens await-leg+belt. Thread parametrised {q:gate,q:other}; F1
+  idempotency de-vacuous'd (`_StampingDrain`). Satisfiability 42/42; mislabel corrected.
+- Re-grade handed to warm `adversary-05aii-1` (delta): JOB 1 = confirm 7a/7b/monoculture now redden;
+  JOB 2 = attack the NEW pins (runtime-mutation vacuity? AST belt's OWN reach derived/spelling-proof?
+  STOP-rule if it recedes). AWAITING re-verdict → on SUFFICIENT the Opus-4.8 builder (reuse-audit brief).
+- Adversary re-verdict **SUFFICIENT** (`REPORT-adversary-05a-ii.md` §R3, HEAD `218c13f`): all 4 fixes
+  verified (7a/7b/thread/stamping redden); scout-leg mutation RED on unwired HEAD = real standing guard;
+  satisfiability 42/42, no C-DEF trap; runtime-mutation pins sound (non-vacuous controls); AST belt
+  spelling-defeatable (concat) but the mutation pin backstops every inline spelling (redundant defense).
+  ONE residual PINNED as a BOUND (not spiraled, per the pre-authorised STOP-rule): a same-named LOCAL
+  re-definition of the constant in a consumer module (drift-only, correct today) + a 3rd-module clone.
+  Builder-req: "import from `_txn`, do NOT re-define" + a re-open trigger. NOT a blocker.
+- Contract-adversary SATISFIED → releasing the Opus-4.8 builder (lead-base v4: no builder before the
+  adversary is satisfied — now met).
