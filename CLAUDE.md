@@ -159,6 +159,20 @@ so the protocol is: **check, then trust**.
    created_by). Routing around a lore weakness without filing it is the one
    unacceptable move.
 
+**PRE-PRODUCTION STATUS — PRODUCTION CHARGES ARE ALWAYS AUTHORIZED (operator, 2026-08-10).**
+lore's ONLY consumer is lore itself — the dogfooding fleet — so there is NO external
+production risk during this phase. Deploys (container rebuild+recreate), and production-touching
+code changes (the shipped scripts, the served MCP surface, the store schema/DDL) are
+PRE-AUTHORIZED: do NOT escalate a "production-touching surprise" as a scope fork, and do NOT
+gate a deploy on operator sign-off — proceed, then report. This RELAXES only the
+production-touching *scope-escalation* trigger for lore's own code; the standing
+verification / gate / cold-audit / trust law is UNCHANGED — you still PROVE the change (green
+gates + cold audit) before shipping it, and the operator still owns *feature/scope* decisions
+(what to build), just not *permission to touch production* (which is granted). **Re-open
+trigger: the FIRST external / off-fleet consumer of lore — any deployment whose reader is not
+this dogfooding fleet — at which point production-touching changes need the ordinary operator
+scope-grant again.**
+
 ## Project memory is IN LORE, not in MEMORY.md (dogfood, operator 2026-07-22)
 Durable project memory lives in the lore `memory` table — write it with `lore_remember`,
 recall it with `lore_recall`. The harness's auto-loaded `MEMORY.md` is a **thin bootstrap**
