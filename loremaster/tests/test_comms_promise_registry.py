@@ -2403,7 +2403,10 @@ _SAFE_STR_PROMISE_FREE: dict[str, str] = {
     "model": "fleet-row cell label",
     "task": "fleet-row cell label",
     "note:": "fleet-row note cell label",
-    "{}…": "fleet-row truncated task-id ellipsis (display marker, no mechanism)",
+    # (removed) "{}…" — the fleet-row truncated task-id was emitted via
+    # safe_str(row.task_id[:8] + "…"); design Ruling 4 / #348 moved it to
+    # render_attributed (Agent.task_id is caller free text, and safe_str is
+    # same-line-forgery-blind), so this safe_str literal is no longer emitted.
 }
 
 

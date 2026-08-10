@@ -1719,9 +1719,14 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
             # -- Agent / brief tree: name/session charset-gated (SAFE); role/model/note/checkpoint
             #    caller free text (DOOR) --
             entry(Agent,
-                  door={"role", "model", "last_note", "spawned_by", "checkpoint"},
-                  safe={"id", "name", "session", "task_id"}),  # id opaque; name/session gated;
-                  # task_id = task-id ref (rendered truncated, a system id)
+                  door={"role", "model", "last_note", "spawned_by", "checkpoint", "task_id"},
+                  safe={"id", "name", "session"}),  # id opaque; name/session gated.
+                  # task_id is caller FREE TEXT (agents.py AgentRegistry.register stores it
+                  # VERBATIM, length-bounded only — "the fleet task id", advisory intent, no
+                  # charset gate), rendered TRUNCATED but same-line-forgeable by
+                  # _render_comms_fleet_row via render_attributed. Was MIS-CLASSIFIED
+                  # "task-id ref / a system id" — the sibling of the InboxEntry.task_id leak
+                  # (design Ruling 4, #348).
             entry(AgentFleetWindow, door=set(), safe=set()),
             entry(Brief,
                   door={"body", "created_by", "note"},
@@ -1732,9 +1737,13 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
             entry(BriefAckResult, door=set(), safe={"name"}),  # name gated; via = Literal
             # -- Message tree: sender_name/session charset-gated; thread/body/refs/ack_note free --
             entry(Message,
-                  door={"thread", "body", "refs"},
-                  safe={"id", "sender_id", "sender_name", "session", "task_id"}),
-                  # id/sender_id opaque; sender_name/session gated; task_id = task-id ref
+                  door={"thread", "body", "refs", "task_id"},
+                  safe={"id", "sender_id", "sender_name", "session"}),
+                  # id/sender_id opaque; sender_name/session gated. task_id is caller FREE
+                  # TEXT (send stores it length-bounded only — "a LABEL, not content", no
+                  # charset gate); NOT served in a driven render, so its correction is
+                  # latent-honesty, but a DOOR by provenance — was MIS-CLASSIFIED
+                  # "task-id ref" (design Ruling 4, #348).
             entry(InboxEntry,
                   door={"thread", "body", "refs", "ack_note", "task_id"},
                   safe={"message_id", "sender_name"}),
@@ -2403,7 +2412,10 @@ def _probes() -> list[RenderProbe]:
                 _forge(
                     Agent, forge=g,
                     model=(_T("Agent", "model") if g else BENIGN),
-                    task_id="tid12345",
+                    # task_id is now a DOOR (design Ruling 4 / #348) — driven by _forge
+                    # with the Agent.task_id token, no longer hardcoded to a benign value
+                    # (the literal #345 artifact). Rendered truncated ([:8]) via
+                    # render_attributed, so the marker does not survive to the served bytes.
                     last_note=(_T("Agent", "last_note") if g else BENIGN),
                 ),
                 project_head_version=2, acked_version=1, stale_after_s=120, heartbeat_age_s=1,

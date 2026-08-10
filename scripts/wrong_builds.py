@@ -91,6 +91,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _harness_guards import refuse_vacuous_baseline
+
 #: The mutations, as (anchor, replacement) pairs against ``scripts/gated_ground.py``. Each name
 #: says what the WRONG build believes; the report's census table says what happened to it.
 WRONG_BUILDS: dict[str, list[tuple[str, str]]] = {}
@@ -332,6 +334,18 @@ WRONG_BUILDS["WB21_memo_written_before_the_anti_vacuity_check"] = [(
         raise _blind(
             "collector-output-is-not-the-shape-read",""")]
 
+# WB22 — INSTRUMENT E (finding #289): the finding-number validator reverts `.fullmatch` to
+# `.match`. Python's `$` matches immediately BEFORE a trailing newline, so `.match("#188\n")` is a
+# match while `.fullmatch("#188\n")` is None — a row with `finding == "#188\n"` then CONSTRUCTS and
+# injects a line into every message rendering it. Killed by
+# `test_trailing_newline_matrix.py::…test_a_finding_number_with_a_trailing_newline_is_rejected` and
+# the matrix integration pin, whose fixtures embed "#188\n" in the re-open trigger so the row
+# constructs on the `.match` build and the fullmatch-vs-match decision is the ONLY thing between
+# construct and reject.
+WRONG_BUILDS["WB22_finding_number_validated_with_match"] = [(
+    "if not _FINDING_NUMBER.fullmatch(self.finding):",
+    "if not _FINDING_NUMBER.match(self.finding):")]
+
 def apply(name: str, pristine: str) -> str:
     """The named build's source, or a hard error if any anchor does not match exactly once."""
     patched = pristine
@@ -427,13 +441,21 @@ def main(argv: list[str] | None = None) -> int:
     # `21 survived`, i.e. "this contract catches nothing", which is the most alarming output this
     # file can print and it would have been an artifact of a missing pytest. A guard that
     # compares two numbers must first know that either number is a measurement.
-    if not baseline:
-        raise SystemExit(
-            f"the baseline collected NOTHING, so every build below would compare 0 to 0 and read "
-            f"as a SURVIVOR — the contract never ran. Tail: {tail!r}. The usual cause is the "
-            f"interpreter: the child runs {sys.executable!r} -m pytest, so invoke this harness "
-            f"with the project's venv python rather than through its shebang."
-        )
+    #
+    # ROUTED through the SHARED guard (finding #290), not re-inlined: `refuse_vacuous_baseline` is
+    # the ONE implementation any N-vs-baseline harness calls. Called UNCONDITIONALLY (it decides on
+    # the count it is handed) — a `if not baseline: refuse(...)` half-extraction would keep the
+    # vacuity predicate inline and never route a non-zero baseline, which is the routing-not-sharing
+    # trap (#102/#120). The guard raises SystemExit on 0, preserving this main's exit-1 behaviour.
+    refuse_vacuous_baseline(
+        baseline,
+        cause_hint=(
+            "the child runs `sys.executable -m pytest`, so invoking this harness through its "
+            "shebang interpreter (whose python3 has no pytest) collects nothing — run it with the "
+            "project's venv python"
+        ),
+        interpreter=sys.executable,
+    )
 
     survivors: list[str] = []
     killed: list[str] = []

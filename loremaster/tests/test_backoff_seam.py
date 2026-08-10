@@ -34,9 +34,9 @@ Two instruments, because one is not enough and this repo has the receipts to pro
    affordable here rather than an insult that gets switched off.
 
    ⚠ That sentence used to NAME three members, and the scan used to hold its own list of
-   them. Both went stale when ``lorerunes`` was minted (lore **#251**). The roots are now
-   DERIVED from ``[tool.uv.workspace] members`` — see :func:`_production_python_files` — and
-   this prose is count-free and member-free on purpose, so it cannot go stale again.
+   them. Both went stale when ``lorerunes`` was minted (lore **#251**). The trees are now
+   parsed by the SHARED ``_logging_fixtures.parse_production_trees`` (F4 / #279) — and this
+   prose is count-free and member-free on purpose, so it cannot go stale again.
 
 **THE THREAT MODEL, stated IN the instrument** (``CLAUDE.md``: *a gate needs one written down,
 or every auditor is entitled to call a clever evasion a defect*): these pins catch the HONEST
@@ -57,6 +57,7 @@ from typing import Any
 
 import httpx
 import pytest
+from _logging_fixtures import parse_production_trees
 from loremaster.calibration import counting
 from loremaster.calibration import engine as ce
 from loremaster.scout import CommandSubscriber
@@ -155,29 +156,6 @@ _SCOUT_CAP_S = 12.0
 
 #: Likewise for the eager-lease driver — NOT ``_DEFAULT_EAGER_BACKOFF_BASE_S``.
 _EAGER_BASE_S = 3.5
-
-def _production_python_files() -> list[Path]:
-    """Every production ``.py`` under the scanned roots, tests excluded.
-
-    ⚠ **THE ROOT LIST IS DERIVED, NOT HELD HERE (lore #251).** This function used to
-    carry its own ``_SCANNED_ROOTS`` tuple naming three workspace members by hand. When
-    ``lorerunes`` was minted, that tuple was not widened — so the deny-by-default
-    perimeter below silently stopped covering a workspace member, and nothing said so.
-    It is the same shape four sibling scanners had (`3fd0fee`), and the same shape that
-    left the #140 provenance guard blind (#251): four call sites needing one POLICY —
-    *"which roots does this repo govern?"* — each keeping a private copy.
-
-    :func:`_logging_fixtures.workspace_roots` reads ``[tool.uv.workspace] members`` from
-    ``pyproject.toml``, so member #5 is covered by running the suite rather than by
-    someone remembering this file exists.
-
-    Tests are still excluded: a test may legitimately compute an expected window to
-    assert against (this file's own siblings do).
-    """
-    from _logging_fixtures import production_sources
-
-    return [path for _label, path in production_sources()]
-
 
 class _PolicyMutation:
     """Replaces the shared policy with a sentinel and records which sites drew from it.
@@ -772,13 +750,14 @@ class TestNoNewHandRolledBackoff:
         self,
     ) -> None:
         offenders: list[str] = []
-        for path in _production_python_files():
-            relative = path.relative_to(_REPO_ROOT).as_posix()
+        # Routed through the SHARED ONE parser (F4 / #279): the split-leg private-parse loop
+        # (``_production_python_files()`` → ``production_sources`` + ``ast.parse``) the
+        # delta-adversary-asub-5 survivor hid behind is GONE, so L1's runtime chokepoint sees
+        # this scan route SANCTIONED. ``include_skills=True`` matches the old
+        # ``production_sources()`` reach; the parser also covers scripts/skills test files
+        # (a benign, arguably-more-correct widening — measured to add no new offenders).
+        for relative, tree in parse_production_trees(include_scripts=True, include_skills=True).items():
             if relative in _POW_ALLOWLIST:
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:  # pragma: no cover - archived/none expected
                 continue
             for node in ast.walk(tree):
                 if (

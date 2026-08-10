@@ -268,8 +268,10 @@ async def test_a_marker_only_proxy_cannot_distinguish_the_two_builds(
 # --------------------------------------------------------------------------- #
 # MP-1 / #346 — the WIRE-driving claim is VERIFIED, not merely asserted in a docstring.
 # Two independent closures of the D-WB2 in-process door: (R4) the helper is handed only the
-# boundary callable, so `.mcp` is unreachable by construction; (R16) the helper's module is
+# boundary callable, so the DIRECT `.mcp` handle is unreachable — the `call.__self__.mcp`
+# back-door is NOT closed by construction here, it is closed by (R16), the helper's module being
 # under `test_wire_discipline`'s receiver-blind scan, which forbids `<any>.call_tool(...)`.
+# The two legs together cover the door; neither alone does (reviser-cd R1).
 # --------------------------------------------------------------------------- #
 
 
@@ -282,8 +284,15 @@ async def test_the_helper_is_handed_only_the_boundary_callable_so_the_in_process
     guard at every proxy point (that is why the docstring-only WIRE claim let it pass all six
     pins). The strongest fix does not merely PIN that door shut; it removes the handle: the
     helper is handed ONLY the boundary callable (``WireSession.call``), which exposes no
-    ``.mcp``, so ``wire.mcp.call_tool(...)`` cannot be written. This pins the helper's USAGE —
-    it is driven with only the callable, and that callable carries no in-process dispatch handle.
+    ``.mcp``, so the DIRECT ``wire.mcp.call_tool(...)`` cannot be written. This pins the helper's
+    USAGE — it is driven with only the callable, and that callable carries no in-process dispatch
+    handle.
+
+    ⚠ BOUND (reviser-cd R1): R4 removes the DIRECT handle only. A bound method's ``__self__`` still
+    reaches the session, so ``call.__self__.mcp.call_tool(...)`` remains writable and is NOT closed
+    "by construction" here — it is closed by the R16 receiver-blind scan leg (which flags any
+    ``.call_tool(...)`` in this module regardless of receiver). The two legs together cover the
+    door; the ``hasattr(call, "mcp")`` check below is only R4's half.
 
     WRONG BUILD THIS KILLS: a helper whose first parameter is the whole ``WireSession`` (so it
     COULD reach ``.mcp``) — handed ``probe.wire.call`` here, such a build does ``wire.call`` on a

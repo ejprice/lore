@@ -339,18 +339,21 @@ def store_seams() -> dict[str, Callable[..., Any]]:
     Returns:
         ``{name: function}``. Empty is a broken derivation, never a clean tree — the
         callers below raise on it rather than reporting no doors.
-    """
-    from loremaster.store import _txn
 
-    seams: dict[str, Callable[..., Any]] = {}
-    for name, value in vars(_txn).items():
-        if name.startswith("_") or not inspect.iscoroutinefunction(value):
-            continue
-        if getattr(value, "__module__", None) != SEAM_MODULE:
-            continue
-        if _CALLER_STATEMENT_PARAMETER in inspect.signature(value).parameters:
-            seams[name] = value
-    return seams
+    Routes through the ONE store-seam walk ``loremaster.store._txn_coroutines`` (finding
+    #279): the DOOR subset is the public + ``statement``-bearing filter of that WIDE core,
+    not a second independent walk of ``vars(_txn)``. The lazy call-time import is deliberate
+    — it re-reads the (possibly mutation-rebound) package attribute, so the sharing proof
+    (``test_store_seam_one_derivation.TestSharingProvenByMutation``) reaches this filter.
+    """
+    from loremaster.store import _txn_coroutines
+
+    return {
+        name: function
+        for name, function in _txn_coroutines().items()
+        if not name.startswith("_")
+        and _CALLER_STATEMENT_PARAMETER in inspect.signature(function).parameters
+    }
 
 
 def public_coroutines_not_swept() -> dict[str, str]:
@@ -358,32 +361,45 @@ def public_coroutines_not_swept() -> dict[str, str]:
 
     Printed on every run. An exclusion nobody is told about is indistinguishable from a
     door nobody found — which is the failure this whole file exists to stop.
+
+    Routes through the SAME ONE walk as :func:`store_seams` (``_txn_coroutines``, #279): the
+    public non-door coroutines are the complement filter of the WIDE core, never a third
+    private walk of ``vars(_txn)``.
     """
-    from loremaster.store import _txn
+    from loremaster.store import _txn_coroutines
 
-    excluded: dict[str, str] = {}
-    for name, value in vars(_txn).items():
-        if name.startswith("_") or not inspect.iscoroutinefunction(value):
-            continue
-        if getattr(value, "__module__", None) != SEAM_MODULE:
-            continue
-        if _CALLER_STATEMENT_PARAMETER not in inspect.signature(value).parameters:
-            excluded[name] = "executes no caller-supplied statement"
-    return excluded
+    return {
+        name: "executes no caller-supplied statement"
+        for name, function in _txn_coroutines().items()
+        if not name.startswith("_")
+        and _CALLER_STATEMENT_PARAMETER not in inspect.signature(function).parameters
+    }
 
 
-def seam_bindings(*, package: str = _DEFAULT_PACKAGE) -> tuple[SeamBinding, ...]:
+def seam_bindings(
+    *,
+    package: str = _DEFAULT_PACKAGE,
+    seams: dict[str, Callable[..., Any]] | None = None,
+) -> tuple[SeamBinding, ...]:
     """Every place an IMPORTED ``package`` module holds a store seam, found BY IDENTITY.
 
     By identity, never by name: a module that imported ``execute_transaction`` under an
     alias is still holding the same function object, and a module that happens to define
     something *called* ``run_query`` is not.
 
+    ``seams`` selects WHICH seam set to bind over (finding #279): omit it for the DOOR subset
+    (``store_seams()``, the default — back-compatible), or pass the WIDE superset
+    (``loremaster.store._txn_coroutines()``) so a caller like
+    ``_degrade_every_STORE_seam`` can build bindings over every ``_txn`` coroutine
+    ``loremaster.tasks`` binds, not only the doors. Either way the bindings are found by
+    identity against the given set.
+
     The seam module itself is skipped. Its own internals reference these functions as
     globals, so patching there would intercept a seam calling a seam — one store operation
     counted twice.
     """
-    seams = store_seams()
+    if seams is None:
+        seams = store_seams()
     by_identity = {id(function): name for name, function in seams.items()}
     found: list[SeamBinding] = []
     for module_name, module in list(sys.modules.items()):

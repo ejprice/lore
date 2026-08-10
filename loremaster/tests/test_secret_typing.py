@@ -45,6 +45,11 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _logging_fixtures import (
+    assert_scan_reached_every_member,
+    parse_production_trees,
+    production_sources,
+)
 from loremaster.config import resolve_secret
 from loremaster.store._txn import signin_credentials
 from pydantic import SecretStr, ValidationError
@@ -118,23 +123,12 @@ SHARED_PREDICATE_PACKAGE = "lorerunes"
 # be able to find and patch it.
 BLANKNESS_PREDICATE = "is_blank"
 
-_SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
-    ("loremaster", "loremaster/loremaster"),
-    ("loresigil", "loresigil/loresigil"),
-    ("lorescribe", "lorescribe/lorescribe"),
-    ("scripts", "scripts"),
-    # Ruling R6 (2026-07-26): the deploy skill's scripts are IN SCOPE. They hold
-    # the FOURTH hand-rolled resolver (``probe_embed.py::_resolve_key``), and
-    # leaving them out would make "ONE entry point" true of the workspace and
-    # false of the repo.
-    ("skills", "skills"),
-    # ⚠ Ruling R29 — THE NEW MEMBER, and consequence 3 of five. **A package
-    # outside this scan is a package exempt from every ∀ pin in this packet,
-    # silently** — which is the exact reason this list was widened from
-    # ``loremaster`` alone in the first place (see the note above). Its absence
-    # here would not fail anything; it would quietly govern less.
-    (SHARED_PREDICATE_PACKAGE, f"{SHARED_PREDICATE_PACKAGE}/{SHARED_PREDICATE_PACKAGE}"),
-)
+# ⚠ ``_SCANNED_MEMBERS`` (the per-file ``(label, relative_dir)`` hand-list) is RETIRED
+# (F4 / #279 / A-SUB-4): it was a #291-shaped private copy of "which members exist" that
+# went STALE on #251. The member set now comes from the SHARED derivation — the trees are
+# parsed by ``parse_production_trees`` and coverage is asserted by
+# ``assert_scan_reached_every_member`` (both read ``[tool.uv.workspace] members`` from
+# pyproject), so a new member is covered by running the suite, never by editing a tuple here.
 
 # ``scripts/`` is scanned even though it is NOT one of ``scripts/typecheck.sh``'s
 # ``MEMBERS``, so mypy never sees it — and its files construct the very stores
@@ -159,32 +153,25 @@ _SCANNED_MEMBERS: tuple[tuple[str, str], ...] = (
 # importing it. ``test_the_scan_reaches_every_workspace_member`` is the receipt.
 
 
-def _python_sources() -> list[tuple[str, Path]]:
-    """Every ``.py`` file these pins govern, as ``(display_path, path)`` pairs.
+def _python_source_trees() -> list[tuple[str, ast.Module]]:
+    """Every PRODUCTION ``.py`` file these pins govern, as ``(display_path, ast.Module)``.
 
-    Display paths are prefixed with the member label (``loresigil/factory.py``),
-    so a key is unambiguous across packages. A member directory that is absent —
-    the deployed image carries ``loremaster`` in site-packages with no
-    ``scripts/`` and no sibling checkouts — is skipped, and the scan simply
-    covers less; the positive control in
-    :meth:`TestEverySecretParameterIsTyped.test_the_scan_reaches_every_member`
-    is what stops that degrading silently in a CHECKOUT.
+    Parsed by the SHARED ONE parser (F4 / #279): ``parse_production_trees`` does the compile
+    (SANCTIONED at L1's runtime chokepoint), so no private ``ast.parse`` loop escapes it, and
+    the retired ``_SCANNED_MEMBERS`` hand-list is gone. Display paths + the production-only set
+    (test files excluded — a fixture may legitimately hold a plain-``str`` password) come from
+    the shared ``production_sources``, which uses the same member-labelled format the pins'
+    allowlists key on (``loresigil/factory.py``). A member directory absent on disk (the
+    deployed image carries ``loremaster`` alone) is simply covered less; the positive control
+    :meth:`TestEverySecretParameterIsTyped.test_the_scan_reaches_every_workspace_member` is
+    what stops that degrading silently in a CHECKOUT.
     """
     workspace_root = _package_root().parent.parent
-    sources: list[tuple[str, Path]] = []
-    for label, relative in _SCANNED_MEMBERS:
-        root = workspace_root / relative
-        if not root.is_dir():
-            continue
-        sources += [
-            (f"{label}/{path.relative_to(root)}", path)
-            for path in sorted(root.rglob("*.py"))
-            # Test files are not production sources. Harmless for the package
-            # roots (they hold none) and load-bearing for ``scripts/`` and
-            # ``skills/``, which carry their tests inline beside the code.
-            if "tests" not in path.parts and not path.name.startswith("test_")
-        ]
-    return sources
+    trees = parse_production_trees(include_scripts=True, include_skills=True)
+    return [
+        (display, trees[path.relative_to(workspace_root).as_posix()])
+        for display, path in production_sources(include_scripts=True, include_skills=True)
+    ]
 
 
 def _annotation_text(annotation: ast.expr | None) -> str:
@@ -203,8 +190,7 @@ def _secret_parameters() -> list[tuple[str, str, str, str]]:
         ``def``/``async def`` in the package.
     """
     found: list[tuple[str, str, str, str]] = []
-    for relative, source_path in _python_sources():
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    for relative, tree in _python_source_trees():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -299,17 +285,15 @@ class TestEverySecretParameterIsTyped:
         )
 
     def test_the_scan_reaches_every_workspace_member(self) -> None:
-        # POSITIVE CONTROL for the WIDENING (packet 42). ``_python_sources``
-        # silently skips a member directory that is absent — correct in the
-        # deployed image, catastrophic in a checkout, where it would restore
-        # exactly the blind spot that let loresigil keep bare-``str`` keys through
-        # the whole of #211. In a checkout every member must be reached.
-        display_paths = [display for display, _ in _python_sources()]
-        for label, _relative in _SCANNED_MEMBERS:
-            assert any(display.startswith(f"{label}/") for display in display_paths), (
-                f"the scan reached no file under {label}/ — this pin is exempting a whole "
-                "package rather than governing it"
-            )
+        # POSITIVE CONTROL for the WIDENING (packet 42), now routed through the SHARED ONE
+        # coverage assertion (F4 / #279): a member directory absent on disk would restore
+        # exactly the blind spot that let loresigil keep bare-``str`` keys through the whole of
+        # #211. ``assert_scan_reached_every_member`` reads the declared members INDEPENDENTLY
+        # from pyproject (never ``derived == derived``), fails closed on an empty scan, and
+        # names any member silently exempted. ``extra_roots`` = the non-member trees this pin
+        # governs (``scripts`` per R6/R14, ``skills`` per R9).
+        scanned = {display: tree for display, tree in _python_source_trees()}
+        assert_scan_reached_every_member(scanned, extra_roots=("scripts", "skills"))
 
     def test_the_pin_is_keyed_on_names_and_says_so(self) -> None:
         # A HONEST BOUND on this instrument, stated as a test so it cannot be
@@ -468,10 +452,9 @@ class TestSigninCredentialsIsTheOneUnwrapSeam:
         # wearing the shared name. Scan for the literal payload shape and allow it
         # in exactly one file.
         offenders: list[str] = []
-        for relative, source_path in _python_sources():
+        for relative, tree in _python_source_trees():
             if relative == f"loremaster/{Path('store') / '_txn.py'}":
                 continue
-            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Dict):
                     continue
@@ -579,8 +562,7 @@ def _unwrap_sites() -> list[str]:
     sees a docstring as a call.
     """
     found: list[str] = []
-    for display, source_path in _python_sources():
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    for display, tree in _python_source_trees():
         enclosing: dict[int, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -838,10 +820,9 @@ def _auth_construction_offenders() -> list[str]:
       the other misses.
     """
     offenders: list[str] = []
-    for display, source_path in _python_sources():
+    for display, tree in _python_source_trees():
         if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display == _INCOMING_AUTH_EXEMPT:
             continue  # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
         enclosing: dict[int, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -908,8 +889,7 @@ def _is_secretstr_mint(node: ast.AST) -> bool:
 def _secretstr_mint_sites() -> list[str]:
     """Every ``SecretStr(...)`` construction — the S6 bypass's gate."""
     sites: list[str] = []
-    for display, source_path in _python_sources():
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    for display, tree in _python_source_trees():
         sites += [
             f"{display}:{node.lineno}"
             for node in ast.walk(tree)
@@ -1521,7 +1501,7 @@ class TestEveryScannerSharesOneRootList:
         assert package_file is not None
         tests_dir = Path(package_file).resolve().parent.parent / "tests"
         labels: dict[str, set[str]] = {
-            "secret_typing": {display.split("/")[0] for display, _ in _python_sources()}
+            "secret_typing": {display.split("/")[0] for display, _ in _python_source_trees()}
         }
         for module_name, function_name in (
             ("test_secret_resolution_seam", "_scanned_python_sources"),

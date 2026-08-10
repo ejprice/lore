@@ -66,6 +66,12 @@ from typing import Any
 
 import pytest
 
+# ``_rebind_everywhere`` PROMOTED to the shared test-support home (design §10 #3, finding
+# #279): the ≥2-reuser by-identity drop tool (this F contract + the A-SUB F4 contract) now
+# lives in ``_logging_fixtures`` and BOTH route through it, proven by mutation. Its former
+# local definition here is deleted; A-SUB's ``_rebind_everywhere_fn`` resolves the promoted home.
+from _logging_fixtures import _rebind_everywhere
+
 # ``scripts`` is not a package; make ``forgery_door_sweep`` importable — the idiom
 # ``scripts/test_forgery_door_sweep.py`` already uses. ``loremaster/tests`` is already on
 # ``sys.path`` via that directory's ``conftest.py``, so ``test_blocks_edge`` imports as a
@@ -131,37 +137,11 @@ def _inert_seam_replacement(*_args: Any, **_kwargs: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# The mutation machinery (shared by the real proof AND its positive control)
+# The mutation machinery (shared by the real proof AND its positive control).
+# ``_rebind_everywhere`` is the PROMOTED shared drop tool, imported above from
+# ``_logging_fixtures`` (design §10 #3, finding #279) — a caller that stays green under its
+# drop never read the shared thing.
 # ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _rebind_everywhere(real: object, fake: object) -> Iterator[None]:
-    """Rebind every module attribute that IS ``real`` to ``fake`` for the duration.
-
-    Found BY IDENTITY across ``sys.modules`` — the same technique ``seam_bindings`` uses to
-    find seam bindings — so the mutation reaches a caller whether it imported the helper at
-    MODULE level (a rebindable global) or re-imports it per call (which re-reads the patched
-    canonical ``loremaster.store`` attribute, itself one of the rebound sites). A caller that
-    references the helper NOWHERE is unreached by both — which is precisely the private copy
-    the mutation proof must catch.
-    """
-    saved: list[tuple[Any, str]] = []
-    for module in list(sys.modules.values()):
-        try:
-            attributes = list(vars(module).items())
-        except TypeError:  # a None placeholder or a module without an ordinary __dict__
-            continue
-        for attribute, value in attributes:
-            if value is real:
-                saved.append((module, attribute))
-    for module, attribute in saved:
-        setattr(module, attribute, fake)
-    try:
-        yield
-    finally:
-        for module, attribute in saved:
-            setattr(module, attribute, real)
 
 
 @contextlib.contextmanager

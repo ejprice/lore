@@ -1511,3 +1511,30 @@ def _is_retryable_conflict(failed_statements: list[_FailedStatement]) -> bool:
     decision.
     """
     return any(_is_retryable_conflict_text(str(failed.raw_result)) for failed in failed_statements)
+
+
+def _txn_coroutines() -> dict[str, Callable[..., Any]]:
+    """THE ONE store-seam derivation (finding #279 / design INSTRUMENT F): every coroutine
+    function DEFINED in this module (``loremaster.store._txn``), keyed by name.
+
+    Both store-seam callers derive from THIS one walk rather than re-walking a namespace
+    independently:
+
+    * ``scripts.forgery_door_sweep.store_seams`` filters it to the DOOR subset (public +
+      accepting a caller-supplied ``statement``);
+    * ``loremaster/tests/test_blocks_edge._degrade_every_STORE_seam`` intersects it (by
+      identity) with what ``loremaster.tasks`` binds — the WIDE set.
+
+    So a 4th coroutine added here is classified CONSISTENTLY by both, never by "whichever
+    walk happens to see it" (the #279 defect, one level up: CLAUDE.md ONE IMPLEMENTATION —
+    "if two call sites need the same POLICY, it is a FUNCTION THEY CALL"). Returns the WIDE
+    superset; each caller applies its own filter. Empty is a broken derivation, never a clean
+    module — callers fail closed on it.
+    """
+    import inspect  # noqa: PLC0415
+
+    return {
+        name: value
+        for name, value in globals().items()
+        if inspect.iscoroutinefunction(value) and getattr(value, "__module__", None) == __name__
+    }

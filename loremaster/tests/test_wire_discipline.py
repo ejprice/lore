@@ -73,10 +73,31 @@ TESTS_DIRECTORY = Path(__file__).parent
 # from it is reaching for the shortcut this invariant exists to remove.
 IN_PROCESS_HELPER_NAMES = frozenset({"call_and_capture", "as_principal"})
 
+# Refusal-EFFECT helper modules (finding #295/#346) are brought UNDER this same wire-discipline
+# scan, so the receiver-blind check mechanically forbids any ``<anything>.call_tool(...)`` in them —
+# the D-WB2 in-process door — and governs packet 39's future consumers of the shared refusal helper.
+# They are NOT posture TEST modules (they carry no ``posture`` in their name), so they are named by
+# ROLE and unioned in BY EXISTENCE: a named-but-absent helper is simply not scanned, never a hard
+# error. A new refusal-effect helper is brought under the scan by adding its filename here.
+REFUSAL_EFFECT_HELPER_MODULE_NAMES = frozenset({"_refusal_effect.py"})
+
+
+def refusal_effect_helper_modules() -> list[Path]:
+    """The refusal-effect helper modules present on disk (finding #346 — the R16 reach extension)."""
+    return sorted(
+        path
+        for name in REFUSAL_EFFECT_HELPER_MODULE_NAMES
+        if (path := TESTS_DIRECTORY / name).exists()
+    )
+
 
 def posture_modules() -> list[Path]:
-    """Every posture test module on disk."""
-    return sorted(TESTS_DIRECTORY.glob(POSTURE_MODULE_GLOB))
+    """Every module UNDER the wire-discipline scan: the posture test modules (glob-derived) PLUS the
+    refusal-effect helper modules (finding #346 R16 reach), so R16's receiver-blind check governs
+    the shared refusal helper — and every posture pin packet 39 builds on it — too."""
+    return sorted(
+        [*TESTS_DIRECTORY.glob(POSTURE_MODULE_GLOB), *refusal_effect_helper_modules()]
+    )
 
 
 def test_the_posture_module_set_is_not_empty() -> None:

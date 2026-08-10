@@ -4628,10 +4628,16 @@ class AppContext:
         :func:`~loremaster.sanitise.sanitise_line`; ``owner`` (``str | None``)
         through :func:`~loremaster.sanitise.safe_str` (the ``sanitise_line(
         str(x))`` idiom already used elsewhere for this exact field type).
-        ``blocked_by``'s elements are wrapped too, defense-in-depth, though
-        this field is NOT live-forgeable as rendered: Python's ``repr()`` of a
-        ``list[str]`` escapes every control/invisible character in each
-        element, so no real newline or forged row can survive even unwrapped.
+        ``blocked_by`` is a forgery DOOR (design Ruling 2, #345): its elements
+        are UNCONSTRAINED caller strings (``TaskSpecItem.blocked_by`` is a bare
+        ``list[str]``; ``create_many`` passes non-key refs through verbatim), so
+        :func:`~loremaster.render.render_attributed` is the PRIMARY, REQUIRED
+        containment on each element — a revert to ``safe_str`` / list-``repr()``
+        must go RED (``test_render_slot_inventory.py`` Leg-2). The ``repr()`` of a
+        ``list[str]`` escaping control chars is a FRAGILE secondary property only:
+        it holds solely while the field is rendered inside a ``[...]`` literal, so
+        a future join-into-prose refactor would silently re-open the door — never
+        rely on it, and never remove the ``render_attributed`` wrap.
         """
         if not rows:
             return _NO_TASKS_MATCHED
@@ -7052,7 +7058,12 @@ class AppContext:
         if row.model is not None:
             cells.append(render_join(" ", [safe_str("model"), render_attributed(row.model)]))
         if row.task_id is not None:
-            cells.append(render_join(" ", [safe_str("task"), safe_str(row.task_id[:8] + "…")]))
+            # #348 / design Ruling 4: Agent.task_id is UNCONSTRAINED caller free text
+            # (AgentRegistry.register stores it verbatim, length-bounded only), so the
+            # truncated cell routes through render_attributed — NOT safe_str, which is
+            # same-line-forgery-blind (a printable ` · ` survives and forges a phantom
+            # fleet cell boundary). Drop-in consistent with the role/model/note cells above.
+            cells.append(render_join(" ", [safe_str("task"), render_attributed(row.task_id[:8] + "…")]))
         brief_cell = AppContext._render_comms_fleet_brief_cell(project_head_version, acked_version)
         if brief_cell is not None:
             cells.append(brief_cell)
@@ -9431,6 +9442,46 @@ _FINDINGS_TOOL_ANNOTATIONS = ToolAnnotations(
 _COMMS_TOOL_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False
 )
+
+
+def partition_tools_by_posture(
+    tools: Iterable[Any],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Partition registered tools into ``(mutating, read_only)`` by their annotations.
+
+    The SINGLE production source of truth for the read-only / mutating split (finding #291):
+    DERIVED from each tool's typed ``ToolAnnotations.readOnlyHint``, never a hand-list kept
+    beside them. A hand-list beside production truth is free to disagree with it, and it did —
+    ``test_mcp_server``'s old ``_MUTATING_TOOLS`` had drifted, dropping ``lore_claim_task`` /
+    ``lore_tasks``. It matters beyond tidiness: packet 39's hosted-refusal set is built from the
+    mutating partition, so a drifted list would leave a claim/create silently writable to a
+    remote principal.
+
+    DENY-BY-DEFAULT — ``readOnlyHint is not True`` counts as mutating, NOT ``== False``: a tool
+    registered WITHOUT an annotation (``readOnlyHint is None``) lands in ``mutating``, so a
+    future tool added without an annotation is refused write-access downstream rather than
+    silently writable. This is "allowlist the safe" applied exactly.
+
+    The caller supplies the UNSCOPED registered tool set — its responsibility. Under a hosted
+    posture ``mcp.list_tools()`` is FILTERED, so a scoped caller passes its own unscoped
+    accessor to this SAME helper: one implementation, every caller (a caller that stays green
+    when a production annotation is flipped is a private copy wearing the shared name).
+
+    Each ``tool`` is any object carrying ``.name`` and ``.annotations`` (an
+    ``mcp.types.Tool``); ``annotations`` may be ``None``.
+    """
+    mutating: set[str] = set()
+    read_only: set[str] = set()
+    for tool in tools:
+        tool_annotations = getattr(tool, "annotations", None)
+        read_only_hint = (
+            getattr(tool_annotations, "readOnlyHint", None) if tool_annotations else None
+        )
+        if read_only_hint is True:
+            read_only.add(tool.name)
+        else:  # None (unannotated) or False -> mutating. DENY-BY-DEFAULT.
+            mutating.add(tool.name)
+    return frozenset(mutating), frozenset(read_only)
 
 
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:

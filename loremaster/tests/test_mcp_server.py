@@ -101,6 +101,7 @@ from loremaster.server import (
     build_app_context,
     build_mcp_server,
     configure_logging_from_config,
+    partition_tools_by_posture,
     run_probe_gate,
 )
 from loremaster.store._txn import SurrealConnectionError
@@ -1154,36 +1155,25 @@ class TestNoDeadToolNamesInAgentFacingText:
 # In-band consumer guidance (server instructions + per-tool descriptions +
 # input-schema field descriptions + tool annotations)
 # --------------------------------------------------------------------------- #
-# The read-only tools (every tool that does NOT mutate index/memory state). These
-# must carry ``readOnlyHint=True``. ``lore_remember`` / ``lore_reindex`` /
-# ``lore_findings`` mutate state and must NOT be marked read-only.
-_READ_ONLY_TOOLS = {
-    "lore_search",
-    "lore_get_symbol",
-    "lore_verify",
-    "lore_recall",
-    "lore_dead_code",
-    # P6-tail: both are pure reads over the graph, never mutating index/memory
-    # state — read-only exactly like their five graph-tool neighbours above.
-    "lore_impact",
-    "lore_map",
-    # P8b wire-up: lore_read serves a stored span (a read — the single read verb
-    # after the read_file merge), lore_diff reads the snapshot ledger (a read).
-    # lore_findings MUTATES the finding ledger, so it is NOT here — it lives in
-    # ``_MUTATING_TOOLS`` below (like lore_tasks' family).
-    "lore_read",
-    "lore_diff",
-}
-# P8d Wave 3: ``lore_index`` replaces ``lore_reindex`` here — the merged tool
-# CAN sweep (``reconcile=True``), so it is annotated by its strongest
-# capability exactly like ``lore_findings``/``lore_tasks``, even though a
-# no-arg call never mutates anything (mcp-builder: a tool that CAN write is
-# not read-only merely because one call shape happens not to).
-# PKT-28 C1: ``lore_comms`` joins this set (register/brief_publish/brief_ack
-# mutate the durable agent/brief ledgers) — this is also what actually WIRES
-# UP annotation-level test coverage for the tool (see test_comms_tool.py's
-# own ``_COMMS_TOOL_ANNOTATIONS`` pin for the production-side annotation).
-_MUTATING_TOOLS = {"lore_remember", "lore_index", "lore_findings", "lore_comms"}
+# finding #291: the read-only / mutating split is DERIVED from the production
+# ``ToolAnnotations``, never a hand-list beside them. The old ``_READ_ONLY_TOOLS`` /
+# ``_MUTATING_TOOLS`` literals here were a SECOND source of truth that had already
+# drifted (``_MUTATING_TOOLS`` dropped ``lore_claim_task`` / ``lore_tasks``, which
+# production correctly marks ``readOnlyHint=False``). They are RETIRED: the coherence
+# pins below consume the single production helper via :func:`derive_tool_postures`, and
+# the behavioural oracle for the split (an INDEPENDENT expected-contents check +
+# deny-by-default + a ∀ liveness mutation proof) lives in
+# ``test_mutating_set_derivation.py``.
+
+
+def derive_tool_postures(tools: list[Any]) -> tuple[frozenset[str], frozenset[str]]:
+    """The ``(mutating, read_only)`` tool partition, DERIVED from production annotations.
+
+    Wires this suite's annotation-coherence pins to the ONE production source of truth
+    (:func:`loremaster.server.partition_tools_by_posture`, finding #291) so no drifted
+    hand-list can stand beside it. Deny-by-default lives in the production helper.
+    """
+    return partition_tools_by_posture(tools)
 
 # Tools that take NO consumer-facing parameters (so there are no per-field
 # descriptions to assert). Empty today: ``lore_index_status`` was the last
@@ -1697,18 +1687,22 @@ class TestToolAnnotations:
         return {tool.name: tool for tool in await mcp.list_tools()}
 
     async def test_read_only_tools_are_marked_read_only(self, tmp_path: Path) -> None:
-        tools = await self._tools_by_name(tmp_path)
-        for name in _READ_ONLY_TOOLS:
-            annotations = tools[name].annotations
+        by_name = await self._tools_by_name(tmp_path)
+        _mutating, read_only = derive_tool_postures(list(by_name.values()))
+        assert read_only, "the read-only partition is empty — the derivation is broken"
+        for name in read_only:
+            annotations = by_name[name].annotations
             assert annotations is not None, f"{name} must carry tool annotations"
             assert annotations.readOnlyHint is True, (
-                f"{name} is a read-only tool and must set readOnlyHint=True"
+                f"{name} is in the read-only partition and must set readOnlyHint=True"
             )
 
     async def test_mutating_tools_are_not_marked_read_only(self, tmp_path: Path) -> None:
-        tools = await self._tools_by_name(tmp_path)
-        for name in _MUTATING_TOOLS:
-            annotations = tools[name].annotations
+        by_name = await self._tools_by_name(tmp_path)
+        mutating, _read_only = derive_tool_postures(list(by_name.values()))
+        assert mutating, "the mutating partition is empty — the derivation is broken"
+        for name in mutating:
+            annotations = by_name[name].annotations
             assert annotations is not None, f"{name} must carry tool annotations"
             assert annotations.readOnlyHint is not True, (
                 f"{name} mutates state and must NOT set readOnlyHint=True"

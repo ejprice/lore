@@ -89,6 +89,7 @@ import pytest
 from _logging_fixtures import (
     emit_through_configured_logger,
     make_record,
+    parse_production_trees,
     production_sources,
     restored_lore_logger_state,
     workspace_roots,
@@ -767,12 +768,12 @@ def _production_function_names() -> list[str]:
     measured against, and regenerating it is how the "recovered data" receipt the
     packet's Exit clause asks for stays honest as the tree changes.
     """
-    # ⚠ REWIRED to the ONE shared root list — the corpus was missing
-    # ``lorerunes``, so the recovered-data pin did not cover a workspace member's
-    # function names.
+    # ⚠ REWIRED to the ONE shared parser (F4 / #279): routes its whole-workspace parse
+    # through ``parse_production_trees`` so no private ast.parse loop escapes L1's runtime
+    # chokepoint. ``include_scripts=False, include_skills=False`` preserves the members-prod
+    # corpus this pin measured (production packages have no test files nested in them).
     names: set[str] = set()
-    for _label, source_path in production_sources(include_scripts=False, include_skills=False):
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    for _relative, tree in parse_production_trees(include_scripts=False, include_skills=False).items():
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 names.add(node.name)
@@ -1019,8 +1020,11 @@ class TestNoTracebackFormatterRendersFrameLocals:
         #   rich.traceback.Traceback/install(show_locals=True)
         #   any assignment to sys.excepthook
         offenders: list[str] = []
-        for display, source_path in _workspace_python_sources():
-            tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        # Routed through the SHARED ONE parser (F4 / #279) — the split-leg
+        # ``_workspace_python_sources()`` + ``ast.parse`` loop is gone, so L1 sees this scan
+        # SANCTIONED. ``include_skills=True`` matches the old ``production_sources()`` reach;
+        # the parser also covers scripts/skills test files (measured to add no new offenders).
+        for display, tree in parse_production_trees(include_scripts=True, include_skills=True).items():
             for node in ast.walk(tree):
                 if isinstance(node, ast.keyword) and node.arg in {"capture_locals", "show_locals"}:
                     if isinstance(node.value, ast.Constant) and node.value.value is True:

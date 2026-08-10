@@ -1506,22 +1506,19 @@ def _run_selected_gates(
     return results
 
 
-def _render_currency(
+def _currencies_for(
     gate: PendingContractGate,
     manifest: GateManifest,
     results: dict[str, MypyRun | RuffRun | PytestRun],
-) -> tuple[list[str], bool]:
-    """The close-out's gate enumeration, GENERATED from the manifest.
+) -> list[GateCurrency]:
+    """The per-gate CURRENCY verdicts, DERIVED from the manifest and the run results.
 
-    #306's rule was *"any close-out claiming gates must enumerate WHICH gates it
-    ran and state the verdict of EACH"*. Generating that list from the canonical
-    manifest is what makes the omission class unwritable: a gate cannot be left
-    out of a receipt it is enumerated into.
+    Extracted from :func:`_render_currency` so the structured verdicts have ONE derivation
+    that both the currency renderer here and ``wave_gate.main`` consume — the latter needs
+    structured access to the pytest gate's verdict to render it SCOPED-not-GREEN in wave
+    mode without re-deciding 'is this gate green-or-owned' (a second copy would be a private
+    answer wearing the shared name — CLAUDE.md ONE IMPLEMENTATION).
     """
-    lines = [
-        "GATE CURRENCY — is every CLAIMED gate green, or owned?",
-        f"  manifest   : {manifest.ids} ({len(manifest.gates)} gates)",
-    ]
     expired = gate.registry_liveness_findings()
     currencies: list[GateCurrency] = []
     for spec in manifest.gates:
@@ -1555,6 +1552,26 @@ def _render_currency(
                 registered_count=registered,
             )
         )
+    return currencies
+
+
+def _render_currency(
+    gate: PendingContractGate,
+    manifest: GateManifest,
+    results: dict[str, MypyRun | RuffRun | PytestRun],
+) -> tuple[list[str], bool]:
+    """The close-out's gate enumeration, GENERATED from the manifest.
+
+    #306's rule was *"any close-out claiming gates must enumerate WHICH gates it
+    ran and state the verdict of EACH"*. Generating that list from the canonical
+    manifest is what makes the omission class unwritable: a gate cannot be left
+    out of a receipt it is enumerated into.
+    """
+    lines = [
+        "GATE CURRENCY — is every CLAIMED gate green, or owned?",
+        f"  manifest   : {manifest.ids} ({len(manifest.gates)} gates)",
+    ]
+    currencies = _currencies_for(gate, manifest, results)
 
     for currency in currencies:
         lines.append(currency.render())

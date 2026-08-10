@@ -113,9 +113,63 @@ from test_link5_render_containment import (
 #: render_attributed) or a genuinely-safe field (add it here WITH EVIDENCE, never "it looked
 #: fine", plus the re-open trigger for the day it stops being safe).
 #:
-#: ⚠ EMPTY AT HEAD (641f758) — deliberately. This is the artifact the #345 fix is missing:
-#: the SAFE judgement as machine-checkable evidence instead of a comment. RED until filled.
-_SERVED_SAFE_FIELDS: dict[str, tuple[str, str]] = {}
+#: Populated by the #345 fix (this cycle) with EXACTLY the served str-ish fields that CANNOT
+#: carry a forgery — the SAFE provenance made machine-checkable (design §3 INSTRUMENT B). Each
+#: reason is one of the four legit classes; each names a re-open trigger for the day it stops
+#: being safe. Every entry is a field-NAME (Ruling 3/5 keying): the mis-park pin
+#: (:class:`TestNoServedSafeFieldIsAManifestDoor`) forbids any DOOR name here, so a name that is
+#: a door in ANY model (``task_id``, ``blocked_by``, …) is UNREPRESENTABLE — it must pass by
+#: CONTAINMENT (``render_attributed``), never by allowlisting. ``task_id`` is DELIBERATELY absent:
+#: it is a DOOR (InboxEntry/Agent/Message, all caller free text) and the fleet-row leak is fixed
+#: by containing it, not by SAFE-listing it (design Ruling 4).
+_SERVED_SAFE_FIELDS: dict[str, tuple[str, str]] = {
+    "id": (
+        "opaque system-minted store id (Task/Finding/Agent/Brief/Message/RecalledMemory .id — "
+        "SAFE in every manifest model; a store-assigned key, no caller charset reaches it)",
+        "a render begins serving a caller-supplied value under the name `id`",
+    ),
+    "name": (
+        "charset-gated identity (Agent/Brief/BriefCoverage/BriefAckResult .name — validated by "
+        "AGENT_NAME_PATTERN `^[a-z0-9][a-z0-9_-]{0,63}$` at register/publish, which forbids the "
+        "spaces / ` · ` / newlines a same-line forgery needs)",
+        "agent/brief name registration stops charset-gating `name` (AGENT_NAME_PATTERN dropped)",
+    ),
+    "session": (
+        "charset-gated identity (Agent/Message .session — validated by AGENT_NAME_PATTERN at "
+        "register/send, same gate as `name`; a forgery cannot be a legal session id)",
+        "the session id stops being charset-gated at its boundary",
+    ),
+    "sender_name": (
+        "charset-gated identity (Message/InboxEntry .sender_name — a registered agent name, "
+        "AGENT_NAME_PATTERN-gated at register; the send path stamps it from the gated identity)",
+        "a message begins carrying a `sender_name` not drawn from the gated agent registry",
+    ),
+    "agent_name": (
+        "charset-gated identity (BriefBehindEntry.agent_name — a registered agent name from the "
+        "brief-coverage walk, AGENT_NAME_PATTERN-gated; not caller free text)",
+        "brief coverage begins listing an `agent_name` not drawn from the gated registry",
+    ),
+    "superseded_by": (
+        "opaque system-minted id REFERENCE (Task/RecalledMemory .superseded_by — the store-minted "
+        "id of the successor row, stamped by the supersede path, never caller free text)",
+        "`superseded_by` begins carrying a caller-supplied value instead of a minted successor id",
+    ),
+    "ids": (
+        "system graph-walked task ids (TransitiveBlockers.ids — the blocker ids the ledger walk "
+        "produces, each a store-minted id; the truncation/depth around them are non-str)",
+        "`ids` begins including a caller-supplied ref rather than a graph-walked minted id",
+    ),
+    "chunk_key": (
+        "opaque store point-id (RecalledRef.chunk_key — a system-minted uuid5 store key for a "
+        "recalled chunk, never caller-authored)",
+        "`chunk_key` begins carrying a caller-supplied value",
+    ),
+    "ref": (
+        "system-minted reference (MemorySource.ref — a store/source-minted pointer emitted by the "
+        "recall path, not the caller-authored `refs[]` door which is a different field name)",
+        "`ref` begins carrying caller free text (distinct from the `refs` door)",
+    ),
+}
 
 
 _CONTAIN_VERBS: frozenset[str] = frozenset({"render_attributed", "render_fenced"})

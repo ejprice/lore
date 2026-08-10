@@ -6072,22 +6072,37 @@ def _degrade_every_STORE_seam(
 
     Fails CLOSED, twice: an empty derivation reddens, and so does one that does not include
     the single-statement seam every ledger read rides.
+
+    ⚠ DERIVES from the ONE store-seam walk (``loremaster.store._txn_coroutines``, finding
+    #279), not a second independent walk of ``vars(loremaster.tasks)``: the WIDE core
+    intersected BY IDENTITY with what ``loremaster.tasks`` binds. So a seam DROPPED from the
+    shared core is dropped here too (routing IS sharing — a private re-walk would stay green
+    under the drop, the exact wrong build ``TestSharingProvenByMutation`` fails), and a 4th
+    ``_txn`` coroutine is classified by the SAME walk ``forgery_door_sweep`` uses. Imports
+    NOTHING from ``scripts`` — the shared core lives in production ``loremaster.store``.
     """
     import importlib
 
+    from loremaster.store import _txn_coroutines
+
     tasks_module = importlib.import_module("loremaster.tasks")
+    core_by_identity = {id(function): name for name, function in _txn_coroutines().items()}
     patched: list[str] = []
-    for name, value in list(vars(tasks_module).items()):
-        if not inspect.iscoroutinefunction(value):
+    for attribute, value in list(vars(tasks_module).items()):
+        seam_name = core_by_identity.get(id(value))
+        if seam_name is None:
             continue
-        if getattr(value, "__module__", None) != "loremaster.store._txn":
-            continue
-        monkeypatch.setattr(tasks_module, name, replacement, raising=True)
-        patched.append(name)
+        monkeypatch.setattr(tasks_module, attribute, replacement, raising=True)
+        patched.append(seam_name)
     assert "run_query" in patched, (
         f"the derived store-seam set {sorted(patched)} does not contain run_query, so this "
         f"degradation does not reach the ledger's single-statement reads and every "
         f"assertion resting on it passes vacuously"
+    )
+    assert "bootstrap_session" in patched, (
+        f"the derived store-seam set {sorted(patched)} does not contain bootstrap_session — a "
+        f"WIDE-only seam. Its absence means this derivation collapsed to the DOOR subset and no "
+        f"longer proves the WIDE store-seam route specifically (finding #279)."
     )
     return tuple(patched)
 

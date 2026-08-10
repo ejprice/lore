@@ -75,6 +75,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from _logging_fixtures import _declared_workspace_members, parse_production_trees
 
 pytestmark = pytest.mark.anyio
 
@@ -2971,15 +2972,19 @@ class TestTheFalseRationaleSurvivesNowhereInTheTree:
         impossible rather than merely unobserved.
         """
         root = pathlib.Path(__file__).resolve().parents[2]
-        per_member: dict[str, int] = {}
+        # Scan A (prod AND tests) migrated to the SHARED ONE parser (F4 / #279): it CALLS
+        # parse_production_trees(include_tests=True), which RE-ADDS each member's <member>/tests
+        # tree, so the private ``_workspace_scan_roots`` member derivation is RETIRED. This is a
+        # non-parsing marker scan, so it takes the parser's KEY SET (its file list) and reads
+        # each file's text for _hits_in; the parse itself is SANCTIONED at L1's chokepoint.
+        # per_member is seeded from the DECLARED members (independent of what was scanned), so a
+        # member whose source root MOVED still shows up as 0 and reddens the coverage check.
+        per_member: dict[str, int] = {member: 0 for member in _declared_workspace_members()}
         hits: list[tuple[str, int, str]] = []
-        for member in _workspace_scan_roots(root):
-            per_member[member] = 0
-            for path in sorted((root / member).rglob("*.py")):
-                if "__pycache__" in str(path):
-                    continue
-                per_member[member] += 1
-                hits.extend(cls._hits_in(path.read_text(), path.relative_to(root).as_posix()))
+        for key in parse_production_trees(include_scripts=False, include_tests=True):
+            member = key.split("/", 1)[0]
+            per_member[member] = per_member.get(member, 0) + 1
+            hits.extend(cls._hits_in((root / key).read_text(), key))
         return per_member, hits
 
 
@@ -3118,8 +3123,7 @@ class TestNoCommsIdentityReachesQueryTEXT:
         return node.id if isinstance(node, ast.Name) else None
 
     @classmethod
-    def _scan_source(cls, source: str, path: str) -> list[tuple[str, str, int]]:
-        tree = ast.parse(source, filename=path)
+    def _doors_in_tree(cls, tree: ast.Module, path: str) -> list[tuple[str, str, int]]:
         bindings = cls._module_bindings(tree)
         doors: list[tuple[str, str, int]] = []
         for node in ast.walk(tree):
@@ -3141,28 +3145,38 @@ class TestNoCommsIdentityReachesQueryTEXT:
         return doors
 
     @classmethod
+    def _scan_source(cls, source: str, path: str) -> list[tuple[str, str, int]]:
+        """Door scan over a synthetic SOURCE string (the +/- controls). A single-string parse,
+        NOT a whole-tree clone; the real tree is scanned via :meth:`_scan`, which routes
+        through the shared parser."""
+        return cls._doors_in_tree(ast.parse(source, filename=path), path)
+
+    @classmethod
     def _scan(cls) -> tuple[int, list[tuple[str, str, int]]]:
-        root = pathlib.Path(__file__).resolve().parents[2]
+        # Scan B (query-door AST scan, PRODUCTION ONLY) migrated to the SHARED ONE parser
+        # (F4 / #279): it CALLS parse_production_trees(include_tests=False) and consumes the
+        # already-parsed TREES, so the hardcoded 4-tuple member list is RETIRED and no private
+        # ast.parse escapes L1's chokepoint. This NARROWS the pre-migration reach 131 → 90
+        # (operator ruling, reading b): the 4-tuple mixed loremaster's NESTED package path with
+        # 3 FLAT member dirs, leaking 41 non-loremaster TEST files into a PRODUCTION query-door
+        # scan; those are not production surfaces and contribute ZERO query sites (measured).
+        # Adjudicated by TestCommsFooterScansMigrateBehaviourPreserving.
+        # test_scan_B_narrowing_drops_only_accidental_test_over_reach (test_ast_reach_helpers.py).
         sites = 0
         doors: list[tuple[str, str, int]] = []
-        for member in ("loremaster/loremaster", "lorerunes", "loresigil", "lorescribe"):
-            for path in sorted((root / member).rglob("*.py")):
-                if "__pycache__" in str(path):
+        for relative, tree in parse_production_trees(include_scripts=False, include_tests=False).items():
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
                     continue
-                relative = path.relative_to(root).as_posix()
-                tree = ast.parse(path.read_text(), filename=relative)
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.Call) or not node.args:
-                        continue
-                    func = node.func
-                    receiver = (
-                        func.attr
-                        if isinstance(func, ast.Attribute)
-                        else (func.id if isinstance(func, ast.Name) else None)
-                    )
-                    if receiver in cls.QUERY_RECEIVERS:
-                        sites += 1
-                doors.extend(cls._scan_source(path.read_text(), relative))
+                func = node.func
+                receiver = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else (func.id if isinstance(func, ast.Name) else None)
+                )
+                if receiver in cls.QUERY_RECEIVERS:
+                    sites += 1
+            doors.extend(cls._doors_in_tree(tree, relative))
         return sites, doors
 
 
@@ -3404,32 +3418,9 @@ def _has_footer(served: str) -> bool:
     return _footer_line(served) is not None
 
 
-def _workspace_scan_roots(root: pathlib.Path) -> tuple[str, ...]:
-    """Every workspace member's source root, DERIVED from ``pyproject.toml``.
-
-    ⚠ **THIS WAS A HAND LIST UNTIL 2026-08-02, AND THAT MADE IT A NEW REGISTRATION
-    SITE** (delta residual R-1). A ∀ pin over a hand-written member list exempts
-    the next member silently: ``scripts/registration_sites.py`` could not flag it,
-    because the list was COMPLETE on the day it was written — which is exactly the
-    state the four previously-wrong lists were in. Repo law says to prefer
-    converting a hand-list into a derived one, as ``test_backoff_seam.py`` and
-    ``test_anchored_pattern_seam.py`` were: **a site that reads
-    ``[tool.uv.workspace] members`` stops being a registration site at all.**
-
-    ``loremaster`` nests its package and its tests one level down, which the
-    manifest does not say; every other member is flat. That shape difference is
-    handled by GLOBBING for ``*.py`` under the member root rather than by naming
-    subdirectories, so a member that later grows a ``tests/`` directory is covered
-    without another edit here.
-    """
-    manifest = (root / "pyproject.toml").read_text()
-    block = manifest.split("[tool.uv.workspace]", 1)[-1].split("members", 1)[-1]
-    members = tuple(re.findall(r'"([^"]+)"', block.split("]", 1)[0]))
-    assert members, (
-        "no [tool.uv.workspace] members could be read from pyproject.toml, so this sweep "
-        "would silently scan NOTHING — the shape a derived reach must never fail into"
-    )
-    return members
+# ``_workspace_scan_roots`` RETIRED (F4 / #279): Scan A now derives its member set from the
+# SHARED ``parse_production_trees`` / ``_declared_workspace_members`` (both read
+# ``[tool.uv.workspace] members``), so the per-file member derivation is gone.
 
 
 def _is_footer_line(line: str) -> bool:
