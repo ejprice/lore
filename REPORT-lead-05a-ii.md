@@ -216,3 +216,10 @@ Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically
   RED. Adversary FINAL confirm running. Pre-existing flags (NOT ours, d7e65bd ancestor — cold audit already
   validated the canonical gate at 191): bare `mypy loremaster` aborts (duplicate calibration.baseline);
   102 auth-cluster = #333 baseline. Surface at close-out.
+- Adversary FINAL confirm **SUFFICIENT** (`f71760f`): PIN 2 reach complete (3 drain reads, grep-verified);
+  builder released. Builder applied the #354 guard `7bc68f9` (docs `ae7fe18`): 19 lines, inbox_awaiter.py
+  ONLY, connect-path-only (`except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION → connection=None → poll`),
+  shared constant reused, 3 drain reads unguarded. GREEN: PIN 1 (4 legs) + PIN 2 (3 sites) + SocketDropNonLoss
+  + R-2 mutation; blast-radius 1838 passed; zero-new mypy. Lead verified diff scope (inbox_awaiter only).
+  Removed the auditor's disposable `scratch_coldaudit_*.py` (cold-audit R4; the ruff RED_ORPHANED source) →
+  `ruff check .` clean. Re-engaging cold auditor for the delta (verify #354 closed + gates + currency PASS).
