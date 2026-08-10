@@ -149,8 +149,23 @@ class InboxAwaiter:
         live_uuid: Any = None
         consume_task: asyncio.Task[None] | None = None
         try:
-            connection = await self._connect()
-            live_uuid, consume_task = await self._establish_live(connection, agent_id, wake)
+            # Step 2 — establish LIVE is BEST-EFFORT (design §A.1 step 2; #354). The
+            # dedicated LIVE connect+establish is guarded HERE, at the SDK-await boundary,
+            # so a failure (the shared opener re-raises by contract, and connect can hit a
+            # concurrent-first-connect TxnContentionExhausted) leaves connection=None and
+            # the poll loop below carries the load — it never aborts await. The catch NAMES
+            # the shared _WITH_CONTENTION global (mirrors CommandSubscriber.run's connect
+            # guard; the R-2 mutation pins rebind it). ⚠ This guard fences the CONNECT path
+            # ONLY: the authoritative self._drain reads (snapshot/poll/final) sit OUTSIDE it
+            # and MUST raise on a fault (never a false-empty; F1=peek makes the raise
+            # loss-free — TestADrainFaultRaisesNeverFalseEmpties, all three sites).
+            try:
+                connection = await self._connect()
+                live_uuid, consume_task = await self._establish_live(connection, agent_id, wake)
+            except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
+                connection = None
+                live_uuid = None
+                consume_task = None
             while self._now() < deadline:
                 # Race a LIVE wake against a poll tick; re-drain on EITHER. LIVE only
                 # triggers a re-read — the authoritative answer is always the drain.
