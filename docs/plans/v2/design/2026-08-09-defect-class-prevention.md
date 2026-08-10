@@ -1658,6 +1658,145 @@ a forbidden-shape scan.
   `PASS_OWNED` qualified pass), the P1 biconditional and P2 token mapping grow by one enum value
   — the coverage pin reddens until the ∀ is extended, which is the mechanism working as intended.
 
+## §11.8 — G summary honesty, round 4: complete the typed WaveReceipt (fable-sidecar, 2026-08-09)
+
+**Completion of §11, not a new design** — `REPORT-delta-adversary-g-3.md` (graded `1a5d9b3`) confirms
+the §11 string→type redesign closed EVERY prior survivor (W-summary-alt/double/inline-hand/inline-minter,
+the 5 originals, MP-6, MP-8 — all independently rebuilt and mutation-verified; extraction non-regressive,
+`test_pending_contract_gate.py` 41/0), but it typed the SUMMARY LINE and stopped one level short: the
+RECEIPT COMPOSITION is still `lines.append(<anything>)`, so **W-EXTRA-LINE survives 143/143** — an honest
+`render_summary(PASS_SCOPED)` line PLUS an appended alternate-wording over-claim
+(`"SUMMARY: all gates are clean, tree is green"`) in wave mode, blind to P2b (no marker literal), P3
+(`render_summary` IS called), P4 (marker-count 0). The honesty reach is STILL a hidden constant (the one
+marker string) over open receipt vocabulary — the class, one slot over, round 4. Ruled at HEAD `e36c114`
+(working-tree `scripts/test_wave_gate.py` uncommitted `M` at graded `1a5d9b3`; index does not serve the
+uncommitted contract — the #125 no-overlay bound — so line sources were read directly, said out loud).
+
+### §11.8.1 — Ask 1: CONFIRM the full typed WaveReceipt — but §11.2.4's `[*leg_lines, summary, note]` was itself incomplete
+
+**CONFIRMED: the robust form is the FULL typed `WaveReceipt` (§11.2.4), NOT a minimal composition/line-count
+pin.** A minimal "no summary append" pin risks a DIFFERENT append path (round 5), exactly as the lead
+warns — and the ground-truth enumeration below PROVES that risk is real, not hypothetical: there already
+ARE other free-append slots today. So the receipt is typed as a closed set of typed COMPONENTS, `render()`
+is a total function over exactly them, and there is NO free-`str` append seam anywhere.
+
+**⚠ THE ROUND-5 CATCH — §11.2.4's own three-source model (`[*leg_lines, str(summary), _NOT_DEPLOY_NOTE]`)
+is a simplification, and pinning it verbatim would BOTH fail on the real receipt AND reopen the door.**
+The real receipt (ground truth, `_render_currency` in `pending_contract_gate.py` + the wave contract in
+`test_wave_gate.py`) has **SIX** line sources, not three — and two of the three §11.2.4 omitted are LIVE
+free-`str` appends today:
+
+### §11.8.2 — Ask 2: THE ROUND-5 GUARD — every receipt line source enumerated, each confirmed typed
+
+Enumerated from the code (not assumed): the receipt (both the checkpoint `_render_currency` and the wave
+`render_wave_receipt`, which share the extracted seam) is composed of these line sources — the guard is
+that EACH becomes a typed component, none a free-`str` append:
+
+| # | line source (evidence) | today | round-5 risk | typed component |
+|---|---|---|---|---|
+| 1 | **header** — checkpoint `"GATE CURRENCY — …"`; wave records `MODE_WAVE`/`MODE_CHECKPOINT` + pytest scope (`test_receipt_header_records_the_chosen_mode`) | free-text literal / f-string | an over-claim can ride the header | `ReceiptHeader(mode, pytest_scope)` — typed; render is a total fn of the typed mode + scope |
+| 2 | **manifest roster** — `f"  manifest   : {manifest.ids} ({n} gates)"` | free-`str` append (derived from manifest) | low (roster), but a free slot | `RosterLine(manifest)` — derived-typed |
+| 3 | **per-gate verdict** — `currency.render()` (one per manifest gate) | typed already (`GateCurrency.render()`) | — | `GateLeg` over the typed `GateCurrency` (wave SCOPED override included) |
+| 4 | **per-orphan detail** — `lines.append(f"      ORPHAN: {orphan}")` (N per gate) | **LIVE free-`str` append** | **the OTHER W-EXTRA-LINE slot — structurally identical to the survivor** | folded INTO `GateLeg.render()` (verdict + its orphans, all from the typed `GateCurrency`) |
+| 5 | **summary** — `render_summary(verdict)` | typed (§11) ✓ | closed by §11 | `SummaryLine` (sole minter) |
+| 6 | **not-deploy note** — the fixed `"(this is NOT the deploy receipt …)"` literal | fixed literal | — | typed constant (`_NOT_DEPLOY_NOTE`) |
+
+**The round-5 finding, stated: the header (1), roster (2), and orphan-detail (4) lines are the OTHER open
+slots.** #4 is the sharp one — `lines.append(f"      ORPHAN: {orphan}")` is a free-`str` append TODAY,
+the same shape as W-EXTRA-LINE; a future over-claim (or a mis-derived orphan string) rides it, and a pin
+that only walls the summary slot never sees it. So the robust form types ALL SIX and the guard forbids a
+free-`str` receipt append ANYWHERE, not just at the summary.
+
+**The mechanism (two layers, per §12's ladder — construction is strong, AST is the weak-total backstop):**
+1. **STRONG (construction): `WaveReceipt` is a frozen typed structure**
+   `WaveReceipt(header: ReceiptHeader, roster: RosterLine, legs: tuple[GateLeg, ...], summary: SummaryLine,
+   note: <fixed>)`, and `render()` is a TOTAL function over exactly those components
+   (`[*header.render(), roster.render(), *(l for leg in legs for l in leg.render()), str(summary),
+   note]`). There is no `list[str]` a caller appends to — to add a line a builder must add a typed
+   component (a reviewed structural change), which an over-claim one-liner cannot do. This is the
+   string→type lift of §11, applied to the RECEIPT, over ALL six sources.
+2. **WEAK-TOTAL (AST mint-scan, REUSE `TestSafeLineRenderedMintPin`): the receipt's `list[str]` is minted
+   ONLY by `WaveReceipt.render()`** — an AST scan over `wave_gate.py` (+ the extracted seam in
+   `pending_contract_gate.py` if it enters scope) fails if any `lines.append(...)` / free-`str` receipt
+   composition exists outside `render()`, exactly as `test_render_seam_pins.TestSafeLineRenderedMintPin`
+   forbids `Rendered(...)`/`SafeLine(...)` outside the mint verbs. This catches a NEW free slot the day it
+   lands — so round 5 (a fifth append path) is caught by construction, not by a marker deny-list.
+
+Together: the frozen typed structure makes an over-claim line unrepresentable at the type level, and the
+mint-scan makes a NEW free-append seam reddens on sight. Reach is now a checked variable over the receipt
+STRUCTURE (six typed components), not a hidden constant (the one marker string).
+
+### §11.8.3 — The exact pin the reviser adds
+
+`test_wave_receipt_is_the_fixed_typed_composition_no_free_append` (the delta's MP-r5, made round-5-robust):
+- **Structural composition pin:** `render_wave_receipt` returns / builds the typed `WaveReceipt`; assert
+  `receipt.render()` equals the total composition over its typed components, and for a clean run
+  `len(receipt.legs) == len(manifest.gates)` (one leg per gate, no extras). Cover BOTH modes and the FAIL
+  path (so the orphan-detail lines are exercised as `GateLeg` sub-renders, not free appends).
+- **AST mint-scan pin** (`test_no_free_receipt_line_composition_outside_render`): reuse the
+  `TestSafeLineRenderedMintPin` idiom — no `lines.append` / free-`str` receipt list outside
+  `WaveReceipt.render()`.
+- **Mutation proofs (both directions):** (a) plant W-EXTRA-LINE (`if mode == MODE_WAVE:
+  lines.append("all gates clean")`) → the mint-scan reddens; (b) plant an over-claim through the
+  **orphan** slot (the round-5 variant) → same; (c) add a typed component without updating the
+  composition pin → the structural pin reddens. Positive control: the honest reference receipt (one leg
+  per gate + minted PASS_SCOPED summary, no extra line) passes; negative control: a genuinely clean FULL
+  checkpoint still renders its unqualified PASS_FULL summary (honesty, not a blanket ban).
+
+### §11.8.4 — Scope FLAG (the lead's "flag if a further production change is needed" — it IS)
+
+- **IN SCOPE now (test-only + new `wave_gate.py`, already granted):** the full typed WAVE receipt +
+  both pins + the mutation proofs. This closes W-EXTRA-LINE (a WAVE-mode survivor) and its header/roster/
+  orphan-slot variants for the wave path.
+- **⚠ FURTHER PRODUCTION CHANGE — FLAGGED for operator/lead:** DRY #1 (operator priority #1) requires ONE
+  receipt composition, so the CHECKPOINT `_render_currency` should build the SAME typed `WaveReceipt`
+  (typing its header/roster/orphan sources, not just the already-approved summary extraction). That is a
+  further restructure of the shipped #306/#312 enforcement surface beyond the summary extraction §11.3
+  approved. **I RECOMMEND GRANTING it:** leaving the wave receipt typed while `_render_currency` keeps
+  free-`str` appends is TWO receipt-composition implementations — the #102 two-copies risk operator
+  priority #1 forbids, and it leaves the checkpoint's own header/orphan slots un-walled. The change is
+  behaviour-preserving, guarded by the existing `test_pending_contract_gate.py` (41/0) PLUS a byte-exact
+  oracle over the checkpoint receipt (the same removed-behavior net §11.3 already specified for the
+  summary line, widened to the whole receipt). **Fallback if NOT granted:** type the wave receipt now
+  (closes the actual survivor); file the checkpoint typing as a NAMED follow-up with a decision point, and
+  state plainly that until then the checkpoint path retains free appends and two composition
+  implementations coexist (DRY #1 deferred, not met). Operator/lead decides; I recommend granting.
+
+### §11.8.5 — Ask 3: reviser fork-2 CONFIRMED as a residual (one-time cold-audit read)
+
+**CONFIRMED (delta R1).** `render_summary` is the SOLE minter with FIXED strings for `PASS_SCOPED`/`FAIL`;
+a rephrased over-claim baked into one of those two fixed strings that AVOIDS the marker phrase carries no
+marker (P2a/P4 blind) and fires only on a red/scoped bundle. Because the strings are fixed and
+sole-minted, this is NOT a per-call wrong-build door (a builder cannot vary them) — it is a **one-time
+adversary/cold-audit READ** of the two new fixed strings for over-claim, once the builder writes them. Met
+deliberately as a checklist item, not dressed as a missing pin it cannot be (the honest boundary, per §6).
+Also note delta R2 (reviser fork-1 — whether checkpoint FAIL becomes a fixed line) still owes an operator
+ruling; it is satisfiable either way (41/0) and is orthogonal to the round-5 close.
+
+### §11.8.6 — Reuse map / DRY (Packages considered)
+
+- **`SummaryLine` / `render_summary` / `SummaryVerdict` / `LegQualification`** (§11, in
+  `pending_contract_gate.py`) — the summary component, unchanged; the receipt embeds it.
+- **`GateCurrency.render()`** (`pending_contract_gate.py`) — the per-gate leg body, already typed; `GateLeg`
+  wraps it + its orphans (folding the free orphan append into a typed sub-render).
+- **`loremaster.render.Rendered` / `SafeLine` + `test_render_seam_pins.TestSafeLineRenderedMintPin`** — the
+  provenance-type + AST mint-scan idiom, REUSED for the receipt's `list[str]` mint (§11.8.2 layer 2).
+  Genuinely the same pattern (§11.2.5 already reused it for `SummaryLine`); do not invent a bespoke scan.
+- **`MODE_WAVE` / `MODE_CHECKPOINT` / `pytest_args_for`** (`wave_gate.py` contract) — the header's typed
+  inputs.
+- **Packages considered:** stdlib `enum` / `dataclasses` (frozen) + `str`-subclass components (the
+  `Rendered`/`SafeLine` idiom); no library supplies a "typed receipt whose lines are minted only via
+  render()". **Verdict: bespoke (minimal), reusing the §11 summary types + the render-seam mint-scan idiom
+  — the string→type lift applied one level up, over all six line sources.**
+
+### §11.8.7 — Routing
+
+Route through the standing order (contract → adversary → build → cold audit). The reviser writes §11.8.3's
+pins; the contract-adversary re-attacks with W-EXTRA-LINE, an **orphan-slot** over-claim, a **header-slot**
+over-claim, and a NEW free-append path (round 5) — all four must be caught by the typed structure + the
+mint-scan. **Named re-open trigger:** any new receipt line source added later is a new typed component or
+the mint-scan reddens; a builder cannot add a free-`str` line.
+
 ## §12 — A-SUB anti-dup: un-defeatable-by-spelling (fable-sidecar, 2026-08-09)
 
 **Escalation, not a fix wave** — same posture as §11, one packet over. `REPORT-delta-adversary-asub-b.md`
