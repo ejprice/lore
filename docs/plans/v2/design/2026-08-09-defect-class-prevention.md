@@ -1737,25 +1737,45 @@ layers ship, exactly as the retry seam ships both.
 ### §12.3 — How the reviser pins it (reuse the retry-seam runtime-guard machinery; do not invent)
 
 **Layer 1 — RUNTIME chokepoint offender gate (the load-bearing, spelling-agnostic catch).** GENERALISE
-`test_retry_seam`'s runtime-guard scaffold (`_install_runtime_sdk_guard`, the escape `report`,
-`report.require_observations`, the pos control `test_the_guard_SEES_an_escape_it_is_shown`, the neg
-control `test_a_call_INSIDE_a_driver_attempt_is_allowed`, and the plain-`def`-wrapper-walks-at-call-time
-lesson) from the SDK-connection primitive to the `builtins.compile` primitive:
+the ALREADY-SHARED guard module `loremaster/tests/_sdk_guard.py` (armed via `_install_runtime_sdk_guard`
+/ `_install_shared_guard`, autouse for every test through conftest — its reach is the thing the SDK
+gate's own v4 got wrong) from the SDK-connection primitive to the `builtins.compile` primitive. Reuse
+its `GuardReport` API verbatim (`report.armed`, `report.escapes`, `report.require_observations`), the
+pos control `test_the_guard_SEES_an_escape_it_is_shown`, the neg control
+`test_a_call_INSIDE_a_driver_attempt_is_allowed`, and the plain-`def`-wrapper-walks-at-call-time lesson:
 - Wrap `builtins.compile` (a plain `def`, so the stack walk happens when the call is MADE); record every
   PyCF_ONLY_AST compile of a workspace `.py` filename with no `parse_production_trees` frame above as an
-  escape (file:line, from `inspect`/`sys._getframe`).
-- **Anti-vacuity is REQUIRED and is `require_observations`:** if the gate saw NO workspace-AST compile
-  at all, it is BLIND, not clean — its silence must not read as a pass (#136).
+  escape (file:line, from `inspect`/`sys._getframe`). An unsanctioned workspace parse from a file NOT on
+  the single-package allowlist (`_ALLOWED_WHOLE_TREE_CLONE_FILES`) is the escape — the file allowlist is
+  the parse analog of `_SAFE_CONNECTION_METHODS`.
+- **Anti-vacuity is REQUIRED and is `report.require_observations`:** if the gate saw NO workspace-AST
+  compile at all, it is BLIND, not clean — its silence must not read as a pass (#136); and per
+  `_install_shared_guard`'s #136 discipline, the guard's "production" root is the ARTIFACT's root, and
+  you may not point it at a tree and then be told nothing happened in it.
 - **Positive control doubles as the routing-verification the reviser OWES (verify, don't assume — the
   #107 discipline):** aim the guard at the test file itself, `ast.parse` a workspace module with no
   sanctioned frame, assert it is recorded. If this control fails, `ast.parse` does NOT route through
   the wrapped `builtins.compile` on this Python and the reviser must also wrap `ast.parse` (do not
   assert the routing — prove it with this control). **Negative control:** a parse INSIDE
   `parse_production_trees` is allowed (or the builder deletes the gate).
-- **Reach as a checked variable:** the gate runs session-wide (or drives the derived adopter scans,
-  retry-seam style over `_discover_query_seams`'s analog); a private parse ANYWHERE in the executed
-  suite escapes. This is the completeness guard — it is NOT a target hand-list, so `_MIGRATION_SET`
-  being a small known set for Layer 3 is acceptable (a 6th un-migrated scanner that runs escapes here).
+- **⚠ Reach as a checked variable — REUSE `_all_sdk_call_sites`'s SHAPE *and its documented v5 trap*,
+  do NOT hand-roll this (the operator "read it, don't reinvent" directive caught my first draft here).**
+  `_all_sdk_call_sites`'s docstring records the exact mistake to avoid: its own v5 coverage pin built
+  the enumeration from the OFFENDERS set (`_unseamed_sdk_call_sites`), which is *empty by construction
+  on any lint-clean build* → **strictly dominated by the lint, could not fire**, and `WB-ROUTED-UNDRIVEN`
+  walked through it ("#120 alive again, one altitude up"). So: build an **ALL-set** enumerator
+  `_all_workspace_parse_sites()` — every AST-detectable parse-primitive call site (`ast.parse` /
+  `compile(…PyCF_ONLY_AST)`) touching a workspace tree, derived from the parse-primitive truth, NOT from
+  the offenders and NOT from a module name-list — and pin that the runtime guard OBSERVED EACH ALL-set
+  site EXECUTE (`report.require_observations` per site / a coverage pin over the ALL set). *"Watched is
+  not the same as well-formed, and neither is the same as unexamined"* — a site never executed under the
+  guard is a reach gap NAMED, so reach cannot become the next hidden constant. **My draft's "the offender
+  leg IS the completeness guard" was the v5 trap; this replaces it.** (The ALL-set AST enumeration is
+  itself alias-imperfect — the retry seam accepts this identically: the runtime gate catches aliased/
+  getattr escapes in EXECUTED code absolutely, the ALL-set-observed pin bounds the reach over sites it
+  CAN see, and the un-enumerable tail is Layer 2 + INSTRUMENT 0. This is the SAME honest split the render
+  instrument reached independently — packet 04b5: "the CHECKED VARIABLE is coverage over execution, not a
+  static derivation.")
 
 **Layer 2 — AST lint, REFRAMED from spelling to allowlist-the-safe (weak-but-total backstop for
 un-executed code).** Keep an AST scan (retry-seam's `_unseamed_sdk_call_sites` SHAPE, already cited
@@ -1808,23 +1828,32 @@ hand-check. Default is the pin; the hand-check is the escape hatch, not the plan
 
 ### §12.5 — Reuse map / DRY (Packages considered)
 
-- **`test_retry_seam.TestNoSdkCallEscapesTheDriverAtRuntime` + `_install_runtime_sdk_guard` +
-  `report.require_observations` + its pos/neg controls + the plain-`def`-walks-at-call-time lesson**
-  (`loremaster/tests/test_retry_seam.py`) — the runtime-reach-gate PATTERN, already proven and pinned.
-  Layer 1 GENERALISES it (SDK-connection primitive → `builtins.compile` primitive). **REUSE candidate,
-  flagged for the builder:** the escape-report + require_observations + stack-walk-for-sanctioned-frame
-  + pos/neg-control shape is a shared POLICY (the runtime-reach guard) with now ≥2 users (SDK gate +
-  parse gate) — a candidate to extract into shared test-support parametrized by (primitive,
-  sanctioned-frame), **gated on prove-by-mutation** (change the shared scaffold → BOTH gates redden;
-  a caller that stays green is a private copy), exactly like the `_rebind_everywhere` promotion (#3).
-  Do NOT force the extraction if the retry-seam guard proves tightly coupled to async-SDK specifics
-  (§7 over-consolidation caution) — recommend it, prove it, or clone only the SHAPE.
+- **THE RUNTIME-REACH GUARD — the already-shipped, proven "un-defeatable-by-spelling" idiom (#102/#120).**
+  Shared module `loremaster/tests/_sdk_guard.py` (autouse via conftest; the `GuardReport` type with
+  `.armed`/`.escapes`/`.require_observations`), armed by `_install_runtime_sdk_guard`/`_install_shared_guard`
+  and pinned by `test_retry_seam.TestNoSdkCallEscapesTheDriverAtRuntime` with pos control
+  `test_the_guard_SEES_an_escape_it_is_shown` + neg control `test_a_call_INSIDE_a_driver_attempt_is_allowed`
+  + the plain-`def`-walks-at-call-time (2×2 detachment) lesson. **This IS the un-defeatable form Layer 1
+  reuses — SDK-connection primitive → `builtins.compile` primitive.** **REUSE candidate flagged:** the
+  `_sdk_guard.py` scaffold (escape-report + require_observations + stack-walk-for-sanctioned-frame +
+  pos/neg controls) is a shared POLICY with now ≥2 users (SDK gate + parse gate) — a candidate to
+  parametrize by (primitive, sanctioned-frame) in shared test-support, **gated on prove-by-mutation**
+  (change the shared scaffold → BOTH gates redden; a stay-green caller is a private copy), exactly like
+  `_rebind_everywhere` (#3). Do NOT force it if `_sdk_guard.py` proves tightly coupled to async-SDK
+  specifics (§7 over-consolidation caution) — recommend, prove, or clone only the SHAPE.
+- **`_all_sdk_call_sites` — the ALL-SET coverage enumerator, and REUSE ITS DOCUMENTED v5 TRAP, not
+  just its shape** (`test_retry_seam`). Layer 1's reach-checked-variable enumerates the ALL set
+  (`_all_workspace_parse_sites()` analog) and asserts each was OBSERVED — because building coverage from
+  the OFFENDERS set is *empty-on-clean → dominated-by-lint → cannot fire* (the v5 trap `WB-ROUTED-UNDRIVEN`
+  walked through; its docstring is the receipt). Distinct from →
+- **`_unseamed_sdk_call_sites` SHAPE** (`test_retry_seam`) — the OFFENDERS enumerator; Layer 2's reframed
+  allowlist-the-safe LINT (weak-total backstop for un-executed code). The ALL set is for COVERAGE; the
+  offenders set is for the LINT — conflating them is the v5 trap.
 - **`_logging_fixtures.assert_scan_reached_every_member` / `parse_production_trees`** (pinned by
   `test_ast_reach_helpers.py`) — the sanctioned parser (Layer 1's one SAFE name) and the coverage
   consumer Layer 3 binds to.
 - **`_rebind_everywhere`** (promoting to `_logging_fixtures` per #3) + **`scripts/mutation_proof.py`**
   (both-direction diff, `--collect-only` declared node ids, #194 landing guard) — Layer 3's mutation.
-- **`_unseamed_sdk_call_sites` SHAPE** (`test_retry_seam`) — Layer 2's reframed allowlist-the-safe scan.
 - **INSTRUMENT 0's reach-attack** (`~/.claude/agents/contract-adversary.md`, P1c) — the un-runnable tail.
 - **Packages considered:** stdlib `ast`/`sys`/`inspect`/`builtins` only (the compile chokepoint + stack
   walk); no library supplies a "no-unsanctioned-frame-above-a-primitive" runtime gate. **Verdict:
