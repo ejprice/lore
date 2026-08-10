@@ -204,3 +204,15 @@ Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically
 - FIX CYCLE (delta): contract adds 3 pins (#354 connect-guard + raise-not-empty invariant + known-bound
   for the deferred latency) → adversary delta → builder fix (guard connect+establish → poll) → cold-audit
   delta. Surfaced to operator as FYI (fix-now per don't-kick-the-can; redirect to a bound if preferred).
+- Operator APPROVED fix-now (2026-08-10): "This was a good decision to fix it. It affected the usability
+  of the tool." → no bound; proceed with the #354 guard through the delta cycle.
+- Contract pins committed `2e40b03` (PIN 1 connect-guard degrade-to-poll + PIN 2 raise-not-empty). Adversary
+  delta-grading the 2 new pins (vacuity/reach). AWAITING → builder applies guard → cold-audit delta → deploy.
+- Adversary delta INSUFFICIENT (bounded, not a spiral): PIN 1 SUFFICIENT (non-vacuous, both legs, 47/47);
+  PIN 2 reach was a HIDDEN SINGLE-SITE (faulted only the snapshot drain step 1) — a poll/final drain-swallow
+  build passed while genuinely false-emptying. Fix = parametrize fault-site over {snapshot,poll,final}.
+- PIN 2 parametrized + committed `b18ed31`: per-site mutation receipts (guard exactly one drain → exactly
+  that leg reddens; PIN 1 stays green); final isolated at budget=0; satisfiability 49/49; only 4 PIN-1 legs
+  RED. Adversary FINAL confirm running. Pre-existing flags (NOT ours, d7e65bd ancestor — cold audit already
+  validated the canonical gate at 191): bare `mypy loremaster` aborts (duplicate calibration.baseline);
+  102 auth-cluster = #333 baseline. Surface at close-out.

@@ -3,9 +3,183 @@
 brief-base v11 read
 brief project v7 read
 
+> **RE-GRADE #4 (2026-08-10, HEAD `b18ed31`) — VERDICT: CONTRACT SUFFICIENT.** The PIN 2 reach
+> gap (§R4) is fixed: PIN 2 is now parametrized over all 3 authoritative drain reads
+> `{snapshot, poll, final}`, and my re-grade#3 escaping build now reddens the poll+final legs.
+> This is the last contract gate — builder may apply the ~3-line connect guard. See §R5 (top).
+> §R4/§R3/rev2 are kept below for provenance.
+
+---
+
+## R5. RE-GRADE #4 — PIN 2 reach parametrized over {snapshot, poll, final}. VERDICT: SUFFICIENT.
+
+### R5 SUMMARY BLOCK
+- **VERDICT: CONTRACT SUFFICIENT.** The §R4 reach gap is closed. `TestADrainFaultRaisesNever
+  FalseEmpties` is parametrized over all THREE authoritative drain reads via `_DrainFaultAtSite`
+  (faults on call #1 = snapshot, call #2 = poll or final; `budget=0` isolates the final read),
+  each with a `drain.calls` + `clock.now()` reach receipt. Reach is now a CHECKED variable, not a
+  hidden single site.
+- **The re-grade#3 escaping build is now CAUGHT.** My poll+final drain-swallow build (correct
+  connect guard, poll+final wrapped `except boundary: return empty`) passed all 47 before; it now
+  reddens **both `[poll]` and `[final]`** (2 failed / 47 passed). Verified for BOTH sites.
+- **Per-site mutation is EXACT — non-vacuous, no over/under-reddening:** guarding ONLY the
+  snapshot → only `[snapshot]` RED; ONLY the poll → only `[poll]` RED; ONLY the final → only
+  `[final]` RED; PIN 1 stays GREEN in all three (the two pins still fence connect→degrade vs
+  drain→raise).
+- **Satisfiability 49/49** on the guarded reference (no C-DEF trap from the parametrize). On the
+  UNGUARDED real build, exactly the **4 PIN-1 legs RED** (4 failed / 45 passed) — the #354 blocker,
+  and nothing else.
+- **No new reach gap.** The awaiter has EXACTLY three `self._drain` call sites (grep-verified:
+  `inbox_awaiter.py` lines 139/158/167 = snapshot/poll/final) and no other authoritative ledger
+  read — the parametrize's site set is COMPLETE for the current design. Minor bound (§R5.2).
+- **Graded:** HEAD `b18ed31` · HEAD-at-report `b18ed31` · SAME. Provenance:
+  `loremaster.__file__ = /tmp/adv-b18/loremaster/loremaster/__init__.py`.
+
+### R5.1 — the reach matrix (empirical)
+
+| Over-guard build (on the guarded reference) | `[snapshot]` | `[poll]` | `[final]` | PIN 1 |
+|---|---|---|---|---|
+| none (correct reference) | pass | pass | pass | green — **49/49** |
+| snapshot drain → `except: return empty` | **RED** | pass | pass | green |
+| poll drain → `except: return empty` | pass | **RED** | pass | green |
+| final drain → `except: return empty` | pass | pass | **RED** | green |
+| **poll+final wrapped (re-grade#3 escaping build)** | pass | **RED** | **RED** | green (full: 2 failed / 47 passed) |
+
+Each leg reddens iff its OWN authoritative read is swallowed — the reach is now a checked variable
+across all three reads. PIN 1's 4 legs stay green under every drain over-guard (the drain-swallow
+does not touch the connect path), so the two pins independently fence the two opposite fates
+(connect→degrade-to-poll, drain→raise).
+
+### R5.2 — residual (minor BOUND, not a blocker; per the STOP rule)
+
+The parametrize's site list `["snapshot","poll","final"]` is a literal hand-list. It is COMPLETE
+for the current design — exactly three `self._drain` reads exist (verified) — so no wrong build
+escapes today. A FUTURE refactor that adds a 4th authoritative read (e.g. a second poll variant, or
+a `since=` recovery read on the await path) would need a 4th leg, and the hand-list would not grow
+on its own. This is a receding-by-design bound, not a present gap: pin it with a re-open trigger
+*("if a `self._drain`/authoritative-read call site is added to `InboxAwaiter`, add its
+`_DrainFaultAtSite` leg — the site count is 3 today")*. Per the STOP rule I name it and do not
+spiral into an AST-derived-site guard for a 3-element set.
+
+### R5.3 — VERDICT: CONTRACT SUFFICIENT
+
+The #354 fix is fully pinned: PIN 1 (connect→degrade-to-poll) is sound and non-vacuous, PIN 2
+(authoritative-read→raise) now covers all three drain reads with exact per-site discrimination,
+the two fence the guard to the connect path only, satisfiability holds 49/49, and the real
+unguarded build shows exactly the 4 PIN-1 legs RED. The re-grade#3 escaping build is caught; no new
+reach gap emerged. **Builder may apply the ~3-line connect guard** (`try: connect+establish except
+_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION: connection=None`).
+
+_Scratch: `/tmp/adv-b18` (b18ed31 + guard, provenance-verified). `rm` sandbox-blocked; operator may
+delete, with `/tmp/adv-354`, `/tmp/adv-r3`, `/tmp/adv-05aii` from earlier re-grades._
+
+---
+
+> **RE-GRADE #3 (2026-08-10, HEAD `2e40b03`) — VERDICT: CONTRACT INSUFFICIENT** (one concrete,
+> cheap missing pin: PIN 2's drain-fault reach). The #354 connect-guard pins (PIN 1) are SOUND;
+> PIN 2 is a regression lock that covers only 1 of 3 authoritative drain reads. See §R4 (top).
+> §R3 (rev3, SUFFICIENT) and the rev2 grade below are kept for provenance.
+> ⚠ SUPERSEDED by RE-GRADE #4 (§R5, top) — the reach gap was fixed at `b18ed31`.
+
+---
+
+## R4. RE-GRADE #3 — the #354 connect-guard (PIN 1) + raise-not-empty (PIN 2). VERDICT: INSUFFICIENT.
+
+### R4 SUMMARY BLOCK
+- **VERDICT: CONTRACT INSUFFICIENT — one concrete missing pin (PIN 2 reach).** PIN 1 (the #354
+  fix) is fully sound and non-vacuous. PIN 2 under-delivers on its OWN stated invariant: it locks
+  the drain-raises-never-false-empties property at the SNAPSHOT read only; the POLL and FINAL
+  reads are uncovered, and a build that swallows them survives the whole 47-pin contract.
+- **JOB 1 — the fixes work:** PIN 1's **4 legs are RED on the unguarded build** (f5aec32 — connect
+  factory raising OSError/Contention crashes; `connection = await self._connect()` at
+  `inbox_awaiter.py` step 2 sits in a `try/finally` with no `except`). With the ~3-line guard
+  (`try: connect+establish except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION: connection=None`)
+  all 4 go **GREEN** and satisfiability is **47/47** (no C-DEF trap). PIN 2 is GREEN on the built
+  (correct) code. Positive control (connect-ok/establish-drop → poll) = `TestSocketDropNonLoss`,
+  green among the 47.
+- **JOB 2 — PIN 1 vacuity: SOUND.** It has TWO methods — connect-fails-WITH-poll-traffic (must
+  return `[55]`, `drain.calls≥2`) and connect-fails-NO-traffic (honest-empty). A catch-and-
+  ALWAYS-return-empty (graceful-degradation-that-drops-traffic) build reddens both WITH-traffic
+  legs — verified. Non-vacuous.
+- **JOB 2 — PIN 2 reach: HIDDEN SINGLE-SITE → the missing pin (§R4.2).** PIN 2's `raising_drain`
+  raises on the FIRST `_drain` call, which is the **snapshot** (step 1, before the guarded block).
+  It never reaches the **poll** (step 3) or **final** (step 4) reads. A build with the correct
+  connect guard but the poll/final drain wrapped `except _SDK_AWAIT_BOUNDARY_ERRORS: return empty`
+  **passes PIN 2 and all 47** — and genuinely false-empties on a poll-drain fault (repro below).
+- **JOB 2 — the fourth-state / three-path fence:** connect-fail→poll (PIN 1), establish-drop→poll
+  (`TestSocketDropNonLoss` + `_establish_live`'s internal catch), drain-fault→raise (PIN 2, but see
+  §R4.2). A mid-poll RECONNECT does not exist by design (R-4 no-reconnect ratification — the built
+  loop establishes ONCE before the `while`, verified), so "connect-fail on a retry mid-poll" is not
+  a reachable state; partial establish is handled. No uncovered fourth state there.
+- **Graded:** HEAD `2e40b03` · HEAD-at-report `2e40b03` · SAME. Provenance:
+  `loremaster.__file__ = /tmp/adv-354/loremaster/loremaster/__init__.py`.
+
+### R4.1 — JOB 1 confirmations (empirical, against the REAL built awaiter)
+
+| Check | Result |
+|---|---|
+| PIN 1 4 legs RED on unguarded build (f5aec32) | **RED** ×4 (oserror/contention × with-traffic/no-traffic) — the connect factory raise is uncaught (`try/finally`, no `except`), poll unreached |
+| PIN 1 GREEN with the ~3-line guard | **GREEN** ×4 |
+| Satisfiability on the guarded reference | **47/47** — no C-DEF trap |
+| PIN 2 GREEN on the built (correct) code | **GREEN** (snapshot drain propagates) |
+| Positive control (connect-ok/establish-drop → poll) | `TestSocketDropNonLoss` GREEN |
+| PIN 1 vacuity — catch-and-return-empty (drops traffic) build | WITH-traffic legs **RED** ×2, NO-traffic legs green ⇒ **non-vacuous** |
+
+### R4.2 — MISSING PIN (INSUFFICIENT): PIN 2 covers only the SNAPSHOT drain, not poll/final
+
+**Reach analysis (P1c on PIN 2).** The awaiter reads the authoritative ledger `drain` at THREE
+sites (design steps 1/3/4): the snapshot (`inbox_awaiter.py` step 1, before the wait `try`), the
+poll re-drain (step 3, in the `while`), and the final snapshot (step 4). PIN 2's `raising_drain`
+raises on the FIRST call — the snapshot — so the awaiter never reaches the other two. PIN 2's
+reach is therefore a **hidden single-site constant** (the snapshot), not a checked variable over
+the three named reads — even though PIN 2's own docstring claims to forbid "a build that wraps
+THE DRAIN in an except and returns empty."
+
+**Surviving wrong build (reproduced, survives all 47):** connect guard CORRECT (→ poll), but the
+poll+final drain section wrapped `except _SDK_AWAIT_BOUNDARY_ERRORS: return <empty peek>`. PIN 2 →
+**GREEN** (snapshot raises first, outside the wrapped block); full contract → **47/47**. Direct
+repro that it is a genuine #354-class false-empty (drain that returns empty on the snapshot then
+raises `OSError` on the poll):
+
+```
+RESULT: returned entries = []  peeked=True
+VERDICT: FALSE-EMPTY on a poll-drain fault — the authoritative read faulted but await returned a
+clean empty. Uncaught by PIN 2 (and by every other pin — no pin drives a poll/final drain fault).
+```
+
+**The test that should exist:** parametrize PIN 2's fault SITE across the three reads — a drain
+that returns empty until the Nth call, then raises — `@pytest.mark.parametrize("fault_on",
+["snapshot","poll","final"])`, asserting `pytest.raises` for each. Fault-on-poll/final needs an
+entry snapshot that is empty (so the wait is entered) and a LIVE that stays silent (so the poll
+tick fires the faulting read). The defect it catches: a poll/final-drain over-guard that
+false-empties the authoritative read — the exact silent degradation PIN 2 names but does not lock.
+
+**Severity / mitigation (right-sizing for the lead):** the current BUILD is correct (all three
+drains propagate — PIN 2 green). This is a REGRESSION-LOCK gap: it fails to lock 2 of 3 sites
+against a future over-guard. The MORE realistic over-guard — a single broad `except … return
+empty` around the whole wait region — is already caught by **PIN 1** (it fails to poll on connect
+failure, WITH-traffic leg RED). The escaping build needs a *surgical* connect guard PLUS a
+*separate* drain-swallow, which is less likely but is exactly PIN 2's stated target. The fix is
+one parametrize; it is a bounded, closeable gap (3 named sites), NOT a receding spiral — so it is
+a missing pin, not a pinned-bound situation.
+
+### R4.3 — VERDICT: CONTRACT INSUFFICIENT
+
+PIN 1 is sound and non-vacuous; the #354 crash is caught and the guard is satisfiable (47/47). The
+one gap is PIN 2's drain-fault reach: it locks the snapshot read only, and a poll/final-drain
+over-guard that commits the #354-class silent false-empty survives the entire contract (repro
+above). Add the fault-site parametrize (§R4.2) and re-run the adversary (no revision skips it).
+This is the sole blocker; everything else in re-grade #2 passed.
+
+_Scratch: `/tmp/adv-354` (rev + #354 pins, provenance-verified). `rm` sandbox-blocked; operator
+may delete. Also `/tmp/adv-r3`, `/tmp/adv-05aii` from earlier re-grades._
+
+---
+
 > **REVISION 3 RE-GRADE (2026-08-10, HEAD `218c13f`) — VERDICT: CONTRACT SUFFICIENT.** The
 > author fixed the rev2 INSUFFICIENT (§R3 below is the delta grade). The rev2 grade is kept
 > UNCHANGED beneath it for provenance (marked SUPERSEDED). Read §R3 first.
+> ⚠ SUPERSEDED by RE-GRADE #3 (§R4, top) — a later commit `2e40b03` added the #354 pins.
 
 ---
 
