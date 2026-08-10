@@ -18,6 +18,31 @@ precedent):
   · **#262** (register accepts a task_id another agent holds, SILENTLY — two surfaces
   disagree and only one says so) · idle-gate v2 (#121/#149) · #195 home-settling (with 06).
 
+## 05a-ii KICKOFF RULINGS (operator, 2026-08-10) — the `await` verb
+Design of record: `REPORT-fable-design-05a-ii.md` (archived at close-out under
+`receipts/2026-08-10-packet05aii/`) — the contract-ready await requirements §A.1–A.6 + pin
+checklist, reconstructed from surviving sources (the canonical `nifty-garden.md` plan file is
+GONE; nothing invented). Scope of 05a-ii (already the operator-adopted Fable Q1 split): the
+`await` action ONLY + the Opus-4.8 LIVE receipt leg + the DEPLOY of the 05a commit-only backlog
+(05a-i `53e28fc` + the defect-class wave `f49d668`). Siblings shipped the rest (05a-i: drain
+reshape/`since=`/#183/#190/R1/DD-2.a helper; 05a-iii: story/rollup/comms_cli/#304).
+- **F1 — await does NOT stamp (PEEK + wait).** await surfaces/waits/times-out but stamps nothing;
+  the caller consumes via a subsequent `drain`. Keeps await idempotent + retry-safe and OFF the
+  DD-4.c/#214 at-most-once loss path; the only reading consistent with the socket-drop non-loss
+  forgery pin (design §A.6). Return shape: `stamped_seqs` empty; add an idempotency pin (two awaits
+  over the same traffic both return it). Mirrors `drain(peek=True)`.
+- **F2 — the ≤55s bound is a FIXED named constant, no `timeout=` param.** Sits strictly under the
+  ~60s MCP tool-call ceiling; the PROPERTY (not the magic number) is what the pin guards.
+- **Q5(ii)/F3 — LIVE-WHERE key = agent-id ONLY, never `thread`.** `LIVE SELECT * FROM to WHERE
+  out = agent:<uuid5-id-literal>`; injection-safe by construction (uuid5 hash of charset-ASSERTed
+  name/session); probe-confirmed it fires + discriminates. `thread?` narrowing (if the param is
+  offered) is a CLIENT-SIDE predicate on the authoritative snapshot re-read, never in the LIVE
+  WHERE (DD-3.e stays un-triggered). Build-probe residual: confirm a hyphenated uuid5 record-id
+  literal PARSES (backtick/angle-bracket quoted) and still discriminates.
+- **Roster — Opus-4.8 via `opus48-worker`** (agent type pinned to claude-opus-4-8 by frontmatter;
+  spawn WITHOUT a per-invocation `model` override). Used for the contract author, cold auditor,
+  and the live-leg builder.
+
 ## Mission
 The wait-and-reconstruct half of the surface: bounded await, task-anchored story,
 rollup extension, CLI, and the idle-gate hook rework.
