@@ -2074,6 +2074,158 @@ blowup — the same factoring §11.9 used.
   over-claim on stdout AND on stderr, (2) the NOT_RUN shape, (3) a new render branch no cell reaches (must
   redden leg-2), (4) a new `VERDICT_*` (must redden leg-1). If ALL die, G is closed — terminal.
 
+## §11.11 — G summary honesty, round 8 (the genuinely terminal form): main is a PROVEN pure conduit (fable-sidecar, 2026-08-10, finding #350)
+
+`delta-adversary-g-6` (#350): §11.10 is strong (F1/F2/stderr + all priors DIE, 187/0, extraction 41/0) but two
+exit-0 false clears survive, both the class one axis/surface over:
+- **PRIMARY — W-main-empty-selector (production-reachable, NOT adversarial):** MP-B anchored `main`'s served
+  bytes over (mode × VERDICT_*) but FIXED the selector NON-EMPTY in every wave cell, and — the root cause —
+  §11.10's leg-2 branch-coverage drove `render_wave_receipt` (the PROXY), NOT `main` (the served surface). So a
+  `main` over-claim on the EMPTY-selector PASS_SCOPED path survives. **This is F2's recipe/cake mistake
+  reproduced at the branch-coverage layer** — covering the recipe, not the cake. `wave_gate --wave` with no
+  `-k` is a normal path an agent hits.
+- **SECONDARY — W-compose-multiowned (adversarial):** the single-gate test domain lets a 2+-owned exit-0
+  over-claim survive.
+
+**The lead's diagnosis, which is correct and is the thing to fix: every round the checked-variable's REACH was
+under-derived by ONE AXIS (verdict-state → selector-state → composition) BECAUSE the coverage ran over a
+PROXY / an ENUMERATED domain, never over MAIN's ACTUAL EXECUTION.** An enumerated domain is *always* one axis
+short — that is the recurrence. **NOT a pinned bound: #344 IS the over-claim.** Ruled at HEAD `e36c114`.
+
+### §11.11.1 — The ruling: BETTER than (A) or (B) — the synthesis (and why neither alone is terminal)
+
+**(A) alone — branch-coverage over MAIN + a per-cell golden over an enumerated domain — is NOT terminal.** It
+fixes §11.10's locus error (cover main, not render) but the ASSERTION is still a per-cell golden over an
+enumerated domain (mode × VERDICT_* × selector-state × composition-arity …) — the exact enumeration that is
+one-axis-short every round. And a branchLESS unconditional main over-claim needs the golden, which needs the
+cell enumerated; a composition over-claim (W-compose) is not a per-count branch (the summary is symmetric in
+the legs), so branch-coverage does not force the multi-gate cell. (A) would buy one round, not termination.
+
+**(B) alone — an AST-pin that main emits only the typed receipt — is NOT terminal.** Per §12's own lesson, an
+AST scan is the WEAK-total layer, spelling-defeatable: a main that writes via `sys.stdout.write`, a helper,
+`os.write(1, …)`, or an aliased `print` evades the AST constraint. (B)'s PROPERTY (main is a pure conduit) is
+right; enforcing it by AST is not un-defeatable.
+
+**RULING — the synthesis: (B)'s PROPERTY proven via (A)'s LOCUS, with CONDUIT-EQUALITY as the assertion.**
+Drive `main` at RUNTIME (capfd — the served surface, not the proxy) and assert **`main`'s captured stdout ==
+`render_wave_receipt(...)`'s output, byte-exact, and stderr == the expected diagnostic (empty on the pass
+path)** — i.e. main ADDS NOTHING; it is a pure conduit for the typed receipt. This is neither a per-cell golden
+(no enumeration to fall one axis short of) nor an AST scan (no spelling to evade — it is a runtime byte
+comparison of what main ACTUALLY emitted vs what render returned). **Conduit-equality is a SINGLE property, not
+a per-axis one**, and it moves the whole axis-enumeration problem OFF main (unbounded input axes) and ONTO
+`render_wave_receipt` — a pure function of a CLOSED TYPED domain, where §11.8/§11.9 already anchor it.
+
+To prove conduit-equality holds ∀ inputs without re-enumerating axes: run it over **branch-coverage of MAIN's
+ACTUAL execution** (coverage.py over `main`, not `render_wave_receipt`). An over-claim in main is then either
+(i) unconditional → conduit-equality fails on EVERY driven cell, or (ii) branch-gated → branch-coverage forces
+that branch to be driven → conduit-equality fails there, or (iii) a NEW main branch → branch-coverage reddens
+(uncovered). There is no fourth case. **Main's completeness is branch-coverage (a checked variable — coverage.py
+names every uncovered branch), NOT axis-enumeration** — which is precisely why this ends the recurrence.
+
+### §11.11.2 — The selector axis collapses into the typed `scoped` bool (spec-silence RESOLVED)
+
+The axis that broke §11.10 (empty vs non-empty selector) must not be a new domain dimension. **RULING
+(design authority; flagged for operator veto below): `--wave` with an EMPTY selector is an HONEST FULL RUN.**
+Derive `scoped = (reader is JUnit) ∧ (mode == MODE_WAVE) ∧ (selector is NON-EMPTY)`. An empty `-k` selects ALL
+tests (pytest semantics) — it IS a full run — so `scoped=False` → the receipt renders PASS_FULL, which is
+HONEST (it ran everything). This:
+- **Resolves the spec-silence** (does `--wave` require `-k`? — no; an empty `-k` is a coherent full run, rendered
+  honestly), so the empty path CANNOT render PASS_SCOPED / "owed" while actually running full.
+- **Folds the selector-emptiness into the EXISTING typed `scoped` bool** — it is NOT a new honesty axis. The
+  selector STRING itself is contained ECHO data (not honesty-bearing — §11.9 containment / INSTRUMENT B forgery
+  containment), so it expands the honesty byte-space by nothing.
+- **Flag (operator's UX call, not mine to force):** a defensive alternative is argparse REJECTING `--wave` with
+  an empty `-k` (a wave with no scope is arguably a misuse). The HONESTY is secured by the `scoped` derivation
+  either way; rejection is a UX hardening the operator may add. I RULE full-run-honest as the honesty-securing
+  design; the reject-vs-accept UX is surfaced for the operator.
+
+### §11.11.3 — WHY this is terminal (stress-tested, not asserted)
+
+After the synthesis, the served surface (`{stdout, stderr, exit}`, the complete set per §11.10.0 — no file, no
+subprocess passthrough, no logging) carries honesty in exactly one place, and it is closed:
+- **`main` adds no honesty byte** — proven a pure conduit ∀ its branches (conduit-equality × branch-coverage of
+  main's actual execution; any spelling, any stream). A new main behaviour = a new branch = branch-coverage
+  reddens.
+- **`render_wave_receipt`'s output is a pure function of a CLOSED TYPED domain** (mode × per-gate `VERDICT_*` ×
+  the typed `scoped` bool), fully anchored by §11.8 (frozen typed structure, no free-`str` seam) + §11.9
+  (per-component byte-anchor over the closed enums + whole-receipt byte-oracle over the derived domain +
+  meta-recursion coverage). A finite closed domain is FULLY anchorable — there is no "one more axis," because the
+  axes ARE the typed fields, and **the typed-field SET is itself a checked variable** (§11.8 component-set
+  coverage: a new field → the anchor set must grow or the coverage pin reddens). Data fields (selector, gate
+  ids) are contained echo (forgery-safe), not honesty-bearing.
+- **The selector axis** is the typed `scoped` bool (§11.11.2) — not a new axis.
+- **The composition axis (W-compose-multiowned)** is `summary_verdict` over the legs — SYMMETRIC in the legs
+  (any FAILING → FAIL; any SCOPED → PASS_SCOPED; else PASS_FULL), so its honesty is a function of the PRESENCE
+  SET over the closed `LegQualification`, anchored by §11's P1 ∀ (over ≥2 legs — the render domain must use a
+  ≥2-gate manifest so multi-leg presence is exercised). And `main` cannot inject a composition over-claim (it is
+  a conduit). Both legs closed.
+
+**No un-anchored axis remains, and a new axis in EITHER surface is a checked variable:** a new main branch →
+branch-coverage reddens; a new render typed field → §11.8 component coverage reddens; a new `VERDICT_*` → §11.10
+leg-1 coverage reddens. There is nothing after `main`'s stdout+stderr+exit. **Terminal — because completeness is
+now carried by two CHECKED VARIABLES (main's branch set, render's typed-field set), not by an enumerated domain
+that is always one axis short.** (Honest residual, unchanged from §11.9.5: the honest PROSE of render's golden
+constants is human-audited ONCE; that is the irreducible "a human decides what English is honest," not an
+over-claim vector.)
+
+### §11.11.4 — The exact pins (the delta's MP-C, plus the conduit pins)
+
+- **MP-C — `test_main_wave_empty_selector_is_an_honest_full_run`:** drive `main(["--wave"])` with NO `-k`
+  (capfd); assert the served receipt is the HONEST full-run receipt (PASS_FULL when clean; `scoped=False`), NOT
+  a PASS_SCOPED over-claim, NOT any free over-claim line. The production-reachable path the delta named.
+- **CONDUIT-EQUALITY — `test_main_served_output_is_exactly_the_typed_receipt`:** drive `main` at runtime
+  (capfd, BOTH streams) over the domain; assert `captured.out == "\n".join(render_wave_receipt(...))` (byte-exact
+  conduit) and `captured.err ==` the expected diagnostic (empty on pass). Main == render, any spelling.
+- **BRANCH-COVERAGE OVER MAIN — re-aim §11.10's leg-2 from `render_wave_receipt` to `main`:**
+  `coverage.Coverage(branch=True)` over `main`'s execution across the domain; assert every `main` branch is
+  covered (an uncovered main branch → RED, forcing a driven cell). This is the F2 fix at the coverage layer
+  (cover the CAKE — main — not the recipe — render).
+- **`scoped` DERIVATION pin — `test_scoped_requires_a_nonempty_selector`:** `scoped` is False for an empty
+  selector even in wave mode (so empty-wave renders PASS_FULL honestly).
+- **Composition domain — the render/summary ∀ uses a ≥2-gate manifest** so multi-leg presence (W-compose) is
+  exercised by §11's P1 combination surface.
+- **Mutation proofs (both directions):** add a free `print("all clean")` to `main` on the empty-selector path
+  → MP-C + conduit-equality redden; add it unconditionally → conduit-equality reddens on every cell; add a new
+  `main` branch that diverges → branch-coverage + conduit-equality redden; make `scoped` ignore selector
+  emptiness → MP-C reddens (empty-wave renders PASS_SCOPED). Positive control: an honest reference main (pure
+  conduit) passes conduit-equality over every cell; negative control: a genuinely clean full checkpoint still
+  renders PASS_FULL.
+
+### §11.11.5 — How each survivor — and any round 9 — dies BY CONSTRUCTION
+
+- **W-main-empty-selector:** MP-C drives the exact path; the `scoped` derivation renders it PASS_FULL honestly;
+  conduit-equality forbids any main-injected over-claim on it; branch-coverage over MAIN (not render) forces the
+  branch. Dies four ways.
+- **W-compose-multiowned:** `main` cannot compose (conduit); render's `summary_verdict` is symmetric over the
+  legs and anchored over the ≥2-leg presence set (§11 P1). Dies.
+- **The stderr door / any free print, any spelling:** conduit-equality (capfd both streams) — main's actual
+  emitted bytes must equal render's output; anything else, on either stream, in any spelling, reddens. Dies.
+- **All prior rounds (summary alt-wording, extra line, scoped-leg, orphan, NOT_RUN shape):** subsumed —
+  render's honesty is anchored over the closed typed domain (§11.9/§11.10) and main is a proven conduit.
+- **Round 9 (a new axis):** a new main branch → branch-coverage reddens; a new render typed field → §11.8
+  component coverage reddens; a new verdict → §11.10 leg-1 reddens. No enumerated domain to fall short of.
+
+### §11.11.6 — Scope + reuse (Packages considered)
+
+- **Scope: TEST-ONLY + the approved pcg extraction.** MP-C / conduit-equality / branch-coverage-over-main are
+  runtime capfd + coverage.py pins (test-only). The `scoped`-requires-nonempty derivation is a small change in
+  the wave receipt/`render_wave_receipt` seam (`wave_gate.py`, new code — in scope). **⚠ Two flags:** (1) if
+  making the CHECKPOINT `main` (pcg) a pure conduit requires removing a free print on its success path, that is
+  a small further pcg change — flag; the WAVE `main` (new code) is in scope regardless, and the survivors are
+  wave-mode. (2) the `--wave`-empty-`-k` CLI SEMANTICS (full-run-honest, my ruling) vs a defensive argparse
+  reject is an operator UX call — surfaced, honesty secured either way.
+- **NOT a pinned bound** — #344 IS the over-claim; the fix CLOSES it.
+- **Reuse:** §11.8/§11.9's typed receipt + per-component/byte-oracle anchoring + the AST mint-scan idiom (still
+  the weak-total backstop) · §11.10's leg-1 verdict-domain coverage + P-S branch-coverage mechanism (re-aimed at
+  `main`) · §11's `summary_verdict` P1 combination surface (≥2 legs) · `capfd` (pytest built-in). **Packages
+  considered:** stdlib + `coverage` (already used by P-S) + pytest built-ins — no new dependency. **Verdict:
+  bespoke minimal — the recipe→cake law and the string→type "make it unrepresentable" move applied to the
+  ENTRYPOINT: main proven a conduit at runtime, render anchored over a closed typed domain.**
+- **Route:** contract → adversary → build → cold audit; the adversary re-attacks with a `main` over-claim via
+  `print`/`sys.stdout.write`/a helper/stderr (all must fail conduit-equality), the empty-selector path (MP-C), a
+  multi-owned composition (symmetric summary), and a new `main` branch (branch-coverage). If all die, G is
+  closed — terminal.
+
 ## §12 — A-SUB anti-dup: un-defeatable-by-spelling (fable-sidecar, 2026-08-09)
 
 **Escalation, not a fix wave** — same posture as §11, one packet over. `REPORT-delta-adversary-asub-b.md`
@@ -2524,3 +2676,34 @@ skip-coverage docstring's mislabel is the defect.
 - **Route:** contract → adversary → build → cold audit; the adversary re-attacks with a split-leg parse (must
   redden via L1), a comprehension/aliased parse (same), a legit single-file skip (must stay green), and confirms
   the docstring no longer mislabels an in-scope parse as the #349 bound.
+
+## 13. OPERATOR SIMPLIFICATION (2026-08-10) — supersedes the G fortress; A-SUB bound accepted
+
+After G reached round 8 and A-SUB round 7, the operator ruled the honesty-render machinery
+over-built for trivial-importance surfaces (the gate's own output, read only by the pre-production
+fleet). Right-size. NO contract-adversary for the simplified G or the A-SUB pin (operator).
+
+### G / #344 — SIMPLE DESIGN (supersedes §11.8–§11.11; retire that machinery)
+Retire the typed-WaveReceipt / conduit-equality / branch-coverage / per-axis byte-oracle work
+(§11.8–§11.11). Behaviour:
+- **No `--wave`** → the full suite runs (default; the old `--checkpoint` is REMOVED).
+- **`--wave <args>` (≥1)** → typecheck + ruff + currency run FULL (the #344 non-omittable core is
+  untouched); ONLY the pytest leg is short-circuited to `<args>` (pytest node-ids/paths passed
+  through); the receipt carries an honest **"SCOPED RUN — ran {args} (N tests); does NOT certify
+  the full gate"** flag for the LLM reader (echoes the exact args + the collected/passed count).
+- **`--wave` with no args** → error. **`--wave <args>` that collect ZERO tests** → error (no silent
+  scoped-pass over nothing — #290 anti-vacuity class). No `-k`.
+Honesty = the SCOPED-RUN flag + the two errors, not a byte-oracle fortress. Right-sized contract
+(assert the four behaviours). Closes #350.
+
+### A-SUB / F4 — remaining in-scope survivor ACCEPTED AS A KNOWN BOUND (operator)
+The bytes/normalized-source whole-workspace parse that fails the members-spanned discriminator OPEN
+(delta-adversary-asub-6) is accepted as a KNOWN BOUND — trivial-importance test-infra,
+adversarial-only, outside the honest-dev threat model (L1 catches every honest spelling). Pin-the-miss
+(reddens if closed) + honest docstring (state exactly what L1 covers) + named re-open trigger (real
+drift / threat-model change / CI). Distinct from #349 (non-parsing walk). Consolidation + L1 +
+skip-coverage stand.
+
+### Verification (right-sized)
+No contract-adversary. Flow: contract → builder → cold audit (builder≠grader ground-truth: re-run the
+gate bundle + read the diff). The 6 already-delta-clean packets (B/C/D/E/F/H) proceed to build as-is.
