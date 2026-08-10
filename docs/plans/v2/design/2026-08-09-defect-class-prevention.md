@@ -1797,6 +1797,151 @@ over-claim, and a NEW free-append path (round 5) — all four must be caught by 
 mint-scan. **Named re-open trigger:** any new receipt line source added later is a new typed component or
 the mint-scan reddens; a builder cannot add a free-`str` line.
 
+## §11.9 — G summary honesty, round 6: ∀ over the DERIVED honesty-line set (the endgame) (fable-sidecar, 2026-08-09)
+
+**The completion that ends the one-line-over recurrence** — `REPORT-delta-adversary-g-4` confirms §11.8's
+typed receipt WORKS (all 7 §11.8.7 attacks die, both reviser deviations individually safe, 170/0, extraction
+41/0) but one survivor remains and it is the recurrence signature itself:
+
+- **W-SCOPED-OVERCLAIM (D2c):** §11 typed the SUMMARY line, §11.8 typed the receipt COMPOSITION, but the
+  SCOPED-LEG line's CONTENT is still FREE TEXT, pinned only by "not literally GREEN." A PASS_SCOPED
+  (`ok=True`, exit 0) receipt whose scoped line reads `"SCOPED(-k x) — tree is current and clean; nothing
+  owed"` over-claims and passes every pin.
+- **R1 (the tell):** reviser-g-4 asserted the byte-oracle's anchored read-zone is "ONLY the wave-header
+  constant" — measurably FALSE: the scoped-leg line (D2c) AND the wave FAIL-detail line (D1a) are two MORE
+  fixed-constant honesty lines it did not anchor. **PARTIAL ENUMERATION of the honesty lines is the packet's
+  own class, one line over.**
+
+The pattern, named so it stops: every round typed ONE more honesty line and a NEIGHBOUR survived (summary →
+composition → scoped-leg → FAIL-detail next = round 7 if we point-fix). Ruled at HEAD `e36c114`; ground truth
+read directly (the contract is uncommitted `M`, the #125 no-overlay bound — said out loud).
+
+### §11.9.1 — Ground truth: what is already anchored, and the exact gap
+
+Read from the in-flight `scripts/test_wave_gate.py`:
+- **CHECKPOINT whole-receipt byte-oracle ALREADY EXISTS:** `test_checkpoint_receipt_preserves_the_historical_bytes`
+  (§11.8.4, built) anchors the clean checkpoint receipt byte-for-byte; `test_render_summary_pass_full_preserves_the_checkpoint_line`
+  anchors PASS_FULL; `test_render_currency_fail_uses_the_fixed_verdict_and_preserves_reasons` splits the checkpoint
+  FAIL line into `render_summary(FAIL)` + a typed reasons-detail. So on the CHECKPOINT path, D1a is anchored.
+- **THE GAP — the WAVE receipt:** only its header constant is anchored (R1). The scoped-leg line's prose (D2c,
+  PASS_SCOPED) and the wave FAIL-detail (D1a, FAIL) are unanchored free text. The lead's phrase names it exactly:
+  the byte-oracle "currently skips the wave PASS_SCOPED receipt."
+
+So the completion is not new machinery — it is **extending the EXISTING whole-receipt byte-oracle idiom
+(`test_checkpoint_receipt_preserves_the_historical_bytes`) to the WAVE receipt, over the derived enum-state
+domain (including PASS_SCOPED and FAIL).**
+
+### §11.9.2 — The move: DON'T classify honesty lines — anchor EVERY line over the DERIVED state domain
+
+⚠ **The trap to refuse: deriving a semantic "honesty-bearing" SUBSET is ITSELF a new instance of the class**
+— a content classifier ("lines that read as a clear") is enumerate-the-forbidden over open prose, and it will
+misjudge a line (round 7 rides the misjudged one). R1 is that classifier failing by hand. **So do not enumerate
+or classify honesty lines at all.** Anchor EVERY line of the receipt — honesty-bearing or data — over the
+DERIVED verdict-state domain. "Every line" strictly SUBSUMES "every honesty line," so the honesty subset is
+covered a fortiori, with no subset to get wrong. This is the same reasoning as §12 (anchor at the chokepoint,
+don't enumerate spellings) and §11.8 (type every line source, don't wall one slot).
+
+Two complementary anchors, both DERIVED, per the operator's REUSE directive:
+
+1. **Per-component byte-anchor over its OWN closed-enum domain (the ∀ over the derived honesty-line set).**
+   Each §11.8 typed component's render is byte-anchored for EACH value of its closed-enum state:
+   - summary over `SummaryVerdict.__members__` (3) — DONE (`test_render_summary_*`);
+   - **leg over `LegQualification.__members__` × `{scoped, not-scoped}` — the OWED one:** the SCOPED-leg prose
+     (`_SCOPED_HONESTY` catalog constant), the verdict prose, the orphan-detail prose are FIXED per state and
+     byte-anchored; a reworded "nothing owed" ≠ the anchored `"NOT a currency clear; full run owed"` → RED;
+   - header over `{MODE_WAVE, MODE_CHECKPOINT}`; note fixed.
+   The DERIVED set is `(honesty-bearing components) × (their closed-enum domains)`, and it is a **CHECKED
+   VARIABLE** exactly as §11's P1: iterate `__members__` (not a hand-list); a NEW enum member → a new required
+   anchor or the coverage pin reddens (reuse `test_summary_verdict_combination_surface_equals_the_live_product`
+   / the `_leg_qual_combos` meta-recursion idiom). The COMPONENT set is derived from the typed `WaveReceipt`
+   structure (§11.8) — a new component → new required anchors or the coverage pin reddens.
+
+2. **Whole-receipt byte-oracle over the derived state domain (the composition anchor that subsumes any line).**
+   Extend `test_checkpoint_receipt_preserves_the_historical_bytes` to the WAVE receipt: for each verdict state
+   in the derived domain (`SummaryVerdict` reachable in wave = {PASS_SCOPED, FAIL, and PASS_FULL only if no leg
+   scoped}), render the whole wave receipt over FIXED fixture data and assert byte-exact against the honest
+   golden. Any over-claim in ANY line (scoped-leg, wave FAIL-detail, a future line) ≠ golden → RED. A NEW line
+   → byte mismatch → RED (forcing a reviewed golden update). This is the "extend the byte-oracle to every
+   honesty line incl. the wave PASS_SCOPED receipt" the lead names.
+
+**Plus the two §11.8 layers, unchanged:** the frozen typed `WaveReceipt` (no free-`str` composition seam) and
+the AST mint-scan (`TestSafeLineRenderedMintPin` idiom — the prose catalog constants and the mint appear
+nowhere else). Per §12's ladder: the byte-oracle (content) + the frozen structure (composition) are the STRONG
+layers; the AST mint-scan is the WEAK-total backstop (alias-defeatable, said plainly).
+
+**And sole-mint the wave honesty prose** (`_SCOPED_HONESTY` + the wave FAIL-detail as catalog constants in
+`wave_gate.py`, new code) so the prose is not author-chosen per-call — the belt that makes the byte-oracle's
+golden stable and the mint-scan meaningful. New code, so free.
+
+### §11.9.3 — The exact pins the reviser adds
+
+- **`test_every_wave_receipt_line_is_byte_anchored_over_the_derived_verdict_state_domain`** — the wave analog
+  of `test_checkpoint_receipt_preserves_the_historical_bytes`, ∀ over the derived verdict-state domain
+  (parametrized over `_leg_qual_combos` / the closed-enum product, coverage-pinned == the live product), whole
+  wave receipt byte-exact vs the honest golden. Closes D2c (scoped-leg) and the wave D1a (FAIL-detail) and any
+  future wave line.
+- **`test_every_typed_component_prose_is_byte_anchored_over_its_enum_domain`** — the per-component ∀: iterate
+  the typed components (derived from `WaveReceipt`) × `__members__` of each's closed-enum state; assert each
+  rendered prose == its catalog constant; coverage-pin the iterated (component × state) set == the derived
+  product (reuse the §11 meta-recursion). A new enum member or component without an anchor → RED.
+- **Sole-mint + mint-scan (extend §11.8):** `_SCOPED_HONESTY` and the wave FAIL-detail become catalog constants
+  minted only by their sole-minters; the §11.8 AST mint-scan (`test_no_free_receipt_line_composition_outside_render`)
+  extends to forbid these prose literals outside their catalogs.
+- **Mutation proofs (both directions):** rewrite the scoped-leg prose to an over-claim (D2c) → the wave
+  byte-oracle + the per-component anchor redden; rewrite the wave FAIL-detail (D1a) → same; ADD a new wave
+  honesty line without a golden update → byte-oracle reddens; GROW `LegQualification` by a member without a new
+  anchor → the coverage pin reddens (the checked-variable proof). Positive control: the honest reference wave
+  receipt matches its golden; negative control: a genuinely honest PASS_SCOPED receipt still renders its scoped
+  bound (honesty, not a blanket ban on the word "clean").
+
+### §11.9.4 — How every survivor — and round 7 — dies BY CONSTRUCTION
+
+- **W-SCOPED-OVERCLAIM (D2c):** the scoped-leg prose is a byte-anchored catalog constant; a reworded
+  "nothing owed" ≠ the anchored `"NOT a currency clear; full run owed"` → the wave byte-oracle AND the
+  per-component anchor redden. The pin never asks "does it read as a clear" (the trap) — it asks "is it the
+  anchored bytes." Dies.
+- **D1a (wave FAIL-detail):** same — anchored over the FAIL state in the wave byte-oracle. Dies.
+- **A round-7 honesty line (the next neighbour):** any new line changes the rendered receipt ≠ golden → RED,
+  forcing a reviewed golden update where the prose is read (the honest bound, §11.9.5). No SILENT over-claim.
+  Dies by construction — the recurrence ends because the read-zone is the WHOLE receipt over the DERIVED domain,
+  not the next single line someone remembers to anchor.
+- **R1 (partial enumeration of the read-zone):** DISSOLVED — the read-zone is no longer a hand-named constant
+  subset; it is every line over the derived state domain, and the derivation (enum domains + component set) is a
+  checked variable. There is no honesty-subset left to enumerate incompletely.
+
+### §11.9.5 — Honest bound + scope
+
+- **Honest bound (the golden's honesty is human-established, once):** the byte-oracle anchors each line to a
+  golden; the golden's PROSE being honest is established by a cold-audit / adversary READ, once, when written
+  (reviser fork-2's "one-time read", now the STANDING mechanism for all honesty prose — generalised from the two
+  fixed strings to every catalog constant). The type system cannot judge whether `"NOT a currency clear; full
+  run owed"` is honest English; a human does, once, and the byte-oracle then makes any DRIFT from that honest
+  golden reddens. This is the honest boundary, stated not glossed (§6): the instrument pins CONSISTENCY WITH AN
+  AUDITED GOLDEN, not semantic honesty in the abstract.
+- **Scope: TEST-ONLY + the already-approved pcg extraction — NO new scope-grant.** The wave byte-oracle and the
+  per-component anchor are test-only (goldens over `render_wave_receipt`'s output). `_SCOPED_HONESTY` + the wave
+  FAIL-detail catalog constants are NEW code in `wave_gate.py` (in scope). The checkpoint whole-receipt
+  byte-oracle already exists (§11.8.4 built), so the checkpoint path needs nothing new. Confirmed: no
+  `pending_contract_gate.py` change beyond the approved extraction is required for round-6 closure.
+
+### §11.9.6 — Reuse map / DRY (Packages considered)
+
+- **`test_checkpoint_receipt_preserves_the_historical_bytes`** (`test_wave_gate.py`, §11.8.4) — the whole-receipt
+  byte-oracle idiom; EXTEND it to the wave receipt over the derived state domain. Do not invent a new oracle.
+- **`SummaryVerdict` / `LegQualification` `__members__` + `_leg_qual_combos` +
+  `test_summary_verdict_combination_surface_equals_the_live_product`** (§11) — the closed-enum domains and the
+  meta-recursion coverage idiom that makes the anchored set a CHECKED VARIABLE. Reuse, don't rebuild.
+- **`test_render_summary_*` / `test_render_currency_fail_uses_the_fixed_verdict_and_preserves_reasons`** — the
+  existing per-component byte anchors (summary, checkpoint FAIL); the wave leg/FAIL anchors mirror them.
+- **`TestSafeLineRenderedMintPin` idiom + §11.8's `test_no_free_receipt_line_composition_outside_render`** — the
+  AST mint-scan, extended to the wave prose catalogs.
+- **Packages considered:** stdlib `enum` (closed domains) + `str`-subclass catalog constants (the `Rendered`/
+  `SafeLine` idiom); no library supplies "every receipt line byte-anchored over a derived enum domain."
+  **Verdict: bespoke (minimal), extending four in-repo idioms — the string→type lift + the existing byte-oracle
+  + the §11 meta-recursion + the mint-scan.** Route: contract → adversary → build → cold audit; the adversary
+  re-attacks D2c, the wave FAIL-detail, AND a fresh round-7 line — all three must die by the whole-receipt
+  byte-oracle over the derived domain.
+
 ## §12 — A-SUB anti-dup: un-defeatable-by-spelling (fable-sidecar, 2026-08-09)
 
 **Escalation, not a fix wave** — same posture as §11, one packet over. `REPORT-delta-adversary-asub-b.md`
