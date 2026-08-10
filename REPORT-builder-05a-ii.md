@@ -147,3 +147,15 @@ Beyond the named build-list `C1_RENDER_CASES` addition, the new `await` action +
 ---
 
 _Order: contract → adversary → build → cold audit. This build satisfies the SUFFICIENT-graded contract; the cold audit is the next instrument._
+
+---
+
+## 7. FOLLOW-UP FIX — #354 LIVE-connect crash → degrade-to-poll (commit `7bc68f9`, 2026-08-10)
+
+The cold audit (NO-GO §2, finding **#354**) caught a crash the build-list state machine implied but did not guard: the dedicated LIVE **connect+establish** sat in a `try`/`finally` with **no `except`**, so a failing `self._connect()` (the shared opener re-raises by contract; connect can also hit a concurrent-first-connect `TxnContentionExhausted`) **propagated and crashed `await_inbox`** instead of degrading to poll-only (design §A.1 step 2 says establish is best-effort). Operator approved fix-now ("it affected the usability of the tool"); the adversary graded the fix pins SUFFICIENT at HEAD `f71760f`.
+
+**Fix (17+/2−, `inbox_awaiter.py` only):** a nested `try`/`except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION` around ONLY the connect+establish — on failure `connection=None` and the poll loop carries the load (mirrors `CommandSubscriber.run`'s connect guard; the shared constant is IMPORTED, never re-defined — the §R3 pinned bound). The guard **fences the connect path only**: the three authoritative `self._drain` reads (snapshot/poll/final) stay OUTSIDE the `except` and MUST raise on a fault — a drain fault is a loss-free RAISE (F1=peek), never a false-empty. OSError is *inside* the boundary set, so over-guarding a drain read would false-empty; the two pins fence the guard.
+
+**Pins GREEN:** `TestConnectFailureDegradesToPoll` all 4 legs (OSError + `TxnContentionExhausted` × {returns-pending `drain.calls≥2`, honest-empty}) · `TestADrainFaultRaisesNeverFalseEmpties` all 3 sites (snapshot/poll/final each mutation-proven) · `TestSocketDropNonLoss` + the R-2 mutation legs unchanged. Full await + blast-radius (`scout`/`retry_seam`/`render_seam_pins`/`message_ledger`/`comms_waiting_line`/`comms_tool`) = **1838 passed, 17 skipped**. `typecheck.sh`: ZERO in `inbox_awaiter.py` (191 total = the pkt39-adjudicated #333 baseline). ruff on the tracked tree clean.
+
+⚠ **`--currency` ruff RED_ORPHANED is NOT from this fix:** all 5 hits are the cold-audit's UNTRACKED `scratch_coldaudit_{liveprobe,probe_connect,probe_r2}.py`; `ruff check . --exclude 'scratch_coldaudit_*.py'` passes. Recommended to the lead: `git clean -f scratch_coldaudit_*.py` (disposable audit scratch) — not deleted here (not mine; scope is the operator's).
