@@ -2417,3 +2417,110 @@ enumerate-the-forbidden pattern this whole doc exists to kill — it IS round 6.
 - **Route:** contract → adversary → build → cold audit; the adversary re-attacks with (1) a skip-set decoy that
   parses privately (must be caught by the skip-coverage pin), (2) a non-parsing os.walk (must hit the pinned
   bound, not a false clear), and (3) a mis-classified parse-adopter in the skip set (must redden).
+
+### §12.8 — A-SUB round 6: route the skip-coverage through L1's RUNTIME observation (fable-sidecar, 2026-08-10, finding continues #349)
+
+`delta-adversary-asub-5`: the §12.7.2 skip-coverage pin is SPELLING-BLIND — the reviser built it on the STATIC
+`_all_workspace_parse_sites` (parse-primitive + a 3-NAME source hand-list, one function), so a skip file that
+routes an UNCONSUMED `parse_production_trees` decoy while its REAL scan parses the whole workspace via a
+SPLIT-LEG (`_production_python_files()` → `production_sources()` + `ast.parse`, across functions) passes the
+full contract (49/4-skip). @HEAD only secret_leak (single-function) is flagged; backoff/secret_typing/
+comms_footer parse UNROUTED and are not. **This PRODUCES AN AST → it is an IN-SCOPE PARSE (§12.7.1), not the
+#349 non-parsing tail.** Coupled TRUST defect: the skip-coverage docstring mislabels this split-leg PARSE as
+"the #349 pinned bound" — a FALSE CLEAR (a disguised-spelling in-scope parse dressed as an accepted bound).
+
+**⚠ I OWN THE ROOT CAUSE — a §12.7.2 wording defect.** §12.7.2 wrote *"REUSE L1's observation
+(`_all_workspace_parse_sites` / the runtime compile-chokepoint observation)"* — CONFLATING two different
+instruments: the STATIC `_all_workspace_parse_sites` (§12.3's AST ALL-set, for L1's OWN coverage, spelling-blind
+by construction) and the RUNTIME L1 guard's observation (`report.escapes`, the un-defeatable compile chokepoint).
+The reviser reasonably took the one named first — the static, spelling-blind one. §12.8 disambiguates. Ruled at
+HEAD `e36c114`; the delta PROVED the closure (L1 already records backoff's escape at `test_backoff_seam.py:780`).
+
+#### §12.8.1 — Ask 1: CONFIRM in-scope, CLOSE via L1, no new operator ruling — I AGREE
+
+**CONFIRMED.** A split-leg / disguised-spelling private whole-workspace parse PRODUCES AN AST — it IS the parse
+operation §12.7.1's threat model puts IN SCOPE, merely spelled across functions. §12's whole point (L1, the
+`compile` chokepoint) is that ANY parse, however spelled, funnels through `compile` and is caught un-defeatably.
+The operator's #349 ruling scoped OUT only the NON-parsing walk (no AST, no chokepoint); a PARSE was never in
+that ruling. So this needs **no new operator ruling** — it is design closure within the delegated authority, and
+the lead's in-scope call is correct. **It CLOSES (via L1); it is NOT pinned** (contrast the genuine #349
+non-parsing bound, which stays pinned and honest).
+
+#### §12.8.2 — Ask 2: the skip-coverage checked-variable runs on L1's RUNTIME observation, NOT the static detector
+
+The skip-coverage pin (§12.7.2's `test_no_skip_set_file_parses_the_tree_unrouted`) is re-sourced:
+- **Source = L1's RUNTIME `report.escapes`** (the compile-chokepoint observation — un-defeatable-by-spelling,
+  already records backoff), **NOT `_all_workspace_parse_sites`** (the static AST ALL-set, which is L1's own
+  coverage instrument, spelling-blind by construction and the WRONG source for this check).
+- **Stop exempting skip files from L1's assert.** Today skip files are exempt; instead, a skip file that L1
+  OBSERVES parsing the workspace unrouted (beyond its declared budget, §12.8.3) is an escape — the skip means
+  "confirmed non-parsing," and L1 seeing it parse falsifies that, ANY spelling.
+- **Reach is a checked variable (reuse §12.3's `require_observations`):** the pin asserts L1 OBSERVED each skip
+  file's scan EXECUTE (else a skip file whose tests didn't run under the guard is silently un-observed = a false
+  clear). Per skip file: observed-to-run AND escapes ⊆ its declared budget.
+
+#### §12.8.3 — Ask 3: the WHOLE-WORKSPACE-vs-SINGLE-FILE discriminator (a checked variable, not a threshold)
+
+L1 flags any unrouted `compile`, but a skip file may legitimately compile ONE known file for an unrelated
+purpose — the pin must fire on a whole-workspace DERIVATION (an enumeration of the tree), not a single-file
+parse. **Discriminator = a per-skip-file DECLARED unrouted-parse BUDGET in the allowlist, default ∅/0
+(allowlist-the-safe); assert L1's observed unrouted-workspace-compile set for that file ⊆ the declared set (or
+its count ≤ the declared count).**
+- **Not a global threshold — a PER-FILE DECLARED value, evidence-backed** (the allowlist-the-safe pattern):
+  a genuine non-parse skip declares **0** (backoff, secret_typing, comms_footer — "does not parse the tree");
+  a documented single-file parse declares that ONE file (or count 1) WITH its reason. The boundary is the
+  qualitative one — TARGETING a known file (declared, small) vs ENUMERATING the tree (undeclared, many) — carried
+  as declared data, not a magic number.
+- **Checked variable, both directions:** the reference is L1's live per-file observation vs the declared budget;
+  a skip file that compiles unrouted MORE than it declared → RED; a declared budget for a file L1 never observes
+  compiling → a dead declaration → RED (the `_ALLOWED_*` dead-entry idiom). A new workspace member grows what an
+  enumeration touches, so an enumerating hand-roll's observed set exceeds its declared ∅ regardless of members.
+- **Uses L1's recorded target filename** (the compiled `.py` path L1 already inspects for
+  `_is_workspace_tree_result`). ⚠ If L1's escape record currently carries only the call-site `file:line` and not
+  the COMPILED TARGET, extend it to record the target path — a small, in-scope addition to the existing guard
+  (it already has the filename in hand to make its workspace decision); the reviser flags if not.
+- **backoff dies:** declared budget ∅/0, L1 observes its split-leg `production_sources()`+`ast.parse` compiling
+  the whole workspace unrouted (the set `parse_production_trees` would produce) → observed ⊄ ∅ → RED. Any
+  spelling — L1 is at the `compile` chokepoint, blind to whether the roots came from `production_sources`, a
+  hardcoded tuple, `os.walk`, or a comprehension.
+
+#### §12.8.4 — Ask 4: fix the false-clear docstring (the coupled TRUST defect)
+
+The skip-coverage docstring must NOT call a split-leg in-scope PARSE "the #349 pinned bound." Correct it to
+distinguish, explicitly: **(a) an in-scope PARSE (any spelling — split-leg, comprehension, aliased) is CLOSED by
+L1's runtime compile-chokepoint observation (§12.8.2–3), never pinned; (b) #349's KNOWN BOUND is the NON-parsing
+tree-walk only (no AST, no chokepoint — §12.7.3).** A parse mislabeled as the accepted bound is a served-English
+false clear — the exact trust-doctrine defect class this whole doc exists to kill, reproduced in a docstring.
+**Leave the #349 pin itself unchanged — it is honest** (it pins a genuine non-parsing walk); only the
+skip-coverage docstring's mislabel is the defect.
+
+#### §12.8.5 — How the split-leg survivors die by L1's runtime observation
+
+- **backoff / secret_typing / comms_footer (split-leg `production_sources()`+`ast.parse`):** each produces
+  workspace-AST via `compile` → L1 records the escape at runtime (backoff already does, `test_backoff_seam.py:780`)
+  → the L1-routed skip-coverage pin sees observed-unrouted-compiles ⊄ the declared ∅ budget → RED. Spelling
+  (split across functions, `production_sources` vs rglob vs os.walk-then-parse) is irrelevant — all funnel
+  through `compile`.
+- **A genuine single-file legit parse in a skip file:** declared (budget 1 / that file, evidence-backed) →
+  observed == declared → OK. Not a false positive.
+- **The static `_all_workspace_parse_sites` stays** — as L1's OWN coverage instrument (§12.3), its correct role;
+  it is simply NOT the skip-coverage source.
+
+#### §12.8.6 — Scope, reuse, closability
+
+- **Closable via L1: YES** (the lead asked me to say so if not). L1 is the `compile` chokepoint; it already
+  observes the parse un-defeatably-by-spelling. The only design piece was the whole-workspace-vs-single-file
+  discriminator, resolved as a per-file declared budget (§12.8.3) — a checked variable, not a threshold. No
+  reason L1 can't discriminate: it records the target filenames, and "enumerated the tree" vs "targeted a file"
+  is the observed-set-vs-declared-budget comparison.
+- **Scope: TEST-ONLY** (skip allowlist gains a per-file budget column; the pin re-sources to `report.escapes`;
+  the docstring fix), **no operator scope-grant** (§12.8.1). The one possible non-test touch is extending L1's
+  escape RECORD to carry the compiled target path — that is inside the existing test-support guard
+  (`_sdk_guard.py`-analog for compile), not production; flag if the reviser finds otherwise.
+- **Reuse (no new machinery):** L1's runtime guard + `report.escapes` + `require_observations` (§12.3); the
+  `_ALLOWED_WHOLE_TREE_CLONE_FILES` allowlist + dead-entry idiom (§12.7.2), extended with the per-file budget.
+  **Packages considered:** none — stdlib, all reuse. **Verdict: bespoke minimal, re-sourcing an existing pin to
+  the existing runtime observation.**
+- **Route:** contract → adversary → build → cold audit; the adversary re-attacks with a split-leg parse (must
+  redden via L1), a comprehension/aliased parse (same), a legit single-file skip (must stay green), and confirms
+  the docstring no longer mislabels an in-scope parse as the #349 bound.
