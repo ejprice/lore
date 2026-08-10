@@ -1942,6 +1942,138 @@ golden stable and the mint-scan meaningful. New code, so free.
   re-attacks D2c, the wave FAIL-detail, AND a fresh round-7 line — all three must die by the whole-receipt
   byte-oracle over the derived domain.
 
+## §11.10 — G summary honesty, round 7 (TERMINAL): pin main's SERVED BYTES over the complete derived outcome domain (fable-sidecar, 2026-08-09)
+
+**The terminal completion.** `delta-adversary-g-5` confirms §11.9 closed every round-1..5 survivor
+(D2c/D1a/W-EXTRA/orphan die, meta-recursion a real checked variable, 178/0, 41/0, goldens honest) but the
+round-7 hunt broke "PIN-1 anchors every line" TWICE, and the two breaks together are WHY G recurred:
+
+- **FINDING 2 (root cause — recipe vs cake):** every honesty pin reaches `render_wave_receipt`'s RETURN — a
+  PROXY (the recipe). The SERVED SURFACE an agent reads is `main`'s STDOUT (the cake). `main` can
+  `print("all gates are clean, tree is green")` → an EXIT-0 false clear on a PASS_SCOPED receipt, surviving
+  178/0 (alt-wording evades the marker/summary literal scans; `print` evades the AST append-scan, which sees
+  `.append` not `print`). This is CLAUDE.md's #131/#107 law — *pinning the source proves the RECIPE; only the
+  running artifact proves the CAKE* — reproduced inside the fix for a finding about exactly this.
+- **FINDING 1 (quantifier law):** PIN-1's domain is `SummaryVerdict.__members__` (3), but FAIL has ≥2 receipt
+  SHAPES — RED_ORPHANED and NOT_RUN render DIFFERENT reasons lines, and NOT_RUN (the LITERAL #344 event) is
+  byte-anchored by NOTHING. The honesty invariant was derived over RED_ORPHANED and stated over all-FAIL.
+
+Ruled at HEAD `e36c114`; served surfaces read directly from `main`/`_dispatch`/`GateRunner` in
+`pending_contract_gate.py`. **⚠ This is NOT a pinned bound: #344 IS "the gate over-claims" — pinning that is
+unacceptable (contrast §12.7, whose hole was OUT of the guarded policy's scope; this hole IS the core policy,
+so it must CLOSE).**
+
+### §11.10.0 — The lead's direct question, answered FIRST: IS stdout+exit the whole served surface?
+
+**Enumerated from the code, not assumed (the completeness the lead asked me to check):**
+- **stdout** — the receipt, via `print(line)` in `_dispatch`. THE primary served surface (FINDING 2).
+- **stderr** — written ONLY in `main`'s three error branches (`MANIFEST ERROR` / `REGISTRY ERROR` / `BROKEN
+  INSTRUMENT`, all `file=sys.stderr`), each returning NONZERO. On the exit-0 path, `main` writes NOTHING to
+  stderr.
+- **exit code** — `raise SystemExit(main())`; pinned by MP-1/MP-6 over the complete cell domain.
+- **NO receipt file** is written (verified: no `open`/`.write` in `main`/`_dispatch`), **NO subprocess
+  passthrough** (`GateRunner.run` captures `stdout=PIPE, stderr=subprocess.STDOUT` — subprocess output is an
+  INPUT, parsed by the readers, never served), **no logging surface** (the receipt path uses `print`, not
+  `logging`).
+- `render_wave_receipt`'s `tuple[list[str], bool]` RETURN is an INTERNAL seam (only `main` consumes it → prints
+  it); §11.9's per-component/return anchors localize failures there, but it is NOT the served surface.
+
+**Verdict: the served surface is `{stdout, stderr, exit}`, and it IS terminal — CONDITIONAL on capturing BOTH
+STREAMS, not stdout alone.** ⚠ **"pin main's stdout (capsys) == honest render" as phrased is NOT terminal:** a
+wrong build could `print(<over-claim>, file=sys.stderr)` on the exit-0 path and survive a stdout-only capture.
+Honest-dev plausibility is lower for stderr (a banner goes to stdout), but the fix is free (capture both via
+`capfd`/`capsys` and anchor stderr == empty on the pass path / == the pinned diagnostic on the error path), and
+"anchor the whole served surface" is the recipe→cake law's actual demand. **With both streams + exit anchored
+over the complete domain, there is nothing "after" — terminal. Without stderr, there is a round-8 door.**
+
+### §11.10.1 — The move: anchor the SERVED BYTES, not the render RETURN
+
+Drive the ENTRYPOINT `main` (gate-runner stubbed to synthesise each outcome — reuse the EXISTING
+`test_main_exit_equals_the_renderer_verdict_over_every_cell` harness), capture the SERVED OUTPUT (`capfd` —
+BOTH streams), and assert it EQUALS the honest golden, ∀ over the complete derived outcome domain. This is the
+recipe→cake fix (§131/§107): anchor the bytes `main` actually emits, never the function it calls. It SUBSUMES
+§11.9's render-return oracle (main prints the render verbatim → anchoring main's bytes anchors the render
+transitively), while §11.9's per-component/return pins stay as failure-localizers.
+
+### §11.10.2 — THE CRUX: the complete derived outcome domain + the round-8 guard (a CHECKED VARIABLE, not a hand-enum)
+
+**The domain is the GATE-OUTCOME verdict set, which is FINER than both enums §11.9 used — that finer-ness IS
+F1's fix.** The receipt CONTENT per gate is keyed on the gate's verdict ∈ the closed module set
+`{VERDICT_GREEN, VERDICT_RED_ADJUDICATED, VERDICT_RED_ORPHANED, VERDICT_NOT_RUN}` (+ the wave SCOPED state),
+whereas `SummaryVerdict` (3) collapses all fails to FAIL and `LegQualification` (4) collapses RED_ORPHANED and
+NOT_RUN into FAILING. So the anchor domain = **mode × (per-gate verdict over the closed `VERDICT_*` set) ×
+{scoped, not}** — derived from the `VERDICT_*` constants (module truth, e.g. a canonical
+`GATE_OUTCOME_VERDICTS` tuple / `FAILING_VERDICTS` ∪ the non-failing ones), NEVER `SummaryVerdict.__members__`
+(that under-derivation IS F1).
+
+**The round-8 guard — two legs, both reusing existing idioms, so the domain-derivation is itself a checked
+variable (a NEW outcome shape reddens or forces a new golden):**
+1. **Verdict-domain coverage (meta-recursion, reuse §11's `_leg_qual_combos`/`test_..._equals_the_live_product`
+   idiom, re-keyed on the `VERDICT_*` set):** assert the anchored per-gate-state set == the live-derived verdict
+   set (+ scoped), both-direction diff. A NEW `VERDICT_*` constant → the derived domain grows → a new golden is
+   required or the coverage pin reddens.
+2. **Branch-coverage backstop (reuse §11's P-S `coverage.Coverage(branch=True)` mechanism over `main`'s
+   stdout-render path):** running `main` over the domain must exercise EVERY branch of the render/served path. A
+   NEW render branch (a new reason line, a new header variant) that NO domain state reaches → an unexercised
+   branch → the branch-coverage pin reddens. **This is the leg that catches a new receipt SHAPE that is NOT a
+   new verdict** — without it, verdict-domain coverage alone would silently miss a shape born of a new branch
+   (the exact under-derivation that made F1 possible). Together: leg 1 gives the ∀ its reach; leg 2 proves the
+   reach hit every shape. That pairing is what makes this terminal rather than round 8.
+
+The full N-gate cross-product is NOT required: per-component anchoring (§11.9, re-keyed to the full verdict set)
++ a representative cell set whose branch-coverage is PROVEN complete (leg 2) covers every shape without the
+blowup — the same factoring §11.9 used.
+
+### §11.10.3 — The exact pins the reviser adds (the delta's MP-A / MP-B, made domain-complete)
+
+- **MP-B — `test_main_served_output_equals_the_honest_render_over_the_complete_outcome_domain`** (FINDING 2):
+  drive `main` (gate-runner stubbed) for each cell in the derived domain; capture BOTH streams (`capfd`); assert
+  the served bytes == the honest golden (stdout == render golden; stderr == "" on pass / the pinned diagnostic on
+  error). Extends the existing main-exit matrix (`test_main_exit_equals_the_renderer_verdict_over_every_cell`)
+  with the SERVED-BYTES assertion, so served-output and exit-code ride the SAME checked domain.
+- **MP-A — `test_omitted_gate_NOT_RUN_receipt_is_byte_anchored`** (FINDING 1): the NOT_RUN / omitted-gate receipt
+  shape is byte-anchored, and the anchor domain is the `VERDICT_*` set (incl. NOT_RUN distinct from
+  RED_ORPHANED), NOT `SummaryVerdict`. Coverage-pinned per leg 1.
+- **The round-8 guard pins:** the verdict-domain coverage pin (leg 1) + the branch-coverage pin (leg 2).
+- **Mutation proofs (both directions):** `print` an alt-wording over-claim in `main` on the exit-0 path (FINDING
+  2) → MP-B reddens; `print` it to stderr → MP-B reddens (both streams captured); rewrite the NOT_RUN reasons
+  line (F1) → MP-A reddens; ADD a `VERDICT_*` constant without a golden → leg-1 coverage reddens; ADD a render
+  branch no cell reaches → leg-2 branch-coverage reddens. Positive control: the honest reference main output
+  matches its golden over every cell; negative control: a genuinely clean checkpoint still prints its PASS_FULL
+  line.
+
+### §11.10.4 — How F1, F2, and every prior round die BY CONSTRUCTION
+
+- **F2 (main prints an over-claim, any wording, either stream):** MP-B anchors the SERVED bytes == the golden;
+  any deviation (alt-wording, a new line, an over-claim on stdout OR stderr) ≠ golden → RED. The pin never asks
+  "does it read as a clear" (the trap) — it asks "are these the honest bytes." Dies.
+- **F1 (NOT_RUN / omitted shape unanchored):** MP-A + the `VERDICT_*`-keyed domain anchor the NOT_RUN shape;
+  leg-1 coverage reddens if a verdict shape is unanchored. Dies.
+- **Every prior round (summary alt-wording, extra line, scoped-leg, orphan):** all are lines in main's served
+  output → subsumed by MP-B's whole-served-surface anchor over the complete domain. Dies.
+- **Round 8 (a new shape/branch/verdict/stream):** a new verdict → leg-1 reddens; a new branch/shape → leg-2
+  reddens; a new stream is not possible (both captured; no file/log/passthrough surface exists — §11.10.0). No
+  silent unanchored outcome remains — which is what "terminal" means here.
+
+### §11.10.5 — Scope + reuse (Packages considered)
+
+- **Scope: TEST-ONLY + the already-approved pcg extraction — NO new scope-grant.** MP-A/MP-B are goldens over
+  `main`'s captured output using the existing gate-runner stub harness; the branch-coverage reuses §11's P-S
+  mechanism. If exposing a canonical `GATE_OUTCOME_VERDICTS` tuple for leg-1's derivation touches
+  `pending_contract_gate.py`, it is a one-line constant beside the existing `VERDICT_*`/`FAILING_VERDICTS`
+  (well within the approved extraction) — flag if the reviser finds it needs more.
+- **NOT a pinned bound** (§11.10 intro): #344 IS the over-claim; the fix CLOSES it.
+- **Reuse:** `test_main_exit_equals_the_renderer_verdict_over_every_cell` (the main-driving cell harness — extend
+  with served bytes) · the `VERDICT_*`/`FAILING_VERDICTS` closed set (the domain source) · §11's
+  `_leg_qual_combos`/meta-recursion idiom (leg-1, re-keyed) · §11's P-S `coverage.Coverage(branch=True)` (leg-2)
+  · §11.9's byte-oracle goldens (extended to main's served bytes). **Packages considered:** stdlib
+  (`capfd`/`capsys` are pytest built-ins; `coverage` already used by P-S) — no new dependency. **Verdict:
+  bespoke minimal, extending five in-repo idioms — the recipe→cake law applied to the entrypoint's served
+  bytes, over a verdict-derived + branch-coverage-checked domain.**
+- **Route:** contract → adversary → build → cold audit; the adversary re-attacks with (1) a `main` `print`
+  over-claim on stdout AND on stderr, (2) the NOT_RUN shape, (3) a new render branch no cell reaches (must
+  redden leg-2), (4) a new `VERDICT_*` (must redden leg-1). If ALL die, G is closed — terminal.
+
 ## §12 — A-SUB anti-dup: un-defeatable-by-spelling (fable-sidecar, 2026-08-09)
 
 **Escalation, not a fix wave** — same posture as §11, one packet over. `REPORT-delta-adversary-asub-b.md`
