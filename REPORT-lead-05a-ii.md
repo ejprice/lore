@@ -69,6 +69,21 @@ Seam forks (Fable sidecar ruled; lead-ratified 2026-08-10; none operator-level):
 
 Rulings tally: 7 in a committed artifact / 0 body-only.
 
+## DRY / reuse — operator directive (2026-08-10: "adhere to DRY. Reuse, don't reinvent.")
+Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically (adversary attacks
+#7/#8/#9 = prove-sharing-by-mutation). **Reuse inventory `InboxAwaiter` MUST call (not clone):**
+- `scout._open_command_connection` — the ALREADY-shared connect factory (1 prod/6 test); `InboxAwaiter`'s
+  `connect` reuses it, no hand-rolled opener.
+- `store._txn.{retry_on_conflict, _CONNECTION_ERRORS, TxnContentionExhaustedError}` + the new R-2
+  `_SDK_AWAIT_BOUNDARY_ERRORS`.
+- `CommandSubscriber._DEFAULT_BACKOFF_BASE_S/_MAX_BACKOFF_S` (backoff), `drain(peek=True)` (reads),
+  `awaiting_answer`/`_comms_waiting_lines` (waiting line), `_render_comms_drain` fence + `render_attributed`.
+- **R-2 WIDENED by the directive:** `scout.py` has ~7 inline `(*_CONNECTION_ERRORS, KeyError)` clones
+  (L163/350/487/496/570/585/602; 3 are the `+TxnContentionExhaustedError` variant). DRY-complete =
+  consolidate ALL onto the shared constant(s) with a REACH-CHECKED pin (AST: no inline clones remain =
+  coverage a checked variable), not "≥1 site". Fold into the contract revision after the adversary verdict
+  (its attack #7 probes exactly this). Builder brief carries a MANDATORY reuse-audit (name the seam or escalate).
+
 ## Remaining operator touchpoints
 - Deploy go/no-go before the recreate (brief-directed; this deploy ships the 05a-i + defect-class backlog).
 - The live-leg mechanism is settled (opus48-worker); the live receipt itself is a deploy-gated smoke.
@@ -112,3 +127,22 @@ Rulings tally: 7 in a committed artifact / 0 body-only.
   policy (share vs distinct-with-shared-error-constant); (5.3 → my #3) the peek-teach nuance (await's
   non-empty render reuses `_render_comms_drain(peeked=True)`, which teaches a consume await can't honor).
   Sidecar to append its ruling to its design doc. AWAITING sidecar ruling before the adversary pass.
+- Sidecar RULED (R-1/R-2/R-3, appended to design doc): all house-precedent + standing-law, none
+  operator-level. Lead-RATIFIED, committed to packet file + design doc, commit `251c40f` (also
+  committed the RED contract test files). Scope ADD granted+surfaced: R-2 touches scout.py+test_scout.py.
+- Revision handed to warm `contract-05aii-1` (SendMessage): retarget wait-machine pins to standalone
+  `InboxAwaiter`; add R-2 shared `_SDK_AWAIT_BOUNDARY_ERRORS` + cross-suite mutation pin (test_scout.py
+  into writable set); add R-3 `action=drain` render pin; re-earn satisfiability + mutation receipts.
+  AWAITING revised contract, THEN the contract-adversary pass (no builder before the adversary is satisfied).
+- Contract REVISED to R-1/R-2/R-3 (`contract-05aii-1`): ~14 wait-machine pins → standalone `InboxAwaiter`;
+  R-2 shared-constant + cross-suite anchor; R-3 drain-teach pin; satisfiability 38/38; 10 mutation proofs.
+- Contract-adversary `adversary-05aii-1` (opus48-worker) verdict **INSUFFICIENT** (`REPORT-adversary-05a-ii.md`)
+  — satisfiability 38/38 (no C-DEF trap), RED honesty confirmed, 9 invariants + waiting-line guard discriminate.
+  TWO missing pins: **(§4.1 BLOCKER)** the R-2 sharing "pin" is a BEHAVIOR pin (green on HEAD before the
+  constant exists) — two routing-≠-sharing builds (7a scout private clones / 7b await inline) pass all 38.
+  Fix = runtime-mutation pin BOTH legs (patch `<module>._SDK_AWAIT_BOUNDARY_ERRORS` → recovery breaks) +
+  AST reach-check belt (derived reach, consolidates all ~7 scout clones — the operator DRY directive) +
+  builder-req reference-as-patchable-attribute. **(§4.2)** `TestThreadNarrowsClientSide` value-monoculture
+  → add a 2nd thread value. §7 residuals: F1 idempotency/shape vacuous on attack 5 (peek_true covers it —
+  verify), hyphenated-uuid5 parse = deploy build-probe (named). Revision handed to warm contract author,
+  THEN re-adversary (no revision skips it).

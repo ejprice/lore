@@ -3,168 +3,152 @@
 brief-base v11 read
 brief project v7 read
 
+> **REVISION 2 (2026-08-10)** — revised to the lead-ratified seam rulings R-1/R-2/R-3
+> (`docs/plans/v2/05-comms-await-story.md` §"Seam rulings"; `REPORT-fable-design-05a-ii.md`
+> §"Follow-up rulings 05a-ii"). The three forks §5 first raised are now RESOLVED (see §5).
+> Satisfiability + mutation receipts re-earned against the revised reference.
+
 ## SUMMARY BLOCK
-- **State:** done — RED contract delivered (26 pins, all RED for the right reason), fake
-  capability added, satisfiability + 8 mutation proofs run against a reference build.
-- **Deviations:** (1) I built a KNOWN-CORRECT reference of the await seams in a DISPOSABLE
-  scratch copy (`/tmp/await-ref-05aii`, provenance-verified) to earn the satisfiability +
-  mutation receipts — production code in the REAL tree was NOT touched. (2) Scratch cleanup
-  (`rm`) is sandbox-blocked; `/tmp/await-ref-05aii` + `/tmp/ref_{messages,server}.py` remain —
-  disposable, no uncommitted value, operator may delete.
-- **Capability check:** all tools present; lore reachable; only spike-surreal `:18000` reasoned
-  about (no store connected — the reference ledger never opens a socket). No production touched.
+- **State:** done — RED contract revised to R-1/R-2/R-3 (29 pins across 3 files, all RED/anchor
+  for the right reason), fake capability reworked, satisfiability + 10 mutation proofs re-run.
+- **Deviations:** (1) a KNOWN-CORRECT reference of the R-1/R-2/R-3 seams was built in a DISPOSABLE
+  scratch copy (`/tmp/await-ref2-05aii`, provenance-verified) to earn the receipts — real
+  production UNTOUCHED (`git status`: only test files + reports changed). (2) scratch `rm` is
+  sandbox-blocked; `/tmp/await-ref{,2}-05aii` + `/tmp/ref*` remain — disposable, operator may delete.
+- **Capability check:** all tools present; only spike-surreal `:18000` reasoned about (no store
+  connected — the reference awaiter never opens a socket). No production code touched in the real tree.
 - **Packages considered:** none — no mechanism specified (a test contract). await REUSES shipped
-  seams; hand-rolls nothing.
+  seams (`drain`, `awaiting_answer`, the `_render_comms_drain` fence/row, the `CommandSubscriber`
+  connect-injection idiom, the shared `_CONNECTION_ERRORS`); hand-rolls nothing.
 - **Graded:** contract authorship — no builder artifact graded. `git rev-parse HEAD` = `d64cd23`.
-- **Decisions-needed (escalations — see §Escalations):**
-  1. **RATIFY the wait-machine seam shape** — I resolved a design gap the design-of-record left
-     thin (`MessageLedger.await_inbox` with injectable `connect`/`sleep`/`now`, reusing
-     `self.drain(peek=True)`); proven satisfiable, but the operator/lead should ratify (or the
-     builder proposes an equivalent, and the ~13 wait-machine pins adapt).
-  2. **await's non-empty render peek-teach nuance** — `_render_comms_drain(peeked=True)` teaches
-     "re-run without peek=true", which await has no param for. Consume-teach fix? (Consumer-Law.)
+- **Decisions-needed:** none — R-1/R-2/R-3 are ruled; §5 marks them RESOLVED. Ready for the
+  `contract-adversary` pass.
 - **Receipt pointers:** RED counts §1 · per-pin discriminators + mutation receipts §2 ·
-  satisfiability §3 · builder requirements §4 · escalations §5 · unrelated mypy debt §6.
+  satisfiability §3 · builder requirements §4 · rulings-resolved §5 · unrelated mypy debt §6.
 
 ---
 
-## 1. What was written, and the RED receipts
+## 1. What was written, and the RED receipts (real tree, HEAD `d64cd23`, await UNBUILT)
 
-**Writable set honoured.** New: `loremaster/tests/test_comms_await.py` (23 behavioural pins).
-Extended: `loremaster/tests/test_comms_tool.py` (exact-set + `test_await_params`),
-`loremaster/tests/_message_fakes.py` (the `FakeMessageLedger.await_inbox` oracle). No
-production code touched in the real tree.
+**Writable set (R-2 SCOPE ADD: `test_scout.py`, lead-granted).** New:
+`loremaster/tests/test_comms_await.py` (25 pins). Extended: `test_comms_tool.py` (exact-set +
+`test_await_params`), `test_scout.py` (the R-2 cross-suite scout leg + `_FakeCommandConnection`
+`drop_error` param), `_message_fakes.py` (REVERTED my earlier `await_inbox` oracle — R-1 hosts the
+wait-machine in a standalone `InboxAwaiter`, not a ledger method). No production code touched.
 
-**RED counts (real tree, HEAD `d64cd23`, await UNBUILT):**
-- `test_comms_await.py` — **23 failed** (all RED). Causes, aggregated:
-  - 9 × `ValueError: unknown comms action 'await'` (dispatch/render pins — await unregistered)
-  - 8 × `AttributeError: 'MessageLedger' object has no attribute 'await_inbox'` (wait-machine pins)
-  - 4 × `AttributeError: … 'await_live_select_statement'` (injection pins #5)
-  - 1 × `AttributeError: module 'loremaster.messages' has no attribute 'AWAIT_BUDGET_S'` (F2)
-  - 1 × the foreign-param pin (unknown-action guard fires before the strict-param check — flips
-    GREEN when await is registered AND rejects `limit`)
-- `test_comms_tool.py::TestCommsActionsTable` — **3 failed** (`test_exact_action_set` set-mismatch;
+**RED counts:**
+- `test_comms_await.py` — **25 failed** (all RED). Causes: **15 × `AttributeError`** (14 for the
+  pending `InboxAwaiter`, 1 for the pending `_SDK_AWAIT_BOUNDARY_ERRORS` — both reached through an
+  `Any` handle so they are mypy-clean while unbuilt), **9 × `ValueError: unknown comms action
+  'await'`** (dispatch/render pins), **1 × `AssertionError`** (foreign-param: await unregistered so
+  the unknown-action guard fires first; flips GREEN when await is registered AND rejects `limit`).
+- `test_comms_tool.py::TestCommsActionsTable` — **3 failed** (exact-set mismatch;
   `test_every_other_action_requires_prior_registration` + `test_await_params` `KeyError: 'await'`).
-  `TestCommsToolRegistration` and the other table pins stay GREEN — no collateral breakage.
-- `test_comms_waiting_line.py` — **14 passed** (the `_message_fakes` extension is non-breaking).
+  No collateral breakage.
+- `test_scout.py::TestCommandSubscriberSharesTheSdkAwaitBoundary` — **GREEN on current production**
+  (CommandSubscriber already recovers a KeyError drop, currently via an inline tuple). It is a
+  MUTATION ANCHOR, non-vacuous (drives a real KeyError in-flight drop through the reconnect ladder),
+  RED only under the shared-constant mutation (§2). `TestCommandSubscriberTransport` stays green.
 
-A green-at-write pin would test nothing; there are none — every pin reddens on the unbuilt seam.
-Collection is clean (23 collected, no uncollectable — the message module + unbuilt seams are
-reached at CALL time per the #133 discipline, never a module-scope import of a missing symbol).
-
-**Gates on changed files:** `ruff check` clean; `mypy loremaster` reports **0 errors in my three
-files** (102 pre-existing errors elsewhere — see §6).
+Collection clean (25 collected, no uncollectable — every unbuilt symbol is reached at CALL time,
+never a module-scope import). **Gates on changed files:** `ruff` clean; `mypy loremaster` reports
+**0 errors in my four files** (102 pre-existing elsewhere — §6).
 
 ## 2. The pins, their discriminators, and the mutation-proof receipts
 
-Every load-bearing pin was mutation-proven: a plausible WRONG build was built in the scratch
-reference, the pin watched RED, then restored. Table = mutation applied → pin → observed.
+Every load-bearing pin was mutation-proven against the revised reference (build wrong → watch RED →
+restore). All mutations discriminate; the reference stays **38/38 GREEN** when restored (§3).
 
-| # | Pin (property) | Wrong build the pin STOPS | Mutation receipt |
+| # | Pin (property) | Wrong build it STOPS | Mutation receipt |
 |---|---|---|---|
-| 1 | **Snapshot-first short-circuit** — pending-at-entry returns immediately: no wait, no LIVE, no poll | "only-new / always-waits" | M1: removed the `if snapshot.entries: return` short-circuit → `TestSnapshotFirstShortCircuit` **RED** |
-| 2 | **Final-snapshot-at-timeout (LOAD-BEARING)** — a deadline arrival is returned (fresh final snapshot), + the last read ran at/after the deadline | "renders empty off the stale last-wake read" | M2: replaced `return await _snap()` with `return <empty>` → `TestFinalSnapshotAtTimeout` **RED** |
-| 3 | **Poll-only completeness** — LIVE silent, poll returns the traffic BEFORE the deadline | "LIVE-dependent" (waits out the budget) | M8: removed the in-loop re-drain (only sleep) → `TestPollOnlyCompleteness` **RED** |
-| 4 | **Socket-drop non-loss (forgery)** — a DEAD LIVE (`KeyError` on establish) with traffic present → returned, no false-empty, no crash; **positive control**: genuine-empty → empty | "false-empty / crash on the KeyError boundary" | M3: `except → return <empty>` → non-loss pin **RED**, positive control **PASS** |
-| 5 | **Injection — emitted LIVE statement** inlines ONLY the agent-id record literal: no `thread`, no caller substring, no bound `$param`, keyed on `out =` | inlines `thread` (DD-3.e door) / binds a param (SDK ignores → delivers nothing) | M4: appended `AND thread = 'q'` → `test_…inlines_no_thread…` **RED** |
-| 6 | **Honest-empty-as-fact** — empty render names the SET (caller) + a TEMPORAL bound, never a disclaimer, never drain's bare "no unread messages" | bare disclaimer / reuse drain's empty render | M7: replaced the honest-empty with `render_line("no unread messages")` → both `…NamesTheBoundAsAFact` pins **RED** |
-| 7 | **Waiting-line on debt via ONE shared helper** — discriminating pair (WITH/WITHOUT a question) + PROVEN BY MUTATION (monkeypatched `_render_comms_waiting_line` sentinel routes through await) | a private CLONE of the waiting line (routing ≠ sharing) | M5: cloned the await handler's waiting line → mutation pin **RED**; the output-identity pin stayed **PASS** (proving output-identity alone is blind to the clone) |
-| F1 | **await PEEKS, never stamps** — every drain read is `peek=True`; return shape `stamped_seqs=[]`, `peeked=True`; two awaits both return | a stamping build (DD-4.c/#214 loss path) | M6: `peek=True → peek=False` → `test_await_reads…peek_true` **RED** |
-| F2 | **budget is a fixed constant strictly under the ~60s ceiling** — the PROPERTY, not the number | a `timeout=` param / a value ≥ ceiling | RED via `AWAIT_BUDGET_S` unbuilt; the reference `55.0` satisfies `0 < x < 60` |
-| 9 | **Exact-set + param honesty** — `"await"` in `_EXPECTED_ACTIONS`; `params={"thread"}`, `required=∅` | a drifted/foreign param surface | RED: set-mismatch + `KeyError` until registered |
-
-**FIXTURE-MUST-DISCRIMINATE fix, caught by the mutation loop itself:** pin #4 first used
-`_FakeLiveConnection(die_on_subscribe=True)` — a fault firing ONLY on `subscribe_live`. A correct
-build that ESTABLISHES the LIVE without consuming it never hits that path, so M3's false-empty
-mutation passed the pin **vacuously**. Switched to `dead=True` (the establish op itself raises the
-PROBED `KeyError` shape), a fault EVERY build that touches the LIVE encounters — M3 then reddens
-correctly. This is the "what wrong build would still pass this?" question answered by BUILDING it.
+| 1 | **Snapshot-first short-circuit** (InboxAwaiter): pending-at-entry returns immediately — no wait, no LIVE, no poll | "only-new / always-waits" | removed the awaiter short-circuit → `TestSnapshotFirstShortCircuit` **RED** |
+| 2 | **Final-snapshot-at-timeout (LOAD-BEARING)**: a deadline arrival is returned (fresh final snapshot), last read at/after the deadline | "renders empty off the stale last-wake read" | awaiter `return <empty>` instead of a final `_snapshot()` → `TestFinalSnapshotAtTimeout` **RED** |
+| 3 | **Poll-only completeness**: LIVE silent → poll returns BEFORE the deadline | "LIVE-dependent" | removed the in-loop re-drain → `TestPollOnlyCompleteness` **RED** (validated rev-1; unchanged property) |
+| 4 | **Socket-drop non-loss (forgery)**: DEAD LIVE (`KeyError` establish) + traffic → returned, no false-empty; **positive control** genuine-empty → empty | "false-empty / crash on the KeyError boundary" | see R-2 row (the shared-constant mutation is the sharper proof) + `except→return <empty>` → **RED**, control **PASS** |
+| **R-2** | **ONE-IMPLEMENTATION cross-suite (MANDATORY)**: await + CommandSubscriber ride the ONE `_SDK_AWAIT_BOUNDARY_ERRORS` | two private `(*_CONNECTION_ERRORS, KeyError)` clones (routing ≠ sharing) | **dropped `KeyError` from the ONE constant → BOTH `test_comms_await`'s #4 AND `test_scout`'s KeyError-drop pin reddened** (the scout pin errored with the escaped `KeyError('req-uuid-abc')` — the subscriber died) + the constant-shape pin **RED** |
+| **R-3** | **Non-empty teaches `action=drain`, not the peek re-run** | reuse of `_render_comms_drain(peeked=True)`'s footer verbatim | await render → `_render_comms_drain(peeked=True)` → `TestTheNonEmptyAwaitTeachesDrain…` **RED** (`peek=true` present / `action=drain` absent), while the **fence pin stayed GREEN** (shared fence preserved) |
+| 5 | **Injection — emitted LIVE statement** (InboxAwaiter): inlines ONLY the agent-id record literal; no `thread`, no caller substring, no bound `$param`, keyed on `out =` | inlines `thread` (DD-3.e) / binds a param | appended `AND thread='q'` → `test_…inlines_no_thread…` **RED** (validated rev-1; moved to the awaiter) |
+| 6 | **Honest-empty-as-fact**: names the caller + a temporal bound, never a disclaimer/drain's bare line | bare disclaimer / drain empty render | empty render → `render_line("no unread messages")` → both `…NamesTheBoundAsAFact` pins **RED** |
+| 7 | **Waiting-line via ONE shared helper** (handler): discriminating pair + PROVEN BY MUTATION | a private clone (routing ≠ sharing) | sentinel-patched `_render_comms_waiting_line` routes through await (validated rev-1) |
+| 8 | **Fenced bodies + hostile** (SHARED fence): body round-trips, fence wider than its backtick run | a hand-rolled fence-less render | proven GREEN under the R-3 mutation (fence survives a footer swap) |
+| F1 | **await PEEKS, never stamps** (InboxAwaiter): every read `peek=True`, shape `stamped_seqs=[]/peeked=True`, idempotent | a stamping build (DD-4.c/#214 loss) | `peek=True → peek=False` → `test_the_awaiter_reads…peek_true` **RED** |
+| F2 | **budget is a fixed constant < ~60s** — the InboxAwaiter `budget_s` DEFAULT, the PROPERTY not the number | a `timeout=` param / value ≥ ceiling | RED via `InboxAwaiter` unbuilt; the reference default `55.0` satisfies `0 < x < 60` |
+| F3 | **thread narrows CLIENT-SIDE** (awaiter) + **never in the LIVE WHERE** (pin #5) | thread in the LIVE / thread suppresses the inbox | awaiter narrows to the requested thread; #5 forbids thread in the statement |
+| 9 | **Exact-set + param honesty** | a drifted/foreign param surface | RED: set-mismatch + `KeyError` until registered |
 
 ## 3. Satisfiability receipt (the C-DEF gate)
 
-A KNOWN-CORRECT reference of the await seams (`MessageLedger.await_inbox` +
-`await_live_select_statement` + `AWAIT_BUDGET_S`; `AppContext._comms_await` + the
-`_COMMS_ACTIONS["await"]` registration + the honest-empty render) was built in a
-provenance-verified scratch copy (`scratch_copy.sh`, imports asserted INSIDE the copy). Against
-it the whole contract goes **35 passed / 0 failed** (`test_comms_await.py` 23 +
-`TestCommsActionsTable` 12). So the contract is SATISFIABLE — it is not a C-DEF trap, and the
-seam shape I resolved (§5.1) is buildable as specified. The reference is a throwaway grading
-instrument; its exact source is reproducible from §4's seam contract (it lived only in the
-disposable scratch).
+A KNOWN-CORRECT reference of the R-1/R-2/R-3 seams — the standalone
+`loremaster/inbox_awaiter.py::InboxAwaiter` (+ `AWAIT_BUDGET_S`); `store._txn._SDK_AWAIT_BOUNDARY_ERRORS
+= (*_CONNECTION_ERRORS, KeyError)` referenced by BOTH the awaiter's catch AND `scout.py`'s reconnect
+ladder (4 inline clones DRY'd); `AppContext._comms_await` + the `_COMMS_ACTIONS["await"]` registration
++ the honest-empty render + the R-3 `_render_comms_await_nonempty` (SHARED fence + row, `action=drain`
+teach) — was built in a provenance-verified scratch copy (`scratch_copy.sh`). Against it the whole
+contract goes **38 passed / 0 failed** (`test_comms_await` 25 + `TestCommsActionsTable` 12 + the
+scout cross-suite pin 1). The contract is SATISFIABLE — not a C-DEF trap — and the R-1/R-2/R-3 seam
+shapes are buildable as specified. The reference is a throwaway grading instrument reproducible from
+§4.
 
-## 4. NAMED builder requirements (the seams the pins reference)
+## 4. NAMED builder requirements
 
 1. **Registration** — `_COMMS_ACTION_AWAIT = "await"` + `_COMMS_ACTIONS["await"] =
    CommsActionSpec(AppContext._comms_await, params=frozenset({"thread"}), required=frozenset())`.
-   AND a render case for `await` in `test_render_seam_pins`'s `C1_RENDER_CASES` so
-   `assert_actions_covered` stays satisfied (that pin is OUT of my writable set — named here).
-2. **Handler** — `AppContext._comms_await(self, *, agent_row, thread=None, **_ignored) -> Rendered`:
-   calls `self.message_ledger.await_inbox(...)`; NON-empty → the SHARED `_render_comms_drain`
-   (fenced bodies); EMPTY → an honest-empty naming the bound as a FACT (caller + waited-time)
-   composed with the SHARED `_comms_waiting_lines` (ONE IMPLEMENTATION — the mutation pin #7
-   enforces routing, not cloning).
-3. **Wait machine** — `MessageLedger.await_inbox(self, *, agent_id, limit, thread=None,
-   budget_s=AWAIT_BUDGET_S, poll_interval_s=…, connect=None, sleep=asyncio.sleep,
-   now=time.monotonic) -> MessageDrainResult`. Snapshot-first (`self.drain(peek=True)`)
-   short-circuit; else LIVE-primary (via `connect`) + poll-fallback (re-`drain`) within `budget_s`
-   (measured via `now`); a FINAL snapshot at the deadline; catch `(*_CONNECTION_ERRORS, KeyError)`
-   so a LIVE fault falls to poll (never a false-empty). Returns a PEEK (`stamped_seqs=[]`,
-   `peeked=True`). The pins inject `connect`/`sleep`/`now` and monkeypatch `self.drain` (the snapshot
-   seam), exactly as `test_scout.py` injects connect/sleep into `CommandSubscriber`.
-4. **LIVE statement** — `MessageLedger.await_live_select_statement(agent_id: str) -> str`: the
-   filtered `LIVE SELECT * FROM to WHERE out = <agent-id record literal>`; agent-id inlined, no
-   `thread`, no bound param. **Builder BUILD-PROBE (live store, NOT an in-process pin — design
-   §A.5):** confirm the record-id literal for a real uuid5 `.hex` id (which can start with a digit)
-   PARSES on spike-surreal `:18000` and still discriminates — the reference used angle-bracket
-   quoting (`agent:⟨…⟩`); confirm it against the live engine. Injection-safety is unaffected (the
-   id is a charset-safe uuid5 hash).
-5. **Constant** — `AWAIT_BUDGET_S` (the reference used `55.0`); pin F2 guards `0 < x < ~60`.
+   AND a render case for `await` in `test_render_seam_pins`'s `C1_RENDER_CASES` (OUT of my writable
+   set — named).
+2. **Wait machine (R-1)** — a STANDALONE `InboxAwaiter` (its own module is the builder's call; the
+   reference used `loremaster/inbox_awaiter.py`), imported into `loremaster.server`'s namespace by
+   the handler (so the tests reach it as `server.InboxAwaiter`). Constructed
+   `InboxAwaiter(*, connect, drain, sleep=asyncio.sleep, now=time.monotonic, budget_s=AWAIT_BUDGET_S,
+   poll_interval_s=…)`; `async def await_inbox(*, agent_id, limit, thread=None) -> MessageDrainResult`
+   (snapshot-first `drain(peek=True)` → LIVE-primary via `connect` + poll-fallback within `budget_s`
+   via `now` → final snapshot; PEEK shape); `live_select_statement(agent_id) -> str`. `AWAIT_BUDGET_S`
+   ≤55s (the `budget_s` default; F2 pins `0 < x < 60`).
+3. **Handler (R-1)** — `AppContext._comms_await(self, *, agent_row, thread=None, **_ignored) ->
+   Rendered`: CONSTRUCTS `InboxAwaiter` from the store LIVE-connect + `self.message_ledger.drain`,
+   CALLS it, and owns the RENDER. NON-empty → the R-3 drain-teach render (SHARED fence + row,
+   `action=drain`, NO "peek=true"); EMPTY → honest-empty naming the bound as a FACT + the SHARED
+   `_comms_waiting_lines`. The handler must reference `InboxAwaiter` as the `server` module global
+   (so it is monkeypatchable) — the testability seam the render pins ride.
+4. **Shared error classification (R-2)** — `store._txn._SDK_AWAIT_BOUNDARY_ERRORS =
+   (*_CONNECTION_ERRORS, KeyError)`, referenced by the awaiter's catch AND ≥1 `CommandSubscriber`
+   catch site (the reference wired the reconnect-ladder + `_safe_kill`/`_safe_close` Txn-union sites;
+   the run ladder is what the scout cross-suite pin exercises). await's reconnect set MAY union
+   `TxnContentionExhaustedError` (recommended); teardown set = the base constant. The cross-suite
+   mutation pin is the invariant: a private clone reddens only one suite.
+5. **R-3 typed applicability (#104)** — the non-empty render's consume-instruction is a typed input
+   (drain-teach for await, the peek footer for drain's own peek), NOT a `peeked: bool` hardcoding
+   drain's wording. REUSE the fence + row render (the injection-critical part); vary only the taught
+   follow-up.
 6. **The LIVE-wake + socket-drop against a REAL socket** is the DEPLOY-gated build probe / smoke
-   (design §C, §A.6 Leg A/B), run on `:18000` by the Opus-4.8 live-leg builder — the in-process
-   pins prove the STATE MACHINE (the recipe); only the real send-across-a-socket proves the wake
-   (the cake). The probe report already settled LIVE-fires + the socket-drop shape
+   (design §C, §A.6 Leg A/B), run on `:18000` by the Opus-4.8 live-leg builder — the in-process pins
+   prove the STATE MACHINE. The probe already settled LIVE-fires + the socket-drop shape
    (`docs/plans/v2/receipts/2026-08-09-packet05ai/REPORT-probe-await-05a-1.md`).
 
-## 5. Escalations (surfaced, not silently resolved)
+## 5. The three forks — RESOLVED by the ratified rulings
 
-### 5.1 — RATIFY the wait-machine seam shape (design gap I resolved; recommend ratifying)
-The design-of-record says "await mirrors `CommandSubscriber`" and "await REUSES the drain SELECT",
-but does NOT specify the Python seam that makes the state machine testable in-process. That is a
-genuine fork (brief-base §2). I resolved it as §4.3 — a `MessageLedger.await_inbox` method with
-injectable `connect`/`sleep`/`now`, reusing `self.drain(peek=True)` for snapshot/poll/final reads
-and `connect` for the LIVE wake. Rationale: it is the faithful `CommandSubscriber` mirror the
-design + brief point at (`test_scout.py` is the template), it honours ONE IMPLEMENTATION (the drain
-read is reused, not re-hand-rolled), and it is proven satisfiable (§3). **Alternative not taken:** a
-standalone `InboxAwaiter` class constructed with the seams (also valid, more surface). **Recommend:
-ratify §4.3.** If the builder prefers an equivalent shape, the ~13 wait-machine pins adapt to its
-entry point — the OBSERVABLE properties (§2) are unchanged; only the seam the pins CALL moves.
-
-### 5.2 — await's non-empty render peek-teach (Consumer-Law nuance)
-`_render_comms_drain(peeked=True)` renders "peeked N of M pending — nothing stamped; re-run
-WITHOUT peek=true to mark them seen". await has NO `peek` param — its caller consumes via a
-subsequent **`drain`**, not `await(peek=false)`. So reusing `_render_comms_drain` verbatim teaches a
-consume instruction await cannot honour. Under the hard trust definition a consumer acting on that
-line is misdirected. **Fork for the builder/operator:** does await's non-empty render need a
-variant teach ("…consume via `action=drain`")? I did NOT pin the exact peek-teach wording (pin #8
-asserts only the FENCE + verbatim round-trip, which holds either way), so this is open latitude, not
-a contract contradiction — flagged so it is a DELIBERATE choice, not an accident.
-
-### 5.3 — the `assert_actions_covered` render case (named, out of my writable set)
-Once the builder registers `await`, `assert_actions_covered` (test_render_seam_pins) REQUIRES a
-render case for it. That file is outside my writable set — named as a builder requirement (§4.1).
+- **§5.1 (rev-1) — the wait-machine seam shape → RESOLVED by R-1** (lead-ratified): a STANDALONE
+  `InboxAwaiter` constructed with an injected `connect` factory + the ledger's `drain` seam, NOT a
+  `MessageLedger.await_inbox` method; the handler CONSTRUCTS + CALLS it and owns the render. The
+  contract's ~14 wait-machine pins were retargeted to construct `InboxAwaiter` directly (the
+  `CommandSubscriber`/`test_scout.py` idiom); observable properties unchanged.
+- **§5.2 (rev-1) — await's non-empty peek-teach → RESOLVED by R-3** (lead-ratified): the non-empty
+  render teaches `action=drain`, never drain's "re-run without peek=true" footer, via typed
+  applicability (#104). Added `TestTheNonEmptyAwaitTeachesDrainNotThePeekRerun` with the
+  discriminating fixture (a verbatim-drain-footer build fails).
+- **NEW from R-2** (lead-ratified, SCOPE ADD to `scout.py`/`test_scout.py`): await + CommandSubscriber
+  share ONE error-classification symbol, proven BY MUTATION across BOTH suites. Added the shared-
+  constant pin + the scout cross-suite mutation anchor + the `drop_error` fake capability.
 
 ## 6. Unrelated pre-existing mypy debt (flagged, not buried)
 
-`uv run mypy loremaster` (the gate's loremaster leg) reports **102 errors in 8 files** on this
-branch (`feat/surreal-unification`) — ALL in an AUTH-test cluster I never touched
-(`test_auth_composition.py` 40, `test_permission_resolver_seam.py` 20,
-`test_hosted_readonly_posture.py` 13, `test_allowlist_roster.py` 10, `test_google_token_verifier.py`
-7, `test_auth.py` 7, `_auth_fixtures.py` 3, `test_auth_identity_seam.py` 2). **Zero are in my three
-files.** This is pre-existing branch debt, out of my scope — surfaced per the "flag unrelated
-failures, don't bury them" rule; the operator decides whether it wants it examined.
+`uv run mypy loremaster` reports **102 errors** on this branch (`feat/surreal-unification`), ALL in a
+pre-existing AUTH-test cluster (`test_auth_composition.py`, `test_permission_resolver_seam.py`,
+`test_hosted_readonly_posture.py`, `test_allowlist_roster.py`, `test_google_token_verifier.py`,
+`test_auth.py`, `_auth_fixtures.py`, `test_auth_identity_seam.py`) — **zero in my four files**. Out
+of my scope; surfaced per "flag unrelated failures, don't bury them". The operator decides.
 
 ---
 
 _Contract author proposes; the adversary grades the contract; the operator rules; the lead
-adjudicates. The order is contract → adversary → build → cold audit — this contract is ready for
+adjudicates. Order: contract → adversary → build → cold audit. This revised contract is ready for
 the `contract-adversary` pass._

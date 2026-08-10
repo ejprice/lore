@@ -776,6 +776,7 @@ class _FakeCommandConnection:
         live_uuid: str = "live-uuid-1",
         die_on_subscribe: bool = False,
         dead: bool = False,
+        drop_error: BaseException | None = None,
     ) -> None:
         self.pending = pending if pending is not None else {}
         self.queries: list[tuple[str, dict[str, Any]]] = []
@@ -785,12 +786,19 @@ class _FakeCommandConnection:
         self._live_uuid = live_uuid
         self._die_on_subscribe = die_on_subscribe
         self._dead = dead
+        # The exception a ``dead`` socket raises on any op. Default = the OSError-family
+        # ``ConnectionResetError``; a test may pass ``KeyError(<request-uuid>)`` — the PROBED
+        # in-flight-drop shape (store §3) — to exercise the KeyError leg of the SHARED
+        # ``_SDK_AWAIT_BOUNDARY_ERRORS`` boundary (R-2 cross-suite mutation proof).
+        self._drop_error = drop_error
 
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         params = params or {}
         self.queries.append((statement, dict(params)))
         if self._dead:
-            raise ConnectionResetError("fake socket is dead")
+            raise self._drop_error if self._drop_error is not None else ConnectionResetError(
+                "fake socket is dead"
+            )
         upper = statement.strip().upper()
         if upper.startswith("LIVE SELECT"):
             return self._live_uuid
@@ -1013,6 +1021,62 @@ class TestCommandSubscriberTransport:
             f"every backoff/poll delay must be bounded by max_backoff "
             f"({_MAX_BACKOFF_S}s); got {sleep.delays!r} — an unbounded backoff "
             f"would delay recovery indefinitely"
+        )
+
+
+class TestCommandSubscriberSharesTheSdkAwaitBoundary:
+    """Packet 05a-ii R-2 — the SCOUT leg of the cross-suite ONE-IMPLEMENTATION proof.
+
+    ``CommandSubscriber``'s reconnect ladder catches the SAME KeyError SDK-await
+    boundary the ``await`` verb catches — and R-2 (lead-ratified) requires BOTH to
+    reference the ONE shared symbol ``store._txn._SDK_AWAIT_BOUNDARY_ERRORS =
+    (*_CONNECTION_ERRORS, KeyError)`` rather than each hand-rolling
+    ``(*_CONNECTION_ERRORS, KeyError)`` inline (routing is not sharing).
+
+    This pin is the scout half of the PROVE-SHARING-BY-MUTATION obligation: mutate
+    that ONE constant (drop ``KeyError``) and THIS pin AND ``test_comms_await.py``'s
+    socket-drop pin BOTH redden — the only test that distinguishes a shared constant
+    from two private copies wearing the same value.
+
+    ⚠ GREEN today AND after the builder wires the catch to the shared constant
+    (``CommandSubscriber`` already recovers a ``KeyError`` in-flight drop); it reddens
+    ONLY under the constant mutation. It is a mutation ANCHOR, not a new-behaviour pin —
+    non-vacuous (it drives a real KeyError drop through the reconnect ladder).
+    """
+
+    async def test_reconnect_recovers_from_a_keyerror_inflight_drop(self) -> None:
+        # A mid-run KeyError drop (the PROBED in-flight shape, store §3 / PROBE 2), NOT a
+        # ConnectionReset: connection #1 raises KeyError on every op; #2 recovers the gap
+        # command. The subscriber must catch the KeyError (via _SDK_AWAIT_BOUNDARY_ERRORS)
+        # and reconnect, recovering the command EXACTLY once.
+        gap_command = {
+            "id": "command:gapk", "kind": _RECONCILE_KIND, "payload": {}, "status": "pending",
+        }
+        dead = _FakeCommandConnection(dead=True, drop_error=KeyError("req-uuid-abc"))
+        recovered = _FakeCommandConnection(
+            pending={"command:gapk": gap_command}, die_on_subscribe=True
+        )
+        connector = _Connector([dead, recovered])
+        dispatched: list[str] = []
+
+        async def handler(command_row: dict[str, Any]) -> None:
+            dispatched.append(str(command_row["id"]))
+
+        subscriber = _make_subscriber(
+            connect=connector, handler=handler, sleep=_RecordingImmediateSleep()
+        )
+        await _run_briefly(
+            subscriber,
+            until=lambda: dispatched.count("command:gapk") == 1 and connector.calls >= 2,
+        )
+        assert connector.calls >= 2, (
+            "the subscriber did not RECONNECT after a KeyError in-flight drop — its reconnect "
+            "ladder failed to catch the KeyError boundary (the shared _SDK_AWAIT_BOUNDARY_ERRORS "
+            "dropped KeyError, or this catch site does not reference the shared constant)"
+        )
+        assert dispatched.count("command:gapk") == 1, (
+            "the gap command was not recovered exactly once after a KeyError drop — the KeyError "
+            "escaped the reconnect ladder and killed the subscriber"
         )
 
 
