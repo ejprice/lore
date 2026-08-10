@@ -1696,3 +1696,27 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   derives free-text slots from the render AST + coverage assert). Memories `2380d29b` (retro) +
   `bcef60f4` (the "argument or probe?" reflex: a containment claim is inadmissible by ruling).
   05a-ii/05b remain — NEXT = 05a-ii (await, Opus-4.8 LIVE leg).
+- **DEFECT-CLASS PREVENTION WAVE (05a-i retro #344/#345 + 6 siblings): BUILT + COLD-AUDIT GO 2026-08-10 —
+  commit-only `f49d668`, NOT deployed (operator: (re)build deferred to the next packet that needs it).**
+  A dedicated sub-cleanup wave making ONE class un-writable by construction: *"a guard/gate/probe certifies
+  only the sites it EXECUTES over, and its reach is a hidden CONSTANT, not a checked variable."* 8 instruments
+  via the design's §9 ∀-mutation-proof pattern (reuse shipped idioms; prove sharing by MUTATION): **G/#344**
+  `scripts/wave_gate.py` non-omittable bundle, operator-**SIMPLE** design (no `--wave=full`; `--wave <args>` =
+  core-full + scoped pytest + `SCOPED RUN` honesty flag; no-args/zero-collect = error) — closes the #306/#312
+  subset-green recurrence; **B/#345+#348** `render_attributed` containment + AST-derived driven-slot coverage +
+  the live `Agent`/`Message.task_id` forgery door; **C/#291** `partition_tools_by_posture` (deny-by-default,
+  `readOnlyHint is not True`) retiring the drifted `_MUTATING_TOOLS` hand-list; **D/#295** observe-the-EFFECT
+  (`assert_tool_refused_and_did_not_run`, wire + invocation-counter) under R16; **E/#289** trailing-newline
+  matrix; **F/#279** `loremaster.store._txn_coroutines` one-derivation; **H/#290** `refuse_vacuous_baseline`;
+  **A-SUB/F4** `parse_production_trees` consolidation (~14 hand-rolled parsers → 1) behind **L1**, a runtime
+  `builtins.compile` chokepoint (un-defeatable-by-spelling). **INSTRUMENT 0** = a GLOBAL contract-adversary
+  REACH ATTACK (probe P1c, `~/.claude/agents/contract-adversary.md`). Pipeline: contract → adversary → build →
+  cold audit **GO** (8 contracts green, 5/5 mutation spot-checks discriminate, diff-honesty clean). One trivial
+  regression (a local `annotations` shadowing the `__future__` import, tripping the #125/#131 exec-seam scanner —
+  which correctly caught it) fixed by a Sonnet agent + full-suite re-verified. Gates: **9582 passed / 444 failed
+  (ALL the #333 auth-WIP baseline, RED_ADJUDICATED→pkt39; ZERO new)**, ruff clean, currency **PASS** (0
+  RED_ORPHANED). Findings: **11 resolved** (#344/#345/#291/#279/#289/#290/#295/#348/#346/#347/#350); **#351
+  acknowledged** as a PINNED BOUND (with #349; #337 stays ledger-only). Reports → `receipts/2026-08-09-defect-class/`
+  (49). Design of record: `design/2026-08-09-defect-class-prevention.md` §1–§13. ⚠ COST RETRO (operator): a
+  trivial-importance cleanup that over-spent on the G/A-SUB design spiral — lesson logged: right-size rigor to
+  importance, escalate the cost/importance mismatch EARLY. NEXT = 05a-ii.
