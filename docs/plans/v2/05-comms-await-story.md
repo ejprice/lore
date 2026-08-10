@@ -70,6 +70,22 @@ none operator-level — design/mechanics settled by house precedent + standing l
   name `action=drain`; discriminating fixture = a verbatim-drain-footer build FAILS (a).
 Design reasoning of record: `REPORT-fable-design-05a-ii.md` §"Follow-up rulings 05a-ii".
 
+### R-4 — no LIVE reconnect (lead-ratified 2026-08-10 from the sidecar's Follow-up rulings #2; the
+build's §6.2 deviation is CORRECT and superior)
+- **§A.6's LIVE-reconnect mechanism is MOOTED by R-1's two-connection split.** `InboxAwaiter` runs the
+  authoritative reads (`drain`) on the ledger's OWN connection and the LIVE subscription on a SEPARATE
+  ephemeral connection (`_open_command_connection`); a dead LIVE never poisons the final snapshot, which
+  always runs on the unaffected ledger connection. §A.6 non-loss INTENT stands, mechanism superseded.
+- **Trust-correct on the uncovered case (a LEDGER-connection drop):** `self._drain` sits outside any
+  `except` (the try has only a `finally`), so a drain fault RAISES — never a false-empty — and F1=peek
+  makes the raise loss-free (nothing stamped ⇒ nothing lost; the caller retries). This is a load-bearing
+  trust property to LOCK with a `raise-not-empty` invariant pin (PIN-THE-MISS — recommended).
+- **DEFERRED (named re-open trigger):** the optional early-wake LIVE reconnect is a latency add-on ONLY
+  (after a mid-wait LIVE drop, wakes come from poll ticks until timeout — bounded, never a false-empty).
+  Re-open trigger: a measured await-latency SLA on the drop path, or an operator request for instant
+  early-wake. Lead-adjudicable, not operator-level.
+Design reasoning: `REPORT-fable-design-05a-ii.md` §"Follow-up rulings 05a-ii #2".
+
 ## Mission
 The wait-and-reconstruct half of the surface: bounded await, task-anchored story,
 rollup extension, CLI, and the idle-gate hook rework.

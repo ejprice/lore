@@ -163,3 +163,44 @@ Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically
   Builder-req: "import from `_txn`, do NOT re-define" + a re-open trigger. NOT a blocker.
 - Contract-adversary SATISFIED → releasing the Opus-4.8 builder (lead-base v4: no builder before the
   adversary is satisfied — now met).
+- Builder `builder-05aii-1` (opus48-worker) spawned: implement `InboxAwaiter` (reuse `_open_command_connection`
+  /`retry_on_conflict`/backoff/`drain(peek=True)`/`awaiting_answer`/render fence) + shared `_SDK_AWAIT_BOUNDARY_ERRORS`
+  (+`_WITH_CONTENTION`) in `store._txn` DRY-consolidating scout's 8 clones (import, don't re-define — the
+  pinned bound) + `_comms_await` handler/registration + `action=drain` typed-applicability render + the
+  uuid5 record-id live build-probe (:18000). MANDATORY reuse-audit table in its report. Commits its green
+  build; reports SHA + passed-counts. AWAITING → then Opus-4.8 COLD AUDIT (fresh context, re-runs gates +
+  the removed-behavior adjudication on the 8-site scout reshape) → deploy (go/no-go to operator) → live smoke.
+- Builder DELIVERED commit `f5aec32`: await GREEN (test_comms_await 28/28, blast-radius 1989 passed,
+  ruff clean, zero-new mypy, currency PASS 0 RED_ORPHANED); live uuid5 build-probe PASS on :18000 (3.2.4,
+  backtick record-id parses hex+hyphenated, LIVE fires+discriminates). Files: `inbox_awaiter.py` (new 313),
+  `scout.py` (8 clones→shared constant), `server.py` (handler/render), `store/_txn.py` (constants). Reuse-audit
+  table complete (nothing cloned). TWO flags: (§6.1) **#353** contract missed `test_retry_seam.py` blast radius
+  — a DRY WIN (the existing retry-seam guard forced routing InboxAwaiter's SDK calls through `retry_on_conflict`);
+  (§6.2) **no LIVE reconnect** — deliberate per R-1 (drain on ledger conn, LIVE on separate ephemeral conn →
+  dead LIVE never blocks re-drain; non-loss met by poll; forgery pin green). Early-wake-after-drop = optional
+  latency add-on.
+- Flag §6.2 → sidecar (design confirm: R-1 moots §A.6 reconnect? + the add-on classify). Cold audit
+  `coldaudit-05aii-1` (opus48-worker, fresh) spawned: re-run gates + empirically verify non-loss holds w/o
+  reconnect + mutation-prove R-2 sharing + adjudicate the 8-site scout reshape + DRY audit. Both AWAITING.
+- Sidecar RATIFIED the no-reconnect deviation (Follow-up rulings #2; lead-ratified as packet §R-4): §A.6
+  reconnect MOOTED by R-1's two-connection split (final snapshot always on the unaffected ledger conn);
+  trust-correct on a ledger-conn drop (drain RAISES, not false-empty; F1=peek → loss-free); latency
+  residual DEFERRED w/ named re-open trigger (lead-adjudicable). Recommends 2 cheap optional pins:
+  raise-not-empty invariant (PIN-THE-MISS, load-bearing trust — I lean ADD) + known-bound. NOTHING blocks
+  GO/deploy. Decide on the optional pins after the cold audit (fold into one addition if warranted).
+  AWAITING cold audit.
+- Cold audit `coldaudit-05aii-1` **NO-GO** (`REPORT-coldaudit-05a-ii.md`, HEAD `f5aec32` SAME): gates ALL
+  GREEN re-derived (pytest 2476p/17s exit0, zero-new mypy, ruff clean, currency PASS 0 RED_ORPHANED); R-2
+  sharing PROVEN by IDENTITY (same `_txn` object, no clone) + mutation; 8 scout sites preserved-EXACT;
+  injection/R-3/live-probe clean. **BLOCKER #354:** LIVE-**connect** failure (`connect→OSError` /
+  `→TxnContentionExhausted`, the #102 contention class) CRASHES `await_inbox` (line ~152 try/finally, NO
+  except) — the shared opener re-raises by contract expecting the caller to catch (CommandSubscriber.run
+  does), InboxAwaiter dropped that discipline. Reproduced w/ positive control (leg C recovers). Graceful-
+  degradation defect (NOT data loss; snapshot-first protects pending-at-entry) but a served-surface trust
+  violation + a deviation from design §A.1 step 2 (establish best-effort → poll). **DECISION: FIX NOW**
+  (in-scope, required-by-design, ~3 lines mirror `CommandSubscriber._serve`, trust-critical) — not a bound.
+  Residuals: R1 (snapshot-drain raises = trust-correct, lock via raise-not-empty pin) · R2 test-hygiene
+  nit · R3 pointer-stub convention (intentional) · R4 scratch files → close-out clean.
+- FIX CYCLE (delta): contract adds 3 pins (#354 connect-guard + raise-not-empty invariant + known-bound
+  for the deferred latency) → adversary delta → builder fix (guard connect+establish → poll) → cold-audit
+  delta. Surfaced to operator as FYI (fix-now per don't-kick-the-can; redirect to a bound if preferred).
