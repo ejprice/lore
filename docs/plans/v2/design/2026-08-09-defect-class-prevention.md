@@ -1657,3 +1657,195 @@ a forbidden-shape scan.
 - **Named re-open trigger:** if a future packet splits OWNED out of `PASS_FULL` (a distinct
   `PASS_OWNED` qualified pass), the P1 biconditional and P2 token mapping grow by one enum value
   — the coverage pin reddens until the ∀ is extended, which is the mechanism working as intended.
+
+## §12 — A-SUB anti-dup: un-defeatable-by-spelling (fable-sidecar, 2026-08-09)
+
+**Escalation, not a fix wave** — same posture as §11, one packet over. `REPORT-delta-adversary-asub-b.md`
+found A-SUB still INSUFFICIENT (1 BLOCKER: A-SUB-3 sharing NOT actually closed), and it is G's §11
+class reproduced one file over: **enumerate-the-forbidden-by-SPELLING.** The lead's-own-tell has fired
+(the class survived the §9.7 patch), so §12 redesigns the property so the survivor is *unrepresentable
+by construction*, not patched a 4th spelling later. Ruled at HEAD `e36c114` (branch
+`feat/surreal-unification`; index fresh, last sweep 2026-08-09T13:11Z). Cite symbols; line numbers are
+stale-prone. **Scope: TEST-ONLY, within the A-SUB cycle's existing writable set
+(`test_ast_reach_helpers.py`, `_logging_fixtures.py`, the migrated files); NO production / store /
+schema / DDL; reuses an already-shipped in-repo pattern. NO operator scope-grant needed — this is
+design within the delegated authority (I flag: none of §12 requires one).**
+
+### §12.1 — Root cause: EVERY A-SUB anti-dup pin observes a PROXY, not the effect
+
+The survivor (reproduced in scratch by the delta-adversary) is a routing-not-sharing build with two
+cooperating parts: **(1)** a PRIVATE whole-tree derivation via `production_sources()`/`workspace_roots()`
++ `ast.parse` (NO `rglob`) doing the REAL 113-key work, and **(2)** an UNCONSUMED nullary decoy that
+calls `parse_production_trees` purely to satisfy the used-ness/∀ reach. All three guards pass because
+each is keyed on a PROXY, and I verified each proxy at HEAD:
+
+- **Offender scan** (`TestNoTestFileHandRollsAWholeTreeParserOutsideTheAllowlist`, via
+  `_whole_tree_clone_offenders`/`_has_tree_parser_clone`) — proxy = **the `rglob("*.py")+ast.parse+
+  read_text` SPELLING**. Its own positive control (`test_a_planted_clone_in_a_fresh_file_would_be_caught`)
+  plants exactly that spelling, so a `production_sources()`+`ast.parse` derivation is invisible.
+- **∀-mutation reach** (`TestSharingProvenByMutation`, via `_live_adopters`) — proxy = **"a call to
+  `parse_production_trees` EXISTS"**. The decoy is a call, so it makes the file a "live adopter"; the
+  ∀-drop then reddens something on the DECOY path while the private scan's real consumer stays green.
+- **Used-ness** — proxy = **the import is used** (a call binds it). The decoy binds it.
+
+This is exactly §11.1's diagnosis, one primitive over: string-inspection of an open-vocabulary artifact
+IS enumerate-the-forbidden. Here the "open vocabulary" is *the ways to spell a whole-tree parse*
+(`rglob` / `os.walk` / `glob` / `Path.iterdir` / a comprehension / `production_sources`+`ast.parse` /
+a hardcoded root tuple), and *the ways to fake consumption* (a decoy call). Both sets are unbounded,
+so a spelling/decoy always escapes. **The reach of each guard is a hidden constant** (`the rglob
+spelling`, `a call exists`) — the 7th-defeat shape.
+
+### §12.2 — The move: observe the parse PRIMITIVE and the real EFFECT, never the spelling
+
+Same lift as §11 (string→type): stop inspecting the open-vocabulary artifact; observe the property at
+a chokepoint where the vocabulary collapses to one. Two properties, two chokepoints — **and the repo
+already ships the proven template for both at `test_retry_seam.py::TestNoSdkCallEscapesTheDriverAtRuntime`,
+which pairs a weak-but-total LINT with an absolute-over-executed-code RUNTIME gate.** A-SUB today has
+only the (mis-built, spelling-keyed) LINT half and is missing the runtime half. §12 gives A-SUB the
+same two-layer shape, applied to the tree-parser instead of the SDK connection.
+
+**RULING on "AST-allowlist vs runtime — which is un-defeatable here": the RUNTIME chokepoint is the
+un-defeatable form; an AST-allowlist alone is REJECTED for this surface.** Rationale, from
+CLAUDE.md's instrument-lesson ladder:
+1. **Allowlist-the-safe, not enumerate-the-forbidden.** The SAFE set is ONE name — *the only sanctioned
+   whole-tree parser is `_logging_fixtures.parse_production_trees`*. Everything else that produces an
+   AST across the workspace trees is an offender. (The current scan already claims allowlist-the-safe
+   in its docstring but implements enumerate-the-forbidden: it keys on the `rglob` spelling, so its
+   "offender set" is really "the one spelling I listed".)
+2. **An AST allowlist cannot make "produces a whole-tree parse" crisp.** Two spelling-variable parts —
+   the roots-source (rglob / os.walk / `production_sources` / a hardcoded tuple — comms_footer Scan B
+   used a hardcoded tuple) AND the parse call (`ast.parse` / `compile(…PyCF_ONLY_AST)` / an alias
+   `ap = ast.parse; ap(…)`). Keying the AST scan on the parse PRIMITIVE (better than keying on the
+   loop) is still alias-defeatable — `test_retry_seam` says this in its own words: the runtime gate
+   "cannot be evaded by aliasing, by a helper module, by `getattr`, … or by a method nobody has
+   listed", which is precisely what the AST layer canNOT promise.
+3. **So enforce at RUNTIME, at the true chokepoint.** Producing an AST of source REQUIRES the builtin
+   `compile` (`ast.parse` calls `compile(source, filename, mode, flags=PyCF_ONLY_AST)`); there is no
+   pure-Python way to a real `ast.Module` of arbitrary source without it. Instrument `builtins.compile`,
+   filter to `flags & ast.PyCF_ONLY_AST` **AND** a filename resolving to a workspace `.py` module, and
+   walk the stack at call time: any such compile with **no `parse_production_trees` frame above it**,
+   made from a test module, is an ESCAPE named file:line — the exact analog of the SDK gate's "no
+   driver frame above the call". This chokepoint is spelling- AND alias-agnostic by construction (the
+   spelling that reaches `compile` is irrelevant; the frame check is on the code object's identity, so
+   aliasing `parse_production_trees` does not forge a sanctioned frame).
+
+**Honest bound (stated in the instrument, per §6 / retry_seam's own scope line): the runtime gate is
+absolute only over code that EXECUTES.** Code that never runs is the LINT's weak-total job, and the
+un-runnable tail is INSTRUMENT 0's standing reach-attack — not pretended closed. This is why BOTH
+layers ship, exactly as the retry seam ships both.
+
+### §12.3 — How the reviser pins it (reuse the retry-seam runtime-guard machinery; do not invent)
+
+**Layer 1 — RUNTIME chokepoint offender gate (the load-bearing, spelling-agnostic catch).** GENERALISE
+`test_retry_seam`'s runtime-guard scaffold (`_install_runtime_sdk_guard`, the escape `report`,
+`report.require_observations`, the pos control `test_the_guard_SEES_an_escape_it_is_shown`, the neg
+control `test_a_call_INSIDE_a_driver_attempt_is_allowed`, and the plain-`def`-wrapper-walks-at-call-time
+lesson) from the SDK-connection primitive to the `builtins.compile` primitive:
+- Wrap `builtins.compile` (a plain `def`, so the stack walk happens when the call is MADE); record every
+  PyCF_ONLY_AST compile of a workspace `.py` filename with no `parse_production_trees` frame above as an
+  escape (file:line, from `inspect`/`sys._getframe`).
+- **Anti-vacuity is REQUIRED and is `require_observations`:** if the gate saw NO workspace-AST compile
+  at all, it is BLIND, not clean — its silence must not read as a pass (#136).
+- **Positive control doubles as the routing-verification the reviser OWES (verify, don't assume — the
+  #107 discipline):** aim the guard at the test file itself, `ast.parse` a workspace module with no
+  sanctioned frame, assert it is recorded. If this control fails, `ast.parse` does NOT route through
+  the wrapped `builtins.compile` on this Python and the reviser must also wrap `ast.parse` (do not
+  assert the routing — prove it with this control). **Negative control:** a parse INSIDE
+  `parse_production_trees` is allowed (or the builder deletes the gate).
+- **Reach as a checked variable:** the gate runs session-wide (or drives the derived adopter scans,
+  retry-seam style over `_discover_query_seams`'s analog); a private parse ANYWHERE in the executed
+  suite escapes. This is the completeness guard — it is NOT a target hand-list, so `_MIGRATION_SET`
+  being a small known set for Layer 3 is acceptable (a 6th un-migrated scanner that runs escapes here).
+
+**Layer 2 — AST lint, REFRAMED from spelling to allowlist-the-safe (weak-but-total backstop for
+un-executed code).** Keep an AST scan (retry-seam's `_unseamed_sdk_call_sites` SHAPE, already cited
+§9.6) but re-key it: flag any parse-primitive call site (`ast.parse` / `compile(…PyCF_ONLY_AST)`)
+outside `parse_production_trees` and the evidence-backed `_ALLOWED_WHOLE_TREE_CLONE_FILES` allowlist —
+NOT the `rglob` spelling. This is weaker than Layer 1 (alias-defeatable) and that is fine: it exists
+only to cover code Layer 1 does not execute, and it says so. Keep the existing anti-vacuity
+(`test_the_scan_is_not_vacuous`) and dead-entry (`test_the_allowlist_carries_no_dead_entries`) pins.
+
+**Layer 3 — the ∀-mutation SHARING proof, with the reach and the per-adopter assertion FIXED (sub-problem
+2 — used-ness binds to CONSUMPTION).** `TestSharingProvenByMutation` stays (it proves the distinct
+property "the adopter's real output DEPENDS on the shared parser", which Layer 1 does not), but:
+- **Retire `_live_adopters() == "calls parse_production_trees"`.** Derive the ∀'s reach from Layer 1's
+  OBSERVED-SANCTIONED set (modules the runtime gate saw routing a workspace-parse THROUGH
+  `parse_production_trees`) — derived-from-execution, not a call-existence proxy and not a hand-list.
+  (Equivalent acceptable form: the known adopter set, with Layer 1 as the completeness checked-variable.
+  Either is sound because Layer 1 catches a decoy build BEFORE the ∀ matters — see below.)
+- **Bind the per-adopter ∀ assertion to the adopter's REAL coverage consumer**, not to "something
+  reddens". Drop the shared parser (via `_rebind_everywhere` by-identity so from-imports are reached,
+  or a `scripts/mutation_proof.py` receipt) and require EACH adopter's `assert_scan_reached_every_member`
+  coverage pin (which reads its observed set FROM the shared parser) to go RED — **both-direction diff
+  (#194): a declared-RED coverage pin that stays GREEN = the adopter feeds that pin from a private scan
+  = FAIL.** The decoy cannot make the real coverage pin redden (its result feeds nothing), so it is
+  worthless; and its private scan is already an escape at Layer 1.
+
+**Why the decoy dies at every layer:** its private scan produces workspace ASTs with no sanctioned
+frame → **Layer 1 escape (file:line)**; its call is not the `rglob` spelling but the reframed Layer 2
+flags any un-allowlisted parse primitive → **Layer 2** (weakly); and its unconsumed result cannot
+redden the real coverage pin → **Layer 3** declared-RED-stayed-GREEN. The decoy's entire purpose
+(get into the reach, reflect the drop) evaporates once reach is derived-from-execution and the ∀ binds
+to the real consumer.
+
+### §12.4 — comms_footer scan↔mode binding (Ruling 6.3 residual): PIN IT, don't hand-check
+
+**Disposition: PIN the binding — the per-scan scanned-file-set equality pin already MANDATED by §8
+Ruling 1 and §10 Ruling 6.3 IS the mode-binding enforcement; it must be BUILT per scan (it currently
+tests the HELPER's two modes, not WHICH mode each scan consumes).** Mechanism: Scan A must consume
+`parse_production_trees(include_tests=True)` and Scan B `(include_tests=False)`; pin each scan's
+post-migration scanned FILE SET == its exact pre-migration set (oracle = the pre-migration reach).
+Then a mode-swap is caught mechanically: Scan A on `include_tests=False` NARROWS (drops the member-test
+files it scans today) ≠ its pinned set → RED; Scan B on `include_tests=True` GAINS member tests ≠ its
+pinned set → RED. This also catches §10 R6.3's live hazard (`workspace_roots` yields `<member>/<member>`
+package roots that structurally EXCLUDE `<member>/tests`, so `include_tests=True` must re-add them or
+Scan A silently narrows). **Cold-audit obligation:** verify BOTH per-scan equality pins exist, that
+their sets are DISTINCT (Scan A ⊋ Scan B by exactly the member-test files), and that a swap reddens.
+**Hand-check fallback ONLY** if the reviser finds the two sets cannot be made discriminating (e.g. a
+member has zero test files, collapsing the include_tests distinction) — in which case that
+non-discrimination is itself flagged, and the binding drops to an explicit named A-SUB cold-audit
+hand-check. Default is the pin; the hand-check is the escape hatch, not the plan.
+
+### §12.5 — Reuse map / DRY (Packages considered)
+
+- **`test_retry_seam.TestNoSdkCallEscapesTheDriverAtRuntime` + `_install_runtime_sdk_guard` +
+  `report.require_observations` + its pos/neg controls + the plain-`def`-walks-at-call-time lesson**
+  (`loremaster/tests/test_retry_seam.py`) — the runtime-reach-gate PATTERN, already proven and pinned.
+  Layer 1 GENERALISES it (SDK-connection primitive → `builtins.compile` primitive). **REUSE candidate,
+  flagged for the builder:** the escape-report + require_observations + stack-walk-for-sanctioned-frame
+  + pos/neg-control shape is a shared POLICY (the runtime-reach guard) with now ≥2 users (SDK gate +
+  parse gate) — a candidate to extract into shared test-support parametrized by (primitive,
+  sanctioned-frame), **gated on prove-by-mutation** (change the shared scaffold → BOTH gates redden;
+  a caller that stays green is a private copy), exactly like the `_rebind_everywhere` promotion (#3).
+  Do NOT force the extraction if the retry-seam guard proves tightly coupled to async-SDK specifics
+  (§7 over-consolidation caution) — recommend it, prove it, or clone only the SHAPE.
+- **`_logging_fixtures.assert_scan_reached_every_member` / `parse_production_trees`** (pinned by
+  `test_ast_reach_helpers.py`) — the sanctioned parser (Layer 1's one SAFE name) and the coverage
+  consumer Layer 3 binds to.
+- **`_rebind_everywhere`** (promoting to `_logging_fixtures` per #3) + **`scripts/mutation_proof.py`**
+  (both-direction diff, `--collect-only` declared node ids, #194 landing guard) — Layer 3's mutation.
+- **`_unseamed_sdk_call_sites` SHAPE** (`test_retry_seam`) — Layer 2's reframed allowlist-the-safe scan.
+- **INSTRUMENT 0's reach-attack** (`~/.claude/agents/contract-adversary.md`, P1c) — the un-runnable tail.
+- **Packages considered:** stdlib `ast`/`sys`/`inspect`/`builtins` only (the compile chokepoint + stack
+  walk); no library supplies a "no-unsanctioned-frame-above-a-primitive" runtime gate. **Verdict:
+  bespoke (minimal), GENERALISING the in-repo retry-seam runtime-guard idiom — not new machinery.**
+
+### §12.6 — Routing & recommendation
+
+- **This is a CONTRACT revision (test-only), routed through the standing order: contract → adversary
+  → build → cold audit** (a fix wave is where the adversary is cheapest — operator, 2026-07-28). The
+  reviser writes Layers 1–3 + the comms_footer binding pin to §12.3/§12.4; the contract-adversary
+  MUST re-attack with the delta-adversary's survivor (private `production_sources`+`ast.parse` scan +
+  unconsumed decoy) AND a fresh spelling (`os.walk` / a comprehension / a direct
+  `compile(…PyCF_ONLY_AST)` / an alias) — Layer 1 must catch every one; plus the decoy-into-derived-reach
+  build (Layer 3 must catch it) and a mode-swapped comms_footer (§12.4 must catch it).
+- **The load-bearing acceptance test (the pos control that is also the routing proof):** the
+  reviser DEMONSTRATES Layer 1 firing on a `compile(…PyCF_ONLY_AST)` and on an `ast.parse` with no
+  sanctioned frame — if `ast.parse` does not register through the wrapped `builtins.compile`, wrap
+  `ast.parse` too. Do not ship the claim un-demonstrated.
+- **No operator scope-grant needed** (test-only, within the A-SUB writable set, reusing a shipped
+  pattern). The only lead action is routing the revised A-SUB contract through the standing cycle.
+- **Named re-open trigger:** the day this repo gains CI (#285), Layer 1's session-wide run becomes a CI
+  job so its reach covers the full suite deterministically; and if a NEW sanctioned whole-tree parser
+  is ever added beside `parse_production_trees`, Layer 1's SAFE set grows by exactly one named frame
+  (a deliberate, reviewed edit), never a spelling.
