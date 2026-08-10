@@ -566,6 +566,20 @@ hand-list, or whose coverage is not a checked variable, or that observes a proxy
 adversary, so instance #9 of the class is caught at CONTRACT time rather than by the next agent
 who trips over it.
 
+**The STOP-rule for a reach attack (heuristic, NOT an instrument — labelled so per THE LEVER and
+A DIAGNOSIS IS NOT AN INSTRUMENT).** The askable form: *"is this guard's reach receding one level
+deeper every round?"* If each round's fix just RELOCATES the hidden constant to a new site the
+guard still doesn't cover, the surface is adversarial-only — **accept a pinned bound with a named
+re-open trigger; do not run another round.** And before standing up a full multi-agent pipeline
+for a cleanup/hardening wave, surface the value-vs-depth trade to the operator (*"ship the 2–3
+that matter simply and ledger the rest?"*) rather than defaulting to max machinery because the
+findings exist — the operator sets importance, not the lead. Receipts: the G/A-SUB spiral
+(2026-08-10, the #344/#345 defect-class wave) ran 7–8 contract→adversary→revise rounds EACH on
+trivial-importance surfaces before the operator right-sized both to a simple design + a pinned
+bound; once escalated, each fix was one sentence. Right-sizing rigor to importance IS part of the
+verification budget: maximal rigor on a trivial surface is the same error as under-verifying an
+important one, in the opposite direction.
+
 ## Every artifact gets an adversary — not just the code (PKT-28 C1, 2026-07-12)
 C1 shipped FIVE defects that no builder gate caught. Their provenance, measured: THREE
 were tests that were never written (fleet grouping, the `brief_counter` declaration,
@@ -792,6 +806,18 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   both directions; proof of receipt is the recipient's artifact (or its process on
   the process table). An idle agent with a live gate-pytest + self-watcher is the
   benign waiting-on-own-wake mode — do not double-drive it.
+- **AGENTS ROUTE CONTENT THROUGH THE DURABLE LEDGER; NATIVE IS A THIN WAKE ONLY (2026-08-10).**
+  Every spawn brief instructs the agent to register on `lore_comms` and route status /
+  coordination / forks there (and to `lore_findings` / `lore_tasks` as apt); native SendMessage
+  carries ONLY a wake to an AT-REST agent, never content. The one message an agent sends the lead
+  is the brief-base §1 terse disambiguated micro-format (`STATE · REPORT-path · headline`) —
+  detail is PULLED from the ledger/report, never pushed into the lead's context. WHY: no hook can
+  filter or reshape what the lead sees (measured 2026-08-10, doc-cited — Claude Code's
+  teammate→lead notifications are auto-delivered mailbox traffic, not a lead-side hook event), so
+  the agent's own outbound message text is the ONLY control surface for the lead's per-wave
+  context cost. Prefer ONE-SHOT agents that deliver and exit over STANDING-BY agents (the design
+  sidecar excepted): a standing-by agent re-idles repeatedly, and each idle is a contentless ping
+  the lead must triage.
 - Briefs use the versioned base protocol: the agent's FIRST action is
   `Read ~/.claude/orchestration/brief-base.md`, and its report opens with the
   `brief-base v<N> read` receipt (missing receipt ⇒ treat as unbriefed). The brief
