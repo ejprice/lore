@@ -4,13 +4,15 @@ brief-base v11 read
 brief project v7 read
 
 ## SUMMARY BLOCK
-- **VERDICT: NO-GO** — one BLOCKER (finding #354): a LIVE-**connect** failure crashes
-  `await_inbox` instead of degrading to poll-only, violating the stated non-loss invariant
-  and the brief's "no crash". Everything else the brief named is GO. The operator may
-  downgrade to a pinned bound (blast radius is graceful-degradation, not permanent loss) —
-  but per "don't kick the can" the default is fix-now (small, mirrors existing code).
-- **State:** done (audit complete; I do not fix).
-- **Graded:** f5aec32 · HEAD-at-report: f5aec32 · **SAME (0 behind)** — I audited HEAD exactly.
+- **VERDICT: GO** (updated 2026-08-10 by the §8 DELTA re-audit at HEAD `c1e1b31`). The
+  original audit returned **NO-GO** on BLOCKER #354 (a LIVE-**connect** failure crashed
+  `await_inbox`); the builder's connect-guard at `7bc68f9` CLOSES it — re-verified
+  empirically (§8). All other findings were GO at the original audit and are unchanged
+  (scout/server/`_txn` byte-identical since `f5aec32`). **The build is GO for deploy.**
+- **State:** done (delta re-audit complete; I do not fix).
+- **Graded:** original **f5aec32**; DELTA re-audit **c1e1b31** (HEAD; = `7bc68f9` fix +
+  two docs-only commits `ae7fe18`/`c1e1b31`; the brief said HEAD `ae7fe18` but true HEAD is
+  `c1e1b31` — both docs, production code identical). HEAD-at-report: c1e1b31 · **SAME**.
 - **Gates (re-derived independently, not relayed):** pytest 8-suite **2476 passed / 17 skipped, exit 0**
   · typecheck **191 residual, ZERO in any touched file** (= #333 baseline, RED_ADJUDICATED→pkt39)
   · ruff **clean** · currency **PASS, 0 RED_ORPHANED**.
@@ -258,7 +260,54 @@ opener but NOT the opener's documented caller-catch contract — that omission I
 
 ---
 
-_Order: contract → adversary → build → **cold audit**. The build satisfies the SUFFICIENT
-contract and passes every gate — and still ships one defect the contract could not see (its
-non-loss pin used an establish-drop, not a connect-failure). That is the cold audit's whole
-reason to exist. VERDICT: **NO-GO** pending #354._
+## 8. DELTA RE-AUDIT — #354 CLOSED (2026-08-10, HEAD `c1e1b31`)
+
+The builder applied the connect-guard at `7bc68f9`. I verified the fix (I did NOT re-audit the
+whole build; §§1–7 stand, and scout/server/`_txn` are byte-identical to `f5aec32` — confirmed by
+`git diff --quiet`). Fix flow was proper: contract-first (`2e40b03`/`b18ed31`) → adversary
+SUFFICIENT (`f71760f`) → build (`7bc68f9`).
+
+**The fix (19-line diff, `inbox_awaiter.py::await_inbox` ONLY):** `connect()` + `_establish_live()`
+are now wrapped `try: … except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION: connection = live_uuid =
+consume_task = None` → the poll loop carries with no LIVE. Mirrors `CommandSubscriber.run`'s connect
+guard; the catch NAMES the shared `_WITH_CONTENTION` global (R-2 mutation-pin-safe). The 3 `self._drain`
+reads (snapshot/poll/final) are deliberately LEFT OUTSIDE the guard.
+
+**1 — #354 CLOSED (empirical, positive-controlled; `loremaster.__file__` in-tree).** Re-ran the §2
+repro against the guarded build, expanded to {OSError, TxnContentionExhausted} × {arrives-via-poll,
+stays-empty, pending-at-entry}:
+```
+OSError / arrives-via-poll        connect.calls=1 drain.calls= 2 -> poll-recovered   OK
+OSError / stays-empty             connect.calls=1 drain.calls= 5 -> honest-empty     OK
+OSError / pending-at-entry        connect.calls=0 drain.calls= 1 -> poll-recovered   OK
+TxnContentionExh / arrives-poll   connect.calls=1 drain.calls= 2 -> poll-recovered   OK
+TxnContentionExh / stays-empty    connect.calls=1 drain.calls= 5 -> honest-empty     OK
+TxnContentionExh / pending-entry  connect.calls=0 drain.calls= 1 -> poll-recovered   OK
+control connect-ok/dead / poll    connect.calls=1 drain.calls= 2 -> poll-recovered   OK
+```
+The pre-fix crash (`drain.calls=1`, RAISED) is GONE: every connect-failure now shows `connect.calls=1`
+(attempted → caught) then the poll loop carries. NO crash, NO false-empty. Positive control still
+recovers. Matches the new pin `TestConnectFailureDegradesToPoll` ({oserror,contention}×{pending,empty}).
+
+**2 — scope + no regression (my §7 R1 now LOCKED).** Production diff `f5aec32..c1e1b31` = ONLY
+`inbox_awaiter.py` (19 lines). The 3 drain reads are STILL unguarded — a separate probe raising OSError
+at each authoritative read propagated every time (`snapshot/poll/final → RAISED, not swallowed`),
+so a drain fault never becomes a false-empty. Matches the new pin `TestADrainFaultRaisesNeverFalseEmpties`
+({snapshot,poll,final}). No new swallow anywhere; the only new `except` is the connect-guard.
+
+**3 — gates re-run independently at HEAD `c1e1b31`:** pytest 7-suite (the brief's set) **1838 passed /
+17 skipped, exit 0** · typecheck **191 residual, ZERO in touched files** (= #333 baseline,
+RED_ADJUDICATED→pkt39) · ruff **clean** (repo root cleared of my disposable scratch — the prior
+RED_ORPHANED source) · currency **PASS, 0 RED_ORPHANED**.
+
+**Residual R2 (test-hygiene warning) and R3 (naming) from §7 are unchanged and non-blocking.** The
+delta probe was disposable and is not committed; its logic is reproduced verbatim above and in §2.
+
+**DELTA VERDICT: GO.** #354 closed, scope contained, all gates green.
+
+---
+
+_Order: contract → adversary → build → **cold audit** → fix (contract→adversary→build) → **delta
+re-audit**. The original build passed every gate and still shipped one defect the contract could not
+see (its non-loss pin used an establish-drop, not a connect-failure) — the cold audit's whole reason
+to exist. The fix closed it under the same discipline. VERDICT: **GO**._
