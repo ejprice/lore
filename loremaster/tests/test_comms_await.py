@@ -520,6 +520,43 @@ async def _drive_awaiter(
     return result, drain, clock, connect
 
 
+class _StampingDrain:
+    """A drain seam that MODELS a real ``to``-edge drain's STAMP: ``peek=True`` returns
+    the pending unchanged; ``peek=False`` stamps it seen, so a later read returns EMPTY.
+    Shared state across calls, so two awaits over the SAME traffic discriminate a
+    stamping (peek=False) build from the correct peek build (F1)."""
+
+    def __init__(self, *seqs: int) -> None:
+        self._seqs = list(seqs)
+        self._stamped = False
+        self.calls: list[bool] = []
+
+    async def __call__(
+        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+    ) -> Any:
+        self.calls.append(peek)
+        if self._stamped:
+            return _peek_empty()
+        result = _peek_traffic(*self._seqs)
+        if not peek:  # a real drain STAMPS -> the next read finds nothing unseen
+            self._stamped = True
+        return result
+
+
+def _drop_keyerror(monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
+    """RUNTIME MUTATION of the SHARED error-classification symbol AS ``module`` sees it:
+    rebind BOTH ``_SDK_AWAIT_BOUNDARY_ERRORS`` and its ``_WITH_CONTENTION`` sibling to a
+    KeyError-free tuple. An ``except`` clause evaluates its type expression at match
+    time, so a catch that NAMES the module global picks up the drop; a catch holding a
+    PRIVATE INLINE tuple does NOT (raising=False makes the setattr a harmless no-op there
+    — and that unaffected recovery is exactly what the mutation pin reddens on)."""
+    from loremaster.store._txn import _CONNECTION_ERRORS  # noqa: PLC0415
+
+    keyerror_free = tuple(_CONNECTION_ERRORS)  # KeyError is NOT in _CONNECTION_ERRORS
+    for name in ("_SDK_AWAIT_BOUNDARY_ERRORS", "_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION"):
+        monkeypatch.setattr(module, name, keyerror_free, raising=False)
+
+
 # --------------------------------------------------------------------------- #
 # PIN #1 — SNAPSHOT-FIRST SHORT-CIRCUIT. Pending-at-entry returns IMMEDIATELY: no
 # wait, no LIVE established, no poll sleep. Discriminates "only-new / always-waits".
@@ -566,12 +603,24 @@ class TestAwaitPeeksItNeverStamps:
         )
 
     async def test_two_awaits_over_the_same_pending_BOTH_return_it(self) -> None:
-        first, *_ = await _drive_awaiter(chooser=lambda call_index, now: _peek_traffic(7))
-        second, *_ = await _drive_awaiter(chooser=lambda call_index, now: _peek_traffic(7))
+        # §7 (adversary): this pin must DISCRIMINATE a stamping build, not pass
+        # vacuously. The shared ``_StampingDrain`` MODELS a real ``to``-edge drain:
+        # ``peek=True`` returns the pending unchanged; ``peek=False`` STAMPS it (the
+        # next read then returns empty). Two awaits share ONE drain state — so a
+        # correct (peek) awaiter returns [7] BOTH times, while a stamping (peek=False)
+        # awaiter consumes on the first and the second reads EMPTY → RED.
+        drain = _StampingDrain(7)
+        connect = _connect_factory(_FakeLiveConnection())
+        clock = _AdvancingClock()
+        awaiter = _build_awaiter(connect=connect, drain=drain, sleep=clock.sleep, now=clock.now)
+        first = await awaiter.await_inbox(agent_id="fixer-b-id", limit=20)
+        second = await awaiter.await_inbox(agent_id="fixer-b-id", limit=20)
         assert [entry.seq for entry in first.entries] == [7]
         assert [entry.seq for entry in second.entries] == [7], (
-            "a second await over the same still-unseen traffic returned empty — await stamped the "
-            "rows (F1 violated: await must be idempotent)"
+            "a second await over the same still-unseen traffic returned empty — the first await "
+            "STAMPED the rows (drain(peek=False)), so they never re-serve (F1 violated: await "
+            "must be idempotent + retry-safe). NB the peek=True pin above is the primary "
+            "no-stamp discriminator; this proves the idempotency CONSEQUENCE."
         )
 
 
@@ -649,6 +698,73 @@ class TestSocketDropNonLoss:
         assert result.entries == [], (
             "the positive control returned traffic on a genuinely-empty inbox — the non-loss pin "
             "could then pass by ALWAYS-returning rather than by recovering the drop"
+        )
+
+
+# =========================================================================== #
+# R-2 (adversary §4.1 BLOCKER) — SHARING is proven by RUNTIME MUTATION of the ONE
+# symbol, not by a behaviour pin (a private inline tuple recovers a KeyError drop
+# just as well). The await leg is here; the scout leg is in
+# test_scout.py::TestDroppingKeyErrorFromTheSharedConstantBreaksScoutRecovery. An
+# AST reach-check belt (coverage a CHECKED, DERIVED variable) forbids ANY surviving
+# inline clone. Together they redden BOTH routing-≠-sharing builds: 7a (scout inline)
+# + 7b (await inline).
+# =========================================================================== #
+class TestAwaitSharesTheSdkBoundaryConstantByMutation:
+    async def test_dropping_keyerror_from_the_shared_constant_breaks_await_recovery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # POSITIVE CONTROL (unpatched -> the SAME dead-LIVE scenario RETURNS the
+        # traffic) is TestSocketDropNonLoss above. Here the shared symbol is mutated AS
+        # THE AWAITER'S MODULE SEES IT: KeyError leaves the boundary, so it escapes the
+        # awaiter's catch and await_inbox RAISES. A build holding a PRIVATE INLINE tuple
+        # is UNAFFECTED -> it still recovers (no raise) -> pytest.raises FAILS -> RED (7b).
+        import sys  # noqa: PLC0415
+
+        awaiter_module = sys.modules[_awaiter_cls().__module__]  # RED until built
+        _drop_keyerror(monkeypatch, awaiter_module)
+
+        def chooser(call_index: int, now: float) -> Any:
+            return _peek_traffic(99) if call_index >= 2 else _peek_empty()
+
+        with pytest.raises(KeyError):
+            await _drive_awaiter(chooser=chooser, connection=_FakeLiveConnection(dead=True))
+
+    def test_no_inline_sdk_await_boundary_tuple_survives_in_scout_or_the_awaiter(self) -> None:
+        """AST REACH-CHECK belt (P1c reach-attack + the DRY directive). Reach is DERIVED
+        by scanning the PATTERN, never a hand-list of line numbers: every ``except``
+        whose type is a TUPLE containing BOTH a ``*_CONNECTION_ERRORS`` spread AND a bare
+        ``KeyError`` is an inline SDK-await-boundary clone that must instead NAME the
+        shared constant. Asserts NONE remain in scout.py OR the awaiter's module — a
+        build leaving any private clone (7a keeps scout's; 7b keeps await's) reddens here
+        even if every behaviour pin passes."""
+        import ast  # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        from loremaster import scout  # noqa: PLC0415
+
+        awaiter_module = sys.modules[_awaiter_cls().__module__]  # RED until built
+        offenders: list[str] = []
+        for module in (scout, awaiter_module):
+            tree = ast.parse(inspect.getsource(module))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
+                    continue
+                elts = node.type.elts
+                spread = any(
+                    isinstance(elt, ast.Starred)
+                    and isinstance(elt.value, ast.Name)
+                    and elt.value.id == "_CONNECTION_ERRORS"
+                    for elt in elts
+                )
+                keyerror = any(isinstance(elt, ast.Name) and elt.id == "KeyError" for elt in elts)
+                if spread and keyerror:
+                    offenders.append(f"{module.__name__}:{node.lineno}")
+        assert not offenders, (
+            f"inline SDK-await-boundary tuples survive (must NAME the shared "
+            f"_SDK_AWAIT_BOUNDARY_ERRORS[_WITH_CONTENTION], not clone it): {offenders} — a private "
+            f"clone passes every behaviour pin (routing ≠ sharing) but is caught here"
         )
 
 
@@ -730,7 +846,11 @@ class TestTheAwaitBudgetIsAFixedConstantUnderTheToolCeiling:
 # this pins F3 both ways.
 # =========================================================================== #
 class TestThreadNarrowsClientSide:
-    async def test_await_with_a_thread_returns_only_that_threads_traffic(self) -> None:
+    # §4.2 (adversary): parametrised over TWO distinct values so a build that hardcodes
+    # a single thread comparand (e.g. ``entry.thread == 'q:gate'``) passes ONE leg and
+    # FAILS the other — the value-monoculture the single-value pin missed.
+    @pytest.mark.parametrize("wanted", ["q:gate", "q:other"])
+    async def test_await_with_a_thread_returns_only_that_threads_traffic(self, wanted: str) -> None:
         def chooser(call_index: int, now: float) -> Any:
             return _msg().MessageDrainResult(
                 entries=[
@@ -743,9 +863,10 @@ class TestThreadNarrowsClientSide:
                 peeked=True,
             )
 
-        result, _drain, _clock, _connect = await _drive_awaiter(chooser=chooser, thread="q:gate")
+        result, _drain, _clock, _connect = await _drive_awaiter(chooser=chooser, thread=wanted)
         threads = {entry.thread for entry in result.entries}
-        assert threads == {"q:gate"}, (
-            f"await(thread='q:gate') returned threads {threads} — thread must narrow the snapshot "
-            f"CLIENT-SIDE to the requested thread (F3), never surface other-thread traffic"
+        assert threads == {wanted}, (
+            f"await(thread={wanted!r}) returned threads {threads} — thread must narrow the snapshot "
+            f"CLIENT-SIDE to the REQUESTED thread (F3), whichever it is; a hardcoded single-value "
+            f"comparand passes one leg and fails the other"
         )

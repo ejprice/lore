@@ -1033,15 +1033,17 @@ class TestCommandSubscriberSharesTheSdkAwaitBoundary:
     (*_CONNECTION_ERRORS, KeyError)`` rather than each hand-rolling
     ``(*_CONNECTION_ERRORS, KeyError)`` inline (routing is not sharing).
 
-    This pin is the scout half of the PROVE-SHARING-BY-MUTATION obligation: mutate
-    that ONE constant (drop ``KeyError``) and THIS pin AND ``test_comms_await.py``'s
-    socket-drop pin BOTH redden — the only test that distinguishes a shared constant
-    from two private copies wearing the same value.
+    TWO methods, a control + a mutation (adversary §4.1 fix — a behaviour pin alone is
+    satisfied by a private inline tuple, so it is NOT the sharing invariant):
 
-    ⚠ GREEN today AND after the builder wires the catch to the shared constant
-    (``CommandSubscriber`` already recovers a ``KeyError`` in-flight drop); it reddens
-    ONLY under the constant mutation. It is a mutation ANCHOR, not a new-behaviour pin —
-    non-vacuous (it drives a real KeyError drop through the reconnect ladder).
+    * ``test_reconnect_recovers_from_a_keyerror_inflight_drop`` — the POSITIVE CONTROL.
+      GREEN on current HEAD (the ladder already recovers a KeyError drop, inline) and
+      after wiring; proves the mutation below is load-bearing.
+    * ``test_dropping_keyerror_from_the_shared_constant_breaks_recovery`` — the RUNTIME
+      MUTATION. Rebinds the module global scout references and asserts recovery BREAKS.
+      RED on current HEAD (scout is inline) and RED for build 7a (scout keeps a private
+      clone); PASSES only when scout NAMES the patchable shared symbol. THIS is the
+      sharing invariant.
     """
 
     async def test_reconnect_recovers_from_a_keyerror_inflight_drop(self) -> None:
@@ -1077,6 +1079,59 @@ class TestCommandSubscriberSharesTheSdkAwaitBoundary:
         assert dispatched.count("command:gapk") == 1, (
             "the gap command was not recovered exactly once after a KeyError drop — the KeyError "
             "escaped the reconnect ladder and killed the subscriber"
+        )
+
+    async def test_dropping_keyerror_from_the_shared_constant_breaks_recovery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The RUNTIME-MUTATION half (adversary §4.1): the test above is the POSITIVE
+        CONTROL (unpatched ⇒ recovers). Here the module-level symbol scout's reconnect
+        ladder references is rebound to DROP KeyError; the SAME KeyError in-flight drop
+        must then NO LONGER recover. An ``except`` evaluates its type at match time, so a
+        catch that NAMES the patchable global picks up the drop; a PRIVATE INLINE
+        ``(*_CONNECTION_ERRORS, KeyError…)`` is UNAFFECTED — it still recovers and FAILS
+        this pin. That is exactly build 7a (await wired, scout inline), and it is why the
+        behaviour pin alone is not the sharing invariant."""
+        from loremaster.store._txn import _CONNECTION_ERRORS  # noqa: PLC0415
+
+        from loremaster import scout  # noqa: PLC0415
+
+        keyerror_free = tuple(_CONNECTION_ERRORS)  # KeyError is NOT in _CONNECTION_ERRORS
+        for name in ("_SDK_AWAIT_BOUNDARY_ERRORS", "_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION"):
+            monkeypatch.setattr(scout, name, keyerror_free, raising=False)
+
+        gap_command = {
+            "id": "command:gapk2", "kind": _RECONCILE_KIND, "payload": {}, "status": "pending",
+        }
+        dead = _FakeCommandConnection(dead=True, drop_error=KeyError("req-uuid-xyz"))
+        recovered = _FakeCommandConnection(
+            pending={"command:gapk2": gap_command}, die_on_subscribe=True
+        )
+        connector = _Connector([dead, recovered])
+        dispatched: list[str] = []
+
+        async def handler(command_row: dict[str, Any]) -> None:
+            dispatched.append(str(command_row["id"]))
+
+        subscriber = _make_subscriber(
+            connect=connector, handler=handler, sleep=_RecordingImmediateSleep()
+        )
+        task = asyncio.create_task(subscriber.run())
+        try:
+            await _wait_until(
+                lambda: task.done() or dispatched.count("command:gapk2") >= 1, timeout=1.5
+            )
+        finally:
+            await subscriber.stop()
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task  # retrieve the escaped KeyError (expected when recovery breaks)
+        assert dispatched.count("command:gapk2") == 0, (
+            "the subscriber STILL recovered a KeyError drop AFTER KeyError was dropped from the "
+            "SHARED constant — its reconnect ladder holds a PRIVATE INLINE tuple, not a reference "
+            "to the patchable module global (routing ≠ sharing, build 7a). The unpatched positive "
+            "control above proves the mutation is real."
         )
 
 

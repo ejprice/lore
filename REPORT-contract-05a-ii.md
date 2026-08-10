@@ -3,152 +3,146 @@
 brief-base v11 read
 brief project v7 read
 
-> **REVISION 2 (2026-08-10)** — revised to the lead-ratified seam rulings R-1/R-2/R-3
-> (`docs/plans/v2/05-comms-await-story.md` §"Seam rulings"; `REPORT-fable-design-05a-ii.md`
-> §"Follow-up rulings 05a-ii"). The three forks §5 first raised are now RESOLVED (see §5).
-> Satisfiability + mutation receipts re-earned against the revised reference.
+> **REVISION 3 (2026-08-10)** — addresses the `contract-adversary` INSUFFICIENT verdict
+> (`REPORT-adversary-05a-ii.md` §4): the R-2 sharing pin was a BEHAVIOR pin (a private inline
+> tuple satisfies it), and `TestThreadNarrowsClientSide` was value-monoculture. Both fixed +
+> re-proven (§2, §3). Rev-2 addressed the ratified R-1/R-2/R-3; rev-1 the original three forks.
 
 ## SUMMARY BLOCK
-- **State:** done — RED contract revised to R-1/R-2/R-3 (29 pins across 3 files, all RED/anchor
-  for the right reason), fake capability reworked, satisfiability + 10 mutation proofs re-run.
-- **Deviations:** (1) a KNOWN-CORRECT reference of the R-1/R-2/R-3 seams was built in a DISPOSABLE
-  scratch copy (`/tmp/await-ref2-05aii`, provenance-verified) to earn the receipts — real
-  production UNTOUCHED (`git status`: only test files + reports changed). (2) scratch `rm` is
-  sandbox-blocked; `/tmp/await-ref{,2}-05aii` + `/tmp/ref*` remain — disposable, operator may delete.
+- **State:** done — INSUFFICIENT addressed. 33 pins across 3 files (all RED/anchor for the right
+  reason), satisfiability 42/42, 14 mutation proofs (incl. the two routing-≠-sharing builds 7a/7b).
+- **Deviations:** (1) a KNOWN-CORRECT reference of R-1/R-2/R-3 was built in DISPOSABLE scratch
+  copies to earn the receipts — real production UNTOUCHED (`git status`: only test files + reports).
+  (2) scratch `rm` is sandbox-blocked; `/tmp/await-ref{,2,3}-05aii` + `/tmp/r*` remain — disposable,
+  operator may delete.
 - **Capability check:** all tools present; only spike-surreal `:18000` reasoned about (no store
-  connected — the reference awaiter never opens a socket). No production code touched in the real tree.
+  connected). No production code touched in the real tree.
 - **Packages considered:** none — no mechanism specified (a test contract). await REUSES shipped
   seams (`drain`, `awaiting_answer`, the `_render_comms_drain` fence/row, the `CommandSubscriber`
   connect-injection idiom, the shared `_CONNECTION_ERRORS`); hand-rolls nothing.
 - **Graded:** contract authorship — no builder artifact graded. `git rev-parse HEAD` = `d64cd23`.
-- **Decisions-needed:** none — R-1/R-2/R-3 are ruled; §5 marks them RESOLVED. Ready for the
-  `contract-adversary` pass.
+- **Decisions-needed:** none — R-1/R-2/R-3 ruled; the two adversary gaps fixed. Ready for the
+  `contract-adversary` re-run (no revision skips it).
 - **Receipt pointers:** RED counts §1 · per-pin discriminators + mutation receipts §2 ·
-  satisfiability §3 · builder requirements §4 · rulings-resolved §5 · unrelated mypy debt §6.
+  satisfiability §3 · builder requirements §4 · adversary-gaps-closed §5 · unrelated mypy debt §6.
 
 ---
 
 ## 1. What was written, and the RED receipts (real tree, HEAD `d64cd23`, await UNBUILT)
 
-**Writable set (R-2 SCOPE ADD: `test_scout.py`, lead-granted).** New:
-`loremaster/tests/test_comms_await.py` (25 pins). Extended: `test_comms_tool.py` (exact-set +
-`test_await_params`), `test_scout.py` (the R-2 cross-suite scout leg + `_FakeCommandConnection`
-`drop_error` param), `_message_fakes.py` (REVERTED my earlier `await_inbox` oracle — R-1 hosts the
-wait-machine in a standalone `InboxAwaiter`, not a ledger method). No production code touched.
+**Writable set (R-2 SCOPE ADD: `test_scout.py`, lead-granted).** `test_comms_await.py` (28 pins,
+new), `test_comms_tool.py` (exact-set + `test_await_params`), `test_scout.py` (the R-2 scout leg —
+positive control + runtime mutation — + `_FakeCommandConnection.drop_error`), `_message_fakes.py`
+(the earlier `await_inbox` oracle reverted — R-1 hosts the wait-machine in `InboxAwaiter`). No
+production code touched.
 
 **RED counts:**
-- `test_comms_await.py` — **25 failed** (all RED). Causes: **15 × `AttributeError`** (14 for the
-  pending `InboxAwaiter`, 1 for the pending `_SDK_AWAIT_BOUNDARY_ERRORS` — both reached through an
-  `Any` handle so they are mypy-clean while unbuilt), **9 × `ValueError: unknown comms action
-  'await'`** (dispatch/render pins), **1 × `AssertionError`** (foreign-param: await unregistered so
-  the unknown-action guard fires first; flips GREEN when await is registered AND rejects `limit`).
-- `test_comms_tool.py::TestCommsActionsTable` — **3 failed** (exact-set mismatch;
-  `test_every_other_action_requires_prior_registration` + `test_await_params` `KeyError: 'await'`).
-  No collateral breakage.
-- `test_scout.py::TestCommandSubscriberSharesTheSdkAwaitBoundary` — **GREEN on current production**
-  (CommandSubscriber already recovers a KeyError drop, currently via an inline tuple). It is a
-  MUTATION ANCHOR, non-vacuous (drives a real KeyError in-flight drop through the reconnect ladder),
-  RED only under the shared-constant mutation (§2). `TestCommandSubscriberTransport` stays green.
+- `test_comms_await.py` — **28 failed** (all RED, no green-at-write). Causes: **AttributeError**
+  (the pending `InboxAwaiter` / `_SDK_AWAIT_BOUNDARY_ERRORS`, reached through an `Any` handle so
+  mypy-clean while unbuilt), **`ValueError: unknown comms action 'await'`** (dispatch/render pins),
+  **AssertionError** (foreign-param, + the thread parametrise legs).
+- `test_comms_tool.py::TestCommsActionsTable` — **3 failed** (exact-set + two `KeyError: 'await'`).
+- `test_scout.py::TestCommandSubscriberSharesTheSdkAwaitBoundary` — the POSITIVE CONTROL
+  (`test_reconnect_recovers_from_a_keyerror_inflight_drop`) is **GREEN on HEAD**; the RUNTIME
+  MUTATION (`test_dropping_keyerror_from_the_shared_constant_breaks_recovery`) is **RED on HEAD**
+  (scout is still inline — it goes green only when scout NAMES the shared constant). No collateral.
 
-Collection clean (25 collected, no uncollectable — every unbuilt symbol is reached at CALL time,
-never a module-scope import). **Gates on changed files:** `ruff` clean; `mypy loremaster` reports
-**0 errors in my four files** (102 pre-existing elsewhere — §6).
+Collection clean (no uncollectable — every unbuilt symbol reached at CALL time). **Gates:** `ruff`
+clean; `mypy loremaster` **0 errors in my four files** (102 pre-existing elsewhere — §6).
 
 ## 2. The pins, their discriminators, and the mutation-proof receipts
 
-Every load-bearing pin was mutation-proven against the revised reference (build wrong → watch RED →
-restore). All mutations discriminate; the reference stays **38/38 GREEN** when restored (§3).
+All load-bearing pins mutation-proven against the reference (build wrong → watch RED → restore);
+the reference stays **42/42 GREEN** restored (§3).
 
 | # | Pin (property) | Wrong build it STOPS | Mutation receipt |
 |---|---|---|---|
-| 1 | **Snapshot-first short-circuit** (InboxAwaiter): pending-at-entry returns immediately — no wait, no LIVE, no poll | "only-new / always-waits" | removed the awaiter short-circuit → `TestSnapshotFirstShortCircuit` **RED** |
-| 2 | **Final-snapshot-at-timeout (LOAD-BEARING)**: a deadline arrival is returned (fresh final snapshot), last read at/after the deadline | "renders empty off the stale last-wake read" | awaiter `return <empty>` instead of a final `_snapshot()` → `TestFinalSnapshotAtTimeout` **RED** |
-| 3 | **Poll-only completeness**: LIVE silent → poll returns BEFORE the deadline | "LIVE-dependent" | removed the in-loop re-drain → `TestPollOnlyCompleteness` **RED** (validated rev-1; unchanged property) |
-| 4 | **Socket-drop non-loss (forgery)**: DEAD LIVE (`KeyError` establish) + traffic → returned, no false-empty; **positive control** genuine-empty → empty | "false-empty / crash on the KeyError boundary" | see R-2 row (the shared-constant mutation is the sharper proof) + `except→return <empty>` → **RED**, control **PASS** |
-| **R-2** | **ONE-IMPLEMENTATION cross-suite (MANDATORY)**: await + CommandSubscriber ride the ONE `_SDK_AWAIT_BOUNDARY_ERRORS` | two private `(*_CONNECTION_ERRORS, KeyError)` clones (routing ≠ sharing) | **dropped `KeyError` from the ONE constant → BOTH `test_comms_await`'s #4 AND `test_scout`'s KeyError-drop pin reddened** (the scout pin errored with the escaped `KeyError('req-uuid-abc')` — the subscriber died) + the constant-shape pin **RED** |
-| **R-3** | **Non-empty teaches `action=drain`, not the peek re-run** | reuse of `_render_comms_drain(peeked=True)`'s footer verbatim | await render → `_render_comms_drain(peeked=True)` → `TestTheNonEmptyAwaitTeachesDrain…` **RED** (`peek=true` present / `action=drain` absent), while the **fence pin stayed GREEN** (shared fence preserved) |
-| 5 | **Injection — emitted LIVE statement** (InboxAwaiter): inlines ONLY the agent-id record literal; no `thread`, no caller substring, no bound `$param`, keyed on `out =` | inlines `thread` (DD-3.e) / binds a param | appended `AND thread='q'` → `test_…inlines_no_thread…` **RED** (validated rev-1; moved to the awaiter) |
-| 6 | **Honest-empty-as-fact**: names the caller + a temporal bound, never a disclaimer/drain's bare line | bare disclaimer / drain empty render | empty render → `render_line("no unread messages")` → both `…NamesTheBoundAsAFact` pins **RED** |
-| 7 | **Waiting-line via ONE shared helper** (handler): discriminating pair + PROVEN BY MUTATION | a private clone (routing ≠ sharing) | sentinel-patched `_render_comms_waiting_line` routes through await (validated rev-1) |
-| 8 | **Fenced bodies + hostile** (SHARED fence): body round-trips, fence wider than its backtick run | a hand-rolled fence-less render | proven GREEN under the R-3 mutation (fence survives a footer swap) |
-| F1 | **await PEEKS, never stamps** (InboxAwaiter): every read `peek=True`, shape `stamped_seqs=[]/peeked=True`, idempotent | a stamping build (DD-4.c/#214 loss) | `peek=True → peek=False` → `test_the_awaiter_reads…peek_true` **RED** |
-| F2 | **budget is a fixed constant < ~60s** — the InboxAwaiter `budget_s` DEFAULT, the PROPERTY not the number | a `timeout=` param / value ≥ ceiling | RED via `InboxAwaiter` unbuilt; the reference default `55.0` satisfies `0 < x < 60` |
-| F3 | **thread narrows CLIENT-SIDE** (awaiter) + **never in the LIVE WHERE** (pin #5) | thread in the LIVE / thread suppresses the inbox | awaiter narrows to the requested thread; #5 forbids thread in the statement |
+| 1 | **Snapshot-first short-circuit** (InboxAwaiter) | "only-new / always-waits" | removed the short-circuit → `TestSnapshotFirstShortCircuit` **RED** |
+| 2 | **Final-snapshot-at-timeout (LOAD-BEARING)** | "renders empty off the stale last-wake read" | `return <empty>` instead of a final `_snapshot()` → **RED** |
+| 3 | **Poll-only completeness** | "LIVE-dependent" | removed the in-loop re-drain → **RED** (rev-1) |
+| 4 | **Socket-drop non-loss (forgery)** + positive control | "false-empty / crash on the KeyError boundary" | `except→return <empty>` → **RED**, control **PASS** |
+| **R-2a** | **SHARING by RUNTIME MUTATION — await leg**: patch the awaiter module's `_SDK_AWAIT_BOUNDARY_ERRORS` ⇒ recovery BREAKS (await_inbox RAISES) | **7b** — await hand-rolls a private inline tuple | build **7b** (await inline) → the await-leg pin **RED** (patch no-op, still recovers, `pytest.raises` fails) |
+| **R-2b** | **SHARING by RUNTIME MUTATION — scout leg** (in `test_scout.py`): patch scout's module global ⇒ the subscriber NO LONGER recovers | **7a** — scout keeps private inline clones | build **7a** (scout inline) → the scout-leg pin **RED** (still recovers); positive control still recovers **PASS** |
+| **R-2c** | **AST REACH-CHECK belt**: DERIVED scan (never a hand-list) — NO `except`-tuple with `*_CONNECTION_ERRORS`+`KeyError` survives in scout OR the awaiter | either private clone | **BOTH 7a AND 7b** → the belt **RED** (offenders found); on the wired reference it finds none |
+| 5 | **Injection — emitted LIVE statement** (InboxAwaiter): agent-id literal only, no `thread`/param | inlines `thread` / binds a param | appended `AND thread='q'` → **RED** (rev-1) |
+| 6 | **Honest-empty-as-fact** | bare disclaimer / drain empty render | empty render → `render_line("no unread messages")` → both pins **RED** |
+| 7 | **Waiting-line via ONE shared helper** | a private clone | sentinel-patched `_render_comms_waiting_line` (rev-1) |
+| 8 | **Fenced bodies + hostile (SHARED fence)** | a hand-rolled fence-less render | GREEN under the R-3 footer swap (fence survives) |
+| R-3 | **Non-empty teaches `action=drain`, not the peek re-run** | verbatim `_render_comms_drain(peeked=True)` footer | await render → `_render_comms_drain(peeked=True)` → **RED**, fence pin **PASS** |
+| F1 | **await PEEKS, never stamps + idempotent** | a stamping (`peek=False`) build | `peek=True→peek=False` → `…peek_true` **RED** AND (now) `test_two_awaits…` **RED** via the shared `_StampingDrain` (§7 fix: the idempotency pin now discriminates, no longer vacuous) |
+| F2 | **budget a fixed constant < ~60s** (InboxAwaiter `budget_s` default) | a `timeout=` param / value ≥ ceiling | RED via `InboxAwaiter` unbuilt; reference default `55.0` satisfies `0<x<60` |
+| F3 | **thread narrows CLIENT-SIDE** (parametrised over TWO values) + **never in the LIVE WHERE** | a hardcoded single-thread comparand | awaiter filters `entry.thread=='q:gate'` → the `q:other` parametrise leg **RED** (§4.2 fix), `q:gate` leg PASS |
 | 9 | **Exact-set + param honesty** | a drifted/foreign param surface | RED: set-mismatch + `KeyError` until registered |
+
+**The R-2 sharing invariant is now R-2a/R-2b/R-2c (runtime-mutation + AST belt) — NOT the behavior
+pin.** The behavior pin (does the subscriber recover a KeyError drop?) is retained ONLY as the
+positive control that proves the runtime mutation is load-bearing; a private inline tuple recovers
+just as well, so it never was the invariant (adversary §4.1, corrected here).
 
 ## 3. Satisfiability receipt (the C-DEF gate)
 
-A KNOWN-CORRECT reference of the R-1/R-2/R-3 seams — the standalone
-`loremaster/inbox_awaiter.py::InboxAwaiter` (+ `AWAIT_BUDGET_S`); `store._txn._SDK_AWAIT_BOUNDARY_ERRORS
-= (*_CONNECTION_ERRORS, KeyError)` referenced by BOTH the awaiter's catch AND `scout.py`'s reconnect
-ladder (4 inline clones DRY'd); `AppContext._comms_await` + the `_COMMS_ACTIONS["await"]` registration
-+ the honest-empty render + the R-3 `_render_comms_await_nonempty` (SHARED fence + row, `action=drain`
-teach) — was built in a provenance-verified scratch copy (`scratch_copy.sh`). Against it the whole
-contract goes **38 passed / 0 failed** (`test_comms_await` 25 + `TestCommsActionsTable` 12 + the
-scout cross-suite pin 1). The contract is SATISFIABLE — not a C-DEF trap — and the R-1/R-2/R-3 seam
-shapes are buildable as specified. The reference is a throwaway grading instrument reproducible from
-§4.
+Reference (in provenance-verified scratch): standalone `loremaster/inbox_awaiter.py::InboxAwaiter`
+(+ `AWAIT_BUDGET_S`); `store._txn._SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)` +
+`_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION = (*…, TxnContentionExhaustedError)`, referenced as
+PATCHABLE module attrs at the awaiter's catch AND **all 8 previously-inline scout sites** (4 base +
+4 with-contention, DRY'd — the AST belt confirms zero inline clones remain); `AppContext._comms_await`
++ the `_COMMS_ACTIONS["await"]` registration + the honest-empty render + the R-3
+`_render_comms_await_nonempty`. Against it the whole contract goes **42 passed / 0 failed**
+(`test_comms_await` 28 + `TestCommsActionsTable` 12 + the scout control+mutation 2). SATISFIABLE —
+not a C-DEF trap; the R-1/R-2/R-3 seam shapes are buildable as specified.
+
+**The two routing-≠-sharing builds the adversary found both REDDEN now** (each proven in scratch):
+**7a** (await wired, scout inline) → scout-leg mutation **RED** + AST belt **RED**; **7b** (scout
+wired, await inline) → await-leg mutation **RED** + AST belt **RED**. Neither passes the contract.
 
 ## 4. NAMED builder requirements
 
-1. **Registration** — `_COMMS_ACTION_AWAIT = "await"` + `_COMMS_ACTIONS["await"] =
-   CommsActionSpec(AppContext._comms_await, params=frozenset({"thread"}), required=frozenset())`.
-   AND a render case for `await` in `test_render_seam_pins`'s `C1_RENDER_CASES` (OUT of my writable
-   set — named).
-2. **Wait machine (R-1)** — a STANDALONE `InboxAwaiter` (its own module is the builder's call; the
+1. **Registration** — `_COMMS_ACTION_AWAIT` + `_COMMS_ACTIONS["await"] = CommsActionSpec(
+   AppContext._comms_await, params=frozenset({"thread"}), required=frozenset())` + a `C1_RENDER_CASES`
+   render case in `test_render_seam_pins` (OUT of my writable set — named).
+2. **Wait machine (R-1)** — a STANDALONE `InboxAwaiter` (its module is the builder's call; the
    reference used `loremaster/inbox_awaiter.py`), imported into `loremaster.server`'s namespace by
-   the handler (so the tests reach it as `server.InboxAwaiter`). Constructed
-   `InboxAwaiter(*, connect, drain, sleep=asyncio.sleep, now=time.monotonic, budget_s=AWAIT_BUDGET_S,
-   poll_interval_s=…)`; `async def await_inbox(*, agent_id, limit, thread=None) -> MessageDrainResult`
-   (snapshot-first `drain(peek=True)` → LIVE-primary via `connect` + poll-fallback within `budget_s`
-   via `now` → final snapshot; PEEK shape); `live_select_statement(agent_id) -> str`. `AWAIT_BUDGET_S`
-   ≤55s (the `budget_s` default; F2 pins `0 < x < 60`).
-3. **Handler (R-1)** — `AppContext._comms_await(self, *, agent_row, thread=None, **_ignored) ->
-   Rendered`: CONSTRUCTS `InboxAwaiter` from the store LIVE-connect + `self.message_ledger.drain`,
-   CALLS it, and owns the RENDER. NON-empty → the R-3 drain-teach render (SHARED fence + row,
-   `action=drain`, NO "peek=true"); EMPTY → honest-empty naming the bound as a FACT + the SHARED
-   `_comms_waiting_lines`. The handler must reference `InboxAwaiter` as the `server` module global
-   (so it is monkeypatchable) — the testability seam the render pins ride.
+   the handler. `InboxAwaiter(*, connect, drain, sleep=asyncio.sleep, now=time.monotonic,
+   budget_s=AWAIT_BUDGET_S, poll_interval_s=…)`; `async def await_inbox(*, agent_id, limit,
+   thread=None) -> MessageDrainResult` (snapshot-first `drain(peek=True)` → LIVE-primary via `connect`
+   + poll-fallback within `budget_s` via `now` → final snapshot; PEEK shape);
+   `live_select_statement(agent_id) -> str`. `AWAIT_BUDGET_S` ≤55s (the `budget_s` default).
+3. **Handler (R-1)** — `AppContext._comms_await`: CONSTRUCTS `InboxAwaiter` from the store LIVE-connect
+   + `self.message_ledger.drain`, CALLS it, owns the RENDER (NON-empty → R-3 drain-teach render;
+   EMPTY → honest-empty + SHARED `_comms_waiting_lines`). References `InboxAwaiter` as the `server`
+   module global (monkeypatchable — the testability seam the render pins ride).
 4. **Shared error classification (R-2)** — `store._txn._SDK_AWAIT_BOUNDARY_ERRORS =
-   (*_CONNECTION_ERRORS, KeyError)`, referenced by the awaiter's catch AND ≥1 `CommandSubscriber`
-   catch site (the reference wired the reconnect-ladder + `_safe_kill`/`_safe_close` Txn-union sites;
-   the run ladder is what the scout cross-suite pin exercises). await's reconnect set MAY union
-   `TxnContentionExhaustedError` (recommended); teardown set = the base constant. The cross-suite
-   mutation pin is the invariant: a private clone reddens only one suite.
+   (*_CONNECTION_ERRORS, KeyError)` AND `_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION = (*…,
+   TxnContentionExhaustedError)`, referenced **as PATCHABLE module attributes** (never an inline
+   spread that the AST belt would flag, and never a pre-imported alias the runtime patch can't reach)
+   at the awaiter's catch AND **ALL** scout SDK-await-boundary catch sites (the reference DRY'd all
+   8). The runtime-mutation pins + the AST belt are the invariant — a private clone reddens.
 5. **R-3 typed applicability (#104)** — the non-empty render's consume-instruction is a typed input
-   (drain-teach for await, the peek footer for drain's own peek), NOT a `peeked: bool` hardcoding
-   drain's wording. REUSE the fence + row render (the injection-critical part); vary only the taught
-   follow-up.
-6. **The LIVE-wake + socket-drop against a REAL socket** is the DEPLOY-gated build probe / smoke
-   (design §C, §A.6 Leg A/B), run on `:18000` by the Opus-4.8 live-leg builder — the in-process pins
-   prove the STATE MACHINE. The probe already settled LIVE-fires + the socket-drop shape
-   (`docs/plans/v2/receipts/2026-08-09-packet05ai/REPORT-probe-await-05a-1.md`).
+   (`action=drain` for await), NOT a `peeked: bool` hardcoding drain's wording; REUSE the fence + row.
+6. **The LIVE-wake + socket-drop against a REAL socket** = the DEPLOY-gated build probe / smoke
+   (design §C, §A.6 Leg A/B) — the in-process pins prove the STATE MACHINE.
 
-## 5. The three forks — RESOLVED by the ratified rulings
+## 5. Adversary gaps closed
 
-- **§5.1 (rev-1) — the wait-machine seam shape → RESOLVED by R-1** (lead-ratified): a STANDALONE
-  `InboxAwaiter` constructed with an injected `connect` factory + the ledger's `drain` seam, NOT a
-  `MessageLedger.await_inbox` method; the handler CONSTRUCTS + CALLS it and owns the render. The
-  contract's ~14 wait-machine pins were retargeted to construct `InboxAwaiter` directly (the
-  `CommandSubscriber`/`test_scout.py` idiom); observable properties unchanged.
-- **§5.2 (rev-1) — await's non-empty peek-teach → RESOLVED by R-3** (lead-ratified): the non-empty
-  render teaches `action=drain`, never drain's "re-run without peek=true" footer, via typed
-  applicability (#104). Added `TestTheNonEmptyAwaitTeachesDrainNotThePeekRerun` with the
-  discriminating fixture (a verbatim-drain-footer build fails).
-- **NEW from R-2** (lead-ratified, SCOPE ADD to `scout.py`/`test_scout.py`): await + CommandSubscriber
-  share ONE error-classification symbol, proven BY MUTATION across BOTH suites. Added the shared-
-  constant pin + the scout cross-suite mutation anchor + the `drop_error` fake capability.
+- **§4.1 BLOCKER (R-2 sharing was a behavior pin)** → the sharing invariant is now the
+  RUNTIME-MUTATION pin, BOTH legs (await in `test_comms_await`, scout in `test_scout`), plus the AST
+  reach-check belt (coverage a CHECKED, DERIVED variable — scans the pattern, no hand-list). Proven:
+  builds **7a** and **7b** each redden. The behavior pin is retracted as the invariant (kept as the
+  positive control). §2/§4 corrected accordingly.
+- **§4.2 SECONDARY (thread value-monoculture)** → `TestThreadNarrowsClientSide` is parametrised over
+  `{q:gate, q:other}`; a hardcoded-`q:gate` build reddens the `q:other` leg (proven in scratch).
+- **§7 (F1 idempotency vacuous)** → the idempotency pin now rides a shared `_StampingDrain` that
+  MODELS a stamping drain, so a `peek=False` build reddens the second-await assertion (proven). The
+  `…peek_true` pin remains the primary no-stamp discriminator; idempotency proves the consequence.
 
 ## 6. Unrelated pre-existing mypy debt (flagged, not buried)
 
 `uv run mypy loremaster` reports **102 errors** on this branch (`feat/surreal-unification`), ALL in a
-pre-existing AUTH-test cluster (`test_auth_composition.py`, `test_permission_resolver_seam.py`,
-`test_hosted_readonly_posture.py`, `test_allowlist_roster.py`, `test_google_token_verifier.py`,
-`test_auth.py`, `_auth_fixtures.py`, `test_auth_identity_seam.py`) — **zero in my four files**. Out
-of my scope; surfaced per "flag unrelated failures, don't bury them". The operator decides.
+pre-existing AUTH-test cluster — **zero in my four files**. Out of my scope; surfaced per "flag
+unrelated failures, don't bury them". The operator decides.
 
 ---
 
 _Contract author proposes; the adversary grades the contract; the operator rules; the lead
 adjudicates. Order: contract → adversary → build → cold audit. This revised contract is ready for
-the `contract-adversary` pass._
+the `contract-adversary` re-run._
