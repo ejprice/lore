@@ -4149,6 +4149,22 @@ async def _render_story_task_id(value: str, _ctx: Any) -> str:
     return str(AppContext._render_comms_story(CommsStory(task_id=value)))
 
 
+async def _render_await_thread(value: str, _ctx: Any) -> str:
+    """packet 05a-ii: await's NON-empty render surfaces the drained ``thread`` through the
+    SHARED ``_render_comms_drain_row`` (``render_attributed`` containment; ONE
+    IMPLEMENTATION). ONE agent-controlled field satisfies the per-ACTION completeness pin;
+    await's multi-line body FENCE case (hostile round-trip) lives in
+    ``test_comms_await.py::TestTheNonEmptyAwaitFencesHostileBodies`` — the same split as
+    ``drain.body`` (a fenced body is verbatim/newline-preserving, so it cannot ride this
+    injection oracle)."""
+    return str(
+        AppContext._render_comms_await(
+            _drain_result(entries=[_inbox_entry(thread=value)], peeked=True),
+            session="wave7",
+        )
+    )
+
+
 # The FENCE cases (register.brief_body / brief_get.body / drain.body) are
 # deliberately NOT in this list -- see TestFencedBodyIntegrity and
 # TestDrainBodiesAreFENCED below, and the report's "genuine spec tension" flag:
@@ -4207,6 +4223,11 @@ C1_RENDER_CASES: list[RenderCase] = [
     # test_comms_story.py (multi-line/verbatim, so it is a fence case, not this
     # battery — same split as drain.body).
     RenderCase("story.task_id", _render_story_task_id),
+    # packet 05a-ii: ``await`` — one agent-controlled field (the drained ``thread``, routed
+    # through the SHARED ``_render_comms_drain_row``) satisfies the per-ACTION completeness
+    # pin; await's body FENCE case lives in test_comms_await.py (multi-line/verbatim, so it
+    # is a fence case, not this battery — same split as drain.body / story).
+    RenderCase("await.thread", _render_await_thread),
 ]
 
 # The FENCE-labeled cases, tracked separately (see TestFencedBodyIntegrity and,

@@ -1719,6 +1719,10 @@ _EXPECTED_COMMS_ACTIONS = (
     # packet 05a-iii: ``story`` (task-anchored lineage). Appended in DISPATCH ORDER
     # (after ``ack``) — this tuple's order is the unknown-action refusal's list.
     "story",
+    # packet 05a-ii: ``await`` (the bounded snapshot-first WAIT). Appended in DISPATCH
+    # ORDER (after ``story``) — same rationale: this tuple's order IS the served
+    # unknown-action refusal's list.
+    "await",
 )
 
 

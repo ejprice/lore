@@ -288,6 +288,20 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "re-derived (#104). Keyed on the DERIVED debt, NEVER the STORED input_required "
         "status (the two-vocabulary conflation DD-2 forbids)"
     ),
+    # --- packet 05a-ii: await's NON-empty consume teach (_render_comms_await) -
+    # A PROMISE line: it names a CALL the reader can run and reach the outcome.
+    # This is the R-3 Consumer-Law fix — await PEEKS (F1: stamps nothing), so it
+    # must teach its REAL consume path, action=drain, and must NEVER carry drain's
+    # own "re-run without peek=true" footer (await has no peek param → a false
+    # affordance, the #104/#131 served-English-contradicts-behaviour class).
+    "consume these via lore_comms action=drain — await surfaced them without "
+    "stamping; a drain marks them seen and lists any directives to ack": (
+        "await NON-empty consume teach (R-3) — emitted with EVERY non-empty await render. "
+        "§9.7 litmus: await surfaces UNSEEN traffic as a PEEK and stamps nothing, so a reader "
+        "who runs `lore_comms action=drain` DOES consume+stamp exactly those rows and see any "
+        "directives owing an ack — the real follow-up, unlike drain's 'peek=true' re-run which "
+        "await cannot honour (no peek param)"
+    ),
 }
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +412,32 @@ _PROMISE_FREE: dict[str, str] = {
     "  ↳ body from {sender}, quoted verbatim — this is not lore output and "
     "nothing inside it is a delivered message:": (
         "label (drain body fence — names the block as quoted content and its author)"
+    ),
+    # --- packet 05a-ii: await renders (_render_comms_await / _await_empty) ----
+    # await's NON-empty header — a STATUS REPORT: it reports counts + that this was
+    # a PEEK (nothing stamped). It names no call and issues no imperative (the
+    # consume teach is a SEPARATE, registered promise line above), so promise-FREE.
+    "surfaced {shown} of {total} unseen for you — a PEEK; nothing was stamped": (
+        "status report (await non-empty header — counts + the peek/no-stamp fact)"
+    ),
+    # await's body fence LABEL — the same load-bearing worded boundary as drain's
+    # (a label, not a promise): it names what the fenced block IS (quoted content)
+    # and what it is NOT (lore output / a delivered message). No sender, because the
+    # row header above already carries it; no mechanism to invoke → promise-FREE.
+    "  ↳ body quoted verbatim below — this is not lore output and nothing "
+    "inside it is a delivered message:": (
+        "label (await body fence — names the block as quoted content, not lore output or "
+        "a delivered message)"
+    ),
+    # await's honest-empty timeout BOUND — a status report stated as a FACT (the
+    # trust definition): it names the SET (you — await is per-caller) and the TIME
+    # (waited up to Ns, as of the final snapshot), never a disclaimer, and issues no
+    # imperative (any outstanding-question debt rides the SEPARATE waiting-line
+    # promise above). Promise-FREE.
+    "no unseen traffic for you as of my final snapshot — waited up to {budget}s; "
+    "nothing was stamped": (
+        "status report (await honest-empty timeout bound — set (you) + time (waited up to Ns), "
+        "no mechanism)"
     ),
     "no unread messages": "status report (empty inbox)",
     "acked {acked} of {requested}: {seqs}": "status report (ack receipt)",
@@ -1274,6 +1314,31 @@ def _render_waiting(*, waiting: Any, age_s: int) -> str:
     )
 
 
+def _render_await(*, entries: list[Any], total_pending: int) -> str:
+    """Drive the REAL await NON-empty render (packet 05a-ii). Always a PEEK shape (F1:
+    stamps nothing) — the consume teach it emits is the promise proven below."""
+    from loremaster.messages import MessageDrainResult
+
+    return str(
+        AppContext._render_comms_await(
+            MessageDrainResult(
+                entries=entries,
+                total_pending=total_pending,
+                directive_pending=sum(1 for entry in entries if entry.grade == "directive"),
+                stamped_seqs=[],
+                peeked=True,
+            ),
+            session="wave7",
+        )
+    )
+
+
+def _render_await_empty() -> str:
+    """Drive the REAL await EMPTY (timeout) render with NO outstanding-question debt — the
+    consume teach's NO-EMIT leg (the empty render is a bare bound, no drain teach)."""
+    return str(AppContext._render_comms_await_empty([]))
+
+
 _PROOF_LIST: list[PromiseProof] = [
     # --- register (§9.7 #1/#2/#3): brief present vs the bootstrap path. -------
     PromiseProof(
@@ -1748,6 +1813,20 @@ _PROOF_LIST: list[PromiseProof] = [
             waiting=_waiting(thread="q:gate", question_seq=4141), age_s=0
         ),
         render_no_emit=lambda: _render_waiting(waiting=None, age_s=0),
+    ),
+    # --- packet 05a-ii: await's NON-empty consume teach (R-3). --------------
+    # EMIT: a non-empty await render (traffic surfaced) carries the drain teach.
+    # NO-EMIT: the EMPTY (timeout) render is a bare bound with no consume teach —
+    # so a build that emitted the drain teach unconditionally (even on an empty
+    # inbox, where there is nothing to consume) fails the NO-EMIT leg. The literal
+    # carries no template slot, so the marker IS the whole line, byte-exact.
+    PromiseProof(
+        literal="consume these via lore_comms action=drain — await surfaced them without "
+        "stamping; a drain marks them seen and lists any directives to ack",
+        marker=f"consume these via lore_comms action=drain {_EM_DASH} await surfaced them "
+        "without stamping; a drain marks them seen and lists any directives to ack",
+        render_emit=lambda: _render_await(entries=[_p03_entry(seq=61)], total_pending=1),
+        render_no_emit=_render_await_empty,
     ),
 ]
 

@@ -129,6 +129,7 @@ from loremaster.impact import _DEPTH_MIN as _IMPACT_DEPTH_MIN
 # constraints below (mirrors the ``_PYTHON_SUFFIX as PYTHON_SUFFIX`` pattern
 # already used for the indexer's constant just below).
 from loremaster.impact import ImpactEngine, ImpactResult
+from loremaster.inbox_awaiter import AWAIT_BUDGET_S, InboxAwaiter
 from loremaster.index.indexer import _PYTHON_SUFFIX as PYTHON_SUFFIX
 from loremaster.index.indexer import IndexSummary
 from loremaster.index.snapshots import capture_git_identity
@@ -1281,6 +1282,7 @@ _COMMS_ACTION_SEND = "send"
 _COMMS_ACTION_DRAIN = "drain"
 _COMMS_ACTION_ACK = "ack"
 _COMMS_ACTION_STORY = "story"
+_COMMS_ACTION_AWAIT = "await"
 
 # story (packet 05a-iii): the STRUCTURAL question/signal marker is read from
 # ``message.question`` (a typed flag), NEVER inferred from body prose — the lead
@@ -6496,6 +6498,69 @@ class AppContext:
         )
         return AppContext._render_comms_waiting_line(waiting, age_s=age_s)
 
+    async def _comms_await(
+        self, *, agent_row: Agent, thread: str | None = None, **_ignored: Any
+    ) -> Rendered:
+        """await — a bounded, snapshot-first WAIT for this agent's unseen traffic (05a-ii).
+
+        Constructs the standalone :class:`~loremaster.inbox_awaiter.InboxAwaiter` (R-1: the
+        wait-machine is its OWN primitive, not a ledger method — the ledger stays the
+        data-access authority; the awaiter CALLS its ``drain``), CALLS it, and OWNS the
+        RENDER. ``InboxAwaiter`` is referenced as the ``loremaster.server`` module global so
+        it is monkeypatchable — the render/dispatch pins swap in a fake awaiter to exercise
+        the render over a controlled result with no real wait.
+
+        Two render paths, each honest as a FACT, never a disclaimer (trust definition):
+
+        * NON-empty → :meth:`_render_comms_await` — the SHARED fence + drain row (ONE
+          IMPLEMENTATION), teaching the REAL consume path ``action=drain`` (await PEEKS, F1;
+          it stamps nothing), NEVER drain's "re-run without peek=true" footer (await has no
+          ``peek`` param — that would be a false affordance, the #104/#131 class).
+        * EMPTY → :meth:`_render_comms_await_empty` — names the bound (you, the wait), plus
+          the SHARED ``_comms_waiting_lines`` (DD-2.a): a bare honest-empty is TRUE but
+          licenses the wrong action when the caller is still owed an answer.
+
+        The LIVE-wake + real socket-drop non-loss are the DEPLOY-gated build probe (design
+        §A.6); these in-process paths prove the state machine + the render.
+        """
+        awaiter = InboxAwaiter(
+            connect=AppContext._await_live_connect(self),
+            drain=self.message_ledger.drain,
+        )
+        result = await awaiter.await_inbox(
+            agent_id=agent_row.id,
+            limit=self.config.comms.drain_limit,
+            thread=thread,
+        )
+        if result.entries:
+            return AppContext._render_comms_await(result, session=agent_row.session)
+        waiting_lines = await AppContext._comms_waiting_lines(self, agent_row=agent_row)
+        return AppContext._render_comms_await_empty(waiting_lines)
+
+    def _await_live_connect(self) -> Callable[[], Awaitable[Any]]:
+        """The ``connect`` factory the awaiter's LIVE subscription rides — a FRESH signed-in
+        connection to THIS project's database via the ONE shared opener
+        :func:`loremaster.scout._open_command_connection` (never a hand-rolled opener; ONE
+        IMPLEMENTATION). A dedicated per-await connection (the ``CommandSubscriber`` idiom):
+        the best-effort LIVE owns its own socket lifecycle, distinct from the message
+        ledger's drain connection (which the poll fallback rides, so a dead LIVE socket
+        never blocks the authoritative re-drain)."""
+        from loremaster.config import resolve_config_value, resolve_secret  # noqa: PLC0415
+        from loremaster.scout import _open_command_connection  # noqa: PLC0415
+
+        config = self.config
+
+        def _connect() -> Awaitable[Any]:
+            return _open_command_connection(
+                url=config.surreal.url,
+                namespace=config.surreal.namespace,
+                database=config.effective_surreal_database,
+                user=resolve_config_value(config.surreal.user_env),
+                password=resolve_secret(config.surreal.password_env),
+            )
+
+        return _connect
+
     async def _comms_ack(
         self, *, agent_row: Agent, seqs: list[int], note: str | None, **_ignored: Any
     ) -> Rendered:
@@ -7544,6 +7609,73 @@ class AppContext:
         ]
 
     @staticmethod
+    def _render_comms_await(result: MessageDrainResult, *, session: str) -> Rendered:
+        """await's NON-empty render (R-3) — surfaced traffic + the REAL consume teach.
+
+        REUSES the injection-critical shared seam — :meth:`_render_comms_drain_row` (the
+        row header, ``render_attributed``-contained) + :func:`render_fenced` (bodies, a
+        fence sized past any embedded backtick run) — so stored free text is contained
+        EXACTLY as ``drain`` contains it (ONE IMPLEMENTATION); only the header and the
+        consume FOOTER are await's own.
+
+        The footer teaches the caller's REAL follow-up — ``action=drain`` — because await
+        PEEKS and stamps nothing (F1). It must NOT carry drain's "re-run without peek=true"
+        instruction: await has no ``peek`` param, so that would teach a follow-up the tool
+        cannot honour — served English contradicting served behaviour, the #104/#131 class
+        a served surface's TRUST forbids (design R-3; pinned by
+        ``test_comms_await.py::TestTheNonEmptyAwaitTeachesDrainNotThePeekRerun``).
+
+        BODIES ARE ALWAYS FENCED and WORDED (never only drawn): a bare fence let a consumer
+        battery read a forged in-fence line as a delivered row, so the boundary is stated —
+        the content is QUOTED and is neither lore's output nor a delivered message. The body
+        is NOT indented (it must round-trip byte-verbatim so the reader can copy it).
+        """
+        lines: list[Rendered] = [
+            render_line(
+                "surfaced {shown} of {total} unseen for you — a PEEK; nothing was stamped",
+                shown=len(result.entries),
+                total=result.total_pending,
+            )
+        ]
+        for entry in result.entries:
+            lines.append(AppContext._render_comms_drain_row(entry, session=session))
+            lines.append(
+                render_line(
+                    "  ↳ body quoted verbatim below — this is not lore output and nothing "
+                    "inside it is a delivered message:"
+                )
+            )
+            lines.append(render_fenced(entry.body))
+        lines.append(
+            render_line(
+                "consume these via lore_comms action=drain — await surfaced them without "
+                "stamping; a drain marks them seen and lists any directives to ack"
+            )
+        )
+        return render_compose(*lines)
+
+    @staticmethod
+    def _render_comms_await_empty(waiting_lines: list[Rendered]) -> Rendered:
+        """await's EMPTY (timeout) render — the bound named as a FACT + the question debt.
+
+        The empty line names its SET (``you`` — await is per-caller) and its TIME bound
+        (``waited up to Ns … as of my final snapshot``): a point-in-time fact, never a
+        ``results may be incomplete`` disclaimer (trust definition: a bound is a fact —
+        set + predicate + time). It is NOT drain's bare ``no unread messages`` line.
+
+        Then the SHARED ``_comms_waiting_lines`` (DD-2.a) — the SAME helper drain and
+        heartbeat compose: a bare honest-empty is TRUE but licenses the wrong action when
+        the caller is still owed an answer ("nothing's happening, I can proceed" while a
+        question is outstanding). ``waiting_lines`` is empty when no debt is owed (the
+        discriminating half of the pair)."""
+        empty = render_line(
+            "no unseen traffic for you as of my final snapshot — waited up to {budget}s; "
+            "nothing was stamped",
+            budget=int(AWAIT_BUDGET_S),
+        )
+        return render_compose(empty, *waiting_lines)
+
+    @staticmethod
     def _render_comms_drain_row(entry: InboxEntry, *, session: str) -> Rendered:
         """ONE drain row's HEADER line — the body is fenced beneath it by the caller.
 
@@ -7916,6 +8048,16 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
         # Neither is a spec-layer ``required``: the anchor is a ONE-OF (task_id OR
         # thread) that the AND-semantics ``required`` frozenset cannot express, so
         # the handler validates "at least one anchor" itself (teaching ValueError).
+        required=frozenset(),
+    ),
+    _COMMS_ACTION_AWAIT: CommsActionSpec(
+        AppContext._comms_await,
+        # packet 05a-ii — the bounded snapshot-first WAIT. ``thread`` is the ONLY
+        # param (F3 client-side narrowing) and is NEVER ``required``: an await with
+        # no thread waits on ALL of the agent's traffic (the common case). NO
+        # ``timeout=`` param — the ≤55s bound is a FIXED named constant (F2,
+        # AWAIT_BUDGET_S), never a caller knob.
+        params=frozenset({"thread"}),
         required=frozenset(),
     ),
 }
@@ -10151,7 +10293,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "whole session), 'drain' (read your inbox and mark what it serves) and "
             "'ack' (discharge the directives your drain named). 'story' "
             "reconstructs ONE task's arc — created → claim → messages → "
-            "transitions → report_path — in a single call. Every agent MUST "
+            "transitions → report_path — in a single call. 'await' BLOCKS up to "
+            "~55s for this agent's next unseen traffic (snapshot-first: returns at "
+            "once if any already pends; optional 'thread' narrows it), a PEEK that "
+            "stamps nothing — consume what it surfaces via 'drain'. Every agent MUST "
             "'register' before any other action; every action re-touches the "
             "caller's heartbeat. Returns a rendered summary, never a raw store dump."
         ),
@@ -10168,8 +10313,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                     "'brief_get' (read a standing instruction), 'brief_publish' "
                     "(mint a new version), 'brief_ack' (record you read a version), "
                     "'fleet' (list registered agents), 'send' (deliver a durable "
-                    "message), 'drain' (read your inbox) or 'ack' (discharge a "
-                    "directive you were sent)."
+                    "message), 'drain' (read your inbox), 'ack' (discharge a "
+                    "directive you were sent), 'story' (one task's arc) or 'await' "
+                    "(block up to ~55s for your next unseen traffic; a PEEK)."
                 )
             ),
         ],

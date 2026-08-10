@@ -165,6 +165,7 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.briefs import BriefLedger
+from loremaster.inbox_awaiter import InboxAwaiter
 from loremaster.store import _txn as txn_module
 from loremaster.store import surreal as surreal_module
 from loremaster.store._txn import (
@@ -2540,6 +2541,9 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
 
         admin = await connect_admin(live_env)
         await run(admin, "DEFINE TABLE IF NOT EXISTS command SCHEMALESS")
+        # packet 05a-ii: the `await` verb's InboxAwaiter LIVE-subscribes on the `to` edge,
+        # so its establish query needs the table to exist to be OBSERVED cleanly.
+        await run(admin, "DEFINE TABLE IF NOT EXISTS to SCHEMALESS")
         await admin.close()
 
         connection = await scout_module._open_command_connection(
@@ -2562,6 +2566,33 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
             await subscriber._safe_kill(connection, live_uuid)
         finally:
             await connection.close()
+
+        # packet 05a-ii: the `await` verb's InboxAwaiter owns THREE SDK call sites of its own
+        # — `_live_query` (the LIVE establish query), `_consume_live` (subscribe_live) and
+        # `_safe_kill` (kill), each riding the SHARED retry driver. Drive them with a guarded
+        # connection so the guard OBSERVES each, exactly as it does the subscriber's above (a
+        # new call site nothing drives is a site the guard certifies nothing about).
+        awaiter_connection = await scout_module._open_command_connection(
+            url=live_env.url,
+            namespace=live_env.namespace,
+            database=live_env.database,
+            user=live_env.user,
+            password=live_env.password,
+        )
+        awaiter = _await_inbox_awaiter()
+        agent_id = "abcdef0123456789abcdef0123456789"  # a uuid5-hex-shaped id (see live_select_statement)
+        try:
+            awaiter_live_uuid = await awaiter._live_query(
+                awaiter_connection, awaiter.live_select_statement(agent_id)
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    awaiter._consume_live(awaiter_connection, awaiter_live_uuid, asyncio.Event()),
+                    1.0,
+                )
+            await awaiter._safe_kill(awaiter_connection, awaiter_live_uuid)
+        finally:
+            await awaiter_connection.close()
 
         observed = {site.split(" in ")[0] for site in report.observed}
         all_sites = _all_sdk_call_sites()
@@ -2739,6 +2770,21 @@ def _subscriber() -> Any:
     return scout_module.CommandSubscriber(
         connect=_connect, handler=_handler, poll_interval_s=0.01
     )
+
+
+def _await_inbox_awaiter() -> Any:
+    """An ``InboxAwaiter`` (packet 05a-ii) whose ``connect``/``drain`` are inert — the
+    OBSERVED pin drives its connection-TAKING seam methods (``_live_query`` / ``_consume_live``
+    / ``_safe_kill``) DIRECTLY with a guarded connection, exactly as it drives the
+    subscriber's, so the guard observes the awaiter's own SDK call sites."""
+
+    async def _connect() -> Any:
+        raise AssertionError("the guard drives the awaiter's seam methods directly")
+
+    async def _drain(**_kwargs: Any) -> Any:
+        raise AssertionError("the guard drives the awaiter's seam methods directly")
+
+    return InboxAwaiter(connect=_connect, drain=_drain)
 
 
 @dataclass

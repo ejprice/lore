@@ -63,8 +63,9 @@ from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.index.watcher import LiveWatcher
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    _SDK_AWAIT_BOUNDARY_ERRORS,
+    _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION,
     RetryableConflictSignal,
-    TxnContentionExhaustedError,
     bootstrap_session,
     is_retryable_conflict_error,
     retry_on_conflict,
@@ -160,7 +161,7 @@ async def _scout_query_once(
         if params is None:
             return await connection.query(statement)
         return await connection.query(statement, params)
-    except (*_CONNECTION_ERRORS, KeyError) as error:
+    except _SDK_AWAIT_BOUNDARY_ERRORS as error:
         if is_retryable_conflict_error(error):
             raise RetryableConflictSignal() from error
         raise
@@ -347,7 +348,7 @@ class CommandSubscriber:
         """Close ``connection``, swallowing an already-dead-socket failure."""
         try:
             await connection.close()
-        except (*_CONNECTION_ERRORS, KeyError):
+        except _SDK_AWAIT_BOUNDARY_ERRORS:
             logger.debug("command_subscriber.close.already_closed")
 
     # -- draining / dispatch ------------------------------------------------ #
@@ -484,7 +485,7 @@ class CommandSubscriber:
             while self._running:
                 try:
                     connection = await self._ensure_connection()
-                except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
+                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
                     # The connect itself failed — back off (bounded) and retry.
                     logger.debug("command_subscriber.connect_failed", exc_info=True)
                     await self._backoff(attempt)
@@ -493,7 +494,7 @@ class CommandSubscriber:
                 attempt = 0  # a live connection resets the backoff ladder
                 try:
                     await self._serve(connection)
-                except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
+                except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
                     # The socket dropped mid-serve, OR sustained contention on a
                     # command claim exhausted the shared seam's retry budget —
                     # reconnect + poll-reconcile the gap (a command inserted
@@ -567,7 +568,7 @@ class CommandSubscriber:
                     if inspect.isawaitable(subscription):
                         subscription = await subscription
                     return subscription
-                except (*_CONNECTION_ERRORS, KeyError) as error:
+                except _SDK_AWAIT_BOUNDARY_ERRORS as error:
                     if is_retryable_conflict_error(error):
                         raise RetryableConflictSignal() from error
                     raise
@@ -582,7 +583,7 @@ class CommandSubscriber:
                 # A pending insert fired — reconcile via the (idempotent) poll
                 # path so the live and poll routes can never double-dispatch.
                 await self._drain_pending(connection)
-        except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
+        except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
             logger.debug("command_subscriber.live_unavailable", exc_info=True)
 
     @staticmethod
@@ -599,7 +600,7 @@ class CommandSubscriber:
         async def _attempt() -> None:
             try:
                 await connection.kill(live_uuid)
-            except (*_CONNECTION_ERRORS, KeyError) as error:
+            except _SDK_AWAIT_BOUNDARY_ERRORS as error:
                 if is_retryable_conflict_error(error):
                     raise RetryableConflictSignal() from error
                 raise
@@ -610,7 +611,7 @@ class CommandSubscriber:
             # still swallows the exhaustion, so the driver's labelled record is the one place
             # the engine's text survives.
             await retry_on_conflict(_attempt, label="command_subscriber.kill.rejected")
-        except (*_CONNECTION_ERRORS, KeyError, TxnContentionExhaustedError):
+        except _SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION:
             logger.debug("command_subscriber.kill.already_closed")
 
     async def _backoff(self, attempt: int) -> None:

@@ -388,6 +388,32 @@ _SurrealConnection = (
 # Exception`` covers a broken/closed WS transport.
 _CONNECTION_ERRORS = (OSError, SurrealError, WebSocketException)
 
+# The ONE SDK-await-boundary error-classification set (packet 05a-ii, R-2). At the
+# boundary where a query is IN FLIGHT on the socket, a mid-op drop surfaces not only the
+# :data:`_CONNECTION_ERRORS` transport family but ALSO a raw ``builtins.KeyError(request-
+# uuid)`` from SDK 2.0.0's response routing — probed on 3.1.5 and re-probed unchanged on
+# 3.2.4 (store reference §3 ~:420-427; finding #336). Both the ``await`` verb's
+# ``InboxAwaiter`` and ``CommandSubscriber``'s reconnect ladder / teardown ride this SAME
+# atom rather than each hand-rolling ``(*_CONNECTION_ERRORS, KeyError)`` inline: a policy
+# two call sites must agree on is a function/constant they IMPORT, never a pattern they
+# clone (ONE IMPLEMENTATION, #102/#120 — routing is not sharing). Consumers must
+# ``from loremaster.store._txn import _SDK_AWAIT_BOUNDARY_ERRORS`` and reference it as a
+# module global so a mutation of this ONE definition reaches every catch site; a same-named
+# LOCAL re-definition is a drift-only two-source clone the mutation proof cannot see (the
+# adversary's R3.3 pinned bound — re-open if a THIRD module ever catches this boundary, or
+# if this value ever changes, at which point add a same-value drift check).
+_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)
+
+# The reconnect-LADDER variant: the SDK-await boundary PLUS a
+# :class:`TxnContentionExhaustedError` (a ``RuntimeError``, so NOT a member of
+# ``_CONNECTION_ERRORS``). ``CommandSubscriber.run`` unions it at its reconnect ladder so
+# sustained contention on a command claim backs off and reconnects rather than killing the
+# channel (finding #108's removed-behaviour preservation); ``InboxAwaiter`` treats an
+# exhaustion on its LIVE path as a transient and re-polls within budget. Teardown /
+# best-effort-close sites ride the base ``_SDK_AWAIT_BOUNDARY_ERRORS`` (no contention leg
+# there — a kill/close never contends).
+_SDK_AWAIT_BOUNDARY_ERRORS_WITH_CONTENTION = (*_SDK_AWAIT_BOUNDARY_ERRORS, TxnContentionExhaustedError)
+
 # The structured :attr:`ServerError.kind` values that mean "this is a transport /
 # session-loss problem, not a rejection of the write we sent". ``NotAllowed``
 # covers both a bad-password sign-in AND a mid-life socket drop the SDK silently
