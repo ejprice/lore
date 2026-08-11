@@ -223,3 +223,16 @@ Reinforces ONE IMPLEMENTATION; enforced structurally (R-1/R-2/R-3) + empirically
   + R-2 mutation; blast-radius 1838 passed; zero-new mypy. Lead verified diff scope (inbox_awaiter only).
   Removed the auditor's disposable `scratch_coldaudit_*.py` (cold-audit R4; the ruff RED_ORPHANED source) →
   `ruff check .` clean. Re-engaging cold auditor for the delta (verify #354 closed + gates + currency PASS).
+- Cold-audit delta **GO** (`5466b7b`): #354 CLOSED empirically; gates 1838p, zero-new mypy, ruff, currency PASS.
+- DEPLOY (operator GO): rollback `pre-05aii-rollback`=`a04a23ca`; built image `65e36c8` from HEAD `5466b7b`
+  (await verified in artifact); recreated lore-lore (`f93aad91`, PID1=tini) via the captured mount command.
+- ⚠ **DEPLOY BLOCKER — full lore-tier RE-EMBED at boot.** The recreate triggered a FULL lore-tier re-embed
+  (~450 files, ~1.5hr), NOT a delta: cross-checked — 127 of 152 boot-indexed files are UNCHANGED (not in the
+  122-file git delta). NOT explained by any code/config change (chunker/hash/indexer/reconcile untouched;
+  lore.yaml unchanged) → likely a store↔manifest divergence self-heal (`reconcile_store_divergence` →
+  `delete_by_tier`), #336-adjacent. Container HEALTHY (steady progress, no crash); uvicorn gated on it; lore
+  MCP down for the fleet + THIS session (pre-production, no external risk). **Operator ruled: LET IT FINISH**
+  (~1.5hr; correct current index; rollback neither clean nor certainly faster). Long boot monitor armed
+  (`bqjkrshhh`, ~120min). **TO FILE once lore serves:** a deploy-mechanism finding — recreate → full lore-tier
+  re-embed (every deploy costs ~1.5hr); root-cause the divergence (store point-count vs manifest); #336-adjacent
+  → a follow-up packet. **Pending post-boot:** live-leg smoke (served await receipt) + close-out.
