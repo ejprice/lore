@@ -1703,6 +1703,10 @@ _EXPECTED_FINDING_ACTIONS = (
     "acknowledge",
     "resolve",
     "wontfix",
+    # #256: ``annotate`` (status-preserving note append). Appended in DISPATCH ORDER
+    # (after ``wontfix``, before the batch verbs) — this tuple's order IS the served
+    # unknown-action refusal's list, so it must equal the dispatcher's own set.
+    "annotate",
     "resolve_many",
     "acknowledge_many",
 )

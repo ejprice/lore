@@ -1447,6 +1447,10 @@ _FINDING_ACTION_CHAIN_HEAD = "chain_head"
 _FINDING_ACTION_ACKNOWLEDGE = "acknowledge"
 _FINDING_ACTION_RESOLVE = "resolve"
 _FINDING_ACTION_WONTFIX = "wontfix"
+# #256: ``annotate`` — a status-PRESERVING note append (never a transition). In
+# DISPATCH ORDER after ``wontfix`` and before the batch verbs, because this tuple's
+# order IS the served unknown-action refusal's list.
+_FINDING_ACTION_ANNOTATE = "annotate"
 _FINDING_ACTION_RESOLVE_MANY = "resolve_many"
 _FINDING_ACTION_ACKNOWLEDGE_MANY = "acknowledge_many"
 _FINDING_ACTIONS = (
@@ -1457,6 +1461,7 @@ _FINDING_ACTIONS = (
     _FINDING_ACTION_ACKNOWLEDGE,
     _FINDING_ACTION_RESOLVE,
     _FINDING_ACTION_WONTFIX,
+    _FINDING_ACTION_ANNOTATE,
     _FINDING_ACTION_RESOLVE_MANY,
     _FINDING_ACTION_ACKNOWLEDGE_MANY,
 )
@@ -3288,6 +3293,19 @@ class AppContext:
                 note,
             )
             rendered, writes = AppContext._render_finding_transition(closed, actor), 1
+        elif action == _FINDING_ACTION_ANNOTATE:
+            # #256: a status-PRESERVING note append. ``note`` is REQUIRED and
+            # non-blank at the served boundary too (reuse ``_require_finding_arg`` —
+            # its refusal names 'note'), and the response renders via
+            # ``_render_finding_detail`` (the ``get`` render), NEVER
+            # ``_render_finding_transition``: an annotate changes no status, so a
+            # "transitioned to <status>" line would be a fabricated transition (#104).
+            annotated = await self.finding_ledger.annotate(
+                _require_finding_ref(id_or_number),
+                _require_finding_arg(actor, "actor"),
+                _require_finding_arg(note, "note"),
+            )
+            rendered, writes = AppContext._render_finding_detail(annotated), 1
         else:
             raise ValueError(
                 f"unknown findings action {render_attributed(action)}; "
@@ -10658,7 +10676,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             "kind defaults 'friction'), 'query' by status / kind / area, 'get' or "
             "'chain_head' one by id_or_number, or drive its review state machine — "
             "'acknowledge' / 'resolve' / 'wontfix' (by id_or_number + actor, with an "
-            "optional note) — or the BATCH edges 'resolve_many' / 'acknowledge_many' "
+            "optional note) — 'annotate' (append a status-PRESERVING note to a "
+            "finding's provenance by id_or_number + actor + a REQUIRED note; the cheap "
+            "correction that records a stale-body fix WITHOUT minting a new number via "
+            "supersede) — or the BATCH edges 'resolve_many' / 'acknowledge_many' "
             "(by 'items', a list of {id_or_number, note?} objects, + actor; "
             "BEST-EFFORT — one bad item never vetoes the rest, rendered per-item). "
             "Returns summarised rows, never a raw store dump."
@@ -10754,8 +10775,12 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             str | None,
             Field(
                 description=(
-                    "An optional free-text note recorded with an 'acknowledge' / "
-                    "'resolve' / 'wontfix' transition. Ignored by the other actions."
+                    "A free-text note recorded in the finding's provenance: OPTIONAL "
+                    "on an 'acknowledge' / 'resolve' / 'wontfix' transition, and "
+                    "REQUIRED (non-blank) for an 'annotate' (a status-preserving note "
+                    "append). Ignored by the read actions, by 'report', and by the "
+                    "batch edges 'resolve_many' / 'acknowledge_many' (which carry their "
+                    "notes per-item inside 'items')."
                 )
             ),
         ] = None,

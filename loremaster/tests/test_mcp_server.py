@@ -1498,6 +1498,23 @@ class TestToolDescriptions:
         assert "resolve_many" in description
         assert "acknowledge_many" in description
 
+    async def test_findings_description_teaches_the_annotate_action(
+        self, tmp_path: Path
+    ) -> None:
+        # #256 CONSUMER LAW / F4: annotate's whole PURPOSE is to make the cheap,
+        # status-preserving correction the OBVIOUS move so agents stop reaching for
+        # `supersede` (a new number) or leaving stale bodies. An agent learns the
+        # action menu from the served description alone — so `annotate` must be
+        # TEACHABLE there, exactly as report/query/resolve|acknowledge already are.
+        # RED at HEAD: the description names no annotate action.
+        tools = await self._tools_by_name(tmp_path)
+        description = tools["lore_findings"].description.lower()
+        assert "annotate" in description, (
+            "the lore_findings description does not TEACH the annotate action — an agent "
+            "scanning the action menu cannot discover the cheap correction and keeps using "
+            "supersede (the #256 friction, unclosed)"
+        )
+
     async def test_tasks_description_teaches_the_actions(self, tmp_path: Path) -> None:
         # PKT-06 §6: latent gap closed — no task-side counterpart to
         # test_findings_description_teaches_the_actions existed before this
@@ -2365,6 +2382,113 @@ class TestToolBehaviourEndToEnd:
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
             await indexed_context.findings(action="obliterate")
         assert "obliterate" in str(exc_info.value)
+
+    # -- #256 annotate: the SERVED surface (dispatch + render) ------------- #
+    # The ledger contract lives in test_findings.py; these pin the served action
+    # `lore_findings action=annotate` — the surface an AGENT actually calls. RED at
+    # HEAD because `annotate` is not a dispatch action yet (the dispatcher raises
+    # "unknown findings action").
+
+    async def test_findings_annotate_action_routes_to_the_ledger_and_returns_detail(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Pin S1 (dispatch exists + routes): action=annotate reaches
+        # FindingLedger.annotate and returns the finding DETAIL (like get), so the
+        # agent sees the correction landed. RED at HEAD: unknown action.
+        reported = await indexed_context.findings(
+            action="report",
+            subject="stale body needs a footnote",
+            body="the original, now-stale framing",
+            area="lore_findings",
+            category="friction",
+            created_by="me",
+        )
+        number = int(reported.split("#", 1)[1].split(" ", 1)[0])
+        note = "the tests_for gap also strands transitive coverage via a helper - grep-confirmed"
+
+        served = await indexed_context.findings(
+            action="annotate",
+            id_or_number=number,
+            actor="drift-sweep-agent-7",
+            note=note,
+        )
+        # Returns the finding DETAIL: the subject (a get-render trait) + the note.
+        assert "stale body needs a footnote" in served
+        assert note in served
+        # Routed to the ledger: the finding is annotated AND status is UNCHANGED.
+        persisted = await indexed_context.finding_ledger.get(number)
+        assert persisted.status == "open"
+        assert any(
+            isinstance(event, dict)
+            and event.get("action") == "annotate"
+            and event.get("note") == note
+            for event in persisted.provenance["events"]
+        )
+
+    async def test_findings_annotate_response_and_get_never_fabricate_a_transition(
+        self, indexed_context: AppContext
+    ) -> None:
+        # Pin S2 (the #104 server-level twin — the load-bearing one): an annotate
+        # changed NO status, so neither its response NOR a later get/chain_head may
+        # render a "transitioned to <status>" line for it. Discriminating wrong
+        # build: wiring action=annotate through `_render_finding_transition` (or
+        # otherwise treating annotate as a transition) renders
+        # "finding #N transitioned to open by ..." => this reddens.
+        reported = await indexed_context.findings(
+            action="report",
+            subject="only-ever-annotated finding",
+            body="b",
+            area="lore_findings",
+            category="bug",
+            created_by="me",
+        )
+        number = int(reported.split("#", 1)[1].split(" ", 1)[0])
+
+        served = await indexed_context.findings(
+            action="annotate",
+            id_or_number=number,
+            actor="me",
+            note="a footnote, never a transition",
+        )
+        assert "transitioned to" not in served, (
+            f"the annotate response fabricated a status transition (#104): {served!r}"
+        )
+        # ...and get of a finding that was ONLY annotated carries no fabricated
+        # transition line either (the provenance renders the annotate event, which
+        # has no status/`to` field for a render to build an arrow from).
+        got = await indexed_context.findings(action="get", id_or_number=number)
+        assert "transitioned to" not in got, (
+            f"get fabricated a status transition for an annotate-only finding: {got!r}"
+        )
+        # Belt: the finding is genuinely still open (the row's own status word is
+        # legitimate; what must be absent is the fabricated *transition* verb).
+        assert (await indexed_context.finding_ledger.get(number)).status == "open"
+
+    @pytest.mark.parametrize("blank_note", ["", " ", "\t", None])
+    async def test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary(
+        self, indexed_context: AppContext, blank_note: str | None
+    ) -> None:
+        # Pin S3 (served argument surface): `note` is REQUIRED and non-blank at the
+        # served boundary too (reuse `_require_finding_arg`, don't hand-roll). RED at
+        # HEAD: the unknown-action error names the ACTION, never "note", so the
+        # `"note" in message` assert fails until the branch exists and validates.
+        reported = await indexed_context.findings(
+            action="report",
+            subject="needs a real note to annotate",
+            body="b",
+            area="lore_findings",
+            category="friction",
+            created_by="me",
+        )
+        number = int(reported.split("#", 1)[1].split(" ", 1)[0])
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
+            await indexed_context.findings(
+                action="annotate", id_or_number=number, actor="me", note=blank_note
+            )
+        assert "note" in str(exc_info.value).lower(), (
+            f"a blank/None annotate note must be refused with an error naming 'note', got "
+            f"{str(exc_info.value)!r}"
+        )
 
     # -- verify rebuild caveat (item 4) ------------------------------------ #
 

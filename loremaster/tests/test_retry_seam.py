@@ -6772,6 +6772,12 @@ def _discover_guarded_cas_handlers() -> dict[str, tuple[str, int, bool]]:
 _GUARDED_CAS_DOORS = {
     "briefs.py::_relate_briefed": "already_acked=True with a racer's `via`",
     "findings.py::_transition": "IllegalTransitionError — a lost transition race",
+    # #256: `annotate` re-reads after a `SurrealStoreError` to distinguish a vanished
+    # row (findings are never hard-deleted, so this is a defensive belt-and-braces
+    # guard). It carries the `except TxnContentionExhaustedError: raise` clause ABOVE
+    # the rollback handler, so exhausted contention propagates unread — never re-read
+    # as a not-found. A DELIBERATE, reviewer-visible fifth door.
+    "findings.py::annotate": "FindingNotFoundError — a row that vanished (defensive)",
     "tasks.py::transition": "IllegalTransitionError — a lost transition race",
     "tasks.py::supersede_task": "IllegalTransitionError — 'already superseded by someone else'",
 }
@@ -6865,6 +6871,7 @@ class TestEveryGuardedCasDoorPropagatesExhaustionUNREAD:
         ("module_name", "door"),
         [
             pytest.param("findings", "findings.py::_transition", id="findings-transition"),
+            pytest.param("findings", "findings.py::annotate", id="findings-annotate"),
             pytest.param("tasks", "tasks.py::transition", id="tasks-transition"),
             pytest.param("tasks", "tasks.py::supersede_task", id="TASKS-SUPERSEDE-unpinned"),
         ],

@@ -70,6 +70,7 @@ The public surface:
         async acknowledge(id_or_number, actor) -> Finding
         async resolve(id_or_number, actor, note=None) -> Finding
         async wontfix(id_or_number, actor, note=None) -> Finding
+        async annotate(id_or_number, actor, note) -> Finding  # status-preserving
 
     Exceptions: FindingLedgerError(RuntimeError);
                 FindingNotFoundError(FindingLedgerError);
@@ -108,6 +109,7 @@ from loremaster.store.surreal_schema import (
     FINDING_TABLE,
     generate_finding_ddl,
 )
+from lorerunes import is_blank
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +187,10 @@ _PROV_AT = "at"
 _PROV_TO = "to"
 _PROV_NOTE = "note"
 _ACTION_TRANSITION = "transition"
+# The audit-event action name for a status-PRESERVING note append (#256): an
+# ``annotate`` event carries NO ``to``/status key, so no render can fabricate a
+# ``-> status`` arrow from it (the #104 served-English-contradicts-data class).
+_ACTION_ANNOTATE = "annotate"
 
 # The record-id table separator and the
 # row id key.
@@ -963,6 +969,83 @@ class FindingLedger:
         """
         return await self._transition(id_or_number, STATUS_WONTFIX, actor, note)
 
+    async def annotate(
+        self, id_or_number: int | str, actor: str, note: str | None
+    ) -> Finding:
+        """Append a status-PRESERVING ``{actor, action:'annotate', at, note}`` event.
+
+        The cheap correction #256 exists to make the OBVIOUS move: an agent that finds
+        a finding's BODY stale (a superseded framing, a wrong count) attaches a note
+        WITHOUT minting a new number via ``supersede`` and WITHOUT moving the finding
+        through the state machine. Annotate is legal in EVERY status — a stale body on
+        a ``resolved`` finding is exactly as misleading as one on an ``open`` finding,
+        so being status-orthogonal is the whole value of the verb.
+
+        The event rides the SAME guarded, server-side-append CAS a transition does
+        (:meth:`_guarded_append_fragment`), dropping ONLY the status ``SET`` and the
+        ``WHERE status = $expected_from`` predicate — so concurrent annotates can never
+        clobber each other's events (the append is server-side) and status changes for
+        NO annotate, in ANY state. The event carries NO ``to``/status field: an
+        annotate changes no status, so a render has nothing to fabricate a
+        ``-> status`` arrow from (#104).
+
+        Args:
+            id_or_number: The finding to annotate (stable number or opaque id).
+            actor: The identity recording the note, stamped into ``provenance``.
+            note: The correction — REQUIRED and non-blank (an annotate with no real
+                note is pointless). Rejected via the shared :func:`lorerunes.is_blank`
+                predicate (the ONE answer to "what counts as blank?", shared with
+                :meth:`report` and config) — never a hand-rolled ``strip`` check.
+
+        Returns:
+            The finding's updated state: status unchanged, one more provenance event.
+
+        Raises:
+            ValueError: ``note`` is ``None``, empty, or whitespace-only.
+            FindingNotFoundError: Nothing is addressed by ``id_or_number``.
+        """
+        if note is None or is_blank(note):
+            raise ValueError(
+                f"finding annotate note must be a non-empty, non-whitespace string, "
+                f"got {note!r}"
+            )
+        row = await self._resolve_or_raise(id_or_number)
+        finding_id = self._bare_id(row.get(_ID_KEY))
+        now = datetime.now(UTC)
+        event: dict[str, Any] = {
+            _PROV_ACTOR: actor,
+            _PROV_ACTION: _ACTION_ANNOTATE,
+            _PROV_AT: now.isoformat(),
+            _PROV_NOTE: note,
+        }
+        try:
+            await self._apply([self._guarded_append_fragment(finding_id, event)])
+        except SurrealConnectionError:
+            # A genuine transport fault — never a lost race; propagate untouched.
+            raise
+        except TxnContentionExhaustedError:
+            # A conflict that outlived the retry budget — NOT a lost CAS (#102): this
+            # WHERE-less append may be perfectly applicable, so it must never be
+            # re-read and reinterpreted below. Propagate untouched. (Kept as its OWN
+            # single-name clause — the canonical guarded-CAS-door shape the retry-seam
+            # scanner recognises, matching :meth:`_transition`.)
+            raise
+        except SurrealStoreError as error:
+            # Belt-and-braces: the shared guarded shell THROWs when the addressed row
+            # matched zero rows (it vanished between the pre-read and the UPDATE).
+            # Findings are never hard-deleted, so this is defensive — surface it as a
+            # not-found rather than a silent no-op (the store law's named enemy).
+            fresh = await self._select_row_by_id(finding_id)
+            if fresh is None:
+                raise FindingNotFoundError(
+                    f"no finding with id {finding_id!r}"
+                ) from error
+            raise
+        updated = await self._select_row_by_id(finding_id)
+        if updated is None:
+            raise FindingNotFoundError(f"no finding with id {finding_id!r}")
+        return self._row_to_finding(updated)
+
     async def _transition(
         self, id_or_number: int | str, target: str, actor: str, note: str | None
     ) -> Finding:
@@ -1031,46 +1114,79 @@ class FindingLedger:
         return self._row_to_finding(updated)
 
     @staticmethod
-    def _transition_fragment(
-        finding_id: str, target: str, expected_from: str, event: dict[str, Any]
+    def _guarded_append_fragment(
+        finding_id: str,
+        event: dict[str, Any],
+        *,
+        status_target: str | None = None,
+        expected_from: str | None = None,
     ) -> TxnFragment:
-        """The guarded-CAS transition fragment: LET-bind, THROW on zero rows.
+        """The ONE guarded, server-side-append CAS shell: LET-bind, append, THROW.
 
+        The single append primitive BOTH :meth:`_transition_fragment` and
+        :meth:`annotate` route through — never cloned (ONE-IMPLEMENTATION, #102/#120).
         Mirrors :meth:`~loremaster.tasks.TaskLedger._transition_fragment`: a guarded
-        ``UPDATE`` binds its affected rows to ``$tr_updated`` — mutating ONLY while
-        the row is STILL in ``expected_from`` — and
+        ``UPDATE`` binds its affected rows to ``$tr_updated`` and
         ``IF array::len($tr_updated) == 0 { THROW … }`` rolls the WHOLE transaction
-        back the instant a concurrent writer already moved the row away, so a zero-row
-        CAS is ALWAYS a typed, detectable rollback — never a silent no-op a caller
-        could mistake for success. The new provenance EVENT is appended SERVER-SIDE
+        back the instant zero rows match, so a zero-row CAS is ALWAYS a typed,
+        detectable rollback — never a silent no-op a caller could mistake for success.
+        The new provenance EVENT is appended SERVER-SIDE
         (``provenance.events += [$tr_event]``) rather than written as a whole
         Python-merged object, so concurrent mutators can never clobber each other's
-        events. Unlike the task ledger, a finding transition guards ONLY on
-        ``status`` — a finding is never gated by supersession (the ``supersedes`` link
-        lives on the successor, not the predecessor).
+        events.
+
+        The two OPTIONAL, keyword-only guards are exactly what a *transition* adds on
+        top of a bare append and an *annotate* drops:
+
+        * ``status_target`` — when given, the CAS also ``SET``s ``status`` (a
+          transition changes status; an annotate changes NONE, so it omits the SET).
+        * ``expected_from`` — when given, the ``UPDATE`` mutates ONLY while the row is
+          STILL in that status (the transition's compare-and-set guard). An annotate
+          is legal in EVERY status, so it drops the ``WHERE`` predicate and always
+          matches the addressed row.
+
+        Unlike the task ledger, a finding transition guards ONLY on ``status`` — a
+        finding is never gated by supersession (the ``supersedes`` link lives on the
+        successor, not the predecessor).
         """
-        set_parts = [
-            f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}",
-            f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_TRANSITION_EVENT_PARAM}]",
-        ]
-        guarded_transition = (
+        set_parts = [f"{_COL_PROVENANCE}.{_PROV_EVENTS} += [${_TRANSITION_EVENT_PARAM}]"]
+        params: dict[str, Any] = {
+            _TRANSITION_ID_PARAM: finding_id,
+            _TRANSITION_EVENT_PARAM: event,
+        }
+        if status_target is not None:
+            set_parts.insert(0, f"{_COL_STATUS} = ${_TRANSITION_STATUS_PARAM}")
+            params[_TRANSITION_STATUS_PARAM] = status_target
+        where_clause = ""
+        if expected_from is not None:
+            where_clause = f" WHERE {_COL_STATUS} = ${_TRANSITION_EXPECTED_FROM_PARAM}"
+            params[_TRANSITION_EXPECTED_FROM_PARAM] = expected_from
+        guarded_update = (
             f"LET ${_TRANSITION_UPDATED_VAR} = (UPDATE "
             f"type::record('{FINDING_TABLE}', ${_TRANSITION_ID_PARAM}) SET "
-            f"{', '.join(set_parts)} "
-            f"WHERE {_COL_STATUS} = ${_TRANSITION_EXPECTED_FROM_PARAM})"
+            f"{', '.join(set_parts)}{where_clause})"
         )
         guard_updated = (
             f"IF array::len(${_TRANSITION_UPDATED_VAR}) == 0 "
             f"{{ THROW '{_TRANSITION_ALREADY_MESSAGE}' }}"
         )
-        return TxnFragment(
-            statements=[guarded_transition, guard_updated],
-            params={
-                _TRANSITION_ID_PARAM: finding_id,
-                _TRANSITION_STATUS_PARAM: target,
-                _TRANSITION_EVENT_PARAM: event,
-                _TRANSITION_EXPECTED_FROM_PARAM: expected_from,
-            },
+        return TxnFragment(statements=[guarded_update, guard_updated], params=params)
+
+    @staticmethod
+    def _transition_fragment(
+        finding_id: str, target: str, expected_from: str, event: dict[str, Any]
+    ) -> TxnFragment:
+        """The guarded-CAS transition fragment: status SET + ``WHERE`` gate + append.
+
+        Delegates to the ONE shared :meth:`_guarded_append_fragment` (never clones
+        it): a transition IS a guarded append that ALSO sets ``status`` and gates on
+        the pre-read ``expected_from``. See that method for the full CAS mechanics.
+        """
+        return FindingLedger._guarded_append_fragment(
+            finding_id,
+            event,
+            status_target=target,
+            expected_from=expected_from,
         )
 
     @staticmethod

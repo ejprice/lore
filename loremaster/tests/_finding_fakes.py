@@ -363,6 +363,49 @@ class FakeFindingLedger:
         # --- end compare-and-set ---
         return finding.model_copy(deep=True)
 
+    # -- annotate (#256) ----------------------------------------------------
+
+    async def annotate(
+        self, id_or_number: int | str, actor: str, note: str | None
+    ) -> Finding:
+        """Append an ``{actor, action:'annotate', at, note}`` event to a finding's
+        ``provenance.events`` — changing NOTHING else.
+
+        Independent parity reimplementation of the #256 contract (this fake never
+        imports the real ledger's logic): status-PRESERVING (NO legal-transition
+        gate — annotate is legal in EVERY status, the property that makes it
+        status-orthogonal), ``note`` REQUIRED and non-blank (rejected BEFORE any
+        yield/mutate, mirroring :meth:`report`'s area/category guard so the parity
+        pin holds), and — like :meth:`_transition` — an atomic append with NO
+        ``await`` between the resolve and the mutation, so concurrent annotates
+        never clobber one another's events (the server-side ``+= [$event]`` a real
+        ``FindingLedger`` gets from the engine, modelled here by asyncio's
+        cooperative single-thread scheduling).
+
+        The event carries NO ``to``/status field: an annotate changes no status, so
+        a render must have nothing to fabricate a ``-> status`` arrow from (#104).
+        """
+        if note is None or not note.strip():
+            raise ValueError(
+                f"finding annotate note must be a non-empty, non-whitespace string, "
+                f"got {note!r}"
+            )
+        # The race window is honestly OPEN before the append, then resolve-and-mutate
+        # with NO ``await`` between them (mirrors :meth:`_transition`).
+        await asyncio.sleep(0)
+        finding = self._resolve(id_or_number)
+        # --- the atomic append: NO ``await`` between resolve and mutation ---
+        now = _utc_now()
+        event: dict[str, Any] = {
+            "actor": actor,
+            "action": "annotate",
+            "at": now.isoformat(),
+            "note": note,
+        }
+        finding.provenance.setdefault("events", []).append(event)
+        # --- end atomic append ---
+        return finding.model_copy(deep=True)
+
     # -- rollup (PKT-06) ------------------------------------------------------
 
     async def filed_since(self, since: datetime, *, limit: int) -> _FakeFindingActivityWindow:

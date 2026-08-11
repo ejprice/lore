@@ -285,6 +285,10 @@ FINDING_WRITE_ACTIONS = (
     "acknowledge",
     "resolve",
     "wontfix",
+    # #256: ``annotate`` MUTATES (appends a provenance event), so it footers the
+    # pending-traffic line like every other write. Its kwargs (a real id + actor +
+    # a non-blank note) are supplied by :func:`_finding_action_kwargs`.
+    "annotate",
     "resolve_many",
     "acknowledge_many",
 )
@@ -3939,6 +3943,18 @@ async def _finding_action_kwargs(
     if action in ("acknowledge", "resolve", "wontfix"):
         seeded = await _seed_open_finding(harness)
         return {"id_or_number": seeded.id, "actor": _UNREGISTERED_ATTRIBUTION}
+    if action == "annotate":
+        # #256: annotate REQUIRES a non-blank note (the served boundary refuses a
+        # missing/blank one via ``_require_finding_arg``). Without a note here the
+        # parametrized write-footer leg would drive annotate with no id/note and die
+        # on ``_require_finding_ref``/note-required BEFORE any footer decision — the
+        # exact C-DEF-2 shape repaired for the ref-needing reads below.
+        seeded = await _seed_open_finding(harness)
+        return {
+            "id_or_number": seeded.id,
+            "actor": _UNREGISTERED_ATTRIBUTION,
+            "note": "a real note",
+        }
     if action in _FINDING_ACTIONS_NEEDING_A_REF:
         # ⚠ REPAIRED 2026-08-01 (C-DEF 2, REPORT-refbuild-c3-1.md §3.2). These two
         # actions were driven with NO ``id_or_number``, and every correct build
