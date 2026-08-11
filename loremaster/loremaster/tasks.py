@@ -1880,6 +1880,7 @@ class TaskLedger:
         subject: str,
         description: str,
         created_by: str,
+        blocked_by: list[str] | None = None,
     ) -> str:
         """Reframe a task: create a fresh open successor, stamp the old row.
 
@@ -1896,11 +1897,25 @@ class TaskLedger:
         ``superseded_by IS NONE``), transitioned (:meth:`_validate_transition`
         refuses it), or superseded again.
 
+        PACKET 05b (#174): the successor reframes the SAME work item, so its dependency
+        structure travels with it, mirrored onto the ENFORCED ``blocks`` edge and run
+        through the SAME pre-checks :meth:`create_task` runs (lead ruling L3 — ONE
+        implementation, not a clone). ``blocked_by`` is a SENTINEL: ``None`` INHERITs the
+        predecessor's ``blocked_by``; ``[]`` CLEARs it; ``[ids]`` REPLACEs it (never a
+        merge). The resolved set is deduped (order-preserving). A phantom or SUPERSEDED
+        blocker is REFUSED atomically before the write — nothing minted, the old row
+        un-stamped — where it used to mint a successor that was unclaimable forever,
+        silently (the harm #174 abolishes). Cost mirrors :meth:`create_task`: two extra
+        round trips only when the resolved ``blocked_by`` is non-empty.
+
         Args:
             task_id: The opaque id of the task being superseded.
             subject: The successor task's short human-readable title.
             description: The successor task's longer free-text description.
             created_by: The identity of the caller performing the supersession.
+            blocked_by: The successor's dependency SENTINEL — ``None`` (INHERIT the
+                predecessor's ``blocked_by``), ``[]`` (CLEAR), or ``[ids]`` (REPLACE the
+                resolved set, deduped order-preserving — NOT a merge).
 
         Returns:
             The newly created successor task's opaque id.
@@ -1909,6 +1924,11 @@ class TaskLedger:
             TaskNotFoundError: No task with ``task_id`` exists.
             IllegalTransitionError: The task is ALREADY superseded (sequentially,
                 or as the loser of a concurrent double supersede).
+            UnknownBlockerError: A resolved ``blocked_by`` entry names no task row, or
+                names a SUPERSEDED one (refused by the SHARED blocker-existence policy).
+            TaskCycleError: The resolved ``blocked_by`` would put the successor on a
+                ``blocked_by`` cycle, OR names the very task being superseded (a successor
+                blocked by its predecessor is unclaimable forever).
         """
         row = await self._select_row(task_id)
         if row is None:
@@ -1924,9 +1944,36 @@ class TaskLedger:
                 f"{row.get(_COL_SUPERSEDED_BY)!r} and cannot be superseded again"
             )
 
+        # #174: resolve the successor's dependency SENTINEL (INHERIT / CLEAR / REPLACE),
+        # deduped order-preserving, exactly as create_task normalises its own blocked_by.
+        if blocked_by is None:
+            dependencies = [str(blocker) for blocker in (row.get(_COL_BLOCKED_BY) or ())]
+        else:
+            dependencies = [str(blocker) for blocker in blocked_by]
+        dependencies = list(dict.fromkeys(dependencies))
         new_id = uuid4().hex
+        # A successor blocked_by the task it supersedes is UNCLAIMABLE FOREVER: the
+        # predecessor is stamped ``superseded`` (a NON-terminal status) in this very
+        # transaction, so the successor's claim CAS can never resolve it. Neither shared
+        # pre-check below can see it — ``_reject_unusable_blockers`` finds the predecessor
+        # present and not-yet-superseded at check time, and ``_refuse_a_cycle`` finds a
+        # fresh successor id on no COLUMN cycle — so this dedicated guard covers BOTH the
+        # explicit-override and the inherited (legacy self-loop) paths.
+        if task_id in dependencies:
+            raise TaskCycleError(
+                f"a successor cannot be blocked by the task it supersedes: "
+                f"{render_attributed(task_id)} — supersede reframes the same work item, so "
+                f"re-point the dependency at the successor (or drop it) rather than at the "
+                f"task being superseded"
+            )
+        # The SAME shared pre-checks create_task runs, over the RESOLVED deps (L3 / R6 —
+        # ONE implementation): a phantom/superseded blocker or a column cycle is refused
+        # atomically before any write. Both short-circuit on empty deps (no wire cost).
+        await self._reject_unusable_blockers([(entry, entry) for entry in dependencies])
+        await self._refuse_a_cycle({new_id: dependencies})
+
         now = datetime.now(UTC)
-        content = self._new_task_content(subject, description, None, created_by, now)
+        content = self._new_task_content(subject, description, dependencies, created_by, now)
         event = {
             _PROV_ACTOR: created_by,
             _PROV_ACTION: _ACTION_SUPERSEDE,
@@ -1934,8 +1981,17 @@ class TaskLedger:
             _PROV_AT: now.isoformat(),
         }
         try:
+            # The successor CREATE (in the supersede fragment) and its blocks-edge mirror
+            # ride ONE transaction: RELATE comes AFTER the CREATE so the ENFORCED ``out``
+            # endpoint (the fresh successor) exists, and the loser of a raced supersede
+            # rolls back the WHOLE txn (stamp + CREATE + RELATEs) — ZERO orphan edges.
             await self._apply(
-                [self._supersede_fragment(task_id, new_id, content, event)]
+                [
+                    self._supersede_fragment(task_id, new_id, content, event),
+                    self._relate_fragment(
+                        [(blocker, new_id) for blocker in dependencies]
+                    ),
+                ]
             )
         except SurrealConnectionError:
             # A genuine transport fault — never a lost race; propagate untouched

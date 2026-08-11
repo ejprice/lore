@@ -1575,21 +1575,22 @@ class TestTheMirrorHoldsAtEveryWritePath:
         assert await _edge_blockers_of(ledger, first_id) == {second_id}
         assert await _edge_blockers_of(ledger, second_id) == set()
 
-    async def test_the_SUPERSEDED_successor_is_born_UNBLOCKED_with_no_blocks_edges(
+    async def test_the_SUPERSEDED_successor_INHERITS_predecessor_blocked_by(
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
     ) -> None:
-        """GREEN-ISH today for the column, RED for the edge.  **OLD-BEHAVIOUR-PRESERVED,
-        DELIBERATELY** — the removed-behaviour law's adjudication, written down as a pin
-        rather than as a sentence in a report.
+        """RED at HEAD `c0071cd`.  **#174 FLIPS THE OLD-WORLD CORPSE.**
 
-        MEASURED (scout §A2 W3): ``supersede_task`` calls ``_new_task_content(..., None,
-        ...)``, so the successor is born with an EMPTY ``blocked_by`` and the predecessor's
-        dependencies are dropped.  Whether that is right is spec-silent; it is CONSISTENT
-        with today's row, so *"mirror exactly"* is the safe read — and the inventory records
-        it as **old-behaviour-preserved deliberately, not accidentally**.
+        This pin used to be ``..._is_born_UNBLOCKED_with_no_blocks_edges``: it asserted the
+        successor was born ``blocked_by=[]`` with no edges and labelled it
+        *"old-behaviour-preserved DELIBERATELY"*.  That adjudication CERTIFIED finding #174
+        (a superseded task silently drops its dependency structure, minting a falsely-
+        unblocked successor) — a green suite green BECAUSE it pinned the corpse (P8d).
 
-        The pin also holds the PREDECESSOR's own edges intact: a supersede must not garbage
-        -collect the edges of the row it stamps.
+        #174's reframe: ``supersede`` reframes the SAME work item, so — with no ``blocked_by``
+        argument (the INHERIT sentinel) — the successor CARRIES the predecessor's
+        dependencies, and the mirror follows the column onto the ENFORCED ``blocks`` edge.
+        The PREDECESSOR's own edges stay intact (a supersede must not garbage-collect the
+        row it stamps).  Contract: ``REPORT-contract-verbs-05b.md`` §#174 pin 1.
         """
         ledger, _env, blocker_id = task_ledger
         original = await ledger.create_task(
@@ -1598,13 +1599,13 @@ class TestTheMirrorHoldsAtEveryWritePath:
         successor = await ledger.supersede_task(
             original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
         )
-        assert await _column_blockers_of(ledger, successor) == []
-        assert await _edge_blockers_of(ledger, successor) == set(), (
-            "the successor inherited blocks EDGES its blocked_by column does not carry — "
-            "the mirror must follow the column, and supersede_task deliberately drops the "
-            "predecessor's dependencies (scout §A2-FLAG 2)"
+        # INHERIT: the successor carries the predecessor's dependency + its mirror edge.
+        assert await _column_blockers_of(ledger, successor) == [blocker_id]
+        assert await _edge_blockers_of(ledger, successor) == {blocker_id}, (
+            "the successor's blocks EDGE must mirror its inherited blocked_by column "
+            "(#174: supersede reframes the same work item, deps travel with it)"
         )
-        await _assert_mirror(ledger, successor, where="supersede_task successor")
+        await _assert_mirror(ledger, successor, where="supersede_task successor (inherit)")
         await _assert_mirror(ledger, original, where="supersede_task predecessor")
         assert await _edge_blockers_of(ledger, original) == {blocker_id}
 
@@ -9143,4 +9144,354 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #   BOTH legs of $T (2/2, EXIT=0, server.py restored byte-exact md5
 #   f0341e3e8558a1b67d063600763b57d5). That run is also why this class has no
 #   "limit on query is ACCEPTED" leg — see the comment in $T's own body.
+
+
+# ===========================================================================
+# #174 — supersede inherits/overrides the SUCCESSOR's OWN blocked_by
+# ===========================================================================
+# CONTRACT (RED at HEAD `c0071cd`): `REPORT-contract-verbs-05b.md` §#174.
+# Author: contract-verbs-05b (Opus-4.8). `supersede_task` today calls
+# `_new_task_content(subject, description, None, ...)` (a literal None) and its `_apply`
+# has NO `_relate_fragment`, so the successor is born `blocked_by=[]` with no edges — a
+# silently-unblocked successor (the harm is VISIBILITY, found only by a later
+# `blocked=false` query). The fix mirrors `create_task`: sentinel-disciplined deps
+# (None=INHERIT / []=CLEAR / [ids]=REPLACE), the SAME two pre-checks over the RESOLVED
+# set (`_reject_unusable_blockers` + `_refuse_a_cycle`), `_new_task_content(..., deps, ..)`,
+# and `_relate_fragment` appended to supersede's OWN stamp-CAS `_apply` (RELATE after the
+# successor CREATE, ENFORCED needs `out` to exist). SCOPE: ONLY the successor's own
+# blocked_by — NOT the dependents blocked_BY the superseded task (that is the separate #356).
+#
+# The INHERIT sentinel is pinned by the flipped corpse
+# `TestTheMirrorHoldsAtEveryWritePath::test_the_SUPERSEDED_successor_INHERITS_predecessor_blocked_by`.
+# This class pins CLEAR + REPLACE + the two refuse-and-teach fates + the ONE-IMPLEMENTATION
+# reuse + the edge-aware atomicity + the served surface.
+_SUPERSEDE_EDGE_RACE_ITERATIONS = 12
+
+
+class TestSupersedeCarriesBlockedBy174:
+    """#174 — the successor's dependency structure travels with the reframe."""
+
+    async def test_CLEAR_with_an_explicit_empty_list_drops_dependencies(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """`blocked_by=[]` = CLEAR (distinct from omitted=INHERIT).
+
+        RED at HEAD via TypeError (the param does not exist yet). Kills a build that
+        conflates None and [] — if []≡INHERIT, the successor would carry the blocker.
+        """
+        ledger, _env, blocker_id = task_ledger
+        original = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
+        )
+        successor = await ledger.supersede_task(
+            original, subject="Reframed", description=DESCRIPTION,
+            created_by=CREATOR, blocked_by=[],
+        )
+        assert await _column_blockers_of(ledger, successor) == []
+        assert await _edge_blockers_of(ledger, successor) == set()
+
+    async def test_REPLACE_with_a_new_blocker_list_is_not_a_merge(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """`blocked_by=[C]` = REPLACE the resolved set (dedup, order-preserving), NOT merge.
+
+        Kills always-inherit (successor would still carry the old blocker) AND merge/append
+        (successor would carry BOTH). RED at HEAD via TypeError.
+        """
+        ledger, _env, blocker_id = task_ledger
+        replacement = await ledger.create_task(
+            "a replacement blocker that exists", DESCRIPTION, created_by=CREATOR
+        )
+        original = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
+        )
+        successor = await ledger.supersede_task(
+            original, subject="Reframed", description=DESCRIPTION,
+            created_by=CREATOR, blocked_by=[replacement],
+        )
+        assert await _column_blockers_of(ledger, successor) == [replacement]
+        assert await _edge_blockers_of(ledger, successor) == {replacement}
+        assert blocker_id not in await _column_blockers_of(ledger, successor), (
+            "REPLACE must not MERGE the predecessor's dependencies with the override"
+        )
+
+    async def test_an_INHERITED_SUPERSEDED_blocker_is_REFUSED_and_nothing_is_minted(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """HEADLINE (trust): validate the INHERITED deps, not just an override.
+
+        A build that pre-checks only explicit overrides — trusting inherited deps as
+        "already valid" — mints a successor whose claim CAS can never be satisfied (the
+        #174/#130 unclaimable-forever shape). RED at HEAD: supersede does not validate OR
+        inherit today, so no refusal is raised.
+        """
+        ledger, _env, _blocker = task_ledger
+        blocker = await ledger.create_task(
+            "a blocker that will be reframed", DESCRIPTION, created_by=CREATOR
+        )
+        original = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        # Supersede the BLOCKER — it is now superseded (still non-terminal status).
+        await ledger.supersede_task(
+            blocker, subject="the reframed blocker", description=DESCRIPTION,
+            created_by=CREATOR,
+        )
+        before = await _task_row_count(ledger)
+
+        with pytest.raises(TaskLedgerError) as caught:
+            # No blocked_by arg -> INHERIT [blocker], which is now superseded.
+            await ledger.supersede_task(
+                original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
+            )
+        assert blocker in str(caught.value), (
+            "the refusal must NAME the stale inherited blocker (teach the rewire)"
+        )
+        # Atomic refuse-and-teach: NOTHING minted, the original is un-stamped.
+        assert (await ledger.get_task(original)).superseded_by is None
+        assert await _task_row_count(ledger) == before
+
+    async def test_an_OVERRIDE_PHANTOM_blocker_is_REFUSED_and_nothing_is_minted(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """An override naming a non-existent task is refused atomically (RED via TypeError)."""
+        ledger, _env, _blocker = task_ledger
+        phantom = PHANTOM_TASK_IDS[0]
+        original = await ledger.create_task(SUBJECT, DESCRIPTION, created_by=CREATOR)
+        before = await _task_row_count(ledger)
+
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.supersede_task(
+                original, subject="Reframed", description=DESCRIPTION,
+                created_by=CREATOR, blocked_by=[phantom],
+            )
+        assert phantom in str(caught.value)
+        assert (await ledger.get_task(original)).superseded_by is None
+        assert await _task_row_count(ledger) == before
+
+    async def test_supersede_REFUSES_a_successor_blocked_by_the_task_it_SUPERSEDES(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """BLOCKER (adversary-verbs-05b; contract R1): a successor blocked_by the task it
+        supersedes is UNCLAIMABLE FOREVER — once X is superseded (non-terminal), the
+        successor's claim CAS can never resolve X. Neither `_reject_unusable_blockers`
+        (X exists + is not-yet-superseded at pre-check time) NOR `_refuse_a_cycle` (a fresh
+        successor id lies on no cycle) catches it, so supersede needs a DEDICATED
+        refuse-and-teach. Explicit-override case. RED at HEAD via TypeError.
+        """
+        ledger, _env, _blocker = task_ledger
+        original = await ledger.create_task(SUBJECT, DESCRIPTION, created_by=CREATOR)
+        before = await _task_row_count(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.supersede_task(
+                original, subject="Reframed", description=DESCRIPTION,
+                created_by=CREATOR, blocked_by=[original],
+            )
+        message = str(caught.value)
+        assert original in message, "the refusal must NAME the offending id"
+        assert "supersede" in message.lower(), (
+            "the refusal must TEACH why (a successor cannot be blocked by the task it supersedes)"
+        )
+        assert (await ledger.get_task(original)).superseded_by is None
+        assert await _task_row_count(ledger) == before
+
+    async def test_supersede_REFUSES_an_INHERITED_self_block(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """The SAME refusal must fire on the INHERITED path — a (legacy/raw) X whose own
+        blocked_by contains X. `_refuse_a_cycle` treats X's self-loop as a LEGACY cycle the
+        fresh successor is not on, so ONLY the dedicated self-ref check catches the inherited
+        case. Proves the check runs over the RESOLVED deps, not only explicit overrides.
+        RED at HEAD (supersede neither inherits nor validates today).
+        """
+        ledger, _env, _blocker = task_ledger
+        original = await ledger.create_task(SUBJECT, DESCRIPTION, created_by=CREATOR)
+        # Raw-seed a self-referential blocked_by (create_task would refuse this; a legacy
+        # store or a raw write can hold it).
+        await _raw(
+            ledger,
+            f"UPDATE type::record('{TASK_TABLE}', $id) SET blocked_by = $bb",
+            {"id": original, "bb": [original]},
+        )
+        before = await _task_row_count(ledger)
+        with pytest.raises(TaskLedgerError) as caught:
+            await ledger.supersede_task(
+                original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
+            )
+        assert original in str(caught.value)
+        assert (await ledger.get_task(original)).superseded_by is None
+        assert await _task_row_count(ledger) == before
+
+    async def test_supersede_ROUTES_THROUGH_the_SHARED_blocker_check(
+        self, monkeypatch: pytest.MonkeyPatch, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """ONE-IMPLEMENTATION by mutation: supersede's refusal IS the shared policy.
+
+        Neutralise the SHARED row-existence policy `loremaster.tasks.reject_unknown_rows`
+        (the same seam `create_task` uses via `_reject_unusable_blockers`, lead ruling L3)
+        and the inherited-superseded-blocker refusal DISAPPEARS — supersede mints. A build
+        that hand-rolls its own private blocker check (routing-is-not-sharing, #102's shape)
+        would KEEP refusing here and FAIL this test. Baseline (unpatched) refusal is the
+        headline pin above. This is a WRONG-BUILD discriminator, not a RED-at-HEAD pin.
+        """
+        import importlib
+
+        tasks_module = importlib.import_module("loremaster.tasks")
+
+        async def _accept_everything(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        monkeypatch.setattr(
+            tasks_module, "reject_unknown_rows", _accept_everything, raising=True
+        )
+
+        ledger, _env, _blocker = task_ledger
+        blocker = await ledger.create_task(
+            "a blocker to reframe", DESCRIPTION, created_by=CREATOR
+        )
+        original = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
+        )
+        await ledger.supersede_task(
+            blocker, subject="reframed blocker", description=DESCRIPTION, created_by=CREATOR
+        )
+
+        # With the SHARED check neutralised, the inherited-superseded blocker sails through.
+        successor = await ledger.supersede_task(
+            original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
+        )
+        assert successor, "neutralising the shared check should let supersede mint"
+        assert (await ledger.get_task(original)).superseded_by == successor
+
+    def test_supersede_source_calls_BOTH_shared_blocks_edge_prechecks(self) -> None:
+        """STRUCTURAL route-through (#174-F3): a fresh successor id has no incoming edges,
+        so `_refuse_a_cycle` can NEVER fire for supersede behaviourally — its reuse is
+        pinned structurally instead (lead ruling F3). Asserts `supersede_task`'s own source
+        runs the SAME pre-checks + edge mirror `create_task` runs. RED at HEAD (supersede
+        calls none of them today).
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from loremaster.tasks import TaskLedger
+
+        source = textwrap.dedent(inspect.getsource(TaskLedger.supersede_task))
+        tree = ast.parse(source)
+        called_attrs = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "_reject_unusable_blockers" in called_attrs, (
+            "supersede must run the SHARED blocker-existence pre-check over its resolved deps"
+        )
+        assert "_refuse_a_cycle" in called_attrs, (
+            "supersede must run the SHARED acyclicity pre-check (route-through; structural "
+            "because a fresh successor cannot close a cycle)"
+        )
+        assert "_relate_fragment" in called_attrs, (
+            "supersede must mirror blocked_by onto the ENFORCED blocks edge via the SHARED "
+            "_relate_fragment, not a hand-rolled RELATE"
+        )
+
+    async def test_concurrent_supersede_with_deps_mints_ONE_successor_zero_orphan_edges(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """Atomicity WITH the added relate fragment: a concurrent double-supersede of a
+        task carrying deps mints EXACTLY ONE successor with EXACTLY its edges; the loser's
+        whole txn (stamp + CREATE + RELATEs) rolls back -> ZERO orphan edges. Extends the
+        exactly-one-successor guarantee (test_task_ledger.py::TestConcurrentSupersession) to
+        the edge mirror. RED at HEAD via TypeError-free path but the edge assertions fail
+        (no edges minted today).
+        """
+        from loremaster.tasks import IllegalTransitionError
+
+        ledger, env, blocker_id = task_ledger
+
+        async def total_edges() -> int:
+            rows = await _raw(ledger, f"SELECT count() FROM {BLOCKS_RELATION_NAME} GROUP ALL")
+            if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+                return 0
+            return int(rows[0].get("count", 0))
+
+        racers = [
+            TaskLedger(
+                url=env.url, namespace=env.namespace, database=env.database,
+                user=env.user, password=env.password,
+            )
+            for _ in range(2)
+        ]
+        try:
+            for racer in racers:
+                await racer.ensure_ready()  # SETUP SERIAL — only the supersede races.
+            for _ in range(_SUPERSEDE_EDGE_RACE_ITERATIONS):
+                original = await ledger.create_task(
+                    SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
+                )
+                before = await total_edges()
+                results = await asyncio.gather(
+                    *(
+                        racer.supersede_task(
+                            original, subject="reframed", description=DESCRIPTION,
+                            created_by=CREATOR,
+                        )
+                        for racer in racers
+                    ),
+                    return_exceptions=True,
+                )
+                successors = [r for r in results if isinstance(r, str)]
+                losers = [r for r in results if isinstance(r, IllegalTransitionError)]
+                assert len(successors) == 1, f"exactly one successor, got {results!r}"
+                assert len(losers) == 1, f"exactly one typed loser, got {results!r}"
+                successor = successors[0]
+                assert await _edge_blockers_of(ledger, successor) == {blocker_id}
+                assert await _edge_blockers_of(ledger, original) == {blocker_id}
+                assert await total_edges() == before + 1, (
+                    "a concurrent double-supersede left an ORPHAN blocks edge — the loser's "
+                    "stamp+CREATE+RELATE must roll back ATOMICALLY (store law §3/§4)"
+                )
+        finally:
+            await asyncio.gather(
+                *(racer.close() for racer in racers), return_exceptions=True
+            )
+
+    async def test_tool_seam_supersede_threads_blocked_by_and_SURFACES_it(
+        self, task_ledger: tuple[TaskLedger, SurrealEnv, str]
+    ) -> None:
+        """SERVED SURFACE (contract §#174-F2): the `lore_tasks supersede` dispatch threads
+        `blocked_by` through to the ledger, AND the rendered result NAMES the successor's
+        resolved blocked_by (the harm #174 fixes was VISIBILITY). Drives the REAL dispatcher
+        via `_tool_seam` (no fake double). RED at HEAD: the supersede branch drops
+        `blocked_by` (server.py:3938) and `_render_supersede_result` never surfaces it.
+        """
+        ledger, _env, blocker_id = task_ledger
+        seam = _tool_seam(ledger)
+        replacement = await ledger.create_task(
+            "a replacement blocker that exists", DESCRIPTION, created_by=CREATOR
+        )
+        original = await ledger.create_task(
+            SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
+        )
+
+        rendered = str(
+            await seam.tasks(
+                action="supersede",
+                task_id=original,
+                subject="Reframed",
+                description=DESCRIPTION,
+                created_by=CREATOR,
+                blocked_by=[replacement],
+            )
+        )
+
+        # (a) the dispatch threaded the override onto the successor.
+        successor = (await ledger.get_task(original)).superseded_by
+        assert successor is not None
+        assert await _column_blockers_of(ledger, successor) == [replacement]
+        # (b) the served surface NAMES the successor's resolved blocked_by.
+        assert replacement in rendered, (
+            "the supersede result must SURFACE the successor's resolved blocked_by so a "
+            "rewire that forgot its override is seen at once (#174 harm = visibility)"
+        )
 # =========================================================================== #

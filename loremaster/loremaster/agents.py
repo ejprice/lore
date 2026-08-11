@@ -730,6 +730,40 @@ class AgentRegistry:
         row = await self._resolve_row(name, session)
         return self._row_to_agent(row)
 
+    async def resolve_holder(self, name: str) -> Agent | None:
+        """Resolve a task-HOLDER name to its liveness-bearing row, or ``None`` on a miss.
+
+        For the #262 register notice, which DISCLOSES a held task's owner liveness and must
+        NEVER refuse. DELIBERATELY NOT :meth:`get_agent` / :meth:`_resolve_row` (fork F1):
+        those RAISE :class:`AmbiguousAgentError` on a name shared across sessions and
+        EXCLUDE retired rows — conflating a retired holder with an unknown one, and turning
+        a disclosure into a failure. A disclosure surface needs the opposite:
+
+        * retired-INCLUSIVE — a retired holder is a DISTINCT, disclosable fate, never a
+          not-found;
+        * ambiguity-TOLERANT — the FRESHEST-heartbeat same-named row wins, never a raise
+          (the notice reports one holder's liveness; it must not fail the whole register);
+        * ``None`` (not an exception) on a genuine miss — the caller renders
+          "not found in registry", never a false "alive" (the fatal Forgery-pin false clear).
+
+        Shares the ONE name->rows read :meth:`_select_rows_by_name` with :meth:`_resolve_row`
+        (the raw FETCH is the shared thing; only the POLICY over the rows differs), so
+        :meth:`get_agent` stays the single resolution seam ruling 5.3 governs.
+
+        Args:
+            name: The holder's bare name (a task ``owner`` is unconstrained free text —
+                :meth:`~loremaster.tasks.TaskLedger.claim_task` stores any string).
+
+        Returns:
+            The freshest-heartbeat :class:`Agent` matching ``name`` (any session, any
+            status including retired), or ``None`` if no row matches.
+        """
+        rows = await self._select_rows_by_name(name)
+        if not rows:
+            return None
+        candidates = [self._row_to_agent(row) for row in rows]
+        return max(candidates, key=lambda candidate: candidate.heartbeat_at)
+
     # -- heartbeat / status machine ------------------------------------------
 
     async def touch(

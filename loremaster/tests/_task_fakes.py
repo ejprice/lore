@@ -641,6 +641,7 @@ class FakeTaskLedger:
         subject: str,
         description: str,
         created_by: str,
+        blocked_by: list[str] | None = None,
     ) -> str:
         await asyncio.sleep(0)
         old_task = self._require(task_id)
@@ -655,6 +656,14 @@ class FakeTaskLedger:
                 f"task {task_id!r} is already superseded by "
                 f"{old_task.superseded_by!r} and cannot be superseded again"
             )
+        # #174 lockstep with the production TaskLedger.supersede_task: the successor's
+        # dependency SENTINEL — None INHERITs the predecessor's blocked_by, [] CLEARs it,
+        # [ids] REPLACEs it (deduped, order-preserving). A double lacking a param its twin
+        # has turns a correct build into a TypeError in every test that drives the fake.
+        if blocked_by is None:
+            dependencies = list(dict.fromkeys(old_task.blocked_by))
+        else:
+            dependencies = list(dict.fromkeys(blocked_by))
         new_id = uuid4().hex
         now = _utc_now()
         successor = Task(
@@ -664,7 +673,7 @@ class FakeTaskLedger:
             status=STATUS_OPEN,
             owner=None,
             claimed_at=None,
-            blocked_by=[],
+            blocked_by=dependencies,
             provenance={"created_by": created_by, "created_at": now.isoformat(), "events": []},
             superseded_by=None,
             created_at=now,

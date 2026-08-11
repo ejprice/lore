@@ -220,6 +220,7 @@ from loremaster.tasks import (
     CYCLE_NOUN_BATCH_KEYS,
     STATUS_DONE,
     TaskListing,
+    TaskNotFoundError,
     find_blocked_by_cycle,
     raise_cycle_refusal,
     validated_task_limit,
@@ -3940,12 +3941,19 @@ class AppContext:
                 subject=_require_arg(subject, "subject"),
                 description=_require_arg(description, "description"),
                 created_by=_require_arg(created_by, "created_by"),
+                blocked_by=blocked_by,
             )
+            # #174: SURFACE the successor's resolved blocked_by so a rewire that forgot
+            # its override (or inherited stale deps) is seen at once — the harm #174 fixes
+            # is VISIBILITY. Read it back from the ledger (the authoritative resolution),
+            # never from the caller's raw argument.
+            successor = await self.task_ledger.get_task(successor_id)
             rendered, writes = (
                 AppContext._render_supersede_result(
                     predecessor,
                     successor_id,
                     await self.task_ledger.direct_dependents(predecessor),
+                    successor.blocked_by,
                 ),
                 1,
             )
@@ -4202,7 +4210,10 @@ class AppContext:
 
     @staticmethod
     def _render_supersede_result(
-        task_id: str, successor_id: str, dependents: list[str]
+        task_id: str,
+        successor_id: str,
+        dependents: list[str],
+        successor_blocked_by: list[str],
     ) -> str:
         """Render a supersession, WARNING about the dependents it just stranded (R10(iii)).
 
@@ -4223,9 +4234,19 @@ class AppContext:
         to every supersede is an imperative riding a verdict that is not true — the shape
         ruling R8 split apart — and a warning that always fires is a warning nobody reads.
         """
+        # #174: NAME the successor's resolved blocked_by (each id contained via
+        # render_attributed — its elements are unconstrained caller ids) so a rewire that
+        # forgot its override, or inherited a stale dependency, is visible at once. Empty
+        # (the common no-dependency reframe) appends nothing — the render is byte-unchanged.
+        blocked_clause = ""
+        if successor_blocked_by:
+            named = ", ".join(
+                render_attributed(blocker) for blocker in successor_blocked_by
+            )
+            blocked_clause = f", blocked_by [{named}]"
         superseded = (
             f"superseded task {render_attributed(task_id)}; "
-            f"successor {render_attributed(successor_id)} (status open)"
+            f"successor {render_attributed(successor_id)} (status open{blocked_clause})"
         )
         if not dependents:
             return superseded
@@ -5986,12 +6007,101 @@ class AppContext:
                 version=brief.version,
                 via="register",
             )
-        return AppContext._render_comms_register(
+        rendered = AppContext._render_comms_register(
             result.agent,
             re_registered=result.re_registered,
             registered_age_s=registered_age_s,
             brief=brief,
             brief_age_s=brief_age_s,
+        )
+        # #262: DISCLOSE (never refuse) the liveness of the holder of any task this agent
+        # associates with. An ADVISORY note only — register stays cheap + idempotent — and
+        # ADDITIVE (a self-held / unheld / no-task_id register is byte-unchanged).
+        if task_id is not None:
+            notice = await AppContext._holder_liveness_notice(
+                self, agent=agent, task_id=task_id
+            )
+            if notice is not None:
+                rendered = render_compose(rendered, notice)
+        return rendered
+
+    async def _holder_liveness_notice(
+        self, *, agent: str, task_id: str
+    ) -> Rendered | None:
+        """#262: the I/O half — resolve ``task_id``'s holder, or return ``None`` for a silent case.
+
+        Reading 1 (DISCLOSE-not-refuse, design §2A + ADDENDUM A-262): register stays cheap +
+        idempotent, so this NEVER refuses — every fate degrades to a note (or to no note),
+        never to a raise. A note is emitted ONLY when ``task_id`` names a task held by ANOTHER
+        agent; a self-held or unheld (``owner is None``) task is a legitimate SILENT
+        association. The holder is resolved retired-INCLUSIVE, most-recent-heartbeat on
+        ambiguity (:meth:`AgentRegistry.resolve_holder`, NOT ``get_agent`` — fork F1). The
+        PURE render (liveness derivation via the ONE shared :meth:`_heartbeat_is_stale`) lives
+        in :meth:`_render_holder_liveness_notice`; this method touches the store and delegates
+        every served byte to it (the ``_comms_X`` / ``_render_X`` split this file uses
+        everywhere), so the containment invariant drives the render, not the I/O.
+        """
+        now = datetime.now(UTC)
+        try:
+            task = await self.task_ledger.get_task(task_id)
+        except TaskNotFoundError:
+            return AppContext._render_holder_liveness_notice(
+                task_id=task_id, task=None, holder=None, now=now,
+                stale_after_s=self.config.comms.stale_heartbeat_s,
+            )
+        if task.owner is None or task.owner == agent:
+            return None  # unheld or self-held — a legitimate, silent association.
+        holder = await self.agent_registry.resolve_holder(task.owner)
+        return AppContext._render_holder_liveness_notice(
+            task_id=task_id, task=task, holder=holder, now=now,
+            stale_after_s=self.config.comms.stale_heartbeat_s,
+        )
+
+    @staticmethod
+    def _render_holder_liveness_notice(
+        *,
+        task_id: str,
+        task: Task | None,
+        holder: Agent | None,
+        now: datetime,
+        stale_after_s: int,
+    ) -> Rendered:
+        """#262: render the holder-liveness note (design §9 + ADDENDUM A-262) — the PURE half.
+
+        ``task is None`` renders "task <id> not found"; otherwise the task is held by another
+        agent and the note discloses the holder's liveness, derived via the ONE shared STALE
+        predicate :meth:`_heartbeat_is_stale` (via the CLASS, so the ONE-implementation
+        mutation proof holds). ``holder is None`` (an owner with no registry row) renders
+        "not found in registry" — NEVER a false "active" (the fatal Forgery-pin false clear
+        the Consumer Law forbids); a retired holder renders "retired" (precedence over STALE,
+        F4). Every caller value (``task_id`` and the holder ``owner`` — unconstrained free
+        text) is contained via ``render_attributed``.
+        """
+        if task is None:
+            return render_line(
+                "note: task {task_id} not found",
+                task_id=render_attributed(task_id),
+            )
+        liveness: SafeLine | Rendered
+        if holder is None:
+            liveness = safe_str("not found in registry")
+        elif holder.status == _AGENT_STATUS_RETIRED:
+            liveness = safe_str("retired")  # retired takes precedence over STALE (F4).
+        else:
+            age_s = int((now - holder.heartbeat_at).total_seconds())
+            if AppContext._heartbeat_is_stale(age_s, stale_after_s):
+                liveness = render_line(
+                    "⚠ STALE, last seen {age} ago", age=AppContext._render_age(age_s)
+                )
+            else:
+                liveness = sanitise_line(holder.status)
+        return render_line(
+            "note: task {task_id} is held by {owner} ({status}; {liveness}) — "
+            "registering the association anyway",
+            task_id=render_attributed(task_id),
+            owner=render_attributed(task.owner),
+            status=render_attributed(task.status),
+            liveness=liveness,
         )
 
     async def _comms_heartbeat(self, *, agent_row: Agent, **_ignored: Any) -> Rendered:
@@ -6644,6 +6754,19 @@ class AppContext:
         return safe_str(f"{days}d")
 
     @staticmethod
+    def _heartbeat_is_stale(age_s: int, stale_after_s: int) -> bool:
+        """Whether a heartbeat this old counts as STALE — the ONE staleness predicate.
+
+        Extracted (#262) so the fleet row render AND the register holder-liveness notice
+        share ONE decision, not a cloned ``age > threshold``: a divergence between the two
+        surfaces about a holder's liveness (say ``>`` vs ``>=`` at the boundary) is exactly
+        the "two surfaces disagreeing, only one saying so" class #262 exists to close.
+        Both callers invoke it via the CLASS (``AppContext._heartbeat_is_stale``) so a
+        monkeypatch of this ONE function moves BOTH — the mutation proof that DRY holds.
+        """
+        return age_s > stale_after_s
+
+    @staticmethod
     def _render_comms_register(
         agent: Agent,
         *,
@@ -7156,7 +7279,10 @@ class AppContext:
         # template-literal pin requires args[0] to be an ast.Constant; a
         # ternary selecting between two literal templates is an ast.IfExp
         # and fails the pin (design doc §9.6 note).
-        if heartbeat_age_s > stale_after_s:
+        # #262: the staleness DECISION routes through the ONE shared predicate (via the
+        # CLASS, so a monkeypatch of it moves this surface too) — never a private
+        # ``age > threshold`` clone the register notice could silently diverge from.
+        if AppContext._heartbeat_is_stale(heartbeat_age_s, stale_after_s):
             return render_line(
                 "- {name} [{status} ⚠ STALE] hb {age} · {cells}",
                 name=sanitise_line(row.name),
@@ -10193,7 +10319,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             Field(
                 description=(
                     "For 'create', optional ids of tasks the new task depends on (it "
-                    "cannot be claimed until every blocker is done/wontfix)."
+                    "cannot be claimed until every blocker is done/wontfix). For "
+                    "'supersede', the successor's dependency SENTINEL: OMITTED inherits "
+                    "the superseded task's own blocked_by, [] clears it, and [ids] "
+                    "replaces it (deduped, order-preserving — not a merge)."
                 )
             ),
         ] = None,

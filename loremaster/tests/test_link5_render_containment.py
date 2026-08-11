@@ -1937,6 +1937,42 @@ async def _adrive_resolve_many(forge: bool) -> str:
     return str(rendered)
 
 
+def _drive_holder_liveness_notice(forge: bool) -> list[str]:
+    """Drive `_render_holder_liveness_notice` (#262) over ALL its branches (P-S), so the
+    caller doors (`task_id`, the holder `owner`) are byte-checked and every liveness fate is
+    OBSERVED: no-such-task, unresolvable holder, retired, STALE, live. It is a PURE static
+    render (no store, no mock self), so branch reach is a checked variable here, not a
+    store-state bound (contrast the B-α store-backed drivers)."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    Task = _model("loremaster.tasks", "Task")
+    Agent = _model("loremaster.agents", "Agent")
+    task = _forge(Task, forge=forge)  # `owner` is a manifest DOOR -> tokenised when forging.
+    live = _forge(Agent, forge=forge, status="active", heartbeat_at=_NOW)
+    stale = _forge(
+        Agent, forge=forge, status="active", heartbeat_at=_NOW - timedelta(seconds=1300)
+    )
+    retired = _forge(Agent, forge=forge, status="retired", heartbeat_at=_NOW)
+
+    def _bytes(task_arg: object, holder_arg: object) -> str:
+        return _served(
+            "_render_holder_liveness_notice",
+            task_id=_tok(forge, "holder", "task_id"),
+            task=task_arg,
+            holder=holder_arg,
+            now=_NOW,
+            stale_after_s=600,
+        )
+
+    return [
+        _bytes(None, None),     # no-such-task
+        _bytes(task, None),     # owner with no registry row -> "not found in registry"
+        _bytes(task, retired),  # retired holder (precedence over STALE)
+        _bytes(task, stale),    # STALE holder
+        _bytes(task, live),     # live holder
+    ]
+
+
 def _tasks_windows(forge: bool, *, empty: bool) -> tuple[Any, Any]:
     TaskActivityWindow = _model("loremaster.tasks", "TaskActivityWindow")
     FindingActivityWindow = _model("loremaster.findings", "FindingActivityWindow")
@@ -2067,10 +2103,17 @@ def _probes() -> list[RenderProbe]:
         ]),
         P("_render_supersede_result", lambda g: [
             _served(
-                "_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"), []
+                "_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
+                [], [],
             ),
             _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
-                    [_tok(g, "sup", "dependent")]),
+                    [_tok(g, "sup", "dependent")], []),
+            # #174: the successor_blocked_by door on its OWN branch (a reframe that kept/
+            # replaced a dependency) — dependents empty so the `(status open, blocked_by
+            # [...])` clause is the only door, forgery-carrying to discharge the
+            # served-free-text hostile-fixture law for the new render branch.
+            _served("_render_supersede_result", _tok(g, "sup", "task_id"), _tok(g, "sup", "successor_id"),
+                    [], [_tok(g, "sup", "blocker")]),
         ]),
         P("_render_task_transition", lambda g: [
             _served(
@@ -2652,6 +2695,8 @@ def _probes() -> list[RenderProbe]:
         # ---- `.format()` caller-param door (closer-04b5-format-1): store-free instance method,
         #      fully branch-driven (NOT B-α exempt — its branches are pure param/engine shape) ----
         P("_caller_model_note", _drive_caller_model_note),
+        # ---- #262 holder-liveness notice (pure static render; fully branch-driven — no store) ----
+        P("_render_holder_liveness_notice", _drive_holder_liveness_notice),
         # ---- STORE-BACKED door renders (mock self; neutralisation only, branch-exempt B-α) ----
         P("_tier_miss_teach", lambda g: [_drive_tier_miss_teach(g)]),
         P("_filter_miss_notice", lambda g: [asyncio.run(_adrive_filter_miss_notice(g))]),
