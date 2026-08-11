@@ -3,12 +3,20 @@ brief project v7 read
 
 # REPORT-lead-05a-ii — comms `await` verb + Opus-4.8 LIVE leg + deploy the 05a split
 
-## SUMMARY BLOCK (filled at close-out)
-- Verdicts acted on: `<graded-sha> -> <HEAD-then> -> SAME|STALE`
-- Directives: `<n> ledger / <n> wake / <n> prose-duplicated` (duplicated must be 0)
-- Rulings: `<n> in a committed artifact / <n> body-only` (body-only must be 0)
-- Agents: `<n> spawned / <n> ledger-retired / <n> left running`
-- Uncommitted at stop: `<n> files`
+## SUMMARY BLOCK
+- **Verdicts acted on:** cold-audit delta graded `c1e1b31` (prod-identical to `5466b7b`) → HEAD-then
+  `5466b7b` → **SAME** (no STALE acted on; deployed the graded code, image `65e36c8`).
+- **Directives:** 0 ledger / ~9 native-to-AT-REST-warm-agent (contract ×3, adversary ×3, builder ×1,
+  sidecar ×2 — the sanctioned at-rest / warm-reuse exception; in-process subagents woken + fed via
+  SendMessage) / **0 prose-duplicated**. ⚠ REFLECTION: content rode native (not the ledger) because the
+  recipients were in-process warm subagents at rest; strict 2026-08-10 hardening prefers ledger-content —
+  the at-rest exception justifies it, but a cleaner run would route content through `lore_comms send`.
+- **Rulings:** **8 in a committed artifact / 0 body-only** (kickoff F1/F2/Q5(ii)/roster + seam R-1/R-2/R-3
+  + R-4 no-reconnect — all in `docs/plans/v2/05-comms-await-story.md`).
+- **Agents:** **7 spawned / 9 ledger-retired / 0 left-running** (7 pipeline agents TaskStop-returned dead;
+  ledger-retired the 6 registered pipeline agents + 2 smoke identities; the investigator held no ledger
+  row — lore was down when it ran, used SendMessage).
+- **Uncommitted at stop:** 0 files (after the close-out commit).
 
 ## Mission (reconciled scope)
 05a-ii = the LAST piece of the 05a wait-surface: the **`await` action** on `lore_comms`, plus
