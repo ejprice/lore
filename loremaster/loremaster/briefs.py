@@ -141,6 +141,18 @@ BriefAckVia = Literal["register", "explicit", "publish"]
 BRIEF_NAME_PROJECT = "project"
 BRIEF_NAME_BASE = "base"
 
+# #257 (packet 06a W3): the minimal non-vacuity floor at ``publish``. The
+# ``project`` brief body was literally ``"x"`` for 15 days, served with full ack
+# ceremony — teaching every agent that brief-acks are theatre. A body with FEWER
+# THAN this many whitespace-delimited tokens is a placeholder, not a standing
+# instruction, and is rejected BEFORE the version mint (nothing stored). Operator
+# ruling (2026-08-11): 3. Deliberately a placeholder floor, NOT a structure
+# mandate — three real words publish. Blank/whitespace is subsumed here (0 tokens)
+# AND independently rejected by the schema's non-empty ASSERT on ``brief.body``, so
+# no separate blankness predicate is used (F-DRY ruling — the shared predicate's
+# reuse is unverifiable-by-construction when blank is double-guarded).
+_MIN_BRIEF_BODY_TOKENS = 3
+
 # The ONE named standing-brief ROLE (finding #104): the brief every agent
 # auto-acks at register, whose skew the heartbeat surfaces universally, and
 # whose ack level the fleet's project column tracks. It is a ROLE bound to a
@@ -351,6 +363,18 @@ class UnknownBriefError(BriefLedgerError):
 
 class UnknownBriefVersionError(BriefLedgerError):
     """Raised when a brief ``name`` exists but not at the requested ``version``."""
+
+
+class BriefBodyTooThinError(BriefLedgerError):
+    """Raised when a ``publish`` body has fewer than :data:`_MIN_BRIEF_BODY_TOKENS`
+    whitespace-delimited tokens — a placeholder, not a standing instruction (#257).
+
+    A caller/SHAPE error, raised BEFORE the version mint, so nothing is stored: a
+    rejected first publish leaves the name with no head at all. Its message names the
+    problem (the BODY is a placeholder with no real content) so an agent reading it
+    knows what to fix — a brief-ack must never again be theatre over a body that says
+    nothing.
+    """
 
 
 class UnknownBriefAgentError(BriefLedgerError, UnknownAgentRowError):
@@ -576,8 +600,11 @@ class BriefLedger:
 
         Args:
             name: The brief name to publish under.
-            body: The RAW brief text (stored verbatim; blank bodies are
-                rejected by the schema's non-empty ASSERT, not here).
+            body: The RAW brief text (stored verbatim). A body with fewer than
+                :data:`_MIN_BRIEF_BODY_TOKENS` whitespace tokens is a placeholder
+                and is rejected HERE (#257, :class:`BriefBodyTooThinError`), before
+                the mint; blank bodies fall to that floor AND to the schema's
+                non-empty ASSERT.
             created_by: The identity publishing this version.
             note: An optional free-text publish note.
             agent_id: The publishing AGENT's opaque row id (v7, finding #98) —
@@ -595,6 +622,9 @@ class BriefLedger:
             The :class:`BriefPublishResult` of this call.
 
         Raises:
+            BriefBodyTooThinError: ``body`` is a placeholder (fewer than
+                :data:`_MIN_BRIEF_BODY_TOKENS` whitespace tokens). Raised FIRST,
+                before any store I/O — nothing is minted or written (#257).
             UnknownBriefAgentError: ``agent_id`` names no ``agent`` row. Raised
                 BEFORE anything is minted or written.
             SurrealConnectionError: A transport fault.
@@ -602,6 +632,19 @@ class BriefLedger:
                 ASSERT). Such a rejection is NEVER retried — only a classified
                 retryable conflict on the counter row is (:meth:`_mint_version`).
         """
+        # #257 non-vacuity floor — a pure SHAPE check on ``body``, so it fires FIRST,
+        # before any store I/O (nothing is minted or queried for a placeholder). A body
+        # with fewer than :data:`_MIN_BRIEF_BODY_TOKENS` whitespace tokens is a
+        # placeholder (``"x"``, ``"proceed now"``), not a standing instruction; reject it
+        # with a TEACHING error so a brief-ack is never again ceremony over an empty body.
+        # Blank/whitespace collapses to 0 tokens here (and is also caught by the schema's
+        # non-empty ASSERT) — no separate blankness predicate needed (F-DRY).
+        if len(body.split()) < _MIN_BRIEF_BODY_TOKENS:
+            raise BriefBodyTooThinError(
+                f"a brief BODY must carry at least {_MIN_BRIEF_BODY_TOKENS} words of real "
+                f"content; {body[:60]!r} is a placeholder, not a standing instruction — "
+                f"nothing was published (#257)"
+            )
         # BEFORE the mint, not merely before the CREATE (packet 04a). The mint is a
         # hot-row UPSERT: a build that mints first and lets the write be rejected
         # takes the BEST-EFFORT :meth:`_release_version` path, which swallows its own

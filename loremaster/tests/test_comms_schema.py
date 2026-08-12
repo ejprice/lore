@@ -468,6 +468,31 @@ class TestAgentDdlOffline:
         for field in ("model", "spawned_by", "task_id", "last_note"):
             assert "option<string>" in _field_statement(ddl, AGENT_TABLE, field)
 
+    def test_declared_cadence_is_option_string_with_no_assert(self) -> None:
+        # W1a (packet 06a, #360/#257/#304). The NEW cadence self-declaration
+        # field. Store reference §1.4: a NEW field on the production-POPULATED
+        # ``agent`` table MUST be ``option<>`` with NO ASSERT — a required or
+        # asserted field write-poisons every existing row's next UPDATE
+        # (``Expected string but found NONE``), and a DEFAULT does not rescue an
+        # already-present row. This mirrors the ``status_set_at`` (#304) precedent
+        # EXACTLY (see ``test_optional_string_fields_are_option_string`` above and
+        # ``_AGENT_FIELD_SPECS``'s ``("status_set_at", "option<datetime>", "")``).
+        # ``_field_statement`` already fails unless the clause is
+        # ``DEFINE FIELD OVERWRITE`` (finding #107), so this pin also carries the
+        # OVERWRITE guard — a regression to ``IF NOT EXISTS`` reddens here.
+        statement = _field_statement(generate_agent_ddl(), AGENT_TABLE, "declared_cadence")
+        assert "option<string>" in statement, (
+            "declared_cadence must be option<string> — store reference §1.4: a NEW "
+            "field on the POPULATED agent table must be option<> or it write-poisons "
+            f"every existing row's next UPDATE. Served: {statement!r}"
+        )
+        assert "ASSERT" not in statement, (
+            "declared_cadence must carry NO ASSERT (store reference §1.4): an asserted "
+            "field on a populated table poisons legacy rows on their next UPDATE, and a "
+            "cadence is free-form agent text validated (if at all) at the app layer, "
+            f"never by a store ASSERT. Served: {statement!r}"
+        )
+
     def test_checkpoint_is_option_object_flexible(self) -> None:
         # The exact spelling verified live against 3.1.5 (module docstring):
         # FLEXIBLE trailing OUTSIDE the angle brackets.

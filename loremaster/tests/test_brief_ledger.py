@@ -733,12 +733,25 @@ class TestPublishSelfAckIsWrittenInTheSameTransaction:
         )
 
     async def test_a_rejected_create_rolls_back_the_edge_too_and_burns_no_version(self) -> None:
-        """ATOMICITY, observed: a blank body is rejected by the schema's
-        non-empty ASSERT. With both statements in ONE transaction, the whole
-        write disappears — no brief row, no orphan ``briefed`` edge — and the
-        guarded compensating release hands the version back, so the NEXT publish
-        is gapless. (An orphan edge is invisible to ``acked_version`` — its join
-        drops a dangling brief id — so this counts the EDGE TABLE directly.)
+        """ATOMICITY, observed: a store-rejected CREATE rolls the whole write back.
+        With both statements in ONE transaction, the whole write disappears — no
+        brief row, no orphan ``briefed`` edge — and the guarded compensating
+        release hands the version back, so the NEXT publish is gapless. (An orphan
+        edge is invisible to ``acked_version`` — its join drops a dangling brief id
+        — so this counts the EDGE TABLE directly.)
+
+        REMOVED-BEHAVIOR ADJUDICATION (packet 06a fix wave, the #257 floor changed
+        reachability): this test USED a blank BODY to trigger the store's
+        ``brief.body`` non-empty ASSERT at the CREATE. The #257 floor now rejects a
+        blank/short body PRE-mint (``BriefBodyTooThinError``), which never reaches
+        the mint or the CREATE and so CANNOT exercise the POST-mint rollback. The
+        trigger is therefore a blank ``created_by`` (valid ≥3-token body, valid
+        seeded agent_id) — it clears the floor and the mint, then fails the
+        ``brief.created_by`` non-empty ASSERT at the CREATE (POST-mint), under the
+        SAME name so the version-release/gapless coverage is PRESERVED. Verified
+        POST-mint by mutation (breaking ``_release_version`` reddens the gapless
+        ``recovered.version == 2`` assertion — a PRE-mint failure would leave it
+        green). See REPORT §CONTRACT FIX WAVE.
         """
         ledger, env = await self._real_ledger()
         try:
@@ -749,8 +762,10 @@ class TestPublishSelfAckIsWrittenInTheSameTransaction:
             assert edges_before == 1  # the v1 author's own self-ack
 
             with pytest.raises(SurrealStoreError):
+                # Blank created_by (NOT a blank body — the #257 floor would catch that
+                # pre-mint): fails the brief.created_by ASSERT at the CREATE, POST-mint.
                 await _publish_as(
-                    ledger, BRIEF_NAME_PROJECT, "", created_by="scout-c", agent_id=AGENT_SCOUT_C_ID
+                    ledger, BRIEF_NAME_PROJECT, BODY_V2, created_by="", agent_id=AGENT_SCOUT_C_ID
                 )
 
             assert await _edge_count(ledger) == edges_before, (
@@ -2174,3 +2189,180 @@ class TestTheFakeLedgerSharesTheUnknownAgentPolicy:
             "an UNMODELLED agent table must accept any id — see this test's docstring "
             "before changing either side"
         )
+
+
+# =====================================================================
+# PACKET 06a — W3: the #257 minimal non-vacuity floor at brief_publish.
+# Contract author: contract-honesty-06a (RED contract — the builder makes it
+# green). Operator ruling 2 (docs/plans/v2/06-comms-protocol-drill.md §KICKOFF,
+# 2026-08-11): "#257 = a MINIMAL non-vacuity floor at brief_publish (reject
+# blank / whitespace-only / single-token; reuse the lorerunes blankness
+# predicate) — no pin-the-miss test."
+#
+# WHY THIS IS A REAL-ONLY FIXTURE: the floor is APP-LEVEL logic in production
+# BriefLedger.publish (blank/whitespace is ALREADY rejected by the schema's
+# _NON_EMPTY_STRING_ASSERT on brief.body — string::len(string::trim($value))>0 —
+# so #257's gap is a short NON-BLANK body, which passes that ASSERT).
+# FakeBriefLedger reimplements publish and would not carry the floor; grading
+# production is the point (see REPORT-contract-honesty-06a.md §fixture-fidelity).
+#
+# THE FLOOR (operator-ruled, FIX WAVE 2026-08-11): reject a body with FEWER THAN
+# THREE whitespace-delimited tokens (_MIN_BRIEF_BODY_TOKENS = 3). So "" / "   " /
+# "x" / "z" / "hello" (0–1 tokens) and "proceed now" (2 tokens) are ALL REJECTED;
+# "proceed with caution" (3 tokens) and any longer real body publish. This
+# supersedes the earlier single-token (< 2) reading and the D-fork about it —
+# the operator RULED 3 in the fix wave. (F1.)
+#
+# NO BLANKNESS PREDICATE IS USED (F-DRY ruling, FIX WAVE): the adversary PROVED
+# that reusing lorerunes.is_blank here is BOTH moot AND unverifiable — blank is
+# double-guarded (the store's _NON_EMPTY_STRING_ASSERT rejects it at CREATE, and
+# the >=3-token check subsumes blank/whitespace), so no is_blank mutation can
+# redden a blank-rejection pin. The floor is the SINGLE token-count check; the
+# blank/whitespace reject pins below STAND, subsumed by the token check + the
+# store ASSERT. See REPORT §FIX WAVE / §F-DRY.
+# =====================================================================
+
+
+@pytest_asyncio.fixture()
+async def real_brief_ledger() -> AsyncIterator[BriefLedger]:
+    """A REAL (spike-surreal :18000) ready ledger on a throwaway database.
+
+    Real-only on purpose: the #257 floor is production BriefLedger.publish logic,
+    and :18500 (production) is NEVER touched.
+    """
+    env: SurrealEnv = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    setup_connection = await connect_admin(env)
+    await setup_connection.close()
+    # FIX WAVE #2: this builds a real BriefLedger + make_env, so the
+    # TestEveryRealLedgerSiteSeedsItsAgentRows sweep REQUIRES it to seed. Its
+    # tests publish WITHOUT agent_id (no `briefed` edge is written), so an EMPTY
+    # seed satisfies the "force new sites to seed" sweep without inventing ids.
+    await _seed_agent_rows(env, [])
+    ledger = BriefLedger(
+        url=env.url,
+        namespace=env.namespace,
+        database=env.database,
+        user=env.user,
+        password=env.password,
+    )
+    await ledger.ensure_ready()
+    try:
+        yield ledger
+    finally:
+        await ledger.close()
+        await drop_database(env)
+
+
+# A small, lenient "this error TEACHES" predicate: a non-vacuity rejection must
+# name the problem (body/brief/placeholder/content/token/blank), not be an opaque
+# or incidental error. Deliberately NOT wording-exact — the message text is
+# builder latitude; the PROPERTY (it teaches the caller what to fix) is pinned.
+_TEACHING_KEYWORDS = ("body", "brief", "placeholder", "content", "token", "blank", "vacu")
+
+
+def _assert_is_a_teaching_rejection(error: BaseException) -> None:
+    message = str(error)
+    assert len(message) >= 20, (
+        "the #257 rejection must be a TEACHING error, not an opaque/one-word one — "
+        f"an agent reading it must know what to fix. Served: {message!r}"
+    )
+    lowered = message.lower()
+    assert any(keyword in lowered for keyword in _TEACHING_KEYWORDS), (
+        "the #257 rejection message must name the problem (the brief BODY is a "
+        f"placeholder / has no real content), so a consumer can act on it. Served: "
+        f"{message!r}"
+    )
+
+
+class TestBriefPublishNonVacuityFloor:
+    """#257 (packet 06a W3): brief_publish rejects a placeholder body.
+
+    The `project` brief body was literally ``x`` for 15 days and was served with
+    full ack ceremony — teaching every agent that brief-acks are theatre. This
+    floor rejects any body with FEWER THAN THREE whitespace-delimited tokens
+    (operator-ruled, FIX WAVE) with a TYPED, TEACHING error (never a silent
+    accept), while a body of three or more real words publishes. Each reject pin
+    is RED at HEAD (today ``publish('x', ...)`` SUCCEEDS and mints v1).
+    """
+
+    async def test_single_char_x_is_rejected_and_nothing_is_stored(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # The exact #257 shape. RED at HEAD: today this mints v1 and returns.
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - the builder's
+            # dedicated teaching type does not exist yet; the PROPERTY (raises +
+            # teaches + stores nothing) is what discriminates, tightened below.
+            await real_brief_ledger.publish("project", "x", created_by=PUBLISHER_LEAD)
+        _assert_is_a_teaching_rejection(exc_info.value)
+        # NOT A SILENT DROP: the placeholder must never have been minted/stored —
+        # a rejected first publish leaves the name with no head at all.
+        with pytest.raises(UnknownBriefError):
+            await real_brief_ledger.get_head("project")
+
+    async def test_a_different_single_token_is_rejected_not_hardcoded_x(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # Parameter-value MONOCULTURE guard (PKT-28 C1): a build hardcoded to
+        # ``body == 'x'`` passes the pin above and fails HERE. The floor must key
+        # on the SHAPE (single token), never a literal.
+        with pytest.raises(Exception):  # noqa: PT011,B017 - see the note above.
+            await real_brief_ledger.publish("project", "z", created_by=PUBLISHER_LEAD)
+
+    async def test_a_single_real_word_is_rejected_token_not_char(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # THE token-vs-char discriminator. ``hello`` is one real multi-CHARACTER
+        # word = a single TOKEN (1 < 3), so it is REJECTED. A char-based floor
+        # (``len(body.strip()) < N``) would ACCEPT ``hello`` and this pin catches
+        # that wrong reading — the floor must count TOKENS, not characters.
+        with pytest.raises(Exception):  # noqa: PT011,B017 - see the note above.
+            await real_brief_ledger.publish("project", "hello", created_by=PUBLISHER_LEAD)
+
+    async def test_blank_body_is_rejected(self, real_brief_ledger: BriefLedger) -> None:
+        # Blank is DOUBLE-guarded: the store's _NON_EMPTY_STRING_ASSERT rejects it
+        # at CREATE, and the >=3-token check subsumes it (0 tokens < 3). This pin
+        # GUARDS that a blank body keeps being rejected (regression guard). No
+        # blankness predicate is required (F-DRY ruling — see the module note).
+        with pytest.raises(Exception):  # noqa: PT011,B017 - see the note above.
+            await real_brief_ledger.publish("project", "", created_by=PUBLISHER_LEAD)
+
+    async def test_whitespace_only_body_is_rejected(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        with pytest.raises(Exception):  # noqa: PT011,B017 - see the note above.
+            await real_brief_ledger.publish("project", "   \t\n  ", created_by=PUBLISHER_LEAD)
+
+    async def test_a_valid_multi_word_body_publishes(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # GREEN at HEAD, and it MUST stay green — the floor catches placeholders,
+        # NOT real content (it is not a structure mandate). A build that rejects
+        # everything fails HERE.
+        body = "Register first, drain at your turn boundaries, ack directives."
+        result = await real_brief_ledger.publish("project", body, created_by=PUBLISHER_LEAD)
+        assert isinstance(result, BriefPublishResult)
+        assert result.brief.version == 1
+        head = await real_brief_ledger.get_head("project")
+        assert head.body == body, "a valid body must be stored VERBATIM, never rewritten"
+
+    async def test_a_two_token_body_is_rejected(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # THE reject-boundary (F1, operator-ruled 3 in the FIX WAVE): a TWO-token
+        # body is BELOW the >=3 floor, so it is REJECTED. RED at HEAD (today
+        # "proceed now" publishes). This is the pin that flipped from ACCEPT to
+        # REJECT when the operator ruled _MIN_BRIEF_BODY_TOKENS = 3.
+        with pytest.raises(Exception):  # noqa: PT011,B017 - see the note above.
+            await real_brief_ledger.publish("project", "proceed now", created_by=PUBLISHER_LEAD)
+
+    async def test_a_three_word_body_publishes(
+        self, real_brief_ledger: BriefLedger
+    ) -> None:
+        # The accept-boundary: exactly THREE whitespace-delimited tokens is the
+        # minimum non-vacuous body under the ruled floor. GREEN at HEAD; it MUST
+        # stay green — the floor catches placeholders, NOT short real content, so
+        # a build tightened past 3 (e.g. >=4) reddens HERE.
+        result = await real_brief_ledger.publish(
+            "project", "proceed with caution", created_by=PUBLISHER_LEAD
+        )
+        assert result.brief.version == 1

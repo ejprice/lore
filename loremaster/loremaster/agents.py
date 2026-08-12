@@ -180,6 +180,13 @@ _COL_HEARTBEAT_AT = "heartbeat_at"
 # a dated fact). ``option<datetime>``: every production agent row predates it and
 # reads NONE, so the decode is None-tolerant (never ``_require_aware_utc``).
 _COL_STATUS_SET_AT = "status_set_at"
+# W1a (packet 06a, #360): the agent's self-declared cadence — the expected max
+# gap between comms touches (e.g. ``"≤20m"``), stored VERBATIM as free-form text.
+# ``option<string>``: every production agent row predates it and reads NONE
+# (store reference §1.4), so the decode is None-tolerant, exactly like
+# ``status_set_at``. It turns an agent's silence into a self-set contract the
+# fleet renders as ``overdue`` (design §B.7).
+_COL_DECLARED_CADENCE = "declared_cadence"
 
 # The record-id table separator. (The signin credential keys moved to the ONE
 # shared ``store._txn.signin_credentials`` seam — #211/#102.)
@@ -208,6 +215,11 @@ _TOUCH_NOTE_PARAM = "touch_note"
 # changed" policy is written ONCE (``_status_set_at_for``) and CALLED, never cloned.
 _REG_STATUS_SET_AT_PARAM = "reg_status_set_at"
 _TOUCH_STATUS_SET_AT_PARAM = "touch_status_set_at"
+# W1a (packet 06a): the declared-cadence stamp threaded through the re-register
+# UPDATE and the heartbeat touch UPDATE alike — mutable-on-provided, exactly like
+# ``model``/``task_id`` (register) and ``note`` (touch).
+_REG_DECLARED_CADENCE_PARAM = "reg_declared_cadence"
+_TOUCH_DECLARED_CADENCE_PARAM = "touch_declared_cadence"
 
 
 class Agent(BaseModel):
@@ -238,6 +250,11 @@ class Agent(BaseModel):
             write-side only on a status change — NOT on every heartbeat — so the
             fleet render can age the declaration. A legacy ``None`` renders as an
             explicit unknown, never a fabricated zero age.
+        declared_cadence: The agent's self-declared max gap between comms touches
+            (e.g. ``"≤20m"``), stored VERBATIM, or ``None`` when the agent declared
+            none (the honest "no self-set contract" state, and every row written
+            before this field existed — #360). When set, the fleet renders
+            ``overdue`` once the heartbeat age exceeds it (design §B.7).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -255,6 +272,7 @@ class Agent(BaseModel):
     registered_at: datetime
     heartbeat_at: datetime
     status_set_at: datetime | None = None
+    declared_cadence: str | None = None
 
 
 class AgentRegisterResult(BaseModel):
@@ -586,6 +604,7 @@ class AgentRegistry:
         model: str | None = None,
         spawned_by: str | None = None,
         task_id: str | None = None,
+        cadence: str | None = None,
     ) -> AgentRegisterResult:
         """Idempotently register an agent identity (design doc §1/§2).
 
@@ -595,8 +614,8 @@ class AgentRegistry:
         write-once (a differing value is a teaching
         :class:`AgentIdentityConflictError`; a first-time value on a
         previously-unset ``spawned_by`` FILLS it in without conflict — there
-        is no prior value to disagree with); ``model``/``task_id`` are
-        mutable (overwritten when provided, kept when omitted); ``status``
+        is no prior value to disagree with); ``model``/``task_id``/``cadence``
+        are mutable (overwritten when provided, kept when omitted); ``status``
         resets to ``active`` unconditionally UNLESS the row is currently
         ``retired``, which is terminal (:class:`RetiredAgentError` — a
         respawn registers a fresh name).
@@ -609,6 +628,9 @@ class AgentRegistry:
             model: The model identifier the agent runs on.
             spawned_by: The identity that spawned this agent.
             task_id: The fleet task id this agent is currently working.
+            cadence: The agent's self-declared max gap between comms touches
+                (e.g. ``"≤20m"``), stored VERBATIM. Mutable on re-register
+                (overwritten when provided, kept when omitted).
 
         Returns:
             The :class:`AgentRegisterResult` of this call.
@@ -633,6 +655,7 @@ class AgentRegistry:
                 _COL_TASK_ID: task_id,
                 _COL_CHECKPOINT: None,
                 _COL_LAST_NOTE: None,
+                _COL_DECLARED_CADENCE: cadence,
                 _COL_REGISTERED_AT: now,
                 _COL_HEARTBEAT_AT: now,
                 # #304: birth of the ``active`` status IS a status set — stamp it,
@@ -676,6 +699,11 @@ class AgentRegistry:
 
         new_model = model if model is not None else existing.model
         new_task_id = task_id if task_id is not None else existing.task_id
+        # W1a: mutable-on-provided, exactly like model/task_id — a re-register that
+        # omits cadence keeps the prior declaration, never nulls it.
+        new_declared_cadence = (
+            cadence if cadence is not None else existing.declared_cadence
+        )
         # write-once, resolved: a first-time incoming value fills a
         # previously-unset field without conflict (the mismatch case above
         # already refused a differing CONCRETE value).
@@ -693,6 +721,7 @@ class AgentRegistry:
             f"{_COL_MODEL} = ${_REG_MODEL_PARAM}, "
             f"{_COL_TASK_ID} = ${_REG_TASK_ID_PARAM}, "
             f"{_COL_SPAWNED_BY} = ${_REG_SPAWNED_BY_PARAM}, "
+            f"{_COL_DECLARED_CADENCE} = ${_REG_DECLARED_CADENCE_PARAM}, "
             f"{_COL_STATUS_SET_AT} = ${_REG_STATUS_SET_AT_PARAM}",
             {
                 _ROW_ID_PARAM: agent_id,
@@ -701,6 +730,7 @@ class AgentRegistry:
                 _REG_MODEL_PARAM: new_model,
                 _REG_TASK_ID_PARAM: new_task_id,
                 _REG_SPAWNED_BY_PARAM: new_spawned_by,
+                _REG_DECLARED_CADENCE_PARAM: new_declared_cadence,
                 _REG_STATUS_SET_AT_PARAM: new_status_set_at,
             },
         )
@@ -773,6 +803,7 @@ class AgentRegistry:
         session: str | None = None,
         status: str | None = None,
         note: str | None = None,
+        cadence: str | None = None,
     ) -> Agent:
         """The ONE heartbeat/status-machine primitive (design doc §3/§8).
 
@@ -790,6 +821,9 @@ class AgentRegistry:
             session: Optional session to disambiguate a bare name.
             status: An optional explicit target status.
             note: An optional free-text note to record as ``last_note``.
+            cadence: An optional self-declared cadence (W1a) — mutable-on-provided,
+                exactly like ``note``: overwrites ``declared_cadence`` when given,
+                else the prior value is preserved (a bare heartbeat never nulls it).
 
         Returns:
             The agent's updated state.
@@ -823,6 +857,11 @@ class AgentRegistry:
 
         now = datetime.now(UTC)
         new_note = note if note is not None else agent.last_note
+        # W1a: mutable-on-provided (the ``note`` idiom) — a bare heartbeat that omits
+        # cadence preserves the prior declaration, never nulls it.
+        new_declared_cadence = (
+            cadence if cadence is not None else agent.declared_cadence
+        )
         # #304: age the DECLARATION, not the heartbeat — stamp status_set_at only
         # when new_status differs from the stored status (a same-status heartbeat
         # preserves the prior stamp; a change records ``now``).
@@ -834,12 +873,14 @@ class AgentRegistry:
             f"{_COL_STATUS} = ${_TOUCH_STATUS_PARAM}, "
             f"{_COL_HEARTBEAT_AT} = ${_TOUCH_HEARTBEAT_PARAM}, "
             f"{_COL_LAST_NOTE} = ${_TOUCH_NOTE_PARAM}, "
+            f"{_COL_DECLARED_CADENCE} = ${_TOUCH_DECLARED_CADENCE_PARAM}, "
             f"{_COL_STATUS_SET_AT} = ${_TOUCH_STATUS_SET_AT_PARAM}",
             {
                 _ROW_ID_PARAM: agent.id,
                 _TOUCH_STATUS_PARAM: new_status,
                 _TOUCH_HEARTBEAT_PARAM: now,
                 _TOUCH_NOTE_PARAM: new_note,
+                _TOUCH_DECLARED_CADENCE_PARAM: new_declared_cadence,
                 _TOUCH_STATUS_SET_AT_PARAM: new_status_set_at,
             },
         )
@@ -1019,6 +1060,10 @@ class AgentRegistry:
             # (touch/register on a status CHANGE) is the builder's; this stub only
             # threads the value through so the model round-trips.
             status_set_at=row.get(_COL_STATUS_SET_AT),
+            # W1a: NONE-tolerant — a legacy row omits the column (store reference
+            # §2: ``SELECT *`` omits a NONE-valued option column), so ``.get`` →
+            # None is the honest "no declared cadence" state.
+            declared_cadence=row.get(_COL_DECLARED_CADENCE),
         )
 
     def _require_aware_utc(self, value: Any, column: str) -> datetime:

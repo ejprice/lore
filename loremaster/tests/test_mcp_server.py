@@ -65,27 +65,35 @@ Auth wiring (D9/D11)
 
 from __future__ import annotations
 
+import ast
+import inspect
 import logging
 import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
 from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
 from _surreal_harness import (
-    drop_database as drop_surreal_database,
-)
-from _surreal_harness import (
+    PRODUCTION_DIM,
+    connect_admin,
     make_env,
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
+)
+from _surreal_harness import (
+    drop_database as drop_surreal_database,
 )
 from _task_fakes import FakeTaskDatabase, FakeTaskLedger
+from loremaster.agents import Agent, AgentRegistry
+from loremaster.briefs import BriefLedger
 from loremaster.config import LoreConfig
 from loremaster.findings import Finding, FindingActivityWindow
 from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
@@ -119,6 +127,7 @@ from render_injection_scaffold import (
     RenderCase,
     assert_render_injection_safe,
 )
+from test_comms_wiring import _backdate_heartbeat, _open_context
 
 _DIM = 2048
 
@@ -8680,3 +8689,494 @@ class TestServedParamDescriptionsMatchTheRefusalMatrix:
             "the required-for class this bound names has no members on lore_tasks — "
             "re-derive the witness param before trusting the bound"
         )
+
+
+# =====================================================================
+# PACKET 06a — W1: comms fleet-render honesty (cadence + overdue + STALE retire).
+# Contract author: contract-honesty-06a (RED contract — the builder makes it
+# green). Work order: docs/plans/v2/design/2026-08-11-packet06-drill-and-obedience.md
+# §B.7 (cadence param + overdue verdict) and §D-1/§D-4 (retire the ⚠STALE glyph,
+# BOTH callers of _heartbeat_is_stale). Operator ruling 3 (2026-08-11): retire
+# STALE (D-1 Reading A), folded into the overdue build.
+#
+# TESTING SEAM CHOICE (contract author): the overdue verdict + STALE retirement
+# are pinned through the LIVE _comms_fleet handler (a real AgentRegistry on
+# spike-surreal :18000), NOT by calling _render_comms_fleet_row directly, so the
+# pins do NOT couple to that method's parameter list — which sheds `stale_after_s`
+# once the STALE branch is deleted. The holder-liveness surface (§D-4's second
+# caller) IS pinned as a pure render (its `stale_after_s` survives to gate the
+# age display). Mirrors the live idiom in test_comms_status_age._LiveCtx; a local
+# harness is kept because _LiveCtx lacks the `cadence` register param and a
+# heartbeat backdater (see REPORT-contract-honesty-06a.md DRY ledger).
+# Tests hit spike-surreal :18000 ONLY; :18500 (production) is NEVER touched.
+# =====================================================================
+
+_CADENCE_SESSION = "pkt06-fleet"
+# A rendered largest-fit age token (``0s`` / ``21m`` / ``2h`` / ``2d``), used to
+# assert "the AGE remains" after the ⚠STALE glyph is retired.
+_FLEET_AGE_TOKEN = re.compile(r"\d+[smhd]")
+
+
+class _FleetCtx:
+    """A minimal live comms harness for the W1 fleet + register pins: a real
+    :class:`AgentRegistry` + :class:`BriefLedger` on ONE throwaway database, plus
+    the ``config.comms`` shape :meth:`AppContext._comms_fleet` reads. It can
+    register an agent WITH or WITHOUT a declared cadence and backdate a row's
+    heartbeat deterministically (the ``_backdate_heartbeat`` idiom), so
+    ``heartbeat_age`` is controlled without waiting real time.
+    """
+
+    def __init__(self, database: str) -> None:
+        self._env = make_env(database=database, dim=PRODUCTION_DIM)
+        coord: dict[str, Any] = {
+            "url": self._env.url,
+            "namespace": self._env.namespace,
+            "database": self._env.database,
+            "user": self._env.user,
+            "password": self._env.password,
+        }
+        self.agent_registry = AgentRegistry(**coord)
+        self.brief_ledger = BriefLedger(**coord)
+        self.config = SimpleNamespace(
+            comms=SimpleNamespace(stale_heartbeat_s=600, fleet_limit=20, drain_limit=20)
+        )
+
+    async def start(self) -> None:
+        setup = await connect_admin(self._env)
+        await setup.close()
+        await self.agent_registry.ensure_ready()
+        await self.brief_ledger.ensure_ready()
+
+    async def stop(self) -> None:
+        await self.agent_registry.close()
+        await self.brief_ledger.close()
+        await drop_surreal_database(self._env)
+
+    async def register(
+        self, name: str, *, cadence: str | None = None, status: str = "active"
+    ) -> Agent:
+        # Only pass ``cadence`` when declared, so a no-cadence register stays a
+        # CLEAN call today (the parameter is unbuilt at HEAD): the STALE-retire
+        # pin below reddens on the GLYPH, not on a TypeError from an unknown kwarg.
+        extra: dict[str, Any] = {} if cadence is None else {"cadence": cadence}
+        await self.agent_registry.register(
+            name, session=_CADENCE_SESSION, role="builder", **extra
+        )
+        if status != "active":
+            await self.agent_registry.touch(name, session=_CADENCE_SESSION, status=status)
+        return await self.get(name)
+
+    async def get(self, name: str) -> Agent:
+        return await self.agent_registry.get_agent(name, session=_CADENCE_SESSION)
+
+    async def backdate_heartbeat(self, agent: Agent, *, seconds_ago: int) -> None:
+        """Raw-write ``heartbeat_at`` into the past so ``heartbeat_age`` is a
+        controlled value (the test-only ``_backdate_heartbeat`` idiom)."""
+        await self.agent_registry._query(  # noqa: SLF001 - test-only raw write
+            "UPDATE type::record('agent', $id) SET heartbeat_at = $ts",
+            {"id": agent.id, "ts": datetime.now(UTC) - timedelta(seconds=seconds_ago)},
+        )
+
+    async def render_fleet(self, *, caller: Agent) -> str:
+        rendered = await AppContext._comms_fleet(
+            cast(AppContext, self), agent_row=caller, session=_CADENCE_SESSION, limit=None
+        )
+        return str(rendered)
+
+
+@pytest_asyncio.fixture()
+async def fleet_ctx() -> AsyncIterator[_FleetCtx]:
+    ctx = _FleetCtx(unique_database())
+    await ctx.start()
+    try:
+        yield ctx
+    finally:
+        await ctx.stop()
+
+
+def _fleet_row(rendered: str, name: str) -> str:
+    prefix = f"- {name} ["
+    matches = [line for line in rendered.splitlines() if line.startswith(prefix)]
+    assert len(matches) == 1, f"expected exactly one fleet row for {name!r}: {matches!r}"
+    return matches[0]
+
+
+class TestRegisterPersistsDeclaredCadence:
+    """W1 — the ``cadence`` register param persists to ``agent.declared_cadence``.
+
+    RED at HEAD: ``AgentRegistry.register`` does not accept ``cadence`` and
+    ``Agent`` has no ``declared_cadence`` field yet.
+    """
+
+    async def test_register_with_cadence_persists_it_verbatim(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        await fleet_ctx.register("worker", cadence="≤2m")
+        agent = await fleet_ctx.get("worker")
+        assert agent.declared_cadence == "≤2m", (
+            "register(cadence=...) must persist the cadence VERBATIM to "
+            f"agent.declared_cadence (stored, never normalised): {agent.declared_cadence!r}"
+        )
+
+    async def test_register_without_cadence_leaves_it_none(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        await fleet_ctx.register("plain")
+        agent = await fleet_ctx.get("plain")
+        assert agent.declared_cadence is None, (
+            "an agent that declared no cadence must have declared_cadence None — the "
+            f"honest 'no self-set contract' state: {agent.declared_cadence!r}"
+        )
+
+
+class TestHeartbeatPersistsDeclaredCadence:
+    """F3 (fix wave) — the ``cadence`` param was built on heartbeat (touch) too,
+    not just register, so heartbeat-cadence must be PINNED or it is unguarded.
+    Mutable-on-provided (the ``note`` idiom): a heartbeat WITH cadence persists
+    it; a BARE heartbeat does NOT null a prior declaration. GREEN against the
+    built tree; a build that ignores heartbeat cadence — or that nulls on a bare
+    heartbeat — reddens (mutation-proven, REPORT §CONTRACT FIX WAVE).
+    """
+
+    async def test_heartbeat_with_cadence_persists_it(self, fleet_ctx: _FleetCtx) -> None:
+        await fleet_ctx.register("worker")  # no cadence declared at register
+        await fleet_ctx.agent_registry.touch("worker", session=_CADENCE_SESSION, cadence="≤5m")
+        agent = await fleet_ctx.get("worker")
+        assert agent.declared_cadence == "≤5m", (
+            "heartbeat(cadence=...) must persist declared_cadence — the param was built "
+            f"on touch too, not only register: {agent.declared_cadence!r}"
+        )
+
+    async def test_a_bare_heartbeat_does_not_null_a_prior_cadence(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        # Mutable-on-provided (the ``note`` idiom): a heartbeat that OMITS cadence
+        # must PRESERVE the prior declaration, never reset it to None — else every
+        # ordinary heartbeat would silently retract the agent's self-set contract.
+        await fleet_ctx.register("worker", cadence="≤9m")
+        await fleet_ctx.agent_registry.touch("worker", session=_CADENCE_SESSION)  # bare heartbeat
+        agent = await fleet_ctx.get("worker")
+        assert agent.declared_cadence == "≤9m", (
+            "a bare heartbeat (no cadence) must PRESERVE the prior declaration ≤9m, never "
+            f"null it (mutable-on-provided, the note idiom): {agent.declared_cadence!r}"
+        )
+
+
+class TestFleetRendersOverdueVerdict:
+    """W1 — the ``overdue (declared {cadence}, silent {age})`` verdict, derived
+    from typed state (the #104 derived-prose law), rendered ONLY when a cadence
+    is declared AND heartbeat_age exceeds it.
+
+    Fixtures dodge the PR93 arithmetic-alignment trap: cadence and age are on
+    clearly OPPOSITE sides of the boundary (never equal), so the exact cadence
+    parse precision is not load-bearing — only the ordering is.
+
+    RED at HEAD: register(cadence=...) is unbuilt (and there is no overdue
+    render).
+    """
+
+    async def test_overdue_fires_when_silence_exceeds_the_declared_cadence(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        caller = await fleet_ctx.register("lead")
+        worker = await fleet_ctx.register("worker", cadence="≤2m")
+        await fleet_ctx.backdate_heartbeat(worker, seconds_ago=1200)  # 20m >> 2m
+        row = _fleet_row(await fleet_ctx.render_fleet(caller=caller), "worker")
+        assert "overdue" in row, f"a ≤2m cadence silent 20m must render 'overdue': {row!r}"
+        assert "declared" in row and "2m" in row, (
+            f"the verdict must echo the declared cadence (design §B.7 format "
+            f"'overdue (declared ≤2m, silent …)'): {row!r}"
+        )
+        assert "silent" in row, f"the verdict must name the silence duration: {row!r}"
+        assert "⚠ STALE" not in row, (
+            f"the overdue verdict REPLACES the retired ⚠STALE glyph — the glyph must "
+            f"NOT co-render (operator ruling 3 / #360): {row!r}"
+        )
+
+    async def test_no_overdue_when_silence_is_below_the_declared_cadence(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        caller = await fleet_ctx.register("lead")
+        worker = await fleet_ctx.register("worker", cadence="≤20m")
+        await fleet_ctx.backdate_heartbeat(worker, seconds_ago=120)  # 2m << 20m
+        row = _fleet_row(await fleet_ctx.render_fleet(caller=caller), "worker")
+        assert "overdue" not in row, (
+            f"a ≤20m cadence silent only 2m is WITHIN contract — no overdue verdict: {row!r}"
+        )
+        assert "⚠ STALE" not in row, row
+        assert _FLEET_AGE_TOKEN.search(row), f"the liveness age must still render: {row!r}"
+
+    async def test_overdue_threshold_tracks_the_declared_value_not_a_constant(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        # PARAMETER-VALUE MONOCULTURE guard (PKT-28 C1): at the SAME age (5m), the
+        # verdict must FLIP on the declared cadence VALUE. A build that hardcodes a
+        # threshold (or ignores the stored cadence) gives both rows the same verdict
+        # and fails one leg.
+        caller = await fleet_ctx.register("lead")
+        fast = await fleet_ctx.register("fast", cadence="≤2m")
+        slow = await fleet_ctx.register("slow", cadence="≤20m")
+        await fleet_ctx.backdate_heartbeat(fast, seconds_ago=300)  # 5m > 2m  -> overdue
+        await fleet_ctx.backdate_heartbeat(slow, seconds_ago=300)  # 5m < 20m -> not
+        rendered = await fleet_ctx.render_fleet(caller=caller)
+        fast_row = _fleet_row(rendered, "fast")
+        slow_row = _fleet_row(rendered, "slow")
+        assert "overdue" in fast_row, f"≤2m silent 5m is overdue: {fast_row!r}"
+        assert "overdue" not in slow_row, (
+            f"≤20m silent 5m is NOT overdue — the threshold must track the DECLARED "
+            f"value, not a shared constant: {slow_row!r}"
+        )
+
+    async def test_overdue_verdict_echoes_THIS_agents_own_cadence_and_silence(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        # F-ECHO (adversary BLOCKER) + F-SILENT-AGE: the ECHOED cadence AND the
+        # silence duration must each be THIS agent's OWN value, not a constant.
+        # A build that reads row.declared_cadence ONLY for the threshold comparison
+        # but HARDCODES the displayed cadence (e.g. "≤2m") passes every OTHER W1c/W1d
+        # pin (they all render overdue for exactly one ≤2m agent) yet ships a FALSE
+        # self-set contract — an agent declaring ≤1h renders "declared ≤2m" (the
+        # #104 / Consumer-Law trust defect §B.7 exists to prevent). Two agents,
+        # DIFFERENT cadences AND DIFFERENT ages, BOTH overdue: a constant echo
+        # cannot be both, and a swapped echo fails too. ≤7m/≤3m and 20m/15m are
+        # mutually non-substring, so each token uniquely fingerprints its own row.
+        caller = await fleet_ctx.register("lead")
+        slowpoke = await fleet_ctx.register("slowpoke", cadence="≤7m")
+        hasty = await fleet_ctx.register("hasty", cadence="≤3m")
+        await fleet_ctx.backdate_heartbeat(slowpoke, seconds_ago=1200)  # 20m > 7m -> overdue
+        await fleet_ctx.backdate_heartbeat(hasty, seconds_ago=900)  # 15m > 3m -> overdue
+        rendered = await fleet_ctx.render_fleet(caller=caller)
+        slow_row = _fleet_row(rendered, "slowpoke")
+        hasty_row = _fleet_row(rendered, "hasty")
+        assert "overdue" in slow_row and "overdue" in hasty_row, (
+            f"both agents are past their declared cadence:\n{slow_row!r}\n{hasty_row!r}"
+        )
+        # Each verdict echoes its OWN cadence — a constant echo can't be both.
+        assert "7m" in slow_row and "3m" not in slow_row, (
+            f"slowpoke's verdict must echo ITS cadence ≤7m, never a constant (F-ECHO): {slow_row!r}"
+        )
+        assert "3m" in hasty_row and "7m" not in hasty_row, (
+            f"hasty's verdict must echo ITS cadence ≤3m, never a constant (F-ECHO): {hasty_row!r}"
+        )
+        # F-SILENT-AGE: each verdict's `silent {age}` is that agent's OWN age.
+        assert "20m" in slow_row and "15m" not in slow_row, (
+            f"slowpoke's silence (20m) must be its own, not hasty's (F-SILENT-AGE): {slow_row!r}"
+        )
+        assert "15m" in hasty_row and "20m" not in hasty_row, (
+            f"hasty's silence (15m) must be its own, not slowpoke's (F-SILENT-AGE): {hasty_row!r}"
+        )
+
+
+class TestFleetRetiresTheStaleGlyph:
+    """W1 / operator ruling 3 (#360, #259b) — the ⚠STALE glyph is RETIRED from the
+    fleet row: the age remains, the glyph is gone, and an agent with NO declared
+    cadence never renders a verdict at ANY age.
+
+    This pin registers WITHOUT a cadence, so it is a CLEAN behavioural RED at HEAD
+    (today the row renders ``[active ⚠ STALE]`` past 600s) rather than a
+    build-time error — the strongest RED shape.
+    """
+
+    async def test_no_declaration_never_overdue_and_no_stale_glyph_past_600s(
+        self, fleet_ctx: _FleetCtx
+    ) -> None:
+        caller = await fleet_ctx.register("lead")
+        # 1300s = 21m, WELL past the old 600s STALE threshold: a below-threshold
+        # fixture would pass a still-STALE build vacuously (the >600s requirement).
+        worker = await fleet_ctx.register("worker")  # NO declared cadence
+        await fleet_ctx.backdate_heartbeat(worker, seconds_ago=1300)
+        row = _fleet_row(await fleet_ctx.render_fleet(caller=caller), "worker")
+        assert "⚠ STALE" not in row, (
+            f"the ⚠STALE glyph is RETIRED (operator ruling 3 / #360) — it must not "
+            f"render at ANY age, including a >600s corpse: {row!r}"
+        )
+        assert "STALE" not in row, f"no residual 'STALE' text either: {row!r}"
+        assert "overdue" not in row, (
+            f"NO declaration ⇒ NO verdict, regardless of age — an undeclared agent "
+            f"silent 21m gets age only, never 'overdue': {row!r}"
+        )
+        assert _FLEET_AGE_TOKEN.search(row), (
+            f"the AGE must REMAIN — it is what replaces the glyph (obligation #1): {row!r}"
+        )
+
+
+class TestHolderLivenessNoticeRetiresTheStaleGlyph:
+    """W1 / §D-4 — the SECOND caller of ``_heartbeat_is_stale``, the #262 held-task
+    holder-liveness notice, must ALSO retire the ⚠STALE glyph (glyph gone, age
+    remains). Pinned as a PURE render (its ``stale_after_s`` survives to gate the
+    age). RED at HEAD: today it renders ``⚠ STALE, last seen 21m ago``.
+    """
+
+    def test_stale_holder_notice_drops_glyph_keeps_age(self) -> None:
+        now = datetime.now(UTC)
+        holder = Agent(
+            id="holder-opaque-id",
+            name="holder-y",
+            session=_CADENCE_SESSION,
+            role="builder",
+            status="active",  # a live status — the STALE gate is on AGE, not status
+            registered_at=now - timedelta(seconds=1300),
+            heartbeat_at=now - timedelta(seconds=1300),  # 21m > 600s: a corpse
+        )
+        task = Task(
+            id="task-opaque-id",
+            subject="held work",
+            description="a task held by holder-y",
+            status="in_progress",
+            owner="holder-y",
+            created_at=now - timedelta(seconds=2000),
+        )
+        rendered = str(
+            AppContext._render_holder_liveness_notice(
+                task_id="t-123", task=task, holder=holder, now=now, stale_after_s=600
+            )
+        )
+        assert "is held by" in rendered and "holder-y" in rendered
+        assert "⚠ STALE" not in rendered, (
+            f"§D-4: the #262 holder-liveness notice must ALSO retire the ⚠STALE glyph "
+            f"— sweeping BOTH callers of _heartbeat_is_stale: {rendered!r}"
+        )
+        assert "STALE" not in rendered, f"no residual 'STALE' text: {rendered!r}"
+        assert "last seen" in rendered and _FLEET_AGE_TOKEN.search(rendered), (
+            f"the AGE must REMAIN — glyph gone, age stays (§D-4 'age remains'): {rendered!r}"
+        )
+
+
+class TestCadenceParamDescriptionStatesThePayoff:
+    """W1 / obligation #2 (the R1 lesson) — the ``cadence`` param's served
+    description must STATE THE PAYOFF, not be terse: measured, neither Sonnet 5
+    nor Opus 5 passes an optional param with a terse description, and both pass
+    with a payoff-stating one. The payoff is the ``overdue`` verdict declaring a
+    cadence enables. RED at HEAD: there is no ``cadence`` param in the schema.
+    """
+
+    async def _tools_by_name(self, tmp_path: Path) -> dict[str, Any]:
+        config = _config(_slug(), tmp_path / "live")
+        mcp = build_mcp_server(LoreServer(config))
+        return {tool.name: tool for tool in await mcp.list_tools()}
+
+    async def test_cadence_param_is_present_and_states_the_overdue_payoff(
+        self, tmp_path: Path
+    ) -> None:
+        tools = await self._tools_by_name(tmp_path)
+        properties = (tools["lore_comms"].inputSchema or {}).get("properties", {})
+        assert "cadence" in properties, (
+            "register's optional 'cadence' param must surface in the lore_comms tool "
+            "schema (add it to _COMMS_ACTIONS[register].params AND the tool signature)"
+        )
+        description = properties["cadence"].get("description", "")
+        assert len(description) >= 80, (
+            "the 'cadence' description must STATE THE PAYOFF (the R1 lesson: a terse "
+            f"optional-param description is passed by NEITHER Sonnet 5 nor Opus 5): {description!r}"
+        )
+        assert "overdue" in description.lower(), (
+            "the 'cadence' description must name the PAYOFF it unlocks — the fleet's "
+            f"'overdue' verdict — so a reader knows why to declare it: {description!r}"
+        )
+
+
+class TestNoStaleGlyphLiteralInCommsRenders:
+    """F-GLYPH (#262 class-closer, FIX WAVE) — a SEMANTIC ban on the retired
+    ``⚠ STALE`` glyph in any served string literal in server.py.
+
+    Repo law: every audit-caught defect CLASS becomes a repo-local invariant, not
+    just a fix. The #262 precedent IS this class re-occurring — the glyph was
+    RE-PROPAGATED into a NEW holder-note render AFTER #259 ruled it retired,
+    caught then only as an UNCLASSIFIED literal (partial: a dev who classifies it
+    walks straight past). This scan bans the glyph outright and FAILS CLOSED (a
+    scan that visits zero literals is a failure, never a vacuous pass). RED at
+    HEAD: server.py carries the glyph in two render templates.
+
+    REACH BOUND (stated per repo law): the scan covers server.py's own string
+    literals — where every comms render lives today. Re-open trigger: a comms
+    render that moves to another module; then this scan must widen or gain a
+    coverage assertion over the render modules.
+    """
+
+    _GLYPH = "⚠ STALE"  # the retired warning-sign glyph
+
+    def test_no_stale_glyph_literal_in_any_server_string(self) -> None:
+        source_path = inspect.getsourcefile(AppContext)
+        assert source_path is not None, (
+            "FAIL-CLOSED: could not locate AppContext's source file — the glyph scan "
+            "has nothing to scan, so it must not pass vacuously."
+        )
+        tree = ast.parse(Path(source_path).read_text(encoding="utf-8"))
+        # Exclude docstrings — prose explaining the retirement is never served.
+        docstring_ids: set[int] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.Module, ast.AsyncFunctionDef, ast.FunctionDef, ast.ClassDef))
+                and node.body
+                and isinstance(node.body[0], ast.Expr)
+            ):
+                doc = node.body[0].value
+                if isinstance(doc, ast.Constant) and isinstance(doc.value, str):
+                    docstring_ids.add(id(doc))
+        scanned = 0
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstring_ids
+            ):
+                scanned += 1
+                if self._GLYPH in node.value:
+                    offenders.append(node.value)
+        assert scanned > 0, (
+            "FAIL-CLOSED: the AST scan visited 0 string literals in server.py — the walk "
+            "found nothing, so this invariant would pass vacuously."
+        )
+        assert not offenders, (
+            "the retired ⚠STALE glyph must not appear in ANY served string literal in "
+            "server.py (#262 class-closer / operator ruling 3). A re-introduction is the "
+            f"exact class the packet retires. Offending literals: {offenders!r}"
+        )
+
+
+class TestCadenceWiredThroughTheDispatch:
+    """R1 (cold audit, LOW) — the SERVED path: cadence must survive the ``_comms``
+    dispatch hop. ``comms(action="register"/"heartbeat", cadence=...)`` →
+    ``_comms_register`` / ``_comms_heartbeat`` → ``registry.register/touch(cadence=...)``.
+
+    The round-trip pins (``TestRegisterPersistsDeclaredCadence`` /
+    ``TestHeartbeatPersistsDeclaredCadence``) test ``AgentRegistry`` DIRECTLY, so a
+    refactor that DROPS the ``cadence`` kwarg in the dispatch hop would silently
+    stop cadence persisting via the tool — with every existing pin green. This
+    exercises cadence end-to-end THROUGH the real ``AppContext.comms`` dispatch,
+    for BOTH register and heartbeat, on a deploying surface. GREEN against the
+    built tree; mutation-proven (dropping the dispatch-hop kwarg reddens these,
+    and only these). Reuses the ``test_comms_wiring`` dispatch harness (DRY).
+    """
+
+    async def test_register_cadence_through_the_dispatch(self, tmp_path: Path) -> None:
+        ctx = await _open_context(tmp_path=tmp_path)
+        try:
+            await ctx.comms(
+                action="register", agent="worker", session="wave7", role="builder", cadence="≤2m"
+            )
+            agent = await ctx.agent_registry.get_agent("worker", session="wave7")
+            assert agent.declared_cadence == "≤2m", (
+                f"the register DISPATCH dropped cadence (registry got it directly in the "
+                f"round-trip pin, but the served path lost it): {agent.declared_cadence!r}"
+            )
+            # End-to-end: the served fleet render reflects it (overdue verdict).
+            await _backdate_heartbeat(ctx, name="worker", session="wave7", seconds_ago=1200)
+            await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
+            rendered = str(await ctx.comms(action="fleet", agent="lead", session="wave7"))
+            assert "overdue" in rendered and "2m" in rendered, rendered
+        finally:
+            await ctx.aclose()
+
+    async def test_heartbeat_cadence_through_the_dispatch(self, tmp_path: Path) -> None:
+        ctx = await _open_context(tmp_path=tmp_path)
+        try:
+            await ctx.comms(action="register", agent="worker", session="wave7", role="builder")
+            await ctx.comms(action="heartbeat", agent="worker", session="wave7", cadence="≤5m")
+            agent = await ctx.agent_registry.get_agent("worker", session="wave7")
+            assert agent.declared_cadence == "≤5m", (
+                f"the heartbeat DISPATCH dropped cadence: {agent.declared_cadence!r}"
+            )
+        finally:
+            await ctx.aclose()

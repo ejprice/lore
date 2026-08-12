@@ -279,9 +279,17 @@ class TestSchemaIsActuallyAppliedNotJustConstructed:
                 "Not A Legal Name!", session="wave7", role="builder"
             )
 
-    async def test_brief_ledger_non_empty_body_assert_is_enforced_by_the_applied_schema(
+    async def test_brief_ledger_applied_schema_assert_is_enforced(
         self, ctx: AppContext
     ) -> None:
+        # ⚠ REWORKED (#360/#257). This previously published a BLANK body to exercise the
+        # brief.body non-empty ASSERT — but the #257 token floor in ``publish`` now refuses a
+        # blank body APP-SIDE (BriefBodyTooThinError) before it can ever reach the store, so
+        # that ASSERT is no longer reachable through publish() and the class's premise ("a
+        # value the LEDGER layer deliberately does not validate") no longer holds for the
+        # body. The brief.NAME charset ASSERT is STILL a store ASSERT the ledger does not
+        # app-validate, so it proves the SAME thing — the DDL was genuinely applied on THIS
+        # connection — with a body that clears the #257 floor.
         from loremaster.store._txn import SurrealStoreError
 
         await ctx.agent_registry.register(
@@ -289,7 +297,7 @@ class TestSchemaIsActuallyAppliedNotJustConstructed:
         )
         with pytest.raises(SurrealStoreError):
             await ctx.brief_ledger.publish(
-                "project", "", created_by="lead"
+                "Not A Legal Name!", "a real standing instruction body", created_by="lead"
             )
 
 
@@ -479,10 +487,11 @@ class TestCommsReachesTheRealLedgersNotAFake:
             action="register", agent="lead", session="wave7", role="lead"
         )
         await ctx.comms(
-            action="brief_publish", agent="lead", session="wave7", name="project", body="the plan"
+            action="brief_publish", agent="lead", session="wave7", name="project",
+            body="the real plan",  # ≥3 tokens — clears the #257 floor
         )
         head = await ctx.brief_ledger.get_head("project")
-        assert head.body == "the plan"
+        assert head.body == "the real plan"
         assert head.created_by == "lead", (
             "the publishing identity is the universal 'agent' param, not a separate "
             "'created_by' kwarg — spec §8's _COMMS_ACTIONS table declares "
@@ -509,7 +518,8 @@ class TestPublishSelfAckIsDurableThroughTheRealStack:
         """
         await ctx.comms(action="register", agent="lead", session="wave7", role="lead")
         await ctx.comms(
-            action="brief_publish", agent="lead", session="wave7", name=brief_name, body="the plan"
+            action="brief_publish", agent="lead", session="wave7", name=brief_name,
+            body="the real plan",  # ≥3 tokens — clears the #257 floor
         )
         lead_id = AgentRegistry._agent_id("wave7", "lead")  # noqa: SLF001 - test-only id recipe reuse
         acked = await ctx.brief_ledger.acked_version(agent_id=lead_id, name=brief_name)
@@ -978,50 +988,65 @@ class TestEndToEndCommsArcThroughTheRealToolSurface:
 
 
 class TestConfigKnobStaleHeartbeatIsConsumed:
-    """``comms.stale_heartbeat_s`` must genuinely gate the fleet ``STALE``
-    marker — proven BIDIRECTIONALLY so neither direction can be satisfied by
-    a hardcoded 600s default.
+    """``comms.stale_heartbeat_s`` must genuinely gate the HOLDER-LIVENESS age display —
+    proven BIDIRECTIONALLY so neither direction can be satisfied by a hardcoded 600s default.
 
-    The row under test ('fixer-b') is backdated but is NEVER the ``fleet``
-    caller — the dispatcher's uniform heartbeat touch (spec §8 step 4) stamps
-    the CALLING agent's own ``heartbeat_at`` to ``now()`` on every action,
-    which would silently re-freshen a self-called backdate before the
-    render even runs. A separate 'lead' agent calls ``fleet`` so 'fixer-b's
-    backdated row survives untouched to be judged.
+    ⚠ REWORKED (#360/§D-4). This class previously gated the FLEET ROW ``⚠ STALE`` marker,
+    but #360 RETIRED that glyph: the fleet row now renders the per-agent ``overdue`` verdict
+    off ``declared_cadence`` and no longer reads ``stale_heartbeat_s`` at all. The knob's
+    SURVIVING consumer is the #262 held-task holder-liveness notice, whose
+    ``_render_holder_liveness_notice`` age-gates ``last seen Nm ago`` (vs the holder's plain
+    status) on this threshold. So this proves the knob is genuinely consumed THERE — the
+    holder ('holder-y') is backdated, and a DIFFERENT agent ('reg-agent') triggers the notice
+    by registering against the held task (the caller's own touch never re-freshens the holder).
     """
 
-    async def test_raising_the_threshold_suppresses_a_marker_that_would_otherwise_fire(
+    async def _hold_a_task_with_a_backdated_holder(
+        self, context: AppContext, *, seconds_ago: int
+    ) -> str:
+        await context.comms(action="register", agent="holder-y", session="wave7", role="builder")
+        await _backdate_heartbeat(context, name="holder-y", session="wave7", seconds_ago=seconds_ago)
+        task_id = await context.task_ledger.create_task(
+            "held work", "a real description", created_by="creator-360"
+        )
+        claim = await context.task_ledger.claim_task(task_id, "holder-y")
+        assert claim.claimed, "fixture precondition: the claim must win"
+        return task_id
+
+    async def test_raising_the_threshold_suppresses_the_aged_display(
         self, tmp_path: Path
     ) -> None:
         context = await _open_context(tmp_path=tmp_path, comms={"stale_heartbeat_s": 800})
         try:
-            await context.comms(action="register", agent="lead", session="wave7", role="lead")
-            await context.comms(
-                action="register", agent="fixer-b", session="wave7", role="builder"
+            task_id = await self._hold_a_task_with_a_backdated_holder(context, seconds_ago=700)
+            rendered = str(
+                await context.comms(
+                    action="register", agent="reg-agent", session="wave7",
+                    role="builder", task_id=task_id,
+                )
             )
-            await _backdate_heartbeat(context, name="fixer-b", session="wave7", seconds_ago=700)
-            rendered = str(await context.comms(action="fleet", agent="lead", session="wave7"))
-            assert "STALE" not in rendered, (
-                "stale_heartbeat_s=800 must suppress the marker for a 700s-old "
-                "heartbeat — a hardcoded 600s default would incorrectly show it here"
+            assert "last seen" not in rendered, (
+                "stale_heartbeat_s=800 must NOT age a 700s-old holder — a hardcoded 600s "
+                "default would incorrectly age it here"
             )
         finally:
             await context.aclose()
 
-    async def test_lowering_the_threshold_triggers_a_marker_that_would_not_otherwise_fire(
+    async def test_lowering_the_threshold_ages_a_holder_that_would_not_otherwise_age(
         self, tmp_path: Path
     ) -> None:
         context = await _open_context(tmp_path=tmp_path, comms={"stale_heartbeat_s": 1})
         try:
-            await context.comms(action="register", agent="lead", session="wave7", role="lead")
-            await context.comms(
-                action="register", agent="fixer-b", session="wave7", role="builder"
+            task_id = await self._hold_a_task_with_a_backdated_holder(context, seconds_ago=5)
+            rendered = str(
+                await context.comms(
+                    action="register", agent="reg-agent", session="wave7",
+                    role="builder", task_id=task_id,
+                )
             )
-            await _backdate_heartbeat(context, name="fixer-b", session="wave7", seconds_ago=5)
-            rendered = str(await context.comms(action="fleet", agent="lead", session="wave7"))
-            assert "STALE" in rendered, (
-                "stale_heartbeat_s=1 must mark a 5s-old heartbeat STALE — a hardcoded "
-                "600s default would incorrectly hide it here"
+            assert "last seen" in rendered, (
+                "stale_heartbeat_s=1 must age a 5s-old holder ('last seen Ns ago') — a "
+                "hardcoded 600s default would incorrectly hide it here"
             )
         finally:
             await context.aclose()
@@ -1097,7 +1122,7 @@ class TestConfigKnobBriefBodyWarnCharsIsConsumed:
             await context.comms(
                 action="register", agent="lead", session="wave7", role="lead"
             )
-            body = "0123456789ABCDEF"  # 16 chars > 10
+            body = "aa bb 0123456789ABCDEF"  # 22 chars > 10, 3 tokens (clears the #257 floor)
             rendered = str(
                 await context.comms(
                     action="brief_publish",
@@ -1123,7 +1148,7 @@ class TestConfigKnobBriefBodyWarnCharsIsConsumed:
             await context.comms(
                 action="register", agent="lead", session="wave7", role="lead"
             )
-            body = "0123456789ABCDEF"
+            body = "aa bb 0123456789ABCDEF"  # the SAME 22-char body as the low-threshold test
             rendered = str(
                 await context.comms(
                     action="brief_publish",
@@ -1134,7 +1159,7 @@ class TestConfigKnobBriefBodyWarnCharsIsConsumed:
                 )
             )
             assert "warn threshold" not in rendered, (
-                "the SAME 16-char body must not warn under the default 4000-char "
+                "the SAME 22-char body must not warn under the default 4000-char "
                 "threshold — a hardcoded low internal threshold would incorrectly warn here"
             )
         finally:

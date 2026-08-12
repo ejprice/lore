@@ -1404,6 +1404,36 @@ _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 _SECONDS_PER_DAY = 86400
 
+# W1c (packet 06a, #360): the cadence-string -> seconds parser behind the fleet
+# ``overdue`` verdict. A declared cadence is free-form agent text of the shape
+# ``<N><unit>`` (unit in {s,m,h,d}), optionally prefixed by a comparator
+# (``≤``/``<=``/``<``/``~`` — the design's recommended ``"≤20m"`` shape). No
+# in-repo duration parser exists and the SurrealDB SDK's ``Duration.parse`` does
+# NOT accept the ``≤``-prefixed form, so this is a deliberate ~4-line hand-roll
+# (bespoke). Tolerant BY CONSTRUCTION: an unparseable cadence yields ``None`` ⇒
+# NO verdict (a threshold we could not compute would be a FABRICATED self-set
+# contract, the #104 derived-prose defect), never a guessed number.
+_CADENCE_UNIT_SECONDS: dict[str, int] = {
+    "s": 1,
+    "m": _SECONDS_PER_MINUTE,
+    "h": _SECONDS_PER_HOUR,
+    "d": _SECONDS_PER_DAY,
+}
+_CADENCE_RE = re.compile(r"^[≤<~=\s]*(?P<value>\d+)\s*(?P<unit>[smhd])\s*$")
+
+
+def _parse_cadence_seconds(cadence: str) -> int | None:
+    """Parse a declared cadence string (e.g. ``"≤20m"``) into seconds, or ``None``.
+
+    ``None`` on any unparseable input: an agent's cadence is free-form text, and a
+    verdict derived from a threshold we could not compute would be a fabricated
+    self-set contract. No verdict is the honest degradation (design §B.7).
+    """
+    match = _CADENCE_RE.match(cadence)
+    if match is None:
+        return None
+    return int(match.group("value")) * _CADENCE_UNIT_SECONDS[match.group("unit")]
+
 
 class TaskSpecItem(BaseModel):
     """One wire-level ``create_many`` batch item (PKT-06 §2, mcp-builder boundary).
@@ -5402,6 +5432,7 @@ class AppContext:
         model: str | None = None,
         spawned_by: str | None = None,
         task_id: str | None = None,
+        cadence: str | None = None,
         note: str | None = None,
         status: str | None = None,
         name: str | None = None,
@@ -5464,6 +5495,7 @@ class AppContext:
             "model": model,
             "spawned_by": spawned_by,
             "task_id": task_id,
+            "cadence": cadence,
             "note": note,
             "status": status,
             "name": name,
@@ -5522,9 +5554,13 @@ class AppContext:
         if spec.requires_registration:
             touch_status = status if action == _COMMS_ACTION_HEARTBEAT else None
             touch_note = note if action == _COMMS_ACTION_HEARTBEAT else None
+            # W1a (F3): heartbeat may (re-)declare cadence, mutable-on-provided; every
+            # other registration-requiring action leaves the prior declaration intact.
+            touch_cadence = cadence if action == _COMMS_ACTION_HEARTBEAT else None
             try:
                 agent_row = await self.agent_registry.touch(
-                    agent, session=session, status=touch_status, note=touch_note
+                    agent, session=session, status=touch_status, note=touch_note,
+                    cadence=touch_cadence,
                 )
             except _UnknownAgentError as error:
                 raise await AppContext._comms_enrich_unknown_agent(self, error, session=session) from error
@@ -5538,6 +5574,7 @@ class AppContext:
             model=model,
             spawned_by=spawned_by,
             task_id=task_id,
+            cadence=cadence,
             note=note,
             status=status,
             name=name,
@@ -5984,11 +6021,18 @@ class AppContext:
         model: str | None,
         spawned_by: str | None,
         task_id: str | None,
+        cadence: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
         """register — idempotent identity registration + head-brief bootstrap ack."""
         result = await self.agent_registry.register(
-            agent, session=session, role=role, model=model, spawned_by=spawned_by, task_id=task_id
+            agent,
+            session=session,
+            role=role,
+            model=model,
+            spawned_by=spawned_by,
+            task_id=task_id,
+            cadence=cadence,
         )
         now = datetime.now(UTC)
         registered_age_s = int((now - result.agent.registered_at).total_seconds())
@@ -6090,8 +6134,13 @@ class AppContext:
         else:
             age_s = int((now - holder.heartbeat_at).total_seconds())
             if AppContext._heartbeat_is_stale(age_s, stale_after_s):
+                # #360 / §D-4: the ⚠STALE glyph is RETIRED here TOO — this #262 held-task
+                # note was the SECOND caller of _heartbeat_is_stale, and a retirement that
+                # swept only the fleet row would leave the corpse asserting on this surface
+                # (the "sweep from the grep, not a hand-list" law). Glyph GONE, age REMAINS:
+                # _heartbeat_is_stale still GATES whether the age (vs the plain status) shows.
                 liveness = render_line(
-                    "⚠ STALE, last seen {age} ago", age=AppContext._render_age(age_s)
+                    "last seen {age} ago", age=AppContext._render_age(age_s)
                 )
             else:
                 liveness = sanitise_line(holder.status)
@@ -7279,14 +7328,28 @@ class AppContext:
         # template-literal pin requires args[0] to be an ast.Constant; a
         # ternary selecting between two literal templates is an ast.IfExp
         # and fails the pin (design doc §9.6 note).
-        # #262: the staleness DECISION routes through the ONE shared predicate (via the
-        # CLASS, so a monkeypatch of it moves this surface too) — never a private
-        # ``age > threshold`` clone the register notice could silently diverge from.
-        if AppContext._heartbeat_is_stale(heartbeat_age_s, stale_after_s):
+        # #360 / operator ruling 3: the ⚠STALE glyph is RETIRED (it was measured-false,
+        # #259). Its replacement is the per-agent ``overdue`` verdict — when an agent
+        # DECLARED a cadence (its self-set silence contract) AND its heartbeat age exceeds
+        # that declared threshold, the row renders ``overdue (declared {cadence}, silent
+        # {age})``, every interpolated value DERIVED FROM THIS ROW'S OWN typed state
+        # (``row.declared_cadence`` and ``heartbeat_age_s``), never a shared constant (the
+        # #104 derived-prose law: a hardcoded echo would ship a FALSE self-set contract). No
+        # declaration — or a heartbeat still WITHIN the declared cadence — ⇒ age only, no
+        # verdict. ``stale_after_s`` no longer gates THIS surface (the fleet row has no
+        # staleness verdict now); it stays in the signature for the pre-06a direct-render
+        # callers, and ``_heartbeat_is_stale`` survives only in the holder-liveness notice.
+        overdue_after_s = (
+            _parse_cadence_seconds(row.declared_cadence)
+            if row.declared_cadence is not None
+            else None
+        )
+        if overdue_after_s is not None and heartbeat_age_s > overdue_after_s:
             return render_line(
-                "- {name} [{status} ⚠ STALE] hb {age} · {cells}",
+                "- {name} [{status}] overdue (declared {cadence}, silent {age}) · {cells}",
                 name=sanitise_line(row.name),
                 status=status_cell,
+                cadence=render_attributed(row.declared_cadence),
                 age=AppContext._render_age(heartbeat_age_s),
                 cells=render_join(" · ", cells),
             )
@@ -8141,13 +8204,13 @@ class CommsActionSpec:
 _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
     _COMMS_ACTION_REGISTER: CommsActionSpec(
         AppContext._comms_register,
-        params=frozenset({"role", "model", "spawned_by", "task_id"}),
+        params=frozenset({"role", "model", "spawned_by", "task_id", "cadence"}),
         required=frozenset({"session", "role"}),
         requires_registration=False,
     ),
     _COMMS_ACTION_HEARTBEAT: CommsActionSpec(
         AppContext._comms_heartbeat,
-        params=frozenset({"note", "status"}),
+        params=frozenset({"note", "status", "cadence"}),
     ),
     _COMMS_ACTION_BRIEF_GET: CommsActionSpec(
         AppContext._comms_brief_get,
@@ -10522,6 +10585,20 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        cadence: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'register'/'heartbeat' (optional): your expected MAX gap "
+                    "between comms touches, e.g. '≤20m'. Declaring it turns your silence "
+                    "into a self-set contract the fleet can read: your row renders "
+                    "'overdue (declared …, silent …)' the moment your heartbeat age "
+                    "exceeds it — the honest orphan signal a killed or stalled agent "
+                    "can't fake. Omit it and you get a bare age, never a verdict. Stored "
+                    "verbatim; mutable on any later register/heartbeat."
+                )
+            ),
+        ] = None,
         note: Annotated[
             str | None,
             Field(
@@ -10676,6 +10753,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             model=model,
             spawned_by=spawned_by,
             task_id=task_id,
+            cadence=cadence,
             note=note,
             status=status,
             name=name,

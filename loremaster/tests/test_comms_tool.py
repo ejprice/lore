@@ -444,12 +444,16 @@ class TestCommsActionsTable:
 
     def test_register_params_and_required(self) -> None:
         spec = _COMMS_ACTIONS["register"]
-        assert spec.params == frozenset({"role", "model", "spawned_by", "task_id"})
+        # W1 (packet 06a, #360): register gained the optional ``cadence`` param — the
+        # self-declared max comms gap that drives the fleet ``overdue`` verdict (§B.7).
+        assert spec.params == frozenset({"role", "model", "spawned_by", "task_id", "cadence"})
         assert spec.required == frozenset({"session", "role"})
 
     def test_heartbeat_params(self) -> None:
         spec = _COMMS_ACTIONS["heartbeat"]
-        assert spec.params == frozenset({"note", "status"})
+        # W1 (packet 06a, #360, F3 symmetry): heartbeat may (re-)declare ``cadence`` too —
+        # mutable-on-provided, exactly like register (§B.7).
+        assert spec.params == frozenset({"note", "status", "cadence"})
         assert spec.required == frozenset()
 
     def test_brief_get_params(self) -> None:
@@ -3321,11 +3325,17 @@ class TestRenderCommsFleetRow:
         )
         assert "STALE" not in rendered
 
-    def test_stale_one_second_past_the_threshold(self) -> None:
+    def test_no_stale_glyph_and_age_remains_past_the_old_threshold(self) -> None:
+        # #360/§D-4 (rename/retire law): the ⚠STALE glyph is RETIRED. An agent with NO
+        # declared cadence gets its AGE only at ANY age — no verdict, no glyph. (Was
+        # `test_stale_one_second_past_the_threshold`, which certified the retired glyph;
+        # the fleet's replacement `overdue` verdict is proven in test_mcp_server.py.)
         rendered = AppContext._render_comms_fleet_row(
             _agent(), project_head_version=None, acked_version=None, stale_after_s=600, heartbeat_age_s=601
         )
-        assert "STALE" in rendered
+        assert "STALE" not in rendered
+        assert "overdue" not in rendered  # no declared cadence ⇒ no verdict
+        assert "hb " in rendered  # the age REMAINS — it is what replaces the glyph
 
     def test_brief_cell_omitted_when_no_project_brief(self) -> None:
         rendered = AppContext._render_comms_fleet_row(

@@ -463,6 +463,17 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     # ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1, the only clause that lands
     # a changed definition; ``IF NOT EXISTS`` is the #107 silent no-op).
     ("status_set_at", "option<datetime>", ""),
+    # W1a (packet 06a, #360/#257): the cadence SELF-DECLARATION. An agent's
+    # ``register(cadence=...)`` turns its silence into a self-set contract the
+    # fleet renders as ``overdue`` (design §B.7). ``option<string>`` with NO
+    # ASSERT — store reference §1.4: a NEW field on the production-POPULATED
+    # ``agent`` table MUST be ``option<>`` (a required/asserted field poisons
+    # every existing row's next UPDATE, and a DEFAULT does not rescue a legacy
+    # row); a cadence is free-form agent text validated (if at all) at the app
+    # layer, never by a store ASSERT. The ``status_set_at`` (#304) precedent
+    # EXACTLY. Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE``
+    # (§1.1, the only clause that lands a changed definition).
+    ("declared_cadence", "option<string>", ""),
 )
 
 # The ``agent`` columns the two indexes are built on: ``(session, status)``

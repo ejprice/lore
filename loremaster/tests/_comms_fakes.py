@@ -242,6 +242,7 @@ class FakeAgentRegistry:
         model: str | None = None,
         spawned_by: str | None = None,
         task_id: str | None = None,
+        cadence: str | None = None,
     ) -> AgentRegisterResult:
         # The race window is honestly OPEN before the check (mirrors
         # ``FakeTaskLedger.claim_task``): two concurrent callers can both reach
@@ -263,6 +264,7 @@ class FakeAgentRegistry:
                 task_id=task_id,
                 checkpoint=None,
                 last_note=None,
+                declared_cadence=cadence,
                 registered_at=now,
                 heartbeat_at=now,
             )
@@ -292,6 +294,8 @@ class FakeAgentRegistry:
             existing.model = model
         if task_id is not None:
             existing.task_id = task_id
+        if cadence is not None:
+            existing.declared_cadence = cadence
         # status resets to active unconditionally (retired already excluded above).
         existing.status = STATUS_ACTIVE
         existing.heartbeat_at = now
@@ -313,6 +317,7 @@ class FakeAgentRegistry:
         session: str | None = None,
         status: str | None = None,
         note: str | None = None,
+        cadence: str | None = None,
     ) -> Agent:
         agent = await self._resolve(name, session)
         if agent.status == STATUS_RETIRED:
@@ -351,6 +356,8 @@ class FakeAgentRegistry:
         agent.heartbeat_at = _utc_now()
         if note is not None:
             agent.last_note = note
+        if cadence is not None:
+            agent.declared_cadence = cadence  # W1a: mutable-on-provided (the note idiom)
         return agent.model_copy(deep=True)
 
     # -- fleet ----------------------------------------------------------------

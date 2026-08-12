@@ -727,6 +727,12 @@ _PARAM_CLASS: dict[str, str] = {
     "model": "attribution",
     "spawned_by": "attribution",
     "thread": "attribution",
+    # W1 (packet 06a, #360): the register ``cadence`` param → stored ``declared_cadence`` →
+    # rendered inline in the fleet ``overdue`` verdict via ``render_attributed`` (attribution),
+    # the sibling of role/model/note. It only ever reaches served bytes when it PARSES (a
+    # closed cadence charset), and even then it is contained — but classified as a door and
+    # driven all the same (see the _render_comms_fleet_row overdue probe shape).
+    "cadence": "attribution",
     # -- attribution, ARRAY-of-string (R2, cold-audit-04b5-1 §2): each element is
     #    caller free text rendered per-element into a served answer; the render-layer
     #    sweep drives a forgery element through the site that serves it. `refs` →
@@ -1719,8 +1725,14 @@ def _manifest() -> dict[type[BaseModel], tuple[frozenset[str], frozenset[str]]]:
             # -- Agent / brief tree: name/session charset-gated (SAFE); role/model/note/checkpoint
             #    caller free text (DOOR) --
             entry(Agent,
-                  door={"role", "model", "last_note", "spawned_by", "checkpoint", "task_id"},
+                  door={"role", "model", "last_note", "spawned_by", "checkpoint", "task_id",
+                        "declared_cadence"},
                   safe={"id", "name", "session"}),  # id opaque; name/session gated.
+                  # declared_cadence (W1/#360) is caller FREE TEXT (register stores it VERBATIM,
+                  # no charset gate), rendered inline in the fleet overdue verdict via
+                  # render_attributed — a DOOR, the sibling of last_note/task_id. It reaches the
+                  # served bytes only when it PARSES (a closed cadence charset), so a forgery
+                  # value never renders; driven as a door regardless (over-drive overdue shape).
                   # task_id is caller FREE TEXT (agents.py AgentRegistry.register stores it
                   # VERBATIM, length-bounded only — "the fleet task id", advisory intent, no
                   # charset gate), rendered TRUNCATED but same-line-forgeable by
@@ -2467,6 +2479,22 @@ def _probes() -> list[RenderProbe]:
                 "_render_comms_fleet_row",
                 _forge(Agent, forge=g, model=None, task_id=None, last_note=None),
                 project_head_version=None, acked_version=None, stale_after_s=120, heartbeat_age_s=200,
+            ),
+            # OVERDUE branch (#360, retired-STALE replacement): a PARSEABLE declared_cadence
+            # the heartbeat age exceeds fires ``overdue (declared …, silent …)``, which renders
+            # declared_cadence via render_attributed. The forgery still rides the OTHER doors
+            # (model/last_note) so their containment is byte-checked on THIS branch too;
+            # declared_cadence itself only ever renders when it PARSES (a closed cadence
+            # charset), so it cannot carry a forgery to the served bytes.
+            _served(
+                "_render_comms_fleet_row",
+                _forge(
+                    Agent, forge=g,
+                    model=(_T("Agent", "model") if g else BENIGN),
+                    last_note=(_T("Agent", "last_note") if g else BENIGN),
+                    declared_cadence="≤1m",
+                ),
+                project_head_version=None, acked_version=None, stale_after_s=120, heartbeat_age_s=600,
             ),
         ]),
         P("_render_comms_fleet", lambda g: [

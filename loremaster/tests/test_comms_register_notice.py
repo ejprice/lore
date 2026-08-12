@@ -255,7 +255,13 @@ class TestHolderLivenessRenderSet:
         assert "STALE" not in notice
         assert "not found in registry" not in notice
 
-    async def test_stale_holder_renders_STALE_with_age(self, ctx: _RegisterCtx) -> None:
+    async def test_stale_holder_notice_drops_glyph_keeps_age(self, ctx: _RegisterCtx) -> None:
+        # #360 / §D-4 (rename/retire law): the ⚠STALE glyph is RETIRED from the
+        # holder-liveness notice TOO — this note was the SECOND caller of
+        # `_heartbeat_is_stale`, swept alongside the fleet row. Glyph GONE, age REMAINS: a
+        # corpse holder still discloses "last seen Nm ago" so the register caller sees the
+        # stale liveness, just without the retired verdict glyph. (Was
+        # `test_stale_holder_renders_STALE_with_age`, which certified the retired world.)
         holder = await ctx.register_agent("holder-y")
         await ctx.backdate_heartbeat(holder, seconds_ago=1300)  # 21m > 600s default
         task_id = await ctx.held_task(owner="holder-y")
@@ -264,7 +270,7 @@ class TestHolderLivenessRenderSet:
 
         notice = _notice_line(text)
         assert "is held by" in notice and "holder-y" in notice
-        assert "STALE" in notice
+        assert "STALE" not in notice, f"the ⚠STALE glyph is RETIRED (#360/§D-4): {notice!r}"
         assert "last seen" in notice
         assert _MINUTES_AGO.search(notice), f"expected an 'Nm ago' age token in:\n{notice}"
 
@@ -355,68 +361,74 @@ class TestRegisterNeverRefuses:
 
 
 # ---------------------------------------------------------------------------
-# ONE IMPLEMENTATION — the STALE threshold is SHARED with the fleet render.
-# The brief's own proof: "mutate the 600s constant -> BOTH fleet AND notice move."
-# A cloned/hardcoded 600 in the notice would NOT respond to the config change; this
-# behavioral proof catches that divergence.
+# The holder-liveness notice reads the config threshold + the ONE extracted predicate.
+#
+# ⚠ REWORKED by #360/§D-4 (rename/retire law). This class was
+# `TestStaleThresholdIsSharedWithFleet` and proved the ⚠STALE verdict flipped on BOTH the
+# fleet row AND this notice at one threshold. #360 RETIRED the glyph and the fleet row no
+# longer has a staleness verdict AT ALL — it renders the per-agent `overdue` verdict off
+# `declared_cadence` (proven in test_mcp_server.py::TestFleetRendersOverdueVerdict), and has
+# EXITED the `_heartbeat_is_stale` club entirely. So the shared-with-FLEET premise is
+# dissolved: the notice is now the SOLE caller of `_heartbeat_is_stale`. These pins keep the
+# surviving, still-load-bearing half — the notice (a) responds to the config knob (never a
+# cloned 600) and (b) age-gates through the extracted predicate (never a private clone) —
+# with the observable now the age-display ("last seen Nm ago") rather than the retired glyph.
 # ---------------------------------------------------------------------------
 
 
-class TestStaleThresholdIsSharedWithFleet:
-    async def test_both_surfaces_flip_at_one_threshold(
+class TestHolderNoticeReadsTheConfigThreshold:
+    async def test_notice_ages_the_holder_at_the_config_threshold(
         self, ctx: _RegisterCtx
     ) -> None:
-        caller = await ctx.register_agent("reg-agent")
         holder = await ctx.register_agent("holder-y")
         await ctx.backdate_heartbeat(holder, seconds_ago=1300)  # age ~= 21m
         task_id = await ctx.held_task(owner="holder-y")
 
-        # Threshold BELOW the age -> both surfaces STALE.
+        # Threshold BELOW the age -> the notice AGES the holder ("last seen Nm ago").
         ctx.config.comms.stale_heartbeat_s = 600
-        notice_stale = await ctx.register_notice(agent="reg-agent", task_id=task_id)
-        fleet_stale = await ctx.fleet_line(caller=caller, name="holder-y")
-        assert "STALE" in _notice_line(notice_stale)
-        assert "STALE" in fleet_stale
+        notice_aged = _notice_line(
+            await ctx.register_notice(agent="reg-agent", task_id=task_id)
+        )
+        assert "last seen" in notice_aged and _MINUTES_AGO.search(notice_aged)
+        assert "STALE" not in notice_aged  # glyph retired (#360)
 
-        # Threshold ABOVE the age -> NEITHER surface STALE. If the notice cloned the
-        # 600 constant instead of reading config, it would stay STALE here and diverge.
+        # Threshold ABOVE the age -> the notice reads the holder's PLAIN status. If it
+        # cloned the 600 constant instead of reading config, it would still age here.
         ctx.config.comms.stale_heartbeat_s = 3600
-        notice_fresh = await ctx.register_notice(agent="reg-agent", task_id=task_id)
-        fleet_fresh = await ctx.fleet_line(caller=caller, name="holder-y")
-        assert "STALE" not in _notice_line(notice_fresh)
-        assert "STALE" not in fleet_fresh
+        notice_fresh = _notice_line(
+            await ctx.register_notice(agent="reg-agent", task_id=task_id)
+        )
+        assert "last seen" not in notice_fresh
+        assert "active" in notice_fresh
 
-    async def test_both_surfaces_share_the_EXTRACTED_predicate(
+    async def test_notice_age_gating_routes_through_the_EXTRACTED_predicate(
         self, monkeypatch: pytest.MonkeyPatch, ctx: _RegisterCtx
     ) -> None:
-        """ONE-IMPLEMENTATION (sharpened, adversary MINOR): the constant-share pin above
-        proves a shared 600s CONSTANT; this proves a shared PREDICATE. Mutate the extracted
-        `AppContext._heartbeat_is_stale` LOGIC and BOTH the fleet render AND the register
-        notice must flip together — a private `age > threshold` clone in either surface
-        would ignore the patch and diverge. RED at HEAD via AttributeError (the predicate is
-        not extracted yet). Together with the constant pin: threshold-source AND logic shared.
+        """ONE-IMPLEMENTATION: the notice's stale-age gate routes through the extracted
+        `AppContext._heartbeat_is_stale` — mutate the LOGIC and the notice's age-display
+        flips. A private `age > threshold` clone would ignore the patch. Post-#360 the fleet
+        row no longer calls this predicate (it has its own `overdue` verdict), so this is a
+        SINGLE-surface pin now; `_heartbeat_is_stale` survives precisely for this age-gating.
         """
-        caller = await ctx.register_agent("reg-agent")
         holder = await ctx.register_agent("holder-y")
         await ctx.backdate_heartbeat(holder, seconds_ago=1300)  # genuinely stale by age
         task_id = await ctx.held_task(owner="holder-y")
 
-        # always-False: a GENUINELY-stale holder must read NOT stale on BOTH surfaces.
+        # always-False: a GENUINELY-stale holder reads its PLAIN status (not aged).
         monkeypatch.setattr(
             AppContext, "_heartbeat_is_stale",
             lambda age_s, stale_after_s: False, raising=True,
         )
-        assert "STALE" not in _notice_line(
+        notice_false = _notice_line(
             await ctx.register_notice(agent="reg-agent", task_id=task_id)
         )
-        assert "STALE" not in await ctx.fleet_line(caller=caller, name="holder-y")
+        assert "last seen" not in notice_false and "active" in notice_false
 
-        # always-True: a config-fresh holder must read STALE on BOTH surfaces.
+        # always-True: a config-fresh holder is AGED ("last seen Nm ago").
         monkeypatch.setattr(
             AppContext, "_heartbeat_is_stale",
             lambda age_s, stale_after_s: True, raising=True,
         )
-        assert "STALE" in _notice_line(
+        assert "last seen" in _notice_line(
             await ctx.register_notice(agent="reg-agent", task_id=task_id)
         )
-        assert "STALE" in await ctx.fleet_line(caller=caller, name="holder-y")

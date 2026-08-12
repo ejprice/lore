@@ -351,7 +351,12 @@ _PROMISE_FREE: dict[str, str] = {
     "already acked brief '{name}' v{version} — no new edge": "status report (idempotent ack)",
     "acked brief '{name}' v{version} (head)": "status report (head ack)",
     "- {name} [{status}] hb {age} · {cells}": "fleet row structural template",
-    "- {name} [{status} ⚠ STALE] hb {age} · {cells}": "fleet row structural template (stale variant)",
+    # #360/§D-4: the ⚠STALE variant is RETIRED; its replacement is the per-agent overdue
+    # verdict, derived from declared_cadence + heartbeat age (a status report, promises no
+    # runtime mechanism). Was: "- {name} [{status} ⚠ STALE] hb {age} · {cells}".
+    "- {name} [{status}] overdue (declared {cadence}, silent {age}) · {cells}": (
+        "status report (fleet row structural template, overdue variant)"
+    ),
     "fleet (session {session}): {total} non-retired agents — {parked} input_required, "
     "{active} active, {idle} idle": "status report (fleet header)",
     "fleet: {total} non-retired agents — {parked} input_required, {active} active, {idle} idle": (
