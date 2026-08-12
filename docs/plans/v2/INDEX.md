@@ -1813,3 +1813,14 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Findings #363/#364/#365/#366 filed; #193/#360 resolved; tasks 05b5cd71 + d9395d54 + fe6e5f8a done.
   **WAVE C (the agent-comms subsystem) CLOSES HERE — deployed, working, acceptance-passed at fleet scale.**
   Reports → `receipts/2026-08-12-packet06b/`.
+- **06b currency-fix (the honest wave-C close):** the REQUIRED wave-close `--currency` gate (run AFTER
+  the premature close-out commit `3e38a5a`) surfaced **7 RED_ORPHANED pins** — 6 = 06a collateral (the
+  #257 floor / `declared_cadence` / `_CADENCE_RE.match` #210 / the #345 render-inventory, shipped without
+  06a running `--currency`), 1 = 06b's (the new trace-GC test bumped a harness importer-count pin). Operator
+  ruled **fix-all-7**. Fixed (`e9c7f82`, commit-only): 6 mechanical stale-expectation updates + B2 = an
+  evidence-backed `_PARSE_GATED_DOOR_FIELDS` exemption (a manifest DOOR whose only render is parse-gated →
+  un-observable via a forge token) with a **mutation-proven-discriminating** control — the builder caught
+  that the lead-ruled `not _leaks` predicate was VACUOUS for this vector and promoted `CONTROL_CHAR_PATTERN`.
+  Lead-verified: 9 pins pass, `--currency` **PASS — 0 RED_ORPHANED** (remaining 191 mypy / 444 pytest = the
+  #333 auth-WIP baseline, RED_ADJUDICATED owned by pkt39). #367/#368 resolved; #363/#364/#365/#366 open as
+  follow-ups. Lesson: run `--currency` at EVERY packet close, not just the wave close. **WAVE C CLOSES CLEANLY.**
