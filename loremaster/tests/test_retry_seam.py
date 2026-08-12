@@ -1439,7 +1439,7 @@ class TestBriefMintSharesTheDriver:
         monkeypatch.setattr(briefs_module, "execute_transaction", _exhausted)
 
         with pytest.raises(TxnContentionExhaustedError):
-            await ledger.publish(_WAVE_NAME, "a body", created_by="lead")
+            await ledger.publish(_WAVE_NAME, "a standing wave instruction", created_by="lead")
 
         assert released, (
             "a publish whose CREATE died of exhausted contention did NOT hand its version "
@@ -1559,7 +1559,7 @@ class TestEveryCallerRunsTheSameRetryPolicy:
         connection = _ConflictingConnection(conflicts=None)
 
         with pytest.raises(TxnContentionExhaustedError):
-            await _ledger_on(connection).publish(_WAVE_NAME, "body", created_by="lead")
+            await _ledger_on(connection).publish(_WAVE_NAME, "a standing wave instruction", created_by="lead")
 
         assert connection.calls == _MAX_TXN_CONFLICT_ATTEMPTS, (
             f"publish() made {connection.calls} attempts — briefs' private 20-attempt "

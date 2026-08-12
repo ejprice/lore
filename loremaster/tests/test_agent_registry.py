@@ -865,6 +865,12 @@ class TestNoForwardCompatFieldsOnAgent:
             # NOT a forward-compat unread/unacked/orphan-impact creep. Kept in this
             # exact-set pin so any FURTHER field still reddens here.
             "status_set_at",
+            # W1 (packet 06a, #360): the agent's self-declared comms cadence — a
+            # DELIBERATE addition (register/heartbeat `cadence` param, stored verbatim
+            # on the Agent model, drives the fleet `overdue` verdict). NOT a
+            # forward-compat creep. Kept in this exact-set pin so any FURTHER field
+            # still reddens here.
+            "declared_cadence",
         }
         assert set(Agent.model_fields) == expected
 

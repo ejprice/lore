@@ -1429,7 +1429,7 @@ def _parse_cadence_seconds(cadence: str) -> int | None:
     verdict derived from a threshold we could not compute would be a fabricated
     self-set contract. No verdict is the honest degradation (design §B.7).
     """
-    match = _CADENCE_RE.match(cadence)
+    match = _CADENCE_RE.fullmatch(cadence)
     if match is None:
         return None
     return int(match.group("value")) * _CADENCE_UNIT_SECONDS[match.group("unit")]

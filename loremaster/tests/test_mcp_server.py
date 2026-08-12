@@ -9083,6 +9083,40 @@ class TestFleetRetiresTheStaleGlyph:
         )
 
 
+class TestParseCadenceSecondsToleratesTrailingWhitespace:
+    """W1c (#360) — ``_parse_cadence_seconds`` is a TOLERANT parser by design (design §B.7):
+    it maps a declared cadence to a threshold, it is NOT an identity guard on the stored
+    string. A trailing newline (or any charset-admitted whitespace) is TOLERATED — it parses
+    to the same seconds as the bare form, so there is no identity forgery at the threshold.
+
+    Documents the #210 nuance (FORK-2, packet 06b) so a future reader does not mistake the
+    ``_CADENCE_RE.match`` → ``.fullmatch`` change (server.py, the #210 anchored-pattern-seam
+    fix) for a REJECTION of a trailing newline: for THIS pattern ``.fullmatch`` ≡ ``.match``
+    on every input, because the pattern ends in ``\\s*$`` and ``\\s`` absorbs the ``\\n`` (the
+    trailing ``\\s*`` consumes it before ``$``). Unlike ``AGENT_NAME_PATTERN`` (a bare ``$``),
+    tightening this anchor is a DELIBERATE non-goal: the trailing newline is a benign residual
+    whose RENDER safety is owned by ``render_attributed`` at ``_render_comms_fleet_row`` (the
+    #210 residual is CONTAINED there, pinned by
+    ``test_render_slot_inventory.py::…::test_the_overdue_cadence_slot_neutralises_a_hostile_parseable_declared_cadence``),
+    NOT by this parser. Do NOT tighten the anchor to make this return ``None``.
+    """
+
+    def test_a_trailing_newline_is_tolerated_and_parses_identically(self) -> None:
+        from loremaster.server import _parse_cadence_seconds  # noqa: PLC0415
+
+        assert _parse_cadence_seconds("≤2m") == 120, "the bare cadence parses to 120s (2 × 60)"
+        assert _parse_cadence_seconds("≤2m\n") == 120, (
+            "a TRAILING NEWLINE is TOLERATED — it parses to the SAME 120s as the bare form "
+            "(tolerant parser, #360 W1c; the pattern's trailing `\\s*$` absorbs the `\\n`, so "
+            "`.fullmatch` ≡ `.match` here). Its render safety is render_attributed's job "
+            "(#210 residual, contained at _render_comms_fleet_row), NOT this parser's — do NOT "
+            "tighten the anchor to reject it."
+        )
+        # POSITIVE CONTROL — the parser is NOT accept-all: a non-cadence returns None (the
+        # honest degradation, design §B.7), so the tolerance above is not a vacuous pass.
+        assert _parse_cadence_seconds("junk") is None, "a non-cadence string must not parse"
+
+
 class TestHolderLivenessNoticeRetiresTheStaleGlyph:
     """W1 / §D-4 — the SECOND caller of ``_heartbeat_is_stale``, the #262 held-task
     holder-liveness notice, must ALSO retire the ⚠STALE glyph (glyph gone, age

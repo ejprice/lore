@@ -172,6 +172,36 @@ _SERVED_SAFE_FIELDS: dict[str, tuple[str, str]] = {
 }
 
 
+#: ``{field_name: (reason, re_open_trigger)}`` — a THIRD category the Leg-1 observed-door | safe
+#: binary has no slot for: a manifest DOOR (caller free text, so NEVER eligible for
+#: :data:`_SERVED_SAFE_FIELDS` — the mis-park pin :class:`TestNoServedSafeFieldIsAManifestDoor`
+#: forbids it) whose only driven render is PARSE-GATED, so a forgery TOKEN can never reach the
+#: served bytes and Leg 1's token observation is un-satisfiable BY CONSTRUCTION (not by a build
+#: bug). Distinct dict from ``_SERVED_SAFE_FIELDS`` precisely so the mis-park pin stays untouched
+#: (a door here is CORRECT; a door there is the #345 defect). Each entry is evidence-backed with a
+#: named re-open trigger (repo law: "WHEN YOU CANNOT CLOSE A HOLE, PIN IT"), and — unlike a SAFE
+#: entry, which licenses UNCONTAINED rendering — a parse-gated door STILL routes through
+#: ``render_attributed`` (Leg 2 is UNCHANGED and still requires it) and STILL carries a dedicated
+#: control that mutation-provably discriminates (finding #368). A field is added here ONLY when
+#: BOTH hold: it is a manifest door AND its sole driven render is value-gated to a closed charset a
+#: forge token cannot satisfy.
+_PARSE_GATED_DOOR_FIELDS: dict[str, tuple[str, str]] = {
+    "declared_cadence": (
+        "manifest DOOR (Agent.declared_cadence — register/heartbeat `cadence` stored VERBATIM, "
+        "no charset gate) whose only driven render (`_render_comms_fleet_row` overdue branch, "
+        "server.py) is parse-gated by `_parse_cadence_seconds(value) is not None`, restricting the "
+        "rendered value to the closed cadence charset `^[≤<~=\\s]*\\d+\\s*[smhd]\\s*$`; a forge "
+        "token (letters/dots) cannot parse, so it is un-observable via a token BY CONSTRUCTION. The "
+        "residual forgery a parseable cadence CAN carry is line-fracturing whitespace (a trailing "
+        "newline, #210; also CR / U+2028 / U+2029), which is CONTAINED by `render_attributed` "
+        "(sanitise_line collapses it) — proven by the dedicated control "
+        "`test_the_overdue_cadence_slot_neutralises_a_hostile_parseable_declared_cadence`",
+        "the overdue verdict renders `declared_cadence` OUTSIDE the parse gate, OR the cadence "
+        "charset widens to admit a printable forgery char (` · `, a backtick, prose)",
+    ),
+}
+
+
 _CONTAIN_VERBS: frozenset[str] = frozenset({"render_attributed", "render_fenced"})
 _RENDER_CALL_VERBS: frozenset[str] = frozenset({"render_line", "render_join", "render_compose"})
 
@@ -453,13 +483,94 @@ class TestEveryServedSlotIsDrivenWithContentOrJustifiedSafe:
             "to SAFE (re-opening #345) or its drain-row driver re-hardcoded task_id=None."
         )
 
+    def test_the_overdue_cadence_slot_neutralises_a_hostile_parseable_declared_cadence(
+        self,
+    ) -> None:
+        """DEDICATED CONTROL for the :data:`_PARSE_GATED_DOOR_FIELDS` ``declared_cadence``
+        exemption (finding #368; mirrors
+        :meth:`test_the_drain_row_task_id_slot_is_driven_with_content`) — the exemption's
+        evidence made a REAL check, not a rug-sweep (repo law: every deny-by-default exemption is
+        evidence-backed, and its control must mutation-provably discriminate).
+
+        ``declared_cadence`` renders ONLY in the ``_render_comms_fleet_row`` overdue branch, and
+        only when it PARSES as a cadence — so the served value is confined to the closed charset
+        ``^[≤<~=\\s]*\\d+\\s*[smhd]\\s*$``. The ONLY forgery that charset admits is line-fracturing
+        WHITESPACE (a trailing newline, #210; also CR / U+2028 / U+2029). This drives that exact
+        vector, on a value that parses, and proves the served row carries NO line-fracturing /
+        control char — it stays one visually-honest line.
+
+        ⚠ NOT ``_leaks`` alone: ``_leaks`` keys on ``FORGERY_MARKER`` PROSE, which a charset-gated
+        cadence can NEVER carry, so it returns ``False`` even on a render where the raw newline
+        SURVIVES (MEASURED: finding #368 / REPORT-fixer-orphans-06b-2.md §B2). It is therefore
+        VACUOUS for this vector — the LOAD-BEARING assertion is
+        :data:`~loremaster.sanitise.CONTROL_CHAR_PATTERN` (the exact line-fracturing class
+        ``sanitise_line`` neutralises). ``_leaks`` is kept only as a documented-secondary belt for
+        the re-open-trigger world where the charset widens to admit a printable char.
+
+        MUTATION PROOF (bypass ``render_attributed`` at the overdue branch → this control RED;
+        restore → GREEN): REPORT-fixer-orphans-06b-2.md §B2.
+        """
+        from loremaster.agents import Agent  # noqa: PLC0415
+        from loremaster.sanitise import CONTROL_CHAR_PATTERN  # noqa: PLC0415
+        from test_link5_render_containment import _app  # noqa: PLC0415
+
+        # Hostile-but-PARSEABLE: parses to 60s (so the overdue branch fires at
+        # heartbeat_age_s=600), packing the line-fracturing whitespace the charset admits — a
+        # trailing newline (#210) PLUS CR and U+2028, so the assertion is load-bearing beyond the
+        # single ``\n`` vector (a bypass that only handled ``\n`` would still be caught).
+        # newline (#210) + CR + U+2028 LINE SEPARATOR — all charset-admitted \s, written
+        # as escapes so no literal line-fracturing char sits in this source file.
+        hostile_cadence = "≤1m" + "\r\n\u2028"
+        row = Agent.model_construct(  # type: ignore[call-arg]
+            name="agent-x",
+            role="release-bot",
+            model=None,
+            task_id=None,
+            last_note=None,
+            status="active",
+            declared_cadence=hostile_cadence,
+        )
+        rendered = str(
+            _app()._render_comms_fleet_row(
+                row,
+                project_head_version=None,
+                acked_version=None,
+                stale_after_s=120,
+                heartbeat_age_s=600,
+            )
+        )
+        assert "overdue" in rendered, (
+            "the overdue branch did NOT fire — the parse-gated declared_cadence slot is not being "
+            "exercised, so this control proves nothing (heartbeat_age_s must exceed the parsed "
+            f"cadence). rendered={rendered!r}"
+        )
+        assert not CONTROL_CHAR_PATTERN.search(rendered), (
+            "a line-fracturing / control character from the hostile declared_cadence survived into "
+            "the served fleet row — the #210 residual vector is NOT contained (render_attributed "
+            f"was bypassed at the overdue branch). rendered={rendered!r}"
+        )
+        assert not _leaks(rendered), (
+            "the forgery marker reached the served row outside a provenance delimiter — the "
+            "documented-secondary belt (marker-blind for this charset-gated vector) fired."
+        )
+
     def test_every_served_field_is_driven_with_content_or_justified_safe(self) -> None:
         observed = _observed_field_names()
         doors = _door_field_names()
         offenders: list[str] = []
         for method, slots in _all_served_slots().items():
             for lineno, field, _contained in slots:
-                if field in observed or field in _SERVED_SAFE_FIELDS:
+                # A parse-gated door (finding #368) is exempt from the token-observation
+                # requirement — its render is value-gated to a closed charset a forge token
+                # cannot satisfy, so "observed with content" is un-satisfiable BY CONSTRUCTION.
+                # It is NOT let off containment: Leg 2 (below) is unchanged and still requires
+                # render_attributed, and each such field carries a dedicated discriminating
+                # control (see _PARSE_GATED_DOOR_FIELDS).
+                if (
+                    field in observed
+                    or field in _SERVED_SAFE_FIELDS
+                    or field in _PARSE_GATED_DOOR_FIELDS
+                ):
                     continue
                 verdict = (
                     "a DOOR served but NEVER observed with content — a vacuous drive "
