@@ -3,6 +3,30 @@ size ~0.25 wu · wave C, LAST · depends: packet 05
 law: read `comms-subsystem.md` FIRST (its Exit section specifies the drill verbatim) +
 DESIGN-LAW §8 · DEPLOY: receipts (no new tool surface expected)
 
+## ⚠ KICKOFF 2026-08-11 — SPLIT + operator rulings + a scope correction (lead `lead-06`)
+Split at kickoff (sizing ≥0.30 + the #360 scope correction below) into:
+- **06a** (ledger `f582f0ad`) — build enablers, **DEPLOYS**: W1 fleet-render honesty (`declared_cadence`
+  field + `cadence` register/heartbeat param + the `overdue (declared, silent)` verdict + RETIRE the
+  ⚠STALE glyph); W2 the #195 obedience battery (O1/O2 graders + controls in `scripts/comms_consumer_eval.py`,
+  §15 adversary); W3 the #257 minimal non-vacuity floor at `brief_publish`; W4 brief-base **v13** (lead-applied).
+- **06b** (ledger `fe6e5f8a`, blocked_by 06a) — **THE DRILL** + join-quality/decay/loss-rate reads + trace-GC
+  (#193) + close **wave C**.
+
+**Design of record (Fable sidecar):** `docs/plans/v2/design/2026-08-11-packet06-drill-and-obedience.md`
+(§A obedience battery · §B drill choreography · §C brief-base v13 · §D forks).
+
+**Operator rulings (2026-08-11):**
+1. **Split 06a → 06b** (above).
+2. **#257 = a MINIMAL non-vacuity floor** at `brief_publish` (reject blank / whitespace-only / single-token;
+   reuse the `lorerunes` blankness predicate) — **no** pin-the-miss test.
+3. **RETIRE the ⚠STALE glyph in 06a** (D-1 = Reading A). Sweep **both** callers of `_heartbeat_is_stale`
+   (`_render_comms_fleet_row` + the #262 held-task note), folded into the `overdue` build.
+
+**⚠ SCOPE CORRECTION — obligation #1 below is FALSE at HEAD (finding #360).** The inherited obligation #1
+states the ⚠STALE glyph is already retired ("04b-2 replaces it with the AGE"). It is **not** — 04b-2 shipped
+only the columns; the retirement (#259 candidate b) AND the `overdue` verdict (candidate d) are **both
+unbuilt** and both fall to 06a (ruling 3). Read obligation #1 through this correction.
+
 ## Mission
 Make the fleet actually use it: the protocol rewrite plus the live multi-agent drill
 that is the SUBSYSTEM'S acceptance gate. After this packet, the manual mitigation stack
