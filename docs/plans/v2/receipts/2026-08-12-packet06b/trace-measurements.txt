@@ -1,0 +1,481 @@
+TOTAL trace rows pulled: 3709
+lore_comms trace rows: 1726
+
+=== JOIN-QUALITY (DD-5.b) ===
+rows with agent AND transport_session: 1726 / 1726 lore_comms rows
+lore_comms rows WITH a non-null transport_session: 1726
+
+(a) transport_sessions per agent (distinct):
+  acc-contract-adversary-2: 2 session(s)
+  acc-package-scout-2: 2 session(s)
+  acc-postpin-adversary-3: 2 session(s)
+  acc-tdd-contract-2: 2 session(s)
+  acc-tdd-implementer-2: 2 session(s)
+  acc-tdd-light-contract-2: 2 session(s)
+  acc-tdd-refactorer-2: 2 session(s)
+  acc-tdd-stub-2: 2 session(s)
+  accept-tddcontract-comms-1: 2 session(s)
+  adv-05ai-1: 2 session(s)
+  adversary-04b4-1: 2 session(s)
+  adversary-04b4-2: 2 session(s)
+  adversary-05aii-1: 2 session(s)
+  adversary-05aiii: 2 session(s)
+  adversary-05aiii-2: 2 session(s)
+  adversary-256-05b: 2 session(s)
+  adversary-asub-b: 2 session(s)
+  adversary-c1-1: 2 session(s)
+  adversary-c1-delta-1: 2 session(s)
+  adversary-c3-1: 2 session(s)
+  adversary-c3-delta-1: 2 session(s)
+  adversary-c3-delta-2: 2 session(s)
+  adversary-cd: 2 session(s)
+  adversary-cycle-04b3-1: 2 session(s)
+  adversary-cycle-04b3-2: 2 session(s)
+  adversary-eh: 2 session(s)
+  adversary-f: 2 session(s)
+  adversary-g: 2 session(s)
+  adversary-honesty-06a: 1 session(s)
+  adversary-idlegate-05b: 2 session(s)
+  adversary-obedience-06a: 1 session(s)
+  adversary-verbs-05b: 2 session(s)
+  auditor-05ai-1: 2 session(s)
+  author-44-monotonic-1: 2 session(s)
+  builder-04b1: 2 session(s)
+  builder-04b5-1: 2 session(s)
+  builder-05ai-1: 2 session(s)
+  builder-05aii-1: 2 session(s)
+  builder-256-05b: 2 session(s)
+  builder-44-instrument-1: 2 session(s)
+  builder-44-scripts-debt-1: 2 session(s)
+  builder-c1-1: 2 session(s)
+  builder-c3-1: 2 session(s)
+  builder-c3-2: 2 session(s)
+  builder-comms-cap-1: 2 session(s)
+  builder-cycle-04b3-1: 2 session(s)
+  builder-cycle-fix-04b3-1: 2 session(s)
+  builder-forgery-sites: 2 session(s)
+  builder-gatewrapper-1: 2 session(s)
+  builder-honesty-06a: 1 session(s)
+  builder-idlegate-05b: 2 session(s)
+  builder-obedience-06a: 1 session(s)
+  builder-predeploy-05aiii: 2 session(s)
+  builder-scriptsgate: 2 session(s)
+  builder-server: 2 session(s)
+  builder-treescan: 2 session(s)
+  builder-verbs-05b: 2 session(s)
+  closeout-04b3: 1 session(s)
+  closer-04b5-format-1: 2 session(s)
+  closer-04b5-selfecho-1: 2 session(s)
+  cold-audit: 2 session(s)
+  cold-audit-05b-batch1: 2 session(s)
+  cold-audit-verbs-05b: 2 session(s)
+  coldaudit-04b1: 2 session(s)
+  coldaudit-04b2-wavec-r2: 2 session(s)
+  coldaudit-04b4-1: 2 session(s)
+  coldaudit-04b5-2: 2 session(s)
+  coldaudit-04b5-3: 2 session(s)
+  coldaudit-04b5-4: 2 session(s)
+  coldaudit-04b5-5: 2 session(s)
+  coldaudit-05aii-1: 2 session(s)
+  coldaudit-44-1: 2 session(s)
+  coldaudit-build-04b5-1: 2 session(s)
+  coldaudit-contract-04b5-1: 2 session(s)
+  coldaudit-cycle-04b3-1: 2 session(s)
+  coldaudit-obedience-06a: 1 session(s)
+  contract-04b2-c3fix-1: 2 session(s)
+  contract-04b2-cdef-1: 2 session(s)
+  contract-04b2-wavec-1: 2 session(s)
+  contract-04b2-wavec-2: 2 session(s)
+  contract-04b4-1: 2 session(s)
+  contract-04b5-1: 2 session(s)
+  contract-04b5-2: 2 session(s)
+  contract-04b5-3: 2 session(s)
+  contract-04b5-4: 2 session(s)
+  contract-04b5-5: 2 session(s)
+  contract-05ai-1: 2 session(s)
+  contract-05aii-1: 2 session(s)
+  contract-05aiii: 2 session(s)
+  contract-256-05b: 2 session(s)
+  contract-asub-b: 2 session(s)
+  contract-cd: 2 session(s)
+  contract-cycle-04b3-1: 2 session(s)
+  contract-eh: 2 session(s)
+  contract-f: 2 session(s)
+  contract-fix-05aiii: 2 session(s)
+  contract-fix-05aiii-a2: 2 session(s)
+  contract-g: 2 session(s)
+  contract-g-simple: 2 session(s)
+  contract-honesty-06a: 1 session(s)
+  contract-idlegate-05b: 2 session(s)
+  contract-obedience-06a: 1 session(s)
+  contract-revise-05aiii: 2 session(s)
+  contract-tracegc-06b: 1 session(s)
+  contract-verbs-05b: 2 session(s)
+  contractfix-04b1-r3: 2 session(s)
+  contractfix-04b1-r4: 2 session(s)
+  contractfix-04b1-r5: 2 session(s)
+  contractfix-04b1-r6: 2 session(s)
+  delta-adversary-asub-3: 2 session(s)
+  delta-adversary-asub-4: 2 session(s)
+  delta-adversary-asub-5: 2 session(s)
+  delta-adversary-asub-6: 2 session(s)
+  delta-adversary-asub-b: 2 session(s)
+  delta-adversary-cd: 2 session(s)
+  delta-adversary-fh: 2 session(s)
+  delta-adversary-g: 2 session(s)
+  delta-adversary-g-2: 2 session(s)
+  delta-adversary-g-3: 2 session(s)
+  delta-adversary-g-4: 2 session(s)
+  delta-adversary-g-5: 2 session(s)
+  delta-adversary-g-6: 2 session(s)
+  design-sidecar-04b: 1 session(s)
+  design-sidecar-04b2-wavec-1: 2 session(s)
+  design-sidecar-04b2-wavec-r2: 2 session(s)
+  design-sidecar-04b3-1: 2 session(s)
+  design-sidecar-04b5-1: 2 session(s)
+  drill-prober-06b: 1 session(s)
+  drill-worker-06b: 1 session(s)
+  fable-design-05a: 2 session(s)
+  fable-design-06: 1 session(s)
+  fable-designer: 2 session(s)
+  fable-designer-2: 2 session(s)
+  fable-designer-3: 2 session(s)
+  fable-sidecar: 2 session(s)
+  fable-sidecar-05ai: 2 session(s)
+  fable-sidecar-05aii: 2 session(s)
+  fixer-04b5-ruff: 2 session(s)
+  fixer-44-audit-1: 2 session(s)
+  fixer-annotations: 2 session(s)
+  fixer-smoke-retire: 2 session(s)
+  fixwave-04b1-close: 2 session(s)
+  instrument0: 2 session(s)
+  lead: 1 session(s)
+  lead-04b2: 3 session(s)
+  lead-04b2-wavec: 1 session(s)
+  lead-04b2-wavec-r2: 2 session(s)
+  lead-04b3: 3 session(s)
+  lead-04b4: 1 session(s)
+  lead-04b5: 1 session(s)
+  lead-05a: 3 session(s)
+  lead-05a-ii: 3 session(s)
+  lead-05aiii: 2 session(s)
+  lead-05b: 2 session(s)
+  lead-06: 2 session(s)
+  lead-06b: 1 session(s)
+  lead-44: 1 session(s)
+  lead-cleanup: 1 session(s)
+  lead-defect-class: 1 session(s)
+  lead-pkt04b: 2 session(s)
+  liveleg-05aii-1: 2 session(s)
+  model-check-2: 2 session(s)
+  opus48-check-1: 2 session(s)
+  probe-await-05a-1: 2 session(s)
+  probe-esc1-closure-1: 2 session(s)
+  probe-explore-grant-1: 2 session(s)
+  recheck-04b5-1: 2 session(s)
+  refbuild-c3-1: 2 session(s)
+  reviser-asub-2: 2 session(s)
+  reviser-asub-3: 2 session(s)
+  reviser-asub-4: 2 session(s)
+  reviser-asub-5: 2 session(s)
+  reviser-asub-6: 2 session(s)
+  reviser-asub-7: 2 session(s)
+  reviser-asub-b: 2 session(s)
+  reviser-cd: 2 session(s)
+  reviser-fh: 2 session(s)
+  reviser-g: 2 session(s)
+  reviser-g-2: 2 session(s)
+  reviser-g-3: 2 session(s)
+  reviser-g-4: 2 session(s)
+  reviser-g-5: 2 session(s)
+  reviser-g-6: 2 session(s)
+  riders-04b2-r11-1: 2 session(s)
+  scout-04b5-1: 2 session(s)
+  smoke-06a-mcp: 1 session(s)
+  smoke-327-recv: 1 session(s)
+  smoke-alpha: 7 session(s)
+  smoke-bravo: 4 session(s)
+  smoke-charlie: 5 session(s)
+  smoke-holder-05b: 1 session(s)
+  smoke-retired: 4 session(s)
+  smoke-sender: 7 session(s)
+  smoke-x-05aii: 2 session(s)
+  smoke-y-05aii: 2 session(s)
+
+(b) agents per transport_session (distinct):
+  04a03c4e1f5b48ac91e3675bc35b9d6c...: 1 agent(s) -> ['lead-04b2-wavec-r2']
+  04d71479f1bb499a84644561059788cc...: 1 agent(s) -> ['contract-verbs-05b']
+  06838e7c3cc24f3cb7fdc3d2e7068c86...: 1 agent(s) -> ['coldaudit-04b5-4']
+  07f5cb00aa524f9fa70b2cb0d9b5a4ee...: 1 agent(s) -> ['closer-04b5-format-1']
+  0880cc0a754a4c16a120210876bc19c1...: 1 agent(s) -> ['contract-05ai-1']
+  0b4998bd2fc84a8d879a2641fc18e76d...: 1 agent(s) -> ['model-check-2']
+  0d1e55da31524d889804b6211bd398c5...: 1 agent(s) -> ['adversary-cycle-04b3-2']
+  0dfb5e0887634917afdefbe8c6099f4a...: 1 agent(s) -> ['delta-adversary-asub-6']
+  0e2b7a86c7a24ce186e525a5b52a9502...: 1 agent(s) -> ['contract-04b2-cdef-1']
+  0f8e4a6837a043e4984b9cfb9d74e4f4...: 1 agent(s) -> ['adversary-eh']
+  12360ec4277447e5ae0fcff34dd6c1d1...: 1 agent(s) -> ['adversary-05aii-1']
+  123b6cce4cff497d91868daf147554f4...: 1 agent(s) -> ['closer-04b5-selfecho-1']
+  1436e264d143473dbc20942ee48b6a83...: 1 agent(s) -> ['smoke-charlie']
+  155f26d41c3249d4ba2711b12501029d...: 1 agent(s) -> ['delta-adversary-asub-3']
+  16b059d32e9d45d9853eb132300f1202...: 1 agent(s) -> ['adversary-idlegate-05b']
+  17f8331b91fe4dcdb9bfdc8ab222053d...: 1 agent(s) -> ['reviser-asub-5']
+  1dc9cf440f0044bd843190d66b8d0aff...: 1 agent(s) -> ['coldaudit-04b4-1']
+  22bc6d26a9d243b38a58e27372f1f47c...: 1 agent(s) -> ['builder-c1-1']
+  25294e5861a44365ab5e4fd7c04aebd2...: 1 agent(s) -> ['lead-05aiii']
+  2608617a83644ff8b18e5b2525d5b768...: 1 agent(s) -> ['coldaudit-04b5-5']
+  262083bcda6d42919775c60300b41e82...: 1 agent(s) -> ['design-sidecar-04b3-1']
+  26d0e226eb054396bff993ffbb4fe7cf...: 1 agent(s) -> ['contractfix-04b1-r6']
+  280bf57c6afd4651a96e91dfd9be394d...: 1 agent(s) -> ['delta-adversary-asub-b']
+  28669560178a46bab01294863b3224c0...: 1 agent(s) -> ['builder-05ai-1']
+  288ec37f75b34c02a547d9ee713b7ee3...: 1 agent(s) -> ['acc-tdd-contract-2']
+  28a9996107784d6eac27fcbf23af2528...: 1 agent(s) -> ['builder-c3-1']
+  28db3ea063ef4e01a250e16b0a5da4cd...: 1 agent(s) -> ['adversary-c1-delta-1']
+  2975245849bb41468a85e9c5712ef959...: 1 agent(s) -> ['lead-05a-ii']
+  2a04cef4e1af49079e15953eac71fd18...: 1 agent(s) -> ['adversary-g']
+  2afaf77d5ce9421fa44bc12a983de1f4...: 1 agent(s) -> ['builder-cycle-04b3-1']
+  2bf1934bac3a4b5fb2dda00fd5241efd...: 1 agent(s) -> ['reviser-asub-2']
+  2c6fb8528a394c2cb997afc00bcfac06...: 1 agent(s) -> ['contract-256-05b']
+  2da39c901ae1404681bb8ae6b2ef50dc...: 1 agent(s) -> ['contract-04b2-cdef-1']
+  2db80be3b2c54efbb1ea7d387eb9e5a0...: 1 agent(s) -> ['reviser-g-5']
+  2dfb099eceb942e8b7aa33ff2c9ffeb1...: 1 agent(s) -> ['reviser-g-3']
+  2e367187f9b6466780bd0e322aa41260...: 1 agent(s) -> ['acc-tdd-refactorer-2']
+  2ffd4f7a39ae425aaf7df35f0e664a67...: 1 agent(s) -> ['reviser-asub-b']
+  307ff9da8ca24ab8bc9d2eb4ff6a6b0d...: 1 agent(s) -> ['builder-c3-2']
+  316052d6f72549578c8c5ae84c5f2f8b...: 1 agent(s) -> ['builder-256-05b']
+  358a37522b934524b533ddfbefd6924f...: 1 agent(s) -> ['adversary-asub-b']
+  38a731e6ce4a467a9a85fc591543c2b0...: 15 agent(s) -> ['adversary-c1-1', 'adversary-c1-delta-1', 'adversary-c3-1', 'adversary-c3-delta-1', 'adversary-c3-delta-2', 'builder-c1-1', 'builder-c3-1', 'builder-gatewrapper-1', 'contract-04b2-c3fix-1', 'contract-04b2-wavec-1', 'contract-04b2-wavec-2', 'design-sidecar-04b2-wavec-1', 'lead-04b2', 'lead-04b2-wavec', 'refbuild-c3-1']
+  391136fae9a14f908023bd86b573fb3d...: 1 agent(s) -> ['adv-05ai-1']
+  3c7bcbcffe65428f9e6104f60372fea1...: 1 agent(s) -> ['builder-gatewrapper-1']
+  3d4c2bbc595e4653ba849f5cf5dd54a3...: 1 agent(s) -> ['coldaudit-04b1']
+  40d3ade52d8d4e7e9a3395a8c1b15e5c...: 1 agent(s) -> ['delta-adversary-g-3']
+  4102184208184b3c9b34372f8781ffc3...: 1 agent(s) -> ['lead-05b']
+  4214221c4e3c4096a72aaa4ffe8ce69a...: 1 agent(s) -> ['coldaudit-44-1']
+  42907c22346a40c9b25a5ad5b3f28905...: 1 agent(s) -> ['adversary-c3-delta-2']
+  43a17334b4a846eba605eb3a52a51f2a...: 1 agent(s) -> ['fixer-smoke-retire']
+  43fcc7bdb3aa40c88cbb9b2436a1acb0...: 1 agent(s) -> ['adversary-c1-1']
+  466d2ed623124cc1b7e525412c4cbae1...: 1 agent(s) -> ['contract-04b2-wavec-2']
+  47cc8cba1900415684400914ea43c4d3...: 1 agent(s) -> ['acc-package-scout-2']
+  4814c8fdab504ea2b025865ac5c6f1ab...: 1 agent(s) -> ['contract-fix-05aiii']
+  482863d310874e1081a6acdddd2b142f...: 1 agent(s) -> ['fixwave-04b1-close']
+  492be482468c4b8e98465c3f98e74e03...: 1 agent(s) -> ['contractfix-04b1-r3']
+  4a8aea9626bb4ea08638b6d7fa0c81e2...: 1 agent(s) -> ['fable-designer-3']
+  4ab68fe70de04ddeab101eb0cf46f022...: 1 agent(s) -> ['acc-tdd-stub-2']
+  4e39fe6f94df4ce4803510777a3a09e5...: 1 agent(s) -> ['acc-contract-adversary-2']
+  52232d5cc2e34dbd911816bbde82bd1c...: 3 agent(s) -> ['liveleg-05aii-1', 'smoke-x-05aii', 'smoke-y-05aii']
+  52a105a65a654fcaad6d6e8336999d72...: 1 agent(s) -> ['coldaudit-05aii-1']
+  52a6602555534fb79d7c344797354b69...: 1 agent(s) -> ['delta-adversary-fh']
+  53cd6845191f47efa71cc8c82efd5293...: 1 agent(s) -> ['contract-04b4-1']
+  5495d72294424abe8c65cb53f421221e...: 1 agent(s) -> ['acc-postpin-adversary-3']
+  56f6c206e7cf49e2bfb57aca65c53935...: 1 agent(s) -> ['acc-tdd-implementer-2']
+  58d369ebc332435ab77dbab058197aac...: 1 agent(s) -> ['adversary-05aiii-2']
+  59aa80e5a77a472ea60b60a4b94e118a...: 1 agent(s) -> ['adversary-honesty-06a']
+  5e3a16130d2f4a4f8dfa99a91976f032...: 2 agent(s) -> ['smoke-alpha', 'smoke-sender']
+  5f16d029853f49f9af0c439bce8111e0...: 1 agent(s) -> ['builder-obedience-06a']
+  608629b5aacc43f09ebdb26e7a0e8bca...: 1 agent(s) -> ['coldaudit-04b5-3']
+  60d6845e22f34aa68e89f5fe46ecd4b6...: 1 agent(s) -> ['coldaudit-cycle-04b3-1']
+  60f67e6c2e804f86a12548f1ba9b8e29...: 1 agent(s) -> ['reviser-g-2']
+  6119a4afc10e4ab6837dc5056a858833...: 1 agent(s) -> ['contract-04b5-1']
+  6178b477b97a45a89ac7370590f686b3...: 1 agent(s) -> ['model-check-2']
+  63a3192dde054bc39652a9d1a5d81486...: 9 agent(s) -> ['adversary-05aii-1', 'builder-05aii-1', 'coldaudit-05aii-1', 'contract-05aii-1', 'fable-sidecar-05aii', 'lead-05a-ii', 'liveleg-05aii-1', 'smoke-x-05aii', 'smoke-y-05aii']
+  685230dd9410407d888c0ae15eac0311...: 1 agent(s) -> ['fable-designer-2']
+  691e9dea19684282aa826dee35a245f5...: 1 agent(s) -> ['cold-audit']
+  6a11a743d9174cb499559a166104aeac...: 1 agent(s) -> ['adversary-04b4-1']
+  6c6d04cfaedc4237a7f188ccee39f9ef...: 1 agent(s) -> ['reviser-asub-6']
+  6ddca62442d5498db6170d43c8b768fb...: 1 agent(s) -> ['fixer-44-audit-1']
+  6f1edebc25524663ad60f21077efe04b...: 1 agent(s) -> ['cold-audit-05b-batch1']
+  6f71cd55c9044fc3b936ad428bfc224d...: 1 agent(s) -> ['fable-design-06']
+  70b9bd55334a4f118abe27ad76b6a674...: 1 agent(s) -> ['lead-06']
+  729fec0be0934ba9961c73be5f1789b7...: 1 agent(s) -> ['builder-scriptsgate']
+  738ae39849664251918a621a238b5e22...: 1 agent(s) -> ['builder-c3-2']
+  73cc34fa1c4c4f4a84ee802f7d41eecc...: 53 agent(s) -> ['adversary-asub-b', 'adversary-cd', 'adversary-eh', 'adversary-f', 'adversary-g', 'builder-predeploy-05aiii', 'builder-scriptsgate', 'builder-server', 'builder-treescan', 'cold-audit', 'contract-asub-b', 'contract-cd', 'contract-eh', 'contract-f', 'contract-g', 'contract-g-simple', 'delta-adversary-asub-3', 'delta-adversary-asub-4', 'delta-adversary-asub-5', 'delta-adversary-asub-6', 'delta-adversary-asub-b', 'delta-adversary-cd', 'delta-adversary-fh', 'delta-adversary-g', 'delta-adversary-g-2', 'delta-adversary-g-3', 'delta-adversary-g-4', 'delta-adversary-g-5', 'delta-adversary-g-6', 'fable-designer', 'fable-designer-2', 'fable-designer-3', 'fable-sidecar', 'fixer-annotations', 'instrument0', 'lead-05a', 'lead-05aiii', 'lead-defect-class', 'reviser-asub-2', 'reviser-asub-3', 'reviser-asub-4', 'reviser-asub-5', 'reviser-asub-6', 'reviser-asub-7', 'reviser-asub-b', 'reviser-cd', 'reviser-fh', 'reviser-g', 'reviser-g-2', 'reviser-g-3', 'reviser-g-4', 'reviser-g-5', 'reviser-g-6']
+  779ee045250944bab115e8683ac4d9f8...: 1 agent(s) -> ['reviser-asub-3']
+  78068678b8504a478921bc85c261d1f8...: 2 agent(s) -> ['lead-04b3', 'smoke-327-recv']
+  78c4c56139954f2a9dc25b0f022a10b9...: 1 agent(s) -> ['builder-comms-cap-1']
+  792ebb2cc8324cf583cdc38a7e34f11e...: 1 agent(s) -> ['builder-05aii-1']
+  7941a5a241544eeaa3c8c0d4e5e1ca75...: 1 agent(s) -> ['acc-tdd-light-contract-2']
+  79bdc2d4ae044231b4e72b307f03bcb0...: 1 agent(s) -> ['fixer-annotations']
+  7b244004226248b59b48452c2bc19c22...: 1 agent(s) -> ['probe-explore-grant-1']
+  7b738088f39341158b90cc31bec375e6...: 1 agent(s) -> ['reviser-cd']
+  7bd1dd37bfde4e94af25c4e4a3ad8fa2...: 1 agent(s) -> ['coldaudit-04b5-2']
+  7bdc4266c9814f46a98681cf9686d93b...: 1 agent(s) -> ['builder-predeploy-05aiii']
+  7c85cab48bb14a9abeca05d2ede829be...: 1 agent(s) -> ['delta-adversary-g-4']
+  7c8671210ae84c02be12dfebd4ee3650...: 1 agent(s) -> ['contract-05aiii']
+  7cc0226b18b14f92afdb1bc6970f6b90...: 2 agent(s) -> ['lead-06', 'smoke-06a-mcp']
+  7d4942f90b284d039a648110e22658f3...: 1 agent(s) -> ['builder-honesty-06a']
+  7fe7cd5bbefe432f8b27f9f68cb7bb1b...: 1 agent(s) -> ['delta-adversary-g-6']
+  812e91bbffc4466aa8cbde6ead4a02ce...: 5 agent(s) -> ['smoke-alpha', 'smoke-bravo', 'smoke-charlie', 'smoke-retired', 'smoke-sender']
+  82b4dd872942451aab64ed46ca9aa326...: 1 agent(s) -> ['design-sidecar-04b5-1']
+  82f336f302f04821b2258c813fba6ffe...: 1 agent(s) -> ['riders-04b2-r11-1']
+  85638b9a055547f1a447d1476720e212...: 1 agent(s) -> ['delta-adversary-g-2']
+  85971ee80b3a4563a65628a8c1d73b91...: 1 agent(s) -> ['builder-44-scripts-debt-1']
+  85efc7f4fc9a4574953309d56c9e5996...: 1 agent(s) -> ['reviser-fh']
+  86d93721470244b3b5adbdef6155148f...: 2 agent(s) -> ['smoke-alpha', 'smoke-sender']
+  8737a2d12f6c41eca51ecec7ea4ffe96...: 1 agent(s) -> ['adversary-verbs-05b']
+  889a5c1383554f0b966ab0d9703f21d1...: 1 agent(s) -> ['lead-44']
+  89740536626647b0bb85ab8d75d341fd...: 1 agent(s) -> ['adversary-c3-1']
+  8ca99a9ee17442b8a0c494bf5bc77420...: 1 agent(s) -> ['contract-04b2-wavec-1']
+  9040b20f7ffc487695e23e576fc7b49a...: 1 agent(s) -> ['builder-04b1']
+  92a3d5d846674a4db382b56abeb3a560...: 1 agent(s) -> ['delta-adversary-g']
+  94e4b9c7424a491f940554dc39ac1a75...: 1 agent(s) -> ['lead-pkt04b']
+  959e792d9ddc41018ec15ae411da209f...: 2 agent(s) -> ['lead-04b2', 'lead-04b2-wavec-r2']
+  98a3ec906fd94b9ca89b3180609fe8ec...: 1 agent(s) -> ['fable-sidecar-05ai']
+  9ad43de54b1f427aa28e9a9df9f69389...: 1 agent(s) -> ['builder-idlegate-05b']
+  9ca895b2a53b4a0fb8034a80cea44b28...: 1 agent(s) -> ['contract-04b2-c3fix-1']
+  9d02500625944e999c1a81c50c808d98...: 1 agent(s) -> ['recheck-04b5-1']
+  9d3e142e7f9f4bcd831118400e93f42f...: 1 agent(s) -> ['contract-obedience-06a']
+  9d81702770f84b7495a9df0dc73da19a...: 1 agent(s) -> ['contract-revise-05aiii']
+  9e971d99341a4140a31a3844a1dd85ce...: 1 agent(s) -> ['builder-treescan']
+  9f359aa160764509a296fcc276421baf...: 5 agent(s) -> ['smoke-alpha', 'smoke-bravo', 'smoke-charlie', 'smoke-retired', 'smoke-sender']
+  a16bf4a4d0dc497cb23cfe951cefb18c...: 1 agent(s) -> ['builder-44-instrument-1']
+  a21020f6394743edaccd5d8372f17872...: 1 agent(s) -> ['builder-04b5-1']
+  a295a36a3f5143138b477b1fb7165a4e...: 1 agent(s) -> ['adversary-obedience-06a']
+  a2f52b714fa748fe85cb24b20da539dd...: 1 agent(s) -> ['reviser-asub-7']
+  a342da7b99b04e51aeb472bcebcc5974...: 1 agent(s) -> ['adversary-05aiii']
+  a4c6ef923b8b49c59a95573e5d997623...: 1 agent(s) -> ['contract-idlegate-05b']
+  a5139a88c6eb4c28893286abb226081b...: 1 agent(s) -> ['builder-forgery-sites']
+  a60b735fa6e44f98918eeb1095b151ec...: 1 agent(s) -> ['fable-sidecar-05aii']
+  a6598814e8bc4ae3a6e55ca27120fb92...: 1 agent(s) -> ['riders-04b2-r11-1']
+  a6992045860348eda793799a72357eb3...: 1 agent(s) -> ['design-sidecar-04b']
+  aa19b698e1724c0ea713a715482da697...: 1 agent(s) -> ['adversary-cycle-04b3-1']
+  ab9f2f5ad5304309865f8264f13e463a...: 1 agent(s) -> ['reviser-g-6']
+  abd54318d18643d2a83391264a404805...: 1 agent(s) -> ['cold-audit-verbs-05b']
+  ac74f99041a04c9bb46c8074a6713abc...: 1 agent(s) -> ['probe-esc1-closure-1']
+  ad243726368b45bf8dc3262f3de9bc7f...: 1 agent(s) -> ['design-sidecar-04b2-wavec-r2']
+  ad4969f9769c4faba0d2970f55545cbe...: 1 agent(s) -> ['contract-fix-05aiii-a2']
+  b207f232851d4ee990b2139165b274cf...: 5 agent(s) -> ['smoke-alpha', 'smoke-bravo', 'smoke-charlie', 'smoke-retired', 'smoke-sender']
+  b278b8dbce1249c5bdd3bbe34f0ebfec...: 1 agent(s) -> ['coldaudit-04b2-wavec-r2']
+  b5bea13526e1476ebfaf6aa724874c6d...: 1 agent(s) -> ['author-44-monotonic-1']
+  ba4bab1ceba549489e3d7b6dbb7bfabb...: 1 agent(s) -> ['fable-design-05a']
+  ba72c3fee2e64b6e9ccdc754e130df42...: 1 agent(s) -> ['fixer-04b5-ruff']
+  bacf6da364934929b1014af010d41d4b...: 1 agent(s) -> ['adversary-256-05b']
+  bb280631798e42e882480e3adecf8af7...: 1 agent(s) -> ['contract-cd']
+  bc383ceb60714063941ae6e6f382276b...: 2 agent(s) -> ['lead-04b4', 'lead-05a']
+  bcf1bd095cf14b88822cb9639dbf32e6...: 1 agent(s) -> ['opus48-check-1']
+  bdd8eaf26ea449d3907e95ebd5637e92...: 1 agent(s) -> ['reviser-asub-4']
+  be5e04ec90384c61b320546ba5c100cd...: 1 agent(s) -> ['instrument0']
+  c1266cb7635346848d9d12d4b03613cb...: 1 agent(s) -> ['adversary-c3-delta-1']
+  c42265ec2a7a47a1a1d17a6073debbd7...: 1 agent(s) -> ['delta-adversary-asub-5']
+  c5a55484852a422dba0cbdf654ad7064...: 1 agent(s) -> ['coldaudit-build-04b5-1']
+  c6cae1c0f4c34d609c1be5c47fc05e4a...: 1 agent(s) -> ['reviser-g']
+  c6e9699a57ea4f939f53da9136b336fb...: 1 agent(s) -> ['adversary-f']
+  c8883ccf57de46e4a5fa1be79e646a1f...: 1 agent(s) -> ['builder-cycle-fix-04b3-1']
+  c8b3619f543142088900a093f6278755...: 1 agent(s) -> ['fable-designer']
+  c9e3a9a4cf0a45feb478d57ac75b044c...: 1 agent(s) -> ['auditor-05ai-1']
+  c9ea2416bc884331bd0492e1f3713c67...: 1 agent(s) -> ['adversary-04b4-2']
+  ca60e46a0af04c82a66eb7e08c78765a...: 1 agent(s) -> ['delta-adversary-g-5']
+  cd223133cbde487cacb91e0742857db5...: 1 agent(s) -> ['contract-asub-b']
+  cd6322a2db2749b9bdd92b44c1bff1f6...: 1 agent(s) -> ['contract-04b5-3']
+  cda816c04292461aa453e2a7439fc272...: 1 agent(s) -> ['contract-04b5-2']
+  cfdf24aa87774202a7de2aee6d454e2d...: 1 agent(s) -> ['probe-await-05a-1']
+  d224c704e030464d9faea799d58d8335...: 1 agent(s) -> ['contractfix-04b1-r4']
+  d2abbf022ab5476d9be2a756b8581966...: 1 agent(s) -> ['contract-05aii-1']
+  d48c61143722495cbcc8f5024f5be0af...: 1 agent(s) -> ['contract-04b5-4']
+  d902f9ec465e4d44993da7bd5a2c0b7b...: 1 agent(s) -> ['adversary-cd']
+  dc705264db5147ccacf0ce3e1c5624aa...: 1 agent(s) -> ['contract-04b5-5']
+  ddf59040d3324a899d477c4716a778c3...: 1 agent(s) -> ['scout-04b5-1']
+  de51000cb80c466ab4cc30fb684afcbb...: 2 agent(s) -> ['smoke-alpha', 'smoke-sender']
+  de941aa365d446988f0b56c59e76a16a...: 1 agent(s) -> ['delta-adversary-asub-4']
+  dea27149ae864072a913373f6e866b01...: 1 agent(s) -> ['contract-tracegc-06b']
+  decb9862df3f4066b62250e0027f3921...: 1 agent(s) -> ['accept-tddcontract-comms-1']
+  e013cb3b00c44faba4891ce4226c636e...: 9 agent(s) -> ['adversary-cycle-04b3-1', 'adversary-cycle-04b3-2', 'builder-comms-cap-1', 'builder-cycle-04b3-1', 'builder-cycle-fix-04b3-1', 'coldaudit-cycle-04b3-1', 'contract-cycle-04b3-1', 'design-sidecar-04b3-1', 'lead-04b3']
+  e05783ce577a46e48ef7d68e8ce4fab7...: 1 agent(s) -> ['design-sidecar-04b2-wavec-r2']
+  e09bb5bee1374ffab2d53f43f272177e...: 1 agent(s) -> ['drill-worker-06b']
+  e3ad6c411c4c4da895d01f4d99067a6f...: 1 agent(s) -> ['contractfix-04b1-r5']
+  e4c7b991d39d40b0ba016257fd78c362...: 1 agent(s) -> ['fable-sidecar']
+  e4d7e3f72e5341b0b31400807542a2c1...: 1 agent(s) -> ['coldaudit-04b2-wavec-r2']
+  e6bd623d93174b079b70d97bc8683fb0...: 1 agent(s) -> ['reviser-g-4']
+  e87fbd674efd407ea4bd368496c6ea15...: 13 agent(s) -> ['adversary-256-05b', 'adversary-idlegate-05b', 'adversary-verbs-05b', 'builder-256-05b', 'builder-idlegate-05b', 'builder-verbs-05b', 'cold-audit-05b-batch1', 'cold-audit-verbs-05b', 'contract-256-05b', 'contract-idlegate-05b', 'contract-verbs-05b', 'lead-05b', 'smoke-holder-05b']
+  e8d8fedd7aed44e79635996c64bc4594...: 1 agent(s) -> ['delta-adversary-cd']
+  e93eae99b3b24a38a881e8a516e0be88...: 49 agent(s) -> ['acc-contract-adversary-2', 'acc-package-scout-2', 'acc-postpin-adversary-3', 'acc-tdd-contract-2', 'acc-tdd-implementer-2', 'acc-tdd-light-contract-2', 'acc-tdd-refactorer-2', 'acc-tdd-stub-2', 'accept-tddcontract-comms-1', 'adv-05ai-1', 'adversary-04b4-1', 'adversary-04b4-2', 'adversary-05aiii', 'adversary-05aiii-2', 'auditor-05ai-1', 'author-44-monotonic-1', 'builder-04b1', 'builder-05ai-1', 'builder-44-instrument-1', 'builder-44-scripts-debt-1', 'builder-forgery-sites', 'coldaudit-04b1', 'coldaudit-04b4-1', 'coldaudit-44-1', 'contract-04b4-1', 'contract-05ai-1', 'contract-05aiii', 'contract-fix-05aiii', 'contract-fix-05aiii-a2', 'contract-revise-05aiii', 'contractfix-04b1-r3', 'contractfix-04b1-r4', 'contractfix-04b1-r5', 'contractfix-04b1-r6', 'fable-design-05a', 'fable-sidecar-05ai', 'fixer-44-audit-1', 'fixer-smoke-retire', 'fixwave-04b1-close', 'lead', 'lead-04b2', 'lead-05a', 'lead-05a-ii', 'lead-06b', 'lead-cleanup', 'lead-pkt04b', 'probe-await-05a-1', 'probe-esc1-closure-1', 'probe-explore-grant-1']
+  ea937ac158834fe69716a66a2e250a54...: 1 agent(s) -> ['contract-g']
+  ed44602be0ce4f4ab65e61b0c10e7c4c...: 1 agent(s) -> ['refbuild-c3-1']
+  ed9592cedfe5470592519976f40d450e...: 1 agent(s) -> ['contract-g-simple']
+  ee32bf743dca40da822a3daf49578d9d...: 1 agent(s) -> ['builder-verbs-05b']
+  f02a439e54a64c9880565f1da2635e6d...: 1 agent(s) -> ['drill-prober-06b']
+  f0bdbe89026547e48a04d1c39cd2f4d4...: 1 agent(s) -> ['design-sidecar-04b2-wavec-1']
+  f1211006adbd426391d6d650fb39a1eb...: 5 agent(s) -> ['smoke-alpha', 'smoke-bravo', 'smoke-charlie', 'smoke-retired', 'smoke-sender']
+  f1d780a6971b41919480c522b3159c0c...: 1 agent(s) -> ['contract-cycle-04b3-1']
+  f29e1a07c63f43219067de77fe159be2...: 1 agent(s) -> ['contract-f']
+  f35d1334f5934903b93c96811d58ac81...: 1 agent(s) -> ['opus48-check-1']
+  f50bbc96376b4df497267954a72c1b44...: 1 agent(s) -> ['coldaudit-obedience-06a']
+  f776b987be214d0ca24e9adef69eea54...: 1 agent(s) -> ['contract-eh']
+  fa6abe5330674966902b580c0197f658...: 1 agent(s) -> ['coldaudit-contract-04b5-1']
+  fa8dbade837e469a8530ef5815cb1bfe...: 1 agent(s) -> ['builder-server']
+  fb153dccdae74951b75012748595f0aa...: 21 agent(s) -> ['builder-04b5-1', 'closeout-04b3', 'closer-04b5-format-1', 'closer-04b5-selfecho-1', 'coldaudit-04b5-2', 'coldaudit-04b5-3', 'coldaudit-04b5-4', 'coldaudit-04b5-5', 'coldaudit-build-04b5-1', 'coldaudit-contract-04b5-1', 'contract-04b5-1', 'contract-04b5-2', 'contract-04b5-3', 'contract-04b5-4', 'contract-04b5-5', 'design-sidecar-04b5-1', 'fixer-04b5-ruff', 'lead-04b3', 'lead-04b5', 'recheck-04b5-1', 'scout-04b5-1']
+  fde2d9c06a6248cfb5e5c0859b6e8d00...: 1 agent(s) -> ['contract-honesty-06a']
+
+JOIN VERDICT: 1:many DEGRADED  (agents spanning >1 session: 171; sessions holding >1 agent: 19)
+
+=== LOSS-RATE (DD-4.d) ===
+drains total: 493; ok=false: 1; UPPER-BOUND loss-rate: 0.2028%  (trigger: >0.5% or any confirmed lost directive)
+
+=== DECAY (DD-5.c) ===
+agents seen registering: 193; agents that ever drained: 141
+register-then-NEVER-drains population: 52
+  never-drained: acc-postpin-adversary-3
+  never-drained: adversary-05aii-1
+  never-drained: adversary-256-05b
+  never-drained: adversary-c3-delta-1
+  never-drained: adversary-honesty-06a
+  never-drained: adversary-idlegate-05b
+  never-drained: adversary-obedience-06a
+  never-drained: adversary-verbs-05b
+  never-drained: builder-05aii-1
+  never-drained: builder-256-05b
+  never-drained: builder-honesty-06a
+  never-drained: builder-idlegate-05b
+  never-drained: builder-obedience-06a
+  never-drained: builder-verbs-05b
+  never-drained: closeout-04b3
+  never-drained: cold-audit-05b-batch1
+  never-drained: cold-audit-verbs-05b
+  never-drained: coldaudit-04b5-2
+  never-drained: coldaudit-04b5-3
+  never-drained: coldaudit-contract-04b5-1
+  never-drained: coldaudit-obedience-06a
+  never-drained: contract-04b4-1
+  never-drained: contract-04b5-1
+  never-drained: contract-04b5-2
+  never-drained: contract-05aii-1
+  never-drained: contract-256-05b
+  never-drained: contract-idlegate-05b
+  never-drained: contract-obedience-06a
+  never-drained: contract-tracegc-06b
+  never-drained: contract-verbs-05b
+  never-drained: design-sidecar-04b2-wavec-r2
+  never-drained: fable-design-06
+  never-drained: fable-designer
+  never-drained: fable-designer-3
+  never-drained: fixwave-04b1-close
+  never-drained: lead-06
+  never-drained: lead-44
+  never-drained: lead-cleanup
+  never-drained: liveleg-05aii-1
+  never-drained: model-check-2
+
+per-agent drain counts (top 25 by count):
+  lead-defect-class: 63 drain(s)
+  smoke-charlie: 34 drain(s)
+  lead-04b2-wavec: 34 drain(s)
+  smoke-alpha: 32 drain(s)
+  lead-05a: 25 drain(s)
+  lead-04b5: 21 drain(s)
+  lead-05b: 19 drain(s)
+  lead-05a-ii: 17 drain(s)
+  lead-04b3: 15 drain(s)
+  smoke-bravo: 12 drain(s)
+  design-sidecar-04b2-wavec-1: 10 drain(s)
+  lead-04b2-wavec-r2: 9 drain(s)
+  lead-04b4: 9 drain(s)
+  builder-44-instrument-1: 7 drain(s)
+  contract-05ai-1: 7 drain(s)
+  contract-04b2-wavec-2: 6 drain(s)
+  builder-gatewrapper-1: 6 drain(s)
+  contract-04b2-wavec-1: 5 drain(s)
+  refbuild-c3-1: 4 drain(s)
+  builder-c3-1: 4 drain(s)
+  design-sidecar-04b3-1: 4 drain(s)
+  contractfix-04b1-r3: 3 drain(s)
+  contractfix-04b1-r5: 3 drain(s)
+  fixer-44-audit-1: 3 drain(s)
+  contract-04b2-c3fix-1: 3 drain(s)
