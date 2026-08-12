@@ -470,6 +470,8 @@ DEFAULT_COMMS_DRAIN_LIMIT: int = 20
 # the table's whole lifetime. The CONSTANT is strikeable; the windowing MECHANISM
 # is not.
 DEFAULT_TELEMETRY_WINDOW_DAYS: int = 14
+# Packet 06b contract stub (DD-1.c, finding #193): the trace-retention horizon.
+DEFAULT_TRACE_RETENTION_DAYS: int = 90
 
 
 class TelemetryConfig(_StrictModel):
@@ -487,9 +489,39 @@ class TelemetryConfig(_StrictModel):
             (the dispatched tool name) self-limiting — junk names age out of the
             window rather than accumulating forever. Every served surface that
             DESCRIBES the window derives its wording from this value.
+        trace_retention_days: How many days of ``trace`` rows the retention GC
+            KEEPS (packet 06b, DD-1.c / finding #193). The periodic reconcile tick
+            deletes every row older than ``now - trace_retention_days``; defaults
+            to 90. Must be ``>= aggregate_window_days`` (the cross-field
+            ``_retention_covers_window`` validator below) so the served aggregate
+            window can never outlive its retained trace data — a window reaching
+            back further than the GC keeps would read partial, silently.
+            ⚠ DEPLOY NOTE: because this validator runs at config LOAD, an existing
+            ``lore.yaml`` that set ``aggregate_window_days`` above 90 (or above an
+            explicit ``trace_retention_days``) now FAILS to load until the two are
+            made consistent — a deliberate, loud fail, not a silent truncation.
     """
 
     aggregate_window_days: PositiveInt = DEFAULT_TELEMETRY_WINDOW_DAYS
+    trace_retention_days: PositiveInt = DEFAULT_TRACE_RETENTION_DAYS
+
+    @model_validator(mode="after")
+    def _retention_covers_window(self) -> TelemetryConfig:
+        """Retention must cover the aggregate window (else the window reads partial).
+
+        The served aggregate scans ``aggregate_window_days`` back; the GC keeps
+        ``trace_retention_days``. If the window reached further back than retention,
+        the oldest part of every aggregate would silently be missing its data. This
+        pins ``retention >= window`` and names BOTH fields so the rejection is
+        actionable (pinned in ``test_trace_retention_gc.py``).
+        """
+        if self.trace_retention_days < self.aggregate_window_days:
+            raise ValueError(
+                f"telemetry.trace_retention_days ({self.trace_retention_days}) must be "
+                f">= telemetry.aggregate_window_days ({self.aggregate_window_days}) so the "
+                f"served aggregate window can never outlive its retained trace data"
+            )
+        return self
 
 
 class CommsConfig(_StrictModel):

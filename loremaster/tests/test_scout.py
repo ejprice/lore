@@ -281,12 +281,18 @@ class _FakeWatcher:
         self._order = order if order is not None else []
         self.writer_lock = asyncio.Lock()
         self.run_sweep_calls = 0
+        # Every run_sweep's purge_traces gate, in call order (packet 06b, DD-1.c /
+        # E1=Reading Y): the initial startup sweep is bare (False), the periodic
+        # reconcile tick is True. Recording it is what lets the caller-reach pins
+        # in TestTracePurgeGateReachesTheRightCallers discriminate the two.
+        self.run_sweep_purge_flags: list[bool] = []
         self.start_calls = 0
         self.stop_calls = 0
 
-    async def run_sweep(self) -> ReconcileSummary:
+    async def run_sweep(self, *, purge_traces: bool = False) -> ReconcileSummary:
         async with self.writer_lock:
             self.run_sweep_calls += 1
+            self.run_sweep_purge_flags.append(purge_traces)
             self._order.append(("sweep",))
             return _empty_reconcile_summary()
 
@@ -305,7 +311,10 @@ class _FailingWatcher:
     def __init__(self) -> None:
         self.writer_lock = asyncio.Lock()
 
-    async def run_sweep(self) -> ReconcileSummary:
+    async def run_sweep(self, *, purge_traces: bool = False) -> ReconcileSummary:
+        # Signature widened to accept the packet-06b purge gate (DD-1.c) so the
+        # periodic caller's run_sweep(purge_traces=True) reaches it without a
+        # TypeError; the failure this fake pins (sweep raises) is unchanged.
         raise RuntimeError("reconcile sweep exploded")
 
     async def start(self) -> None:  # pragma: no cover - not reached in these tests
@@ -343,6 +352,24 @@ class _RecordingSleep:
 
     async def __call__(self, delay: float) -> None:
         self.delays.append(delay)
+        await self._gate.wait()
+
+
+class _SweepOnceSleep(_RecordingSleep):
+    """A :class:`_RecordingSleep` that returns immediately the FIRST time, then parks.
+
+    Lets EXACTLY ONE periodic-reconcile iteration run: the first awaited interval
+    returns at once (so the loop proceeds to a single ``run_sweep``), every later
+    interval parks (until the scout stops cancels it). Used to inspect the
+    periodic tick's purge gate without the loop hot-spinning (packet 06b, DD-1.c).
+    Subclasses ``_RecordingSleep`` so it satisfies the ``_fake_scout`` sleep seam
+    type; it still records every delay, it just does not park on the first call.
+    """
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        if len(self.delays) == 1:
+            return  # let the first periodic iteration reach run_sweep
         await self._gate.wait()
 
 
@@ -571,6 +598,79 @@ class TestScoutStartupSequence:
             assert subscriber.run_calls == 1  # command channel STILL up
             assert watcher.start_calls == 0  # NO live observer
             assert sleep.delays == []  # NO periodic reconcile loop
+        finally:
+            await scout.stop()
+            await scout.aclose()
+
+
+# =========================================================================== #
+# 2b) Trace-retention GC — the PERIODIC caller passes the purge gate, the
+#     INITIAL startup sweep does not (finding #193, DD-1.c, E1=Reading Y).
+#     The reconcile-level gate + the run_sweep threading are pinned in
+#     test_reconcile.py / test_watcher.py; HERE we pin the LAST MILE — which
+#     Scout caller sets the gate (adversary E-reach, Fork A). Server's twin
+#     callers are pinned in test_mcp_server.py.
+# =========================================================================== #
+class TestTracePurgeGateReachesTheRightCallers:
+    """Scout's PERIODIC reconcile passes ``run_sweep(purge_traces=True)``; its
+    INITIAL startup sweep stays bare (``purge_traces=False``).
+
+    DD-1.c / E1=Reading Y: the trace-retention GC runs on the periodic tick ONLY,
+    NEVER on the awaited initial startup sweep (a first-activation purge over
+    months of rows must not block boot). The gate + its threading are pinned
+    elsewhere; a build could satisfy both and STILL never purge (periodic caller
+    left bare) or purge at boot (initial caller flipped True) — a reach the
+    ``reconcile``/``run_sweep`` pins cannot see (adversary §B/§E, the surviving
+    13/13-green wrong build). These two pins close it at the caller seam.
+    """
+
+    async def test_periodic_reconcile_passes_the_trace_purge_gate(
+        self, tmp_path: Path
+    ) -> None:
+        # RED on HEAD+stub: Scout._periodic_reconcile calls a bare run_sweep().
+        order: list[Any] = []
+        watcher = _FakeWatcher(order=order)
+        sleep = _SweepOnceSleep()
+        scout = _fake_scout(
+            config=_config(slug="s", live_path=tmp_path / "live", watcher_enabled=True),
+            order=order, watcher=watcher, sleep=sleep,
+        )
+        try:
+            await scout.start()
+            # start() runs the initial sweep (index 0); the periodic loop then runs
+            # ONE sweep after the first (immediately-returning) interval (index 1).
+            await _wait_until(lambda: watcher.run_sweep_calls >= 2)
+            assert watcher.run_sweep_purge_flags[0] is False, (
+                "the initial startup sweep must be bare — no purge at boot"
+            )
+            assert watcher.run_sweep_purge_flags[1] is True, (
+                "the PERIODIC reconcile tick must pass run_sweep(purge_traces=True); "
+                "a bare periodic caller means production NEVER purges (trace table "
+                "grows unbounded) — the exact reach the reconcile-level gate misses"
+            )
+        finally:
+            await scout.stop()
+            await scout.aclose()
+
+    async def test_initial_startup_sweep_does_not_pass_the_purge_gate(
+        self, tmp_path: Path
+    ) -> None:
+        # GREEN on HEAD (guard): the initial sweep is already bare. Mutation-proven
+        # — flip Scout.start's run_sweep() to run_sweep(purge_traces=True) -> RED.
+        # watcher_enabled=False => the initial sweep is the ONLY sweep (no periodic
+        # loop), so the recorded gate set is exactly the initial caller's.
+        order: list[Any] = []
+        watcher = _FakeWatcher(order=order)
+        scout = _fake_scout(
+            config=_config(slug="s", live_path=tmp_path / "live", watcher_enabled=False),
+            order=order, watcher=watcher,
+        )
+        try:
+            await scout.start()
+            assert watcher.run_sweep_purge_flags == [False], (
+                "the awaited initial startup sweep must call run_sweep() bare — a "
+                "first-activation purge over months of rows must never run at boot"
+            )
         finally:
             await scout.stop()
             await scout.aclose()

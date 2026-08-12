@@ -988,6 +988,89 @@ class TestAppContextLifespan:
 
 
 # --------------------------------------------------------------------------- #
+# Trace-retention GC — the SERVER daemon's callers set the purge gate correctly
+# (finding #193, DD-1.c, E1=Reading Y). The twin of
+# test_scout.py::TestTracePurgeGateReachesTheRightCallers, for the server's
+# module-level ``_periodic_reconcile`` + the awaited initial startup sweep
+# (adversary E-reach / Fork A — the reach the reconcile/run_sweep gate pins miss).
+# --------------------------------------------------------------------------- #
+class TestServerTracePurgeGateReachesTheRightCallers:
+    """The server's PERIODIC reconcile passes ``run_sweep(purge_traces=True)``;
+    its awaited INITIAL startup sweep stays bare.
+
+    DD-1.c / E1=Reading Y: purge on the periodic tick ONLY, never at boot. The
+    gate + its threading are pinned in test_reconcile.py / test_watcher.py; these
+    pins close the last mile — which server caller sets it — so the surviving
+    13/13-green wrong build (callers bare -> never purges; initial caller True ->
+    purges at boot) reddens here (adversary §B).
+    """
+
+    async def test_server_periodic_reconcile_passes_the_trace_purge_gate(self) -> None:
+        # RED on HEAD+stub: server._periodic_reconcile calls a bare run_sweep().
+        # Drive the module-level periodic loop directly with a recording watcher;
+        # interval 0 lets one iteration reach run_sweep, then cancel.
+        import asyncio
+
+        from loremaster import server as server_module
+
+        seen: list[bool] = []
+        fired = asyncio.Event()
+
+        class _RecordingWatcher:
+            async def run_sweep(self, *, purge_traces: bool = False) -> None:
+                seen.append(purge_traces)
+                fired.set()
+
+        task = asyncio.create_task(
+            server_module._periodic_reconcile(_RecordingWatcher(), 0)
+        )
+        try:
+            await asyncio.wait_for(fired.wait(), timeout=2.0)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        assert seen and seen[0] is True, (
+            "server._periodic_reconcile (the periodic tick) must pass "
+            "run_sweep(purge_traces=True); a bare periodic caller means production "
+            "NEVER purges (the trace table grows unbounded)"
+        )
+
+    async def test_server_initial_sweep_does_not_pass_the_trace_purge_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GREEN on HEAD (guard): the awaited initial startup sweep is already bare.
+        # Mutation-proven — flip it to run_sweep(purge_traces=True) -> RED.
+        # reconcile_interval_s defaults to 600s so the periodic task cannot fire in
+        # this window: ``seen`` holds exactly the initial sweep's gate.
+        import loremaster.index.watcher as watcher_module
+
+        seen: list[bool] = []
+        original_run_sweep = watcher_module.LiveWatcher.run_sweep
+
+        async def _spy_run_sweep(self: Any, *, purge_traces: bool = False) -> Any:
+            seen.append(purge_traces)
+            return await original_run_sweep(self, purge_traces=purge_traces)
+
+        monkeypatch.setattr(watcher_module.LiveWatcher, "run_sweep", _spy_run_sweep)
+
+        slug = _slug()
+        live = tmp_path / "live"
+        live.mkdir()
+        config = _config(slug, live, watcher_enabled=True)
+        ctx = await _make_context(config=config, tmp_path=tmp_path, start_tasks=True)
+        try:
+            assert seen and seen[0] is False, (
+                "the awaited initial startup sweep must call run_sweep() bare — a "
+                "months-long first-activation purge must never block boot"
+            )
+        finally:
+            await ctx.aclose()
+
+
+# --------------------------------------------------------------------------- #
 # Tool registration + end-to-end tool behaviour
 # --------------------------------------------------------------------------- #
 # The built-in tools, each carrying the mandatory ``lore_`` service prefix

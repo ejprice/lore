@@ -1556,3 +1556,84 @@ class TestKernelOverflowDetectionDoesNotMutateGlobalParser:
         # (detection has no latch by design; restored after being dropped as
         # collateral in the 8ab017c oracle-restoration hunk).
         assert spy.fired == iterations
+
+
+# --------------------------------------------------------------------------- #
+# Trace-retention GC — run_sweep threads the purge gate (finding #193, DD-1.c,
+# E1=Reading Y). Connective seam between the reconcile-level gate
+# (test_reconcile.py) and the periodic CALL SITES (scout/server; escalation
+# E-reach in REPORT-contract-tracegc-06b-r2.md).
+# --------------------------------------------------------------------------- #
+class TestRunSweepThreadsTracePurgeGate:
+    """``run_sweep`` threads its ``purge_traces`` gate VERBATIM to ``reconcile``.
+
+    E1=Reading Y (DD-1.c): the trace-retention GC rides the PERIODIC reconcile
+    tick only, NEVER the awaited initial startup sweep — and BOTH funnel through
+    ``run_sweep``. The reconcile-level gate (default off / gated on) is pinned in
+    ``test_reconcile.py::TestReconcilePurgesTraceRetention``. HERE we pin the
+    connective seam the lead named (``run_sweep -> reconcile``) so the gate the
+    caller sets actually REACHES the engine:
+
+      * a ``run_sweep`` that DROPS the flag (always ``reconcile()``) would make the
+        periodic tick never purge — caught by the ``True`` leg;
+      * a ``run_sweep`` that HARDCODES ``True`` (always ``reconcile(purge_traces=
+        True)``) would purge on the AWAITED INITIAL SWEEP, the exact boot-blocking
+        regression Reading Y forbids — caught by the default leg.
+
+    Green on HEAD+stub (``run_sweep``'s stub threads correctly) — these are
+    THREADING guards, mutation-proven (drop/hardcode the flag -> RED); the
+    behavioral RED-on-HEAD pins live in ``test_reconcile.py``.
+    """
+
+    @staticmethod
+    def _spy_reconcile_gate(watcher: LiveWatcher) -> list[bool]:
+        """Shadow the engine's ``reconcile`` with a recorder of the gate it saw."""
+        seen: list[bool] = []
+
+        async def _spy(*, purge_traces: bool = False) -> Any:
+            seen.append(purge_traces)
+            return None
+
+        watcher._reconcile_engine.reconcile = _spy  # type: ignore[method-assign]
+        return seen
+
+    async def test_run_sweep_purge_traces_true_reaches_reconcile(self, tmp_path: Path) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        seen = self._spy_reconcile_gate(watcher)
+
+        await watcher.run_sweep(purge_traces=True)
+
+        assert seen == [True], (
+            "run_sweep(purge_traces=True) (the periodic tick) must reach "
+            "reconcile(purge_traces=True); a dropped flag never purges"
+        )
+
+    async def test_default_run_sweep_reaches_reconcile_with_gate_off(self, tmp_path: Path) -> None:
+        # The awaited initial startup sweep calls run_sweep() bare -> reconcile
+        # must see purge_traces=False (no purge at boot). Guards against a
+        # run_sweep that hardcodes True and would purge on the initial sweep.
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = _config(slug=slug, live_path=live)
+        trio = _trio()
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        watcher = _make_watcher(config=config, indexer=indexer, trio=trio)
+        seen = self._spy_reconcile_gate(watcher)
+
+        await watcher.run_sweep()
+
+        assert seen == [False], (
+            "the default run_sweep() (the initial startup sweep) must reach "
+            "reconcile(purge_traces=False) — no trace purge at boot"
+        )

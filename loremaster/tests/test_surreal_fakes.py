@@ -49,7 +49,7 @@ import ast
 import inspect
 import math
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -1140,6 +1140,36 @@ class TestRecordTraceFake:
         assert first == second  # deterministic call-to-call
         assert set(first) == set(insertion_hashes)  # no row lost or duplicated
         assert first != insertion_hashes  # NOT a naive insertion-order walk
+
+
+class TestPurgeTracesBeforeFake:
+    """The fake's ``purge_traces_before`` mirrors the real store's trace-retention
+    GC window (packet 06b, DD-1.c): rows strictly older than the cutoff are
+    deleted, the boundary row (``ts == cutoff``) survives, the count is returned.
+
+    Without this the fake would AttributeError the moment any test lets a real
+    ``reconcile(purge_traces=True)`` reach an unspied ``FakeSurrealStore``; and an
+    oracle whose window logic cannot FAIL is not an oracle, so this pins the ∀ at
+    the fake level too (a fake that used ``>`` for ``>=``, or returned the survivor
+    count, goes RED here).
+    """
+
+    async def test_purge_deletes_strictly_older_and_returns_the_count(
+        self, store: FakeSurrealStore
+    ) -> None:
+        cutoff = datetime(2026, 6, 1, tzinfo=UTC)
+        older = [cutoff - timedelta(days=2), cutoff - timedelta(seconds=1)]
+        at_or_after = [cutoff, cutoff + timedelta(seconds=1), cutoff + timedelta(days=2)]
+        for ts in older + at_or_after:
+            store.db.append_trace(
+                {"tool": "probe", "params_hash": "d", "latency_ms": 1.0, "ts": ts}
+            )
+
+        deleted = await store.purge_traces_before(cutoff=cutoff)
+
+        assert deleted == len(older)  # count is the DELETED rows, not survivors
+        remaining = {row["ts"] for row in store.recorded_traces()}
+        assert remaining == set(at_or_after)  # boundary (ts == cutoff) survives (< strict)
 
 
 class TestFileTextReadFake:

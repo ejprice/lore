@@ -31,12 +31,13 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
-from loremaster.config import LoreConfig
+from loremaster.config import LoreConfig, TelemetryConfig
 from loremaster.index.indexer import Indexer, graph_roots
 from loremaster.index.reconcile import ReconcileEngine
 from loremaster.index.surreal_manifest import (
@@ -631,3 +632,150 @@ class TestReconcileStampsLastSweep:
         assert second_stamp is not None, (
             "reconcile() must stamp last_sweep even on a zero-change sweep"
         )
+
+
+# --------------------------------------------------------------------------- #
+# Trace-retention GC — the reconcile-tick WIRING (finding #193, ruling DD-1.c)
+# --------------------------------------------------------------------------- #
+class TestReconcilePurgesTraceRetention:
+    """The reconcile sweep purges trace rows older than a CONFIG-DERIVED cutoff —
+    but ONLY on the GATED periodic tick, NEVER on the awaited initial sweep.
+
+    DD-1.c + E1=Reading Y (lead ruling, revised in
+    ``REPORT-contract-tracegc-06b-r2.md``): the trace retention purge runs on the
+    PERIODIC reconcile tick ONLY and performs NO purge during the initial startup
+    sweep (``server.py``/``scout.py`` funnel that awaited boot sweep through the
+    SAME ``reconcile``), so a first-activation purge over months of rows can never
+    block boot. The seam is a ``purge_traces: bool`` gate on ``reconcile`` that the
+    PERIODIC caller passes ``True`` and every other caller (initial sweep,
+    ``IN_Q_OVERFLOW`` recovery, forced ``lore_index(reconcile=True)``, ``reconcile``
+    command) leaves default. The purge LOGIC stays in ``index/reconcile.py``.
+
+    Three facts pinned here, at the daemon-agnostic ``reconcile`` seam:
+      * GATED (``purge_traces=True``): computes
+        ``cutoff = now - config.telemetry.trace_retention_days`` and calls
+        ``store.purge_traces_before(cutoff=...)`` exactly once.
+      * UNGATED / default (the initial startup sweep's call shape): purges NOTHING
+        — mutation-proven (a build that purges on the ungated path reddens
+        ``test_ungated_initial_sweep_does_not_purge_but_gated_does``).
+      * INSTRUMENT-0 (reach is a CHECKED VARIABLE, never a hidden constant): two
+        retention values move the cutoff — a build hardcoding 90 fails it.
+
+    The ``ensure_ready`` (DDL boot) no-purge half is pinned in
+    ``test_trace_retention_gc.py::TestBootNeverPurges``; the store's batched-delete
+    correctness (∀ window + no-residual drain) is pinned live in that same file;
+    and the ``run_sweep`` gate THREADING (that the periodic caller's ``True`` and
+    the initial sweep's default actually reach ``reconcile``) is pinned in
+    ``test_watcher.py::TestRunSweepThreadsTracePurgeGate``. The two production
+    periodic-reconcile CALL SITES (``scout``/``server`` ``_periodic_reconcile``
+    passing ``True``; both initial sweeps bare) are escalation E-reach in the
+    report — a builder obligation across the two duplicated daemons.
+    """
+
+    @staticmethod
+    def _with_retention(config: LoreConfig, days: int) -> LoreConfig:
+        """A copy of ``config`` whose telemetry retention is ``days`` (window 14)."""
+        return config.model_copy(
+            update={"telemetry": TelemetryConfig(trace_retention_days=days)}
+        )
+
+    @staticmethod
+    def _install_purge_spy(trio: FakeSurrealTrio) -> list[datetime]:
+        """Shadow the store's purge with a recorder; return the cutoff log.
+
+        An INSTANCE attribute, so it works whether or not the fake class defines
+        ``purge_traces_before``: it records every call's cutoff and STAYS EMPTY
+        when the purge is (correctly) not called, so the same recorder discriminates
+        both directions — gated-purges (len 1) and ungated-does-not (len 0).
+        """
+        cutoffs: list[datetime] = []
+
+        async def _spy(*, cutoff: datetime, batch_size: int = 0) -> int:
+            cutoffs.append(cutoff)
+            return 0
+
+        # method-assign (not attr-defined): the fake now DEFINES purge_traces_before
+        # (builder companion, _surreal_fakes.py), so shadowing it with an instance
+        # spy is a method reassignment — the contract's own docstring above notes it
+        # works "whether or not the fake class defines" it.
+        trio.store.purge_traces_before = _spy  # type: ignore[method-assign]
+        return cutoffs
+
+    async def test_gated_periodic_reconcile_purges_with_a_config_derived_cutoff(
+        self, tmp_path: Path
+    ) -> None:
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = self._with_retention(_config(slug=slug, live_path=live), 30)
+        trio = _trio()
+        cutoffs = self._install_purge_spy(trio)
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        engine = _make_engine(config=config, indexer=indexer, trio=trio)
+
+        before = datetime.now(UTC)
+        await engine.reconcile(purge_traces=True)
+        after = datetime.now(UTC)
+
+        assert len(cutoffs) == 1, "the GATED (periodic) reconcile purges trace exactly once"
+        # cutoff = now - 30d, computed inside reconcile between `before` and `after`.
+        assert (before - timedelta(days=30)) <= cutoffs[0] <= (after - timedelta(days=30))
+
+    async def test_ungated_initial_sweep_does_not_purge_but_gated_does(
+        self, tmp_path: Path
+    ) -> None:
+        """E1=Reading Y: the DEFAULT/ungated ``reconcile`` (the shape the awaited
+        initial startup sweep calls) purges NOTHING; only ``purge_traces=True``
+        (the periodic tick) purges. ONE engine, ONE store, so the ONLY difference
+        between the two legs is the gate. Discriminates the ruling's target wrong
+        build — a purge that fires on the initial/ungated path — on the FIRST
+        assert; RED on HEAD+stub because the stub ignores the gate, so the gated
+        leg records 0 and the second assert fails.
+        """
+        slug = _slug()
+        live = tmp_path / "live"
+        _build_live_corpus(live)
+        config = self._with_retention(_config(slug=slug, live_path=live), 30)
+        trio = _trio()
+        cutoffs = self._install_purge_spy(trio)
+        indexer = _make_indexer(
+            config=config, trio=trio, embedder=FakeEmbedder(dim=_DIM), snapshot_root=tmp_path / "snap",
+        )
+        engine = _make_engine(config=config, indexer=indexer, trio=trio)
+
+        # The initial startup sweep's call shape: default args -> NO trace purge.
+        await engine.reconcile()
+        assert cutoffs == [], (
+            "the un-gated (initial startup) reconcile must NOT purge traces — a "
+            "first-activation purge over months of rows must never run at boot"
+        )
+
+        # The SAME engine on the periodic tick DOES purge (the gate flips it on).
+        await engine.reconcile(purge_traces=True)
+        assert len(cutoffs) == 1, "the gated (periodic) reconcile purges exactly once"
+
+    async def test_gated_reconcile_cutoff_tracks_config_retention(self, tmp_path: Path) -> None:
+        results: dict[int, datetime] = {}
+        for days in (30, 60):
+            slug = _slug()
+            live = tmp_path / f"live{days}"
+            _build_live_corpus(live)
+            config = self._with_retention(_config(slug=slug, live_path=live), days)
+            trio = _trio()
+            cutoffs = self._install_purge_spy(trio)
+            indexer = _make_indexer(
+                config=config,
+                trio=trio,
+                embedder=FakeEmbedder(dim=_DIM),
+                snapshot_root=tmp_path / f"snap{days}",
+            )
+            engine = _make_engine(config=config, indexer=indexer, trio=trio)
+            await engine.reconcile(purge_traces=True)
+            assert len(cutoffs) == 1
+            results[days] = cutoffs[0]
+
+        # A 60-day retention keeps a cutoff ~30 days EARLIER than a 30-day one.
+        gap = results[30] - results[60]
+        assert timedelta(days=29) <= gap <= timedelta(days=31)

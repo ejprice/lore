@@ -91,6 +91,7 @@ from loremaster.store._txn import TXN_STATEMENT_HARD_CAP, TxnParamCollisionError
 from loremaster.store.candidate import Candidate
 from loremaster.store.surreal import (
     _MAX_HYBRID_K,
+    _TRACE_PURGE_BATCH_SIZE,
     CHUNK_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_FRAGMENT_PARAM_PREFIX,
     FILE_TEXT_MAX_BYTES,
@@ -977,6 +978,25 @@ class FakeSurrealStore:
         must FIRST add fake parity here plus a contract test.
         """
         return [dict(row) for row in reversed(self.db.traces)]
+
+    async def purge_traces_before(
+        self, *, cutoff: datetime, batch_size: int = _TRACE_PURGE_BATCH_SIZE
+    ) -> int:
+        """Delete every stored trace row with ``ts < cutoff``; return the count.
+
+        The in-memory analogue of :meth:`SurrealStore.purge_traces_before` (packet
+        06b, DD-1.c). Filters ``self.db.traces`` — the shared per-project trace list
+        (NOT a store-local attribute) — KEEPING rows with ``ts >= cutoff`` so the
+        boundary row (``ts == cutoff``) survives (``<`` is strict), and returns how
+        many were removed. ``batch_size`` is accepted for signature compatibility
+        with the real store but is inert here: an in-memory filter drains the whole
+        population in one pass, so batching (which exists only because
+        ``DELETE ... LIMIT`` is a 3.2.4 parse error) is a store-transport concern.
+        """
+        survivors = [row for row in self.db.traces if row["ts"] >= cutoff]
+        deleted = len(self.db.traces) - len(survivors)
+        self.db.traces = survivors
+        return deleted
 
     # -- inspection helpers (test-only, not part of the production API) ---
 

@@ -1045,7 +1045,7 @@ class LiveWatcher:
 
     # -- periodic sweep (under the SAME lock) ------------------------------- #
 
-    async def run_sweep(self) -> ReconcileSummary:
+    async def run_sweep(self, *, purge_traces: bool = False) -> ReconcileSummary:
         """Run the periodic reconcile sweep under the shared single-writer lock.
 
         Acquiring the SAME lock the drain uses is the whole concurrency contract:
@@ -1053,13 +1053,21 @@ class LiveWatcher:
         ``index_file`` at once. The reconcile itself is the policy-aware
         :class:`~loremaster.index.reconcile.ReconcileEngine.reconcile`.
 
+        ``purge_traces`` (packet 06b, DD-1.c / E1=Reading Y) is threaded VERBATIM
+        to :meth:`ReconcileEngine.reconcile` so the trace-retention GC gate rides
+        the SAME single-writer lock as the sweep. The PERIODIC reconcile caller
+        passes ``True``; the awaited initial startup sweep leaves it default so a
+        first-activation purge can never block boot. This is pure plumbing — the
+        gate DECISION lives in ``reconcile`` (pinned there), threading is pinned
+        by ``test_watcher.py::TestRunSweepThreadsTracePurgeGate``.
+
         Returns:
             The :class:`~loremaster.index.reconcile.ReconcileSummary` the sweep
             produced, so the startup path can log/report the initial sweep's
             counts without bypassing the lock.
         """
         async with self._lock:
-            return await self._reconcile_engine.reconcile()
+            return await self._reconcile_engine.reconcile(purge_traces=purge_traces)
 
     async def on_kernel_overflow(self, tier: str) -> None:
         """Reconcile a tier IMMEDIATELY in response to a kernel inotify overflow.

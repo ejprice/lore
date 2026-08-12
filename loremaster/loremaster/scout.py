@@ -892,7 +892,9 @@ class Scout:
         while True:
             await self._sleep(interval_s)
             try:
-                await self._watcher.run_sweep()
+                # Periodic tick ONLY -> run the trace-retention GC (packet 06b,
+                # DD-1.c / E1=Reading Y). The initial sweep in start() stays bare.
+                await self._watcher.run_sweep(purge_traces=True)
             except Exception:  # noqa: BLE001 - one blip must not kill the backstop
                 logger.exception("scout.periodic_reconcile.sweep_failed")
 

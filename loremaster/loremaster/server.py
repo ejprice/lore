@@ -9318,7 +9318,10 @@ async def _periodic_reconcile(watcher: Any, interval_s: int) -> None:
     while True:
         await asyncio.sleep(interval_s)
         try:
-            await watcher.run_sweep()
+            # Periodic tick ONLY -> run the trace-retention GC (packet 06b, DD-1.c
+            # / E1=Reading Y). The awaited initial startup sweep stays bare so a
+            # first-activation purge over months of rows can never block boot.
+            await watcher.run_sweep(purge_traces=True)
         except Exception:
             # The Surreal store has NO retry layer (fail-fast + reconnect-on-next-
             # call by design), so a transient server blip makes the sweep raise.

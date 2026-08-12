@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -118,8 +118,18 @@ class ReconcileEngine:
         # before (backward compatible).
         self._snapshot_stamper = snapshot_stamper
 
-    async def reconcile(self) -> ReconcileSummary:
+    async def reconcile(self, *, purge_traces: bool = False) -> ReconcileSummary:
         """Walk every root per its policy, purge deletions, return a summary.
+
+        ``purge_traces`` (packet 06b contract stub, DD-1.c / E1=Reading Y): the
+        gate that keeps the trace-retention GC OFF the awaited initial startup
+        sweep and ON the periodic reconcile tick. The PERIODIC caller passes
+        ``True``; every other caller (the initial startup sweep, the
+        ``IN_Q_OVERFLOW`` recovery, a forced ``lore_index(reconcile=True)``, a
+        ``reconcile`` command) leaves it default so a first-activation purge over
+        months of rows can never block boot. The BUILDER adds the gated purge
+        body (pinned RED by ``test_reconcile.py::TestReconcilePurgesTraceRetention``);
+        the parameter lands here only so the contract type-checks (mypy zero-new).
 
         For each configured root: delegate to :meth:`Indexer.index_tier` (live →
         walk + fast-path + resume non-indexed; static → version-stamp defer).
@@ -175,6 +185,17 @@ class ReconcileEngine:
         # off files_failed/files_indexed/files_purged). Mirrors index_file's
         # META_LAST_SYNC_AT_KEY stamp on the per-file live-apply side.
         await self._manifest.meta_set(META_LAST_SWEEP_AT_KEY, datetime.now(UTC).isoformat())
+        # Trace-retention GC (packet 06b, DD-1.c / #193), GATED to the PERIODIC
+        # tick only (E1=Reading Y): the awaited initial startup sweep leaves
+        # ``purge_traces`` default False so a first-activation purge over months of
+        # rows can never block boot. The batched drain rides the store's ONE _txn
+        # retry driver; the cutoff derives from config retention (a CHECKED
+        # variable, not a hidden 90 — pinned in TestReconcilePurgesTraceRetention).
+        if purge_traces:
+            trace_cutoff = datetime.now(UTC) - timedelta(
+                days=self._config.telemetry.trace_retention_days
+            )
+            await self._store.purge_traces_before(cutoff=trace_cutoff)
         return result
 
     async def _maybe_stamp_snapshot(self, summary: ReconcileSummary) -> None:

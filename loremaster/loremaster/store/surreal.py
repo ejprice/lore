@@ -350,6 +350,25 @@ _FILE_TEXT_SHA_KEY = "sha512"
 # comfortably above realistic large generated/vendored source files (a few MB).
 FILE_TEXT_MAX_BYTES = 10 * 1024 * 1024
 
+# Packet 06b (DD-1.c, finding #193): the trace-retention GC drains ``ts < cutoff``
+# in id-batches because ``DELETE ... LIMIT`` is a PARSE ERROR on surrealdb-3.2.4
+# (probe receipt: REPORT-contract-tracegc-06b.md §3, spike-surreal). The batch
+# size bounds each statement so a first-activation purge over months of rows never
+# sends one unbounded DELETE; it is NOT a correctness knob (the loop drains to
+# completion at any positive size — the no-residual invariant is pinned in
+# test_trace_retention_gc.TestBatchedDrainLeavesNoResidual).
+_TRACE_PURGE_BATCH_SIZE: int = 1000
+# The row-finding SELECT the purge issues, as ONE template both the store AND its
+# EXPLAIN receipt (test_trace_retention_gc.TestPurgeRidesTraceTsIndex) read — so
+# the "rides trace_ts" receipt observes the purge's ACTUAL query, never a
+# decoupled proxy (INSTRUMENT-0). ``{limit}`` is the batch size (an int the store
+# controls), never caller input. The one-sided ``ts < $cutoff`` range predicate
+# rides the ``trace_ts`` index (store ref §2: a range predicate is an IndexScan).
+_TRACE_PURGE_ID_SELECT: str = (
+    f"SELECT VALUE id FROM {TRACE_TABLE} "
+    f"WHERE {TRACE_TS_FIELD} < $cutoff LIMIT {{limit}}"
+)
+
 
 class VectorDimensionError(SurrealStoreError):
     """A vector's width does not match the store's configured dimension."""
@@ -892,6 +911,50 @@ class SurrealStore:
                 {"cutoff": cutoff},
             )
         )
+
+    async def purge_traces_before(
+        self, *, cutoff: datetime, batch_size: int = _TRACE_PURGE_BATCH_SIZE
+    ) -> int:
+        """Delete every ``trace`` row strictly older than ``cutoff``; return the count.
+
+        The trace-retention GC (packet 06b, DD-1.c / finding #193). ``<`` is
+        strict, so a row exactly AT ``cutoff`` survives (the boundary is pinned in
+        ``test_trace_retention_gc.TestPurgeRespectsTheWindow``).
+
+        Id-batched because ``DELETE ... LIMIT`` is a PARSE ERROR on surrealdb-3.2.4
+        (probe receipt: ``REPORT-contract-tracegc-06b.md`` §3): each pass SELECTs a
+        bounded page of ids on the ``ts < $cutoff`` range (which rides ``trace_ts``,
+        store ref §2) then deletes them by id, looping until the page is empty.
+        Termination is guaranteed — the ``ts < cutoff`` population strictly shrinks
+        each pass and no fresh row enters it (``record_trace`` stamps ``ts = now``,
+        always ``>= cutoff``). Every ``_query`` rides the ONE ``_txn`` retry driver,
+        so no retry/backoff is hand-rolled here.
+
+        Called on the PERIODIC reconcile tick only (via the gated
+        :meth:`~loremaster.index.reconcile.ReconcileEngine.reconcile`), NEVER in
+        :meth:`ensure_ready` (a first-activation purge over months of rows must not
+        block boot — pinned by ``test_trace_retention_gc.TestBootNeverPurges``).
+
+        Args:
+            cutoff: The tz-aware instant; rows with ``ts < cutoff`` are deleted.
+            batch_size: The per-page id ceiling (bounds each statement, not
+                correctness — the loop drains to completion at any positive size).
+
+        Returns:
+            The total number of trace rows deleted.
+        """
+        total = 0
+        while True:
+            ids = await self._query(
+                _TRACE_PURGE_ID_SELECT.format(limit=int(batch_size)),
+                {"cutoff": cutoff},
+            )
+            if not ids:
+                return total
+            await self._query(
+                f"DELETE {TRACE_TABLE} WHERE id IN $ids", {"ids": ids}
+            )
+            total += len(ids)
 
     def replace_file_fragment(
         self,
