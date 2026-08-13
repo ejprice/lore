@@ -1809,9 +1809,19 @@ def render_sample_tools_section() -> str:
     Returns:
         The commented sample section text naming exactly the universe.
     """
-    raise NotImplementedError(
-        "packet 45: render_sample_tools_section — builder implements (STUB)"
-    )
+    lines = [
+        "# tools:",
+        "#   # Per-deploy built-in tool allowlist (packet 45). Uncomment the section",
+        "#   # and keep ONLY the built-ins this deploy should serve; an unlisted",
+        "#   # built-in is NOT registered (absent from the surface AND uncallable).",
+        "#   # Omit the whole section to serve EVERY built-in (the default).",
+        "#   enabled:",
+    ]
+    # DERIVED from the declared universe (never a hand-list, so the menu cannot drift
+    # from the code — a 16th built-in appears here automatically). Sorted for a stable
+    # rendering.
+    lines.extend(f"#     - {name}" for name in sorted(_ALL_BUILTIN_TOOL_NAMES))
+    return "\n".join(lines)
 
 
 def _validate_tool_allowlist(
@@ -1837,8 +1847,36 @@ def _validate_tool_allowlist(
         config: The parsed project config carrying the optional ``tools`` section.
         extension_tool_names: The names of the extension-contributed tools (for the
             Fork-B total-surface-empty check).
+
+    Raises:
+        ValueError: If a ``tools.enabled`` name is outside the declared universe, or
+            if the TOTAL served surface (built-ins ∩ enabled) ∪ extensions is empty.
     """
-    # STUB: no validation yet — builder implements the loud-fail contract above.
+    # Absent ``tools:`` ⇒ the ruled default (all built-ins); nothing to validate.
+    if config.tools is None:
+        return None
+
+    enabled = set(config.tools.enabled)
+    # Typo safety: every enabled name must be in the DECLARED UNIVERSE. The message
+    # NAMES the unknown name(s) AND the known set, so a typo cannot silently register
+    # nothing — the loud-fail shows it validated against the universe.
+    unknown = enabled - set(_ALL_BUILTIN_TOOL_NAMES)
+    if unknown:
+        raise ValueError(
+            f"tools.enabled names {sorted(unknown)} outside the declared built-in "
+            f"universe; the known built-ins are {sorted(_ALL_BUILTIN_TOOL_NAMES)}."
+        )
+
+    # Fork B: an empty ``enabled`` set is LEGAL at parse, but a zero-tool server is
+    # operationally meaningless — boot loud-fails only when the TOTAL served surface
+    # (the enabled built-ins PLUS any extension tools) is empty.
+    total_surface = (enabled & set(_ALL_BUILTIN_TOOL_NAMES)) | set(extension_tool_names)
+    if not total_surface:
+        raise ValueError(
+            "the tools allowlist leaves an EMPTY total served surface "
+            "(no enabled built-in and no extension tool); a zero-tool server is "
+            "operationally meaningless — enable at least one built-in or extension tool."
+        )
     return None
 
 
@@ -9789,6 +9827,16 @@ def build_mcp_server(server: LoreServer) -> Any:
 
     config = server.config
 
+    # Packet 45 — validate the tools allowlist BEFORE building anything: an unknown
+    # enabled name or an empty TOTAL served surface must fail boot LOUDLY (Fork B),
+    # never silently register nothing. The extension tool names complete the
+    # total-surface check; collected over the composition context for their static
+    # names only (the same metadata pass ``_register_extension_tools`` makes).
+    extension_tool_names = [
+        spec.name for spec in server.tool_specs(server.extension_context(store=None))
+    ]
+    _validate_tool_allowlist(config, extension_tool_names)
+
     async def _build_context() -> tuple[AppContext, Any]:
         """Run the heavy startup once: build the AppContext (SurrealDB write stack).
 
@@ -9984,8 +10032,40 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         server: The composed :class:`LoreServer` whose extensions contribute the
             seam-3 tools.
     """
+    # Packet 45 — the built-in surface is a FUNCTION OF THE ENABLED SET. Absent a
+    # ``tools:`` section (``config.tools is None``) ⇒ the FULL declared universe (the
+    # ruled default keeps every existing ``lore.yaml`` and pin green); a ``tools:``
+    # section ⇒ exactly its ``enabled`` allowlist. ``enabled`` is captured by both the
+    # ``_gated_tool`` registration filter below AND the per-tool description builders
+    # (which drop a cross-reference to a DISABLED neighbour), so the two never diverge
+    # on what this deploy actually serves.
+    config = server.config
+    enabled: frozenset[str] = (
+        _ALL_BUILTIN_TOOL_NAMES
+        if config.tools is None
+        else frozenset(config.tools.enabled)
+    )
 
-    @mcp.tool(
+    def _gated_tool(
+        *, name: str, description: str, annotations: ToolAnnotations
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Register the decorated built-in via ``mcp.tool`` IFF ``name`` is enabled.
+
+        A DISABLED built-in is NEVER REGISTERED — the returned decorator is a no-op,
+        so the tool is absent from ``list_tools()`` AND uncallable by the SDK's own
+        dispatch (there is no wire handler to reach — finding #296, the EFFECT not a
+        marker). Named ``_gated_tool`` — NOT ``_tool`` — to avoid clashing with the
+        extension wrapper's inner ``_tool`` (:func:`_extension_tool_wrapper`).
+        """
+        if name in enabled:
+            return mcp.tool(name=name, description=description, annotations=annotations)
+
+        def _skip(func: Callable[..., Any]) -> Callable[..., Any]:
+            return func
+
+        return _skip
+
+    @_gated_tool(
         name="lore_search",
         description=(
             "Semantic, memory-boosted search across THIS project's indexed code and "
@@ -10103,7 +10183,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             caller_model=caller_model,
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_get_symbol",
         description=(
             "Resolve a Python symbol name to its EXACT stored definition + on-disk "
@@ -10133,7 +10213,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> ResolvedSymbol:
         return await _app_context(context).get_symbol(qualified_name)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_verify",
         description=(
             "Verify a symbol / signature / location CLAIM against the stored truth "
@@ -10188,7 +10268,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             qualified_name, expected_file_path, expected_signature_fragment
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_remember",
         description=(
             "Persist a durable note to THIS project's shared memory store; returns "
@@ -10291,7 +10371,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             labels=labels,
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_recall",
         description=(
             "Recall the nearest saved project-memory notes for a query — the read "
@@ -10347,7 +10427,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> str:
         return await _app_context(context).recall(query, k, kind=kind, labels=labels)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_claim_task",
         description=(
             "Atomically CLAIM a task for yourself from the project's shared, durable "
@@ -10390,7 +10470,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             task_id, owner, agent=agent, session=session
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_tasks",
         description=(
             "Manage the project's shared, durable fleet task ledger: dispatch on "
@@ -10611,7 +10691,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             session=session,
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_comms",
         description=(
             "Coordinate a live multi-agent fleet through the durable agent-registry "
@@ -10893,7 +10973,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             peek=peek,
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_read",
         description=(
             "Read a file span — the single read verb. Serves the EXACT bytes lore "
@@ -10951,7 +11031,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> StoreFileSpan:
         return await _app_context(context).read(tier, path, line_start, line_end)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_diff",
         description=(
             "Show what changed between two index SNAPSHOTS. Call it with NO 'since' "
@@ -10997,7 +11077,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> str:
         return await _app_context(context).diff(since=since, until=until, limit=limit)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_findings",
         description=(
             "Manage the project's durable, fleet-visible FINDING ledger (friction, "
@@ -11178,7 +11258,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             session=session,
         )
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_index",
         description=(
             "Index freshness/health status, with an optional force-sweep (merges the "
@@ -11238,7 +11318,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     # and deleted the handler outright — no residual what_imports surface
     # remains anywhere in AppContext.
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_dead_code",
         description=(
             "List CANDIDATE dead/orphaned definitions in the project's live tiers — "
@@ -11274,7 +11354,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> DeadCodeSweepResult:
         return await _app_context(context).dead_code(max_results=max_results)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_impact",
         description=(
             "Answer 'who depends on this, and is it safe to touch?' for ONE symbol "
@@ -11327,7 +11407,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     ) -> ImpactResult:
         return await _app_context(context).impact(target, depth)
 
-    @mcp.tool(
+    @_gated_tool(
         name="lore_map",
         description=(
             "Orient yourself in this codebase in one call: a PageRank-style, "
@@ -11466,18 +11546,24 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     thin wrapper now and binding the live handler later threads the runtime context
     through cleanly without blocking the later resource-channel seam.
 
-    **Name-collision guard.** A tool whose name already exists on ``mcp`` — a
-    built-in or an earlier extension's tool — raises a :class:`ValueError` at
-    registration rather than silently shadowing it (FastMCP's own ``add_tool``
-    would merely warn and keep the first registration, a silent shadow).
+    **Name-collision guard.** A tool whose name is reserved by the DECLARED UNIVERSE
+    (:data:`_ALL_BUILTIN_TOOL_NAMES`) — INCLUDING a built-in that this deploy's
+    ``tools:`` allowlist DISABLED, so it is not currently registered on ``mcp`` — or
+    that already exists on ``mcp`` (an earlier extension's tool) raises a
+    :class:`ValueError` at registration rather than silently shadowing it (FastMCP's
+    own ``add_tool`` would merely warn and keep the first registration, a silent
+    shadow). Checking the universe rather than only the registered set (packet 45,
+    L2-4) is what stops an extension from claiming a DISABLED built-in's name and
+    binding the WRONG handler to it with every token pin still green.
 
     Args:
         mcp: The FastMCP server (the built-ins are already registered).
         server: The composed :class:`LoreServer` whose extensions contribute tools.
 
     Raises:
-        ValueError: If an extension tool name collides with an already-registered
-            tool (a built-in or another extension's tool).
+        ValueError: If an extension tool name collides with a name reserved by the
+            declared universe (a built-in, ENABLED OR DISABLED) or with an
+            already-registered extension tool.
     """
     # Enumerate the specs over the COMPOSITION context for their static metadata
     # (names / descriptions / input schemas do not depend on the runtime ctx; only
@@ -11486,11 +11572,20 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     # invokes the handler or the placeholder tokenizer.
     composition_ctx = server.extension_context(store=None)
     for spec in server.tool_specs(composition_ctx):
-        if mcp._tool_manager.get_tool(spec.name) is not None:  # noqa: SLF001
+        # Check the DECLARED UNIVERSE, not just the registered set (packet 45, L2-4):
+        # a built-in DISABLED by the ``tools:`` allowlist is not registered on this
+        # deploy, yet its name stays RESERVED — otherwise an extension could claim a
+        # disabled built-in's name and ``tools/list`` would show the name present but
+        # bound to the WRONG handler, with every token/biconditional pin still green.
+        if (
+            spec.name in _ALL_BUILTIN_TOOL_NAMES
+            or mcp._tool_manager.get_tool(spec.name) is not None  # noqa: SLF001
+        ):
             raise ValueError(
-                f"extension tool {spec.name!r} collides with an already-registered tool; "
-                f"refusing to shadow it on the MCP surface (rename the extension tool — a "
-                f"tool name must be unique across the built-ins and every extension)."
+                f"extension tool {spec.name!r} collides with an already-registered tool "
+                f"or a built-in name reserved by the declared universe; refusing to shadow "
+                f"it on the MCP surface (rename the extension tool — a tool name must be "
+                f"unique across the built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
         mcp.add_tool(wrapper, name=spec.name, description=spec.description)
