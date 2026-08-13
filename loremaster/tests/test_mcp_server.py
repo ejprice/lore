@@ -101,6 +101,9 @@ from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
 from loremaster.render import render_attributed
 from loremaster.server import (
+    _ALL_BUILTIN_TOOL_NAMES as _PROD_BUILTIN_TOOL_NAMES,
+)
+from loremaster.server import (
     _SEARCH_BUDGET_CAP,
     _SEARCH_STUB_NOTICE,
     AppContext,
@@ -1119,13 +1122,19 @@ _BARE_TOOL_NAMES = {
 }
 _EXPECTED_TOOLS = {f"{_TOOL_PREFIX}{name}" for name in _BARE_TOOL_NAMES}
 # The COMPLETE built-in surface = the prefixed cores above PLUS the two task-ledger
-# tools (pinned separately below because they predate the bare-name cutover) PLUS
-# PKT-28 C1's new agent-comms dispatch tool. This is the EXACT set the flip
+# tools PLUS PKT-28 C1's agent-comms dispatch tool. This is the EXACT set the flip
 # freezes — the surface-equality pin fails if a tool is silently ADDED as well as
-# if one is removed. Later waves update this set deliberately as the surface
-# consolidates. (PKT-28 C1: 14 -> 15, adds "lore_comms" — see test_comms_tool.py
-# for its own dispatch-table/render/registration contract.)
-_ALL_BUILTIN_TOOL_NAMES = _EXPECTED_TOOLS | {"lore_claim_task", "lore_tasks", "lore_comms"}
+# if one is removed.
+#
+# RE-1 (packet 45): the declared universe was promoted to PRODUCTION
+# (:data:`loremaster.server._ALL_BUILTIN_TOOL_NAMES`) as the ONE object both the
+# boot-time allowlist validation and this registration-equality pin consume — so
+# prod and test can never drift into two hand-lists (the #291 lesson). This name is
+# now an ALIAS of that prod object (its value is unchanged: the 12 prefixed cores +
+# the 3 ledger/comms tools). A 16th built-in is added THERE, deliberately, and this
+# pin freezes the registered surface to it. ``test_tool_allowlist`` pins the ALIAS
+# is the SAME object (identity), so the single-source cannot silently regress.
+_ALL_BUILTIN_TOOL_NAMES = _PROD_BUILTIN_TOOL_NAMES
 
 
 class TestToolRegistration:

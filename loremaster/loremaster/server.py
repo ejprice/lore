@@ -49,7 +49,15 @@ import math
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -1638,6 +1646,38 @@ def _make_existing_chunks(store: SurrealStore) -> ExistingChunksFn:
 # substrings leave little room below ~500 without either dropping a
 # requirement or degrading to unreadable shorthand). Still a ~80% cut from
 # the prior block.
+# The DECLARED UNIVERSE of built-in tools (packet 45; RE-1). Promoted to PRODUCTION
+# as the ONE object both the boot-time allowlist validation and the test-side
+# registration-equality pin consume — a single source of truth, so prod and test can
+# never drift into two hand-lists (the #291 lesson). Adding a 16th ``@mcp.tool`` means
+# adding its name HERE deliberately, or the exact-set registration pin goes RED.
+#
+# It is a DELIBERATE hand-declared frozenset, NOT derived from the registered surface:
+# the anti-drift guard (``test_the_registered_surface_is_exactly_the_expected_set``)
+# asserts this universe == the registered full surface, so deriving it from that
+# surface would make the guard circular. The 15 members are the 12 prefixed cores plus
+# the three ledger/comms tools that predate the bare-name cutover.
+_ALL_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "lore_search",
+        "lore_get_symbol",
+        "lore_verify",
+        "lore_remember",
+        "lore_recall",
+        "lore_index",
+        "lore_dead_code",
+        "lore_impact",
+        "lore_map",
+        "lore_read",
+        "lore_diff",
+        "lore_findings",
+        "lore_claim_task",
+        "lore_tasks",
+        "lore_comms",
+    }
+)
+
+
 _INSTRUCTIONS = (
     "IDENTITY: lore is this repo's code+docs+graph RAG, durable memory, and "
     "fleet ledgers — cited, freshness-honest.\n"
@@ -1719,6 +1759,87 @@ _INSTRUCTIONS = (
     "TOOL LOADING: behind a deferred-tool harness, ToolSearch-load lore's "
     "tools first; batch independent calls in one turn, not serial turns."
 )
+
+
+def build_instructions(enabled: frozenset[str], *, identity: str | None = None) -> str:
+    """Assemble the served ``instructions`` document for the ENABLED built-in set.
+
+    STUB (packet 45) — builder implements. The full contract (design doc
+    ``docs/design/2026-08-13-packet45-served-prose-derivation.md`` §2):
+
+    * ``build_instructions(_ALL_BUILTIN_TOOL_NAMES)`` reproduces today's
+      :data:`_INSTRUCTIONS` BYTE-EXACT (the CL3 anchor + the ANCHOR pin E1).
+    * The set of ``lore_``-shaped tokens across the served instructions equals
+      ``enabled`` exactly (the biconditional, E2) — no disabled tool named, every
+      enabled tool named.
+    * No gutted section header and no dangling ``->`` on any enabled subset (E3):
+      the LADDER is an ordered list of steps re-joined by ``->``; a disabled step is
+      dropped whole; MEMORY drops its header if no clause survives; the ruled COMMS
+      block is emitted iff ``lore_comms`` is enabled.
+    * The interpolation site (``instructions=_INSTRUCTIONS`` in ``build_mcp_server``)
+      becomes ``instructions=build_instructions(enabled_tool_names)``, preserving the
+      ``_MESSAGE_BODY_MAX_CHARS`` interpolation that lives inside the comms block.
+
+    The ``identity`` keyword carries the Fork-A config-authorable IDENTITY line:
+    ``None`` ⇒ the built-in default (today's exact IDENTITY paragraph, byte-exact);
+    a custom string replaces that paragraph VERBATIM.
+
+    Args:
+        enabled: The frozenset of enabled built-in tool names (a subset of
+            :data:`_ALL_BUILTIN_TOOL_NAMES`).
+        identity: The IDENTITY/preamble paragraph to serve, or ``None`` for the
+            built-in default (Fork A / :attr:`LoreConfig.identity`).
+
+    Returns:
+        The assembled ``instructions`` string naming exactly the enabled tools.
+    """
+    raise NotImplementedError("packet 45: build_instructions — builder implements (STUB)")
+
+
+def render_sample_tools_section() -> str:
+    """Render the commented-out sample ``tools:`` section for a ``lore.yaml`` (2B).
+
+    STUB (packet 45) — builder implements. A discoverability artifact GENERATED from
+    :data:`_ALL_BUILTIN_TOOL_NAMES` (never a hand-list, so it cannot drift from the
+    code): a commented ``tools:``/``enabled:`` block listing EVERY built-in as an
+    ``allow`` entry, so an operator authoring a ``lore.yaml`` sees the full menu. The
+    pin (H) asserts the ``lore_``-shaped tokens in the rendered sample equal the
+    declared universe exactly.
+
+    Returns:
+        The commented sample section text naming exactly the universe.
+    """
+    raise NotImplementedError(
+        "packet 45: render_sample_tools_section — builder implements (STUB)"
+    )
+
+
+def _validate_tool_allowlist(
+    config: LoreConfig, extension_tool_names: Collection[str]
+) -> None:
+    """Boot-time validation of a ``tools:`` allowlist against the declared universe.
+
+    STUB (packet 45) — builder implements; a NO-OP placeholder so the boot-validation
+    contract pins are RED (nothing loud-fails yet). The full contract (spec §Part 2 /
+    kickoff Fork B):
+
+    * Every name in ``config.tools.enabled`` MUST be in
+      :data:`_ALL_BUILTIN_TOOL_NAMES`; an UNKNOWN name fails boot LOUDLY, naming the
+      unknown name AND the known set.
+    * An empty ``enabled`` set is LEGAL at parse; boot loud-fails ONLY if the TOTAL
+      served surface ``(built-ins ∩ enabled) ∪ extension_tool_names`` is empty.
+    * Absent ``tools:`` (``config.tools is None``) ⇒ no validation, all built-ins.
+
+    The builder wires this into ``build_mcp_server`` (where both the config and the
+    extension tool names are in hand).
+
+    Args:
+        config: The parsed project config carrying the optional ``tools`` section.
+        extension_tool_names: The names of the extension-contributed tools (for the
+            Fork-B total-surface-empty check).
+    """
+    # STUB: no validation yet — builder implements the loud-fail contract above.
+    return None
 
 
 def configure_logging_from_config(config: LoreConfig) -> None:

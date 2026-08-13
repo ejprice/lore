@@ -355,6 +355,31 @@ class AuthConfig(_StrictModel):
     tls_terminated_upstream: bool = True
 
 
+class ToolsConfig(_StrictModel):
+    """The optional per-deploy built-in tool allowlist (packet 45; multi-user Part 2).
+
+    A ``tools:`` section enables/disables the built-in MCP tools for one deploy. A
+    disabled tool is NEVER REGISTERED — absent from ``tools/list`` AND uncallable by
+    the SDK's own dispatch (resolves finding #296). ABSENT ``tools:`` ⇒ all built-ins
+    (:attr:`LoreConfig.tools` is ``None``); deny-by-default applies WITHIN the section
+    (an unlisted built-in is disabled), mirroring the ``auth`` idiom.
+
+    ``enabled`` is a bare ``list[str]`` because pydantic cannot typo-check it against
+    the DECLARED UNIVERSE (:data:`loremaster.server._ALL_BUILTIN_TOOL_NAMES`) — that
+    validation is a BOOT check (loud-fail on an unknown name), never a static type. An
+    EMPTY ``enabled`` set is legal at parse; boot loud-fails only if the TOTAL served
+    surface ``(built-ins ∩ enabled) ∪ extension-tools`` is empty (Fork B).
+
+    Attributes:
+        enabled: The built-in tool names to register for this deploy. Each must name a
+            tool in the declared universe or boot fails loudly.
+    """
+
+    # STUB (packet 45) — the FIELD is the contract surface; the ENFORCEMENT (boot
+    # validation, never-register filter, prose derivation) is builder GREEN work.
+    enabled: list[str] = []
+
+
 class WatcherConfig(_StrictModel):
     """Live-watch and reconcile configuration.
 
@@ -623,6 +648,11 @@ class LoreConfig(_StrictModel):
             brief-body warn size).
         auth: The optional rotatable-key auth layer (D9). ``None`` ⇒ no-auth
             localhost mode.
+        tools: The optional per-deploy built-in tool allowlist (packet 45).
+            ``None`` ⇒ all built-ins register; present ⇒ only the listed built-ins.
+        identity: The optional config-authorable IDENTITY/preamble line for the
+            served instructions (packet 45, Fork A). ``None`` ⇒ the built-in default
+            (byte-exact today's IDENTITY paragraph); a custom string is served verbatim.
         extensions: The OPAQUE extension namespace — a mapping of extension name
             → arbitrary nested config the base passes through verbatim.
     """
@@ -659,6 +689,17 @@ class LoreConfig(_StrictModel):
     # aggregate window.
     telemetry: TelemetryConfig = TelemetryConfig()
     auth: AuthConfig | None = None
+    # OPTIONAL, mirroring ``auth``: absent ``tools:`` ⇒ ``None`` ⇒ ALL built-ins
+    # register (an existing ``lore.yaml`` still validates untouched). Present ⇒ only
+    # the listed built-ins register; deny-by-default within the section (packet 45).
+    tools: ToolsConfig | None = None
+    # STUB (packet 45, Fork A) — the config-authorable IDENTITY/preamble line for the
+    # served instructions. ``None`` ⇒ the built-in default (today's exact IDENTITY
+    # paragraph, so CL3 stays byte-exact green); a custom string is served VERBATIM.
+    # It exists because the default IDENTITY line over-claims "code+docs+graph RAG,
+    # durable memory, fleet ledgers" on a REDUCED surface and no ``lore_``-token pin
+    # catches that (a Trust Leg-1 defect); the operator/deploy owns the true identity.
+    identity: str | None = None
     # The opaque extension namespace: a typo'd extension *key* is not catchable
     # by the base (it cannot know every extension's schema), so this is a
     # deliberate pass-through validated downstream by the registered extension.
