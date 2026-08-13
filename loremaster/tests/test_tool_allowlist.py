@@ -171,6 +171,23 @@ async def _registered_builtins(mcp: Any) -> set[str]:
     return names & set(_ALL_BUILTIN_TOOL_NAMES)
 
 
+def _tool_description_texts(tool: Any) -> list[str]:
+    """Every agent-facing text on ONE registered tool: its top-level ``description``
+    plus every per-parameter ``inputSchema`` field description.
+
+    Shared (DRY §6) by the whole-surface token union (:func:`_served_lore_tokens`, E2)
+    and the per-tool cross-reference map (:func:`_builtin_crossref_map`, MP-1) so the
+    two cannot silently diverge on WHICH text they scan. The F2 defect class lives in a
+    PARAMETER description, not a top-level one — a scan limited to top-level text alone
+    would miss it (CLAUDE.md rename-sweep law).
+    """
+    texts: list[str] = [tool.description or ""]
+    properties = (tool.inputSchema or {}).get("properties", {})
+    for field_schema in properties.values():
+        texts.append(field_schema.get("description") or "")
+    return texts
+
+
 async def _served_lore_tokens(mcp: Any) -> set[str]:
     """Every ``lore_``-shaped token across the WHOLE served surface of ``mcp``.
 
@@ -179,14 +196,36 @@ async def _served_lore_tokens(mcp: Any) -> set[str]:
     """
     texts: list[str] = [mcp.instructions or ""]
     for tool in await mcp.list_tools():
-        texts.append(tool.description or "")
-        properties = (tool.inputSchema or {}).get("properties", {})
-        for field_schema in properties.values():
-            texts.append(field_schema.get("description") or "")
+        texts.extend(_tool_description_texts(tool))
     tokens: set[str] = set()
     for text in texts:
         tokens |= set(_TOOL_NAME_TOKEN.findall(text))
     return tokens
+
+
+async def _builtin_crossref_map(mcp: Any) -> dict[str, set[str]]:
+    """Map each registered BUILT-IN ``A`` → the set of OTHER built-in names its own
+    served text references (a cross-reference ``A→B``).
+
+    The reach set MP-1 quantifies over: for each registered built-in, the ``lore_``
+    tokens in its top-level + per-parameter descriptions that name a DIFFERENT built-in.
+    DERIVED from the built server (as adversary-45's ``_adv_xref.py`` did), never a
+    hand-list — a 16th tool or a new cross-reference extends the set automatically
+    (INSTRUMENT-0, CLAUDE.md). Extensions are not part of the built-in cross-reference
+    graph and are skipped.
+    """
+    universe = set(_ALL_BUILTIN_TOOL_NAMES)
+    crossrefs: dict[str, set[str]] = {}
+    for tool in await mcp.list_tools():
+        if tool.name not in universe:
+            continue
+        named: set[str] = set()
+        for text in _tool_description_texts(tool):
+            named |= set(_TOOL_NAME_TOKEN.findall(text))
+        referents = (named & universe) - {tool.name}
+        if referents:
+            crossrefs[tool.name] = referents
+    return crossrefs
 
 
 async def _register_only_builtins(tmp_path: Path, enabled: frozenset[str]) -> set[str]:
@@ -465,6 +504,40 @@ class TestBuildInstructionsFullSetIsByteExact:
         assert build_instructions(_FULL) == _declared_instructions(cap)
 
 
+class TestInstructionsInterpSiteWiresBuildInstructions:
+    """WIRING (adversary-45 attack 3, FLAG #2): the ``instructions`` interpolation site
+    in ``build_mcp_server`` actually CALLS ``build_instructions`` with the ENABLED set —
+    not the frozen ``_INSTRUCTIONS`` literal, nor ``build_instructions(_FULL)``
+    regardless of config. E2 catches an interp-site fumble only TRANSITIVELY (via tokens):
+    a builder who keeps the module constant correct but wires the wrong object into
+    ``mcp.instructions`` on a reduced surface would pass full/default and redden only on
+    E2's reduced fixtures. This pins the served instructions byte-exact against
+    ``build_instructions`` of the enabled set directly."""
+
+    async def test_reduced_surface_instructions_are_build_instructions_of_enabled(
+        self, tmp_path: Path
+    ) -> None:
+        """On the lore-dnd reduced surface, ``mcp.instructions`` == ``build_instructions``
+        applied to the ACTUALLY-registered built-in set with ``config.identity`` — exactly
+        the interp-site call. The argument is DERIVED from the registered surface (not an
+        assumed effective-enabled computation), so only the true wiring passes; C
+        (registered == enabled) independently pins that set == lore-dnd, and E1 forces
+        ``build_instructions`` to be byte-exact over a frozenset (hence order-insensitive),
+        so the reconstructed argument is deterministic.
+
+        expected-RED (stub): ``build_instructions`` raises ``NotImplementedError`` (the
+        derivation is unbuilt), so the right-hand side errors before comparison.
+        MUTATION that reddens a finished build: wire ``instructions=_INSTRUCTIONS`` (the
+        full literal) or ``build_instructions(_FULL)`` regardless of the enabled set.
+        """
+        config = _make_config(tmp_path, _LORE_DND_ENABLED)
+        mcp = build_mcp_server(LoreServer(config))
+        registered = frozenset(await _registered_builtins(mcp))
+        assert (mcp.instructions or "") == build_instructions(
+            registered, identity=config.identity
+        )
+
+
 class TestServedProseNamesExactlyTheEnabledTools:
     """E2 [BICONDITIONAL]: the ``lore_`` tokens across the WHOLE served surface (server
     instructions + every tool/param description) == the enabled built-in set — the single
@@ -499,6 +572,72 @@ class TestServedProseNamesExactlyTheEnabledTools:
         """
         assert set(_TOOL_NAME_TOKEN.findall(build_instructions(_EMPTY))) == set()
         assert await _register_only_builtins(tmp_path, _EMPTY) == set()
+
+
+class TestEveryDescriptionCrossRefDropsItsDisabledReferent:
+    """MP-1 (adversary-45 attack 2): cross-reference guard coverage is a CHECKED
+    VARIABLE over the DERIVED description graph — not the ``(referrer, referent)`` pairs
+    the E2 fixtures happen to split.
+
+    E2's forward (⊆) leg reddens only for a disabled tool that SOME E2 fixture disables
+    while a referrer stays enabled — a HIDDEN CONSTANT (the pairs ``{subset, lore-dnd}``
+    split; adversary-45 measured 18 of 24 description cross-references UNEXERCISED by it,
+    e.g. leaking ``lore_search→lore_read`` stays GREEN across all four E2 fixtures). This
+    pin ENUMERATES the actual cross-references from the built full server and, for EACH
+    ``A→B``, builds the witness config ``_FULL − {B}`` (B disabled, every referrer A≠B
+    enabled) and asserts the disabled referent ``B`` is absent from A's served
+    description AND from the whole served surface. Coverage now grows with the graph: a
+    16th tool or a new cross-reference is quantified over automatically, and a single
+    hardcoded cross-reference reddens (INSTRUMENT-0, CLAUDE.md)."""
+
+    async def test_every_crossref_drops_its_disabled_referent(self, tmp_path: Path) -> None:
+        """expected-RED node (stub): this test. ``build_mcp_server`` ignores the
+        allowlist and serves the FULL ``_INSTRUCTIONS`` + all 15 descriptions, so on the
+        witness ``_FULL − {B}`` the disabled referent ``B``'s token is STILL present in
+        every referrer's served description (``lore_search``'s description still names
+        disabled ``lore_read``) and on the whole served surface. The proved-leak scenario
+        adversary-45 found (``lore_search→lore_read``, one of the 18 E2-unexercised
+        cross-references) is caught here.
+        MUTATION that reddens a finished build: leave a disabled neighbour's name in a
+        surviving tool's description, or in the served instructions.
+        """
+        full = _build(tmp_path, enabled=_FULL)
+        crossrefs = await _builtin_crossref_map(full)
+        pairs = sorted((a, b) for a, referents in crossrefs.items() for b in referents)
+        # ANTI-VACUITY (INSTRUMENT-0 / #291): the ∀ below is vacuous if the enumeration
+        # is empty. The full server's descriptions cross-reference heavily (adversary-45
+        # enumerated 24); a build returning zero cross-references — descriptions that
+        # stopped naming neighbours — is a coverage collapse, caught here rather than
+        # silently waved through as a passing ∀ over nothing.
+        assert len(pairs) >= 20, (
+            f"expected >= 20 derived description cross-references (adversary-45 found 24); "
+            f"enumerated {len(pairs)}: {pairs}"
+        )
+        # Group by referent B: the witness _FULL − {B} disables exactly B and keeps every
+        # referrer A (A != B) enabled — one reduced build per distinct referent.
+        referrers_of: dict[str, set[str]] = {}
+        for referrer, referent in pairs:
+            referrers_of.setdefault(referent, set()).add(referrer)
+        leaks: list[str] = []
+        for referent, referrers in sorted(referrers_of.items()):
+            witness = frozenset(_FULL) - {referent}
+            mcp = _build(tmp_path, enabled=witness)
+            if referent in await _served_lore_tokens(mcp):
+                leaks.append(
+                    f"surface: disabled {referent} named on the served surface of "
+                    f"witness _FULL−{{{referent}}}"
+                )
+            witness_crossrefs = await _builtin_crossref_map(mcp)
+            for referrer in sorted(referrers):
+                if referent in witness_crossrefs.get(referrer, set()):
+                    leaks.append(
+                        f"desc: {referrer}→{referent} — {referrer}'s served description "
+                        f"still names disabled {referent}"
+                    )
+        assert not leaks, (
+            f"disabled referents leaked into served text on reduced surfaces "
+            f"({len(leaks)} leak(s)):\n" + "\n".join(leaks)
+        )
 
 
 class TestServedProseIsStructurallyCoherent:
