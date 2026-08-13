@@ -71,8 +71,12 @@ bounds:
       packet 39 — the hosted-security contract. Owner of the CLOSURE is packet 39;
       owner of this PIN is packet 04b-2 wave C.
     reopen_trigger: >-
-      operator decision #296, or packet 39's build start — whichever comes first.
-      At that point every entry below self-destructs as its file goes green.
+      packet 39's build start (or a re-author to the mypy-clean house idiom).
+      ⚠ #296 is RESOLVED by packet 45's tool-allowlist (2026-08-13) — this UNBLOCKED
+      packet 39's build, but did NOT make these files green: they still reference
+      symbols packet 39's build will CREATE. Each entry below self-destructs as its
+      file goes green at that build. (The prior "operator decision #296" clause is
+      spent; the sole remaining closure owner is packet 39's build.)
     ruling: >-
       finding #306 (the diagnosis and the ruling text), from packet 04b-2 wave C's
       design sidecar ruling 4, thread q:04b2-gate-definition. Rejected alternatives
@@ -81,8 +85,9 @@ bounds:
       reverting the contract commit.
     rationale: >-
       These 11 files are a TEST CONTRACT committed deliberately ahead of a build
-      that is BLOCKED on operator decision #296, after four adversary passes all
-      returning INSUFFICIENT and an operator override holding the door. They are
+      that was BLOCKED on #296 (RESOLVED by packet 45's allowlist, 2026-08-13 — the
+      never-register mechanism; packet 39's build is now UNBLOCKED but not yet run),
+      after four adversary passes all returning INSUFFICIENT. They are
       operator-held territory: the clean closure (build it, or re-author it to the
       mypy-clean house idiom) lives inside files this wave may not touch. This is
       the out-of-authority deferral shape, with a named decision point — not
