@@ -430,3 +430,32 @@ posture, distinct from packet 45's TOOL allowlist). Packet 45 must not break tho
   the builder greps them; I did not run that grep to a per-description verdict).
 - The empty-set boot behavior (Fork B) is a recommendation, not a reading of existing code — no
   current code path constructs a zero-built-in server.
+
+---
+
+## 8. Post-adversary corrections (2026-08-13, `adversary-45b` — REPORT-adversary-45.md)
+
+Two claims in this doc were empirically falsified by the contract-adversary. They are
+corrected here so the builder does not inherit them:
+
+- **§2.4 is FALSE as written.** "*the subset biconditional then proves exhaustiveness — a
+  missed cross-ref reddens it*" does NOT hold for the contract's fixtures: only **5 of 24**
+  description cross-references are exercised by `{full, subset, lore-dnd, empty}` (the pairs
+  those fixtures happen to split — a HIDDEN CONSTANT, not the description graph). A build
+  leaking any of the other ~18 (proved: `lore_search→lore_read` GREEN across all E2 fixtures;
+  positive control `lore_search→lore_get_symbol` reds `[lore-dnd]`) ships a disabled tool's
+  name on a reduced surface with every pin green. **FIX: MP-1** — a DERIVED cross-ref coverage
+  pin (enumerate cross-refs from the built descriptions; per A→B witness `{A on, B off}`,
+  assert B absent), making coverage a checked variable. Added by `contract-45c`.
+  ⚠ **Not a deploy blocker:** `E2[lore-dnd]` DOES cover lore-dnd's own cross-refs; the gap is
+  future reduced deploys + this doc's overclaimed guarantee.
+
+- **§2.0 is INACCURATE about CL3.** CL3
+  (`test_comms_tool.py::test_the_served_INSTRUCTIONS_are_EXACTLY_the_declared_paragraphs`)
+  reads the MODULE CONSTANT `loremaster.server._INSTRUCTIONS` (via `_server()._INSTRUCTIONS`),
+  **NOT** `mcp.instructions`. So the additive-anchor argument holds only if the builder
+  **rewires `_INSTRUCTIONS = build_instructions(_ALL_BUILTIN_TOOL_NAMES)`** at module scope,
+  AND serves `instructions=build_instructions(enabled, identity=config.identity)` at the
+  interp site. E1 (`test_full_set_reproduces_todays_instructions_byte_exact`) tests
+  `build_instructions(full)` DIRECTLY, so it is the load-bearing full-set anchor regardless of
+  the wiring; CL3 becomes a live derivation anchor only after the rewire.
