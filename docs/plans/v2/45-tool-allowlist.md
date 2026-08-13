@@ -28,6 +28,27 @@ unblocking packet 39; gates the `lore-dnd` surface (rulings doc §4 is the first
   dynamic filtering — composition rule in spec §Part 2 ⚠ (partition input = the
   registered set).
 
+## Kickoff rulings (operator, 2026-08-13 — design `docs/design/2026-08-13-packet45-served-prose-derivation.md`)
+- **SIZING = ONE packet** (a–h), ⅓ emergent reserve. The mechanism/prose seam is a FALSE
+  seam (the every-token pin couples instructions + all 15 descriptions), so the coupled
+  core cannot be cut; the only separable items (2B sample-gen, deploy) are too small to
+  justify a second packet's ritual.
+- **FORK A (IDENTITY over-claim) = config-authorable IDENTITY/preamble field** on
+  `LoreConfig`, **default = today's exact `_INSTRUCTIONS` identity string** (byte-exact →
+  CL3 stays green). The served IDENTITY line over-claims "code+docs+graph RAG, durable
+  memory, fleet ledgers" on a REDUCED surface and no `lore_`-token pin catches it (a
+  Trust Leg-1 defect). lore-dnd authors its true identity in packet 54. **SCOPE ADD.**
+- **FORK B (empty enabled set) = LEGAL at the config layer**; boot loud-fails ONLY if the
+  TOTAL served surface `(built-ins ∩ enabled) ∪ extension-tools` is empty (keeps the
+  spec-required empty-set coverage fixture constructible; supports a future extension-only
+  instance).
+- **Design spine:** `build_instructions(enabled)` refactor of `_INSTRUCTIONS`;
+  `build_instructions(ALL)` reproduces today's string BYTE-EXACT (CL3 is the anchor — do
+  NOT reparametrize CL3/CL1). Coherence = ONE biconditional (served `lore_` tokens ==
+  enabled built-ins) + structural pins (no gutted header / dangling arrow) + anti-vacuity.
+  RE-1: promote `_ALL_BUILTIN_TOOL_NAMES` to prod as ONE object (test-side imports it).
+  RE-2: #333 typecheck-RED baseline is operator-accepted → report a green-DELTA.
+
 ## Entry check
 Wave C closed (INDEX). `lore_findings` → #296 not-resolved. Spec §Part 2 read in full.
 
