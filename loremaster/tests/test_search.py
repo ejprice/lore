@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from _extension_helpers import FakeExtension, minimal_config
+from _extension_helpers import FakeExtension, register_in_discovery
 from _surreal_fakes import (
     FakeSurrealCodeGraph,
     FakeSurrealManifest,
@@ -2834,23 +2834,29 @@ class TestExtensionHooks:
     """A FAKE extension's Candidate seams observably change output; generic = base."""
 
     async def _extension_pipeline(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, embedder: FakeEmbedder
     ) -> SearchPipeline:
         _write(tmp_path / "routing.py", _PY_ROUTING)
         slug = _slug()
         base_config = _config(slug=slug, live_path=tmp_path)
-        # Merge the fake extension's config slice into this config.
-        ext_config = base_config.model_copy(update={"extensions": minimal_config().extensions})
-        server = LoreServer(ext_config).register_extension(FakeExtension())
+        # Packet 46: compose the fake via LIVE DISCOVERY (the production path) —
+        # inject the registry and carry the matching slice, then let
+        # ``LoreServer(...)`` discover it, rather than a manual ``register_extension``
+        # (which now needs the slice discovery would have supplied).
+        register_in_discovery(monkeypatch, {"fake": FakeExtension})
+        ext_config = base_config.model_copy(
+            update={"extensions": {"fake": {"flavour": "vanilla"}}}
+        )
+        server = LoreServer(ext_config)
         indexed = await _index_corpus(
             slug=slug, live_path=tmp_path, embedder=embedder, server=server
         )
         return _make_pipeline(indexed=indexed, embedder=embedder, server=server)
 
     async def test_fake_extension_format_overrides_base_citation(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        pipeline = await self._extension_pipeline(tmp_path, embedder)
+        pipeline = await self._extension_pipeline(monkeypatch, tmp_path, embedder)
         results = await pipeline.search_code("routing", k=5)
         hits = [r for r in results if r.kind == _HIT_KIND]
         assert hits
@@ -2860,9 +2866,9 @@ class TestExtensionHooks:
         assert not any("[SOURCE:" in r.formatted for r in hits)
 
     async def test_fake_extension_augment_injects_a_candidate(
-        self, tmp_path: Path, embedder: FakeEmbedder
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, embedder: FakeEmbedder
     ) -> None:
-        pipeline = await self._extension_pipeline(tmp_path, embedder)
+        pipeline = await self._extension_pipeline(monkeypatch, tmp_path, embedder)
         # The fake's augment_candidates injects a Candidate keyed "injected" score
         # 1.0 and rerank sorts by score desc ⇒ the injected candidate leads the hits.
         results = await pipeline.search_code("routing", k=10)

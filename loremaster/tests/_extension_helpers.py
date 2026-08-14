@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Literal
 from xml.etree import ElementTree
 
+import pytest
 from loremaster.config import LoreConfig
 from loremaster.extension import (
     Extension,
@@ -50,18 +51,39 @@ FAKE_KEY_VERSION = 7
 MAKEFILE_BASENAME = "Makefile"
 
 
+def register_in_discovery(
+    monkeypatch: pytest.MonkeyPatch, mapping: dict[str, type[Extension]]
+) -> None:
+    """Point live extension discovery at ``mapping`` for one test's duration.
+
+    ``setattr`` on the module OBJECT (not dict mutation) so pytest auto-reverts it,
+    and because :meth:`LoreServer._discover_extensions` reads the module ATTRIBUTE
+    ``loremaster.extension.EXTENSION_REGISTRY`` at construction time — an
+    import-bound name would not be re-pointed. Shared by ``test_server.py`` and
+    ``test_search.py`` (ONE-IMPLEMENTATION: two call sites needing the same
+    test-composition policy ⇒ one function they call, not a pattern each clones).
+    """
+    import loremaster.extension as extension_module
+
+    monkeypatch.setattr(extension_module, "EXTENSION_REGISTRY", mapping)
+
+
 def minimal_config(extensions: dict[str, dict[str, Any]] | None = None) -> LoreConfig:
-    """Build a valid :class:`LoreConfig` carrying a ``fake`` extension slice.
+    """Build a valid :class:`LoreConfig` with the given ``extensions`` block.
 
     Args:
-        extensions: Override the ``extensions`` block. Defaults to a valid
-            ``fake`` slice (``{"fake": {"flavour": "vanilla"}}``).
+        extensions: Override the ``extensions`` block. Defaults to ``{}`` (no
+            extension) so a bare ``minimal_config()`` composes a plain RAG under
+            live extension discovery (packet 46). Pass an explicit
+            ``{"fake": {"flavour": "vanilla"}}`` slice AND inject a matching
+            registry via :func:`register_in_discovery` when a test wants the fake
+            actually wired through discovery.
 
     Returns:
         A validated config suitable for an :class:`ExtensionContext`.
     """
     if extensions is None:
-        extensions = {"fake": {"flavour": "vanilla"}}
+        extensions = {}
     payload: dict[str, Any] = {
         "schema_version": 1,
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
