@@ -397,6 +397,44 @@ class LoreServer:
         # registry: ordering matters -- the override targets (e.g. ``python_ast``)
         # only exist AFTER ``_build_default_registry()``, so the wiring runs last.
         self._apply_config_chunker_overrides()
+        # Packet 46 — config-driven extension discovery runs LAST: the registry and
+        # chunker overrides must be built before any extension composes onto them.
+        # Hooked here (not in ``from_config``) so all four production construction
+        # sites — ``from_config``, the indexer CLI, scout, the comms eval — discover
+        # extensions; hooking ``from_config`` alone would blind the indexer + scout.
+        self._discover_extensions()
+
+    def _discover_extensions(self) -> None:
+        """Instantiate + ``register_extension`` each extension named in ``config.extensions``.
+
+        For each key in ``self._config.extensions``: look the key up in the LIVE
+        :data:`loremaster.extension.EXTENSION_REGISTRY` module global (read at
+        construction time so a test can inject a fake registry), instantiate the
+        class, and compose it via :meth:`register_extension`.
+
+        Two loud-boot failures the finished build owes (both ``ValueError``):
+
+        * **Unknown key** — a ``config.extensions`` key absent from the registry
+          fails boot with a teaching error whose known-set is DERIVED from
+          ``EXTENSION_REGISTRY`` keys (never a hand-list): the served surface is
+          read by an LLM, so a typo must be TAUGHT the real known set, not merely
+          rejected (Trust Leg-1 / #291 natural-language-surface class).
+        * **Registry-key vs ``name`` mismatch** — the framework declares an
+          extension's ``name`` IS "its key in the ``extensions:`` config"
+          (:attr:`~loremaster.extension.Extension.name`). If a registry KEY maps to
+          a class whose instance ``name`` differs, ``register_extension`` would
+          validate ``config.extensions[ext.name]`` — the WRONG (usually absent)
+          slice — silently. A mismatch therefore fails boot loudly, catching the
+          honest extension-author who registered a class under the wrong key.
+
+        STUB (packet 46 contract): the body is INERT — the real discovery loop is
+        the builder's deliverable. Leaving it inert keeps every existing
+        construction site's behaviour unchanged (all pre-existing suites stay
+        green) while the contract's new-behaviour pins go RED.
+        """
+        # INERT STUB (packet 46): no registry read, no instantiate, no register, no
+        # raise. The builder implements the loop + both loud-boot failures above,
+        # reading ``loremaster.extension.EXTENSION_REGISTRY`` LIVE at this point.
 
     # -- construction -------------------------------------------------------
 

@@ -370,3 +370,24 @@ class Extension(ABC):
             The detail level, or ``None`` to defer to the base default.
         """
         return None
+
+
+# --------------------------------------------------------------------------- #
+# The static extension registry (packet 46 — config-driven discovery).
+# --------------------------------------------------------------------------- #
+# Maps an extension's stable ``name`` to its class. ``LoreServer.__init__``
+# consults it to instantiate + ``register_extension`` each extension named in a
+# project's ``extensions:`` config block.
+#
+# It ships EMPTY in production: no real extension exists yet (the ``dnd``
+# extension is packet 51), so the generic RAG's default construction discovers
+# nothing. A workspace-member extension registers its class here; ENTRY-POINT
+# discovery is deliberately DEFERRED until an out-of-repo extension exists (a
+# named re-open trigger), per the wave-D architecture ruling §3.
+#
+# It is a LIVE module global on PURPOSE: the discovery hook reads
+# ``loremaster.extension.EXTENSION_REGISTRY`` at construction time (never a name
+# bound at import into another module), so a test injects a fake registry via
+# ``monkeypatch.setattr(loremaster.extension, "EXTENSION_REGISTRY", {...})`` and
+# the very next ``LoreServer(...)`` sees it.
+EXTENSION_REGISTRY: dict[str, type[Extension]] = {}
