@@ -427,14 +427,35 @@ class LoreServer:
           slice — silently. A mismatch therefore fails boot loudly, catching the
           honest extension-author who registered a class under the wrong key.
 
-        STUB (packet 46 contract): the body is INERT — the real discovery loop is
-        the builder's deliverable. Leaving it inert keeps every existing
-        construction site's behaviour unchanged (all pre-existing suites stay
-        green) while the contract's new-behaviour pins go RED.
+        An empty ``config.extensions`` (the default) leaves the loop body unrun, so
+        a bare RAG's served surface is byte-identical to before discovery existed.
         """
-        # INERT STUB (packet 46): no registry read, no instantiate, no register, no
-        # raise. The builder implements the loop + both loud-boot failures above,
-        # reading ``loremaster.extension.EXTENSION_REGISTRY`` LIVE at this point.
+        # Read the registry off the MODULE OBJECT (not an import-bound name) so a
+        # test's ``monkeypatch.setattr(extension_module, "EXTENSION_REGISTRY", …)``
+        # is honoured — the registry ships EMPTY in production (no real extension
+        # until a later packet), and discovery is dark until an operator names a key.
+        import loremaster.extension as extension_module
+
+        registry = extension_module.EXTENSION_REGISTRY
+        for key in self._config.extensions:
+            extension_cls = registry.get(key)
+            if extension_cls is None:
+                known = ", ".join(sorted(registry)) or "(none registered)"
+                raise ValueError(
+                    f"unknown extension {key!r} named in the ``extensions:`` config; "
+                    f"no such extension is registered. Known extensions: {known}. "
+                    f"Register its class in loremaster.extension.EXTENSION_REGISTRY, "
+                    f"or remove the key."
+                )
+            instance = extension_cls()
+            if instance.name != key:
+                raise ValueError(
+                    f"extension registry key {key!r} maps to a class whose name is "
+                    f"{instance.name!r}; an extension's name IS its key in the "
+                    f"``extensions:`` config, so register the class under "
+                    f"{instance.name!r} (the mismatch would validate the wrong slice)."
+                )
+            self.register_extension(instance)
 
     # -- construction -------------------------------------------------------
 
@@ -12020,7 +12041,15 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
                 f"unique across the built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
-        mcp.add_tool(wrapper, name=spec.name, description=spec.description)
+        # R14 (packet 39): an extension tool may MUTATE, so it publishes the same
+        # explicit, honest ``readOnlyHint=False`` posture all 15 built-ins carry —
+        # never ``None``, which would leave the consumer guessing whether it writes.
+        mcp.add_tool(
+            wrapper,
+            name=spec.name,
+            description=spec.description,
+            annotations=ToolAnnotations(readOnlyHint=False),
+        )
 
 
 # The parameter kinds an extension tool handler may declare and have faithfully
