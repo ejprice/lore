@@ -502,3 +502,46 @@ class LifecycleProbeExtension(Extension):
         if type(self).fail_resolve:
             raise RuntimeError("phase-2 resolve refused during the initial sweep")
         return []
+
+
+class EntityTablePurgeProbeExtension(Extension):
+    """A no-arg-constructible ingest extension with a REAL entity table.
+
+    For the ``register_entity_tables`` production-wiring pin (finding #376 /
+    cold-audit M1): unlike :class:`LifecycleProbeExtension` (whose backend's
+    ``entity_tables()`` is ``()``, so ``build_app_context``'s union registers
+    NOTHING and the register wiring is never exercised), this probe contributes a
+    :class:`FakeDomainStore` backend that DDL-defines ``fake_node`` (carrying a
+    ``tier`` field — store §2 rider, so ``DELETE … WHERE tier`` is no silent no-op,
+    #107) and DECLARES it via ``entity_tables()``. Routed through
+    ``build_app_context``'s ``EXTENSION_REGISTRY`` discovery, it drives the REAL
+    production path that unions the backends' tables into
+    ``SurrealStore.register_entity_tables`` before any ``delete_by_tier`` — the path
+    M1 mutation-proved unpinned (no-oping it left the whole 47a contract GREEN).
+
+    The backend connects to the SAME probe database ``build_app_context``
+    provisioned: it is built from the injected :class:`ExtensionContext`'s live
+    write store, which already carries the resolved url / namespace / database /
+    credentials (``ingest_backends`` is called AFTER the write store is readied).
+    """
+
+    @property
+    def name(self) -> str:
+        return "entity_table_probe"
+
+    def config_model(self) -> type[BaseModel]:
+        return FakeIngestConfigModel
+
+    def claims(self, tier: str, path: str) -> bool:
+        return path.endswith(FAKE_SUFFIX)
+
+    def ingest_backends(self, ctx: ExtensionContext) -> list[IngestBackend]:
+        store = ctx.store
+        backend = FakeDomainStore(
+            url=store._url,  # noqa: SLF001 - the live write store carries the resolved target
+            namespace=store._namespace,  # noqa: SLF001
+            database=store._database,  # noqa: SLF001
+            user=store._user,  # noqa: SLF001
+            password=store._password,  # noqa: SLF001
+        )
+        return [backend]

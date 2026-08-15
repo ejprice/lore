@@ -74,10 +74,10 @@ The wired surface a composed server exposes:
 | `await server.run_startup_hooks(ctx)` / `run_shutdown_hooks(ctx)` | lifespan (seam 9; shutdown runs in **reverse** order, unwinding on partial startup failure) |
 | `server.extension_config(name)` | the validated per-extension config slice (seam 7, §6) |
 
-## The eleven seams
+## The twelve seams
 
 `Extension` is an ABC (`loremaster/extension.py`) with a required `name`
-property and eleven seams, each shipping a safe, inert default (`[]` / `None`
+property and twelve seams, each shipping a safe, inert default (`[]` / `None`
 / identity / async no-op) so a server with zero extensions registered behaves
 as the generic code/docs RAG:
 
@@ -109,6 +109,16 @@ as the generic code/docs RAG:
 11. `classify_detail(chunk_type) -> DetailLevel | None` — chunk-type →
     `"summary"`/`"source"` detail-level classification; `None` defers to the
     base default.
+12. `claims(tier, path)` / `entity_fragment(tier, path, text, ctx)` /
+    `entity_purge_fragment(tier, path)` / `ingest_backends(ctx)` /
+    `resolve_edges(ctx, changed_scopes)` — the **ingest** seam: a *claimed* file
+    skips chunking/embedding and instead composes typed entity **NODES** (phase 1)
+    and two-phase cross-file `ENFORCED` **edges** (phase 2) into the *same* per-file
+    `SurrealStore.apply` as the manifest, so entities and the manifest row
+    commit-or-roll-back together. Override when your domain contributes a structured
+    entity graph alongside the generic index. Its backends ride the write-stack ready
+    rail; the claim dispatch fails loud if a claimed file's domain schema is not yet
+    registered on the store.
 
 An extension also carries `key_version: int` (default `1`,
 `loremaster.extension.DEFAULT_KEY_VERSION`), which it should fold into its

@@ -822,14 +822,21 @@ class Indexer:
     def _entity_fragment(self, tier: str, path: str, source: str, ctx: Any) -> Any:
         """Build ``(tier, path)``'s phase-1 entity NODE fragment, or ``None`` (seam 12).
 
-        Mirrors :meth:`_graph_fragment`'s None-gate: dispatches through the SHARED
-        ``claiming_extension`` helper (never a private per-site clone — CF8, ONE
-        IMPLEMENTATION) and, if exactly one extension claims the file, returns its
-        pure ``entity_fragment`` (purge-then-CREATE NODES, params namespaced under
-        ``xt_<name>_``); ``None`` when no extension claims the file. Raises loudly
-        (via the helper) if two extensions claim the same file.
+        Mirrors :meth:`_graph_fragment`'s None-gate but through the SHARED COMPOSE-path
+        claim dispatch ``ready_claiming_extension`` (never a private per-site clone —
+        CF8, ONE IMPLEMENTATION): if exactly one extension claims the file AND its
+        ingest lifecycle is READY (its declared entity tables are registered on the
+        write store), returns its pure ``entity_fragment`` (purge-then-CREATE NODES,
+        params namespaced under ``xt_<name>_``); ``None`` when no extension claims the
+        file. The dispatch raises loudly if two extensions claim the same file, OR — the
+        seam-12 readiness fail-fast (#375) — if the claiming extension's tables are NOT
+        registered (the ``cli`` / ``scout`` half-wiring that would silently CREATE a
+        SCHEMALESS table, store §5). Both the realtime and batch compose sinks funnel
+        through here, so the guard covers every claimed-file compose by construction.
         """
-        claimant = extension_module.claiming_extension(self._extensions, tier, path)
+        claimant = extension_module.ready_claiming_extension(
+            self._extensions, tier, path, ctx, self._store
+        )
         if claimant is None:
             return None
         return claimant.entity_fragment(tier, path, source, ctx)

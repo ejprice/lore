@@ -19,7 +19,9 @@ Contents:
 * :class:`FakeSourceProvider` — a conforming :class:`SourceProvider`.
 * :class:`FakeConfigModel` — the pydantic model seam 7 validates the ``fake``
   config slice with (rejects a bad slice — fail-loud).
-* :class:`FakeExtension` — overrides every one of the eleven seams.
+* :class:`FakeExtension` — overrides every one of the eleven non-ingest seams
+  (all twelve seams except the twelfth, ingest, seam — covered by
+  ``test_ingest_entity_seam.py``).
 """
 
 from __future__ import annotations
@@ -221,7 +223,10 @@ class FakeConfigModel(BaseModel):
 
 
 class FakeExtension(Extension):
-    """An :class:`Extension` overriding every one of the eleven seams.
+    """An :class:`Extension` overriding every one of the eleven non-ingest seams.
+
+    (The twelfth, ingest, seam is deliberately left at its inert default here — it
+    is exercised by ``test_ingest_entity_seam.py``'s ``FakeIngestExtension``.)
 
     Each override is trivial but *observably distinct* from the inert default, so
     a test can prove the seam was wired (chunker dispatchable, profile reached,

@@ -1,14 +1,15 @@
 """Contract tests for ``loremaster.extension`` — the composition surface.
 
 This module pins the *extension API surface* the loremaster base exposes (plan
-AMENDMENT 1, §A1.3 — the eleven seams, refined by §A1.10 C2/C3, and the P6
-read-path cutover §6):
+AMENDMENT 1, §A1.3 — the original eleven seams, refined by §A1.10 C2/C3, and the
+P6 read-path cutover §6). The twelfth, ingest, seam (packet 47a) is pinned
+separately in ``test_ingest_entity_seam.py``:
 
 * :class:`ExtensionContext` — the shared-services bundle (store, embedder,
   config, ``count_tokens``, manifest) handed to every context-taking seam. It is
   *mutable* so a lifespan hook (seam 9) can stash state on it.
 * :class:`Extension` — an ABC base class (NOT a bare Protocol) with a ``name``
-  and the eleven seams, **each with a safe no-op/empty default**, so a subclass
+  and the twelve seams, **each with a safe no-op/empty default**, so a subclass
   overrides only what it needs and a *bare* server is the generic RAG.
 * :class:`ToolSpec` / :class:`PayloadIndexSpec` — the small declarative models
   seams 3 and 8 hand back.

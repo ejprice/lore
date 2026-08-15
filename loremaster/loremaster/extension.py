@@ -523,6 +523,34 @@ class ExtensionClaimConflictError(RuntimeError):
     """
 
 
+class ExtensionLifecycleNotReadyError(RuntimeError):
+    """A claimed file's entity ingest was dispatched before its domain schema is READY.
+
+    A LOUD fail-fast (operator ruling, finding #375): the shared COMPOSE-path claim
+    dispatch (:func:`ready_claiming_extension`, which the indexer's
+    :meth:`~loremaster.index.indexer.Indexer._entity_fragment` sink routes through)
+    raises this when a file is CLAIMED but the claiming extension's declared entity
+    tables are NOT covered by the write store's REGISTERED entity-table set
+    (:meth:`~loremaster.store.surreal.SurrealStore.registered_entity_tables`).
+
+    Why an EMPTY / partial registered set means "not ready": ``build_app_context``
+    co-wires the two signals — it readies the ingest backends (applying their DDL)
+    AND registers their declared tables into the store's tier-purge channel — so a
+    claimed file whose declared tables are not in that set proves the ingest
+    lifecycle never ran for it. That is exactly the ``cli`` / ``scout`` composition
+    roots, which thread ``extensions=`` (so ``claims()`` fires) but neither ready
+    backends nor register tables (#375). Composing a ``CREATE`` against an
+    un-``DEFINE``d table would let SurrealDB auto-create it SCHEMALESS — no
+    ``ENFORCED``, no indexes — and silently corrupt the store (store law §5). This
+    error converts that silent corruption into a loud stop that names the claiming
+    extension and the missing table(s).
+
+    Raised by :func:`ready_claiming_extension` (packet-47a hardening, #375) — the
+    shared compose-path dispatch that both the realtime and batch compose sinks funnel
+    through, so every claimed-file compose is guarded without a call-site hand-list.
+    """
+
+
 def claiming_extension(
     extensions: Sequence[Extension], tier: str, path: str
 ) -> Extension | None:
@@ -561,6 +589,86 @@ def claiming_extension(
             "in the extensions' claims() predicates"
         )
     return claimants[0] if claimants else None
+
+
+def ready_claiming_extension(
+    extensions: Sequence[Extension],
+    tier: str,
+    path: str,
+    ctx: ExtensionContext,
+    store: Any,
+) -> Extension | None:
+    """The sole claimant of ``(tier, path)`` — but only if its ingest lifecycle is READY.
+
+    The seam-12 COMPOSE-path claim dispatch (finding #375, operator-ruled). It is the
+    ONE home of the readiness DECISION that the indexer's compose sink
+    (:meth:`~loremaster.index.indexer.Indexer._entity_fragment`, and so BOTH the
+    realtime ``_compose_file_fragments`` and the batch ``_commit_batch_file`` paths that
+    funnel through it) routes through — so a new compose site inherits the guard by
+    construction, never by a call-site hand-list (the reach law; §7's twin sink-purge
+    decision). It REUSES :func:`claiming_extension` for the exclusivity rule — never a
+    second copy of that policy (ONE IMPLEMENTATION, CLAUDE.md #102/#120) — and layers
+    the readiness fail-fast on top.
+
+    If a single extension claims the file AND the entity tables its ingest backends
+    declare are NOT all covered by the write store's
+    :meth:`~loremaster.store.surreal.SurrealStore.registered_entity_tables` set (read
+    LAZILY — only a claimed file needs it, so a no-extension compose never touches it), the
+    ingest lifecycle never readied for this claim — exactly the ``cli`` / ``scout``
+    composition roots, which thread ``extensions=`` (so ``claims()`` fires) but neither
+    ready the backends nor register their tables (#375). Composing a ``CREATE`` against
+    an un-``DEFINE``d table would let SurrealDB auto-create it SCHEMALESS and silently
+    corrupt the store (store law §5). This converts that latent corruption into a LOUD
+    stop naming the claiming extension AND the missing table(s).
+
+    A claimant whose backends declare NO entity tables (``()``) has no domain to be
+    unready — ``∅`` is a subset of any registered set (even empty) — so it never trips
+    the guard. The PURGE sites (``LiveWatcher._purge`` / ``ReconcileEngine._purge_file``)
+    keep calling :func:`claiming_extension` directly, WITHOUT this readiness leg: a
+    DELETE against an un-``DEFINE``d table is a harmless no-op, never the SCHEMALESS
+    ``CREATE`` corruption this guard exists to stop, so raising there would block
+    legitimate cleanup on an unready store — a regression, not a safeguard.
+
+    Args:
+        extensions: The registered extensions to poll (each asked ``claims``).
+        tier: The tier of the claimed file.
+        path: The tier-relative path of that file.
+        ctx: The live :class:`ExtensionContext` — used to enumerate the sole claimant's
+            ingest backends (and so the entity tables they declare).
+        store: The unified write store. Its ``registered_entity_tables()`` is the
+            readiness signal, read only WHEN a claimant is found (so a no-extension
+            compose imposes no store requirement). Typed ``Any`` to avoid importing the
+            store here (the ``ExtensionContext.store`` idiom).
+
+    Returns:
+        The sole claimant (proven ready), or ``None`` when no extension claims the file.
+
+    Raises:
+        ExtensionClaimConflictError: Two or more extensions claim the same file.
+        ExtensionLifecycleNotReadyError: The claimant's declared entity tables are not
+            all registered on the write store (its ingest lifecycle never readied).
+    """
+    claimant = claiming_extension(extensions, tier, path)
+    if claimant is None:
+        return None
+    # Read the readiness signal LAZILY — only a claimed file needs it, so a compose
+    # with no claiming extension imposes no store-surface requirement (the common case).
+    registered = set(store.registered_entity_tables())
+    declared = dict.fromkeys(
+        table
+        for backend in claimant.ingest_backends(ctx)
+        for table in backend.entity_tables()
+    )
+    missing = [table for table in declared if table not in registered]
+    if missing:
+        raise ExtensionLifecycleNotReadyError(
+            f"extension {claimant.name!r} claims ({tier}, {path}) but its declared "
+            f"entity table(s) {missing} are not registered on the write store "
+            f"(registered: {sorted(registered)}) — the ingest lifecycle never readied "
+            f"for this claim (finding #375): composing a CREATE against an un-DEFINEd "
+            f"table would silently corrupt the store SCHEMALESS (store law §5)"
+        )
+    return claimant
 
 
 # --------------------------------------------------------------------------- #

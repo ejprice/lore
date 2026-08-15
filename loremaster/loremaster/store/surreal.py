@@ -1215,6 +1215,19 @@ class SurrealStore:
         """
         self._entity_tables = tuple(entity_tables)
 
+    def registered_entity_tables(self) -> tuple[str, ...]:
+        """The entity tables currently registered for tier co-purge (the readiness signal).
+
+        The read side of :meth:`register_entity_tables`: the seam-12 claim-dispatch
+        readiness guard (``loremaster.extension.ready_claiming_extension``, finding
+        #375) keys on this set. A claimed file whose declared entity tables are NOT a
+        subset of it proves its ingest lifecycle never readied (the ``cli`` / ``scout``
+        half-wiring), so composing a ``CREATE`` against an un-``DEFINE``d table would
+        silently corrupt the store SCHEMALESS (store law §5). ``build_app_context``
+        registers this set; ``cli`` / ``scout`` leave it empty (deferred to packet 51).
+        """
+        return self._entity_tables
+
     async def delete_by_tier(self, tier: str) -> None:
         """Purge every chunk — and every extension ENTITY row — in ``tier``.
 

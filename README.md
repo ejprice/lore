@@ -133,7 +133,7 @@ config block.
 
 `loremaster` is a framework: build a domain-specific MCP by subclassing one `Extension`
 ABC and registering it — `LoreServer.from_config(...).register_extension(...).run()` —
-without forking the core. See **`EXTENDING.md`** (the eleven seams) and
+without forking the core. See **`EXTENDING.md`** (the twelve seams) and
 **`lorescribe/EXTENDING.md`** (writing chunkers / schema profiles).
 
 ## Status / Roadmap

@@ -53,6 +53,7 @@ from _ingest_entity_fixtures import (
     FAKE_NODE_DDL,
     FAKE_NODE_TABLE,
     FAKE_SUFFIX,
+    EntityTablePurgeProbeExtension,
     FakeDomainStore,
     FakeIngestConfigModel,
     FakeIngestExtension,
@@ -72,7 +73,13 @@ from _surreal_harness import (
     surreal_user,
 )
 from loremaster.config import LoreConfig
-from loremaster.extension import Extension, ExtensionContext, IngestBackend, ResolvedScope
+from loremaster.extension import (
+    Extension,
+    ExtensionContext,
+    ExtensionLifecycleNotReadyError,
+    IngestBackend,
+    ResolvedScope,
+)
 from loremaster.graph_surreal import SurrealCodeGraph
 from loremaster.index.indexer import Indexer, graph_roots
 from loremaster.index.manifest import STATE_INDEXED
@@ -279,11 +286,28 @@ def _white_box_indexer(tmp_path: Path, *, extensions: list[Extension]) -> Indexe
     ``_compose_file_fragments`` / the ``_entity_fragment`` helper build fragments
     PURELY (no socket), so a white-box pin needs no live DB — only real store /
     manifest instances (their fragment builders are pure) and the extension list.
+
+    The store is constructed REGISTERED for the extensions' declared entity tables —
+    the union of every extension's ``ingest_backends(...).entity_tables()``, exactly
+    as ``build_app_context`` does. This makes the white-box store a READY store, so a
+    claiming extension does not trip the R2 fail-fast guard (#375, PIN A): an
+    unregistered store with a claiming extension IS the unready state the guard
+    forbids, so a white-box ``_entity_fragment`` / ``_compose_file_fragments`` call
+    must run against a ready one. Inert before the guard lands (the field is only
+    read by the guard); a zero-extension caller registers nothing.
     """
     env_slug = tmp_path.name
+    registered = tuple(
+        dict.fromkeys(
+            table
+            for extension in extensions
+            for backend in extension.ingest_backends(_fake_ctx())
+            for table in backend.entity_tables()
+        )
+    )
     store = SurrealStore(
         url="ws://127.0.0.1:18000/rpc", namespace="lore_test", database=env_slug,
-        dim=8, user="root", password=SecretStr("spikeroot"),
+        dim=8, user="root", password=SecretStr("spikeroot"), entity_tables=registered,
     )
     manifest = SurrealManifest(
         url="ws://127.0.0.1:18000/rpc", namespace="lore_test", database=env_slug,
@@ -295,6 +319,39 @@ def _white_box_indexer(tmp_path: Path, *, extensions: list[Extension]) -> Indexe
         registry=LoreServer(config).registry, source_providers=[], config=config,
         snapshot_root=tmp_path / "snap", code_graph=None, extensions=extensions,
     )
+
+
+def _guard_indexer_and_ctx(
+    tmp_path: Path, *, extensions: list[Extension], registered_tables: tuple[str, ...]
+) -> tuple[Indexer, ExtensionContext]:
+    """An Indexer + a matching ctx over ONE store with a chosen REGISTERED entity-table set.
+
+    For the R2 fail-fast guard pin (PIN A / #375): the store's registered set (the
+    ``register_entity_tables`` channel, ``_entity_tables``) is controllable, and
+    ``ctx.store`` IS ``indexer._store`` (one shared object) — so the pin is robust to
+    whichever the builder's guard reads. The store is UNCONNECTED: the guard is a pure
+    ``(tier, path, claimant, registered-set)`` check that fires BEFORE any socket
+    touch, so the RED / ()-table legs need no live DB.
+    """
+    store = SurrealStore(
+        url="ws://127.0.0.1:18000/rpc", namespace="lore_test", database=tmp_path.name,
+        dim=8, user="root", password=SecretStr("spikeroot"), entity_tables=registered_tables,
+    )
+    manifest = SurrealManifest(
+        url="ws://127.0.0.1:18000/rpc", namespace="lore_test", database=tmp_path.name,
+        user="root", password=SecretStr("spikeroot"),
+    )
+    config = _entity_config(slug=tmp_path.name, live_path=tmp_path)
+    indexer = Indexer(
+        store=store, embedder=FakeEmbedder(dim=8), manifest=manifest,
+        registry=LoreServer(config).registry, source_providers=[], config=config,
+        snapshot_root=tmp_path / "snap", code_graph=None, extensions=extensions,
+    )
+    ctx = ExtensionContext(
+        store=store, embedder=FakeEmbedder(dim=8), config=config,
+        count_tokens=lambda texts: [len(text) for text in texts], manifest=manifest,
+    )
+    return indexer, ctx
 
 
 def _ctx(bench: _EntityBench) -> ExtensionContext:
@@ -1087,6 +1144,37 @@ async def _build_probe_app_context(
     )
 
 
+async def _build_entity_probe_app_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A real ``AppContext`` whose sole extension DDL-defines + DECLARES a REAL entity table.
+
+    Clones :func:`_build_probe_app_context` but registers
+    :class:`EntityTablePurgeProbeExtension` (a ``fake_node`` backend) instead of the
+    ``()``-table :class:`LifecycleProbeExtension` — so ``build_app_context``'s
+    ``register_entity_tables`` union feeds a NON-empty set into the write store (the
+    #376 production path). ``start_tasks=False``: the register wiring is block-1 (run
+    before any initial sweep — P11 confirms the backend readies with ``start_tasks``
+    False), so no sweep is needed to exercise it.
+    """
+    from loremaster.server import build_app_context
+
+    register_in_discovery(monkeypatch, {"entity_table_probe": EntityTablePurgeProbeExtension})
+    live = tmp_path / "live"
+    (live / "books").mkdir(parents=True)
+    (live / "books" / "a.fake").write_text(_FILE_A, encoding="utf-8")
+    slug = f"entprobe_{tmp_path.name.replace('-', '_')}"
+    _pending_probe_slugs.append(slug)
+    config = _entity_config(
+        slug=slug, live_path=live, extensions={"entity_table_probe": {"flavour": "vanilla"}}
+    )
+    return await build_app_context(
+        server=LoreServer(config),
+        embedder=FakeEmbedder(dim=_DIM),
+        manifest_path=tmp_path / "m.db",
+        snapshot_root=tmp_path / "snap",
+        start_tasks=False,
+    )
+
+
 # ===========================================================================
 # PHASE 2 — cross-file edge resolution (two-phase, purge-then-RELATE, timing)
 # ===========================================================================
@@ -1500,3 +1588,164 @@ class TestSlugLeadingIndex:
 
 # Names imported for the Phase-2 pins; referenced above to keep the linter honest.
 _PHASE2_USED = (AsyncSurreal, IngestBackend, FakeIngestConfigModel, FAKE_SUFFIX)
+
+
+# ===========================================================================
+# HARDENING WAVE (packet 47a) — 3 operator-approved pins ADDED atop the GREEN
+# twelfth-seam contract. PIN A (#375, R2 fail-fast guard, RED-now behavioural),
+# PIN B (#376, register-wiring coverage, GREEN-now/mutation-proven), PIN C
+# (#131/rename-sweep, served-doc seam count, RED-now). The existing 40 stay GREEN.
+# ===========================================================================
+
+
+class TestUnreadyStoreFailFastGuard:
+    """PIN A (#375, operator-ruled) — a claimed file on an UNREADY store fails LOUD.
+
+    ``build_app_context`` co-wires the ingest lifecycle (readies backends AND
+    registers their entity tables); ``cli`` / ``scout`` do NEITHER (finding #375), so
+    their store's REGISTERED entity-table set is empty. A claimed file there would
+    silently ``CREATE`` against an un-``DEFINE``d table, which SurrealDB auto-creates
+    SCHEMALESS (no ``ENFORCED``, no indexes) = silent corruption (store §5). The
+    claim-dispatch seam (``Indexer._entity_fragment`` / ``claiming_extension``) MUST
+    convert that latent corruption into a loud fail-fast that names the extension AND
+    the missing table.
+
+    Fable owns the guard's general form (#375); these pins bind only its BEHAVIOUR.
+    """
+
+    def test_claimed_file_unregistered_entity_tables_raises_loudly(self, tmp_path: Path) -> None:
+        """PIN A core (RED now): claimant declares ``fake_node``, store registers NOTHING → raise.
+
+        The extension is named ``bookdomain`` (distinct from its table ``fake_node``)
+        so the two assertions independently prove the error names BOTH the claiming
+        extension AND the missing table. RED today: ``_entity_fragment`` composes the
+        entity fragment SILENTLY (no guard exists), so ``pytest.raises`` sees no raise.
+        """
+        domain = FakeDomainStore(
+            url="ws://127.0.0.1:18000/rpc", namespace="lore_test", database=tmp_path.name,
+            user="root", password=SecretStr("spikeroot"),
+        )
+        ext = FakeIngestExtension(domain_store=domain, name="bookdomain")
+        indexer, ctx = _guard_indexer_and_ctx(tmp_path, extensions=[ext], registered_tables=())
+        with pytest.raises(ExtensionLifecycleNotReadyError) as exc_info:
+            cast(Any, indexer)._entity_fragment(_TIER, "books/a.fake", _FILE_A, ctx)  # noqa: SLF001
+        message = str(exc_info.value)
+        assert "bookdomain" in message, (
+            f"the fail-fast must NAME the claiming extension (bookdomain); got: {message!r}"
+        )
+        assert FAKE_NODE_TABLE in message, (
+            f"the fail-fast must NAME the missing entity table {FAKE_NODE_TABLE!r}; got: {message!r}"
+        )
+
+    async def test_positive_control_registered_store_composes_and_lands_rows(
+        self, entity_bench: _EntityBench
+    ) -> None:
+        """PIN A positive control (GREEN now AND after): a COVERED store composes, NO raise, rows land.
+
+        ``entity_bench``'s store registers ``fake_node`` (ctor
+        ``entity_tables=domain.entity_tables()``), so the guard's precondition is
+        ABSENT — the claimed file must index cleanly and land its 2 entity rows, exactly
+        as on the happy path. This discriminates an ALWAYS-raise guard (proving the
+        guard fires on unready-ONLY). A raise here is a hard failure.
+        """
+        await entity_bench.indexer.index_file(_TIER, "books/a.fake", _FILE_A)  # must NOT raise
+        nodes = [r for r in await _fetch_nodes(entity_bench.env) if r["file_path"] == "books/a.fake"]
+        assert len(nodes) == 2, f"a COVERED store must compose the entity rows; got {len(nodes)}"
+
+    def test_empty_tables_claimant_never_triggers_the_guard(self, tmp_path: Path) -> None:
+        """PIN A discriminator (GREEN now AND after): a ``()``-entity-tables claimant never raises.
+
+        ``LifecycleProbeExtension`` claims ``.fake`` but its backend declares NO entity
+        tables (``entity_tables()==()``), so it has no domain to be unready — ∅ is a
+        subset of ANY registered set (even empty). This FORCES the guard to be a SUBSET
+        check (claimant.tables ⊆ registered), not a "registered set is empty → raise"
+        check: the latter WRONG build reddens HERE while still passing the core RED leg.
+        The store registers NOTHING and the claimant must still compose without raising.
+        """
+        LifecycleProbeExtension.reset()
+        indexer, ctx = _guard_indexer_and_ctx(
+            tmp_path, extensions=[LifecycleProbeExtension()], registered_tables=()
+        )
+        result = cast(Any, indexer)._entity_fragment(_TIER, "books/a.fake", _FILE_A, ctx)  # noqa: SLF001
+        assert result is None, (
+            "a ()-entity-tables claimant has no domain to be unready — it must compose "
+            f"the base default (None) WITHOUT raising the fail-fast; got {result!r}"
+        )
+
+
+class TestRegisterEntityTablesWiring:
+    """PIN B (#376 / cold-audit M1) — the PRODUCTION register wiring co-purges entities.
+
+    ``build_app_context`` unions each ingest backend's ``entity_tables()`` and calls
+    ``write_store.register_entity_tables(...)`` before any ``delete_by_tier``. That
+    path is correct today but pinned by NOTHING (the bench uses the ctor
+    ``entity_tables=`` path; P11/P12 use a ``()``-table probe). M1 proved no-oping the
+    method leaves 40/40 green. This pin drives the REAL ``build_app_context`` path and
+    reddens under that no-op (#131 class — the artifact, not the recipe).
+    """
+
+    async def test_tier_rebuild_purges_entity_rows_through_the_register_wiring(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PIN B (GREEN now; mutation-proven): registered via ``build_app_context`` ⇒ purge.
+
+        A NON-empty-``entity_tables()`` backend routes through ``build_app_context``'s
+        register union; seeding ``fake_node`` rows for a tier and then
+        ``delete_by_tier`` must purge them — via the REAL register wiring, NOT the ctor
+        path P13 covers. No-oping ``register_entity_tables`` (M1) leaves
+        ``store._entity_tables=()`` so ``delete_by_tier`` purges chunks only and the
+        rows SURVIVE (RED) — the discriminator. Rows are seeded WITH a ``tier`` so the
+        ``DELETE … WHERE tier`` is no silent no-op (#107).
+        """
+        ctx = await _build_entity_probe_app_context(tmp_path, monkeypatch)
+        try:
+            store = ctx.write_store
+            env = make_env(database=store._database, dim=_DIM)  # noqa: SLF001 - the resolved probe DB
+            # Seed fake_node rows for _TIER through the REAL production store apply (the
+            # P13 idiom): entity_fragment is a PURE builder, so its domain_store is unused.
+            seed_domain = FakeDomainStore(
+                url=store._url, namespace=store._namespace, database=store._database,  # noqa: SLF001
+                user=store._user, password=store._password,  # noqa: SLF001
+            )
+            fragment = FakeIngestExtension(domain_store=seed_domain).entity_fragment(
+                _TIER, "books/a.fake", _FILE_A, _fake_ctx()
+            )
+            assert fragment is not None
+            await store.apply([fragment])
+            before = [r for r in await _fetch_nodes(env) if r["tier"] == _TIER]
+            assert len(before) == 2, f"fixture: two entity rows must seed before the purge; got {len(before)}"
+
+            await store.delete_by_tier(_TIER)
+            after = [r for r in await _fetch_nodes(env) if r["tier"] == _TIER]
+            assert after == [], (
+                f"delete_by_tier left {len(after)} entity rows — the build_app_context "
+                "register_entity_tables wiring did not feed the store's tier-purge channel (#376)"
+            )
+        finally:
+            await ctx.aclose()
+
+
+class TestServedDocsTeachTwelveSeams:
+    """PIN C (#131 / rename-sweep class) — the SERVED docs teach TWELVE seams, not eleven.
+
+    P2 pins only ``extension.py``'s module surface; the sibling SERVED docs
+    (``EXTENDING.md``, ``README.md``) still teach the pre-ingest "eleven seams"
+    TOTAL-count claim (cold-audit R3). A bare, anchor-free phrase scan (CLAUDE.md
+    rename-sweep law): "eleven seams" ABSENT and "twelve seams" PRESENT in each served
+    doc. RED until the builder updates both. Scoped to the served-doc seam-COUNT claim
+    only — every other "eleven"/"seams" hit is individually verdicted in
+    REPORT-contract-harden-47a.md (context-scoped test prose, or dated docs).
+    """
+
+    def test_served_docs_teach_twelve_not_eleven_seams(self) -> None:
+        """PIN C (RED now): neither served doc may still teach 'eleven seams'; both teach 'twelve seams'."""
+        for rel in ("EXTENDING.md", "README.md"):
+            source = (_REPO_ROOT / rel).read_text(encoding="utf-8")
+            assert "eleven seams" not in source, (
+                f"{rel} still teaches 'the eleven seams' — the ingest seam is the TWELFTH; "
+                "update the served seam-count claim (cold-audit R3 / rename-sweep law)"
+            )
+            assert "twelve seams" in source, (
+                f"{rel} does not teach 'twelve seams' — a deletion-only fix that drops the "
+                "count is banned; the served docs must state the new total"
+            )
