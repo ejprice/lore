@@ -441,22 +441,23 @@ corroborated independently by blindreader-dry-2 F9): `scout.py` owns no `_query`
 one sentence is the exact defect class this section exists to stop. **The doc did not document
 the defect. It propagated it.**
 
-Therefore, standing law:
-- **If two call sites need the same POLICY, it is a FUNCTION THEY CALL — never a pattern they
-  clone.** Policy = retry budgets, backoff/jitter, error classification, sanitisation, auth,
-  validation. A doc that says *"copy this pattern"* is an instruction to duplicate a defect
-  nobody has found yet. Write `retry_on_conflict`; do not describe it.
-- **ROUTING IS NOT SHARING.** A caller that calls the shared driver but hand-rolls the
-  *decision* underneath it is a private copy wearing the shared name. Measured: a build where
-  all eleven seams routed through the driver but each matched `"Resource busy"` locally scored
-  **839 passed / 0 failed — indistinguishable from correct** — and under a reworded engine
-  message **all eleven silently stopped retrying.** Another routed `kill` through the driver and
-  retried **ZERO times**, because routing without CLASSIFY-AND-SIGNAL is a no-op. **A green gate
-  over a dead mechanism — #102's own shape, reproduced inside the fix for #102.**
-- **PROVE SHARING BY MUTATION.** Change the shared constant / jitter / marker → **every**
-  caller's pin must go RED. A caller that stays green is not sharing. This is the only test that
-  distinguishes DRY from looks-DRY, and it caught builds nothing else could.
-- **Duplication is a DESIGN decision. ESCALATE it; never quietly write copy #2.**
+**The cross-project statement of this rule lives ONCE, in `~/.claude/CLAUDE.md` §"ONE
+IMPLEMENTATION — the in-house half of the same rule"**: function-they-call · prove-sharing-by-
+MUTATION · ROUTING-IS-NOT-SHARING · duplication-is-a-DESIGN-decision-→-escalate. Read it there;
+restating it in full here is the very drift the rule warns of (this section used to, and the two
+copies diverged — the global copy had lost ROUTING-IS-NOT-SHARING). What is lore-specific and
+lives ONLY here — the receipts that ground each clause:
+- **The #102/#120 clone chain (above):** `findings.py`/`briefs.py`'s deterministic-jitter clone,
+  the ten `_query` bodies with no seam-level retry, the eleventh bootstrap clone in `scout.py`,
+  and the two-populations count this section once got wrong.
+- **ROUTING-IS-NOT-SHARING, measured in THIS tree:** a build where all eleven seams routed through
+  the driver but each matched `"Resource busy"` locally scored **839 passed / 0 failed —
+  indistinguishable from correct** — then under a reworded engine message **all eleven silently
+  stopped retrying**; another routed `kill` through the driver and retried **ZERO times**, because
+  routing without CLASSIFY-AND-SIGNAL is a no-op. A green gate over a dead mechanism — #102's own
+  shape reproduced inside the fix for #102.
+- **The RESOLUTION is `lorerunes`** (next section): where cross-caller policy actually lives, so
+  "escalate, don't write copy #2" has a concrete address.
 
 ### `lorerunes` — THE HOME FOR SHARED CODE (operator, 2026-07-27)
 The law above says *escalate rather than write copy #2*, and for four years it never said where
@@ -476,9 +477,12 @@ loremaster/    the keeper          -> all three
 
 A rune is the atomic mark a sigil is composed from, so the name states the dependency direction.
 
-- **If two members need the same POLICY, it goes in `lorerunes` — not cloned, not "escalated"
-  into a fork.** Policy = validation predicates, error classification, retry/backoff budgets,
-  sanitisation, normalisation, formatting rules. Anything whose *rules must agree everywhere*.
+- **If two members need the same POLICY, it goes in `lorerunes`.** This IS the resolution of
+  brief-base §6's *"escalate, don't write copy #2"*: you escalate the design decision, and the
+  answer is `lorerunes` — not a clone, and not an "escalation" that quietly resolves into a *fork*
+  (a second copy in a new place is still copy #2). Policy = validation predicates, error
+  classification, retry/backoff budgets, sanitisation, normalisation, formatting rules. Anything
+  whose *rules must agree everywhere*.
 - **`lorerunes` depends on NO sibling, ever.** The moment it imports `loremaster` or `loresigil`
   it stops being importable by them, and it is back to being nowhere. That is the whole
   constraint; guard it with a pin, not a habit.
