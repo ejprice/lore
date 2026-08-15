@@ -166,6 +166,10 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
             config=config,
             snapshot_root=snapshot_root,
             code_graph=code_graph,
+            # Seam-12 (F3): the extension list, so a claimed file is ingested via
+            # its entity fragment instead of chunked (the P8 derived scan requires
+            # every production Indexer(...) site to thread it).
+            extensions=server.extensions,
         )
         if args.tier is not None:
             root = next((r for r in config.effective_roots if r.tier == args.tier), None)

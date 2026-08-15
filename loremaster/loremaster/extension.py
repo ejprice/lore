@@ -15,9 +15,9 @@ The surface:
   ``manifest``), plus a mutable :attr:`~ExtensionContext.state` dict a lifespan
   hook may stash on (seam 9 / §A1.3.9).
 * :class:`Extension` — an **ABC base class** (NOT a bare Protocol, per D2) with a
-  required ``name`` and the **eleven seams** (§A1.3 + the §A1.10 corrections C2
-  and C3), EACH with a safe no-op / empty / identity default so a subclass
-  overrides only what it needs.
+  required ``name`` and the **twelve seams** (§A1.3 + the §A1.10 corrections C2
+  and C3, plus the packet-47 ingest seam C4), EACH with a safe no-op / empty /
+  identity default so a subclass overrides only what it needs.
 * :class:`ToolSpec` — the small DECLARATIVE tool spec seam 3 returns, so the
   contract is testable WITHOUT FastMCP; the later server build registers them.
 * :class:`FieldIndexSpec` — the declarative extra-index spec seam 8 returns
@@ -26,7 +26,8 @@ The surface:
   ONLY here; the concrete ``LocalDirectorySourceProvider`` + snapshot layout is
   the next batch).
 
-The eleven seams (the numbering matches §A1.3, with C2 adding seam 11):
+The twelve seams (the numbering matches §A1.3, with C2 adding seam 11 and the
+packet-47 ingest capability adding seam 12):
 
 1. :meth:`Extension.chunkers` — contribute :class:`~lorescribe.base.Chunker`\\ s.
 2. :meth:`Extension.xml_profiles` + :meth:`Extension.js_profiles` — contribute
@@ -44,6 +45,11 @@ The eleven seams (the numbering matches §A1.3, with C2 adding seam 11):
 10. :meth:`Extension.source_providers` — indexer-side acquisition providers.
 11. :meth:`Extension.classify_detail` — chunk-type → ``"summary"``/``"source"``
     detail-level classification (C2); ``None`` ⇒ base default classification.
+12. :meth:`Extension.claims` / :meth:`Extension.entity_fragment` /
+    :meth:`Extension.entity_purge_fragment` / :meth:`Extension.resolve_edges` /
+    :meth:`Extension.ingest_backends` — the ingest capability (packet 47): a
+    claimed file's typed entity NODES + two-phase cross-file ``ENFORCED`` edges,
+    composed into the file's atomic apply. ONE seam (ingest), five methods.
 """
 
 from __future__ import annotations
@@ -276,7 +282,7 @@ class Extension(ABC):
     """The base class a domain MCP subclasses to plug into ``loremaster``.
 
     An **ABC** (per D2 — a unit-testable value, not entry-point discovery), with
-    a required :attr:`name` and the eleven seams. Every seam ships a safe,
+    a required :attr:`name` and the twelve seams. Every seam ships a safe,
     *inert* default — ``[]`` / ``None`` / identity / async no-op — so a subclass
     overrides only the seams it needs, and a server with zero extensions is the
     generic code/docs RAG. The base class is genuinely abstract: a subclass that
@@ -505,6 +511,56 @@ class Extension(ABC):
         :meth:`resolve_edges` seams to read through. Default: ``[]``.
         """
         return []
+
+
+class ExtensionClaimConflictError(RuntimeError):
+    """Two or more extensions claim the SAME ``(tier, path)`` (seam-12 exclusivity).
+
+    A build-time defect surfaced LOUDLY by :func:`claiming_extension`: at most one
+    registered extension may own a file's ingest, so a silent-precedence pick that
+    ingested one file under two domain schemas can never happen. The message names
+    every colliding extension so the overlap is fixable at a glance.
+    """
+
+
+def claiming_extension(
+    extensions: Sequence[Extension], tier: str, path: str
+) -> Extension | None:
+    """The single extension that claims ``(tier, path)``, or ``None`` (seam-12 exclusivity).
+
+    The ONE shared exclusivity rule the THREE claim-dispatch sites — the indexer's
+    compose branch (:meth:`~loremaster.index.indexer.Indexer._entity_fragment`), the
+    watcher purge (``LiveWatcher._purge``), and the reconcile purge
+    (``ReconcileEngine._purge_file``) — ALL call, never a per-site clone (ONE
+    IMPLEMENTATION, CLAUDE.md #102/#120: a shared decision routed, not cloned). At
+    most ONE registered extension may claim a given ``(tier, path)``; two is a
+    build-time defect raised LOUDLY naming BOTH claimants.
+
+    Reference it via the LIVE module (``loremaster.extension.claiming_extension``),
+    never a name bound at import into a caller's namespace, so a test that
+    monkeypatches it binds across all three call sites at once — that live binding is
+    exactly what makes the ONE-IMPLEMENTATION guarantee provable by mutation.
+
+    Args:
+        extensions: The registered extensions to poll (each asked ``claims``).
+        tier: The tier of the file whose claim is resolved.
+        path: The tier-relative path of that file.
+
+    Returns:
+        The sole claimant, or ``None`` when no extension claims the file.
+
+    Raises:
+        ExtensionClaimConflictError: Two or more extensions claim the same file.
+    """
+    claimants = [ext for ext in extensions if ext.claims(tier, path)]
+    if len(claimants) > 1:
+        names = ", ".join(ext.name for ext in claimants)
+        raise ExtensionClaimConflictError(
+            f"multiple extensions claim ({tier}, {path}): {names} — at most one "
+            "extension may claim a file (seam-12 exclusivity); resolve the overlap "
+            "in the extensions' claims() predicates"
+        )
+    return claimants[0] if claimants else None
 
 
 # --------------------------------------------------------------------------- #

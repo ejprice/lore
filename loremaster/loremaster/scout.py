@@ -778,6 +778,10 @@ class Scout:
             snapshot_root=snapshot_root,
             code_graph=code_graph,
             snapshot_stamper=snapshot_stamper,
+            # Seam-12 (F3): the extension list, so a claimed file is ingested via
+            # its entity fragment instead of chunked (the P8 derived scan requires
+            # every production Indexer(...) site to thread it).
+            extensions=server.extensions,
         )
         reconcile_engine = ReconcileEngine(
             indexer=indexer,

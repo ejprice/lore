@@ -2718,9 +2718,14 @@ class AppContext:
         brief_ledger: BriefLedger,
         message_ledger: MessageLedger,
         calibration_engine: CalibrationEngine | None = None,
+        ingest_backends: Sequence[Any] = (),
     ) -> None:
         self._server = server
         self._config: LoreConfig = server.config
+        # Seam-12 (F4): the ingesting extensions' domain-store backends, closed on
+        # normal shutdown by ``aclose`` (block-1 unwind + block-2 teardown cover the
+        # failure paths). Empty for a zero-extension server (backward-compatible).
+        self._ingest_backends: tuple[Any, ...] = tuple(ingest_backends)
         self.embedder = embedder
         self.write_store = write_store
         self.manifest = manifest
@@ -8575,6 +8580,12 @@ class AppContext:
             self.watcher_started = False
         if self._extension_ctx is not None:
             await self._server.run_shutdown_hooks(self._extension_ctx)
+        # Seam-12 (F4): close each ingesting extension's domain-store backend on a
+        # clean shutdown (idempotent) — the normal-close counterpart to the two
+        # build-time teardown blocks. Empty for a zero-extension server.
+        for ingest_backend in self._ingest_backends:
+            with contextlib.suppress(Exception):
+                await ingest_backend.close()
         # The stamper owns its OWN connection — close it too, or it outlives
         # the server as a leaked socket (readied last, closed first).
         await self._snapshot_stamper.close()
@@ -8970,7 +8981,7 @@ async def reconcile_store_divergence(
         await _restore_rebuilding_window(manifest, prior_status)
 
 
-async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restructuring now would churn
+async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this render; restructuring now would churn
     *,
     server: LoreServer,
     embedder: Embedder,
@@ -9130,6 +9141,32 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         )
         await code_graph.ensure_ready()
         write_stack_readied.append(code_graph)
+        # Seam-12 (ingest, phase 0 — §Q4): build the RUNTIME ExtensionContext EARLY
+        # (all its inputs are ready by here) and REUSE the ONE object for the ingest
+        # ready loop, the startup hooks, and the search pipeline below. Then ready
+        # each ingesting extension's IngestBackend on the SAME write_stack_readied
+        # rail as code_graph, so a partial-ready failure unwinds every earlier
+        # collaborator (block-1 teardown), and a fragment can reference the tables its
+        # DDL defined (F4/ordering pin). The backends' declared entity tables union
+        # into the write store's tier-purge channel (DG1) — fed AFTER construction
+        # because a backend is produced by ingest_backends(ctx), whose ctx needs the
+        # store (so the store cannot know its entity tables at its own ctor).
+        extension_ctx = ExtensionContext(
+            store=write_store,
+            embedder=embedder,
+            config=config,
+            count_tokens=embedder.count_tokens,
+            manifest=manifest,
+        )
+        ingest_backends: list[Any] = []
+        entity_table_names: list[str] = []
+        for extension in server.extensions:
+            for ingest_backend in extension.ingest_backends(extension_ctx):
+                await ingest_backend.ensure_ready()
+                write_stack_readied.append(ingest_backend)
+                ingest_backends.append(ingest_backend)
+                entity_table_names.extend(ingest_backend.entity_tables())
+        write_store.register_entity_tables(list(dict.fromkeys(entity_table_names)))
         # The server-side snapshot stamper (C4-audit #2): the CLI/scout wire one, and
         # the server must too, or a live server's periodic reconcile never records a
         # snapshot generation. ONE stamper, readied here and injected into BOTH the
@@ -9265,31 +9302,24 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         snapshot_root=snapshot_root,
         code_graph=code_graph,
         snapshot_stamper=snapshot_stamper,
+        # Seam-12 (F3): the extension LIST (not the ChunkerRegistry), so a claimed
+        # file is ingested via its entity fragment + phase-2 edges resolve.
+        extensions=server.extensions,
     )
     reconcile_engine = ReconcileEngine(
         indexer=indexer, manifest=manifest, store=write_store, config=config,
         code_graph=code_graph, snapshot_stamper=snapshot_stamper,
+        # Seam-12 (CF7): the engine's OWN extension list, so its per-file purge
+        # composes a claimed file's entity_purge_fragment (the code_graph precedent).
+        extensions=server.extensions,
     )
-    # The RUNTIME extension context over the LIVE services — the real embedder,
-    # manifest, and the embedder's working ``count_tokens`` (NOT the composition
-    # placeholder from LoreServer.extension_context, whose embedder/manifest are
-    # None and whose tokenizer refuses to count). The search pipeline carries this
-    # so every context-taking search seam (4/5/6/11) sees functional services; the
-    # SAME object is reused for the startup hooks below, so seam-9 ``state`` set at
-    # startup is visible to the search seams.
-    extension_ctx = ExtensionContext(
-        # ctx.store is the UNIFIED SurrealStore (P6 close-out ctx.store flip):
-        # the same ``write_store`` object the search pipeline reads, so an
-        # extension hook that queries ctx.store sees the live corpus, not the
-        # legacy Qdrant handle the indexer stopped writing at P5. Memory now lives
-        # in the SurrealDB ``memory_backend`` (P7 cutover) — a SEPARATE object,
-        # never reachable through ctx.store.
-        store=write_store,
-        embedder=embedder,
-        config=config,
-        count_tokens=embedder.count_tokens,
-        manifest=manifest,
-    )
+    # The RUNTIME extension context over the LIVE services (the real embedder,
+    # manifest, and the embedder's working ``count_tokens``) is now built EARLY —
+    # right after ``code_graph`` is readied, inside block 1's try — so the ingest
+    # backends can ready against it (§Q4). The SAME ``extension_ctx`` object is
+    # reused here for the search pipeline (below) and the startup hooks, so a seam-9
+    # ``state`` a hook stashes is visible to the search seams. ctx.store is the
+    # UNIFIED SurrealStore the search pipeline reads (P6 close-out ctx.store flip).
     search_pipeline = SearchPipeline(
         # P6 read cutover (§6 item 1): the read path is the unified SurrealDB
         # store's ``hybrid_search`` (HNSW ⊕ BM25 via RRF), so the pipeline reads
@@ -9336,6 +9366,9 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         loop=asyncio.get_running_loop(),
         reconcile_engine=reconcile_engine,
         code_graph=code_graph,
+        # Seam-12 (CF7): the watcher's OWN extension list, so a delete event's
+        # purge composes a claimed file's entity_purge_fragment (code_graph pattern).
+        extensions=server.extensions,
     )
 
     # P8c: the boot token-calibration engine (closes config-audit F3 — the first
@@ -9379,6 +9412,10 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
         brief_ledger=brief_ledger,
         message_ledger=message_ledger,
         calibration_engine=calibration_engine,
+        # Seam-12 (F4): the ingesting extensions' domain-store backends, so
+        # ``AppContext.aclose`` closes them on normal shutdown (they are also on the
+        # write_stack_readied rail for block-1 unwind, and in block-2 teardown).
+        ingest_backends=ingest_backends,
     )
 
     # 3) Extension startup hooks (fix A: unwind on partial failure). Reuse the
@@ -9503,6 +9540,12 @@ async def build_app_context(  # noqa: PLR0915 - P8d rewrites this render; restru
             await calibration_engine.stop()
         if app_context.watcher_started:
             await watcher.stop()
+        # Seam-12 (F4): a failing startup hook / initial-sweep phase-2 (which runs
+        # INSIDE this block via watcher.run_sweep) must not leak the ingesting
+        # extensions' domain-store connections — close each (idempotent).
+        for ingest_backend in ingest_backends:
+            with contextlib.suppress(Exception):
+                await ingest_backend.close()
         await memory_backend.close()
         await task_ledger.close()
         # P8b wire-up: the finding ledger + diff engine each own a connection —

@@ -1196,12 +1196,50 @@ class SurrealStore:
         """
         await self.apply([self.delete_file_fragment(tier, file_path)])
 
-    async def delete_by_tier(self, tier: str) -> None:
-        """Purge every chunk in ``tier`` — the per-tier rebuild primitive.
+    def register_entity_tables(self, entity_tables: Sequence[str]) -> None:
+        """Declare the extension ENTITY tables ``delete_by_tier`` must co-purge (DG1).
 
-        A tier with no chunks is a harmless no-op.
+        The post-construction feed for the tier-purge channel: an ``IngestBackend``
+        is produced by ``Extension.ingest_backends(ctx)``, whose ``ctx`` needs the
+        store — so the store cannot know its entity tables at construction time in
+        ``build_app_context`` (a chicken-and-egg the test bench sidesteps by
+        constructing the backend first and passing ``entity_tables=`` at ctor). This
+        seam lets the composition root union the backends' declared tables into the
+        store once, at boot, before any ``delete_by_tier`` runs. Order-preserving,
+        REPLACES any prior set (idempotent for a re-declaration).
+
+        Args:
+            entity_tables: The entity TABLE names to co-purge on a tier wipe. Each
+                MUST carry a ``tier`` field (store §2 rider), or its
+                ``DELETE … WHERE tier`` is a silent no-op (#107 shape).
+        """
+        self._entity_tables = tuple(entity_tables)
+
+    async def delete_by_tier(self, tier: str) -> None:
+        """Purge every chunk — and every extension ENTITY row — in ``tier``.
+
+        The per-tier rebuild primitive AND the SINK for seam-12 entity co-purge
+        (DG1 / design §7): the tier entity purge lives HERE, at the one point every
+        tier-wipe caller passes through, so all callers inherit it without any
+        purge-site hand-list to enumerate (the reach law — a 6th caller added
+        tomorrow is covered for free). For each entity table an ``IngestBackend``
+        declared via ``entity_tables()`` (threaded in at construction), delete that
+        tier's rows; a relation edge whose endpoint node is deleted self-deletes,
+        so the edges cascade with no explicit edge DELETE (store law §2/§4).
+
+        ⚠ Each declared entity table MUST carry a ``tier`` field or the
+        ``WHERE tier=$tier`` is a silent no-op (#107 shape) — a store-law rider the
+        fixture's ``fake_node`` honours. The entity purge is a SEPARATE statement
+        from the chunk ``DELETE``; for a wholesale tier rebuild they need NOT be
+        atomic with each other (the tier is being wiped and rebuilt regardless).
+
+        A tier with no chunks and no entity tables is a harmless no-op.
         """
         await self._query(f"DELETE {CHUNK_TABLE} WHERE tier = $tier", {"tier": tier})
+        for entity_table in self._entity_tables:
+            await self._query(
+                f"DELETE {entity_table} WHERE tier = $tier", {"tier": tier}
+            )
 
     async def delete_points(self, ids: Sequence[str]) -> None:
         """Purge exactly the named point ids — the upsert-before-purge enabler.

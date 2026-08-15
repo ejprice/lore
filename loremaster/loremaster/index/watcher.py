@@ -90,6 +90,11 @@ from watchdog.observers.inotify_c import (
     InotifyEvent,
 )
 
+# Seam-12 (ingest): a RUNTIME module import so ``_purge`` reaches
+# ``claiming_extension`` through the LIVE module — a test monkeypatching
+# ``loremaster.extension.claiming_extension`` binds here too (CF8, ONE
+# IMPLEMENTATION prove-by-mutation).
+import loremaster.extension as extension_module
 from loremaster.config import WATCH_LIVE, RootConfig
 from loremaster.index.paths import is_included
 
@@ -1048,6 +1053,15 @@ class LiveWatcher:
         # must not linger in the graph (tier-scoped, so a sibling tier survives).
         if self._code_graph is not None:
             fragments.append(self._code_graph.purge_file_fragment(tier, rel_path))
+        # Seam-12 (CF7): a claimed file's entity NODES purge in the SAME apply (its
+        # edges cascade — store §2/§4). The claiming extension is reached via THIS
+        # watcher's OWN ``extensions=`` param (the code_graph precedent), through the
+        # shared ``claiming_extension`` helper (CF8 / ONE IMPLEMENTATION).
+        claimant = extension_module.claiming_extension(self._extensions, tier, rel_path)
+        if claimant is not None:
+            entity_purge = claimant.entity_purge_fragment(tier, rel_path)
+            if entity_purge is not None:
+                fragments.append(entity_purge)
         await self._store.apply(fragments)
 
     # -- periodic sweep (under the SAME lock) ------------------------------- #

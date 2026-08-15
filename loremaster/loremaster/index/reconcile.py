@@ -47,6 +47,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+# Seam-12 (ingest): a RUNTIME module import so ``_purge_file`` reaches
+# ``claiming_extension`` through the LIVE module — a test monkeypatching
+# ``loremaster.extension.claiming_extension`` binds here too (CF8, ONE
+# IMPLEMENTATION prove-by-mutation).
+import loremaster.extension as extension_module
 from loremaster.config import WATCH_LIVE
 from loremaster.index.indexer import META_LAST_SWEEP_AT_KEY, IndexSummary
 from loremaster.index.paths import is_included, walked_dirs
@@ -186,6 +191,14 @@ class ReconcileEngine:
                 "duration_ms": (time.monotonic_ns() - started_ns) / 1_000_000,
             },
         )
+        # Seam-12 phase 2 (CF5/DG3): re-resolve cross-file edges through the
+        # indexer's ONE shared resolver — the SAME method index_all / rebuild_all
+        # route through (ONE IMPLEMENTATION, prove-by-mutation). Gated on a
+        # PRODUCTIVE sweep (a file was actually indexed) so a no-op reconcile tick
+        # does NOT re-resolve every edge each interval (CF5c / cost, not correctness).
+        await self._indexer._resolve_all_extension_edges(
+            productive=result.files_indexed > 0
+        )
         await self._maybe_stamp_snapshot(result)
         # P8d Wave 3: stamp the sweep-liveness fact UNCONDITIONALLY — "did the
         # sweep mechanism last run", not "did it change anything" or "did it
@@ -302,6 +315,15 @@ class ReconcileEngine:
         # outlives the source it was derived from.
         if self._code_graph is not None:
             fragments.append(self._code_graph.purge_file_fragment(tier, file_path))
+        # Seam-12 (CF7): a claimed file's entity NODES purge in the SAME apply (its
+        # edges cascade — store §2/§4). The claiming extension is reached via THIS
+        # engine's OWN ``extensions=`` param (the code_graph precedent), through the
+        # shared ``claiming_extension`` helper (CF8 / ONE IMPLEMENTATION).
+        claimant = extension_module.claiming_extension(self._extensions, tier, file_path)
+        if claimant is not None:
+            entity_purge = claimant.entity_purge_fragment(tier, file_path)
+            if entity_purge is not None:
+                fragments.append(entity_purge)
         await self._store.apply(fragments)
 
     def _included_files_on_disk(self, root: RootConfig, base: Path) -> set[str]:

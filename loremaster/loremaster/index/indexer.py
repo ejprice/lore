@@ -63,6 +63,13 @@ from lorescribe.models import Chunk, ChunkContext
 from loresigil.voyage_batch import BatchJobFailedError
 from pydantic import BaseModel, ConfigDict, Field
 
+# Seam-12 (ingest): a RUNTIME module import (not TYPE_CHECKING) so the claim
+# dispatch and the phase-2 ctx build reach ``claiming_extension`` /
+# ``ExtensionContext`` through the LIVE module — a test that monkeypatches
+# ``loremaster.extension.claiming_extension`` then binds here too (the
+# ONE-IMPLEMENTATION mutation proof, CF8). ``loremaster.extension`` imports only
+# low-level store/scribe modules, never this one, so there is no import cycle.
+import loremaster.extension as extension_module
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, RootConfig
 from loremaster.index.manifest import (
     STATE_FAILED,
@@ -527,21 +534,32 @@ class Indexer:
             )
         else:
             size = len(source.encode("utf-8"))
-            try:
-                chunks = self._chunk(path, source)
-            except Exception:
-                # ANY chunker exception (ParseError, a recursion-DoS ValueError,
-                # etc.) isolates THIS file instead of propagating out of the
-                # watcher's live-event path — mirrors the embed/store isolation
-                # below, one step earlier.
-                outcome = await self._handle_chunk_failure(
-                    tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
-                )
-            else:
+            if self._claims(tier, path):
+                # Seam-12: a claimed file skips chunking/embedding; the entity
+                # fragment rides the composed apply (n_chunks=0). A single-file
+                # watched change re-writes NODES only — cross-file edges re-resolve
+                # at the next FULL sweep (§Q3.2 pinned non-feature), so index_file
+                # never triggers phase-2.
                 outcome = await self._index_chunks(
                     tier=tier, path=path, content_hash=content_hash, source=source,
-                    chunks=chunks, mtime_ns=0, size=size,
+                    chunks=[], mtime_ns=0, size=size,
                 )
+            else:
+                try:
+                    chunks = self._chunk(path, source)
+                except Exception:
+                    # ANY chunker exception (ParseError, a recursion-DoS ValueError,
+                    # etc.) isolates THIS file instead of propagating out of the
+                    # watcher's live-event path — mirrors the embed/store isolation
+                    # below, one step earlier.
+                    outcome = await self._handle_chunk_failure(
+                        tier=tier, path=path, content_hash=content_hash, mtime_ns=0, size=size,
+                    )
+                else:
+                    outcome = await self._index_chunks(
+                        tier=tier, path=path, content_hash=content_hash, source=source,
+                        chunks=chunks, mtime_ns=0, size=size,
+                    )
         await self._stamp_last_sync()
         return outcome
 
@@ -706,6 +724,16 @@ class Indexer:
         graph_fragment = self._graph_fragment(tier, path, chunks)
         if graph_fragment is not None:
             fragments.append(graph_fragment)
+        # Seam-12 (ingest, phase 1): a CLAIMED file's typed entity NODE fragment
+        # rides the SAME per-file apply as the manifest + the (bare-DELETE) chunk
+        # replace, so entities and the manifest row commit-or-roll-back together
+        # (§Q1.2/§Q2.3 atomicity). ``None`` when no extension claims ``(tier,
+        # path)`` — the exact None-gate ``_graph_fragment`` uses — so a
+        # zero-extension compose is byte-unchanged (P1c). Both the realtime and the
+        # batch commit paths funnel through here, so ONE branch covers both (P10).
+        entity_fragment = self._entity_fragment(tier, path, source, self._extension_ctx())
+        if entity_fragment is not None:
+            fragments.append(entity_fragment)
         return fragments
 
     def _file_text_within_cap(self, tier: str, path: str, source: str) -> bool:
@@ -758,6 +786,53 @@ class Indexer:
         return self._code_graph.build_file_graph_fragment(
             tier, path, chunks, module_name=module_name
         )
+
+    def _extension_ctx(self) -> Any:
+        """The :class:`ExtensionContext` the indexer's seam calls read through.
+
+        Assembled from the resources the indexer already holds (store / embedder /
+        config / manifest + the embedder's ``count_tokens``) — a value bundle, NOT a
+        second copy of any policy — so ``_entity_fragment`` (phase 1) and
+        ``_resolve_all_extension_edges`` (phase 2) can hand the ingesting extension
+        a live context. Built through the live module so it stays in step with the
+        one ``build_app_context`` reuses.
+        """
+        return extension_module.ExtensionContext(
+            store=self._store,
+            embedder=self._embedder,
+            config=self._config,
+            count_tokens=self._embedder.count_tokens,
+            manifest=self._manifest,
+        )
+
+    def _claims(self, tier: str, path: str) -> bool:
+        """Whether an ingesting extension claims ``(tier, path)`` (the chunk-skip gate).
+
+        The SINGLE decision point (§Q1.2): the chunk-skip and the entity-compose
+        both key off this one predicate, computed through the SHARED
+        ``claiming_extension`` helper so the two can never diverge (ONE
+        IMPLEMENTATION). A claimed file skips chunking/embedding entirely and is
+        ingested via :meth:`_entity_fragment` instead.
+        """
+        return (
+            extension_module.claiming_extension(self._extensions, tier, path)
+            is not None
+        )
+
+    def _entity_fragment(self, tier: str, path: str, source: str, ctx: Any) -> Any:
+        """Build ``(tier, path)``'s phase-1 entity NODE fragment, or ``None`` (seam 12).
+
+        Mirrors :meth:`_graph_fragment`'s None-gate: dispatches through the SHARED
+        ``claiming_extension`` helper (never a private per-site clone — CF8, ONE
+        IMPLEMENTATION) and, if exactly one extension claims the file, returns its
+        pure ``entity_fragment`` (purge-then-CREATE NODES, params namespaced under
+        ``xt_<name>_``); ``None`` when no extension claims the file. Raises loudly
+        (via the helper) if two extensions claim the same file.
+        """
+        claimant = extension_module.claiming_extension(self._extensions, tier, path)
+        if claimant is None:
+            return None
+        return claimant.entity_fragment(tier, path, source, ctx)
 
     async def _embed_records(self, records: Sequence[Record]) -> EmbedResult:
         """Embed ``records``' texts, dispatching on the embedder's grouping capability.
@@ -1131,22 +1206,32 @@ class Indexer:
                     continue
                 source = abs_path.read_text(encoding="utf-8")
                 content_hash = sha512_hex(source)
-                try:
-                    chunks = self._chunk(rel, source)
-                except Exception:
-                    # ANY chunker exception isolates THIS file (the walk-level
-                    # frames the production crash climbed) instead of killing
-                    # the whole sweep — mirrors the embed/store isolation one
-                    # step later in the pipeline.
-                    outcome = await self._handle_chunk_failure(
-                        tier=root.tier, path=rel, content_hash=content_hash,
-                        mtime_ns=stat.st_mtime_ns, size=stat.st_size,
-                    )
-                else:
+                if self._claims(root.tier, rel):
+                    # Seam-12: a claimed file SKIPS chunking/embedding (the machine
+                    # tier is never chunked) — index it with ``chunks=[]`` so
+                    # ``_compose_file_fragments`` composes a bare chunk-DELETE +
+                    # n_chunks=0 manifest + the entity fragment in ONE apply.
                     outcome = await self._index_chunks(
                         tier=root.tier, path=rel, content_hash=content_hash, source=source,
-                        chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                        chunks=[], mtime_ns=stat.st_mtime_ns, size=stat.st_size,
                     )
+                else:
+                    try:
+                        chunks = self._chunk(rel, source)
+                    except Exception:
+                        # ANY chunker exception isolates THIS file (the walk-level
+                        # frames the production crash climbed) instead of killing
+                        # the whole sweep — mirrors the embed/store isolation one
+                        # step later in the pipeline.
+                        outcome = await self._handle_chunk_failure(
+                            tier=root.tier, path=rel, content_hash=content_hash,
+                            mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                        )
+                    else:
+                        outcome = await self._index_chunks(
+                            tier=root.tier, path=rel, content_hash=content_hash, source=source,
+                            chunks=chunks, mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                        )
                 outcomes.append(outcome)
                 # Notify the caller that this file has been indexed.  Called AFTER
                 # _index_chunks so the outcome is final before the callback fires.
@@ -1183,6 +1268,12 @@ class Indexer:
             result = await self._sweep_two_pass(is_rebuild=False, fingerprint=None)
         else:
             result = await self._index_all_realtime()
+        # Seam-12 phase 2: resolve cross-file edges once every file's NODES are
+        # committed, BEFORE the snapshot stamp (§Q3.1). Routed through the ONE
+        # shared resolver so all three orchestrator entries share it (CF5).
+        result.scopes_failed = await self._resolve_all_extension_edges(
+            productive=result.files_indexed > 0
+        )
         await self._maybe_stamp_snapshot(result)
         return result
 
@@ -1223,6 +1314,55 @@ class Indexer:
         if summary.files_failed != 0 or summary.files_indexed <= 0:
             return
         await self._snapshot_stamper.stamp()
+
+    async def _resolve_all_extension_edges(self, *, productive: bool) -> list[str]:
+        """Phase 2: resolve every ingesting extension's cross-file edges (ONE impl, all entries).
+
+        The SINGLE resolver ``index_all`` / ``rebuild_all`` /
+        ``ReconcileEngine.reconcile`` ALL route through (CF5 / ONE IMPLEMENTATION —
+        routing≠sharing, prove by mutation): after a sweep commits every file's
+        phase-1 NODES, ask each extension to resolve its cross-file ``ENFORCED``
+        edges — ``resolve_edges(ctx, changed_scopes=None)``, the ONLY trigger and
+        the ONLY value the framework ever passes (§Q3.1/§Q3.2) — and apply each
+        returned scope's purge-then-``RELATE`` fragment in its OWN ``store.apply``
+        (one atomic txn per scope, ONE IMPLEMENTATION — never a private query path).
+
+        A per-scope apply failure ISOLATES to that scope (§Q3.1/F7): earlier scopes
+        stay committed, later scopes are STILL attempted, and the failed
+        ``source_book`` scope id is surfaced LOUDLY (returned for
+        ``IndexSummary.scopes_failed`` + a WARNING) — never swallowed into a false
+        clear.
+
+        Gated on ``productive`` (DG3): a no-op sweep that re-indexed no file must NOT
+        re-resolve every edge — cost, not correctness (a frequent reconcile tick
+        would otherwise re-``RELATE`` the whole corpus each pass). A first crawl, a
+        rebuild, or any genuine change resolves; an all-skipped tick does not.
+
+        Args:
+            productive: Whether this sweep actually indexed a file (drives the gate).
+
+        Returns:
+            The ``source_book`` scopes whose edge-resolution apply FAILED (empty on a
+            clean run or when the gate held it off).
+        """
+        if not productive or not self._extensions:
+            return []
+        ctx = self._extension_ctx()
+        scopes_failed: list[str] = []
+        for extension in self._extensions:
+            for resolved in await extension.resolve_edges(ctx, None):
+                try:
+                    await self._store.apply([resolved.fragment])
+                except SurrealStoreError:
+                    # Per-scope isolation (F7): this scope's edges do not land, but
+                    # its siblings do — and the failure is NAMED, not lost.
+                    logger.warning(
+                        "index.resolve_edges.scope_failed",
+                        extra={"scope": resolved.scope, "extension": extension.name},
+                        exc_info=True,
+                    )
+                    scopes_failed.append(resolved.scope)
+        return scopes_failed
 
     # -- two-pass bulk-sweep batch flow (index_all / rebuild_all only) ------
 
@@ -1445,6 +1585,20 @@ class Indexer:
                     continue
                 source = abs_path.read_text(encoding="utf-8")
                 content_hash = sha512_hex(source)
+                if self._claims(root.tier, rel):
+                    # Seam-12: a claimed file skips chunking, so it carries ZERO
+                    # chunk records into pass 2 (no embed batch item). Pass 2's
+                    # per-file commit (``_commit_batch_file`` /
+                    # ``_realtime_embed_pending``) composes its entity fragment via
+                    # the SAME ``_compose_file_fragments`` branch (n_chunks=0).
+                    pending.append(
+                        _PendingFile(
+                            tier=root.tier, path=rel, content_hash=content_hash,
+                            source=source, chunks=[], records=[], new_ids=[],
+                            mtime_ns=stat.st_mtime_ns, size=stat.st_size,
+                        )
+                    )
+                    continue
                 try:
                     chunks = self._chunk(rel, source)
                 except Exception:
@@ -1711,6 +1865,11 @@ class Indexer:
         """
         if self._sweep_uses_batch_dispatch():
             result = await self._sweep_two_pass(is_rebuild=True, fingerprint=fingerprint)
+            # Seam-12 phase 2 (CF5): a schema rebuild ALSO re-resolves cross-file
+            # edges, through the SAME shared resolver, before the snapshot stamp.
+            result.scopes_failed = await self._resolve_all_extension_edges(
+                productive=result.files_indexed > 0
+            )
             await self._maybe_stamp_snapshot(result)
             return result
         return await self._rebuild_all_realtime(fingerprint)
@@ -1808,6 +1967,11 @@ class Indexer:
             state=_REBUILD_STATE_DONE, done=done, total=total, fingerprint=fingerprint,
         )
         result = self._summarize(outcomes, rebuilt=rebuilt, skipped_tiers=[])
+        # Seam-12 phase 2 (CF5): the realtime rebuild path resolves cross-file edges
+        # through the SAME shared resolver, before the snapshot stamp.
+        result.scopes_failed = await self._resolve_all_extension_edges(
+            productive=result.files_indexed > 0
+        )
         await self._maybe_stamp_snapshot(result)
         return result
 
