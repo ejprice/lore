@@ -54,6 +54,34 @@ Sections below are the REVISED text; the R2 changes are marked `[R2: Fn]` inline
 
 ---
 
+## R3 revision log (2026-08-15 — build-phase amendments; contract-adversary + Fable sidecar + operator)
+
+The 47a contract-adversary (`docs/plans/v2/receipts/.../REPORT-adversary-47a.md`, a 7-file reference
+build) proved **three pins are RED on a known-correct build (C-DEF)** because the ruled §Q1.1/§Q3.1
+seam surface under-specifies its own ruled behaviours. The Fable sidecar resolved all three; the
+**operator APPROVED the two seam-surface changes (DG1, DG2) on 2026-08-15**. These amend the R2 text
+below (the affected §Q1.1/§Q3.1/§7/§8 prose is finalized to the SHIPPED signatures at 47a build
+close-out — until then, THIS block is authoritative where it conflicts):
+
+| # | gap the adversary proved | resolution (RULED / approved) | verdict |
+|---|---|---|---|
+| DG1 | §7's sink entity-purge is unimplementable — no seam tells `SurrealStore` which entity tables an extension owns, so `delete_by_tier` cannot identify `fake_node` (Probe-4). | **[OPERATOR-APPROVED]** add `IngestBackend.entity_tables() -> Sequence[str]` (backend owns its DDL → authority on its tables); `build_app_context` unions declared tables across `server.extensions`' backends → `SurrealStore(..., entity_tables=frozenset(...))`; `delete_by_tier` purges each table `WHERE tier=$tier` (edges cascade — store §2/§4). ⚠ each declared entity table MUST carry a `tier` field or the WHERE silently no-ops (#107 shape) — pinned. Seam goes **5 methods → 6**. |
+| DG2 | F7's ruled loud per-scope isolation is unsatisfiable — `resolve_edges -> list[TxnFragment]` returns UNLABELED fragments, so the indexer knows a failed fragment's POSITION, not its scope id (Probe-5). | **[OPERATOR-APPROVED]** change `resolve_edges -> list[ResolvedScope]` (a frozen pydantic model `scope: str` + `fragment: TxnFragment`); the indexer records `resolved.scope` into `IndexSummary.scopes_failed: list[str] = Field(default_factory=list)` on a per-scope apply failure. The scope↔fragment is already 1:1 per §Q3.1, so the label is inherent. |
+| DG3 | §Q3.1's named phase-2 hook `_sweep_two_pass` is the BATCH-only completion point; a literal build gets P17/P12b RED (the realtime path routes through `_index_all_realtime`; reconcile through `reconcile.reconcile→index_tier`). | **[WITHIN RULED INTENT — proceed]** the correct completion union is **`index_all` + `rebuild_all` + `ReconcileEngine.reconcile`**, all routed through ONE extracted `Indexer._resolve_all_extension_edges(...)` (ONE IMPLEMENTATION — prove by mutation), fired after all phase-1 nodes commit and BEFORE `_maybe_stamp_snapshot`. ⚠ gate the reconcile-tick driver on "an owned scope-bearing tier was actually rebuilt this sweep (in `rebuilt`, not `skipped_tiers`)" — else it re-resolves all edges on every no-op periodic tick (cost, not correctness). §Q3.1/§Q4/§8's `_sweep_two_pass` naming is corrected to this union (stale-prose fix). |
+
+Also folded (pure-contract, not seam): P6's `pytest.raises` wrapper is dropped (it contradicts
+§Q2.3 fault-isolation — `index_file` catches `SurrealStoreError`, never raises); a framework-side
+atomicity ∀-pin is added (a non-atomic separate-apply build otherwise orphans entities — QUANTIFIER
+law); the P8 construction-site scan's reach is derived to include `scripts/` (not a hidden
+`_PACKAGE_DIR` constant); the P14 access-path is the code_graph precedent (an `extensions=` ctor
+param on `LiveWatcher`/`ReconcileEngine`, not reach-through-indexer); the 3 claim-dispatch sites
+share ONE `claiming_extension(...)` helper (prove by mutation). Receipts:
+`REPORT-adversary-47a.md`, `REPORT-design-sidecar-47a.md`; operator ruling recorded in lore memory.
+
+Sections below are the R2 text; where a `[R3: DGn]` marker or this block conflicts with R2, R3 wins.
+
+---
+
 ## 0. The shape in one paragraph
 
 An extension contributes a per-file **ingest fragment** — typed entity records + intra-file purge —

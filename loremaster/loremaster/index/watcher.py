@@ -72,7 +72,7 @@ import contextlib
 import errno
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -95,6 +95,7 @@ from loremaster.index.paths import is_included
 
 if TYPE_CHECKING:
     from loremaster.config import LoreConfig
+    from loremaster.extension import Extension
     from loremaster.index.indexer import Indexer
     from loremaster.index.reconcile import ReconcileEngine, ReconcileSummary
 
@@ -598,6 +599,7 @@ class LiveWatcher:
         reconcile_engine: ReconcileEngine,
         queue_maxsize: int = _DEFAULT_QUEUE_MAXSIZE,
         code_graph: Any = None,
+        extensions: Sequence[Extension] = (),
     ) -> None:
         self._indexer = indexer
         self._manifest = manifest
@@ -609,6 +611,11 @@ class LiveWatcher:
         # slice too (so the graph never serves a symbol whose source is gone). The
         # index path's graph refresh rides through the injected indexer.
         self._code_graph = code_graph
+        # Seam-12 (CF7/DG1): the registered extensions, so ``_purge`` can compose
+        # a claimed file's ``entity_purge_fragment`` alongside the graph purge
+        # (the code_graph precedent). STUB (packet 47a contract): accepted +
+        # stored (default ``()``); the purge wiring is BUILDER logic → P14 RED.
+        self._extensions: tuple[Extension, ...] = tuple(extensions)
 
         # The SINGLE writer lock: live events AND the periodic sweep both index
         # under it, so index_file never runs concurrently with itself.

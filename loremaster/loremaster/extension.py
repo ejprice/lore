@@ -49,13 +49,18 @@ The eleven seams (the numbering matches §A1.3, with C2 adding seam 11):
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from lorescribe.base import Chunker
 from pydantic import BaseModel, ConfigDict, Field
 
+# Seam 12 (ingest) — the composable fragment the entity producers build. A
+# RUNTIME import (not TYPE_CHECKING): ``ResolvedScope`` below is a pydantic model
+# with a ``TxnFragment`` field, which pydantic must resolve at class-build time.
+# ``store._txn`` is low-level (never imports this module), so no cycle.
+from loremaster.store._txn import TxnFragment
 from loremaster.store.candidate import Candidate
 
 # The two detail levels seam 11 (C2) partitions chunk types into: a coarse
@@ -200,6 +205,71 @@ class SourceProvider(Protocol):
                 under, for the live server to bind-mount ``:ro`` and serve.
         """
         ...
+
+
+@runtime_checkable
+class IngestBackend(Protocol):
+    """A domain store an ingesting extension readies BEFORE any fragment build (seam 12, phase 0).
+
+    The DDL/lifecycle collaborator an extension contributes via
+    :meth:`Extension.ingest_backends` — e.g. a dnd ``DnDStore`` with its own
+    signed-in connection and ``execute_transaction`` (packet 51). A STRUCTURAL
+    :class:`typing.Protocol` (not a base class), mirroring
+    :class:`SourceProvider`, so an extension's store satisfies it by shape —
+    the same duck-typed lifecycle ``code_graph`` / ``manifest`` / the ledgers
+    already present to ``build_app_context``'s ``write_stack_readied`` rail:
+
+    * ``ensure_ready()`` — apply the domain schema DDL (store law §1.1),
+      idempotent, on the write-stack ready rail so a partial-ready failure
+      unwinds every earlier collaborator (Q4).
+    * ``close()`` — release the connection, on both teardown paths + normal
+      shutdown.
+
+    ``runtime_checkable`` so a structural conformance check is meaningful in
+    tests and at registration.
+    """
+
+    async def ensure_ready(self) -> None:
+        """Apply the domain schema DDL — idempotent (store law §1.1)."""
+        ...
+
+    async def close(self) -> None:
+        """Release the backend's connection."""
+        ...
+
+    def entity_tables(self) -> Sequence[str]:
+        """The entity TABLE names this backend owns — the store's tier-purge channel.
+
+        The information channel a bare :class:`~loremaster.store.surreal.
+        SurrealStore` needs to co-purge an extension's entity rows in
+        ``delete_by_tier`` (a `TYPE NORMAL` table is indistinguishable from a
+        chunk table without it — DG1). Each named table MUST carry a ``tier``
+        field so a `DELETE <table> WHERE tier=$tier` is not a silent no-op
+        (#107 shape). Default: none.
+        """
+        ...
+
+
+class ResolvedScope(BaseModel):
+    """One phase-2 scope's resolved edge fragment, LABELLED with its scope id (DG2).
+
+    ``resolve_edges`` returns these (not bare :class:`TxnFragment`\\ s) so the
+    indexer's per-scope apply loop can name WHICH scope failed in
+    :attr:`~loremaster.index.indexer.IndexSummary.scopes_failed` — a bare
+    fragment list carries only POSITION, never the ``source_book`` scope id.
+
+    Attributes:
+        scope: The ``source_book`` scope this fragment resolves (the failure label).
+        fragment: The purge-then-``RELATE`` :class:`TxnFragment` for that scope,
+            applied via the shared ``SurrealStore.apply`` (ONE IMPLEMENTATION).
+    """
+
+    # ``arbitrary_types_allowed`` so the frozen dataclass ``TxnFragment`` is a
+    # valid field; ``frozen`` mirrors the value-object idiom (IndexOutcome).
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    scope: str
+    fragment: TxnFragment
 
 
 class Extension(ABC):
@@ -370,6 +440,71 @@ class Extension(ABC):
             The detail level, or ``None`` to defer to the base default.
         """
         return None
+
+    # -- seam 12: ingest (entity records + two-phase edges) -----------------
+    # ONE seam (ingest), five methods (phases 0/1/2). Each ships a safe inert
+    # default so a zero-ingest extension — and a zero-extension server — is
+    # byte-unchanged.
+    def claims(self, tier: str, path: str) -> bool:
+        """Does this extension own the ingest of ``(tier, path)`` (seam 12)? Default: False.
+
+        PURE + cheap (a suffix/tier test) — called for every pending file. A
+        claimed file skips chunking/embedding and is ingested via
+        :meth:`entity_fragment` instead. At most one registered extension may
+        claim a given ``(tier, path)``.
+        """
+        return False
+
+    def entity_fragment(
+        self, tier: str, path: str, text: str, ctx: ExtensionContext
+    ) -> TxnFragment | None:
+        """Build this file's phase-1 NODE fragment (purge-then-create), or None (seam 12).
+
+        A PURE builder on the ``build_file_graph_fragment`` precedent: parse
+        ``text`` (never a socket touch), emit a self-contained
+        DELETE-this-file's-prior-entity-nodes + CREATE-new-nodes fragment, NO
+        ``BEGIN``/``COMMIT``, every value a bound param namespaced under
+        ``f"xt_{self.name}_"``. NODES ONLY — cross-file ``ENFORCED`` edges are
+        phase 2 (:meth:`resolve_edges`). Default: None.
+        """
+        return None
+
+    def entity_purge_fragment(self, tier: str, path: str) -> TxnFragment | None:
+        """Build the standalone purge of one file's entity slice, or None (seam 12).
+
+        The composable counterpart to :meth:`entity_fragment`'s internal purge,
+        for the standalone DELETE sites (a removed file) — mirrors
+        ``purge_file_fragment``. Default: None.
+        """
+        return None
+
+    async def resolve_edges(
+        self, ctx: ExtensionContext, changed_scopes: set[str] | None
+    ) -> list[ResolvedScope]:
+        """Phase 2: resolve cross-file edges per ``source_book`` scope (seam 12).
+
+        READS committed phase-1 nodes to resolve each edge's endpoints, then
+        returns ONE :class:`ResolvedScope` PER scope (its ``source_book`` id +
+        the purge-then-``RELATE`` fragment — DG2, so the indexer can name a
+        failed scope). The framework calls this ONLY with ``changed_scopes=None``
+        (every scope this extension owns, at full-sweep completion). The ``set``
+        form is RESERVED for the pinned non-feature (live per-file
+        re-resolution) and is never passed today. The INDEXER applies each
+        scope's fragment via ``SurrealStore.apply`` (ONE IMPLEMENTATION —
+        never a private query path). Default: ``[]`` (no edges).
+        """
+        return []
+
+    def ingest_backends(self, ctx: ExtensionContext) -> list[IngestBackend]:
+        """Contribute the domain store(s) readied BEFORE any fragment build (seam 12, phase 0).
+
+        Each :class:`IngestBackend` applies its schema DDL on
+        ``build_app_context``'s ``write_stack_readied`` rail (like
+        ``code_graph``) so a partial-ready failure unwinds. The extension
+        retains the reference for its :meth:`entity_fragment` /
+        :meth:`resolve_edges` seams to read through. Default: ``[]``.
+        """
+        return []
 
 
 # --------------------------------------------------------------------------- #

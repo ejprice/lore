@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from loremaster.config import LoreConfig, RootConfig
+    from loremaster.extension import Extension
     from loremaster.index.indexer import Indexer, IndexOutcome
 
 
@@ -103,6 +105,7 @@ class ReconcileEngine:
         config: LoreConfig,
         code_graph: Any = None,
         snapshot_stamper: Any = None,
+        extensions: Sequence[Extension] = (),
     ) -> None:
         self._indexer = indexer
         self._manifest = manifest
@@ -112,6 +115,11 @@ class ReconcileEngine:
         # vanished file's graph slice (kept as fresh as the vector index). The
         # per-file re-index path already refreshes the graph through the indexer.
         self._code_graph = code_graph
+        # Seam-12 (CF7/DG1): the registered extensions, so ``_purge_file`` can
+        # compose a claimed file's ``entity_purge_fragment`` alongside the graph
+        # purge (the code_graph precedent). STUB (packet 47a contract): accepted
+        # + stored (default ``()``); the purge wiring is BUILDER logic → P14 RED.
+        self._extensions: tuple[Extension, ...] = tuple(extensions)
         # Optional snapshot stamper (P5-C4, mirrors ``code_graph``). When
         # present, a fully-successful, genuinely productive sweep stamps a new
         # ``snapshot`` generation marker; absent, reconcile behaves exactly as

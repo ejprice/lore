@@ -405,6 +405,7 @@ class SurrealStore:
         user: str,
         password: SecretStr,
         analyzer_name: str = DEFAULT_ANALYZER_NAME,
+        entity_tables: Sequence[str] = (),
     ) -> None:
         self._url = url
         self._namespace = namespace
@@ -413,6 +414,13 @@ class SurrealStore:
         self._user = user
         self._password = password
         self._analyzer_name = analyzer_name
+        # Seam-12 (DG1): the extension entity TABLE names this store must also
+        # purge in ``delete_by_tier`` (fed from each IngestBackend's
+        # ``entity_tables()`` at composition). STUB (packet 47a contract):
+        # accepted + stored (default ``()`` = no entity tables, backward-
+        # compatible). The co-purge in ``delete_by_tier`` is BUILDER logic —
+        # absent here, so P13 REDs at the sink.
+        self._entity_tables: tuple[str, ...] = tuple(entity_tables)
         # Opened on first use; ``None`` means "not yet connected / closed".
         self._connection: _SurrealConnection | None = None
         # Guards the connect-time check-then-set below: without it, N

@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from lorescribe.models import Chunk, ChunkContext
 from loresigil.voyage_batch import BatchJobFailedError
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from loremaster.config import WATCH_LIVE, WATCH_STATIC, LoreConfig, RootConfig
 from loremaster.index.manifest import (
@@ -82,7 +82,7 @@ if TYPE_CHECKING:
     from lorescribe.registry import ChunkerRegistry
     from loresigil.base import Embedder, EmbedResult
 
-    from loremaster.extension import SourceProvider
+    from loremaster.extension import Extension, SourceProvider
 
 # The Python source suffix whose files contribute to the code-graph. Non-Python
 # files are NOT given a graph slice (the graph is a Python AST structure only),
@@ -355,6 +355,12 @@ class IndexSummary(BaseModel):
     tiers_rebuilt: list[str]
     tiers_skipped: list[str]
     outcomes: list[IndexOutcome]
+    # Seam-12 (phase 2): the ``source_book`` scopes whose edge re-resolution
+    # apply FAILED this sweep (DG2/F7 — loud per-scope isolation, never
+    # swallowed). Defaulting to ``[]`` keeps every existing ctor site + the
+    # ``index_status`` manifest roll-up green (extra="forbid"). BUILDER populates
+    # it in the per-scope apply loop; the field is a stub here.
+    scopes_failed: list[str] = Field(default_factory=list)
     embedding_schema: EmbeddingSchemaStatus | None = None
     schema_rebuild: SchemaRebuildStatus | None = None
 
@@ -400,6 +406,7 @@ class Indexer:
         snapshot_root: Path,
         code_graph: Any = None,
         snapshot_stamper: Any = None,
+        extensions: Sequence[Extension] = (),
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -408,6 +415,14 @@ class Indexer:
         self._providers_by_tier: dict[str, SourceProvider] = {
             provider.tier: provider for provider in source_providers
         }
+        # Seam-12 (ingest) — the registered Extension objects, so the claimed-file
+        # branch can dispatch ``claims()`` / ``entity_fragment()`` / ``resolve_edges()``.
+        # STUB (packet 47a contract): the field is accepted + stored (default ``()``
+        # ⇒ no ingest, backward-compatible). The claimed-file compose branch, the
+        # ``_entity_fragment`` helper, the chunk-skip gate, and the phase-2 trigger
+        # are BUILDER logic — deliberately absent here so the contract's behaviour
+        # pins fail RED at the seam.
+        self._extensions: tuple[Extension, ...] = tuple(extensions)
         self._config = config
         self._snapshot_layout = SnapshotLayout(snapshot_root)
         # Optional code-graph (the capability layer). When present, a successful
