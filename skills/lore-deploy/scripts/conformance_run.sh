@@ -44,6 +44,8 @@ podman run --rm --network=host \
     -e HOME=/tmp/h \
     -e PYTHONPYCACHEPREFIX=/tmp/pyc \
     -e LORE_CONFORMANCE_IN_CONTAINER=1 \
+    -e OPENBLAS_NUM_THREADS=1 \
+    -e OMP_NUM_THREADS=1 \
     "${IMAGE}" \
     sh -c '
 set -eu
