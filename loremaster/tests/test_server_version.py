@@ -24,21 +24,24 @@ reverse-engineered from any implementation):
     that version: the built server's advertised ``serverInfo.version``
     equals ``server.__version__`` and is NOT the MCP SDK version.
 
-HOW FASTMCP EXPOSES THE VERSION (verified by reading the installed
-``mcp.server.fastmcp.server.FastMCP`` and ``mcp.server.lowlevel.server``):
+HOW FASTMCP EXPOSES THE VERSION (packet 59: RE-VERIFIED against installed
+``fastmcp`` 3.4.7 — the mcp-SDK ``mcp.server.fastmcp`` façade is RETIRED, and
+``mcp`` now rides transitively):
 
-* FastMCP's ``__init__`` does NOT accept a ``version=`` kwarg and does
-  NOT forward one to its low-level server — so the version is carried by
-  the **low-level** server it wraps: ``mcp._mcp_server.version``
-  (``str | None``, default ``None``).
-* ``serverInfo.version`` (what the host sees on ``initialize``) is
+* standalone ``fastmcp.FastMCP.__init__`` DOES accept a ``version=`` kwarg
+  (``str | int | float | None``) — ``build_mcp_server`` passes
+  ``version=_resolve_version()`` at construction (design D4). fastmcp forwards
+  it to the low-level server it wraps, so the version is still carried at
+  ``mcp._mcp_server`` (a ``LowLevelServer``).
+* ``serverInfo.version`` (what the host sees on ``initialize``) is still
   produced by ``mcp._mcp_server.create_initialization_options()`` as
-  ``self.version if self.version else pkg_version("mcp")`` — so a
-  ``None`` version silently advertises the MCP SDK version. This is the
+  ``self.version if self.version else pkg_version(...)`` — so a DROPPED
+  ``version=`` kwarg silently advertises the fallback version. This is the
   observable seam the contract asserts on: the
   ``.create_initialization_options().server_version`` field, which is
   the real ``serverInfo.version`` wire value, not an internal-only
-  attribute.
+  attribute. (Verified against fastmcp 3.4.7: a ``version=`` build advertises
+  exactly that string here.)
 
 These tests are written BLIND to the (not-yet-written) implementation:
 they reference the named surface (``server._resolve_version``,

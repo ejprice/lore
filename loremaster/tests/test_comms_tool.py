@@ -548,7 +548,7 @@ class TestCommsToolRegistration:
         (a builder adds a handler param but forgets the MCP-visible
         parameter) must be caught, not shipped."""
         tools = await _tools_by_name(monkeypatch)
-        properties = set((tools["lore_comms"].inputSchema or {}).get("properties", {}))
+        properties = set((tools["lore_comms"].parameters or {}).get("properties", {}))
         declared_params: set[str] = {"action", "agent", "session"}
         for spec in _COMMS_ACTIONS.values():
             declared_params |= spec.params | spec.required
@@ -575,7 +575,7 @@ class TestCommsToolRegistration:
         an MCP-boundary caller actually receives.
         """
         tools = await _tools_by_name(monkeypatch)
-        limit_schema = (tools["lore_comms"].inputSchema or {})["properties"]["limit"]
+        limit_schema = (tools["lore_comms"].parameters or {})["properties"]["limit"]
         branches = limit_schema.get("anyOf", [limit_schema])
         integer_branches = [branch for branch in branches if branch.get("type") == "integer"]
         assert integer_branches, f"no integer branch in the limit schema: {limit_schema!r}"
@@ -597,7 +597,7 @@ class TestCommsToolRegistration:
         ``test_clause_4_the_body_cap_sentence_carries_the_LIVE_constant``).
         """
         tools = await _tools_by_name(monkeypatch)
-        body_schema = (tools["lore_comms"].inputSchema or {})["properties"]["body"]
+        body_schema = (tools["lore_comms"].parameters or {})["properties"]["body"]
         description = body_schema.get("description", "")
         cap = _msg().MESSAGE_BODY_MAX_CHARS
         assert str(cap) in description, (
@@ -7771,7 +7771,7 @@ class TestTheCommsToolSchemaTeachesTheNewParams:
 
     @staticmethod
     def _properties(tools: dict[str, Any]) -> dict[str, Any]:
-        return dict((tools["lore_comms"].inputSchema or {}).get("properties", {}))
+        return dict((tools["lore_comms"].parameters or {}).get("properties", {}))
 
     async def _description(self, param: str, monkeypatch: pytest.MonkeyPatch) -> str:
         properties = self._properties(await _tools_by_name(monkeypatch))

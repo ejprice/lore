@@ -55,7 +55,6 @@ from collections.abc import (
     Collection,
     Iterable,
     Mapping,
-    MutableMapping,
     Sequence,
 )
 from contextvars import ContextVar
@@ -66,6 +65,10 @@ from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast, get_args
 from uuid import uuid4
 
 import anyio
+from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from fastmcp.tools.tool import ToolResult
 from lorescribe.javascript import JavascriptChunker
 from lorescribe.markdown import MarkdownChunker
 from lorescribe.python_ast import PythonAstChunker
@@ -74,9 +77,7 @@ from lorescribe.sql import SqlChunker
 from lorescribe.stylesheet import StylesheetChunker
 from lorescribe.text import TextChunker
 from lorescribe.xml_generic import XmlChunker
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.lowlevel.server import request_ctx
-from mcp.types import ContentBlock, ToolAnnotations
+from mcp.types import CallToolRequestParams, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from loremaster.agent_ref import AgentRefLike as _AgentRefLike
@@ -1001,14 +1002,16 @@ class LoreServer:
         """
         import uvicorn
 
-        # Configure the lore-namespace JSON handler FIRST — before build_mcp_server,
-        # which constructs FastMCP, whose __init__ runs logging.basicConfig with a
-        # root RichHandler (mcp.server.fastmcp.utilities.logging.configure_logging).
-        # If our scoped handler is not installed by then, the early
-        # ``loremaster.server`` startup events (probe gate / watcher / reconcile)
-        # propagate to that root handler and render via the default formatter
-        # instead of JsonFormatter — so Mezmo never indexes them. Installing our
-        # handler (propagate=False) first keeps every lore event on the JSON sink.
+        # Configure the lore-namespace JSON handler FIRST — before build_mcp_server.
+        # lore's early startup events (probe gate / watcher / reconcile) must render
+        # via JsonFormatter on the lore-scoped, propagate=False sink, or Mezmo never
+        # indexes them; installing that handler before any construction or third-party
+        # logging setup runs guarantees it. (Under standalone fastmcp 3.x this is
+        # defence-in-depth, not a fix for a specific clash: fastmcp configures its OWN
+        # ``fastmcp`` logger — at IMPORT, non-propagating and off the root, never
+        # ``logging.basicConfig`` — so it does not touch lore's namespace. Verified in
+        # installed ``fastmcp/utilities/logging.py`` + ``fastmcp/__init__.py``; the
+        # ordering stays correct regardless of fastmcp's internals.)
         # The lifespan re-runs this (idempotent) so an env override still applies.
         configure_logging_from_config(self._config)
         mcp = build_mcp_server(self)
@@ -2471,9 +2474,9 @@ class TraceSummary(BaseModel):
     description of them is DERIVED from it rather than restated beside it.
 
     ``total``/``by_tool``/``latest_at`` are ``0``/``[]``/``None`` when nothing
-    traced IN THE WINDOW. Every served tool call writes one row through
-    :class:`TracingFastMCP`, so a live deployment whose numbers stay flat is a
-    SIGNAL (the emission is broken), not the expected reading.
+    traced IN THE WINDOW. Every served tool call writes one row through the trace
+    middleware (:class:`ToolTraceMiddleware`), so a live deployment whose numbers
+    stay flat is a SIGNAL (the emission is broken), not the expected reading.
 
     Attributes:
         total: Calls across EVERY tool in the window — including any the display
@@ -9850,90 +9853,139 @@ async def _periodic_reconcile(watcher: Any, interval_s: int) -> None:
             logger.exception("reconcile.periodic.sweep_failed")
 
 
-class _ProcessLifespanGuard:
-    """Run the heavy lifespan startup exactly ONCE per process across MCP sessions.
+async def _eager_build_with_retry[EagerBuildResult](
+    build: Callable[[], Awaitable[EagerBuildResult]],
+    *,
+    max_attempts: int,
+    backoff_base_s: float,
+) -> EagerBuildResult:
+    """Run the eager heavy build with bounded retry-with-backoff (FP-07).
 
-    FastMCP's streamable-http composition enters the user lifespan once per
-    ``MCPServer.run`` — and the session manager calls that once per MCP SESSION
-    (``StreamableHTTPSessionManager._handle_stateful_request`` → ``run_server`` →
-    ``self.app.run`` → ``lifespan(self)``). So in ONE uvicorn process every new
-    client session would otherwise re-run loremaster's heavy startup (probe gate →
-    initial reconcile → watcher start), spawning a second watcher + a second
-    startup reconcile (wasteful; two watchers risk manifest contention).
+    Re-homed from ``_EagerStartupLifespan._acquire_eager_lease_with_retry`` (design
+    §5b-C2): the ~150-LOC lifespan apparatus is DELETED — fastmcp enters the user
+    ``lifespan=`` ONCE PER PROCESS (ref-counted), so the per-session guard/interceptor
+    is dead weight — but fastmcp does NOT retry a failed build, so the transient-boot
+    resilience the apparatus carried must survive. This is that resilience, as a
+    nameable async helper the native lifespan calls (the retry is a POLICY, so a
+    FUNCTION per DRY/#102/#207; it was already a separate method today).
 
-    This guard makes the heavy startup idempotent per process. Each session takes
-    a reference-counted *lease*: the FIRST lease builds the shared
-    :class:`AppContext` (probe gate + SurrealDB write stack + watcher + tasks);
-    every subsequent concurrent lease REUSES the same context (no second
-    probe/watcher); and the LAST lease to release tears the context down (plus any
-    process-owned client, though the SurrealDB stack self-closes via
-    ``AppContext.aclose``). An ``asyncio``
-    lock serialises the build/teardown so two sessions racing the first lease
-    cannot both build. Sequential sessions (build → release-to-zero → a later
-    session) correctly rebuild — the guard tracks "currently live", not
-    "ever-built", so a clean process that drops to zero active sessions and later
-    gets a new one still comes up.
+    Calls ``build`` (a no-arg async callable running the heavy startup) up to
+    ``max_attempts`` total attempts, returning its result the instant one SUCCEEDS.
+    Between failed attempts it sleeps ``loresigil.backoff.additive_jitter(backoff_base_s)``
+    — the ONE workspace backoff policy, late-bound via the MODULE attribute so a
+    monkeypatch of the shared function fires (routing-is-sharing, #207/#102), and
+    additive (not exponential) jitter so a fleet of containers restarting together
+    against one cold SurrealDB/TEI does not retry in lockstep (#207 D3). A zero base
+    (the test policy) skips the sleep. After the budget is spent it RE-RAISES the
+    last exception (fail-CLOSED) so uvicorn can abort a genuinely-down dependency —
+    never an unbounded loop.
 
-    A build failure (e.g. the probe gate refusing) is NOT cached: the partial
-    state is cleaned up and the next lease retries, so a transient embedder outage
-    does not wedge the process into a permanently-broken context.
+    Args:
+        build: The zero-arg async heavy-build callable.
+        max_attempts: The BOUNDED retry budget (clamped to at least 1 so the build
+            always runs once); the production default ``_DEFAULT_EAGER_MAX_ATTEMPTS``
+            is > 1, so it is never single-shot.
+        backoff_base_s: Seconds base for the inter-attempt jittered sleep; 0 skips it.
+
+    Returns:
+        The heavy build's result on the first successful attempt.
+
+    Raises:
+        BaseException: Re-raises the LAST failure when every attempt failed
+            (fail-closed after the budget).
     """
+    attempts = max(1, max_attempts)
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return await build()
+        except BaseException as exc:  # noqa: BLE001 — surface any build failure
+            last_exc = exc
+            # Sleep between attempts ONLY when another attempt remains, so a
+            # final-attempt failure fails closed immediately.
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "eager startup build attempt failed; retrying",
+                    extra={"attempt": attempt + 1, "max_attempts": attempts},
+                )
+                if backoff_base_s > 0:
+                    await asyncio.sleep(backoff.additive_jitter(backoff_base_s))
+    # Unreachable: the loop body either returns on success or sets last_exc; with
+    # attempts >= 1 an all-failure path always leaves last_exc set.
+    assert last_exc is not None
+    raise last_exc
 
-    def __init__(self, build: Callable[[], Awaitable[tuple[AppContext, Any]]]) -> None:
-        """Initialise the guard around a context-build coroutine factory.
 
-        Args:
-            build: A zero-arg async factory returning ``(app_context, client)`` —
-                the heavy startup. Called at most once per live generation (under
-                the lock), and only when no context is currently live.
-        """
-        self._build = build
-        self._lock = asyncio.Lock()
-        self._refcount = 0
-        self._app_context: AppContext | None = None
-        self._client: Any = None
+# Operator-safe FIXED message for a total eager-build failure surfaced out of the
+# native ``lifespan=``. WHY a constant and not ``str(exc)``: on retry exhaustion the
+# exception propagates to uvicorn, whose startup-failure logger (``uvicorn.error`` /
+# the root) is OUTSIDE lore's redaction-backstopped sink (``configure_logging``
+# scopes ``RedactingFilter`` to the lore namespaces only, deliberately leaving
+# uvicorn's handler untouched), so it logs the message UNREDACTED. A credentialed
+# transport exception — a ``surreal.url`` / embedding ``base_url`` carrying
+# ``user:pass@host`` surfacing in a ``SurrealConnectionError`` — would leak verbatim
+# into the container boot log. The real detail is logged through the module logger
+# (the redacted lore sink) instead — see ``_eager_build_or_operator_safe_error``.
+# (Re-homes the secret-non-leak half of the deleted ``_EagerStartupLifespan._drive_
+# lifespan``; design §5b-C2 flag-4 / F2, operator-restored 2026-08-16.)
+_EAGER_BUILD_FAILED_MESSAGE = "eager startup build failed; see server logs"
 
-    async def acquire(self) -> AppContext:
-        """Take a lease, building the shared context on the first live lease.
 
-        Returns:
-            The shared per-process :class:`AppContext` (built once, reused by every
-            concurrent session).
+async def _eager_build_or_operator_safe_error[EagerBuildResult](
+    build: Callable[[], Awaitable[EagerBuildResult]],
+    *,
+    max_attempts: int,
+    backoff_base_s: float,
+) -> EagerBuildResult:
+    """Run the eager heavy build with bounded retry; on TOTAL failure, log the real
+    detail through lore's REDACTING sink and raise a FIXED operator-safe error.
 
-        Raises:
-            Exception: Re-raises a build failure (the refcount is rolled back and
-                nothing is cached, so a later lease retries).
-        """
-        async with self._lock:
-            if self._app_context is None:
-                # First live lease — run the heavy startup once. On failure leave
-                # nothing live so the next session retries (no wedged process).
-                self._app_context, self._client = await self._build()
-            self._refcount += 1
-            return self._app_context
+    This is the native ``lifespan=``'s operator-safe layer over
+    :func:`_eager_build_with_retry`. The retry helper itself RE-RAISES the original
+    exception (the FP-07 fail-closed contract, pinned by ``test_fastmcp_migration``
+    ``pytest.raises(SurrealStoreError)`` and ``test_backoff_seam``
+    ``pytest.raises(RuntimeError)`` — both require the ORIGINAL type to propagate),
+    so the conversion cannot live inside it. It lives HERE, at the boot boundary,
+    exactly where the deleted ``_EagerStartupLifespan._drive_lifespan`` did it
+    (design §5b-C2 flag-4 / F2).
 
-    async def release(self) -> None:
-        """Release a lease, tearing the shared context down on the last release.
+    On a total-failure exception:
+      * the REAL detail (traceback) goes to ``logger.error(exc_info=exc)`` — lore's
+        redaction-backstopped sink — so operators still learn WHY startup failed;
+      * only ``_EAGER_BUILD_FAILED_MESSAGE`` (never ``str(exc)``) is raised, so the
+        UNREDACTED uvicorn startup log cannot leak an inline credential.
 
-        Idempotent at zero: extra releases never drive the refcount negative or
-        double-close. The teardown mirrors the original lifespan ``finally`` —
-        ``AppContext.aclose`` (tasks/watcher/hooks/SurrealDB), then any
-        process-owned client (``None`` since the SurrealDB stack self-closes).
-        """
-        async with self._lock:
-            if self._refcount == 0:
-                return
-            self._refcount -= 1
-            if self._refcount > 0 or self._app_context is None:
-                return
-            app_context, client = self._app_context, self._client
-            self._app_context = None
-            self._client = None
-        # Tear down OUTSIDE the lock so a teardown never blocks a concurrent
-        # acquire racing the next generation; the fields are already cleared.
-        await app_context.aclose()
-        if client is not None:
-            await client.close()
+    ``from None`` SUPPRESSES exception chaining so the credentialed cause cannot ride
+    the propagated traceback (which Starlette/uvicorn format via
+    ``traceback.format_exc()``) either — the raised error carries the fixed phrase
+    and nothing else.
+
+    Only ``Exception`` is converted: ``BaseException``-but-not-``Exception``
+    (``CancelledError`` on shutdown, ``KeyboardInterrupt``) carries no secret and
+    must propagate UNCHANGED so graceful shutdown is preserved — a stricter, cleaner
+    boundary than the deleted apparatus (which caught ``BaseException``), and it
+    covers the entire measured leak surface (``SurrealConnectionError`` and every SDK
+    transport error are ``Exception`` subclasses — security-59 F4).
+
+    Args:
+        build: The zero-arg async heavy-build callable.
+        max_attempts: The bounded FP-07 retry budget.
+        backoff_base_s: Seconds base for the inter-attempt jittered sleep; 0 skips it.
+
+    Returns:
+        The heavy build's result on the first successful attempt.
+
+    Raises:
+        RuntimeError: The FIXED operator-safe message on total (``Exception``)
+            failure, with the credentialed cause suppressed.
+    """
+    try:
+        return await _eager_build_with_retry(
+            build, max_attempts=max_attempts, backoff_base_s=backoff_base_s
+        )
+    except Exception as exc:
+        logger.error("eager startup build failed", exc_info=exc)
+        raise RuntimeError(_EAGER_BUILD_FAILED_MESSAGE) from None
 
 
 # The declared-identity keys the trace seam harvests, and the transport header
@@ -9956,19 +10008,20 @@ _TRACE_TRANSPORT_SESSION_HEADER = "mcp-session-id"
 _TRACE_EMIT_TIMEOUT_SECONDS = 5.0
 
 
-class TracingFastMCP(FastMCP):
-    """A ``FastMCP`` whose ``call_tool`` records ONE trace row per dispatch.
+class ToolTraceMiddleware(Middleware):
+    """A fastmcp ``on_call_tool`` middleware recording ONE trace row per dispatch.
 
-    THE SEAM, and why it is here rather than in ~20 tool wrappers: ``mcp``
-    exposes no middleware or hook API, and the standalone ``fastmcp`` package
-    that does is a server-wide dependency swap far beyond this change. So the
-    package demonstrably does not do the job and the gap is hand-rolled at its
-    MINIMUM — one method, delegating to ``super()``. ``_setup_handlers``
-    registers the BOUND ``self.call_tool`` with the lowlevel server, so
-    overriding the method puts the emission on the WIRE path by construction:
-    every tool — built-in, extension-registered, and any registered later —
-    passes through this one funnel. Per-tool emission would be ~20 forgettable
-    obligations, invisible for any tool nobody remembered to wrap.
+    THE SEAM, and why it is a middleware rather than ~20 tool wrappers: fastmcp's
+    ``Middleware.on_call_tool`` runs on the WIRE dispatch path for EVERY tool —
+    built-in (``@mcp.tool``), extension-registered (``mcp.tool(name=…)(wrapper)``),
+    and any registered later — so this one funnel observes them all (the migration
+    spike MEASURED middleware gating on the wire). Per-tool emission would be ~20
+    forgettable obligations, invisible for any tool nobody remembered to wrap. The
+    retired ``mcp`` SDK exposed no middleware, so this seam WAS a ``FastMCP``
+    subclass overriding ``call_tool``; the migration to standalone ``fastmcp`` 3.x
+    re-homes it here (design M3), with the failure posture and ``ok``-latch
+    UNCHANGED (M4). The write policy is the reused module-level
+    :func:`_record_tool_trace`; the funnel just calls it once per dispatch.
 
     THE FAILURE POSTURE, ruled: the tool call's outcome ALWAYS wins. A
     trace-write failure is logged loudly server-side and NEVER surfaces to the
@@ -9978,7 +10031,7 @@ class TracingFastMCP(FastMCP):
     loss is data loss; a trace row is telemetry ABOUT a call.
 
     THE ``ok`` LATCH: ``ok`` starts False and is latched True only after
-    ``super().call_tool`` RETURNS — there is no ``except`` arm at all. An
+    ``call_next`` RETURNS — there is no ``except`` arm at all. An
     ``except Exception`` flag would be a failure-class NAME-LIST, and
     ``CancelledError`` (a ``BaseException``) is the door it misses; a timed-out
     drain counted as a performed one would corrupt the very numerator this
@@ -9999,18 +10052,22 @@ class TracingFastMCP(FastMCP):
     that same bound caps what the emission can add to ANY call's latency.
     """
 
-    async def call_tool(
-        self, name: str, arguments: dict[str, Any]
-    ) -> Sequence[ContentBlock] | dict[str, Any]:
-        """Dispatch ``name`` through ``super()``, then record exactly one trace row."""
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[CallToolRequestParams],
+        call_next: CallNext[CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
+        """Dispatch through ``call_next``, then record exactly one trace row."""
         started = time.perf_counter()
         ok = False
         try:
-            result = await super().call_tool(name, arguments)
+            result = await call_next(context)
             ok = True
+            # B2: the tool's OUTCOME always wins — return call_next's result UNCHANGED.
             return result
         finally:
             latency_ms = (time.perf_counter() - started) * 1000
+            tool = context.message.name
             try:
                 # SHIELDED + BOUNDED — see the class docstring's cancellation
                 # leg. The shield is what makes the `finally` placement true
@@ -10020,73 +10077,99 @@ class TracingFastMCP(FastMCP):
                     anyio.CancelScope(shield=True),
                     anyio.fail_after(_TRACE_EMIT_TIMEOUT_SECONDS),
                 ):
-                    await self._record_tool_trace(
-                        tool=name, arguments=arguments, latency_ms=latency_ms, ok=ok
+                    await _record_tool_trace(
+                        fastmcp_context=context.fastmcp_context,
+                        tool=tool,
+                        arguments=dict(context.message.arguments or {}),
+                        latency_ms=latency_ms,
+                        ok=ok,
                     )
             except Exception:
                 # LOUD where it can be — the server log — and invisible to the
                 # caller. A silent failure plus a flatlined traces section is a
                 # dead instrument with nothing to diagnose from.
-                logger.exception("trace.emit.failed", extra={"tool": name})
+                logger.exception("trace.emit.failed", extra={"tool": tool})
 
-    async def _record_tool_trace(
-        self, *, tool: str, arguments: dict[str, Any], latency_ms: float, ok: bool
-    ) -> None:
-        """Write ONE trace row for a dispatch, or do nothing if no store is reachable.
 
-        Identity is DECLARED or absent — never inferred. There is no
-        session-sticky attribution and no "probably the same agent as the last
-        call": a guessed identity in a measurement instrument poisons the curve
-        it exists to produce, invisibly, and no aggregate can later tell a guess
-        from a declaration. A value is recorded only if it IS a ``str``, so a
-        future tool's unrelated integer parameter cannot mint an identity.
+async def _record_tool_trace(
+    *,
+    fastmcp_context: Any,
+    tool: str,
+    arguments: dict[str, Any],
+    latency_ms: float,
+    ok: bool,
+) -> None:
+    """Write ONE trace row for a dispatch, or do nothing if no store is reachable.
 
-        The ``ordinal`` is NOT passed: it is minted server-side inside the write
-        from the shared native sequence. The transport correlator is MEASURED,
-        never declared, and is a CORRELATOR rather than an identity.
-        """
-        try:
-            request_context = request_ctx.get()
-        except LookupError:
-            # An in-process call, or a transport that never set a request
-            # context: there is no store to write through. DEBUG, not WARNING —
-            # this is a real and expected shape (nothing is broken), but a
-            # silent return would be unobservable, and an absence nobody can see
-            # is how a dead emission survives every green gate.
-            logger.debug("trace.emit.no_request_context", extra={"tool": tool})
-            return
-        app_context = request_context.lifespan_context
-        try:
-            store = _trace_write_store(cast(AppContext, app_context))
-        except AttributeError:
-            # The context carries no write store. Unlike the branch above this
-            # is NOT an expected shape, so it is LOUD: it means the emission has
-            # been un-wired, and every trace would otherwise vanish with every
-            # gate still green.
-            logger.warning("trace.emit.no_write_store", extra={"tool": tool})
-            return
-        declared = {
-            key: _bounded_trace_identity(value)
-            for key, value in ((key, arguments.get(key)) for key in _TRACE_DECLARED_KEYS)
-            if isinstance(value, str)
-        }
-        request = getattr(request_context, "request", None)
-        headers = getattr(request, "headers", None)
-        transport_session = (
-            headers.get(_TRACE_TRANSPORT_SESSION_HEADER) if headers is not None else None
-        )
-        await store.record_trace(
-            tool=_bounded_trace_identity(tool),
-            params_hash=_trace_params_hash(arguments),
-            latency_ms=latency_ms,
-            agent=declared.get("agent"),
-            session=declared.get("session"),
-            action=declared.get("action"),
-            transport_session=(
-                None if transport_session is None else _bounded_trace_identity(transport_session)
-            ),
-            ok=ok,
-        )
+    Identity is DECLARED or absent — never inferred. There is no
+    session-sticky attribution and no "probably the same agent as the last
+    call": a guessed identity in a measurement instrument poisons the curve
+    it exists to produce, invisibly, and no aggregate can later tell a guess
+    from a declaration. A value is recorded only if it IS a ``str``, so a
+    future tool's unrelated integer parameter cannot mint an identity.
+
+    The ``ordinal`` is NOT passed: it is minted server-side inside the write
+    from the shared native sequence. The transport correlator is MEASURED,
+    never declared, and is a CORRELATOR rather than an identity.
+
+    Mechanism under fastmcp (design B5/B7, M4 — policy UNCHANGED): the funnel
+    hands us the per-call :class:`~fastmcp.Context` directly (no ContextVar
+    lookup). ``None`` means an in-process / no-request
+    dispatch with no store to write through (DEBUG, expected); the AppContext
+    hangs off ``fastmcp_context.request_context.lifespan_context``; and the
+    transport correlator comes from :func:`fastmcp.server.dependencies.get_http_headers`
+    (``{}`` when there is no HTTP request).
+    """
+    if fastmcp_context is None or fastmcp_context.request_context is None:
+        # An in-process call, or a transport that never set a request context:
+        # there is no store to write through. DEBUG, not WARNING — this is a real
+        # and expected shape (nothing is broken), but a silent return would be
+        # unobservable, and an absence nobody can see is how a dead emission
+        # survives every green gate. fastmcp types ``Context.request_context`` as
+        # ``RequestContext | None`` (see ``_app_context``), so a non-None context
+        # can still carry a ``None`` request_context — the SAME quiet DEBUG no-op,
+        # never a loud ``trace.emit.failed`` from dereferencing None (F3).
+        logger.debug("trace.emit.no_request_context", extra={"tool": tool})
+        return
+    app_context = fastmcp_context.request_context.lifespan_context
+    try:
+        store = _trace_write_store(cast(AppContext, app_context))
+    except AttributeError:
+        # The context carries no write store. Unlike the branch above this is NOT
+        # an expected shape, so it is LOUD: it means the emission has been
+        # un-wired, and every trace would otherwise vanish with every gate still
+        # green.
+        logger.warning("trace.emit.no_write_store", extra={"tool": tool})
+        return
+    declared = {
+        key: _bounded_trace_identity(value)
+        for key, value in ((key, arguments.get(key)) for key in _TRACE_DECLARED_KEYS)
+        if isinstance(value, str)
+    }
+    # MEASURED, never declared — the transport correlator off the request headers.
+    # ⚠ ``get_http_headers()`` STRIPS ``mcp-session-id`` by DEFAULT: it sits in the
+    # ``include_all=False`` exclude set (verified in installed fastmcp
+    # ``server/dependencies.py`` — the "MCP-related headers" block), so a bare
+    # ``.get("mcp-session-id")`` is None for EVERY traced HTTP call, silently
+    # nulling the correlator on every row (F1 / finding #381). ``include=`` subtracts
+    # the name back out of the exclude set, so it is returned when present. It still
+    # returns {} when there is no HTTP request (an in-memory / in-process dispatch),
+    # so an absent correlator reads None, not a crash.
+    transport_session = get_http_headers(include={_TRACE_TRANSPORT_SESSION_HEADER}).get(
+        _TRACE_TRANSPORT_SESSION_HEADER
+    )
+    await store.record_trace(
+        tool=_bounded_trace_identity(tool),
+        params_hash=_trace_params_hash(arguments),
+        latency_ms=latency_ms,
+        agent=declared.get("agent"),
+        session=declared.get("session"),
+        action=declared.get("action"),
+        transport_session=(
+            None if transport_session is None else _bounded_trace_identity(transport_session)
+        ),
+        ok=ok,
+    )
 
 
 def _bounded_trace_identity(value: str) -> str:
@@ -10164,21 +10247,20 @@ def build_mcp_server(server: LoreServer) -> Any:
     calls the matching handler — every tool returns a pydantic value object (a
     filtered/summarised shape), never a raw store dump.
 
-    **Run-once guard.** FastMCP enters this lifespan once per MCP SESSION (the
-    streamable-http session manager calls ``MCPServer.run`` — and the user
-    lifespan — for every new client session), so a single uvicorn process would
-    otherwise run the heavy startup (probe gate / initial reconcile / watcher
-    start) once per session. A :class:`_ProcessLifespanGuard` makes that startup
-    idempotent per process: the first session builds the shared
-    :class:`AppContext`, every concurrent session reuses it, and the last session
-    to exit tears it down — exactly one probe gate, one initial reconcile, and one
-    watcher per container start regardless of how many sessions connect.
+    **Run-once, eagerly.** fastmcp enters this ``lifespan=`` exactly ONCE PER
+    PROCESS (its ref-counted ``_lifespan_manager`` shares one entry across every
+    concurrent MCP session), at ASGI process startup — so the heavy build (probe
+    gate / initial reconcile / watcher start) runs once per container start
+    regardless of how many sessions connect, with no bespoke per-session guard
+    (design §5b-C2, the ~150-LOC apparatus is deleted). FP-07 bounded-retry
+    (:func:`_eager_build_with_retry`) wraps the build so a transient boot-time
+    dependency blip is retried, not fatal.
 
     Args:
         server: The composed :class:`LoreServer`.
 
     Returns:
-        The configured :class:`~mcp.server.fastmcp.FastMCP` instance.
+        The configured :class:`~fastmcp.FastMCP` instance.
     """
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
@@ -10207,15 +10289,13 @@ def build_mcp_server(server: LoreServer) -> Any:
         else frozenset(config.tools.enabled)
     )
 
-    async def _build_context() -> tuple[AppContext, Any]:
+    async def _build_context() -> AppContext:
         """Run the heavy startup once: build the AppContext (SurrealDB write stack).
 
         Returns:
-            The built ``(app_context, None)`` pair the guard reuses across
-            sessions. The second element is the process-owned client the guard
-            closes on the last release; the SurrealDB stack is owned and torn down
-            by ``AppContext.aclose`` itself, so there is no separate client to hand
-            back — ``None`` (the guard's release tolerates it).
+            The built :class:`AppContext`. The SurrealDB stack is owned and torn
+            down by ``AppContext.aclose`` itself, so there is no separate client to
+            hand back — the native ``lifespan=`` closes the context on shutdown.
         """
         app_context = await build_app_context(
             server=server,
@@ -10228,60 +10308,60 @@ def build_mcp_server(server: LoreServer) -> Any:
         # not inside build_app_context — so the DI core the tests drive directly
         # never fires the network probe. Non-blocking (schedules a background task).
         await app_context.start_calibration_probe()
-        return app_context, None
-
-    # ONE guard per built server → one shared heavy startup per process. Captured
-    # by the per-session lifespan closure below.
-    guard = _ProcessLifespanGuard(_build_context)
+        return app_context
 
     @asynccontextmanager
     async def _lifespan(_mcp: FastMCP) -> AsyncIterator[AppContext]:
         # Configure structured logging FIRST so every startup event (probe gate,
         # initial reconcile, watcher start) is captured in the chosen format with
         # the redaction backstop in place. Env (LORE_LOG_LEVEL) overrides the
-        # config level; idempotent and scoped to the lore namespace. (Cheap +
-        # idempotent, so it is fine to re-run per session even though the heavy
-        # startup behind the guard runs once.)
+        # config level; idempotent and scoped to the lore namespace.
         configure_logging_from_config(config)
-        # The guard runs the heavy startup once per PROCESS; this per-session enter
-        # only takes/releases a lease (the second session reuses the first's
-        # context — no second probe gate, watcher, or initial reconcile).
-        app_context = await guard.acquire()
+        # fastmcp enters this lifespan ONCE PER PROCESS (ref-counted _lifespan_manager),
+        # so the heavy build runs here directly — no per-session guard/interceptor
+        # (the ~150-LOC apparatus is deleted, design §5b-C2). FP-07: a transient
+        # SurrealDB/TEI boot blip is retried with bounded backoff rather than
+        # aborting the container on the first failure. On TOTAL failure the wrapper
+        # logs the redacted detail and raises a fixed operator-safe message (never
+        # str(exc)) so a credentialed boot exception cannot leak into uvicorn's
+        # UNREDACTED startup log (F2). The native lifespan closes the context on
+        # process shutdown.
+        app_context = await _eager_build_or_operator_safe_error(
+            _build_context,
+            max_attempts=_DEFAULT_EAGER_MAX_ATTEMPTS,
+            backoff_base_s=_DEFAULT_EAGER_BACKOFF_BASE_S,
+        )
         try:
             yield app_context
         finally:
-            await guard.release()
+            await app_context.aclose()
 
-    # The ONE construction site, and it MUST be the tracing subclass: a plain
-    # FastMCP here traces nothing while every emission pin driven directly
-    # against the subclass still passes, and the served trace count stays 0
-    # forever with every gate green.
-    mcp: FastMCP = TracingFastMCP(
+    # The ONE construction site, and it MUST install the trace middleware: a plain
+    # FastMCP here traces nothing while every emission pin driven directly against
+    # the middleware still passes, and the served trace count stays 0 forever with
+    # every gate green (design D7). ``version=`` sets the wire ``serverInfo.version``
+    # (resolved at CONSTRUCTION so an env baked after import is honoured — D4). host/
+    # port are NOT ctor kwargs (read at the uvicorn call site — D2); the mount path
+    # moves to ``http_app(path=)`` in build_asgi_app (C1).
+    mcp: FastMCP = FastMCP(
         name=f"lore-{config.project.slug}",
         instructions=build_instructions(enabled_tool_names, identity=config.identity),
         lifespan=_lifespan,
-        host=config.server.host,
-        port=config.server.port,
-        streamable_http_path=config.server.path,
+        version=_resolve_version(),
+        middleware=[ToolTraceMiddleware()],
     )
     _register_tools(mcp, server)
-    # FastMCP takes no ``version=`` kwarg; the low-level server it wraps carries
-    # the wire ``serverInfo.version`` (``create_initialization_options().server_version``).
-    # Left as None, the MCP SDK would advertise its OWN version — so set lore's
-    # here. Resolve at CONSTRUCTION time so an env baked after import is honoured.
-    mcp._mcp_server.version = _resolve_version()
-    # Surface the SAME process-lifespan guard on the returned server so the ASGI
-    # composition (build_asgi_app) can take the EAGER process-startup lease through
-    # it — running the heavy build once at uvicorn startup rather than lazily on the
-    # first session. Additive (an attribute), so the single-FastMCP return signature
-    # the ~25 callers depend on is unchanged.
-    mcp._lore_eager_guard = guard  # type: ignore[attr-defined]
     return mcp
 
 
-def _app_context(context: Context[Any, AppContext, Any]) -> AppContext:
+def _app_context(context: Context) -> AppContext:
     """Fetch the live :class:`AppContext` off a request's lifespan context."""
-    return context.request_context.lifespan_context
+    # fastmcp types ``Context.request_context`` as ``RequestContext | None`` and its
+    # ``lifespan_context`` as ``Any``; during a tool dispatch the request context is always
+    # present and carries the AppContext the lifespan yielded, so read it through ``Any`` and
+    # re-assert the concrete type (the same seam the middleware's ``_record_tool_trace`` uses).
+    request_context: Any = context.request_context
+    return cast(AppContext, request_context.lifespan_context)
 
 
 # Tool annotations (mcp-builder: set readOnlyHint / idempotentHint / openWorldHint
@@ -10462,7 +10542,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def search(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         query: Annotated[
             str,
             Field(
@@ -10592,7 +10672,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def get_symbol(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         qualified_name: Annotated[
             str,
             Field(
@@ -10631,7 +10711,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def verify(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         qualified_name: Annotated[
             str,
             Field(
@@ -10700,7 +10780,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_SAVE_MEMORY_ANNOTATIONS,
     )
     async def remember(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         text: Annotated[
             str,
             Field(
@@ -10807,7 +10887,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def recall(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         query: Annotated[
             str,
             Field(
@@ -10869,7 +10949,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_TASK_TOOL_ANNOTATIONS,
     )
     async def claim_task(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         task_id: Annotated[
             str,
             Field(
@@ -10932,7 +11012,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_TASK_TOOL_ANNOTATIONS,
     )
     async def tasks(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         action: Annotated[
             str,
             Field(
@@ -11157,7 +11237,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_COMMS_TOOL_ANNOTATIONS,
     )
     async def comms(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         action: Annotated[
             str,
             Field(
@@ -11424,7 +11504,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def read(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         tier: Annotated[
             str,
             Field(
@@ -11478,7 +11558,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def diff(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         since: Annotated[
             str | None,
             Field(
@@ -11540,7 +11620,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_FINDINGS_TOOL_ANNOTATIONS,
     )
     async def findings(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         action: Annotated[
             str,
             Field(
@@ -11733,7 +11813,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_INDEX_ANNOTATIONS,
     )
     async def index(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         reconcile: Annotated[
             bool,
             Field(
@@ -11799,7 +11879,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def dead_code(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         max_results: Annotated[
             int,
             Field(
@@ -11854,7 +11934,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def impact(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         target: Annotated[
             str,
             Field(
@@ -11911,7 +11991,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
         annotations=_READ_ONLY_ANNOTATIONS,
     )
     async def map(
-        context: Context[Any, AppContext, Any],
+        context: Context,
         budget: Annotated[
             int,
             Field(
@@ -12067,16 +12147,22 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
     # AppContext). A placeholder store handle suffices — the metadata pass never
     # invokes the handler or the placeholder tokenizer.
     composition_ctx = server.extension_context(store=None)
+    # A SYNC collision guard (design §3-P9). fastmcp's public ``get_tool`` is ASYNC and
+    # ``mcp._tool_manager`` is GONE (renamed ``_local_provider``; §0), so the guard
+    # tracks the names registered so far LOCALLY rather than querying the registry.
+    # Two legs: the DECLARED UNIVERSE (``_ALL_BUILTIN_TOOL_NAMES`` — every built-in,
+    # ENABLED OR DISABLED) and this deploy's already-registered extension tools.
+    registered_extension_names: set[str] = set()
     for spec in server.tool_specs(composition_ctx):
         # Check the DECLARED UNIVERSE, not just the registered set (packet 45, L2-4):
         # a built-in DISABLED by the ``tools:`` allowlist is not registered on this
         # deploy, yet its name stays RESERVED — otherwise an extension could claim a
         # disabled built-in's name and ``tools/list`` would show the name present but
         # bound to the WRONG handler, with every token/biconditional pin still green.
-        if (
-            spec.name in _ALL_BUILTIN_TOOL_NAMES
-            or mcp._tool_manager.get_tool(spec.name) is not None  # noqa: SLF001
-        ):
+        # ``on_duplicate='error'`` cannot do this — it only sees REGISTERED tools, so
+        # a disabled built-in's name would be free to shadow; the universe check is the
+        # discriminating leg (adversary-59, packet 45 L2-4).
+        if spec.name in _ALL_BUILTIN_TOOL_NAMES or spec.name in registered_extension_names:
             raise ValueError(
                 f"extension tool {spec.name!r} collides with an already-registered tool "
                 f"or a built-in name reserved by the declared universe; refusing to shadow "
@@ -12084,15 +12170,18 @@ def _register_extension_tools(mcp: FastMCP, server: LoreServer) -> None:
                 f"unique across the built-ins and every extension)."
             )
         wrapper = _extension_tool_wrapper(spec)
-        # R14 (packet 39): an extension tool may MUTATE, so it publishes the same
-        # explicit, honest ``readOnlyHint=False`` posture all 15 built-ins carry —
-        # never ``None``, which would leave the consumer guessing whether it writes.
-        mcp.add_tool(
-            wrapper,
+        # coupling #2: fastmcp's ``add_tool(self, tool)`` is single-arg, so the metadata
+        # rides the ``mcp.tool(name=…, description=…, annotations=…)`` decorator applied
+        # to the wrapper (probed-working; design D6). R14 (packet 39): an extension tool
+        # may MUTATE, so it publishes the same explicit, honest ``readOnlyHint=False``
+        # posture all 15 built-ins carry — never ``None``, which would leave the consumer
+        # guessing whether it writes.
+        mcp.tool(
             name=spec.name,
             description=spec.description,
             annotations=ToolAnnotations(readOnlyHint=False),
-        )
+        )(wrapper)
+        registered_extension_names.add(spec.name)
 
 
 # The parameter kinds an extension tool handler may declare and have faithfully
@@ -12148,7 +12237,7 @@ def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
             names the offending :class:`ToolSpec` and field.
     """
 
-    async def _tool(context: Context[Any, AppContext, Any], **kwargs: Any) -> Any:
+    async def _tool(context: Context, **kwargs: Any) -> Any:
         handler = _app_context(context).extension_tool_handler(spec.name)
         result = handler(**kwargs)
         if inspect.isawaitable(result):
@@ -12207,316 +12296,70 @@ def _extension_tool_wrapper(spec: ToolSpec) -> Callable[..., Awaitable[Any]]:
     return _tool
 
 
-# ASGI typing aliases for the eager-startup interceptor. An ASGI app is
-# ``(scope, receive, send) -> awaitable[None]`` and needs no Starlette import.
-# These are byte-for-byte identical to the ones in loremaster.auth, but kept
-# LOCAL on purpose rather than imported: auth's copies are module-PRIVATE
-# (underscore-prefixed), so reusing them would reach into another module's
-# private surface, and server.py deliberately imports auth only LAZILY inside
-# build_asgi_app — a module-level ``from loremaster.auth import _Scope, ...``
-# would add an eager import edge to dedup five trivial stdlib-typed lines. If a
-# shared ASGI-types home is ever wanted, promote them to a public module; that
-# is an API-surface (CONTRACT) decision, not this refactor's call.
-_Scope = MutableMapping[str, Any]
-_Message = MutableMapping[str, Any]
-_Receive = Callable[[], Awaitable[_Message]]
-_Send = Callable[[_Message], Awaitable[None]]
-_ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
-
-# ASGI lifespan protocol message types (server <- uvicorn / server -> uvicorn).
-_LIFESPAN_SCOPE = "lifespan"
-_LIFESPAN_STARTUP = "lifespan.startup"
-_LIFESPAN_STARTUP_COMPLETE = "lifespan.startup.complete"
-_LIFESPAN_STARTUP_FAILED = "lifespan.startup.failed"
-_LIFESPAN_SHUTDOWN = "lifespan.shutdown"
-_LIFESPAN_SHUTDOWN_COMPLETE = "lifespan.shutdown.complete"
-# Operator-safe FIXED message for an eager-build failure surfaced as the ASGI
-# lifespan.startup.failed event. WHY a constant and not str(exc): uvicorn logs
-# this message UNREDACTED at process startup, so a credentialed config (e.g. a
-# surreal.url or embedding base_url with user:pass@host surfacing in a transport
-# exception) would leak verbatim into the startup log. The real detail is logged
-# through the module logger (the redaction-backstopped lore sink) instead — see
-# _drive_lifespan.
-_EAGER_BUILD_FAILED_MESSAGE = "eager startup build failed; see server logs"
-
 # FP-07 — bounded retry-with-backoff for the eager heavy build at process startup.
-# A TRANSIENT SurrealDB/TEI outage at boot makes the eager build raise once ->
-# lifespan.startup.failed -> uvicorn aborts -> the container EXITS with no
-# auto-retry. A brief dependency blip should not permanently down the container, so
-# the eager startup retries the build up to ``_DEFAULT_EAGER_MAX_ATTEMPTS`` times
-# (> 1, so the default is BOUNDED, not single-shot), sleeping
-# ``_DEFAULT_EAGER_BACKOFF_BASE_S`` seconds between attempts. Failing EVERY attempt
-# still surfaces lifespan.startup.failed (fail-closed after exhausting the budget)
-# so uvicorn aborts a genuinely-down dependency rather than looping forever. These
-# are the PRODUCTION defaults; tests inject a tiny N + zero backoff to stay fast.
+# A TRANSIENT SurrealDB/TEI outage at boot makes the heavy build raise once; fastmcp's
+# native ``lifespan=`` does NOT retry a failed build, so without this the container
+# aborts on the first blip. A brief dependency blip should not permanently down the
+# container, so :func:`_eager_build_with_retry` retries the build up to
+# ``_DEFAULT_EAGER_MAX_ATTEMPTS`` times (> 1, so the default is BOUNDED, not
+# single-shot), sleeping ``_DEFAULT_EAGER_BACKOFF_BASE_S`` seconds between attempts.
+# Failing EVERY attempt re-raises (fail-closed after exhausting the budget) so uvicorn
+# aborts a genuinely-down dependency rather than looping forever. These are the
+# PRODUCTION defaults; tests inject a tiny N + zero backoff to stay fast.
 _DEFAULT_EAGER_MAX_ATTEMPTS = 5
 _DEFAULT_EAGER_BACKOFF_BASE_S = 2.0
 
 
-class _EagerStartupLifespan:
-    """ASGI lifespan-interceptor that runs loremaster's heavy build EAGERLY.
+# The deploy knob naming the PROXIED Host header(s) fastmcp's host_origin_protection
+# must accept (design §5b-C3′). ServerConfig carries no proxied-host field, and lore's
+# real topology terminates TLS upstream (nginx-ingress, auth.py), so the Host lore sees
+# is the proxied name — an env knob (comma-separated) lets a deploy name it without a
+# config-schema change. Empty (the loopback dogfooding deploy) needs nothing here:
+# fastmcp's DEFAULT_HOSTS (127.0.0.1/localhost/::1) + the configured bind host cover it.
+_ALLOWED_HOSTS_ENV = "LORE_ALLOWED_HOSTS"
 
-    Today the heavy startup (probe gate -> initial reconcile -> schema self-heal ->
-    file watcher) runs in FastMCP's per-MCP-SESSION user lifespan, so a freshly
-    (re)started container does nothing heavy until the FIRST client connects — a
-    dead index that *looks* up. This wrapper hoists that build to the ASGI/uvicorn
-    PROCESS startup (the ``lifespan.startup`` event): it drives the inner streamable
-    app's own session-manager lifespan (so the server still serves) AND takes a
-    PROCESS-LIFETIME eager lease against the guard ``build_mcp_server`` surfaced — so
-    the heavy build runs ONCE at startup and the shared :class:`AppContext` survives
-    between sessions (no per-session build/teardown churn; every per-session lease
-    just reuses the eager one). On ``lifespan.shutdown`` it releases the eager lease
-    (-> AppContext teardown, incl. the SurrealDB write stack) and exits the inner
-    lifespan.
 
-    Only the ``lifespan`` scope is intercepted; every other scope (``http``) is
-    delegated straight to the inner app, so the Origin/Bearer wrapping that sits
-    OUTSIDE this interceptor (and the inner app's HTTP routing) is untouched.
+def _resolve_allowed_hosts(config: LoreConfig) -> list[str]:
+    """The Host-header allowlist for fastmcp's ``host_origin_protection`` (design §5b-C3′).
+
+    Strict host validation (spike Item 3) closes lore's today-open Host/DNS-rebinding
+    gap, but would 421 legit traffic whose Host is not a loopback default — lore's real
+    deploy terminates TLS upstream so the Host is the PROXIED name. The bind host is
+    always allowed; the ``LORE_ALLOWED_HOSTS`` env names any additional proxied host(s)
+    (comma-separated; fnmatch patterns like ``*.example.org`` work — fastmcp's
+    ``_host_matches``). A NON-empty list makes the guard validate the Host even for a
+    non-loopback bind (``has_explicit_allowed_hosts``), so the gap cannot silently
+    reopen. fastmcp adds its own DEFAULT_HOSTS + the scope bind on top.
     """
-
-    def __init__(
-        self,
-        inner: _ASGIApp,
-        guard: Any | None,
-        *,
-        max_attempts: int = _DEFAULT_EAGER_MAX_ATTEMPTS,
-        backoff_base_s: float = _DEFAULT_EAGER_BACKOFF_BASE_S,
-    ) -> None:
-        """Wrap the inner streamable app + (optionally) the eager lease guard.
-
-        Args:
-            inner: The inner streamable-http (Starlette) ASGI app — its own ASGI
-                lifespan starts/stops the session manager / task group.
-            guard: The :class:`_ProcessLifespanGuard` ``build_mcp_server`` surfaced
-                on the FastMCP object (via ``mcp._lore_eager_guard``), or ``None``.
-                Tolerated as ``None`` defensively — the inner lifespan still runs,
-                the eager lease is simply skipped (no heavy build hoisted).
-            max_attempts: The BOUNDED retry budget for the eager heavy build at
-                ``lifespan.startup`` (FP-07). A transient SurrealDB/TEI blip is retried
-                up to this many times before failing closed; the production default
-                is ``_DEFAULT_EAGER_MAX_ATTEMPTS`` (> 1, so it is never single-shot).
-            backoff_base_s: Seconds slept between failed eager-build attempts. The
-                production default is ``_DEFAULT_EAGER_BACKOFF_BASE_S``; tests inject
-                zero so the suite never sleeps on a deliberately-failing build.
-        """
-        self._inner = inner
-        self._guard = guard
-        # The bounded retry policy is honoured ONLY when there is a guard to retry
-        # against — a max_attempts below 1 is clamped to a single attempt so the
-        # eager build always runs at least once.
-        self._max_attempts = max(1, max_attempts)
-        self._backoff_base_s = backoff_base_s
-
-    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
-        """Intercept only the ``lifespan`` scope; delegate everything else.
-
-        Non-lifespan scopes (HTTP) pass straight through to the inner app so this
-        interceptor never touches request routing — the security middleware wrapping
-        it stays in force verbatim.
-        """
-        if scope.get("type") != _LIFESPAN_SCOPE:
-            await self._inner(scope, receive, send)
-            return
-        await self._drive_lifespan(scope, receive, send)
-
-    async def _drive_lifespan(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
-        """Drive the ASGI lifespan protocol with the eager build composed in.
-
-        Runs the inner app's own lifespan in a background task (bridged by
-        per-direction message queues) so the eager lease can be sequenced AROUND it:
-        the inner session manager starts first, THEN the eager lease is taken (the
-        heavy build) before reporting startup complete; on shutdown the eager lease
-        is released BEFORE the inner lifespan exits, so the AppContext teardown never
-        outlives the session manager. A failed eager build is reported as
-        ``lifespan.startup.failed`` and nothing is cached (the guard does not cache
-        failures), so a later startup retries.
-        """
-        # Bridge queues: the inner app pulls its lifespan messages from inbox and
-        # pushes its replies to outbox; this coroutine sequences both.
-        inbox: asyncio.Queue[_Message] = asyncio.Queue()
-        outbox: asyncio.Queue[_Message] = asyncio.Queue()
-
-        async def inner_receive() -> _Message:
-            return await inbox.get()
-
-        async def inner_send(message: _Message) -> None:
-            await outbox.put(message)
-
-        # create_task (not ensure_future): this coroutine always runs under a live
-        # event loop, and the modern idiom returns a concrete asyncio.Task. The
-        # inner call is wrapped so its broad _ASGIApp Awaitable return is awaited as
-        # a coroutine (what create_task requires) without narrowing the alias.
-        async def _run_inner() -> None:
-            await self._inner(scope, inner_receive, inner_send)
-
-        inner_task: asyncio.Task[None] = asyncio.create_task(_run_inner())
-        try:
-            # The first lifespan message from uvicorn must be the startup event.
-            # A hard check (not an ``assert``): asserts are stripped under
-            # ``python -O``, and an out-of-protocol first message must surface as a
-            # real error rather than silently driving the inner startup over it.
-            message = await receive()
-            if message["type"] != _LIFESPAN_STARTUP:
-                raise RuntimeError(
-                    f"expected {_LIFESPAN_STARTUP} first, got {message['type']!r}"
-                )
-            # 1) Start the inner session-manager lifespan and await its reply.
-            await inbox.put({"type": _LIFESPAN_STARTUP})
-            inner_startup = await outbox.get()
-            if inner_startup["type"] == _LIFESPAN_STARTUP_FAILED:
-                # The inner app itself failed to start — relay the failure verbatim
-                # WITHOUT taking the eager lease, and do not report complete.
-                await send(inner_startup)
-                await inner_task
-                return
-            # 2) Take the PROCESS-LIFETIME eager lease — the heavy build. Skipped
-            #    when no guard was surfaced (defensive), so the inner still runs.
-            #    FP-07: a transient SurrealDB/TEI outage at boot must not permanently
-            #    down the container, so the build is RETRIED with bounded backoff —
-            #    up to self._max_attempts acquires, sleeping self._backoff_base_s
-            #    between failures. A build that fails K < N times then succeeds comes
-            #    up cleanly; failing ALL N attempts surfaces lifespan.startup.failed
-            #    (fail-closed) so uvicorn aborts a genuinely-down dependency.
-            if self._guard is not None:
-                last_exc = await self._acquire_eager_lease_with_retry()
-                if last_exc is not None:
-                    # Every retry was exhausted — surface the failure so uvicorn
-                    # aborts; nothing is cached (the guard rolls each failed acquire
-                    # back), so a later startup retries. Tear the already-started
-                    # inner lifespan back down before failing.
-                    await self._shutdown_inner(inbox, outbox, inner_task)
-                    # Log the REAL detail (with traceback) through the module logger,
-                    # which is the redaction-backstopped lore sink, so operators
-                    # still learn WHY startup failed. The ASGI message below stays a
-                    # FIXED operator-safe phrase — never str(exc) — because uvicorn
-                    # logs that message UNREDACTED at startup, so any secret-bearing
-                    # exception text (e.g. a credentialed surreal.url) must not reach
-                    # it.
-                    logger.error("eager startup build failed", exc_info=last_exc)
-                    await send(
-                        {
-                            "type": _LIFESPAN_STARTUP_FAILED,
-                            "message": _EAGER_BUILD_FAILED_MESSAGE,
-                        }
-                    )
-                    return
-            # 3) Both the inner session manager and the eager build are up.
-            await send({"type": _LIFESPAN_STARTUP_COMPLETE})
-
-            # Block until uvicorn signals shutdown. Hard check (asserts are stripped
-            # under ``python -O``): an out-of-protocol message here must error, not
-            # silently fall through into the shutdown-and-release path.
-            message = await receive()
-            if message["type"] != _LIFESPAN_SHUTDOWN:
-                raise RuntimeError(
-                    f"expected {_LIFESPAN_SHUTDOWN}, got {message['type']!r}"
-                )
-            # 4) Release the eager lease (-> teardown) BEFORE exiting the inner
-            #    lifespan, so the AppContext teardown does not outlive the session
-            #    manager unexpectedly.
-            if self._guard is not None:
-                await self._guard.release()
-            await self._shutdown_inner(inbox, outbox, inner_task)
-            await send({"type": _LIFESPAN_SHUTDOWN_COMPLETE})
-        finally:
-            # Never leak the inner lifespan task if this coroutine unwinds early
-            # (e.g. a test stops the handshake by raising from its send). Cancel it
-            # AND await its settling so the CancelledError is retrieved deterministically
-            # within this scope — leaving it to loop-teardown timing risks a
-            # "Task was destroyed but it is pending" warning.
-            if not inner_task.done():
-                inner_task.cancel()
-                try:
-                    await inner_task
-                except asyncio.CancelledError:
-                    pass
-
-    async def _acquire_eager_lease_with_retry(self) -> BaseException | None:
-        """Acquire the eager lease, retrying a transient failure with bounded backoff.
-
-        FP-07. Attempts ``self._guard.acquire()`` up to ``self._max_attempts``
-        times, sleeping ``self._backoff_base_s`` seconds between failures. Returns
-        ``None`` the instant an acquire SUCCEEDS (the eager lease is then held — the
-        heavy build ran). Returns the LAST exception when every attempt failed, so
-        the caller can surface ``lifespan.startup.failed`` (fail-closed) after the
-        budget is exhausted — never an unbounded retry loop that would stop uvicorn
-        ever aborting a genuinely-down dependency.
-
-        The guard's own no-cache-on-failure contract makes the retry safe: a failed
-        ``acquire`` rolls back without caching, so a subsequent attempt rebuilds
-        cleanly rather than re-serving a half-built context.
-
-        Returns:
-            ``None`` on success (lease held), or the last :class:`BaseException`
-            raised when all ``self._max_attempts`` attempts failed.
-        """
-        # The caller only invokes this helper when a guard was surfaced, so the
-        # guard is non-None here (mypy can't see the caller's guard-check).
-        assert self._guard is not None
-        last_exc: BaseException | None = None
-        for attempt in range(self._max_attempts):
-            try:
-                await self._guard.acquire()
-                return None
-            except BaseException as exc:  # noqa: BLE001 — surface any build failure
-                last_exc = exc
-                # Sleep between attempts ONLY when another attempt remains, so a
-                # final-attempt failure fails closed immediately. A zero backoff
-                # (the test policy) makes this a no-op delay.
-                if attempt + 1 < self._max_attempts:
-                    logger.warning(
-                        "eager startup build attempt failed; retrying",
-                        extra={
-                            "attempt": attempt + 1,
-                            "max_attempts": self._max_attempts,
-                        },
-                    )
-                    if self._backoff_base_s > 0:
-                        # ADDITIVE jitter, not an exponential ladder (#207 D3). Several
-                        # containers restarting together against one cold SurrealDB/TEI
-                        # retry in lockstep otherwise. Growth is deliberately NOT added:
-                        # it would move total boot-retry time from ~8s to ~30s and could
-                        # cross a container health-check budget nobody has measured.
-                        # Decorrelation does not require growth, so the shape is
-                        # untouched and the unmeasured trade never arises.
-                        await asyncio.sleep(backoff.additive_jitter(self._backoff_base_s))
-        return last_exc
-
-    @staticmethod
-    async def _shutdown_inner(
-        inbox: asyncio.Queue[_Message],
-        outbox: asyncio.Queue[_Message],
-        inner_task: asyncio.Task[None],
-    ) -> None:
-        """Drive the inner app's lifespan shutdown and await its clean exit."""
-        await inbox.put({"type": _LIFESPAN_SHUTDOWN})
-        # Drain the inner shutdown reply so its lifespan_context fully exits.
-        await outbox.get()
-        await inner_task
+    hosts = [config.server.host]
+    raw = os.environ.get(_ALLOWED_HOSTS_ENV, "")
+    hosts.extend(host.strip() for host in raw.split(",") if host.strip())
+    return hosts
 
 
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     """Assemble the streamable-http ASGI app: Origin-guarded, Bearer-gated if auth.
 
-    The single place the served app is built and gated. Two layers wrap the
-    streamable-http app:
+    The single place the served app is built and gated. Layers, innermost-out:
 
-    * **Origin (DNS-rebinding) guard — ALWAYS on (D11/mcp-builder).** The local
-      streamable-HTTP server binds loopback, but a browser tricked by DNS rebinding
-      still reaches it carrying an attacker ``Origin``; the
+    * **fastmcp ``host_origin_protection`` (C3′, migration benefit).** ``http_app``'s
+      built-in guard validates Host + Origin + DNS-rebinding — a Host check lore did
+      NOT have (``transport_security`` was unset). Enabled explicitly (the fastmcp
+      default is OFF), with ``allowed_hosts`` from :func:`_resolve_allowed_hosts` so a
+      spoofed Host is 421'd while the real proxied Host passes.
+    * **Origin (DNS-rebinding) guard — ALWAYS on (D11/mcp-builder).** The bespoke
       :class:`~loremaster.auth.OriginValidationMiddleware` rejects any non-loopback,
       non-configured Origin with 403 while ALLOWING an absent Origin (a non-browser
-      local client) and loopback — so the no-auth localhost default is unbroken.
-    * **Bearer auth — when an enabled ``auth`` block is configured (D9/D11).** The
-      app is additionally wrapped in
-      :class:`~loremaster.auth.BearerAuthMiddleware` over the configured named-key
-      set; Bearer is the OUTERMOST layer so a request is authenticated, then
-      Origin-checked, then served.
+      local client) and loopback. KEPT alongside fastmcp's guard (design C3/F1 keep-both).
+    * **Bearer auth — when an enabled ``auth`` block is configured (D9/D11).** The app
+      is additionally wrapped in :class:`~loremaster.auth.BearerAuthMiddleware`;
+      Bearer is the OUTERMOST layer so a request is authenticated, then Origin-checked,
+      then served.
 
     Args:
-        mcp: The FastMCP server (its ``streamable_http_app`` is the inner app).
+        mcp: The FastMCP server (its ``http_app(path=…)`` is the inner ASGI app).
         config: The project config (its ``auth`` block decides the Bearer gating;
-            ``server.host`` provides the loopback bind the Origin guard defends).
+            ``server.host``/``server.path`` provide the bind + mount).
 
     Returns:
         The ASGI app to serve: ``Origin(app)`` (no auth) or
@@ -12524,28 +12367,30 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
     """
     from loremaster.auth import OriginValidationMiddleware
 
-    inner: Any = mcp.streamable_http_app()
-    # The heavy build runs EAGERLY at process startup: wrap the inner streamable app
-    # in a lifespan-interceptor that, on lifespan.startup, both enters the inner
-    # session-manager lifespan (so the server serves) AND takes the process-lifetime
-    # eager lease through the guard build_mcp_server surfaced. HTTP scopes pass
-    # straight through, so the Origin/Bearer wrapping below is untouched.
-    eager_guard = getattr(mcp, "_lore_eager_guard", None)
-    # FP-07: wire the PRODUCTION-default BOUNDED retry policy (N > 1 + a real
-    # backoff) so a brief boot-time SurrealDB/TEI blip is retried rather than aborting
-    # the container on the first failure. Passed explicitly so the production
-    # composition's bounded-not-single-shot behaviour is unmistakable at the seam.
-    app: Any = _EagerStartupLifespan(
-        inner,
-        eager_guard,
-        max_attempts=_DEFAULT_EAGER_MAX_ATTEMPTS,
-        backoff_base_s=_DEFAULT_EAGER_BACKOFF_BASE_S,
+    # C1: streamable is fastmcp's default transport; the mount path moves here from the
+    # retired ``streamable_http_path`` ctor kwarg. C3′: enable host_origin_protection
+    # explicitly (default OFF) and configure allowed_hosts for the real proxied topology.
+    # fastmcp enters the ``lifespan=`` once per process natively, so there is NO eager
+    # interceptor to wrap (the ~150-LOC apparatus is deleted, C2).
+    #
+    # C5/FG8: set the transport mode EXPLICITLY (stateful) rather than inheriting
+    # fastmcp's default. ``http_app(stateless_http=None)`` resolves to the global
+    # ``fastmcp.settings.stateless_http`` — an ENV-OVERRIDABLE (``FASTMCP_STATELESS_HTTP``)
+    # default — so an inherited mode could silently flip on a deploy env or a fastmcp
+    # upgrade, with every gate green. ``False`` = stateful (an mcp-session-id is minted),
+    # matching pre-migration behaviour; passing it explicitly makes that a DELIBERATE
+    # choice the env cannot change (R1 / design §5b-C5).
+    inner: Any = mcp.http_app(
+        path=config.server.path,
+        host_origin_protection=True,
+        allowed_hosts=_resolve_allowed_hosts(config),
+        stateless_http=False,
     )
-    # The Origin guard runs for every deployment (DNS-rebinding defense), with the
-    # configured server bind's own origin implicitly covered by the loopback allow
+    # The bespoke Origin guard runs for every deployment (DNS-rebinding defense), with
+    # the configured server bind's own origin implicitly covered by the loopback allow
     # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be
     # threaded here in a future config knob; loopback + absent is the secure default.
-    app = OriginValidationMiddleware(app)
+    app: Any = OriginValidationMiddleware(inner)
     if config.auth is not None and config.auth.enabled:
         from loremaster.auth import BearerAuthMiddleware, build_api_key_verifier
 

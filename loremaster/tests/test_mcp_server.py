@@ -1234,7 +1234,7 @@ class TestNoDeadToolNamesInAgentFacingText:
         texts: dict[str, str] = {"_INSTRUCTIONS": mcp.instructions or ""}
         for tool in tools:
             texts[f"{tool.name}.description"] = tool.description or ""
-            properties = (tool.inputSchema or {}).get("properties", {})
+            properties = (tool.parameters or {}).get("properties", {})
             for field_name, field_schema in properties.items():
                 texts[f"{tool.name}.{field_name}"] = field_schema.get("description") or ""
 
@@ -1657,7 +1657,7 @@ class TestToolInputFieldDescriptions:
         # immediately for the pre-existing surface.
         tools = await self._tools_by_name(tmp_path)
         for name in _ALL_BUILTIN_TOOL_NAMES:
-            properties = tools[name].inputSchema.get("properties", {})
+            properties = tools[name].parameters.get("properties", {})
             if name in _PARAMETERLESS_TOOLS:
                 assert not properties, f"{name} is expected to take no parameters"
                 continue
@@ -1674,7 +1674,7 @@ class TestToolInputFieldDescriptions:
         # The qualified_name description must convey it accepts BOTH a
         # module-qualified dotted name AND a bare identity.
         tools = await self._tools_by_name(tmp_path)
-        description = tools["lore_get_symbol"].inputSchema["properties"]["qualified_name"][
+        description = tools["lore_get_symbol"].parameters["properties"]["qualified_name"][
             "description"
         ].lower()
         assert "bare" in description
@@ -1687,7 +1687,7 @@ class TestToolInputFieldDescriptions:
         # requirement and explicitly rule out the three miss-shapes the gate
         # transcripts hit (a directory, a basename, a path prefix).
         tools = await self._tools_by_name(tmp_path)
-        description = tools["lore_search"].inputSchema["properties"]["path"][
+        description = tools["lore_search"].parameters["properties"]["path"][
             "description"
         ]
         lowered = description.lower()
@@ -1720,20 +1720,30 @@ class TestInputParamConstraints:
         config = _config(slug, tmp_path / "live")
         return build_mcp_server(LoreServer(config))
 
-    def _arg_model(self, mcp: Any, name: str) -> Any:
-        """The pydantic model FastMCP validates a tool's call arguments against.
+    async def _arg_validator(self, mcp: Any, name: str) -> Any:
+        """A validator over a tool's call arguments (fastmcp's own arg TypeAdapter).
 
         Validating this directly is the NON-VACUOUS rejection probe: it isolates
         arg-validation from the handler, so a rejection proves the SCHEMA refused
         the value (not that a missing lifespan context crashed the handler body).
+        fastmcp validates args with a TypeAdapter over the fn WITHOUT its injected
+        Context param (the exact object ``Tool.run`` builds); ``.validate_python``
+        raises ``pydantic.ValidationError`` on a schema-illegal value.
         """
-        return mcp._tool_manager.get_tool(name).fn_metadata.arg_model  # noqa: SLF001
+        from fastmcp.server.dependencies import without_injected_parameters
+        from fastmcp.utilities.types import get_cached_typeadapter
+
+        tool = await mcp.get_tool(name)
+        fn = without_injected_parameters(
+            tool.fn, run_in_thread=getattr(tool, "run_in_thread", False)
+        )
+        return get_cached_typeadapter(fn)
 
     # -- Item 4: detail_level Literal enum ---------------------------------- #
 
     async def test_detail_level_publishes_enum_constraint(self, tmp_path: Path) -> None:
         tools = await self._tools_by_name(tmp_path)
-        prop = tools["lore_search"].inputSchema["properties"]["detail_level"]
+        prop = tools["lore_search"].parameters["properties"]["detail_level"]
         assert prop.get("enum") == ["auto", "summary", "source"], (
             "detail_level must publish the Literal enum so a bad value is rejected, "
             "not silently filtered to empty"
@@ -1745,14 +1755,14 @@ class TestInputParamConstraints:
         from pydantic import ValidationError
 
         mcp = await self._server(tmp_path)
-        model = self._arg_model(mcp, "lore_search")
+        validator = await self._arg_validator(mcp, "lore_search")
         # A value outside the Literal is rejected at arg-validation. A bare-str
         # param would instead ACCEPT it (then silently filter to an empty result).
         with pytest.raises(ValidationError):
-            model.model_validate({"query": "x", "detail_level": "bogus"})
+            validator.validate_python({"query": "x", "detail_level": "bogus"})
         # A valid Literal member is accepted — the rejection is value-specific, not
         # a blanket failure (non-vacuous).
-        model.model_validate({"query": "x", "detail_level": "summary"})
+        validator.validate_python({"query": "x", "detail_level": "summary"})
 
     # -- Item 5: ge= bounds on numeric params ------------------------------- #
 
@@ -1763,10 +1773,10 @@ class TestInputParamConstraints:
         # unchanged as lore_impact's own 'depth' param), max_results on
         # lore_dead_code all carry a minimum of 1 (a count/depth below 1 is
         # meaningless).
-        search_k = tools["lore_search"].inputSchema["properties"]["k"]
-        recall_k = tools["lore_recall"].inputSchema["properties"]["k"]
-        depth = tools["lore_impact"].inputSchema["properties"]["depth"]
-        max_results = tools["lore_dead_code"].inputSchema["properties"]["max_results"]
+        search_k = tools["lore_search"].parameters["properties"]["k"]
+        recall_k = tools["lore_recall"].parameters["properties"]["k"]
+        depth = tools["lore_impact"].parameters["properties"]["depth"]
+        max_results = tools["lore_dead_code"].parameters["properties"]["max_results"]
         assert search_k.get("minimum") == 1
         assert recall_k.get("minimum") == 1
         assert depth.get("minimum") == 1
@@ -1778,16 +1788,16 @@ class TestInputParamConstraints:
         from pydantic import ValidationError
 
         mcp = await self._server(tmp_path)
-        search_model = self._arg_model(mcp, "lore_search")
-        impact_model = self._arg_model(mcp, "lore_impact")
+        search_validator = await self._arg_validator(mcp, "lore_search")
+        impact_validator = await self._arg_validator(mcp, "lore_impact")
         # k=0 (search) and depth=-1 (lore_impact) are schema-rejected at validation.
         with pytest.raises(ValidationError):
-            search_model.model_validate({"query": "x", "k": 0})
+            search_validator.validate_python({"query": "x", "k": 0})
         with pytest.raises(ValidationError):
-            impact_model.model_validate({"target": "x", "depth": -1})
+            impact_validator.validate_python({"target": "x", "depth": -1})
         # A positive value passes — the bound rejects below-1, not all values.
-        search_model.model_validate({"query": "x", "k": 1})
-        impact_model.model_validate({"target": "x", "depth": 1})
+        search_validator.validate_python({"query": "x", "k": 1})
+        impact_validator.validate_python({"target": "x", "depth": 1})
 
 
 class TestToolAnnotations:
@@ -1947,15 +1957,41 @@ _TOOL_OUTPUT_FIELDS: dict[str, set[str]] = {
 def _schema_field_names(schema: dict[str, Any]) -> set[str]:
     """Collect every property name a tool's outputSchema names, transitively.
 
-    Gathers the schema's own ``properties`` keys plus the ``properties`` keys of
-    every model under ``$defs`` (a list-wrapped return publishes the element model
-    in ``$defs`` and only a ``result`` array at top level). This is how a consumer
-    discovers the actual fields; an opaque ``additionalProperties: true`` object
-    contributes NONE of them, so the set stays empty for the regression case.
+    PACKET 59: fastmcp 3.x INLINES nested models (no ``$defs``/``$ref``) — a scalar-model
+    return names its fields at the top-level ``properties``; a list-wrapped return
+    publishes a ``result`` array whose ``items.properties`` carry the element model's
+    fields. So walk the schema tree, collecting every ``properties`` key at any depth
+    (top-level, under ``items``, and under any legacy ``$defs``), which is how a consumer
+    discovers the actual fields. An opaque ``additionalProperties: true`` object
+    contributes NONE of them, so the set stays empty for the regression case (mutation:
+    revert a wrapper to ``list[dict[str, Any]]`` ⇒ ``items`` has no ``properties`` ⇒ only
+    the ``result`` wrapper key survives ⇒ the expected field set is missing ⇒ RED).
     """
-    names: set[str] = set(schema.get("properties", {}).keys())
-    for definition in schema.get("$defs", {}).values():
-        names.update(definition.get("properties", {}).keys())
+    names: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            names.update(properties.keys())
+            for child in properties.values():
+                _walk(child)
+        items = node.get("items")
+        if isinstance(items, dict):
+            _walk(items)
+        # A nested optional/union model publishes as ``anyOf``/``oneOf``/``allOf`` (fastmcp
+        # inlines each branch) — descend so a ``ResolvedSymbol | None`` field's own fields
+        # are discoverable, not just the wrapper key.
+        for combinator in ("anyOf", "oneOf", "allOf"):
+            branches = node.get(combinator)
+            if isinstance(branches, list):
+                for branch in branches:
+                    _walk(branch)
+        for definition in node.get("$defs", {}).values():
+            _walk(definition)
+
+    _walk(schema)
     return names
 
 
@@ -1982,7 +2018,7 @@ class TestToolOutputSchemas:
     ) -> None:
         tools = await self._tools_by_name(tmp_path)
         for name, expected_fields in _TOOL_OUTPUT_FIELDS.items():
-            schema = tools[name].outputSchema
+            schema = tools[name].output_schema
             assert schema is not None, f"{name} must publish an outputSchema"
             published = _schema_field_names(schema)
             missing = expected_fields - published
@@ -1997,7 +2033,7 @@ class TestToolOutputSchemas:
         # object). No model-returning tool may do that.
         tools = await self._tools_by_name(tmp_path)
         for name in _TOOL_OUTPUT_FIELDS:
-            schema = tools[name].outputSchema or {}
+            schema = tools[name].output_schema or {}
             result_prop = schema.get("properties", {}).get("result", {})
             items = result_prop.get("items", {}) if isinstance(result_prop, dict) else {}
             assert items.get("additionalProperties") is not True, (
@@ -2021,22 +2057,18 @@ class TestToolOutputSchemas:
         mcp = build_mcp_server(LoreServer(config))
         try:
             # index: a scalar IndexStatusSummary — structuredContent is the model dict.
-            status_tool = mcp._tool_manager.get_tool("lore_index")  # noqa: SLF001
-            _content, structured = await status_tool.run(
-                {},
-                context=_FakeToolContext(ctx),
-                convert_result=True,
-            )
+            status_tool = await mcp.get_tool("lore_index")
+            structured = status_tool.convert_result(
+                await status_tool.fn(_FakeToolContext(ctx))
+            ).structured_content
             assert isinstance(structured, dict)
             assert "files_indexed" in structured
             # search: a list[SearchResult] — wrapped under ``result`` with the
             # SearchResult fields on each element.
-            search_tool = mcp._tool_manager.get_tool("lore_search")  # noqa: SLF001
-            _content2, structured2 = await search_tool.run(
-                {"query": "champion routing", "k": 10},
-                context=_FakeToolContext(ctx),
-                convert_result=True,
-            )
+            search_tool = await mcp.get_tool("lore_search")
+            structured2 = search_tool.convert_result(
+                await search_tool.fn(_FakeToolContext(ctx), query="champion routing", k=10)
+            ).structured_content
             assert isinstance(structured2, dict) and "result" in structured2
             assert structured2["result"], "expected at least one hit"
             assert "formatted" in structured2["result"][0]
@@ -3179,18 +3211,22 @@ class TestRegisteredToolWrappers:
 
     @staticmethod
     async def _structured(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
-        """Run a registered tool through FastMCP and return its structuredContent.
+        """Run a registered tool wrapper and return its structuredContent.
 
-        ``Tool.run(convert_result=True)`` returns ``(unstructured, structured)`` when
-        the tool has an output schema — the structured half is the model-derived
-        dict the consumer receives. Driving the real run path proves the wrapper
-        returns a model FastMCP can serialise into structuredContent.
+        PACKET 59 (fastmcp 3.x): fastmcp's ``Tool.run`` injects the AMBIENT Context and
+        takes no explicit one, so we drive the wrapper ``.fn`` DIRECTLY with our fake
+        AppContext-carrying Context, then convert its return exactly as fastmcp does —
+        ``tool.convert_result(raw).structured_content`` is the model-derived dict the
+        consumer receives (a list is wrapped under ``result``). This proves the wrapper
+        returns a model fastmcp can serialise into structuredContent.
         """
-        tool = mcp._tool_manager.get_tool(name)  # noqa: SLF001 - test-only introspection
-        _unstructured, structured = await tool.run(
-            kwargs, context=_FakeToolContext(ctx), convert_result=True
-        )
-        return structured
+        tool = await mcp.get_tool(name)
+        # fastmcp's Tool.run injects the ambient Context and takes no explicit one,
+        # so drive the wrapper .fn DIRECTLY with our fake AppContext-carrying Context,
+        # then convert its return exactly as fastmcp does (structured_content is the
+        # model-derived dict the consumer receives — a list is wrapped under "result").
+        raw = await tool.fn(_FakeToolContext(ctx), **kwargs)
+        return tool.convert_result(raw).structured_content
 
     async def test_search_wrapper_yields_structured_list(
         self, indexed: tuple[Any, AppContext]
@@ -3499,11 +3535,13 @@ class TestImpactMapRegisteredToolWrappers:
 
     @staticmethod
     async def _structured(mcp: Any, name: str, ctx: AppContext, /, **kwargs: Any) -> Any:
-        tool = mcp._tool_manager.get_tool(name)  # noqa: SLF001 - test-only introspection
-        _unstructured, structured = await tool.run(
-            kwargs, context=_FakeToolContext(ctx), convert_result=True
-        )
-        return structured
+        tool = await mcp.get_tool(name)
+        # fastmcp's Tool.run injects the ambient Context and takes no explicit one,
+        # so drive the wrapper .fn DIRECTLY with our fake AppContext-carrying Context,
+        # then convert its return exactly as fastmcp does (structured_content is the
+        # model-derived dict the consumer receives — a list is wrapped under "result").
+        raw = await tool.fn(_FakeToolContext(ctx), **kwargs)
+        return tool.convert_result(raw).structured_content
 
     async def test_lore_impact_wrapper_serves_a_nonempty_caveat_in_structured_content(
         self, indexed: tuple[Any, AppContext]
@@ -3534,10 +3572,16 @@ class TestImpactMapRegisteredToolWrappers:
     async def test_lore_impact_wrapper_unknown_target_raises_tool_error_naming_it(
         self, indexed: tuple[Any, AppContext]
     ) -> None:
-        from mcp.server.fastmcp.exceptions import ToolError
+        # PACKET 59: driving the registered wrapper directly (via .fn) surfaces the
+        # handler's own ``ImpactTargetNotFoundError`` — the ToolError-shaping is a
+        # WIRE concern now (fastmcp's dispatch converts a non-ToolError to a
+        # structured tool error at the client boundary; pinned by
+        # test_fastmcp_migration.py's B2 middleware legs). The wrapper's contract
+        # here is that it PROPAGATES a clear error naming the target + the next step.
+        from loremaster.impact import ImpactTargetNotFoundError
 
         mcp, ctx = indexed
-        with pytest.raises(ToolError) as exc_info:
+        with pytest.raises(ImpactTargetNotFoundError) as exc_info:
             await self._structured(
                 mcp, "lore_impact", ctx, target=_IMPACT_UNKNOWN_TARGET, depth=1
             )
@@ -3901,234 +3945,30 @@ class TestImpactResolutionWideningEndToEnd:
 # --------------------------------------------------------------------------- #
 # Double-lifespan guard (per-process heavy startup runs exactly once)
 # --------------------------------------------------------------------------- #
-class TestLifespanRunsOncePerProcess:
-    """The heavy startup fires exactly once per process, not once per MCP session.
+class TestTheDeletedLifespanApparatusIsRetired:
+    """RETIRED by packet 59 (fastmcp 3.x migration, design §5b-C2 / M11).
 
-    Root cause: FastMCP's streamable-http composition hands the user lifespan to
-    the LOW-LEVEL ``MCPServer`` (``lifespan_wrapper`` →
-    ``mcp._mcp_server.lifespan``), and the session manager enters
-    ``MCPServer.run`` — and therefore that lifespan — ONCE PER MCP SESSION (see
-    ``StreamableHTTPSessionManager._handle_stateful_request`` → ``run_server`` →
-    ``self.app.run`` → ``lifespan(self)``). So in a single uvicorn process, every
-    new client session re-runs loremaster's heavy startup (probe gate → initial
-    reconcile → watcher start), spawning a second watcher + a second startup
-    reconcile. That is wasteful and risks manifest contention between two watchers.
-
-    This drives the EXACT callable the framework hands each session — the composed
-    ``mcp._mcp_server.lifespan`` produced by ``build_mcp_server`` →
-    ``build_asgi_app`` — once per simulated session (two sessions in one process),
-    spying on the heavy-startup primitives. The contract: across N sessions the
-    probe gate / watcher start / initial reconcile each run exactly ONCE.
+    The former ``TestLifespanRunsOncePerProcess`` + ``TestProcessLifespanGuard`` drove the
+    per-session ``_ProcessLifespanGuard`` and its ``mcp._mcp_server.lifespan`` re-entry — the
+    apparatus this migration DELETES (fastmcp enters the user ``lifespan=`` once per PROCESS
+    natively, ref-counted). Their PROPERTY (heavy build once per process, eagerly) is re-pinned in
+    ``test_fastmcp_migration.py`` — the ``@pytest.mark.wire`` once-per-process gate
+    (``TestTheHeavyBuildRunsOncePerProcessEagerly``; in-memory transport skips the ASGI lifespan,
+    FG1, so it cannot be an in-process unit pin) plus ``test_the_deleted_apparatus_is_gone`` and the
+    FP-07 ``TestTheEagerHeavyBuildRetriesTransientFailures`` unit pins. Kept as a visible anti-
+    regression stub rather than silently removed.
     """
 
-    async def test_heavy_startup_runs_once_across_two_sessions(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        _inert_calibration_counter: None,
-    ) -> None:
-        # ``_inert_calibration_counter`` (conftest) forces the calibration probe's
-        # counter construction to a network-free double: this test drives the REAL
-        # production lifespan, which now starts the boot probe — without the double
-        # it would fire a live ``count_tokens`` POST to ``api.anthropic.com`` with the
-        # dummy key (the leak the wiring introduced). Scoped to THIS test, not the
-        # module, so the file's other tests keep their exact collaborators.
-        import loremaster.embedding as embedding_module
-        import loremaster.server as server_module
+    def test_the_process_lifespan_guard_is_gone(self) -> None:
+        import loremaster.server as server_module  # noqa: PLC0415
 
-        slug = _slug()
-        live = tmp_path / "live"
-        (live / "pkg").mkdir(parents=True)
-        (live / "pkg" / "boot.py").write_text("def boot():\n    return 1\n", encoding="utf-8")
-        config = _config(slug, live)
-
-        # Keep the lifespan hermetic: a FakeEmbedder (no live TEI) and tmp-path
-        # SQLite/snapshot dirs — but otherwise the REAL composed lifespan the
-        # framework runs.
-        # ``_lifespan`` does ``from loremaster.embedding import
-        # make_embedder_from_config`` at call time, so patch it at its source.
-        monkeypatch.setattr(
-            embedding_module,
-            "make_embedder_from_config",
-            lambda _embedding_config: FakeEmbedder(dim=_DIM),
-        )
-        monkeypatch.setattr(server_module, "_DEFAULT_MANIFEST_DIR", tmp_path / "state")
-        monkeypatch.setattr(server_module, "_DEFAULT_SNAPSHOT_ROOT", tmp_path / "snap")
-        (tmp_path / "state").mkdir()
-
-        # Spy on the heavy-startup primitives WITHOUT changing their behaviour.
-        probe_calls = 0
-        watcher_starts = 0
-        real_probe_gate = server_module.run_probe_gate
-        import loremaster.index.watcher as watcher_module
-
-        real_watcher_start = watcher_module.LiveWatcher.start
-
-        async def _counting_probe_gate(**kwargs: Any) -> int:
-            nonlocal probe_calls
-            probe_calls += 1
-            return await real_probe_gate(**kwargs)
-
-        async def _counting_watcher_start(self: Any) -> None:
-            nonlocal watcher_starts
-            watcher_starts += 1
-            await real_watcher_start(self)
-
-        monkeypatch.setattr(server_module, "run_probe_gate", _counting_probe_gate)
-        monkeypatch.setattr(watcher_module.LiveWatcher, "start", _counting_watcher_start)
-
-        # Build the REAL ASGI app (build_mcp_server → build_asgi_app), then reach
-        # the EXACT lifespan callable the framework hands each session: the
-        # low-level MCPServer's lifespan (lifespan_wrapper'd user lifespan).
-        mcp = build_mcp_server(LoreServer(config))
-        build_asgi_app(mcp, config)  # composes the streamable-http app (session mgr)
-        per_session_lifespan = mcp._mcp_server.lifespan  # noqa: SLF001
-
-        contexts: list[AppContext] = []
-        open_cms: list[Any] = []
-        try:
-            # Simulate TWO MCP sessions in ONE process — the framework enters the
-            # lifespan once per MCPServer.run (once per session).
-            for _ in range(2):
-                cm = per_session_lifespan(mcp._mcp_server)  # noqa: SLF001
-                app_context = await cm.__aenter__()
-                contexts.append(app_context)
-                open_cms.append(cm)
-        finally:
-            for cm in open_cms:
-                await cm.__aexit__(None, None, None)
-
-        # The heavy startup must have run EXACTLY ONCE across the two sessions —
-        # not once per session.
-        assert probe_calls == 1, (
-            f"probe gate ran {probe_calls}x across 2 sessions; the heavy startup "
-            f"must run once per PROCESS, not once per session"
-        )
-        assert watcher_starts == 1, (
-            f"watcher started {watcher_starts}x across 2 sessions; exactly one "
-            f"watcher per process"
-        )
-        # Both sessions saw the SAME shared AppContext (reuse, not a rebuild).
-        assert contexts[0] is contexts[1], (
-            "the second session must reuse the first session's AppContext, not "
-            "build a second one"
-        )
-
-
-class TestProcessLifespanGuard:
-    """The run-once guard's lease lifecycle: reuse, last-release teardown, retry.
-
-    These drive the guard's contract directly with lightweight async doubles (no
-    Qdrant / embedder needed) so the build/reuse/teardown/recovery behaviour is
-    pinned independently of the full lifespan integration above.
-    """
-
-    @staticmethod
-    def _build_factory(builds: list[int], *, fail_times: int = 0) -> Any:
-        """Return an async ``(context, client)`` factory that records each build.
-
-        Args:
-            builds: A list each successful build appends to (so a test counts them).
-            fail_times: The number of leading builds that raise before one succeeds
-                (to exercise the no-cache-on-failure retry path).
-        """
-
-        class _FakeContext:
-            def __init__(self) -> None:
-                self.closed = False
-
-            async def aclose(self) -> None:
-                self.closed = True
-
-        class _FakeClient:
-            def __init__(self) -> None:
-                self.closed = False
-
-            async def close(self) -> None:
-                self.closed = True
-
-        attempts = {"n": 0}
-
-        async def _factory() -> tuple[Any, Any]:
-            attempts["n"] += 1
-            if attempts["n"] <= fail_times:
-                raise RuntimeError("build failed")
-            builds.append(1)
-            return _FakeContext(), _FakeClient()
-
-        return _factory
-
-    async def test_two_sessions_build_once_and_reuse(self) -> None:
-        from loremaster.server import _ProcessLifespanGuard
-
-        builds: list[int] = []
-        guard = _ProcessLifespanGuard(self._build_factory(builds))
-        first: Any = await guard.acquire()
-        second: Any = await guard.acquire()
-        assert first is second  # reuse, not rebuild
-        assert len(builds) == 1
-        await guard.release()
-        await guard.release()
-
-    async def test_context_stays_live_until_last_release(self) -> None:
-        from loremaster.server import _ProcessLifespanGuard
-
-        builds: list[int] = []
-        guard = _ProcessLifespanGuard(self._build_factory(builds))
-        first: Any = await guard.acquire()
-        await guard.acquire()
-        # Release ONE lease: the still-leased context must NOT be torn down.
-        await guard.release()
-        assert first.closed is False, (
-            "a context with a still-active session lease must not be closed"
-        )
-        # Release the LAST lease: now it tears down (aclose + client close).
-        await guard.release()
-        assert first.closed is True
-
-    async def test_sequential_sessions_rebuild_after_full_release(self) -> None:
-        from loremaster.server import _ProcessLifespanGuard
-
-        builds: list[int] = []
-        guard = _ProcessLifespanGuard(self._build_factory(builds))
-        first: Any = await guard.acquire()
-        await guard.release()  # drop to zero — the first generation is torn down
-        assert first.closed is True
-        # A later session over the SAME guard rebuilds (the guard tracks "live",
-        # not "ever-built"), so a clean idle process still comes back up.
-        second: Any = await guard.acquire()
-        assert second is not first
-        assert len(builds) == 2
-        await guard.release()
-
-    async def test_build_failure_is_not_cached_and_next_lease_retries(self) -> None:
-        from loremaster.server import _ProcessLifespanGuard
-
-        builds: list[int] = []
-        guard = _ProcessLifespanGuard(self._build_factory(builds, fail_times=1))
-        # The first lease's build raises — the failure must propagate and NOT be
-        # cached (a transient embedder outage must not wedge the process).
-        with pytest.raises(RuntimeError, match="build failed"):
-            await guard.acquire()
-        assert builds == []
-        # The next lease retries and succeeds.
-        ctx: Any = await guard.acquire()
-        assert ctx is not None
-        assert len(builds) == 1
-        await guard.release()
-
-    async def test_extra_release_is_a_noop(self) -> None:
-        from loremaster.server import _ProcessLifespanGuard
-
-        builds: list[int] = []
-        guard = _ProcessLifespanGuard(self._build_factory(builds))
-        ctx: Any = await guard.acquire()
-        await guard.release()
-        assert ctx.closed is True
-        # An extra release (more exits than enters can't happen normally, but the
-        # guard must be robust) is a no-op — no negative refcount, no double-close.
-        await guard.release()
-        assert ctx.closed is True
+        for retired in ("_ProcessLifespanGuard", "_EagerStartupLifespan"):
+            assert not hasattr(server_module, retired), (
+                f"loremaster.server.{retired} is back. Packet 59 retired the per-session lifespan "
+                f"apparatus (design §5b-C2); the once-per-process property now lives in the "
+                f"test_fastmcp_migration.py @wire gate + FP-07 unit pins. Re-express there, do not "
+                f"revive this deleted-mechanism suite."
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -6431,14 +6271,14 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         config = _config(_slug(), tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
         tools = {tool.name: tool for tool in await mcp.list_tools()}
-        prop = tools["lore_search"].inputSchema["properties"]["k"]
+        prop = tools["lore_search"].parameters["properties"]["k"]
         assert prop.get("maximum") == 50
 
     async def test_filters_param_is_gone_from_the_tool_schema(self, tmp_path: Path) -> None:
         config = _config(_slug(), tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
         tools = {tool.name: tool for tool in await mcp.list_tools()}
-        properties = tools["lore_search"].inputSchema["properties"]
+        properties = tools["lore_search"].parameters["properties"]
         assert "filters" not in properties
         assert "path" in properties
         assert "tier" in properties
@@ -6655,12 +6495,10 @@ class TestMapFullSymbols:
         self, over_endowed: tuple[Any, AppContext]
     ) -> None:
         mcp, ctx = over_endowed
-        tool = mcp._tool_manager.get_tool("lore_map")  # noqa: SLF001
-        _unstructured, structured = await tool.run(
-            {"full_symbols": True},
-            context=_FakeToolContext(ctx),
-            convert_result=True,
-        )
+        tool = await mcp.get_tool("lore_map")
+        structured = tool.convert_result(
+            await tool.fn(_FakeToolContext(ctx), full_symbols=True)
+        ).structured_content
         entry = next(e for e in structured["entries"] if e["module"] == _MAP_OVER_ENDOWED_MODULE)
         assert entry["symbols_elided"] == 0, (
             "full_symbols=True passed through the REGISTERED tool wrapper must "
@@ -6673,7 +6511,7 @@ class TestMapFullSymbols:
         config = _config(_slug(), tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
         tools = {tool.name: tool for tool in await mcp.list_tools()}
-        properties = tools["lore_map"].inputSchema["properties"]
+        properties = tools["lore_map"].parameters["properties"]
         assert "full_symbols" in properties
         description = properties["full_symbols"]["description"].lower()
         assert "cap" in description, "the description must explain the default caps"
@@ -6691,7 +6529,7 @@ class TestDeadCodeParamsCut:
         config = _config(_slug(), tmp_path / "live")
         mcp = build_mcp_server(LoreServer(config))
         tools = {tool.name: tool for tool in await mcp.list_tools()}
-        properties = tools["lore_dead_code"].inputSchema["properties"]
+        properties = tools["lore_dead_code"].parameters["properties"]
         assert "include_tests" not in properties
         assert "include_dunders" not in properties
         assert "include_entrypoints" not in properties
@@ -8581,7 +8419,7 @@ class TestServedParamDescriptionsMatchTheRefusalMatrix:
         mcp = build_mcp_server(LoreServer(config))
         served: dict[str, dict[str, str]] = {}
         for tool in await mcp.list_tools():
-            properties = (tool.inputSchema or {}).get("properties", {})
+            properties = (tool.parameters or {}).get("properties", {})
             served[tool.name] = {
                 field: (schema.get("description") or "")
                 for field, schema in properties.items()
@@ -9185,7 +9023,7 @@ class TestCadenceParamDescriptionStatesThePayoff:
         self, tmp_path: Path
     ) -> None:
         tools = await self._tools_by_name(tmp_path)
-        properties = (tools["lore_comms"].inputSchema or {}).get("properties", {})
+        properties = (tools["lore_comms"].parameters or {}).get("properties", {})
         assert "cadence" in properties, (
             "register's optional 'cadence' param must surface in the lore_comms tool "
             "schema (add it to _COMMS_ACTIONS[register].params AND the tool signature)"

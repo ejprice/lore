@@ -1017,6 +1017,16 @@ ENV_READ_ALLOWLIST: dict[str, str] = {
     "loremaster/server.py::main": (
         "LORE_CONFIG default for the --config argument — a filesystem path."
     ),
+    "loremaster/server.py::_resolve_allowed_hosts": (
+        "LORE_ALLOWED_HOSTS — the fastmcp host_origin_protection Host-header allowlist deploy "
+        "knob (packet 59). A PUBLIC allowlist of proxied hostnames (lore's TLS is terminated "
+        "upstream by nginx-ingress, so the Host it sees is the proxied name), never a "
+        "credential — an operational knob, like LORE_VERSION/LORE_LOG_LEVEL above. It cannot "
+        "route through resolve_secret: that resolver returns ONE value for ONE credential, "
+        "while this parses a comma-separated list of non-secret hostnames. RE-OPEN TRIGGER: "
+        "if allowed-hosts config ever moves onto a ServerConfig field (then it is validated "
+        "config, not an env read at all)."
+    ),
     "scripts/gated_ground.py::_collector_input_fingerprint": (
         "an operational knob read as a CACHE KEY, never as configuration — the inherited value "
         "still decides what is measured. The gated-ground guard memoises its collector subprocess "

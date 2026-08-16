@@ -129,7 +129,7 @@ _DECLARED_SITES = frozenset(
         # --- additive-jitter sites (#207 D2/D3), declared at birth, not retrofitted ---
         "loremaster.calibration.counting.AsyncClaudeTokenCounter._sleep_backoff.retry_after",
         "token_survey.ClaudeTokenCounter._sleep_backoff.retry_after",
-        "loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry",
+        "loremaster.server._eager_build_with_retry",
     }
 )
 
@@ -354,33 +354,32 @@ def _drive_token_survey_retry_after(
 
 
 async def _drive_eager_lease(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Site 8: the eager-startup lease retry — ADDITIVE jitter, constant ladder.
+    """Site 8: the eager-startup retry — ADDITIVE jitter, constant ladder.
 
-    Driven through the real method with a guard that always fails, so the retry path is
-    genuinely exercised rather than simulated. ``asyncio.sleep`` is patched at the
-    ``server`` module's own reference, so nothing else in the suite is affected.
+    Driven through the real module-level ``server._eager_build_with_retry`` with a heavy
+    build that always fails, so the retry path is genuinely exercised rather than simulated
+    (packet 59: the per-session ``_EagerStartupLifespan`` was deleted; the retry re-homed to
+    this helper). ``asyncio.sleep`` is patched at the ``server`` module's own reference, so
+    nothing else in the suite is affected.
     """
     slept: list[float] = []
 
     async def fake_sleep(delay: float) -> None:
         slept.append(delay)
 
-    class _AlwaysFailingGuard:
-        async def acquire(self) -> None:
-            raise RuntimeError("dependency down at boot")
-
-    lifespan = server._EagerStartupLifespan.__new__(server._EagerStartupLifespan)
-    lifespan._guard = _AlwaysFailingGuard()
-    lifespan._max_attempts = 2  # one retry -> exactly one backoff sleep
-    lifespan._backoff_base_s = _EAGER_BASE_S
+    async def _always_failing_build() -> None:
+        raise RuntimeError("dependency down at boot")
 
     # Patch the shared ``asyncio`` module object, which is the same one ``server.py``
     # resolves its ``asyncio.sleep`` through. Patching ``server.asyncio`` directly is the
     # obvious spelling but mypy rejects it — ``asyncio`` is an import in that module, not
     # an explicit re-export. monkeypatch reverts it at teardown.
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    last_exc = await lifespan._acquire_eager_lease_with_retry()
-    assert last_exc is not None, "the driver's guard must fail, or no backoff is reached"
+    # max_attempts=2 -> one retry -> exactly one backoff sleep; fail-closed re-raises.
+    with pytest.raises(RuntimeError):
+        await server._eager_build_with_retry(
+            _always_failing_build, max_attempts=2, backoff_base_s=_EAGER_BASE_S
+        )
     return slept
 
 
@@ -563,7 +562,7 @@ async def test_EVERY_declared_site_draws_from_the_mutated_policy(
     if _drive_token_survey_retry_after(monkeypatch) == [_SENTINEL_ADDITIVE]:
         observed.add("token_survey.ClaudeTokenCounter._sleep_backoff.retry_after")
     if await _drive_eager_lease(monkeypatch) == [_SENTINEL_ADDITIVE]:
-        observed.add("loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry")
+        observed.add("loremaster.server._eager_build_with_retry")
 
     missing = _DECLARED_SITES - observed
     assert not missing, (
@@ -679,7 +678,7 @@ async def _real_policy_draws_per_site(monkeypatch: pytest.MonkeyPatch) -> dict[s
     eager: list[float] = []
     for _ in range(_JITTER_DRAWS):
         eager.extend(await _drive_eager_lease(monkeypatch))
-    draws["loremaster.server._EagerStartupLifespan._acquire_eager_lease_with_retry"] = eager
+    draws["loremaster.server._eager_build_with_retry"] = eager
 
     return draws
 

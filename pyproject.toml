@@ -200,6 +200,33 @@ ignore_missing_imports = true
 module = ["anthropic", "anthropic.*"]
 ignore_missing_imports = true
 
+# ``fastmcp`` (packet 59: the MCP server façade migrated off the mcp SDK's bundled FastMCP to
+# standalone ``fastmcp`` 3.x). The umbrella ships a ``py.typed`` marker, but since 3.3 the code
+# lives in ``fastmcp-slim`` (no ``py.typed``), and the umbrella re-exports its submodules
+# (``fastmcp.tools.tool`` etc.) — so a ``from fastmcp.tools.tool import ToolResult`` is a hard
+# ``import-not-found`` / ``no-any-unimported`` under ``disallow_any_unimported``. Same shape as the
+# astroid / kubernetes / networkx / anthropic boundaries above. RE-OPEN TRIGGER: the day
+# ``fastmcp-slim`` ships ``py.typed`` (or a ``types-fastmcp`` stub distribution is added), DELETE
+# these two blocks rather than keep both.
+[[tool.mypy.overrides]]
+module = ["fastmcp", "fastmcp.*", "fastmcp_slim", "fastmcp_slim.*"]
+ignore_missing_imports = true
+
+# The modules that IMPORT fastmcp's (now-Any) types: the production façade + the migration test
+# modules. Relaxing ``disallow_any_unimported`` here is the ``loremaster.store.lease`` pattern —
+# the untyped boundary is contained to the modules that actually cross it, and no served logic is
+# weakened (fastmcp only types the wire seam). Bare + dotted names because the importlib test mode
+# resolves test modules by bare name.
+[[tool.mypy.overrides]]
+module = [
+    "loremaster.server",
+    "test_fastmcp_migration",
+    "test_migration_wire",
+    "loremaster.tests.test_fastmcp_migration",
+    "loremaster.tests.test_migration_wire",
+]
+disallow_any_unimported = false
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
@@ -216,6 +243,10 @@ addopts = "--import-mode=importlib"
 # lorescribe, …) instead of shadowing them with the on-disk distribution dirs,
 # so test modules can import the package submodules under test.
 consider_namespace_packages = true
+# Custom markers (registered so --strict-markers stays clean and the warnings vanish).
+markers = [
+    "wire: needs a REAL uvicorn/TCP server + a real MCP client (deploy/gate lane, not the unit lane) — the packet-59 fastmcp-migration wire smoke (test_migration_wire.py + test_fastmcp_migration.py SECTION F).",
+]
 testpaths = [
     "lorerunes/tests",
     "lorescribe/tests",

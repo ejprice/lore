@@ -38,8 +38,8 @@ import contextlib
 import socket
 import threading
 import time
-from collections.abc import Awaitable, Callable, Iterable, MutableMapping
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, MutableMapping
+from typing import Any, TypedDict
 from urllib.parse import urlsplit
 
 import httpx
@@ -88,7 +88,8 @@ class OriginValidationMiddleware:
 
     @staticmethod
     def _origin(scope: _Scope) -> str | None:
-        for name, value in scope.get("headers", []):
+        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        for name, value in headers:
             if name.lower() == b"origin":
                 return value.decode("latin-1")
         return None
@@ -132,7 +133,8 @@ class BearerAuthMiddleware:
 
     @staticmethod
     def _bearer(scope: _Scope) -> str | None:
-        for name, value in scope.get("headers", []):
+        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        for name, value in headers:
             if name.lower() == b"authorization":
                 decoded = value.decode("latin-1")
                 if decoded.lower().startswith("bearer "):
@@ -170,13 +172,13 @@ class NaiveLifespanEatingMiddleware:
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    port = int(s.getsockname()[1])
     s.close()
     return port
 
 
 @contextlib.contextmanager
-def serve(app: _ASGIApp, port: int):
+def serve(app: _ASGIApp, port: int) -> Iterator[str]:
     """Run `app` under uvicorn on 127.0.0.1:port in a daemon thread. `lifespan="on"`
     FORCES the ASGI lifespan protocol (a server that cannot run it fails loudly rather
     than silently skipping it — the FG1 guard). Yields the base URL; on exit drives a
@@ -219,17 +221,26 @@ async def _concurrent_sessions(url: str, tool: str, n: int, token: str | None = 
 # ITEM 1 — lifespan enters EXACTLY ONCE PER PROCESS, ref-counted teardown,
 #          bespoke wrappers delegate the lifespan scope.  (§6.6-1 / §5b-C2)
 # ============================================================================ #
+class _Item1Counters(TypedDict):
+    """Oracle counters for item 1 — heterogeneous values, so a precise TypedDict (not a
+    ``dict[str, int | None]`` that would make ``+= 1`` and the str assignment both errors)."""
+
+    enter: int
+    exit: int
+    boot_id: str | None
+
+
 def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecycles + controls inline
     print("\n" + "=" * 72)
     print("ITEM 1 — lifespan once-per-process + ref-counted teardown + wrapper delegation")
     print("=" * 72)
 
     # Oracle counters mutated ONLY by the user lifespan body.
-    counters = {"enter": 0, "exit": 0, "boot_id": None}
+    counters: _Item1Counters = {"enter": 0, "exit": 0, "boot_id": None}
     boot_seq = {"n": 0}
 
     @contextlib.asynccontextmanager
-    async def heavy_lifespan(server: FastMCP):
+    async def heavy_lifespan(server: FastMCP) -> AsyncIterator[dict[str, str | None]]:
         # This stands in for lore's ~150-LOC eager heavy build (watcher/reconcile).
         counters["enter"] += 1
         boot_seq["n"] += 1
@@ -239,7 +250,7 @@ def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecyc
         finally:
             counters["exit"] += 1
 
-    def build_app(wrapper: str):
+    def build_app(wrapper: str) -> tuple[_ASGIApp, Any]:
         mcp = FastMCP(name="spike59-item1", version="59.0.0", lifespan=heavy_lifespan)
 
         @mcp.tool
@@ -250,7 +261,7 @@ def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecyc
         inner = mcp.http_app(path="/mcp", stateless_http=False)  # SERVED/stateful mode
         if wrapper == "faithful":
             # Production stack: Bearer(Origin(http_app)) — both delegate lifespan.
-            app = OriginValidationMiddleware(inner)
+            app: _ASGIApp = OriginValidationMiddleware(inner)
             app = BearerAuthMiddleware(app, verify=lambda t: "dev" if t == "tok-1" else None)
             return app, inner.lifespan
         if wrapper == "naive":
@@ -428,7 +439,7 @@ def item3() -> dict[str, Any]:
     print("ITEM 3 — host_origin_protection rejects a spoofed Host (DNS-rebinding gap)")
     print("=" * 72)
 
-    def build(protection: bool | str):
+    def build(protection: bool) -> Any:
         mcp = FastMCP(name="spike59-item3", version="59.0.0")
 
         @mcp.tool

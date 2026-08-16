@@ -724,7 +724,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         tools = await mcp.list_tools()
         bump = next(t for t in tools if t.name == "bump_counter")
         # The declared ``count`` input is visible on the tool's input schema.
-        assert "count" in bump.inputSchema.get("properties", {})
+        assert "count" in bump.parameters.get("properties", {})
 
     async def test_extension_tool_is_invocable_end_to_end_with_runtime_ctx(
         self, tmp_path: Path
@@ -745,7 +745,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         mcp = build_mcp_server(server)
         ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
-            tool = mcp._tool_manager.get_tool("bump_counter")  # noqa: SLF001
+            tool = await mcp.get_tool("bump_counter")
             assert tool is not None
             # Call the registered wrapper through a fake lifespan Context, exactly as
             # the live streamable-http dispatch would. The runtime ctx's per-extension
@@ -815,7 +815,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         tools = await mcp.list_tools()
         echo = next(t for t in tools if t.name == "echo_shapes")
-        required = set(echo.inputSchema.get("required", []))
+        required = set(echo.parameters.get("required", []))
         # The no-default scalar/containers stay required; the defaulted one does not.
         assert "required" in required
         assert "factor" not in required, (
@@ -824,7 +824,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
-            tool = mcp._tool_manager.get_tool("echo_shapes")  # noqa: SLF001
+            tool = await mcp.get_tool("echo_shapes")
             # Invoke WITHOUT ``factor`` — the handler's default must apply.
             result = await tool.fn(
                 _FakeToolContext(ctx),
@@ -853,7 +853,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
         tools = await mcp.list_tools()
         echo = next(t for t in tools if t.name == "echo_shapes")
-        props = echo.inputSchema["properties"]
+        props = echo.parameters["properties"]
         assert props["items"]["type"] == "array", "list[str] must publish as array, not string"
         assert props["items"]["items"]["type"] == "string"
         assert props["mapping"]["type"] == "object", "dict must publish as object, not string"
@@ -907,8 +907,8 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
         mcp = build_mcp_server(server)
         ctx = await self._live_context(server=server, tmp_path=tmp_path)
         try:
-            tool_a = mcp._tool_manager.get_tool("read_state_a")  # noqa: SLF001
-            tool_b = mcp._tool_manager.get_tool("read_state_b")  # noqa: SLF001
+            tool_a = await mcp.get_tool("read_state_a")
+            tool_b = await mcp.get_tool("read_state_b")
             out_a = await tool_a.fn(_FakeToolContext(ctx))
             out_b = await tool_b.fn(_FakeToolContext(ctx))
             # Each sees its own sentinel...

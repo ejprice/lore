@@ -2094,7 +2094,7 @@ class TestTheNewSurfaceIsREACHABLEThroughTheREGISTEREDTool:
 
     async def test_the_served_tool_exposes_max_depth(self, tmp_path: Any) -> None:
         tool = await self._registered_task_tool(tmp_path)
-        properties = (tool.inputSchema or {}).get("properties", {})
+        properties = (tool.parameters or {}).get("properties", {})
         assert "max_depth" in properties, (
             f"the REGISTERED lore_tasks tool exposes {sorted(properties)} — no 'max_depth'. "
             f"Every SECTION B pin drives AppContext.tasks, an INTERNAL method; an agent "
@@ -2135,8 +2135,8 @@ class TestTheNewSurfaceIsREACHABLEThroughTheREGISTEREDTool:
         from test_mcp_server import _config, _slug  # noqa: PLC0415
 
         mcp = build_mcp_server(LoreServer(_config(_slug(), tmp_path / "live")))
-        registered = mcp._tool_manager.get_tool("lore_tasks").fn  # noqa: SLF001 - the SEAM is the pin
-        declared = set((await self._registered_task_tool(tmp_path)).inputSchema.get("properties", {}))
+        registered = (await mcp.get_tool("lore_tasks")).fn  # the wrapper .fn IS the SEAM
+        declared = set((await self._registered_task_tool(tmp_path)).parameters.get("properties", {}))
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(registered)))
         forwarded: set[str] = set()
@@ -2213,7 +2213,7 @@ class TestTheNewSurfaceIsREACHABLEThroughTheREGISTEREDTool:
         tool = await self._registered_task_tool(tmp_path)
         served = (tool.description or "") + "".join(
             (schema.get("description") or "")
-            for schema in ((tool.inputSchema or {}).get("properties", {})).values()
+            for schema in ((tool.parameters or {}).get("properties", {})).values()
         )
         unadvertised = [action for action in _TASK_ACTIONS if f"'{action}'" not in served]
         assert unadvertised == [], (

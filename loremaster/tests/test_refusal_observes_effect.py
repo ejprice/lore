@@ -127,16 +127,16 @@ async def _probe_session(tmp_path: Path) -> AsyncIterator[_ProbeTools]:
             effects.run_then_refuse_effect.bump()
             return PROBE_MARKER
 
-        mcp.add_tool(
-            probe_refuse_first,
+        # PACKET 59: fastmcp's add_tool is single-arg; the metadata rides the mcp.tool(...)
+        # decorator applied to the fn (coupling #2 / design D6).
+        mcp.tool(
             name=REFUSE_FIRST_TOOL,
             annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
-        )
-        mcp.add_tool(
-            probe_run_then_refuse,
+        )(probe_refuse_first)
+        mcp.tool(
             name=RUN_THEN_REFUSE_TOOL,
             annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=False),
-        )
+        )(probe_run_then_refuse)
 
     async with wire_session(
         tmp_path, posture="loopback", principal=None, prepare=_prepare
@@ -320,6 +320,14 @@ async def test_the_helper_is_handed_only_the_boundary_callable_so_the_in_process
     )
 
 
+@pytest.mark.skip(
+    reason="RETIRED by packet 59 (fastmcp 3.x migration): R16's `test_wire_discipline."
+    "posture_modules()` is GONE — the wire-only discipline's `_setup_handlers` derivation "
+    "dissolved with the mcp-SDK subclass, so test_wire_discipline is now a superseded-header "
+    "tombstone. Per design §7, PACKET 39 re-expresses the wire-only invariant over the "
+    "`on_call_tool`/`on_list_tools` middleware substrate this migration delivers, and re-cuts "
+    "this reach pin against it. Un-skip when packet 39 re-expresses posture_modules()."
+)
 def test_the_effect_helper_module_is_within_R16_wire_discipline_reach() -> None:
     """R16 REACH (finding #346): the effect-helper's module is UNDER the wire-discipline scan.
 
@@ -342,7 +350,9 @@ def test_the_effect_helper_module_is_within_R16_wire_discipline_reach() -> None:
     import inspect  # noqa: PLC0415
     from pathlib import Path as _Path  # noqa: PLC0415
 
-    from test_wire_discipline import posture_modules  # noqa: PLC0415
+    # PACKET 59: ``posture_modules`` was retired with the test_wire_discipline tombstone; this
+    # whole test is skipped (see the decorator) until packet 39 re-expresses R16 (design §7).
+    from test_wire_discipline import posture_modules  # type: ignore[attr-defined]  # noqa: PLC0415
 
     helper_module = _Path(inspect.getfile(assert_refused)).resolve()
     covered = {module.resolve() for module in posture_modules()}

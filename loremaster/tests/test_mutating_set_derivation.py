@@ -204,6 +204,8 @@ def _build_tools(tmp_path: Path, *, prepare: Any = None) -> Any:
     mcp = build_mcp_server(LoreServer(config))
     if prepare is not None:
         prepare(mcp)
+    # Returns the ``list_tools()`` coroutine (async under fastmcp too); every caller awaits
+    # ``_build_tools(...)``, so the awaitable is awaited exactly once at the call site.
     return mcp.list_tools()
 
 
@@ -214,7 +216,10 @@ def _register_unannotated(mcp: Any) -> None:
         """A newly contributed tool whose author forgot the annotation."""
         return "cd-ok"
 
-    mcp.add_tool(probe, name=_UNANNOTATED_PROBE)
+    # PACKET 59: fastmcp add_tool is single-arg; the name rides the mcp.tool(...) decorator.
+    # No annotations kwarg → the tool carries NO readOnlyHint, so partition_tools_by_posture
+    # classifies it MUTATING (deny-by-default), which is exactly what this probe pins.
+    mcp.tool(name=_UNANNOTATED_PROBE)(probe)
 
 
 def _live_annotation_constants() -> frozenset[str]:

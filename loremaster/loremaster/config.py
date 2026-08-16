@@ -35,11 +35,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from dotenv import dotenv_values
 from loresigil.voyage_batch import DEFAULT_POLL_INTERVAL_S
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     PositiveFloat,
@@ -96,6 +98,44 @@ SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_]*$"
 # every other strict field on the model (both on direct ``ProjectConfig(...)``
 # construction and via ``LoreConfig.model_validate(...)``).
 SlugStr = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+
+
+def _reject_url_userinfo(value: str) -> str:
+    """Reject a URL carrying inline credentials (a ``user:pass@host`` userinfo component).
+
+    Closes the FLAG-4 / security-59 F1 leak vector AT THE SOURCE: an inline credential
+    in ``surreal.url`` / embedding ``base_url`` would reach an UNREDACTED boot log via a
+    transport exception on a total-boot-failure (uvicorn's startup logger is outside
+    lore's redacting sink — server.py ``_eager_build_or_operator_safe_error`` / #532).
+    Credentials are referenced by env-var NAME (``*_env`` → ``resolve_secret`` →
+    ``SecretStr``, #211), never inlined, so a userinfo component is ALWAYS a
+    misconfiguration. The honest-operator threat model (repo CLAUDE.md "a gate needs a
+    threat model"): this catches the operator who inlines a credential by habit — at
+    config LOAD, loud and remediable — not a hostile author (who can already ship
+    anything). A blank/malformed value is left for the surrounding validation to reject.
+    """
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # Not a parseable URL at all — a different problem, surfaced by the connection
+        # seam at startup; this predicate only guards the userinfo leak vector.
+        return value
+    if parts.username is not None or parts.password is not None:
+        raise ValueError(
+            "URL must not contain inline credentials (a 'user:pass@host' userinfo "
+            "component) — reference credentials by env-var NAME instead "
+            "(user_env/password_env for surreal, api_key_env for embedding). An inline "
+            "credential can leak verbatim into an unredacted boot log on a startup failure."
+        )
+    return value
+
+
+# An annotated ``str`` that rejects an inline-credential URL — mirrors the ``SlugStr``
+# annotated-type idiom (a shared PREDICATE, not two clones), so a userinfo URL raises a
+# pydantic ``ValidationError`` at load for EVERY field that uses it. Applied to both
+# ``SurrealConfig.url`` and ``EmbeddingConfig.base_url``; changing the predicate changes
+# both by construction (prove-sharing-by-mutation).
+CredentialFreeUrl = Annotated[str, AfterValidator(_reject_url_userinfo)]
 
 
 class _StrictModel(BaseModel):
@@ -182,7 +222,7 @@ class EmbeddingConfig(_StrictModel):
     """
 
     backend: Literal["tei", "voyage-cloud", "voyage-context"]
-    base_url: str
+    base_url: CredentialFreeUrl
     endpoint: str
     model: str
     dim: PositiveInt
@@ -250,7 +290,7 @@ class SurrealConfig(_StrictModel):
             password.
     """
 
-    url: str = SURREAL_DEFAULT_URL
+    url: CredentialFreeUrl = SURREAL_DEFAULT_URL
     namespace: SlugStr = SURREAL_DEFAULT_NAMESPACE
     database: SlugStr | None = None
     user_env: str = SURREAL_DEFAULT_USER_ENV

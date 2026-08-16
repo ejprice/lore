@@ -4277,7 +4277,7 @@ async def _tool_param_description(tool_name: str, param_name: str) -> str | None
         tool = tools.get(tool_name)
         if tool is None:
             return None
-        properties = (tool.inputSchema or {}).get("properties", {})
+        properties = (tool.parameters or {}).get("properties", {})
         description = properties.get(param_name, {}).get("description")
         return str(description) if description is not None else None
 

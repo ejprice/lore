@@ -844,7 +844,7 @@ async def _registered_string_params() -> set[tuple[str, str]]:
         tools = await mcp.list_tools()
     universe: set[tuple[str, str]] = set()
     for tool in tools:
-        for name, schema in ((tool.inputSchema or {}).get("properties", {})).items():
+        for name, schema in ((tool.parameters or {}).get("properties", {})).items():
             if _schema_carries_string(schema):
                 universe.add((tool.name, name))
     return universe

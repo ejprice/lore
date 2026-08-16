@@ -45,6 +45,8 @@ import pytest
 # also single-sources the universe — the same object this module imports from the server.
 import test_mcp_server as _suite
 from _extension_helpers import BUILTIN_COLLISION_NAME, CollidingExtension
+from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError
 from loremaster.config import LoreConfig, ToolsConfig
 from loremaster.server import (
     _ALL_BUILTIN_TOOL_NAMES,
@@ -55,8 +57,6 @@ from loremaster.server import (
     partition_tools_by_posture,
     render_sample_tools_section,
 )
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from test_comms_tool import _declared_instructions, _msg
 from test_mcp_server import _config, _slug
 
@@ -182,7 +182,7 @@ def _tool_description_texts(tool: Any) -> list[str]:
     would miss it (CLAUDE.md rename-sweep law).
     """
     texts: list[str] = [tool.description or ""]
-    properties = (tool.inputSchema or {}).get("properties", {})
+    properties = (tool.parameters or {}).get("properties", {})
     for field_schema in properties.values():
         texts.append(field_schema.get("description") or "")
     return texts
@@ -404,7 +404,9 @@ class TestDisabledToolIsUncallableOnTheWire:
         mcp = _build(tmp_path, enabled=_LORE_DND_ENABLED)
         names = {tool.name for tool in await mcp.list_tools()}
         assert "lore_map" not in names, "a disabled tool must be ABSENT from list_tools()"
-        with pytest.raises(ToolError, match=r"[Uu]nknown tool.*lore_map"):
+        # PACKET 59: fastmcp raises ``NotFoundError('Unknown tool: lore_map')`` for an
+        # absent tool (a ``ToolError`` sibling under ``FastMCPError``, not a subclass).
+        with pytest.raises(NotFoundError, match=r"[Uu]nknown tool.*lore_map"):
             await mcp.call_tool("lore_map", {})
 
 

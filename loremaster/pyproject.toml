@@ -13,7 +13,12 @@ dependencies = [
     # production code that IMPORTS a package declares it — a transitive pin is
     # somebody else's promise to keep.
     "anyio>=4.5",
-    "mcp[cli]>=1.27",
+    # Packet 59: the MCP server façade is standalone ``fastmcp`` 3.x. ``mcp`` rides
+    # TRANSITIVELY via ``fastmcp-slim``'s ``mcp<2.0,>=1.24.0`` pin (D4, operator-ruled):
+    # ``mcp.types`` (ContentBlock/ToolAnnotations) stays a direct import, undeclared —
+    # operator-ACCEPTED. ``fastmcp`` (the umbrella = ``fastmcp-slim[client,server]``) is
+    # correct; lore needs no opt-in extras (design §3 packaging).
+    "fastmcp>=3.4,<4",
     "watchdog>=6.0",
     "pydantic>=2.13",
     "pydantic-settings>=2.14",

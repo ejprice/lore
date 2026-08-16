@@ -142,6 +142,55 @@ class TestLoreConfigParsing:
             LoreConfig.model_validate(payload)
 
 
+class TestUrlUserinfoIsRejected:
+    """security-59 F1 / packet-59 FLAG-4 hardening: an inline ``user:pass@host`` credential
+    in ``surreal.url`` / embedding ``base_url`` is REJECTED at config load
+    (``CredentialFreeUrl``), so it can never reach an unredacted boot log on a startup
+    failure. Credentials are referenced by env-var NAME (``*_env``), never inlined. The
+    honest-operator threat model: this catches the operator who inlines a credential by
+    habit (a shape every DB tutorial teaches), loud and remediable at load.
+    """
+
+    def test_embedding_base_url_with_userinfo_is_rejected(self) -> None:
+        payload = _deep_copy_config()
+        payload["embedding"]["base_url"] = "http://user:hunter2@tei.example:8080"
+        with pytest.raises(ValidationError, match=r"inline credential"):
+            LoreConfig.model_validate(payload)
+
+    def test_surreal_url_with_userinfo_is_rejected(self) -> None:
+        # A DIFFERENT field than base_url — the shared predicate must guard BOTH
+        # (prove-sharing-by-mutation: one predicate, every field that uses it).
+        payload = _deep_copy_config()
+        payload["surreal"] = {
+            "url": "ws://root:hunter2@db.internal:8000/rpc",
+            "namespace": "lore",
+            "user_env": "SURREAL_USER",
+            "password_env": "SURREAL_PASS",
+        }
+        with pytest.raises(ValidationError, match=r"inline credential"):
+            LoreConfig.model_validate(payload)
+
+    def test_a_username_only_url_is_also_rejected(self) -> None:
+        # userinfo with no password (``user@host``) is still an inline credential —
+        # ``parts.username`` alone is enough to reject.
+        payload = _deep_copy_config()
+        payload["embedding"]["base_url"] = "http://root@tei.example:8080"
+        with pytest.raises(ValidationError, match=r"inline credential"):
+            LoreConfig.model_validate(payload)
+
+    def test_a_credential_free_url_is_accepted(self) -> None:
+        # POSITIVE CONTROL: the canonical (credential-free) URL validates, so the
+        # rejections above discriminate — the predicate is not a blanket refusal.
+        config = LoreConfig.model_validate(_deep_copy_config())
+        assert config.embedding.base_url == "http://tei.example:8080"
+
+    def test_the_surreal_default_url_is_credential_free(self) -> None:
+        # A config with no ``surreal`` block still validates and its defaulted url is
+        # credential-free (the predicate never rejects the shipped default).
+        config = LoreConfig.model_validate(_deep_copy_config())
+        assert "@" not in config.surreal.url
+
+
 class TestRoots:
     """The amendment's multi-root / per-tier freshness model (D5)."""
 

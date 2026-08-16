@@ -682,24 +682,26 @@ class _StubAppContext:
 
 
 def stub_heavy_startup(mcp: Any) -> None:
-    """Neutralise the heavy build factory INSIDE the existing guard object.
+    """Neutralise the heavy build by replacing the fastmcp lifespan with a stub.
 
-    ⚠ THE FACTORY IS SWAPPED, NOT THE GUARD. ``build_mcp_server``'s per-SESSION
-    lifespan closes over the guard INSTANCE, while ``build_asgi_app`` reaches it
-    through ``mcp._lore_eager_guard``. Rebinding the attribute leaves the closure
-    holding the original — so the eager path is stubbed, the first MCP session still
-    runs the REAL heavy build, and the test dies resolving ``LORE_TEI_KEY``. Measured
-    on this contract's first run; the fix is to mutate the one object both references
-    share, which also keeps the guard's own once-per-process semantics under test.
+    PACKET 59 (fastmcp 3.x, design §5b-C2): fastmcp enters the user ``lifespan=`` (stored as
+    ``mcp._lifespan``) ONCE per process; the ``_ProcessLifespanGuard`` + the
+    ``mcp._lore_eager_guard`` attribute the old stub swapped are DELETED. So replace the
+    lifespan wholesale with one that yields a :class:`_StubAppContext` instead of running the
+    real build (probe gate → SurrealDB write stack → watcher). The MCP ``initialize``
+    handshake — the only protocol traffic these auth pins drive — never touches the lifespan
+    context, so substituting it leaves the ENTIRE SDK auth + session stack real, which is the
+    part under contract.
 
     Args:
         mcp: The ``FastMCP`` returned by ``build_mcp_server``.
     """
 
-    async def _build() -> Any:
-        return (_StubAppContext(), None)
+    @contextlib.asynccontextmanager
+    async def _stub_lifespan(_server: Any) -> Any:
+        yield _StubAppContext()
 
-    mcp._lore_eager_guard._build = _build
+    mcp._lifespan = _stub_lifespan
 
 
 def mcp_session_id(response: AsgiResponse) -> str:
@@ -871,7 +873,10 @@ async def wire_session(
         if posture == "hosted"
         else build_mcp_server(server)
     )
-    mcp.settings.json_response = True
+    # PACKET 59: fastmcp's FastMCP has no ``.settings`` — the JSON-vs-SSE response mode is an
+    # ``http_app(json_response=…)`` param (production's build_asgi_app leaves it at the
+    # negotiated default). The MCP SDK streamable-http client handles the negotiated response,
+    # so no per-response-mode override is needed here.
     if verdict_override is not None:
 
         async def _forced(_token: str) -> Any:
