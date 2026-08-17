@@ -213,7 +213,11 @@ from loremaster.search import (
     _sanitise_line,
     apply_cosine_floor_drift_check,
 )
-from loremaster.store._txn import SurrealConnectionError
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    TxnContentionExhaustedError,
+)
 from loremaster.store.candidate import Candidate
 
 # The bound on every caller-controlled string the trace seam writes. Imported,
@@ -3929,6 +3933,22 @@ class AppContext:
                 outcome_lines.append(
                     f"- {ref_label} ABORTED — store connection lost; retry these"
                 )
+                continue
+            except TxnContentionExhaustedError:
+                # A healthy connection that lost a write-write race after exhausting
+                # its retry budget — the OPPOSITE of a dead socket, so CONTINUE (the
+                # next row can well succeed) and label it retryable. Caught before its
+                # ``SurrealStoreError`` superclass so it keeps this distinct wording.
+                outcome_lines.append(
+                    f"- {ref_label} FAILED — store contention, safe to retry this item"
+                )
+                continue
+            except SurrealStoreError as error:
+                # Any other non-connection store rejection: per-item FAILED, CONTINUE
+                # (connection is healthy). Caught AFTER SurrealConnectionError (a sibling
+                # subclass that must still abort-all) — order load-bearing. NOT labelled
+                # "safe to retry": a plain store rejection is not known-retryable.
+                outcome_lines.append(f"- {ref_label} FAILED — {_sanitise_line(str(error))}")
                 continue
             except (_FindingNotFoundError, _FindingIllegalTransitionError, ValueError) as error:
                 outcome_lines.append(f"- {ref_label} FAILED — {_sanitise_line(str(error))}")
