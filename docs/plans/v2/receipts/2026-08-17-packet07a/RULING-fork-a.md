@@ -30,7 +30,10 @@ self-heal on the next call after a full server restart.
 **Ruled: A1.** Ship:
 - The measurement + the committed 20-consecutive live drill as the packet's deploy-smoke instrument
   (satisfies the spec's literal "20-consecutive bounce-recovery, no container restart" ask).
-- Resolve #164/#250 as **fixed-by-05a-ii**, with a named re-open trigger (below).
+- Resolve #164/#250 as **does-not-reproduce-at-HEAD; both known transport-fault branches (connection-
+  close and in-flight-KeyError) are independently guarded and mutation-proven; root cause of the
+  original July wedge undiagnosed** — never as "fixed by 05a-ii" (struck above, F2) — with a named
+  re-open trigger (below).
 - **No new reconnect-and-retry code.** The Option A2 design (§3.1 of the contract report — a shared
   `ReconnectRetrySignal`, pre-send/idempotent-only, at-most-once-preserving) stays **designed but
   unwritten**.

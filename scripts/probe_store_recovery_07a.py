@@ -333,7 +333,8 @@ async def main() -> int:
 
 if __name__ == "__main__":
     try:
-        sys.exit(asyncio.run(main()))
-    except BaseException:  # noqa: BLE001
+        _rc = asyncio.run(main())
+    except Exception:  # noqa: BLE001 — report the failure, then exit below
         traceback.print_exc()
-        sys.exit(1)
+        _rc = 1
+    sys.exit(_rc)
