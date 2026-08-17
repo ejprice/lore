@@ -420,6 +420,12 @@ The house rules for reading and writing rows. Each one was found the hard way.
 - **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
   from SDK 2.0.0's response routing (6/6 futures) — *not* `CancelledError`. The next call heals via
   `ConnectionClosedError`. Classify `KeyError` tightly, at the SDK-await boundary only.
+  ⚠ **"heals via `ConnectionClosedError`" names the ERROR SHAPE normalizing, not the connection
+  auto-recovering** — the raw `KeyError` on the in-flight call becomes a clean `ConnectionClosedError`
+  on the *next* call, which `is_connection_error` then classifies as transport → `drop` →
+  reconnect-on-the-call-after-that, via the owner's `_ensure_connection`. It is not automatic and it
+  is not instantaneous. (#250 misread this as "the connection recovers," reported a contradiction
+  against a full-server-restart bounce, and it wasn't one — packet 07a settled it live.)
   **[RE-PROBED 2026-08-05 on 3.2.4 — shape UNCHANGED]** 6/6 in-flight awaits raise
   `KeyError(request-uuid)`; the next call raises `ConnectionClosedError`. The mechanism is
   SDK-2.0.0-side (`_recv_task` clears `self.qry` racing `_send`'s `del`), so it is
