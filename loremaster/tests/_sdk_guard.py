@@ -86,7 +86,7 @@ from __future__ import annotations
 
 import inspect
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +180,15 @@ class GuardReport:
     armed: bool
     watched_root: Path | None = None
     intercepted: int = 0
+    # Bare ``.query()`` calls (NEVER ``.query_raw()``) that carried MORE THAN ONE
+    # top-level statement — the #144 posture. ``.query()`` validates statement[0]
+    # ONLY (store reference §3), so a later statement can fail and roll the whole
+    # transaction back while ``.query()`` raises nothing; multi-statement SurrealQL
+    # must ride ``execute_transaction`` (``query_raw``). Filled ORTHOGONALLY to
+    # ``escapes``: a driver-wrapped multi-statement call is not a retry-escape, but it
+    # IS a statement-count violation. The verdict comes from the SHARED
+    # ``_txn._assert_envelope_integrity`` (see :func:`_is_multi_statement_query`).
+    multi_statement_violations: list[SdkEscape] = field(default_factory=list)
 
     def require_observations(self, flow: str) -> None:
         """Refuse a "no escapes" verdict this report cannot substantiate. (#136)
@@ -205,6 +214,39 @@ def _driver() -> Any:
     from loremaster.store import _txn
 
     return getattr(_txn, "retry_on_conflict", None)
+
+
+def _is_multi_statement_query(args: tuple[Any, ...]) -> bool:
+    """Does this ``.query()`` call carry MORE THAN ONE top-level statement?
+
+    The single-statement verdict is the SHARED ``_txn._assert_envelope_integrity`` — the
+    SAME predicate ``compose()`` enforces on every fragment (ONE IMPLEMENTATION: this leg
+    ROUTES to it, it does not re-derive the ``;``-counting policy). It raises on an
+    internal statement separator or a bare ``BEGIN``/``COMMIT`` keyword; a single trailing
+    ``;`` is peeled first, so the ordinary one-statement shape is never flagged.
+
+    ⚠ The predicate is looked up on the MODULE at CALL time (``_txn._assert_envelope_
+    integrity``), never captured at import — so a test that monkeypatches the module
+    attribute is OBSERVED, which is exactly how the mutation-share pin proves this leg
+    reads the shared predicate rather than a private clone (adversary-07 F0). An
+    import-captured reference would silently pass every other pin and still be a clone in
+    the dimension the ``;``-in-literal re-open trigger depends on.
+
+    Only the FIRST positional arg is inspected (the SurrealQL string); a non-string or
+    absent first arg is not a query string and is never a violation.
+    """
+    if not args:
+        return False
+    query_text = args[0]
+    if not isinstance(query_text, str):
+        return False
+    from loremaster.store import _txn
+
+    try:
+        _txn._assert_envelope_integrity(query_text)
+    except _txn.TxnEnvelopeViolationError:
+        return True
+    return False
 
 
 def artifact_root() -> Path:
@@ -333,6 +375,15 @@ def install(
                 report.observed.add(site)
                 if not allowed:
                     report.escapes.append(SdkEscape(method=method_name, site=site))
+                # ORTHOGONAL to the escape check (#144 posture): a bare ``.query()`` may
+                # carry exactly ONE statement, whether or not it rode the driver. Scoped
+                # to ``query`` by METHOD NAME — ``query_raw`` validates every statement and
+                # is the safe multi-statement path. Receiver-BLIND (the class is patched),
+                # which is the keystone letting the offline leg's receiver-name limit stand.
+                if method_name == "query" and _is_multi_statement_query(args):
+                    report.multi_statement_violations.append(
+                        SdkEscape(method=method_name, site=site)
+                    )
             return original(self, *args, **kwargs)  # the coroutine; the caller awaits it
 
         _guarded._sdk_guarded = True  # type: ignore[attr-defined]

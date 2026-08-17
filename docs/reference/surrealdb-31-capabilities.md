@@ -850,6 +850,26 @@ Live defects and things we genuinely do not know. **Nothing here is settled — 
   (measured: no retro-validation at DDL time either way), so **no gate will ever catch it** — it
   simply teaches a dead mechanism to the next reader. Same for `test_diff.py:982`'s comment.
   Flagged, not fixed (docs-only writable set).
+- **[PROBED 2026-08-17, spike-surreal 3.2.4] The QUERY-TOO-COMPLEX parse recursion-depth branch
+  is LIVE on 3.2.4 — but ONLY for the fulltext `@@`/RRF query SHAPE, and this shape-specificity
+  is NEW.** The classifier's `_ERROR_CLASS_QUERY_TOO_COMPLEX` branch (`_txn.py`, keyed on the
+  marker `"recursion depth"` — finding #66's 3.1.5 boundary of ~40 fulltext tokens / ~120 `@@`
+  clauses) still fires on 3.2.4, but the limit is a **whole-query parse-depth** property, **not
+  operator-agnostic**. Simple-operator chains no longer trip it at any realistic size (probed
+  to **40000 OR-clauses, 64000 nested parens, 32000 nested fn calls — all execute FINE**); even
+  a bare `@@`-only predicate chain at **400 clauses** executes fine in **isolation**. It is
+  tripped ONLY by the full `hybrid_search` / `recall` **RRF-fusion query** — the `@@` chain
+  EMBEDDED in `search::score` / `search::rrf` / the dual-arm UNION, a much deeper parse tree —
+  at #66's ~120-clause boundary. **An isolated construct is a FALSE NEGATIVE** ("a probe needs
+  a control": `scripts/probe_query_complexity_07.py` first read the branch as DEAD on 3.2.4
+  until the EXISTING live tests corrected it — the probe's committed as a negative-space
+  receipt). The authoritative, **standard-gate** instrument is
+  `test_bypassing_both_clamps_still_raises_a_classified_store_error`
+  (`test_surreal_store.py::TestResidualRejectionStillLaunders` +
+  `test_memory_backend.py::TestRecursionDepthClassificationAtRecallSeam`): it runs the REAL RRF
+  path with the clamps bypassed and asserts the laundered `"query too complex"` label, GREEN on
+  3.2.4 ONLY if the engine still emits `"recursion depth"`. That doubles as the drift alarm — it
+  goes RED the day the engine rewords the marker OR lifts the limit (the #336 floating-tag class).
 
 ---
 

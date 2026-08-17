@@ -2048,10 +2048,15 @@ class TestRecursionDepthClassificationAtRecallSeam:
     """
 
     def test_classifier_recognises_the_live_recursion_depth_rejection_text(self) -> None:
-        # The EXACT raw engine text captured live against spike-surreal for
-        # THIS consumer's own predicate shape (scratchpad/probe_long_query_69.py)
+        # The EXACT raw engine text captured live against spike-surreal on 3.1.5
+        # for THIS consumer's own predicate shape (scratchpad/probe_long_query_69.py)
         # — a pure, fast unit test of the (already-shared) classifier, no live
-        # server needed.
+        # server needed. The classifier behaviour it pins is RE-CONFIRMED live on
+        # 3.2.4 by the sibling test_bypassing_both_clamps_still_raises_a_classified_
+        # store_error below (it runs the REAL recall RRF path and asserts the
+        # laundered label — GREEN only if the 3.2.4 engine still emits "recursion
+        # depth"). The 3.2.4 raw text was not re-captured: that limit is reachable
+        # only via the full RRF query (packet 07, scripts/probe_query_complexity_07.py).
         raw_engine_text = (
             "Parse error: Exceeded expression recursion depth limit\n"
             " --> [1:3378]\n"

@@ -1355,9 +1355,15 @@ class TestResidualRejectionStillLaunders:
     """
 
     def test_classifier_recognises_the_live_recursion_depth_rejection_text(self) -> None:
-        # The EXACT raw engine text captured live against spike-surreal
+        # The EXACT raw engine text captured live against spike-surreal on 3.1.5
         # (scratchpad/probe_long_query_66b.py) — a pure, fast unit test of the
-        # classifier extension, no live server needed.
+        # classifier extension, no live server needed. The classifier behaviour it
+        # pins is RE-CONFIRMED live on 3.2.4 by the sibling
+        # test_bypassing_both_clamps_still_raises_a_classified_store_error below (it
+        # runs the REAL RRF path and asserts the laundered label — GREEN only if the
+        # 3.2.4 engine still emits "recursion depth"). The 3.2.4 raw text was not
+        # re-captured: that limit is reachable only via the full RRF query (packet 07,
+        # scripts/probe_query_complexity_07.py), which the bypass test exercises.
         raw_engine_text = (
             "Parse error: Exceeded expression recursion depth limit\n"
             " --> [1:3139]\n"

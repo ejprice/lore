@@ -209,3 +209,14 @@ def _no_sdk_call_escapes_the_retry_driver(monkeypatch: pytest.MonkeyPatch) -> It
         "be evaded by aliasing, a helper module, `getattr`, a detached `gather`, or an SDK "
         "method nobody has listed."
     )
+    assert not report.multi_statement_violations, (
+        f"{len(report.multi_statement_violations)} bare .query() call(s) carried MORE THAN "
+        f"ONE statement during this test:\n  "
+        + "\n  ".join(str(violation) for violation in report.multi_statement_violations)
+        + "\n\n"
+        "The SDK's .query() validates statement[0] ONLY (store reference §3): a later "
+        "statement can fail and roll the whole transaction back while .query() raises "
+        "nothing (#124/#144). Multi-statement SurrealQL must ride execute_transaction "
+        "(query_raw), never bare .query(). Checked at RUNTIME on the real SDK class (the "
+        "#144 posture), replacing the per-module hand-list."
+    )

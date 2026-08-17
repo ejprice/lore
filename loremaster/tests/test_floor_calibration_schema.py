@@ -37,10 +37,8 @@ the bound DELIBERATELY instead of rediscovering it from an outage.
 
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
 from _surreal_harness import (
@@ -1124,55 +1122,3 @@ class TestTheSchemaMigratesAnEXISTINGStore:
             f"SELECT scope FROM type::record('{FLOOR_HEAD_TABLE}', 'legacy_head')",
         )
         assert rows and rows[0]["scope"] == "pooled"
-
-
-class TestNoMultiStatementDdlRidesABareQuery:
-    """Store reference §3: the SDK's ``query()`` validates statement[0] ONLY, so
-    a multi-statement DDL string sent through it can fail its third statement,
-    roll the whole thing back, and raise NOTHING. This bit us as silent partial
-    SCHEMA in all three ``ensure_ready`` paths.
-
-    Keyed on the SAFE set: the two new modules may call ``execute_transaction``
-    and ``run_query``; what they may not do is hand a multi-statement string to a
-    connection directly.
-    """
-
-    @staticmethod
-    def _module_sources() -> dict[str, str]:
-        import loremaster.floor_calibration.store as floor_store  # noqa: PLC0415
-        import loremaster.store.lease as lease_module  # noqa: PLC0415
-
-        sources: dict[str, str] = {}
-        for module in (floor_store, lease_module):
-            path = module.__file__
-            assert path is not None, f"{module.__name__} has no __file__ to scan"
-            sources[module.__name__] = Path(path).read_text(encoding="utf-8")
-        return sources
-
-    def test_neither_module_calls_query_on_a_connection_directly(self) -> None:
-        for name, source in self._module_sources().items():
-            calls = [
-                node
-                for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"query", "query_raw"}
-                and not (isinstance(node.func.value, ast.Name) and node.func.value.id == "self")
-            ]
-            assert not calls, (
-                f"{name} calls the SDK's query()/query_raw() directly; every statement "
-                f"must ride `_txn.run_query` or `_txn.execute_transaction`"
-            )
-
-    def test_the_ddl_scan_can_actually_see_a_call(self) -> None:
-        """CONTROL on the AST walk above — an analyser that matched nothing would
-        make the pin silently green against any build."""
-        source = "async def f(c):\n    await c.query('SELECT 1')\n"
-        found: list[Any] = [
-            node
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "query"
-        ]
-        assert len(found) == 1

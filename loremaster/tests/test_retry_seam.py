@@ -9422,3 +9422,591 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
             f"right place to find that out) or this probe is not reaching the fallback at "
             f"all — in which case the containment pins have never been shown able to fail."
         )
+
+
+# ===========================================================================
+# #144 — A BARE .query() MUST CARRY EXACTLY ONE STATEMENT (the full-statement-
+# validation POSTURE). Contract by contract-author-07, packet 07, 2026-08-17.
+# Design: docs/plans/v2/receipts/2026-08-17-packet07/DESIGN-sidecar-144-posture.md
+# (fable-sidecar-07) — Option A-cheap.
+#
+# THE INVARIANT. A multi-statement string handed to the SDK's bare ``.query()``
+# is validated statement[0] ONLY (store reference §3, the #124/#144 mechanism):
+# a LATER statement can fail and roll the whole transaction back while ``.query()``
+# raises NOTHING (reproduced live on 3.2.4 — packet 07 probe B,
+# scripts/probe_store_error_classes_07.py). Multi-statement therefore must ride
+# ``execute_transaction`` / ``execute_read_transaction`` (which use ``query_raw``
+# and verify EVERY statement) — never bare ``.query()``.
+#
+# WHY THIS LIVES IN THE RUNTIME GUARD, NOT A PER-MODULE PIN. The invariant is a
+# reach-attack surface: the autouse ``_sdk_guard`` ALREADY observes every bare
+# ``.query()`` at runtime, with coverage already a checked variable — so a
+# single-statement predicate added there covers the property BY DERIVED REACH,
+# where a per-module pin would be a hand-list (CLAUDE.md: "reach is a checked
+# variable, not a hand-list"; the sixth defeat — a runtime gate armed in 4 tests,
+# defeated by a path no test ran).
+#
+# ⚠ CORRECTED COUNT (adversary-07 F1; independently RE-DERIVED here — grep of the
+# whole test tree for the ``attr in {"query","query_raw"}`` AST-ban shape returns
+# ``test_floor_calibration_schema.py`` ONLY). There is exactly **ONE** pre-existing
+# such pin — ``TestNoMultiStatementDdlRidesABareQuery`` (floor_calibration.store +
+# lease). An earlier draft of this block claimed "five scattered pins" with
+# ``comms_schema``/``message_ledger``/``graph_surreal`` copies — that was a
+# FABRICATED count inherited un-derived from a discovery summary (the exact
+# re-derive-inherited-numbers failure this repo has the most receipts against);
+# those copies DO NOT EXIST. The one real pin bans ALL direct ``.query()``/
+# ``.query_raw()`` (a BROADER property than this leg's multi-statement-literal
+# check), so this offline leg is NOT its subsumer; its route-through-seam coverage
+# is preserved by the pre-existing RETRY-ESCAPE lint+guard (``_unseamed_sdk_call_
+# sites`` + the autouse runtime guard), which already bans every unseamed SDK call
+# in every ``_talks_to_surrealdb`` module — floor_cal + lease included. Deletion is
+# therefore SAFE (adversary-verified: both modules route everything except
+# signin/close through the seam); the only narrowing is the old pin's ``not-self``
+# receiver breadth vs the retry lint's ``_is_connection_receiver`` NAME-limit,
+# accepted-with-note (zero current impact; the repo-wide accepted bound).
+#
+# ⚠ RED AGAINST HEAD (82e2587): the guard has NO single-statement check today, so
+# ``GuardReport.multi_statement_violations`` does not exist. The positive pins read
+# it via ``_multi_statement_violations`` (getattr → None today) so their RED is
+# BEHAVIOURAL ("the guard did not flag the multi-statement call"), never an
+# AttributeError, and this file stays COLLECTABLE against the unrepaired tree.
+#
+# THE BUILDER'S JOB (do NOT do it here — this is the contract):
+#   1. Add ``multi_statement_violations: list[SdkEscape]`` to ``GuardReport``.
+#   2. In ``_sdk_guard._guard``, when the observed method is ``query`` (NOT
+#      ``query_raw``) and its first positional arg is a multi-statement string,
+#      append an ``SdkEscape``. REUSE the single-statement predicate that already
+#      exists — ``_txn._assert_envelope_integrity`` / the internal-``;`` logic
+#      behind ``compose`` — do NOT clone it (ONE IMPLEMENTATION; extract a shared
+#      predicate if needed).
+#   3. Extend the autouse fixture (``conftest._no_sdk_call_escapes_the_retry_driver``)
+#      to also assert ``not report.multi_statement_violations``.
+#   4. OPTIONALLY delete the ONE pre-existing ``TestNoMultiStatementDdlRidesABareQuery``
+#      pin (floor_cal + lease). SAFE (its route-through-seam coverage is preserved by
+#      the retry-escape lint+guard, NOT by this leg — see the corrected note above), but
+#      it is a SEPARATE, broader property (bans ALL direct .query()/.query_raw()); deleting
+#      it is a removed-behaviour decision to adjudicate deliberately, not a mechanical
+#      subsumption. Leaving it in place is also fine (it is not wrong, just narrower-reach).
+#
+# THE DETECTOR — packages-checked, allowlist the safe. The installed ``surrealdb``
+# SDK exposes NO SurrealQL parser/statement-tokeniser (read 2026-08-17: only
+# ``request_message/sql_adapter.SqlAdapter``, a naive ``.split(';')`` JOINER for
+# migration parts, no statement-count validation and no literal handling). So the
+# detector is legitimately bespoke: the POSITIVE property "exactly one top-level
+# statement" — strip one trailing ``;``, then any remaining ``;`` ⇒ multi-statement.
+# NOT keyed on the literal ``BEGIN`` (that is enumerate-the-forbidden, defeated by a
+# ``;``-joined non-BEGIN pair). Scoped to ``.query()`` only — ``query_raw`` validates
+# every statement and is the SAFE multi-statement path.
+#
+# KNOWN BOUND (WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT): the internal-``;`` detector
+# false-positives on a single statement whose ``;`` sits inside a string/backtick
+# literal. NO current bare-``.query()`` site does this (scout, inbox_awaiter,
+# run_query, bootstrap DEFINE — all literal-``;``-free; verified 2026-08-17). Pinned
+# by ``test_the_semicolon_in_a_literal_is_a_KNOWN_BOUND`` below. RE-OPEN TRIGGER:
+# the day a bare-``.query()`` site legitimately needs a ``;``-bearing statement
+# literal — at which point the fix is bound params or ``execute_transaction``, not
+# loosening the guard.
+# ===========================================================================
+
+# Two top-level statements — the shape .query() validates statement[0]-only (#144).
+_MULTI_STATEMENT_QUERY = "BEGIN;\nRETURN 1;\nCOMMIT;"
+# Two top-level statements WITHOUT a BEGIN/COMMIT envelope — the discriminator that
+# refuses a detector keyed on the ``BEGIN`` literal (enumerate-the-forbidden): a
+# ;-joined non-BEGIN pair hits the statement[0]-only gap just as hard.
+_MULTI_STATEMENT_NO_BEGIN_QUERY = "RETURN 1;\nRETURN 2"
+# One statement — the overwhelmingly common, correct bare-.query() shape.
+_SINGLE_STATEMENT_QUERY = "RETURN 1"
+# ONE statement whose ; is inside a string literal — the KNOWN-BOUND false positive.
+_SEMICOLON_IN_LITERAL_QUERY = "RETURN 'a;b'"
+# TWO statements, each carrying a QUOTED literal (no ; INSIDE a literal) — the DUAL of
+# the ;-in-literal bound (F2). Flagged by the naive internal-; detector today; the pin
+# guards the day the ;-in-literal bound is closed by a literal-aware detector, so a buggy
+# literal-aware parser can't over-strip and wave a real multi-statement-with-quotes through.
+_MULTI_STATEMENT_WITH_QUOTES_QUERY = "RETURN 'v'; RETURN 'w'"
+
+
+def _multi_statement_violations(report: GuardReport) -> Any:
+    """The guard's record of bare-``.query()`` calls that carried >1 statement.
+
+    Read via ``getattr`` (default ``None``) so this contract is COLLECTABLE and
+    BEHAVIOURALLY red against the current guard, which has no such surface yet:
+    today the positive pins fail with "the guard did not flag ...", never an
+    ``AttributeError``. The builder adds ``GuardReport.multi_statement_violations``.
+    """
+    return getattr(report, "multi_statement_violations", None)
+
+
+class TestBareQueryMustCarryExactlyOneStatement:
+    """#144 posture — a bare ``.query()`` may carry exactly ONE statement; multi-
+    statement must ride ``execute_transaction``. Enforced in the autouse runtime
+    guard (reach = a checked variable), replacing the per-module hand-list.
+
+    ``[real]`` tier — drives the REAL SDK connection class the guard instruments,
+    exactly like ``TestNoSdkCallEscapesTheDriverAtRuntime``. Each call is aimed at
+    THIS FILE as "production" (via ``_install_guard_aimed_at_this_file``) so the
+    controls fire identically on a repaired tree — a control that goes vacuous the
+    day the fix lands is the disease, not the cure.
+    """
+
+    async def test_a_multi_statement_bare_query_is_flagged_even_inside_the_driver(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RED at HEAD (82e2587). THE finding: a ``BEGIN;…;COMMIT;`` string handed to
+        bare ``.query()`` is waved through — ``.query()`` validates statement[0] only,
+        so a later statement can roll the txn back with ``.query()`` raising nothing
+        (#124/#144). Made INSIDE a driver attempt ON PURPOSE: this invariant is
+        ORTHOGONAL to the retry-escape one, so ``report.escapes`` stays empty and only
+        the multi-statement surface fires — that discrimination is the point.
+        """
+        connection = await connect_admin(live_env)  # connect BEFORE arming the guard
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_MULTI_STATEMENT_QUERY)
+
+            await _driver()(_attempt)  # under the driver → NOT a retry escape
+        finally:
+            await connection.close()
+
+        assert not report.escapes, (
+            "the multi-statement call rode the driver, so it must not register as a "
+            f"retry-escape; got {[str(escape) for escape in report.escapes]}. This pin "
+            "is about statement COUNT, not driver presence."
+        )
+        violations = _multi_statement_violations(report)
+        assert violations, (
+            "a multi-statement string handed to bare .query() was NOT flagged. .query() "
+            "validates statement[0] ONLY (store reference §3): a later statement can fail "
+            "and roll the whole transaction back while .query() raises nothing (#124/#144, "
+            "reproduced live on 3.2.4). Multi-statement must ride execute_transaction."
+        )
+        assert [violation.method for violation in violations] == ["query"], (
+            f"the flagged violation names the wrong method: {violations!r}"
+        )
+
+    async def test_a_semicolon_joined_non_BEGIN_pair_is_also_flagged(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RED at HEAD, and the DISCRIMINATOR against a detector keyed on ``BEGIN``. A
+        ``RETURN 1;\\nRETURN 2`` string is two top-level statements with no envelope —
+        it hits ``.query()``'s statement[0]-only gap identically, and a detector that
+        looked for ``BEGIN`` (enumerate-the-forbidden) would wave it straight through.
+        The positive property is 'exactly one top-level statement', not 'no BEGIN'.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_MULTI_STATEMENT_NO_BEGIN_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        violations = _multi_statement_violations(report)
+        assert violations, (
+            "a ;-joined non-BEGIN statement pair handed to bare .query() was NOT flagged. "
+            "The detector must count TOP-LEVEL STATEMENTS (internal ;), never key on the "
+            "BEGIN literal — a non-BEGIN pair hits the statement[0]-only gap just as hard."
+        )
+        assert [violation.method for violation in violations] == ["query"]
+
+    async def test_a_single_statement_bare_query_is_NOT_flagged(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NEGATIVE CONTROL. The common case — a single-statement bare ``.query()`` —
+        must never be flagged, or the builder cannot satisfy the guard and deletes it
+        (and then we have nothing). Discriminates a detector that fires on every
+        ``.query()`` from one that fires on multi-statement ones.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_SINGLE_STATEMENT_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        assert not _multi_statement_violations(report), (
+            "a single-statement bare .query() was flagged as multi-statement — the "
+            "detector over-fires and would reject scout / inbox_awaiter / run_query / "
+            "the bootstrap DEFINEs, all legitimately single-statement."
+        )
+
+    async def test_a_multi_statement_query_RAW_is_NOT_flagged(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """NEGATIVE CONTROL — the SAFE path. ``query_raw`` validates EVERY statement (it
+        is what ``execute_transaction`` rides), so a multi-statement ``query_raw`` is
+        correct and must never be flagged. A build that flagged all multi-statement
+        (statement-count alone, ignoring the method) fails here: the rule is scoped to
+        ``.query()``, not to statement count per se.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query_raw(_MULTI_STATEMENT_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        assert not _multi_statement_violations(report), (
+            "a multi-statement query_raw was flagged — query_raw checks every statement "
+            "and is the SAFE multi-statement path (execute_transaction rides it). The "
+            "single-statement rule is scoped to .query() only, never .query_raw()."
+        )
+
+    async def test_the_semicolon_in_a_literal_is_a_KNOWN_BOUND(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """KNOWN, BOUNDED RESIDUAL (WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT).
+
+        The minimal honest detector — 'strip one trailing ;, then any remaining ; ⇒
+        multi-statement' — false-positives on a SINGLE statement whose ; is inside a
+        string literal (the surrealdb SDK ships no SurrealQL parser; packages-checked
+        2026-08-17). No current bare-.query() site does this, so the bound is accepted
+        and PINNED here rather than rediscovered from an outage.
+
+        This pin asserts the bound HOLDS (a ;-in-literal single statement IS flagged).
+        RE-OPEN TRIGGER: a builder makes the detector literal-aware → this goes RED →
+        delete this pin and say so (the bound was closed deliberately). Or a bare
+        .query() site legitimately needs a ;-bearing literal → the fix is bound params
+        or execute_transaction, NOT loosening the guard.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_SEMICOLON_IN_LITERAL_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        assert _multi_statement_violations(report), (
+            "the ;-in-literal single statement was NOT flagged. Either the detector "
+            "became literal-aware (good — this KNOWN BOUND was closed; delete this pin "
+            "and say so) or the detector is not running at all (bad)."
+        )
+
+    async def test_the_runtime_guard_OBSERVES_the_bootstrap_define_statements(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DERIVED-REACH PROOF (sidecar §RECOMMENDATION.4) — GREEN today, and the whole
+        argument for A-cheap over the hand-list.
+
+        ``TestNoMultiStatementDdlRidesABareQuery`` names only floor_calibration.store +
+        lease; it CANNOT see ``bootstrap_session``'s own bare
+        ``.query('DEFINE NAMESPACE …')`` / ``.query('DEFINE DATABASE …')`` (_txn.py).
+        The autouse runtime guard, whose reach is a checked variable, observes every
+        bare ``.query()`` — including those. Consolidating the hand-list INTO the guard
+        therefore strictly WIDENS reach. If this pin is RED, the guard does NOT reach the
+        bootstrap path — itself the argument for a checked reach over a hand-list.
+        """
+        report = _install_runtime_sdk_guard(monkeypatch)  # aimed at REAL production
+        connection = await connect_admin(live_env)  # calls bootstrap_session → DEFINE NS/DB
+        await connection.close()
+
+        report.require_observations("bootstrapping a fresh admin connection")
+        bootstrap_sites = [
+            site
+            for site in report.observed
+            if "_txn.py" in site
+            and ("_define_namespace" in site or "_define_database" in site)
+        ]
+        assert bootstrap_sites, (
+            "the runtime guard did not observe bootstrap_session's bare .query() DEFINE "
+            f"NAMESPACE / DATABASE statements. Observed sites: {sorted(report.observed)}. "
+            "A hand-list keyed on 'scout + inbox_awaiter' omits these; a checked-reach "
+            "guard must not."
+        )
+
+    async def test_the_runtime_leg_shares_the_txn_predicate_by_mutation(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F0 (adversary-07 BLOCKER) — the runtime multi-statement verdict must come from the
+        SHARED ``_txn._assert_envelope_integrity``, not a private ``;``-clone. A clone is
+        behaviourally identical on every OTHER fixture (the adversary's ``inline_predicate``
+        build passed all 6), silently defeats ONE-IMPLEMENTATION, AND breaks the ``;``-in-literal
+        known-bound re-open trigger (measured on THIS leg — mutate the shared predicate and a
+        clone will not move with it). Prove sharing by MUTATION: invert the shared predicate and
+        confirm the runtime verdict FLIPS.
+
+        ⚠ Also enforces call-time import: the builder must look ``_assert_envelope_integrity`` up
+        as a module global at call time, not capture it at import — a captured reference the
+        monkeypatch cannot reach leaves this RED, which is correct (an import-captured copy is a
+        clone in the dimension that matters). Mirrors
+        ``test_the_two_scans_SHARE_their_predicates_rather_than_cloning_them``.
+        """
+        from loremaster.store._txn import TxnEnvelopeViolationError
+
+        def _invert(_statement: str) -> None:
+            # Flag EVERY statement (single included) as multi — the inversion.
+            raise TxnEnvelopeViolationError("inverted: every statement is flagged multi here")
+
+        # Bootstrap FIRST, under the REAL predicate. connect_admin runs bootstrap_session's
+        # own legitimate SINGLE-statement DEFINE NAMESPACE/DATABASE bare .query() calls, which
+        # the ALWAYS-ARMED autouse guard observes. Inverting the shared predicate BEFORE them
+        # would make that guard misread those single statements as multi-statement violations —
+        # a false positive at conftest teardown, unrelated to what this pin proves. The
+        # inversion only has to be live for the _attempt call below (the guard reads the
+        # predicate at CALL time), so it goes AFTER connect + arm.
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        monkeypatch.setattr("loremaster.store._txn._assert_envelope_integrity", _invert)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_SINGLE_STATEMENT_QUERY)  # a SINGLE statement
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        violations = _multi_statement_violations(report)
+        assert violations, (
+            "with _txn._assert_envelope_integrity INVERTED, a SINGLE-statement bare .query() was "
+            "NOT flagged — so the runtime leg does not read the shared predicate: it is a private "
+            ";-clone (routing-is-not-sharing, #102/#120), or it captured the predicate at import "
+            "rather than at call time. Either way it passes every other pin AND silently breaks the "
+            ";-in-literal known-bound re-open trigger, which is measured on THIS leg."
+        )
+
+    async def test_a_multi_statement_bare_query_on_an_oddly_named_receiver_is_flagged(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F5 (adversary-07) — the runtime leg's RECEIVER-BLINDNESS, the two-leg design's
+        keystone. The offline leg's ``_is_connection_receiver`` NAME-limit is only acceptable
+        BECAUSE the runtime leg patches the CLASS (receiver-blind). Every OTHER runtime pin uses a
+        receiver named ``connection``; this one uses ``db`` — a name the offline leg would MISS —
+        and proves the runtime leg catches it anyway.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+            db = connection  # a handle whose NAME the offline leg's _is_connection_receiver misses
+
+            async def _attempt() -> Any:
+                return await db.query(_MULTI_STATEMENT_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        violations = _multi_statement_violations(report)
+        assert violations, (
+            "a multi-statement bare .query() on a receiver named `db` was NOT flagged — the "
+            "runtime leg is not receiver-blind, collapsing the two-leg keystone (the offline leg's "
+            "_is_connection_receiver NAME-limit is acceptable ONLY because the runtime leg patches "
+            "the class)."
+        )
+        assert [violation.method for violation in violations] == ["query"]
+
+    async def test_a_multi_statement_string_containing_quoted_literals_is_flagged(
+        self, live_env: SurrealEnv, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F2 (adversary-07) — a multi-statement string whose statements carry QUOTED literals
+        (no ``;`` INSIDE a literal) stays flagged. The DUAL of the ``;``-in-literal known bound:
+        real statement separators alongside quotes. Flagged by the naive detector today; guards
+        the day the ``;``-in-literal bound is closed by a literal-aware detector — against one that
+        over-strips quotes and waves a real multi-statement-with-quotes through.
+        """
+        connection = await connect_admin(live_env)
+        report = _install_guard_aimed_at_this_file(monkeypatch)
+        try:
+
+            async def _attempt() -> Any:
+                return await connection.query(_MULTI_STATEMENT_WITH_QUOTES_QUERY)
+
+            await _driver()(_attempt)
+        finally:
+            await connection.close()
+
+        violations = _multi_statement_violations(report)
+        assert violations, (
+            "a multi-statement string whose statements contain quoted literals was NOT flagged. It "
+            "has REAL statement separators (the ; between RETURN 'v' and RETURN 'w'); a literal-aware "
+            "detector that over-strips quotes and waves it through is the failure this pin guards."
+        )
+
+
+# ---------------------------------------------------------------------------
+# #144 — THE OFFLINE (AST) LEG, paired with the runtime leg above exactly as the
+# retry-escape guard pairs ``TestNoProductionCodeCallsTheSdkOutsideTheSeam`` (lint)
+# with ``TestNoSdkCallEscapesTheDriverAtRuntime`` (runtime): "the lint covers all
+# code weakly, the gate covers executed code absolutely" (:2304). Sidecar §5.2.
+#
+# WHY BOTH LEGS. The runtime leg only sees ``.query()`` calls a test EXECUTES, with
+# the strings they are driven with — a bare-``.query()`` site in an untested branch,
+# or one driven single-statement in tests but multi-statement in prod, escapes it.
+# The AST leg sees a STATIC multi-statement literal at a ``.query()`` site even in an
+# untested branch (but is blind to runtime-composed strings, and defeatable by
+# spelling). They close each other's blind spot — this offline leg exists so a NEW
+# multi-statement bare-``.query()`` LITERAL at an untested-branch site is caught even
+# though the runtime leg (executed-only) cannot see it.
+#
+# ⚠ NOT a consolidation of ``TestNoMultiStatementDdlRidesABareQuery`` (adversary-07 F1):
+# that ONE pin (floor_cal + lease) bans ALL direct ``.query()``/``.query_raw()`` — a
+# BROADER property than this leg's ``.query()``-with-static-multi-statement-literal
+# check (this leg is narrower in three dimensions: query_raw, single-statement direct
+# query, runtime-composed multi-statement). This leg does NOT preserve that pin's
+# coverage; the pre-existing retry-escape lint+guard does. See the corrected note in
+# the runtime-leg block above.
+#
+# REUSES the retry guard's OWN derived-reach primitives (``_talks_to_surrealdb``
+# deny-by-default, ``_is_connection_receiver`` — a NAME-limit, accepted-with-note) and
+# ``_txn._assert_envelope_integrity`` as the single-statement predicate (the SAME one
+# ``compose`` uses; sharing MUTATION-PROVEN by
+# ``test_the_offline_leg_shares_the_txn_predicate_by_mutation`` below) — NOT a new
+# hand-list, NOT a new AST walker, NOT a new predicate (ONE IMPLEMENTATION).
+# ---------------------------------------------------------------------------
+
+
+def _bare_query_multi_statement_literals_in(tree: ast.AST) -> list[tuple[int, str]]:
+    """``(lineno, literal)`` for every ``<conn>.query(<str literal>)`` in ``tree`` whose
+    first positional arg is a STATIC multi-statement string literal.
+
+    ``query`` ONLY (``query_raw`` validates every statement — the safe path). The
+    single-statement verdict is ``_txn._assert_envelope_integrity`` (raises on an internal
+    ``;`` or a bare BEGIN/COMMIT — the SAME predicate ``compose`` enforces). Non-literal
+    args (f-strings, variables) are skipped: a runtime-composed string is the runtime
+    leg's job, not this one.
+    """
+    from loremaster.store._txn import TxnEnvelopeViolationError, _assert_envelope_integrity
+
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "query" or not _is_connection_receiver(node.func.value):
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            continue
+        try:
+            _assert_envelope_integrity(first.value)
+        except TxnEnvelopeViolationError:
+            found.append((node.lineno, first.value))
+    return found
+
+
+def _bare_query_multi_statement_literal_sites() -> dict[str, list[tuple[int, str]]]:
+    """Every production ``<conn>.query(<multi-statement literal>)`` site in the package —
+    the OFFLINE half of the #144 single-statement invariant. Derived reach: only modules
+    that ``_talks_to_surrealdb`` are scanned (deny-by-default, reused from the retry guard).
+    """
+    sites: dict[str, list[tuple[int, str]]] = {}
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if not _talks_to_surrealdb(tree):
+            continue
+        hits = _bare_query_multi_statement_literals_in(tree)
+        if hits:
+            sites[path.relative_to(_PACKAGE_ROOT).as_posix()] = hits
+    return sites
+
+
+class TestNoBareQueryCarriesAMultiStatementLiteral:
+    """#144 OFFLINE leg — mirrors ``TestNoProductionCodeCallsTheSdkOutsideTheSeam`` (the
+    retry guard's AST lint). GREEN at HEAD; it exists so the scattered per-module
+    ``TestNoMultiStatementDdlRidesABareQuery`` pins can be RETIRED without losing their
+    untested-branch coverage (sidecar §5.2).
+
+    ⚠ A LINT, not the invariant. Name-keyed, blind to runtime-composed strings, defeatable
+    by spelling — the RUNTIME leg (``TestBareQueryMustCarryExactlyOneStatement``) is the
+    invariant. Kept because it is instant, names the site, and sees code that never runs.
+    """
+
+    def test_no_production_bare_query_site_passes_a_multi_statement_literal(self) -> None:
+        """GREEN at HEAD (no production bare-.query() site passes a static multi-statement
+        literal — all are single-statement). It goes RED the day one is added — the
+        consolidated offline replacement for the scattered per-module pins.
+        """
+        offenders = _bare_query_multi_statement_literal_sites()
+        assert not offenders, (
+            "a production bare .query() site passes a static MULTI-STATEMENT string literal. "
+            ".query() validates statement[0] ONLY (#144): a later statement can fail and roll "
+            f"the whole transaction back while .query() raises nothing. Sites: {offenders}. "
+            "Multi-statement must ride execute_transaction (query_raw)."
+        )
+
+    def test_the_scan_actually_SEES_a_multi_statement_literal(self) -> None:
+        """POSITIVE + NEGATIVE CONTROLS (mirrors the lint's
+        ``test_the_ddl_scan_can_actually_see_a_call``). A scan that matched nothing would be
+        green against any build. Run the REAL scanner on planted snippets.
+
+        The receiver is named ``connection`` because this leg reuses the retry lint's
+        ``_is_connection_receiver`` — which is RECEIVER-NAME-keyed (a documented limit: a
+        connection bound to a name not ending in ``connection``/``conn`` is invisible to
+        this leg, exactly as it is to the retry lint). That blind spot is the RUNTIME
+        leg's job — it patches the class and is receiver-blind.
+        """
+        positive = ast.parse(
+            'async def f(connection):\n    await connection.query("BEGIN;\\nRETURN 1;\\nCOMMIT;")\n'
+        )
+        assert _bare_query_multi_statement_literals_in(positive), (
+            "the scanner did NOT see a planted multi-statement bare .query() literal — a "
+            "green from it would prove nothing"
+        )
+
+        non_begin = ast.parse(
+            'async def f(connection):\n    await connection.query("RETURN 1;\\nRETURN 2")\n'
+        )
+        assert _bare_query_multi_statement_literals_in(non_begin), (
+            "the scanner missed a ;-joined non-BEGIN pair — it must count top-level "
+            "statements, not key on the BEGIN literal"
+        )
+
+        single = ast.parse('async def f(connection):\n    await connection.query("SELECT 1")\n')
+        assert not _bare_query_multi_statement_literals_in(single), (
+            "a single-statement bare .query() was flagged — the scan over-fires"
+        )
+
+        raw = ast.parse(
+            'async def f(connection):\n    await connection.query_raw("BEGIN;\\nRETURN 1;\\nCOMMIT;")\n'
+        )
+        assert not _bare_query_multi_statement_literals_in(raw), (
+            "a multi-statement query_raw was flagged — query_raw is the SAFE path; the "
+            "single-statement rule is scoped to .query() only"
+        )
+
+    def test_the_offline_leg_shares_the_txn_predicate_by_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F0 (adversary-07) — the offline leg's single-statement verdict comes from the SHARED
+        ``_txn._assert_envelope_integrity`` (looked up at CALL time inside
+        ``_bare_query_multi_statement_literals_in``), not a private ``;``-clone. GREEN today (it
+        DOES share, by construction). Prove it by MUTATION: invert the predicate and confirm a
+        SINGLE-statement bare ``.query()`` literal is now flagged — with a pre-mutation control so
+        the flip is real, not a scan that flags everything.
+        """
+        from loremaster.store._txn import TxnEnvelopeViolationError
+
+        def _invert(_statement: str) -> None:
+            raise TxnEnvelopeViolationError("inverted: every statement flagged multi here")
+
+        single = ast.parse('async def f(connection):\n    await connection.query("SELECT 1")\n')
+        assert not _bare_query_multi_statement_literals_in(single), (
+            "control: a single-statement bare .query() literal must NOT be flagged before the "
+            "mutation — otherwise the scan flags everything and the flip below proves nothing"
+        )
+
+        monkeypatch.setattr("loremaster.store._txn._assert_envelope_integrity", _invert)
+        assert _bare_query_multi_statement_literals_in(single), (
+            "after inverting _txn._assert_envelope_integrity, a SINGLE-statement bare .query() "
+            "literal was STILL not flagged — the offline leg holds a private ;-clone rather than "
+            "calling the shared predicate (ONE IMPLEMENTATION; routing-is-not-sharing, #102/#120)."
+        )
