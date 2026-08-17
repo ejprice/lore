@@ -1,0 +1,130 @@
+# packet 07a — store bounce-recovery probe transcript
+# instrument: scripts/probe_store_recovery_07a.py (committed, regenerable)
+# run: 2026-08-17T22:05:29Z · engine spike-surreal 3.2.4 · HEAD 995a358
+# 'store.query.rejected' structured-log lines filtered (the store's own rejection log
+#  for the intentional dead-socket calls); everything else is verbatim stdout.
+
+packet 07a store-recovery probe — spike-surreal 3.2.4 (TEST store only)
+URL=ws://127.0.0.1:18000/rpc
+
+==============================================================================
+CONTROL — no bounce: a healthy held store answers repeated queries
+==============================================================================
+  call 0: ok=True  OK -> 1
+  call 1: ok=True  OK -> 1
+  call 2: ok=True  OK -> 1
+
+==============================================================================
+SCENARIO 1 — IDLE-then-full-bounce (#164/#250 shape): held store idle,
+  server RESTARTED, then repeated _query() calls. Does it self-heal, and in how many calls?
+==============================================================================
+  pre-bounce call: ok=True  OK -> 1
+  held._connection is set: True
+  --- bouncing spike-surreal (full server restart) ---
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  (A) fresh SurrealStore (same process) after the bounce:
+      fresh-store call: ok=True  OK -> 1
+  (B) OLD held store's next calls (self-heal test):
+      call 0: ok=False  conn[True->False]  loremaster.store._txn.SurrealConnectionError [SurrealConnectionError <- SurrealStoreError <- RuntimeError <- Exception <- BaseException]: SurrealDB query failed against 'ws://127.0.0.1:18000/rpc': no close frame received or sent
+      call 1: ok=True  conn[False->True]  OK -> 1
+      call 2: ok=True  conn[True->True]  OK -> 1
+      call 3: ok=True  conn[True->True]  OK -> 1
+      call 4: ok=True  conn[True->True]  OK -> 1
+      call 5: ok=True  conn[True->True]  OK -> 1
+      call 6: ok=True  conn[True->True]  OK -> 1
+      call 7: ok=True  conn[True->True]  OK -> 1
+  ==> held store healed on call index: 1 (None = never healed within 8 calls = WEDGE reproduced)
+
+==============================================================================
+SCENARIO 2 — IN-FLIGHT bounce: a query racing the socket drop
+  (store reference §3 KeyError shape). Records the raw exception, then
+  the same self-heal test.
+==============================================================================
+  pre-bounce call: ok=True  OK -> 1
+  --- launching in-flight query, then bouncing mid-flight ---
+    [systemctl restart rc=0]  
+  in-flight query result: ok=False  loremaster.store._txn.SurrealStoreError [SurrealStoreError <- RuntimeError <- Exception <- BaseException <- object]: SurrealDB query rejected against 'ws://127.0.0.1:18000/rpc' (unspecified rejection); see the server log for the full engine detail
+    [server back after 0.52s, 2 fresh-connect attempts]
+  next calls (self-heal test):
+      call 0: ok=False  loremaster.store._txn.SurrealConnectionError [SurrealConnectionError <- SurrealStoreError <- RuntimeError <- Exception <- BaseException]: SurrealDB query failed against 'ws://127.0.0.1:18000/rpc': no close frame received or sent
+      call 1: ok=True  OK -> 1
+      call 2: ok=True  OK -> 1
+      call 3: ok=True  OK -> 1
+      call 4: ok=True  OK -> 1
+      call 5: ok=True  OK -> 1
+      call 6: ok=True  OK -> 1
+      call 7: ok=True  OK -> 1
+  ==> healed on call index: 1 (None = wedge)
+
+==============================================================================
+DRILL — 20-consecutive full bounces on ONE long-held store (recover w/o
+  a container restart). heal-index per bounce; control before + after.
+==============================================================================
+  control-before: ok=True  OK -> 1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  0: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  1: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  2: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  3: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  4: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  5: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  6: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  7: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  8: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce  9: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 10: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 11: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 12: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 13: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 14: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 15: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 16: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 17: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 18: heal-index=1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  bounce 19: heal-index=1
+  control-after: ok=True  OK -> 1
+
+  SUMMARY: 20/20 recovered without a container restart; heal-index set=[1]; wedged bounces=[]
+  ==> PASS — 20/20 self-healed
+
+DONE.

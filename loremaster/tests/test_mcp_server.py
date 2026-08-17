@@ -115,7 +115,11 @@ from loremaster.server import (
     partition_tools_by_posture,
     run_probe_gate,
 )
-from loremaster.store._txn import SurrealConnectionError
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    TxnContentionExhaustedError,
+)
 from loremaster.tasks import (
     ClaimResult,
     IllegalTransitionError,
@@ -7555,6 +7559,44 @@ class TestCreateManyDispatch:
         assert len(await rollup_ctx.task_ledger.query_tasks()) == 3
 
 
+class _LedgerRaisingOnSecondCall:
+    """Wrap a real ``FakeFindingLedger`` so the SECOND ``resolve``/``acknowledge``
+    call (per verb) raises ``error`` — the finding #128 fault-injection double.
+
+    Mirrors ``test_connection_loss_aborts_remaining_as_render_not_raise``'s inline
+    ``_ConnectionDroppingAfterFirst`` (a mid-batch fault on item 2 of 3), lifted to a
+    reusable module-level double so the contention / plain-store-error pins share ONE
+    injector rather than cloning three near-identical wrappers (ONE IMPLEMENTATION).
+    Each verb counts independently, so a batch that uses only one verb raises on its
+    own second item.
+    """
+
+    def __init__(self, inner: FakeFindingLedger, error: BaseException) -> None:
+        self._inner = inner
+        self._error = error
+        self._resolve_calls = 0
+        self._acknowledge_calls = 0
+
+    async def resolve(
+        self, id_or_number: int | str, actor: str, note: str | None = None
+    ) -> Any:
+        self._resolve_calls += 1
+        if self._resolve_calls == 2:
+            raise self._error
+        return await self._inner.resolve(id_or_number, actor, note)
+
+    async def acknowledge(
+        self, id_or_number: int | str, actor: str, note: str | None = None
+    ) -> Any:
+        self._acknowledge_calls += 1
+        if self._acknowledge_calls == 2:
+            raise self._error
+        return await self._inner.acknowledge(id_or_number, actor, note)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class TestResolveManyAcknowledgeManyDispatch:
     """§3 (L2b): ``lore_findings action=resolve_many|acknowledge_many`` —
     BEST-EFFORT sequential, per-item outcome render (never all-or-nothing).
@@ -7702,6 +7744,169 @@ class TestResolveManyAcknowledgeManyDispatch:
         assert lines[1] == f"- #{first.number} resolved by {render_attributed('slate-lead')}"
         assert lines[2] == f"- #{second.number} ABORTED — store connection lost; retry these"
         assert lines[3] == f"- #{third.number} ABORTED — store connection lost; retry these"
+
+    # -- finding #128 (packet 07a): a store fault that is NOT a dead socket must -----
+    # -- degrade PER-ITEM, never kill the whole batch response. --------------------
+    # A ``TxnContentionExhaustedError`` (this row lost a write-write race after
+    # exhausting its retry budget) and a plain ``SurrealStoreError`` (any other
+    # non-connection store rejection) both subclass ``SurrealStoreError`` but are
+    # NEITHER a ``SurrealConnectionError`` NOR the domain trio — so at HEAD (995a358)
+    # they escape ``_resolve_or_acknowledge_many``'s per-item loop entirely and kill
+    # the whole batch MCP response, defeating the best-effort contract the batch verbs
+    # advertise ("one bad item never vetoes the rest"). Contention is the OPPOSITE of a
+    # dead socket: the connection is HEALTHY, so the batch must CONTINUE (per-item
+    # FAILED), not ABORT the remainder the way a real connection loss does. These pins
+    # go RED at HEAD (the whole call raises) and GREEN once the loop catches
+    # ``SurrealStoreError`` AFTER ``SurrealConnectionError`` (order load-bearing) and
+    # renders a per-item FAILED-and-continue line. Finding #128; sidecar §3.
+
+    async def test_a_contended_item_FAILS_per_item_without_aborting_the_rest(
+        self, rollup_ctx: AppContext
+    ) -> None:
+        first = await rollup_ctx.finding_ledger.report(
+            "s1", "b", area="a", category="c", created_by="me"
+        )
+        contended = await rollup_ctx.finding_ledger.report(
+            "s2", "b", area="a", category="c", created_by="me"
+        )
+        third = await rollup_ctx.finding_ledger.report(
+            "s3", "b", area="a", category="c", created_by="me"
+        )
+        setattr(
+            rollup_ctx,
+            "finding_ledger",
+            _LedgerRaisingOnSecondCall(
+                rollup_ctx.finding_ledger,  # type: ignore[arg-type]
+                TxnContentionExhaustedError(
+                    "gave up after 64 attempts (retryable conflict)",
+                    attempts=64,
+                    elapsed_seconds=2.0,
+                ),
+            ),
+        )
+        # RED at HEAD: the escaped TxnContentionExhaustedError makes this call RAISE
+        # rather than render — the whole batch response dies for one contended item.
+        rendered = _render_text(
+            await getattr(rollup_ctx, "findings")(
+                action="resolve_many",
+                actor="slate-lead",
+                items=[
+                    {"id_or_number": first.number},
+                    {"id_or_number": contended.number},
+                    {"id_or_number": third.number},
+                ],
+            )
+        )
+        lines = rendered.splitlines()
+        # Two items wrote; the contended one is a per-item failure, NOT an abort.
+        assert lines[0] == "resolved 2 of 3:"
+        assert lines[1] == f"- #{first.number} resolved by {render_attributed('slate-lead')}"
+        # Operator-ruled (RULING-fork-a.md) EXACT contention wording — distinct from the
+        # domain trio's generic "FAILED — {reason}" because contention is genuinely
+        # retryable (healthy connection, lost write-write race), unlike a domain
+        # rejection. Pinning the suffix (not just "a FAILED line") is the ruling's ask.
+        assert lines[2] == (
+            f"- #{contended.number} FAILED — store contention, safe to retry this item"
+        )
+        # THE DISCRIMINATOR: the batch CONTINUED past the contended item — a build
+        # that catches contention but aborts the remainder (like a connection loss)
+        # would render #third as ABORTED and fail here.
+        assert lines[3] == f"- #{third.number} resolved by {render_attributed('slate-lead')}"
+
+    async def test_a_plain_store_error_item_FAILS_per_item_without_aborting_the_rest(
+        self, rollup_ctx: AppContext
+    ) -> None:
+        first = await rollup_ctx.finding_ledger.report(
+            "s1", "b", area="a", category="c", created_by="me"
+        )
+        rejected = await rollup_ctx.finding_ledger.report(
+            "s2", "b", area="a", category="c", created_by="me"
+        )
+        third = await rollup_ctx.finding_ledger.report(
+            "s3", "b", area="a", category="c", created_by="me"
+        )
+        setattr(
+            rollup_ctx,
+            "finding_ledger",
+            _LedgerRaisingOnSecondCall(
+                rollup_ctx.finding_ledger,  # type: ignore[arg-type]
+                SurrealStoreError("SurrealDB query rejected (unspecified rejection)"),
+            ),
+        )
+        rendered = _render_text(
+            await getattr(rollup_ctx, "findings")(
+                action="resolve_many",
+                actor="slate-lead",
+                items=[
+                    {"id_or_number": first.number},
+                    {"id_or_number": rejected.number},
+                    {"id_or_number": third.number},
+                ],
+            )
+        )
+        lines = rendered.splitlines()
+        assert lines[0] == "resolved 2 of 3:"
+        assert lines[1] == f"- #{first.number} resolved by {render_attributed('slate-lead')}"
+        # A plain (non-contention) SurrealStoreError is a per-item FAILED line, but NOT
+        # the connection-loss ABORTED line and NOT the contention "safe to retry"
+        # wording — that wording is RESERVED for TxnContentionExhaustedError. This
+        # discriminates a wrong build that catches the SurrealStoreError base class
+        # (contention's superclass) and labels EVERYTHING "safe to retry": a plain
+        # store rejection is not known-retryable, so it must NOT claim it is.
+        assert lines[2].startswith(f"- #{rejected.number} FAILED — ")
+        assert "ABORTED — store connection lost" not in lines[2]
+        assert "safe to retry this item" not in lines[2]
+        # The raw engine text must NEVER reach the render verbatim (ledger #31 hygiene):
+        # the escaped SurrealStoreError message is generic here, but the render must not
+        # echo an unsanitised store message — assert the failure line is a single row.
+        assert len(lines) == 4  # header + 3 outcome rows, none fractured
+        assert lines[3] == f"- #{third.number} resolved by {render_attributed('slate-lead')}"
+
+    async def test_acknowledge_many_also_degrades_per_item_on_contention(
+        self, rollup_ctx: AppContext
+    ) -> None:
+        # The SAME loop serves acknowledge_many; a build that special-cases only
+        # resolve_many would pass the pins above and fail HERE.
+        first = await rollup_ctx.finding_ledger.report(
+            "s1", "b", area="a", category="c", created_by="me"
+        )
+        contended = await rollup_ctx.finding_ledger.report(
+            "s2", "b", area="a", category="c", created_by="me"
+        )
+        third = await rollup_ctx.finding_ledger.report(
+            "s3", "b", area="a", category="c", created_by="me"
+        )
+        setattr(
+            rollup_ctx,
+            "finding_ledger",
+            _LedgerRaisingOnSecondCall(
+                rollup_ctx.finding_ledger,  # type: ignore[arg-type]
+                TxnContentionExhaustedError(
+                    "gave up after 64 attempts (retryable conflict)",
+                    attempts=64,
+                    elapsed_seconds=2.0,
+                ),
+            ),
+        )
+        rendered = _render_text(
+            await getattr(rollup_ctx, "findings")(
+                action="acknowledge_many",
+                actor="slate-lead",
+                items=[
+                    {"id_or_number": first.number},
+                    {"id_or_number": contended.number},
+                    {"id_or_number": third.number},
+                ],
+            )
+        )
+        lines = rendered.splitlines()
+        assert lines[0] == "acknowledged 2 of 3:"
+        assert lines[1] == f"- #{first.number} acknowledged by {render_attributed('slate-lead')}"
+        # Same operator-ruled exact contention wording, on the acknowledge verb.
+        assert lines[2] == (
+            f"- #{contended.number} FAILED — store contention, safe to retry this item"
+        )
+        assert lines[3] == f"- #{third.number} acknowledged by {render_attributed('slate-lead')}"
 
     async def test_hostile_caller_ref_is_echoed_sanitised_in_a_failed_row(
         self, rollup_ctx: AppContext

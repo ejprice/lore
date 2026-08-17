@@ -1708,3 +1708,78 @@ class TestCommandChannelLivePrimaryEndToEnd:
                 with contextlib.suppress(asyncio.CancelledError):
                     await run_task
             await _close_scout_bench(bench)
+
+
+# ---------------------------------------------------------------------------
+# Finding #127 (packet 07a, operator-ruled RULING-fork-a.md 2026-08-17): the
+# lockless check-then-set in ``CommandSubscriber._ensure_connection`` is accepted
+# as latent-by-design — SAFE ONLY because ``run()`` is its sole PRODUCTION driver.
+# (``process_pending_once`` is a SECOND in-code caller, but it is TEST-ONLY — zero
+# production callers — and serialised on ``_drain_lock``; the contract-07a-1 probe
+# corrected #127's "sole caller" wording to "sole PRODUCTION driver".) The re-open
+# trigger is "any change that adds a second caller of ``_ensure_connection``, or
+# makes scout construct its own socket." This pin is that trigger's MECHANICAL
+# tripwire (WHEN YOU CANNOT CLOSE A HOLE, PIN IT): a THIRD caller reddens it,
+# forcing a deliberate re-adjudication rather than silently inheriting a
+# check-then-set that is now concurrently driven. The invariant is a FROZEN SET,
+# read from the AST — not a list anyone maintains.
+# ---------------------------------------------------------------------------
+
+
+def _command_subscriber_ensure_connection_callers() -> set[str]:
+    """The ``CommandSubscriber`` methods that call ``self._ensure_connection()``.
+
+    Read from the AST of the ACTUAL imported ``loremaster.scout`` source (via its
+    ``__file__``), scoped to the ``CommandSubscriber`` class only — ``scout.py`` has a
+    second ``run`` on the unrelated ``Scout`` class, which must not leak into this set.
+    A method is a caller iff its body contains a ``self._ensure_connection(...)`` call.
+    """
+    import loremaster.scout  # noqa: PLC0415
+
+    source = Path(loremaster.scout.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    callers: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and node.name == "CommandSubscriber"):
+            continue
+        for item in node.body:
+            if not isinstance(item, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            for call in ast.walk(item):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "_ensure_connection"
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "self"
+                ):
+                    callers.add(item.name)
+    return callers
+
+
+@pytest.mark.skipif(not _SCOUT_API_AVAILABLE, reason="scout module not importable")
+class TestScoutEnsureConnectionSoleDriverTripwire:
+    """#127 tripwire — the callers of ``CommandSubscriber._ensure_connection`` are
+    EXACTLY ``{run, process_pending_once}`` (operator-ruled, packet 07a)."""
+
+    def test_the_caller_scan_is_not_silently_finding_nothing(self) -> None:
+        # The instrument lesson (CLAUDE.md): a scan that finds nothing passes the
+        # equality below vacuously. Prove it sees the two known callers FIRST.
+        callers = _command_subscriber_ensure_connection_callers()
+        assert {"run", "process_pending_once"} <= callers, (
+            f"the AST scan for CommandSubscriber._ensure_connection callers found "
+            f"{sorted(callers)} — it did not even see the two known callers, so the "
+            f"scanner is broken and the equality pin below is vacuously green."
+        )
+
+    def test_ensure_connection_callers_are_exactly_run_and_process_pending_once(self) -> None:
+        callers = _command_subscriber_ensure_connection_callers()
+        assert callers == {"run", "process_pending_once"}, (
+            f"CommandSubscriber._ensure_connection now has caller set {sorted(callers)}, "
+            f"not {{process_pending_once, run}}. Finding #127 accepted its lockless "
+            f"check-then-set as safe ONLY because run() is the sole PRODUCTION driver "
+            f"(process_pending_once is test-only). A new caller means that safety must be "
+            f"RE-ADJUDICATED: either the new caller is provably never concurrent with run() "
+            f"in production (lower this set in a visible diff, citing #127), or the connect "
+            f"lock the original #127 decision declined is now owed."
+        )
