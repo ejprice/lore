@@ -1,61 +1,17 @@
 # packet 07a — store bounce-recovery probe transcript
 # instrument: scripts/probe_store_recovery_07a.py (committed, regenerable)
-# run: 2026-08-17T22:05:29Z · engine spike-surreal 3.2.4 · HEAD 995a358
+# run: 2026-08-17T23:10:17Z · engine spike-surreal 3.2.4 · HEAD edbd72a
 # 'store.query.rejected' structured-log lines filtered (the store's own rejection log
 #  for the intentional dead-socket calls); everything else is verbatim stdout.
+# NOTE: 'drill' mode = 20x positive drill + the negative-control self-test (adversary F3).
 
+Traceback (most recent call last):
+  File "/home/ejprice/PycharmProjects/lore/loremaster/../scripts/probe_store_recovery_07a.py", line 336, in <module>
+    sys.exit(asyncio.run(main()))
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+SystemExit: 0
 packet 07a store-recovery probe — spike-surreal 3.2.4 (TEST store only)
 URL=ws://127.0.0.1:18000/rpc
-
-==============================================================================
-CONTROL — no bounce: a healthy held store answers repeated queries
-==============================================================================
-  call 0: ok=True  OK -> 1
-  call 1: ok=True  OK -> 1
-  call 2: ok=True  OK -> 1
-
-==============================================================================
-SCENARIO 1 — IDLE-then-full-bounce (#164/#250 shape): held store idle,
-  server RESTARTED, then repeated _query() calls. Does it self-heal, and in how many calls?
-==============================================================================
-  pre-bounce call: ok=True  OK -> 1
-  held._connection is set: True
-  --- bouncing spike-surreal (full server restart) ---
-    [systemctl restart rc=0]  
-    [server back after 0.52s, 2 fresh-connect attempts]
-  (A) fresh SurrealStore (same process) after the bounce:
-      fresh-store call: ok=True  OK -> 1
-  (B) OLD held store's next calls (self-heal test):
-      call 0: ok=False  conn[True->False]  loremaster.store._txn.SurrealConnectionError [SurrealConnectionError <- SurrealStoreError <- RuntimeError <- Exception <- BaseException]: SurrealDB query failed against 'ws://127.0.0.1:18000/rpc': no close frame received or sent
-      call 1: ok=True  conn[False->True]  OK -> 1
-      call 2: ok=True  conn[True->True]  OK -> 1
-      call 3: ok=True  conn[True->True]  OK -> 1
-      call 4: ok=True  conn[True->True]  OK -> 1
-      call 5: ok=True  conn[True->True]  OK -> 1
-      call 6: ok=True  conn[True->True]  OK -> 1
-      call 7: ok=True  conn[True->True]  OK -> 1
-  ==> held store healed on call index: 1 (None = never healed within 8 calls = WEDGE reproduced)
-
-==============================================================================
-SCENARIO 2 — IN-FLIGHT bounce: a query racing the socket drop
-  (store reference §3 KeyError shape). Records the raw exception, then
-  the same self-heal test.
-==============================================================================
-  pre-bounce call: ok=True  OK -> 1
-  --- launching in-flight query, then bouncing mid-flight ---
-    [systemctl restart rc=0]  
-  in-flight query result: ok=False  loremaster.store._txn.SurrealStoreError [SurrealStoreError <- RuntimeError <- Exception <- BaseException <- object]: SurrealDB query rejected against 'ws://127.0.0.1:18000/rpc' (unspecified rejection); see the server log for the full engine detail
-    [server back after 0.52s, 2 fresh-connect attempts]
-  next calls (self-heal test):
-      call 0: ok=False  loremaster.store._txn.SurrealConnectionError [SurrealConnectionError <- SurrealStoreError <- RuntimeError <- Exception <- BaseException]: SurrealDB query failed against 'ws://127.0.0.1:18000/rpc': no close frame received or sent
-      call 1: ok=True  OK -> 1
-      call 2: ok=True  OK -> 1
-      call 3: ok=True  OK -> 1
-      call 4: ok=True  OK -> 1
-      call 5: ok=True  OK -> 1
-      call 6: ok=True  OK -> 1
-      call 7: ok=True  OK -> 1
-  ==> healed on call index: 1 (None = wedge)
 
 ==============================================================================
 DRILL — 20-consecutive full bounces on ONE long-held store (recover w/o
@@ -127,4 +83,15 @@ DRILL — 20-consecutive full bounces on ONE long-held store (recover w/o
   SUMMARY: 20/20 recovered without a container restart; heal-index set=[1]; wedged bounces=[]
   ==> PASS — 20/20 self-healed
 
+==============================================================================
+NEGATIVE CONTROL — self-heal DISABLED (_drop_connection no-op): the drill
+  MUST now report a WEDGE (proving it can DETECT one; not vacuously green).
+==============================================================================
+  control-before: ok=True  OK -> 1
+    [systemctl restart rc=0]  
+    [server back after 0.52s, 2 fresh-connect attempts]
+  with self-heal disabled: heal-index=None (None = wedged, as REQUIRED)
+  ==> PASS — the drill DETECTS a wedge; its 20/20 above is a real signal.
+
 DONE.
+

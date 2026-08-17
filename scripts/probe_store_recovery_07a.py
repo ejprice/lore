@@ -24,7 +24,15 @@ isolates: after a full server restart (server gone → back), does
 If (A) works but (B) wedges, the fault is per-store reconnect. If (A) ALSO wedges,
 the fault is process/SDK-level (which is what ``podman restart lore-lore`` — a
 fresh PROCESS — fixing it implies). A control leg (no bounce) proves the probe can
-see a healthy store.
+see a healthy store; a NEGATIVE-CONTROL leg (self-heal disabled → the drill must report a
+WEDGE) proves the drill can DETECT a wedge and is not vacuously green (adversary Exp B / F3).
+
+⚠ SCOPE OF THE DRILL (adversary F1): the full-bounce drill exercises the IDLE / connection-close
+(pre-send) shape — the next query raises `ConnectionClosedError` ("no close frame received or
+sent", a `WebSocketException` in `_CONNECTION_ERRORS`), driving drop→reconnect. It does NOT
+exercise the in-flight-`KeyError` branch of `run_query`/`_txn_query_raw`'s literal
+`except (*_CONNECTION_ERRORS, KeyError)`; that branch is guarded by the SYNTHETIC unit tests
+`TestQuerySeamSdkKeyErrorClassification` / `TestTxnSdkKeyErrorClassification`, not by this drill.
 
 Committed here (``scripts/``) rather than a scratchpad per brief-base §1: an
 instrument that establishes a load-bearing claim is a deliverable.
@@ -259,7 +267,53 @@ async def scenario_20_consecutive() -> None:
     print(f"  ==> {'PASS — 20/20 self-healed' if len(healed) == 20 else 'FAIL — a wedge reproduced'}")
 
 
-async def main() -> None:
+async def scenario_negative_control() -> int:
+    """NEGATIVE CONTROL (a probe needs a control) — the drill's own self-test.
+
+    The 20x drill above claims "the store recovers". A drill that ALWAYS prints PASS
+    (or whose heal detection rots) would print exactly the same thing on a broken
+    store — so the 20/20 is worthless UNLESS the drill can also REPORT a wedge. Here
+    we DISABLE the self-heal (patch ``_drop_connection`` to a no-op, so a dead cached
+    handle is NEVER nulled — #164's "never re-establishes the session" shape) and
+    require the SAME recovery loop to WEDGE. This is the contract-adversary's Exp B
+    (REPORT-adversary-07a-1.md §Findings F3 / §Probe record), committed as a permanent
+    leg so the committed transcript carries both a positive (20/20) and a negative
+    (0/N wedged) result. Returns a process exit code (0 = the negative control held).
+    """
+    print("\n" + "=" * 78)
+    print("NEGATIVE CONTROL — self-heal DISABLED (_drop_connection no-op): the drill")
+    print("  MUST now report a WEDGE (proving it can DETECT one; not vacuously green).")
+    print("=" * 78)
+    held = await _make_store()
+    ok, detail = await _query_once(held, "RETURN 1")
+    print(f"  control-before: ok={ok}  {detail}")
+
+    async def _noop_drop(connection: object) -> None:
+        # wedge injection: the dead cached handle is never nulled, so the next
+        # _ensure_connection returns the SAME dead socket and the store can never heal.
+        return None
+
+    held._drop_connection = _noop_drop  # type: ignore[method-assign]
+    await _restart_server()
+    await _wait_server_back()
+    heal_at: int | None = None
+    for i in range(5):
+        ok_b, _ = await _query_once(held, "RETURN 1")
+        if ok_b:
+            heal_at = i
+            break
+    await held.close()
+    wedged = heal_at is None
+    print(f"  with self-heal disabled: heal-index={heal_at} (None = wedged, as REQUIRED)")
+    if wedged:
+        print("  ==> PASS — the drill DETECTS a wedge; its 20/20 above is a real signal.")
+        return 0
+    print("  ==> FAIL — the drill is NOT discriminating: it healed with the drop "
+          "DISABLED, so its PASS means nothing. Fix the drill before trusting it.")
+    return 1
+
+
+async def main() -> int:
     print("packet 07a store-recovery probe — spike-surreal 3.2.4 (TEST store only)")
     print(f"URL={URL}")
     mode = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -267,14 +321,19 @@ async def main() -> None:
         await scenario_control()
         await scenario_idle_bounce()
         await scenario_inflight_bounce()
+    rc = 0
     if mode in ("all", "drill"):
         await scenario_20_consecutive()
+        # The negative control is REQUIRED whenever the drill runs — a positive-only
+        # drill is a gate with no control (adversary F3).
+        rc = await scenario_negative_control()
     print("\nDONE.")
+    return rc
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        sys.exit(asyncio.run(main()))
     except BaseException:  # noqa: BLE001
         traceback.print_exc()
         sys.exit(1)

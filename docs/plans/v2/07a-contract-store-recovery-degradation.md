@@ -6,8 +6,12 @@ Full measurement + reasoning: `REPORT-contract-07a-1.md` (this session; archive 
 Spec/work-order: `docs/plans/v2/07a-store-recovery-degradation.md`. Design analysis:
 `REPORT-fable-sidecar-07a.md`.
 **Operator ruling applied:** `docs/plans/v2/receipts/2026-08-17-packet07a/RULING-fork-a.md` — FORK A = A1
-(adjudicate #164/#250 fixed-by-05a-ii; NO reconnect-and-retry; A2 designed-not-written); #128 = distinct
-contention wording; #127 = add the frozen-caller-set tripwire. All three applied (§A, §B, §D below).
+(adjudicate #164/#250 as does-not-reproduce-at-HEAD; NO reconnect-and-retry; A2 designed-not-written);
+#128 = distinct contention wording; #127 = frozen-caller-set tripwire. All three applied (§A, §B, §D).
+**Adversary graded INSUFFICIENT (narrowly) → corrected:** #128/#127 cleared to build; the #164/#250
+adjudication's evidence chain was fixed for F1 (false-gate trigger), F2 (chronologically-false
+"fixed-by-05a-ii" root cause → UNDIAGNOSED), F3 (drill negative control) — `REPORT-adversary-07a-1.md`,
+applied in §B + `REPORT-contract-07a-1.md` §13.
 
 ## The reshaping (READ FIRST)
 The packet spec assumes #164/#250 is a LIVE wedge needing a reconnect FIX. **Measurement falsifies that:**
@@ -15,7 +19,8 @@ a full server bounce self-heals on the next call, 20/20 (`scripts/probe_store_re
 transcript `docs/plans/v2/receipts/2026-08-17-packet07a/probe-store-recovery-transcript.txt`). So this
 contract is a MIX, not an all-RED reconnect contract:
 - **#128** — a genuine RED contract (pins written, RED at HEAD, satisfiable). The core buildable item.
-- **#164/#250** — an ADJUDICATION (FIXED-by-05a-ii) + a committed live drill; the reconnect-and-retry
+- **#164/#250** — an ADJUDICATION (does-not-reproduce at HEAD; root cause UNDIAGNOSED) + a committed live
+  drill with a negative control; the reconnect-and-retry
   build is a SCOPE FORK (A1 vs A2) held for the operator.
 - **#126/#127** — written verdicts (RENEW), each with a rider/precision.
 
@@ -67,30 +72,48 @@ contention actually exhaust. The deterministic injected pins ARE the real discri
 grades whether a live-contention corroboration pin is warranted and in which form.
 
 ## B. #164/#250 — RECOVERY (adjudication + drill; reconnect build is FORK A)
-Measured FIXED on HEAD: self-heals on the next call after a full bounce, 20/20 heal-index=1
-(`REPORT-contract-07a-1.md` §1). The historical wedge was the in-flight bare `KeyError` escaping
-`run_query` without `drop`; packet 05a-ii's `_SDK_AWAIT_BOUNDARY_ERRORS` KeyError branch closed it.
-Already guarded LIVE by `TestMidLifeConnectionRecovery` + `TestQuerySeamSdkKeyErrorClassification` +
-`test_record_trace_recovers_…` + scout's reconnect suite (coverage nuance: those use a CLEAN
-`connection.close()`; the committed drill covers the ABNORMAL "no close frame" server-vanish shape).
+Measured: **does NOT reproduce on HEAD** — self-heals on the next call after a full bounce, 20/20
+heal-index=1 (`REPORT-contract-07a-1.md` §1). **Root cause of the original July wedge: UNDIAGNOSED**
+(corrected per adversary F2 — see below; NOT "fixed-by-05a-ii"). Both known transport-fault branches are
+independently guarded and mutation-proven:
+- **idle / connection-close (pre-send) + drop/reconnect** — the next query raises `ConnectionClosedError`
+  ("no close frame received or sent", a `WebSocketException` ∈ `_CONNECTION_ERRORS`) → drop→reconnect.
+  Guarded LIVE by `TestMidLifeConnectionRecovery` (`connection.close()` shape) AND by the committed
+  full-bounce drill (the abnormal server-vanish shape), whose **negative control** (Exp B: disable the
+  drop → 0/N wedged) proves it discriminates this mechanism.
+- **in-flight `KeyError`** — a socket drop with a query in flight raises `KeyError(request-uuid)`, caught
+  by the LITERAL `except (*_CONNECTION_ERRORS, KeyError)` in `run_query` / `_txn_query_raw` (NOT
+  `_SDK_AWAIT_BOUNDARY_ERRORS` — that constant is read only by `inbox_awaiter.py`/`scout.py`). Guarded by
+  the SYNTHETIC unit tests `TestQuerySeamSdkKeyErrorClassification` + `TestTxnSdkKeyErrorClassification`
+  (mutation-proven RED under a reverted catch — adversary Exp A). **The drill does NOT reach this branch**
+  (the idle bounce never produces a `KeyError`), so it is NOT the guard for it.
 
 Deliverables:
-- **The committed live drill** (`scripts/probe_store_recovery_07a.py drill`) is the spec's literal
-  "20-consecutive bounce-recovery without a container restart" — wire it as a DEPLOY-SMOKE step (it needs
-  `systemctl`, so it cannot be a fast unit test; it is a smoke instrument).
-- **Adjudication:** resolve #164/#250 as fixed-by-05a-ii with a named re-open trigger:
-  *"a full-bounce recovery drill (`probe_store_recovery_07a.py drill`) that no longer heals on the next
-  call — i.e. any regression to the `_SDK_AWAIT_BOUNDARY_ERRORS` KeyError branch or the
-  `_CONNECTION_ERRORS`/`is_connection_error` classification of a closed socket."*
+- **The committed live drill + its negative control** (`scripts/probe_store_recovery_07a.py drill`) is the
+  spec's literal "20-consecutive bounce-recovery without a container restart" — wire it as a DEPLOY-SMOKE
+  step (it needs `systemctl`, so it cannot be a fast unit test).
+- **Adjudication (root cause honest — adversary F2):** resolve #164/#250 as *"does not reproduce at HEAD;
+  both known transport-fault branches (connection-close + in-flight-KeyError) independently guarded and
+  mutation-proven; ROOT CAUSE of the original July wedge UNDIAGNOSED (candidates: a since-changed cause,
+  or the 'server not yet back within the 2 calls anyone tried' timing artifact #250 flags)"* — **never
+  "fixed by 05a-ii"** (chronologically impossible: the store's KeyError self-heal shipped at `9d29111`
+  2026-07-14, 8–13 days BEFORE #164/#250; 05a-ii's `f5aec32` 2026-08-10 never touched the store path).
+  Named re-open trigger, split by the instrument that actually guards each:
+  - a **connection-close/reconnect** regression → the full-bounce drill stops healing (its negative
+    control proves it can detect that);
+  - an **in-flight-KeyError-branch** regression → `TestQuerySeamSdkKeyErrorClassification` /
+    `TestTxnSdkKeyErrorClassification` go RED (mutation-proven, adversary Exp A);
+  - and the standing FORK-A re-open at packet 16 (#249 RSS restart-policy).
 
-**FORK A — RULED A1 (RULING-fork-a.md):** adjudicate #164/#250 FIXED-by-05a-ii; ship the committed
-20-consecutive drill as deploy-smoke; NO new reconnect-and-retry code. Named re-open trigger: **packet 16
+**FORK A — RULED A1 (RULING-fork-a.md):** adjudicate #164/#250 as does-not-reproduce-at-HEAD; ship the
+committed 20-consecutive drill (+ negative control) as deploy-smoke; NO new reconnect-and-retry code. Named re-open trigger: **packet 16
 (#249 RSS restart-policy)** — when store restarts become routine/scheduled, re-open FORK A with fleet
 telemetry rather than building A2 speculatively (measure-then-tune). The A2 design stays in
 `REPORT-contract-07a-1.md` §3.1 (shared `ReconnectRetrySignal`, pre-send/idempotent-only,
 at-most-once-preserving) — **designed, NOT written**. Do not build A2.
-Close-out action for the lead: resolve #164 and #250 as fixed-by-05a-ii, citing the drill + the re-open
-trigger.
+Close-out action for the lead: resolve #164 and #250 as *does-not-reproduce-at-HEAD* (both transport-fault
+branches guarded + mutation-proven; ROOT CAUSE undiagnosed — never "fixed by 05a-ii"), citing the drill +
+its negative control + the two KeyError unit-test classes + the packet-16 re-open trigger.
 
 ## C. #126 — retry-under-lock latency (VERDICT: RENEW)
 Trigger (multi-second p99 stalls under fleet load) NOT fired: survey p99 ~0.045s @N=32; probe reconnect

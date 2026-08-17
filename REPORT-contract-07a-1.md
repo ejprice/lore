@@ -4,18 +4,18 @@ brief-base v14 read · brief project v7 read
 
 ## SUMMARY BLOCK
 - receipt: brief-base v14 read · brief project v7 read
-- state: **done** — contract phase complete + operator ruling (A1 + 2 secondaries) applied (§12). The packet's central premise was FALSIFIED by measurement (#164/#250 wedge does NOT reproduce on HEAD); the operator ruled A1 (adjudicate FIXED, defer the polish). Final contract = #128 RED pins (tightened) + #127 GREEN tripwire + adjudications + committed drill.
+- state: **done** — contract phase + operator ruling (A1) + **adversary corrections (F1/F2/F3)** all applied (§12, §13). The packet's central premise was FALSIFIED by measurement (#164/#250 wedge does NOT reproduce at HEAD, 20/20); the adversary cleared #128 + #127 to build and INSUFFICIENT'd the #164/#250 evidence chain (false-gate trigger, chronologically-false root cause, no negative control) — all three fixed. Final contract = #128 RED pins (tightened) + #127 GREEN tripwire (mutation-proven) + adjudications + committed drill WITH a negative control.
 - deviation 1: #164/#250 "store bounce WEDGES the held connection forever, only a container restart heals" **does not reproduce** — 20/20 consecutive full bounces self-heal on the 2nd call. So there is **no RED contract for a reconnect FIX**; instead an adjudication + regression guard + a committed live drill. See §1–§3.
 - deviation 2: contract is a MIX (measurement demanded it): #128 RED pins (real) + #164/#250/#126/#127 adjudications + a committed live-bounce probe. Not the all-RED contract the spec assumed.
 - deviation 3: reference-build applied to server.py to earn the #128 satisfiability receipt, then **reverted** — `git diff loremaster/loremaster/server.py` is EMPTY (§4). Production code unchanged.
 - Packages considered: **none new** — #128 rides the EXISTING per-item best-effort loop (`_resolve_or_acknowledge_many`); the #164 reconnect (if built) rides the EXISTING `retry_on_conflict` + `bootstrap_session` + the SDK's own reconnect. The retry substrate is the audited in-house `retry_on_conflict` (#102/#108/#120), deliberately not a package (settled in that wave; read: its docstring at `_txn.py`).
 - Reuse ledger: **1 new test symbol** — `_LedgerRaisingOnSecondCall` (fault-injection double), all dispositioned (§9 DRY ledger). Probe script reuses `signin_credentials` + the packet-07 probe template.
-- Graded: 995a358 · HEAD-at-report: 995a358 · SAME. (All code read + all probes run at HEAD 995a358, engine spike-surreal 3.2.4.)
+- Graded: 995a358 (measurement base) · HEAD-at-report: edbd72a · code-identical (3 test/docs commits ahead — the contract commit + two ruling docs; `git diff 995a358..edbd72a -- loremaster/loremaster/` EMPTY, so the measurement holds). Probes run vs engine spike-surreal 3.2.4.
 - decisions-needed: **ALL THREE RULED** (operator, `RULING-fork-a.md`; revisions applied — §12):
   1. **FORK A** → **A1** (adjudicate #164/#250 FIXED; no reconnect-and-retry; A2 designed-not-written; re-open at packet 16).
   2. **#128 wording** → distinct `FAILED — store contention, safe to retry this item`; pins tightened.
   3. **#127 tripwire** → add the frozen-caller-set pin; written + mutation-proven.
-- receipt POINTERS: measurement + drill §1 · #250 healing-scope + #308 §2 · FORK A §3 · #128 RED pins + satisfiability §4–§5 · #126 verdict §6 · #127 verdict + precision §7 · store-ref clarification §8 · DRY ledger §9 · files §10 · **POST-RULING revisions §12**.
+- receipt POINTERS: measurement + drill §1 · #250 healing-scope + #308 §2 · FORK A §3 · #128 RED pins + satisfiability §4–§5 · #126 verdict §6 · #127 verdict + precision §7 · store-ref clarification §8 · DRY ledger §9 · files §10 · POST-RULING revisions §12 · **ADVERSARY corrections F1/F2/F3 + git timeline §13**.
 
 ---
 
@@ -53,27 +53,38 @@ fresh connections were never carrying a stale KeyError-escaped dead handle; the 
 too. (I did NOT and must NOT probe the prod containers on `:18500`; the mechanism question is answered on
 the TEST store.)
 
-**Why it wedged in July but not now (mechanism, code-confirmed):** the historical wedge was the
-**in-flight bare `KeyError`** — SDK 2.0.0's response-routing raises `KeyError(request-uuid)` on a
-socket drop with a query in flight (store reference §3; re-probed unchanged on 3.2.4). At #164/#250
-time that `KeyError` was NOT in the caught set, so it **escaped `run_query` WITHOUT calling `drop`** —
-the dead handle stayed cached, and every subsequent call reused it. **Packet 05a-ii's
-`_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)`** (now the caught set in
-`run_query._attempt` and `_txn_query_raw`) closed that hole: a `KeyError` now drops-and-heals like any
-transport fault. The `run_query` `SurrealConnectionError` message format that #164/#250 quoted verbatim
-proves `drop` DID fire on their call 1 — the wedge was the *reconnect* never happening because the
-handle was never nulled on the KeyError path. That path is now closed.
+**Why it wedged in July but not now — ROOT CAUSE UNDIAGNOSED (corrected per adversary F2; my first
+draft's "fixed-by-05a-ii" claim was chronologically FALSE — see §13).** I originally inferred the July
+wedge was an in-flight `KeyError` escaping `run_query` before packet 05a-ii closed it. **The git record
+refutes that for the store path** (re-derived myself, §13): `run_query` shipped ALREADY catching the
+literal `(*_CONNECTION_ERRORS, KeyError)` with the `isinstance(error, KeyError) or is_connection_error`
+heal guard at `9d29111` (2026-07-14) — **8 days before #164 (07-22) and 13 before #250 (07-27)** — and
+05a-ii (`f5aec32`, 2026-08-10) added `_SDK_AWAIT_BOUNDARY_ERRORS` used ONLY by `inbox_awaiter.py`/`scout.py`,
+never the store's `run_query`/`_txn_query_raw`. So the store's KeyError self-heal was present, tested and
+unchanged BEFORE the wedge was ever reported; 05a-ii did not fix it. **What DID cause the July production
+wedge is undiagnosed** — the two live candidates are (a) a since-changed cause I have not identified, or
+(b) the "server not yet back within the 2 calls anyone tried" timing artifact #250 itself flags ("nobody
+waited minutes") — my probe's `_wait_server_back` is built precisely to rule (b) out of the HEAD
+measurement. **What IS established:** the wedge does not reproduce at HEAD (20/20), and both known
+transport-fault branches are independently guarded and mutation-proven (below). The *decision* (A1: the
+store self-heals → don't build A2) stands; the *why* of July does not, and I do not assert one.
 
-**Already guarded (no new pin strictly required):** the self-heal is pinned LIVE by
-`test_surreal_store.py::TestMidLifeConnectionRecovery` (`test_count_recovers_from_a_mid_life_socket_drop`,
-`test_hybrid_search_recovers_…`) + `test_record_trace_recovers_from_a_mid_life_socket_drop` +
-`TestQuerySeamSdkKeyErrorClassification::test_sdk_routing_key_error_surfaces_as_connection_error_and_heals`
-+ scout's reconnect suite. **Coverage nuance:** those pins kill the socket with a CLEAN
-`connection.close()`; a real server-vanish is the ABNORMAL `no close frame received or sent` close. Both
-self-heal (my probe covers the abnormal shape live), and both route through the same
-`except (*_CONNECTION_ERRORS, KeyError)` + `is_connection_error` branch, so coverage is materially
-equivalent — the distinct value of the abnormal shape is the full-server-bounce integration, which the
-committed drill covers and no fast unit test can.
+**Already guarded — TWO DISTINCT branches, guarded by DIFFERENT instruments (corrected per adversary F1;
+the two are NOT interchangeable):**
+- **Connection-close / idle (pre-send) + drop/reconnect** — the branch the full-bounce hits (the next
+  query raises `ConnectionClosedError` ∈ `_CONNECTION_ERRORS`). Guarded LIVE by
+  `TestMidLifeConnectionRecovery` (`test_count_recovers_…` / `test_hybrid_search_recovers_…`; a CLEAN
+  `connection.close()` shape) + `test_record_trace_recovers_…`, AND by the committed full-bounce drill
+  (the ABNORMAL server-vanish shape), whose **negative control** (§13/F3) proves it discriminates this
+  mechanism (disable the drop → 0/N wedged).
+- **In-flight `KeyError`** — a socket drop with a query in flight, caught by the LITERAL
+  `except (*_CONNECTION_ERRORS, KeyError)` in `run_query`/`_txn_query_raw`. Guarded ONLY by the SYNTHETIC
+  monkeypatched-`query` unit tests `TestQuerySeamSdkKeyErrorClassification` +
+  `TestTxnSdkKeyErrorClassification` (mutation-proven RED under a reverted catch — adversary Exp A).
+  **⚠ The drill does NOT reach this branch** (an idle bounce never produces a `KeyError`), so it is NOT
+  the guard for it — my first draft's claim that the drill catches "any regression to the KeyError branch"
+  was a FALSE GATE (§13/F1). The live in-flight-under-full-bounce path (#250's claimed prod shape) is
+  exercised by nothing gated; its coverage is SYNTHETIC-only, stated honestly here (adversary MP-2).
 
 ---
 
@@ -92,8 +103,9 @@ scoped narrower than a FULL SERVER restart, or has it regressed?** SETTLED, tier
   *connection* auto-recovers; the reconnect happens on the call AFTER the drop, via `_ensure_connection`.
 - My probe confirms both legs: the pre-send idle-bounce call raises `ConnectionClosedError` ("no close
   frame received or sent"), and the SUBSEQUENT call reconnects (20/20). So §3 is CORRECT but
-  easily-misread; #250's "no heal" was the pre-05a-ii KeyError-escape wedge, since closed. **Neither §3 is
-  false nor has it regressed.** (Recommended §3 one-line clarification: §8.)
+  easily-misread; #250's "no heal" was the July wedge whose root cause is UNDIAGNOSED (§1/§13 — NOT the
+  "KeyError-escape, since closed by 05a-ii" story my first draft told; that is chronologically false).
+  **Neither §3 is false nor has it regressed.** (Recommended §3 one-line clarification: §8.)
 
 **#308 "cold-start `Session not found` router-race fix" — does it change the wedge shape?** SETTLED,
 tiers (2)+(3)+(4):
@@ -123,8 +135,8 @@ post-bounce call surfaces `SurrealConnectionError` to the agent, then heals). Tw
 
 - **A1 — adjudicate #164/#250 FIXED + regression guard (my recommendation).** Ship: (a) this measurement +
   the committed live drill as the deploy-smoke instrument (satisfies the spec's "20-consecutive
-  bounce-recovery, no container restart" literally); (b) resolve #164/#250 as fixed-by-05a-ii, with a
-  named re-open trigger; (c) NO new reconnect-and-retry code. **Rationale — measure-then-tune (operator
+  bounce-recovery, no container restart" literally); (b) resolve #164/#250 as *does-not-reproduce-at-HEAD*
+  (root cause undiagnosed — §1/§13), with a named re-open trigger; (c) NO new reconnect-and-retry code. **Rationale — measure-then-tune (operator
   deferral law):** the intervention's original target (the wedge) is gone; Option A now buys only a
   cosmetic "0 sacrificed calls instead of 1," at the cost of code that **partially reverses the
   at-most-once write-safety rule** (`retry_on_conflict` refuses to retry a transport fault precisely
@@ -261,10 +273,19 @@ adjudication instrument, not a fix, and its exact form wants the operator's nod)
 **Two-reconnect-policies question (spec: adjudicate #127+#164 together):** the store's self-heal and
 scout's `run()` ladder are STRUCTURALLY DISTINCT loops (discrete-query self-heal vs long-lived-subscription
 re-serve) — that difference is inherent to the two usage patterns, not duplication. ONE IMPLEMENTATION is
-satisfied at the MECHANISM layer: both ride the SAME `bootstrap_session`, the SAME
-`is_connection_error`/`_SDK_AWAIT_BOUNDARY_ERRORS`, the SAME `retry_on_conflict`. IF A2 introduces a
-`ReconnectRetrySignal`/widened predicate, it MUST be the SHARED one both seams read (routing-is-not-
-sharing) — that is the only #127/#164 coupling, and it only exists under A2.
+satisfied at the MECHANISM layer: both ride the SAME `bootstrap_session`, the SAME `is_connection_error` +
+`_CONNECTION_ERRORS`, the SAME `retry_on_conflict`. IF A2 introduces a `ReconnectRetrySignal`/widened
+predicate, it MUST be the SHARED one both seams read (routing-is-not-sharing) — that is the only #127/#164
+coupling, and it only exists under A2.
+⚠ **Minor two-source shape SURFACED (not fixed — out of my writable set, pre-existing):** the KeyError
+boundary value is expressed TWICE — `run_query`/`_txn_query_raw` catch the LITERAL
+`(*_CONNECTION_ERRORS, KeyError)`, while `inbox_awaiter.py`/`scout.py` import the NAMED constant
+`_txn._SDK_AWAIT_BOUNDARY_ERRORS` (defined as that exact tuple). Same value, two sources — so a change to
+the constant would NOT reach the store's literal. `_txn.py`'s own docstring (~:400) warns consumers to
+import the constant rather than re-define it; `run_query` (which predates the constant, `9d29111`) was
+never migrated onto it. Low-stakes today (both equal `(*_CONNECTION_ERRORS, KeyError)`), but a genuine
+ROUTING-IS-NOT-SHARING residual if A2 ever widens the boundary. Flagged for the operator/lead; NOT in 07a's
+scope to fix.
 
 ---
 
@@ -317,9 +338,10 @@ The operator ruled all three decisions-needed per my recommendation
 EMPTY):
 
 1. **FORK A → A1.** No reconnect-and-retry code written; A2 stays designed-not-written (§3.1). #164/#250
-   adjudicated FIXED-by-05a-ii; the committed drill (`scripts/probe_store_recovery_07a.py`) is the
-   deploy-smoke instrument; re-open trigger = packet 16 (#249 RSS restart-policy). Close-out action for
-   the lead: resolve findings #164 + #250 with that citation.
+   adjudicated *does-not-reproduce-at-HEAD, root cause undiagnosed* (see §13 for the F2 correction — NOT
+   "fixed-by-05a-ii"); the committed drill + its negative control (`scripts/probe_store_recovery_07a.py`)
+   is the deploy-smoke instrument; re-open trigger = packet 16 (#249 RSS restart-policy). Close-out action
+   for the lead: resolve findings #164 + #250 with that citation.
 
 2. **#128 wording → distinct contention line, pins TIGHTENED.** The 3 RED pins now assert the EXACT
    operator-ruled line `- #<n> FAILED — store contention, safe to retry this item` for the contention
@@ -348,3 +370,55 @@ scans, not one shareable helper.
 
 **Final pin state:** #128 → 3 RED (`test_mcp_server.py`); #127 → 2 GREEN (`test_scout.py`). Ruff clean on
 both files. Ready for the contract-adversary.
+
+---
+
+## 13. ADVERSARY corrections (F1/F2/F3 — `REPORT-adversary-07a-1.md`)
+
+The contract-adversary graded **#128 (3 RED pins) and #127 (tripwire) SUFFICIENT — cleared to build**
+(every wrong build it constructed was caught; quantifier table complete; `except`-order guarded). It
+graded the **#164/#250 A1 adjudication INSUFFICIENT** on three points, all "re-anchoring, not new logic."
+All three fixed here (docs/scripts/receipts only; production code UNCHANGED — `git diff 995a358..HEAD --
+loremaster/loremaster/` empty):
+
+**F1 (BLOCKER — false gate, FIXED).** My re-open trigger prose claimed the 20× drill catches "any
+regression to the KeyError branch." **Empirically false** (adversary Exp A, reproduced: revert the store's
+`(*_CONNECTION_ERRORS, KeyError)` catch → the KeyError unit tests go RED (`2 failed`) but the drill stays
+**20/20 green** — the idle bounce raises `ConnectionClosedError`, never a `KeyError`, so it never exercises
+that arm). Re-anchored (§1, §B of the contract doc): KeyError-branch regression → the two unit-test classes
+(mutation-proven); connection-close regression → the drill (its negative control, F3). **Symbol fixed:**
+the store path uses the LITERAL `(*_CONNECTION_ERRORS, KeyError)` tuple in `run_query`/`_txn_query_raw`,
+NOT `_SDK_AWAIT_BOUNDARY_ERRORS` (verified: that constant is imported only by `inbox_awaiter.py` +
+`scout.py`).
+
+**F2 (ROOT CAUSE — chronologically false, FIXED + escalated).** My "fixed-by-05a-ii" mechanism is
+impossible for the store path. **Re-derived myself (not inherited):**
+
+| fact | commit · date | receipt |
+|---|---|---|
+| `run_query` created ALREADY catching `(*_CONNECTION_ERRORS, KeyError)` + `isinstance(error, KeyError) or is_connection_error` heal | `9d29111` · **2026-07-14** | `git show 9d29111:…/store/_txn.py` → lines 1093–1094, 1289 |
+| #164 reported | **2026-07-22** | finding #164 |
+| #250 reported (prod repro) | **2026-07-27** | finding #250 |
+| 05a-ii adds `_SDK_AWAIT_BOUNDARY_ERRORS` — read ONLY by `inbox_awaiter.py`/`scout.py`, never the store path | `f5aec32` · **2026-08-10** | `grep -rn _SDK_AWAIT_BOUNDARY_ERRORS loremaster/loremaster/` |
+
+The store's KeyError self-heal shipped **8–13 days before** the wedge was ever reported, and 05a-ii never
+touched the store path. So the July wedge's **root cause is UNDIAGNOSED** (candidates: a since-changed
+cause, or the "server not yet back within the 2 calls anyone tried" timing #250 flags). Corrected in §1,
+§2, §3, §12 and the contract doc + the close-out language. The A1 *decision* stands (self-heals 20/20 at
+HEAD; both branches guarded); the false *cause* is removed. This also escalates to the operator, since
+`RULING-fork-a.md` itself asserts "fixed-by-05a-ii" — the lead has been notified to correct the ruling's
+root-cause line.
+
+**F3 (no negative control — FIXED).** The committed drill transcript showed only PASS. Added a **permanent
+negative-control leg** to `scenario_negative_control` (the adversary's Exp B): disable the self-heal
+(`_drop_connection` → no-op) and require the SAME recovery loop to WEDGE. Re-ran `drill` mode; the
+regenerated transcript now carries BOTH `20/20 recovered … ⇒ PASS` (positive) AND `heal-index=None …
+⇒ PASS — the drill DETECTS a wedge` (negative control). A rotted drill that always prints PASS now fails
+its own self-test. The drill returns a non-zero exit code if the negative control does not hold.
+
+**Not-fixed-by-design (adversary residuals, agreed):** the live in-flight-KeyError coverage stays
+SYNTHETIC-only (MP-2) — reliably reproducing a real in-flight `KeyError` under a full bounce is
+timing-fragile (my `scenario_inflight_bounce` got an "unspecified rejection", not a `KeyError`), so it is
+stated honestly rather than faked. The #127 tripwire's two reach bounds (a cross-class/non-`self` caller;
+a concurrent nested driver inside an existing method) are named residuals, not blockers — the tripwire
+covers the realistic trigger and fails closed.
