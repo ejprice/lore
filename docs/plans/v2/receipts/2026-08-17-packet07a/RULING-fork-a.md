@@ -10,10 +10,22 @@ The #164/#250 "store bounce wedges forever, only a container restart heals it" p
 reproduce on HEAD — `contract-07a-1`'s 20-consecutive live full-bounce drill against spike-surreal
 3.2.4 (`scripts/probe_store_recovery_07a.py`, transcript
 `docs/plans/v2/receipts/2026-08-17-packet07a/probe-store-recovery-transcript.txt`) shows 20/20
-self-heal on the next call after a full server restart. Root cause: packet 05a-ii's
-`_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)` already closed the hole that produced
-the July wedge (the in-flight `KeyError` used to escape `run_query` without dropping the dead handle;
-it is now caught and dropped like any transport fault).
+self-heal on the next call after a full server restart.
+
+> **⚠ CORRECTED 2026-08-17, post-adversary (`REPORT-adversary-07a-1.md` F2) — the root-cause
+> attribution below was FACTUALLY WRONG and is struck.** ~~Root cause: packet 05a-ii's
+> `_SDK_AWAIT_BOUNDARY_ERRORS = (*_CONNECTION_ERRORS, KeyError)` already closed the hole that
+> produced the July wedge.~~ Git record: the store path's `run_query`/`_txn_query_raw` has caught
+> `(*_CONNECTION_ERRORS, KeyError)` and healed on it since `9d29111` (2026-07-14) — **eight days
+> before #164 (2026-07-22) and thirteen before #250 (2026-07-27)**. Packet 05a-ii's
+> `_SDK_AWAIT_BOUNDARY_ERRORS` constant (added `f5aec32`, 2026-08-10) is used ONLY by
+> `inbox_awaiter.py` and `scout.py` — never by the store path. **05a-ii did not fix this.** The A1
+> *decision* is unaffected (self-heal is reproduced live, 20/20, at HEAD, and both the
+> connection-close and in-flight-KeyError branches are independently guarded — see corrected
+> re-open-trigger anchoring below) — but the *cause* of the July production wedge is **not
+> established**. Close-out must resolve #164/#250 as "does not reproduce at HEAD; both known
+> transport-fault branches are guarded and mutation-proven; root cause of the original wedge
+> undiagnosed" — never as "fixed by 05a-ii."
 
 **Ruled: A1.** Ship:
 - The measurement + the committed 20-consecutive live drill as the packet's deploy-smoke instrument
