@@ -1944,3 +1944,15 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   `a1ac479`..`0f5f2dc` (ruling → contract → build → audit-fix → close-out). Reports →
   `receipts/2026-08-17-packet07a/`. **NEXT = packet 45's follow-on or the next wave-D packet per
   INDEX ordering.**
+- 2026-08-17 · REGRESSION-FIX WAVE (operator-directed; not a packet) · closes **#384**. Full-suite
+  baseline was 451 failed + 135 errors; 446 failed are the incomplete auth-WIP packet (39/45/48/49,
+  RED_ADJUDICATED); the 140 non-reconciling were **5 regressions from recent on-branch packets** (0
+  store-artifacts, 0 hidden auth-WIP), ALL test-code/docstring — no production defect. A: pkt-07's new
+  multi-statement guard (147be46) caught `_seed_agents` routing multi-statement DDL through the
+  single-statement seam → fixed via `execute_transaction` (mirror prod, guard kept); B1/B2/D:
+  evidence-backed allowlists for pkt-07/07a probes, pkt-59 spike, pkt-47a parser clone; C: stale
+  `_surreal_harness` docstring counts (54→56/37→40); E: `entity_table` safe-door adjudicated (pkt-47a).
+  Pipeline: sonnet census → opus-4.8 diagnose → lead rulings → opus-4.8 fix → opus-4.8 cold-audit **GO**
+  (full suite 451f/135e → **446f/0e**, zero new red). **TEST-ONLY, NO DEPLOY.** Commit `edb1a03`;
+  reports → `receipts/2026-08-17-regression-fix/`. Suite is now non-auth-green; the 446 residual is
+  exactly the auth WIP.
