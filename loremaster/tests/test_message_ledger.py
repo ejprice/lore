@@ -136,6 +136,7 @@ from _surreal_harness import (
     make_env,
     unique_database,
 )
+from loremaster.store._txn import execute_transaction
 from loremaster.store.surreal_schema import AGENT_TABLE, generate_agent_ddl
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb import RecordID
@@ -244,7 +245,18 @@ async def _seed_agents(ledger: Any, refs: list[_AgentRef], *, session: str) -> N
         for ref in refs:
             cast(Any, ledger).register_agent(agent_id=ref.id, name=ref.name)
         return
-    await cast(Any, ledger)._query(generate_agent_ddl())
+    # Route the MULTI-STATEMENT agent DDL through ``execute_transaction`` (which
+    # verifies EVERY statement via ``query_raw``), mirroring production
+    # ``AgentRegistry.ensure_ready`` (agents.py) — NOT through the single-statement
+    # ``_query`` seam, whose bare ``.query()`` validates statement[0] only
+    # (store reference §3), which the packet-07 multi-statement guard correctly flags.
+    await execute_transaction(
+        f"BEGIN;\n{generate_agent_ddl()}COMMIT;\n",
+        {},
+        acquire=cast(Any, ledger)._ensure_connection,
+        drop=cast(Any, ledger)._drop_connection,
+        url=cast(Any, ledger)._url,
+    )
     now = datetime.now(UTC)
     for ref in refs:
         await cast(Any, ledger)._query(

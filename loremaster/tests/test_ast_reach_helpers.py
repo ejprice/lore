@@ -874,6 +874,23 @@ _ALLOWED_WHOLE_TREE_CLONE_FILES: dict[str, str] = {
     # entry is DELETED, so the offender scan below FLAGS its un-migrated Scan clones
     # (``_scan``/``_scan_source``, parse+read+directory) as a RED that forces migration, and the
     # dead-entry pin can never re-exempt it. Do NOT re-add it.
+    "test_ingest_entity_seam.py": (
+        "single-package-plus-scripts loremaster ``Indexer(...)`` construction-site scan "
+        "(``_find_indexer_construction_sites``) — loremaster-scoped (§7). Its reach is a "
+        "DELIBERATELY-DERIVED set (``_production_python_roots``: ``loremaster/loremaster`` + repo "
+        "``scripts`` + member ``loremaster/scripts``, per its CF3 / adversary-Probe-2-leg-B "
+        "docstring — a ``scripts/`` construction site was once silently exempt). "
+        "``parse_production_trees`` CANNOT express this reach: it scans EVERY workspace member "
+        "(widening a loremaster-scoped scan to whole-tree is a §7 scope change, not consolidation — "
+        "``Indexer`` is a loremaster concept, absent from lorerunes/loresigil/lorescribe) AND it "
+        "omits member-level ``<member>/scripts`` dirs (narrowing the helper's adversary-derived "
+        "'repo + member scripts' contract). So migrating would both widen and narrow the intended "
+        "reach — the shared parser genuinely cannot express what this helper needs. Same shape as "
+        "the loremaster-scoped ``test_retry_seam``/``test_render_seam_pins`` entries above. "
+        "RE-OPEN TRIGGER: ``Indexer(...)`` construction becomes cross-member, OR "
+        "``parse_production_trees`` gains a member-scripts / ``roots=`` parameter that can express "
+        "the loremaster-package-plus-scripts reach — then migrate."
+    ),
 }
 
 

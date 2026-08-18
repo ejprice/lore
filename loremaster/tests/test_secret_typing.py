@@ -802,6 +802,26 @@ _STDLIB_ONLY_EXEMPT_ROOT = "skills/lore-deploy/scripts/"
 # that verifies an INCOMING client token. A suffix is a pattern; a path is a fact.
 _INCOMING_AUTH_EXEMPT = "loremaster/auth.py"
 
+# ⚠ EXEMPT (regr-fixer, packet 59) — the fastmcp migration SPIKE exercises raw
+# fastmcp/MCP auth plumbing the typed seam does NOT cover, so no site can route
+# through it. EVIDENCE (every one of its six flagged sites read):
+#   * ``build_auth_headers(credential: SecretStr)`` produces a FIXED Anthropic
+#     token-counting header set — ``{"x-api-key", "anthropic-version",
+#     "content-type"}`` — from a wrapped credential (calibration/counting.py).
+#   * The spike builds ``Authorization: Bearer <token>`` (a DIFFERENT header name
+#     and scheme), a FastMCP SERVER-side ``auth=<verifier>`` object (incoming, not
+#     an outgoing header at all), a fastmcp ``Client(auth=BearerAuth(...))`` SDK
+#     object, and bare httpx ``headers=`` merges carrying ``Host``/``Accept`` and
+#     DELIBERATELY-WRONG test tokens (``"Bearer WRONG"``) as negative controls.
+#   * None carries a real loremaster/Anthropic credential — they are hardcoded MCP
+#     test literals. Routing a "WRONG"-token negative control through a
+#     ``SecretStr`` seam that unwraps to ``x-api-key`` is not expressible.
+# A path, not a suffix, per the C1 discipline above. RE-OPEN TRIGGER: the day this
+# spike sends a REAL credential (an Anthropic ``x-api-key`` from a ``SecretStr``),
+# OR ``build_auth_headers`` gains a ``Bearer``-emitting overload — either makes a
+# site expressible through the seam, and the exemption must go.
+_FASTMCP_SPIKE_EXEMPT = "scripts/fastmcp_migration_spike.py"
+
 
 def _auth_construction_offenders() -> list[str]:
     """Auth-header construction outside a seam — the v3 gate, both halves.
@@ -821,8 +841,14 @@ def _auth_construction_offenders() -> list[str]:
     """
     offenders: list[str] = []
     for display, tree in _python_source_trees():
-        if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display == _INCOMING_AUTH_EXEMPT:
-            continue  # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth
+        if (
+            display.startswith(_STDLIB_ONLY_EXEMPT_ROOT)
+            or display == _INCOMING_AUTH_EXEMPT
+            or display == _FASTMCP_SPIKE_EXEMPT
+        ):
+            # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth;
+            # the fastmcp spike exercises MCP auth plumbing the seam cannot express.
+            continue
         enclosing: dict[int, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -975,10 +1001,23 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # env var at ``config.py::resolve_secret``. It is the ONLY mint in the module
         # (the sibling ``resolve_secret`` branch wraps inside config.py, an existing
         # origin). ONE origin added, never a wildcard.
+        # ADJUDICATED (regr-fixer, packets 07/07a): the three spike-store probes each mint
+        # ``SecretStr("spikeroot")`` — the well-known spike-surreal (TEST store, :18000) root
+        # credential literal, NOT a production secret. The store-connect API they call GENUINELY
+        # requires a SecretStr and a plain str is not an option: ``signin_credentials(*, user: str,
+        # password: SecretStr)`` and ``SurrealStore.__init__(..., password: SecretStr)`` both take
+        # SecretStr (#211 — every connection owner holds one), so a bare str is a type error AND a
+        # runtime AttributeError at ``password.get_secret_value()``. Same shape as the already-allowed
+        # ``survey_txn_contention_102.py`` scripts/ probe. Re-open trigger: if any of these probes ever
+        # sources a REAL / production credential (env, argv, secret file) instead of the "spikeroot"
+        # literal, it is a genuine credential ORIGIN and must move to config.py's resolver seam.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
             "loremaster/comms_cli.py",
+            "scripts/probe_query_complexity_07.py",
+            "scripts/probe_store_error_classes_07.py",
+            "scripts/probe_store_recovery_07a.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)

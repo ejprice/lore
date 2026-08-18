@@ -3053,6 +3053,24 @@ class TestNoCommsIdentityReachesQueryTEXT:
             #     interpolated.
             ("loremaster/loremaster/messages.py", "self._ENTRY_PROJECTION"),
             ("loremaster/loremaster/messages.py", "predicate"),
+            # packet 47a (regr-fixer): SurrealStore.delete_by_tier's entity co-purge —
+            # `f"DELETE {entity_table} WHERE tier = $tier"`, where `entity_table` iterates
+            # `self._entity_tables`. VERIFIED against the source (surreal.py::delete_by_tier /
+            # register_entity_tables):
+            #   * `entity_table` is a controlled, CODE-DECLARED TABLE NAME — NOT a comms identity
+            #     (agent/session/brief/recipient name) and NOT user input. `self._entity_tables` is
+            #     fed only by the composition root (`build_app_context` unions each
+            #     `Extension.ingest_backends(ctx)`-declared table set via `register_entity_tables`).
+            #   * A table NAME cannot be a bound parameter in SurrealQL (store ref §2/§4 —
+            #     table/edge names are inline, only VALUES bind). The sibling
+            #     `DELETE {CHUNK_TABLE} WHERE tier = $tier` on the line above interpolates a table
+            #     name for the identical reason (CHUNK_TABLE is a module constant so the scanner
+            #     never flags it; entity_table is a loop var, so it needs this door).
+            #   * The `tier` VALUE is correctly bound `$tier`.
+            # RE-OPEN TRIGGER: if `entity_table` / `self._entity_tables` ever derives from
+            # user / comms / caller-supplied input rather than a code-declared table set — then
+            # #219's prose is false and the CODE must change (bind it), not this door.
+            ("loremaster/loremaster/store/surreal.py", "entity_table"),
         }
     )
 
