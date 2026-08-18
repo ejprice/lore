@@ -263,7 +263,7 @@ sizing law. *was* = the retired PKT-id (decoder for Log/findings/memories).
 | 13 | detection-build | PKT-05 | L | →split | 12 ruled | open |
 | 14 | config-derive-excludes (#26, #28, #72 corpus pollution + #162 archive-twin dedup) | PKT-09a | L ∥ | 0.20 | — | open |
 | 15 | config-boot-validation (+ dead fields, #12) | PKT-09b | L ∥ | 0.20 | — | open |
-| 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117; + #175 re-probe→reference, #249 RSS restart policy, #239 4.0-break→reference) | PKT-31 | L ∥ | 0.15 →**split guidance ruled 2026-07-29**: if over at kickoff, 16 keeps the ops six + #249; #175/#239 probe→reference work splits to 16b | #249's prod leg needs 07a first | open |
+| 16 | surreal-ops-hardening (#109, #110, #113, #114, #116, #117; + #175 re-probe→reference, #249 RSS restart policy, #239 4.0-break→reference) | PKT-31 | L ∥ | 0.15 →**split guidance ruled 2026-07-29**: if over at kickoff, 16 keeps the ops six + #249; #175/#239 probe→reference work splits to 16b | 07a ✅ (2026-08-17) — #249's prod leg UNBLOCKED | open |
 | 16a | package-seam-hardening (loresigil #205 split-math + #223 Retry-After; #209 watchdog fork bound+canary) | — | L ∥ | 0.15 | — | open — MINTED by the 2026-07-26 sweep (operator may strike/re-home at kickoff) |
 | 17 | worktree-overlay-design (#125; delta-only RULED) | PKT-33 | L | 0.15 | — (#136 FIXED 2026-07-14) | open |
 | 18 | ledger-retirement (singular-store ruling) | PKT-24 | M | 0.20 | — (before 20 finalizes, 22 ships) | open |
