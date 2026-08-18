@@ -1907,3 +1907,40 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   scratch copy). **Zero changes under `loremaster/loremaster/`** — deploy skipped as a genuine no-op
   (same precedent as 02a/03a-1/03a-2). Findings #118/#119/#144/#124 resolved. Commit `147be46`. Reports
   → `receipts/2026-08-17-packet07/`.
+- **2026-08-17 — packet 07a (store-error-honesty: RECOVERY + DEGRADATION) DONE + DEPLOYED.** The
+  #164/#250 "store bounce wedges forever, only a container restart heals it" premise, measured live
+  20-consecutive full-bounce drill against spike-surreal 3.2.4 (real `SurrealStore` path): **does NOT
+  reproduce at HEAD** — self-heals on the next call, every time. Operator ruled **FORK A = A1**
+  (adjudicate fixed-at-HEAD, no new reconnect-and-retry code; named re-open trigger = packet 16 when
+  store restarts go routine) over A2 (build a shared pre-send/idempotent-safe reconnect signal — designed
+  in the contract report §3.1, unwritten). **#128 FIXED** (`43c4ab3`): `AppContext.
+  _resolve_or_acknowledge_many` now degrades `TxnContentionExhaustedError`/`SurrealStoreError` per-item
+  (ruled distinct wording "FAILED — store contention, safe to retry this item") instead of killing the
+  whole batch; except-order load-bearing, mutation-proven. **#126/#127 RENEWED** (both latent-by-design,
+  neither re-open trigger fired); #127 gained a mutation-proven frozen-caller-set tripwire
+  (`TestScoutEnsureConnectionSoleDriverTripwire`) plus a precision correction (sole *production* driver,
+  not sole caller — `process_pending_once` is a pre-existing test-only 2nd caller).
+  Pipeline: contract (opus48) → **contract-adversary caught the #164/#250 evidence chain was unsound**
+  (F1: the drill's own regression-trigger prose claimed to catch a KeyError-branch regression it
+  empirically cannot — Exp A/B controls; re-anchored to the two mutation-proven unit test classes that
+  actually do. F2: the ruling's "fixed-by-05a-ii" root cause was chronologically impossible — the
+  store's KeyError catch predates #164/#250 by 8-13 days; corrected to root-cause-undiagnosed. F3: the
+  drill shipped with no negative control — added, permanent) → build (`server.py`-only, baseline-proven
+  zero-new-regressions via a content-backup swap) → **cold audit found ONE real defect**: the ruling
+  doc's line-28 correction narrative wasn't mirrored in its line-33 actionable "Ship:" bullet, leaving
+  the ruling self-contradictory — one-line NO-GO, fixed + verified live, immediate GO. Also fixed
+  (non-blocking, cold-audit-caught): the deploy-smoke drill's `__main__` wrapper caught its own
+  `SystemExit(0)` and always exited 1 regardless of pass/fail — narrowed to `except Exception`.
+  Deploy: rebuild + recreate (`localhost/lore:latest` = `4312207128bb`, `LORE_VERSION=0f5f2dc`,
+  `pre-07a-rollback` tag on the prior image `a8daccf68f3a`) — the in-image conformance suite was run
+  **twice** (candidate + a production **control**, same test tree, different baked code) after an
+  unexplained delta from the dev-host baseline turned out to be a real, pre-existing conformance-harness
+  environment gap (~36-41 tests needing secrets/writable-fs the harness's restricted run doesn't provide
+  — identical in both runs, filed **#386**, not blocking); candidate scored 5 fewer failures than
+  control, fully explained by the #128 fix. Live-verified post-deploy: `lore_index()` git_ref matches
+  HEAD, MCP responding. #164/#250/#128 resolved; #126/#127 annotated. Findings #384 (140 pre-existing
+  unrelated failures, surfaced not chased), #385 (latent two-source error-classification duplication,
+  moot unless a future A2 ships), #386 (conformance-harness environment gap) filed. Commits
+  `a1ac479`..`0f5f2dc` (ruling → contract → build → audit-fix → close-out). Reports →
+  `receipts/2026-08-17-packet07a/`. **NEXT = packet 45's follow-on or the next wave-D packet per
+  INDEX ordering.**
