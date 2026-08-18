@@ -841,10 +841,9 @@ def _auth_construction_offenders() -> list[str]:
     """
     offenders: list[str] = []
     for display, tree in _python_source_trees():
-        if (
-            display.startswith(_STDLIB_ONLY_EXEMPT_ROOT)
-            or display == _INCOMING_AUTH_EXEMPT
-            or display == _FASTMCP_SPIKE_EXEMPT
+        if display.startswith(_STDLIB_ONLY_EXEMPT_ROOT) or display in (
+            _INCOMING_AUTH_EXEMPT,
+            _FASTMCP_SPIKE_EXEMPT,
         ):
             # R14 stdlib-only boundary; R26 constraint 2 excludes incoming auth;
             # the fastmcp spike exercises MCP auth plumbing the seam cannot express.
