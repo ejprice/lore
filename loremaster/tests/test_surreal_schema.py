@@ -68,6 +68,7 @@ from loremaster.store.surreal_schema import (
     generate_graph_ddl,
     generate_manifest_ddl,
     generate_memory_ddl,
+    generate_principal_ddl,
     generate_task_ddl,
 )
 
@@ -87,6 +88,7 @@ EXPECTED_TABLES = frozenset(
         "command",
         "memory",
         "task",
+        "principal",
     }
 )
 
@@ -434,6 +436,7 @@ class TestFieldDdlConvergesOnAnExistingStore:
             "generate_memory_ddl": generate_memory_ddl(dim=NONDEFAULT_DIM),
             "generate_task_ddl": generate_task_ddl(),
             "generate_finding_ddl": generate_finding_ddl(),
+            "generate_principal_ddl": generate_principal_ddl(),
             "generate_agent_ddl": generate_agent_ddl(),
             "generate_brief_ddl": generate_brief_ddl(),
             "generate_graph_ddl": generate_graph_ddl(),

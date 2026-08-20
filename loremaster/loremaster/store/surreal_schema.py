@@ -116,6 +116,16 @@ NAME_TABLE = "name"
 REFERS_RELATION = "refers"
 ANSWERS_TO_RELATION = "answers_to"
 
+# The packet-48 human-identity table (:mod:`loremaster.principals`). ``principal``
+# is a node table — one row per person who authenticates (Google OAuth ``sub`` / an
+# API-key name, surfaced at runtime as ``AccessToken.client_id`` and stored in
+# ``principal.subject``). It is a THIRD, distinct identity vocabulary — NEVER
+# conflated with the ledger-actor strings (``finding``/``task`` ``created_by``) or
+# the comms ``agent`` registry (see the :mod:`loremaster.principals` docstring and
+# the one-column-one-identity-vocabulary law near ``server._TRACE_DECLARED_KEYS``).
+# Single source of truth shared by :mod:`loremaster.principals` and its tests.
+PRINCIPAL_TABLE = "principal"
+
 # The bare-``SCHEMAFULL``-placeholder tables (no field-level probe) the plan
 # requires to exist. This tuple is now EMPTY: every table that was ever a
 # placeholder has graduated to a real field-level slice —
@@ -396,6 +406,44 @@ _FINDING_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # fleet-visible ``query(status=...)`` filter (mirrors the ``task`` status index).
 _FINDING_NUMBER_FIELD = "number"
 _FINDING_STATUS_FIELD = "status"
+
+# The ``principal`` table's closed domains — principal-SPECIFIC vocabularies, NEVER
+# the ``agent`` tuples (R3). ``agent`` already carries columns named ``role`` and
+# ``status`` with DIFFERENT domains (``agent.role`` a free non-empty string;
+# ``agent.status ∈ {active, idle, input_required, retired}``); ``principal``'s are
+# NARROWER closed sets. ``status`` gates admission (``active``/``suspended``);
+# ``role`` is the AUTHZ domain (``role → AccessToken.scopes``) — ``member`` is
+# least-privilege, ``admin`` the explicit elevation. The ``status``/``role`` ASSERTs
+# derive from these tuples at CALL TIME in :func:`_principal_statements` (the
+# :func:`_floor_measurement_statements` idiom), never frozen into a module constant,
+# so a mutation of a tuple moves the emitted ASSERT — the derivation is
+# mutation-provable.
+_PRINCIPAL_STATUS_ACTIVE = "active"
+_PRINCIPAL_STATUS_SUSPENDED = "suspended"
+_PRINCIPAL_STATUSES = (_PRINCIPAL_STATUS_ACTIVE, _PRINCIPAL_STATUS_SUSPENDED)
+
+_PRINCIPAL_ROLE_MEMBER = "member"
+_PRINCIPAL_ROLE_ADMIN = "admin"
+_PRINCIPAL_ROLES = (_PRINCIPAL_ROLE_MEMBER, _PRINCIPAL_ROLE_ADMIN)
+
+# The ``principal`` table's NON-DOMAIN fields as ``(name, type_expr, constraint)``
+# triples (the ``finding`` idiom, fine here — these fields carry no closed
+# vocabulary to mutate). ``status``/``role`` are NOT here: they are emitted at CALL
+# TIME in :func:`_principal_statements` from the tuples above (see the note there).
+# ``email`` is the REQUIRED, non-empty human admission key (UNIQUE index). ``subject``
+# is ``option<string>`` (Model B — a pre-created-by-email row carries NONE until
+# packet 39 fills the OAuth subject on first login) carrying the SAME non-empty
+# ASSERT, which an ``option<>`` field SKIPS on NONE but FIRES on a present empty
+# string (UNIQUE index). ``display_name``/``expires_at`` are optional presentation/
+# lifecycle columns; ``created_at`` self-stamps via ``DEFAULT time::now()`` (the
+# store OMITS it on write so the engine stamps it). Field ORDER is DDL-irrelevant.
+_PRINCIPAL_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("email", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("subject", "option<string>", _NON_EMPTY_STRING_ASSERT),
+    ("display_name", "option<string>", ""),
+    ("expires_at", "option<datetime>", ""),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+)
 
 # The ``finding_counter`` table's single ``next`` int column, defaulted to 0 so the
 # FIRST ``UPSERT ... SET next += 1`` on the newly-created singleton row yields 1.
@@ -1326,6 +1374,51 @@ def _finding_counter_statements() -> list[str]:
     ]
 
 
+def _principal_statements() -> list[str]:
+    """The ``principal`` table: the field set + the two UNIQUE indexes (spec §3/§4).
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_PRINCIPAL_FIELD_SPECS` entry (the five non-domain fields) followed by
+    the ``status`` and ``role`` field-defs; the UNIQUE index on ``email`` (the human
+    admission key) and the UNIQUE index on ``subject`` (the runtime OAuth identity).
+    The ``subject`` index is a PLAIN UNIQUE over an ``option<string>`` column, which
+    admits any number of NONE rows while rejecting a duplicate non-NONE subject —
+    exactly the Model-B pre-create semantics (probe-settled on 3.2.4; store
+    reference §2/§4). UNLIKE ``finding``/``task`` the table carries no ``status``
+    index: a ``principal`` table is bounded by the number of humans, so ``list``
+    full-scans for free (a status index is a free ``IF NOT EXISTS`` add later).
+
+    ⚠ The ``status``/``role`` ASSERTs are derived HERE, at CALL time, from
+    :data:`_PRINCIPAL_STATUSES` / :data:`_PRINCIPAL_ROLES` — the
+    :func:`_floor_measurement_statements` idiom, NOT the frozen import-time
+    ``finding`` idiom. A join constant frozen at import cannot move when a mutation
+    pin monkeypatches the vocabulary tuple, so the derivation would be un-provable;
+    deriving it here makes a tuple change move the emitted ASSERT.
+    """
+    status_allowed = ", ".join(f"'{status}'" for status in _PRINCIPAL_STATUSES)
+    role_allowed = ", ".join(f"'{role}'" for role in _PRINCIPAL_ROLES)
+    domain_specs: tuple[tuple[str, str, str], ...] = (
+        (
+            "status",
+            _CHUNK_STRING_TYPE,
+            f"DEFAULT '{_PRINCIPAL_STATUS_ACTIVE}' ASSERT $value IN [{status_allowed}]",
+        ),
+        (
+            "role",
+            _CHUNK_STRING_TYPE,
+            f"DEFAULT '{_PRINCIPAL_ROLE_MEMBER}' ASSERT $value IN [{role_allowed}]",
+        ),
+    )
+    statements: list[str] = [_define_table(PRINCIPAL_TABLE)]
+    statements += [
+        _define_field(PRINCIPAL_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in (*_PRINCIPAL_FIELD_SPECS, *domain_specs)
+    ]
+    statements.append(_unique_index(PRINCIPAL_TABLE, f"{PRINCIPAL_TABLE}_email", ("email",)))
+    statements.append(_unique_index(PRINCIPAL_TABLE, f"{PRINCIPAL_TABLE}_subject", ("subject",)))
+    return statements
+
+
 def _agent_statements() -> list[str]:
     """The ``agent`` table: the field set + the ``(session, status)`` and ``name`` indexes.
 
@@ -1615,6 +1708,7 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _task_statements()
     statements += _finding_statements()
     statements += _finding_counter_statements()
+    statements += _principal_statements()
     # Any residual bare-``SCHEMAFULL`` placeholder tables (currently none — every
     # table has graduated to a field-level slice; see :data:`_STRUCTURAL_TABLES`).
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
@@ -1714,6 +1808,28 @@ def generate_finding_ddl() -> str:
     """
     statements: list[str] = _finding_statements() + _finding_counter_statements()
     return ";\n".join(statements) + ";\n"
+
+
+def generate_principal_ddl() -> str:
+    """Generate just the ``principal`` table DDL — packet 48's human-identity slice.
+
+    Mirrors :func:`generate_finding_ddl`: a schema SLICE
+    :class:`~loremaster.principals.PrincipalStore` applies on its OWN connection at
+    :meth:`ensure_ready`, independent of the full :func:`generate_ddl` (into which
+    ``principal`` is ALSO folded — Variant A — so the primary
+    ``write_store.ensure_ready()`` creates the table the moment packet 48 ships,
+    without wiring a ``PrincipalStore`` into ``build_app_context``). Needs NEITHER
+    the embedding ``dim`` NOR the analyzer — a principal is addressed by ``email``
+    and ``subject``, never retrieved semantically. Every statement is idempotent
+    (``IF NOT EXISTS`` for the table/indexes, ``OVERWRITE`` for its fields — see
+    :func:`_define_field`), so applying it twice — or alongside :func:`generate_ddl`,
+    in either order — is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    return ";\n".join(_principal_statements()) + ";\n"
 
 
 def generate_agent_ddl() -> str:

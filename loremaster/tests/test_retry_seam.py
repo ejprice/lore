@@ -6041,6 +6041,11 @@ _SEAM_REJECTION_EVENTS = {
     "FloorCalibrationStore": "floor_calibration.query.rejected",
     "LocalMemoryBackend": "memory.query.rejected",
     "MessageLedger": "message.query.rejected",
+    # Packet 48-B's new seam. HAND-WRITTEN entry for the auto-DISCOVERED
+    # ``PrincipalStore._query`` (loremaster.principals): registering its canonical
+    # event is the sanctioned resolution named above — never a bespoke seam that
+    # dodges the AST enumeration (finding #120), never "pre-existing, ship".
+    "PrincipalStore": "principal.query.rejected",
     "SnapshotStamper": "snapshot.query.rejected",
     "SurrealCodeGraph": "graph.query.rejected",
     "SurrealLeaseStore": "lease.query.rejected",
@@ -6068,6 +6073,7 @@ _SEAM_REJECTION_NOUNS = {
     "FloorCalibrationStore": "floor calibration query",
     "LocalMemoryBackend": "memory query",
     "MessageLedger": "message query",
+    "PrincipalStore": "principal query",
     "SnapshotStamper": "query",
     "SurrealCodeGraph": "query",
     "SurrealLeaseStore": "lease query",
