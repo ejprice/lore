@@ -53,7 +53,10 @@ cannot read my own model, but the brief asserts 4.8 and the session env corrobor
 
 ## The ONE message to lead
 
-`STATE: done · REPORT: REPORT-contract-49-1.md · pkt-49 contract+stubs RED (54F/36P/30E, 120 collected); 7 decisions-needed flagged, none blocking`
+(Latest of several rounds — lead rulings + two adversary passes applied; the counts below
+are CURRENT.)
+
+`STATE: done · REPORT: REPORT-contract-49-1.md · pkt-49 contract RED (59F/38P/31E, 128 collected on the 4-file scope); all lead rulings + both adversary passes applied; full test_retry_seam.py = 604 passed / 1 RED (the "PrincipalKeyStore needs _query" signal)`
 
 ---
 
@@ -102,6 +105,34 @@ RED-for-the-right-reason (no C-DEF, no ImportError); the F2 positive-control is 
 
 ---
 
+## ADVERSARY DELTA-2 FIX APPLIED (directive #5076 — 1 blocker + 2 residuals)
+
+adversary-49-2 = INSUFFICIENT with ONE blocker (all r1 fixes F1–F5/R1 CLOSED — 13/13 wrong
+builds caught, reference 111/0 on the 4-file scope). The blocker is R2's downstream blast-radius.
+
+- **FINDING 1 (BLOCKER, #353 — the packet-03b revision-introduced class):** the R2 discovery
+  pin makes `test_retry_seam.py` DISCOVER `PrincipalKeyStore._query` on a correct build, pulling
+  it into that file's HAND-WRITTEN `_SEAM_REJECTION_EVENTS` / `_SEAM_REJECTION_NOUNS` maps —
+  which lacked its entry → a CORRECT build fails the FULL retry-seam gate (attribution/monoculture
+  KeyError). The 4-file scope hid it; the full gate exposed it. **Fix (writable set extended to
+  the two MAP ENTRIES only, mirroring 48-B's `PrincipalStore`):**
+  - `_SEAM_REJECTION_EVENTS += {"PrincipalKeyStore": "principal.key.query.rejected"}`
+  - `_SEAM_REJECTION_NOUNS  += {"PrincipalKeyStore": "principal key query"}`
+  - `principal_keys` module docstring now SPECIFIES the exact `noun`/`label` the builder's
+    `_query` must use (so it matches the maps) — citing #353.
+  - pin-17c docstring CORRECTED (the maps DID need registration; only `_CTOR_VALUES` didn't).
+  - **Verified in the STUB state:** full `test_retry_seam.py` = **604 passed / 1 RED**, the RED
+    being exactly `test_every_seam_still_logs_its_OWN_canonical_rejection_event` (map names
+    `PrincipalKeyStore`, not yet discovered → "add `_query`" signal; GREEN when the builder
+    lands `_query` with the mapped strings). No non-"add-`_query`" break.
+- **R-a (guidance, NOT a pin):** `verify`'s natural ~10-return deny shape trips `PLR0911`
+  repo-wide → added a `verify` stub-docstring note that the builder may collapse the deny-returns
+  or apply a scoped `# noqa: PLR0911`. The contract pins NO return-count shape.
+- **R-b (doc):** reconciled the stale `54F/36P/30E/120` in the ONE-message + Verification-receipts
+  sections to the CURRENT `59F/38P/31E/128` (the SUMMARY was already correct).
+
+---
+
 ## PROBE (de-risking a C-DEF — the one store-behaviour question my fixtures rest on)
 
 Before writing the live schema fixtures I probed the `record<>` link CONTENT-write shape
@@ -134,7 +165,12 @@ correct build.
 package scan is unperturbed (measured: 14 seams before and after the stub; `_MIN_KNOWN_SEAMS=13`
 still met). Pin 17c FORCES the builder to add `async def _query`, at which point the scan
 auto-discovers it (→15) and its parametrised pins prove it rides the shared `run_query`
-(#102/#120) — no new registration needed (`_CTOR_VALUES` already carries the std ctor params).
+(#102/#120). ⚠ **CORRECTION (adversary delta-2 / #353):** discovery ALSO pulls the class into
+`test_retry_seam.py`'s HAND-WRITTEN rejection maps, which **DID need registration** — packet 49
+adds `"PrincipalKeyStore"` to both `_SEAM_REJECTION_EVENTS` and `_SEAM_REJECTION_NOUNS`. Only
+`_CTOR_VALUES` did not need an entry (it already carries the std ctor params). The builder's
+`_query` must raise with `noun="principal key query"` / `label="principal.key.query.rejected"`
+to match those maps (specified in the `principal_keys` module docstring).
 
 ---
 
@@ -261,12 +297,19 @@ reader sees the alternative that was considered and rejected, not just the survi
 
 ## Verification receipts
 
-- **RED tail (per file, `-n auto -p no:cacheprovider`):** schema `27 failed, 4 passed`;
-  keys-store `1 failed, 2 passed, 26 errors`; cli `22 failed, 13 passed`; store-ext (whole file)
-  `4 failed, 17 passed, 4 errors`. Every RED verified BEHAVIOURAL: fixture/method
-  `NotImplementedError`, empty-DDL clean assertion, or missing-verb parse error — **no
-  ImportError, no collection error** (120 collected).
-- **ruff:** clean on all 8 touched files.
+- **RED tail (per file, `-n auto -p no:cacheprovider` — CURRENT, after both adversary passes):**
+  schema `27 failed, 5 passed`; keys-store `1 failed, 2 passed, 27 errors`; cli `27 failed,
+  14 passed`; store-ext (whole file) `4 failed, 17 passed, 4 errors` → **59F / 38P / 31E, 128
+  collected**. Every RED verified BEHAVIOURAL: fixture/method `NotImplementedError`, empty-DDL
+  clean assertion, or missing-verb parse error — **no ImportError, no collection error**.
+- **FULL `test_retry_seam.py` (delta-2 #353 fix — writable set now includes it, MAP ENTRIES ONLY):**
+  `1 failed, 604 passed`. The single RED is `test_every_seam_still_logs_its_OWN_canonical_rejection_event`
+  — the map now names `PrincipalKeyStore` (`principal key query` / `principal.key.query.rejected`)
+  but the stub has no `_query` yet, so it is not discovered/observed: the exact "PrincipalKeyStore
+  needs `_query`" signal, GREEN the moment the builder adds `_query` with those strings. The other
+  604 stay green (no collateral break; the events check sits after the nouns assert in the same
+  method — dormant until `_query` lands; the monoculture pin is a map self-consistency check).
+- **ruff:** clean on all 9 touched files (the 8 + `test_retry_seam.py`).
 - **mypy (`scripts/typecheck.sh`):** MY files clean (one intentional `# type: ignore[call-arg]`
   on the `extra='forbid'` negative-construction pin). The gate's overall RED is the PRE-EXISTING
   packet-39 adjudicated typecheck + lorerunes tests (8 files: `test_auth_*`, `test_*posture*`,

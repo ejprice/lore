@@ -544,7 +544,16 @@ class TestSharingProvenByMutation:
         retry/classification, #102/#120) cover it. Merely `hasattr(_query)` proves the
         seam EXISTS; asserting it is in ``_discover_query_seams()`` proves the shared
         retry suite PARAMETRIZES over it (a build hand-rolling queries inline evades that
-        scan entirely). RED on the stub (no ``_query`` yet → not discovered)."""
+        scan entirely). RED on the stub (no ``_query`` yet → not discovered).
+
+        ⚠ BLAST-RADIUS (finding #353): being discovered ALSO pulls ``PrincipalKeyStore``
+        into ``test_retry_seam.py``'s HAND-WRITTEN ``_SEAM_REJECTION_EVENTS`` /
+        ``_SEAM_REJECTION_NOUNS`` maps — those DO need registration (packet 49 added the
+        entries; only ``_CTOR_VALUES`` did NOT, since it already carries the std ctor
+        params). So the builder's ``_query`` MUST raise with ``noun="principal key query"``
+        / ``label="principal.key.query.rejected"`` to match those maps (see the
+        ``principal_keys`` module docstring). A wrong string passes THIS pin but FAILS the
+        full retry-seam attribution gate."""
         import inspect
 
         # test_retry_seam is a sibling test module on the tests path; a function-level

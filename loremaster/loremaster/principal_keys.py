@@ -24,6 +24,16 @@ classification / query policy of its own (finding #102/#120). Its ``_query`` sea
 auto-discovered by ``test_retry_seam.py``'s scan, so the shared retry pins prove the
 sharing by mutation.
 
+⚠⚠ BUILDER — THE ``_query`` SEAM'S ``noun``/``label`` ARE FIXED BY THE RETRY-SEAM MAPS
+(finding #353, blast-radius). Being auto-discovered pulls this class into EVERY
+``test_retry_seam.py`` parametrization, and that file's hand-written
+``_SEAM_REJECTION_EVENTS`` / ``_SEAM_REJECTION_NOUNS`` maps register it (packet 49):
+so ``PrincipalKeyStore._query`` MUST call ``run_query`` with EXACTLY
+``noun="principal key query"`` and ``label="principal.key.query.rejected"`` — the same
+convention ``PrincipalStore._query`` uses (``principals.py``, ``noun="principal query"`` /
+``label="principal.query.rejected"``). A different string passes the 4-file contract but
+FAILS the full retry-seam attribution/monoculture gate on a correct build.
+
 The public surface (design §F7):
 
     PrincipalKey:                          # a frozen value object (pydantic model)
@@ -196,7 +206,15 @@ class PrincipalKeyStore:
 
         The shared predicates are named here so they are module attributes the
         ONE-IMPLEMENTATION mutation pins can patch; the real routing is the
-        builder's obligation."""
+        builder's obligation.
+
+        ⚠ BUILDER (adversary R-a — guidance, NOT a pin): the natural implementation has
+        ~10 ``return`` statements (blank / no-colon / blank-half / no-row / revoked /
+        key-expired / no-principal / suspended / principal-expired / allow), which trips
+        ``PLR0911`` (too-many-returns) repo-wide. The contract does NOT pin a return-count
+        shape — you may collapse the deny-returns into a single guarded path OR apply a
+        scoped ``# noqa: PLR0911`` with a one-line reason. Do not distort the logic to
+        satisfy the linter."""
         _shared_predicates = (is_blank, sha512_hex)  # noqa: F841 - see docstring
         raise NotImplementedError(f"PrincipalKeyStore.verify — {_STUB_MESSAGE}")
 

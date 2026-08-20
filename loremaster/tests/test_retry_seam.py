@@ -6041,6 +6041,13 @@ _SEAM_REJECTION_EVENTS = {
     "FloorCalibrationStore": "floor_calibration.query.rejected",
     "LocalMemoryBackend": "memory.query.rejected",
     "MessageLedger": "message.query.rejected",
+    # Packet 49's new seam (finding #353 — blast-radius). HAND-WRITTEN entry for the
+    # auto-DISCOVERED ``PrincipalKeyStore._query`` (loremaster.principal_keys): the
+    # discovery scan pulls this class into EVERY parametrization here, so its canonical
+    # event MUST be registered (like PrincipalStore below) or the map-completeness +
+    # attribution pins KeyError on a correct build. Its ``_query`` MUST raise with
+    # ``label="principal.key.query.rejected"`` to match this entry.
+    "PrincipalKeyStore": "principal.key.query.rejected",
     # Packet 48-B's new seam. HAND-WRITTEN entry for the auto-DISCOVERED
     # ``PrincipalStore._query`` (loremaster.principals): registering its canonical
     # event is the sanctioned resolution named above — never a bespoke seam that
@@ -6073,6 +6080,10 @@ _SEAM_REJECTION_NOUNS = {
     "FloorCalibrationStore": "floor calibration query",
     "LocalMemoryBackend": "memory query",
     "MessageLedger": "message query",
+    # Packet 49's new seam (finding #353): the noun ``PrincipalKeyStore._query`` MUST
+    # raise with — ``noun="principal key query"`` — to match this entry (a domain-naming
+    # noun, so it also keeps the two-population monoculture guard non-trivial).
+    "PrincipalKeyStore": "principal key query",
     "PrincipalStore": "principal query",
     "SnapshotStamper": "query",
     "SurrealCodeGraph": "query",
