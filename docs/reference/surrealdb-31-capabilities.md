@@ -296,6 +296,33 @@ constraint took effect AND the existing row survived.**
 - **[PROBED]** `DEFINE FIELD OVERWRITE` is legal inside the `BEGIN … COMMIT` that `ensure_ready`
   uses, and works on relation-edge fields and nested `chunk_hashes[*].…` fields.
 
+### 1.8 UNIQUE over an `option<>` (nullable) field — multiple NONE COEXIST
+
+**[PROBED 2026-08-20, 3.2.4 — `scripts/probe_unique_nullable_48.py` (committed, self-checking,
+exit 0 with positive controls); receipts
+`docs/plans/v2/receipts/2026-08-20-packet48/REPORT-probe-unique-null-48.md`.]** Packet 48's
+`principal.subject` (an `option<string>` UNIQUE column, NONE until an OAuth login fills it)
+forced this, and the **vendor docs are SILENT** on it — so it was settled by construction.
+
+- **A plain `DEFINE INDEX … FIELDS <col> UNIQUE` over `<col> option<string>` (= `none | string`)
+  PERMITS MULTIPLE rows with the column = NONE.** Fail-open coexistence (4 unset rows coexisted).
+  This is exactly the pre-create-a-row-by-another-key-then-fill-later pattern: many rows carry
+  NONE at once and the UNIQUE index does not treat them as duplicates.
+  ⚠ **Do NOT assume the SQL-ish "one NULL only" behaviour.** A careful engineer expecting
+  `option<> UNIQUE` to reject the 2nd NONE would design the fill-later pattern wrong — the 2nd
+  `CREATE` would appear to fail. It does NOT fail. This is a **#107-class trap: an unwritten
+  engine fact, believed rather than probed** (which is why it is written here).
+- **The backstop still holds: the SAME NON-NONE value IS rejected** — on CREATE **and** on the
+  `UPDATE` that fills a previously-NONE row to a value another row already holds (the fill path).
+  So a real (non-NONE) key maps to ≤1 row; only NONE is exempt.
+- **A FILTERED / PARTIAL unique index is NOT SUPPORTED.** Every spelling — `… UNIQUE WHERE col !=
+  NONE`, `… WHERE col IS NOT NONE`, `… FIELDS col WHERE … UNIQUE` — is a **parse error**
+  (`Unexpected token 'WHERE'`); `WHERE` on `DEFINE INDEX` is COUNT-only, not a row predicate. And
+  it is not needed: plain `UNIQUE` over `option<>` already gives multiple-NONE + unique-non-NONE.
+
+Provenance (stored shape): `DEFINE INDEX <n> ON <t> FIELDS <col> UNIQUE` over
+`DEFINE FIELD <col> ON <t> TYPE none | string`. [Finding #388.]
+
 ---
 
 ## 2. DML IDIOMS
