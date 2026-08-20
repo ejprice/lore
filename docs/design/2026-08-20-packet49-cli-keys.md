@@ -15,7 +15,7 @@
 - **State:** done — 7 forks ruled; **operator rulings applied 2026-08-20** (F4 `<name>:<secret>` CONFIRMED; the dry-run/`--execute` paradigm STRUCK entirely — every verb executes directly, only `list`/`list-keys` are reads). Two forward-dependency FLAGS on packet 39 (§F3/§F4 identity mint) and a PIN-THE-MISS bound (§F2 cascade forward-scope) remain surfaced for awareness.
 - **New store surface (49 owns):** a `principal_key` table + `PrincipalKeyStore` in a new module `loremaster/loremaster/principal_keys.py`; three new `PrincipalStore` methods (`set_expires`, `delete`); the CLI in `principals.py`.
 - **49 does NOT touch:** `auth.py`'s `ApiKeyVerifier` / `build_api_key_verifier` / `BearerAuthMiddleware` — that is packet 39's kept surface (§4 of the pkt-39 design). The wire-level middleware wiring is packet 39's, explicitly out of 49's scope.
-- **DRY reuse (proven-shareable, cite these):** `lorerunes.blankness.is_blank` (reject-empty; mutation-proven shared, pkt42 #222) · `loremaster.index.records.sha512_hex` (the key hash) · the `loremaster.store._txn` seams (`bootstrap_session`/`run_query`/`execute_transaction` — NO new retry/query policy, #102/#120) · `surreal_schema` emitter idiom · `snapshot_gc.py` CLI template · `index/cli.py` `build_parser()`/`main(argv)->int` house idiom.
+- **DRY reuse (proven-shareable, cite these):** `lorerunes.blankness.is_blank` (reject-empty; mutation-proven shared, pkt42 #222) · `loremaster.index.records.sha512_hex` (the key hash) · **`loremaster.sanitise.sanitise_line`/`safe_str`** (CLI render of stored free text — F8, finding #34) · the `loremaster.store._txn` seams (`bootstrap_session`/`run_query`/`execute_transaction` — NO new retry/query policy, #102/#120) · `surreal_schema` emitter idiom · `snapshot_gc.py` CLI idiom (not its dry-run) · `index/cli.py` `build_parser()`/`main(argv)->int` house idiom.
 - **Packages considered:** `secrets.token_urlsafe` (secret generation — stdlib, `keep`); `hashlib` via the existing `sha512_hex` wrapper (`replace` the would-be hand-roll); `argparse` (stdlib CLI — house idiom); `cachetools`/TTL **rejected** by R12 (revocation must beat any cache — no residual window).
 
 ---
@@ -229,6 +229,29 @@ Citations: `principals.py` (owner idiom, `_row_to_principal`, CONTENT create, ex
 
 ---
 
+## F8 — CLI render of stored free text: launder it (lead-surfaced 2026-08-20) [RULED by sidecar: YES]
+
+The `list` / `list-keys` verbs render STORED FREE TEXT — principal `email` and `display_name`, key `name`. The repo P8d law: *"Any NEW render of stored free text routes through the shared sanitiser seam … its tests MUST include a hostile fixture (newlines + a row-shaped forgery line + backtick runs)."*
+
+**Reading that would produce different code:** does a TERMINAL-facing render (an admin via `podman exec`, not an MCP surface an LLM reads) warrant the seam, or is it out of the law's LLM-consumer scope?
+
+**RULING: YES — route every rendered free-text field through the shared seam. This is not a close call, and here is why (the seam itself settles it):**
+- The canonical seam is **`loremaster.sanitise.sanitise_line`** (finding #34 promoted it out of `search.py`; `loremaster.search._sanitise_line` is now an alias) and its `safe_str(value)` companion (handles `str | None` — right for the optional `display_name`). Read its docstring: it collapses **C0/C1 controls, `\n`, TAB, the ANSI/OSC `ESC` introducer, DEL, bidi override/isolate/mark, zero-width, and line/paragraph separators** to a single space. It is **explicitly designed to defeat terminal-framing** ("cannot break the … line it sits on, escape a fence, or smuggle a hidden/reordered payload"; "in a bidi-aware terminal/UI"). So the seam is NOT MCP-only — it is exactly the launder a terminal render needs.
+- **The threat model, written down (per the repo's "a gate needs a threat model" law):** the harm is real even for a terminal admin — a `display_name`/`name` with an embedded newline forges a **fake `list` row** (mis-attributing identity/role); an ANSI/OSC run hijacks the admin's terminal (cursor/color/OSC-52 clipboard); a bidi run visually spoofs an email (Trojan-Source). And the **provenance is trending untrusted**: `email`/`display_name` are admin-typed TODAY, but packet 39's OAuth fill and any future self-service make them **user-chosen** — the render-side launder is the provenance-independent fix (the reason the law is render-side, not write-side). Note `email` and key `name` carry only `_NON_EMPTY_STRING_ASSERT` (non-empty — NOT newline/ANSI-free), so the store does not stop hostile values; the render must.
+- **Cost is near-zero and ONE-IMPLEMENTATION demands it:** the seam already exists and is tree-wide; a CLI-private launder would be a clone. "Rigor-vs-speed on serving surfaces resolves toward RIGOR" (Trust Doctrine) closes it.
+
+**Scope of the launder (be precise so the builder doesn't over- or under-apply):**
+- **Sanitise:** `email`, `display_name`, key `name` (the free-text fields). Route through `sanitise_line` / `safe_str`.
+- **Safe by construction (no launder needed, but `safe_str` is a harmless no-op if applied uniformly):** `status`/`role` (closed-domain, DDL-ASSERT-validated) and datetimes (`created_at`/`expires_at`/`revoked_at`, engine-typed, rendered via `isoformat`).
+- **The CLI needs the LINE sanitiser, NOT the backtick-FENCE machinery.** `render_fenced`/`fence_width` wrap **multi-line MCP bodies** in a markdown fence; a terminal does not interpret backticks and the CLI renders only single-line identity fields. Do not wrap CLI output in markdown fences — apply `sanitise_line` to each field.
+- **A `--json` mode** (if `list`/`list-keys` provide one) is forgery-safe by construction via the **stdlib `json` encoder** (control chars escaped, strings quoted) — that is its launder; the human/table mode uses `sanitise_line`.
+
+**Defense-in-depth NOTE (flag, not a mandate):** the CLI could also validate `email` format on `add` (reject newlines/controls at write time). That is additive hardening, not the law-required fix — the render-side launder is robust regardless of how a value was written (OAuth fill, future self-service), so pin the render; write-validation is optional.
+
+Citations: repo CLAUDE.md P8d "rendered stored free text" law + Trust Doctrine; `loremaster/loremaster/sanitise.py::sanitise_line`/`safe_str`/`SafeLine` (finding #34); `_NON_EMPTY_STRING_ASSERT` (`surreal_schema.py:370`).
+
+---
+
 ## PIN CHECKLIST — what the contract author MUST satisfy
 
 **The packet exit pins (from `49-principal-cli-keys.md`), made concrete:**
@@ -263,6 +286,7 @@ Citations: `principals.py` (owner idiom, `_row_to_principal`, CONTENT create, ex
 16. **`build_parser()` separately testable** — parse each verb's args without running; `prog == "loremaster.principals"`; unknown verb / missing required arg ⇒ non-zero exit.
 17. **Sharing proven by mutation** — (a) mutate `is_blank` → 49's verify + the other callers redden; (b) mutate the shared principal-row→`Principal` mapper → BOTH stores redden (no cloned mapper, F3); (c) `_query` is discovered by `test_retry_seam.py`'s scan (no private retry policy).
 18. **Env-var indirection** — the CLI carries env-var NAMES (`--user-env`/`--password-env` via `resolve_config_value`/`resolve_secret`), never values; the password is a `SecretStr` to the SDK seam; no secret is ever printed (except the one-time minted key line).
+19. **CLI render of stored free text is laundered (P8d rendered-free-text law — F8).** Every free-text field `list`/`list-keys` renders — principal `email`/`display_name`, key `name` — routes through the shared `loremaster.sanitise.sanitise_line` / `safe_str` seam (NOT a CLI-private launder). Prove the sharing by **mutation**: break `sanitise_line`'s body → the CLI render pins redden ALONGSIDE the other seam callers (ONE IMPLEMENTATION — a private copy would stay green). **HOSTILE FIXTURE (mandatory):** a principal `display_name` AND a key `name` each containing embedded newlines + a **row-shaped forgery line** (e.g. `evil\n  attacker@x.com   admin   active`) + **backtick runs**; assert the rendered output (a) contains EXACTLY the expected record/row count — the forgery produces NO second row; (b) renders the hostile value as ONE collapsed line with control/`\n`/ANSI-ESC/bidi/zero-width chars neutralised to spaces; (c) if a `--json` mode exists, it emits via the stdlib `json` encoder (control chars escaped by construction). ⚠ Single-line-only fixtures are the documented way this class stays green — the fixture MUST be multi-line + row-shaped. NOTE: pin the LINE sanitiser (`sanitise_line`), NOT the markdown backtick-FENCE machinery (`render_fenced`/`fence_width`) — the CLI renders single-line identity fields, not multi-line MCP bodies.
 
 **Satisfiability receipt** (C-DEF class): the adversary's reference build goes 0-failed against this contract, INCLUDING after any lint-demanded cleanup — before any builder sees it.
 
@@ -276,4 +300,4 @@ Citations: `principals.py` (owner idiom, `_row_to_principal`, CONTENT create, ex
 - **PIN-THE-MISS (F2)** — the delete cascade is scoped to `principal_key` by construction as of 2026-08-20; packet 3A's `memory.owner` is the named re-open trigger.
 
 **Packages considered:** `secrets.token_urlsafe` — `keep` (stdlib, correct for high-entropy key generation; read: stdlib signature). `hashlib` — `replace` with the existing `loremaster.index.records.sha512_hex` wrapper (read: its source, `records.py:108`). `argparse` — `keep` (stdlib; the house CLI idiom). `cachetools`/TTL — **rejected** by R12 (revocation must beat any cache; read: pkt-39 §3-R12). Password KDFs (`bcrypt`/`argon2`) — **not applicable** (the secret is high-entropy random, not a password; read: odoo-code `_validate_odoo_api_key` uses unsalted sha512 for the same reason).
-**Reuse ledger:** 4 external reuses dispositioned (`is_blank`, `sha512_hex`, `_txn` seams, `build_store` accessors); all new symbols routed through the existing owner/emitter idioms.
+**Reuse ledger:** 5 external reuses dispositioned (`is_blank`, `sha512_hex`, `sanitise_line`/`safe_str`, `_txn` seams, `build_store` accessors); all new symbols routed through the existing owner/emitter idioms.
