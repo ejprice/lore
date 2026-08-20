@@ -8,8 +8,17 @@ Mint and manage principals + their API keys from inside the image
 
 ## Scope IN (headlines; the spec carries the mechanics)
 - CLI per the house idiom and the `snapshot_gc.py` template (argparse, env-var NAMES not
-  values, **strict dry-run unless `--execute`** for delete/suspend); verbs add/list/
-  delete/suspend/unsuspend/--expires; `__main__`-guard-last law.
+  values); verbs add/list/delete/suspend/unsuspend/set-expiry + mint-key/list-keys/
+  revoke-key; `__main__`-guard-last law.
+  ⚠ **OPERATOR RULING 2026-08-20 — NO dry-run / `--execute` paradigm** (verbatim: *"Gate
+  none. I hate that paradigm."*). This OVERRIDES the former "strict dry-run unless
+  `--execute` for delete/suspend" scope line **and** spec §1B's "only list is safe by
+  default": every verb executes its effect directly when run (loud-on-failure,
+  silent-on-success, Unix idiom); only `list`/`list-keys` are reads; there is no
+  `--execute` flag. The CLI keeps `snapshot_gc.py`'s argparse/async/env-var-NAMES/
+  loud-on-failure idiom but NOT its dry-run gating.
+- Key wire format `<name>:<secret>` (odoo-code's split-on-first-colon shape) — **operator-
+  confirmed 2026-08-20**.
 - Keys: **adopt odoo-code's VALIDATION shape, REJECT its identity mint** (constant
   client_id collapses every keyholder — spec §1C receipts). Mint per packet 39 §4:
   `client_id=f"api_key:{name}"`, `subject=name`.
@@ -27,5 +36,6 @@ Mint and manage principals + their API keys from inside the image
 
 ## Exit
 Full gates + adversary + cold audit. Pins: revoked key denied on the NEXT verification;
-key never stored raw (constructed leak probe with positive control); CLI dry-run mutates
-nothing (state-unchanged probe + a `--execute` control that DOES mutate).
+key never stored raw (constructed leak probe with positive control); each verb executes
+its effect directly (no dry-run/`--execute` paradigm — operator ruling 2026-08-20);
+mint-key shows the key ONCE. Design doc: `docs/design/2026-08-20-packet49-cli-keys.md`.

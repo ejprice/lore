@@ -1969,3 +1969,9 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   leak (an unpinned exact set would have let a `superadmin` role ship). Operator forks: F1=model B,
   F1b=A, scope=schema+store+CRUD, per-slug. Design `131ba56`; findings #388/#390/#391 open, #389
   resolved. Reports → `receipts/2026-08-20-packet48/`.
+- 2026-08-20 · **PACKET 49 (principal CLI + per-user API keys) KICKOFF + operator scope ruling.**
+  Fable sidecar ruled 7 forks (`docs/design/2026-08-20-packet49-cli-keys.md`); reuse citations
+  lead-verified (`is_blank`/`sha512_hex`/`_txn` seams/`snapshot_entry→snapshot` cascade precedent).
+  **OPERATOR:** key format `<name>:<secret>` confirmed; **NO dry-run/`--execute` paradigm** ("Gate
+  none. I hate that paradigm.") — OVERRIDES packet scope-IN + spec §1B (every verb executes; only
+  list/list-keys read). Packet doc scope-IN + exit edited to match. Design/contract WIP.
