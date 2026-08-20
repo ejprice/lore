@@ -39,8 +39,10 @@ store is a LOUD failure, not a skip.
 
 from __future__ import annotations
 
+import ast
 import importlib
-from datetime import UTC, datetime
+import inspect
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -51,8 +53,10 @@ from _surreal_harness import (
     connect_admin,
     drop_database,
     make_env,
+    run,
     unique_database,
 )
+from loremaster.store import surreal_schema
 
 _REQUIRED_NAMES = (
     "PrincipalStore",
@@ -382,4 +386,214 @@ class TestModuleDocstringNamesBothVocabularies:
             f"vocabulary-distinction tokens {missing} (design §6): the served-prose law "
             f"that principal.role/status are NARROWER, own-constant domains and must never "
             f"be wired to the agent table's coincidentally-named columns"
+        )
+
+
+# =========================================================================== #
+# PACKET 49 EXTENSION (contract-49-1, 2026-08-20): PrincipalStore.set_expires +
+# PrincipalStore.delete. STUB surfaces raise NotImplementedError, so every pin below
+# is RED for the RIGHT reason (behavioural, never ImportError). DESIGN:
+# docs/design/2026-08-20-packet49-cli-keys.md §F1 (set-expiry) + §F2 (delete cascade).
+# =========================================================================== #
+
+
+def _future() -> datetime:
+    return datetime(2027, 6, 1, 12, 0, tzinfo=UTC)
+
+
+def _past() -> datetime:
+    return datetime.now(UTC) - timedelta(hours=1)
+
+
+# --------------------------------------------------------------------------- #
+# set_expires (design §F1, Reading C — the standalone `set-expiry` verb).
+# --------------------------------------------------------------------------- #
+
+
+class TestSetExpires:
+    async def test_set_expires_sets_a_value_on_a_known_principal(
+        self, principal_store: Any
+    ) -> None:
+        """(set path) ``set_expires(email, at)`` sets the expiry; a FRESH read confirms it
+        (get_by_email uses an explicit projection, so a NONE-vs-value confusion is caught).
+        The returned Principal also carries the new value."""
+        await principal_store.create(email=_EMAIL_A)  # expires_at NONE
+        updated = await principal_store.set_expires(email=_EMAIL_A, expires_at=_future())
+        assert updated.expires_at == _future()
+        fetched = await principal_store.get_by_email(_EMAIL_A)
+        assert fetched is not None and fetched.expires_at == _future()
+
+    async def test_set_expires_clears_to_none_via_explicit_SET(
+        self, principal_store: Any
+    ) -> None:
+        """⚠ (clear path) THE DISCRIMINATING PIN (design §F1): clearing must ``SET
+        expires_at = NONE`` — an UPDATE that OMITS the column would leave the OLD value
+        UNCHANGED. Create a principal WITH an expiry, then ``set_expires(clear)`` and
+        assert it reads back ``None``. A build that "cleared" by omission fails here."""
+        await principal_store.create(email=_EMAIL_A, expires_at=_future())
+        precheck = await principal_store.get_by_email(_EMAIL_A)
+        assert precheck is not None and precheck.expires_at == _future()  # it WAS set
+        cleared = await principal_store.set_expires(email=_EMAIL_A, expires_at=None)
+        assert cleared.expires_at is None
+        fetched = await principal_store.get_by_email(_EMAIL_A)
+        assert fetched is not None and fetched.expires_at is None
+
+    async def test_set_expires_on_unknown_email_raises_not_found(
+        self, principals_module: Any, principal_store: Any
+    ) -> None:
+        """An unknown email is a typed ``PrincipalNotFoundError`` — never a silent no-op
+        (which a naive ``UPDATE … WHERE`` returning an empty set would be). Positive
+        control: a KNOWN email DOES set, so the raise is attributable to the missing row."""
+        with pytest.raises(principals_module.PrincipalNotFoundError):
+            await principal_store.set_expires(email=_UNKNOWN_EMAIL, expires_at=_future())
+        # POSITIVE CONTROL — a known email sets fine.
+        await principal_store.create(email=_EMAIL_A)
+        ok = await principal_store.set_expires(email=_EMAIL_A, expires_at=_future())
+        assert ok.expires_at == _future()
+
+
+# --------------------------------------------------------------------------- #
+# delete (design §F2 — HARD delete + children-first cascade, one transaction).
+# --------------------------------------------------------------------------- #
+
+
+@pytest_asyncio.fixture()
+async def principal_store_with_key_table(principals_module: Any) -> Any:
+    """A ready ``PrincipalStore`` whose database ALSO carries the ``principal_key`` table
+    (applied via an admin connection), so the delete-cascade pins can insert raw key rows
+    without depending on ``PrincipalKeyStore``. On the STUB ``generate_principal_key_ddl``
+    is empty, so this fixture reddens with a CLEAN message (the slice is unbuilt)."""
+    env: SurrealEnv = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    store = principals_module.PrincipalStore(
+        url=env.url, namespace=env.namespace, database=env.database,
+        user=env.user, password=env.password,
+    )
+    await store.ensure_ready()  # the principal table
+    key_ddl = surreal_schema.generate_principal_key_ddl()
+    assert key_ddl.strip(), (
+        "generate_principal_key_ddl() is EMPTY — the principal_key slice is unbuilt "
+        "(RED until packet 49 lands the emitter); the delete-cascade pins need the table"
+    )
+    admin = await connect_admin(env)
+    try:
+        await run(admin, key_ddl)  # the principal_key table
+    finally:
+        await admin.close()
+    try:
+        yield store, env
+    finally:
+        await store.close()
+        await drop_database(env)
+
+
+async def _insert_raw_key(env: SurrealEnv, *, key_id: str, principal_id: str, name: str) -> None:
+    """Insert a raw ``principal_key`` row owned by ``principal_id`` (a ``str(RecordID)``
+    like ``principal:xxx``), binding the owner via ``type::record`` — no
+    ``PrincipalKeyStore`` needed (the cascade is a ``PrincipalStore`` concern)."""
+    rid = principal_id.split(":", 1)[1]  # the id part after the table name
+    connection = await connect_admin(env)
+    try:
+        await run(
+            connection,
+            f"CREATE type::record('{surreal_schema.PRINCIPAL_KEY_TABLE}', $kid) CONTENT "
+            f"{{ principal: type::record('{surreal_schema.PRINCIPAL_TABLE}', $pid), "
+            f"hash: $hash, name: $name }}",
+            {"kid": key_id, "pid": rid, "hash": key_id * 8, "name": name},
+        )
+    finally:
+        await connection.close()
+
+
+async def _count(env: SurrealEnv, table: str, where: str, params: dict[str, Any]) -> int:
+    connection = await connect_admin(env)
+    try:
+        rows = await run(connection, f"SELECT count() FROM {table} WHERE {where} GROUP ALL", params)
+    finally:
+        await connection.close()
+    if isinstance(rows, list) and rows:
+        return int(rows[0].get("count", 0))
+    return 0
+
+
+class TestDelete:
+    async def test_delete_cascades_all_keys_and_removes_the_principal(
+        self, principal_store_with_key_table: tuple[Any, SurrealEnv]
+    ) -> None:
+        """Pin 13 (design §F2): a principal with N keys — after ``delete`` BOTH the
+        principal row AND all N ``principal_key`` rows are gone (no orphans — record links
+        do NOT auto-clean, §4). ``delete`` returns N (the cascaded-key count the CLI's
+        audit line reports)."""
+        store, env = principal_store_with_key_table
+        created = await store.create(email=_EMAIL_A)
+        await _insert_raw_key(env, key_id="k1", principal_id=created.id, name="laptop")
+        await _insert_raw_key(env, key_id="k2", principal_id=created.id, name="ci")
+        await _insert_raw_key(env, key_id="k3", principal_id=created.id, name="phone")
+
+        removed = await store.delete(email=_EMAIL_A)
+        assert removed == 3, f"delete must report the 3 cascaded keys, got {removed!r}"
+        assert await store.get_by_email(_EMAIL_A) is None  # principal gone
+        rid = created.id.split(":", 1)[1]
+        remaining = await _count(
+            env, surreal_schema.PRINCIPAL_KEY_TABLE,
+            "principal = type::record('principal', $pid)", {"pid": rid},
+        )
+        assert remaining == 0, f"{remaining} orphaned principal_key rows survived the cascade"
+
+    async def test_delete_of_a_keyless_principal_returns_zero(
+        self, principal_store_with_key_table: tuple[Any, SurrealEnv]
+    ) -> None:
+        """A principal with NO keys deletes cleanly and reports 0 cascaded keys."""
+        store, _env = principal_store_with_key_table
+        await store.create(email=_EMAIL_A)
+        removed = await store.delete(email=_EMAIL_A)
+        assert removed == 0
+        assert await store.get_by_email(_EMAIL_A) is None
+
+    async def test_delete_only_touches_the_named_principals_keys(
+        self, principal_store_with_key_table: tuple[Any, SurrealEnv]
+    ) -> None:
+        """⚠ FIXTURE-DISCRIMINATE: a second principal's keys MUST survive. A build whose
+        cascade DELETE dropped its WHERE (``DELETE principal_key`` — every key) would wipe
+        the bystander's key too. Two principals, each with a key; delete one; the other's
+        key remains."""
+        store, env = principal_store_with_key_table
+        keep = await store.create(email=_EMAIL_B)
+        drop = await store.create(email=_EMAIL_A)
+        await _insert_raw_key(env, key_id="keep1", principal_id=keep.id, name="laptop")
+        await _insert_raw_key(env, key_id="drop1", principal_id=drop.id, name="laptop")
+
+        await store.delete(email=_EMAIL_A)
+
+        assert await store.get_by_email(_EMAIL_B) is not None  # bystander principal survives
+        keep_rid = keep.id.split(":", 1)[1]
+        survivors = await _count(
+            env, surreal_schema.PRINCIPAL_KEY_TABLE,
+            "principal = type::record('principal', $pid)", {"pid": keep_rid},
+        )
+        assert survivors == 1, "the bystander principal's key was wrongly cascaded"
+
+    async def test_delete_on_unknown_email_raises_not_found(
+        self, principals_module: Any, principal_store_with_key_table: tuple[Any, SurrealEnv]
+    ) -> None:
+        """An unknown email is a typed ``PrincipalNotFoundError`` — never a silent no-op."""
+        store, _env = principal_store_with_key_table
+        with pytest.raises(principals_module.PrincipalNotFoundError):
+            await store.delete(email=_UNKNOWN_EMAIL)
+
+    def test_delete_runs_the_cascade_in_ONE_transaction(self, principals_module: Any) -> None:
+        """Pin 13 (one transaction): the child + parent DELETEs run inside ONE
+        ``execute_transaction`` (BEGIN … COMMIT) so a half-cascade can never leave orphaned
+        keys (design §F2). A build issuing two separate ``_query`` DELETEs would fail here.
+        AST over ``PrincipalStore.delete``'s OWN source (robust to line drift)."""
+        source = inspect.getsource(principals_module.PrincipalStore.delete)
+        tree = ast.parse(source.lstrip())
+        called = {
+            node.func.id if isinstance(node.func, ast.Name) else
+            node.func.attr if isinstance(node.func, ast.Attribute) else None
+            for node in ast.walk(tree) if isinstance(node, ast.Call)
+        }
+        assert "execute_transaction" in called, (
+            "PrincipalStore.delete must run its children-first cascade inside ONE "
+            "execute_transaction (BEGIN … COMMIT) — not two separate _query DELETEs — so a "
+            "mid-cascade failure leaves neither half committed (design §F2)"
         )

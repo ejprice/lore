@@ -126,6 +126,16 @@ ANSWERS_TO_RELATION = "answers_to"
 # Single source of truth shared by :mod:`loremaster.principals` and its tests.
 PRINCIPAL_TABLE = "principal"
 
+# The ``principal_key`` table (packet 49) — one row per per-user API key, owned by
+# exactly one :data:`PRINCIPAL_TABLE` via a required ``record<principal>`` link.
+# Shared by :mod:`loremaster.principal_keys` and its tests.
+#
+# ⚠⚠ STUB (contract-49-1, 2026-08-20) — a NAME only. The field specs / emitters
+# below are RED stubs; the builder greens them. Named here so the store module and
+# ``PrincipalStore.delete``'s cascade can import the table name without a literal
+# drifting across modules.
+PRINCIPAL_KEY_TABLE = "principal_key"
+
 # The bare-``SCHEMAFULL``-placeholder tables (no field-level probe) the plan
 # requires to exist. This tuple is now EMPTY: every table that was ever a
 # placeholder has graduated to a real field-level slice —
@@ -1830,6 +1840,48 @@ def generate_principal_ddl() -> str:
         single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
     """
     return ";\n".join(_principal_statements()) + ";\n"
+
+
+# --------------------------------------------------------------------------- #
+# ``principal_key`` (packet 49) — per-user API keys owned by a ``principal``.
+#
+# ⚠⚠ RED STUBS (contract-49-1, 2026-08-20). These emit NOTHING (or a bare table)
+# so every packet-49 schema pin fails BEHAVIOURALLY — never an ImportError. The
+# builder replaces them with the real slice per the packet-49 design §F7:
+#   * ``_PRINCIPAL_KEY_FIELD_SPECS`` — hash / name / created_at / expires_at /
+#     revoked_at (with ``principal: record<principal>`` and both UNIQUE indexes
+#     emitted in ``_principal_key_statements``), routed through the shared
+#     ``_define_table`` / ``_define_field`` / ``_unique_index`` emitters;
+#   * ``_principal_key_statements`` folded into ``generate_ddl`` immediately AFTER
+#     ``_principal_statements()`` (so the PRIMARY store gains the table on ship —
+#     the #131 dirty-store class the fold pin guards);
+#   * ``generate_principal_key_ddl`` exposed for ``PrincipalKeyStore.ensure_ready``.
+# The DELIBERATE gaps the RED pins encode: the stub emits no fields/indexes and is
+# NOT folded into ``generate_ddl``. Do NOT "fix" them here — they are the contract.
+# --------------------------------------------------------------------------- #
+
+# STUB: the real spec carries hash/name (required, non-empty), created_at (DEFAULT
+# time::now()), and expires_at/revoked_at (option<datetime>, no DEFAULT — the
+# ``seen_at``/``acked_at`` "IS NONE is live" idiom). Empty here ⇒ the field pins are RED.
+_PRINCIPAL_KEY_FIELD_SPECS: tuple[tuple[str, str, str], ...] = ()
+
+
+def _principal_key_statements() -> list[str]:
+    """STUB (contract-49-1): the ``principal_key`` slice — RED until the builder
+    emits the table + fields + ``UNIQUE(hash)`` + ``UNIQUE(principal, name)`` via
+    the shared emitters (packet-49 design §F7). Returns ``[]`` so every schema pin
+    fails behaviourally rather than on an ImportError."""
+    return []
+
+
+def generate_principal_key_ddl() -> str:
+    """STUB (contract-49-1): the standalone ``principal_key`` DDL slice —
+    :meth:`~loremaster.principal_keys.PrincipalKeyStore.ensure_ready` applies it.
+    Returns ``""`` so the schema round-trip / idempotency / index pins are RED for
+    the RIGHT reason (an empty slice creates no table). The builder implements it
+    as ``";\\n".join(_principal_key_statements()) + ";\\n"`` (the house shape), and
+    ALSO folds ``_principal_key_statements()`` into :func:`generate_ddl`."""
+    return ""
 
 
 def generate_agent_ddl() -> str:

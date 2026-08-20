@@ -67,6 +67,7 @@ The public surface:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 from datetime import UTC, datetime
@@ -527,6 +528,66 @@ class PrincipalStore:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
         return self._row_to_principal(rows[0])
 
+    async def set_expires(self, *, email: str, expires_at: datetime | None) -> Principal:
+        """STUB (contract-49-1): set/clear a principal's ``expires_at`` — 49's
+        ``set-expiry`` verb (design §F1, Reading C).
+
+        Clones :meth:`set_status`'s shape: keyed on ``email``; an unknown email is a
+        typed :class:`PrincipalNotFoundError` (never a silent no-op on an empty
+        UPDATE). ``expires_at`` binds as a Python datetime (store law §2 — never
+        stringified); ``None`` clears via ``SET expires_at = NONE`` (⚠ an UPDATE
+        OMITTING the column would leave it unchanged — the builder must SET it to
+        NONE explicitly). Rides ``_query`` (no new policy).
+
+        Args:
+            email: The principal to adjust (its UNIQUE admission key).
+            expires_at: The new tz-aware expiry instant, or ``None`` to never expire.
+
+        Returns:
+            The principal's updated state (a FRESH value object).
+
+        Raises:
+            PrincipalNotFoundError: No principal carries ``email``.
+        """
+        raise NotImplementedError(
+            "PrincipalStore.set_expires — packet-49 builder "
+            "(docs/design/2026-08-20-packet49-cli-keys.md §F1)"
+        )
+
+    async def delete(self, *, email: str) -> int:
+        """STUB (contract-49-1): HARD-delete a principal and CASCADE its keys — 49's
+        ``delete`` verb (design §F2).
+
+        Deletes every ``principal_key`` owned by the principal (children FIRST —
+        ``record<t>`` links do NOT auto-clean, store law §4) THEN the ``principal``
+        row, inside ONE :func:`~loremaster.store._txn.execute_transaction` so a
+        half-cascade can never leave orphaned keys. Keyed on ``email``; an unknown
+        email is a typed :class:`PrincipalNotFoundError`. Needs the
+        ``PRINCIPAL_KEY_TABLE`` name (import from ``surreal_schema``); does NOT need a
+        ``PrincipalKeyStore`` instance (it issues the child DELETE on its OWN
+        connection, in the same txn).
+
+        ⚠ CASCADE FORWARD-SCOPE (design §F2 PIN THE MISS): the cascade covers
+        ``principal_key`` ONLY, by construction of what links to ``principal`` as of
+        2026-08-20. When ANY new ``record<principal>`` link is added (packet 3A's
+        ``memory.owner`` first), this cascade MUST be revisited — see the exact-set
+        pin in ``test_principal_keys_schema.py``.
+
+        Args:
+            email: The principal to delete (its UNIQUE admission key).
+
+        Returns:
+            The number of ``principal_key`` rows cascaded (0 if the principal held
+            none) — the CLI's audit line reports it alongside the email.
+
+        Raises:
+            PrincipalNotFoundError: No principal carries ``email``.
+        """
+        raise NotImplementedError(
+            "PrincipalStore.delete — packet-49 builder "
+            "(docs/design/2026-08-20-packet49-cli-keys.md §F2)"
+        )
+
     # -- reads / mapping ----------------------------------------------------
 
     def _row_to_principal(self, row: dict[str, Any]) -> Principal:
@@ -601,3 +662,74 @@ class PrincipalStore:
             return None
         aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
         return aware.astimezone(UTC)
+
+
+# --------------------------------------------------------------------------- #
+# The admin CLI (packet 49, design §F6): ONE CLI covering BOTH principal verbs and
+# key verbs, invoked ``python -m loremaster.principals``. Lib + CLI in the ONE
+# module so ``-m loremaster.principals`` runs this module's ``__main__`` guard
+# directly (a sibling ``principals_cli.py`` would force ``-m loremaster.principals_cli``,
+# violating the fixed invocation).
+#
+# ⚠⚠ RED STUBS (contract-49-1, 2026-08-20). The builder clones the ``index/cli.py``
+# house idiom (``build_parser`` + ``main(argv) -> int``) and the ``snapshot_gc.py``
+# async/env-var-NAMES/SurrealConnectionError-laundering/loud-on-failure SHAPE — but
+# NOT its ``--execute``/dry-run gating (STRUCK by the operator 2026-08-20: every verb
+# executes directly; only ``list``/``list-keys`` are reads; there is NO ``--execute``
+# flag and NO "gated set" anywhere). The verbs (design §F6): ``add`` / ``list`` /
+# ``delete`` / ``suspend`` / ``unsuspend`` / ``set-expiry`` / ``mint-key`` /
+# ``revoke-key`` / ``list-keys``. The CLI builds a ``PrincipalStore`` +
+# ``PrincipalKeyStore`` from config via the sibling factories
+# :func:`build_principal_store` / :func:`~loremaster.principal_keys.build_principal_key_store`.
+# --------------------------------------------------------------------------- #
+
+_CLI_PROG = "loremaster.principals"
+_STUB_MESSAGE = (
+    "packet-49 builder (docs/design/2026-08-20-packet49-cli-keys.md §F6)"
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """STUB (contract-49-1): the argparse parser for the admin CLI.
+
+    Returns a BARE parser (``prog`` set, NO subcommands yet) so the structural pins
+    (``prog == 'loremaster.principals'``, no ``--execute`` anywhere) run while every
+    VERB pin is RED (the subcommands are unbuilt). The builder adds the nine verbs
+    per design §F6 (all executing directly — NO ``--execute`` flag, NO dry-run):
+    ``add``/``list``/``delete``/``suspend``/``unsuspend``/``set-expiry``/``mint-key``/
+    ``revoke-key``/``list-keys``, each naming its principal by ``--email`` and
+    carrying env-var NAMES (``--user-env``/``--password-env``) not values.
+    """
+    return argparse.ArgumentParser(
+        prog=_CLI_PROG,
+        description=(
+            "Manage lore principals (human identities) and their per-user API keys. "
+            "Every verb executes directly; only `list`/`list-keys` are reads."
+        ),
+    )
+
+
+def build_principal_store(config: Any) -> PrincipalStore:
+    """STUB (contract-49-1): construct a :class:`PrincipalStore` from ``config`` — the
+    sibling of :func:`loremaster.store.surreal.build_store`, reading the SAME
+    coordinate accessors (``config.surreal.{url,namespace,user_env,password_env}`` +
+    ``config.effective_surreal_database``) MINUS ``dim`` (an identity store is never
+    embedded). The builder implements it with ``resolve_config_value`` /
+    ``resolve_secret`` exactly as ``build_store`` does (design §F6). RED now: raises
+    so the CLI-wiring pins fail behaviourally."""
+    raise NotImplementedError(f"build_principal_store — {_STUB_MESSAGE}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """STUB (contract-49-1): CLI entrypoint — parse args, dispatch the verb, report.
+
+    The builder wires ``config = load_config(args.config)`` → the two sibling
+    factories → the verb's store call, Unix-philosophy output (silent on success, a
+    clear one-line result on a mutation, loud non-zero exit on failure), the
+    ``mint-key`` secret printed EXACTLY ONCE. RED now: raises so the CLI-execution
+    pins fail behaviourally."""
+    raise NotImplementedError(f"loremaster.principals.main — {_STUB_MESSAGE}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
