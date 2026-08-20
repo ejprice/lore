@@ -5494,3 +5494,160 @@ class TestSchemaMigrationAgainstAnExistingStore:
                 }
             },
         )
+
+    # ----------------------------------------------------------------------- #
+    # Packet 48 Wave 48-B — the ``principal`` table's dirty-store migration leg
+    # (contract-48b, spec §8 item 7). ``principal`` is a NEW table shipping in 48,
+    # so it has no live migration on day one — but its FIELDS will evolve, and the
+    # #107 outage is exactly a field-definition change that never lands on an
+    # existing store. These pins prove the principal slice's emitter uses the
+    # ``OVERWRITE`` field clause so a future widening MIGRATES a dirty store, and
+    # that the legacy row survives it. Shape clones
+    # ``test_a_narrowed_state_assert_MIGRATES_back_to_the_full_set`` (floor).
+    #
+    # RED-gated by ``_require_principal_ddl()`` — a CALL-TIME dynamic import, never
+    # a module-level one, so a not-yet-built ``generate_principal_ddl`` leaves this
+    # whole file COLLECTABLE with its pins RED rather than UNCOLLECTABLE with its
+    # pins deleted from the run (finding #133 — the ``blocks``-literal norm above).
+    # ----------------------------------------------------------------------- #
+
+    @staticmethod
+    def _require_principal_ddl() -> Any:
+        """Return ``surreal_schema`` once 48-B lands the principal surface, else
+        ``pytest.fail`` CLEANLY. Imported at call time (see the block comment)."""
+        from loremaster.store import surreal_schema as schema
+
+        missing = [
+            name
+            for name in ("PRINCIPAL_TABLE", "generate_principal_ddl", "_PRINCIPAL_STATUSES")
+            if not hasattr(schema, name)
+        ]
+        if missing:
+            pytest.fail(
+                f"principal schema not yet built (packet 48-B) — surreal_schema is missing "
+                f"{missing}; contract is RED until it lands",
+                pytrace=False,
+            )
+        return schema
+
+    async def _dirty_principal_store_with_narrowed_status(
+        self, connection: SurrealConnection, *, url: str
+    ) -> tuple[Any, str, str, str]:
+        """Set up the #107 condition and hand back ``(schema, table, legacy_value,
+        widened_value)``.
+
+        Applies the REAL principal slice (table + every field at current defs),
+        then OVERWRITEs ONLY ``status`` to a NARROWER closed set standing in for an
+        OLDER deployed schema, then inserts a legacy principal LEGAL under the
+        narrow set. The narrowed/widened/legacy values are DERIVED from
+        ``_PRINCIPAL_STATUSES`` (never hand-typed), so the pin tracks the ruled
+        domain rather than a literal nobody rechecks.
+        """
+        schema = self._require_principal_ddl()
+        table = schema.PRINCIPAL_TABLE
+        statuses = tuple(schema._PRINCIPAL_STATUSES)
+        assert len(statuses) >= 2, (
+            f"the principal status domain degenerated to {statuses!r}; a widening "
+            "migration pin needs at least two members to narrow between"
+        )
+        widened_value = statuses[-1]  # present only AFTER the widening
+        legacy_value = statuses[0]  # legal under the narrow set
+        narrowed_allowed = ", ".join(f"'{value}'" for value in statuses if value != widened_value)
+
+        # NEW world first, so the table + all fields exist.
+        await _apply_ddl(connection, schema.generate_principal_ddl(), url=url)
+        # OLD world stand-in: a narrower status ASSERT on the existing field.
+        await run(
+            connection,
+            f"DEFINE FIELD OVERWRITE status ON {table} "
+            f"TYPE string DEFAULT '{legacy_value}' ASSERT $value IN [{narrowed_allowed}]",
+        )
+        # DIRTY THE STORE — a legacy principal legal under the OLD (narrow) schema.
+        await run(
+            connection,
+            f"CREATE type::record('{table}', 'legacy') "
+            f"CONTENT {{ email: 'legacy@example.com', status: '{legacy_value}' }}",
+        )
+        return schema, table, legacy_value, widened_value
+
+    async def test_a_principal_status_widening_lands_on_an_existing_store(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """#107, on ``principal``: a widened ``status`` ASSERT must LAND on a store
+        that already carries the old definition. Today ``IF NOT EXISTS`` would
+        silently keep the narrow set; ``OVERWRITE`` migrates."""
+        connection, env = migration_db
+        schema, table, _legacy, widened_value = (
+            await self._dirty_principal_store_with_narrowed_status(connection, url=env.url)
+        )
+        # The narrow schema is really in force — the widened value is rejected NOW.
+        with pytest.raises(SurrealError):
+            await run(
+                connection,
+                f"CREATE type::record('{table}', 'blocked') "
+                f"CONTENT {{ email: 'blocked@example.com', status: '{widened_value}' }}",
+            )
+        # THE DEPLOY: re-apply the REAL slice, exactly as ``ensure_ready`` does.
+        await _apply_ddl(connection, schema.generate_principal_ddl(), url=env.url)
+        # The widened definition LANDED — a value legal ONLY under the new set is
+        # now accepted.
+        await run(
+            connection,
+            f"CREATE type::record('{table}', 'now_allowed') "
+            f"CONTENT {{ email: 'now@example.com', status: '{widened_value}' }}",
+        )
+        rows = await run(
+            connection, f"SELECT status FROM type::record('{table}', 'now_allowed')"
+        )
+        assert rows[0]["status"] == widened_value
+
+    async def test_the_migrated_principal_status_still_rejects_out_of_domain(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """THE POSITIVE CONTROL: a migration that "landed" by DROPPING the ASSERT
+        entirely would accept the widened value too — and every typo forever after.
+        The constraint must be WIDER, not GONE."""
+        connection, env = migration_db
+        schema, table, _legacy, _widened = (
+            await self._dirty_principal_store_with_narrowed_status(connection, url=env.url)
+        )
+        await _apply_ddl(connection, schema.generate_principal_ddl(), url=env.url)
+        with pytest.raises(SurrealError) as rejection:
+            await run(
+                connection,
+                f"CREATE type::record('{table}', 'garbage') "
+                f"CONTENT {{ email: 'garbage@example.com', status: '{_OUT_OF_DOMAIN_VALUE}' }}",
+            )
+        # ...and rejected BY THE ASSERT (naming the offending value), never by a
+        # parse error or a missing table — a probe that passes for the wrong reason
+        # is the failure mode this whole class exists to end.
+        assert _OUT_OF_DOMAIN_VALUE in str(rejection.value)
+
+    async def test_the_legacy_principal_row_survives_and_stays_writable(
+        self, migration_db: tuple[SurrealConnection, SurrealEnv]
+    ) -> None:
+        """The dirty row must come through the DDL change untouched AND remain
+        writable — a migration that converged the schema by write-poisoning or
+        dropping the rows under it has migrated nothing (store reference §1.4)."""
+        connection, env = migration_db
+        schema, table, legacy_value, widened_value = (
+            await self._dirty_principal_store_with_narrowed_status(connection, url=env.url)
+        )
+        await _apply_ddl(connection, schema.generate_principal_ddl(), url=env.url)
+        # Intact, not rewritten and not dropped.
+        rows = await run(
+            connection,
+            f"SELECT email, status FROM type::record('{table}', 'legacy')",
+        )
+        assert rows and rows[0]["email"] == "legacy@example.com"
+        assert rows[0]["status"] == legacy_value
+        # And STILL WRITABLE — an UPDATE of the pre-existing row is accepted (the
+        # widening did not write-poison it), landing a now-legal value.
+        await run(
+            connection,
+            f"UPDATE type::record('{table}', 'legacy') SET status = '{widened_value}'",
+        )
+        rows = await run(
+            connection, f"SELECT status FROM type::record('{table}', 'legacy')"
+        )
+        assert rows[0]["status"] == widened_value
