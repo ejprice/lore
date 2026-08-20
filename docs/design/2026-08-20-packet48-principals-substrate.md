@@ -23,7 +23,7 @@ in the per-fork sections). Line numbers drift — citations are by SYMBOL.
 |---|---|---|
 | 1 | Extraction scope: narrow vs broad | **NARROW.** `build_store(config) -> SurrealStore` owns the cred/db resolution + the 3-site `SurrealStore(...)` construction only; returns an **un-readied** store. The ~10 sibling re-resolvers (incl. `_await_live_connect`) are a separately-motivated future refactor, OUT of 48. |
 | 2 | Principal DDL idiom | **Variant A CONFIRMED.** Module-level `_PRINCIPAL_FIELD_SPECS` + `_principal_statements()` FOLDED into global `generate_ddl()`, plus a standalone `generate_principal_ddl()` owned by `PrincipalStore.ensure_ready` via `execute_transaction`. Per-slug DB → this is correct; the shared-DB future is a documented seam (§2). |
-| 3 | Field set + closed domains + clause selection | Ruled in §3. `email` required non-empty; **`subject` `option<string>`** (Model B — pre-created-by-email rows carry NONE) with the non-empty ASSERT retained (skipped on NONE); `display_name`/`expires_at` `option<>`; `status ∈ {active,suspended}` DEFAULT `active`; `role ∈ {member,admin}` **DEFAULT `member`** (least-privilege — my ruling, plan left it unspecified); `created_at` `DEFAULT time::now()`. **NEW** `_PRINCIPAL_STATUS_ALLOWED`/`_PRINCIPAL_ROLE_ALLOWED` (R3). FIELD=OVERWRITE, TABLE/INDEX=IF NOT EXISTS. |
+| 3 | Field set + closed domains + clause selection | Ruled in §3. `email` required non-empty; **`subject` `option<string>`** (Model B — pre-created-by-email rows carry NONE) with the non-empty ASSERT retained (skipped on NONE); `display_name`/`expires_at` `option<>`; `status ∈ {active,suspended}` DEFAULT `active`; `role ∈ {member,admin}` **DEFAULT `member`** (least-privilege — my ruling, plan left it unspecified); `created_at` `DEFAULT time::now()`. **NEW** principal-specific `_PRINCIPAL_STATUSES`/`_PRINCIPAL_ROLES` tuples (R3), `status`/`role` ASSERTs derived at CALL TIME in the emitter (floor idiom — mutation-provable, not frozen at import; lead ruling A). FIELD=OVERWRITE, TABLE/INDEX=IF NOT EXISTS. |
 | 4 | `subject` index: unique vs plain | **UNIQUE (plain, over `option<string>`).** Model B (operator-resolved F1): admin pre-creates by email, 39 fills the OAuth subject on first login. Probe-settled on 3.2.4 (§4): multiple NONE coexist; a duplicate non-NONE subject is rejected on CREATE and on the fill UPDATE. Anchored on `AccessToken.client_id` (R2). |
 | 5 | CRUD surface | `PrincipalStore` ships `create` (subject OPTIONAL — email-only creation) / `get_by_subject` / `get_by_email` / `list` / `set_status` / **`set_subject`** (the 39 fill-on-login primitive — NEW fork, ruled YES §5), all routing through the **existing** store seams (`_query`→`run_query`, `ensure_ready`→`execute_transaction`) — NO new query/retry seam (#102/#120). Signatures in §5. 49 owns the CLI + `principal_key`. |
 | 6 | Module docstring standing-law clause | Exact wording ruled in §6. |
@@ -194,45 +194,53 @@ populated `principal` table, which must then be `option<>`.)
 _PRINCIPAL_STATUS_ACTIVE = "active"
 _PRINCIPAL_STATUS_SUSPENDED = "suspended"
 _PRINCIPAL_STATUSES = (_PRINCIPAL_STATUS_ACTIVE, _PRINCIPAL_STATUS_SUSPENDED)
-_PRINCIPAL_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _PRINCIPAL_STATUSES)
 
 _PRINCIPAL_ROLE_MEMBER = "member"
 _PRINCIPAL_ROLE_ADMIN = "admin"
 _PRINCIPAL_ROLES = (_PRINCIPAL_ROLE_MEMBER, _PRINCIPAL_ROLE_ADMIN)
-_PRINCIPAL_ROLE_ALLOWED = ", ".join(f"'{role}'" for role in _PRINCIPAL_ROLES)
 ```
+
+⚠ **The closed-domain `ASSERT`s DERIVE AT CALL TIME (the `_floor_measurement_statements`
+idiom), NOT at import (the `finding` idiom).** There is deliberately **no** module-level
+`_PRINCIPAL_STATUS_ALLOWED` / `_PRINCIPAL_ROLE_ALLOWED` join constant: a constant frozen at
+import cannot move when the Leg-1 mutation pin monkeypatches the vocabulary tuple, so a
+frozen build would **false-RED** that pin (a C-DEF trap for the builder — lead ruling A,
+2026-08-20, contract-48b). The join is derived inside `_principal_statements()` from
+`_PRINCIPAL_STATUSES` / `_PRINCIPAL_ROLES` (below), so mutating the tuple moves the emitted
+ASSERT and the pin is mutation-provable. R3 is satisfied by the tuples being
+principal-specific — the derivation site (call-time local vs import constant) is orthogonal.
+The *simple* fields keep the module-constant `_PRINCIPAL_FIELD_SPECS` (the `finding` idiom is
+fine there — no vocabulary to mutate); only `status`/`role` move to call-time. This is the
+minimal hybrid, orthogonal to the Variant-A `generate_ddl()` fold.
 
 The `agent` table (`_AGENT_FIELD_SPECS`) already carries `role` (a free non-empty string —
 `builder`/`auditor`) and `status ∈ {active,idle,input_required,retired}` via
 `_AGENT_STATUS_ALLOWED`. Principal's domains are DIFFERENT and get their OWN constants. The
-`", ".join(f"'{v}'" for v in …)` derivation (never a hand-typed twin ASSERT) matches
-`_FINDING_STATUS_ALLOWED` / the `FLOOR_STATES` idiom — the domain is named once and the DDL
-ASSERT is a derivation of it.
+`", ".join(f"'{v}'" for v in …)` derivation (never a hand-typed twin ASSERT) is the
+`_floor_measurement_statements` idiom — **derived at call time, inside the emitter** (§below),
+so the domain is named once and the DDL ASSERT is a *mutation-provable* derivation of it.
 
-### The ruled `_PRINCIPAL_FIELD_SPECS`
+### The ruled `_PRINCIPAL_FIELD_SPECS` (the SIMPLE fields — `status`/`role` are NOT here)
 
 ```python
+# The NON-DOMAIN fields — module-level source of truth (the `finding` idiom, fine here:
+# these fields carry no closed vocabulary to mutate). status/role are emitted at CALL TIME
+# in _principal_statements() from _PRINCIPAL_STATUSES/_PRINCIPAL_ROLES, so their ASSERTs are
+# mutation-provable (see the constants note above).
 _PRINCIPAL_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("email", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
     ("subject", "option<string>", _NON_EMPTY_STRING_ASSERT),   # Model B: NONE until 39 fills it
     ("display_name", "option<string>", ""),
-    (
-        "status",
-        _CHUNK_STRING_TYPE,
-        f"DEFAULT '{_PRINCIPAL_STATUS_ACTIVE}' ASSERT $value IN [{_PRINCIPAL_STATUS_ALLOWED}]",
-    ),
     ("expires_at", "option<datetime>", ""),
-    (
-        "role",
-        _CHUNK_STRING_TYPE,
-        f"DEFAULT '{_PRINCIPAL_ROLE_MEMBER}' ASSERT $value IN [{_PRINCIPAL_ROLE_ALLOWED}]",
-    ),
     ("created_at", "datetime", "DEFAULT time::now()"),
 )
 ```
 
 (`_CHUNK_STRING_TYPE == "string"`; `_NON_EMPTY_STRING_ASSERT ==
 `"ASSERT string::len(string::trim($value)) > 0"` — both existing module constants.)
+Field ORDER is DDL-irrelevant (`DEFINE FIELD` is order-independent); the emitter appends
+`status`/`role` after these five. The offline pin checks each field's clause by name, not by
+position.
 
 Field-by-field, with the option-vs-required ruling stated (§1.4 requires it):
 
@@ -264,10 +272,28 @@ _unique_index(PRINCIPAL_TABLE, f"{PRINCIPAL_TABLE}_subject", ("subject",))
 
 ```python
 def _principal_statements() -> list[str]:
+    # status/role ASSERTs are derived HERE (call time) from the closed vocabularies — the
+    # _floor_measurement_statements idiom — so a mutation of _PRINCIPAL_STATUSES /
+    # _PRINCIPAL_ROLES moves the emitted ASSERT and the Leg-1 mutation pin can SEE it. A
+    # module-level frozen join constant could not (C-DEF false-RED — lead ruling A).
+    status_allowed = ", ".join(f"'{status}'" for status in _PRINCIPAL_STATUSES)
+    role_allowed = ", ".join(f"'{role}'" for role in _PRINCIPAL_ROLES)
+    domain_specs: tuple[tuple[str, str, str], ...] = (
+        (
+            "status",
+            _CHUNK_STRING_TYPE,
+            f"DEFAULT '{_PRINCIPAL_STATUS_ACTIVE}' ASSERT $value IN [{status_allowed}]",
+        ),
+        (
+            "role",
+            _CHUNK_STRING_TYPE,
+            f"DEFAULT '{_PRINCIPAL_ROLE_MEMBER}' ASSERT $value IN [{role_allowed}]",
+        ),
+    )
     statements: list[str] = [_define_table(PRINCIPAL_TABLE)]
     statements += [
         _define_field(PRINCIPAL_TABLE, name, type_expr, constraint=constraint)
-        for name, type_expr, constraint in _PRINCIPAL_FIELD_SPECS
+        for name, type_expr, constraint in (*_PRINCIPAL_FIELD_SPECS, *domain_specs)
     ]
     statements.append(_unique_index(PRINCIPAL_TABLE, f"{PRINCIPAL_TABLE}_email", ("email",)))
     statements.append(_unique_index(PRINCIPAL_TABLE, f"{PRINCIPAL_TABLE}_subject", ("subject",)))
@@ -486,8 +512,8 @@ drop any of the four):
 >    `agent.role` is a free non-empty string (`builder`/`auditor`/…) and `agent.status ∈
 >    {active, idle, input_required, retired}` (`_AGENT_STATUS_ALLOWED`). `principal.role ∈
 >    {member, admin}` and `principal.status ∈ {active, suspended}` are NARROWER,
->    principal-specific closed domains with their OWN constants
->    (`_PRINCIPAL_ROLE_ALLOWED` / `_PRINCIPAL_STATUS_ALLOWED`). The identical column NAMES
+>    principal-specific closed domains with their OWN vocabulary tuples
+>    (`_PRINCIPAL_ROLES` / `_PRINCIPAL_STATUSES`). The identical column NAMES
 >    across two tables are a coincidence of English, not shared vocabulary — never wire
 >    `principal.role`/`status` to the `agent` tuples.
 
