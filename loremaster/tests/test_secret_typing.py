@@ -1010,6 +1010,10 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # ``survey_txn_contention_102.py`` scripts/ probe. Re-open trigger: if any of these probes ever
         # sources a REAL / production credential (env, argv, secret file) instead of the "spikeroot"
         # literal, it is a genuine credential ORIGIN and must move to config.py's resolver seam.
+        # ADJUDICATED (probe-unique-null-48, packet 48, #389): ``probe_unique_nullable_48.py`` is the
+        # SAME shape — a spike-surreal TEST-store probe minting the fixed dev cred ``SecretStr("spikeroot")``
+        # (a hardcoded literal, no real secret) to call ``signin_credentials``/``bootstrap_session``, which
+        # require a SecretStr (#211). Same re-open trigger as the _07/07a probes above.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
@@ -1017,6 +1021,7 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
             "scripts/probe_query_complexity_07.py",
             "scripts/probe_store_error_classes_07.py",
             "scripts/probe_store_recovery_07a.py",
+            "scripts/probe_unique_nullable_48.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)
