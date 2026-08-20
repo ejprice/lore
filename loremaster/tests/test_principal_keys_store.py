@@ -60,6 +60,12 @@ _NAME_1 = "laptop"
 _NAME_2 = "ci-runner"
 _SECRET = "s3cr3t-token-value-not-really-random-but-distinct"
 _SECRET_2 = "another-distinct-secret-value-for-the-second-key"
+# ⚠ FINDING 1 (adversary): a key's stored hash is sha512(name:secret); two keys sharing
+# BOTH name AND secret collide on UNIQUE(hash) and the 2nd mint is rejected on a CORRECT
+# build. So every key that could co-exist in one DB gets a DISTINCT secret (the #206 and
+# uniform-deny fixtures need distinct principals each holding A key, never identical creds).
+_SECRET_3 = "a-third-distinct-secret-so-no-two-keys-share-one-hash"
+_SECRET_4 = "a-fourth-distinct-secret-for-the-uniform-deny-fixture"
 
 
 def _wire(name: str, secret: str) -> str:
@@ -230,7 +236,10 @@ class TestPerPrincipalIdentity206:
         await stores.principals.create(email=_EMAIL_B)
         a_key1 = await _mint(stores, email=_EMAIL_A, name=_NAME_1, secret=_SECRET)
         a_key2 = await _mint(stores, email=_EMAIL_A, name=_NAME_2, secret=_SECRET_2)
-        b_key1 = await _mint(stores, email=_EMAIL_B, name=_NAME_1, secret=_SECRET)
+        # ⚠ FINDING 1: a DISTINCT secret (not _SECRET) — else b's (laptop, _SECRET) hash
+        # collides with a_key1's on UNIQUE(hash) and the mint is rejected on a correct build.
+        # The #206 property is about PRINCIPAL identity, orthogonal to the secret value.
+        b_key1 = await _mint(stores, email=_EMAIL_B, name=_NAME_1, secret=_SECRET_3)
 
         va1 = await stores.keys.verify(a_key1)
         va2 = await stores.keys.verify(a_key2)
@@ -344,13 +353,13 @@ class TestUniformDenyNoOracle:
         key_expired = await _mint(
             stores, email=_EMAIL_A, name=_NAME_2, secret=_SECRET_2, key_expires_at=_past()
         )
-        # principal-suspended
+        # principal-suspended (⚠ FINDING 1: distinct secret — else collides with `revoked`)
         await stores.principals.create(email=_EMAIL_B)
-        suspended = await _mint(stores, email=_EMAIL_B, name=_NAME_1, secret=_SECRET)
+        suspended = await _mint(stores, email=_EMAIL_B, name=_NAME_1, secret=_SECRET_3)
         await stores.principals.set_status(email=_EMAIL_B, status="suspended")
-        # principal-expired
+        # principal-expired (⚠ FINDING 1: distinct secret — every co-existing key's hash unique)
         await stores.principals.create(email="carol@example.com", expires_at=_past())
-        p_expired = await _mint(stores, email="carol@example.com", name=_NAME_1, secret=_SECRET_2)
+        p_expired = await _mint(stores, email="carol@example.com", name=_NAME_1, secret=_SECRET_4)
 
         results = [
             await stores.keys.verify(revoked),
@@ -527,17 +536,30 @@ class TestSharingProvenByMutation:
             "PrincipalKeyStore has a CLONED principal mapper (design §F3 ONE-IMPLEMENTATION)"
         )
 
-    def test_principal_key_store_owns_a_query_seam_for_retry_discovery(self) -> None:
-        """Pin 17c: ``PrincipalKeyStore`` owns an ``async def _query`` seam so
-        ``test_retry_seam.py``'s package scan AUTO-DISCOVERS it and its parametrised
-        pins prove it rides the shared ``run_query`` (NO private retry/classification,
-        #102/#120). This pin FORCES the seam to exist (a build hand-rolling queries
-        inline would evade that scan entirely). RED on the stub (no ``_query`` yet)."""
+    def test_principal_key_store_query_seam_is_covered_by_the_retry_suite(self) -> None:
+        """Pin 17c (STRENGTHENED per adversary R2 — coverage, not mere existence):
+        ``PrincipalKeyStore`` owns an ``async def _query`` seam AND
+        ``test_retry_seam.py``'s package scan ACTUALLY DISCOVERS it, so its parametrised
+        pins (which mutation-prove the seam rides the shared ``run_query`` — NO private
+        retry/classification, #102/#120) cover it. Merely `hasattr(_query)` proves the
+        seam EXISTS; asserting it is in ``_discover_query_seams()`` proves the shared
+        retry suite PARAMETRIZES over it (a build hand-rolling queries inline evades that
+        scan entirely). RED on the stub (no ``_query`` yet → not discovered)."""
         import inspect
 
+        # test_retry_seam is a sibling test module on the tests path; a function-level
+        # import keeps this file independently collectible.
+        from test_retry_seam import _discover_query_seams  # noqa: PLC0415
+
         seam = getattr(pk_module.PrincipalKeyStore, "_query", None)
-        assert seam is not None, (
-            "PrincipalKeyStore must own an `async def _query` seam so test_retry_seam.py "
-            "auto-discovers it (the shared retry policy, #102/#120)"
+        assert seam is not None and inspect.iscoroutinefunction(seam), (
+            "PrincipalKeyStore must own an `async def _query` seam (the shared retry policy, "
+            "#102/#120)"
         )
-        assert inspect.iscoroutinefunction(seam), "_query must be an async coroutine function"
+        discovered = {cls.__name__ for _module_path, cls in _discover_query_seams()}
+        assert "PrincipalKeyStore" in discovered, (
+            "test_retry_seam.py's `_discover_query_seams()` does NOT include PrincipalKeyStore "
+            "— its `async def _query` is not discovered, so the shared retry/backoff/exhaustion "
+            "pins do not parametrize over it, and a private retry policy could ship unproven "
+            "(#102/#120). The seam must be a real `async def _query` on the class."
+        )

@@ -12,16 +12,18 @@ cannot read my own model, but the brief asserts 4.8 and the session env corrobor
 
 ## SUMMARY BLOCK
 
-- **State:** done — contract (failing tests) + minimal STUBS written; **LEAD RULINGS
-  #5070 APPLIED** (see §LEAD RULINGS APPLIED). Suite is RED behaviourally (NEVER
-  ImportError). No implementation logic written.
-- **RED receipt (scoped, `-n auto`, per-file — AFTER rulings applied):** schema 27F/4P ·
-  keys-store 1F/2P/27E · cli 24F/14P · store-ext 4F/17P/4E → **aggregate 56 failed + 37
-  passed + 31 errors (124 collected)**. The 37 green = interface freezes (value objects),
-  structural standing-guards (`prog`, no-`--execute`, `__main__`-guard-last, no-`load_config`),
-  vacuous-clause pins guarded by RED existence pins, and the 17 unchanged 48-B
-  `PrincipalStore` tests. The 87 RED (F+E) are feature pins failing on `NotImplementedError`
-  / empty-DDL / missing verbs — RED-for-the-right-reason. ruff + mypy clean on all touched files.
+- **State:** done — contract (failing tests) + minimal STUBS written; **LEAD RULINGS #5070
+  APPLIED** (§LEAD RULINGS APPLIED) + **ADVERSARY #5073 INSUFFICIENT → all fixes applied**
+  (§ADVERSARY FIXES APPLIED). Suite is RED behaviourally (NEVER ImportError). No
+  implementation logic written.
+- **RED receipt (scoped, `-n auto`, per-file — AFTER adversary fixes):** schema 27F/5P ·
+  keys-store 1F/2P/27E · cli 27F/14P · store-ext 4F/17P/4E → **aggregate 59 failed + 38
+  passed + 31 errors (128 collected)**. The 38 green = interface freezes (value objects),
+  structural standing-guards (`prog`, no-`--execute`, `__main__`-guard-last, no-`load_config`,
+  the F2 regex-reach positive-control), vacuous-clause pins guarded by RED existence pins,
+  and the 17 unchanged 48-B `PrincipalStore` tests. The 90 RED (F+E) are feature pins failing
+  on `NotImplementedError` / empty-DDL / missing verbs — RED-for-the-right-reason. ruff + mypy
+  clean on all touched files; no regression (retry_seam 605 green).
 - **deviations:** (1) sibling factories placed in `principals.py`/`principal_keys.py`
   (my writable set), NOT `store/surreal.py` as design §F6's "next to `build_store`"
   suggested (that file is out of scope; module-ownership is cleaner) — see §Deviations.
@@ -69,6 +71,34 @@ revised, scoped RED re-run (counts above reflect the revision).
 | 5 | `--email` flags — ACCEPT | none (as-authored) |
 | 6 | **RULE creds-free** — CLI resolves ONLY the surreal block; MUST NOT require the Anthropic key | **added** `TestCredsFreeConfigResolution`: `test_the_cli_runs_with_no_anthropic_key_set` (delenv ANTHROPIC → a verb still succeeds — catches an eager `load_config` build) + `test_the_cli_does_not_call_load_config` (AST guard) |
 | 7 | revoke idempotency — ACCEPT | none (as-authored) |
+
+---
+
+## ADVERSARY FIXES APPLIED (directive #5073 — INSUFFICIENT → revised)
+
+adversary-49-1 graded INSUFFICIENT (a STRONG pass — it BUILT the reference and proved the
+contract satisfiable **after** these fixes: 107 passed / 0 failed). All are CONTRACT/test
+fixes; NO design change. Applied in full:
+
+| # | finding | fix applied |
+|---|---|---|
+| F1 | **C-DEF** — `TestPerPrincipalIdentity206` + `TestUniformDenyNoOracle` reused IDENTICAL `(name, secret)` across principals → identical `sha512(name:secret)` → `UNIQUE(hash)` rejects the 2nd mint on a CORRECT build | gave every co-existing key a DISTINCT secret (`_SECRET_3`/`_SECRET_4`); the #206 property is about PRINCIPAL identity, orthogonal to the secret |
+| F2 | **C-DEF + zero-reach** — pin 14's `record<principal>\b` never matches `record<principal>;` (non-word→non-word, no boundary): permanently `set()`, so the exact-set pin is always RED AND can never fire when a new link is added | dropped `\b` → `TYPE\b[^;]*?record<principal>(?![\w<])` (also catches an `option<record<principal>>` wrapper); **added** `test_the_forward_scope_regex_has_nonzero_reach` (positive control — matches a synthetic real+hypothetical `memory.owner` link, proving reach) |
+| F3 | **C-DEF** — `test_add`'s pre-`main` `SELECT email FROM principal` RAISES on a virgin DB (3.2.4, table absent) | `_principal_emails` / `_db_snapshot` now check `INFO FOR DB` first and return `set()`/`[]` when the table is absent (`_table_names` helper) |
+| F4 | **MISSING PIN** — pin 19 exercised only `list`/`display_name`; a `list-keys` verbatim/clone key-name render shipped green (§F8 names key `name` as must-launder) | **added** `test_hostile_key_name_does_not_forge_a_row_in_list_keys` (behavioural, from adversary APPENDIX-B) + `test_list_keys_render_routes_through_the_shared_sanitiser_by_mutation` (PER-RENDER mutation-proof — closes R3: the AST scan passes on ANY single sanitise call, so `list` AND `list-keys` each get their own mutation-proof) |
+| F5 | **HARNESS** — the 8 CLI e2e pins called `main()` synchronously from `async def` tests, but §F6's idiom is `main = asyncio.run(...)` → `RuntimeError` from a running loop | added `_run_cli(argv) = await asyncio.to_thread(p_module.main, argv)` — runs the mandated `asyncio.run` `main` OFF-loop; replaced every e2e `main()` call. Design idiom UNCHANGED |
+| R1 | pin 2 store-level leak probe is vacuous (`mint` takes an already-hashed secret; raw never reaches the store) | **added** `test_mint_key_stores_only_the_hash_never_the_raw_secret` at the CLI layer where the raw EXISTS: mint-key → the stored row holds ONLY the hash (positive control: hash present), raw in no row/log |
+| R2 | pin 17c proved `_query` EXISTS, not that the retry suite USES it | **strengthened** to `test_principal_key_store_query_seam_is_covered_by_the_retry_suite` — asserts `PrincipalKeyStore` is in `test_retry_seam._discover_query_seams()` (so the shared retry/backoff pins parametrize over it, mutation-proving it rides `run_query`) |
+| R4 | no timing-oracle pin — ACCEPTABLE (uniform hash-index lookup, §F4) | no action (adversary concurs) |
+
+**Reachability of a CORRECT build:** the adversary already BUILT the reference and proved the
+contract 107/0 satisfiable after F1–F3/F5 (its APPENDIX-C carries the reference `verify` /
+`delete` / schema excerpts — verify uses the single link-deref query and maps the principal via
+`get_by_email`→`_row_to_principal`, so my pin-17b mutation reaches it). The F4/R1/R2 ADDITIONS
+are satisfiable against those same reference shapes by construction (list-keys sanitised via
+`safe_str`; mint stores only the hash; `_query` present → discovered). I write NO implementation,
+so I did not re-build the reference — the adversary delta-grades it. Every revised pin re-run
+RED-for-the-right-reason (no C-DEF, no ImportError); the F2 positive-control is GREEN (non-zero reach).
 
 ---
 

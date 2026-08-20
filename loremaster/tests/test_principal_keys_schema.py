@@ -56,9 +56,15 @@ _DEFINE_FIELD = re.compile(r"^\s*DEFINE\s+FIELD\b", re.IGNORECASE)
 _DEFINE_INDEX = re.compile(r"^\s*DEFINE\s+INDEX\b", re.IGNORECASE)
 
 # Every ``record<principal>`` DEFINE FIELD, captured as ``(field, table)`` — the
-# forward-scope PIN THE MISS scanner (design §F2). Tolerates the ``OVERWRITE`` clause.
+# forward-scope PIN THE MISS scanner (design §F2). Tolerates the ``OVERWRITE`` clause AND
+# an ``option<record<principal>>`` wrapper (a future nullable link must ALSO be caught).
+# ⚠ ADVERSARY FINDING 2: NO trailing ``\b`` — ``record<principal>`` is followed by ``;`` in
+# the DDL (non-word → non-word, no boundary), so ``...principal>\b`` matches ZERO sites (a
+# zero-reach guard: permanently RED on a correct build AND unable to fire when a new link is
+# added). ``[^;]*?`` spans the type expr within one statement; ``(?![\w<])`` rejects a longer
+# type name (e.g. a hypothetical ``record<principals>``).
 _RECORD_PRINCIPAL = re.compile(
-    r"\bFIELD\s+(?:OVERWRITE\s+)?(?P<field>\w+)\s+ON\s+(?P<table>\w+)\s+TYPE\s+record<principal>\b",
+    r"\bFIELD\s+(?:OVERWRITE\s+)?(?P<field>\w+)\s+ON\s+(?P<table>\w+)\s+TYPE\b[^;]*?record<principal>(?![\w<])",
     re.IGNORECASE,
 )
 
@@ -417,6 +423,26 @@ class TestTheCascadeForwardScopeIsPinned:
             f"MISS (design §F2). expected exactly {expected}, found {found}. If you added a "
             f"new link (e.g. packet 3A memory.owner), revisit PrincipalStore.delete's cascade "
             f"and update this pin."
+        )
+
+    def test_the_forward_scope_regex_has_nonzero_reach(self) -> None:
+        """⚠ POSITIVE CONTROL (adversary FINDING 2): prove the forward-scope regex CAN fire
+        for its purpose. A zero-reach regex (the original ``record<principal>\\b`` bug) would
+        pass the exact-set pin above only by finding NOTHING — and could NEVER redden when a
+        real new link is added. Run the regex against a SYNTHETIC DDL carrying the real link
+        PLUS a hypothetical ``memory.owner: option<record<principal>>`` and assert it finds
+        BOTH (required AND option-wrapped). Always GREEN — it guards the INSTRUMENT, not a
+        build."""
+        synthetic = (
+            "DEFINE FIELD OVERWRITE principal ON principal_key TYPE record<principal>;\n"
+            "DEFINE FIELD OVERWRITE owner ON memory TYPE option<record<principal>>;\n"
+            "DEFINE FIELD OVERWRITE tier ON snapshot_entry TYPE string;\n"
+        )
+        found = {(m.group("field"), m.group("table")) for m in _RECORD_PRINCIPAL.finditer(synthetic)}
+        assert found == {("principal", "principal_key"), ("owner", "memory")}, (
+            f"the forward-scope regex has broken/zero reach — it must match EVERY "
+            f"record<principal> link (required OR option-wrapped) so the PIN THE MISS can "
+            f"fire the day packet 3A adds one; found {found}"
         )
 
 

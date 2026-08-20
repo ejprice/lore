@@ -23,6 +23,7 @@ a per-test unique database on the spike store and read it back via an admin conn
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ from _surreal_harness import (
     unique_database,
 )
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
+from loremaster.index.records import sha512_hex
 
 from loremaster import principal_keys as pk_module
 from loremaster import principals as p_module
@@ -148,8 +150,36 @@ async def cli_env(tmp_path: Path) -> Any:
         await drop_database(env)
 
 
+async def _run_cli(argv: list[str]) -> int:
+    """Invoke the CLI ``main`` OFF the test's running event loop (adversary FINDING 5).
+
+    §F6's house idiom is ``main = asyncio.run(...)``; calling it directly from an
+    ``async def`` test raises ``RuntimeError: asyncio.run() cannot be called from a running
+    event loop``. Running it in a worker thread (which has NO loop) lets the mandated
+    ``asyncio.run`` idiom work unchanged — the contract must not silently contradict its
+    own design's idiom instruction."""
+    return await asyncio.to_thread(p_module.main, argv)
+
+
+async def _table_names(env: SurrealEnv) -> set[str]:
+    """The tables that currently exist in the database (empty on a virgin DB)."""
+    connection = await connect_admin(env)
+    try:
+        info = await run(connection, "INFO FOR DB")
+    finally:
+        await connection.close()
+    tables = info.get("tables", {}) if isinstance(info, dict) else {}
+    return set(tables)
+
+
 async def _principal_emails(env: SurrealEnv) -> set[str]:
-    """Every principal email currently in the database (via a fresh admin connection)."""
+    """Every principal email currently in the database (via a fresh admin connection).
+
+    ⚠ ADVERSARY FINDING 3: on a VIRGIN DB the ``principal`` table does not exist yet and a
+    ``SELECT ... FROM principal`` RAISES on 3.2.4 — so the "empty before main" control read
+    a not-yet-created table. Tolerant: return ``set()`` when the table is absent."""
+    if "principal" not in await _table_names(env):
+        return set()
     connection = await connect_admin(env)
     try:
         rows = await run(connection, "SELECT email FROM principal")
@@ -159,11 +189,21 @@ async def _principal_emails(env: SurrealEnv) -> set[str]:
 
 
 async def _db_snapshot(env: SurrealEnv) -> Any:
-    """A stable snapshot of the two identity tables (for the read-only controls)."""
+    """A stable snapshot of the two identity tables (for the read-only controls).
+
+    Tolerant of an absent table (FINDING 3): a table that does not exist snapshots as
+    ``"[]"`` rather than raising."""
+    present = await _table_names(env)
     connection = await connect_admin(env)
     try:
-        principals = await run(connection, "SELECT * FROM principal ORDER BY email")
-        keys = await run(connection, "SELECT * FROM principal_key ORDER BY name")
+        principals = (
+            await run(connection, "SELECT * FROM principal ORDER BY email")
+            if "principal" in present else []
+        )
+        keys = (
+            await run(connection, "SELECT * FROM principal_key ORDER BY name")
+            if "principal_key" in present else []
+        )
     finally:
         await connection.close()
     return (repr(principals), repr(keys))
@@ -364,7 +404,7 @@ class TestCredsFreeConfigResolution:
         resolves ``anthropic.api_key_env`` eagerly) would raise a ``KeyError`` on the unset
         var and fail here — which is exactly the bad failure mode this pin forbids."""
         monkeypatch.delenv(_ANTHROPIC_ENV, raising=False)  # the autouse fixture set it; remove it
-        rc = p_module.main(cli_env.argv("add", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("add", "--email", _EMAIL))
         assert rc == 0
         assert _EMAIL in await _principal_emails(cli_env.env), (
             "the CLI must run and mutate the store with NO Anthropic key set — resolve the "
@@ -404,7 +444,7 @@ class TestVerbsExecuteDirectly:
         CONFIGURED database (no ``--execute`` step). This also proves the CLI wired its
         store from config (it reached the database the fixture named)."""
         assert await _principal_emails(cli_env.env) == set()  # empty before
-        rc = p_module.main(cli_env.argv("add", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("add", "--email", _EMAIL))
         assert rc == 0
         assert _EMAIL in await _principal_emails(cli_env.env)  # created by the ONE call
 
@@ -413,17 +453,17 @@ class TestVerbsExecuteDirectly:
     ) -> None:
         """``delete`` executes DIRECTLY and HARD-deletes (design §F2) — after one
         invocation the principal is gone."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
         assert _EMAIL in await _principal_emails(cli_env.env)
-        rc = p_module.main(cli_env.argv("delete", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("delete", "--email", _EMAIL))
         assert rc == 0
         assert _EMAIL not in await _principal_emails(cli_env.env)
 
     async def test_suspend_sets_status_on_invocation(self, cli_env: _CliEnv) -> None:
         """``suspend`` executes DIRECTLY — after one invocation the principal's status is
         ``suspended`` (read back from the store)."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
-        rc = p_module.main(cli_env.argv("suspend", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("suspend", "--email", _EMAIL))
         assert rc == 0
         connection = await connect_admin(cli_env.env)
         try:
@@ -436,9 +476,9 @@ class TestVerbsExecuteDirectly:
         """CONTROL: ``list`` is a READ — after it the database is byte-identical (so the
         "state changed" probes above demonstrably distinguish a mutating verb from a
         read)."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
         before = await _db_snapshot(cli_env.env)
-        rc = p_module.main(cli_env.argv("list"))
+        rc = await _run_cli(cli_env.argv("list"))
         assert rc == 0
         assert await _db_snapshot(cli_env.env) == before, "`list` must not mutate the store"
 
@@ -450,8 +490,8 @@ class TestVerbsExecuteDirectly:
         proving the CLI's hash (``sha512_hex(name:secret)``) agrees with ``verify``. A
         second ``mint-key`` (different name) mints a NEW key and NEVER re-prints the first
         secret (the raw secret is unrecoverable after mint)."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
-        rc = p_module.main(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
         assert rc == 0
         first_out = capsys.readouterr().out
         credential_lines = [ln for ln in first_out.splitlines() if re.fullmatch(r"laptop:\S+", ln.strip())]
@@ -471,12 +511,49 @@ class TestVerbsExecuteDirectly:
 
         # A second mint-key (different name) mints a NEW key, never re-printing the first.
         first_secret = first_credential.split(":", 1)[1]
-        rc = p_module.main(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "ci"))
+        rc = await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "ci"))
         assert rc == 0
         second_out = capsys.readouterr().out
         assert first_secret not in second_out, "mint-key re-printed the FIRST secret — it is unrecoverable"
         second_lines = [ln for ln in second_out.splitlines() if re.fullmatch(r"ci:\S+", ln.strip())]
         assert len(second_lines) == 1
+
+    async def test_mint_key_stores_only_the_hash_never_the_raw_secret(
+        self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """⚠ ADVERSARY R1: the STORE-level pin 2 is architecturally vacuous — ``mint`` takes
+        an ALREADY-hashed secret, so the raw never reaches the store. Probe the layer where
+        the raw EXISTS: the CLI ``mint-key`` path generates the raw secret, hashes it, stores
+        the hash. Assert the stored ``principal_key`` row holds the sha512 hash and NOWHERE
+        the raw secret, and the raw secret appears in NO log record. POSITIVE CONTROL: the
+        hash IS present (so the probe can see stored content)."""
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        with caplog.at_level("DEBUG"):
+            rc = await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
+        assert rc == 0
+        credential = next(
+            ln.strip() for ln in capsys.readouterr().out.splitlines()
+            if re.fullmatch(r"laptop:\S+", ln.strip())
+        )
+        secret = credential.split(":", 1)[1]
+        connection = await connect_admin(cli_env.env)
+        try:
+            rows = await run(connection, "SELECT * FROM principal_key")
+        finally:
+            await connection.close()
+        blob = repr(rows)
+        assert secret not in blob, (
+            f"the RAW secret was found in the stored principal_key row — the CLI must store "
+            f"ONLY the sha512 hash of `<name>:<secret>`, never the raw secret; row={rows!r}"
+        )
+        assert sha512_hex(credential) in blob, (
+            "POSITIVE CONTROL failed: the sha512 hash of the credential is NOT in the row — "
+            "the probe cannot see stored content, so its negative result is worthless"
+        )
+        for record in caplog.records:
+            assert secret not in record.getMessage(), (
+                "the raw secret leaked into a log record — the CLI must never log the credential"
+            )
 
     async def test_revoke_key_denies_the_credential_on_invocation(
         self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
@@ -484,13 +561,13 @@ class TestVerbsExecuteDirectly:
         """``revoke-key`` executes DIRECTLY — after one invocation the credential no longer
         verifies. Mints via the CLI, captures the credential, revokes via the CLI, then
         confirms denial through the store."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
-        p_module.main(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
         credential = next(
             ln.strip() for ln in capsys.readouterr().out.splitlines()
             if re.fullmatch(r"laptop:\S+", ln.strip())
         )
-        rc = p_module.main(cli_env.argv("revoke-key", "--email", _EMAIL, "--name", "laptop"))
+        rc = await _run_cli(cli_env.argv("revoke-key", "--email", _EMAIL, "--name", "laptop"))
         assert rc == 0
         key_store = pk_module.build_principal_key_store(_make_config(cli_env.env.database))
         try:
@@ -505,13 +582,13 @@ class TestVerbsExecuteDirectly:
         """Only ``mint-key`` ever emits a secret. ``list-keys`` shows key metadata (names,
         flags) but NEVER a secret (it is unrecoverable). Mints, drains the mint output,
         then asserts ``list-keys`` output carries the key NAME but not the secret."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL))
-        p_module.main(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "laptop"))
         secret = next(
             ln.strip().split(":", 1)[1] for ln in capsys.readouterr().out.splitlines()
             if re.fullmatch(r"laptop:\S+", ln.strip())
         )
-        rc = p_module.main(cli_env.argv("list-keys", "--email", _EMAIL))
+        rc = await _run_cli(cli_env.argv("list-keys", "--email", _EMAIL))
         assert rc == 0
         listing = capsys.readouterr().out
         assert "laptop" in listing, "list-keys must show the key name"
@@ -538,6 +615,11 @@ class TestVerbsExecuteDirectly:
 _FORGED_ROW = "evil@attacker.com  admin  active"
 _HOSTILE_DISPLAY_NAME = f"Mallory\n{_FORGED_ROW}\n``` `"
 
+# ADVERSARY FINDING 4: the `list-keys` KEY-NAME hostile fixture (§F8 names key `name` as a
+# must-launder field). A key name with a survived newline forges a phantom key row.
+_FORGED_KEY_ROW = "phantom-key   revoked-but-shown-active"
+_HOSTILE_KEY_NAME = f"laptop\n{_FORGED_KEY_ROW}\n``` `"
+
 
 class TestRenderSafety:
     async def test_hostile_display_name_does_not_forge_a_row_in_list(
@@ -549,8 +631,8 @@ class TestRenderSafety:
         sanitiser ``loremaster.sanitise.sanitise_line`` collapses controls to a space). A
         build that rendered ``display_name`` verbatim would let the crafted value forge a
         phantom row. The real content head still appears (rendered, just made honest)."""
-        p_module.main(cli_env.argv("add", "--email", _EMAIL, "--display-name", _HOSTILE_DISPLAY_NAME))
-        rc = p_module.main(cli_env.argv("list"))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL, "--display-name", _HOSTILE_DISPLAY_NAME))
+        rc = await _run_cli(cli_env.argv("list"))
         assert rc == 0
         listing = capsys.readouterr().out
         output_lines = [ln.strip() for ln in listing.splitlines()]
@@ -600,12 +682,60 @@ class TestRenderSafety:
         monkeypatch.setattr(sanitise_module, "sanitise_line", _marked)
         monkeypatch.setattr(p_module, "sanitise_line", _marked, raising=False)
 
-        p_module.main(cli_env.argv("add", "--email", _EMAIL, "--display-name", "RenderProbe"))
-        rc = p_module.main(cli_env.argv("list"))
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL, "--display-name", "RenderProbe"))
+        rc = await _run_cli(cli_env.argv("list"))
         assert rc == 0
         listing = capsys.readouterr().out
         assert marker in listing, (
             "the CLI `list` render does not route stored free text through the shared "
             "canonical sanitiser (loremaster.sanitise.sanitise_line/safe_str) — a private "
             "sanitiser clone is a #102-class defect (LEAD RULING #4)"
+        )
+
+    async def test_hostile_key_name_does_not_forge_a_row_in_list_keys(
+        self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """⚠ ADVERSARY FINDING 4: §F8 names the key ``name`` as a must-launder field, but
+        the ``list`` pins above exercise ONLY ``display_name`` — a ``list-keys`` build that
+        renders ``key.name`` VERBATIM (or via a private clone) shipped green. A key minted
+        with a hostile NAME (newline + fake key-row + backtick runs) must NOT forge a
+        standalone phantom key row in ``list-keys`` output."""
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", _HOSTILE_KEY_NAME))
+        capsys.readouterr()  # drain the mint secret line
+        rc = await _run_cli(cli_env.argv("list-keys", "--email", _EMAIL))
+        assert rc == 0
+        output_lines = [ln.strip() for ln in capsys.readouterr().out.splitlines()]
+        assert _FORGED_KEY_ROW not in output_lines, (
+            "the hostile key NAME's survived newline forged a standalone phantom key row in "
+            "`list-keys` output — the key name must route through the shared sanitiser seam "
+            "(loremaster.sanitise.sanitise_line/safe_str)"
+        )
+
+    async def test_list_keys_render_routes_through_the_shared_sanitiser_by_mutation(
+        self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ ADVERSARY R3/F4: a PER-RENDER mutation-proof for ``list-keys`` (the ``list``
+        mutation-proof above does NOT cover it, and the AST source-scan passes on ANY single
+        sanitise call). Patch the canonical seam; the ``list-keys`` render must reflect the
+        marker — a ``list-keys`` that renders the key name verbatim / via a private clone
+        shows no marker → RED."""
+        marker = "XSANITISERWASHEREX"
+        original = sanitise_module.sanitise_line
+
+        def _marked(text: str) -> Any:
+            return f"{original(text)}{marker}"
+
+        monkeypatch.setattr(sanitise_module, "sanitise_line", _marked)
+        monkeypatch.setattr(p_module, "sanitise_line", _marked, raising=False)
+
+        await _run_cli(cli_env.argv("add", "--email", _EMAIL))
+        await _run_cli(cli_env.argv("mint-key", "--email", _EMAIL, "--name", "renderprobe"))
+        capsys.readouterr()  # drain the mint output
+        rc = await _run_cli(cli_env.argv("list-keys", "--email", _EMAIL))
+        assert rc == 0
+        assert marker in capsys.readouterr().out, (
+            "the CLI `list-keys` render does not route the key name through the shared "
+            "canonical sanitiser (sanitise_line/safe_str) — a private clone or verbatim "
+            "render is a #102-class defect (adversary FINDING 4 / R3)"
         )
