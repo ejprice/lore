@@ -96,6 +96,7 @@ from typing import Any
 from pydantic import SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.index.records import Record
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -1860,6 +1861,27 @@ class SurrealStore:
                 f"this is NOT a measurement failure"
             )
         return CalibrationPool(rows=tuple(rows), counted_total=counted_total, limit=limit)
+
+
+def build_store(config: LoreConfig) -> SurrealStore:
+    """Construct the unified SurrealDB write store from config. UN-READIED.
+
+    The single factory for the store-construction recipe copy-pasted at three
+    sites (server.build_app_context / index.cli._run / scout.Scout.from_config).
+    Returns a store on which the caller decides readiness — build_app_context and
+    index.cli._run call ensure_ready(); Scout.from_config does not. Reads the
+    ALREADY-VALIDATED config.surreal.url (config._reject_url_userinfo rejected any
+    inline credentials at load, R4/security-59 F1) — this factory never parses or
+    handles credentials in the URL.
+    """
+    return SurrealStore(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=config.effective_surreal_database,
+        dim=config.embedding.dim,
+        user=resolve_config_value(config.surreal.user_env),
+        password=resolve_secret(config.surreal.password_env),
+    )
 
 
 # =============================================================================

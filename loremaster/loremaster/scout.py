@@ -71,9 +71,7 @@ from loremaster.store._txn import (
     retry_on_conflict,
     signin_credentials,
 )
-from loremaster.store.surreal import (
-    SurrealStore,
-)
+from loremaster.store.surreal import build_store
 from loremaster.store.surreal_schema import (
     _COMMAND_STATUS_DONE,
     _COMMAND_STATUS_FAILED,
@@ -731,14 +729,13 @@ class Scout:
         database = config.effective_surreal_database
         project_root = Path(config.project.root)
 
-        store = SurrealStore(
-            url=config.surreal.url,
-            namespace=config.surreal.namespace,
-            database=database,
-            dim=config.embedding.dim,
-            user=surreal_user,
-            password=surreal_password,
-        )
+        # Route the write store through the ONE shared factory (packet 48-A):
+        # build_store owns the cred/db-resolution + SurrealStore(...) construction.
+        # Construction ONLY — Scout deliberately leaves it UN-READIED (readiness is
+        # start's job). The surreal_user/password/database locals above still feed
+        # manifest / code_graph / snapshot_stamper / the command connection until the
+        # broad refactor (§1 F5).
+        store = build_store(config)
         manifest = SurrealManifest(
             url=config.surreal.url,
             namespace=config.surreal.namespace,

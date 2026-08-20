@@ -43,7 +43,7 @@ from loremaster.index.indexer import Indexer, IndexSummary, graph_roots
 from loremaster.index.surreal_manifest import SurrealManifest
 from loremaster.server import LoreServer
 from loremaster.source.local_directory import LocalDirectorySourceProvider
-from loremaster.store.surreal import SurrealStore
+from loremaster.store.surreal import build_store
 
 # Default static-tier snapshot location (plan D8 / the staleness-engine ledger).
 _DEFAULT_SNAPSHOT_ROOT = Path.home() / "docker" / "mcp" / "lore-snapshot"
@@ -127,14 +127,11 @@ async def _run(config: LoreConfig, args: argparse.Namespace) -> IndexSummary:
     tier_roots, project_roots = graph_roots(config, snapshot_root)
 
     embedder = make_embedder_from_config(config.embedding)
-    store = SurrealStore(
-        url=config.surreal.url,
-        namespace=config.surreal.namespace,
-        database=database,
-        dim=config.embedding.dim,
-        user=surreal_user,
-        password=surreal_password,
-    )
+    # Route the write store through the ONE shared factory (packet 48-A): build_store
+    # owns the cred/db-resolution + SurrealStore(...) construction. It returns
+    # UN-READIED; the try-block below readies it. The surreal_user/password/database
+    # locals above still feed manifest / code_graph until the broad refactor (§1 F5).
+    store = build_store(config)
     manifest = SurrealManifest(
         url=config.surreal.url,
         namespace=config.surreal.namespace,

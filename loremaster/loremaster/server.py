@@ -9073,7 +9073,7 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
     from loremaster.memory.local import LocalMemoryBackend
     from loremaster.search import SearchPipeline
     from loremaster.source.local_directory import LocalDirectorySourceProvider
-    from loremaster.store.surreal import SurrealStore
+    from loremaster.store.surreal import build_store
     from loremaster.store_read import StoreReadTool
     from loremaster.symbols import SymbolTool, VerifyTool
     from loremaster.tasks import TaskLedger
@@ -9109,14 +9109,14 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
     surreal_user = resolve_config_value(config.surreal.user_env)
     surreal_password = resolve_secret(config.surreal.password_env)
     surreal_database = config.effective_surreal_database
-    write_store = SurrealStore(
-        url=config.surreal.url,
-        namespace=config.surreal.namespace,
-        database=surreal_database,
-        dim=config.embedding.dim,
-        user=surreal_user,
-        password=surreal_password,
-    )
+    # The unified write store routes through the ONE shared factory (packet 48-A):
+    # build_store owns the identical cred/db-resolution + SurrealStore(...)
+    # construction recipe formerly copy-pasted here and at index.cli._run /
+    # scout.Scout.from_config. It returns UN-READIED — this site readies it on the
+    # write_stack_readied rail below. The surreal_user/password/database locals
+    # above still feed the sibling backends (manifest / code_graph / stampers /
+    # ledgers), which re-resolve the conn tuple until the broad refactor (§1 F5).
+    write_store = build_store(config)
     # The Surreal WRITE-STACK ready guard (C6-audit follow-up #3): readying the
     # four write backends below can fail PARTWAY through (e.g. the code graph's
     # socket refuses after the store + manifest already came up) — a bare
