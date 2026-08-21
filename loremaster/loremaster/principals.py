@@ -70,12 +70,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import secrets
+import sys
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import yaml
 from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal
 
+from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
+from loremaster.index.records import sha512_hex
+from loremaster.sanitise import safe_str
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -88,10 +95,26 @@ from loremaster.store._txn import (
     signin_credentials,
 )
 from loremaster.store.surreal_schema import (
+    _PRINCIPAL_STATUS_ACTIVE,
+    _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
+    PRINCIPAL_KEY_TABLE,
     PRINCIPAL_TABLE,
     generate_principal_ddl,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from loremaster.principal_keys import PrincipalKey, PrincipalKeyStore
+
+    # The uniform admin-verb handler signature (dict-dispatched by ``main``). A lazy
+    # (``from __future__`` string) annotation, so ``PrincipalKeyStore`` need not be
+    # imported at runtime — its module imports THIS one (``Principal``), and a runtime
+    # import here would be a cycle.
+    _VerbHandler = Callable[
+        [argparse.Namespace, "PrincipalStore", "PrincipalKeyStore"], Awaitable[int]
+    ]
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +130,11 @@ _COL_STATUS = "status"
 _COL_ROLE = "role"
 _COL_EXPIRES_AT = "expires_at"
 _COL_CREATED_AT = "created_at"
+
+# The ``principal_key.principal`` owner-link column — the cascade in :meth:`delete`
+# filters key rows by it. Named once here so the DELETE literal never drifts from the
+# ``principal_key`` schema (which owns the table + column definitions).
+_COL_PRINCIPAL_KEY_OWNER = "principal"
 
 # The EXPLICIT read projection — NEVER ``SELECT *``. Store law §2: ``SELECT *`` OMITS
 # a NONE-valued ``option<>`` column entirely (``row["subject"]`` KeyErrors on an
@@ -549,10 +577,26 @@ class PrincipalStore:
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
         """
-        raise NotImplementedError(
-            "PrincipalStore.set_expires — packet-49 builder "
-            "(docs/design/2026-08-20-packet49-cli-keys.md §F1)"
-        )
+        if expires_at is None:
+            # ⚠ CLEAR path (design §F1): ``SET expires_at = NONE`` — an UPDATE that
+            # OMITTED the column would leave the OLD value unchanged. The literal NONE
+            # explicitly clears it.
+            result = await self._query(
+                f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = NONE "
+                f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
+                {"email": email},
+            )
+        else:
+            # SET path: bind a Python datetime (store law §2 — never stringified).
+            result = await self._query(
+                f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = $expires_at "
+                f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
+                {"expires_at": expires_at, "email": email},
+            )
+        rows = self._as_rows(result)
+        if not rows:
+            raise PrincipalNotFoundError(f"no principal with email {email!r}")
+        return self._row_to_principal(rows[0])
 
     async def delete(self, *, email: str) -> int:
         """STUB (contract-49-1): HARD-delete a principal and CASCADE its keys — 49's
@@ -583,10 +627,37 @@ class PrincipalStore:
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
         """
-        raise NotImplementedError(
-            "PrincipalStore.delete — packet-49 builder "
-            "(docs/design/2026-08-20-packet49-cli-keys.md §F2)"
+        principal = await self.get_by_email(email)
+        if principal is None:
+            raise PrincipalNotFoundError(f"no principal with email {email!r}")
+        principal_id_part = principal.id.partition(":")[2] or principal.id
+        # Count the keys about to be cascaded — the CLI's audit line reports it. A
+        # separate read (execute_transaction returns None), taken just before the
+        # atomic cascade; for an admin op the tiny window is acceptable.
+        count_rows = self._as_rows(
+            await self._query(
+                f"SELECT count() FROM {PRINCIPAL_KEY_TABLE} "
+                f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid) "
+                f"GROUP ALL",
+                {"pid": principal_id_part},
+            )
         )
+        cascaded = int(count_rows[0].get("count", 0)) if count_rows else 0
+        # ⚠ CHILDREN FIRST (store law §4 — ``record<t>`` links do NOT auto-clean), THEN
+        # the parent, inside ONE ``execute_transaction`` so a half-cascade can never
+        # leave orphaned keys. execute_transaction verifies EVERY statement's status.
+        await execute_transaction(
+            f"BEGIN;\n"
+            f"DELETE {PRINCIPAL_KEY_TABLE} "
+            f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid);\n"
+            f"DELETE {PRINCIPAL_TABLE} WHERE {_COL_EMAIL} = $email;\n"
+            f"COMMIT;\n",
+            {"pid": principal_id_part, "email": email},
+            acquire=self._ensure_connection,
+            drop=self._drop_connection,
+            url=self._url,
+        )
+        return cascaded
 
     # -- reads / mapping ----------------------------------------------------
 
@@ -671,64 +742,316 @@ class PrincipalStore:
 # directly (a sibling ``principals_cli.py`` would force ``-m loremaster.principals_cli``,
 # violating the fixed invocation).
 #
-# ⚠⚠ RED STUBS (contract-49-1, 2026-08-20). The builder clones the ``index/cli.py``
-# house idiom (``build_parser`` + ``main(argv) -> int``) and the ``snapshot_gc.py``
-# async/env-var-NAMES/SurrealConnectionError-laundering/loud-on-failure SHAPE — but
-# NOT its ``--execute``/dry-run gating (STRUCK by the operator 2026-08-20: every verb
-# executes directly; only ``list``/``list-keys`` are reads; there is NO ``--execute``
-# flag and NO "gated set" anywhere). The verbs (design §F6): ``add`` / ``list`` /
+# It clones the ``index/cli.py`` house idiom (``build_parser`` + ``main(argv) -> int``)
+# and the ``comms_cli.py`` CREDS-FREE config load (``LoreConfig.model_validate``, NOT
+# ``load_config`` — LEAD RULING #6) + ``SurrealConnectionError``-laundering /
+# loud-on-failure shape. There is NO ``--execute`` flag and NO dry-run mode (STRUCK by
+# the operator 2026-08-20): EVERY verb executes its effect directly on invocation; only
+# ``list`` / ``list-keys`` are reads. The nine verbs (design §F6): ``add`` / ``list`` /
 # ``delete`` / ``suspend`` / ``unsuspend`` / ``set-expiry`` / ``mint-key`` /
-# ``revoke-key`` / ``list-keys``. The CLI builds a ``PrincipalStore`` +
-# ``PrincipalKeyStore`` from config via the sibling factories
+# ``revoke-key`` / ``list-keys``. Stores are built from config via the sibling factories
 # :func:`build_principal_store` / :func:`~loremaster.principal_keys.build_principal_key_store`.
+# Unix philosophy: silent on success (a mutating verb prints nothing but ``delete``'s
+# one-line audit summary and ``mint-key``'s one-time credential; the reads print their
+# listing), LOUD on failure (a stderr line + non-zero exit).
 # --------------------------------------------------------------------------- #
 
 _CLI_PROG = "loremaster.principals"
-_STUB_MESSAGE = (
-    "packet-49 builder (docs/design/2026-08-20-packet49-cli-keys.md §F6)"
-)
+
+# The minted key secret's entropy (design §F4): ``secrets.token_urlsafe(32)`` — 256
+# bits of URL-safe randomness, the high-entropy token a fast unsalted content hash is
+# correct for (NOT a password).
+_SECRET_ENTROPY_BYTES = 32
+
+# The dash shown for an absent optional field in a rendered listing.
+_ABSENT_FIELD = "-"
+
+
+def _load_surreal_config(config_path: Path) -> LoreConfig:
+    """Parse ``config_path`` into a :class:`LoreConfig` WITHOUT touching the
+    environment — the env-free :meth:`LoreConfig.model_validate`, NEVER
+    :func:`loremaster.config.load_config` (which resolves the REQUIRED Anthropic key
+    EAGERLY and would abort this creds-free admin CLI on an unset embedding key —
+    LEAD RULING #6, the ``comms_cli`` pattern). The surreal-block credentials are
+    resolved lazily at store-construction time by the sibling factories."""
+    raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    return LoreConfig.model_validate(raw)
+
+
+def _require_config(args: argparse.Namespace) -> Path:
+    """The project ``lore.yaml`` the CLI resolves its store coordinate from. Loud
+    failure (non-zero exit) when ``--config`` is absent."""
+    if args.config is None:
+        raise SystemExit(f"{_CLI_PROG}: --config <path to lore.yaml> is required")
+    return Path(args.config)
+
+
+def _parse_instant(value: str) -> datetime:
+    """Parse an ISO-8601 CLI argument into a tz-aware UTC datetime (a naive value is
+    interpreted as UTC — the fleet-comparable anchor; store law §2 binds it as a
+    Python datetime, never stringified)."""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    aware = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return aware.astimezone(UTC)
+
+
+def _render_instant(instant: datetime | None) -> str:
+    """An optional datetime as an ISO-8601 string, or ``-`` when absent."""
+    return instant.isoformat() if instant is not None else _ABSENT_FIELD
+
+
+def _render_principal_line(principal: Principal) -> str:
+    """One rendered ``list`` row for a principal — every FREE-TEXT field
+    (``email`` / ``display_name``) routed through the SHARED canonical LINE sanitiser
+    :func:`loremaster.sanitise.safe_str` (P8d rendered-free-text law / design §F8 — a
+    hostile value cannot forge a phantom row: a survived newline collapses to a space).
+    ``status`` / ``role`` are closed-domain (DDL-validated) and rendered directly;
+    ``expires_at`` is an engine-typed datetime."""
+    display_name = (
+        safe_str(principal.display_name)
+        if principal.display_name is not None
+        else _ABSENT_FIELD
+    )
+    return "  ".join(
+        [
+            safe_str(principal.email),
+            display_name,
+            principal.status,
+            principal.role,
+            f"expires={_render_instant(principal.expires_at)}",
+        ]
+    )
+
+
+def _render_key_line(key: PrincipalKey) -> str:
+    """One rendered ``list-keys`` row for a key — the free-text ``name`` routed through
+    the SHARED :func:`loremaster.sanitise.safe_str` (design §F8). The raw secret is
+    unrecoverable (never stored, never rendered); only metadata is shown."""
+    state = "revoked" if key.revoked_at is not None else "active"
+    return "  ".join(
+        [
+            safe_str(key.name),
+            state,
+            f"created={_render_instant(key.created_at)}",
+            f"expires={_render_instant(key.expires_at)}",
+        ]
+    )
+
+
+def build_principal_store(config: LoreConfig) -> PrincipalStore:
+    """Construct a :class:`PrincipalStore` from ``config`` — the sibling of
+    :func:`loremaster.store.surreal.build_store`, reading the SAME coordinate accessors
+    (``config.surreal.{url,namespace,user_env,password_env}`` +
+    ``config.effective_surreal_database``) MINUS ``dim`` (an identity store is never
+    embedded). Resolves the username via
+    :func:`~loremaster.config.resolve_config_value` and the password via
+    :func:`~loremaster.config.resolve_secret` exactly as ``build_store`` does.
+    """
+    return PrincipalStore(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=config.effective_surreal_database,
+        user=resolve_config_value(config.surreal.user_env),
+        password=resolve_secret(config.surreal.password_env),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """STUB (contract-49-1): the argparse parser for the admin CLI.
+    """The argparse parser for the admin CLI (design §F6).
 
-    Returns a BARE parser (``prog`` set, NO subcommands yet) so the structural pins
-    (``prog == 'loremaster.principals'``, no ``--execute`` anywhere) run while every
-    VERB pin is RED (the subcommands are unbuilt). The builder adds the nine verbs
-    per design §F6 (all executing directly — NO ``--execute`` flag, NO dry-run):
-    ``add``/``list``/``delete``/``suspend``/``unsuspend``/``set-expiry``/``mint-key``/
-    ``revoke-key``/``list-keys``, each naming its principal by ``--email`` and
-    carrying env-var NAMES (``--user-env``/``--password-env``) not values.
+    ``prog`` is the fixed invocation ``loremaster.principals``; ``--config`` names the
+    project ``lore.yaml`` the store coordinate is resolved from. The nine verbs are
+    subcommands, each naming its principal by ``--email`` (except the ``list`` read).
+    There is NO ``--execute`` flag and NO dry-run mode — every verb executes directly
+    (operator ruling 2026-08-20).
     """
-    return argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog=_CLI_PROG,
         description=(
             "Manage lore principals (human identities) and their per-user API keys. "
             "Every verb executes directly; only `list`/`list-keys` are reads."
         ),
     )
+    parser.add_argument(
+        "--config", default=None, help="path to the project lore.yaml (store coordinate)"
+    )
+    subcommands = parser.add_subparsers(dest="command", required=True)
+
+    def _with_email(name: str, help_text: str) -> argparse.ArgumentParser:
+        sub = subcommands.add_parser(name, help=help_text)
+        sub.add_argument(
+            "--email", required=True, help="the principal's email (its admission key)"
+        )
+        return sub
+
+    add = _with_email("add", "create a principal")
+    add.add_argument("--display-name", default=None, help="an optional presentational label")
+    add.add_argument(
+        "--expires", default=None, help="an optional ISO-8601 expiry instant (omitted = never)"
+    )
+
+    subcommands.add_parser("list", help="list every principal")
+
+    _with_email("delete", "hard-delete a principal and cascade its keys (irreversible)")
+    _with_email("suspend", "suspend a principal (reversible; denies its keys)")
+    _with_email("unsuspend", "reactivate a suspended principal")
+
+    set_expiry = _with_email("set-expiry", "set or clear a principal's expiry")
+    expiry_choice = set_expiry.add_mutually_exclusive_group(required=True)
+    expiry_choice.add_argument("--at", default=None, help="an ISO-8601 expiry instant")
+    expiry_choice.add_argument(
+        "--clear", action="store_true", help="clear the expiry (the principal never expires)"
+    )
+
+    mint_key = _with_email("mint-key", "mint a per-user API key (prints <name>:<secret> once)")
+    mint_key.add_argument("--name", required=True, help="the key's label (unique per principal)")
+    mint_key.add_argument(
+        "--expires", default=None, help="an optional ISO-8601 key-expiry instant (omitted = never)"
+    )
+
+    revoke_key = _with_email("revoke-key", "revoke a principal's key by name")
+    revoke_key.add_argument("--name", required=True, help="the label of the key to revoke")
+
+    _with_email("list-keys", "list a principal's keys (names + flags; never a secret)")
+    return parser
 
 
-def build_principal_store(config: Any) -> PrincipalStore:
-    """STUB (contract-49-1): construct a :class:`PrincipalStore` from ``config`` — the
-    sibling of :func:`loremaster.store.surreal.build_store`, reading the SAME
-    coordinate accessors (``config.surreal.{url,namespace,user_env,password_env}`` +
-    ``config.effective_surreal_database``) MINUS ``dim`` (an identity store is never
-    embedded). The builder implements it with ``resolve_config_value`` /
-    ``resolve_secret`` exactly as ``build_store`` does (design §F6). RED now: raises
-    so the CLI-wiring pins fail behaviourally."""
-    raise NotImplementedError(f"build_principal_store — {_STUB_MESSAGE}")
+# -- verb handlers (uniform signature so ``main`` dispatches by a dict) --------
+
+
+async def _cmd_add(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    expires_at = _parse_instant(args.expires) if args.expires else None
+    await principal_store.create(
+        email=args.email, display_name=args.display_name, expires_at=expires_at
+    )
+    return 0
+
+
+async def _cmd_list(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    for principal in await principal_store.list():
+        print(_render_principal_line(principal))
+    return 0
+
+
+async def _cmd_delete(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    cascaded = await principal_store.delete(email=args.email)
+    print(f"deleted {safe_str(args.email)} ({cascaded} key(s) removed)")
+    return 0
+
+
+async def _cmd_suspend(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    await principal_store.set_status(email=args.email, status=_PRINCIPAL_STATUS_SUSPENDED)
+    return 0
+
+
+async def _cmd_unsuspend(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    await principal_store.set_status(email=args.email, status=_PRINCIPAL_STATUS_ACTIVE)
+    return 0
+
+
+async def _cmd_set_expiry(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    expires_at = None if args.clear else _parse_instant(args.at)
+    await principal_store.set_expires(email=args.email, expires_at=expires_at)
+    return 0
+
+
+async def _cmd_mint_key(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    secret = secrets.token_urlsafe(_SECRET_ENTROPY_BYTES)
+    credential = f"{args.name}:{secret}"
+    expires_at = _parse_instant(args.expires) if args.expires else None
+    await key_store.mint(
+        email=args.email,
+        name=args.name,
+        secret_hash=sha512_hex(credential),
+        expires_at=expires_at,
+    )
+    # The ONLY time the raw secret is ever emitted — verbatim, so the holder can present
+    # it back; it is unrecoverable after this line (never stored raw).
+    print(credential)
+    return 0
+
+
+async def _cmd_revoke_key(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    await key_store.revoke(email=args.email, name=args.name)
+    return 0
+
+
+async def _cmd_list_keys(
+    args: argparse.Namespace, principal_store: PrincipalStore, key_store: PrincipalKeyStore
+) -> int:
+    for key in await key_store.list_for(email=args.email):
+        print(_render_key_line(key))
+    return 0
+
+
+_VERB_HANDLERS: dict[str, _VerbHandler] = {
+    "add": _cmd_add,
+    "list": _cmd_list,
+    "delete": _cmd_delete,
+    "suspend": _cmd_suspend,
+    "unsuspend": _cmd_unsuspend,
+    "set-expiry": _cmd_set_expiry,
+    "mint-key": _cmd_mint_key,
+    "revoke-key": _cmd_revoke_key,
+    "list-keys": _cmd_list_keys,
+}
+
+
+async def _dispatch(args: argparse.Namespace) -> int:
+    """Load the (creds-free) config, build both identity stores, ready them, and run
+    the selected verb. Domain failures are laundered to a stderr line + non-zero exit
+    (loud on failure); a transport fault surfaces the same way."""
+    # Lazy import: ``loremaster.principal_keys`` imports THIS module (``Principal``), so
+    # a top-level import here is a cycle. PLC0415 is a house-ignored idiom.
+    from loremaster.principal_keys import PrincipalKeyStoreError, build_principal_key_store
+
+    config = _load_surreal_config(_require_config(args))
+    principal_store = build_principal_store(config)
+    key_store = build_principal_key_store(config)
+    try:
+        # Principal FIRST (the record link's target), then the key table.
+        await principal_store.ensure_ready()
+        await key_store.ensure_ready()
+        handler = _VERB_HANDLERS[args.command]
+        return await handler(args, principal_store, key_store)
+    except (
+        PrincipalStoreError,
+        PrincipalKeyStoreError,
+        SurrealConnectionError,
+        ValueError,
+    ) as error:
+        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await key_store.close()
+        await principal_store.close()
 
 
 def main(argv: list[str] | None = None) -> int:
-    """STUB (contract-49-1): CLI entrypoint — parse args, dispatch the verb, report.
+    """CLI entrypoint — parse args and run the verb on a fresh event loop.
 
-    The builder wires ``config = load_config(args.config)`` → the two sibling
-    factories → the verb's store call, Unix-philosophy output (silent on success, a
-    clear one-line result on a mutation, loud non-zero exit on failure), the
-    ``mint-key`` secret printed EXACTLY ONCE. RED now: raises so the CLI-execution
-    pins fail behaviourally."""
-    raise NotImplementedError(f"loremaster.principals.main — {_STUB_MESSAGE}")
+    Returns a process exit code (0 = success, non-zero = failure). ``asyncio.run`` mints
+    a loop, so a caller ALREADY inside one must run this off the loop (a worker thread) —
+    the house ``index/cli.py`` idiom.
+    """
+    args = build_parser().parse_args(argv)
+    return asyncio.run(_dispatch(args))
 
 
 if __name__ == "__main__":

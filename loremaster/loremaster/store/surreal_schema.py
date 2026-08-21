@@ -1719,6 +1719,7 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _finding_statements()
     statements += _finding_counter_statements()
     statements += _principal_statements()
+    statements += _principal_key_statements()
     # Any residual bare-``SCHEMAFULL`` placeholder tables (currently none — every
     # table has graduated to a field-level slice; see :data:`_STRUCTURAL_TABLES`).
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
@@ -1860,28 +1861,86 @@ def generate_principal_ddl() -> str:
 # NOT folded into ``generate_ddl``. Do NOT "fix" them here — they are the contract.
 # --------------------------------------------------------------------------- #
 
-# STUB: the real spec carries hash/name (required, non-empty), created_at (DEFAULT
-# time::now()), and expires_at/revoked_at (option<datetime>, no DEFAULT — the
-# ``seen_at``/``acked_at`` "IS NONE is live" idiom). Empty here ⇒ the field pins are RED.
-_PRINCIPAL_KEY_FIELD_SPECS: tuple[tuple[str, str, str], ...] = ()
+# The ``principal_key`` table's fields as ``(name, type_expr, constraint)`` triples
+# (packet 49; the ``finding``/``principal`` idiom — these fields carry no closed
+# vocabulary to mutate). ``hash`` is the REQUIRED, non-empty SHA-512 hex of the
+# ``<name>:<secret>`` credential (UNIQUE index — the O(1) lookup + dedup backstop);
+# ``name`` is the REQUIRED, non-empty key label (part of the UNIQUE(principal, name)
+# composite). ``principal`` is a REQUIRED ``record<principal>`` owner link — §1.4's
+# "new field on a POPULATED table must be option<>" does NOT apply: ``principal_key``
+# is a brand-new empty table, so every key has an owner at mint (an ownerless key is a
+# credential belonging to nobody). ``created_at`` self-stamps via ``DEFAULT
+# time::now()`` (the store OMITS it on write). ``expires_at``/``revoked_at`` are
+# ``option<datetime>`` with NO DEFAULT — the ``to.seen_at``/``acked_at`` "IS NONE is
+# live" idiom: ``WHERE revoked_at IS NONE`` is the "active" predicate, and a DEFAULT
+# would make every key look already-stamped (revoked/expired) the instant it is minted.
+_PRINCIPAL_KEY_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("hash", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("name", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("principal", f"record<{PRINCIPAL_TABLE}>", ""),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+    ("expires_at", "option<datetime>", ""),
+    ("revoked_at", "option<datetime>", ""),
+)
 
 
 def _principal_key_statements() -> list[str]:
-    """STUB (contract-49-1): the ``principal_key`` slice — RED until the builder
-    emits the table + fields + ``UNIQUE(hash)`` + ``UNIQUE(principal, name)`` via
-    the shared emitters (packet-49 design §F7). Returns ``[]`` so every schema pin
-    fails behaviourally rather than on an ImportError."""
-    return []
+    """The ``principal_key`` table: the field set + its two UNIQUE indexes (packet 49).
+
+    Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
+    :data:`_PRINCIPAL_KEY_FIELD_SPECS` entry (routed through the shared
+    :func:`_define_field` — the #107 ``OVERWRITE`` policy, proven shared by the
+    schema mutation pin); the UNIQUE index on ``hash`` (the credential lookup +
+    dedup backstop — ``WHERE hash = $h`` over a preimage-resistant digest, O(1) with
+    uniform timing and no name-existence oracle) and the UNIQUE composite index on
+    ``(principal, name)`` (per-principal label uniqueness — two humans may each name
+    a key ``laptop``; ``revoke-key --email e --name laptop`` is deterministic WITHIN
+    a principal). A record-link column (``principal``) is indexable, so the composite
+    is a plain UNIQUE over two REQUIRED columns (§1.8 N/A — neither index spans an
+    ``option<>`` column).
+
+    ``principal_key.principal`` is ``record<{PRINCIPAL_TABLE}>``, so this slice is
+    folded into :func:`generate_ddl` immediately AFTER :func:`_principal_statements`
+    (the ``briefed`` → ``agent`` precedent — the link's target table defined first).
+    Every statement is idempotent (``IF NOT EXISTS`` for the table/indexes,
+    ``OVERWRITE`` for its fields — see :func:`_define_field`), so applying it twice —
+    on the boot re-run :meth:`ensure_ready` performs — is a safe no-op.
+    """
+    statements: list[str] = [_define_table(PRINCIPAL_KEY_TABLE)]
+    statements += [
+        _define_field(PRINCIPAL_KEY_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _PRINCIPAL_KEY_FIELD_SPECS
+    ]
+    statements.append(
+        _unique_index(PRINCIPAL_KEY_TABLE, f"{PRINCIPAL_KEY_TABLE}_hash", ("hash",))
+    )
+    statements.append(
+        _unique_index(
+            PRINCIPAL_KEY_TABLE, f"{PRINCIPAL_KEY_TABLE}_principal_name", ("principal", "name")
+        )
+    )
+    return statements
 
 
 def generate_principal_key_ddl() -> str:
-    """STUB (contract-49-1): the standalone ``principal_key`` DDL slice —
-    :meth:`~loremaster.principal_keys.PrincipalKeyStore.ensure_ready` applies it.
-    Returns ``""`` so the schema round-trip / idempotency / index pins are RED for
-    the RIGHT reason (an empty slice creates no table). The builder implements it
-    as ``";\\n".join(_principal_key_statements()) + ";\\n"`` (the house shape), and
-    ALSO folds ``_principal_key_statements()`` into :func:`generate_ddl`."""
-    return ""
+    """Generate just the ``principal_key`` table DDL — packet 49's per-user API-key
+    slice that :meth:`~loremaster.principal_keys.PrincipalKeyStore.ensure_ready`
+    applies on its OWN connection.
+
+    Mirrors :func:`generate_principal_ddl`: the ``principal_key`` table is ALSO
+    folded into :func:`generate_ddl` (immediately after ``principal`` — its link
+    target), so the primary ``write_store.ensure_ready()`` creates the table the
+    moment packet 49 ships. Needs NEITHER the embedding ``dim`` NOR the analyzer — a
+    key is addressed by its ``hash``, never retrieved semantically. Every statement
+    is idempotent (``IF NOT EXISTS`` for the table/indexes, ``OVERWRITE`` for its
+    fields — see :func:`_define_field`), so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op.
+
+    Returns:
+        A newline-separated, semicolon-terminated DDL string ready to hand to a
+        single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
+    """
+    return ";\n".join(_principal_key_statements()) + ";\n"
 
 
 def generate_agent_ddl() -> str:
