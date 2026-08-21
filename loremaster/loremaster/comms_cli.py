@@ -43,12 +43,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-import yaml
 from pydantic import SecretStr
 
 from loremaster.agents import AgentRegistry
 from loremaster.briefs import STANDING_BRIEF, BriefLedger, UnknownBriefError
-from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
+from loremaster.config import (
+    LoreConfig,
+    load_surreal_only_config,
+    resolve_config_value,
+    resolve_secret,
+)
 from loremaster.messages import MessageLedger
 
 
@@ -101,16 +105,6 @@ class _ResolvedCoordinate(NamedTuple):
     database: str | None
 
 
-def _load_surreal_config(config_path: Path) -> LoreConfig:
-    """Parse ``config_path`` into a :class:`LoreConfig` WITHOUT touching the
-    environment — the env-free :meth:`LoreConfig.model_validate`, NEVER
-    :func:`load_config` (which resolves the REQUIRED Anthropic key eagerly and
-    would abort this creds-free read-only CLI). Fable ruling FORK 2 rider 3.
-    """
-    raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    return LoreConfig.model_validate(raw)
-
-
 def _effective_config_path(args: argparse.Namespace, config_path: Path | None) -> Path:
     """The project ``lore.yaml`` the DEFAULT (no ``--url``) path reads. ``config_path``
     is the tests' injection point; production passes it via ``--config`` (the hook's
@@ -144,7 +138,7 @@ def _resolve_coordinate(
         return _ResolvedCoordinate(
             url=args.url, namespace=args.namespace, database=args.database
         )
-    config = _load_surreal_config(_effective_config_path(args, config_path))
+    config = load_surreal_only_config(_effective_config_path(args, config_path))
     return _ResolvedCoordinate(
         url=config.surreal.url,
         namespace=config.surreal.namespace,
@@ -173,7 +167,7 @@ def _resolve_credentials(
     def _surreal() -> LoreConfig:
         nonlocal surreal
         if surreal is None:
-            surreal = _load_surreal_config(_effective_config_path(args, config_path))
+            surreal = load_surreal_only_config(_effective_config_path(args, config_path))
         return surreal
 
     user = args.user if args.user is not None else resolve_config_value(_surreal().surreal.user_env)

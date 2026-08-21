@@ -830,6 +830,33 @@ def load_config(path: str | Path) -> LoreConfig:
     return config
 
 
+def load_surreal_only_config(config_path: str | Path) -> LoreConfig:
+    """Parse a ``lore.yaml`` into a :class:`LoreConfig` WITHOUT touching the
+    environment — THE shared creds-free config load for admin CLIs.
+
+    The counterpart to :func:`load_config`: the env-free
+    :meth:`LoreConfig.model_validate` ONLY, so it NEVER resolves the REQUIRED
+    ``anthropic.api_key_env`` eagerly (which would abort a creds-free admin tool on an
+    unset embedding key). The surreal-block credentials are resolved lazily by each
+    tool at store-construction time (via :func:`resolve_config_value` /
+    :func:`resolve_secret`). This is the ONE implementation both
+    :mod:`loremaster.comms_cli` and :mod:`loremaster.principals` call — a private copy
+    in either is the #102-class clone this promotion (packet 49 DRY) removed.
+
+    Args:
+        config_path: The filesystem path to the project ``lore.yaml``.
+
+    Returns:
+        The parsed, validated configuration — NO environment access.
+
+    Raises:
+        pydantic.ValidationError: If the YAML contents violate the schema.
+        FileNotFoundError: If ``config_path`` does not exist.
+    """
+    raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    return LoreConfig.model_validate(raw)
+
+
 def resolve_secret(env_var_name: str, env_file: Path | None = None) -> SecretStr:
     """Resolve a SECRET from the environment, optionally falling back to a file.
 

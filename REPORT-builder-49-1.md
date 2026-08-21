@@ -20,9 +20,8 @@ contract files, the clone-target source). No capability gap blocked the mission.
     (`$CLAUDE_SESSION_ID` empty; the hook reads `.session_id` from its own stdin JSON). The hook
     **fails open to `REPORT-builder-49-1.md`** (its v1 default), which is exactly my owed
     artifact — so the gate covers me correctly regardless. Not a blocker; flagged for honesty.
-  - `principals._load_surreal_config` is a 2-line clone of `comms_cli._load_surreal_config`
-    (creds-free config load). The shared home is `loremaster.config` — OUT of my writable set —
-    so I flag the escalation (exact edit below) rather than silently forking. See DECISIONS.
+  - DRY escalation #1 (the config-loader clone) was **RULED PROMOTE by lead-49 (directive #5080)**
+    and is now DONE — see §PROMOTION. Writable set was expanded to add `config.py` + `comms_cli.py`.
 - **Packages considered:** `secrets.token_urlsafe` — `keep` (stdlib; read the stdlib signature —
   correct for a 256-bit high-entropy token). `hashlib` — `replace` with the existing
   `loremaster.index.records.sha512_hex` (read its source `records.py:108-123`). `argparse` —
@@ -194,22 +193,53 @@ $ uv run python scripts/registration_sites.py   →   exit 0
 
 ---
 
+## PROMOTION — DRY #1, RULED PROMOTE by lead-49 (directive #5080, acked)
+
+The creds-free config-load POLICY is now ONE implementation. Done exactly as ruled:
+- **`loremaster/loremaster/config.py`** — added `load_surreal_only_config(config_path) -> LoreConfig`
+  (the `yaml.safe_load` + `LoreConfig.model_validate` creds-free load; docstring names it THE
+  shared loader both admin CLIs call, and names the #102-class clone it removes). Placed right
+  after `load_config` (its eager-Anthropic counterpart).
+- **`loremaster/loremaster/comms_cli.py`** — deleted the private `_load_surreal_config`; both call
+  sites (`_resolve_coordinate`, `_resolve_credentials`) now call `load_surreal_only_config`;
+  removed the now-unused `import yaml`. No other comms_cli logic touched.
+- **`loremaster/loremaster/principals.py`** — deleted the private `_load_surreal_config`;
+  `_dispatch` now calls `load_surreal_only_config`; removed the now-unused `import yaml`.
+
+**MUTATION PROOF (sharing proven, existing pins catch it in BOTH suites — no new pin needed).**
+Broke the promoted function on the REAL tree (`raise RuntimeError("MUTATION-PROOF…")` as its first
+line), ran one config-load pin from each suite, then restored byte-exact (verified: the 3 pins go
+GREEN again, `grep MUTATION-PROOF` = clean, `git diff` = only the promotion):
+```
+# UNDER MUTATION — both suites' config-load pins RED:
+FAILED tests/test_principals_cli.py::TestVerbsExecuteDirectly::test_add_creates_a_principal_on_invocation
+FAILED tests/test_comms_cli.py::TestDefaultCoordinateResolution::test_no_override_resolves_the_config_surreal_coordinate
+FAILED tests/test_comms_cli.py::TestDefaultCoordinateResolution::test_default_resolution_does_not_require_an_anthropic_key
+3 failed, 11 deselected
+# AFTER RESTORE — the same 3 pins GREEN: 3 passed, 11 deselected
+```
+Both `principals` and `comms_cli` redden → both route through the shared seam (a private copy in
+either would have stayed green). Restore is a mutation on the real tree with an Edit-based
+byte-exact revert (no git mutation) — the `grep` + `git diff --stat` (3 files, promotion only)
+prove the tree is clean.
+
+**RE-RUN GATES (post-promotion, from `loremaster/`):**
+```
+$ pytest test_principal_keys_schema.py test_principal_keys_store.py test_principals_cli.py \
+      test_principals_store.py test_retry_seam.py test_comms_cli.py -n auto -q
+775 passed, 1 warning in 12.40s        (762 packet-49/retry + 13 comms_cli)
+
+$ bash scripts/typecheck.sh  →  MY 5 files (config.py, comms_cli.py, principals.py,
+      principal_keys.py, surreal_schema.py): 0 errors (grep-confirmed). The 102 errors remain the
+      #333 packet-39 posture-WIP bound (unchanged; I touched none of those files).
+$ uv run ruff check .        →  All checks passed!
+```
+
+---
+
 ## DECISIONS / FLAGS (operator awareness — none blocks the packet)
 
-1. **DRY escalation (config loader).** `principals._load_surreal_config` duplicates
-   `comms_cli._load_surreal_config`. This is shared POLICY (the creds-free "use
-   `LoreConfig.model_validate`, NOT `load_config`" decision must agree across both admin CLIs).
-   The shared home is `loremaster.config` (out of my writable set). **Recommended edit** (yours to
-   rule): add to `loremaster/loremaster/config.py`
-   ```python
-   def load_surreal_only_config(config_path: Path) -> LoreConfig:
-       """Parse config_path WITHOUT resolving the eager Anthropic key (creds-free admin
-       CLIs). The ONE shared creds-free config load — comms_cli + principals both call it."""
-       raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-       return LoreConfig.model_validate(raw)
-   ```
-   then both `comms_cli` and `principals` call it (and delete their private copies). I did NOT do
-   this — it touches two out-of-scope files (`config.py`, `comms_cli.py`).
+1. **DRY escalation (config loader) — RESOLVED via §PROMOTION** (lead-49 directive #5080).
 
 2. **verify resolution shape (decision, design-sanctioned).** I used the two-query delegation
    (hash lookup dereferencing only `principal.email`, then `get_by_email` for the full principal)
@@ -237,7 +267,9 @@ $ uv run python scripts/registration_sites.py   →   exit 0
 ---
 
 ## The frozen contract was NOT modified
-I changed only the 3 writable production files. No contract test file
-(`test_principal_keys_*.py`, `test_principals_cli.py`, `test_principals_store.py`,
-`test_retry_seam.py`) was touched. No test seemed wrong — every pin is satisfiable and each
-discriminates a plausible wrong build (I read them all before building). No STOP-and-flag.
+I changed only the 5 writable production files (the original 3 + `config.py` + `comms_cli.py`,
+the latter two added by directive #5080 for the promotion — comms_cli's shared loader only, no
+other comms_cli logic). No contract test file (`test_principal_keys_*.py`, `test_principals_cli.py`,
+`test_principals_store.py`, `test_retry_seam.py`) was touched, and `test_comms_cli.py` was run but
+not modified. No test seemed wrong — every pin is satisfiable and each discriminates a plausible
+wrong build (I read them all before building). No STOP-and-flag.

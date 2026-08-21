@@ -76,11 +76,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import yaml
 from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal
 
-from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
+from loremaster.config import (
+    LoreConfig,
+    load_surreal_only_config,
+    resolve_config_value,
+    resolve_secret,
+)
 from loremaster.index.records import sha512_hex
 from loremaster.sanitise import safe_str
 from loremaster.store._txn import (
@@ -767,17 +771,6 @@ _SECRET_ENTROPY_BYTES = 32
 _ABSENT_FIELD = "-"
 
 
-def _load_surreal_config(config_path: Path) -> LoreConfig:
-    """Parse ``config_path`` into a :class:`LoreConfig` WITHOUT touching the
-    environment — the env-free :meth:`LoreConfig.model_validate`, NEVER
-    :func:`loremaster.config.load_config` (which resolves the REQUIRED Anthropic key
-    EAGERLY and would abort this creds-free admin CLI on an unset embedding key —
-    LEAD RULING #6, the ``comms_cli`` pattern). The surreal-block credentials are
-    resolved lazily at store-construction time by the sibling factories."""
-    raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    return LoreConfig.model_validate(raw)
-
-
 def _require_config(args: argparse.Namespace) -> Path:
     """The project ``lore.yaml`` the CLI resolves its store coordinate from. Loud
     failure (non-zero exit) when ``--config`` is absent."""
@@ -1021,7 +1014,7 @@ async def _dispatch(args: argparse.Namespace) -> int:
     # a top-level import here is a cycle. PLC0415 is a house-ignored idiom.
     from loremaster.principal_keys import PrincipalKeyStoreError, build_principal_key_store
 
-    config = _load_surreal_config(_require_config(args))
+    config = load_surreal_only_config(_require_config(args))
     principal_store = build_principal_store(config)
     key_store = build_principal_key_store(config)
     try:
