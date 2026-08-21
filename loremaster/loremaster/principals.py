@@ -742,10 +742,10 @@ class PrincipalStore:
 
 # --------------------------------------------------------------------------- #
 # The admin CLI (packet 49, design §F6): ONE CLI covering BOTH principal verbs and
-# key verbs, invoked ``python -m loremaster.principals``. Lib + CLI in the ONE
-# module so ``-m loremaster.principals`` runs this module's ``__main__`` guard
-# directly (a sibling ``principals_cli.py`` would force ``-m loremaster.principals_cli``,
-# violating the fixed invocation).
+# key verbs, invoked as the ``lore-adm`` console script (``[project.scripts]
+# lore-adm = "loremaster.principals:main"`` in pyproject.toml; operator ruling
+# 2026-08-20 — NOT ``python -m loremaster.principals``, which stays a harmless
+# fallback via the kept ``__main__`` guard). Lib + CLI live in the ONE module.
 #
 # It clones the ``index/cli.py`` house idiom (``build_parser`` + ``main(argv) -> int``)
 # and the ``comms_cli.py`` CREDS-FREE config load (``LoreConfig.model_validate``, NOT

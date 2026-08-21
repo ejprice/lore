@@ -169,6 +169,11 @@ A module under `loremaster/loremaster/` is reachable via
 `podman exec lore-<slug> /app/.venv/bin/python -m loremaster.principals …` immediately. The
 Containerfile comment at `:127-129` already establishes the second-entrypoint precedent.
 
+> ⚠ **SUPERSEDED 2026-08-20 (packet 49 close-out):** the CLI ships as the **`lore-adm`**
+> console script (`[project.scripts] lore-adm = "loremaster.principals:main"`), invoked
+> `podman exec lore-<slug> lore-adm …` — NOT the `-m loremaster.principals` form (which works
+> but is an unwieldy admin interface). The `-m` path is kept only as a harmless fallback.
+
 **Template: `scripts/snapshot_gc.py`** — argparse, async, `--user-env`/`--password-env` (env var
 **names**, never values, resolved via `resolve_config_value`/`resolve_secret`), and **strict
 dry-run unless `--execute`**. That posture is mandatory for `delete` and `suspend`.

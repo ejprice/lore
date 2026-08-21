@@ -1,4 +1,4 @@
-"""Contract — packet 49, the admin CLI (``python -m loremaster.principals``).
+"""Contract — packet 49, the admin CLI (the ``lore-adm`` console script).
 
 Written by ``contract-49-1`` (2026-08-20). The builder builds FROM this; it writes
 NO production code. STUB surfaces exist (``build_parser`` returns a BARE parser;
@@ -302,10 +302,12 @@ def _is_main_guard(node: ast.stmt) -> bool:
 
 class TestMainGuardIsLast:
     def test_main_guard_is_the_last_top_level_statement(self) -> None:
-        """``principals.py`` runs as ``python -m loremaster.principals``, so anything after
-        the ``__main__`` guard would not execute (main() runs first) — the def-after-guard
-        NameError class. ``principals.py`` needs its OWN pin (``test_server_entrypoint`` /
-        ``test_scout`` scan per file; there is no global scan)."""
+        """Under the ``python -m loremaster.principals`` FALLBACK the ``__main__`` guard runs
+        inline, so anything after it would not execute (main() runs first) — the
+        def-after-guard NameError class. (The primary ``lore-adm`` console script calls
+        main() after import and is unaffected, but the fallback must stay sound.)
+        ``principals.py`` needs its OWN pin (``test_server_entrypoint`` / ``test_scout`` scan
+        per file; there is no global scan)."""
         source = Path(p_module.__file__).read_text(encoding="utf-8")
         body = ast.parse(source).body
         guards = [i for i, node in enumerate(body) if _is_main_guard(node)]
