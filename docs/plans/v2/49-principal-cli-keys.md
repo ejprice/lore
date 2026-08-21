@@ -3,8 +3,10 @@ size ~0.25 wu · wave D · depends: 48 · DEPLOY: yes (the CLI must be in the im
 spec: docs/design/2026-08-01-multi-user-lore-proposal.md §Part 1B + §Part 1C (this file only points)
 
 ## Mission
-Mint and manage principals + their API keys from inside the image
-(`podman exec lore-<slug> python -m loremaster.principals …`).
+Mint and manage principals + their API keys from inside the image via the
+`lore-adm` console script (operator-ruled 2026-08-20 — a `[project.scripts]`
+entry point `lore-adm = "loremaster.principals:main"`, NOT the unwieldy
+`python -m loremaster.principals`): `podman exec lore-<slug> lore-adm …`.
 
 ## Scope IN (headlines; the spec carries the mechanics)
 - CLI per the house idiom and the `snapshot_gc.py` template (argparse, env-var NAMES not

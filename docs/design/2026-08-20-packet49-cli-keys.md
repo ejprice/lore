@@ -164,7 +164,14 @@ Citations: repo CLAUDE.md "ONE IMPLEMENTATION"/brief-base §6; `lorerunes.blankn
 
 ## F6 — CLI module: one CLI, in `principals.py` [RULED by sidecar]
 
-**RULING: ONE CLI covering BOTH principal verbs and key verbs, living in `loremaster/loremaster/principals.py` (lib + CLI in the one module), invoked `python -m loremaster.principals`.**
+**RULING: ONE CLI covering BOTH principal verbs and key verbs, living in `loremaster/loremaster/principals.py` (lib + CLI in the one module).**
+
+> ⚠ **INVOCATION SUPERSEDED (operator, 2026-08-20 — POST-close-out):** the CLI is invoked
+> via the **`lore-adm` console script** (`[project.scripts] lore-adm = "loremaster.principals:main"`
+> in `loremaster/pyproject.toml`), NOT `python -m loremaster.principals`. The reasoning below
+> for keeping the CLI IN `principals.py` STILL HOLDS (the entry point targets
+> `loremaster.principals:main`, and the `__main__` guard is kept so `-m` remains a harmless
+> fallback); only the operator-facing invocation changed — `podman exec lore-<slug> lore-adm …`.
 
 - **Why in `principals.py` (not a new sibling, not a package):** the packet fixes the invocation at `-m loremaster.principals`, and `principals.py` is a MODULE (not a package), so `-m loremaster.principals` runs *that module's* `__main__` guard directly. Putting the CLI in a sibling `principals_cli.py` would force `-m loremaster.principals_cli` (violates the fixed invocation); converting `principals` into a package (`principals/__main__.py`) is a rename/move on a module packet 48 *just* shipped — churn and risk for no behavioural gain. So the CLI (`build_parser()` + `main(argv)->int` + the `__main__` guard) is appended to `principals.py` after `PrincipalStore`, with the guard **LAST**.
 - **House idiom to copy:** `index/cli.py` — `build_parser() -> argparse.ArgumentParser` (separately testable), `prog="loremaster.principals"`, `main(argv: list[str] | None = None) -> int`, non-zero exit on failure; env-var **NAMES** via `resolve_config_value`/`resolve_secret` (never values); loud-on-failure/silent-on-success. `snapshot_gc.py` is the async + `SurrealConnectionError`-laundering template — copy its argparse/async/env-var-NAMES/loud-on-failure shape but **NOT** its dry-run/`--execute` gating (struck by the operator, below).

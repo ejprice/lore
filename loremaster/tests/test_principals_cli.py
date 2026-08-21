@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -216,9 +218,10 @@ async def _db_snapshot(env: SurrealEnv) -> Any:
 
 class TestParserSurface:
     def test_build_parser_prog_is_the_fixed_invocation(self) -> None:
-        """The CLI is invoked ``python -m loremaster.principals`` (design §F6), so the
-        parser ``prog`` is exactly that — GREEN against the stub (a structural anchor)."""
-        assert p_module.build_parser().prog == "loremaster.principals"
+        """The CLI is invoked as the ``lore-adm`` console script (operator ruling
+        2026-08-20 — ``python -m loremaster.principals`` is an unwieldy admin interface),
+        so the parser ``prog`` is exactly that (a structural anchor)."""
+        assert p_module.build_parser().prog == "lore-adm"
 
     @pytest.mark.parametrize("verb", _ALL_VERBS)
     def test_every_verb_is_recognised(self, verb: str) -> None:
@@ -786,3 +789,34 @@ class TestAddRole:
         parser = p_module.build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["add", "--email", _EMAIL, "--role", "bogus"])
+
+
+# --------------------------------------------------------------------------- #
+# Console-script entry point (operator ruling 2026-08-20): the admin CLI is invoked
+# as ``lore-adm``, a proper console script — NOT ``python -m loremaster.principals``
+# (unwieldy in ``podman exec``, exposes the internal module path). Pin BOTH that
+# pyproject WIRES the entry point AND that its declared target RESOLVES to a callable:
+# an entry point naming a nonexistent target ships a ``lore-adm`` that ImportErrors on
+# first run — green source but a broken installed console script.
+# --------------------------------------------------------------------------- #
+
+
+class TestConsoleScriptEntryPoint:
+    def test_lore_adm_entry_point_resolves_to_a_real_callable(self) -> None:
+        """``pyproject [project.scripts]`` wires ``lore-adm`` to ``loremaster.principals:main``,
+        and that DECLARED target imports to a callable — resolved exactly as the console-script
+        machinery would (import the module, getattr the attr). RED if the entry point is
+        absent/mis-wired, or if the target string names a nonexistent module/attribute (a
+        broken ``lore-adm`` that would ImportError on first invocation)."""
+        pyproject_path = Path(p_module.__file__).resolve().parents[1] / "pyproject.toml"
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        target = data.get("project", {}).get("scripts", {}).get("lore-adm")
+        assert target == "loremaster.principals:main", (
+            "pyproject [project.scripts] must wire `lore-adm` to `loremaster.principals:main`; "
+            f"got {target!r}"
+        )
+        module_name, _, attribute = target.partition(":")
+        entry_point = getattr(importlib.import_module(module_name), attribute)
+        assert callable(entry_point), (
+            f"the console-script target {target!r} must resolve to a callable; got {entry_point!r}"
+        )

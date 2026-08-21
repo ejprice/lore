@@ -761,7 +761,11 @@ class PrincipalStore:
 # listing), LOUD on failure (a stderr line + non-zero exit).
 # --------------------------------------------------------------------------- #
 
-_CLI_PROG = "loremaster.principals"
+# The program name users see in ``--help`` / usage / error prefixes: the installed
+# console-script name (pyproject ``[project.scripts] lore-adm``), the operator-mandated
+# admin invocation (2026-08-20), NOT the internal module path. ``python -m
+# loremaster.principals`` still works as a harmless fallback via the ``__main__`` guard.
+_CLI_PROG = "lore-adm"
 
 # The minted key secret's entropy (design §F4): ``secrets.token_urlsafe(32)`` — 256
 # bits of URL-safe randomness, the high-entropy random token a fast unsalted content
@@ -853,7 +857,7 @@ def build_principal_store(config: LoreConfig) -> PrincipalStore:
 def build_parser() -> argparse.ArgumentParser:
     """The argparse parser for the admin CLI (design §F6).
 
-    ``prog`` is the fixed invocation ``loremaster.principals``; ``--config`` names the
+    ``prog`` is the installed console script ``lore-adm``; ``--config`` names the
     project ``lore.yaml`` the store coordinate is resolved from. The nine verbs are
     subcommands, each naming its principal by ``--email`` (except the ``list`` read).
     There is NO ``--execute`` flag and NO dry-run mode — every verb executes directly

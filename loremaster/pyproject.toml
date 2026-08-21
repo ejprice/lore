@@ -52,6 +52,12 @@ dependencies = [
     "networkx>=3.6.1",
 ]
 
+[project.scripts]
+# ``lore-adm`` is the operator-mandated admin invocation (2026-08-20 ruling): a proper
+# console script, NOT ``python -m loremaster.principals`` (unwieldy in ``podman exec``,
+# exposes the internal module path). Wired to the CLI entrypoint ``principals:main``.
+lore-adm = "loremaster.principals:main"
+
 [tool.uv.sources]
 lorerunes = { workspace = true }
 lorescribe = { workspace = true }
