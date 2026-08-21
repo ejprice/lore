@@ -739,3 +739,50 @@ class TestRenderSafety:
             "canonical sanitiser (sanitise_line/safe_str) — a private clone or verbatim "
             "render is a #102-class defect (adversary FINDING 4 / R3)"
         )
+
+
+# --------------------------------------------------------------------------- #
+# R2 (OPERATOR RULING — add --role, 2026-08-20, delta re-audit): the `add` verb can
+# mint an admin. This is an ADDITIVE class (it does NOT modify any existing frozen
+# pin). `--role` is a closed choice {member, admin}; omitted → the store DEFAULT
+# (member, least-privilege). The admin + member pins DISCRIMINATE: a build that
+# ignored --role (always member) fails the admin pin; a build that always minted admin
+# fails the member pin.
+# --------------------------------------------------------------------------- #
+
+
+async def _role_of(cli_env: _CliEnv, email: str) -> str | None:
+    """The stored role for ``email`` — read THROUGH the store mapper (``get_by_email``),
+    so a mis-mapped role is caught, not just a raw column read."""
+    store = p_module.build_principal_store(_make_config(cli_env.env.database))
+    try:
+        await store.ensure_ready()
+        principal = await store.get_by_email(email)
+    finally:
+        await store.close()
+    return None if principal is None else principal.role
+
+
+class TestAddRole:
+    async def test_add_role_admin_mints_an_admin(self, cli_env: _CliEnv) -> None:
+        """`add --email e --role admin` executes directly and the principal reads back
+        with ``role == 'admin'``. RED before the verb learns ``--role`` (argparse rejects
+        the unknown flag → SystemExit)."""
+        rc = await _run_cli(cli_env.argv("add", "--email", _EMAIL, "--role", "admin"))
+        assert rc == 0
+        assert await _role_of(cli_env, _EMAIL) == "admin"
+
+    async def test_bare_add_defaults_to_member(self, cli_env: _CliEnv) -> None:
+        """The DISCRIMINATING control: a bare ``add`` (no ``--role``) takes the store
+        DEFAULT ``member`` (least-privilege). A build that hardcoded ``admin`` — or minted
+        the wrong default — fails HERE while the admin pin above passes."""
+        rc = await _run_cli(cli_env.argv("add", "--email", _EMAIL_B))
+        assert rc == 0
+        assert await _role_of(cli_env, _EMAIL_B) == "member"
+
+    def test_add_role_rejects_an_out_of_domain_value(self) -> None:
+        """``--role`` is a CLOSED argparse choice {member, admin}: a bogus value is a
+        parse-time SystemExit, never a value reaching the store."""
+        parser = p_module.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["add", "--email", _EMAIL, "--role", "bogus"])

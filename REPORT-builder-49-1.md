@@ -266,6 +266,74 @@ $ uv run ruff check .        →  All checks passed!
 
 ---
 
+## COLD-AUDIT DELTA FIXES (directive #5083 — audit-49-1 NO-GO, 3 items, acked)
+
+Writable set expanded (operator-authorized): `+tests/_surreal_harness.py`,
+`+tests/test_surreal_harness.py`, `+` a NEW class in `test_principals_cli.py`, `+` `--role` in
+`principals.py`. No existing frozen contract pin modified.
+
+**FINDING A (blocker, packet-49-caused) — one-word CORPSE_PROSE fix.** `principals.py`'s
+`_SECRET_ENTROPY_BYTES` comment read `high-entropy token` — a banned literal (it names the deleted
+pkt-42 entropy scrubber), tripping
+`test_secret_leak_vectors.py::TestTheEntropyMachineryIsGone::test_no_PRODUCTION_prose_teaches_a_mechanism_it_does_not_run`.
+Fixed to `high-entropy random token` (the exact safe phrasing `principal_keys.py:20` already uses).
+Grep confirmed it was the ONLY production occurrence.
+```
+$ pytest test_secret_leak_vectors.py::...::test_no_PRODUCTION_prose_teaches_a_mechanism_it_does_not_run
+1 passed
+```
+
+**FINDING B (operator ruling: "Why cite the number of imports in a docstring? It is mutable.
+Delete it.").** `_surreal_harness.py`'s docstring cited two mutable counts (`56 test files import
+this harness` / `40 test files … calls connect_admin`). Reworded to keep the QUALITATIVE point with
+NO number ("Many test files import this harness at module level, so … a COLLECTION error across all
+of them. (A SMALLER population calls `connect_admin`.)"). Then DELETED the count-checking test
+`test_surreal_harness.py::TestTheHarnessDeclaresNoRetryPolicyOfItsOwn::test_the_harnesss_docstring_counts_are_the_DERIVED_counts`
+— I VERIFIED it guards ONLY the counts (a population-differ assert + two count-match asserts, nothing
+else) before deleting. Its sole consumer-helper `_connect_admin_caller_files` became orphaned
+(grep-confirmed file-local, no other consumer in the tree) → deleted it too. Kept
+`_harness_importer_files` (still used by `test_the_module_level_imports_stay_confined_to_the_sdk_and_records`).
+No other harness test touched.
+```
+$ pytest test_surreal_harness.py -n auto -q   →   56 passed
+```
+
+**R2 (operator ruling: add `--role`) — RED → GREEN.** The `add` verb could not mint an admin. Added
+`--role` to the `add` subparser with `choices=list(_PRINCIPAL_ROLES)` (the choice domain DERIVES from
+the schema role tuple — a role added there becomes a CLI choice automatically, no drift), default
+`None` → the store's `member` default; `_cmd_add` now passes `role=args.role` to `create`. New
+ADDITIVE class `TestAddRole` in `test_principals_cli.py` (3 pins), contract-first:
+```
+# RED (before impl — the verb does not know --role):
+FAILED tests/test_principals_cli.py::TestAddRole::test_add_role_admin_mints_an_admin
+  → loremaster.principals: error: unrecognized arguments: --role admin  (SystemExit 2)
+  (1 failed, 2 passed — the member control + the bogus-value SystemExit already held)
+# GREEN (after impl):
+tests/test_principals_cli.py  →  44 passed  (41 frozen + 3 new)
+```
+The admin + member pins DISCRIMINATE: an ignore-`--role` build (always member) fails the admin pin;
+an always-admin build fails the member pin.
+
+## GATES (post-delta, all GREEN)
+```
+# the 5 packet-49 suites + comms_cli + secret_leak_vectors + surreal_harness (-n auto):
+$ pytest test_principal_keys_schema.py test_principal_keys_store.py test_principals_cli.py \
+      test_principals_store.py test_retry_seam.py test_comms_cli.py \
+      test_secret_leak_vectors.py test_surreal_harness.py -n auto -q
+1046 passed, 1 warning in 12.04s
+$ uv run ruff check .                         →   All checks passed!
+$ bash scripts/typecheck.sh                   →   0 errors in ALL my touched files
+      (principals/principal_keys/surreal_schema/config/comms_cli.py + _surreal_harness.py +
+       test_surreal_harness.py + test_principals_cli.py); the 102 remain the #333 pkt-39 bound.
+$ uv run python scripts/pending_contract_gate.py --currency
+  CURRENCY : PASS — every claimed gate is GREEN or OWNED (EXIT 0, no RED_ORPHANED)
+    ruff       GREEN
+    typecheck  RED_ADJUDICATED — owned by packet-39-pending-build (the #333 bound)
+    pytest     RED_ADJUDICATED — owned by packet-39-pending-build (the #333 bound)
+```
+The two RED legs are the packet-39 pre-build bound (owned, self-destructing as packet 39's
+build lands its symbols) — NOT orphaned, and my work added ZERO to them (my files are clean).
+
 ## The frozen contract was NOT modified
 I changed only the 5 writable production files (the original 3 + `config.py` + `comms_cli.py`,
 the latter two added by directive #5080 for the promotion — comms_cli's shared loader only, no

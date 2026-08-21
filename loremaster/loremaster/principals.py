@@ -99,6 +99,7 @@ from loremaster.store._txn import (
     signin_credentials,
 )
 from loremaster.store.surreal_schema import (
+    _PRINCIPAL_ROLES,
     _PRINCIPAL_STATUS_ACTIVE,
     _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
@@ -763,8 +764,8 @@ class PrincipalStore:
 _CLI_PROG = "loremaster.principals"
 
 # The minted key secret's entropy (design §F4): ``secrets.token_urlsafe(32)`` — 256
-# bits of URL-safe randomness, the high-entropy token a fast unsalted content hash is
-# correct for (NOT a password).
+# bits of URL-safe randomness, the high-entropy random token a fast unsalted content
+# hash is correct for (NOT a password).
 _SECRET_ENTROPY_BYTES = 32
 
 # The dash shown for an absent optional field in a rendered listing.
@@ -880,6 +881,12 @@ def build_parser() -> argparse.ArgumentParser:
     add = _with_email("add", "create a principal")
     add.add_argument("--display-name", default=None, help="an optional presentational label")
     add.add_argument(
+        "--role",
+        choices=list(_PRINCIPAL_ROLES),
+        default=None,
+        help="the authorization role (default: member, least-privilege)",
+    )
+    add.add_argument(
         "--expires", default=None, help="an optional ISO-8601 expiry instant (omitted = never)"
     )
 
@@ -917,7 +924,10 @@ async def _cmd_add(
 ) -> int:
     expires_at = _parse_instant(args.expires) if args.expires else None
     await principal_store.create(
-        email=args.email, display_name=args.display_name, expires_at=expires_at
+        email=args.email,
+        role=args.role,
+        display_name=args.display_name,
+        expires_at=expires_at,
     )
     return 0
 

@@ -21,14 +21,11 @@ broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
-56 test files import this harness, so a module-level import of code still being
-built would turn one mid-TDD breakage into a COLLECTION error across all of them.
-(A SMALLER, DIFFERENT population — 40 test files — calls ``connect_admin``; those two
-numbers are not interchangeable, and committed prose conflated them until fff1382.
-Both are pinned against an AST derivation in ``test_surreal_harness.py``, so this
-sentence cannot rot.) The new-code imports (``SurrealStore`` / ``generate_ddl`` /
-``Candidate``) live in the individual test files, so such a collection error stays
-confined to them.
+Many test files import this harness at module level, so a module-level import of code
+still being built would turn one mid-TDD breakage into a COLLECTION error across all
+of them. (A SMALLER population calls ``connect_admin``.) The new-code imports
+(``SurrealStore`` / ``generate_ddl`` / ``Candidate``) live in the individual test
+files, so such a collection error stays confined to them.
 
 That isolation is why the store's shared retry seam (``loremaster.store._txn``) is
 reached by IN-FUNCTION import only — never at module level (operator RULING 1,

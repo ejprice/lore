@@ -1596,25 +1596,6 @@ def _harness_importer_files() -> list[str]:
     return sorted(importers)
 
 
-def _connect_admin_caller_files() -> list[str]:
-    """Every test file that CALLS ``connect_admin`` — a SMALLER, DIFFERENT population."""
-    import ast
-
-    callers = []
-    for path in _test_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if (isinstance(func, ast.Name) and func.id == "connect_admin") or (
-                isinstance(func, ast.Attribute) and func.attr == "connect_admin"
-            ):
-                callers.append(path.name)
-                break
-    return sorted(callers)
-
-
 class TestTheHarnessDeclaresNoRetryPolicyOfItsOwn:
     """The structural half of finding #150: there is nothing left to drift.
 
@@ -1766,49 +1747,3 @@ class TestTheHarnessDeclaresNoRetryPolicyOfItsOwn:
             for name in _module_level_imported_modules(source)
             if name.startswith("loremaster")
         ], "the scan flagged an import that does NOT execute at module import time"
-
-    def test_the_harnesss_docstring_counts_are_the_DERIVED_counts(self) -> None:
-        """The two populations in the harness docstring are re-derived, never trusted.
-
-        "21 test files import this harness" was committed at four sites and was FALSE:
-        **35** files import it; **21** call ``connect_admin``. Two real counts of two
-        different populations, conflated into one sentence — the same defect shape as
-        this repo's ten-`_query`-bodies-vs-eleven-bootstraps lesson, and one of the four
-        sites was inside a FAILURE MESSAGE, so a reader was told the wrong number at the
-        exact moment the gate fired (audit-150 R2).
-
-        Prose that describes behaviour must be DERIVED from the behaviour or CHECKED
-        against it. This is the check.
-        """
-        import re
-
-        docstring = _surreal_harness.__doc__ or ""
-        importers = _harness_importer_files()
-        callers = _connect_admin_caller_files()
-
-        # The two populations are genuinely different, or this pin proves nothing.
-        assert set(callers) < set(importers), (
-            "every `connect_admin` caller should also be an importer, and the two sets "
-            "should not be equal — if they have become equal, the docstring's "
-            "distinction is no longer meaningful and should be rewritten deliberately"
-        )
-
-        stated_importers = re.findall(r"(\d+) test files import this harness", docstring)
-        stated_callers = re.findall(r"(\d+) test files — calls ``connect_admin``", docstring)
-        assert len(stated_importers) == 1 and len(stated_callers) == 1, (
-            f"the harness docstring no longer states exactly one importer count and one "
-            f"`connect_admin`-caller count in the form this pin reads "
-            f"(found {stated_importers} and {stated_callers}). Rewording is fine — "
-            f"update this pin's patterns in the same diff so the numbers stay checked."
-        )
-        assert int(stated_importers[0]) == len(importers), (
-            f"the harness docstring says {stated_importers[0]} test files import it; "
-            f"{len(importers)} actually do. That number is the stated justification for "
-            f"RULING 1's in-function import, so understating it understates the blast "
-            f"radius."
-        )
-        assert int(stated_callers[0]) == len(callers), (
-            f"the harness docstring says {stated_callers[0]} test files call "
-            f"`connect_admin`; {len(callers)} actually do. Do not collapse this into the "
-            f"importer count — they are different populations (audit-150 R2)."
-        )
