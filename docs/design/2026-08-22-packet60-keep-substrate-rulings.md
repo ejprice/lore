@@ -406,3 +406,80 @@ item surfaced loudly is the Fork-A storage divergence from design §2.1's litera
 (§A flag) — ruled as a field link with a countermand condition stated, not a silent narrowing. If
 the operator reads §2.1's `keeps` as a hard graph-edge requirement, that single ruling flips; every
 other ruling is independent of it.
+
+---
+
+## Follow-up ruling FR-1 (2026-08-22) — packet-49 stale-prose fold + the recurrence invariant
+
+Ruling on `lead-60`'s scope fork (`lore_comms` #5152 · finding **#398** · cold audit
+`coldaudit-60-w1` = **NO-GO-prose-only**). Ground-truthed both cited sites this session:
+`surreal_schema.py:133-136` ("the field specs / emitters below are RED stubs; the builder greens
+them") and `:1855-1868` ("These emit NOTHING … NOT folded into generate_ddl. Do NOT 'fix' them")
+both **factually contradict the committed code** — `_principal_key_statements` is fully implemented
+(real table + fields + two UNIQUE indexes) and IS folded into `generate_ddl` at the
+`_principal_key_statements()` line. Confirmed same-class defect as the 5 in-flight packet-60 comments.
+
+**Part 1 — the 5 packet-60 wave-1 stale comments (keeps.py, surreal_schema.py ~1726/~1959,
+_enforced_relations_scaffold.py): not a fork.** IN scope, must-fix-before-commit. The fixer retires
+them; they ride the packet-60 wave-1 commit. (Confirming, not ruling — the cold audit already put
+them in scope.)
+
+**Part 2 — SCOPE FORK: fold the 2 packet-49 comment fixes? → RULING (a): FOLD IN, as a SEPARATE
+one-concern commit, durably logged.**
+- The fixer is already editing `surreal_schema.py`; it also retires the packet-49 stale-STUB
+  comment blocks (`:133-136`, `:1855-1868`) in the same pass.
+- **BUT commit them SEPARATELY** — a distinct one-concern commit (e.g. `docs(49): retire stale
+  RED-STUB comments on the greened principal_key slice`), NOT bundled into the packet-60 wave-1
+  commit (the repo's one-concern-per-commit law). The fixer edits both in one file pass; the lead
+  stages them into two commits.
+- **The wave close-out Log line AND that commit's body cite #398**, so the packet-49 scope-crossing
+  is DURABLY VISIBLE to the (offline) operator — not silently absorbed.
+- **Rationale:** don't-kick-the-can (a confirmed defect a fixer is one edit away from, punted =
+  a fresh context must rediscover it) · same file, same class, nearly free · **comment-only, zero
+  functional/gate/served-surface risk** · pre-production repo + operator offline · #398 already
+  filed so nothing is lost on either branch. This is neither a silent scope absorption (it is
+  logged + #398) nor a block on an offline operator (Fork-A precedent: surface durably, don't
+  escalate an absent operator).
+- **Riders:** (1) separate commit + Log/#398 citation, as above. (2) The fixer **ground-truths each
+  of the 2 packet-49 comments against the live `_principal_key_statements`/`PRINCIPAL_KEY_TABLE`
+  code before editing** — reframe to a historical-origin note ("introduced as a RED stub by
+  contract-49-1, greened by builder-49") OR a plain description of the real slice (per #398's FIX
+  SHAPE), NOT a blind deletion of context. (3) Resolve #398's packet-49 instance on that commit.
+
+**Part 3 — #398's recurrence-prevention invariant (the AST/text scan): → RULING: BUILD IT, but as a
+PROPERLY-CONTRACTED instrument — never a rushed same-wave text-scan.**
+- **It is mandatory, not operator-discretionary and not indefinitely deferrable:** standing law —
+  *"every audit-caught defect class becomes a repo-local invariant test; a fix without an invariant
+  is half a fix, and the class WILL recur."* This class has now recurred across TWO packets (49 and
+  60), and it is STRUCTURAL to the TDD flow (every contract writes RED-STUB comments a builder
+  greens), so recurrence is the default without a guard.
+- **⚠ CRITICAL DESIGN RIDER — the reach-attack law (this is the load-bearing part):** a scan keyed
+  on the FORBIDDEN literals (`"RED STUB"` / `"emit []"` / `"emits NOTHING"`) is EXACTLY the
+  *"enumerate the forbidden"* antipattern this repo has six receipts against — the next contract
+  author writes `"placeholder — returns nothing yet"` and walks straight through it. So:
+  - **Check a STRUCTURAL property, not a forbidden-literal match, wherever possible.** The
+    load-bearing property is: *a schema-slice function that emits ≥1 statement (or is folded into
+    `generate_ddl`) must not carry a comment/docstring ASSERTING it is empty / a stub / unfolded.*
+    Where a literal set is unavoidable, **allowlist the safe** (a slice's doc describes what it
+    emits) rather than blocklist the unbounded forbidden.
+  - **Coverage-as-checked-variable (INSTRUMENT-0):** the set of schema-slice functions is DERIVED
+    from a property (name shape / return type / `generate_ddl`-fold membership), NEVER a hand-list,
+    and a test reddens when the derived set GROWS but the scan's observed set does not.
+  - **Mutation-prove it:** reintroduce a stale "emits nothing" comment above a greened slice → the
+    pin reddens; restore → green.
+  - The `contract-adversary`'s P1c REACH ATTACK forces exactly these — so this invariant goes
+    through a real contract→adversary→build→cold-audit cycle, not an inline hand-rolled scan.
+- **Placement:** a dedicated CONTRACTED sub-task — riding the packet-60 track's tail (it caught the
+  class) or a small standalone hygiene item; **the lead rules placement, I rule it MUST be
+  contracted (not hand-rolled inline) and law-mandatory.** Per the deferral law it carries a NAMED
+  OWNER + TRIGGER: if not built inside the packet-60 track, a ledgered task with #398 as origin and
+  trigger = *"before the next TDD wave writes new RED-STUB comments"* (i.e. promptly — every wave
+  does).
+
+**Scope-authority note:** Part 2 (editing committed packet-49 code) and Part 3 (a cross-cutting
+hygiene instrument) both reach slightly beyond the literal packet-60 Keep-substrate scope. I rule
+them under my delegated packet-60 authority as scope-ADJACENT, confirmed-defect / law-mandated
+hygiene, surfaced durably (this section + #398 + the Log) rather than escalated to the offline
+operator — the same handling Fork-A's divergence got. Neither is a MAJOR scope/design pivot
+(comment hygiene + a standing-law-mandated invariant), so neither meets my operator-escalation
+trigger; both are durably flagged for a clean operator countermand on return.
