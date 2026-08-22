@@ -1,3 +1,7 @@
+# SUPERSEDED — the flat-file roster (R12) is replaced by the 48/49 principal substrate
+# (re-cut design §9 R12). Archived from lorerunes/tests/ on 2026-08-22 by contract-39-w1
+# (E1c): this tests the never-built roster parser/admission predicate; kept as a resolving
+# address so the retirement is met deliberately, not rediscovered from a red test.
 """CONTRACT — ``lorerunes`` roster parser + admission predicate (packet 39, R7 + R12).
 
 The roster is an operator-curated flat file of individually-allowlisted Google

@@ -1,3 +1,7 @@
+# SUPERSEDED — posture recut at packet-39 wave 3 (design §6). Archived from
+# lorerunes/tests/ on 2026-08-22 by contract-39-w1 (E1c): this tests the OLD-design
+# Posture/derive_posture/SCOPE_READ that the re-cut re-authors in wave 3; kept as a
+# resolving address so the retirement is met deliberately, not rediscovered from a red test.
 """CONTRACT — ``lorerunes`` posture derivation + scope constants (packet 39, design §5).
 
 lore now has THREE legitimate deployment postures and an unbounded set of incoherent
