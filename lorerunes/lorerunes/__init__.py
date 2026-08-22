@@ -18,5 +18,19 @@ rules. Names are re-exported at package level so callers can write
 from __future__ import annotations
 
 from lorerunes.blankness import is_blank
+from lorerunes.email_normalisation import normalize_email
+from lorerunes.scopes import (
+    LORE_READ,
+    LORE_WRITE,
+    hosted_scopes_for_role,
+    lan_scopes_for_role,
+)
 
-__all__ = ["is_blank"]
+__all__ = [
+    "LORE_READ",
+    "LORE_WRITE",
+    "hosted_scopes_for_role",
+    "is_blank",
+    "lan_scopes_for_role",
+    "normalize_email",
+]
