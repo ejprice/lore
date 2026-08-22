@@ -78,6 +78,7 @@ from loremaster.principals import PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
+    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
     _SurrealConnection,
@@ -464,9 +465,15 @@ class KeepStore:
             The created :class:`Keep`, read back through :meth:`get_keep`.
 
         Raises:
-            KeepStoreError: No principal carries ``keeper_email``.
-            SurrealStoreError: The store rejected the create (an unruled ``type``) or the
-                keeper edge (a ghost keeper endpoint), rolling the whole transaction back.
+            KeepStoreError: No principal carries ``keeper_email``, OR the store rejected
+                the create (an unruled ``type``) or the keeper edge (a ghost keeper
+                endpoint). The raw engine ``SurrealStoreError`` is WRAPPED as this domain
+                error (consumer-law parity with
+                :meth:`~loremaster.principals.PrincipalStore.create`); the whole
+                transaction rolls back (no orphan keep). Transport / exhausted-contention
+                faults (:class:`SurrealConnectionError` /
+                :class:`TxnContentionExhaustedError`) pass through untouched — they belong
+                to the retry/lifecycle layer (store reference §3).
         """
         keeper_id = await self._resolve_principal_id(keeper_email)
         keep_id = str(ULID())  # a bare, client-minted ULID (Crockford, colon-free)
@@ -486,14 +493,28 @@ class KeepStore:
             params=params,
         )
         statement_text, merged_params = compose(fragment)
-        await execute_transaction(
-            statement_text,
-            merged_params,
-            acquire=self._ensure_connection,
-            drop=self._drop_connection,
-            url=self._url,
-        )
-        created = await self.get_keep(keep_id)
+        try:
+            await execute_transaction(
+                statement_text,
+                merged_params,
+                acquire=self._ensure_connection,
+                drop=self._drop_connection,
+                url=self._url,
+            )
+            created = await self.get_keep(keep_id)
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport fault / exhausted contention belongs to the retry/lifecycle
+            # layer (store reference §3) — propagate untouched (both SUBCLASS
+            # SurrealStoreError, so this re-raise MUST precede the wrap below).
+            raise
+        except SurrealStoreError as error:
+            # A store rejection — an unruled ``type`` ASSERT or the ghost-keeper
+            # ENFORCED edge — rolls the whole transaction back. Wrap LOUD as the domain
+            # error (consumer law: no raw engine error reaches the caller).
+            raise KeepStoreError(
+                f"could not create {type!r} keep for keeper {keeper_email!r}: "
+                f"the store rejected the keep create or the keeper's household edge"
+            ) from error
         if created is None:  # pragma: no cover - a just-committed row must read back
             raise KeepStoreError(f"created keep {keep_id!r} did not read back")
         return created
@@ -524,21 +545,36 @@ class KeepStore:
         :class:`Membership`.
 
         Raises:
-            KeepStoreError: No principal carries ``member_email``.
+            KeepStoreError: No principal carries ``member_email``, OR the store rejected
+                the membership edge (e.g. a ghost keep OUT endpoint under ENFORCED). The
+                raw engine ``SurrealStoreError`` is WRAPPED as this domain error
+                (consumer-law parity with
+                :meth:`~loremaster.principals.PrincipalStore.create`); transport /
+                exhausted-contention faults pass through untouched (store reference §3).
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        existing = await self._read_membership(bare_keep, member_id)
-        if existing is not None:
-            return existing  # idempotent re-add — a benign no-op
-        await self._query(
-            f"RELATE $member->{MEMBER_OF_RELATION}->$keep",
-            {
-                "member": RecordID(PRINCIPAL_TABLE, member_id),
-                "keep": RecordID(KEEP_TABLE, bare_keep),
-            },
-        )
-        membership = await self._read_membership(bare_keep, member_id)
+        try:
+            existing = await self._read_membership(bare_keep, member_id)
+            if existing is not None:
+                return existing  # idempotent re-add — a benign no-op
+            await self._query(
+                f"RELATE $member->{MEMBER_OF_RELATION}->$keep",
+                {
+                    "member": RecordID(PRINCIPAL_TABLE, member_id),
+                    "keep": RecordID(KEEP_TABLE, bare_keep),
+                },
+            )
+            membership = await self._read_membership(bare_keep, member_id)
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport / exhausted contention belongs to the retry/lifecycle layer
+            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
+            raise
+        except SurrealStoreError as error:
+            raise KeepStoreError(
+                f"could not add member {member_email!r} to keep {keep_id!r}'s household: "
+                f"the store rejected the membership edge"
+            ) from error
         if membership is None:  # pragma: no cover - a just-written edge must read back
             raise KeepStoreError(f"member_of edge for {member_email!r} did not read back")
         return membership
@@ -552,24 +588,41 @@ class KeepStore:
         BEFORE any delete, so the refusal changes nothing.
 
         Raises:
-            KeepStoreError: No principal carries ``member_email``.
-            KeeperLockoutError: ``member_email`` resolves to the keep's keeper.
+            KeepStoreError: No principal carries ``member_email``, OR the store rejected
+                a store operation in this verb. The raw engine ``SurrealStoreError`` is
+                WRAPPED as this domain error (consumer-law parity); transport /
+                exhausted-contention faults pass through untouched (store reference §3).
+            KeeperLockoutError: ``member_email`` resolves to the keep's keeper (a
+                :class:`KeepStoreError` subclass — the refusal raised BEFORE the delete,
+                so it is never re-wrapped).
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        keep = await self.get_keep(keep_id)
-        if keep is not None and keep.keeper_id == member_id:
-            raise KeeperLockoutError(
-                f"refusing to remove the keeper of keep {keep.id!r} from its own household "
-                f"(keeper lockout — the keeper's write access rides household membership)"
+        try:
+            keep = await self.get_keep(keep_id)
+            if keep is not None and keep.keeper_id == member_id:
+                # A domain refusal (not a SurrealStoreError) — passes through the wrap
+                # below untouched, unchanged store state (no delete has run yet).
+                raise KeeperLockoutError(
+                    f"refusing to remove the keeper of keep {keep.id!r} from its own household "
+                    f"(keeper lockout — the keeper's write access rides household membership)"
+                )
+            await self._query(
+                f"DELETE {MEMBER_OF_RELATION} WHERE in = $member AND out = $keep",
+                {
+                    "member": RecordID(PRINCIPAL_TABLE, member_id),
+                    "keep": RecordID(KEEP_TABLE, bare_keep),
+                },
             )
-        await self._query(
-            f"DELETE {MEMBER_OF_RELATION} WHERE in = $member AND out = $keep",
-            {
-                "member": RecordID(PRINCIPAL_TABLE, member_id),
-                "keep": RecordID(KEEP_TABLE, bare_keep),
-            },
-        )
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport / exhausted contention belongs to the retry/lifecycle layer
+            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
+            raise
+        except SurrealStoreError as error:
+            raise KeepStoreError(
+                f"could not remove member {member_email!r} from keep {keep_id!r}'s household: "
+                f"the store rejected the removal"
+            ) from error
 
     async def set_rank(self, *, keep_id: str, member_email: str, rank: str) -> Membership:
         """Set a household member's per-Keep ``rank`` (Fork F rider).
@@ -579,20 +632,35 @@ class KeepStore:
         meaningful when the domain widens in 61+. Returns the updated :class:`Membership`.
 
         Raises:
-            KeepStoreError: No principal carries ``member_email``.
-            KeepNotFoundError: ``member_email`` is not a household member of ``keep_id``.
+            KeepStoreError: No principal carries ``member_email``, OR the store rejected
+                the rank update (e.g. an unruled ``rank`` value refused by the closed-domain
+                ASSERT). The raw engine ``SurrealStoreError`` is WRAPPED as this domain
+                error (consumer-law parity); transport / exhausted-contention faults pass
+                through untouched (store reference §3).
+            KeepNotFoundError: ``member_email`` is not a household member of ``keep_id``
+                (a :class:`KeepStoreError` subclass, raised after a no-match readback).
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        await self._query(
-            f"UPDATE {MEMBER_OF_RELATION} SET rank = $rank WHERE in = $member AND out = $keep",
-            {
-                "rank": rank,
-                "member": RecordID(PRINCIPAL_TABLE, member_id),
-                "keep": RecordID(KEEP_TABLE, bare_keep),
-            },
-        )
-        membership = await self._read_membership(bare_keep, member_id)
+        try:
+            await self._query(
+                f"UPDATE {MEMBER_OF_RELATION} SET rank = $rank WHERE in = $member AND out = $keep",
+                {
+                    "rank": rank,
+                    "member": RecordID(PRINCIPAL_TABLE, member_id),
+                    "keep": RecordID(KEEP_TABLE, bare_keep),
+                },
+            )
+            membership = await self._read_membership(bare_keep, member_id)
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport / exhausted contention belongs to the retry/lifecycle layer
+            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
+            raise
+        except SurrealStoreError as error:
+            raise KeepStoreError(
+                f"could not set rank {rank!r} for member {member_email!r} on keep {keep_id!r}: "
+                f"the store rejected the rank update"
+            ) from error
         if membership is None:
             raise KeepNotFoundError(
                 f"no member_of edge for member {member_email!r} on keep {keep_id!r}"

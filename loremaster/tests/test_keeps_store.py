@@ -28,10 +28,13 @@ is a LOUD failure, not a skip.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import ast
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+import loremaster.keeps as keeps_module
 import pytest
 import pytest_asyncio
 from _enforced_relations_scaffold import ghost_id
@@ -53,6 +56,11 @@ from loremaster.keeps import (
     Membership,
 )
 from loremaster.principals import Principal, PrincipalStore
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    TxnContentionExhaustedError,
+)
 from loremaster.store.surreal_schema import (
     _KEEP_RANK_CONTRIBUTOR,
     KEEP_TABLE,
@@ -238,12 +246,13 @@ class TestCreateKeep:
         row, no keeper edge. (One ``execute_transaction`` — store §3.)"""
         keep_store, _principals, env = keep_env
         before = await _count(env, KEEP_TABLE)
-        with pytest.raises(Exception) as caught:  # noqa: B017 - store rejection of the unruled type
+        # FR-2 Q2b: the unruled-type rejection is a raw engine SurrealStoreError that KeepStore
+        # must WRAP as KeepStoreError (consumer-law parity with PrincipalStore.create). Asserting
+        # the TYPED KeepStoreError — not a bare Exception — is what stops this pin certifying the
+        # corpse: a bare-Exception catch stays green whether KeepStore wraps or leaks raw. RED
+        # against the wave-1 (unwrapped) keeps.py, which leaks the raw SurrealStoreError.
+        with pytest.raises(KeepStoreError):
             await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="workspace")
-        assert not isinstance(caught.value, NotImplementedError), (
-            "create_keep is still a STUB — the rejection must come from the store's type ASSERT, "
-            "not from an unbuilt method (RED-by-design until the builder lands create_keep)"
-        )
         assert await _count(env, KEEP_TABLE) == before, "a rejected create_keep left a keep row behind"
 
     async def test_create_keep_is_ATOMIC_a_failed_keeper_edge_leaves_NO_keep_row(
@@ -284,12 +293,11 @@ class TestCreateKeep:
         monkeypatch.setattr(keep_store._principals, "get_by_email", _ghost_get_by_email)
 
         before = await _count(env, KEEP_TABLE)
-        with pytest.raises(Exception) as caught:  # noqa: B017 - ENFORCED refuses the ghost keeper edge
+        # FR-2 Q2b: the ENFORCED ghost-keeper-edge refusal is a raw engine SurrealStoreError that
+        # KeepStore must WRAP as KeepStoreError (consumer-law parity). Typed, not a bare Exception,
+        # so the pin does not certify the corpse. RED against the unwrapped wave-1 keeps.py.
+        with pytest.raises(KeepStoreError):
             await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="atom")
-        assert not isinstance(caught.value, NotImplementedError), (
-            "create_keep is still a STUB — the refusal must come from the ENFORCED member_of edge, "
-            "not from an unbuilt method (RED-by-design until the builder lands create_keep)"
-        )
         assert await _count(env, KEEP_TABLE) == before, (
             "a create_keep whose keeper member_of RELATE was refused left a keep row behind — "
             "the CREATE and the RELATE must ride ONE execute_transaction (store §3)"
@@ -601,3 +609,230 @@ class TestTheStoreReusesTheSharedSeams:
         assert isinstance(getattr(keep_store, "_principals", None), PrincipalStore), (
             "KeepStore must COMPOSE a PrincipalStore for keeper/member email resolution"
         )
+
+
+# =========================================================================== #
+# FR-2 Q2b — KeepStore WRAPS raw engine rejections as KeepStoreError at every write
+# boundary (consumer law; the PrincipalStore.create parity — store ref §3, _txn.py:116-183).
+# SurrealConnectionError / TxnContentionExhaustedError (both SUBCLASS SurrealStoreError,
+# _txn.py:120/156) PASS THROUGH untouched for the retry/lifecycle layer. The write-path SET
+# is DERIVED from production truth (reach law #344/#345), never a hand-list, so a NEW unwrapped
+# write method reddens the coverage pin.
+# =========================================================================== #
+
+_MUTATING_STATEMENT_KEYWORDS = frozenset(
+    {"CREATE", "RELATE", "UPDATE", "DELETE", "INSERT", "UPSERT"}
+)
+
+# The KeepStore READ verbs — the positive control proving the derivation DISCRIMINATES writes
+# from reads (a derivation that returned "all public async methods" would fail the reach pin).
+_KEEPSTORE_READ_METHODS = frozenset({"get_keep", "list_household", "list_keeps_for_keeper"})
+
+
+def _method_has_mutating_statement(method: ast.AsyncFunctionDef) -> bool:
+    """True iff ``method``'s OWN body (docstring excluded) contains a string literal whose
+    first whitespace-delimited token is a mutating SurrealQL keyword.
+
+    The whole-word check (``tokens[0] in ...``) stops an error message like
+    ``"created keep … did not read back"`` from false-matching ``CREATE``; dropping the
+    docstring stops method prose (``"Create a keep …"``) from doing the same. f-string literal
+    parts are ``ast.Constant`` nodes under a ``JoinedStr``, so ``ast.walk`` reaches the
+    ``CREATE …`` / ``RELATE …`` fragments a mutation statement is built from."""
+    statements = method.body
+    if (
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
+    ):
+        statements = statements[1:]  # drop the docstring so its prose cannot false-match
+    for statement in statements:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                tokens = node.value.strip().upper().split()
+                if tokens and tokens[0] in _MUTATING_STATEMENT_KEYWORDS:
+                    return True
+    return False
+
+
+def _derive_keepstore_write_paths() -> set[str]:
+    """DERIVE the KeepStore public write-method set from production truth (reach law
+    #344/#345) — a public ``async def`` whose own body carries a mutating SurrealQL statement
+    literal (CREATE/RELATE/UPDATE/DELETE/INSERT/UPSERT).
+
+    Read verbs (only ``SELECT``) are excluded; ``ensure_ready`` applies GENERATED DDL
+    (``generate_keep_ddl()`` — no literal mutating statement in its body) and is excluded as
+    bootstrap, not a CRUD write (the CLI dispatch catches its ``SurrealStoreError`` on its own
+    branch). ⚠ Bound (stated per the reach law's honesty requirement): this detects a mutating
+    statement LITERAL in the public method's OWN body; a future write verb routing its mutation
+    entirely through a PRIVATE helper (no literal in the public body) escapes this scan —
+    re-open trigger: the first KeepStore write verb that delegates its mutation to a private
+    helper."""
+    source = Path(keeps_module.__file__).read_text(encoding="utf-8")
+    keepstore = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ClassDef) and node.name == "KeepStore"
+    )
+    return {
+        method.name
+        for method in keepstore.body
+        if isinstance(method, ast.AsyncFunctionDef)
+        and not method.name.startswith("_")
+        and _method_has_mutating_statement(method)
+    }
+
+
+_WRITE_PATHS = _derive_keepstore_write_paths()
+
+# A ghost keep id (its OUT endpoint does not exist) — under fault injection the patched seam
+# raises before the id is used, so any well-formed id serves.
+_WRAP_PROBE_GHOST_KEEP = f"{KEEP_TABLE}:{ghost_id('wrap_probe_keep')}"
+
+# One invocation per DERIVED write path — the HANDLED set the reach pin checks the derived set
+# against. A new write path grows ``_WRITE_PATHS`` but not this map → the reach pin reds
+# (coverage-as-checked-variable). Every invocation resolves a SEEDED principal email (via the
+# composed PrincipalStore, whose ``principals``-module ``run_query`` is NOT patched), so under
+# fault injection resolution succeeds and the patched KeepStore seam is what raises.
+_WRITE_PATH_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
+    "create_keep": lambda store: store.create_keep(
+        keeper_email=_KEEPER_EMAIL, type="project", name="wrap"
+    ),
+    "add_household_member": lambda store: store.add_household_member(
+        keep_id=_WRAP_PROBE_GHOST_KEEP, member_email=_MEMBER_EMAIL
+    ),
+    "remove_household_member": lambda store: store.remove_household_member(
+        keep_id=_WRAP_PROBE_GHOST_KEEP, member_email=_MEMBER_EMAIL
+    ),
+    "set_rank": lambda store: store.set_rank(
+        keep_id=_WRAP_PROBE_GHOST_KEEP, member_email=_MEMBER_EMAIL, rank=_KEEP_RANK_CONTRIBUTOR
+    ),
+}
+
+
+class TestKeepStoreWrapsEngineRejections:
+    """FR-2 Q2b: every KeepStore WRITE boundary wraps a raw engine ``SurrealStoreError`` as
+    ``KeepStoreError`` (consumer law — a consumer never sees a raw engine error), while
+    ``SurrealConnectionError`` / ``TxnContentionExhaustedError`` PASS THROUGH untouched for the
+    retry/lifecycle layer (store ref §3; the ``PrincipalStore.create`` precedent —
+    ``except (SurrealConnectionError, TxnContentionExhaustedError): raise`` BEFORE
+    ``except SurrealStoreError``). RED against the wave-1 (unwrapped) keeps.py at ``efccdc8``."""
+
+    def test_the_derived_write_path_set_matches_the_coverage_map(self) -> None:
+        """REACH PIN (#344/#345): the write-path set is DERIVED from keeps.py (not a hand-list)
+        and must equal the fault-injection coverage map — so a NEW write method grows the derived
+        set, fails this equality, and forces a coverage entry (the observed set cannot silently
+        lag production truth). Positive control: the derivation EXCLUDES the read verbs (a
+        derivation returning all public methods would fail this)."""
+        assert _WRITE_PATHS, "the derived KeepStore write-path set is empty — the AST scan broke"
+        assert _WRITE_PATHS == set(_WRITE_PATH_INVOCATIONS), (
+            "the DERIVED KeepStore write-path set has drifted from the fault-injection coverage "
+            "map — a new write path must add a coverage entry (reach law #344/#345). "
+            f"derived={sorted(_WRITE_PATHS)!r} mapped={sorted(_WRITE_PATH_INVOCATIONS)!r}"
+        )
+        assert _KEEPSTORE_READ_METHODS.isdisjoint(_WRITE_PATHS), (
+            "the derivation misclassified a READ verb as a write path: "
+            f"{sorted(_KEEPSTORE_READ_METHODS & _WRITE_PATHS)!r}"
+        )
+
+    @pytest.mark.parametrize("method_name", sorted(_WRITE_PATHS))
+    async def test_each_write_path_wraps_engine_rejection_as_KeepStoreError(
+        self,
+        keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+        method_name: str,
+    ) -> None:
+        """COVERAGE (fault injection over the DERIVED set): when the engine seam raises a raw
+        ``SurrealStoreError``, EACH write path surfaces ``KeepStoreError`` — never the raw engine
+        error. Injecting at the shared ``keeps.run_query`` / ``keeps.execute_transaction`` seams
+        proves the WHOLE verb wraps (including a read inside a write verb — e.g.
+        ``remove_household_member``'s internal ``get_keep``), which is how
+        ``remove_household_member`` (whose DELETE cannot naturally reject) gets its coverage. RED
+        against the unwrapped wave-1 keeps.py (a raw ``SurrealStoreError`` escapes
+        ``pytest.raises(KeepStoreError)``); patching only the ``keeps``-module seams leaves the
+        COMPOSED ``PrincipalStore``'s ``principals``-module ``run_query`` intact, so email
+        resolution still succeeds and the WRITE seam is what raises."""
+        keep_store, _principals, _env = keep_env
+        invoke = _WRITE_PATH_INVOCATIONS.get(method_name)
+        assert invoke is not None, (
+            f"new KeepStore write path {method_name!r} has no fault-injection invocation — add one "
+            "to _WRITE_PATH_INVOCATIONS (reach law #344/#345)"
+        )
+
+        async def _raise_store_error(*args: object, **kwargs: object) -> object:
+            raise SurrealStoreError(f"injected engine rejection ({method_name})")
+
+        monkeypatch.setattr(keeps_module, "run_query", _raise_store_error)
+        monkeypatch.setattr(keeps_module, "execute_transaction", _raise_store_error)
+        with pytest.raises(KeepStoreError):
+            await invoke(keep_store)
+
+    @pytest.mark.parametrize("transport_error", ["connection", "contention"])
+    @pytest.mark.parametrize("method_name", sorted(_WRITE_PATHS))
+    async def test_each_write_path_propagates_transport_faults_untouched(
+        self,
+        keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+        method_name: str,
+        transport_error: str,
+    ) -> None:
+        """PASS-THROUGH / DISCRIMINATOR: a ``SurrealConnectionError`` (transport) or
+        ``TxnContentionExhaustedError`` (exhausted retry) raised at the seam PROPAGATES untouched
+        — it must NOT be masked as a domain ``KeepStoreError`` (store ref §3: it belongs to the
+        retry/lifecycle layer). GREEN today (the unwrapped keeps.py propagates it) AND after the
+        correct fix; it REDS only against the WRONG fix — a naive ``except SurrealStoreError:
+        raise KeepStoreError`` that omits the ``except (SurrealConnectionError,
+        TxnContentionExhaustedError): raise`` re-raise FIRST (both subclass ``SurrealStoreError``,
+        _txn.py:120/156). This is the discriminator the coverage pin above cannot see — without
+        it, a catch-all wrong build passes the whole wrap contract."""
+        keep_store, _principals, _env = keep_env
+        invoke = _WRITE_PATH_INVOCATIONS.get(method_name)
+        assert invoke is not None, (
+            f"new KeepStore write path {method_name!r} has no fault-injection invocation (reach law)"
+        )
+        expected: type[SurrealStoreError]
+        error_instance: SurrealStoreError
+        if transport_error == "connection":
+            expected = SurrealConnectionError
+            error_instance = SurrealConnectionError("injected transport fault")
+        else:
+            expected = TxnContentionExhaustedError
+            error_instance = TxnContentionExhaustedError(
+                "injected exhausted contention", attempts=8, elapsed_seconds=1.0
+            )
+
+        async def _raise_transport_error(*args: object, **kwargs: object) -> object:
+            raise error_instance
+
+        monkeypatch.setattr(keeps_module, "run_query", _raise_transport_error)
+        monkeypatch.setattr(keeps_module, "execute_transaction", _raise_transport_error)
+        with pytest.raises(expected):
+            await invoke(keep_store)
+
+    async def test_add_household_member_wraps_a_ghost_keep_engine_rejection(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """BEHAVIOURAL (a REAL engine rejection): add-household to a GHOST keep is refused by the
+        ENFORCED ``member_of`` edge (the ghost OUT endpoint does not exist — store ref §4) — a
+        raw ``SurrealStoreError`` KeepStore must WRAP as ``KeepStoreError``. RED against the
+        unwrapped wave-1 keeps.py, which leaks the raw error."""
+        keep_store, _principals, _env = keep_env
+        ghost_keep = f"{KEEP_TABLE}:{ghost_id('behavioural_ghost_keep')}"
+        with pytest.raises(KeepStoreError):
+            await keep_store.add_household_member(keep_id=ghost_keep, member_email=_MEMBER_EMAIL)
+
+    async def test_set_rank_wraps_an_unruled_rank_engine_rejection(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """BEHAVIOURAL (a REAL engine rejection): set-rank to an UNRULED rank is refused by the
+        rank ASSERT (store-side closed domain — design Fork C) — a raw ``SurrealStoreError``
+        KeepStore must WRAP as ``KeepStoreError``. The member is a real household member first, so
+        the UPDATE matches a row and the ASSERT fires (an UPDATE matching no row would no-op).
+        RED against the unwrapped wave-1 keeps.py."""
+        keep_store, _principals, _env = keep_env
+        keep = await keep_store.create_keep(
+            keeper_email=_KEEPER_EMAIL, type="project", name="rankwrap"
+        )
+        await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
+        with pytest.raises(KeepStoreError):
+            await keep_store.set_rank(keep_id=keep.id, member_email=_MEMBER_EMAIL, rank="tyrant")
