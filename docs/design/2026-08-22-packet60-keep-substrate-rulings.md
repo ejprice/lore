@@ -483,3 +483,106 @@ hygiene, surfaced durably (this section + #398 + the Log) rather than escalated 
 operator — the same handling Fork-A's divergence got. Neither is a MAJOR scope/design pivot
 (comment hygiene + a standing-law-mandated invariant), so neither meets my operator-escalation
 trigger; both are durably flagged for a clean operator countermand on return.
+
+---
+
+## Follow-up ruling FR-2 (2026-08-22) — wave-2 forks: `dm --name` + KeepStore error wrapping
+
+Ruling on `lead-60`'s two wave-2 forks (`lore_comms` #5157 · `REPORT-contract-60-w2.md` §Flags F2 +
+§Deviations D1). Both block the wave-2 adversary. Ground-truthed the error idioms this session.
+
+### Q1 (F2) — `create-keep --type dm --name X`: **RULING → REJECT (exit 1), with a teaching message.**
+
+The contract author left it unpinned (correctly — two readings, different code) and recommended
+ignore-and-store-None. **I rule the other way: REJECT.** This resolves the ambiguity my own Fork-B
+wording ("forbids/ignores it for `dm`") created — I am collapsing "forbids/ignores" to **forbids**.
+
+**Rationale:**
+- **Loud-on-failure + server-side input validation** (the standing CLI idiom): silently discarding
+  an operator-supplied `--name` is a SILENT SURPRISE — the operator believes they named the keep;
+  it is stored as `None`; the misunderstanding surfaces later, hard to trace. Rejecting TEACHES the
+  model at the point of error ("`--name` is not valid for `--type dm` — a dm keep is identified by
+  its two members").
+- **Symmetry with the validation already present.** The CLI already rejects `project`/`team`
+  *without* `--name` (Fork-B: name app-required for non-dm — pinned per the report). "Reject `dm`
+  *with* `--name`" is the symmetric completion of an already-type-aware name validation, not a new
+  kind of check. An asymmetric "require for project, silently drop for dm" is a half-validation.
+- **`--name` on a `dm` is always a mistake** (a dm has no name concept), so a reject is never a
+  legitimate-use-case annoyance — it is always catching an error.
+
+**Riders (and pin it like this):**
+- The reject is a **CLI-input-validation** check (argparse/dispatch level, BEFORE any store write),
+  `exit 1`, message naming the model. It is NOT a store ASSERT — `keep.name` stays `option<string>`
+  (the store is unchanged; the per-type name policy lives in the CLI, exactly like the
+  project/team-name-required rule).
+- **Pin:** `create-keep --type dm --name X` exits 1 AND writes NO keep (no partial state — the check
+  precedes the store call). Mirror the existing project/team-without-name reject test.
+- This overrides the author's ignore-and-store-None recommendation; the override + its reason are
+  recorded here so the author sees a ruled decision, not a silent countermand.
+
+### Q2 (D1) — KeepStore leaks raw `SurrealStoreError`: **RULING → (b) amend wave-1 KeepStore to WRAP.**
+
+Ground truth (read this session, committed `efccdc8`): `PrincipalStore.create`/`set_subject` catch
+`SurrealStoreError` and `raise PrincipalStoreError(...) from error` (passing
+`SurrealConnectionError`/`TxnContentionExhaustedError` through to their own handling) — the
+consumer-law "never a raw engine error" idiom. `KeepStore` raises `KeepStoreError`/`KeeperLockoutError`/
+`KeepNotFoundError` for DOMAIN conditions but does NOT wrap ENGINE rejections — a bad `type`/`rank`
+or an ENFORCED ghost-endpoint surfaces as raw `SurrealStoreError` (its own docstrings say so). This
+is a genuine wave-1 inconsistency with the sibling store.
+
+**RULING: (b) — amend wave-1 KeepStore to wrap engine rejections as `KeepStoreError` at its write
+boundaries, mirroring `PrincipalStore`'s classification EXACTLY; the wave-2 CLI then catches
+`KeepStoreError`** (symmetric with `_dispatch` catching `PrincipalStoreError`). NOT (a).
+
+**Rationale:**
+- **ONE-IMPLEMENTATION — error wrapping is a POLICY, not per-caller trivia.** `PrincipalStore` set
+  the policy ("engine rejection → this store's domain error; transient connection/contention errors
+  pass through"). `KeepStore` is the sibling SUBSTRATE store; a store that leaks raw
+  `SurrealStoreError` forces EVERY consumer to clone the translation — the CLI today, and the
+  packet-61 PDP / 63–64 governed tools tomorrow (they call KeepStore to resolve keeps/household). A
+  consumer reading KeepStore's contract expects `KeepStoreError` (as PrincipalStore gives
+  `PrincipalStoreError`); a leak is a contract inconsistency that bites the next consumer.
+- **Consumer law:** the raw engine string is implementation leakage, not a domain contract; the
+  operator (and any consumer) should see a clean domain message, with `from error` preserving the
+  engine detail in the chain.
+- **Scope:** this is a packet-60 **wave-1** amendment — packet-60's OWN prior wave, fully in scope
+  (fixing a gap the wave-1 cold audit missed), NOT a cross-packet crossing like FR-1's packet-49
+  comments. Option (a) is a local CLI patch that leaves the substrate-level policy gap standing.
+
+**Riders (and pin it like this):**
+- **Wrap at the write boundary catching `SurrealStoreError` SPECIFICALLY** (mirror
+  `PrincipalStore.create`'s `except SurrealStoreError as error: raise KeepStoreError(...) from error`)
+  — NOT bare `Exception`, and do **NOT** swallow `SurrealConnectionError`/`TxnContentionExhaustedError`
+  (they keep their existing separate handling; the CLI catches `SurrealConnectionError` on its own
+  branch). `from error` chaining preserved. The `KeepStoreError` message carries WHAT was rejected
+  (bad type / bad rank / ghost endpoint), mirroring PrincipalStore's message shape.
+- **Coverage-as-checked-variable (the reach law):** enumerate EVERY KeepStore write path that can
+  receive a `SurrealStoreError` (create-keep, add-household, remove-household, set-rank — each write
+  that hits an ASSERT / ENFORCED) and pin that EACH wraps. A wrap on `create` but not `add-household`
+  is a partial fix.
+- **Fix the wave-1 test that certifies the OLD world.** `test_a_REJECTED_create_keep…` currently
+  catches bare `Exception` (per the report) — a green-because-it-asserts-the-corpse hazard (a bare
+  `Exception` catch stays green under the wrong wrapping). Tighten it to assert `KeepStoreError`
+  specifically, and **mutation-prove** (remove the wrap → the test reddens; restore → green).
+- **Its own one-concern commit** (`fix(60): wrap KeepStore engine rejections as KeepStoreError
+  (consumer-law parity with PrincipalStore)`), landed BEFORE the wave-2 adversary.
+
+**⚠ DRY FLAG (surfaced, NOT quietly cloned — the ONE-IMPLEMENTATION escalation law):** ruling (b)
+makes KeepStore the SECOND store to encode the same wrap-classification policy (`SurrealStoreError`
+→ domain error; pass connection/contention through). Per *"you may not quietly write copy #2 —
+duplication is a DESIGN decision, ESCALATE it,"* I am NOT blessing a silent clone: I recommend a
+follow-up extraction into **`lorerunes`** — a `wrap_engine_rejection(DomainError, context)`
+contextmanager/decorator that encodes the ONE classification, called by BOTH `PrincipalStore` and
+`KeepStore`, prove-by-mutation (change the classification once → both stores' pins move). This is a
+DRY DESIGN decision that touches committed 48/49 code (`PrincipalStore`), so it is NOT forced into
+the small wave-1 unblock fix (which just needs KeepStore CONSISTENT now) — it is a **ledgered
+follow-up** with a named trigger (*the moment a THIRD store or consumer needs the same wrap*, or
+sooner if the lead schedules it). The immediate consistency fix is still correct; a consistent clone
+beats a leaking store, and the extraction is the proper resolution I am surfacing rather than
+silently choosing to clone. **Recommend the lead file this as a `lore_findings` DRY task now** so it
+is durable.
+
+**Scope-authority note:** Q1 is a pure packet-60 design-fill (in authority). Q2's fix is a packet-60
+wave-1 amendment (in scope). The Q2 DRY-extraction flag reaches into committed 48/49 code — surfaced
+as a ledgered recommendation, not ruled as a forced change; the lead/operator sizes it. Neither fork
+is a MAJOR scope/design pivot, so neither hits my operator-escalation trigger.
