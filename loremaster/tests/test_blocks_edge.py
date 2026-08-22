@@ -208,12 +208,12 @@ author cannot say why each pin is red has not written a contract.
 It ALSO reddens three pins in ``test_enforced_relations.py``, **deliberately**, by
 declaring ``blocks`` in ``_enforced_relations_scaffold.KNOWN_RELATION_EDGES``:
 
-1. ``test_the_relation_edge_set_is_EXACTLY_the_five_known_edges`` — the exact-set pin.
+1. ``test_the_relation_edge_set_is_EXACTLY_the_six_known_edges`` — the exact-set pin.
    04a's contract §6.8 wrote this consequence down in advance: *"a ``blocks`` edge reddens
    it until 04b adds it … it forces a deliberate declaration."*  **That reddening IS the
    declaration, not a misfire.**
 2. ``test_the_edge_is_declared_OVERWRITE_never_IF_NOT_EXISTS[blocks]``
-3. ``test_the_edge_declares_its_IN_and_OUT_endpoint_tables[blocks-endpoints4]``
+3. ``test_the_edge_declares_its_IN_and_OUT_endpoint_tables[blocks-endpoints1]``
 
 ✅ **AND IT NO LONGER REDDENS ANYTHING IN ``test_mcp_server.py`` (wave r5, 2026-07-28).**
 A CORRECT build was MEASURED to break FIVE committed pins there, of which the contract
@@ -8878,7 +8878,7 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #     restored byte-exact (surreal_schema.py md5 dc5dc6f18eb6dc87dbb8cd8d26df417d).**
 #     Swap the endpoint tables in each call:
 #
-#     for pair in "REFERS_RELATION:refers-endpoints3" "ANSWERS_TO_RELATION:answers_to-endpoints0"; do
+#     for pair in "REFERS_RELATION:refers-endpoints4" "ANSWERS_TO_RELATION:answers_to-endpoints0"; do
 #       REL="${pair%%:*}"; PID="${pair##*:}"
 #       ./scripts/mutation_proof.py \
 #         --file loremaster/loremaster/store/surreal_schema.py \
@@ -8887,7 +8887,7 @@ class TestTheScopeOfTheTransitiveReadIsSTATED:
 #         --expect-red "$X::test_the_edge_declares_its_IN_and_OUT_endpoint_tables[$PID]" \
 #         --expect-red "$X::test_the_edge_declares_its_IN_and_OUT_endpoint_tables[blocks-endpoints1]" \
 #         --expect-red "$X::test_the_edge_is_declared_OVERWRITE_never_IF_NOT_EXISTS[blocks]" \
-#         --expect-red "$X::test_the_relation_edge_set_is_EXACTLY_the_five_known_edges" \
+#         --expect-red "$X::test_the_relation_edge_set_is_EXACTLY_the_six_known_edges" \
 #         -- uv run pytest -q --show-capture=no "$G"
 #     done
 #
