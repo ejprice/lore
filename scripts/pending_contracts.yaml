@@ -22,179 +22,63 @@
 # gate told you to delete something: that is the instrument working. Delete it.
 #
 # ─────────────────────────────────────────────────────────────────────────────
+# ⚠ UPDATE 2026-08-22 — packet 39 WAVE 1 discharged 10 of the original 11 files
+# ─────────────────────────────────────────────────────────────────────────────
+# The historical measurement below (533d917 / 2026-08-01: 11 files / 198 errors)
+# is HISTORICAL — do NOT read it as current. Packet 39's build STARTED; wave 1
+# (identity & admission; cold-audit-39-w1 VERDICT GO, 2026-08-22) discharged 10 of
+# the 11 registered files: 8 were archived to
+# docs/plans/v2/receipts/2026-08-21-packet39-recut/, test_email_normalisation.py
+# greened (lorerunes.normalize_email now exists), and test_auth.py's stale
+# LoreTokenVerifier/GoogleOAuthConfig pins were retired (ApiKeyVerifier keepers
+# stay green). R1 (routed by the cold audit) pruned the 26 self-destruct orphans
+# this wave discharged. The `bounds:` section now registers ONLY the 1 remaining
+# WAVE-3 forward-reference. Re-derive (`--derive`) before citing any count.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # DERIVATION — what below is measured, and what is a ruling
 # ─────────────────────────────────────────────────────────────────────────────
 # DERIVED, by `uv run python scripts/pending_contract_gate.py --derive` against a
-# live `./scripts/typecheck.sh` run at commit 533d917 (2026-08-01):
-#   * the file set, the per-file `missing_symbols` set, the per-file
-#     `unsymboled_codes` counts.
-# Re-derive rather than hand-editing; a hand-list is the artifact this repo has
-# the most receipts against.
+# live `./scripts/typecheck.sh` run: the file set, per-file `missing_symbols`,
+# per-file `unsymboled_codes` counts. HAND-AUTHORED, because no script can derive
+# an adjudication: `owner`, `reopen_trigger`, `ruling`, `rationale`, each
+# allowance's `reason`. Re-derive rather than hand-editing; a hand-list is the
+# artifact this repo has the most receipts against.
 #
-# HAND-AUTHORED, because no script can derive an adjudication:
-#   * `owner`, `reopen_trigger`, `ruling`, `rationale`, and each allowance's
-#     `reason`. These are facts about a DECISION, not about the tree.
-#
-# ⚠ AND ONE DELIBERATE OMISSION, so the next reader meets it rather than
-# discovering it. The same 533d917 run showed a TWELFTH red file,
-# `loremaster/tests/test_comms_footer.py` (7 errors) — packet 04b-2 wave C's OWN
-# C3 contract, committed RED ahead of a build that is IN FLIGHT THIS WAVE, not
-# blocked on anything. It is deliberately NOT registered: its build discharges it
-# within the wave, so an entry would be a stale exemption from the hour it was
-# written, and adjudicating a bound is the lead's authority, not a builder's.
-# Until that build lands, this gate FAILS naming that file — which is the honest
-# state, and is itself a live demonstration that deny-by-default works.
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# MEASUREMENT, dated because an archived number reads as current
-# ─────────────────────────────────────────────────────────────────────────────
-# At 533d917 (2026-08-01), `./scripts/typecheck.sh` reported 198 errors over 12
-# files, merged across its legs: `Found 89 errors in 3 files` (lorerunes leg) and
-# `Found 109 errors in 9 files` (loremaster leg). 191 of those are the 11 files
-# below; 7 are the unregistered C3 contract named above.
-#
-# ⚠ That total differs from finding #306's headline "102 errors in 8 files", and
-# the difference is NOT drift: 102 is the LOREMASTER LEG'S OWN summary line,
-# quoted beside an 11-file table that sums to 191. The merged total at 04ede45
-# was 191; at 533d917 it is 198 because C3's contract landed in between. Re-derive
-# before citing either number.
-#
-# Error codes at 533d917: 190 attr-defined, 4 call-arg, 4 no-any-unimported. The
-# ruling's "every error is attr-defined" was true of the sample read, not of the
-# set — which is why `unsymboled_codes` exists at all (see below).
+# HISTORICAL MEASUREMENT (533d917, 2026-08-01, superseded by the wave-1 update
+# above): `./scripts/typecheck.sh` reported 198 errors over 12 files (191 in the 11
+# registered files + 7 in packet 04b-2's then-in-flight C3 contract). Codes: 190
+# attr-defined, 4 call-arg, 4 no-any-unimported.
 
 version: 1
 
 bounds:
   - id: packet-39-pending-build
     owner: >-
-      packet 39 — the hosted-security contract. Owner of the CLOSURE is packet 39;
-      owner of this PIN is packet 04b-2 wave C.
+      packet 39 WAVE 3 (composition) — the sole remaining closure owner after
+      wave 1 (2026-08-22) discharged the identity/admission layer. (Original PIN
+      owner: packet 04b-2 wave C; CLOSURE owner: packet 39.)
     reopen_trigger: >-
-      packet 39's build start (or a re-author to the mypy-clean house idiom).
-      ⚠ #296 is RESOLVED by packet 45's tool-allowlist (2026-08-13) — this UNBLOCKED
-      packet 39's build, but did NOT make these files green: they still reference
-      symbols packet 39's build will CREATE. Each entry below self-destructs as its
-      file goes green at that build. (The prior "operator decision #296" clause is
-      spent; the sole remaining closure owner is packet 39's build.)
+      packet 39 WAVE 3's build, which wires build_mcp_server's injected http_client
+      seam (design docs/design/2026-08-21-packet39-recut-oauth.md §4.3/§8). The
+      single remaining entry self-destructs when _auth_fixtures.py's HOSTED branch
+      stops referencing the not-yet-wired build_mcp_server(http_client=) parameter.
     ruling: >-
-      finding #306 (the diagnosis and the ruling text), from packet 04b-2 wave C's
-      design sidecar ruling 4, thread q:04b2-gate-definition. Rejected alternatives
-      A–F are recorded there: scope-exclusion, literal-blocked-deploy, per-line
-      type: ignore, re-authoring the contract, hand-diffing at deploy time, and
-      reverting the contract commit.
+      finding #306 (diagnosis + ruling text), packet 04b-2 wave C design sidecar
+      ruling 4. The wave-1 discharge (10 of 11 files) is confirmed by
+      cold-audit-39-w1 (2026-08-22, VERDICT GO), which routed R1 to prune the 26
+      self-destruct orphans this wave discharged.
     rationale: >-
-      These 11 files are a TEST CONTRACT committed deliberately ahead of a build
-      that was BLOCKED on #296 (RESOLVED by packet 45's allowlist, 2026-08-13 — the
-      never-register mechanism; packet 39's build is now UNBLOCKED but not yet run),
-      after four adversary passes all returning INSUFFICIENT. They are
-      operator-held territory: the clean closure (build it, or re-author it to the
-      mypy-clean house idiom) lives inside files this wave may not touch. This is
-      the out-of-authority deferral shape, with a named decision point — not
-      unfixed work. Every error below is a reference to a symbol packet 39's build
-      will CREATE; none is a defect in shipped code.
+      The one remaining error is a WAVE-3 forward-reference, deliberately NOT
+      type:ignore'd: _auth_fixtures.py's wire_session HOSTED branch calls
+      build_mcp_server(http_client=), the injected-client seam packet 39 wave 3
+      wires (§4.3/§8). It is DEAD AT RUNTIME today (the live consumer
+      test_refusal_observes_effect uses posture=loopback, so the HOSTED branch
+      never executes). Masking it would hide the wave-3 seam signal. This is the
+      out-of-authority deferral shape with a named decision point (wave-3 build),
+      not unfixed work.
 
     files:
       - path: loremaster/tests/_auth_fixtures.py
         missing_symbols:
           - build_mcp_server.http_client
-          - loremaster.auth.LoreTokenVerifier
-          - loremaster.config.GoogleOAuthConfig
-
-      - path: loremaster/tests/test_allowlist_roster.py
-        missing_symbols:
-          - loremaster.config.PostureConfigError
-          - loremaster.config.resolve_posture
-          - lorerunes.Posture
-
-      - path: loremaster/tests/test_auth.py
-        missing_symbols:
-          - loremaster.auth.LoreTokenVerifier
-          - loremaster.config.GoogleOAuthConfig
-
-      - path: loremaster/tests/test_auth_composition.py
-        missing_symbols:
-          - build_mcp_server.http_client
-          - loremaster.auth.derive_edge_policy
-          - loremaster.config.PostureConfigError
-          - loremaster.config.resolve_posture
-          - lorerunes.Posture
-          - lorerunes.SCOPE_READ
-
-      - path: loremaster/tests/test_auth_identity_seam.py
-        missing_symbols:
-          - build_mcp_server.http_client
-          - lorerunes.Posture
-
-      - path: loremaster/tests/test_google_token_verifier.py
-        missing_symbols:
-          - loremaster.auth._new_http_client
-          - lorerunes.SCOPE_READ
-          - lorerunes.SCOPE_WRITE
-          - lorerunes.is_admitted
-          - lorerunes.normalize_email
-
-      - path: loremaster/tests/test_hosted_readonly_posture.py
-        missing_symbols:
-          - loremaster.server.HOSTED_READ_LADDER_MARKER
-          - loremaster.server.HOSTED_REFUSAL_SECTION_HEADING
-          - loremaster.server.HostedToolRefusedError
-          - loremaster.server._EXTENSION_TOOL_ANNOTATIONS
-          - lorerunes.Posture
-          - lorerunes.SCOPE_READ
-
-      - path: loremaster/tests/test_permission_resolver_seam.py
-        missing_symbols:
-          - build_mcp_server.permission_resolver
-          - loremaster.auth.PassThroughPermissionResolver
-          - loremaster.auth.auth_context_from_access_token
-          - loremaster.server.HostedToolRefusedError
-          - loremaster.server.PermissionFilteredToolError
-          - lorerunes.SCOPE_READ
-          - lorerunes.SCOPE_WRITE
-
-      - path: lorerunes/tests/test_email_normalisation.py
-        missing_symbols:
-          - lorerunes.normalize_email
-
-      - path: lorerunes/tests/test_posture.py
-        missing_symbols:
-          - lorerunes.Posture
-          - lorerunes.PostureRefusal
-          - lorerunes.SCOPE_READ
-          - lorerunes.SCOPE_WRITE
-          - lorerunes.derive_posture
-        unsymboled_codes:
-          # THE RULING'S FALSIFIER (b), INVOKED. Per-symbol discrimination is
-          # unbuildable for these two: mypy's message is `Return type becomes
-          # "Any | None" due to an unfollowed import` — it names the DECAYED
-          # SIGNATURE, never the missing symbol that caused the decay, so there is
-          # no name to register. The residual is stated as required: file-exact,
-          # code-exact, and COUNT-exact. A third one is a change in the world and
-          # must be re-adjudicated, not absorbed.
-          #
-          # RESIDUAL, said plainly: while this entry stands, a genuinely NEW
-          # `no-any-unimported` error in this file would be admitted if and only if
-          # it replaced one of these two — the count cannot tell them apart. That
-          # is the price of falsifier (b), it is bounded at 2 lines in 1 file, and
-          # it discharges at packet 39's build.
-          - code: no-any-unimported
-            count: 2
-            reason: >-
-              downstream of the unfollowed `lorerunes` import; the message names a
-              decayed return type, not a missing symbol.
-
-      - path: lorerunes/tests/test_roster_parser.py
-        missing_symbols:
-          - lorerunes.RosterParse
-          - lorerunes.RosterParseError
-          - lorerunes.is_admitted
-          - lorerunes.normalize_email
-          - lorerunes.parse_roster
-        unsymboled_codes:
-          - code: no-any-unimported
-            count: 2
-            reason: >-
-              downstream of the unfollowed `lorerunes` import; the message names
-              the decayed ARGUMENT type of a local assert-helper, not a missing
-              symbol. Same residual and same discharge as test_posture.py above.

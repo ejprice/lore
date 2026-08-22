@@ -36,7 +36,7 @@ from __future__ import annotations
 import contextlib
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine, Iterator, MutableMapping, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -352,21 +352,6 @@ def write_roster(directory: Path, *emails: str, header: bool = True) -> Path:
     return path
 
 
-def rewrite_roster(path: Path, *emails: str) -> None:
-    """Replace a roster file's contents in place, advancing its mtime.
-
-    The mtime must actually MOVE for an mtime-watched reload to be observable; a
-    same-second rewrite on a coarse clock would make the acceptance test pass or fail
-    by luck rather than by behaviour, so the mtime is forced forward explicitly.
-    """
-    previous = path.stat().st_mtime
-    path.write_text("\n".join(emails) + "\n", encoding="utf-8")
-    forced = max(time.time(), previous + 1.0)
-    import os
-
-    os.utime(path, (forced, forced))
-
-
 # --------------------------------------------------------------------------- #
 # Config payloads. Mirrors the production ``lore.yaml`` shape (and the ``_config``
 # helper the rest of the loremaster suite uses) so a fixture config is the same object
@@ -608,63 +593,6 @@ MCP_POST_HEADERS: list[tuple[bytes, bytes]] = [
 # --------------------------------------------------------------------------- #
 
 
-def make_verifier(
-    *,
-    roster_path: Path | None,
-    api_keys: dict[str, str] | None,
-    http_client: httpx.AsyncClient | None = None,
-    client_id: str = GOOGLE_CLIENT_ID,
-    resource_server_url: str = RESOURCE_SERVER_URL,
-) -> Any:
-    """Build a ``LoreTokenVerifier`` for a contract pin.
-
-    ``roster_path`` and ``api_keys`` are REQUIRED keyword arguments even though both
-    accept ``None``: the verifier BRANCHES on whether each is configured, and a
-    factory that defaults a branched-on parameter manufactures a fixture monoculture
-    where every pin silently exercises one shape (CLAUDE.md, "fixture factories must
-    not default a parameter the code branches on").
-
-    Args:
-        roster_path: The R12 roster file, or ``None`` for an api-key-only verifier.
-        api_keys: ``name -> secret`` for the api-key branch, or ``None`` for none.
-        http_client: The injected ``httpx.AsyncClient`` (tests pass a spy).
-        client_id: The configured OAuth client the ``aud`` claim must equal.
-        resource_server_url: The RFC 9728 resource identifier.
-
-    Returns:
-        A ``LoreTokenVerifier``.
-    """
-    from loremaster.auth import ApiKeyVerifier, LoreTokenVerifier
-    from loremaster.config import GoogleOAuthConfig
-    from pydantic import SecretStr
-
-    google = None
-    if roster_path is not None:
-        google = GoogleOAuthConfig.model_validate(
-            {
-                "client_id": client_id,
-                "resource_server_url": resource_server_url,
-                "allowed_emails_file": str(roster_path),
-            }
-        )
-    api_key_verifier = None
-    if api_keys is not None:
-        api_key_verifier = ApiKeyVerifier(
-            {name: SecretStr(value) for name, value in api_keys.items()}
-        )
-    return LoreTokenVerifier(
-        api_key_verifier=api_key_verifier,
-        google=google,
-        http_client=http_client,
-    )
-
-
-DEFAULT_API_KEYS = {
-    API_KEY_NAME_LOCAL_AGENT: API_KEY_VALUE_LOCAL_AGENT,
-    API_KEY_NAME_LAN_CLIENT: API_KEY_VALUE_LAN_CLIENT,
-}
-
-
 class _StubAppContext:
     """A no-op stand-in for ``AppContext`` in lifespan-driven AUTH pins.
 
@@ -718,47 +646,6 @@ def mcp_session_id(response: AsgiResponse) -> str:
 # --------------------------------------------------------------------------- #
 # R16 — ONE handler-set derivation, feeding BOTH of R16's instruments.
 # --------------------------------------------------------------------------- #
-
-
-def sdk_bound_handler_names() -> frozenset[str]:
-    """The handler methods `FastMCP.__init__` BINDS to the low-level server, DERIVED.
-
-    ⚠ DERIVED, NEVER HAND-LISTED, and that is the whole point. Three wrong builds in
-    three waves (WB30 `call_tool`, WB48 dispatch order, WB93 `list_tools`) all exploited
-    one root cause: ``_setup_handlers`` registers the BOUND method at construction, so a
-    post-construction instance attribute is live in-process and DEAD ON THE WIRE. A
-    hand-listed set of handler names would be the next name-list — the artifact this repo
-    has the most receipts against — and would miss the eighth handler an SDK upgrade
-    binds. So the set is AST-parsed out of the installed SDK's own source.
-
-    The parse: ``_setup_handlers``'s body is ``self._mcp_server.<x>()(self.<x>)`` per
-    handler, so every non-private ``self.<name>`` attribute in it is a bound handler, and
-    ``self._mcp_server`` is excluded by the underscore rule rather than by being named.
-
-    Returns:
-        Every handler name the installed SDK binds (seven at ``mcp`` 1.27.2).
-    """
-    import ast
-    import inspect
-    import textwrap
-
-    from mcp.server.fastmcp import FastMCP
-
-    tree = ast.parse(textwrap.dedent(inspect.getsource(FastMCP._setup_handlers)))
-    names = {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-        and not node.attr.startswith("_")
-    }
-    assert names, (
-        "the handler-set derivation found NOTHING in FastMCP._setup_handlers. The SDK's "
-        "shape changed and both R16 instruments are now vacuous — fix the derivation, do "
-        "not hand-list the names."
-    )
-    return frozenset(names)
 
 
 # --------------------------------------------------------------------------- #
@@ -929,28 +816,3 @@ async def wire_session(
 # --------------------------------------------------------------------------- #
 
 
-@contextlib.contextmanager
-def as_principal(token: Any) -> Iterator[None]:
-    """Install ``token`` as the request's authenticated principal (or none at all)."""
-    from mcp.server.auth.middleware.auth_context import auth_context_var
-    from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
-
-    reset = auth_context_var.set(AuthenticatedUser(token) if token is not None else None)
-    try:
-        yield
-    finally:
-        auth_context_var.reset(reset)
-
-
-async def call_and_capture(mcp: Any, tool_name: str) -> BaseException | None:
-    """Call ``tool_name`` IN PROCESS and return whatever it raised, or ``None``.
-
-    ``pytest.raises(Exception)`` is the wrong instrument for a "was NOT refused" pin: it
-    fails when nothing is raised, so a build that made a tool succeed would red a pin that
-    has nothing to say about success. This captures instead of demanding.
-    """
-    try:
-        await mcp.call_tool(tool_name, {})
-    except BaseException as exception:  # noqa: BLE001 - the pin classifies, never swallows
-        return exception
-    return None
