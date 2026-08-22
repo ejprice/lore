@@ -572,14 +572,14 @@ class PrincipalStore:
         return self._row_to_principal(rows[0])
 
     async def set_expires(self, *, email: str, expires_at: datetime | None) -> Principal:
-        """STUB (contract-49-1): set/clear a principal's ``expires_at`` — 49's
+        """Set or clear a principal's ``expires_at`` — 49's
         ``set-expiry`` verb (design §F1, Reading C).
 
         Clones :meth:`set_status`'s shape: keyed on ``email``; an unknown email is a
         typed :class:`PrincipalNotFoundError` (never a silent no-op on an empty
         UPDATE). ``expires_at`` binds as a Python datetime (store law §2 — never
         stringified); ``None`` clears via ``SET expires_at = NONE`` (⚠ an UPDATE
-        OMITTING the column would leave it unchanged — the builder must SET it to
+        OMITTING the column would leave it unchanged, so the clear path SETs it to
         NONE explicitly). Rides ``_query`` (no new policy).
 
         Args:
@@ -614,7 +614,7 @@ class PrincipalStore:
         return self._row_to_principal(rows[0])
 
     async def delete(self, *, email: str) -> int:
-        """STUB (contract-49-1): HARD-delete a principal and CASCADE its keys — 49's
+        """HARD-delete a principal and CASCADE its keys — 49's
         ``delete`` verb (design §F2).
 
         Deletes every ``principal_key`` owned by the principal (children FIRST —
