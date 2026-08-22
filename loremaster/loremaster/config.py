@@ -19,10 +19,13 @@ controlled way:
   its own slice with its own pydantic model. This is the *only* sanctioned extra
   top-level key; a raw, unrecognised top-level field is still rejected.
 
-An optional **``auth``** block (D9) models a rotatable set of named API keys,
-each referenced by an environment-variable *name* (``*_env``) — never inlined.
-Absent ⇒ no-auth localhost single-user mode. ``tls_terminated_upstream`` (D11)
-records that loremaster serves plain HTTP behind a TLS-terminating ingress.
+An optional **``auth``** block (D9 / packet 39 RE-CUT §6) models either a set of
+named API keys (``mode: "api_key"``, each referenced by an environment-variable
+*name* ``*_env`` — never inlined) or the hosted-OAuth resource-server posture
+(``mode: "hosted_oauth"`` + an ``oauth`` provider block + a public ``base_url``).
+Absent ⇒ no-auth loopback single-user mode. (The pre-recut ``tls_terminated_upstream``
+D11 flag is RETIRED — see :class:`AuthConfig`; auth now runs behind lore-caddy, whose
+native ``host_origin_protection`` covers the transport axis it once recorded.)
 
 Secrets are *never* inlined. The config carries only the *name* of an
 environment variable; :func:`resolve_secret` reads ``os.environ`` and raises a
@@ -48,6 +51,7 @@ from pydantic import (
     PositiveInt,
     SecretStr,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -374,25 +378,145 @@ class AuthKey(_StrictModel):
     key_env: str
 
 
-class AuthConfig(_StrictModel):
-    """The optional rotatable-key auth layer (D9).
+class OAuthProviderConfig(_StrictModel):
+    """The hosted-OAuth provider block (packet 39 RE-CUT, design §6).
 
-    Gates access to the *service* only — not per-content ACL (every
-    authenticated developer sees the same indexed code). Hot-reloadable: rotate
-    = add a new key / drop an old one with zero downtime.
+    ⚠ STUB (contract-39-w23, wave-2/3): the FIELDS are the contract surface; the
+    fail-closed VALIDATION (blank ``client_id`` refused, an email scope required) is
+    builder GREEN work — this stub declares the fields WITHOUT those validators so the
+    R2 config pins fail BEHAVIOURALLY, not on ImportError.
+
+    lore is a RESOURCE SERVER: it verifies a bearer token claude.ai obtained from the
+    IdP; it never runs the OAuth authorization flow. So the ``client_secret`` is NOT a
+    field here — the hand-rolled tokeninfo verification (finding #393) validates a token
+    with only the presented ``access_token`` and the configured ``client_id`` (the ``aud``
+    check), holding no confidential OAuth artifact. ``extra="forbid"`` (from
+    ``_StrictModel``) therefore REFUSES an inline ``client_secret`` (or any other key) by
+    construction — the strongest "never inline" (design §6; contract ESC-2 reading A).
+
+    Attributes:
+        kind: The provider kind. ``"google"`` for the single-provider MVP; the
+            ``Literal`` is the extend-at-provider-#2 seam (design §3.6 / §5).
+        client_id: The configured OAuth client the token's ``aud`` MUST equal. Public
+            (RFC 6749 §2.2), non-blank — a blank ``client_id`` is a fail-OPEN hole
+            (every token's ``aud`` would compare against ``""``), so the builder REFUSES
+            a blank/whitespace-only value (reusing :func:`lorerunes.is_blank`).
+        required_scopes: The scopes the token's grant must be a superset of. MUST include
+            an email scope, or admission has no verified email to key on (design §4.1).
+    """
+
+    kind: Literal["google"]
+    client_id: str
+    required_scopes: list[str]
+
+    @field_validator("client_id")
+    @classmethod
+    def _client_id_is_non_blank(cls, value: str) -> str:
+        """Refuse a blank / whitespace-only ``client_id`` (fail-closed, design §6/R2).
+
+        A blank ``client_id`` is a fail-OPEN hole: every token's ``aud`` would be compared
+        against ``""`` and any Google app's token would open lore. Blankness is decided by the
+        ONE shared rule :func:`lorerunes.is_blank` (a single space has length 1, so a bare
+        ``if not client_id`` truthiness check would ADMIT ``"   "``), exactly as
+        :func:`resolve_secret` decides it — "configured to whitespace" is "not configured".
+        """
+        if is_blank(value):
+            raise ValueError(
+                "oauth.client_id must be a non-blank OAuth client identifier — a blank or "
+                "whitespace-only client_id is a fail-open hole (every token's aud would compare "
+                "against an empty string)"
+            )
+        return value
+
+
+class AuthConfig(_StrictModel):
+    """The optional auth layer — api-key (LAN) OR hosted-OAuth (packet 39 RE-CUT, §6).
+
+    Gates access to the *service* only — not per-content ACL (every authenticated
+    principal sees the same indexed code). The api-key branch is hot-reloadable (rotate
+    = add/drop a named key with zero downtime); the hosted-OAuth branch verifies a
+    claude.ai-obtained bearer token against the 48/49 ``principal`` table.
+
+    ⚠ STUB (contract-39-w23, wave-2/3): the recut ADDS ``mode`` / ``oauth`` / ``base_url``
+    / ``allowed_origins`` and RETIRES ``tls_terminated_upstream`` (design §9, finding
+    #395). This stub declares the new fields WITHOUT their validators (``base_url``
+    https-only, the posture-coherence cross-field check) so the wave-2/3 config pins fail
+    BEHAVIOURALLY; and it deliberately LEAVES ``tls_terminated_upstream`` present so the
+    removed-behaviour pins in ``test_auth.py`` are RED until the builder deletes it (and
+    adds the migration-message validator). Contract-first: the builder GREENs both halves.
 
     Attributes:
         enabled: Whether the auth layer gates requests. Off ⇒ no-auth localhost
-            single-user mode.
-        keys: The configured set of named keys (each an ``*_env`` ref).
-        tls_terminated_upstream: D11 — loremaster serves plain HTTP behind a
-            TLS-terminating ingress and assumes encrypted transport. Defaults to
-            ``True`` to reflect that assumption.
+            single-user (``LOOPBACK``) mode.
+        mode: Which branch this deploy runs — ``"api_key"`` (LAN bearer) or
+            ``"hosted_oauth"`` (the claude.ai resource-server posture). Defaults to
+            ``"api_key"`` so an existing ``lore.yaml`` auth block still validates.
+        keys: The configured set of named api-keys (each an ``*_env`` ref).
+        oauth: The hosted-OAuth provider block (design §6). ``None`` for the api-key
+            branch; REQUIRED for ``mode == "hosted_oauth"`` (a posture-coherence check
+            the builder adds).
+        base_url: The public resource URL (e.g. ``https://lore.firehawktransam.org/mcp``)
+            advertised in the RFC 9728 protected-resource metadata. Non-secret,
+            per-deployment; https-only (the builder REFUSES a non-https value — a plaintext
+            resource URL would advertise a downgradeable endpoint). ``None`` for LAN.
+        allowed_origins: Extra exact ``scheme://host[:port]`` origins the
+            :class:`~loremaster.auth.OriginValidationMiddleware` allows in addition to
+            loopback (e.g. ``https://claude.ai``).
+
+    ⚠ RETIRED (design §9 / finding #395): the ``tls_terminated_upstream`` (D11) flag is
+    DELETED. The recut moves auth into ``FastMCP(auth=…)`` behind lore-caddy, whose native
+    ``host_origin_protection`` covers the transport axis the D11 flag once recorded, so the
+    flag no longer does anything. Because an operator's live ``lore.yaml`` may still carry the
+    key, its removal fails LOUD and REMEDIABLY via :meth:`_reject_retired_tls_flag` (a bare
+    ``extra="forbid"`` "Extra inputs are not permitted" does not tell an operator the fix).
     """
 
     enabled: bool = False
+    mode: Literal["api_key", "hosted_oauth"] = "api_key"
     keys: list[AuthKey] = []
-    tls_terminated_upstream: bool = True
+    oauth: OAuthProviderConfig | None = None
+    base_url: str | None = None
+    allowed_origins: list[str] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_retired_tls_flag(cls, data: Any) -> Any:
+        """Fail LOUD and REMEDIABLY on the retired ``tls_terminated_upstream`` key (§9/#395).
+
+        A DELETE/REPLACE migration guard: an operator whose ``lore.yaml`` still carries the
+        flag must be told AT LOAD what to do, not handed the bare ``extra="forbid"`` "Extra
+        inputs are not permitted" (which names the field via the error loc but never the
+        remedy). Runs BEFORE field validation so this migration message — naming the field AND
+        the fix — is what surfaces, not the generic strict-model rejection.
+        """
+        if isinstance(data, dict) and "tls_terminated_upstream" in data:
+            raise ValueError(
+                "auth.tls_terminated_upstream is RETIRED (packet 39 re-cut): auth now lives in "
+                "FastMCP(auth=…) behind lore-caddy, whose native host_origin_protection covers "
+                "the transport axis this flag once recorded. Fix: REMOVE (delete) the "
+                "tls_terminated_upstream key from your lore.yaml auth block."
+            )
+        return data
+
+    @field_validator("base_url")
+    @classmethod
+    def _base_url_is_https(cls, value: str | None) -> str | None:
+        """Refuse a non-https ``base_url`` (design §6/R2) — the advertised resource must be TLS.
+
+        The RFC 9728 protected-resource metadata advertises this URL to claude.ai; a plaintext
+        ``http://`` (or any non-TLS scheme, or a schemeless value) endpoint is a downgradeable
+        resource, refused at load rather than silently advertised. POSITIVELY requires the
+        ``https`` scheme (never a mere ``not startswith("http://")``, which a ``ws://`` slips).
+        """
+        if value is None:
+            return None
+        if urlsplit(value).scheme != "https":
+            raise ValueError(
+                f"auth.base_url must be an https:// URL (the RFC 9728 protected-resource "
+                f"metadata advertises it to claude.ai; a non-TLS endpoint is downgradeable); "
+                f"got {value!r}"
+            )
+        return value
 
 
 class ToolsConfig(_StrictModel):

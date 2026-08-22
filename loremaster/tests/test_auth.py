@@ -7,15 +7,17 @@ timing-safety semantics, ``build_api_key_verifier``, ``OriginValidationMiddlewar
 still-exported KEPT names, and the cross-module ``_drive`` / ``_RecordingApp`` helpers
 (imported by ``test_eager_startup`` / ``test_mcp_server``).
 
-⚠ WHAT IS NOT HERE, AND WHY. The re-cut's REMOVALS — dropping ``BearerAuthMiddleware`` and
-the ``AuthVerifier`` ABC (design §9: dropped-and-replaced by ``FastMCP(auth=…)``) and
-retiring the ``tls_terminated_upstream`` config flag — land in WAVE 3 (the standalone-fastmcp
-composition, design §2/§8). Per the DUAL law (removed-behaviour pins are written WHEN the
-removal lands, not before), the absence pins for those symbols and the config-migration guard
-were REMOVED from this wave-1 contract by contract-39-w1b and are RE-CUT at wave 3 — see the
-wave-3 re-cut finding filed alongside this trim. Until then those symbols still exist in
-``auth.py`` by design, so pinning their absence here would be a premature (perpetually RED)
-forward pin — which is exactly what the currency gate flagged RED_ORPHANED.
+⚠ THE REMOVED-BEHAVIOUR PINS ARE NOW HERE (wave-3 re-cut by contract-39-w23, finding #395).
+The re-cut's REMOVALS — dropping ``BearerAuthMiddleware`` and the ``AuthVerifier`` ABC
+(design §9: dropped-and-replaced by ``FastMCP(auth=…)``) and retiring the
+``tls_terminated_upstream`` config flag — LAND in wave 3 (the standalone-fastmcp composition,
+design §2/§8). Per the DUAL law (removed-behaviour pins are written WHEN the removal lands, not
+before), contract-39-w1b REMOVED these as premature forward pins at wave-1 close-out (the
+currency gate flagged them RED_ORPHANED); contract-39-w23 RE-CUTS them here now that wave 3's
+build lands the removal. They are RED until the builder deletes the symbols/field — the honest
+contract-first state. ``TestRetiredAuthSurfaceIsGone`` (below) is the absence half;
+``TestKeptAuthSurfaceIsExported`` is its indispensable CONTROL (a build that emptied ``__all__``
+satisfies every absence assertion — only the kept-names control catches it).
 
 The E1 trim (contract-39-w1) that preceded this close-out retired the 2026-07-31 SDK-FastMCP
 pins: ``LoreTokenVerifier`` now lives in ``loremaster/token_verifier.py`` (pinned by
@@ -47,7 +49,7 @@ from _auth_fixtures import (
     API_KEY_VALUE_LOCAL_AGENT,
 )
 from loremaster.config import AuthConfig, AuthKey
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 # The names design §9 keeps exported from ``loremaster.auth``. (The names it DELETES —
 # ``BearerAuthMiddleware`` / ``AuthVerifier`` — and the retired ``tls_terminated_upstream``
@@ -57,6 +59,15 @@ KEPT_AUTH_EXPORTS = (
     "ApiKeyVerifier",
     "OriginValidationMiddleware",
     "build_api_key_verifier",
+)
+
+# The names design §9 DELETES from ``loremaster.auth`` (dropped-and-replaced by
+# ``FastMCP(auth=LoreTokenVerifier)``): the hand-rolled ASGI Bearer gate and its pluggable
+# verifier ABC. Their absence pins are RE-CUT here (finding #395) now that wave 3 lands the
+# removal — RED until the builder deletes them.
+RETIRED_AUTH_NAMES = (
+    "BearerAuthMiddleware",
+    "AuthVerifier",
 )
 
 
@@ -122,6 +133,110 @@ class TestKeptAuthSurfaceIsExported:
     # ``LoreTokenVerifier`` was exported from ``loremaster.auth`` (the 2026-07-31 SDK model).
     # The re-cut moved ``LoreTokenVerifier`` to ``loremaster/token_verifier.py``; its
     # fastmcp-TokenVerifier signature + behaviour are pinned by ``test_token_verifier.py``.
+
+
+class TestRetiredAuthSurfaceIsGone:
+    """Design §9 / finding #395 — the DELETED hand-roll is gone from ``loremaster.auth``.
+
+    ``BearerAuthMiddleware`` (the hand-rolled ASGI Bearer gate) and the ``AuthVerifier`` ABC are
+    dropped-and-replaced by ``FastMCP(auth=LoreTokenVerifier)`` (design §2/§8/§9). Two distinct
+    absence legs per name, because they fail independently: a build could ``del`` the ``__all__``
+    entry while leaving the class importable (or vice versa).
+
+    ⚠ These pins are RED until the builder deletes the symbols — the contract-first state. The
+    CONTROL that keeps them honest is ``TestKeptAuthSurfaceIsExported``: a build that emptied
+    ``__all__`` entirely would satisfy every ``not in __all__`` assertion here — only the kept-names
+    control reddens on that, so the two classes together are the discriminating pair (a bare
+    absence sweep is vacuous without it).
+    """
+
+    @pytest.mark.parametrize("name", RETIRED_AUTH_NAMES)
+    def test_the_retired_name_is_not_importable_from_loremaster_auth(self, name: str) -> None:
+        # Leg 1 — the symbol is gone from the module namespace (not merely undocumented).
+        # WRONG BUILD THIS CATCHES: a build that removed the name from ``__all__`` but left the
+        # class defined (still importable, still constructible — the gate still exists).
+        import loremaster.auth as auth_module  # noqa: PLC0415
+
+        assert not hasattr(auth_module, name), (
+            f"{name} is DELETED by design §9 (replaced by FastMCP(auth=LoreTokenVerifier)) and "
+            f"must not be importable from loremaster.auth"
+        )
+
+    @pytest.mark.parametrize("name", RETIRED_AUTH_NAMES)
+    def test_the_retired_name_is_not_exported(self, name: str) -> None:
+        # Leg 2 — the name is gone from the public surface. WRONG BUILD THIS CATCHES: a build
+        # that deleted the class body but left a dangling ``__all__`` entry (an export naming a
+        # symbol that no longer exists — a broken public surface).
+        import loremaster.auth as auth_module  # noqa: PLC0415
+
+        assert name not in auth_module.__all__, (
+            f"{name} is DELETED by design §9 and must not remain in loremaster.auth.__all__"
+        )
+
+
+class TestAuthConfigRetiresTlsTerminatedUpstream:
+    """Design §9 / finding #395 — the ``tls_terminated_upstream`` flag is retired.
+
+    The recut moves auth into ``FastMCP(auth=…)`` behind lore-caddy (native
+    ``host_origin_protection`` covers the transport axis the D11 flag once recorded), so the flag
+    no longer does anything and is deleted. Its removal is a DELETE/REPLACE: an operator's live
+    ``lore.yaml`` may still carry the key, so the removal must fail LOUD and REMEDIABLY — a bare
+    ``extra="forbid"`` "Extra inputs are not permitted" does not tell an operator what to do.
+
+    ⚠ RED until the builder deletes the field AND adds the migration-message validator.
+    ``test_config.py::test_tls_terminated_upstream_flag_defaults_true`` is the DUAL-law corpse
+    pin (it certifies the OLD world) — the builder MUST retire it in the same GREEN commit, or the
+    suite errors on the deleted attribute (flagged in REPORT-contract-39-w23.md §Removed-behavior).
+    """
+
+    RETIRED_FIELD = "tls_terminated_upstream"
+
+    def test_the_retired_field_is_not_a_model_field(self) -> None:
+        # WRONG BUILD THIS CATCHES: a build that stopped USING the flag but left it a live field
+        # (it would still parse, still default True, still be dead weight in the schema).
+        assert self.RETIRED_FIELD not in AuthConfig.model_fields, (
+            f"{self.RETIRED_FIELD!r} is retired (design §9) and must no longer be an AuthConfig field"
+        )
+
+    def test_a_config_still_carrying_the_retired_flag_fails_to_load(self) -> None:
+        # An operator whose lore.yaml still carries the flag must be told at LOAD, not silently
+        # accepted. WRONG BUILD: a build that keeps the field (accepts the key) — the migration
+        # never surfaces.
+        with pytest.raises(ValidationError):
+            AuthConfig.model_validate(
+                {
+                    "enabled": True,
+                    "keys": [{"name": "local-agent", "key_env": API_KEY_ENV_LOCAL_AGENT}],
+                    self.RETIRED_FIELD: True,
+                }
+            )
+
+    def test_the_failure_names_the_retired_field_and_the_fix(self) -> None:
+        # The message must NAME the field AND tell the operator the fix (remove/delete the key) —
+        # design §9 / finding #395(c): a bare extra="forbid" "Extra inputs are not permitted" is
+        # insufficient for an operator staring at a live lore.yaml. WRONG BUILD THIS CATCHES: a
+        # build that relies on the bare extra="forbid" message (names the field via the error loc,
+        # but never the remedy) instead of a migration-message validator.
+        with pytest.raises(ValidationError) as excinfo:
+            AuthConfig.model_validate({"enabled": True, self.RETIRED_FIELD: True})
+        message = str(excinfo.value).lower()
+        assert self.RETIRED_FIELD in message, "the migration failure must NAME the retired field"
+        assert any(word in message for word in ("remove", "delete", "drop")), (
+            "the migration failure must tell the operator the FIX (remove/delete the key), not "
+            f"just that an extra input is forbidden; message was: {excinfo.value!r}"
+        )
+
+    def test_a_clean_config_without_the_flag_still_loads(self) -> None:
+        # POSITIVE CONTROL — the migration guard must reject ONLY the retired flag, never a clean
+        # config. Without this control, a build that rejected EVERY config would pass the reject
+        # pins above vacuously. This must be GREEN both now (the stub over-rejects nothing) and
+        # after the builder adds the migration validator — it asserts only that the clean config
+        # LOADS (the "field is gone" assertion is test_the_retired_field_is_not_a_model_field).
+        config = AuthConfig.model_validate(
+            {"enabled": True, "keys": [{"name": "lan-client", "key_env": API_KEY_ENV_LAN_CLIENT}]}
+        )
+        assert config.enabled is True
+        assert config.mode == "api_key"
 
 
 class TestApiKeyVerifierIsPreservedVerbatim:
@@ -404,13 +519,10 @@ class TestOriginValidationMiddlewareIsPreserved:
         assert seen == ["lifespan"]
 
 
-# RETIRED (wave-1 close-out, contract-39-w1b): TestAuthConfigRetiresTlsTerminatedUpstream
-# pinned the ``tls_terminated_upstream`` config flag as DELETED — a not-a-field / fails-to-load
-# / message-names-field-and-fix trio plus a clean-config positive control. The re-cut assigns
-# that retirement to WAVE 3 (the standalone-fastmcp config surface, design §9), so the flag is
-# still a live ``AuthConfig`` field today and those pins were perpetually RED (RED_ORPHANED at
-# the currency gate). Per the DUAL law they are RE-CUT at wave 3 when the removal lands — see
-# the wave-3 re-cut finding filed by contract-39-w1b.
+# RE-CUT (wave 3, contract-39-w23, finding #395): TestAuthConfigRetiresTlsTerminatedUpstream is
+# now ABOVE (beside the kept-surface control), since wave 3's build lands the removal. The recut
+# config-VALIDATION virtues (blank client_id fails closed; base_url https-only) — the R2 re-pin —
+# live in the sibling ``test_auth_config_recut.py`` (OAuthProviderConfig / AuthConfig), not here.
 
 # RETIRED (E1a, contract-39-w1): TestGoogleOAuthConfigFailsClosed +
 # TestLoreConfigCrossChecksTheResourcePath tested GoogleOAuthConfig / resource_server_url /

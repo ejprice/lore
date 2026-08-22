@@ -34,6 +34,7 @@ the derived ``expires_at`` lands in an absolute-time sanity band.
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, MutableMapping, Sequence
@@ -93,6 +94,15 @@ API_KEY_ENV_LOCAL_AGENT = "LORE_KEY_LOCAL_AGENT"
 API_KEY_ENV_LAN_CLIENT = "LORE_KEY_LAN_CLIENT"
 API_KEY_VALUE_LOCAL_AGENT = "lk_9f2c41d8b7e34a5f8c1d6e0a2b7f4938"
 API_KEY_VALUE_LAN_CLIENT = "lk_3a7e60c9d1f84b2e95a08c6d4b1e7f52"
+
+# The env-var NAMES the recut HOSTED wire's config.surreal points the composed verifier's
+# stores at (the lore ``*_env`` idiom): the ``wire_session`` hosted branch threads a UNIQUE
+# throwaway test DB into config.surreal and sets these to the test store's creds, so the
+# composed ``LoreTokenVerifier``'s ``PrincipalStore`` (built from config.surreal at the
+# composition root) admits the pre-created principal against that DB — real principal-DB
+# admission, no roster file (design §9 R12).
+_WIRE_SURREAL_USER_ENV = "LORE_TEST_SURREAL_USER"
+_WIRE_SURREAL_PASS_ENV = "LORE_TEST_SURREAL_PASS"
 
 # --------------------------------------------------------------------------- #
 # Server / edge constants (design R3/R4 + the live lore.yaml)
@@ -401,16 +411,32 @@ def base_config_payload(slug: str, live_path: Path) -> dict[str, Any]:
     }
 
 
-def hosted_auth_block(roster_path: Path, *, keys: bool = True) -> dict[str, Any]:
-    """The ``auth`` block for the ``HOSTED_OAUTH`` posture (design §5)."""
+def hosted_auth_block(*, keys: bool = False) -> dict[str, Any]:
+    """The ``auth`` block for the RECUT ``HOSTED_OAUTH`` posture (design §6; contract-39-w23).
+
+    ⚠ RECUT (2026-08-22): the standalone-fastmcp resource-server shape — ``mode:
+    "hosted_oauth"`` + an ``oauth`` provider block (``kind``/``client_id``/
+    ``required_scopes``) + the https ``base_url`` + ``allowed_origins``. The 2026-07-31
+    shape (``mode: "google_oauth"`` + a ``google`` block with ``resource_server_url`` +
+    ``allowed_emails_file`` — the FLAT-FILE ROSTER) is RETIRED (design §9 R7/R12): admission
+    is the 48/49 ``principal`` table, NOT a roster file. ``client_secret`` is deliberately
+    absent (ESC-2 A — lore is a resource server; the tokeninfo verifier holds no secret).
+
+    ``keys`` defaults OFF: the hosted posture gates via OAuth, and the PRE-recut
+    ``build_asgi_app`` (still shipping BearerAuthMiddleware until the builder's composition
+    lands) would demand each key's env var — an empty key set avoids that noise for the
+    wire pins driven before the composition is built.
+    """
     block: dict[str, Any] = {
         "enabled": True,
-        "mode": "google_oauth",
-        "google": {
+        "mode": "hosted_oauth",
+        "oauth": {
+            "kind": "google",
             "client_id": GOOGLE_CLIENT_ID,
-            "resource_server_url": RESOURCE_SERVER_URL,
-            "allowed_emails_file": str(roster_path),
+            "required_scopes": [GOOGLE_EMAIL_SCOPE_URI, "openid"],
         },
+        "base_url": RESOURCE_SERVER_URL,
+        "allowed_origins": [CLAUDE_AI_ORIGIN],
     }
     if keys:
         block["keys"] = [
@@ -691,6 +717,138 @@ class WireSession:
         )
 
 
+def surreal_block_for_test_store(env: Any) -> dict[str, Any]:
+    """A ``config.surreal`` block pointing at the test store ``env``, creds by the wire ``*_env``.
+
+    The ONE way this suite points a composed server's stores at the throwaway test DB: the composed
+    ``LoreTokenVerifier`` builds its ``PrincipalStore`` FROM ``config.surreal`` at the composition
+    root, resolving ``user_env``/``password_env`` — which :func:`set_test_store_creds` sets — so the
+    CORRECT build resolves them WITHOUT externally-set env (adversary-39-w23 #1 / C-DEF). Used by the
+    hosted wire (``_open_hosted_wire_admission``) AND the compose-unit + transport fixtures.
+    """
+    return {
+        "url": env.url,
+        "namespace": env.namespace,
+        "database": env.database,
+        "user_env": _WIRE_SURREAL_USER_ENV,
+        "password_env": _WIRE_SURREAL_PASS_ENV,
+    }
+
+
+def set_test_store_creds(monkeypatch: Any) -> Any:
+    """Set the wire ``*_env`` cred vars to the test-store creds and return a fresh test ``env``.
+
+    Threads the SAME creds the working suites use (``_surreal_harness.surreal_user`` /
+    ``surreal_password`` — the ``ws://127.0.0.1:18000`` root creds), monkeypatch-restored. The
+    caller points ``config.surreal`` at the returned ``env`` (via :func:`surreal_block_for_test_store`)
+    so the CORRECT composition resolves the verifier's store creds WITHOUT externally-set env — the
+    fix for adversary-39-w23 #1 (a pin that passes only with an env var the fixture does not set is
+    unsatisfiable-as-shipped). The returned ``env``'s DB is never connected by the compose-unit /
+    transport pins (construction is lazy), so nothing needs reaping.
+    """
+    from _surreal_harness import (  # noqa: PLC0415 - in-function per the harness import idiom
+        PRODUCTION_DIM,
+        make_env,
+        surreal_password,
+        surreal_user,
+        unique_database,
+    )
+
+    monkeypatch.setenv(_WIRE_SURREAL_USER_ENV, surreal_user())
+    monkeypatch.setenv(_WIRE_SURREAL_PASS_ENV, surreal_password().get_secret_value())
+    return make_env(database=unique_database(), dim=PRODUCTION_DIM)
+
+
+async def _open_hosted_wire_admission(
+    payload: dict[str, Any], saved_env: dict[str, str | None], principal_role: str
+) -> tuple[Any, Any]:
+    """Set up the recut HOSTED wire's REAL principal-DB admission (design §9 R12 — no roster).
+
+    Points ``config.surreal`` at a UNIQUE throwaway test DB, sets the cred + allowed-hosts env
+    vars (recorded in ``saved_env`` for restore), installs the recut ``hosted_auth_block``, and
+    pre-creates the admitted principal (by email, subject unbound — the verifier binds the Google
+    sub on first login). Mutates ``payload`` in place; returns ``(hosted_env, principal_store)``
+    for teardown.
+    """
+    from _surreal_harness import (  # noqa: PLC0415 - in-function per the harness import idiom
+        PRODUCTION_DIM,
+        connect_admin,
+        make_env,
+        unique_database,
+    )
+    from loremaster.principals import PrincipalStore  # noqa: PLC0415
+
+    hosted_env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    for name, value in (
+        (_WIRE_SURREAL_USER_ENV, hosted_env.user),
+        (_WIRE_SURREAL_PASS_ENV, hosted_env.password.get_secret_value()),
+        # lore-caddy proxies the PUBLIC hostname, so host_origin_protection must allow it (else a
+        # legit proxied Host 421s — test_migration_wire's "deploy knob"); 127.0.0.1 is always ok.
+        ("LORE_ALLOWED_HOSTS", PUBLIC_HOSTNAME),
+    ):
+        saved_env[name] = os.environ.get(name)
+        os.environ[name] = value
+    payload["surreal"] = surreal_block_for_test_store(hosted_env)
+    payload["auth"] = hosted_auth_block()
+
+    setup_connection = await connect_admin(hosted_env)
+    await setup_connection.close()
+    principal_store = PrincipalStore(
+        url=hosted_env.url,
+        namespace=hosted_env.namespace,
+        database=hosted_env.database,
+        user=hosted_env.user,
+        password=hosted_env.password,
+    )
+    await principal_store.ensure_ready()
+    await principal_store.create(email=OPERATOR_EMAIL, role=principal_role, subject=None)
+    return hosted_env, principal_store
+
+
+def _force_wire_verdict(mcp: Any, verdict_override: Any) -> None:
+    """Force the verifier's verdict via the fastmcp-native ``mcp.auth`` seam.
+
+    Hosted: ``mcp.auth.token_verifier``; LAN: ``mcp.auth`` itself. A NO-OP when auth is not wired
+    (a STUB composition → ``mcp.auth`` is None), so an adversarial-principal override does not
+    apply until the composition lands — never an AttributeError. Replaces the retired
+    ``mcp._token_verifier`` monkeypatch seam.
+    """
+
+    async def _forced(_token: str) -> Any:
+        return verdict_override
+
+    provider = getattr(mcp, "auth", None)
+    verifier = getattr(provider, "token_verifier", provider)
+    if verifier is not None:
+        verifier.verify_token = _forced
+
+
+def _tokeninfo_spy_for(google_token: str) -> TokeninfoSpy:
+    """A tokeninfo spy that admits ONLY the wire's own Google bearer (else 401)."""
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        if google_token.encode() in request.content:
+            return httpx.Response(
+                200, json=admitted_payload(email=OPERATOR_EMAIL, sub=OPERATOR_SUBJECT)
+            )
+        return httpx.Response(401)
+
+    return TokeninfoSpy(responder=_respond)
+
+
+def _wire_client_params(
+    posture: str, principal: str | None, google_token: str
+) -> tuple[str | None, str, dict[str, str]]:
+    """The bearer token, the (real proxied) origin/Host base URL, and the auth headers."""
+    token = {"google": google_token, "api_key": API_KEY_VALUE_LOCAL_AGENT, None: None}[principal]
+    origin_url = (
+        f"https://{PUBLIC_HOSTNAME}" if posture == "hosted"
+        else f"http://{LOOPBACK_HOST}:{SERVER_PORT}"
+    )
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    return token, origin_url, headers
+
+
 @contextlib.asynccontextmanager
 async def wire_session(
     tmp_path: Path,
@@ -700,108 +858,116 @@ async def wire_session(
     with_extension: bool = False,
     prepare: Callable[[Any], None] | None = None,
     verdict_override: Any = None,
+    principal_role: str = "member",
 ) -> AsyncIterator[WireSession]:
     """Open a real MCP session against the composed server and yield the wire surface.
 
     NOTHING IS DEFAULTED THAT THE CODE BRANCHES ON: ``posture`` and ``principal`` are
     required keyword arguments, so every call site states the shape it exercises.
 
+    ⚠ RECUT (contract-39-w23, 2026-08-22) — the ``hosted`` branch is the standalone-fastmcp
+    resource-server model: a RECUT ``auth`` block (:func:`hosted_auth_block` — mode
+    ``hosted_oauth``, an ``oauth`` block, ``base_url``; NO flat-file roster) and REAL
+    principal-DB admission on a UNIQUE throwaway test DB (design §9 R12 — the roster is
+    retired). config.surreal is pointed at that DB and an admitted ``principal_role``
+    principal is pre-created there, so the composed ``LoreTokenVerifier`` (whose stores the
+    composition root builds FROM config.surreal) admits the presented Google bearer against
+    it. The ``loopback`` and ``lan_bearer`` branches are UNCHANGED — the live GREEN #295
+    instrument (``test_refusal_observes_effect``, loopback) drives this harness and must stay
+    green.
+
+    ⚠ AGAINST THE STUB COMPOSITION (``build_mcp_server`` accepts ``http_client`` but wires no
+    ``FastMCP(auth=…)`` yet, and the pre-recut ``build_asgi_app`` still ships
+    ``BearerAuthMiddleware``): a hosted session's ``initialize`` is refused (401), so the
+    hosted enforce-wire pins are RED by the wire failing to establish until the builder's
+    composition lands — GREEN once ``FastMCP(auth=…)`` gates ``/mcp`` and the guard refuses.
+
     Args:
-        tmp_path: Per-test directory for the roster and the live root.
+        tmp_path: Per-test directory for the live root.
         posture: ``"hosted"`` | ``"lan_bearer"`` | ``"loopback"``.
         principal: ``"google"`` | ``"api_key"`` | ``None`` (unauthenticated).
         with_extension: Register one extension, so the second registration path is live.
         prepare: Called with the composed FastMCP before the app is built — used to
-            register adversarial fixture tools (an UNANNOTATED one, for WB72).
+            register adversarial fixture tools (a synthetic mutating one, for the #295
+            EFFECT counter).
         verdict_override: An ``AccessToken`` the verifier is forced to mint for any
-            credential. The ONLY way to drive an adversarially-shaped principal (a forged
-            ``client_id``) all the way to the wire, since a real principal's identity is
-            whatever the verifier decides.
+            credential — the way to drive an adversarially-shaped principal (a forged
+            ``client_id``) to the wire. RECUT: reaches the verifier via the fastmcp-native
+            ``mcp.auth`` (hosted: ``mcp.auth.token_verifier``; LAN: ``mcp.auth``), not the
+            retired ``mcp._token_verifier``; a no-op until the composition wires auth.
+        principal_role: The role of the pre-created hosted principal (``"member"`` — the only
+            role that matters this READ-ONLY-hosted packet).
 
     Yields:
         A :class:`WireSession` whose `initialize` handshake has completed.
     """
-    from loremaster.config import LoreConfig
-    from loremaster.server import LoreServer, build_asgi_app, build_mcp_server
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
+    from _surreal_harness import drop_database  # noqa: PLC0415
+    from loremaster.config import LoreConfig  # noqa: PLC0415
+    from loremaster.server import LoreServer, build_asgi_app, build_mcp_server  # noqa: PLC0415
+    from mcp import ClientSession  # noqa: PLC0415
+    from mcp.client.streamable_http import streamable_http_client  # noqa: PLC0415
 
-    roster = write_roster(tmp_path / "lore-secrets", OPERATOR_EMAIL, SECOND_PRINCIPAL_EMAIL)
     payload = base_config_payload(slug(), tmp_path / "live")
-    if posture == "hosted":
-        payload["auth"] = hosted_auth_block(roster)
-    elif posture == "lan_bearer":
-        payload["auth"] = lan_bearer_auth_block()
-    elif posture != "loopback":  # pragma: no cover - guards the caller
-        raise AssertionError(f"unknown posture {posture!r}")
-    config = LoreConfig.model_validate(payload)
-
-    google_token = google_access_token("wire-principal")
-
-    def _respond(request: httpx.Request) -> httpx.Response:
-        if google_token.encode() in request.content:
-            return httpx.Response(
-                200, json=admitted_payload(email=OPERATOR_EMAIL, sub=OPERATOR_SUBJECT)
+    hosted_env: Any = None
+    principal_store: Any = None
+    saved_env: dict[str, str | None] = {}
+    try:
+        if posture == "hosted":
+            hosted_env, principal_store = await _open_hosted_wire_admission(
+                payload, saved_env, principal_role
             )
-        return httpx.Response(401)
+        elif posture == "lan_bearer":
+            payload["auth"] = lan_bearer_auth_block()
+        elif posture != "loopback":  # pragma: no cover - guards the caller
+            raise AssertionError(f"unknown posture {posture!r}")
+        config = LoreConfig.model_validate(payload)
 
-    spy = TokeninfoSpy(responder=_respond)
-    server = LoreServer(config)
-    if with_extension:
-        from _extension_helpers import CounterExtension
+        google_token = google_access_token("wire-principal")
+        spy = _tokeninfo_spy_for(google_token)
+        server = LoreServer(config)
+        if with_extension:
+            from _extension_helpers import CounterExtension  # noqa: PLC0415
 
-        server.register_extension(CounterExtension())
-    # The tokeninfo spy is injected ONLY where a Google branch exists. Passing it to a
-    # posture with no google block would be meaningless — and it keeps the loopback and
-    # LAN wire pins runnable TODAY, which is what proves this harness works at all rather
-    # than leaving every wire pin red for an unrelated reason.
-    mcp = (
-        build_mcp_server(server, http_client=spy.client())
-        if posture == "hosted"
-        else build_mcp_server(server)
-    )
-    # PACKET 59: fastmcp's FastMCP has no ``.settings`` — the JSON-vs-SSE response mode is an
-    # ``http_app(json_response=…)`` param (production's build_asgi_app leaves it at the
-    # negotiated default). The MCP SDK streamable-http client handles the negotiated response,
-    # so no per-response-mode override is needed here.
-    if verdict_override is not None:
-
-        async def _forced(_token: str) -> Any:
-            return verdict_override
-
-        mcp._token_verifier.verify_token = _forced
-    if prepare is not None:
-        prepare(mcp)
-    stub_heavy_startup(mcp)
-    app = build_asgi_app(mcp, config)
-
-    token = {
-        "google": google_token,
-        "api_key": API_KEY_VALUE_LOCAL_AGENT,
-        None: None,
-    }[principal]
-
-    # The Host the wire actually carries. Hosted traffic arrives through lore-caddy with
-    # the PUBLIC hostname; loopback/LAN traffic carries the bind. Using the real Host
-    # keeps the SDK's transport-security layer in the path of every wire pin.
-    origin_url = (
-        f"https://{PUBLIC_HOSTNAME}" if posture == "hosted"
-        else f"http://{LOOPBACK_HOST}:{SERVER_PORT}"
-    )
-    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
-
-    async with running_asgi_app(app):
-        http_client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url=origin_url,
-            headers=headers,
+            server.register_extension(CounterExtension())
+        # The tokeninfo spy is injected ONLY where a Google branch exists.
+        mcp = (
+            build_mcp_server(server, http_client=spy.client())
+            if posture == "hosted"
+            else build_mcp_server(server)
         )
-        async with streamable_http_client(
-            f"{origin_url}{MCP_PATH}", http_client=http_client
-        ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                yield WireSession(session=session, mcp=mcp, token=token)
+        if verdict_override is not None:
+            _force_wire_verdict(mcp, verdict_override)
+        if prepare is not None:
+            prepare(mcp)
+        stub_heavy_startup(mcp)
+        app = build_asgi_app(mcp, config)
+
+        # The Host the wire carries is the REAL proxied name (hosted → lore-caddy's public
+        # hostname; loopback/LAN → the bind), keeping the SDK's transport-security layer in path.
+        token, origin_url, headers = _wire_client_params(posture, principal, google_token)
+
+        async with running_asgi_app(app):
+            http_client = httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=origin_url,
+                headers=headers,
+            )
+            async with streamable_http_client(
+                f"{origin_url}{MCP_PATH}", http_client=http_client
+            ) as (read_stream, write_stream, _get_session_id):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    yield WireSession(session=session, mcp=mcp, token=token)
+    finally:
+        if principal_store is not None:
+            await principal_store.close()
+        if hosted_env is not None:
+            await drop_database(hosted_env)
+        for name, previous in saved_env.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
 
 
 # --------------------------------------------------------------------------- #

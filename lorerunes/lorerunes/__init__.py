@@ -19,6 +19,12 @@ from __future__ import annotations
 
 from lorerunes.blankness import is_blank
 from lorerunes.email_normalisation import normalize_email
+from lorerunes.posture import (
+    Posture,
+    PostureError,
+    derive_posture,
+    host_is_loopback,
+)
 from lorerunes.scopes import (
     LORE_READ,
     LORE_WRITE,
@@ -29,7 +35,11 @@ from lorerunes.scopes import (
 __all__ = [
     "LORE_READ",
     "LORE_WRITE",
+    "Posture",
+    "PostureError",
+    "derive_posture",
     "hosted_scopes_for_role",
+    "host_is_loopback",
     "is_blank",
     "lan_scopes_for_role",
     "normalize_email",

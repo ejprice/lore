@@ -10256,8 +10256,131 @@ def _trace_params_hash(arguments: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def build_mcp_server(server: LoreServer) -> Any:
+# The Google authorization-server issuer advertised in the HOSTED_OAUTH RFC 9728
+# protected-resource metadata (design §5 — a ``list`` so provider #2 is one more element).
+_GOOGLE_AUTHORIZATION_SERVER = "https://accounts.google.com"
+
+
+def _public_resource_origin(base_url: str) -> str:
+    """The ``scheme://host[:port]`` ORIGIN of the advertised resource URL (design §8).
+
+    ``RemoteAuthProvider`` derives the RFC 9728 resource URL as ``base_url`` + the mcp mount
+    path, so its ``base_url`` must be the ORIGIN (no path) or the advertised resource doubles the
+    ``/mcp`` segment. ``config.auth.base_url`` is the full resource URL (``…/mcp``, https-only by
+    the config validator), so strip it to the origin here.
+    """
+    from urllib.parse import urlsplit, urlunsplit  # noqa: PLC0415
+
+    parts = urlsplit(base_url)
+    return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+
+
+def _build_lore_token_verifier(config: LoreConfig, posture: Any, http_client: Any) -> Any:
+    """Build the resource-server ``LoreTokenVerifier`` from config for an auth-on posture (§4/§8).
+
+    Its ``PrincipalStore`` / ``PrincipalKeyStore`` are built FROM ``config.surreal`` at THIS
+    composition root (the one place allowed to resolve creds), resolving them through the SHARED
+    :func:`~loremaster.config.resolve_config_value` / :func:`~loremaster.config.resolve_secret`
+    seams — the same policy :func:`~loremaster.store.surreal.build_store` uses. The Google branch
+    is wired ONLY for ``HOSTED_OAUTH`` (``google_client_id`` from the oauth block feeds #393's
+    ``aud`` check); ``LAN_BEARER`` gets an api-key-only verifier (no Google branch).
+    """
+    from loremaster.config import resolve_config_value, resolve_secret
+    from loremaster.principal_keys import PrincipalKeyStore
+    from loremaster.principals import PrincipalStore
+    from loremaster.token_verifier import LoreTokenVerifier
+    from lorerunes import Posture  # noqa: PLC0415
+
+    # ONE coordinate resolution, shared by both stores (PrincipalKeyStore builds its own owned
+    # PrincipalStore from the same coordinates). Mirrors ``build_store``'s config→coordinates
+    # policy — resolving creds through the SAME resolve_config_value/resolve_secret seams — for a
+    # different store class (see the DRY ledger in REPORT-builder-39-w23.md).
+    store_coordinates: dict[str, Any] = {
+        "url": config.surreal.url,
+        "namespace": config.surreal.namespace,
+        "database": config.effective_surreal_database,
+        "user": resolve_config_value(config.surreal.user_env),
+        "password": resolve_secret(config.surreal.password_env),
+    }
+    principal_store = PrincipalStore(**store_coordinates)
+    principal_key_store = PrincipalKeyStore(**store_coordinates)
+
+    if posture is Posture.HOSTED_OAUTH and config.auth is not None and config.auth.oauth is not None:
+        return LoreTokenVerifier(
+            principal_store=principal_store,
+            principal_key_store=principal_key_store,
+            google_client_id=config.auth.oauth.client_id,
+            google_required_scopes=config.auth.oauth.required_scopes,
+            http_client=http_client,
+        )
+    # LAN_BEARER — the api-key branch only (no Google branch; google_client_id stays None).
+    return LoreTokenVerifier(
+        principal_store=principal_store,
+        principal_key_store=principal_key_store,
+    )
+
+
+def _compose_auth(config: LoreConfig, http_client: Any) -> Any:
+    """Build the fastmcp ``AuthProvider`` for the deploy posture, or ``None`` (LOOPBACK) — §8.
+
+    * ``LOOPBACK`` (auth absent / disabled) → ``None`` (no auth provider — the unchanged local
+      single-user mode).
+    * ``LAN_BEARER`` (auth on, ``mode == "api_key"``) → the bare ``LoreTokenVerifier`` (gates
+      ``/mcp`` via the api-key branch; serves NO ``.well-known``).
+    * ``HOSTED_OAUTH`` (auth on, ``mode == "hosted_oauth"``, oauth block, loopback bind) → a
+      ``RemoteAuthProvider`` wrapping the verifier (advertises the RFC 9728 ``.well-known``
+      protected-resource metadata for claude.ai's connector).
+
+    An incoherent auth-on configuration is a fail-LOUD ``PostureError`` from
+    :func:`lorerunes.derive_posture` (the honest-failure boot refusal, design §6).
+    """
+    auth_config = config.auth
+    if auth_config is None or not auth_config.enabled:
+        # LOOPBACK — no auth provider. (Deliberately does NOT run derive_posture on the disabled
+        # path: an existing disabled-auth deploy is the unchanged local mode, and the coherence
+        # refusal for the auth-ON postures is what matters here. See REPORT §Escalations.)
+        return None
+
+    from lorerunes import Posture, derive_posture  # noqa: PLC0415
+
+    posture = derive_posture(
+        host=config.server.host,
+        auth_enabled=auth_config.enabled,
+        mode=auth_config.mode,
+        has_oauth_block=auth_config.oauth is not None,
+    )
+    verifier = _build_lore_token_verifier(config, posture, http_client)
+    if posture is Posture.HOSTED_OAUTH:
+        from fastmcp.server.auth import RemoteAuthProvider  # noqa: PLC0415
+        from pydantic import AnyHttpUrl  # noqa: PLC0415
+
+        if auth_config.base_url is None:  # pragma: no cover - guarded shape
+            raise ValueError(
+                "HOSTED_OAUTH requires auth.base_url (the public resource URL advertised in the "
+                "RFC 9728 protected-resource metadata). Fix: set auth.base_url in lore.yaml."
+            )
+        return RemoteAuthProvider(
+            token_verifier=verifier,
+            authorization_servers=[AnyHttpUrl(_GOOGLE_AUTHORIZATION_SERVER)],
+            base_url=_public_resource_origin(auth_config.base_url),
+        )
+    # LAN_BEARER — the bare verifier gates /mcp; no RemoteAuthProvider (no .well-known).
+    return verifier
+
+
+def build_mcp_server(server: LoreServer, *, http_client: Any = None) -> Any:
     """Construct the FastMCP server: lifespan + the built-in tools + extension tools.
+
+    ⚠ STUB SEAM (contract-39-w23, packet 39 wave 2/3): ``http_client`` is the injected
+    ``httpx.AsyncClient`` (design §4.3) the composition root threads into the
+    ``LoreTokenVerifier``'s Google-tokeninfo branch so that call is hermetic under test
+    (``httpx.MockTransport``). Adding this KEYWORD-ONLY param DISCHARGES the
+    ``scripts/pending_contracts.yaml`` ``packet-39-pending-build`` bound (the
+    ``_auth_fixtures.py`` hosted branch has referenced ``build_mcp_server(http_client=…)``
+    since packet 59). The BEHAVIOUR the param enables — building the verifier from config,
+    wiring ``FastMCP(auth=…)`` per posture, and installing ``ReadOnlyGuardMiddleware`` — is
+    builder GREEN work (design §7/§8); this stub only accepts the param so the composition
+    contract (``test_auth_composition_recut.py``) fails BEHAVIOURALLY, not on a TypeError.
 
     The lifespan builds the live :class:`AppContext` from config (the real
     embedder via :func:`~loremaster.embedding.make_embedder_from_config`, the
@@ -10278,6 +10401,10 @@ def build_mcp_server(server: LoreServer) -> Any:
 
     Args:
         server: The composed :class:`LoreServer`.
+        http_client: The injected ``httpx.AsyncClient`` the hosted-OAuth composition threads
+            into the ``LoreTokenVerifier`` Google-tokeninfo branch (design §4.3); ``None`` (the
+            default) lets a hosted build lazily construct its own bounded client, and is the
+            only value the non-hosted postures ever pass. STUB SEAM — see the summary above.
 
     Returns:
         The configured :class:`~fastmcp.FastMCP` instance.
@@ -10363,12 +10490,24 @@ def build_mcp_server(server: LoreServer) -> Any:
     # (resolved at CONSTRUCTION so an env baked after import is honoured — D4). host/
     # port are NOT ctor kwargs (read at the uvicorn call site — D2); the mount path
     # moves to ``http_app(path=)`` in build_asgi_app (C1).
+    #
+    # Packet 39 RE-CUT (design §7/§8): ``auth=`` is the composed AuthProvider per deployment
+    # posture (None for LOOPBACK; the bare LoreTokenVerifier for LAN_BEARER; a RemoteAuthProvider
+    # for HOSTED_OAUTH) — auth moved OFF the retired ASGI ``BearerAuthMiddleware`` and INTO
+    # fastmcp. ``ReadOnlyGuardMiddleware`` is installed alongside ``ToolTraceMiddleware``: the
+    # #295 default-deny read-only guard that filters + refuses every mutating tool for a principal
+    # lacking ``lore:write`` (a no-op with no ambient principal, so LOOPBACK keeps the full
+    # surface). It is the coarse TOOL-capability layer, built to COMPOSE with RBAC's future
+    # row-level PDP (two layers, neither preempts the other — design §7 banner).
+    from loremaster.readonly_guard import ReadOnlyGuardMiddleware  # noqa: PLC0415
+
     mcp: FastMCP = FastMCP(
         name=f"lore-{config.project.slug}",
         instructions=build_instructions(enabled_tool_names, identity=config.identity),
         lifespan=_lifespan,
         version=_resolve_version(),
-        middleware=[ToolTraceMiddleware()],
+        auth=_compose_auth(config, http_client),
+        middleware=[ToolTraceMiddleware(), ReadOnlyGuardMiddleware()],
     )
     _register_tools(mcp, server)
     return mcp
@@ -12358,7 +12497,7 @@ def _resolve_allowed_hosts(config: LoreConfig) -> list[str]:
 
 
 def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
-    """Assemble the streamable-http ASGI app: Origin-guarded, Bearer-gated if auth.
+    """Assemble the streamable-http ASGI app: Origin-guarded (Bearer auth is now in FastMCP).
 
     The single place the served app is built and gated. Layers, innermost-out:
 
@@ -12367,23 +12506,27 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
       NOT have (``transport_security`` was unset). Enabled explicitly (the fastmcp
       default is OFF), with ``allowed_hosts`` from :func:`_resolve_allowed_hosts` so a
       spoofed Host is 421'd while the real proxied Host passes.
-    * **Origin (DNS-rebinding) guard — ALWAYS on (D11/mcp-builder).** The bespoke
-      :class:`~loremaster.auth.OriginValidationMiddleware` rejects any non-loopback,
-      non-configured Origin with 403 while ALLOWING an absent Origin (a non-browser
-      local client) and loopback. KEPT alongside fastmcp's guard (design C3/F1 keep-both).
-    * **Bearer auth — when an enabled ``auth`` block is configured (D9/D11).** The app
-      is additionally wrapped in :class:`~loremaster.auth.BearerAuthMiddleware`;
-      Bearer is the OUTERMOST layer so a request is authenticated, then Origin-checked,
-      then served.
+    * **Origin (DNS-rebinding) guard — ALWAYS on, OUTERMOST (D11/mcp-builder; §6/§8).** The
+      bespoke :class:`~loremaster.auth.OriginValidationMiddleware` rejects any non-loopback,
+      non-configured Origin with 403 while ALLOWING an absent Origin (a non-browser local
+      client) and loopback. It is the OUTERMOST layer (packet 39 re-cut §6/R6/R9): a disallowed
+      Origin is rejected BEFORE any credential parse or outbound provider call (the zero-outbound
+      property). ``config.auth.allowed_origins`` (e.g. ``https://claude.ai``) are threaded in.
+
+    ⚠ Packet 39 RE-CUT (design §8/§9): the hand-rolled ``BearerAuthMiddleware`` is RETIRED —
+    Bearer verification, the RFC 9728 ``401`` + ``resource_metadata=`` challenge, and the
+    ``.well-known`` advertising moved INTO ``FastMCP(auth=…)`` (wired in
+    :func:`build_mcp_server` via :func:`_compose_auth`). So this function no longer gates on
+    auth; it only assembles the Origin-guarded ASGI app.
 
     Args:
-        mcp: The FastMCP server (its ``http_app(path=…)`` is the inner ASGI app).
-        config: The project config (its ``auth`` block decides the Bearer gating;
-            ``server.host``/``server.path`` provide the bind + mount).
+        mcp: The FastMCP server (its ``http_app(path=…)`` is the inner ASGI app; auth is already
+            wired into it via ``FastMCP(auth=…)``).
+        config: The project config (``server.host``/``server.path`` provide the bind + mount;
+            ``auth.allowed_origins`` extends the Origin allow-list).
 
     Returns:
-        The ASGI app to serve: ``Origin(app)`` (no auth) or
-        ``Bearer(Origin(app))`` (auth enabled).
+        The Origin-guarded ASGI app: ``Origin(mcp.http_app(...))``.
     """
     from loremaster.auth import OriginValidationMiddleware
 
@@ -12406,16 +12549,14 @@ def build_asgi_app(mcp: Any, config: LoreConfig) -> Any:
         allowed_hosts=_resolve_allowed_hosts(config),
         stateless_http=False,
     )
-    # The bespoke Origin guard runs for every deployment (DNS-rebinding defense), with
-    # the configured server bind's own origin implicitly covered by the loopback allow
-    # (the local single-user deploy binds 127.0.0.1). Extra trusted origins can be
-    # threaded here in a future config knob; loopback + absent is the secure default.
-    app: Any = OriginValidationMiddleware(inner)
-    if config.auth is not None and config.auth.enabled:
-        from loremaster.auth import BearerAuthMiddleware, build_api_key_verifier
-
-        return BearerAuthMiddleware(app, build_api_key_verifier(config.auth))
-    return app
+    # The bespoke Origin guard runs for every deployment (DNS-rebinding defense) and is the
+    # OUTERMOST layer (§6/§8): a disallowed Origin is 403'd before any credential parse. The
+    # configured server bind's own origin is implicitly covered by the loopback allow (the local
+    # single-user deploy binds 127.0.0.1); a hosted deploy adds ``https://claude.ai`` via
+    # ``config.auth.allowed_origins``. Bearer auth is NO LONGER wrapped here — it moved into
+    # ``FastMCP(auth=…)`` (design §8/§9; the hand-rolled BearerAuthMiddleware is retired).
+    allowed_origins = config.auth.allowed_origins if config.auth is not None else []
+    return OriginValidationMiddleware(inner, allowed_origins=allowed_origins)
 
 
 def main(argv: list[str] | None = None) -> int:

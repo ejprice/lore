@@ -22,8 +22,8 @@ nothing. The discriminating cases, each with a test that fails without it:
 1. **File-only matching.** A wrapper that admits any error in a registered file
    waves through a genuinely NEW defect in that file. Pinned by
    ``test_registered_file_with_unregistered_symbol_is_unexpected``.
-2. **Substring symbol matching.** ``Posture`` is a substring of
-   ``PostureRefusal``; a naive ``in`` test admits an unregistered symbol.
+2. **Substring symbol matching.** ``FixturePlaceholder`` is a substring of
+   ``FixturePlaceholderRefusal``; a naive ``in`` test admits an unregistered symbol.
    Pinned by ``test_symbol_match_is_quoted_exact_not_substring``.
 3. **No count cross-check.** If the error regex silently stops matching, a
    wrapper reports *zero unexpected errors* and exits 0 — a false clear wearing
@@ -74,7 +74,15 @@ from pending_contract_gate import (  # noqa: E402
 # --------------------------------------------------------------------------
 # Canned gate output — real shapes, transcribed from `533d917`.
 # --------------------------------------------------------------------------
-
+#
+# ⚠ FIXTURE SYMBOL MUST NEVER RESOLVE (builder-39-w23, 2026-08-22). The example
+# "missing symbol" the registry fixtures below register (``lorerunes.FixturePlaceholder``)
+# MUST be a name no real member ever exports — the gate's liveness check imports the
+# owner module and ``hasattr``s the attribute (pending_contract_gate.py:_compute_liveness),
+# and a symbol that RESOLVES flips every "healthy verdict" fixture to a SELF-DESTRUCT. The
+# original fixtures used ``lorerunes.Posture`` as a forward-reference placeholder; packet 39
+# wave 2/3 BUILT ``lorerunes.Posture``, so it began resolving and reddened 4 self-tests.
+# Use a permanently-synthetic name (``FixturePlaceholder``), never a real or planned symbol.
 _REGISTERED_FILE = "lorerunes/tests/test_posture.py"
 _OTHER_REGISTERED_FILE = "loremaster/tests/test_allowlist_roster.py"
 _UNREGISTERED_FILE = "loremaster/tests/test_search.py"
@@ -126,7 +134,7 @@ _REGISTRY_YAML = textwrap.dedent(
         files:
           - path: {_REGISTERED_FILE}
             missing_symbols:
-              - lorerunes.Posture
+              - lorerunes.FixturePlaceholder
               - lorerunes.SCOPE_READ
             unsymboled_codes:
               - code: no-any-unimported
@@ -244,7 +252,7 @@ def test_registry_rejects_a_file_with_neither_symbols_nor_codes(tmp_path: Path) 
 
 def test_reads_error_path_code_and_message() -> None:
     run = MypyOutputReader.read(
-        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture")])
+        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder")])
     )
     assert run.declared_total == 1
     assert len(run.errors) == 1
@@ -252,7 +260,7 @@ def test_reads_error_path_code_and_message() -> None:
     assert error.path == _REGISTERED_FILE
     assert error.line == 74
     assert error.code == "attr-defined"
-    assert '"Posture"' in error.message
+    assert '"FixturePlaceholder"' in error.message
 
 
 def test_notes_are_not_counted_as_errors() -> None:
@@ -260,7 +268,7 @@ def test_notes_are_not_counted_as_errors() -> None:
     notes would trip its own cross-check on any real run."""
     text = _mypy_output(
         [
-            _attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture"),
+            _attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder"),
             f"{_REGISTERED_FILE}:74: note: Did you mean something else?",
         ]
     )
@@ -274,7 +282,7 @@ def test_error_line_count_must_equal_mypys_own_total() -> None:
     """THE CROSS-CHECK. If the regex stops matching production output, the
     partition sees nothing unexpected and the gate goes green over an unread
     error set. mypy states its own total; disagreeing with it is a STOP."""
-    text = _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture")])
+    text = _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder")])
     text = text.replace("Found 1 errors", "Found 9 errors")
     with pytest.raises(BrokenInstrumentError, match="9"):
         MypyOutputReader.read(text)
@@ -314,7 +322,7 @@ def test_shellcheck_verdict_is_carried_through() -> None:
 
 def test_registered_file_and_symbol_is_expected(gate: PendingContractGate) -> None:
     run = MypyOutputReader.read(
-        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture")])
+        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder")])
     )
     partition = gate.partition_mypy(run)
     assert len(partition.expected) == 1
@@ -325,7 +333,7 @@ def test_unregistered_file_is_unexpected(gate: PendingContractGate) -> None:
     """CONTROL: an error outside the registry must never be waved through, even
     when its symbol happens to be a registered name."""
     run = MypyOutputReader.read(
-        _mypy_output([_attr_error(_UNREGISTERED_FILE, 12, "lorerunes", "Posture")])
+        _mypy_output([_attr_error(_UNREGISTERED_FILE, 12, "lorerunes", "FixturePlaceholder")])
     )
     partition = gate.partition_mypy(run)
     assert partition.expected == []
@@ -350,20 +358,22 @@ def test_registered_file_with_unregistered_symbol_is_unexpected(
 
 
 def test_symbol_match_is_quoted_exact_not_substring(gate: PendingContractGate) -> None:
-    """``Posture`` is a proper substring of ``PostureRefusal``. A wrapper doing
+    """``FixturePlaceholder`` is a proper substring of ``FixturePlaceholderRefusal``. A wrapper doing
     ``symbol in message`` admits an unregistered symbol and cannot tell."""
     run = MypyOutputReader.read(
-        _mypy_output([_attr_error(_REGISTERED_FILE, 20, "lorerunes", "PostureRefusal")])
+        _mypy_output([_attr_error(_REGISTERED_FILE, 20, "lorerunes", "FixturePlaceholderRefusal")])
     )
     partition = gate.partition_mypy(run)
-    assert partition.unexpected, "PostureRefusal is not registered — must not match Posture"
+    assert partition.unexpected, (
+        "FixturePlaceholderRefusal is not registered — must not match FixturePlaceholder"
+    )
 
 
 def test_dotted_symbol_requires_the_owner_module_too(gate: PendingContractGate) -> None:
-    """``lorerunes.Posture`` is registered; the same attribute name on a
+    """``lorerunes.FixturePlaceholder`` is registered; the same attribute name on a
     DIFFERENT owner is a different claim and stays unexpected."""
     run = MypyOutputReader.read(
-        _mypy_output([_attr_error(_REGISTERED_FILE, 20, "loremaster.config", "Posture")])
+        _mypy_output([_attr_error(_REGISTERED_FILE, 20, "loremaster.config", "FixturePlaceholder")])
     )
     partition = gate.partition_mypy(run)
     assert partition.unexpected, "owner module must participate in the match"
@@ -663,7 +673,7 @@ def test_self_destruct_when_one_registered_symbol_stops_erroring(
     run = MypyOutputReader.read(
         _mypy_output(
             [
-                _attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture"),
+                _attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder"),
                 unsymboled,
                 unsymboled,
                 _attr_error(
@@ -734,7 +744,7 @@ def _healthy_mypy_run() -> MypyRun:
     return MypyOutputReader.read(
         _mypy_output(
             [
-                _attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture"),
+                _attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder"),
                 _attr_error(_REGISTERED_FILE, 80, "lorerunes", "SCOPE_READ"),
                 unsymboled,
                 unsymboled,
@@ -833,7 +843,7 @@ def test_an_EMPTY_registry_degrades_to_a_pass_through_over_the_plain_gates(
     assert gate.adjudicate(mypy_run=clean, pytest_run=None).ok
 
     one_error = MypyOutputReader.read(
-        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "Posture")])
+        _mypy_output([_attr_error(_REGISTERED_FILE, 74, "lorerunes", "FixturePlaceholder")])
     )
     verdict = gate.adjudicate(mypy_run=one_error, pytest_run=None)
     assert not verdict.ok, "an empty registry must admit NOTHING"

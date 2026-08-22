@@ -32,8 +32,9 @@
 # greened (lorerunes.normalize_email now exists), and test_auth.py's stale
 # LoreTokenVerifier/GoogleOAuthConfig pins were retired (ApiKeyVerifier keepers
 # stay green). R1 (routed by the cold audit) pruned the 26 self-destruct orphans
-# this wave discharged. The `bounds:` section now registers ONLY the 1 remaining
-# WAVE-3 forward-reference. Re-derive (`--derive`) before citing any count.
+# that wave discharged. WAVE 3 (2026-08-22, builder-39-w23) then discharged the
+# LAST forward-reference (`build_mcp_server(http_client=)` is now wired), so the
+# `bounds:` section is now EMPTY. Re-derive (`--derive`) before citing any count.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # DERIVATION — what below is measured, and what is a ruling
@@ -52,33 +53,14 @@
 
 version: 1
 
-bounds:
-  - id: packet-39-pending-build
-    owner: >-
-      packet 39 WAVE 3 (composition) — the sole remaining closure owner after
-      wave 1 (2026-08-22) discharged the identity/admission layer. (Original PIN
-      owner: packet 04b-2 wave C; CLOSURE owner: packet 39.)
-    reopen_trigger: >-
-      packet 39 WAVE 3's build, which wires build_mcp_server's injected http_client
-      seam (design docs/design/2026-08-21-packet39-recut-oauth.md §4.3/§8). The
-      single remaining entry self-destructs when _auth_fixtures.py's HOSTED branch
-      stops referencing the not-yet-wired build_mcp_server(http_client=) parameter.
-    ruling: >-
-      finding #306 (diagnosis + ruling text), packet 04b-2 wave C design sidecar
-      ruling 4. The wave-1 discharge (10 of 11 files) is confirmed by
-      cold-audit-39-w1 (2026-08-22, VERDICT GO), which routed R1 to prune the 26
-      self-destruct orphans this wave discharged.
-    rationale: >-
-      The one remaining error is a WAVE-3 forward-reference, deliberately NOT
-      type:ignore'd: _auth_fixtures.py's wire_session HOSTED branch calls
-      build_mcp_server(http_client=), the injected-client seam packet 39 wave 3
-      wires (§4.3/§8). It is DEAD AT RUNTIME today (the live consumer
-      test_refusal_observes_effect uses posture=loopback, so the HOSTED branch
-      never executes). Masking it would hide the wave-3 seam signal. This is the
-      out-of-authority deferral shape with a named decision point (wave-3 build),
-      not unfixed work.
-
-    files:
-      - path: loremaster/tests/_auth_fixtures.py
-        missing_symbols:
-          - build_mcp_server.http_client
+# ⚠ DISCHARGED 2026-08-22 (packet 39 WAVE 3 build — builder-39-w23). The sole remaining
+# entry, `packet-39-pending-build`, SELF-DESTRUCTED on its own named reopen_trigger: wave 3
+# wired build_mcp_server's injected `http_client` seam (design §4.3/§8), so
+# `_auth_fixtures.py` no longer references a not-yet-wired parameter and
+# `./scripts/typecheck.sh` reports ZERO errors for it. Per this file's own law ("If you are
+# reading this because the gate told you to delete something: that is the instrument working.
+# Delete it."), the entry is deleted with the fix. The registry now degrades to a pass-through
+# over the plain gates (an empty registry is the designed pass-through state — see
+# scripts/test_pending_contract_gate.py::test_an_EMPTY_registry_degrades_to_a_pass_through).
+# Re-derive (`--derive`) before adding any new bound.
+bounds: []

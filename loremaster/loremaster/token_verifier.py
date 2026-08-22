@@ -226,6 +226,16 @@ class LoreTokenVerifier(TokenVerifier):
         http_client: httpx.AsyncClient | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
+        # Initialise the fastmcp ``TokenVerifier`` base so ``required_scopes`` / ``base_url``
+        # exist as attributes (packet 39 wave 2/3, OBSERVATION-A): ``RemoteAuthProvider.__init__``
+        # reads ``token_verifier.required_scopes`` UNCONDITIONALLY when the composition root wraps
+        # this verifier for the HOSTED_OAUTH posture, and ``FastMCP(auth=…)`` handling likewise
+        # expects an initialised base. ``required_scopes=None`` so fastmcp does NOT double-enforce
+        # scopes against the minted ``lore:read`` — this verifier does its OWN Google-scope check
+        # (``google_required_scopes`` in ``_verified_identity``); a fastmcp-level scope requirement
+        # would reject the minted read scope. This does not change ``verify_token`` behaviour (the
+        # wave-1 contract stays green).
+        super().__init__(required_scopes=None)
         self._principal_store = principal_store
         self._principal_key_store = principal_key_store
         self._google_client_id = google_client_id

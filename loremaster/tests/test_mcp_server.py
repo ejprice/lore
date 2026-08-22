@@ -3979,22 +3979,34 @@ class TestTheDeletedLifespanApparatusIsRetired:
 # Auth wiring
 # --------------------------------------------------------------------------- #
 class TestAuthWiring:
-    """The built ASGI app is Bearer-gated iff an enabled auth block is configured."""
+    """Auth is wired into ``FastMCP(auth=…)`` per posture; ``build_asgi_app`` is Origin-only.
 
-    async def test_no_auth_block_leaves_app_ungated(self, tmp_path: Path) -> None:
+    ⚠ RE-CUT (packet 39 wave 3, builder-39-w23 — directly caused by retiring
+    ``BearerAuthMiddleware``, design §8/§9): the two pins here previously asserted
+    ``isinstance(app, BearerAuthMiddleware)`` — a DUAL-law corpse: ``BearerAuthMiddleware`` is
+    DELETED (auth moved into ``FastMCP(auth=…)``), so those pins referenced a symbol that no
+    longer exists. They are re-cut to the NEW truth (no auth provider on the no-auth build; a
+    non-None ``mcp.auth`` on an enabled build; the assembled app is the OUTERMOST Origin guard,
+    never the retired Bearer wrapper). The per-posture ``mcp.auth`` shape is pinned in detail in
+    ``test_auth_composition_recut.py``; this keeps the ``build_asgi_app`` view.
+    """
+
+    async def test_no_auth_block_installs_no_auth_provider(self, tmp_path: Path) -> None:
+        from loremaster.auth import OriginValidationMiddleware  # noqa: PLC0415
+
         slug = _slug()
         config = _config(slug, tmp_path / "live")  # no auth block
         mcp = build_mcp_server(LoreServer(config))
         app = build_asgi_app(mcp, config)
-        # An ungated app is NOT the Bearer middleware.
-        from loremaster.auth import BearerAuthMiddleware
+        # No auth block → no auth provider on the server, and the assembled app is the Origin
+        # guard (not the retired Bearer ASGI wrapper — which no longer exists).
+        assert mcp.auth is None
+        assert isinstance(app, OriginValidationMiddleware)
 
-        assert not isinstance(app, BearerAuthMiddleware)
-
-    async def test_enabled_auth_block_wraps_in_bearer_middleware(
+    async def test_enabled_auth_block_wires_fastmcp_auth(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from loremaster.auth import BearerAuthMiddleware
+        from loremaster.auth import OriginValidationMiddleware  # noqa: PLC0415
 
         monkeypatch.setenv("LORE_KEY_DEV", "dev-secret")
         slug = _slug()
@@ -4005,7 +4017,10 @@ class TestAuthWiring:
         )
         mcp = build_mcp_server(LoreServer(config))
         app = build_asgi_app(mcp, config)
-        assert isinstance(app, BearerAuthMiddleware)
+        # Enabled auth → the LAN_BEARER verifier is wired into FastMCP(auth=…), and the assembled
+        # app is the Origin guard (auth is NO LONGER an outer ASGI wrapper — design §8/§9).
+        assert mcp.auth is not None
+        assert isinstance(app, OriginValidationMiddleware)
 
 
 class TestOriginWiring:

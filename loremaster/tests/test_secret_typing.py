@@ -874,7 +874,7 @@ def _node_verdicts(node: ast.expr | ast.stmt) -> list[str]:
         verdicts.append(f"builds {node.value!r} outside the seam")
     # v2's half — an httpx construction whose headers=/auth= is not from the seam.
     # Never inspects a header NAME, so a computed one cannot slip past this leg.
-    if isinstance(node, ast.Call):
+    if isinstance(node, ast.Call) and not _is_fastmcp_server_auth(node):
         for keyword in node.keywords:
             if keyword.arg in {"headers", "auth"} and not _is_seam_call(keyword.value):
                 verdicts.append(f"{keyword.arg}= not sourced from {SEAM_FUNCTION}()")
@@ -894,6 +894,25 @@ def _is_seam_call(value: ast.expr) -> bool:
         getattr(value.func, "id", None) == SEAM_FUNCTION
         or getattr(value.func, "attr", None) == SEAM_FUNCTION
     )
+
+
+def _is_fastmcp_server_auth(node: ast.Call) -> bool:
+    """Is ``node`` a ``FastMCP(...)`` construction (whose ``auth=`` is a SERVER provider)?
+
+    R26 constraint 2 excludes INCOMING auth (the resource server verifying a client's token).
+    ``FastMCP(auth=<AuthProvider>)`` is exactly that: the ``auth=`` kwarg is a server-side
+    verifier/provider object that VERIFIES incoming bearer tokens — it is NOT an outgoing HTTP
+    auth header carrying one of OUR credentials, so it can neither route through
+    ``build_auth_headers(credential: SecretStr)`` nor leak a loremaster secret. (The gate's own
+    provenance comment already recognises this shape — see ``_FASTMCP_SPIKE_EXEMPT`` — which was a
+    PATH exemption for the spike; packet 39 lands the SAME shape in production ``server.py``, so it
+    is exempted by PATTERN here rather than by blinding a whole production module to R26. Evidence:
+    ``server.py``'s ``auth=`` is ``_compose_auth(...)`` → a fastmcp ``AuthProvider`` /
+    ``LoreTokenVerifier``, never a header dict. The ``Client(auth=…)`` SDK CLIENT shape — which IS
+    outgoing — is a DIFFERENT callee (``Client``), so it stays flagged.)
+    """
+    func = node.func
+    return (getattr(func, "id", None) or getattr(func, "attr", None)) == "FastMCP"
 
 
 AUTH_HEADER_NAMES: frozenset[str] = frozenset({"authorization", "x-api-key", "proxy-authorization"})

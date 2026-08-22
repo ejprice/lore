@@ -1,44 +1,45 @@
-"""Pluggable Bearer-key request auth for the loremaster MCP server (D9/D11/§A1.12).
+"""Request-auth primitives for the loremaster MCP server (D9 / packet 39 RE-CUT §8/§9).
 
-loremaster's auth is a **pluggable request verifier**. The seam is
-:class:`AuthVerifier`; the backend that ships now is :class:`ApiKeyVerifier` — a
-rotatable SET of named API keys validated against an ``Authorization: Bearer``
-header. This covers the near-term consumers (Claude Code's static Bearer header
-via ``--header`` / ``.mcp.json``; the Messages-API MCP connector's
-``authorization_token``). An MCP OAuth 2.1 + Dynamic Client Registration backend
-is the documented FUTURE plug-in behind the SAME seam (the Claude.ai-web surface,
-deferred with the cloud deploy) — it satisfies :class:`AuthVerifier` and slots
-into the same :class:`BearerAuthMiddleware` without re-architecting.
+Two KEPT surfaces after the packet-39 re-cut moved request auth into the
+standalone-fastmcp ``FastMCP(auth=…)`` model (design §2/§8/§9):
 
-Security posture (D11): TLS is terminated UPSTREAM (the host's nginx-ingress), so
-loremaster serves plain HTTP behind it and the key is the whole gate. There is no
-per-content ACL — every authenticated developer sees the same indexed code (D9);
-auth gates access to the *service*, not individual chunks.
+* :class:`ApiKeyVerifier` — a rotatable SET of named API keys matched timing-safely. It is
+  no longer wrapped as an ASGI middleware; instead its constant-time verification semantics
+  are consulted INSIDE :class:`~loremaster.token_verifier.LoreTokenVerifier`'s api-key branch
+  (via :class:`~loremaster.principal_keys.PrincipalKeyStore`). :func:`build_api_key_verifier`
+  resolves each key's VALUE from the env var the config NAMES (``key_env``), never inlined; a
+  key whose env var is unset/empty fails LOUD (an empty key would authenticate an empty token).
+* :class:`OriginValidationMiddleware` — the DNS-rebinding Origin allow-list, KEPT and now the
+  OUTERMOST ASGI layer (design §6/§8): it rejects a disallowed Origin with ``403`` BEFORE any
+  credential parse or outbound provider call, while allowing an absent Origin (a non-browser
+  local client) and loopback.
 
-Design points that make the gate sound:
+⚠ RETIRED by the re-cut (design §9): the hand-rolled ``BearerAuthMiddleware`` (the ASGI Bearer
+gate) and the ``AuthVerifier`` ABC are DELETED — dropped-and-replaced by
+``FastMCP(auth=LoreTokenVerifier)``. Bearer verification, the RFC 9728 ``401`` +
+``WWW-Authenticate: … resource_metadata=`` challenge, and the ``.well-known`` advertising are
+now fastmcp-native (``RemoteAuthProvider`` / ``BearerAuthBackend``). The ``config.auth``
+``tls_terminated_upstream`` flag is retired alongside them (fastmcp's native
+``host_origin_protection`` covers the transport axis it once recorded).
 
-* **Constant-time comparison.** A presented token is matched against each
-  configured key with :func:`hmac.compare_digest`, never a dict lookup or ``==``
-  on the secret, so a wrong key cannot be discovered by timing the rejection.
+There is no per-content ACL — every authenticated principal sees the same indexed code (D9);
+auth gates access to the *service*, not individual chunks. A server with NO ``auth`` block (or
+``enabled=False``) on a loopback bind is the no-auth single-user mode, unchanged for the local
+deploy (the ``LOOPBACK`` posture).
+
+Design points that make :class:`ApiKeyVerifier` sound:
+
+* **Constant-time comparison.** A presented token is matched against each configured key with
+  :func:`hmac.compare_digest`, never a dict lookup or ``==`` on the secret, so a wrong key
+  cannot be discovered by timing the rejection.
 * **Rotation with zero downtime.** :meth:`ApiKeyVerifier.add_key` /
-  :meth:`ApiKeyVerifier.remove_key` add or revoke ONE named identity without
-  disturbing the others — rotate a developer out without restarting the server.
-* **Secrets are env-refs.** :func:`build_api_key_verifier` resolves each key's
-  VALUE from the env var the config NAMES (``key_env``); a configured key whose
-  env var is unset/empty fails LOUD (a key silently resolving to empty would be
-  an un-closable hole).
-* **Fail closed.** With the middleware installed, a request with no/!Bearer/
-  unknown credential is rejected with ``401`` BEFORE the wrapped app runs, and
-  the presented key value is never logged.
-
-A server with NO ``auth`` block (or ``enabled=False``) installs NO middleware —
-the no-auth localhost single-user mode, unchanged for the local deploy.
+  :meth:`ApiKeyVerifier.remove_key` add or revoke ONE named identity without disturbing the
+  others.
 """
 
 from __future__ import annotations
 
 import hmac
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any
 from urllib.parse import urlsplit
@@ -49,8 +50,6 @@ from loremaster.config import AuthConfig, resolve_secret
 
 __all__ = [
     "ApiKeyVerifier",
-    "AuthVerifier",
-    "BearerAuthMiddleware",
     "OriginValidationMiddleware",
     "build_api_key_verifier",
     "hmac",
@@ -64,15 +63,7 @@ _Receive = Callable[[], Awaitable[_Message]]
 _Send = Callable[[_Message], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
 
-# The Bearer scheme prefix (case-insensitive per RFC 7235), the header name, and
-# the challenge the 401 advertises.
-_BEARER_PREFIX = "bearer "
-_AUTHORIZATION_HEADER = b"authorization"
-_WWW_AUTHENTICATE = b'Bearer realm="loremaster"'
-
 _HTTP_SCOPE_TYPE = "http"
-_UNAUTHORIZED_STATUS = 401
-_UNAUTHORIZED_BODY = b"Unauthorized"
 
 # Origin (DNS-rebinding) defense for the local streamable-HTTP mode.
 _ORIGIN_HEADER = b"origin"
@@ -86,22 +77,7 @@ _FORBIDDEN_ORIGIN_BODY = b"Forbidden: disallowed Origin"
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
-class AuthVerifier(ABC):
-    """The pluggable request-verifier seam (API-key now; OAuth/DCR later).
-
-    A backend maps a presented bearer ``token`` to an IDENTITY string (the
-    authenticated principal, e.g. a developer name — for audit) or ``None`` when
-    the token is invalid. Keeping the seam this small lets an OAuth 2.1 + DCR
-    backend satisfy it identically (it would resolve a validated access token to
-    its subject) and ride the same :class:`BearerAuthMiddleware`.
-    """
-
-    @abstractmethod
-    def verify(self, token: str) -> str | None:
-        """Return the identity for a valid ``token``, or ``None`` if invalid."""
-
-
-class ApiKeyVerifier(AuthVerifier):
+class ApiKeyVerifier:
     """A rotatable set of named API keys, matched timing-safely (D9).
 
     Args:
@@ -203,70 +179,6 @@ def build_api_key_verifier(config: AuthConfig) -> ApiKeyVerifier:
     for key in config.keys:
         resolved[key.name] = resolve_secret(key.key_env)
     return ApiKeyVerifier(resolved)
-
-
-class BearerAuthMiddleware:
-    """ASGI middleware that gates every HTTP request on a valid Bearer key.
-
-    Wraps the MCP streamable-http app: a request bearing a valid
-    ``Authorization: Bearer <key>`` passes through to the wrapped app; anything
-    else (no header, a non-Bearer scheme, or an unknown key) is rejected with
-    ``401`` + ``WWW-Authenticate: Bearer`` BEFORE the wrapped app runs (fail
-    closed). Non-HTTP scopes (the ASGI ``lifespan`` startup/shutdown) pass
-    straight through — only HTTP requests are gated. The presented key value is
-    never logged.
-
-    Args:
-        app: The wrapped ASGI application (the MCP streamable-http app).
-        verifier: The :class:`AuthVerifier` consulted for every HTTP request.
-    """
-
-    def __init__(self, app: _ASGIApp, verifier: AuthVerifier) -> None:
-        self._app = app
-        self._verifier = verifier
-
-    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
-        """Gate an HTTP request; pass non-HTTP scopes through untouched."""
-        if scope.get("type") != _HTTP_SCOPE_TYPE:
-            await self._app(scope, receive, send)
-            return
-        token = self._bearer_token(scope)
-        if token is None or self._verifier.verify(token) is None:
-            await self._reject(send)
-            return
-        await self._app(scope, receive, send)
-
-    @staticmethod
-    def _bearer_token(scope: _Scope) -> str | None:
-        """Extract the Bearer token from the ``Authorization`` header, or ``None``.
-
-        Returns ``None`` for a missing header or a non-Bearer scheme (the
-        case-insensitive ``Bearer `` prefix per RFC 7235). The token is the header
-        value after the scheme prefix.
-        """
-        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
-        for name, value in headers:
-            if name.lower() == _AUTHORIZATION_HEADER:
-                decoded: str = value.decode("latin-1")
-                if decoded.lower().startswith(_BEARER_PREFIX):
-                    return decoded[len(_BEARER_PREFIX):]
-                return None
-        return None
-
-    @staticmethod
-    async def _reject(send: _Send) -> None:
-        """Send a ``401`` with a ``WWW-Authenticate: Bearer`` challenge."""
-        await send(
-            {
-                "type": "http.response.start",
-                "status": _UNAUTHORIZED_STATUS,
-                "headers": [
-                    (b"www-authenticate", _WWW_AUTHENTICATE),
-                    (b"content-type", b"text/plain; charset=utf-8"),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": _UNAUTHORIZED_BODY})
 
 
 class OriginValidationMiddleware:

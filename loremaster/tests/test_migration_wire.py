@@ -74,9 +74,20 @@ pytestmark = pytest.mark.wire
 
 _DIM = PRODUCTION_DIM  # the voyage-4-nano production curve dim the probe gate matches.
 _SURREAL_TEST_NAMESPACE = "lore_test"
-# The Bearer key + its env ref (the config names the ENV, the value lives in the env).
-_DEV_KEY = "wire-dev-secret-59"
+# The Bearer credential the wire authenticates with. ⚠ RE-CUT (packet 39 wave 3,
+# builder-39-w23): the recut moved LAN api-key auth OFF ``config.keys`` (the retired
+# BearerAuthMiddleware/ApiKeyVerifier path) and ONTO the ``principal_key`` table via
+# ``LoreTokenVerifier``/``PrincipalKeyStore.verify`` (design §3.3/§4.1). So the wire credential
+# is now a ``<name>:<secret>`` principal-key credential (a colon-bearing string
+# ``PrincipalKeyStore.verify`` splits on the first colon), minted into the test store by
+# ``_serve_migration_wire`` below — it is no longer a bare ``config.keys`` value.
+_WIRE_KEY_NAME = "dev"
+_WIRE_KEY_SECRET = "wire-dev-secret-59"
+_DEV_KEY = f"{_WIRE_KEY_NAME}:{_WIRE_KEY_SECRET}"
 _DEV_KEY_ENV = "LORE_KEY_DEV_WIRE59"
+# The owning principal the wire credential is minted under (LAN keeps full write for every role —
+# design §3.5 lan_scopes_for_role — so a member principal's key can call the mutating smoke tools).
+_WIRE_PRINCIPAL_EMAIL = "wire-dev@firehawktransam.org"
 # A stand-in for the real nginx-ingress proxied Host, configured via the LORE_ALLOWED_HOSTS
 # deploy knob (build_asgi_app's config rider) so a legit proxied Host is accepted (not 421).
 _ALLOWED_PROXY_HOST = "lore.internal.example"
@@ -329,6 +340,38 @@ async def _serve_migration_wire(
     monkeypatch.setenv("SURREAL_USER", env.user)
     monkeypatch.setenv("SURREAL_PASS", env.password.get_secret_value())
     monkeypatch.setenv(_DEV_KEY_ENV, _DEV_KEY)
+
+    # ⚠ RE-CUT (packet 39 wave 3, builder-39-w23): the recut LAN auth path resolves the presented
+    # bearer through the ``principal_key`` table (LoreTokenVerifier / PrincipalKeyStore.verify),
+    # NOT ``config.keys`` (design §3.3/§4.1). So pre-create the owning principal and mint the
+    # ``<name>:<secret>`` credential the wire presents (``_DEV_KEY``) — otherwise every
+    # authenticated smoke session 401s. Mirrors the hosted wire's real principal-DB admission
+    # (``_auth_fixtures._open_hosted_wire_admission``).
+    from loremaster.index.records import sha512_hex
+    from loremaster.principal_keys import PrincipalKeyStore
+    from loremaster.principals import PrincipalStore
+
+    store_coordinates: dict[str, Any] = {
+        "url": env.url,
+        "namespace": env.namespace,
+        "database": env.database,
+        "user": env.user,
+        "password": env.password,
+    }
+    principal_store = PrincipalStore(**store_coordinates)
+    principal_key_store = PrincipalKeyStore(**store_coordinates)
+    try:
+        await principal_store.ensure_ready()
+        await principal_key_store.ensure_ready()
+        await principal_store.create(email=_WIRE_PRINCIPAL_EMAIL, role="member", subject=None)
+        await principal_key_store.mint(
+            email=_WIRE_PRINCIPAL_EMAIL,
+            name=_WIRE_KEY_NAME,
+            secret_hash=sha512_hex(_DEV_KEY),
+        )
+    finally:
+        await principal_key_store.close()
+        await principal_store.close()
     # The config rider: name the proxied Host(s) host_origin_protection accepts. ``None``
     # leaves it UNSET so _resolve_allowed_hosts returns just the bind host (the DEFAULT
     # protective posture — item 8's "unset still 421s a spoofed Host" leg).
@@ -490,7 +533,8 @@ class TestTheAuthPostureIsUnchanged:
         response = await migration_wire.post(token="not-the-dev-key")
         assert response.status_code == 401, (
             f"a bad Bearer token was not rejected 401 (status {response.status_code}) — the "
-            f"bespoke BearerAuthMiddleware posture changed under the http_app swap."
+            f"FastMCP(auth=LoreTokenVerifier) gate (packet 39 re-cut; the bespoke "
+            f"BearerAuthMiddleware is retired) did not reject an unknown credential."
         )
 
     async def test_a_bad_origin_is_rejected_403(self, migration_wire: _MigrationWire) -> None:

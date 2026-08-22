@@ -396,17 +396,14 @@ class TestAuth:
         with pytest.raises(ValidationError):
             LoreConfig.model_validate(payload)
 
-    def test_tls_terminated_upstream_flag_defaults_true(self) -> None:
-        # D11: loremaster serves plain HTTP behind a TLS-terminating ingress and
-        # assumes encrypted transport. The default reflects that assumption.
-        payload = _deep_copy_config()
-        payload["auth"] = {
-            "enabled": True,
-            "keys": [{"name": "alice", "key_env": "LORE_KEY_ALICE"}],
-        }
-        config = LoreConfig.model_validate(payload)
-        assert config.auth is not None
-        assert config.auth.tls_terminated_upstream is True
+    # RETIRED (packet 39 re-cut, wave 3 — builder-39-w23, finding #395): the
+    # ``test_tls_terminated_upstream_flag_defaults_true`` DUAL-law corpse pin asserted the OLD
+    # world's ``config.auth.tls_terminated_upstream is True`` default. The field is DELETED by
+    # the re-cut (design §9 — auth moves into FastMCP(auth=…) behind lore-caddy, whose native
+    # host_origin_protection covers the transport axis this D11 flag once recorded), so this pin
+    # certified a corpse and errored on the deleted attribute. Its retirement is adjudicated with
+    # the field removal; the field's RETIREMENT (not-a-field / migration-message) is now pinned in
+    # ``test_auth.py::TestAuthConfigRetiresTlsTerminatedUpstream``.
 
 
 class TestLoggingConfig:
