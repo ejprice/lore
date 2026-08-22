@@ -99,6 +99,7 @@ from loremaster.store._txn import (
     signin_credentials,
 )
 from loremaster.store.surreal_schema import (
+    _KEEP_TYPES,
     _PRINCIPAL_ROLES,
     _PRINCIPAL_STATUS_ACTIVE,
     _PRINCIPAL_STATUS_SUSPENDED,
@@ -111,6 +112,7 @@ from loremaster.store.surreal_schema import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from loremaster.keeps import KeepStore
     from loremaster.principal_keys import PrincipalKey, PrincipalKeyStore
 
     # The uniform admin-verb handler signature (dict-dispatched by ``main``). A lazy
@@ -120,6 +122,14 @@ if TYPE_CHECKING:
     _VerbHandler = Callable[
         [argparse.Namespace, "PrincipalStore", "PrincipalKeyStore"], Awaitable[int]
     ]
+
+    # The keep-verb handler signature (dict-dispatched by :func:`_dispatch_keep`). Keep
+    # verbs route through a :class:`~loremaster.keeps.KeepStore` — which COMPOSES its own
+    # ``PrincipalStore`` for email resolution — so they need neither the standalone
+    # ``PrincipalStore`` nor the ``PrincipalKeyStore`` the principal verbs take. ``keeps``
+    # imports THIS module (``PrincipalStore``), so ``KeepStore`` is a TYPE_CHECKING-only
+    # import (the string annotation never triggers a runtime cycle).
+    _KeepVerbHandler = Callable[[argparse.Namespace, "KeepStore"], Awaitable[int]]
 
 logger = logging.getLogger(__name__)
 
@@ -775,6 +785,19 @@ _SECRET_ENTROPY_BYTES = 32
 # The dash shown for an absent optional field in a rendered listing.
 _ABSENT_FIELD = "-"
 
+# The per-``type`` ``--name`` CLI policy (design Fork B / FR-2 Q1). argparse cannot
+# express "``--name`` required for some ``--type`` values but forbidden for others", so
+# ``_cmd_create_keep`` enforces it at DISPATCH level, BEFORE any store write: ``project``
+# and ``team`` REQUIRE ``--name``; a ``dm`` keep is nameless and FORBIDS one (a stray
+# ``--name`` is a mistake, caught LOUD rather than silently dropped — FR-2 Q1); ``session``
+# allows either (not listed here). These sets encode the CLI-owned policy the ruling places
+# in the CLI, not the store — ``keep.name`` stays ``option<string>``. Coverage of the
+# ``_KEEP_TYPES`` domain is a CHECKED VARIABLE in the contract
+# (``test_keeps_cli.py::test_every_keep_type_has_a_declared_name_policy``): a new keep type
+# reds that pin until its ``--name`` policy is decided (reach law #344/#345).
+_KEEP_NAME_REQUIRED_TYPES: frozenset[str] = frozenset({"project", "team"})
+_KEEP_NAME_FORBIDDEN_TYPES: frozenset[str] = frozenset({"dm"})
+
 
 def _require_config(args: argparse.Namespace) -> Path:
     """The project ``lore.yaml`` the CLI resolves its store coordinate from. Loud
@@ -854,6 +877,29 @@ def build_principal_store(config: LoreConfig) -> PrincipalStore:
     )
 
 
+def build_keep_store(config: LoreConfig) -> KeepStore:
+    """Construct a :class:`~loremaster.keeps.KeepStore` from ``config`` — the sibling of
+    :func:`build_principal_store` and
+    :func:`~loremaster.principal_keys.build_principal_key_store`, reading the SAME
+    coordinate accessors (``config.surreal.{url,namespace,user_env,password_env}`` +
+    ``config.effective_surreal_database``) MINUS ``dim`` (a collaboration store is never
+    embedded). Resolves the username via
+    :func:`~loremaster.config.resolve_config_value` and the password via
+    :func:`~loremaster.config.resolve_secret`, exactly as ``build_store`` does.
+    """
+    # Lazy import: ``loremaster.keeps`` imports THIS module (``PrincipalStore``), so a
+    # top-level import here is a cycle. PLC0415 is a house-ignored idiom.
+    from loremaster.keeps import KeepStore
+
+    return KeepStore(
+        url=config.surreal.url,
+        namespace=config.surreal.namespace,
+        database=config.effective_surreal_database,
+        user=resolve_config_value(config.surreal.user_env),
+        password=resolve_secret(config.surreal.password_env),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The argparse parser for the admin CLI (design §F6).
 
@@ -917,6 +963,49 @@ def build_parser() -> argparse.ArgumentParser:
     revoke_key.add_argument("--name", required=True, help="the label of the key to revoke")
 
     _with_email("list-keys", "list a principal's keys (names + flags; never a secret)")
+
+    # -- keep (collaboration-space) verbs (packet 60 wave 2, design §6) ----------
+    # Flat subcommands on the SAME lore-adm parser (like the principal verbs), routed
+    # to KeepStore via a distinct handler table (:data:`_KEEP_VERB_HANDLERS`). Keeps are
+    # addressed by ID (not email), so these name a keep by ``--keep`` and principals by
+    # ``--keeper`` / ``--member``. NO ``--execute`` flag / dry-run (struck 2026-08-20).
+    create_keep = subcommands.add_parser(
+        "create-keep", help="create a keep (collaboration space); prints the new keep's id"
+    )
+    create_keep.add_argument(
+        "--type",
+        required=True,
+        choices=list(_KEEP_TYPES),
+        help="the keep flavour (closed domain, server-validated)",
+    )
+    create_keep.add_argument(
+        "--keeper", required=True, help="the keeper (owner) principal's email"
+    )
+    create_keep.add_argument(
+        "--name",
+        default=None,
+        help="an optional label (REQUIRED for project/team, allowed for session, omitted for dm)",
+    )
+
+    add_household = subcommands.add_parser(
+        "add-household", help="add a member to a keep's household (idempotent)"
+    )
+    add_household.add_argument("--keep", required=True, help="the keep's id")
+    add_household.add_argument("--member", required=True, help="the member principal's email")
+
+    remove_household = subcommands.add_parser(
+        "remove-household", help="remove a member from a keep's household (refuses the keeper)"
+    )
+    remove_household.add_argument("--keep", required=True, help="the keep's id")
+    remove_household.add_argument("--member", required=True, help="the member principal's email")
+
+    set_rank = subcommands.add_parser(
+        "set-rank", help="set a household member's per-keep rank (store-validated)"
+    )
+    set_rank.add_argument("--keep", required=True, help="the keep's id")
+    set_rank.add_argument("--member", required=True, help="the member principal's email")
+    set_rank.add_argument("--rank", required=True, help="the rank to set (store-validated closed domain)")
+
     return parser
 
 
@@ -1007,6 +1096,62 @@ async def _cmd_list_keys(
     return 0
 
 
+# -- keep-verb handlers (uniform (args, keep_store) signature; dispatched by
+#    :data:`_KEEP_VERB_HANDLERS` through :func:`_dispatch_keep`) --------------------
+
+
+async def _cmd_create_keep(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``create-keep`` verb — apply the per-``type`` ``--name`` rule, then create.
+
+    The per-``type`` ``--name`` rule (design Fork B / FR-2 Q1) is a CLI-INPUT check
+    enforced HERE at dispatch level (argparse cannot express conditional-required),
+    BEFORE any store write so a rejected create leaves NO partial state: ``project`` and
+    ``team`` REQUIRE ``--name`` (:data:`_KEEP_NAME_REQUIRED_TYPES`); a ``dm`` keep is
+    nameless and FORBIDS ``--name`` (:data:`_KEEP_NAME_FORBIDDEN_TYPES`) — a stray one is
+    a mistake caught LOUD, never silently stored as ``None``; ``session`` allows either. A
+    violation raises :class:`ValueError` with a TEACHING message naming the offending
+    option AND the ``--type``, laundered by :func:`_dispatch_keep` to a ``lore-adm:``
+    stderr line + exit 1. Otherwise :meth:`KeepStore.create_keep` mints the keep (auto-
+    adding the keeper to the household, Fork D) and its id is PRINTED — the ONE line
+    ``create-keep`` emits (the :func:`_cmd_mint_key` print-the-credential precedent, so the
+    operator can address the keep). Silent otherwise.
+    """
+    if args.type in _KEEP_NAME_REQUIRED_TYPES and args.name is None:
+        raise ValueError(f"--name is required for --type {args.type}")
+    if args.type in _KEEP_NAME_FORBIDDEN_TYPES and args.name is not None:
+        raise ValueError(
+            f"--name is not valid for --type {args.type} (a dm keep has no name concept)"
+        )
+    keep = await keep_store.create_keep(keeper_email=args.keeper, type=args.type, name=args.name)
+    print(keep.id)
+    return 0
+
+
+async def _cmd_add_household(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``add-household`` verb — delegates to
+    :meth:`KeepStore.add_household_member` (IDEMPOTENT: a re-add is a benign no-op,
+    Fork F). Silent on success."""
+    await keep_store.add_household_member(keep_id=args.keep, member_email=args.member)
+    return 0
+
+
+async def _cmd_remove_household(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``remove-household`` verb — delegates to
+    :meth:`KeepStore.remove_household_member`; a ``KeeperLockoutError`` (removing the
+    keeper) or a ``KeepNotFoundError`` (a ghost ``--keep``, FR-3) is laundered by
+    :func:`_dispatch_keep` to a stderr line + exit 1. Silent on success."""
+    await keep_store.remove_household_member(keep_id=args.keep, member_email=args.member)
+    return 0
+
+
+async def _cmd_set_rank(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``set-rank`` verb — delegates to :meth:`KeepStore.set_rank` (TRIVIAL today:
+    the only legal rank is ``contributor``; a wrong rank is a loud store error laundered
+    by :func:`_dispatch_keep`). Silent on success."""
+    await keep_store.set_rank(keep_id=args.keep, member_email=args.member, rank=args.rank)
+    return 0
+
+
 _VERB_HANDLERS: dict[str, _VerbHandler] = {
     "add": _cmd_add,
     "list": _cmd_list,
@@ -1019,16 +1164,28 @@ _VERB_HANDLERS: dict[str, _VerbHandler] = {
     "list-keys": _cmd_list_keys,
 }
 
+_KEEP_VERB_HANDLERS: dict[str, _KeepVerbHandler] = {
+    "create-keep": _cmd_create_keep,
+    "add-household": _cmd_add_household,
+    "remove-household": _cmd_remove_household,
+    "set-rank": _cmd_set_rank,
+}
+
 
 async def _dispatch(args: argparse.Namespace) -> int:
-    """Load the (creds-free) config, build both identity stores, ready them, and run
-    the selected verb. Domain failures are laundered to a stderr line + non-zero exit
+    """Load the (creds-free) config, build the stores, ready them, and run the selected
+    verb. Keep verbs route to :func:`_dispatch_keep` (their own store); principal/key
+    verbs run below. Domain failures are laundered to a stderr line + non-zero exit
     (loud on failure); a transport fault surfaces the same way."""
+    # ``_require_config`` runs FIRST (before any branch), so a missing ``--config`` is a
+    # loud ``SystemExit`` for EVERY verb, keep verbs included.
+    config = load_surreal_only_config(_require_config(args))
+    if args.command in _KEEP_VERB_HANDLERS:
+        return await _dispatch_keep(args, config)
     # Lazy import: ``loremaster.principal_keys`` imports THIS module (``Principal``), so
     # a top-level import here is a cycle. PLC0415 is a house-ignored idiom.
     from loremaster.principal_keys import PrincipalKeyStoreError, build_principal_key_store
 
-    config = load_surreal_only_config(_require_config(args))
     principal_store = build_principal_store(config)
     key_store = build_principal_key_store(config)
     try:
@@ -1047,6 +1204,49 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return 1
     finally:
         await key_store.close()
+        await principal_store.close()
+
+
+async def _dispatch_keep(args: argparse.Namespace, config: LoreConfig) -> int:
+    """Build + ready the KeepStore, run the selected keep verb, and close both stores.
+
+    The ``principal`` table is readied FIRST (via a ``PrincipalStore``): the
+    ``member_of`` relation edge is ENFORCED with ``IN principal``, so its endpoint table
+    must exist before :meth:`KeepStore.ensure_ready` applies the keep slice (the wave-1
+    ``keep_env`` fixture / the :meth:`KeepStore.ensure_ready` docstring). ``KeepStore``
+    composes its own ``PrincipalStore`` for email resolution but does NOT ready it.
+
+    Store/domain failures are laundered to ``f"{_CLI_PROG}: {error}"`` on stderr +
+    exit 1 (loud on failure), mirroring :func:`_dispatch`. Since FR-2 Q2b, ``KeepStore``
+    WRAPS engine rejections as ``KeepStoreError`` at every write boundary (consumer-law
+    parity with ``PrincipalStore.create``), so this catches ``KeepStoreError`` — which
+    subsumes ``KeeperLockoutError`` / ``KeepNotFoundError`` — symmetric with :func:`_dispatch`
+    catching ``PrincipalStoreError``, and NOT the raw ``SurrealStoreError`` (FR-2 D1). A
+    transient ``SurrealConnectionError`` still passes through ``KeepStore`` untouched (a dead
+    socket during a verb) and is caught here; ``ValueError`` is the per-``type`` ``--name``
+    CLI-input check (project/team require a name; a ``dm`` forbids one).
+    """
+    # Lazy import: ``loremaster.keeps`` imports THIS module (``PrincipalStore``), so a
+    # top-level import here is a cycle. PLC0415 is a house-ignored idiom.
+    from loremaster.keeps import KeepStoreError
+
+    principal_store = build_principal_store(config)
+    keep_store = build_keep_store(config)
+    try:
+        # The ``member_of`` ENFORCED endpoint (``principal``) FIRST, then keep+member_of.
+        await principal_store.ensure_ready()
+        await keep_store.ensure_ready()
+        handler = _KEEP_VERB_HANDLERS[args.command]
+        return await handler(args, keep_store)
+    except (
+        KeepStoreError,
+        SurrealConnectionError,
+        ValueError,
+    ) as error:
+        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await keep_store.close()
         await principal_store.close()
 
 
