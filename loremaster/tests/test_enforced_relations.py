@@ -208,7 +208,7 @@ class TestEveryRelationEdgeIsEnforced:
             "decision that belongs to the operator"
         )
 
-    def test_the_relation_edge_set_is_EXACTLY_the_five_known_edges(self) -> None:
+    def test_the_relation_edge_set_is_EXACTLY_the_six_known_edges(self) -> None:
         """An exact-set pin over the emitted edges (the house idiom).
 
         GREEN at `28387a0`, and **RED at `c5a2552`** — exactly as this pin's previous
@@ -224,6 +224,14 @@ class TestEveryRelationEdgeIsEnforced:
         set (``test_blocks_edge.py::TestTheBlocksEdgeIsDeclared::test_blocks_is_in_the_DECLARED_edge_set``)
         and adding it to ``DEFERRED_TO_PACKET_43``, which is the measured wrong build W-C
         (``…::test_blocks_is_NOT_in_the_DEFERRED_exemption_set``).
+
+        ⚠ **RE-COUNTED to SIX by packet 60 (contract-60-w1, 2026-08-22):** ``member_of``
+        (``principal --member_of--> keep``) was ADDED to ``KNOWN_RELATION_EDGES`` before
+        its emitter exists, so this pin is RED again until the packet-60 builder lands
+        ``surreal_schema::_member_of_statements`` — the same forcing-function shape as
+        ``blocks``. ``test_keeps_schema.py::TestTheMemberOfEdgeIsDeclared`` pins the two
+        wrong "fixes" (drop it from the declared set / add it to ``DEFERRED_TO_PACKET_43``)
+        shut from that side too.
         """
         assert set(every_emitted_relation_table()) == set(KNOWN_RELATION_EDGES), (
             "the emitted relation-table set drifted from the declared set in "

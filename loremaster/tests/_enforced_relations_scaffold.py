@@ -50,8 +50,11 @@ from loremaster.store.surreal_schema import (
     BRIEF_TABLE,
     BRIEFED_RELATION,
     CODE_NODE_TABLE,
+    KEEP_TABLE,
+    MEMBER_OF_RELATION,
     MESSAGE_TABLE,
     NAME_TABLE,
+    PRINCIPAL_TABLE,
     REFERS_RELATION,
     TASK_TABLE,
     TO_RELATION,
@@ -61,6 +64,7 @@ from loremaster.store.surreal_schema import (
     generate_ddl,
     generate_finding_ddl,
     generate_graph_ddl,
+    generate_keep_ddl,
     generate_manifest_ddl,
     generate_memory_ddl,
     generate_message_ddl,
@@ -85,6 +89,11 @@ ALL_DDL_GENERATORS: dict[str, Callable[[], str]] = {
     "generate_brief_ddl": generate_brief_ddl,
     "generate_message_ddl": generate_message_ddl,
     "generate_graph_ddl": generate_graph_ddl,
+    # packet 60 — the Keep substrate slice (``keep`` + the ``member_of`` edge). Added
+    # here so the ∀ ENFORCED / OVERWRITE / IN-OUT pins sweep ``member_of``.
+    # ``generate_keep_ddl`` emits the real slice (contract-60-w1, greened wave-1),
+    # including the ``member_of`` RELATION table.
+    "generate_keep_ddl": generate_keep_ddl,
 }
 
 #: ⚠ **THE FIFTH EDGE, DECLARED BY PACKET 04b-1 ON 2026-07-28 — as a LITERAL, on purpose.**
@@ -105,16 +114,25 @@ BLOCKS_RELATION_NAME = "blocks"
 #: message, never a silent one.
 #:
 #: ⚠ ``blocks`` was ADDED here by packet 04b-1's contract BEFORE the edge exists, which is
-#: what makes ``test_the_relation_edge_set_is_EXACTLY_the_five_known_edges`` RED until the
-#: builder lands it.  That reddening **is the deliberate declaration the pin exists to
-#: force** (04a contract §6.8), not a misfire — see ``test_blocks_edge.py``'s module
+#: what made ``test_the_relation_edge_set_is_EXACTLY_the_<N>_known_edges`` RED until the
+#: builder landed it (``member_of``, packet 60, is the latest such addition — the pin now
+#: reads ``_six_known_edges``).  That reddening **is the deliberate declaration the pin
+#: exists to force** (04a contract §6.8), not a misfire — see ``test_blocks_edge.py``'s module
 #: docstring, §"WHAT THIS CONTRACT TURNS RED IN FILES IT DOES NOT OWN".
+#: ⚠ ``member_of`` was ADDED here by packet 60's contract (contract-60-w1, 2026-08-22)
+#: BEFORE the edge existed, exactly like ``blocks`` before it — which is what made
+#: ``test_the_relation_edge_set_is_EXACTLY_the_six_known_edges`` RED until the wave-1
+#: builder emitted it in ``surreal_schema::_member_of_statements``. That reddening IS the
+#: deliberate declaration the exact-set pin exists to force (04a contract §6.8), NOT a
+#: misfire — see ``test_keeps_schema.py``'s module docstring, §"WHAT THIS CONTRACT
+#: TURNS RED IN FILES IT DOES NOT OWN".
 KNOWN_RELATION_EDGES: dict[str, tuple[str, str]] = {
     BRIEFED_RELATION: (AGENT_TABLE, BRIEF_TABLE),
     TO_RELATION: (MESSAGE_TABLE, AGENT_TABLE),
     REFERS_RELATION: (CODE_NODE_TABLE, NAME_TABLE),
     ANSWERS_TO_RELATION: (CODE_NODE_TABLE, NAME_TABLE),
     BLOCKS_RELATION_NAME: (TASK_TABLE, TASK_TABLE),
+    MEMBER_OF_RELATION: (PRINCIPAL_TABLE, KEEP_TABLE),
 }
 
 #: ⚠ THE ONE DECLARED HOLE IN THE ∀ LAW, and the reason it is a NAMED CONSTANT rather

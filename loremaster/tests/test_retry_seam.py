@@ -6039,6 +6039,12 @@ _SEAM_REJECTION_EVENTS = {
     # (invent a bespoke seam so the classes fall OUT of the AST enumeration —
     # finding #120 verbatim — or call the reds "pre-existing" and ship).
     "FloorCalibrationStore": "floor_calibration.query.rejected",
+    # Packet 60 wave-1's new seam (finding #397 — the contract-gap recurrence of #353).
+    # HAND-WRITTEN entry for the auto-DISCOVERED ``KeepStore._query`` (loremaster.keeps):
+    # registering its canonical event is the sanctioned 48/49 resolution — never a bespoke
+    # seam that dodges the AST enumeration (finding #120), never "pre-existing, ship". Its
+    # ``_query`` MUST raise with ``label="keep.query.rejected"`` to match this entry.
+    "KeepStore": "keep.query.rejected",
     "LocalMemoryBackend": "memory.query.rejected",
     "MessageLedger": "message.query.rejected",
     # Packet 49's new seam (finding #353 — blast-radius). HAND-WRITTEN entry for the
@@ -6078,6 +6084,10 @@ _SEAM_REJECTION_NOUNS = {
     "DiffEngine": "query",
     "FindingLedger": "finding query",
     "FloorCalibrationStore": "floor calibration query",
+    # Packet 60 wave-1's new seam (finding #397): ``KeepStore._query`` MUST raise with
+    # ``noun="keep query"`` to match this entry (a domain-naming noun, so it also keeps
+    # the two-population monoculture guard non-trivial).
+    "KeepStore": "keep query",
     "LocalMemoryBackend": "memory query",
     "MessageLedger": "message query",
     # Packet 49's new seam (finding #353): the noun ``PrincipalKeyStore._query`` MUST

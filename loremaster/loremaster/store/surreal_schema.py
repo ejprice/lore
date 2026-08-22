@@ -1720,6 +1720,12 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     statements += _finding_counter_statements()
     statements += _principal_statements()
     statements += _principal_key_statements()
+    # packet 60 — the Keep substrate. ``keep`` AFTER ``principal`` (its ``keeper``
+    # record<principal> link target), and ``member_of`` AFTER both ``principal`` and
+    # ``keep`` (its ENFORCED ``IN principal OUT keep`` endpoints must both exist first
+    # — the ``briefed`` → ``agent`` fold-order precedent).
+    statements += _keep_statements()
+    statements += _member_of_statements()
     # Any residual bare-``SCHEMAFULL`` placeholder tables (currently none — every
     # table has graduated to a field-level slice; see :data:`_STRUCTURAL_TABLES`).
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
@@ -1941,6 +1947,170 @@ def generate_principal_key_ddl() -> str:
         single SurrealDB ``query()`` call (or wrap in one ``BEGIN … COMMIT``).
     """
     return ";\n".join(_principal_key_statements()) + ";\n"
+
+
+# --------------------------------------------------------------------------- #
+# ``keep`` + ``member_of`` (packet 60) — the Keep substrate: a collaboration
+# space (``keep``) owned by exactly one keeper (a ``record<principal>`` FIELD
+# LINK — design sidecar Fork A) whose household membership is the many-to-many
+# ``member_of`` RELATION edge (``principal --member_of--> keep``, ENFORCED +
+# UNIQUE(in, out) — Fork F).
+#
+# Introduced as RED STUBS by contract-60-w1 (2026-08-22) — ``_keep_statements`` /
+# ``_member_of_statements`` emitting ``[]`` and ``generate_keep_ddl`` emitting ``""``
+# so every packet-60 schema pin failed BEHAVIOURALLY (never an ImportError, never an
+# uncollectable module — finding #133; the same idiom the packet-49 principal_key
+# slice shipped under) — and GREENED by the wave-1 builder per the design sidecar
+# (``docs/design/2026-08-22-packet60-keep-substrate-rulings.md`` Forks B/C/D/F + the
+# Emission plan) and store law §1.1 (fields ``OVERWRITE``; the ``keep`` table +
+# ``keeper`` index + ``member_of`` UNIQUE index ``IF NOT EXISTS``; the ``member_of``
+# RELATION table ``OVERWRITE … ENFORCED``). The two assemblers + ``generate_keep_ddl``
+# now emit the real slice, folded into ``generate_ddl``.
+#
+# The CONSTANTS and FIELD SPECS below are REAL and mutation-provable: the mutation
+# pins monkeypatch ``_KEEP_TYPES`` / ``_KEEP_RANKS`` and the exact-domain pins read
+# them, and ``_enforced_relations_scaffold.KNOWN_RELATION_EDGES`` imports
+# ``MEMBER_OF_RELATION`` / ``KEEP_TABLE`` / ``generate_keep_ddl``.
+# See ``docs/plans/v2/receipts/…/REPORT-contract-60-w1.md``.
+# --------------------------------------------------------------------------- #
+
+KEEP_TABLE = "keep"
+MEMBER_OF_RELATION = "member_of"
+
+# The ``keep.type`` closed domain — the collaboration flavour (design Fork B). NO
+# DEFAULT: ``type`` is the essential discriminator, so every create must CHOOSE it;
+# a silent default would mislabel keeps. Derived into the ASSERT at CALL TIME in
+# :func:`_keep_statements` (the :func:`_principal_statements` idiom), NEVER frozen
+# into a module constant, so a mutation of this tuple moves the emitted ASSERT (the
+# derivation is mutation-provable). The domain WIDENS safely (a new collaboration
+# flavour is a new ``type``); NARROWING it write-poisons existing rows (store
+# reference §1.4) — same trigger discipline as ``rank``.
+_KEEP_TYPES = ("project", "team", "session", "dm")
+
+# The ``member_of.rank`` closed domain — the per-Keep collaboration rank (design
+# Fork C). FLAT today: one value, ``'contributor'`` (the plain collaborator who may
+# write, distinct from the GLOBAL ``principal.role`` vocabulary — never reuse
+# ``'member'``). DEFAULT ``'contributor'``. Derived at CALL TIME in
+# :func:`_member_of_statements` from this tuple (mutation-provable). ⚠ The domain is
+# designed to WIDEN (viewer/steward/keeper land in 61+); a widening that RETAINS
+# ``'contributor'`` is a pure widen (store reference §1.4 — rows intact, still
+# writable). NARROWING or REMOVING ``'contributor'`` is the poison direction, a data
+# migration, never a bare tuple edit.
+_KEEP_RANK_CONTRIBUTOR = "contributor"
+_KEEP_RANKS = (_KEEP_RANK_CONTRIBUTOR,)
+
+# The ``keep`` table's NON-DOMAIN fields as ``(name, type_expr, constraint)`` triples
+# (the ``principal`` idiom — these fields carry no closed vocabulary to mutate;
+# ``type`` is NOT here, it is emitted at CALL TIME from :data:`_KEEP_TYPES`).
+# ``keeper`` is the REQUIRED ``record<principal>`` owner link — §1.4's "new field on a
+# POPULATED table must be option<>" does NOT apply: ``keep`` is a brand-new empty
+# table, so a required (non-``option``) field is legal at birth (design greenfield
+# note; the ``principal_key.principal`` precedent). ``name`` is an OPTIONAL human
+# label carrying the SAME non-empty ASSERT ``principal.subject`` uses — an
+# ``option<>`` field SKIPS the ASSERT on NONE (so a ``dm`` keep with no label is
+# legal, and multiple NONE coexist — §1.8) but FIRES on a present empty string.
+# ``created_at`` self-stamps via ``DEFAULT time::now()`` (the store OMITS it on
+# write). Field ORDER is DDL-irrelevant.
+_KEEP_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("keeper", f"record<{PRINCIPAL_TABLE}>", ""),
+    ("name", "option<string>", _NON_EMPTY_STRING_ASSERT),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+)
+
+# The ``member_of`` edge's NON-DOMAIN edge-local fields (the ``briefed`` idiom —
+# ``in``/``out`` are auto-defined by TYPE RELATION and NEVER hand-declared). ``since``
+# is the membership-provenance stamp, ``DEFAULT time::now()`` (mirroring ``briefed.at``).
+# ``rank`` is NOT here: it is a closed vocabulary emitted at CALL TIME from
+# :data:`_KEEP_RANKS` in :func:`_member_of_statements`.
+_MEMBER_OF_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("since", "datetime", "DEFAULT time::now()"),
+)
+
+
+def _keep_statements() -> list[str]:
+    """The ``keep`` node table: the field set + the NON-UNIQUE ``keeper`` index.
+
+    Emits, in order: the SCHEMAFULL ``keep`` table (:func:`_define_table` →
+    ``IF NOT EXISTS``); one ``DEFINE FIELD`` per :data:`_KEEP_FIELD_SPECS` entry
+    (``keeper``/``name``/``created_at``) followed by the ``type`` field-def, all
+    routed through the shared :func:`_define_field` (→ ``OVERWRITE``, #107); the
+    NON-UNIQUE index on ``keeper`` (:func:`_plain_index` → ``IF NOT EXISTS`` — a
+    principal keeps MANY keeps) so ``WHERE keeper = $p`` is an IndexScan (design Fork A
+    rider; store reference §4 "a scalar attribute filtered through a hop is
+    un-indexable — keep scalars as indexed fields").
+
+    ⚠ The ``type`` ASSERT is derived HERE, at CALL time, from :data:`_KEEP_TYPES`
+    (the :func:`_principal_statements` idiom, NOT a frozen import-time constant) —
+    ``NO DEFAULT`` (Fork B: ``type`` is the essential discriminator, every create must
+    CHOOSE it). A join frozen at import cannot move under a mutation pin's monkeypatch
+    of the tuple; deriving it here makes a tuple change move the emitted ASSERT.
+    """
+    type_allowed = ", ".join(f"'{keep_type}'" for keep_type in _KEEP_TYPES)
+    type_spec: tuple[tuple[str, str, str], ...] = (
+        ("type", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{type_allowed}]"),
+    )
+    statements: list[str] = [_define_table(KEEP_TABLE)]
+    statements += [
+        _define_field(KEEP_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in (*_KEEP_FIELD_SPECS, *type_spec)
+    ]
+    statements.append(_plain_index(KEEP_TABLE, f"{KEEP_TABLE}_keeper", ("keeper",)))
+    return statements
+
+
+def _member_of_statements() -> list[str]:
+    """The ``member_of`` household edge: the RELATION table + fields + UNIQUE(in, out).
+
+    Emits, in order: the ``member_of`` RELATION table
+    (:func:`_define_relation_table` ``(MEMBER_OF_RELATION, PRINCIPAL_TABLE, KEEP_TABLE,
+    enforced=True)`` → ``DEFINE TABLE OVERWRITE member_of TYPE RELATION IN principal
+    OUT keep ENFORCED SCHEMAFULL`` — Fork F; ``OVERWRITE`` because ``IF NOT EXISTS`` is
+    a MEASURED silent no-op on an existing edge table, §1.1); one ``DEFINE FIELD`` per
+    :data:`_MEMBER_OF_FIELD_SPECS` entry (``since``) followed by the call-time-derived
+    ``rank`` field-def (DEFAULT ``'contributor'`` + ASSERT built HERE from
+    :data:`_KEEP_RANKS`, mutation-provable); and the UNIQUE index on ``(in, out)``
+    (:func:`_unique_index` → ``IF NOT EXISTS`` — the ``briefed`` precedent, so a
+    double-add of the same (principal, keep) pair is a loud ERR, not a second edge).
+
+    THIS SLICE IS ORDER-DEPENDENT on both endpoint tables: ``IN principal`` needs the
+    ``principal`` table and ``OUT keep`` needs the ``keep`` table, so its ``DEFINE
+    TABLE`` must be emitted AFTER both — which the :func:`generate_ddl` fold order and
+    :func:`generate_keep_ddl` (keep before member_of) guarantee.
+    """
+    rank_allowed = ", ".join(f"'{rank}'" for rank in _KEEP_RANKS)
+    rank_spec: tuple[tuple[str, str, str], ...] = (
+        (
+            "rank",
+            _CHUNK_STRING_TYPE,
+            f"DEFAULT '{_KEEP_RANK_CONTRIBUTOR}' ASSERT $value IN [{rank_allowed}]",
+        ),
+    )
+    statements: list[str] = [
+        _define_relation_table(MEMBER_OF_RELATION, PRINCIPAL_TABLE, KEEP_TABLE, enforced=True)
+    ]
+    statements += [
+        _define_field(MEMBER_OF_RELATION, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in (*_MEMBER_OF_FIELD_SPECS, *rank_spec)
+    ]
+    statements.append(
+        _unique_index(MEMBER_OF_RELATION, f"{MEMBER_OF_RELATION}_in_out", ("in", "out"))
+    )
+    return statements
+
+
+def generate_keep_ddl() -> str:
+    """Generate just the ``keep`` + ``member_of`` DDL — the Keep substrate's schema slice.
+
+    Returns ``";\\n".join(_keep_statements() + _member_of_statements()) + ";\\n"`` — the
+    ``keep`` table + its ``keeper`` index THEN the ``member_of`` edge + its UNIQUE index
+    (keep before member_of: the edge's ``OUT keep`` endpoint must be defined first), a
+    schema SLICE a :class:`~loremaster.keeps.KeepStore` applies on its OWN connection
+    (mirroring :func:`generate_principal_ddl`). ``keep`` + ``member_of`` are ALSO folded
+    into the global :func:`generate_ddl` (Variant A — so the primary
+    ``write_store.ensure_ready()`` creates the tables the moment packet 60 ships), and
+    the edge is emitted IDENTICALLY by both paths (they share these two assemblers).
+    """
+    return ";\n".join(_keep_statements() + _member_of_statements()) + ";\n"
 
 
 def generate_agent_ddl() -> str:
