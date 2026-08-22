@@ -64,6 +64,7 @@ from loremaster.store._txn import (
 from loremaster.store.surreal_schema import (
     _KEEP_RANK_CONTRIBUTOR,
     KEEP_TABLE,
+    MEMBER_OF_RELATION,
     PRINCIPAL_TABLE,
 )
 
@@ -465,6 +466,81 @@ class TestRemoveHouseholdMember:
         # The keeper is STILL in the household (the refusal changed nothing).
         keeper_still_present = await keep_store.list_household(keep.id)
         assert keeper_still_present, "the keeper was removed despite the refusal"
+
+    async def test_remove_household_on_a_GHOST_keep_is_LOUD_KeepNotFoundError(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """⚠ FR-3 (sidecar ruling reading (a), 2026-08-22): ``remove_household_member`` on a keep
+        id that was NEVER CREATED (a typo'd ``--keep`` — a real GHOST) is LOUD — it raises
+        :class:`KeepNotFoundError`, NOT a silent rc-0/``None`` no-op. ``remove`` is an
+        ACCESS-CONTROL verb: a silent success on a ghost keep is a false *"access removed"* (the
+        operator believes a member was de-householded, but the target keep does not exist — a
+        typo). This makes ``remove`` SYMMETRIC with ``add_household_member`` (ENFORCED → loud,
+        store ref §4) and ``set_rank`` (no-match → ``KeepNotFoundError``); ``remove`` was the lone
+        silent verb.
+
+        ⚠ AND NO EDGE IS DELETED: the keep-existence check raises BEFORE the ``DELETE`` (fold it
+        into the read the keeper-lockout guard already does — FR-3 rider), so store state is
+        unchanged. A REAL keep with a REAL member is seeded first so the store holds real
+        ``member_of`` edges — the unchanged-count leg then catches a wrong build that deleted edges
+        regardless of the ghost target (e.g. a ``DELETE … WHERE in = $member`` missing the ``out =
+        $keep`` clause), so the leg is not vacuous.
+
+        RED against the wave-1 (FR-2, pre-FR-3) ``keeps.py``: a ghost keep → ``get_keep`` ``None``
+        → the ``DELETE … WHERE`` no-matches (store ref §2: a ``DELETE`` on a non-matching row is a
+        no-op) → returns ``None`` (rc 0, no raise), so ``pytest.raises`` reddens. Mutation-provable:
+        drop the keep-existence check → this pin reds again."""
+        keep_store, _principals, env = keep_env
+        # A REAL keep with a REAL member, so the store holds member_of edges a ghost-remove must
+        # NOT touch (the no-delete leg is non-vacuous): create_keep auto-adds the keeper (Fork D),
+        # add_household_member adds bob → ≥2 real edges.
+        real_keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="team", name="real")
+        await keep_store.add_household_member(keep_id=real_keep.id, member_email=_MEMBER_EMAIL)
+        edges_before = await _count(env, MEMBER_OF_RELATION)
+        assert edges_before >= 2, (
+            f"fixture setup failed — expected the auto-added keeper + 1 member edge, got {edges_before}"
+        )
+
+        # The member RESOLVES (bob is seeded), so the loudness is about the GHOST KEEP, not an
+        # unresolvable --member (fixtures discriminate).
+        ghost_keep = f"{KEEP_TABLE}:{ghost_id('remove_ghost_keep')}"
+        with pytest.raises(KeepNotFoundError):
+            await keep_store.remove_household_member(keep_id=ghost_keep, member_email=_MEMBER_EMAIL)
+        assert await _count(env, MEMBER_OF_RELATION) == edges_before, (
+            "remove_household_member on a ghost keep deleted a member_of edge — the existence "
+            "check must raise BEFORE the DELETE (FR-3: nothing changes)"
+        )
+
+    async def test_remove_a_non_member_from_a_REAL_keep_is_a_benign_no_op(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """⚠ FR-3 asymmetry pin (the MEMBER dimension, ruled DELIBERATELY): a REAL principal who
+        is NOT a household member of a REAL keep → ``remove_household_member`` is a BENIGN
+        idempotent no-op (returns ``None``, does NOT raise). ``remove`` is conventionally
+        idempotent and the intended end-state genuinely holds; the keep (the primary target the
+        ghost pin validates) DOES exist, so no typo is being masked. This is a DELIBERATE asymmetry
+        with ``set_rank`` (loud on a missing membership): you CAN idempotently REMOVE a nonexistent
+        membership, but you cannot SET the rank of one. Pinned so a build cannot "fix" the
+        ghost-keep loudness by making ``remove`` raise on EVERY absent membership — collapsing
+        ghost-keep and absent-member into one behaviour (the ghost pin above requires a RAISE; this
+        requires NO raise on a REAL keep, so a build cannot satisfy both by always-raising).
+
+        GREEN both BEFORE and AFTER the FR-3 amend — the positive control the ghost pin needs (so
+        the ghost assertion is not 'loud on any absent member')."""
+        keep_store, principals, _env = keep_env
+        real_keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="real")
+        outsider = await principals.get_by_email(_OUTSIDER_EMAIL)
+        assert outsider is not None, "the outsider principal must be seeded by the fixture"
+        # dave is a REAL principal but NOT a member of real_keep, and NOT its keeper — a benign
+        # idempotent remove: keep exists → not the keeper → DELETE no-matches → None (no raise).
+        # The method is typed ``-> None``, so 'returns None' is a type-level guarantee; the
+        # BEHAVIOURAL pin is 'does NOT raise' — an unguarded call that raised would ERROR the test
+        # — plus the household-unchanged leg below (discriminating against an over-broad delete).
+        await keep_store.remove_household_member(keep_id=real_keep.id, member_email=_OUTSIDER_EMAIL)
+        # The household is UNTOUCHED (the auto-added keeper is still present) — a wrong build that
+        # deleted more than the named (absent) member is caught.
+        household = await keep_store.list_household(real_keep.id)
+        assert household, "the benign no-op wrongly emptied the household"
 
 
 # =========================================================================== #

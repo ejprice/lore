@@ -582,16 +582,26 @@ class KeepStore:
     async def remove_household_member(self, *, keep_id: str, member_email: str) -> None:
         """Remove a member from a keep's household (Fork F rider).
 
-        DELETEs the ``member_of`` edge (endpoints untouched). REFUSES to remove the
-        current ``keep.keeper`` — removing the keeper would lock them out of writing
-        their own keep (undoing the Fork-D auto-add) — raising :class:`KeeperLockoutError`
-        BEFORE any delete, so the refusal changes nothing.
+        DELETEs the ``member_of`` edge (endpoints untouched). Two guards fire BEFORE any
+        delete — so a refusal changes nothing: a GHOST keep (an id that was never created)
+        is LOUD, raising :class:`KeepNotFoundError` (FR-3, sidecar reading (a): ``remove``
+        is an access-control verb, so a typo'd ``keep_id`` must not read as a silent
+        *"access removed"*); and removing the current ``keep.keeper`` is REFUSED with
+        :class:`KeeperLockoutError` (removing the keeper would lock them out of writing
+        their own keep, undoing the Fork-D auto-add). Folded into the ONE ``get_keep`` read
+        the keeper guard already does — the DIRECT keep-row SELECT, not a keeper-is-None
+        proxy. A REAL principal who is simply not a member of a REAL keep stays a BENIGN
+        idempotent no-op (the deliberate member-dimension asymmetry: you can idempotently
+        remove a nonexistent membership, but never from a nonexistent keep).
 
         Raises:
             KeepStoreError: No principal carries ``member_email``, OR the store rejected
                 a store operation in this verb. The raw engine ``SurrealStoreError`` is
                 WRAPPED as this domain error (consumer-law parity); transport /
                 exhausted-contention faults pass through untouched (store reference §3).
+            KeepNotFoundError: ``keep_id`` resolves to no keep (a :class:`KeepStoreError`
+                subclass — raised BEFORE the delete, so store state is unchanged and it is
+                never re-wrapped).
             KeeperLockoutError: ``member_email`` resolves to the keep's keeper (a
                 :class:`KeepStoreError` subclass — the refusal raised BEFORE the delete,
                 so it is never re-wrapped).
@@ -600,7 +610,18 @@ class KeepStore:
         bare_keep = self._record_id_part(keep_id)
         try:
             keep = await self.get_keep(keep_id)
-            if keep is not None and keep.keeper_id == member_id:
+            if keep is None:
+                # FR-3 (sidecar reading (a)): a GHOST keep is LOUD — a typo'd ``keep_id``
+                # on this access-control verb must not read as a silent "access removed".
+                # Raised BEFORE the DELETE (folded into the keeper-guard read), so store
+                # state is unchanged; a REAL non-member of a REAL keep stays a benign no-op
+                # (the DELETE below simply no-matches — the deliberate member asymmetry).
+                # KeepNotFoundError subclasses KeepStoreError (not SurrealStoreError), so
+                # the wrap below never re-wraps it — it propagates like KeeperLockoutError.
+                raise KeepNotFoundError(
+                    f"no keep {keep_id!r} exists — cannot remove a household member from it"
+                )
+            if keep.keeper_id == member_id:
                 # A domain refusal (not a SurrealStoreError) — passes through the wrap
                 # below untouched, unchanged store state (no delete has run yet).
                 raise KeeperLockoutError(
