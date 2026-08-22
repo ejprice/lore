@@ -130,10 +130,10 @@ PRINCIPAL_TABLE = "principal"
 # exactly one :data:`PRINCIPAL_TABLE` via a required ``record<principal>`` link.
 # Shared by :mod:`loremaster.principal_keys` and its tests.
 #
-# ⚠⚠ STUB (contract-49-1, 2026-08-20) — a NAME only. The field specs / emitters
-# below are RED stubs; the builder greens them. Named here so the store module and
-# ``PrincipalStore.delete``'s cascade can import the table name without a literal
-# drifting across modules.
+# Named as a module constant so the store module and ``PrincipalStore.delete``'s
+# cascade can import the table name without a literal drifting across modules. The
+# field specs / emitters below (introduced as RED stubs by contract-49-1, 2026-08-20)
+# are now fully built and folded into :func:`generate_ddl`.
 PRINCIPAL_KEY_TABLE = "principal_key"
 
 # The bare-``SCHEMAFULL``-placeholder tables (no field-level probe) the plan
@@ -1852,9 +1852,9 @@ def generate_principal_ddl() -> str:
 # --------------------------------------------------------------------------- #
 # ``principal_key`` (packet 49) — per-user API keys owned by a ``principal``.
 #
-# ⚠⚠ RED STUBS (contract-49-1, 2026-08-20). These emit NOTHING (or a bare table)
-# so every packet-49 schema pin fails BEHAVIOURALLY — never an ImportError. The
-# builder replaces them with the real slice per the packet-49 design §F7:
+# Introduced as RED STUBS by contract-49-1 (2026-08-20) — emitting NOTHING so every
+# packet-49 schema pin failed BEHAVIOURALLY (never an ImportError) — and GREENED by the
+# wave builder per the packet-49 design §F7. The slice now built:
 #   * ``_PRINCIPAL_KEY_FIELD_SPECS`` — hash / name / created_at / expires_at /
 #     revoked_at (with ``principal: record<principal>`` and both UNIQUE indexes
 #     emitted in ``_principal_key_statements``), routed through the shared
@@ -1863,8 +1863,6 @@ def generate_principal_ddl() -> str:
 #     ``_principal_statements()`` (so the PRIMARY store gains the table on ship —
 #     the #131 dirty-store class the fold pin guards);
 #   * ``generate_principal_key_ddl`` exposed for ``PrincipalKeyStore.ensure_ready``.
-# The DELIBERATE gaps the RED pins encode: the stub emits no fields/indexes and is
-# NOT folded into ``generate_ddl``. Do NOT "fix" them here — they are the contract.
 # --------------------------------------------------------------------------- #
 
 # The ``principal_key`` table's fields as ``(name, type_expr, constraint)`` triples
