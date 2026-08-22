@@ -586,3 +586,75 @@ is durable.
 wave-1 amendment (in scope). The Q2 DRY-extraction flag reaches into committed 48/49 code — surfaced
 as a ledgered recommendation, not ruled as a forced change; the lead/operator sizes it. Neither fork
 is a MAJOR scope/design pivot, so neither hits my operator-escalation trigger.
+
+---
+
+## Follow-up ruling FR-3 (2026-08-22) — `remove-household` on a ghost keep: **LOUD (reading (a))**
+
+Ruling on `lead-60`'s wave-2 fork (`REPORT-adversary-60-w2.md` §Residuals R3 · thread
+`q:remove-ghost-keep`). Ground-truthed the three keep-consuming verbs in committed `keeps.py`:
+`add_household_member` RELATEs the ENFORCED `member_of` edge (ghost keep → refused → wrapped
+`KeepStoreError` → exit 1, LOUD); `set_rank`'s `UPDATE … WHERE` raises `KeepNotFoundError` on
+no-match (ghost keep → no edge → already LOUD); `remove_household_member`'s `DELETE … WHERE` is a
+silent no-op on a ghost keep (returns `None` → rc 0). **`remove` is the lone silent verb** — a
+typo'd `--keep` gives the operator rc 0 and a false belief that a member was removed.
+
+**RULING → (a) LOUD.** `remove_household_member` validates the keep EXISTS and raises
+`KeepNotFoundError` (→ CLI exit 1) when it does not. NOT (b).
+
+**Rationale:**
+- **Consistency with the rulings already made.** FR-2 Q1 (dm `--name` reject) and the add-household
+  ENFORCED loudness were both grounded in *"no silent surprise / loud on failure."* A silent rc-0
+  `remove` on a ghost keep is the identical silent-surprise pattern. And the asymmetry itself is the
+  defect: three verbs consuming the same `--keep` argument must treat a nonexistent keep the SAME
+  way. This makes `remove` symmetric with `add` and `set-rank`.
+- **This is an ACCESS-CONTROL tool.** Household membership gates who-may-write under the 3-way rule.
+  A typo'd `--keep` that silently "succeeds" makes the operator believe they revoked a member's
+  write access when they did not — the member is still in the REAL keep they meant. A false
+  *"access removed"* confirmation is the most dangerous class of silent success in an authz
+  substrate; it must be loud.
+- **The idempotency argument for (b) does NOT apply to a GHOST keep.** Idempotent-remove justifies a
+  benign no-op only when the intended END-STATE genuinely holds — "a member is not in an EXISTING
+  keep." A nonexistent keep means the operator's PRIMARY TARGET is absent (a typo), which is an
+  ERROR, not an idempotent re-remove.
+
+**The MEMBER dimension, ruled decisively (so no new unpinned ambiguity is created):**
+- **Ghost KEEP** → LOUD (`KeepNotFoundError`, exit 1). [the fix]
+- **Nonexistent principal** (`--member` does not resolve) → already LOUD (`KeepStoreError` "no
+  principal with email …"). [existing]
+- **Real principal who is NOT a household member of a REAL keep** → **benign idempotent no-op
+  (rc 0).** "remove" is conventionally idempotent; the end-state genuinely holds; the member is a
+  real principal so no primary-target typo is being masked (the keep — the target we now validate —
+  does exist). **This is a DELIBERATE asymmetry with `set_rank`** (which is loud on a missing
+  membership) and it is JUSTIFIED by verb semantics: you cannot SET the rank of a membership that
+  does not exist, but you CAN idempotently REMOVE one. Noted so a future reader does not "fix" the
+  asymmetry by making `remove` loud on a missing membership.
+
+**Riders (and pin it like this):**
+- **Fold the existence check into the read the keeper-lockout guard ALREADY does** — don't add a
+  round-trip (ONE-IMPLEMENTATION / efficiency). Order: resolve member → **read the keep; empty
+  result ⇒ `KeepNotFoundError`** → keeper-lockout (`keeper == member` ⇒ `KeeperLockoutError`) →
+  `DELETE`. Use a DIRECT keep-existence signal (`SELECT … FROM keep:<id>` empty-result-set = absent),
+  NOT the proxy "keeper read is None" (a keep always has a keeper — a required field — so the proxy
+  happens to work, but keying on it is the proxy-instead-of-property trap; read the row's presence
+  directly).
+- **Pin BOTH cases so a build cannot collapse them** (fixtures-must-discriminate): (1) ghost keep →
+  exit 1 / `KeepNotFoundError` AND no edge deleted; (2) existing keep + already-absent real member →
+  rc 0 benign no-op. A fixture that only tests the ghost case cannot tell "loud on ghost keep" from
+  "loud on any absent member."
+- **Mutation-prove:** remove the existence check → the ghost-keep pin reddens; restore → green. Keep
+  a positive control that the good idempotent remove (case 2) still returns rc 0 (so the pin can see
+  the benign path is preserved).
+- **Pin the SYMMETRY INVARIANT, not just the one verb (the quantifier / reach law):** the durable
+  invariant is *"∀ keep-consuming verb (add-household, remove-household, set-rank), a nonexistent
+  `--keep` is LOUD (exit 1)."* `add` is loud via ENFORCED, `set_rank` via no-match
+  `KeepNotFoundError`, `remove` via the new existence check. Pin it ∀-over-the-verbs — R3 is exactly
+  the asymmetry a per-verb pin missed; don't re-condition the invariant on the single verb that
+  prompted it.
+
+**Scope/timing:** this is a packet-60 **wave-1** `keeps.py` amendment (packet-60's own prior wave —
+in scope), a few lines (one existence read folded into the lockout read + one raise). The lead noted
+it does NOT block the wave-2 CLI build (different files), so it need not gate the CLI — but it SHOULD
+land promptly (don't-kick-the-can: a confirmed silent-surprise in an access-control tool, one small
+amendment away), as its own one-concern commit. Not a MAJOR pivot → not escalated; the (a)-vs-(b)
+choice + the member-dimension asymmetry are recorded here for a clean operator countermand.
