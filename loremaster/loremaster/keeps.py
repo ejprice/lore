@@ -80,7 +80,6 @@ from loremaster.principals import PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
     _SurrealConnection,
@@ -89,6 +88,7 @@ from loremaster.store._txn import (
     execute_transaction,
     run_query,
     signin_credentials,
+    wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
     KEEP_TABLE,
@@ -495,7 +495,16 @@ class KeepStore:
             params=params,
         )
         statement_text, merged_params = compose(fragment)
-        try:
+        # A store rejection — an unruled ``type`` ASSERT or the ghost-keeper ENFORCED edge —
+        # rolls the whole transaction back and is wrapped LOUD as the domain error (consumer
+        # law); a transport fault / exhausted contention passes through untouched (both
+        # SUBCLASS SurrealStoreError, store reference §3). Finding #400: routed through the
+        # ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not create {type!r} keep for keeper {keeper_email!r}: "
+            f"the store rejected the keep create or the keeper's household edge",
+        ):
             await execute_transaction(
                 statement_text,
                 merged_params,
@@ -504,19 +513,6 @@ class KeepStore:
                 url=self._url,
             )
             created = await self.get_keep(keep_id)
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport fault / exhausted contention belongs to the retry/lifecycle
-            # layer (store reference §3) — propagate untouched (both SUBCLASS
-            # SurrealStoreError, so this re-raise MUST precede the wrap below).
-            raise
-        except SurrealStoreError as error:
-            # A store rejection — an unruled ``type`` ASSERT or the ghost-keeper
-            # ENFORCED edge — rolls the whole transaction back. Wrap LOUD as the domain
-            # error (consumer law: no raw engine error reaches the caller).
-            raise KeepStoreError(
-                f"could not create {type!r} keep for keeper {keeper_email!r}: "
-                f"the store rejected the keep create or the keeper's household edge"
-            ) from error
         if created is None:  # pragma: no cover - a just-committed row must read back
             raise KeepStoreError(f"created keep {keep_id!r} did not read back")
         return created
@@ -556,7 +552,13 @@ class KeepStore:
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        try:
+        # A store rejection is wrapped LOUD; a transport fault / exhausted contention passes
+        # through untouched (store reference §3). Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not add member {member_email!r} to keep {keep_id!r}'s household: "
+            f"the store rejected the membership edge",
+        ):
             existing = await self._read_membership(bare_keep, member_id)
             if existing is not None:
                 return existing  # idempotent re-add — a benign no-op
@@ -568,15 +570,6 @@ class KeepStore:
                 },
             )
             membership = await self._read_membership(bare_keep, member_id)
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport / exhausted contention belongs to the retry/lifecycle layer
-            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
-            raise
-        except SurrealStoreError as error:
-            raise KeepStoreError(
-                f"could not add member {member_email!r} to keep {keep_id!r}'s household: "
-                f"the store rejected the membership edge"
-            ) from error
         if membership is None:  # pragma: no cover - a just-written edge must read back
             raise KeepStoreError(f"member_of edge for {member_email!r} did not read back")
         return membership
@@ -610,7 +603,15 @@ class KeepStore:
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        try:
+        # A store rejection is wrapped LOUD; a transport fault / exhausted contention passes
+        # through untouched (store reference §3). The deliberate KeepNotFoundError /
+        # KeeperLockoutError refusals raised INSIDE this block are NOT SurrealStoreError
+        # subclasses, so the seam never re-wraps them. Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not remove member {member_email!r} from keep {keep_id!r}'s household: "
+            f"the store rejected the removal",
+        ):
             keep = await self.get_keep(keep_id)
             if keep is None:
                 # FR-3 (sidecar reading (a)): a GHOST keep is LOUD — a typo'd ``keep_id``
@@ -619,13 +620,13 @@ class KeepStore:
                 # state is unchanged; a REAL non-member of a REAL keep stays a benign no-op
                 # (the DELETE below simply no-matches — the deliberate member asymmetry).
                 # KeepNotFoundError subclasses KeepStoreError (not SurrealStoreError), so
-                # the wrap below never re-wraps it — it propagates like KeeperLockoutError.
+                # the seam never re-wraps it — it propagates like KeeperLockoutError.
                 raise KeepNotFoundError(
                     f"no keep {keep_id!r} exists — cannot remove a household member from it"
                 )
             if keep.keeper_id == member_id:
-                # A domain refusal (not a SurrealStoreError) — passes through the wrap
-                # below untouched, unchanged store state (no delete has run yet).
+                # A domain refusal (not a SurrealStoreError) — passes through the seam
+                # untouched, unchanged store state (no delete has run yet).
                 raise KeeperLockoutError(
                     f"refusing to remove the keeper of keep {keep.id!r} from its own household "
                     f"(keeper lockout — the keeper's write access rides household membership)"
@@ -637,15 +638,6 @@ class KeepStore:
                     "keep": RecordID(KEEP_TABLE, bare_keep),
                 },
             )
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport / exhausted contention belongs to the retry/lifecycle layer
-            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
-            raise
-        except SurrealStoreError as error:
-            raise KeepStoreError(
-                f"could not remove member {member_email!r} from keep {keep_id!r}'s household: "
-                f"the store rejected the removal"
-            ) from error
 
     async def set_rank(self, *, keep_id: str, member_email: str, rank: str) -> Membership:
         """Set a household member's per-Keep ``rank`` (Fork F rider).
@@ -665,7 +657,14 @@ class KeepStore:
         """
         member_id = await self._resolve_principal_id(member_email)
         bare_keep = self._record_id_part(keep_id)
-        try:
+        # A store rejection (e.g. an unruled ``rank`` refused by the closed-domain ASSERT) is
+        # wrapped LOUD; a transport fault / exhausted contention passes through untouched
+        # (store reference §3). Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not set rank {rank!r} for member {member_email!r} on keep {keep_id!r}: "
+            f"the store rejected the rank update",
+        ):
             await self._query(
                 f"UPDATE {MEMBER_OF_RELATION} SET rank = $rank WHERE in = $member AND out = $keep",
                 {
@@ -675,15 +674,6 @@ class KeepStore:
                 },
             )
             membership = await self._read_membership(bare_keep, member_id)
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport / exhausted contention belongs to the retry/lifecycle layer
-            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
-            raise
-        except SurrealStoreError as error:
-            raise KeepStoreError(
-                f"could not set rank {rank!r} for member {member_email!r} on keep {keep_id!r}: "
-                f"the store rejected the rank update"
-            ) from error
         if membership is None:
             raise KeepNotFoundError(
                 f"no member_of edge for member {member_email!r} on keep {keep_id!r}"
@@ -730,7 +720,15 @@ class KeepStore:
         # the ghost-email ``KeepStoreError`` are NOT ``SurrealStoreError`` subclasses, so
         # they pass through both ``except`` clauses untouched (deliberate refusals).
         bare_keep = self._record_id_part(keep_id)
-        try:
+        # A store rejection is wrapped LOUD; a transport fault / exhausted contention passes
+        # through untouched (store reference §3). The deliberate KeepNotFoundError / ghost-email
+        # KeepStoreError refusals raised INSIDE this block are not SurrealStoreError subclasses,
+        # so the seam never re-wraps them. Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not set keeper of keep {keep_id!r} to {new_keeper_email!r}: "
+            f"the store rejected the keeper update",
+        ):
             keep = await self.get_keep(keep_id)
             if keep is None:
                 raise KeepNotFoundError(
@@ -747,15 +745,6 @@ class KeepStore:
                 {"id": bare_keep, "kid": new_keeper_id},
             )
             updated = await self.get_keep(keep_id)
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport / exhausted contention belongs to the retry/lifecycle layer
-            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
-            raise
-        except SurrealStoreError as error:
-            raise KeepStoreError(
-                f"could not set keeper of keep {keep_id!r} to {new_keeper_email!r}: "
-                f"the store rejected the keeper update"
-            ) from error
         if updated is None:  # pragma: no cover - a just-updated (existing) keep must read back
             # The keep was CONFIRMED to exist by the check-first above, so a None readback
             # here is a store anomaly (a TOCTOU delete / engine fault), NOT a "not found" —
@@ -800,7 +789,14 @@ class KeepStore:
         # ``KeepNotFoundError`` is not a ``SurrealStoreError`` subclass, so the deliberate
         # ghost-keep refusal passes through both ``except`` clauses untouched.
         bare_keep = self._record_id_part(keep_id)
-        try:
+        # A store rejection is wrapped LOUD; a transport fault / exhausted contention passes
+        # through untouched (store reference §3). The deliberate ghost-keep KeepNotFoundError
+        # raised INSIDE this block is not a SurrealStoreError subclass, so the seam never
+        # re-wraps it. Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not delete keep {keep_id!r}: the store rejected the delete",
+        ):
             keep = await self.get_keep(keep_id)
             if keep is None:
                 raise KeepNotFoundError(
@@ -813,14 +809,6 @@ class KeepStore:
                 f"DELETE type::record('{KEEP_TABLE}', $id)",
                 {"id": bare_keep},
             )
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # Transport / exhausted contention belongs to the retry/lifecycle layer
-            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
-            raise
-        except SurrealStoreError as error:
-            raise KeepStoreError(
-                f"could not delete keep {keep_id!r}: the store rejected the delete"
-            ) from error
 
     async def list_household(self, keep_id: str) -> list[Membership]:
         """List a keep's household memberships (store law §4).

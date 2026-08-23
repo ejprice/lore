@@ -92,6 +92,7 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,6 +104,8 @@ from surrealdb import (
 )
 from surrealdb.errors import ErrorKind, ServerError, SurrealError
 from websockets.exceptions import WebSocketException
+
+from lorerunes import reclassify
 
 # The server-side home for the FULL engine detail a rolled-back transaction
 # carries (see :func:`execute_transaction` / :func:`_failed_statements`): the
@@ -196,6 +199,48 @@ class RetryableConflictSignal(Exception):
     subclass :class:`SurrealStoreError` so a caller's broad ``except
     SurrealStoreError`` can never accidentally intercept it first.
     """
+
+
+def wrap_store_rejection(
+    domain_error: type[Exception], context: str
+) -> AbstractContextManager[None]:
+    """The ONE surreal-taxonomy binding for the engine-rejection wrap (finding #400, Layer 2).
+
+    Every store write-path that must translate a raw engine rejection into its own domain
+    error routes through THIS context manager instead of hand-rolling the ``try/except
+    (SurrealConnectionError, TxnContentionExhaustedError): raise; except SurrealStoreError as
+    e: raise <Domain>(...) from e`` idiom. It is the single place the surreal taxonomy is
+    named — ``passthrough=(SurrealConnectionError, TxnContentionExhaustedError)``,
+    ``catch=(SurrealStoreError,)`` — and it delegates the control flow (re-raise the
+    pass-throughs FIRST, then translate the catch ``from`` the original) to the stdlib-only
+    :func:`lorerunes.reclassify` (Layer 1). Splitting it this way keeps BOTH the taxonomy and
+    the control-flow policy each exactly ONE thing: a taxonomy change (a new pass-through
+    class) lands here and reaches every caller; a control-flow change lands in ``reclassify``
+    and reaches every caller — routing without either would be ROUTING-IS-NOT-SHARING.
+
+    The wrapped body is the store's awaited call(s); a transport fault / exhausted contention
+    (:class:`SurrealConnectionError` / :class:`TxnContentionExhaustedError`, both of which
+    SUBCLASS :class:`SurrealStoreError`) propagates UNTOUCHED to the retry/lifecycle layer,
+    and only a genuine :class:`SurrealStoreError` domain rejection is wrapped LOUD as
+    ``domain_error(context)`` chained ``from`` the raw engine error (consumer law: no raw
+    engine error reaches the caller; ledger #31 keeps the raw detail out of the message).
+
+    Args:
+        domain_error: The store's domain-error class to raise on a rejection (e.g.
+            :class:`~loremaster.keeps.KeepStoreError`). Called with ``context`` to build the
+            one raised error, only on a ``SurrealStoreError`` — never on the happy path or a
+            pass-through.
+        context: The domain error's message — WHAT was rejected, in the store's own words.
+
+    Returns:
+        A context manager wrapping the store's awaited write; enter it with
+        ``with wrap_store_rejection(<DomainError>, <context>): await ...``.
+    """
+    return reclassify(
+        passthrough=(SurrealConnectionError, TxnContentionExhaustedError),
+        catch=(SurrealStoreError,),
+        make_error=lambda: domain_error(context),
+    )
 
 
 # The body-statement count above which :meth:`SurrealStore.apply` emits a

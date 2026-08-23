@@ -97,6 +97,7 @@ from loremaster.store._txn import (
     execute_transaction,
     run_query,
     signin_credentials,
+    wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
     _KEEP_TYPES,
@@ -449,21 +450,18 @@ class PrincipalStore:
             content[_COL_DISPLAY_NAME] = display_name
         if expires_at is not None:
             content[_COL_EXPIRES_AT] = expires_at
-        try:
+        # The UNIQUE backstop (email or subject) — wrap LOUD as PrincipalStoreError; a
+        # transport fault / exhausted contention passes through untouched (it must not
+        # masquerade as a UNIQUE collision). Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            PrincipalStoreError,
+            f"could not create principal {email!r}: a principal with that email "
+            f"or subject already exists",
+        ):
             result = await self._query(
                 f"CREATE {PRINCIPAL_TABLE} CONTENT $content RETURN AFTER",
                 {"content": content},
             )
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # A transport fault / exhausted contention is never a domain rejection —
-            # propagate untouched (it must not masquerade as a UNIQUE collision).
-            raise
-        except SurrealStoreError as error:
-            # The UNIQUE backstop (email or subject) — wrap LOUD.
-            raise PrincipalStoreError(
-                f"could not create principal {email!r}: a principal with that email "
-                f"or subject already exists"
-            ) from error
         rows = self._as_rows(result)
         if not rows:
             raise PrincipalStoreError(
@@ -575,21 +573,19 @@ class PrincipalStore:
             PrincipalNotFoundError: No principal carries ``email``.
             PrincipalStoreError: ``subject`` is already bound to another principal.
         """
-        try:
+        # The UNIQUE backstop on the UPDATE path — subject already bound elsewhere — wrapped
+        # LOUD; a transport fault / exhausted contention passes through untouched. Finding
+        # #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            PrincipalStoreError,
+            f"could not bind subject to principal {email!r}: that subject is "
+            f"already bound to another principal",
+        ):
             result = await self._query(
                 f"UPDATE {PRINCIPAL_TABLE} SET {_COL_SUBJECT} = $subject "
                 f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
                 {"subject": subject, "email": email},
             )
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # A transport fault / exhausted contention is never a domain rejection.
-            raise
-        except SurrealStoreError as error:
-            # The UNIQUE backstop on the UPDATE path — subject already bound elsewhere.
-            raise PrincipalStoreError(
-                f"could not bind subject to principal {email!r}: that subject is "
-                f"already bound to another principal"
-            ) from error
         rows = self._as_rows(result)
         if not rows:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")

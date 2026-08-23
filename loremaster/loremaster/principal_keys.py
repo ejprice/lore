@@ -95,13 +95,13 @@ from loremaster.principals import Principal, PrincipalNotFoundError, PrincipalSt
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     _SurrealConnection,
     bootstrap_session,
     execute_transaction,
     run_query,
     signin_credentials,
+    wrap_store_rejection,
 )
 from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_ACTIVE,
@@ -409,17 +409,15 @@ class PrincipalKeyStore:
         statement = (
             f"CREATE {PRINCIPAL_KEY_TABLE} CONTENT {{ {', '.join(fragments)} }} RETURN AFTER"
         )
-        try:
+        # The UNIQUE backstop (credential hash or (principal, name)) — wrapped LOUD; a
+        # transport fault / exhausted contention passes through untouched (it must not
+        # masquerade as a UNIQUE collision). Finding #400: routed through the ONE seam.
+        with wrap_store_rejection(
+            PrincipalKeyStoreError,
+            f"could not mint key {name!r} for principal {email!r}: a key with that "
+            f"name already exists for this principal (or the credential hash collides)",
+        ):
             result = await self._query(statement, params)
-        except (SurrealConnectionError, TxnContentionExhaustedError):
-            # A transport fault / exhausted contention is never a domain rejection —
-            # propagate untouched (it must not masquerade as a UNIQUE collision).
-            raise
-        except SurrealStoreError as error:
-            raise PrincipalKeyStoreError(
-                f"could not mint key {name!r} for principal {email!r}: a key with that "
-                f"name already exists for this principal (or the credential hash collides)"
-            ) from error
         rows = self._as_rows(result)
         if not rows:
             raise PrincipalKeyStoreError(

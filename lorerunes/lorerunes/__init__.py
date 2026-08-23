@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from lorerunes.blankness import is_blank
 from lorerunes.email_normalisation import normalize_email
+from lorerunes.engine_rejection import reclassify
 from lorerunes.posture import (
     Posture,
     PostureError,
@@ -43,4 +44,5 @@ __all__ = [
     "is_blank",
     "lan_scopes_for_role",
     "normalize_email",
+    "reclassify",
 ]
