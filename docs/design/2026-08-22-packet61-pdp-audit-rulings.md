@@ -1444,3 +1444,170 @@ is a separate small field-set decision for the lead to rule in/near w4.
   because a `record<agent>` FIELD needs no pre-existing target table at definition time (store-ref §2 —
   `record<>` links don't validate existence), which the build proved live. No design change; only my
   justification was imprecise, now corrected.
+
+### Fork A/C/D addendum (2026-08-23) — the three 61b-w1 PDP-core forks (D1 · D2 · D4)
+
+Ruling on `lore_comms #6040` (thread `q:61b-w1-forks` · `REPORT-contract-61b-w1.md`). The PDP-core
+contract author escalated three forks (correctly, PKT-28 C1 — spec ambiguity is an escalation, not a
+contract decision). (D3 — `requires_audit`=mutating-only — the lead already CONFIRMED; consistent with
+`_AUDITED_ACTIONS`; no ruling needed.)
+
+**D1 (#414 — the carve-out identity) → RULE B2: the `Resource` carries `table` (4 fields), `authorize`
+KEEPS the §5 signature, `authorize_filter(s, a, table)` gains the table.** This overrides my Fork-D
+"Resource = 3 fields" → **4 fields** `(owner_principal, owner_agent, scope, table)`. Confirms the
+author's B2; rejects B1 (table as a separate threaded arg).
+- **B2 keeps §5's stated signature `authorize(subject, action, resource) -> Decision`.** B1 changes it
+  to a 4-arg `authorize(subject, action, table, resource)` — a deviation from the spec §5 writes. Both
+  options must extend `authorize_filter` with `table` (the carve-out is table-keyed: `authorize_filter(
+  admin, {mutating}, AUDIT_TABLE) = NoRows`), so `authorize_filter(s,a,table)` is common to both — the
+  ONLY difference is whether single-row `authorize` gets the table from `resource.table` (B2) or a
+  separate arg (B1). B2 is the smaller deviation from §5.
+- **⚠ B2 makes the single-brain equivalence STRUCTURAL — the deciding argument (Fork A's whole point).**
+  The §5 equivalence with the carve-out is `authorize(s,a,r) ≡ authorize_filter(s,a,r.table).matches(r)`.
+  In B2 the row CARRIES its table, so both sides use the SAME table BY CONSTRUCTION — the equivalence is
+  automatic. In B1 (`authorize(s,a,table,r) ≡ authorize_filter(s,a,table).matches(r)`) the caller must
+  pass the SAME table to both — a caller DISCIPLINE, a place to get it wrong. Fork A's core is that the
+  equivalence is ARCHITECTURAL, not disciplinary; B2 keeps it architectural.
+- **Answering the lead's "B2 conflates row-data with query-context":** the table is not the row's authz
+  ATTRIBUTES (owner/scope), but it IS the row's KIND, and the row's kind is authz-RELEVANT (the audit
+  carve-out is keyed on kind). A `Resource` models a governed ROW, and every row intrinsically has a
+  table (`id = table:xyz`). A Resource that omits its table is UNDER-specified — it cannot answer "am I
+  an audit row?", an authz question. So carrying `table` is COMPLETENESS, not conflation.
+- **RIDER (makes B2 safe + structural): `Resource.table` is DERIVED from the row's id
+  (`str(id).split(':')[0]`) at construction (63/64 build real Resources from rows), NEVER a free
+  caller-set field.** An intrinsic-from-id table CANNOT drift from the actual table, so a caller cannot
+  claim `table='memory'` on an audit row (no carve-out bypass) AND the equivalence stays structural. At
+  packet 61 the fixture Resources set `table` explicitly (governed rows don't exist yet); the
+  derive-from-id discipline is a 63/64 construction rule — pin it there. Mutation-prove the carve-out:
+  an admin DELETE of a `table=audit` Resource is DENY; the same subject/action on `table=memory` is
+  ALLOW; and the equivalence oracle holds per-table.
+
+**D2 (vocabulary homing — ONE-IMPLEMENTATION) → RULE RE-HOME to `lorerunes` + import; reject the drift
+cross-check.** Confirms the lead's lean.
+- The role domain `{member, admin}` and `AUDIT_TABLE` are now needed in BOTH `lorerunes` (the PDP — the
+  admin branch reads the role domain; the carve-out compares `AUDIT_TABLE`) AND
+  `loremaster.surreal_schema` (the `principal.role` ASSERT; the audit slice). A DRIFT CROSS-CHECK guards
+  TWO copies — the "pattern they clone + a guard" anti-form; ONE-IMPLEMENTATION says define it ONCE and
+  IMPORT. And `lorerunes` CANNOT import `loremaster` (the whole constraint), so if the PDP needs these
+  they MUST live in `lorerunes` and `loremaster` imports them — re-home is the ONLY correct
+  ONE-IMPLEMENTATION resolution; a cross-check is two copies wearing a guard.
+- **⚠ RIDER — preserve the one-column-one-vocabulary law (principals.py standing law):** `principal.role
+  ∈ {member,admin}` is DISTINCT from `agent.role` (a free string) and per-Keep `rank`. The re-homed
+  lorerunes constants must be named for the PRINCIPAL role domain specifically (e.g.
+  `PRINCIPAL_ROLES`/`ROLE_MEMBER`/`ROLE_ADMIN`), NOT a generic `roles` that could tempt merging the
+  three distinct vocabularies. Re-home the DOMAIN, not the confusion.
+- **Prove-by-mutation across the boundary:** change the role tuple / `AUDIT_TABLE` in `lorerunes` → BOTH
+  the `loremaster.surreal_schema` pins (the ASSERT / the audit slice) AND the `lorerunes` PDP pins move.
+  A copy that stays green is not routed through the one definition. Register the moved symbols per
+  `./scripts/registration_sites.py` (new lorerunes API — not a hand-list). Its own one-concern
+  commit(s).
+- **Scope:** touches committed 48 (`_PRINCIPAL_ROLES`) + 60/w4 (`AUDIT_TABLE`) — PRE-AUTHORIZED
+  (pre-production, lore's own code, PRE-PRODUCTION STATUS grant). Same class as the #400 wrap
+  extraction (a DRY re-home touching committed code, pre-blessed). NOT a MAJOR pivot → not escalated.
+
+**D4 (owner can DELETE a keep-row of a keep they LEFT) → CONFIRM INTENDED (the lead's reading); pin it;
+NO household conjunct on DELETE.**
+- **Faithful to the ownership≠scope separation (§4).** DELETE is an OWNERSHIP right (§4: *"a hard DELETE
+  stays the owner's"*) — ownership-gated, scope-INDEPENDENT. Leaving a keep changes SCOPE relationships
+  (read/write visibility), never OWNERSHIP. So owner-delete surviving keep-departure is correct: your
+  work is yours to delete, wherever you scoped it.
+- **The alternative (a household conjunct on DELETE) creates UN-DELETABLE ORPHANS.** If a departed owner
+  can't delete their keep-scoped row, and household members can't (DELETE is owner+admin, never household
+  — §4: members supersede but don't VANISH each other's rows), then ONLY admin can remove it — the row
+  is stranded, accreting admin-only cleanup. Owner-only DELETE lets the owner clean up their own orphan.
+- **Not a security hole.** Deleting your OWN row is never a cross-principal violation (§9 isolation is
+  untouched — the owner still cannot read/write/delete ANOTHER principal's rows). The only "surprise" —
+  deleting a row you can't currently READ — is benign (you don't need to see a row to know you want your
+  own data gone; you may delete by id from a prior reference or a bulk "delete all my rows").
+- **RIDER — PIN the surprising-but-intended bound** (per *"WHEN YOU CANNOT CLOSE A HOLE, PIN IT"*, here
+  a surprising-but-CORRECT behaviour): a test that an owner CAN delete their own keep-scoped row after
+  leaving the keep's household (DELETE scope-independent) AND canNOT read/write it (scope-gated),
+  carrying the note *"INTENDED — ownership≠scope; DELETE is the owner's inalienable right (§4). If you
+  are adding a household conjunct to DELETE, you are breaking owner-cleanup and stranding orphans for
+  admin — reconsider."* So a future engineer meets this deliberately, not as a bug to "fix."
+- **⚠ Surfaced clarification (Fork C under-specified SET_SCOPE):** the lead grouped "DELETE/SET_SCOPE
+  owner-only," but SET_SCOPE is NOT pure owner-only — §4.3 lets a member set scope only "to a Keep it
+  belongs to, principal-private, or server," so SET_SCOPE = `owner(row)` AND `target_scope ∈
+  grantable(subject)` (a member cannot set-scope to a keep they are NOT in). My Fork-C table wrote
+  SET_SCOPE as bare `owner=me`, which OMITS the target-scope-grantability check — a refinement the
+  contract must pin. It does NOT change D4's DELETE answer (DELETE takes no target scope → pure
+  owner-only). For an owner re-scoping a LEFT-keep row: they may re-home it to any scope THEY can grant
+  (reclaim to principal-private, or move to a keep they are in) — useful, coherent.
+- **Named future fork (NOT now — an operator policy call):** if keep-integrity/data-retention ever
+  argues "leaving a keep forfeits delete-rights on rows you scoped there" (so a departing member cannot
+  nuke rows the keep now depends on), that TRADES owner-autonomy for keep-integrity — an operator ruling,
+  not a contract decision. Ledger it if it ever comes up; today owner-autonomy wins (per §4).
+
+**Escalation:** none — D1 is a Fork-A/D seam signature (structural-equivalence + §5-faithful reasoning),
+D2 is a pre-authorized ONE-IMPLEMENTATION re-home, D4 confirms the design's ownership model. All within
+delegated authority. **Adversary unblock (D1):** `authorize(subject, action, resource)` (§5 signature,
+resource carries table) + `authorize_filter(subject, action, table)`; the equivalence oracle runs
+per-table; the carve-out is the `role==admin ∧ action∈mutating ∧ resource.table==AUDIT_TABLE → NoRows`
+branch inside the one expression.
+
+### Fork B/D addendum (2026-08-23) — CORRECTION: Subject/Resource are STDLIB dataclasses, not pydantic (F3)
+
+Ruling on `lore_comms #6044` (thread `q:61b-w1-forkBD` · `REPORT-adversary-61b-w1.md`). The PDP adversary
+caught a real inconsistency BETWEEN MY OWN Forks B and D, and it is MY Fork-D slip:
+- **Fork B** homes the pure PDP core in `lorerunes`, which is STDLIB-ONLY — verified this session:
+  `lorerunes/pyproject.toml` `dependencies = []` (intentional), and no module imports anything beyond
+  stdlib (`unicodedata`, `ipaddress` only). `blankness.py` explicitly ruled pydantic OUT.
+- **Fork D** wrote *"Subject/Resource = two frozen PYDANTIC value objects (the house
+  Keep/Membership/Principal idiom)."* **CONTRADICTION:** pydantic is an external dep; a stdlib-only
+  package cannot use it. My "house pydantic idiom" reasoning was the error — Keep/Membership/Principal
+  live in `loremaster` (which HAS pydantic); that idiom does NOT transfer to stdlib-only `lorerunes`. I
+  applied the wrong home's idiom.
+
+**RULING → Subject/Resource are STDLIB FROZEN DATACLASSES; Fork B's stdlib-only charter is
+non-negotiable (it is the lorerunes law + the pyproject reality + the whole point of a home importable
+by every member). This CORRECTS my Fork D** (now corrected twice: D1 added the `table` 4th field;
+this replaces pydantic→dataclass).
+- **`@dataclass(frozen=True, slots=True)` with `__post_init__` validation** — the stdlib features
+  reproduce every value-object property Fork D wanted: `frozen=True` = immutability; `slots=True` = no
+  arbitrary extra attributes (the `extra="forbid"` equivalent); `__post_init__` = construction-time
+  validation (read `self.<field>`, raise on invalid — no assignment, legal under frozen). So
+  `Subject(principal_id, agent_id, role, visible_keep_ids: frozenset[str])` and `Resource(owner_principal,
+  owner_agent, scope, table)` (the D1 4-field shape) are stdlib dataclasses, no pydantic.
+- **`__post_init__` validates:** `role ∈ PRINCIPAL_ROLES` (the re-homed lorerunes constant, D2); `scope ∈
+  {agent-private, principal-private, server} ∪ {keep:<id>}`; `table` a non-empty governed-table name (at
+  61, fixtures set it; 63/64 derive it from the row id per D1). **No default on any branched field**
+  (`role`, `scope`, `table`, `agent_id`) — the fixture-monoculture guard (PKT-28 C1): every construction
+  chooses, so a build that branches on one value cannot hide behind a fixture default.
+- **REJECT the alternative (move Subject/Resource to loremaster so they can be pydantic):** it breaks
+  Fork B's pure-core-in-lorerunes — the PDP (`authorize`/`authorize_filter`/`matches`) OPERATES on
+  Subject/Resource, and `lorerunes` cannot import `loremaster`, so moving the value objects out would
+  drag the whole pure core to `loremaster`, collapsing the architecture that makes the PDP core
+  stdlib-testable and importable by all members. The value objects stay in lorerunes; they are stdlib.
+
+**⚠ THE CHARTER PIN — the reach law on the charter itself (the adversary noted NOTHING guarded it; the
+author built with pydantic and no gate caught the violation).** Extend the Fork-B lorerunes-purity pin
+from "no sibling import" to the FULL charter, property-derived:
+> **Every top-level import in every `lorerunes` module resolves to the STDLIB or to `lorerunes` itself —
+> nothing external, no sibling.**
+- **Derive "stdlib" from `sys.stdlib_module_names`** (the interpreter's authoritative stdlib frozenset,
+  3.10+), NOT a hand-list of stdlib modules — so the safe set is `sys.stdlib_module_names ∪ {"lorerunes"}`
+  and EVERYTHING else (pydantic, any external dep, any sibling `loremaster`/`loresigil`/`lorescribe`) is
+  forbidden BY CONSTRUCTION. This is allowlist-the-safe on a DERIVED safe set — it catches pydantic AND
+  any future external dep AND sibling imports in one property, and it unifies Fork B's "no sibling" pin
+  with the stdlib-only charter. Coverage-checked: a NEW lorerunes module is scanned too (AST-walk every
+  module, not a fixed file list).
+- **Belt-and-braces declarative half:** also pin `lorerunes/pyproject.toml` `dependencies == []` (the
+  charter's declarative statement; the import-scan is the behavioural proof the declaration holds).
+- **Mutation-prove:** add `import pydantic` to any lorerunes module → the charter pin reds; remove →
+  green. (The adversary already proved stdlib-only is SATISFIABLE via its reference build.)
+
+**Adversary F1/F2 (the lead folds them with this) — NO objection, both consistent with my rulings:**
+- **F1 (a ≥2-keep oracle subject so the #413 `scope IN $my_keep_scopes` expansion is store-tested):**
+  strengthens the equivalence oracle exactly at my Fork-E concern (the `IN`-predicate is the un-probed
+  store-law surface); a 1-keep subject makes `IN` degenerate to `=` and can't test the expansion. Good.
+- **F2 (pin admin SET_SCOPE-into-a-non-grantable-keep is audited + mutation-prove `requires_audit` shares
+  the member predicate):** this IS my Fork-G ruling — `requires_audit = role==admin ∧ NOT
+  member_predicate(action).matches(resource)`, computed in the ONE expression. An admin SET_SCOPE into a
+  keep a member could not grant → the member predicate denies → `requires_audit=True` → audited. Proving
+  it SHARES the member predicate (not a second copy) is the single-brain discipline. Confirmed.
+
+**Escalation:** none — this corrects my own Fork-D slip (the lead caught it via the adversary); Fork B's
+stdlib-only charter is the settled lorerunes law. Fork D is now superseded on BOTH field-type (stdlib
+dataclass, not pydantic) and field-count (4, not 3 — D1). **Contract revision (folded):** Subject/Resource
+= stdlib frozen dataclasses; the lorerunes charter pin (imports ∈ stdlib ∪ lorerunes, derived via
+`sys.stdlib_module_names`; `dependencies == []`); + adversary F1/F2. Then re-grade.
