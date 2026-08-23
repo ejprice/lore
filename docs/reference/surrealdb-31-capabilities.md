@@ -372,6 +372,18 @@ The house rules for reading and writing rows. Each one was found the hard way.
   column (the `name`-table idiom).
 - **[PROBED]** `string::starts_with` = TableScan (*"unsupported predicate"*, the index is ignored).
   A range predicate `value >= $p AND value < $p_hi` = IndexScan, identical results. Use the range.
+- **⚠ `IN` INSIDE AN `OR` IS A TABLESCAN TRAP — expand it to per-value equalities** [PROBED
+  2026-08-23, 3.2.4, `scripts/probe_read_filter_61b.py`, #413; the packet-61b read-filter emitter].
+  On its own, `WHERE col IN $set` on an indexed `col` **IndexScans** (a `UnionIndexScan`; `IN []` →
+  `EmptyScan`, safe). **BUT the same `IN` as one disjunct of an `OR` makes the WHOLE `OR` TableScan** —
+  even though every *other* disjunct (and the `IN` alone) IndexScans. The defeating ingredient is `IN`
+  inside the `OR`, not the `OR` itself and not compound `AND` disjuncts. **Fix: EXPAND the `IN` into
+  N per-value equality disjuncts** (`col = $v1 OR col = $v2 OR …`, bound params, omit when the set is
+  empty) — then the whole predicate is an index-served union, no `UNION`-of-queries needed. This is a
+  #107 shape: a flat `OR … col IN $set` is green on a small/virgin DB and a full TableScan on a large
+  dirty store. **Composite corollary (same probe):** a single `(scope, owner_principal, owner_agent)`
+  composite is leading-column only — a disjunctive read filtering both `scope` AND `owner_principal`
+  needs **separate** indexes on each.
 - **⚠ Indexing an ARRAY column: the element path `<field>.*` is the ONLY spelling that serves
   containment — and the plain spelling builds an index that answers a DIFFERENT question, silently.**
   [VENDOR] the DEFINE INDEX page documents array-element composite indexes since 3.1.0
