@@ -1,10 +1,15 @@
 """Contract — packet 49, the ``principal_key`` table SCHEMA (Legs 1 + 2).
 
 Written by ``contract-49-1`` (2026-08-20). The builder builds FROM this; it writes
-NO production code. STUB surfaces exist (``generate_principal_key_ddl`` returns ``""``,
-``_principal_key_statements`` returns ``[]``, ``principal_key`` is NOT folded into
-``generate_ddl``), so every pin here is RED for the RIGHT reason — a behavioural
-failure of the emitter, never an ImportError.
+NO production code. HISTORICAL (authoring-time, 2026-08-20 RED phase): the emitter
+surfaces were then stubs — ``generate_principal_key_ddl`` returned ``""``,
+``_principal_key_statements`` returned ``[]``, and ``principal_key`` was NOT yet folded
+into ``generate_ddl`` — so every pin was RED for the RIGHT reason (a behavioural failure
+of the emitter, never an ImportError). Those surfaces are NOW BUILT AND GREEN:
+``_principal_key_statements`` emits the real DDL, is folded into ``generate_ddl`` and is
+consumed by the standalone ``generate_principal_key_ddl`` (``surreal_schema.py``). This
+note is kept as the authoring origin, not a current claim (retired 2026-08-23,
+packet 61a-w3, #398/#399).
 
 DESIGN (the work order, executed verbatim — never re-transcribed):
 ``docs/design/2026-08-20-packet49-cli-keys.md`` §F7 (module layout + the exact
