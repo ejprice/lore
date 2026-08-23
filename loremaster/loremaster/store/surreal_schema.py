@@ -29,6 +29,19 @@ domain constraint is a field-level ``ASSERT $value IN [...]``.
 
 from __future__ import annotations
 
+# The shared authorization vocabulary is HOMED in stdlib-only ``lorerunes`` (D2/SEC-R4
+# re-home, packet 61b — one-column-one-vocabulary, shared with the PDP; ``lorerunes`` cannot
+# import ``loremaster``, so the shared home MUST be ``lorerunes``). The table names
+# (``AUDIT_TABLE``/``PRINCIPAL_TABLE``/``AGENT_TABLE``) are RE-EXPORTS — many modules import
+# them from here — so each uses the ``X as X`` redundant alias mypy's ``no_implicit_reexport``
+# requires (the noqa silences ruff's useless-alias rule for that deliberate idiom). The
+# principal role names bind to the module-private ``_PRINCIPAL_*`` names the call-time ASSERT
+# derivation + ``principals.py`` already use, preserving object identity.
+from lorerunes import AGENT_TABLE as AGENT_TABLE  # noqa: PLC0414 - explicit re-export (SEC-R4)
+from lorerunes import AUDIT_TABLE as AUDIT_TABLE  # noqa: PLC0414 - explicit re-export (D2)
+from lorerunes import PRINCIPAL_ROLE_MEMBER, PRINCIPAL_ROLES
+from lorerunes import PRINCIPAL_TABLE as PRINCIPAL_TABLE  # noqa: PLC0414 - explicit re-export (SEC-R4)
+
 # ---------------------------------------------------------------------------
 # Analyzer (the P0-spike-verified code-identifier tokenizer)
 # ---------------------------------------------------------------------------
@@ -90,7 +103,8 @@ BLOCKS_RELATION = "blocks"
 # RELATION`` edge (``agent->briefed->brief``) recording which agent has acked
 # which brief version. Single source of truth shared by
 # :mod:`loremaster.agents` / :mod:`loremaster.briefs` and their contract tests.
-AGENT_TABLE = "agent"
+# ``AGENT_TABLE`` is RE-HOMED to ``lorerunes`` (SEC-R4) and imported at the top of this
+# module (re-exported for its consumers); it is no longer assigned here.
 BRIEF_TABLE = "brief"
 BRIEFED_RELATION = "briefed"
 # The brief ledger's race-safe consecutive VERSION mint's counter table.
@@ -124,7 +138,8 @@ ANSWERS_TO_RELATION = "answers_to"
 # the comms ``agent`` registry (see the :mod:`loremaster.principals` docstring and
 # the one-column-one-identity-vocabulary law near ``server._TRACE_DECLARED_KEYS``).
 # Single source of truth shared by :mod:`loremaster.principals` and its tests.
-PRINCIPAL_TABLE = "principal"
+# ``PRINCIPAL_TABLE`` is RE-HOMED to ``lorerunes`` (SEC-R4) and imported at the top of this
+# module (re-exported for its consumers); it is no longer assigned here.
 
 # The ``principal_key`` table (packet 49) — one row per per-user API key, owned by
 # exactly one :data:`PRINCIPAL_TABLE` via a required ``record<principal>`` link.
@@ -432,9 +447,12 @@ _PRINCIPAL_STATUS_ACTIVE = "active"
 _PRINCIPAL_STATUS_SUSPENDED = "suspended"
 _PRINCIPAL_STATUSES = (_PRINCIPAL_STATUS_ACTIVE, _PRINCIPAL_STATUS_SUSPENDED)
 
-_PRINCIPAL_ROLE_MEMBER = "member"
-_PRINCIPAL_ROLE_ADMIN = "admin"
-_PRINCIPAL_ROLES = (_PRINCIPAL_ROLE_MEMBER, _PRINCIPAL_ROLE_ADMIN)
+# The principal role domain — RE-HOMED to ``lorerunes`` (D2, packet 61b). Bound to the
+# private names the DDL derivation (:func:`_principal_statements`) + ``principals.py`` use;
+# the tuple is the SAME object as ``lorerunes.PRINCIPAL_ROLES`` (shared with the PDP, so a
+# change moves both — the identity is what the oracle's sharing pin asserts).
+_PRINCIPAL_ROLE_MEMBER = PRINCIPAL_ROLE_MEMBER
+_PRINCIPAL_ROLES = PRINCIPAL_ROLES
 
 # The ``principal`` table's NON-DOMAIN fields as ``(name, type_expr, constraint)``
 # triples (the ``finding`` idiom, fine here — these fields carry no closed
@@ -2134,7 +2152,8 @@ def generate_keep_ddl() -> str:
 # change moves the emitted ``action`` ASSERT (the derivation is mutation-provable).
 # --------------------------------------------------------------------------- #
 
-AUDIT_TABLE = "audit"
+# ``AUDIT_TABLE`` is RE-HOMED to ``lorerunes`` (D2, packet 61b) and imported at the top of
+# this module (re-exported for ``audit.py``); it is no longer assigned here.
 
 # The audited action domain — the MUTATING actions ONLY (design Fork G / Fork C). READ is
 # NEVER audited (a read exercises no admin POWER, so auditing one would be over-audit). The
