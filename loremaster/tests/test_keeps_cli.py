@@ -883,6 +883,13 @@ _KEEP_VERB_GHOST_KEEP_ARGV: dict[str, list[str]] = {
     "add-household": ["add-household", "--keep", _GHOST_KEEP, "--member", _MEMBER],
     "remove-household": ["remove-household", "--keep", _GHOST_KEEP, "--member", _MEMBER],
     "set-rank": ["set-rank", "--keep", _GHOST_KEEP, "--member", _MEMBER, "--rank", _KEEP_RANK_CONTRIBUTOR],
+    # packet 61a-w1 (§FR-4): the two new --keep-consuming remediation verbs. The reach pin
+    # DERIVES them from the parser and forced this coverage entry (a new --keep verb must be
+    # loud-on-ghost — reach law #344/#345). Both do get_keep FIRST, so the ghost keep is
+    # LOUD (KeepNotFoundError → exit 1) before the --new-keeper email is used; _MEMBER is a
+    # REAL seeded principal so the loudness is about the ghost KEEP (fixtures discriminate).
+    "set-keeper": ["set-keeper", "--keep", _GHOST_KEEP, "--new-keeper", _MEMBER],
+    "delete-keep": ["delete-keep", "--keep", _GHOST_KEEP],
 }
 
 

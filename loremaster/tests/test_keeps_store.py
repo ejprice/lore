@@ -783,6 +783,16 @@ _WRITE_PATH_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
     "set_rank": lambda store: store.set_rank(
         keep_id=_WRAP_PROBE_GHOST_KEEP, member_email=_MEMBER_EMAIL, rank=_KEEP_RANK_CONTRIBUTOR
     ),
+    # packet 61a-w1 (§FR-4): the two admin remediation write verbs. The reach pin
+    # (test_the_derived_write_path_set_matches_the_coverage_map) DERIVES these from
+    # keeps.py and forced this coverage entry — a new write path must register one
+    # (coverage-as-checked-variable, #344/#345). Under fault injection the patched seam
+    # raises inside the verb (set_keeper/delete_keep run get_keep FIRST, inside the try),
+    # so the ghost keep id serves.
+    "set_keeper": lambda store: store.set_keeper(
+        keep_id=_WRAP_PROBE_GHOST_KEEP, new_keeper_email=_KEEPER_EMAIL
+    ),
+    "delete_keep": lambda store: store.delete_keep(keep_id=_WRAP_PROBE_GHOST_KEEP),
 }
 
 

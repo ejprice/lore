@@ -55,6 +55,8 @@ The public surface:
         async add_household_member(*, keep_id, member_email) -> Membership
         async remove_household_member(*, keep_id, member_email) -> None
         async set_rank(*, keep_id, member_email, rank) -> Membership
+        async set_keeper(*, keep_id, new_keeper_email) -> Keep    # 61a-w1 admin set_owner
+        async delete_keep(*, keep_id) -> None                     # 61a-w1 admin delete
         async list_household(keep_id) -> list[Membership]
         async list_keeps_for_keeper(keeper_email) -> list[Keep]
         async close() -> None
@@ -687,6 +689,138 @@ class KeepStore:
                 f"no member_of edge for member {member_email!r} on keep {keep_id!r}"
             )
         return membership
+
+    async def set_keeper(self, *, keep_id: str, new_keeper_email: str) -> Keep:
+        """Reassign a keep's keeper (owner) to a new principal — admin set_owner
+        (packet 61a-w1, §FR-4/D1: the keep-flavoured spelling of the design's §4.3
+        ``set_owner``, one root with ``set_rank``).
+
+        CHECK-FIRST, so a refusal changes nothing and no phantom keep is upserted:
+          1. a GHOST keep is LOUD — :class:`KeepNotFoundError` raised via the ONE
+             :meth:`get_keep` read BEFORE any UPDATE (D2 parity; and an ``UPDATE`` on a
+             specific record id would otherwise UPSERT a phantom keep at the ghost id);
+          2. the new-keeper email is RESOLVED FIRST — a ``record<principal>`` field link
+             does NOT validate existence (store law §2), so email resolution
+             (:meth:`_resolve_principal_id`, raising :class:`KeepStoreError` on an unknown
+             email) is the ENFORCED-flavoured backstop, raised BEFORE the UPDATE.
+        Only then does it UPDATE ``keep.keeper`` to the resolved successor and read the
+        keep back. The departing keeper's ``member_of`` edge is left as-is (separately
+        managed — §FR-4). Returns the updated :class:`Keep`.
+
+        Args:
+            keep_id: The keep to reassign (a bare id or a ``keep:xyz`` string).
+            new_keeper_email: The email of the principal to make the new keeper.
+
+        Returns:
+            The updated :class:`Keep`, read back through :meth:`get_keep`.
+
+        Raises:
+            KeepNotFoundError: ``keep_id`` resolves to no keep (raised BEFORE any UPDATE —
+                a :class:`KeepStoreError` subclass, never re-wrapped).
+            KeepStoreError: No principal carries ``new_keeper_email`` (raised BEFORE any
+                UPDATE), OR the store rejected the update. The raw engine
+                ``SurrealStoreError`` is WRAPPED as this domain error (consumer-law
+                parity); transport / exhausted-contention faults pass through untouched
+                (store reference §3).
+        """
+        # The check-first ``get_keep`` and email resolution run INSIDE the try (the
+        # ``remove_household_member`` idiom) so a raw engine ``SurrealStoreError`` from
+        # EITHER internal read is wrapped as ``KeepStoreError`` — the FR-2 Q2b consumer-law
+        # invariant covers the WHOLE verb, internal reads included. ``KeepNotFoundError`` /
+        # the ghost-email ``KeepStoreError`` are NOT ``SurrealStoreError`` subclasses, so
+        # they pass through both ``except`` clauses untouched (deliberate refusals).
+        bare_keep = self._record_id_part(keep_id)
+        try:
+            keep = await self.get_keep(keep_id)
+            if keep is None:
+                raise KeepNotFoundError(
+                    f"no keep {keep_id!r} exists — cannot set its keeper"
+                )
+            # Resolve the successor email BEFORE the UPDATE (KeepStoreError on a ghost
+            # email): a record<principal> write does NOT validate existence (store law §2),
+            # so this is the only guard against writing a dangling keeper. A refused
+            # resolution leaves keep.keeper untouched (no UPDATE has run).
+            new_keeper_id = await self._resolve_principal_id(new_keeper_email)
+            await self._query(
+                f"UPDATE type::record('{KEEP_TABLE}', $id) "
+                f"SET keeper = type::record('{PRINCIPAL_TABLE}', $kid)",
+                {"id": bare_keep, "kid": new_keeper_id},
+            )
+            updated = await self.get_keep(keep_id)
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport / exhausted contention belongs to the retry/lifecycle layer
+            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
+            raise
+        except SurrealStoreError as error:
+            raise KeepStoreError(
+                f"could not set keeper of keep {keep_id!r} to {new_keeper_email!r}: "
+                f"the store rejected the keeper update"
+            ) from error
+        if updated is None:  # pragma: no cover - a just-updated (existing) keep must read back
+            # The keep was CONFIRMED to exist by the check-first above, so a None readback
+            # here is a store anomaly (a TOCTOU delete / engine fault), NOT a "not found" —
+            # KeepStoreError, mirroring create_keep's "did not read back" (the check-first
+            # is therefore the SOLE KeepNotFoundError guard, #403).
+            raise KeepStoreError(f"keep {keep_id!r} did not read back after its keeper update")
+        return updated
+
+    async def delete_keep(self, *, keep_id: str) -> None:
+        """Delete a keep node and cascade its household — admin delete (packet 61a-w1,
+        §FR-4/D2: the natural remediation for a sole-member / ``dm`` keep whose keeper is
+        being deleted).
+
+        CHECK-FIRST: a GHOST keep is LOUD — :class:`KeepNotFoundError` raised via the ONE
+        :meth:`get_keep` read BEFORE any DELETE (D2: a destructive access-control verb on
+        a typo'd id must not read as a silent *"deleted"* when nothing was; the FR-3
+        ghost-keep-loud class). Otherwise DELETEs the ``keep`` node — its ``member_of``
+        edges auto-cascade on the ``out``-endpoint (keep-node) delete (store law §4 —
+        probed, ``scripts/probe_member_of_cascade.py`` LEG C), so NO explicit
+        ``member_of`` DELETE is issued; the member/keeper PRINCIPALS are untouched.
+
+        ⚠ 63/64 FORWARD-BOUNDARY (§FR-4/D2): at 61 a keep holds no keep-scoped governed
+        rows, so this cascades keep + member_of only. When 63/64 add
+        ``scope='keep:<id>'`` governed rows, ``delete_keep`` MUST revisit whether it
+        cascades or orphans them (record-link cascade discipline — the #402 class one
+        layer out).
+
+        Args:
+            keep_id: The keep to delete (a bare id or a ``keep:xyz`` string).
+
+        Raises:
+            KeepNotFoundError: ``keep_id`` resolves to no keep (raised BEFORE any DELETE —
+                a :class:`KeepStoreError` subclass, never re-wrapped).
+            KeepStoreError: The store rejected the delete. The raw engine
+                ``SurrealStoreError`` is WRAPPED as this domain error (consumer-law
+                parity); transport / exhausted-contention faults pass through untouched
+                (store reference §3).
+        """
+        # The check-first ``get_keep`` runs INSIDE the try (the ``remove_household_member``
+        # idiom) so a raw engine ``SurrealStoreError`` from that internal read is wrapped as
+        # ``KeepStoreError`` — the FR-2 Q2b consumer-law invariant covers the whole verb.
+        # ``KeepNotFoundError`` is not a ``SurrealStoreError`` subclass, so the deliberate
+        # ghost-keep refusal passes through both ``except`` clauses untouched.
+        bare_keep = self._record_id_part(keep_id)
+        try:
+            keep = await self.get_keep(keep_id)
+            if keep is None:
+                raise KeepNotFoundError(
+                    f"no keep {keep_id!r} exists — cannot delete it"
+                )
+            # DELETE the keep NODE — the member_of edges auto-cascade on the out-endpoint
+            # delete (store law §4, probed LEG C); ONE statement, so ``_query`` suffices
+            # (no multi-statement txn needed).
+            await self._query(
+                f"DELETE type::record('{KEEP_TABLE}', $id)",
+                {"id": bare_keep},
+            )
+        except (SurrealConnectionError, TxnContentionExhaustedError):
+            # Transport / exhausted contention belongs to the retry/lifecycle layer
+            # (store reference §3) — re-raise FIRST (both subclass SurrealStoreError).
+            raise
+        except SurrealStoreError as error:
+            raise KeepStoreError(
+                f"could not delete keep {keep_id!r}: the store rejected the delete"
+            ) from error
 
     async def list_household(self, keep_id: str) -> list[Membership]:
         """List a keep's household memberships (store law §4).

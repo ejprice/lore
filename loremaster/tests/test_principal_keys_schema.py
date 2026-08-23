@@ -401,48 +401,76 @@ class TestThePrincipalKeyDdlIsFoldedIntoGenerateDdl:
 
 
 class TestTheCascadeForwardScopeIsPinned:
-    """⚠ PIN THE MISS (design §F2, pin 14) — a KNOWN BOUND, not a prohibition."""
+    """⚠ PIN THE MISS (design §F2, pin 14) — a KNOWN BOUND, not a prohibition.
 
-    def test_principal_key_is_the_ONLY_record_principal_link(self) -> None:
-        """The ``PrincipalStore.delete`` cascade covers ``principal_key`` ONLY, by
-        construction of what links to ``principal`` as of 2026-08-20 (ledger actors are
-        free strings; ``agent`` is unrelated — §1A). This scans the FULL ``generate_ddl``
-        for every ``record<principal>`` field and asserts the ONLY one is
-        ``principal_key.principal``.
+    ⚠ REVISED 2026-08-23 (packet 61a-w1, finding #402, design
+    ``2026-08-22-packet61-pdp-audit-rulings.md`` §FR-4). Packet-60 Fork A added a SECOND
+    ``record<principal>`` link — ``keep.keeper`` — which reddened the original single-link
+    exact-set pin EXACTLY as designed (PIN THE MISS working). Under §FR-4 the delete of a
+    principal who KEEPS a keep is now REFUSED-WHILE-KEEPING (a ``keep.keeper`` dangle
+    becomes unreachable — you cannot delete a keeper while they keep), so ``keep.keeper``
+    is a DELIBERATE, adjudicated, cascade-handled addition and is added to the expected
+    set. The behavioural cascade-correctness guard lives in
+    ``test_principal_delete_cascade_61.py``; this class stays the STATIC tripwire.
+    """
 
-        ⚠ RE-OPEN TRIGGER: the day ANY new ``record<principal>`` link is added (packet
-        3A's ``memory.owner`` first), this pin goes RED — a deliberate signal that the
-        delete cascade MUST be revisited to avoid dangling links (record links do NOT
-        auto-clean, store law §4). If you added the link deliberately, extend the delete
-        cascade AND update this pin's expected set, then say so."""
+    def test_the_record_principal_link_set_matches_the_cascade_adjudication(self) -> None:
+        """The set of ``record<principal>`` links is EXACTLY the two that
+        ``PrincipalStore.delete`` accounts for, as of §FR-4 (2026-08-23):
+        ``principal_key.principal`` (children-first cascade) and ``keep.keeper``
+        (refuse-while-keeping — a keeper cannot be deleted while they keep, so no
+        ``keep.keeper`` dangle can occur). Ledger actors are free strings and ``agent`` is
+        unrelated (§1A). This scans the FULL ``generate_ddl`` for every ``record<principal>``
+        field and asserts the set is exactly those two.
+
+        ⚠ FORMERLY ``test_principal_key_is_the_ONLY_record_principal_link`` — the name
+        cited by finding #402 / §FR-4 as the RED_ORPHANED gate. Renamed here because it is
+        no longer "the ONLY" link (that would be a false natural-language surface, the P8d
+        drift class); grep the old name to land here.
+
+        ⚠ RE-OPEN TRIGGER (re-armed): the day ANY new ``record<principal>`` link is added
+        (63/64's ``owner_principal`` next), this pin goes RED again — a deliberate signal
+        that ``PrincipalStore.delete``'s cascade/refusal MUST be revisited to avoid
+        dangling links (record links do NOT auto-clean, store law §4). If you added the
+        link deliberately, revisit the delete AND update this pin's expected set, then say
+        so."""
         full = surreal_schema.generate_ddl(dim=NONDEFAULT_DIM)
         found = {(m.group("field"), m.group("table")) for m in _RECORD_PRINCIPAL.finditer(full)}
-        expected = {("principal", surreal_schema.PRINCIPAL_KEY_TABLE)}
+        expected = {
+            ("principal", surreal_schema.PRINCIPAL_KEY_TABLE),
+            ("keeper", surreal_schema.KEEP_TABLE),
+        }
         assert found == expected, (
             f"the set of record<principal> links changed — cascade forward-scope PIN THE "
-            f"MISS (design §F2). expected exactly {expected}, found {found}. If you added a "
-            f"new link (e.g. packet 3A memory.owner), revisit PrincipalStore.delete's cascade "
-            f"and update this pin."
+            f"MISS (design §F2 / §FR-4). expected exactly {expected}, found {found}. If you "
+            f"added a new link (e.g. 63/64 owner_principal), revisit PrincipalStore.delete's "
+            f"cascade/refusal AND update this pin."
         )
 
     def test_the_forward_scope_regex_has_nonzero_reach(self) -> None:
         """⚠ POSITIVE CONTROL (adversary FINDING 2): prove the forward-scope regex CAN fire
         for its purpose. A zero-reach regex (the original ``record<principal>\\b`` bug) would
         pass the exact-set pin above only by finding NOTHING — and could NEVER redden when a
-        real new link is added. Run the regex against a SYNTHETIC DDL carrying the real link
-        PLUS a hypothetical ``memory.owner: option<record<principal>>`` and assert it finds
-        BOTH (required AND option-wrapped). Always GREEN — it guards the INSTRUMENT, not a
+        real new link is added. Run the regex against a SYNTHETIC DDL carrying the two REAL
+        links (``principal_key.principal`` required, ``keep.keeper`` required) PLUS a
+        hypothetical ``memory.owner: option<record<principal>>`` and assert it finds ALL
+        THREE (required AND option-wrapped). Always GREEN — it guards the INSTRUMENT, not a
         build."""
         synthetic = (
             "DEFINE FIELD OVERWRITE principal ON principal_key TYPE record<principal>;\n"
+            "DEFINE FIELD OVERWRITE keeper ON keep TYPE record<principal>;\n"
             "DEFINE FIELD OVERWRITE owner ON memory TYPE option<record<principal>>;\n"
             "DEFINE FIELD OVERWRITE tier ON snapshot_entry TYPE string;\n"
         )
         found = {(m.group("field"), m.group("table")) for m in _RECORD_PRINCIPAL.finditer(synthetic)}
-        assert found == {("principal", "principal_key"), ("owner", "memory")}, (
+        assert found == {
+            ("principal", "principal_key"),
+            ("keeper", "keep"),
+            ("owner", "memory"),
+        }, (
             f"the forward-scope regex has broken/zero reach — it must match EVERY "
             f"record<principal> link (required OR option-wrapped) so the PIN THE MISS can "
-            f"fire the day packet 3A adds one; found {found}"
+            f"fire the day 63/64 adds one; found {found}"
         )
 
 

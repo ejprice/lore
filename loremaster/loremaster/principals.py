@@ -104,6 +104,7 @@ from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_ACTIVE,
     _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
+    KEEP_TABLE,
     PRINCIPAL_KEY_TABLE,
     PRINCIPAL_TABLE,
     generate_principal_ddl,
@@ -150,6 +151,12 @@ _COL_CREATED_AT = "created_at"
 # filters key rows by it. Named once here so the DELETE literal never drifts from the
 # ``principal_key`` schema (which owns the table + column definitions).
 _COL_PRINCIPAL_KEY_OWNER = "principal"
+
+# The ``keep.keeper`` owner-link column — the refuse-while-keeping read in :meth:`delete`
+# (§FR-4) filters keep rows by it (an IndexScan on the ``keep_keeper`` index, packet-60
+# Fork A). Named once here so the literal never drifts from the ``keep`` schema (which
+# owns the table + column + index definitions).
+_COL_KEEP_KEEPER = "keeper"
 
 # The EXPLICIT read projection — NEVER ``SELECT *``. Store law §2: ``SELECT *`` OMITS
 # a NONE-valued ``option<>`` column entirely (``row["subject"]`` KeyErrors on an
@@ -203,6 +210,23 @@ class PrincipalStoreError(RuntimeError):
 
 class PrincipalNotFoundError(PrincipalStoreError):
     """Raised when a principal email does not resolve to any row in the store."""
+
+
+class PrincipalHasKeepsError(PrincipalStoreError):
+    """Raised when a hard-delete is REFUSED because the principal keeps ≥1 keep.
+
+    §FR-4 refuse-while-keeping: ``keep.keeper`` is a ``record<principal>`` FIELD LINK,
+    which does NOT auto-clean on a keeper delete (store law §2) — so hard-deleting a
+    principal who keeps ≥1 keep would leave a dangling ``keep.keeper`` (a #105-class
+    ghost link on a surviving keep). The delete is REFUSED (loud, typed) instead,
+    naming the kept keep ids AND the remediation, before any row is removed.
+
+    Subclasses :class:`PrincipalStoreError` so the CLI's existing
+    ``except PrincipalStoreError`` (:func:`_dispatch`) launders it to a ``lore-adm:``
+    stderr line + ``exit 1`` with NO new catch clause. Remediation: reassign the keeper
+    (``lore-adm set-keeper``) or delete the keep (``lore-adm delete-keep``), then re-run
+    the delete.
+    """
 
 
 # :meth:`PrincipalStore.list` shadows the builtin ``list`` in the class namespace, so
@@ -615,22 +639,34 @@ class PrincipalStore:
 
     async def delete(self, *, email: str) -> int:
         """HARD-delete a principal and CASCADE its keys — 49's
-        ``delete`` verb (design §F2).
+        ``delete`` verb (design §F2), REFUSED while the principal keeps a keep (§FR-4).
 
-        Deletes every ``principal_key`` owned by the principal (children FIRST —
-        ``record<t>`` links do NOT auto-clean, store law §4) THEN the ``principal``
-        row, inside ONE :func:`~loremaster.store._txn.execute_transaction` so a
-        half-cascade can never leave orphaned keys. Keyed on ``email``; an unknown
-        email is a typed :class:`PrincipalNotFoundError`. Needs the
-        ``PRINCIPAL_KEY_TABLE`` name (import from ``surreal_schema``); does NOT need a
-        ``PrincipalKeyStore`` instance (it issues the child DELETE on its OWN
-        connection, in the same txn).
+        §FR-4 REFUSE-WHILE-KEEPING: a principal who keeps ≥1 keep CANNOT be hard-deleted
+        — ``keep.keeper`` is a ``record<principal>`` FIELD LINK that does NOT auto-clean
+        on a keeper delete (store law §2), so the delete would leave a dangling
+        ``keep.keeper``. The refusal is a loud, typed :class:`PrincipalHasKeepsError`,
+        raised BEFORE any row is removed (state unchanged), naming the kept keep ids +
+        the remediation (reassign the keeper or delete the keep, then re-delete). A
+        member-only principal (keeps nothing) deletes cleanly — its ``member_of``
+        memberships auto-cascade on the node delete (store law §4, probed
+        ``scripts/probe_member_of_cascade.py`` — no explicit ``member_of`` DELETE).
 
-        ⚠ CASCADE FORWARD-SCOPE (design §F2 PIN THE MISS): the cascade covers
-        ``principal_key`` ONLY, by construction of what links to ``principal`` as of
-        2026-08-20. When ANY new ``record<principal>`` link is added (packet 3A's
-        ``memory.owner`` first), this cascade MUST be revisited — see the exact-set
-        pin in ``test_principal_keys_schema.py``.
+        For a keeps-nothing principal the delete proceeds: it removes every
+        ``principal_key`` owned by the principal (children FIRST — ``record<t>`` links do
+        NOT auto-clean, store law §4) THEN the ``principal`` row, inside ONE
+        :func:`~loremaster.store._txn.execute_transaction` so a half-cascade can never
+        leave orphaned keys. Keyed on ``email``; an unknown email is a typed
+        :class:`PrincipalNotFoundError`. Needs the ``KEEP_TABLE`` + ``PRINCIPAL_KEY_TABLE``
+        names (import from ``surreal_schema``); does NOT need a ``KeepStore`` /
+        ``PrincipalKeyStore`` instance (both reads run on its OWN connection). ⚠ The
+        ``keep`` table MUST exist on this database for the refuse read — on the CLI path
+        the dispatch readies the keep slice first (§FR-4 D3 / #131 dirty-store).
+
+        ⚠ CASCADE FORWARD-SCOPE (design §F2 / §FR-4 PIN THE MISS): the delete accounts
+        for the TWO ``record<principal>`` links as of §FR-4 — ``principal_key.principal``
+        (children-first cascade) and ``keep.keeper`` (refuse-while-keeping). When ANY new
+        ``record<principal>`` link is added (63/64's ``owner_principal`` next), this MUST
+        be revisited — see the exact-set pin in ``test_principal_keys_schema.py``.
 
         Args:
             email: The principal to delete (its UNIQUE admission key).
@@ -641,11 +677,34 @@ class PrincipalStore:
 
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
+            PrincipalHasKeepsError: The principal keeps ≥1 keep (§FR-4) — the delete is
+                refused, no rows removed, the kept keep ids named.
         """
         principal = await self.get_by_email(email)
         if principal is None:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
         principal_id_part = principal.id.partition(":")[2] or principal.id
+        # ⚠ §FR-4 REFUSE-WHILE-KEEPING (BEFORE any DELETE, so a refusal removes NOTHING).
+        # A keeper cannot be hard-deleted while they keep — a ``keep.keeper`` FIELD LINK
+        # does NOT auto-clean (store law §2), so the delete would dangle it. Read the
+        # kept keep ids via an IndexScan on the ``keep_keeper`` index (packet-60 Fork A),
+        # bound param, mirroring the ``principal_key`` count query below — NO KeepStore
+        # dependency (issued on this store's OWN connection). ≥1 kept keep ⇒ loud refusal
+        # naming ALL of them + the remediation.
+        kept_keep_rows = self._as_rows(
+            await self._query(
+                f"SELECT {_COL_ID} FROM {KEEP_TABLE} "
+                f"WHERE {_COL_KEEP_KEEPER} = type::record('{PRINCIPAL_TABLE}', $pid)",
+                {"pid": principal_id_part},
+            )
+        )
+        if kept_keep_rows:
+            kept_keep_ids = [str(row[_COL_ID]) for row in kept_keep_rows]
+            raise PrincipalHasKeepsError(
+                f"cannot delete principal {email!r}: they keep {len(kept_keep_ids)} "
+                f"keep(s) ({', '.join(kept_keep_ids)}) — reassign the keeper "
+                f"(lore-adm set-keeper) or delete the keep (lore-adm delete-keep) first"
+            )
         # Count the keys about to be cascaded — the CLI's audit line reports it. A
         # separate read (execute_transaction returns None), taken just before the
         # atomic cascade; for an admin op the tiny window is acceptable.
@@ -1006,6 +1065,22 @@ def build_parser() -> argparse.ArgumentParser:
     set_rank.add_argument("--member", required=True, help="the member principal's email")
     set_rank.add_argument("--rank", required=True, help="the rank to set (store-validated closed domain)")
 
+    # -- keep remediation verbs (packet 61a-w1, §FR-4) — admin set_owner + delete on a
+    # keep, so a keeper-principal blocked by refuse-while-keeping can be cleared. Both
+    # route to KeepStore via :data:`_KEEP_VERB_HANDLERS` (their KeepStoreError launder).
+    set_keeper = subcommands.add_parser(
+        "set-keeper", help="reassign a keep's keeper (owner) to a new principal"
+    )
+    set_keeper.add_argument("--keep", required=True, help="the keep's id")
+    set_keeper.add_argument(
+        "--new-keeper", required=True, help="the new keeper (owner) principal's email"
+    )
+
+    delete_keep = subcommands.add_parser(
+        "delete-keep", help="delete a keep and cascade its household edges (irreversible)"
+    )
+    delete_keep.add_argument("--keep", required=True, help="the keep's id")
+
     return parser
 
 
@@ -1152,6 +1227,27 @@ async def _cmd_set_rank(args: argparse.Namespace, keep_store: KeepStore) -> int:
     return 0
 
 
+async def _cmd_set_keeper(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``set-keeper`` verb — delegates to :meth:`KeepStore.set_keeper` (admin
+    set_owner, §FR-4/D1: UPDATE the keep's ``keeper`` field to a new principal so a
+    departing keeper's keep can be reassigned before deleting them). A ghost ``--keep``
+    (:class:`~loremaster.keeps.KeepNotFoundError`) or a ghost ``--new-keeper`` email
+    (:class:`~loremaster.keeps.KeepStoreError`) is laundered by :func:`_dispatch_keep` to
+    a ``lore-adm:`` stderr line + exit 1. Silent on success."""
+    await keep_store.set_keeper(keep_id=args.keep, new_keeper_email=args.new_keeper)
+    return 0
+
+
+async def _cmd_delete_keep(args: argparse.Namespace, keep_store: KeepStore) -> int:
+    """The ``delete-keep`` verb — delegates to :meth:`KeepStore.delete_keep` (admin
+    delete, §FR-4/D2: remove the keep node so a sole-member/dm keep's keeper can then be
+    deleted; its ``member_of`` edges auto-cascade on the node delete — store law §4,
+    probed). A ghost ``--keep`` (:class:`~loremaster.keeps.KeepNotFoundError`) is
+    laundered by :func:`_dispatch_keep` to a stderr line + exit 1. Silent on success."""
+    await keep_store.delete_keep(keep_id=args.keep)
+    return 0
+
+
 _VERB_HANDLERS: dict[str, _VerbHandler] = {
     "add": _cmd_add,
     "list": _cmd_list,
@@ -1169,6 +1265,8 @@ _KEEP_VERB_HANDLERS: dict[str, _KeepVerbHandler] = {
     "add-household": _cmd_add_household,
     "remove-household": _cmd_remove_household,
     "set-rank": _cmd_set_rank,
+    "set-keeper": _cmd_set_keeper,
+    "delete-keep": _cmd_delete_keep,
 }
 
 
@@ -1188,10 +1286,20 @@ async def _dispatch(args: argparse.Namespace) -> int:
 
     principal_store = build_principal_store(config)
     key_store = build_principal_key_store(config)
+    # §FR-4 D3(a) / #131: the ``delete`` verb READS the ``keep`` table (refuse-while-
+    # keeping), so this branch readies the keep SLICE too (``generate_keep_ddl`` — keep +
+    # member_of), NOT the full ``generate_ddl`` (the creds-free CLI has no embedder dim
+    # and must not build HNSW/analyzers). Principal is readied FIRST below, satisfying
+    # ``member_of``'s ENFORCED ``IN principal`` endpoint. Without this a store predating
+    # packet 60 (no keep table) would crash the delete's keep-read — the dirty-store
+    # blind spot every virgin-DB (full-schema) fixture cannot see (§1.6).
+    keep_store = build_keep_store(config)
     try:
-        # Principal FIRST (the record link's target), then the key table.
+        # Principal FIRST (the record link's target + member_of's ENFORCED IN endpoint),
+        # then the key table, then the keep slice.
         await principal_store.ensure_ready()
         await key_store.ensure_ready()
+        await keep_store.ensure_ready()
         handler = _VERB_HANDLERS[args.command]
         return await handler(args, principal_store, key_store)
     except (
@@ -1203,6 +1311,7 @@ async def _dispatch(args: argparse.Namespace) -> int:
         print(f"{_CLI_PROG}: {error}", file=sys.stderr)
         return 1
     finally:
+        await keep_store.close()
         await key_store.close()
         await principal_store.close()
 

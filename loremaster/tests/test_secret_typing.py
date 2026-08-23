@@ -1033,6 +1033,10 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # SAME shape — a spike-surreal TEST-store probe minting the fixed dev cred ``SecretStr("spikeroot")``
         # (a hardcoded literal, no real secret) to call ``signin_credentials``/``bootstrap_session``, which
         # require a SecretStr (#211). Same re-open trigger as the _07/07a probes above.
+        # ADJUDICATED (contract-61a-w1, packet 61a, #402): ``probe_member_of_cascade.py`` is the SAME
+        # shape — a spike-surreal TEST-store probe minting ``SecretStr("spikeroot")`` (the hardcoded dev
+        # literal, no real secret) to call ``signin_credentials``/``bootstrap_session`` (#211). Re-open if
+        # it ever sources a REAL secret instead of the "spikeroot" literal.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
@@ -1041,6 +1045,7 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
             "scripts/probe_store_error_classes_07.py",
             "scripts/probe_store_recovery_07a.py",
             "scripts/probe_unique_nullable_48.py",
+            "scripts/probe_member_of_cascade.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)

@@ -477,6 +477,12 @@ async def principal_store_with_key_table(principals_module: Any) -> Any:
     admin = await connect_admin(env)
     try:
         await run(admin, key_ddl)  # the principal_key table
+        # packet 61a-w1 (§FR-4): PrincipalStore.delete now READS the ``keep`` table
+        # (refuse-while-keeping), so a store-level delete test must carry it too (principal
+        # is readied first above, satisfying member_of's ENFORCED IN principal). Applied via
+        # the admin connection like key_ddl. Production's sole caller readies it via the CLI
+        # dispatch (D3); this aligns the store-level fixture with that dependency.
+        await run(admin, surreal_schema.generate_keep_ddl())  # keep + member_of
     finally:
         await admin.close()
     try:
