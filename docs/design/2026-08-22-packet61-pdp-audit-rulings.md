@@ -1341,3 +1341,106 @@ claim, not a sign-off; ground-truth it* — is why this did not ship.
 **Contract revision (builder still held):** routed set = 9 (drop `transitive_blockers`); the shape-guard
 keys on the FULL passthrough-first+translate idiom (still allowlist-free, empty); the mutation-sharing
 pin spans the 9; `transitive_blockers` untouched + its transport-wrap ledgered separately. Then re-grade.
+
+### Fork G addendum (2026-08-23) — audit.actor cascade disposition (the #402 tripwire's 3rd link)
+
+Ruling on `lore_comms #6032` (thread `q:61a-w4-audit-cascade`). The w4 audit build fired the #402/FR-4
+re-armed tripwire: `audit.actor_principal` is the THIRD `record<principal>` link (after
+`principal_key.principal` + `keep.keeper`), so the exact-set pin demands a delete-cascade ruling.
+Verified the built field set (`_AUDIT_FIELD_SPECS`): actor is `actor_principal: record<principal>` +
+`actor_agent: record<agent>`, with NO denormalized human-identity value.
+
+**RULING → DANGLE-TOLERATED for `audit.actor_principal` AND `audit.actor_agent` — and it is COHERENT
+with #402, not a second arbitrary call, via one unifying principle:**
+
+> **A record-link's cascade disposition follows the target's ROLE in the referencing row:**
+> - **A LIVE DEPENDENCY** — the row NEEDS the target to resolve to FUNCTION (`keep.keeper`: a keep
+>   must have a resolvable keeper to be managed/used) → **REFUSE / reassign** on target delete. A
+>   dangling live-dependency corrupts a live, in-use object (#105).
+> - **A HISTORICAL REFERENCE** — the row RECORDS that the target was involved at a PAST time, an
+>   immutable fact (`audit.actor`: "principal P, agent A, did action X at time T") → **DANGLE-
+>   TOLERATED**. The fact stays true after the actor is gone; cascade-delete would let an admin ERASE
+>   THEIR OWN TRAIL by deleting a principal (re-opening the §9 append-only-admin-exempt hole), and
+>   refuse-while-having-audit-rows would make essentially every principal permanently un-deletable
+>   (everyone accrues audit rows). Both alternatives are wrong for a historical reference.
+
+So `principal_key.principal` (cascade-delete: a key is owned data that dies with its owner),
+`keep.keeper` (refuse: a live dependency), and `audit.actor` (dangle: a historical reference) are ONE
+rule applied to three link-ROLES — the coherent generalization the #402 story needed. **The next new
+`record<principal>` link — 63/64's `owner_principal` on the governed tables — is a LIVE dependency-class
+link (a governed row's current owner), so it will be cascade-or-refuse, NOT dangle; 63/64 disposition it
+by this principle, not ad hoc.**
+
+**Pin expected-set edit (confirm the builder's + the lead's proposal):** add `("actor_principal",
+AUDIT_TABLE)` to the `record<principal>` exact-set, **annotated inline as a KNOWN DANGLE-TOLERATED link
+with the §9 rationale** (an audit record outlives its actors; `PrincipalStore.delete` deliberately does
+NOT cascade or refuse for it — the record id survives per store-law §4, a FETCH just returns None). The
+tripwire stays armed for the next link. **Prefer** the disposition as a CHECKED variable — a small
+classified structure `{cascade-delete: {principal_key.principal}, refuse-guarded: {keep.keeper},
+dangle-tolerated: {audit.actor_principal}}` so a new link must be CLASSIFIED (not silently absorbed into
+a flat set) — but the flat-set + inline-rationale form the builder proposed satisfies the tripwire's
+core job (it reds on a new link, forcing the decision); the classified form is the more-robust option,
+right-sized to the lead's taste (3 links today).
+
+**`audit.actor_agent` coverage (the lead's astute catch — "same policy, not pin-caught") → NOTE +
+NAMED TRIGGER, do NOT extend the pin to all `record<agent>` links.**
+- `actor_agent` follows the SAME dangle-tolerated policy (immutable history). It is MOOT today: agents
+  are RETIRED, never hard-deleted (store-law §4 / the agent model), so a `record<agent>` link never
+  dangles in practice.
+- **Do NOT extend the exact-set tripwire to enumerate all `record<agent>` links.** Unlike
+  `record<principal>` (rare — 3 links), `record<agent>` is COMMON (the comms subsystem: `message.sender`,
+  the `to`/`briefed` edge endpoints, …). An exact-set `record<agent>` pin would red on ALL of them,
+  forcing a cascade-disposition pass over the comms subsystem — scope-expansion far beyond w4/61a.
+- **Instead, guard the LOAD-BEARING ASSUMPTION, not the enumeration:** the moot-ness rests entirely on
+  *"agents are never hard-deleted."* Document `actor_agent = dangle-tolerated (moot: agents
+  retired-not-deleted)` inline beside `actor_principal`, and carry a **NAMED RE-OPEN TRIGGER: the day an
+  agent HARD-DELETE path is introduced, EVERY `record<agent>` link (audit.actor_agent + the comms links)
+  needs a cascade-disposition pass.** Optionally a cheap assumption-guard pin (reds if a hard-DELETE on
+  the `agent` table / a hard-delete agent-store method appears) — recommended if cheap, else the
+  documented trigger suffices (right-sized: agent-hard-delete is on no roadmap). This closes the blind
+  spot at the RIGHT granularity (the assumption) without dragging the comms subsystem into w4. ⚠ The
+  #402 lesson (*"moot-today shipped a bug"* — keep.keeper was "handled" until it wasn't) is why leaving
+  it wholly unguarded is wrong; a documented disposition + a named trigger is the proportionate guard.
+
+**⚠ RIDER (surfaced per scope law; RECOMMENDED, non-blocking — a gap in the built row AND in my own
+Fork G field set): DENORMALIZE the human actor identity.** The built `_AUDIT_FIELD_SPECS` carries actor
+as record LINKS only. Dangle-tolerated means the row RETAINS the actor RecordID (`principal:xyz`) after
+deletion (store-law §4 — the link value persists; deref → None), so *"who, by id"* survives (the
+builder's/lead's stated rationale — correct as far as it goes). **BUT the HUMAN identity (email / agent
+name) is LOST when the principal/agent row is deleted — exactly the case §9 audit matters MOST: a
+deleted / offboarded / compromised admin.** *"`principal:01J…xyz` did this"* is far weaker in an
+incident report than *"alice@corp did this,"* and the human→id mapping is gone with the row. The
+textbook audit-log pattern captures identity-AT-WRITE as a VALUE precisely because actors get
+deleted/renamed. **RECOMMEND adding `actor_email` (+ `actor_agent_name`) as denormalized value columns
+stamped at the audit write** — the PDP already resolves the actor to stamp the row, so capturing the
+email is one more field, and it makes the audit trail a self-contained immutable snapshot (the whole
+point of §9). This does NOT block the cascade ruling (dangle-tolerated is sound either way — the id
+survives); it is a design enhancement the lead/operator sizes. **My lean: DO it** — cheap, and §9's
+forensic purpose wants the human identity, not a pseudonymous id. (This corrects my own Fork G field
+set, which specified links without a denormalized identity — the cascade question surfaced the gap.)
+
+**Escalation:** none — a cascade-disposition ruling within the audit/authz model, coherent with #402;
+the denormalization is a surfaced recommendation, not a MAJOR pivot. **Builder unblock:** the pin's
+expected-set gains `audit.actor_principal` (dangle-tolerated, annotated); `actor_agent` noted +
+triggered; the two authorized test edits (this pin + the retry-seam roster) proceed. The denormalization
+is a separate small field-set decision for the lead to rule in/near w4.
+
+---
+
+### FYI acknowledgements (2026-08-23) — no objection to two lead ratifications
+
+- **`#6020` (Fork J standalone-slice property):** NO objection — the contract author's DERIVED property
+  (*a slice is legitimately standalone iff CALLED BY some `generate_*_ddl` entry point*) is CORRECT and
+  implements my Fork-J rider + INSTRUMENT-0 over my prose's letter. My Fork-J §(b) literal hand-list
+  (*"generate_manifest_ddl/generate_memory_ddl/…"*) WAS the reach-law antipattern my own rider forbade —
+  this is the FOURTH hand-list of mine this packet corrected to a derivation (set_status prose;
+  transitive_blockers site; the translate-line guard; now the standalone-slice list). The pattern is
+  clear and worth stating plainly: **my prose reaches for illustrative hand-lists; the property-derived
+  instrument beats them every time — derive, never enumerate, including in a ruling doc.** The adversary
+  P1c grading the derivation's faithfulness is the right check.
+- **`#6027` (Fork G agent-not-folded correction):** NO objection — correct. `agent` is defined by the
+  comms subsystem's own `ensure_ready`, not `generate_ddl`; my *"references defined earlier"*
+  justification held for `principal` but not `agent`. The fold-after-`member_of` conclusion still stands
+  because a `record<agent>` FIELD needs no pre-existing target table at definition time (store-ref §2 —
+  `record<>` links don't validate existence), which the build proved live. No design change; only my
+  justification was imprecise, now corrected.
