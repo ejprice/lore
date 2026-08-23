@@ -1726,6 +1726,12 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
     # — the ``briefed`` → ``agent`` fold-order precedent).
     statements += _keep_statements()
     statements += _member_of_statements()
+    # packet 61a-w4 — the audit append-only trail, folded AFTER member_of (design Fork G).
+    # ``audit.actor_principal`` is a record<principal> link (principal folded far above);
+    # ``audit.actor_agent`` is a record<agent> link needing NO pre-existing agent table (a
+    # record<t> field-def needs no target at DDL time — the principal_keys.py precedent),
+    # proven live by ``TestTheFullDdlWithAuditFoldedApplies``.
+    statements += _audit_statements()
     # Any residual bare-``SCHEMAFULL`` placeholder tables (currently none — every
     # table has graduated to a field-level slice; see :data:`_STRUCTURAL_TABLES`).
     statements += [_define_table(table) for table in _STRUCTURAL_TABLES]
@@ -2109,6 +2115,109 @@ def generate_keep_ddl() -> str:
     the edge is emitted IDENTICALLY by both paths (they share these two assemblers).
     """
     return ";\n".join(_keep_statements() + _member_of_statements()) + ";\n"
+
+
+# --------------------------------------------------------------------------- #
+# The ``audit`` append-only governance trail (packet 61a-w4, design Fork G).
+#
+# A greenfield SCHEMAFULL NODE table capturing every governed ADMIN mutation: the resolved
+# ``(principal, agent)`` actor stamp, the mutating ``action``, the affected
+# ``target_table``/``target_row``, and the ``old_value``/``new_value`` before/after governed
+# row states. It is FOLDED into :func:`generate_ddl` (AFTER ``member_of`` — Fork G) so the
+# primary ``write_store.ensure_ready()`` readies it at ship, and emitted standalone by
+# :func:`generate_audit_ddl` (a future :class:`~loremaster.audit.AuditStore.ensure_ready`).
+# The record id is a client-minted ``ulid()`` (creation-ordered, no hot-row contention — the
+# append-log discipline), so this slice mints NO counter/sequence.
+#
+# The CONSTANTS below are REAL and mutation-provable: :data:`_AUDITED_ACTIONS` is read at
+# CALL TIME by :func:`_audit_statements` (the :func:`_principal_statements` idiom), so a tuple
+# change moves the emitted ``action`` ASSERT (the derivation is mutation-provable).
+# --------------------------------------------------------------------------- #
+
+AUDIT_TABLE = "audit"
+
+# The audited action domain — the MUTATING actions ONLY (design Fork G / Fork C). READ is
+# NEVER audited (a read exercises no admin POWER, so auditing one would be over-audit). The
+# domain WIDENS safely (a new mutating action is a new value); NARROWING write-poisons
+# existing rows (store reference §1.4) — same trigger discipline as ``keep.type``. Derived
+# into the ``action`` ASSERT at CALL TIME in :func:`_audit_statements`, NEVER frozen into a
+# module constant, so a mutation of this tuple moves the emitted ASSERT (mutation-provable).
+_AUDITED_ACTIONS = ("WRITE", "DELETE", "SET_SCOPE", "SET_OWNER")
+
+# The ``audit`` table's fields as ``(name, type_expr, constraint)`` triples (the ``keep``
+# idiom — these carry no closed vocabulary to mutate; ``action`` is NOT here, it is emitted
+# at CALL TIME from :data:`_AUDITED_ACTIONS`). ``actor_principal``/``actor_agent`` are the
+# REQUIRED ``(principal, agent)`` actor stamp as ``record<>`` LINKS — §1.4's "new field on a
+# POPULATED table must be option<>" does NOT apply: ``audit`` is a brand-new empty table, so
+# required (non-``option``) fields are legal at birth (the greenfield ``keep.keeper`` /
+# ``principal_key.principal`` precedent). ``actor_email``/``actor_agent_name`` are the
+# DENORMALIZED human identity captured at APPEND time (Fork G addendum, §9 forensics) — plain
+# REQUIRED non-empty string VALUE columns, NOT ``record<>`` links: a link DEREFS to NONE once
+# its target is deleted, so an offboarded/compromised admin's identity would vanish from the
+# trail with them; a captured VALUE survives the principal-delete (both required non-empty —
+# a principal always has an email, an agent always a required ``name``). ``target_table``/
+# ``target_row`` are non-empty strings (the ``principal.email`` non-empty ASSERT idiom);
+# ``target_row`` is the affected row's ``str(RecordID)`` carried as a queryable VALUE column (a
+# RecordID's string component can't be indexed/prefix-matched — store reference §2).
+# ``old_value``/``new_value`` are ``option<object> FLEXIBLE`` — ``option<>`` because a
+# from-nothing action has no old and a DELETE no new, FLEXIBLE so an arbitrary before/after
+# governed-row shape round-trips (store reference §1.7; the ``finding.checkpoint`` precedent).
+# ``created_at`` self-stamps via ``DEFAULT time::now()`` (the store OMITS it on write). Field
+# ORDER is DDL-irrelevant.
+_AUDIT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("actor_principal", f"record<{PRINCIPAL_TABLE}>", ""),
+    ("actor_agent", f"record<{AGENT_TABLE}>", ""),
+    ("actor_email", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("actor_agent_name", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("target_table", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("target_row", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("old_value", "option<object>", "FLEXIBLE"),
+    ("new_value", "option<object>", "FLEXIBLE"),
+    ("created_at", "datetime", "DEFAULT time::now()"),
+)
+
+
+def _audit_statements() -> list[str]:
+    """The ``audit`` append-only trail NODE table: the field set (no index — Fork G defers).
+
+    Emits, in order: the SCHEMAFULL ``audit`` table (:func:`_define_table` →
+    ``IF NOT EXISTS``); one ``DEFINE FIELD`` per :data:`_AUDIT_FIELD_SPECS` entry
+    (``actor_principal``/``actor_agent``/``target_table``/``target_row``/``old_value``/
+    ``new_value``/``created_at``) followed by the ``action`` field-def, all routed through the
+    shared :func:`_define_field` (→ ``OVERWRITE``, #107). This slice ships NO index: packet 61
+    ships no audit-query verb, so an ``actor_principal``/``created_at`` index would guard a
+    query nobody makes (Fork G defers it — a free ``IF NOT EXISTS`` add when a listing verb
+    lands).
+
+    ⚠ The ``action`` ASSERT is derived HERE, at CALL time, from :data:`_AUDITED_ACTIONS`
+    (the :func:`_principal_statements` idiom, NOT a frozen import-time constant) — ``NO
+    DEFAULT`` (every append must NAME its action; a silent default would mislabel the trail).
+    A join frozen at import cannot move under a mutation pin's monkeypatch of the tuple;
+    deriving it here makes a tuple change move the emitted ASSERT.
+    """
+    action_allowed = ", ".join(f"'{action}'" for action in _AUDITED_ACTIONS)
+    action_spec: tuple[tuple[str, str, str], ...] = (
+        ("action", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{action_allowed}]"),
+    )
+    statements: list[str] = [_define_table(AUDIT_TABLE)]
+    statements += [
+        _define_field(AUDIT_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in (*_AUDIT_FIELD_SPECS, *action_spec)
+    ]
+    return statements
+
+
+def generate_audit_ddl() -> str:
+    """Generate just the ``audit`` DDL — the append-only trail's schema slice.
+
+    Returns ``";\\n".join(_audit_statements()) + ";\\n"`` — the ``audit`` NODE table + its
+    field set, a schema SLICE a future :class:`~loremaster.audit.AuditStore` applies on its
+    OWN connection (mirroring :func:`generate_keep_ddl`). ``audit`` is ALSO folded into the
+    global :func:`generate_ddl` (so the primary ``write_store.ensure_ready()`` readies it the
+    moment packet 61a-w4 ships), and the table is emitted IDENTICALLY by both paths (they
+    share :func:`_audit_statements`).
+    """
+    return ";\n".join(_audit_statements()) + ";\n"
 
 
 def generate_agent_ddl() -> str:

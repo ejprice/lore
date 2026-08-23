@@ -164,6 +164,7 @@ from _surreal_harness import (
     run,
     unique_database,
 )
+from loremaster.audit import AuditStore  # packet 61a-w4 — an execute_transaction bootstrap owner
 from loremaster.briefs import BriefLedger
 from loremaster.inbox_awaiter import InboxAwaiter
 from loremaster.store import _txn as txn_module
@@ -8123,6 +8124,18 @@ _OWNER_URL_TEMPLATE = "ws://198.51.100.151:19151/rpc-151-owner-{owner}"
 _SCOUT_BOOTSTRAP_MODULE = "loremaster.scout"
 _SCOUT_BOOTSTRAP_FUNCTION = "_open_command_connection"
 
+# EXECUTE_TRANSACTION owners (packet 61a-w4): CLASS bootstrap owners that thread their own url
+# but own NO ``async def _query`` seam, so ``_discover_query_seams()`` cannot see them and they
+# are not in ``_QUERY_SEAMS``. ``AuditStore``'s ONE write path — ``append`` — composes a
+# ``TxnFragment`` and threads its url through ``execute_transaction`` (the verified seam), never
+# a single-statement ``_query`` (Fork G defers audit reads, so there is no ``_query`` to add and
+# a dead one would be untested plumbing). Like scout's module-level owner, it gets its OWN driving
+# pin below and is named here so ``test_every_owner_the_scan_finds_is_DRIVEN_here`` counts it as
+# DRIVEN — coverage is a checked variable, not a widened exclusion. It IS a class with
+# ``_ensure_connection`` + a required ``url`` ctor param, so it is driven by the SAME machinery
+# as the ``_QUERY_SEAMS`` owners (``_construct_at_url`` → ``_ensure_connection`` → exhaustion).
+_EXECUTE_TRANSACTION_OWNERS: list[tuple[str, type]] = [("loremaster.audit", AuditStore)]
+
 
 def _owner_url(owner: str) -> str:
     """A url unique to ``owner`` — stable across runs, distinct across owners."""
@@ -8222,6 +8235,38 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
             f"`await bootstrap_session(connection, ns, db, url=self._url)`."
         )
 
+    @pytest.mark.parametrize(("module_path", "seam"), _EXECUTE_TRANSACTION_OWNERS)
+    async def test_each_execute_transaction_owner_logs_ITS_OWN_url_on_bootstrap_exhaustion(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        module_path: str,
+        seam: type,
+    ) -> None:
+        """The EXECUTE_TRANSACTION owners (packet 61a-w4: ``AuditStore``) — class bootstrap owners
+        with ``_ensure_connection`` but NO ``async def _query`` seam, so ``_discover_query_seams``
+        cannot see them (their writes thread the url through ``execute_transaction``, not a
+        single-statement ``_query``). Driven IDENTICALLY to the ``_QUERY_SEAMS`` owners: constructed
+        at a url derived from its OWN name, its session bootstrap exhausted, and the record must name
+        THAT url — the #151 blocker (one shared hardcoded address) reds here for this owner too."""
+        _silence_sleep(monkeypatch)
+        _set_default_deadline(monkeypatch, 0.0)  # the attempt floor governs: 5 and out
+        _point_at(monkeypatch, module_path, _forever_conflicting_bootstrap())
+        url = _owner_url(seam.__name__)
+        owner = _construct_at_url(seam, url)
+
+        with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
+            with pytest.raises(SurrealConnectionError):
+                await owner._ensure_connection()
+
+        record = _exhaustion_record(caplog)
+        assert getattr(record, "url", None) == url, (
+            f"{seam.__name__} ({module_path}) exhausted its session bootstrap and logged "
+            f"url={getattr(record, 'url', None)!r}; it was connecting to {url!r}. This owner threads "
+            f"its url through execute_transaction, not a _query seam, but its bootstrap is the same "
+            f"shared driver — pass `url=self._url` at the bootstrap_session call site."
+        )
+
     async def test_scouts_command_connection_logs_ITS_OWN_url_on_bootstrap_exhaustion(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -8319,9 +8364,11 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         the tree under test, so it goes red only if someone edits ``_OWNER_URL_TEMPLATE`` in a
         way that silently un-discriminates ten pins.
         """
-        owners = [seam.__name__ for _, seam in _discover_query_seams()] + [
-            _SCOUT_BOOTSTRAP_FUNCTION
-        ]
+        owners = (
+            [seam.__name__ for _, seam in _discover_query_seams()]
+            + [_SCOUT_BOOTSTRAP_FUNCTION]
+            + [seam.__name__ for _, seam in _EXECUTE_TRANSACTION_OWNERS]
+        )
         urls = [_owner_url(owner) for owner in owners]
 
         assert len(set(urls)) == len(urls), (
@@ -8348,9 +8395,11 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
             f"loremaster.{module.removesuffix('.py').replace('/', '.')}"
             for module, _, _, _ in _all_bootstrap_call_sites()
         }
-        driven = {module_path for module_path, _ in _discover_query_seams()} | {
-            _SCOUT_BOOTSTRAP_MODULE
-        }
+        driven = (
+            {module_path for module_path, _ in _discover_query_seams()}
+            | {_SCOUT_BOOTSTRAP_MODULE}
+            | {module_path for module_path, _ in _EXECUTE_TRANSACTION_OWNERS}
+        )
 
         undriven = sorted(scanned - driven)
         assert not undriven, (

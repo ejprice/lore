@@ -420,36 +420,51 @@ class TestTheCascadeForwardScopeIsPinned:
     """
 
     def test_the_record_principal_link_set_matches_the_cascade_adjudication(self) -> None:
-        """The set of ``record<principal>`` links is EXACTLY the two that
-        ``PrincipalStore.delete`` accounts for, as of §FR-4 (2026-08-23):
-        ``principal_key.principal`` (children-first cascade) and ``keep.keeper``
-        (refuse-while-keeping — a keeper cannot be deleted while they keep, so no
-        ``keep.keeper`` dangle can occur). Ledger actors are free strings and ``agent`` is
-        unrelated (§1A). This scans the FULL ``generate_ddl`` for every ``record<principal>``
-        field and asserts the set is exactly those two.
+        """The set of ``record<principal>`` links is EXACTLY the three whose deletion
+        disposition ``PrincipalStore.delete`` accounts for, as of §FR-4 (2026-08-23) + the
+        packet-61a-w4 ``audit`` substrate (2026-08-23). Each link is CLASSIFIED, not
+        flat-absorbed (the sidecar prefers a classified disposition per link):
+
+        * ``principal_key.principal`` — **CASCADE-DELETE-OWNED-DATA**: a principal's keys are its
+          own owned children, deleted children-first with it (no orphan key).
+        * ``keep.keeper`` — **REFUSE-LIVE-DEPENDENCY**: a keeper cannot be deleted while they keep
+          (refuse-while-keeping), so no ``keep.keeper`` dangle can occur.
+        * ``audit.actor_principal`` — **DANGLE-TOLERATED** (packet 61a-w4, operator/sidecar RULED,
+          §9 forensics): the audit trail is IMMUTABLE HISTORY. Cascade-deleting audit rows on a
+          principal-delete would let an admin ERASE THEIR OWN TRAIL by deleting themselves — the
+          §9 hole; refusing the principal-delete would make every actor un-deletable forever. So
+          the link is deliberately allowed to DANGLE, and the human identity is preserved by the
+          DENORMALIZED ``audit.actor_email``/``actor_agent_name`` VALUE columns (they survive the
+          delete — proven by ``test_audit_store.py::TestTheDenormalizedIdentitySurvivesActorDelete``).
+
+        Ledger actors are free strings and ``agent`` is unrelated (§1A). This scans the FULL
+        ``generate_ddl`` for every ``record<principal>`` field and asserts the set is exactly
+        these three.
 
         ⚠ FORMERLY ``test_principal_key_is_the_ONLY_record_principal_link`` — the name
         cited by finding #402 / §FR-4 as the RED_ORPHANED gate. Renamed here because it is
         no longer "the ONLY" link (that would be a false natural-language surface, the P8d
         drift class); grep the old name to land here.
 
-        ⚠ RE-OPEN TRIGGER (re-armed): the day ANY new ``record<principal>`` link is added
-        (63/64's ``owner_principal`` next), this pin goes RED again — a deliberate signal
-        that ``PrincipalStore.delete``'s cascade/refusal MUST be revisited to avoid
-        dangling links (record links do NOT auto-clean, store law §4). If you added the
-        link deliberately, revisit the delete AND update this pin's expected set, then say
-        so."""
+        ⚠ RE-OPEN TRIGGER (STAYS ARMED): the day ANY new ``record<principal>`` link is added
+        (63/64's ``owner_principal`` next — a LIVE-DEPENDENCY-class link, so cascade-or-refuse,
+        NOT dangle: unlike immutable audit history a governed row's owner must not silently point
+        at a ghost), this pin goes RED again — a deliberate signal that ``PrincipalStore.delete``'s
+        cascade/refusal MUST be revisited to avoid dangling links (record links do NOT auto-clean,
+        store law §4). If you added the link deliberately, CLASSIFY its disposition, revisit the
+        delete AND update this pin's expected set, then say so."""
         full = surreal_schema.generate_ddl(dim=NONDEFAULT_DIM)
         found = {(m.group("field"), m.group("table")) for m in _RECORD_PRINCIPAL.finditer(full)}
         expected = {
-            ("principal", surreal_schema.PRINCIPAL_KEY_TABLE),
-            ("keeper", surreal_schema.KEEP_TABLE),
+            ("principal", surreal_schema.PRINCIPAL_KEY_TABLE),  # CASCADE-DELETE-OWNED-DATA
+            ("keeper", surreal_schema.KEEP_TABLE),  # REFUSE-LIVE-DEPENDENCY
+            ("actor_principal", surreal_schema.AUDIT_TABLE),  # DANGLE-TOLERATED (§9 immutable history)
         }
         assert found == expected, (
             f"the set of record<principal> links changed — cascade forward-scope PIN THE "
             f"MISS (design §F2 / §FR-4). expected exactly {expected}, found {found}. If you "
-            f"added a new link (e.g. 63/64 owner_principal), revisit PrincipalStore.delete's "
-            f"cascade/refusal AND update this pin."
+            f"added a new link (e.g. 63/64 owner_principal), CLASSIFY its disposition, revisit "
+            f"PrincipalStore.delete's cascade/refusal AND update this pin."
         )
 
     def test_the_forward_scope_regex_has_nonzero_reach(self) -> None:
