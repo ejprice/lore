@@ -90,8 +90,9 @@ field on a POPULATED table must be `option<>`"* does **NOT** apply at birth (exa
   principal keeps ≥1 keep (cascade-DELETE would vanish other principals' shared collaboration
   spaces + their 63/64 keep-scoped rows). `member_of` edges auto-cascade on endpoint delete
   (store-law §4 — PROBE it, the finding disputes it). Update the exact-set pin (+`keep.keeper`) + add
-  a behavioral no-dangle pin; land the admin reassign-keeper/delete-keep remediation verbs. Lands in
-  **61a**, adjacent to #400. Resolves the gate + #402. One countermand (cascade-delete). See §FR-4.
+  a behavioral no-dangle pin; land the admin `set-keeper`/`delete-keep` remediation verbs. Lands in
+  **61a**, adjacent to #400. Resolves the gate + #402. One countermand (cascade-delete). See §FR-4
+  (+ its 2026-08-23 addendum ruling the contract decisions D1/D2/D3).
 
 ---
 
@@ -714,7 +715,7 @@ its own contract → adversary → build → cold-audit:
 - **61a-w2 — the #402 keeper-on-principal-delete cascade (FR-4).** RESOLVES the RED_ORPHANED gate
   before anything else builds on the substrate: refuse-while-keeping in `PrincipalStore.delete` +
   `member_of` cleanup (probed) + the exact-set pin update + a behavioral no-dangle pin + the admin
-  reassign-keeper/delete-keep remediation verbs. Resolves #402. Adjacent to 61a-w3 (both touch
+  `set-keeper`/`delete-keep` remediation verbs. Resolves #402. Adjacent to 61a-w3 (both touch
   `PrincipalStore`).
 - **61a-w3 — `lorerunes.wrap_engine_rejection` extraction (Fork I).** Touches PrincipalStore +
   KeepStore; mutation-proven across both. Resolves #400. Lands BEFORE the audit store so it is born
@@ -921,14 +922,15 @@ kept keep ids and the remediation. A member-only principal (keeps no keep) delet
   Keep a positive control that a member-only principal delete DOES succeed (rc 0) so the refuse pin
   can see the benign path is preserved (fixtures-must-discriminate: a fixture that only tests the
   keeper case cannot tell *"refuse a keeper"* from *"refuse every delete"*).
-- **The remediation verbs (admin §4.3 authority — land in 61a):** `KeepStore.reassign_keeper` (admin
-  `set_owner` on a keep — UPDATE `keep.keeper` to a new principal; the departing keeper's `member_of`
-  edge stays or is separately managed) and `KeepStore.delete_keep` (admin `delete` — cascade the
-  keep + its `member_of` edges; a `dm`/sole-member keep's natural remediation). Both are lore-adm
-  admin verbs (admin-by-construction — the CLI is CREDS-FREE admin substrate, like packet-60's keep
-  verbs; they need NOT route through the 63/64-facing PDP at 61, mirroring the packet-60 keep verbs).
-  Pin each; the `reassign_keeper` UPDATE must keep the keeper a valid principal (ENFORCED-flavoured —
-  a ghost new-keeper is refused). **If the lead wants the #402 fix minimal, the remediation verbs are
+- **The remediation verbs (admin §4.3 authority — land in 61a; names RULED in the D1 addendum
+  below):** `KeepStore.set_keeper` (admin `set_owner` on a keep — UPDATE `keep.keeper` to a new
+  principal; the departing keeper's `member_of` edge stays or is separately managed) and
+  `KeepStore.delete_keep` (admin `delete` — cascade the keep + its `member_of` edges; a
+  `dm`/sole-member keep's natural remediation). Both are lore-adm admin verbs (admin-by-construction
+  — the CLI is CREDS-FREE admin substrate, like packet-60's keep verbs; they need NOT route through
+  the 63/64-facing PDP at 61, mirroring the packet-60 keep verbs). Pin each; the `set_keeper` UPDATE
+  must keep the keeper a valid principal (ENFORCED-flavoured — a ghost new-keeper is refused). **If
+  the lead wants the #402 fix minimal, the remediation verbs are
   a NAMED follow-up** (a keeper-principal stays un-deletable until they land — SAFE, no data loss,
   just inconvenient) — but they are cheap (mirror set-rank / the delete cascade) and complete the
   story, so I RECOMMEND landing them in 61a-w2. Flag to the lead as the one sizing sub-choice.
@@ -959,3 +961,86 @@ household members' keep-scoped rows — the aggressive reading), countermand thi
 refuse-while-keeping because silent multi-principal data-loss on an account delete is the more
 dangerous default and contradicts the design's collaboration principle. Resolve #402 on the fix
 commit(s).
+
+### FR-4 addendum (2026-08-23) — the three frozen 61a-w1 contract decisions (D1 · D2 · D3)
+
+Ruling on `lead-61`'s `lore_comms #5174` (thread `q:61a-w1-contract-decisions` · `REPORT-contract-61a-w1.md`).
+**The contract's probe SETTLED the FR-4 open question:** `member_of` auto-cascades BOTH endpoints on
+delete, `keep.keeper` dangles — so #402's body claim (dangling member_of) is REFUTED, refuse-while-keeping
+is confirmed, and **no explicit `member_of` DELETE is needed** (the store-law §4 auto-cascade the FR-4
+rider required a probe for is now proven live). FR-4 stands as ruled.
+
+**D1 — remediation verb names → RULED (b) `set-keeper` / `set_keeper` / `--new-keeper` (kwarg
+`new_keeper_email`), COUNTERMANDING the lead's lean (a) `reassign-keeper`.** The delete verb keeps
+`delete-keep` / `delete_keep` (both options agreed). ⚠ This is a countermand — it forces the one
+contract edit (verb root + kwarg), which is why the lead froze the adversary on it.
+- **Rationale (design-vocabulary, three converging reasons):** (1) **the design spec's own method
+  name is `set_owner`** (§4.3: *"reassign ANY owner (set_scope/**set_owner**/delete across all
+  rows)"*) — a keep's owner IS its `keeper` field, so the spec-faithful keep-flavoured spelling of
+  `set_owner` is `set_keeper` (the prose word "reassign" describes what it does; the METHOD name in
+  the spec is `set_*`). (2) **Keep-verb-family consistency (CLAUDE.md naming law).** The family is
+  `create-keep`/`delete-keep` (`<verb>-keep`), `add-household`/`remove-household` (`<verb>-household`),
+  `set-rank` (`set-<field>`). `set-keeper` slots into the `set-<field>` pattern (`set-rank` sets the
+  edge's rank field; `set-keeper` sets the keep's keeper/owner field) — THREE patterns. `reassign-keeper`
+  would open a FOURTH (`reassign-<field>`) pattern for one verb. (3) `keep.keeper` is a FIELD;
+  `set-keeper` reads as "set the keeper field," least-surprise for an admin reading `--help` beside
+  `set-rank`.
+- **The lead's (a) gravity argument acknowledged and outweighed:** yes, an ownership transfer is
+  weightier than a rank tweak — but the spec already chose the `set_*` vocabulary for exactly this
+  (`set_owner`), and one-consistent-root (CLAUDE.md) beats gravity-signalling. The store-method name
+  I used casually in the FR-4 body (`reassign_keeper`) is SUPERSEDED by this ruling — the FR-4 body
+  references above are updated to `set_keeper`.
+- **Rider:** `set-keeper --keep <id> --new-keeper <email>` → `KeepStore.set_keeper(*, keep_id,
+  new_keeper_email)` → UPDATE `keep.keeper` to the resolved new-keeper principal; a ghost keep is
+  LOUD (`KeepNotFoundError`, D2 parity), a ghost new-keeper principal is LOUD (`KeepStoreError` "no
+  principal with email", the `_resolve_principal_id` idiom). Mutation-prove the UPDATE actually moves
+  `keep.keeper` (a set-keeper that no-matched must not read as success — the FR-3 silent-no-op class).
+
+**D2 — `delete-keep` / `delete_keep` on a GHOST keep → CONFIRMED LOUD (`KeepNotFoundError`).** Exactly
+FR-3's ruling class: a DESTRUCTIVE access-control verb on a nonexistent target is LOUD, never a silent
+no-op (a typo'd `--keep` must not read as *"deleted"* when nothing was deleted — the false-success
+class FR-3 named the most dangerous in an authz substrate). FR-4 was silent on delete-keep's ghost
+behaviour; this fills it, consistent with `remove-household`'s ghost-keep loudness (FR-3 reading (a))
+and the ∀-keep-consuming-verb *"a nonexistent `--keep` is LOUD"* invariant FR-3 pinned. There is NO
+member-dimension idempotency wrinkle here (delete-keep has no `--member`): a keep either exists (delete
+it) or does not (loud). **Rider:** pin the ghost-keep-loud + no-partial-state; `delete-keep` on a REAL
+keep DELETEs the keep row (its `member_of` edges auto-cascade — the settled probe; no explicit member_of
+DELETE). ⚠ **63/64 forward-boundary:** at 61 a keep holds no governed keep-scoped rows, so delete-keep
+cascades only keep + member_of; when 63/64 add `scope='keep:<id>'` governed rows, delete-keep MUST
+revisit whether it cascades or orphans them — a NAMED trigger for 63/64 (record-link cascade discipline,
+the same #402 class one layer out), not a 61 concern.
+
+**D3 — #131 keep-table readiness on the delete path → RULED (a), KEEP SLICE (not full `generate_ddl`).**
+Ground-truthed the readiness pattern this session (`principals.py` `_dispatch` / `_dispatch_keep`): the
+established idiom is **each dispatch branch readies EXACTLY the schema slices its verbs touch** —
+`_dispatch` readies `principal` + `principal_key`; `_dispatch_keep` readies `principal` + the keep slice
+(principal FIRST, for `member_of`'s ENFORCED `IN principal`). The `delete` verb now READS the `keep`
+table (the refuse-while-keeping count), so its branch must ready the keep slice too — option (a).
+- **Slice, NOT full `generate_ddl`:** the lore-adm CLI is CREDS-FREE and resolves ONLY the surreal
+  block (the packet-49 ruling) — it has **no embedder `dim`**, and `generate_ddl(dim=…)` both requires
+  one and would build the `chunk`/`memory` HNSW indexes + analyzers an admin CLI has no business
+  touching. The established pattern is slices; ready `generate_keep_ddl` (keep + member_of), principal
+  FIRST (the `_dispatch_keep` ordering). Option (b) (tolerate an absent keep table as 0 keeps) is
+  REJECTED: it makes the admin CLI operate against an un-migrated schema and leans on the unprobed
+  "SELECT from an undeclared table returns [] not raises" behaviour — fragile, and it swallows the
+  "this store predates packet 60" signal. **The admin CLI should run against a migrated schema.**
+- **⚠ THE #131 RIDER (the load-bearing part — a virgin-DB fixture CANNOT see this):** every test mints
+  a virgin DB with the FULL schema (`generate_ddl`), so a *"delete reads an unreadied keep table"*
+  failure is INVISIBLE to the ordinary suite — this is #131/#107 test-env-fiction verbatim. Pin it with
+  a **DIRTY-STORE fixture: ready ONLY the pre-60 slices (`principal` + `principal_key`), then run
+  `delete`** — and assert (i) a keeper-principal is refused (not an undeclared-table crash), (ii) a
+  member-only principal deletes clean. This is the ONLY fixture shape that reproduces the hazard; a
+  full-schema fixture proves nothing about it. (Optional, cheap, settles the ambiguity: probe whether a
+  SELECT from an undeclared table raises or returns [] — but (a) is correct regardless, so it is not a
+  gate.)
+- **Placement/coupling (implementation detail, lead's call):** ready the keep slice at the `_dispatch`
+  principal branch (consistent with the branch-readies pattern — mild: every principal verb builds a
+  KeepStore + one idempotent `ensure_ready`) OR only on the `delete` path (precise, but a handler doing
+  its own readiness breaks the dispatch-readies/handler-runs separation). I recommend the branch-level
+  readiness (consistency); either satisfies the ruling. The DESIGN ruling is: option (a), keep slice,
+  principal-first, #131 dirty-store pin.
+
+**Escalation/authority:** all three are design-vocabulary / readiness rulings within my delegated
+authority (the lead explicitly routed them here). D1 is the one countermand (verb name); D2/D3 confirm
+the lead's leans. None is a MAJOR scope/design pivot. The operator's clean countermand on D1 (if they
+prefer `reassign-keeper`'s gravity over `set-keeper`'s consistency) is a single verb-root flip.
