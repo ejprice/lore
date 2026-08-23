@@ -595,11 +595,18 @@ subclass `SurrealStoreError`, so the connection/contention re-raise must precede
 KeepStore ordering). The `DomainError` message carries WHAT was rejected (the context).
 
 **RIDER (and pin it like this):**
-- **Coverage-as-checked-variable (reach law):** enumerate EVERY write path in all THREE stores that
-  wraps (Principal: create/set_subject/set_status; Keep: create_keep/add_household/remove_household/
-  set_rank; Audit: append) and pin EACH routes through the shared helper. A store wrapping locally is
-  a private copy (ROUTING-IS-NOT-SHARING) — the FR-2 Q2 "a wrap on create but not add-household is a
-  partial fix" rule, now ∀-over-three-stores.
+- **Coverage-as-checked-variable (reach law) — DERIVE the wrap set by property, do NOT hand-list it.**
+  The wrapping set is exactly *"every store write-path that today catches `SurrealStoreError` and
+  re-raises a domain error"* — DERIVE it, then pin EACH derived member routes through the shared
+  helper. ⚠ **My earlier illustrative enumeration in this rider was itself a stale HAND-LIST** (it
+  named `PrincipalStore.set_status`, which does NOT wrap at HEAD — FR-2 Q2 wraps `create`/`set_subject`
+  only) — the exact reach-law defect this rider warns against, in the rider. The 61a-w2 contract
+  DERIVED the real set = **8 paths**: `PrincipalStore.{create, set_subject}` +
+  `KeepStore.{create_keep, add_household_member, remove_household_member, set_rank, set_keeper,
+  delete_keep}` (+ `AuditStore.append` becomes the 9th, born wrapped). Pin the derived set; a store
+  wrapping locally is a private copy (ROUTING-IS-NOT-SHARING) — the FR-2 Q2 *"a wrap on create but not
+  add-household is a partial fix"* rule, now ∀-over-the-derived-set. See the D1 addendum below for the
+  DRY-not-expansion boundary.
 - **Prove sharing by MUTATION:** change the classification inside `wrap_engine_rejection` once (e.g.
   make it also swallow a new error class) → PrincipalStore + KeepStore + AuditStore pins ALL move. A
   store that stays green is not routed through it.
@@ -1044,3 +1051,293 @@ table (the refuse-while-keeping count), so its branch must ready the keep slice 
 authority (the lead explicitly routed them here). D1 is the one countermand (verb name); D2/D3 confirm
 the lead's leans. None is a MAJOR scope/design pivot. The operator's clean countermand on D1 (if they
 prefer `reassign-keeper`'s gravity over `set-keeper`'s consistency) is a single verb-root flip.
+
+### Fork I addendum (2026-08-23) — the two 61a-w2 wrap-extraction design points (D1 · D2)
+
+Ruling on `lead-61`'s `lore_comms #6002` (thread `q:61a-w2-seam` · `REPORT-contract-61a-w2.md`). Both
+guide the builder; neither blocks the (binding-agnostic) adversary already running.
+
+**D1 — SCOPE of the wrap set → CONFIRMED: #400 is DRY-NOT-EXPANSION (behaviour-preserving), over the
+DERIVED 8-path set; the currently-unwrapped paths are a SEPARATE ledgered consumer-law question.**
+- The contract author DERIVED the actual wrapping set by property (not a hand-list) =
+  `PrincipalStore.{create, set_subject}` + `KeepStore.{create_keep, add_household_member,
+  remove_household_member, set_rank, set_keeper, delete_keep}` = **8 paths** (+ `AuditStore.append`,
+  born wrapped = the 9th). That derivation is correct and is the method Fork I's own rider MANDATED —
+  and it caught that my illustrative prose (`set_status`) was a stale hand-list (set_status does NOT
+  wrap at HEAD; FR-2 Q2 = create/set_subject only). **The catch is the reach law working exactly as
+  written, on this very doc — I've corrected the rider above.** Good catch; derive-by-property wins,
+  every time, over a hand-list (including mine).
+- **#400 = DRY the EXISTING wraps, byte-behaviour-preserving.** Extracting the shared seam must NOT
+  add wraps to the currently-unwrapped paths (`set_status`, `set_expires`, `delete`) — that is a
+  BEHAVIOUR CHANGE (coverage expansion), a DIFFERENT concern, and it would muddy the mutation proof
+  (the "all callers move" proof needs a FIXED caller set; adding callers mid-refactor breaks the clean
+  before/after). One-concern-per-commit: DRY now, coverage later.
+- **The unwrapped paths are a SEPARATE potential FR-2-Q2 consumer-law gap → LEDGER with a trigger, NOT
+  in w2.** I do NOT rule them wrap-or-stay now, because it needs a REACHABILITY analysis, not a
+  reflex: a path is a real gap only if it has a REACHABLE engine rejection with a domain meaning that
+  leaks RAW to the caller (e.g. `set_status` with an out-of-domain status would hit the closed-domain
+  ASSERT and leak `SurrealStoreError` — UNLESS the lore-adm CLI's argparse `choices=` makes a bogus
+  status unreachable, in which case there is no raw-leak path and it is unwrapped BY DESIGN). That
+  per-path reachability check is the separate item's job. **Recommend the lead file it** (`lore_findings`,
+  FR-2-Q2 consumer-law completeness sweep of the currently-unwrapped principal-store write paths),
+  **trigger:** *the moment any unwrapped path is shown to leak a raw `SurrealStoreError` to a consumer,
+  OR a governed-tool (63/64) consumes one of these verbs and needs the clean domain error.* Behaviour-
+  preserving DRY (w2) does not wait on it.
+
+**D2 — the SEAM SHAPE under lorerunes stdlib-purity → RULED (a): a TWO-LAYER seam. Confirm the lead's
+lean; reject (b).**
+- **Layer 1 (lorerunes, stdlib-only) — the generic control-flow POLICY.** A helper (contextmanager)
+  parameterised over exception CLASSES it receives as arguments — it never imports a surreal type, it
+  just applies the classify-and-reclassify control flow over `BaseException` subclasses passed in.
+  Shape:
+  ```
+  @contextmanager
+  def reclassify(*, passthrough: tuple[type[BaseException], ...],
+                 catch: tuple[type[BaseException], ...],
+                 make_error: Callable[[], BaseException]):
+      try: yield
+      except passthrough: raise                      # ⚠ FIRST — passthrough SUBCLASSES catch
+      except catch as error: raise make_error() from error
+  ```
+  This is chartered `lorerunes` content (its `__init__` names *"error classification"* explicitly) and
+  is a POLICY helper, not an entry point. The `passthrough`-FIRST ordering is the load-bearing
+  correctness FR-2 Q2 established (`SurrealConnectionError`/`TxnContentionExhaustedError` SUBCLASS
+  `SurrealStoreError`, so they must be re-raised before the catch translates).
+- **Layer 2 (loremaster) — the ONE surreal taxonomy binding.** `loremaster.store._txn.wrap_store_rejection(domain_error, context)`
+  (the address the ref build already used) binds the surreal taxonomy ONCE —
+  `passthrough=(SurrealConnectionError, TxnContentionExhaustedError)`, `catch=(SurrealStoreError,)`,
+  `make_error=lambda: domain_error(context)` — and delegates the control flow to `lorerunes.reclassify`.
+  All 9 store write-paths call `wrap_store_rejection`. The taxonomy lives in exactly one place;
+  `_txn` already owns these three exception types, so it is their natural home.
+- **RULE the target address so the builder + the mutation pin have ONE:** stores call
+  `loremaster.store._txn.wrap_store_rejection(<DomainError>, <context>)`; it delegates to
+  `lorerunes.reclassify`. (Contextmanager over a decorator: the wrapped body is an `await
+  execute_transaction(...)` / `await self._query(...)`, so a `with` block reads cleaner than
+  decorating each method; either is acceptable — the builder rules the ergonomic form, the ADDRESSES
+  are ruled.)
+- **REJECT (b) (stores call `lorerunes` directly, each passing the taxonomy):** it reintroduces the
+  #400 defect ONE LEVEL DOWN. Each store would hand-write `passthrough=(SurrealConnectionError,
+  TxnContentionExhaustedError), catch=(SurrealStoreError,)` at its call site — the taxonomy tuple
+  becomes a per-store CLONE, and a taxonomy change (a new pass-through class) reaches one store and not
+  the others. That is ROUTING-IS-NOT-SHARING verbatim: all stores call the shared control-flow while
+  hand-rolling the classification DECISION. The whole point of #400 is that the classification is ONE
+  thing; (b) keeps the control-flow DRY but re-clones the classification.
+- **TWO-LAYER mutation proof (the prove-sharing rider, now spanning both layers):** mutating EITHER
+  layer must move all 9 callers' pins — (i) change `lorerunes.reclassify`'s control flow (e.g. drop
+  the `from error` chain) → every caller's chain-preservation pin reddens; (ii) change the
+  `_txn.wrap_store_rejection` taxonomy binding (e.g. remove `TxnContentionExhaustedError` from
+  `passthrough`) → every caller's contention-passes-through pin reddens. A caller that stays green
+  under EITHER mutation is a private copy. This is the ROUTING-IS-NOT-SHARING two-address test: one
+  address for control-flow (lorerunes), one for taxonomy (loremaster `_txn`), both shared.
+
+**Escalation/authority:** both are Fork-I design-fill / DRY-placement rulings within my delegated
+authority (the lead routed them here). D1 confirms + fixes my own stale hand-list; D2 confirms the
+lead's (a) with the two-layer addresses named. Neither is a MAJOR scope/design pivot. Register the new
+`lorerunes.reclassify` + `_txn.wrap_store_rejection` symbols per `./scripts/registration_sites.py`
+(not a hand-list — the lesson D1 just re-taught).
+
+### Fork I addendum-2 (2026-08-23) — the 61a-w2 reach-scope fork (the guard property + the clone scope)
+
+Ruling on `lead-61`'s `lore_comms #6005` (thread `q:61a-w2-reach-scope` · `REPORT-adversary-61a-w2.md`).
+The adversary's CORE finding is CORRECT and valuable: within the ruled Principal+Keep scope the contract
+is decisively sufficient (8 wrong builds caught incl. ROUTING-IS-NOT-SHARING), and the SOLE gap is that
+the coverage guard's cross-store reach is a **2-store HAND-LIST** (`_CASES={keep,principal}`) — the
+reach-law defeat. That is a real, non-negotiable fix.
+
+**⚠ BUT I VERIFIED THE NAMED CLONE SITES (read each this session) AND THE ADVERSARY LUMPED THREE
+DISTINCT IDIOMS under "the identical #400 wrap idiom." This changes both items.** `except
+SurrealStoreError` is a SURFACE shared by at least three DIFFERENT policies:
+- **(i) the #400 WRAP idiom — a PURE TRANSLATE:** the handler's SOLE body is `raise
+  <DomainError>(...) from error` (no follow-up read, no branch). Sites: the in-scope
+  `PrincipalStore.{create,set_subject}` + `KeepStore.{6}`, AND **`principal_keys.py:~418` →
+  `PrincipalKeyStoreError`** (verbatim, comment copy-pasted — a GENUINE out-of-scope clone).
+- **(ii) the CAS-RE-VALIDATION idiom — NOT a wrap:** `tasks.py:~1678/~2006` and `findings.py:~1088`
+  (and the belt-and-braces `findings.py:~1033`) catch the rolled-back txn, then **do a follow-up read
+  (`_select_row`/`_select_row_by_id`) + `_validate_transition`** to raise a STATE-SPECIFIC error naming
+  the now-current status and the refused target (the audit-#1 lost-race false-success guard). **Routing
+  these through `wrap_store_rejection` would DELETE the re-read + re-validation — a REGRESSION** (the
+  removed-behavior-inventory law; the lost-race state-naming vanishes).
+- **(iii) the FENCE-VERDICT idiom — NOT a wrap:** `floor_calibration/store.py:~417` catches, then
+  `if fence is None: raise` else `verdict = await self._fence_verdict(error, fence)` — a BRANCH +
+  follow-up, not a translate. Routing it through the wrap seam would delete the fence-verdict path.
+- (For completeness, also on this surface but never in question: `briefs.py` idempotent-re-ack /
+  version-not-released SIGNAL detection; `index/indexer.py` degradation-LOG-and-continue.)
+
+**So the adversary's "6 wrap clones" is really: 1 true out-of-scope wrap clone (`principal_keys`) + a
+DIFFERENT idiom (CAS re-validation) cloned in tasks/findings + a fence idiom in floor_calibration.**
+The clone CLASS #400 governs is smaller than reported; two of the "clones" must NOT be extracted.
+
+### Item 1 — the coverage guard property → RULED (non-negotiable), keyed on the PURE-TRANSLATE SHAPE.
+
+The guard must be PROPERTY-DERIVED (allowlist-the-safe), AST-walking EVERY loremaster module — but keyed
+on the **wrap idiom's STRUCTURE, not the `except SurrealStoreError` surface**, or it would demand
+breaking the CAS/fence idioms (item (ii)/(iii)). The property:
+> **An `except SurrealStoreError as <e>:` clause whose body is EXACTLY a single `raise
+> <DomainError-subclass>(...) from <e>` (a pure translate) MUST NOT appear in any loremaster module
+> outside `loremaster.store._txn.wrap_store_rejection`.** Every such site routes through the shared
+> seam; the escape hatch is an EVIDENCE-BACKED allowlist (empty today — post-extraction the pure-
+> translate `except` shape is replaced by `with wrap_store_rejection(...)` everywhere, so it should
+> occur NOWHERE).
+- **This discriminates correctly by construction:** the pure-translate shape matches the wrap clones
+  (Principal/Key/Keep) and a future new-store clone; it does NOT match the CAS idiom (its body has a
+  read + `_validate_transition`), the fence idiom (a branch), the signal idiom, or the log idiom — so
+  the guard never falsely demands breaking them, and no hand-list of "which stores are exempt" is
+  needed (the SHAPE exempts them).
+- **Threat model (state it IN the guard — a gate needs a threat model):** this catches the HONEST
+  engineer who COPY-PASTES the wrap idiom verbatim (exactly how `principal_keys` cloned it — "comment
+  copy-pasted"). It is NOT a boundary against a deliberate evader who adds a no-op statement to dodge
+  the shape match — that is out of scope by construction, ledgered not paid for.
+- Reds at HEAD (the un-extracted pure-translate clones exist), green post-extraction (all replaced by
+  `with`), reds a future pure-translate clone. Mutation-prove: reintroduce a bare pure-translate
+  `except SurrealStoreError → raise DomainError from e` in any store → the guard reds.
+
+### Item 2 — the scope fork → RULED Option B′ (a corrected B): route the ONE true clone now, ledger the CAS idiom separately. NOT escalated.
+
+Neither of the lead's framed options survives the idiom correction: Option A ("extract all 6") would
+route the CAS/fence idioms through the wrap seam (deleting behaviour — a regression); Option B ("keep
+scope + allowlist the 4 deferred clones") mislabels 3 non-clones as deferred wrap clones (a stale/wrong
+ledger entry) and defers `principal_keys` — a TRUE clone one `with`-block away from the seam being built
+(a can-kick). **RULE B′:**
+- **Route the ONE true out-of-scope wrap clone — `principal_keys` — through `_txn.wrap_store_rejection`
+  in w2, alongside Principal+Keep.** It is the IDENTICAL idiom, verbatim, in the SIBLING 48/49
+  substrate store (principal/principal_key are one family); extracting it is one `with` block and it
+  COMPLETES the wrap-clone class for the substrate stores (Principal+PrincipalKey+Keep now, Audit
+  born-wrapped in w4 = the whole `record`-substrate family). This is **NOT a MAJOR scope expansion**
+  (one site, same idiom, sibling store — it does NOT reach the 63/64 ledger write paths or any
+  different idiom), so it is ruled within my authority, not escalated. Don't-kick-the-can: a trivial
+  true clone the seam is being built for anyway.
+- **Do NOT touch tasks / findings / floor_calibration** — they are DIFFERENT idioms (CAS
+  re-validation, fence verdict), not wrap clones; the shape-keyed guard correctly does not flag them,
+  so no allowlist entry is needed for them (they were never in the guarded class).
+- **Ledger the CAS-RE-VALIDATION idiom's OWN duplication as a SEPARATE DRY finding** (it is genuinely
+  cloned across `tasks.py`×2 + `findings.py`×1–2 — a "lost-CAS → re-read fresh → `_validate_transition`
+  → raise a state-named lost-race error" POLICY). It is a real second DRY candidate but a DIFFERENT
+  policy from #400, and **63/64 rework the tasks/findings write paths anyway** (the lead's own note) —
+  so the NAMED TRIGGER is *the 63/64 governed-ledger retrofit* (consider extracting a shared
+  `revalidate_lost_cas` seam THEN, when those paths are already open), or sooner if a 3rd CAS clone
+  appears. Recommend the lead file it (`lore_findings`, category `design`/DRY, area
+  `loremaster.tasks + loremaster.findings CAS re-validation`). This is the standing-law "pin the bound
+  with a named trigger" form — applied to the RIGHT class.
+
+**Net:** w2 routes Principal + PrincipalKey + Keep through the two-layer seam (Audit born-wrapped, w4);
+the guard is property-derived on the pure-translate shape (kills the wrap-clone class + reds any future
+clone); the CAS/fence idioms are correctly untouched and the CAS-duplication is ledgered to its proper
+63/64 home. No scope expansion into 63/64 territory, the wrap-clone class is DEAD, and no non-clone is
+mislabelled. **Escalation:** none — B′ preserves scope (the one added site is same-idiom sibling
+substrate, not major); the operator's clean countermand, if any, is "route the CAS idiom now too"
+(Option A-flavoured), which I advise AGAINST (regression risk + 63/64 will rework those paths).
+
+**Contract revision needed (builder held):** (1) replace the 2-store `_CASES` hand-list with the
+shape-derived guard (item 1); (2) add `principal_keys` to the routed set (item 2); (3) the
+mutation-sharing pin now spans Principal+PrincipalKey+Keep (all move when either seam layer mutates);
+(4) NOTHING for tasks/findings/floor beyond the ledgered follow-up. Then re-grade.
+
+### Fork I addendum-3 (2026-08-23) — the 10th clone: route `transitive_blockers` (RULE B)
+
+> ⚠ **SUPERSEDED by addendum-4 (2026-08-23).** This section's conclusion — *route
+> `transitive_blockers`, 10 total* — is REVERSED. Ground truth: `transitive_blockers` has NO
+> passthrough-first clause, so it deliberately wraps TRANSPORT faults (a documented behaviour); routing
+> it would CHANGE that contract — my "zero-regression" here was an unverified assumption. The routed set
+> is **9**, `transitive_blockers` is PRESERVED, and the shape-guard is tightened to the FULL #400 idiom.
+> Read addendum-4 for the current ruling. This section is kept for the reasoning trail (why the loose
+> shape-guard first flagged it) — its conclusion does not bind.
+
+Ruling on `lore_comms #6008` (thread `q:61a-w2-reach-scope`). The property-derived SHAPE guard (item 1
+of addendum-2) found a **10th pure-translate clone that BOTH the adversary's hand-list AND my own
+named-site read in addendum-2 MISSED**: `tasks.py::transitive_blockers` — a READ-path traversal-rejection
+wrap whose `except SurrealStoreError as error:` handler's SOLE body is `raise TaskLedgerError(...) from
+error` (verified this session). It is a genuine #400 wrap clone; it is correctly DISTINCT from the CAS
+re-validation sites (`tasks.py:1678/2006`) the shape guard already excludes (those do a follow-up read).
+
+**⚠ This FALSIFIES my addendum-2 premise "tasks has NO pure-translate wrap (only CAS/fence)."** It was
+true of the three sites I READ (1678/2006/1088) and FALSE of the one I did not (transitive_blockers). And
+the correction was made by MY OWN RULED INSTRUMENT: the shape guard is the property-derived detector, my
+addendum-2 site-classification was the fallible hand-list — this is the SECOND time in this fork the
+property beat the hand-read (D1 caught my stale `set_status`; this caught the missed `transitive_blockers`).
+The lesson is exactly the one this fork keeps teaching: **derive by property, do not trust a read.** The
+scope boundary is the SHAPE (a pure-translate wrap), never the store FAMILY — my "record-substrate family"
+framing in addendum-2 was a proxy that under-counted; the shape is the property.
+
+**RULING → B: ROUTE `transitive_blockers` now, through `_txn.wrap_store_rejection`.** (Confirms the lead's
+lean; the contract author's A is rejected.)
+- **A (allowlist it as deferred) reintroduces the reach-law defeat this fork exists to kill.** The whole
+  virtue of the item-1 shape guard is being ALLOWLIST-FREE — the shape classifies correctly, so no
+  hand-list is needed. A 1-entry allowlist is a hand-list creeping back in, and it would NOT be
+  evidence-backed (the deny-by-default rule requires a live-proven reason to exempt): transitive_blockers
+  is a pure-translate wrap identical in policy to the other 9, with NO 63/64 reason to stay separate.
+  Deferring it "same as the CAS idiom (#407)" re-commits the addendum-2 LUMPING error in reverse — it is
+  NOT the CAS idiom (that does a re-read; this is a pure translate), so it does not belong on #407's
+  63/64 trigger.
+- **B is zero-regression + completes the class.** It is pure-translate, so `with
+  wrap_store_rejection(TaskLedgerError, "the upstream blocker walk for task … was REJECTED …")` preserves
+  the exact translate byte-for-byte. One method, one `with` block. The routed set becomes the full
+  **10 pure-translate wraps** — `PrincipalStore{create,set_subject}` (2) + `PrincipalKeyStore.mint` (1) +
+  `KeepStore{create_keep,add_household_member,remove_household_member,set_rank,set_keeper,delete_keep}` (6)
+  + `TaskLedger.transitive_blockers` (1) — with `AuditStore.append` born-wrapped (w4). The guard's
+  allowlist stays EMPTY; the pure-translate `except` shape occurs NOWHERE outside the seam.
+- **No 63/64 conflict.** transitive_blockers' engine-rejection WRAP is orthogonal to 63/64's owner/scope
+  read-filter work (63/64 adds scoped visibility to governed-ROW reads; this is a blocker-graph traversal
+  whose store-rejection translate 63/64 would build ON, not rework). So routing now creates no pre-touch.
+
+**Unchanged:** the CAS re-validation idiom (tasks 1678/2006 + findings 1088/1033) remains a SEPARATE DRY
+finding (#407) with the 63/64 trigger — transitive_blockers is NOT part of it. **Escalation:** none —
+routing one orthogonal read-method's wrap is not a MAJOR expansion (same non-escalation logic as
+principal_keys), and it is REQUIRED to honour item-1's allowlist-free property. **Contract revision:** add
+`transitive_blockers` to the routed set (10 total); the mutation-sharing pin spans all 10; the guard stays
+allowlist-free (empty). Then re-grade.
+
+### Fork I addendum-4 (2026-08-23) — CORRECTION: preserve `transitive_blockers`, tighten the guard to the FULL #400 idiom (routed set = 9)
+
+Ruling on `lore_comms #6011` (thread `q:61a-w2-reach-scope`), which GROUND-TRUTHED and FALSIFIED
+addendum-3's "route it, zero-regression." I verified it independently this session (`tasks.py:2495-2513`
++ the contrast with `keeps.create_keep`): **`transitive_blockers` has ONLY `except SurrealStoreError as
+error: raise TaskLedgerError(...) from error` — NO passthrough-first `except (SurrealConnectionError,
+TxnContentionExhaustedError): raise` clause.** The nine true #400 clones ALL have the passthrough-first.
+So transitive_blockers DELIBERATELY wraps transport/contention faults (both subclass `SurrealStoreError`)
+into a uniform "retry" `TaskLedgerError` — DOCUMENTED in its `Raises:` + the handler comment. **Routing it
+through `wrap_store_rejection` (which re-raises transport/contention FIRST) would make transport
+PROPAGATE instead of wrapping — a CHANGE to a documented contract + the served blockers-error surface.**
+It shares only the TRANSLATE LINE with #400, not the #400 POLICY (transport-propagate-THEN-translate).
+
+**RULING → PRESERVE + REFINE (confirm the lead's recommendation; reject route-and-fix):**
+- **PRESERVE `transitive_blockers`'s documented wrap-everything behaviour — do NOT route it.** Routed
+  set returns to **9** (`PrincipalStore{create,set_subject}` + `PrincipalKeyStore.mint` +
+  `KeepStore{6}`; `AuditStore.append` born-wrapped in w4).
+- **REFINE the item-1 shape-guard to key on the FULL #400 idiom, not the translate line:** a
+  `try` whose handlers include a passthrough-first re-raise of BOTH `SurrealConnectionError` AND
+  `TxnContentionExhaustedError` PRECEDING a sole-body `except SurrealStoreError as e: raise <Domain>(...)
+  from e`. Still property-derived (a structural handler-GROUP pattern over all loremaster modules, no
+  hand-list); allowlist STILL EMPTY. This correctly EXCLUDES `transitive_blockers` BY SHAPE (it has no
+  passthrough-first) and reds a future FULL-#400 clone. Post-extraction the full-idiom structure occurs
+  nowhere outside the seam.
+- **LEDGER `transitive_blockers`'s transport-wrap-everything as a SEPARATE transport-consistency
+  question** (finding, area `loremaster.tasks.transitive_blockers`): is wrapping `SurrealConnectionError`
+  into a domain `TaskLedgerError` a latent bug (a transport fault the shared driver already exhausted,
+  surfaced as "retry" rather than propagated like every other path) OR a documented deliberate choice
+  for a read that cannot serve a partial answer? NOT #400's call, NOT this wave's — trigger: a
+  transport-fault-handling consistency pass, or the 63/64 tasks rework. Recommend the lead file it.
+
+**Route-and-fix (the ALTERNATIVE) is REJECTED and would need the operator.** Making transitive_blockers
+propagate transport for consistency CHANGES a documented contract + a served surface — a behaviour
+change, not a DRY refactor, so per my escalation trigger it would go to the operator. I do NOT pick it:
+preserve+refine is behaviour-safe and makes the guard correctly keyed on the actual #400 policy. **So
+nothing is escalated.**
+
+**⚠ THE META-LESSON, OWNED — this is the THIRD instrument-correction in this one fork, and it landed on
+MY OWN guard:** (1) D1 caught my stale `set_status` prose hand-list; (2) addendum-3 caught the
+`transitive_blockers` site my named-site read missed; (3) NOW the lead's ground-truth caught my
+SHAPE-GUARD being keyed on the TRANSLATE LINE — a SUBSTRING of the full #400 idiom — and defeated by a
+site carrying that substring under a DIFFERENT policy (wrap-everything). **This is CLAUDE.md's instrument-
+lesson table exactly** (*"keyed on X, defeated by a substring of X"*), now on the guard I myself ruled as
+the fix. Two compounding errors of mine: I keyed the guard on a fragment of the idiom rather than the
+whole policy, AND I asserted "zero-regression / byte-identical" for routing it WITHOUT verifying the
+transport-fault path (the passthrough-first absence) — an assume-don't-verify claim the lead correctly
+refused to take on faith and ground-truthed. **The fix is the same each time: key the property on the
+FULL policy (the complete passthrough-first+translate structure = the safe/complete set), never a
+recognizable fragment of it; and verify a "no-behaviour-change" claim against the ACTUAL handler, never
+assert it from the happy-path line.** The lead's discipline — *a subagent's "zero-regression" is a
+claim, not a sign-off; ground-truth it* — is why this did not ship.
+
+**Contract revision (builder still held):** routed set = 9 (drop `transitive_blockers`); the shape-guard
+keys on the FULL passthrough-first+translate idiom (still allowlist-free, empty); the mutation-sharing
+pin spans the 9; `transitive_blockers` untouched + its transport-wrap ledgered separately. Then re-grade.
