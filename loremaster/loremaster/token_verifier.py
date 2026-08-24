@@ -167,15 +167,24 @@ def agent_of(access_token: AccessToken) -> str | None:
     evolve (sidecar E3: "expose it via ONE typed accessor identity.agent -> str | None, not
     scattered dict lookups").
 
-    FAIL-CLOSED SEMANTICS (documented for packet 62): a missing or unresolvable binding
-    returns ``None`` — the SAME value as an explicitly-unbound identity. So an agent-SCOPED
-    operation in packet 62 that requires a bound agent must treat ``None`` as DENY (no
-    agent → no agent authority), never as "any agent". In THIS packet (39) nothing binds an
-    agent, so this always returns ``None`` — the seam exists so packet 62 is an EXTENSION,
-    not a rewrite.
+    ⚠ UNDER THE PACKET-62 CAPABILITY MODEL, THIS CORRECTLY STAYS ``None`` — IT IS NOT
+    "FILLED" (W2.4 / SF-3). The HIGH-verified fact — all subagents share ONE transport
+    token (the PRINCIPAL's) — means the agent is NEVER carried in the transport token; the
+    per-agent capability arrives per-CALL as a tool argument, not a token claim. So the
+    real per-call agent resolver is :meth:`loremaster.agents.AgentRegistry.verify_capability`
+    (reached via :func:`loremaster.stamp_owner`), which verifies the presented capability
+    against the live agent row and the ``(principal, agent)`` binding. ``agent_of`` is NOT
+    that resolver and must never be turned into one: do NOT stuff an agent into the token.
+
+    FAIL-CLOSED SEMANTICS: a missing or unresolvable binding returns ``None`` — the SAME
+    value as an explicitly-unbound identity. An agent-SCOPED operation that requires a bound
+    agent treats ``None`` as DENY (no agent → no agent authority), never as "any agent" —
+    which is exactly why a token-borne agent is always absent here and the authority comes
+    from the verified capability instead.
 
     Returns:
-        The bound agent identity string, or ``None`` when unbound / absent (fail-closed).
+        The bound agent identity string, or ``None`` when unbound / absent (fail-closed) —
+        which, under the capability model, is ALWAYS: the transport token carries no agent.
     """
     claims = access_token.claims
     if not claims:

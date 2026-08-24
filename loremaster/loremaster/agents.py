@@ -75,13 +75,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import secrets
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from fastmcp.server.auth import AccessToken
 from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster.index.records import sha512_hex
+from loremaster.principals import _SECRET_ENTROPY_BYTES
 from loremaster.render import render_attributed
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -94,7 +98,13 @@ from loremaster.store._txn import (
     run_query,
     signin_credentials,
 )
-from loremaster.store.surreal_schema import AGENT_TABLE, generate_agent_ddl
+from loremaster.store.surreal_schema import (
+    _PRINCIPAL_STATUS_ACTIVE,
+    AGENT_TABLE,
+    PRINCIPAL_TABLE,
+    generate_agent_ddl,
+)
+from lorerunes import parse_credential
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +197,14 @@ _COL_STATUS_SET_AT = "status_set_at"
 # ``status_set_at``. It turns an agent's silence into a self-set contract the
 # fleet renders as ``overdue`` (design §B.7).
 _COL_DECLARED_CADENCE = "declared_cadence"
+# packet 62 wave 2 (W2.2/W2.3): the anti-spoofing capability columns on the agent
+# row. ``owner_principal`` (the owns back-link, wave 1) is the binding target;
+# ``capability_hash`` stores ``sha512_hex(f"{name}:{secret}")`` (the raw secret is
+# NEVER persisted); ``capability_expires_at`` is the OPTIONAL enforced-when-set expiry
+# seam (SF-2/ESC-3). Named once so a rename is a single edit (the ``_COL_*`` idiom).
+_COL_OWNER_PRINCIPAL = "owner_principal"
+_COL_CAPABILITY_HASH = "capability_hash"
+_COL_CAPABILITY_EXPIRES_AT = "capability_expires_at"
 
 # The record-id table separator. (The signin credential keys moved to the ONE
 # shared ``store._txn.signin_credentials`` seam — #211/#102.)
@@ -220,6 +238,15 @@ _TOUCH_STATUS_SET_AT_PARAM = "touch_status_set_at"
 # ``model``/``task_id`` (register) and ``note`` (touch).
 _REG_DECLARED_CADENCE_PARAM = "reg_declared_cadence"
 _TOUCH_DECLARED_CADENCE_PARAM = "touch_declared_cadence"
+# packet 62 wave 2: the ``verify_capability`` lookup binds the presented credential's
+# digest as ``$h`` (NEVER interpolated — the injection surface, W2.2); the owner-link
+# dereference projects the owning principal's admission fields under explicit aliases
+# (store reference §2 — a NONE ``record<>`` link's ``.field`` reads back as ``None``
+# under an explicit projection, exactly the ownerless-deny signal).
+_CAPABILITY_HASH_LOOKUP_PARAM = "h"
+_OWNER_EMAIL_ALIAS = "owner_email"
+_OWNER_STATUS_ALIAS = "owner_status"
+_OWNER_EXPIRES_AT_ALIAS = "owner_expires_at"
 
 
 class Agent(BaseModel):
@@ -283,12 +310,21 @@ class AgentRegisterResult(BaseModel):
             register, or re-stamped on a re-register).
         re_registered: ``False`` on the FIRST register of a (session, name)
             pair; ``True`` on every subsequent idempotent re-register.
+        capability: The raw ``<name>:<secret>`` anti-spoofing capability credential —
+            returned EXACTLY ONCE, on a FIRST register (packet 62 W2.3), and ``None``
+            on every idempotent re-register (mint-once-on-create: a running agent
+            already holds its secret; re-register must not rotate it mid-session). The
+            store persists only ``sha512_hex(credential)``, never the raw secret, so
+            this value is the caller's ONLY chance to capture it. It lives on the
+            register RESULT, never on the fleet-visible :class:`Agent` value object
+            (§F3a — no rendered/logged surface may carry it).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     agent: Agent
     re_registered: bool
+    capability: str | None = None
 
 
 class AgentFleetWindow(BaseModel):
@@ -605,6 +641,7 @@ class AgentRegistry:
         spawned_by: str | None = None,
         task_id: str | None = None,
         cadence: str | None = None,
+        owner_principal_id: str | None = None,
     ) -> AgentRegisterResult:
         """Idempotently register an agent identity (design doc §1/§2).
 
@@ -631,9 +668,19 @@ class AgentRegistry:
             cadence: The agent's self-declared max gap between comms touches
                 (e.g. ``"≤20m"``), stored VERBATIM. Mutable on re-register
                 (overwritten when provided, kept when omitted).
+            owner_principal_id: The bare record id of the principal that owns this
+                agent (packet 62 R3.3), DERIVED SERVER-SIDE from the authenticated
+                transport credential by the caller (:func:`loremaster.stamp_owner`'s
+                register side) — NEVER a caller-facing display argument. Stamped onto
+                ``agent.owner_principal`` at CREATE only (the register-time owns edge,
+                Fork 3); ``None`` leaves the agent OWNERLESS (the pre-cutover local
+                fleet holds no credential — Fork 2), never a fabricated owner. A
+                re-register does NOT re-stamp it (mint-once-on-create; owner is set at
+                birth, and a running agent's owner is not rewritten mid-session).
 
         Returns:
-            The :class:`AgentRegisterResult` of this call.
+            The :class:`AgentRegisterResult` of this call — carrying the raw one-time
+            ``capability`` credential on a FIRST register, ``None`` on a re-register.
 
         Raises:
             RetiredAgentError: The row already exists and is retired.
@@ -645,6 +692,17 @@ class AgentRegistry:
         now = datetime.now(UTC)
 
         if existing_row is None:
+            # packet 62 W2.3 — MINT-ONCE-ON-CREATE. Mint a high-entropy secret (the
+            # SHARED pkt-49 entropy constant, never a re-declared width), form the
+            # ``<name>:<secret>`` wire credential, and store only its digest
+            # (``sha512_hex`` — the SHARED hash, never a hand-rolled hashlib clone; the
+            # raw secret is returned ONCE below and NEVER persisted). Atomic: the hash
+            # lands in the SAME CREATE CONTENT as the row. ``owner_principal`` is
+            # stamped from the server-derived id as a ``record<principal>`` link (bound
+            # as a ``RecordID`` — store reference §2, a bare id string does not coerce);
+            # a ``None`` owner leaves the agent ownerless (Fork 2), never fabricated.
+            secret = secrets.token_urlsafe(_SECRET_ENTROPY_BYTES)
+            capability = f"{name}:{secret}"
             content: dict[str, Any] = {
                 _COL_NAME: name,
                 _COL_SESSION: session,
@@ -656,6 +714,15 @@ class AgentRegistry:
                 _COL_CHECKPOINT: None,
                 _COL_LAST_NOTE: None,
                 _COL_DECLARED_CADENCE: cadence,
+                _COL_OWNER_PRINCIPAL: (
+                    RecordID(PRINCIPAL_TABLE, owner_principal_id)
+                    if owner_principal_id is not None
+                    else None
+                ),
+                _COL_CAPABILITY_HASH: sha512_hex(capability),
+                # SF-2: no clock TTL by default — the lifetime bound is the binding +
+                # no-cache revocation. The OPTIONAL expiry seam starts unset (never).
+                _COL_CAPABILITY_EXPIRES_AT: None,
                 _COL_REGISTERED_AT: now,
                 _COL_HEARTBEAT_AT: now,
                 # #304: birth of the ``active`` status IS a status set — stamp it,
@@ -672,7 +739,10 @@ class AgentRegistry:
                 raise AgentRegistryError(
                     f"agent {agent_id!r} vanished immediately after it was created"
                 )
-            return AgentRegisterResult(agent=self._row_to_agent(created), re_registered=False)
+            # Return the raw credential ONCE — the caller's only chance to capture it.
+            return AgentRegisterResult(
+                agent=self._row_to_agent(created), re_registered=False, capability=capability
+            )
 
         existing = self._row_to_agent(existing_row)
         if existing.status == STATUS_RETIRED:
@@ -793,6 +863,132 @@ class AgentRegistry:
             return None
         candidates = [self._row_to_agent(row) for row in rows]
         return max(candidates, key=lambda candidate: candidate.heartbeat_at)
+
+    # -- capability verification (packet 62 wave 2, the anti-spoofing seam) ---
+
+    async def verify_capability(  # noqa: PLR0911
+        self, presented: str, access_token: AccessToken
+    ) -> str | None:
+        """Verify a presented ``<name>:<secret>`` capability under a transport token.
+
+        THE anti-spoofing seam (design W2.2; also reached as ``resolve_agent`` via
+        :func:`loremaster.stamp_owner`). Mirrors :meth:`PrincipalKeyStore.verify`'s
+        discipline EXACTLY (the packet-49 precedent): NO CACHE — the live row is
+        re-checked on EVERY call, so revocation (retire / suspend / expire) beats any
+        residual window; ONE ``now`` (tz-aware UTC captured once); a UNIFORM ``None``
+        deny with NO oracle — the denial REASON is laundered into a DEBUG log (never
+        the raw credential, §F3a) and never reaches the caller.
+
+        On every call: parse via the SHARED :func:`lorerunes.parse_credential` (a
+        malformed credential is a uniform ``None`` before any DB step) → look up by
+        ``sha512_hex(presented)`` bound as ``$h`` (NEVER interpolated — the injection
+        surface) over the UNIQUE ``capability_hash`` index (uniform timing, no
+        name-existence oracle) → re-evaluate the FOUR admission conditions against the
+        single ``now`` (a single indexed SELECT returns all of them via the
+        ``owner_principal`` link dereference — the binding check is FREE, W2.2):
+
+            (1) ``capability_hash`` matches a live agent row (UNIQUE lookup);
+            (2) that agent is NOT ``retired`` (``agent.status``);
+            (3) THE BINDING — ``agent.owner_principal`` names the SAME principal as the
+                transport token (``owner_principal.email == access_token.subject``).
+                This is what makes a leaked capability useless to anyone but its owner
+                (W2-R2). A NONE owner (an ownerless agent) reads ``owner_email`` back as
+                ``None`` → matches NO principal → DENY: None is never a wildcard
+                (fail-closed);
+            (4) the OWNING principal is ``active`` + unexpired (transitive, via
+                ``owner_principal`` — the same ``status`` / ``expires_at`` admission the
+                token verifier applies), PLUS the OPTIONAL ``capability_expires_at`` seam
+                enforced ONLY when an operator has SET it (SF-2 / ESC-3: no clock TTL by
+                default; a set past instant → deny, re-checked every call — a present
+                field that is never read would be a decorative lie).
+
+        Args:
+            presented: The raw ``<name>:<secret>`` wire capability.
+            access_token: The verified transport token whose ``subject`` names the
+                principal the capability must be BOUND to (condition 3).
+
+        Returns:
+            The bare agent id the capability resolves to on success, or ``None`` on
+            ANY failure (uniform deny, no oracle).
+        """
+        now = datetime.now(UTC)
+        # ONE IMPLEMENTATION (W2.6): the SHARED wire-format parse (module attribute so
+        # the mutation pin can patch it). A malformed credential denies uniformly
+        # BEFORE any hash/DB step — no per-shape oracle.
+        if parse_credential(presented) is None:
+            return self._deny_capability("malformed-credential")
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_ID_KEY}, {_COL_STATUS}, {_COL_CAPABILITY_EXPIRES_AT}, "
+                f"{_COL_OWNER_PRINCIPAL}.email AS {_OWNER_EMAIL_ALIAS}, "
+                f"{_COL_OWNER_PRINCIPAL}.status AS {_OWNER_STATUS_ALIAS}, "
+                f"{_COL_OWNER_PRINCIPAL}.expires_at AS {_OWNER_EXPIRES_AT_ALIAS} "
+                f"FROM {AGENT_TABLE} WHERE {_COL_CAPABILITY_HASH} = ${_CAPABILITY_HASH_LOOKUP_PARAM}",
+                {_CAPABILITY_HASH_LOOKUP_PARAM: sha512_hex(presented)},
+            )
+        )
+        if not rows:
+            return self._deny_capability("no-such-capability")
+        row = rows[0]
+        # (2) the agent itself is not retired (no-cache revocation, W2-R3).
+        if row.get(_COL_STATUS) == STATUS_RETIRED:
+            return self._deny_capability("agent-retired")
+        # (3) THE BINDING (W2-R2): owner_principal == the transport token's principal.
+        # A NONE owner reads owner_email None (store §2) → matches no principal → DENY.
+        owner_email = row.get(_OWNER_EMAIL_ALIAS)
+        token_principal = access_token.subject
+        if not owner_email or not token_principal or str(owner_email) != str(token_principal):
+            return self._deny_capability("binding-mismatch")
+        # (4) the OWNING principal is active + unexpired (transitive via owner_principal).
+        if row.get(_OWNER_STATUS_ALIAS) != _PRINCIPAL_STATUS_ACTIVE:
+            return self._deny_capability("owner-inactive")
+        owner_expires_at = self._to_aware_utc(row.get(_OWNER_EXPIRES_AT_ALIAS))
+        if owner_expires_at is not None and owner_expires_at <= now:
+            return self._deny_capability("owner-expired")
+        # (4b, ESC-3) the OPTIONAL capability expiry — enforced only when SET.
+        capability_expires_at = self._to_aware_utc(row.get(_COL_CAPABILITY_EXPIRES_AT))
+        if capability_expires_at is not None and capability_expires_at <= now:
+            return self._deny_capability("capability-expired")
+        return self._bare_id(row.get(_ID_KEY))
+
+    async def owner_principal_of(self, agent_id: str) -> str | None:
+        """Return the bare record id of the principal that OWNS ``agent_id``, else None.
+
+        Used by :func:`loremaster.stamp_owner` to derive the ``owner_principal`` half of
+        a governed write's owner pair from the VERIFIED agent — the binding condition
+        (:meth:`verify_capability` cond. 3) has already proved this owning principal IS
+        the transport token's principal, so reading it off the verified row is exactly
+        "owner_principal from the token", expressed as the record id the PDP stamps.
+        ``None`` for an ownerless or unknown agent (fail-closed for the caller).
+
+        Args:
+            agent_id: The bare agent id (as returned by :meth:`verify_capability`).
+
+        Returns:
+            The owning principal's bare record id, or ``None`` if the agent is
+            ownerless or does not exist.
+        """
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_COL_OWNER_PRINCIPAL} FROM type::record('{AGENT_TABLE}', "
+                f"${_ROW_ID_PARAM})",
+                {_ROW_ID_PARAM: agent_id},
+            )
+        )
+        if not rows:
+            return None
+        owner = rows[0].get(_COL_OWNER_PRINCIPAL)
+        if owner is None:
+            return None
+        return self._bare_id(owner)
+
+    @staticmethod
+    def _deny_capability(reason: str) -> None:
+        """Log a LAUNDERED capability-denial reason (a fixed vocabulary token — NEVER
+        the raw credential, §F3a) and return ``None``. ``verify_capability``'s
+        ``return self._deny_capability(...)`` is the uniform, no-oracle deny (mirrors
+        :meth:`PrincipalKeyStore._deny`)."""
+        logger.debug("agent.capability.verify.denied", extra={"reason": reason})
 
     # -- heartbeat / status machine ------------------------------------------
 

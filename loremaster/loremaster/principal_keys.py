@@ -82,13 +82,21 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from surrealdb import AsyncSurreal
 
 # The shared predicates ``verify`` routes through (ONE IMPLEMENTATION — proven by the
-# mutation pins in ``test_principal_keys_store.py``, which monkeypatch these
-# MODULE-LEVEL names). Imported here — the house idiom (``from lorerunes import
-# is_blank`` in config.py/findings.py; ``from loremaster.index.records import
-# sha512_hex`` in store_read.py) — so they are attributes of THIS module for the patch
-# to reach. ``is_blank`` rejects an empty/whitespace credential; ``sha512_hex`` is the
-# stored-hash helper (NOT a hand-rolled ``hashlib.sha512(...).hexdigest()`` — that
-# clone is the packages / ONE-IMPLEMENTATION violation the DRY ledger forbids).
+# mutation pins in ``test_principal_keys_store.py`` and the packet-62 seam contract,
+# which monkeypatch these MODULE-LEVEL names). Imported here — the house idiom
+# (``from lorerunes import is_blank`` in config.py/findings.py; ``from
+# loremaster.index.records import sha512_hex`` in store_read.py) — so they are
+# attributes of THIS module for the patch to reach. ``is_blank`` is the shared
+# blankness predicate (pin 17a — verify's whole-credential blank check routes through
+# it, never a private re-implementation, §F5); ``parse_credential`` is the shared
+# ``<name>:<secret>`` wire-format parse (EXTRACTED to ``lorerunes`` in packet 62 W2.6
+# so this store AND ``AgentRegistry.verify_capability`` split a credential the SAME
+# way — a private inline parse would silently drift). The two guards OVERLAP on the
+# blank check (parse_credential also rejects blank) but pin DISTINCT properties: pin
+# 17a that the blank check is shared, the seam pin that the PARSE is shared — both
+# route through ONE lorerunes predicate. ``sha512_hex`` is the stored-hash helper (NOT
+# a hand-rolled ``hashlib.sha512(...).hexdigest()`` — that clone is the packages /
+# ONE-IMPLEMENTATION violation the DRY ledger forbids).
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.index.records import sha512_hex
 from loremaster.principals import Principal, PrincipalNotFoundError, PrincipalStore
@@ -109,7 +117,7 @@ from loremaster.store.surreal_schema import (
     PRINCIPAL_TABLE,
     generate_principal_key_ddl,
 )
-from lorerunes import is_blank
+from lorerunes import is_blank, parse_credential
 
 logger = logging.getLogger(__name__)
 
@@ -516,13 +524,19 @@ class PrincipalKeyStore:
             A :class:`KeyVerification` on success, else ``None``.
         """
         now = datetime.now(UTC)
+        # TWO shared guards, both routing through ONE lorerunes predicate each (ONE
+        # IMPLEMENTATION, referenced as module attributes so the mutation pins can patch
+        # them): the whole-credential blank check via the shared ``is_blank`` (pin 17a,
+        # §F5 — a private blank re-implementation is a #102-class clone), then the
+        # wire-format parse via the shared ``parse_credential`` (W2.6 seam pin — the
+        # SAME parse ``AgentRegistry.verify_capability`` uses, so a credential minted
+        # one way parses the other). They overlap on blankness by design; a ``None`` /
+        # blank is the uniform malformed deny (no per-shape oracle; the raw credential
+        # is never logged, §F3a).
         if is_blank(presented):
             return self._deny("blank-credential")
-        name, separator, secret = presented.partition(":")
-        if not separator:
-            return self._deny("malformed-no-colon")
-        if is_blank(name) or is_blank(secret):
-            return self._deny("malformed-blank-half")
+        if parse_credential(presented) is None:
+            return self._deny("malformed-credential")
 
         rows = self._as_rows(
             await self._query(

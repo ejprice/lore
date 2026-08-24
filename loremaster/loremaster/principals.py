@@ -30,6 +30,18 @@ transport id"*). It must NEVER be conflated with the other two:
    column NAMES across the two tables are a coincidence of English, not shared
    vocabulary — never wire ``principal.role``/``status`` to the ``agent`` tuples.
 
+⚠ RELATED, NOT CONFLATED (packet 62, I1/I2). The distinct-vocabulary law above is
+UNCHANGED, but as of packet 62 the two identity NODES are no longer *unrelated*: the
+``agent`` table carries an ``owner_principal`` OWNS back-link
+(``option<record<principal>>`` — a principal OWNS its agents; Fork 3), stamped
+server-side at register from the authenticated credential (R3.3), and the packet-62
+capability binding checks ``agent.owner_principal`` against the transport principal. So
+principal and agent are RELATED by that edge — but the edge links NODES; it does NOT
+merge the closed domains. ``principal.role``/``status`` and ``agent.role``/``status``
+keep their SEPARATE vocabularies (still never wired one to the other, per item 2); an
+ownerless agent is legal (Fork 2), and on principal-delete the link is DANGLE-tolerated
+(R3.2). Relating the nodes is not conflating the vocabularies.
+
 It rides the SAME store machinery :mod:`loremaster.findings` uses — one lazily-opened,
 signed-in WS connection, self-healed on a mid-life transport failure, reusing the
 shared transaction / error-classification seams in :mod:`loremaster.store._txn`

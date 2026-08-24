@@ -10658,6 +10658,29 @@ _REVIEWED_GOVERNED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# packet 62 wave 2 / Fork 4 (R4.1–R4.3) — the DERIVED-reach adjudication record. A
+# governed tool is either ROUTED through the owner-stamp seam (:func:`loremaster.stamp_owner`)
+# OR adjudicated here as PENDING that retrofit, with an owner + a NON-EMPTY trigger (R4.2 —
+# "a trigger nobody measures is a hope"). At 62 close NO governed tool is wired yet (62
+# builds the mechanism; 63/64 wire each tool's governed WRITE through the seam), so EVERY
+# governed tool is pending. This mapping's KEYS must EQUAL the governed set DERIVED from
+# ``partition_tools_by_population`` over the LIVE registry (coverage-as-a-checked-variable,
+# INSTRUMENT-0): a NEW governed tool grows the derived set and REDS the equality (orphan)
+# until it is adjudicated or wired; a stale entry reds it (ghost). It SELF-DESTRUCTS
+# entry-by-entry as 63/64 route each tool (each deletes its entry AND adds a per-tool
+# routing pin — 63/64's job). This is the reach law's derived-set-difference idiom, mirroring
+# ``_SHARED_READ_CORPUS_TOOLS`` / ``_REVIEWED_GOVERNED_TOOLS`` — NOT a hand-list kept beside
+# production truth.
+_PENDING_OWNER_STAMP_TRIGGER = "packet 63/64 routes this tool's governed write through loremaster.stamp_owner"
+_GOVERNED_TOOLS_PENDING_OWNER_STAMP: dict[str, str] = {
+    "lore_comms": _PENDING_OWNER_STAMP_TRIGGER,
+    "lore_recall": _PENDING_OWNER_STAMP_TRIGGER,
+    "lore_remember": _PENDING_OWNER_STAMP_TRIGGER,
+    "lore_tasks": _PENDING_OWNER_STAMP_TRIGGER,
+    "lore_claim_task": _PENDING_OWNER_STAMP_TRIGGER,
+    "lore_findings": _PENDING_OWNER_STAMP_TRIGGER,
+}
+
 
 def partition_tools_by_population(
     tools: Iterable[Any],

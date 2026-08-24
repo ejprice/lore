@@ -18,6 +18,7 @@ rules. Names are re-exported at package level so callers can write
 from __future__ import annotations
 
 from lorerunes.blankness import is_blank
+from lorerunes.credentials import parse_credential
 from lorerunes.email_normalisation import normalize_email
 from lorerunes.engine_rejection import reclassify
 from lorerunes.pdp import (
@@ -98,5 +99,6 @@ __all__ = [
     "keep_scope",
     "lan_scopes_for_role",
     "normalize_email",
+    "parse_credential",
     "reclassify",
 ]

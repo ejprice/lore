@@ -567,6 +567,30 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     # link is DANGLE-TOLERATED (R3.2 / I4) — see ``PrincipalStore.delete``.
     # Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1).
     ("owner_principal", "option<record<principal>>", ""),
+    # packet 62, Fork 1 / wave 2 (W2.2, W2-R7): the per-agent CAPABILITY hash — the
+    # anti-spoofing credential. ``register``'s create branch mints a
+    # ``secrets.token_urlsafe`` secret and stores ``sha512_hex(f"{name}:{secret}")``
+    # here (the raw secret is returned ONCE and NEVER persisted — pkt-49 discipline).
+    # ``verify_capability`` re-checks it every call via a UNIQUE-hash index lookup
+    # (uniform timing, no name-existence oracle, no cache). ``option<string>`` with NO
+    # ASSERT and NO DEFAULT: store reference §1.4 — a NEW field on the
+    # production-POPULATED ``agent`` table MUST be ``option<>`` (a required ``string``
+    # poisons every legacy agent row's next UPDATE with ``Expected string but found
+    # NONE``, and a DEFAULT does not rescue a legacy row); a legacy/ownerless agent
+    # legitimately carries NONE, and store reference §1.8 lets the MANY NONE rows
+    # coexist under the UNIQUE index while a real hash stays unique (the collision
+    # backstop). Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1,
+    # the only clause that lands a changed definition; ``IF NOT EXISTS`` is #107).
+    ("capability_hash", "option<string>", ""),
+    # packet 62, wave 2 (SF-2 / W2-R4): the OPTIONAL capability-expiry seam
+    # (defense-in-depth, mirroring ``principal_key.expires_at``). Defaults to
+    # never/unset (the lifetime bound is the binding + no-cache revocation, NOT a clock
+    # TTL — SF-2); when an operator SETS it, ``verify_capability`` honors it
+    # (``capability_expires_at <= now`` → deny, re-checked every call — ESC-3
+    # enforced-when-set, so it is a real bound not a decorative lie). ``option<datetime>``
+    # with NO ASSERT/DEFAULT (store reference §1.4, the ``status_set_at`` precedent
+    # exactly). Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1).
+    ("capability_expires_at", "option<datetime>", ""),
 )
 
 # The ``agent`` columns the two indexes are built on: ``(session, status)``
@@ -587,6 +611,14 @@ _AGENT_NAME_INDEX_FIELDS = ("name",)
 # ``IF NOT EXISTS`` index (store reference §1.1 — never ``OVERWRITE`` an index:
 # ``OVERWRITE`` rebuilds over every row on every ``ensure_ready`` boot).
 _AGENT_OWNER_PRINCIPAL_INDEX_FIELDS = ("owner_principal",)
+# packet 62, wave 2 (W2.2 / store reference §1.1/§1.8): the per-agent capability is
+# resolved by a UNIQUE-hash index probe (uniform timing, no name-existence oracle — the
+# pkt-49 ``principal_key.hash`` precedent). UNIQUE is the collision backstop (a duplicate
+# capability hash across agents is rejected), while §1.8 lets the MANY agents carrying
+# NONE coexist (``option<string>`` UNIQUE permits multiple NONE, rejects duplicate
+# NON-NONE). Plain ``IF NOT EXISTS`` (store reference §1.1 — NEVER ``OVERWRITE`` an
+# index: ``OVERWRITE`` rebuilds over every row on every ``ensure_ready`` boot).
+_AGENT_CAPABILITY_HASH_INDEX_FIELDS = ("capability_hash",)
 
 # The closed THREE-value ``briefed.via`` vocabulary (design doc §0/§5, v7 —
 # finding #98): a ``register``-time auto-ack, an ``explicit`` ``brief_ack``
@@ -1473,21 +1505,26 @@ def _principal_statements() -> list[str]:
 
 
 def _agent_statements() -> list[str]:
-    """The ``agent`` table: the field set + the ``(session, status)``, ``name`` and
-    ``owner_principal`` indexes.
+    """The ``agent`` table: the field set + the ``(session, status)``, ``name``,
+    ``owner_principal`` and UNIQUE ``capability_hash`` indexes.
 
     Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
     :data:`_AGENT_FIELD_SPECS` entry (the shared identifier charset ASSERT on
     ``name``/``session``, the shared non-empty ASSERT on ``role``, the closed
     four-value ``status`` domain, the ``option`` optional columns — incl. the
-    ``option<record<principal>>`` ``owner_principal`` owns back-link — and the
+    ``option<record<principal>>`` ``owner_principal`` owns back-link and the packet-62
+    ``option<string>`` ``capability_hash`` / ``option<datetime>``
+    ``capability_expires_at`` anti-spoofing credential columns — and the
     ``option<object> FLEXIBLE`` ``checkpoint`` blob); the non-unique index on
     ``(session, status)``; the non-unique index on ``name`` alone (design
-    doc §0 D7 — backs the bare-name resolution SELECT); and the non-unique index
+    doc §0 D7 — backs the bare-name resolution SELECT); the non-unique index
     on ``owner_principal`` (packet 62 Fork 3 — "which agents does principal X
-    own" as an index-served plain-table read; store reference §4). UNLIKE
-    ``chunk`` / ``memory`` the table carries no HNSW/FULLTEXT index — an agent is
-    resolved by exact identity, never retrieved semantically.
+    own" as an index-served plain-table read; store reference §4); and the UNIQUE
+    index on ``capability_hash`` (packet 62 wave 2 — the anti-spoof capability lookup +
+    collision backstop; store reference §1.1/§1.8, UNIQUE over ``option<string>``
+    permits many NONE and rejects a duplicate real hash). UNLIKE ``chunk`` / ``memory``
+    the table carries no HNSW/FULLTEXT index — an agent is resolved by exact identity,
+    never retrieved semantically.
     """
     statements: list[str] = [_define_table(AGENT_TABLE)]
     statements += [
@@ -1507,6 +1544,16 @@ def _agent_statements() -> list[str]:
             AGENT_TABLE,
             f"{AGENT_TABLE}_owner_principal",
             _AGENT_OWNER_PRINCIPAL_INDEX_FIELDS,
+        )
+    )
+    # packet 62 wave 2: the UNIQUE capability-hash index (the anti-spoof lookup +
+    # collision backstop; store reference §1.1/§1.8). UNIQUE over ``option<string>``
+    # permits many NONE (legacy/ownerless rows) and rejects a duplicate real hash.
+    statements.append(
+        _unique_index(
+            AGENT_TABLE,
+            f"{AGENT_TABLE}_capability_hash",
+            _AGENT_CAPABILITY_HASH_INDEX_FIELDS,
         )
     )
     return statements
