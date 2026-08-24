@@ -42,6 +42,7 @@ store is a LOUD failure, not a skip.
 
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import datetime
 from typing import Any
@@ -82,6 +83,34 @@ _HASH_B = "b" * 128
 def _statements(ddl: str) -> list[str]:
     """The DDL's individual statements, as the transaction will see them."""
     return [line.strip() for line in ddl.split(";") if line.strip()]
+
+
+def _all_schema_ddl() -> str:
+    """The DERIVED union of EVERY DDL surface ``surreal_schema`` emits — the reach for the
+    forward-scope ``record<principal>`` scan (reach law #344/#345 / packet 62 Fork 4 R4.1).
+
+    ⚠ A ``record<principal>`` link can live on ANY table applied to the unified store, NOT
+    only the tables ``generate_ddl`` folds. The comms slices (``agent``/``brief``/``message``)
+    and the code-graph slice are STANDALONE — each applied by its OWN store's ``ensure_ready``
+    via a dedicated ``generate_*_ddl`` (``test_schema_fold_coverage.py``: ``_agent_statements``
+    is standalone, NOT folded into ``generate_ddl``). Scanning ``generate_ddl`` alone would be
+    BLIND to a link on the ``agent`` table — which is EXACTLY ``agent.owner_principal`` (packet
+    62). So the corpus is DERIVED from the module's ``generate_*_ddl`` functions (a PROPERTY —
+    every function named ``generate_*_ddl`` — never a hand-list), so a NEW slice generator is
+    covered the day it lands. A generator with a required arg this cannot supply raises LOUDLY
+    (fail-closed: a human must extend the derivation), never a silent skip that shrinks reach.
+    """
+    parts: list[str] = []
+    for name in sorted(dir(surreal_schema)):
+        if not (name.startswith("generate_") and name.endswith("_ddl")):
+            continue
+        generator = getattr(surreal_schema, name)
+        if not callable(generator):
+            continue
+        parameters = inspect.signature(generator).parameters
+        kwargs = {"dim": NONDEFAULT_DIM} if "dim" in parameters else {}
+        parts.append(generator(**kwargs))
+    return "\n".join(parts)
 
 
 def _key_statements() -> list[str]:
@@ -417,13 +446,30 @@ class TestTheCascadeForwardScopeIsPinned:
     is a DELIBERATE, adjudicated, cascade-handled addition and is added to the expected
     set. The behavioural cascade-correctness guard lives in
     ``test_principal_delete_cascade_61.py``; this class stays the STATIC tripwire.
+
+    ⚠ REVISED 2026-08-24 (packet 62 Wave 1, contract-62w1, design
+    ``2026-08-24-packet62-agent-identity-rulings.md`` FORK 3 / I4). Packet 62 adds a FOURTH
+    ``record<principal>`` link — ``agent.owner_principal`` (the ``owns`` back-link) — which
+    reddens this exact-set pin EXACTLY as its re-open trigger promised. Operator-RULED
+    DANGLE-TOLERATED (R3.2): a principal delete is allowed while it owns agents, the owned-agent
+    rows survive with a stale ``owner_principal`` (agents are retired-not-deleted, cascading
+    would erase fleet history), mirroring ``audit.actor_principal``. The behavioural dangle
+    guard lives in ``test_agent_owns_principal_schema.py``; this class stays the STATIC tripwire.
+
+    ⚠ REACH REVISED, same wave. ``agent`` is a STANDALONE slice (``generate_agent_ddl``, applied
+    by the comms store's own ``ensure_ready``), NOT folded into ``generate_ddl`` — so scanning
+    ``generate_ddl`` alone was BLIND to ``agent.owner_principal``. The scan now runs over
+    :func:`_all_schema_ddl` — the DERIVED union of every ``generate_*_ddl`` surface — so a
+    ``record<principal>`` link on ANY store table (not only the folded ones) is in reach (reach
+    law #344/#345 / Fork 4 R4.1; guarded by ``test_the_scanned_corpus_covers_...`` below).
     """
 
     def test_the_record_principal_link_set_matches_the_cascade_adjudication(self) -> None:
-        """The set of ``record<principal>`` links is EXACTLY the three whose deletion
+        """The set of ``record<principal>`` links is EXACTLY the FOUR whose deletion
         disposition ``PrincipalStore.delete`` accounts for, as of §FR-4 (2026-08-23) + the
-        packet-61a-w4 ``audit`` substrate (2026-08-23). Each link is CLASSIFIED, not
-        flat-absorbed (the sidecar prefers a classified disposition per link):
+        packet-61a-w4 ``audit`` substrate (2026-08-23) + packet-62 ``agent.owner_principal``
+        (2026-08-24). Each link is CLASSIFIED, not flat-absorbed (a classified disposition
+        per link):
 
         * ``principal_key.principal`` — **CASCADE-DELETE-OWNED-DATA**: a principal's keys are its
           own owned children, deleted children-first with it (no orphan key).
@@ -436,35 +482,73 @@ class TestTheCascadeForwardScopeIsPinned:
           the link is deliberately allowed to DANGLE, and the human identity is preserved by the
           DENORMALIZED ``audit.actor_email``/``actor_agent_name`` VALUE columns (they survive the
           delete — proven by ``test_audit_store.py::TestTheDenormalizedIdentitySurvivesActorDelete``).
+        * ``agent.owner_principal`` — **DANGLE-TOLERATED** (packet 62 Wave 1, operator RULED R3.2 /
+          I4): the ``owns`` back-link on the comms ``agent`` node. A principal delete is ALLOWED
+          while it owns agents; the owned-agent rows SURVIVE with a now-stale ``owner_principal``.
+          Agents are retired-not-deleted (never hard-deleted), so a surviving stale link is not a
+          correctness break — and cascade-deleting agent rows would ERASE FLEET HISTORY. Mirrors
+          ``audit.actor_principal``. The behavioural dangle guard is
+          ``test_agent_owns_principal_schema.py::TestPrincipalDeleteDanglesTheOwnedAgentBackLink``.
 
-        Ledger actors are free strings and ``agent`` is unrelated (§1A). This scans the FULL
-        ``generate_ddl`` for every ``record<principal>`` field and asserts the set is exactly
-        these three.
+        ⚠ NOT every ``owner_principal`` is a dangle: 63/64's GOVERNED-ROW ``owner_principal``
+        (on memory/tasks/findings/comms rows) is a LIVE-DEPENDENCY-class link — a governed row's
+        owner must not silently point at a ghost — so it will be cascade-or-refuse, NOT dangle.
+        THIS link is the AGENT-NODE's owner, a different link with a different disposition. When
+        63/64 adds the governed-row link, classify IT separately and revisit the delete.
+
+        Ledger actors are free strings. This scans :func:`_all_schema_ddl` — the DERIVED union
+        of every ``generate_*_ddl`` surface (NOT ``generate_ddl`` alone, which does not fold the
+        standalone ``agent`` slice — see the class docstring and the reach control below) — for
+        every ``record<principal>`` field and asserts the set is exactly these four.
 
         ⚠ FORMERLY ``test_principal_key_is_the_ONLY_record_principal_link`` — the name
-        cited by finding #402 / §FR-4 as the RED_ORPHANED gate. Renamed here because it is
-        no longer "the ONLY" link (that would be a false natural-language surface, the P8d
-        drift class); grep the old name to land here.
+        cited by finding #402 / §FR-4 as the RED_ORPHANED gate. Renamed (packet 61a-w1) because it
+        is no longer "the ONLY" link (a false natural-language surface, the P8d drift class); grep
+        the old name to land here.
 
         ⚠ RE-OPEN TRIGGER (STAYS ARMED): the day ANY new ``record<principal>`` link is added
-        (63/64's ``owner_principal`` next — a LIVE-DEPENDENCY-class link, so cascade-or-refuse,
-        NOT dangle: unlike immutable audit history a governed row's owner must not silently point
-        at a ghost), this pin goes RED again — a deliberate signal that ``PrincipalStore.delete``'s
-        cascade/refusal MUST be revisited to avoid dangling links (record links do NOT auto-clean,
-        store law §4). If you added the link deliberately, CLASSIFY its disposition, revisit the
-        delete AND update this pin's expected set, then say so."""
-        full = surreal_schema.generate_ddl(dim=NONDEFAULT_DIM)
+        (63/64's GOVERNED-ROW ``owner_principal`` next), this pin goes RED again — a deliberate
+        signal that ``PrincipalStore.delete``'s cascade/refusal MUST be revisited to avoid
+        dangling links (record links do NOT auto-clean, store law §2/§4). If you added the link
+        deliberately, CLASSIFY its disposition, revisit the delete AND update this pin's expected
+        set, then say so."""
+        full = _all_schema_ddl()
         found = {(m.group("field"), m.group("table")) for m in _RECORD_PRINCIPAL.finditer(full)}
         expected = {
             ("principal", surreal_schema.PRINCIPAL_KEY_TABLE),  # CASCADE-DELETE-OWNED-DATA
             ("keeper", surreal_schema.KEEP_TABLE),  # REFUSE-LIVE-DEPENDENCY
             ("actor_principal", surreal_schema.AUDIT_TABLE),  # DANGLE-TOLERATED (§9 immutable history)
+            ("owner_principal", surreal_schema.AGENT_TABLE),  # DANGLE-TOLERATED (packet 62 R3.2 / I4)
         }
         assert found == expected, (
             f"the set of record<principal> links changed — cascade forward-scope PIN THE "
-            f"MISS (design §F2 / §FR-4). expected exactly {expected}, found {found}. If you "
-            f"added a new link (e.g. 63/64 owner_principal), CLASSIFY its disposition, revisit "
-            f"PrincipalStore.delete's cascade/refusal AND update this pin."
+            f"MISS (design §F2 / §FR-4 / packet 62 I4). expected exactly {expected}, found "
+            f"{found}. If you added a new link (e.g. 63/64 governed-row owner_principal), "
+            f"CLASSIFY its disposition, revisit PrincipalStore.delete's cascade/refusal AND "
+            f"update this pin."
+        )
+
+    def test_the_scanned_corpus_covers_the_standalone_comms_slices(self) -> None:
+        """⚠ INSTRUMENT-0 / reach-as-a-CHECKED-VARIABLE (packet 62 Fork 4 R4.1, reach law
+        #344/#345). The exact-set pin above is only as good as the DDL corpus it scans, and
+        ``agent.owner_principal`` lives on the STANDALONE ``agent`` slice
+        (``generate_agent_ddl``) which ``generate_ddl`` does NOT fold — so a corpus of
+        ``generate_ddl`` alone would be BLIND to it. This asserts :func:`_all_schema_ddl`
+        INCLUDES the ``agent`` table def (``owner_principal``'s home) AND a FOLDED table
+        (``principal_key``) AND the audit table — proving the derived reach spans both the
+        standalone and the folded slices. Always GREEN — it guards the CORPUS, not a build; it
+        REDS the day the derivation stops covering the ``agent`` slice (the reach receding is
+        the seventh instrument-defeat this pin exists to prevent)."""
+        corpus = _all_schema_ddl()
+        assert f"DEFINE TABLE IF NOT EXISTS {surreal_schema.AGENT_TABLE} SCHEMAFULL" in corpus, (
+            "the record<principal> scan corpus does NOT cover the STANDALONE agent slice — "
+            "agent.owner_principal (packet 62) would be INVISIBLE to the exact-set pin"
+        )
+        assert (
+            f"DEFINE TABLE IF NOT EXISTS {surreal_schema.PRINCIPAL_KEY_TABLE} SCHEMAFULL" in corpus
+        ), "the corpus does not cover the folded principal_key slice"
+        assert f"DEFINE TABLE IF NOT EXISTS {surreal_schema.AUDIT_TABLE} SCHEMAFULL" in corpus, (
+            "the corpus does not cover the audit slice"
         )
 
     def test_the_forward_scope_regex_has_nonzero_reach(self) -> None:
