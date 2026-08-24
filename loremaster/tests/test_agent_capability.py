@@ -110,16 +110,21 @@ def _field_statement(field: str) -> str | None:
 
 
 def _index_statement_over(field: str) -> str | None:
-    """The single ``DEFINE INDEX`` over ``field`` (None if unbuilt). The field-name is matched
-    at a WORD BOUNDARY (``\\b``) so this matches BOTH a plain index that ENDS at the field AND a
-    UNIQUE index where ``UNIQUE`` follows the field list — a ``\\s*$`` anchor here would never
-    match a correct ``… FIELDS <field> UNIQUE`` emission (the C-DEF the adversary caught). ``\\b``
-    still requires the WHOLE field token (``capability_hash_extra`` does not match)."""
+    """The single ``DEFINE INDEX`` over ``field`` ALONE (None if unbuilt). The field must be the
+    WHOLE, SOLE field list: ``FIELDS <field>`` optionally followed by ``UNIQUE``, then end of
+    statement (``(\\s+UNIQUE)?\\s*$``). This matches BOTH a plain single-field index that ENDS at
+    the field AND a single-field UNIQUE index — while REJECTING a COMPOSITE/multi-field index
+    (``FIELDS <field>, other UNIQUE``: the ``,`` blocks ``(\\s+UNIQUE)?\\s*$``) and a longer token
+    (``capability_hash_extra``: no boundary at end). A bare ``\\b`` here matched the composite
+    (the ``\\b`` boundary sits between the field and a following ``,``), letting a per-owner
+    UNIQUE build pass all three single-field index pins while falsifying the collision-backstop
+    invariant; a bare ``\\s*$`` here would never match a correct ``… FIELDS <field> UNIQUE``
+    emission (the original C-DEF). This end-anchored, UNIQUE-optional form closes both."""
     matches = [
         statement
         for statement in _agent_statements()
         if _DEFINE_INDEX.match(statement)
-        and re.search(rf"FIELDS\s+{field}\b", statement, re.IGNORECASE)
+        and re.search(rf"FIELDS\s+{field}(\s+UNIQUE)?\s*$", statement, re.IGNORECASE)
     ]
     assert len(matches) <= 1, f"expected at most one DEFINE INDEX over agent.{field}, got {matches!r}"
     return matches[0] if matches else None
