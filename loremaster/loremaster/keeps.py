@@ -846,3 +846,66 @@ class KeepStore:
             )
         )
         return [self._row_to_keep(row) for row in rows]
+
+    async def list_keeps_for_member(self, *, member_email: str) -> list[str]:
+        """List the BARE ids of every keep whose household ``member_email`` is in.
+
+        The symmetric twin of :meth:`list_keeps_for_keeper` (Fork F, packet 61b-w2):
+        reads the ``member_of`` edge AS A PLAIN table filtered on the LEADING column
+        ``in`` (``SELECT out FROM member_of WHERE in = $principal``, the ``in`` endpoint
+        bound as a ``RecordID``) — an IndexScan on the existing ``UNIQUE(in, out)`` (store
+        reference §2: a leading-column ``WHERE in = $p`` IndexScans; §4: a graph traversal
+        never uses a secondary index, so ``member_of`` is read as a PLAIN table, NEVER an
+        arrow traversal). Direction: "keeps whose HOUSEHOLD I am in" (``member_of`` FROM
+        the principal) — the mirror of :meth:`list_household`'s reverse ``WHERE out =
+        $keep``. Returns the BARE keep ids (the ``xyz`` of ``keep:xyz``); the resolver
+        (:func:`loremaster.visible_keeps.resolve_visible_keeps`) maps each to its
+        ``keep:<id>`` scope via the shared ``lorerunes.pdp.keep_scope`` helper (the ONE
+        spelling — the resolver never hand-rolls the prefix).
+
+        ⚠ BORN-WRAPPED — WHOLE METHOD (design sidecar D1). Unlike the unwrapped
+        :meth:`list_keeps_for_keeper` (a pre-existing #406 read-gap, NOT the standard),
+        this read FEEDS THE PDP's ``visible_keep_ids`` via ``resolve_visible_keeps`` — so a
+        raw engine ``SurrealStoreError`` escaping it would land in the AUTHORIZATION path.
+        The ENTIRE body (the email-resolution read AND the ``member_of`` SELECT) is wrapped
+        in ONE :func:`~loremaster.store._txn.wrap_store_rejection`, so no raw engine error
+        reaches the authz path from EITHER; transport / exhausted-contention faults pass
+        through untouched (store reference §3 — they belong to the retry/lifecycle layer).
+
+        Args:
+            member_email: The email of the principal whose household keeps to list.
+
+        Returns:
+            The bare ids of the keeps whose household ``member_email`` is in (``[]`` for a
+            member of no keep — never ``None``).
+
+        Raises:
+            KeepStoreError: No principal carries ``member_email`` (via the composed
+                :meth:`_resolve_principal_id`, raised BEFORE the read — never ``[]`` for a
+                typo'd identity, which would silently under-authorize), OR the store
+                rejected the read. The raw engine ``SurrealStoreError`` is WRAPPED as this
+                domain error (consumer law: no raw engine error reaches the authz path);
+                transport / exhausted-contention faults pass through untouched (store
+                reference §3).
+        """
+        # WHOLE-METHOD born-wrap (D1): the email resolution AND the member_of SELECT both
+        # ride ONE wrap seam, so a raw SurrealStoreError from EITHER is wrapped LOUD as
+        # KeepStoreError before it can reach the PDP's authorization path. The deliberate
+        # unknown-email KeepStoreError raised by _resolve_principal_id is not a
+        # SurrealStoreError subclass, so the seam passes it through untouched. Finding #400:
+        # routed through the ONE seam (wrap_store_rejection), never hand-rolled.
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not list keeps for member {member_email!r}: "
+            f"the store rejected the household read",
+        ):
+            member_id = await self._resolve_principal_id(member_email)
+            rows = PrincipalStore._as_rows(
+                await self._query(
+                    f"SELECT out FROM {MEMBER_OF_RELATION} WHERE in = $principal",
+                    {"principal": RecordID(PRINCIPAL_TABLE, member_id)},
+                )
+            )
+        # Pure mapping (no store call): each member_of row's ``out`` is the keep RecordID;
+        # reduce it to its BARE id (Fork F — the resolver adds the ``keep:`` prefix).
+        return [self._record_id_part(str(row["out"])) for row in rows]

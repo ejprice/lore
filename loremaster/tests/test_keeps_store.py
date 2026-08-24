@@ -67,6 +67,7 @@ from loremaster.store.surreal_schema import (
     MEMBER_OF_RELATION,
     PRINCIPAL_TABLE,
 )
+from surrealdb import RecordID
 
 _KEEPER_EMAIL = "alice@example.com"
 _MEMBER_EMAIL = "bob@example.com"
@@ -702,7 +703,13 @@ _MUTATING_STATEMENT_KEYWORDS = frozenset(
 
 # The KeepStore READ verbs — the positive control proving the derivation DISCRIMINATES writes
 # from reads (a derivation that returned "all public async methods" would fail the reach pin).
-_KEEPSTORE_READ_METHODS = frozenset({"get_keep", "list_household", "list_keeps_for_keeper"})
+# ``list_keeps_for_member`` (packet 61b-w2, Fork F) is a SELECT-only read (the symmetric twin of
+# ``list_keeps_for_keeper``): it is NOT a write path, so the derived ``_WRITE_PATHS`` must
+# EXCLUDE it and the disjointness pin below proves so (a build that wrongly routed a mutation
+# through it, or a derivation that swept it into the write set, reds).
+_KEEPSTORE_READ_METHODS = frozenset(
+    {"get_keep", "list_household", "list_keeps_for_keeper", "list_keeps_for_member"}
+)
 
 
 def _method_has_mutating_statement(method: ast.AsyncFunctionDef) -> bool:
@@ -922,3 +929,385 @@ class TestKeepStoreWrapsEngineRejections:
         await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
         with pytest.raises(KeepStoreError):
             await keep_store.set_rank(keep_id=keep.id, member_email=_MEMBER_EMAIL, rank="tyrant")
+
+
+# =========================================================================== #
+# Fork F (packet 61b-w2) — KeepStore.list_keeps_for_member: the SYMMETRIC twin of
+# list_keeps_for_keeper. Reads the member_of edge AS A PLAIN TABLE
+# (``SELECT out FROM member_of WHERE in = $principal``, endpoint bound as a RecordID) —
+# NEVER an arrow traversal (store ref §4: a graph traversal never uses a secondary index).
+# Direction: "keeps whose HOUSEHOLD I am in" (member_of FROM the principal), the mirror of
+# list_household's REVERSE ``WHERE out = $keep``. It feeds the PDP's visible_keep_ids
+# (resolve_visible_keeps, Fork B/D — test_visible_keeps_61b.py).
+# =========================================================================== #
+
+
+def _explain_operators(plan: Any) -> list[str]:
+    """Every ``operator``/``operation`` string anywhere in an EXPLAIN plan tree (the
+    ``test_brief_ledger`` walker idiom — an EXPLAIN plan is a nested dict/list of nodes)."""
+    found: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key in ("operator", "operation"):
+                op = node.get(key)
+                if isinstance(op, str):
+                    found.append(op)
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(plan)
+    return found
+
+
+def _explain_scans_table(plan: Any, table: str) -> bool:
+    """True iff the plan carries a ``TableScan`` node targeting ``table``
+    (``{operator: TableScan, attributes: {table: ...}}`` — the shape a trailing-column /
+    unindexed predicate emits)."""
+    found = False
+
+    def walk(node: Any) -> None:
+        nonlocal found
+        if isinstance(node, dict):
+            attributes = node.get("attributes")
+            if (
+                node.get("operator") == "TableScan"
+                and isinstance(attributes, dict)
+                and attributes.get("table") == table
+            ):
+                found = True
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(plan)
+    return found
+
+
+class TestListKeepsForMember:
+    """Fork F: ``list_keeps_for_member(*, member_email)`` returns the bare keep ids whose
+    household ``member_email`` is in — the symmetric twin of ``list_keeps_for_keeper``.
+
+    RED at HEAD: ``KeepStore`` has no ``list_keeps_for_member`` method (AttributeError). The
+    fixture auto-adds each keeper to their own keep's household (``create_keep`` RELATEs the
+    keeper edge — Fork D), so a keeper is ALSO a member of their own keep."""
+
+    async def test_returns_every_keep_whose_household_the_member_is_in(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """≥2 keeps (small-N discrimination: a build returning ONE keep is caught). Bob is a
+        household member of BOTH keep A and keep B → both ids returned."""
+        keep_store, _principals, _env = keep_env
+        keep_a = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="A")
+        keep_b = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="team", name="B")
+        await keep_store.add_household_member(keep_id=keep_a.id, member_email=_MEMBER_EMAIL)
+        await keep_store.add_household_member(keep_id=keep_b.id, member_email=_MEMBER_EMAIL)
+        keep_ids = await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        # bare ids (the ``xyz`` of ``keep:xyz``) — the resolver maps these via keep_scope.
+        bare = {KeepStore._record_id_part(kid) for kid in keep_ids}
+        assert {KeepStore._record_id_part(keep_a.id), KeepStore._record_id_part(keep_b.id)} <= bare, (
+            f"both keeps whose household the member is in must be returned: {keep_ids!r}"
+        )
+
+    async def test_a_member_of_no_keep_returns_empty(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """A real principal in no keep's household → ``[]`` (never an error, never None)."""
+        keep_store, _principals, _env = keep_env
+        # carol (_MEMBER2_EMAIL) is seeded but added to no keep.
+        keep_ids = await keep_store.list_keeps_for_member(member_email=_MEMBER2_EMAIL)
+        assert keep_ids == [], f"a member of no keep must return []: {keep_ids!r}"
+
+    async def test_excludes_a_keep_the_member_is_NOT_in(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """Discrimination (the ``WHERE in = $principal`` scope): a keep whose household the
+        member is NOT in must be excluded — a build that read ALL member_of edges is caught.
+        The keeper (alice) IS in her own keep C; bob is NOT → C is in alice's list, not bob's."""
+        keep_store, _principals, _env = keep_env
+        keep_bob = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="bobs")
+        keep_c = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="C")
+        await keep_store.add_household_member(keep_id=keep_bob.id, member_email=_MEMBER_EMAIL)
+        bob_bare = {
+            KeepStore._record_id_part(kid)
+            for kid in await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        }
+        alice_bare = {
+            KeepStore._record_id_part(kid)
+            for kid in await keep_store.list_keeps_for_member(member_email=_KEEPER_EMAIL)
+        }
+        c_bare = KeepStore._record_id_part(keep_c.id)
+        assert c_bare not in bob_bare, f"a keep the member is not in leaked into the list: {bob_bare!r}"
+        # POSITIVE CONTROL: the keeper (a household member of C via the auto-add) DOES see C —
+        # so the exclusion above is a real filter, not an always-empty read.
+        assert c_bare in alice_bare, "the keeper's own keep (auto-add household) was not listed"
+
+    async def test_does_not_bleed_ANOTHER_members_keeps(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """Cross-member isolation: bob's list must not carry a keep only carol is a member of."""
+        keep_store, _principals, _env = keep_env
+        bobs = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="bobs")
+        carols = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="carols")
+        await keep_store.add_household_member(keep_id=bobs.id, member_email=_MEMBER_EMAIL)
+        await keep_store.add_household_member(keep_id=carols.id, member_email=_MEMBER2_EMAIL)
+        bob_bare = {
+            KeepStore._record_id_part(kid)
+            for kid in await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        }
+        assert KeepStore._record_id_part(carols.id) not in bob_bare, (
+            f"carol's keep bled into bob's member list: {bob_bare!r}"
+        )
+
+    async def test_an_unknown_member_email_raises_KeepStoreError(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """Mirror ``list_keeps_for_keeper``: an unresolvable email raises the domain
+        ``KeepStoreError`` (via the composed ``PrincipalStore`` resolution), never a raw
+        engine error and never ``[]`` (an empty list would silently read as "member of
+        nothing" for a typo'd identity feeding the PDP's visible-keep set — a confused-deputy
+        risk)."""
+        keep_store, _principals, _env = keep_env
+        with pytest.raises(KeepStoreError):
+            await keep_store.list_keeps_for_member(member_email=_UNKNOWN_EMAIL)
+
+    async def test_routes_through_the_shared__query_seam_reads_member_of_as_a_plain_table(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """The read routes through the ONE shared ``_query`` seam (auto-discovered by
+        ``test_retry_seam``'s ``_query`` scan — no private retry) AND reads ``member_of`` as a
+        PLAIN table filtered on the LEADING column ``in`` — NEVER an arrow traversal (store ref
+        §4). Captures the statement the method actually issues (the ``test_brief_ledger``
+        capture idiom — pins the query the code SENDS, not a hand-copy that could drift)."""
+        keep_store, _principals, _env = keep_env
+        keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="seam")
+        await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
+
+        captured: list[tuple[str, dict[str, Any]]] = []
+        original_query = keep_store._query
+
+        async def _capturing_query(statement: str, params: dict[str, Any] | None = None) -> Any:
+            captured.append((statement, dict(params or {})))
+            return await original_query(statement, params)
+
+        keep_store._query = _capturing_query  # type: ignore[method-assign]
+        try:
+            await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        finally:
+            keep_store._query = original_query  # type: ignore[method-assign]
+
+        member_of_reads = [
+            (statement, params)
+            for statement, params in captured
+            if MEMBER_OF_RELATION in statement
+        ]
+        assert len(member_of_reads) == 1, (
+            f"expected exactly ONE member_of read through _query; got {len(member_of_reads)} "
+            f"(all captured: {[s for s, _ in captured]!r})"
+        )
+        statement, _params = member_of_reads[0]
+        # PLAIN-TABLE read filtered on the LEADING column ``in`` — never an arrow traversal.
+        assert "WHERE in =" in statement or "WHERE in=" in statement, (
+            f"list_keeps_for_member must filter member_of on the LEADING column `in`: {statement!r}"
+        )
+        assert "->" not in statement and "<-" not in statement, (
+            f"member_of must be read as a PLAIN TABLE, never an arrow traversal (store ref §4): "
+            f"{statement!r}"
+        )
+
+    async def test_the_methods_member_of_read_IndexScans_with_a_trailing_TableScan_control(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """EXPLAIN pin (Fork F rider / store ref §2 / finding #413, ``probe_read_filter_61b.py``):
+        EXPLAIN the member_of read the METHOD ACTUALLY ISSUES (captured, not a hand-copy that
+        could drift — the ``test_brief_ledger`` discipline) and assert it is an **IndexScan** on
+        the existing ``UNIQUE(in, out)`` LEADING column (packet 60 Fork F, so NO new index). The
+        positive control EXPLAINs the TRAILING-column ``WHERE out = $keep`` (what
+        ``list_household`` does) and asserts it is a **TableScan** — proving the plan-walker
+        DISCRIMINATES leading from trailing (the store-law §2 composite-leading-column fact, on
+        THIS edge) and can SEE a TableScan (so the IndexScan claim is not vacuous). A build that
+        read member_of via the trailing column, an arrow traversal, or with an unindexed extra
+        conjunct would TableScan and RED here — the gap a hand-issued EXPLAIN of a fixed query
+        could not see. RED at HEAD: ``list_keeps_for_member`` is absent (AttributeError).
+
+        ⚠ Re-open trigger (per the Fork F rider): if a future packet adds an index on
+        ``member_of.out`` (a free ``IF NOT EXISTS`` add for ``list_household``), the trailing
+        control flips to IndexScan and this leg reds BY DESIGN — delete/retarget the trailing
+        control and say so, do not silence it."""
+        keep_store, _principals, env = keep_env
+        keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="explain")
+        await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
+        keep_kid = KeepStore._record_id_part(keep.id)
+
+        # Capture the EXACT member_of statement + params the method sends, so the EXPLAIN below
+        # inspects what the code issues (not a hand-copy). RED at HEAD via the AttributeError.
+        captured: list[tuple[str, dict[str, Any]]] = []
+        original_query = keep_store._query
+
+        async def _capturing_query(statement: str, params: dict[str, Any] | None = None) -> Any:
+            captured.append((statement, dict(params or {})))
+            return await original_query(statement, params)
+
+        keep_store._query = _capturing_query  # type: ignore[method-assign]
+        try:
+            await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        finally:
+            keep_store._query = original_query  # type: ignore[method-assign]
+
+        member_of_reads = [
+            (statement, params) for statement, params in captured if MEMBER_OF_RELATION in statement
+        ]
+        assert len(member_of_reads) == 1, (
+            f"expected exactly ONE member_of read to EXPLAIN; got {len(member_of_reads)}"
+        )
+        method_statement, method_params = member_of_reads[0]
+
+        connection = await connect_admin(env)
+        try:
+            # The UNIQUE(in, out) index must be BUILT or the EXPLAIN controls are vacuous
+            # (test_brief_ledger discipline: assert the index exists before trusting the plan).
+            table_info = await run(connection, f"INFO FOR TABLE {MEMBER_OF_RELATION}")
+            assert table_info.get("indexes"), (
+                f"member_of has no indexes built — the EXPLAIN pin is vacuous: {table_info!r}"
+            )
+
+            leading_plan = await run(connection, f"{method_statement} EXPLAIN", method_params)
+            assert not _explain_scans_table(leading_plan, MEMBER_OF_RELATION), (
+                f"the method's member_of read TableScanned — Fork F's whole design rests on the "
+                f"LEADING-column `WHERE in = $p` IndexScanning the existing UNIQUE(in, out). "
+                f"statement={method_statement!r} operators={_explain_operators(leading_plan)}"
+            )
+            assert "IndexScan" in _explain_operators(leading_plan), (
+                f"the method's member_of read did not register an IndexScan on UNIQUE(in, out): "
+                f"statement={method_statement!r} operators={_explain_operators(leading_plan)}"
+            )
+
+            # POSITIVE CONTROL — the walker can SEE a TableScan, AND the trailing column
+            # (list_household's `WHERE out = $keep`) TableScans (store ref §2 / #413), proving
+            # the pin discriminates leading from trailing rather than always answering "no scan".
+            trailing_plan = await run(
+                connection,
+                f"SELECT in FROM {MEMBER_OF_RELATION} WHERE out = $keep EXPLAIN",
+                {"keep": RecordID(KEEP_TABLE, keep_kid)},
+            )
+            assert _explain_scans_table(trailing_plan, MEMBER_OF_RELATION), (
+                f"positive control failed: the TRAILING-column read (`WHERE out = $keep`) did "
+                f"NOT TableScan — either the plan format changed (the leading pin is now "
+                f"vacuous) or an `out` index was added (see the re-open trigger). "
+                f"operators={_explain_operators(trailing_plan)}"
+            )
+        finally:
+            await connection.close()
+
+    # -- D1 (sidecar): list_keeps_for_member is BORN-WRAPPED. Unlike its unwrapped mirror
+    # list_keeps_for_keeper (a pre-existing #406-class gap, NOT the standard), this read FEEDS
+    # THE PDP via ``resolve_visible_keeps`` → ``Subject.visible_keep_ids``, so a raw engine
+    # ``SurrealStoreError`` escaping it would land in the AUTHORIZATION path. It wraps the store
+    # rejection as ``KeepStoreError`` through the SHARED seam (Fork I / ``wrap_store_rejection``),
+    # while transport / exhausted-contention faults pass through untouched (store ref §3 — they
+    # belong to the retry/lifecycle layer). Fault-injection mirrors ``TestKeepStoreWrapsEngine-
+    # Rejections``: patch the ``keeps``-module ``run_query`` seam (the SELECT), leaving the
+    # COMPOSED PrincipalStore's ``principals``-module resolution intact so a SEEDED email
+    # resolves and the member_of SELECT is what raises.
+
+    async def test_born_wrapped_engine_rejection_becomes_KeepStoreError(
+        self,
+        keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """D1: a raw engine ``SurrealStoreError`` from the member_of SELECT surfaces as
+        ``KeepStoreError`` (never the raw error into the authz path). RED at HEAD via the
+        AttributeError; RED against an UNWRAPPED build (the raw error escapes
+        ``pytest.raises(KeepStoreError)``)."""
+        keep_store, _principals, _env = keep_env
+
+        async def _raise_store_error(*args: object, **kwargs: object) -> object:
+            raise SurrealStoreError("injected engine rejection (list_keeps_for_member)")
+
+        monkeypatch.setattr(keeps_module, "run_query", _raise_store_error)
+        with pytest.raises(KeepStoreError):
+            await keep_store.list_keeps_for_member(member_email=_KEEPER_EMAIL)
+
+    @pytest.mark.parametrize("transport_error", ["connection", "contention"])
+    async def test_born_wrapped_propagates_transport_faults_untouched(
+        self,
+        keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+        transport_error: str,
+    ) -> None:
+        """D1 DISCRIMINATOR: a ``SurrealConnectionError`` / ``TxnContentionExhaustedError`` at the
+        seam PROPAGATES untouched — it must NOT be masked as ``KeepStoreError`` (store ref §3: it
+        belongs to the retry/lifecycle layer). REDS the WRONG born-wrapped fix — a naive
+        ``except SurrealStoreError: raise KeepStoreError`` that omits the
+        ``except (SurrealConnectionError, TxnContentionExhaustedError): raise`` FIRST (both
+        subclass ``SurrealStoreError``). Without this leg a catch-all wrong build passes the wrap
+        pin above. RED at HEAD via the AttributeError."""
+        keep_store, _principals, _env = keep_env
+        expected: type[SurrealStoreError]
+        error_instance: SurrealStoreError
+        if transport_error == "connection":
+            expected = SurrealConnectionError
+            error_instance = SurrealConnectionError("injected transport fault")
+        else:
+            expected = TxnContentionExhaustedError
+            error_instance = TxnContentionExhaustedError(
+                "injected exhausted contention", attempts=8, elapsed_seconds=1.0
+            )
+
+        async def _raise_transport_error(*args: object, **kwargs: object) -> object:
+            raise error_instance
+
+        monkeypatch.setattr(keeps_module, "run_query", _raise_transport_error)
+        with pytest.raises(expected):
+            await keep_store.list_keeps_for_member(member_email=_KEEPER_EMAIL)
+
+    async def test_returns_BARE_keep_ids_not_record_id_strings(
+        self, keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv]
+    ) -> None:
+        """Adversary (A): Fork F ruled BARE keep ids (the resolver adds the ``keep:`` prefix via
+        ``keep_scope``). A build returning ``keep:xyz`` (the full ``str(RecordID)``) passes the
+        other pins — the resolver's double-prefix pin catches it DOWNSTREAM — but violates the
+        METHOD's OWN contract. Pin it here: a ``keep:``-prefixed (colon-carrying) return reds."""
+        keep_store, _principals, _env = keep_env
+        keep = await keep_store.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="bare")
+        await keep_store.add_household_member(keep_id=keep.id, member_email=_MEMBER_EMAIL)
+        keep_ids = await keep_store.list_keeps_for_member(member_email=_MEMBER_EMAIL)
+        assert keep_ids, "the member is in one keep — the list must be non-empty (non-vacuous)"
+        for keep_id in keep_ids:
+            assert ":" not in keep_id, (
+                f"list_keeps_for_member must return BARE keep ids (Fork F — the resolver adds the "
+                f"keep: prefix), not a str(RecordID): {keep_id!r}"
+            )
+        # Positive control: the bare id equals the created keep's bare id (a real, correct value —
+        # so the "no colon" assertion is not vacuously true over an empty/garbage list).
+        assert KeepStore._record_id_part(keep.id) in keep_ids, (
+            f"the created keep's bare id was not returned: {keep_ids!r}"
+        )
+
+    async def test_born_wrapped_RESOLUTION_rejection_becomes_KeepStoreError(
+        self,
+        keep_env: tuple[KeepStore, PrincipalStore, SurrealEnv],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Adversary (B) — D1 SCOPE (sidecar ruled RESOLUTION-TOO): the born-wrap covers the
+        WHOLE method, so a raw engine ``SurrealStoreError`` from the EMAIL-RESOLUTION read (the
+        composed ``PrincipalStore.get_by_email``, itself unwrapped — the #406 read-gap, out of
+        scope) ALSO surfaces as ``KeepStoreError`` at the KeepStore boundary, never escaping raw
+        into the authz path. Injects at the COMPOSED PrincipalStore's ``_query`` (resolution),
+        NOT the keeps SELECT. RED against a SELECT-only-wrapped build (the resolution error
+        escapes ``pytest.raises(KeepStoreError)``), and RED at HEAD via the AttributeError."""
+        keep_store, _principals, _env = keep_env
+
+        async def _raise_store_error(*args: object, **kwargs: object) -> object:
+            raise SurrealStoreError("injected engine rejection (resolution read)")
+
+        # Patch the COMPOSED PrincipalStore's _query — the resolution read (get_by_email), NOT
+        # the keeps-module SELECT. A SELECT-only born-wrap leaves this raw error un-wrapped.
+        monkeypatch.setattr(keep_store._principals, "_query", _raise_store_error)
+        with pytest.raises(KeepStoreError):
+            await keep_store.list_keeps_for_member(member_email=_KEEPER_EMAIL)

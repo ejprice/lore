@@ -323,6 +323,14 @@ _KEEP_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
     ),
     "set_keeper": lambda s: s.set_keeper(keep_id=_KEEP_GHOST, new_keeper_email=_KEEPER_EMAIL),
     "delete_keep": lambda s: s.delete_keep(keep_id=_KEEP_GHOST),
+    # packet 61b-w2 (Fork F / D1): the born-wrapped READ verb. Unlike the 6 write verbs
+    # above, list_keeps_for_member is a SELECT-only read — but it FEEDS the PDP's
+    # visible_keep_ids, so D1 made it born-wrapped (a raw engine error mid-authorization is
+    # exactly the consumer-law leak). It routes through wrap_store_rejection, so the reach
+    # pin (coverage-as-checked-variable) requires this fault-injection invocation. Resolves a
+    # SEEDED email (via the composed, un-patched PrincipalStore), so under injection at the
+    # keeps run_query seam the member_of SELECT is what raises.
+    "list_keeps_for_member": lambda s: s.list_keeps_for_member(member_email=_KEEPER_EMAIL),
 }
 
 _PRINCIPAL_INVOCATIONS: dict[str, Callable[[PrincipalStore], Awaitable[object]]] = {
