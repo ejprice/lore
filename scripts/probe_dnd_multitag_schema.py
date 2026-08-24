@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: F841  # one-shot dnd probe (lore #424) — the unused _explain() results are intentional; the probe runs for its side effects, and the file is a byte-faithful run receipt, not maintained source.
 """Probe: the closed-vocab MULTI-TAG schema shape for the dndlorescraper transmute stage.
 
 WHY. A sibling project (dndlorescraper) is locking the SurrealDB representation for
