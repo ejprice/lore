@@ -8,9 +8,12 @@ arbiter of the anti-spoofing mechanism (authorization-model §9/§10-O); the con
 grades the contract that implements this.
 **Status:** design finalized, not yet contracted. Consumes the CODE-COMPLETE 39/48/49/60/61
 substrate (all commit-only; deploy = the packet-65 joint cutover).
-**Revision:** v2 (2026-08-24) — folded operator rulings: F1=(A) confirmed (premise
-HIGH-verified); F2=real local principal via api-key (sentinel retired, I5 added); F3/F4
-ratified; added the FINAL PACKET-62 SCOPE LINE.
+**Revision:** v3 (2026-08-24) — v2 folded operator rulings (F1=(A) premise HIGH-verified;
+F2=real local principal via api-key, sentinel retired, I5 added; F3/F4 ratified; FINAL SCOPE
+LINE). v3 corrects the `record<principal>` link count (re-derived: THREE exist —
+`principal_key.principal`/`keep.keeper`/`audit.actor_principal`; `agent.owner_principal` is the
+FOURTH, not the third — the 61a-w4 audit link was missed) across R3.1/R3.2/I4/scope-line, and
+flags the `PrincipalStore.delete` docstring's own stale "TWO".
 
 - `brief-base v14 read`
 - `brief project v7 read`
@@ -114,25 +117,41 @@ never a fourth identity. The `owns` edge is `agent.owner_principal`, and the CRE
 resolution (Fork 1) reads `principal` from the token and `agent` from the registry.
 
 **RIDERS — and pin/verify each like this:**
-- **R3.1 — a NEW `record<principal>` link ⇒ update the delete cascade AND its exact-set pin,
-  in THIS packet.** `PrincipalStore.delete` (`principals.py:636`) already flags it verbatim:
-  *"CASCADE FORWARD-SCOPE … the delete accounts for the TWO record<principal> links as of
-  §FR-4 — principal_key.principal and keep.keeper. When ANY new record<principal> link is
-  added (63/64's owner_principal next), this MUST be revisited — see the exact-set pin in
-  test_principal_keys_schema.py."* `agent.owner_principal` IS that new link. Decide the
-  semantics on principal-delete (recommend: **refuse-while-owning-agents OR dangle-tolerated**
-  — see R3.2) and **red the exact-set pin** (`test_principal_keys_schema.py`) until the new
-  link is adjudicated. A field-link that does NOT auto-clean (store law §2: *"record<t> links
-  do NOT auto-clean on target delete"*) left unhandled is a #105-class dangling-owner ghost.
-- **R3.2 — RULE the principal-delete semantics for owned agents, and PIN it with a
-  dirty-store test.** Recommendation: **dangle-tolerated, mirroring packet-61a-w4's audit
-  cascade** (agents are retired-not-deleted; an owned-agent row surviving a principal delete is
-  a stale back-link, not a correctness break — and the audit store already chose
-  dangle-tolerated for the same class). Do NOT silently cascade-delete agent rows on a
-  principal delete (that would erase fleet history). Pin: create principal → register an agent
-  owned by it → delete principal → assert the chosen semantics (refuse | dangle) hold on a
-  DIRTY store (`TestSchemaMigrationAgainstAnExistingStore` idiom, store-ref §1.6). Escalate to
-  the operator ONLY if refuse-vs-dangle is contested; recommend dangle.
+- **R3.1 — a NEW `record<principal>` link ⇒ revisit the delete accounting AND its exact-set
+  pin, in THIS packet.** ⚠ **COUNT (re-derived 2026-08-24 by grepping `record<{PRINCIPAL_TABLE}>`
+  field specs in `surreal_schema.py` — never trust an inherited number): there are THREE
+  EXISTING `record<principal>` links at HEAD, so `agent.owner_principal` is the FOURTH:**
+  1. `principal_key.principal` (`surreal_schema.py:1908`) — delete CASCADES it (children-first).
+  2. `keep.keeper` (`:2037`) — delete REFUSES-while-keeping (§FR-4).
+  3. `audit.actor_principal` (`:2187`, packet 61a-w4) — **DANGLE-tolerated**; delete does NOT
+     act on it (the append-only admin-exempt audit store survives a principal delete BY DESIGN —
+     `actor_email`/`actor_agent_name` are denormalized for exactly that, §9).
+  So there are TWO populations: links that EXIST (now three, four with `owner_principal`) vs
+  links the delete ACTS ON (two: cascade + refuse). **`agent.owner_principal` is RULED
+  DANGLE-tolerated (R3.2)** — so, like `audit.actor_principal`, delete does NOT act on it and
+  the acts-on set stays two; what changes is the EXISTING set → four.
+  ⚠ **The `PrincipalStore.delete` docstring itself (`principals.py:662`) UNDERCOUNTS** — it says
+  *"the delete accounts for the TWO record<principal> links … principal_key.principal and
+  keep.keeper. When ANY new record<principal> link is added (63/64's owner_principal next), this
+  MUST be revisited."* That was written at §FR-4 (before 61a-w4 added `audit.actor_principal`)
+  and never updated — the P8d stale-prose class. FLAG (code, outside my writable set — exact
+  edit for the builder): when 62 revisits delete, correct the docstring to name all FOUR
+  existing links with their disposition (two acted-on: cascade/refuse; two dangle-tolerated:
+  audit.actor_principal + the new agent.owner_principal). PIN: **red the exact-set pin**
+  (`test_principal_keys_schema.py`) until `agent.owner_principal` is added as the FOURTH link
+  and adjudicated DANGLE. A field-link that does NOT auto-clean (store law §2: *"record<t> links
+  do NOT auto-clean on target delete"*) left un-adjudicated is a #105-class dangling-owner ghost
+  — dangle-tolerated is a DELIBERATE adjudication, not an omission.
+- **R3.2 — principal-delete semantics for owned agents: RULED DANGLE-tolerated (operator,
+  2026-08-24); PIN it with a dirty-store test.** Rationale (ratified): mirrors packet-61a-w4's
+  audit link — agents are retired-not-deleted; an owned-agent row surviving a principal delete
+  is a stale back-link, not a correctness break; `audit.actor_principal` already chose
+  dangle-tolerated for the same class. Do NOT cascade-delete agent rows on a principal delete
+  (that would erase fleet history), and do NOT refuse-while-owning-agents (an owned agent is not
+  a reason to block an admin principal delete, unlike a kept keep). Pin: create principal →
+  register an agent owned by it → delete principal → assert the agent row SURVIVES with a now-
+  dangling `owner_principal` (dangle-tolerated) on a DIRTY store
+  (`TestSchemaMigrationAgainstAnExistingStore` idiom, store-ref §1.6).
 - **R3.3 — the `owns` edge is minted SERVER-SIDE at register, never from an argument.** The
   stamp `agent.owner_principal = <principal-from-credential>` happens inside `register`,
   reading the principal from `get_access_token()` (§3.2.2). Pin by MUTATION: a `register` call
@@ -454,7 +473,7 @@ removed-behavior law — CLAUDE.md P8d dual):
 | I1 | `principal` and comms `agent` are UNLINKED (no edge between them) | **RETIRED** — 62 adds `agent.owner_principal : record<principal>` (the `owns` edge, Fork 3) | **dropped-deliberately** — this IS the mission (authorization-model §3.1: *"Authorization needs them linked"*). The link is a graph edge between two DISTINCT nodes; it does NOT merge their vocabularies. |
 | I2 | `principal.role/status` never wired to the `agent.role/status` tuples (different closed domains) | **PRESERVED** | **preserved-with-pin** — the `owns` edge relates NODES; it touches neither table's role/status columns. Pin: `agent` keeps `_AGENT_STATUS_ALLOWED`, `principal` keeps `_PRINCIPAL_STATUSES`; no cross-wiring (the one-column-one-identity law, `server.py` `_TRACE_DECLARED_KEYS` neighbourhood, survives). |
 | I3 | ledger-actor strings (`created_by`/`actor`/`owner`) NOT retrofitted to `principal` FKs | **PRESERVED for legacy free-text; SUPERSEDED for NEW governed writes** | **spec-silent → follows authorization-model §3.2.2 + §7.** NEW governed rows get server-stamped `owner_principal`/`owner_agent` (63/64 columns), NOT a `created_by` FK on `principal`. EXISTING free-text `created_by` stays a display/audit string (61a-w4 audit store already denormalizes `actor_email`/`actor_agent_name` for exactly this). The free-text field is not promoted to an authz input — §3.2.2 makes authz owner server-derived, not the old string. |
-| I4 | `PrincipalStore.delete` cascade covers exactly TWO `record<principal>` links (`principal_key.principal`, `keep.keeper`) | **EXTENDED** — 62 adds `agent.owner_principal` as the THIRD | **preserved-with-pin (R3.1/R3.2)** — the exact-set pin in `test_principal_keys_schema.py` reds until the new link's delete semantics are adjudicated (ratified DANGLE-tolerated); the delete docstring's own forward-scope warning is DISCHARGED by this packet. |
+| I4 | THREE `record<principal>` links EXIST at HEAD (`principal_key.principal`, `keep.keeper`, `audit.actor_principal` [61a-w4, dangle-tolerated]); `PrincipalStore.delete` ACTS ON two (cascade + refuse) | **EXTENDED** — 62 adds `agent.owner_principal` as the **FOURTH** existing link (RULED dangle-tolerated, so delete's acts-on set stays two) | **preserved-with-pin (R3.1/R3.2)** — count re-derived 2026-08-24 (grep of `record<{PRINCIPAL_TABLE}>` specs); the exact-set pin in `test_principal_keys_schema.py` reds until `agent.owner_principal` is added as the FOURTH and adjudicated DANGLE. ⚠ the delete docstring (`principals.py:662`) still says "TWO" — stale since 61a-w4 (P8d class); builder corrects it (R3.1). Delete's forward-scope warning DISCHARGED by this packet. |
 | I5 | the LOCAL fleet runs under `Posture.LOOPBACK` — auth DISABLED, no credential, full-write (§8 interim, "keep current behavior") | **RETIRED as the local RUNTIME posture** (operator override, Fork 2) — the local fleet moves to api-key auth (`Posture.LAN_BEARER`); the `LOOPBACK` posture itself STAYS supported in `posture.py` for a genuine no-auth deploy | **dropped-deliberately (deploy-owned).** The retirement is a packet-65 CONFIG flip (auth.enabled/mode + `.mcp.json` + key mint), NOT a `posture.py`/62 code deletion. Preserved: `Posture.LOOPBACK` remains valid + tested. Pin (R2.3): the local fleet's shared-view behavior SURVIVES the cutover. ⚠ Cross-packet: 62's served correctness DEPENDS on 65's atomic flip — a code-without-posture-flip cutover locks the fleet out (fail-closed). The pre-cutover fleet keeps running the old no-auth image (62/63/64 unserved until 65), so nothing breaks mid-development. |
 
 **The guard's DOCSTRING itself must be edited, not just the code** (P8d rendered-prose law: a
@@ -506,9 +525,11 @@ NOT drop — the rider IS the ruling):
 3. The ONE shared `stamp_owner(access_token, agent_capability) -> (owner_principal, owner_agent)`
    seam in `lorerunes` (R1.1), mutation-proven, fail-closed on absent credential (R2.1); and the
    `agent_of` resolution filled in `token_verifier.py` (was `None`), fail-closed None=DENY (R1.4).
-4. `PrincipalStore.delete`: `agent.owner_principal` added as the THIRD `record<principal>` link,
-   DANGLE-tolerated for owned agents; the `test_principal_keys_schema.py` exact-set pin discharged
-   (R3.1/R3.2, I4).
+4. `PrincipalStore.delete`: `agent.owner_principal` added as the **FOURTH** existing
+   `record<principal>` link (the three existing: `principal_key.principal`, `keep.keeper`,
+   `audit.actor_principal`), RULED DANGLE-tolerated for owned agents (delete's acts-on set stays
+   two); the `test_principal_keys_schema.py` exact-set pin discharged, and the delete docstring's
+   stale "TWO" count corrected (R3.1/R3.2, I4).
 5. The anti-injection invariant as a DERIVED reach pin over the governed surface
    (`partition_tools_by_population`), per-tool legs RED_ADJUDICATED for tools 63/64 has not yet
    retrofitted (R4.1–R4.3, Fork 4); fuzz + owner-stamp pins for the tool(s) 62 itself wires.
