@@ -10614,6 +10614,85 @@ def partition_tools_by_posture(
     return frozenset(mutating), frozenset(read_only)
 
 
+# Fork H(a) (packet 61b-w2) — the tool-population CLASSIFICATION registry (design
+# ``docs/design/2026-08-22-packet61-pdp-audit-rulings.md`` Fork H, sidecar D2). Every
+# REGISTERED tool is classified into a POPULATION for the 63/64 verb-routing:
+# ``shared_read`` (the code/docs corpus, exempt from row-level authorization) or
+# ``governed`` (owner+scope, routed through the PDP by 63/64). Like
+# ``partition_tools_by_posture`` above, the partition is DERIVED over the LIVE registry
+# (never a hand-list beside production truth — the #291/#344 lesson), so a NEW registered
+# tool is classified BY CONSTRUCTION and the growth pin (``test_tool_population_61b``) reds
+# until a human reviews it.
+#
+# The two REVIEWED sets are the HUMAN REVIEW RECORD — the reds-until-reviewed growth pin's
+# completeness marker (reach law #344/#345 / INSTRUMENT-0), NOT a runtime blocklist. The
+# runtime (``partition_tools_by_population``) DEFAULTS GOVERNED regardless, so an unreviewed
+# tool is fail-closed, never opened by a stale set.
+_SHARED_READ_CORPUS_TOOLS: frozenset[str] = frozenset(
+    {
+        # The code/docs corpus reads — no owner+scope, exempt from row-level authz.
+        "lore_search",
+        "lore_read",
+        "lore_get_symbol",
+        "lore_impact",
+        "lore_map",
+        "lore_dead_code",
+        "lore_diff",
+        # The corpus meta-reads: a claim-check read and a freshness/health read, both of
+        # which carry no owner+scope. Classified shared_read (corpus reads) so the
+        # growth-pin seed is GREEN; over-gating them to governed would be the fail-SAFE
+        # direction and would keep the seed green too (surfaced to lead-61).
+        "lore_verify",
+        "lore_index",
+    }
+)
+_REVIEWED_GOVERNED_TOOLS: frozenset[str] = frozenset(
+    {
+        # The coordination tools — owner+scope, routed through the PDP by 63/64.
+        "lore_comms",
+        "lore_recall",
+        "lore_remember",
+        "lore_tasks",
+        "lore_claim_task",
+        "lore_findings",
+    }
+)
+
+
+def partition_tools_by_population(
+    tools: Iterable[Any],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Partition registered tools into ``(shared_read, governed)`` by population.
+
+    The runtime classification for the 63/64 verb-routing (design Fork H, sidecar D2),
+    DERIVED over the LIVE registry exactly like its sibling
+    :func:`partition_tools_by_posture` — never a hand-list kept beside production truth.
+    ``shared_read`` = the corpus-read allowlist (:data:`_SHARED_READ_CORPUS_TOOLS`) ∩ the
+    live tool set; ``governed`` = EVERY OTHER live tool.
+
+    DEFAULT GOVERNED (fail-closed) — the D2 security asymmetry: a governed tool mistaken
+    for shared_read is a cross-principal LEAK (catastrophic), while a shared_read tool
+    mistaken for governed is broken functionality (loud/safe). So an UNREVIEWED tool
+    (absent from the allowlist) lands in ``governed`` — never opened by default. This is
+    "allowlist the safe" applied exactly: the SAFE, exempt set is the small enumerable one;
+    the forbidden set is not enumerated. :data:`_REVIEWED_GOVERNED_TOOLS` is the
+    review-completeness marker for the growth pin, NOT consulted here — so it is not a
+    fail-open governed blocklist.
+
+    The caller supplies the registered tool set (its responsibility, as with
+    ``partition_tools_by_posture`` under a hosted/filtered posture); each ``tool`` is any
+    object carrying ``.name`` (an ``mcp.types.Tool``).
+    """
+    shared_read: set[str] = set()
+    governed: set[str] = set()
+    for tool in tools:
+        if tool.name in _SHARED_READ_CORPUS_TOOLS:
+            shared_read.add(tool.name)
+        else:  # UNREVIEWED / coordination -> governed. FAIL-CLOSED (deny-by-default).
+            governed.add(tool.name)
+    return frozenset(shared_read), frozenset(governed)
+
+
 def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
     """Register the built-in MCP tools, then the extension-contributed tools.
 
