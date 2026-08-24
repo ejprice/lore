@@ -8,12 +8,12 @@ arbiter of the anti-spoofing mechanism (authorization-model §9/§10-O); the con
 grades the contract that implements this.
 **Status:** design finalized, not yet contracted. Consumes the CODE-COMPLETE 39/48/49/60/61
 substrate (all commit-only; deploy = the packet-65 joint cutover).
-**Revision:** v4 (2026-08-24) — v2 folded operator rulings; v3 corrected the `record<principal>`
-link count (FOUR, not three; 61a-w4 audit link was missed); **v4 adds the WAVE-2 ADDENDUM (at the
-end)** — the concrete capability mechanism: credential-not-claim crux (SF-1), `capability_hash`
-field on `agent` + shared `parse_credential` (DRY), mint-in-register / agent-lifecycle lifetime
-(SF-2) / no-cache revocation, the `resolve_agent` seam relocation (SF-3), ONE-wave scope, and the
-per-item security-auditor attack surface.
+**Revision:** v5 (2026-08-24) — v4 added the WAVE-2 ADDENDUM (capability mechanism; SF-1/SF-2/SF-3);
+operator ruled SF-1=ADOPT + SF-2=lifecycle-scoped+optional-seam (recorded in W2.7). **v5 resolves
+the 3 wave-2 CONTRACT escalations:** ESC-1 (stamp_owner home) RULED **loremaster, NOT lorerunes**
+(overriding the (A) lean — lorerunes is cross-member-only + predicates-not-entry-points; corrected
+R1.1/scope-line/W2.6); ESC-2 DEFER the explicit revoke verb (+ named re-open trigger); ESC-3 the
+`capability_expires_at` seam is ENFORCED-WHEN-SET (a decorative bound fails the trust doctrine).
 
 - `brief-base v14 read`
 - `brief project v7 read`
@@ -255,9 +255,19 @@ own-capability residual named above.
 **RIDERS — and pin/measure/verify each like this (whichever mechanism is ruled):**
 - **R1.1 — the owner stamp is ONE server-derived function, proven by MUTATION (§11 DRY).**
   There is ONE `stamp_owner(access_token, agent_capability) -> (owner_principal, owner_agent)`
-  seam (recommend it lives in `lorerunes` — the shared home — since both the verifier side and
-  the governed-store side read it). Move the derivation; every governed write's owner-stamp
-  pin must red (ROUTING-IS-NOT-SHARING). A caller that hand-derives owner is a private copy.
+  seam. ⚠ **CORRECTED per ESC-1 (2026-08-24) — it lives in `loremaster`, NOT `lorerunes`.** The
+  original "lives in lorerunes" was WRONG and internally inconsistent (W2.4 has it CALL
+  `resolve_agent`, which reads the store — `lorerunes` imports NO sibling, ever). Two reasons it
+  is loremaster: (1) **the lorerunes entry-criterion is CROSS-MEMBER policy** ("if two MEMBERS
+  need the same policy"), and BOTH consumers of `stamp_owner` — the register/verifier side and
+  63/64's governed-store side — are `loremaster`, so it is intra-member sharing = a shared
+  `loremaster` module, never `lorerunes`; (2) **it is I/O-ORCHESTRATION, not a general predicate**
+  (it drives a store read via `resolve_agent` and knows loremaster types — `AccessToken`,
+  `AgentRegistry`, the owner columns), so by the "PREDICATES, not ENTRY POINTS" rule and the #222
+  precedent (resolution stays OUT of lorerunes) it belongs with the I/O. Only the GENERAL pure
+  predicate `parse_credential` (a member-agnostic `name:secret` parser, beside `is_blank`)
+  qualifies for `lorerunes`. Move the derivation; every governed write's owner-stamp pin must red
+  (ROUTING-IS-NOT-SHARING). A caller that hand-derives owner is a private copy.
 - **R1.2 — the dedicated security-auditor pass attacks EXACTLY the ruled mechanism (§10-O).**
   Name for the auditor: for (A) — steal/replay a capability; present a sibling's capability;
   present a valid capability with a MISMATCHED transport principal (must reject); capability
@@ -523,8 +533,11 @@ NOT drop — the rider IS the ruling):
    argument (R3.3), with the per-agent CAPABILITY of mechanism (A) minted here (Fork 1) —
    `lore_comms register` is the natural home (it is already this pattern).
 3. The ONE shared `stamp_owner(access_token, agent_capability) -> (owner_principal, owner_agent)`
-   seam in `lorerunes` (R1.1), mutation-proven, fail-closed on absent credential (R2.1); and the
-   `agent_of` resolution filled in `token_verifier.py` (was `None`), fail-closed None=DENY (R1.4).
+   seam in **`loremaster`** (ESC-1 correction — it orchestrates a store read; `lorerunes` holds
+   only the pure `parse_credential` predicate) (R1.1), mutation-proven, fail-closed on absent
+   credential (R2.1); the `resolve_agent`/`verify_capability` seam in `AgentRegistry` (W2.4); and
+   `agent_of(access_token)` stays `None` (the token carries no agent — W2.4/SF-3), the per-call
+   agent resolution living in `resolve_agent`, fail-closed None=DENY (R1.4).
 4. `PrincipalStore.delete`: `agent.owner_principal` added as the **FOURTH** existing
    `record<principal>` link (the three existing: `principal_key.principal`, `keep.keeper`,
    `audit.actor_principal`), RULED DANGLE-tolerated for owned agents (delete's acts-on set stays
@@ -680,22 +693,39 @@ TTL.** Rationale: R1.3's "short-lived limits the leak window" is SUBSUMED by the
 (Google OAuth / api-key), which is the dominant credential; so an independent clock TTL buys
 little and forces a refresh mechanism (pure surface) that would break long agent sessions. An
 OPTIONAL `capability_expires_at : option<datetime>` seam is provided for defense-in-depth (mirrors
-`principal_key.expires_at`), defaulting to never; if the operator wants a clock TTL, it is the
-`_absolute_expiry`-style re-check on the same field. **Flagged for operator confirm; the
-security-auditor is the arbiter.** Recommendation: lifecycle-scoped + the optional-expiry seam.
+`principal_key.expires_at`), defaulting to never/unset. **Operator RULED SF-2 = agent-lifecycle-scoped
++ this optional seam (no clock TTL).**
+
+> **ESC-3 RULED (2026-08-24): the `capability_expires_at` seam is ENFORCED-WHEN-SET.** It defaults
+> to never/unset (lifecycle-scoped is the norm), but IF an operator sets it, `verify` MUST honor
+> it — `capability_expires_at <= now` → deny, re-checked EVERY call, mirroring
+> `PrincipalKeyStore.verify`'s key-expiry leg and `token_verifier._absolute_expiry`. This ALIGNS
+> with SF-2's intent (the operator ruled a *real seam*, not a decoration): a present-but-unchecked
+> expiry field is a decorative lie the trust doctrine forbids (a bound must be a FACT, not a
+> field nobody reads). This is a RIGOR sharpening of my looser "optional defense-in-depth" wording,
+> caught by the contract author — it needs NO new operator escalation (the operator meant a real
+> seam), and the contract author's enforced-when-set pin STANDS.
 
 **Revocation (RULED):** NO CACHE — verify re-checks the live row every call (pkt-49 R12), so
-revocation beats any residual window. A capability is revoked by (a) the agent being `retired`
-(condition 2 denies on the NEXT call), or (b) an explicit clear of `capability_hash` (a
-revoke path / admin verb — recommend a thin `lore-adm`/registry verb mirroring
-`PrincipalKeyStore.revoke`). Pin: retire/revoke the agent → the very next governed call with the
-old capability DENIES (no residual window).
+revocation beats any residual window. A capability is revoked by the agent being `retired`
+(condition 2 denies on the NEXT call). Pin: retire the agent → the very next governed call with
+the old capability DENIES (no residual window).
+
+> **ESC-2 RULED (2026-08-24): DEFER the explicit `capability_hash`-clear revoke verb.**
+> Retire-based revocation is ruled + pinned above (W2-R3) and fully satisfies the security
+> property (no-cache, next-call-denies). A thin `lore-adm`/registry verb that clears the hash
+> WITHOUT retiring the agent has NO current consumer — it is a `recommend`, not a need, so it is
+> DEFERRED (measure-then-add). **Named re-open trigger:** the first concrete need to invalidate a
+> suspected-leaked capability while KEEPING the agent alive (rotate-without-retire), OR the first
+> non-fleet consumer of the capability path. Until then, retire is the one revocation path and
+> nothing in wave 2 builds the explicit verb. This confirms the contract author's + lead's lean.
 
 **Auditor attack surface (W2.3):** unauthenticated `register` mints an owned agent → register
 must read the principal from the transport token (fail-closed if absent; pre-cutover unserved).
-Re-register rotates a sibling's live secret → mint-once-on-create pin. Revoked/retired capability
-still works → no-cache next-call-denies pin. (If SF-2 → clock TTL: expired capability served past
-expiry → `_absolute_expiry` re-check pin; moot if lifecycle-scoped.)
+Re-register rotates a sibling's live secret → mint-once-on-create pin. Retired-agent capability
+still works → no-cache next-call-denies pin (ESC-2: retire is the revocation path; the explicit
+verb is deferred). A SET `capability_expires_at` served past expiry → `_absolute_expiry`-style
+re-check pin, with a positive control (ESC-3 enforced-when-set); moot when unset (the default).
 
 ## W2.4 — `agent_of` / `resolve_agent` (item 4): the seam RELOCATES
 
@@ -733,20 +763,29 @@ splitting (stamp_owner is small and is the point).
 
 ## W2.6 — DRY ledger + riders (each a "and pin it like this" clause)
 
-- **DRY:** `parse_credential` extracted to `lorerunes`, shared by both verifies (mutation-proven);
-  `sha512_hex` reused (not cloned); `secrets.token_urlsafe(32)` entropy reused; the
-  connection-owner/`_query` retry seam reused (AgentRegistry's, not a new store). One
-  owner-derivation seam `stamp_owner` (R1.1).
+- **DRY:** `parse_credential` (a GENERAL pure `name:secret` predicate) extracted to `lorerunes`,
+  beside `is_blank`, shared by both verifies (mutation-proven); `sha512_hex` reused (not cloned);
+  `secrets.token_urlsafe(32)` entropy reused; the connection-owner/`_query` retry seam reused
+  (AgentRegistry's, not a new store). ONE owner-derivation seam `stamp_owner` in **`loremaster`**
+  (ESC-1 — I/O-orchestration + intra-loremaster, so NOT `lorerunes`), calling `resolve_agent`
+  (R1.1). The lorerunes vs loremaster split: general pure predicates (`is_blank`,
+  `parse_credential`) → `lorerunes`; store-reading orchestration (`stamp_owner`, `resolve_agent`)
+  → `loremaster`.
 - **W2-R1 (SF-1) — the §3.2.2 fuzz is the load-bearing pin:** every governed write, hostile
   `owner=`/`as_agent=`/`created_by=`/`scope=server` → stamp unchanged; only the VERIFIED
   capability moves `owner_agent`. Mutation-prove `stamp_owner`.
 - **W2-R2 — the binding pin (W2.2 cond. 3):** agent-A's valid capability under principal-B's token
   → DENY. This is what makes the accepted own-capability residual (Fork 1) the ONLY residual.
-- **W2-R3 — no-cache/revocation:** retire/revoke → next call denies, no residual window;
-  positive control (a live capability is accepted).
-- **W2-R4 (SF-2) — lifetime is a FACT:** if lifecycle-scoped, pin "no clock TTL, revocation is the
-  bound" out loud; if clock TTL, pin the `_absolute_expiry` re-check. Whichever the operator
-  confirms, the security-auditor arbitrates.
+- **W2-R3 — no-cache/revocation (ESC-2):** retire → next call denies, no residual window;
+  positive control (a live capability is accepted). The explicit clear-hash revoke verb is
+  DEFERRED (ESC-2 re-open trigger: rotate-without-retire need / first non-fleet consumer) — wave 2
+  does NOT build it.
+- **W2-R4 (SF-2 ruled + ESC-3) — lifetime is a FACT, BOTH legs pinned:** (a) lifecycle-scoped is
+  the default — pin "no clock TTL by default; retire is the revocation bound" out loud; AND (b)
+  **enforced-when-set** — pin that a SET `capability_expires_at` IS honored (`<= now` → deny,
+  re-checked every call, the `_absolute_expiry`/pkt-49-key-expiry leg) with a positive control (an
+  unexpired set value is accepted, an expired one denied). A present-but-unchecked expiry field
+  fails the trust doctrine (decorative bound). The security-auditor arbitrates the enforcement.
 - **W2-R5 (SF-3) — fail-closed resolution:** `resolve_agent(None/garbage)` → `None` → DENY;
   `agent_of(token)` stays `None`. Mutation-prove the DENY.
 - **W2-R6 — mint-once:** re-register does not rotate a live secret; the raw secret is returned
