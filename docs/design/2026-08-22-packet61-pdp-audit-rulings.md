@@ -1611,3 +1611,116 @@ stdlib-only charter is the settled lorerunes law. Fork D is now superseded on BO
 dataclass, not pydantic) and field-count (4, not 3 — D1). **Contract revision (folded):** Subject/Resource
 = stdlib frozen dataclasses; the lorerunes charter pin (imports ∈ stdlib ∪ lorerunes, derived via
 `sys.stdlib_module_names`; `dependencies == []`); + adversary F1/F2. Then re-grade.
+
+### Fork F/H addendum (2026-08-23) — the two 61b-w2 resolver+coverage forks (D1 · D2) + the #416 Fork-A refinement
+
+Ruling on `lore_comms #7009` (thread `q:61b-w2-forks` · `REPORT-contract-61b-w2.md`) + acknowledging the
+security-auditor's Fork-A refinement (`#7002`/#416).
+
+**D1 (Fork F — `list_keeps_for_member` born-wrapped vs mirror-consistent) → BORN-WRAPPED (confirm the
+lead); do NOT mirror the gap.** Ground-truthed this session: the mirror `list_keeps_for_keeper` does NOT
+wrap engine rejections (it calls `self._query` directly; only `_resolve_principal_id` raises
+`KeepStoreError` on the email), and NEITHER do `get_keep` / `list_household` / `_read_membership` — ALL
+KeepStore READ paths leak a raw `SurrealStoreError` from their SELECT. That is a #406-class READ gap in
+shipped code, NOT a standard to clone.
+- **Born-wrapped is the correct standard; mirror-consistency would clone a defect.** The new
+  `list_keeps_for_member` FEEDS the PDP resolver (its result populates `Subject.visible_keep_ids`), so a
+  raw `SurrealStoreError` escaping it lands in the AUTHZ path — exactly where consumer-law's "no raw
+  engine error reaches the caller" matters most (a raw engine error mid-authorization could be
+  misclassified or leak store internals). Route it through the shared `wrap_store_rejection` seam
+  (`KeepStoreError`) — one `with` block, near-free, consumer-law-correct. Cloning the mirror's
+  unwrappedness would ship a NEW consumer-law gap in NEW code (the #102 "clone a defect" lesson).
+- **LEDGER the mirror gap — and EXTEND #406 to the READ paths.** #406 currently names unwrapped WRITE
+  paths (`set_status`/`set_expires`/`delete`); the KeepStore READS (`list_keeps_for_keeper`,
+  `get_keep`, `list_household`, `_read_membership`) are the same class on the read side. Extend/annotate
+  #406 (or a sibling finding) to name them, WITH the reachability caveat from #406: a plain SELECT rarely
+  hits a domain-meaningful `SurrealStoreError` (no ASSERT/ENFORCED on a read; transport/contention are
+  already handled by the `_query` retry driver), so the reachable raw-leak set for reads is SMALL — but
+  consumer-law wants the CONTRACT consistent (every store path wraps) regardless of probability. Trigger:
+  the same consumer-law-hardening wave as #406's write paths. Recommend the lead fold it into #406.
+
+**D2 (Fork H-a — my INTERNAL CONTRADICTION) → CONFIRM "reds-until-REVIEWED, default-GOVERNED"; this
+resolves my contradiction.** The lead correctly caught that Fork H-a wrote BOTH *"a new tool grows the
+derived set and REDS the pin until CLASSIFIED"* AND *"allowlist-the-safe: an explicit allowlist of
+shared-read corpus tools"* — which conflict (allowlist-the-safe ⇒ governed-by-default ⇒ a new tool
+auto-governs and does NOT red; reds-until-classified ⇒ a new tool DOES red). Both were in my ruling
+unreconciled. The reconciliation, ruled:
+- **(1) Runtime default = GOVERNED (fail-closed) — the security property.** An unclassified/new tool is
+  treated as GOVERNED (gated). This asymmetry is the whole point and it is threat-model-driven: a
+  GOVERNED tool mistaken as shared-read is a CROSS-PRINCIPAL LEAK (silent, catastrophic); a SHARED-READ
+  tool mistaken as governed is BROKEN FUNCTIONALITY (loud, noticed, harmless to isolation). So the safe
+  default is GOVERNED — never open a coordination tool by default.
+- **(2) allowlist-the-safe = the SHARED-READ corpus tools are the explicit allowlist** (the code-corpus
+  tools — search/read/get_symbol/impact/map/dead_code/diff, §1); everything else is governed by default.
+  This is "allowlist the OPEN set (shared-read is safe to open — no per-row ACL on project code),
+  default-deny/govern the rest" — the reach-law form, correctly oriented.
+- **(3) The growth-detector pin (reds-until-REVIEWED) — why (1)+(2) alone are insufficient.** With only
+  default-governed + a shared-read allowlist, a NEW tool auto-governs (safe at runtime) but its
+  classification is NEVER human-verified — so a new CORPUS tool would be silently OVER-gated (broken
+  functionality nobody notices). So the pin REDS when a registered tool is in NEITHER the shared-read
+  allowlist NOR an explicit REVIEWED-GOVERNED acknowledgment set — forcing a human to review every new
+  tool (shared-read → add to allowlist; governed → acknowledge). The pin RED is a "review me" signal, NOT
+  a runtime failure: the runtime default for the unreviewed tool stays GOVERNED (safe) meanwhile. This is
+  §1's "no tool is silently neither" as a checked variable.
+- **(4) Derived, not stale:** both sets are checked against the LIVE tool registry (the `readonly_guard`
+  `partition_tools_by_posture`-over-the-live-list precedent), so a tool added-and-in-neither, or
+  removed-but-left-in-a-set, is caught. Mutation-prove: register a new tool in neither set → the pin
+  reds; classify it → green.
+- **⚠ Reach-law refinement (the direction, not a 61 blocker):** the PUREST form derives the population
+  from the tool ITSELF — a per-tool `population` declaration (governed|shared-read) as an annotation the
+  tool carries (the `readonly_guard` `readOnlyHint` precedent, though readOnlyHint does NOT map here —
+  BOTH populations have read tools, so a distinct classification is needed), with the pin checking every
+  tool DECLARES one. That removes the two central sets (which are hand-lists, self-correcting via the
+  growth-pin but still central). At 61 the classification is a SEED (the governed tools don't route
+  through the PDP until 63/64), so the two-set + growth-pin form is right-sized; RECOMMEND 63/64 move to
+  per-tool declaration as the routing wiring naturally carries the population. This sharpens Fork H-a.
+
+**Fork-A refinement (`#7002` / #416, the security-auditor's catch) — NO objection; it correctly refines
+my Fork-A IR contract.** The auditor found `ScopeInKeeps.to_surql` emits UNPARENTHESISED disjuncts (my
+flat-splice for the #413 index-served form), a cross-principal LEAK the moment a consumer nests it under
+`And` (operator precedence: `owner=$p AND scope=$k0 OR scope=$k1` parses as `(owner=$p AND scope=$k0) OR
+scope=$k1` — the 2nd disjunct ESCAPES the owner constraint). The flat-splice was a LOCAL index
+optimization that traded composition-safety — NOT a hard requirement; the composition-safety is worth
+far more than one paren layer. The lead's fix is the correct Fork-A IR refinement: **every IR node's
+`to_surql` emits a SELF-CONTAINED (parenthesised) fragment** — the property `And.to_surql` already
+ASSUMES of its children, now made universal + pinned (a live-store composition-safety pin: nest each node
+under `And` and assert no disjunct escapes) + a re-probe that the parenthesised `IN` still IndexScans
+(store-law — parens should not change the plan, but re-probe per the trust law). This is my Fork-A "IR
+node coverage / self-contained fragment" contract, sharpened. **And it validates the Fork-L decision to
+place a dedicated security-auditor on the PDP** (61b): the single-brain IR is the security surface, and
+the auditor found a latent cross-principal leak no functional gate reached — exactly its job.
+
+**Escalation:** none — D1 confirms consumer-law-correct born-wrapping (+ ledger the pre-existing read
+gap), D2 resolves my own Fork-H-a contradiction (the lead's reconciliation is correct), and the #416
+refinement is an accepted Fork-A sharpening. All within delegated authority. **Adversary unblock:**
+`list_keeps_for_member` born-wrapped via the shared seam; the coverage mechanism is reds-until-reviewed /
+default-governed (shared-read allowlist + reviewed-governed set, live-registry-derived, growth-pinned);
+every IR node's `to_surql` is self-contained.
+
+### Fork H addendum-R1 (2026-08-23) — `lore_verify` + `lore_index` = shared_read (my named-7 was illustrative, not a boundary)
+
+Ruling on `lead-61`'s R1 (the LAST thing holding the 61b-w2 commit): the D2 growth-pin, derived over the
+LIVE registry, found **9** ownerless corpus-reads — the 7 I named in D2 (search/read/get_symbol/impact/
+map/dead_code/diff) PLUS `lore_verify` + `lore_index` — and the builder classified the two as
+`shared_read`. Correct or a deliberate exclusion?
+
+**RULING → `shared_read` is CORRECT; ship it.** My D2 "7" was an ILLUSTRATIVE hand-list (I copied
+design §1's own 7-item corpus example), NOT a deliberate boundary excluding these two — and it was
+INCOMPLETE, which is the FIFTH hand-list of mine this packet a derivation/pin corrected. The growth pin
+did EXACTLY its job: it caught my under-count and forced the two omitted tools to be classified. The
+authoritative set is the LIVE registry, never my prose list — that is the whole point of D2.
+- **Both fit the D2/§1 principle exactly — ownerless CORPUS/INDEX meta-reads, no per-principal data:**
+  `lore_verify` claim-checks a symbol/signature against stored CODE truth (the shared corpus — anti-
+  hallucination); `lore_index` reads corpus FRESHNESS/HEALTH (file counts, sync/sweep ages, watched
+  roots). Neither touches a coordination row (comms/memory/tasks/findings) — so neither is
+  owner+scope-governed. They are corpus-side (§1's "code/docs corpus, shared-read"), just not in §1's
+  illustrative enumeration (which named the primary corpus reads, not the meta-reads).
+- **No per-principal angle exists** for either (I checked: verify reads the code graph; index reads
+  index metadata — both project-corpus-shared, like the corpus itself). So `shared_read` is both correct
+  AND the functional choice (don't over-gate a corpus meta-read).
+- **Fail-safe confirmed:** the D2 runtime default is GOVERNED, so a wrong call here would DENY (over-gate
+  = broken-functionality, loud), never LEAK — the asymmetry D2 is built on. shared_read is right on the
+  merits, and the floor is safe even if it weren't.
+- **Going forward:** these 9 are the REVIEWED shared_read set at HEAD; the growth pin keeps it honest (a
+  10th ownerless corpus-read, or a new coordination tool, reds until reviewed). Do NOT re-freeze my
+  prose "7" anywhere — the reviewed set is 9, derived-then-reviewed, and the pin is its keeper.
