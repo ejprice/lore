@@ -658,11 +658,22 @@ class PrincipalStore:
         ``keep`` table MUST exist on this database for the refuse read — on the CLI path
         the dispatch readies the keep slice first (§FR-4 D3 / #131 dirty-store).
 
-        ⚠ CASCADE FORWARD-SCOPE (design §F2 / §FR-4 PIN THE MISS): the delete accounts
-        for the TWO ``record<principal>`` links as of §FR-4 — ``principal_key.principal``
-        (children-first cascade) and ``keep.keeper`` (refuse-while-keeping). When ANY new
-        ``record<principal>`` link is added (63/64's ``owner_principal`` next), this MUST
-        be revisited — see the exact-set pin in ``test_principal_keys_schema.py``.
+        ⚠ CASCADE FORWARD-SCOPE (design §F2 / §FR-4 PIN THE MISS): the delete now
+        accounts for FOUR ``record<principal>`` links, each with its operator-ruled
+        disposition —
+          • ``principal_key.principal`` — children-first CASCADE (deleted above);
+          • ``keep.keeper`` — REFUSE-WHILE-KEEPING (the loud refusal above, §FR-4);
+          • ``audit.actor_principal`` — DANGLE-TOLERATED (packet 61a-w4); and
+          • ``agent.owner_principal`` — DANGLE-TOLERATED (packet 62, Fork 3 / R3.2 /
+            removed-behavior I4).
+        The delete deliberately does NOT touch the two dangling back-links: those rows
+        are retired-not-deleted history, a stale ``record<principal>`` back-link does NOT
+        auto-clean (store law §2) and is not a correctness break, and cascading them
+        would erase audit / fleet history. When ANY NEW ``record<principal>`` link is
+        added — e.g. 63/64's future GOVERNED-ROW ``owner_principal`` (a governed row's
+        owner, a LIVE dependency → cascade-or-refuse, NOT this agent-node dangle) — this
+        MUST be revisited; the exact-set pin in ``test_principal_keys_schema.py`` reds
+        until it is.
 
         Args:
             email: The principal to delete (its UNIQUE admission key).

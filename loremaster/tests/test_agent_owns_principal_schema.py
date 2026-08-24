@@ -396,10 +396,14 @@ class TestTheOwnerPrincipalFieldOnTheLiveEngine:
     async def test_the_agent_slice_is_safely_re_appliable(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811
     ) -> None:
-        """⚠ DISCRIMINATOR (§1.1). ``ensure_ready`` re-applies the slice on EVERY boot — a
-        statement that raises on re-application is a boot-time crash. GREEN at HEAD and on the
-        correct build; REDDENS a build whose ``owner_principal`` INDEX is ``OVERWRITE`` (which
-        rebuilds over every row on the 2nd apply)."""
+        """⚠ RE-APPLIABILITY CONTROL (§1.1). ``ensure_ready`` re-applies the slice on EVERY
+        boot — a statement that raises on re-application is a boot-time crash, so the whole
+        ``agent`` slice must apply twice without raising. GREEN at HEAD and on the correct
+        build. NOTE: this live control does NOT discriminate an ``OVERWRITE`` ``owner_principal``
+        index — an ``OVERWRITE`` PLAIN scalar index re-applies cleanly (the boot-crash rebuild
+        is HNSW-dimension-specific, store reference §1.5), so the live re-apply cannot see it.
+        The ``OVERWRITE``-index guard is the OFFLINE
+        ``test_the_owner_principal_index_is_IF_NOT_EXISTS_never_OVERWRITE`` pin."""
         connection, _ = admin_db
         for _ in range(2):
             await _apply_agent_ddl(connection)

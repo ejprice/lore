@@ -550,6 +550,23 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     # EXACTLY. Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE``
     # (§1.1, the only clause that lands a changed definition).
     ("declared_cadence", "option<string>", ""),
+    # packet 62, Fork 3 / scope item 1 (R3.4): the ``owns`` back-link — the
+    # principal that owns this agent. FORK 3 RULED it a SCALAR field-link
+    # (``keep.keeper`` precedent, packet-60 Fork A), NOT a relation edge; store
+    # reference §4 seals that choice — a graph TRAVERSAL is never index-served,
+    # so a scalar owner stays an INDEXED FIELD (the index is appended in
+    # ``_agent_statements``). ``option<record<principal>>`` with NO ASSERT and NO
+    # DEFAULT: store reference §1.4 — a NEW field on the production-POPULATED
+    # ``agent`` table MUST be ``option<>`` (a required ``record<principal>``
+    # poisons every existing agent row's next UPDATE with ``Expected
+    # record<principal> but found NONE``, and a DEFAULT does not rescue a legacy
+    # row). An ownerless agent is ALSO legal by design (Fork 2 — the pre-cutover
+    # local fleet holds no credential to stamp from; the register-time owner
+    # STAMP is scope item 2, a LATER wave), so ``option<>`` is both the
+    # migration-safe AND the semantically-correct shape. On principal-delete this
+    # link is DANGLE-TOLERATED (R3.2 / I4) — see ``PrincipalStore.delete``.
+    # Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1).
+    ("owner_principal", "option<record<principal>>", ""),
 )
 
 # The ``agent`` columns the two indexes are built on: ``(session, status)``
@@ -562,6 +579,14 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # not an index).
 _AGENT_SESSION_STATUS_INDEX_FIELDS = ("session", "status")
 _AGENT_NAME_INDEX_FIELDS = ("name",)
+# packet 62, Fork 3 / scope item 1: the ``owns`` back-link is indexed so "which
+# agents does principal X own" is an index-served plain-table read (store
+# reference §4 — a scalar filtered through a graph hop is un-indexable, so the
+# owner stays a FIELD and it is indexed). NON-unique: a principal owns MANY
+# agents (a UNIQUE index would reject the principal's 2nd owned agent). Plain
+# ``IF NOT EXISTS`` index (store reference §1.1 — never ``OVERWRITE`` an index:
+# ``OVERWRITE`` rebuilds over every row on every ``ensure_ready`` boot).
+_AGENT_OWNER_PRINCIPAL_INDEX_FIELDS = ("owner_principal",)
 
 # The closed THREE-value ``briefed.via`` vocabulary (design doc §0/§5, v7 —
 # finding #98): a ``register``-time auto-ack, an ``explicit`` ``brief_ack``
@@ -1448,17 +1473,21 @@ def _principal_statements() -> list[str]:
 
 
 def _agent_statements() -> list[str]:
-    """The ``agent`` table: the field set + the ``(session, status)`` and ``name`` indexes.
+    """The ``agent`` table: the field set + the ``(session, status)``, ``name`` and
+    ``owner_principal`` indexes.
 
     Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
     :data:`_AGENT_FIELD_SPECS` entry (the shared identifier charset ASSERT on
     ``name``/``session``, the shared non-empty ASSERT on ``role``, the closed
-    four-value ``status`` domain, the ``option`` optional columns, and the
+    four-value ``status`` domain, the ``option`` optional columns — incl. the
+    ``option<record<principal>>`` ``owner_principal`` owns back-link — and the
     ``option<object> FLEXIBLE`` ``checkpoint`` blob); the non-unique index on
-    ``(session, status)``; and the non-unique index on ``name`` alone (design
-    doc §0 D7 — backs the bare-name resolution SELECT). UNLIKE ``chunk`` /
-    ``memory`` the table carries no HNSW/FULLTEXT index — an agent is resolved
-    by exact identity, never retrieved semantically.
+    ``(session, status)``; the non-unique index on ``name`` alone (design
+    doc §0 D7 — backs the bare-name resolution SELECT); and the non-unique index
+    on ``owner_principal`` (packet 62 Fork 3 — "which agents does principal X
+    own" as an index-served plain-table read; store reference §4). UNLIKE
+    ``chunk`` / ``memory`` the table carries no HNSW/FULLTEXT index — an agent is
+    resolved by exact identity, never retrieved semantically.
     """
     statements: list[str] = [_define_table(AGENT_TABLE)]
     statements += [
@@ -1472,6 +1501,13 @@ def _agent_statements() -> list[str]:
     )
     statements.append(
         _plain_index(AGENT_TABLE, f"{AGENT_TABLE}_name", _AGENT_NAME_INDEX_FIELDS)
+    )
+    statements.append(
+        _plain_index(
+            AGENT_TABLE,
+            f"{AGENT_TABLE}_owner_principal",
+            _AGENT_OWNER_PRINCIPAL_INDEX_FIELDS,
+        )
     )
     return statements
 
