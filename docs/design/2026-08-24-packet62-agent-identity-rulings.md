@@ -8,12 +8,12 @@ arbiter of the anti-spoofing mechanism (authorization-model §9/§10-O); the con
 grades the contract that implements this.
 **Status:** design finalized, not yet contracted. Consumes the CODE-COMPLETE 39/48/49/60/61
 substrate (all commit-only; deploy = the packet-65 joint cutover).
-**Revision:** v3 (2026-08-24) — v2 folded operator rulings (F1=(A) premise HIGH-verified;
-F2=real local principal via api-key, sentinel retired, I5 added; F3/F4 ratified; FINAL SCOPE
-LINE). v3 corrects the `record<principal>` link count (re-derived: THREE exist —
-`principal_key.principal`/`keep.keeper`/`audit.actor_principal`; `agent.owner_principal` is the
-FOURTH, not the third — the 61a-w4 audit link was missed) across R3.1/R3.2/I4/scope-line, and
-flags the `PrincipalStore.delete` docstring's own stale "TWO".
+**Revision:** v4 (2026-08-24) — v2 folded operator rulings; v3 corrected the `record<principal>`
+link count (FOUR, not three; 61a-w4 audit link was missed); **v4 adds the WAVE-2 ADDENDUM (at the
+end)** — the concrete capability mechanism: credential-not-claim crux (SF-1), `capability_hash`
+field on `agent` + shared `parse_credential` (DRY), mint-in-register / agent-lifecycle lifetime
+(SF-2) / no-cache revocation, the `resolve_agent` seam relocation (SF-3), ONE-wave scope, and the
+per-item security-auditor attack surface.
 
 - `brief-base v14 read`
 - `brief project v7 read`
@@ -550,3 +550,235 @@ NOT drop — the rider IS the ruling):
 Fork 2 = real local principal via api-key (sentinel overridden); Forks 3 & 4 ratified. The
 security-auditor is the arbiter of mechanism (A) (§10-O). This doc consumes 39/48/49/60/61 as
 CODE-COMPLETE and touches no code — I am the designer.*
+
+---
+---
+
+# WAVE-2 ADDENDUM (2026-08-24) — the concrete capability mechanism
+
+Wave 1 (the `agent.owner_principal` store foundation) is GO + committed (`3c94ffd`). This
+addendum rules the CONCRETE shape of Fork-1's mechanism (A) — the per-agent capability — before
+the wave-2 contract. It answers the lead's five consult items (`lore_comms #7027`), each with
+its security-auditor attack surface (R1.2). Grounded in a read of `principal_keys.py`
+(`PrincipalKeyStore` — the packet-49 credential precedent) this session.
+
+## W2.0 — THE CRUX (item 1): a capability is a VERIFIED CREDENTIAL, not a spoofable CLAIM
+
+**ANSWERED: the credential-vs-claim distinction is SOUND and SUFFICIENT.** §3.2.2 forbids
+authz-bearing arguments because an argument like `owner=alice` is an **unverified assertion the
+server would have to TRUST** — the confused deputy. A `capability` secret is categorically
+different: it is a **bearer credential the server VERIFIES** (constant-time-ish UNIQUE-hash
+lookup over a preimage-resistant `sha512_hex` digest — `principal_keys.py:492` `verify`),
+unforgeable without the secret. The server never TRUSTS the argument's asserted identity; it
+derives identity from the **verification RESULT**. That is the same construction as the transport
+bearer token itself — a secret presented in a header, verified, not trusted — and as the packet-49
+api-key `name:secret`, which is ALREADY a credential-presented-as-a-value and which nobody calls a
+confused deputy. **PROOF-BY-PRECEDENT: `PrincipalKeyStore.verify` is this exact pattern, shipped
+and audited.** The only difference wave-2 introduces is the CHANNEL: because all subagents share
+ONE connection + ONE transport token (the HIGH-verified constraint), the per-agent credential
+cannot ride a per-connection header, so it rides the **only per-call channel a subagent controls
+— a tool argument.** The channel changes; the credential-not-claim nature does not.
+
+**⚠ SF-1 (sub-fork — CONFIRM; touches §3.2.2's letter).** §3.2.2 as written says
+*"identity/owner … NEVER from a tool argument."* The precise, correct reading under mechanism (A)
+is: **never from an UNVERIFIED tool argument (a claim); a VERIFIED credential argument is
+admissible, because identity is taken from the verification result, not the asserted value.** The
+owner STAMP still never comes from a raw `owner=`/`as_agent=`/`created_by=`/`scope=server` claim —
+those remain forbidden as authz inputs (display-only, sanitised, no authority). This refinement
+is the necessary consequence of the operator's own (A) + `name:secret` ruling given the verified
+shared-transport fact, so I RECORD it as derived rather than escalate it — but it edits the letter
+of an operator-stated invariant, so it is flagged for the operator to VETO. Recommendation:
+adopt the refined reading; it is what makes (A) expressible at all.
+
+## W2.1 — presentation (item 1): `name:secret`, verified, on every governed call
+
+**RULED: the capability is a `<name>:<secret>` string presented as a dedicated argument on every
+governed call, verified server-side before the owner stamp.** Mirror the packet-49 wire format
+exactly (`principal_keys.py` §WIRE FORMAT: presented `<name>:<secret>`, stored hash
+`sha512_hex(f"{name}:{secret}")` of the WHOLE string). Two presentation shapes were considered;
+the ruling is a DEDICATED argument, not overloading the existing `agent=` name param:
+- **Dedicated `capability=<name:secret>` argument** (RULED) — keeps the credential separate from
+  the display `agent=<name>` (which stays a sanitised, no-authority label). The verified
+  capability determines `owner_agent`; the display `agent=` never does.
+- *Overloading `agent=` to carry `name:secret`* (REJECTED) — the `agent` name is used in renders,
+  dedup and routing; mixing a secret into it risks the secret leaking into a rendered surface (a
+  §F3a-class credential-in-a-log defect) and conflates a display label with a credential.
+
+**Auditor attack surface (W2.1):** fuzz every governed write with hostile
+`owner=`/`as_agent=`/`created_by=`/`scope=server` → the stamped `(owner_principal, owner_agent)`
+is UNCHANGED (from the verified capability + transport token). Present a valid capability with a
+mismatched display `agent=<other>` → `owner_agent` follows the CAPABILITY, not the display name.
+Present NO capability on a governed write → fail-closed DENY (W2.4).
+
+## W2.2 — storage + verify (item 2): a `capability_hash` field on `agent`, shared parse/hash
+
+**RULED: store the capability as `agent.capability_hash : option<string>` (UNIQUE index) — a
+field on the existing `agent` row — NOT a new `AgentCapabilityStore` and NOT an extension of
+`PrincipalKeyStore`.** Rationale (packages/DRY + minimal surface):
+- **1:1 cardinality.** An agent has exactly ONE live capability; `principal_key` is 1:many
+  (a principal holds many keys), which is why IT is a separate table. A 1:1 credential is a
+  FIELD on the owning row, not a child table.
+- **Minimal surface + atomic mint.** `register`'s create branch (`agents.py:650`, the
+  `existing_row is None` path) already `CREATE`s the agent row; minting `capability_hash` in the
+  SAME `CONTENT` is one atomic write, no new store, no new connection-owner clone (a whole `~250`-line
+  clone is what a separate store costs — `principal_keys.py` cloned it verbatim).
+- **The binding check is FREE.** `verify` needs `agent.owner_principal` (Fork 3) for the
+  `(principal, agent)` binding — it lives on the SAME row, so one indexed SELECT returns
+  `capability_hash` + `status` + `owner_principal` together.
+- **The retry seam is already covered.** `AgentRegistry._query` is auto-discovered by
+  `test_retry_seam.py`; verify rides it — no new seam to enroll.
+- **Extending `PrincipalKeyStore`** (REJECTED) — overloads a principal-bound table with an
+  agent-bound credential; one-column-one-identity violation (the same law `principals.py:13–31`
+  states for role/status).
+
+**DRY (the shared POLICY that MUST agree — ONE IMPLEMENTATION):** the wire-format PARSE and the
+HASH must be identical to `PrincipalKeyStore`'s, or a credential minted one way won't verify the
+other and the two drift. Concretely:
+- **Extract `lorerunes.parse_credential(presented) -> tuple[str, str] | None`** (the
+  `is_blank` reject → `partition(":")` → blank-half reject sequence, currently inline at
+  `principal_keys.py:519–525`) and have BOTH verifies call it. Prove by mutation: change the
+  parse (e.g. partition on LAST colon), and BOTH stores' verify pins red.
+- **The hash stays `sha512_hex`** (already shared, `loremaster.index.records`) — never a
+  hand-rolled `hashlib` clone (#102/#120).
+- **The no-oracle uniform-deny + NO-CACHE discipline** (verify returns `None` on every failure,
+  laundered DEBUG reason, re-checked every call — `principal_keys.py:492`, R12) is a DISCIPLINE
+  pinned in both, not a shared skeleton (the admission conditions differ, so a forced shared
+  skeleton over differing logic would be worse than the pinned discipline).
+
+`agent.capability_hash` is a NEW field on the POPULATED `agent` table → `DEFINE FIELD OVERWRITE`,
+type `option<string>` (store-ref §1.4: a new required field poisons existing rows), UNIQUE index
+`IF NOT EXISTS` (store-ref §1.1). Dirty-store migration pinned (old agent rows read `None`).
+
+**verify_capability admission conditions** (re-evaluated every call, one `now`, mirroring
+`principal_keys.py:497–503`): (1) `capability_hash` matches (UNIQUE lookup); (2) the agent is
+NOT `retired` (`agent.status`); (3) **the binding: `agent.owner_principal` == the transport
+token's principal** (the load-bearing (principal, agent) check); (4) the owning principal is
+`active` + unexpired (transitive, via `owner_principal`). Any failure → uniform `None` → DENY.
+
+**Auditor attack surface (W2.2):** forge a capability without the secret → no hash match →
+uniform deny (preimage resistance). Timing/enumeration oracle → UNIQUE-hash-index lookup gives
+uniform timing + no name-existence oracle (pkt-49 precedent). Injection via the presented string
+→ bound `$h` param, never interpolated. **Cross-principal capability replay — present agent-A's
+valid capability under principal-B's transport token → condition (3) DENIES** (this is the pin
+that makes a leaked capability useless to anyone but its owner). Retired-agent capability →
+condition (2) denies.
+
+## W2.3 — mint + lifetime + revocation (item 3)
+
+**Mint (RULED):** `register`'s create branch mints the secret (`secrets.token_urlsafe(32)` — the
+pkt-49 entropy, `principals.py:_SECRET_ENTROPY_BYTES`), stores `capability_hash =
+sha512_hex(f"{name}:{secret}")`, and returns the raw `<name>:<secret>` **ONCE** in the register
+result (the store never persists the raw secret — pkt-49 discipline). **Mint-once-on-create:**
+re-register (the idempotent `else` branch, `agents.py:680+`) does NOT rotate the secret (a
+running agent already holds it; rotating would break it mid-session). This is consistent with
+fleet law "names are never reused" — a respawn is a fresh name → fresh register → fresh mint.
+
+**⚠ SF-2 (sub-fork — CONFIRM; reinterprets R1.3 "short-lived is a FACT"). Lifetime RULED
+(recommended): AGENT-LIFECYCLE-scoped — valid while the agent is not retired/revoked; NO clock
+TTL.** Rationale: R1.3's "short-lived limits the leak window" is SUBSUMED by the binding check
+(W2.2 condition 3) — a leaked capability is **useless without the owner's transport token**
+(Google OAuth / api-key), which is the dominant credential; so an independent clock TTL buys
+little and forces a refresh mechanism (pure surface) that would break long agent sessions. An
+OPTIONAL `capability_expires_at : option<datetime>` seam is provided for defense-in-depth (mirrors
+`principal_key.expires_at`), defaulting to never; if the operator wants a clock TTL, it is the
+`_absolute_expiry`-style re-check on the same field. **Flagged for operator confirm; the
+security-auditor is the arbiter.** Recommendation: lifecycle-scoped + the optional-expiry seam.
+
+**Revocation (RULED):** NO CACHE — verify re-checks the live row every call (pkt-49 R12), so
+revocation beats any residual window. A capability is revoked by (a) the agent being `retired`
+(condition 2 denies on the NEXT call), or (b) an explicit clear of `capability_hash` (a
+revoke path / admin verb — recommend a thin `lore-adm`/registry verb mirroring
+`PrincipalKeyStore.revoke`). Pin: retire/revoke the agent → the very next governed call with the
+old capability DENIES (no residual window).
+
+**Auditor attack surface (W2.3):** unauthenticated `register` mints an owned agent → register
+must read the principal from the transport token (fail-closed if absent; pre-cutover unserved).
+Re-register rotates a sibling's live secret → mint-once-on-create pin. Revoked/retired capability
+still works → no-cache next-call-denies pin. (If SF-2 → clock TTL: expired capability served past
+expiry → `_absolute_expiry` re-check pin; moot if lifecycle-scoped.)
+
+## W2.4 — `agent_of` / `resolve_agent` (item 4): the seam RELOCATES
+
+**⚠ SF-3 (a refinement, NOT a fork — but the contract author MUST have it crisp).** The 39-W1
+`agent_of(access_token)` seam (`token_verifier.py:160`) reads `claims["agent"]` — it was shaped
+on the ASSUMPTION of a token-borne agent (the "minted (principal, agent) token" shape §3.3
+imagined). The HIGH-verified fact kills that assumption: **the agent is NEVER in the transport
+token** (the token is the PRINCIPAL's; the capability arrives per-call as an argument). Therefore:
+- **`agent_of(access_token)` correctly stays `None` — it is not "filled".** The transport token
+  genuinely carries no agent. Keep it (its fail-closed None=DENY doc is still right for a
+  token-borne agent, which is always absent); update its docstring to say so under the
+  capability model. Do NOT stuff an agent into the token.
+- **The REAL per-call resolver is a NEW seam: `resolve_agent(presented_capability, access_token,
+  registry) -> agent_id | None`** (living in `AgentRegistry` as `verify_capability`), fail-closed
+  `None`=DENY (R1.4's semantics MOVE here). `stamp_owner` calls it: `owner_principal` from the
+  token, `owner_agent` from `resolve_agent`. A `None` from `resolve_agent` (absent/garbage/
+  unverified/binding-mismatch capability) DENIES an agent-scoped write — never "any agent".
+
+**Auditor attack surface (W2.4):** absent/garbage capability treated as wildcard → fail-closed
+DENY pin. `agent_of(token)` returns a stale/other agent → pin it stays `None`. `resolve_agent`
+returns an agent whose `owner_principal` ≠ the token principal → binding pin (W2.2 cond. 3).
+
+## W2.5 — wave scope (item 5): ONE wave (mechanism + its security pins + prose)
+
+**RULED: ONE wave-2.** The field + mint-in-register + `verify_capability`/`resolve_agent` +
+`stamp_owner` + `parse_credential` extraction are ONE tightly-coupled mechanism; splitting
+store-from-verify ships a half-mechanism nothing exercises, and **splitting the security pins
+from the mechanism ships an UNVERIFIED mechanism — forbidden by the trust doctrine** (a mechanism
+must ship WITH its adversary pins). So the mechanism, its fuzz/binding/replay/revocation pins, and
+the prose ride ONE wave. The 63/64 **per-tool** reach legs (Fork 4) stay RED_ADJUDICATED — that
+is the cross-packet boundary, not a wave-2 split. If sizing forces a split, the ONLY sound seam is
+**2a = the credential mechanism + ALL its security pins** (never mechanism-without-pins) and
+**2b = `stamp_owner` wiring into the tool(s) 62 owns + the reach pin + prose**; I recommend NOT
+splitting (stamp_owner is small and is the point).
+
+## W2.6 — DRY ledger + riders (each a "and pin it like this" clause)
+
+- **DRY:** `parse_credential` extracted to `lorerunes`, shared by both verifies (mutation-proven);
+  `sha512_hex` reused (not cloned); `secrets.token_urlsafe(32)` entropy reused; the
+  connection-owner/`_query` retry seam reused (AgentRegistry's, not a new store). One
+  owner-derivation seam `stamp_owner` (R1.1).
+- **W2-R1 (SF-1) — the §3.2.2 fuzz is the load-bearing pin:** every governed write, hostile
+  `owner=`/`as_agent=`/`created_by=`/`scope=server` → stamp unchanged; only the VERIFIED
+  capability moves `owner_agent`. Mutation-prove `stamp_owner`.
+- **W2-R2 — the binding pin (W2.2 cond. 3):** agent-A's valid capability under principal-B's token
+  → DENY. This is what makes the accepted own-capability residual (Fork 1) the ONLY residual.
+- **W2-R3 — no-cache/revocation:** retire/revoke → next call denies, no residual window;
+  positive control (a live capability is accepted).
+- **W2-R4 (SF-2) — lifetime is a FACT:** if lifecycle-scoped, pin "no clock TTL, revocation is the
+  bound" out loud; if clock TTL, pin the `_absolute_expiry` re-check. Whichever the operator
+  confirms, the security-auditor arbitrates.
+- **W2-R5 (SF-3) — fail-closed resolution:** `resolve_agent(None/garbage)` → `None` → DENY;
+  `agent_of(token)` stays `None`. Mutation-prove the DENY.
+- **W2-R6 — mint-once:** re-register does not rotate a live secret; the raw secret is returned
+  ONCE and never persisted; no credential in any rendered/logged surface (§F3a).
+- **W2-R7 — DDL:** `capability_hash` `option<string>` `OVERWRITE`, UNIQUE `IF NOT EXISTS`,
+  dirty-store migration pinned (store-ref §1.1/§1.4).
+- **Fleet-briefing obligation (FLAG, not a 62-build task):** the capability model requires each
+  subagent to CAPTURE `register`'s one-time secret and PRESENT it on every governed call — a
+  spawn-BRIEF change (like "register first" already is), owned by orchestration/packet-65, not
+  62's build. Pre-cutover nothing breaks (62 unserved). Name it so the contract author does not
+  try to make 62 re-brief the fleet.
+
+## W2.7 — sub-forks flagged (for the lead → operator)
+
+> **OPERATOR RULED 2026-08-24 (via lead-62, AskUserQuestion):** **SF-1 = ADOPT** the refined
+> reading (a VERIFIED credential argument is admissible; identity is taken from the verification
+> result, not the asserted value; raw `owner=`/`as_agent=`/`created_by=`/`scope=server` CLAIMS
+> stay forbidden as authz inputs). **SF-2 = agent-lifecycle-scoped + the optional
+> `capability_expires_at` seam** (no clock TTL; the binding + no-cache revocation IS the bound,
+> pinned out loud; the seam defaults to never). Both confirmed AS the sidecar recommended. SF-3 is
+> a NOTE (no decision). The mechanism is SETTLED for the wave-2 contract.
+
+- **SF-1 (§3.2.2 refinement: verified-credential-arg admissible)** — DERIVED from (A)+`name:secret`;
+  recorded, flagged CONFIRM (edits a stated invariant's letter). Recommend adopt.
+- **SF-2 (lifetime: agent-lifecycle-scoped vs clock TTL)** — reinterprets R1.3; recommend
+  lifecycle-scoped + optional-expiry seam; security-auditor arbitrates. Flagged CONFIRM.
+- **SF-3 (`agent_of` stays `None`; `resolve_agent` is the real seam)** — a refinement forced by
+  the verified fact, NOT a fork; a crisp NOTE for the contract author.
+
+None are MAJOR-blocking; SF-1 and SF-2 are "confirm-the-derivation / recommend" (operator may
+veto), SF-3 is a note. The mechanism is fully specified for the wave-2 contract.
+
+*Addendum author: design-sidecar-62 (Fable), 2026-08-24, consult `lore_comms #7027`. Grounded in
+`principal_keys.py` (`PrincipalKeyStore` precedent) + `agents.py` (`AgentRegistry.register`) read
+this session. Touches no code — I am the designer.*
