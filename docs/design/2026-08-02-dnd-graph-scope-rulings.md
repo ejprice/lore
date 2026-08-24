@@ -22,7 +22,8 @@ their derivations from those reports — anything without a derivation there is 
 5. **THE PICKS — seven families ship in v1** (§2 below): spells+classes · class
    architecture · monsters core · monster—casts→spell · conditions + damage types ·
    items · feats/backgrounds/species. **Deferred with a named trigger** (first
-   campaign-lore query that needs it): lore glossary / deities / planes / gazetteer.
+   campaign-lore query that needs it): lore glossary / deities / ~~planes~~ / gazetteer.
+   **[planes UN-DEFERRED 2026-08-24 — see the amendment after §1.]**
 6. **COMPOSITION IS CLIENT-SIDE, ALWAYS.** Wild shape is one of MANY prose-mechanic
    rules. The served pattern: the consumer LLM searches the rule → reads the returned
    rules text → derives the constraint (Beast, CR = level/3) → runs a graph FILTER query
@@ -58,13 +59,34 @@ Still open, ruled at packet 50/51 kickoff: proposal §9 forks 3 (MCDM dedupe —
 5 (class-node edition scoping), 7 (edge-only membership), 8 (ENFORCED from birth — rec
 stands); D3 (degraded 2014 stat blocks) moves into 50's design scope.
 
+### Amendment — 2026-08-24 operator ruling (closed-vocab multi-tag schema slot-in)
+
+Two clauses above are REVERSED, ruled during the transmute-stage closed-vocab schema design.
+Provenance (facts, not re-transcribed here): `scripts/probe_dnd_multitag_schema.py`
+(self-checking, PROBED live on 3.2.4), capabilities doc §2, and packet 51 Scope IN.
+
+- **F3 habitat: EDGE → FIELD.** Habitat is an indexed `array<string>` field on `monster`
+  (`FIELDS habitat.*`), not an edge. Member-exact `CONTAINSANY`/`INSIDE` containment,
+  index-served (measured `UnionIndexScan`); the `Any` habitat is a reserved SENTINEL vocab
+  member expanded at read (`CONTAINSANY [<terrain>, 'Any']`; omit the clause when the set is
+  empty — `CONTAINSANY []` TableScans). Rationale: habitat terrains are ATTRIBUTES with no
+  identity / own attributes / inbound questions — a field per the relationship-vs-attribute
+  line — and the field is cheaper and un-trap-able where the edge bought nothing. NEVER a
+  joined string (substring false-match: 'Forest' ⊂ 'Foresthome').
+- **Ruling 5 planes: DEFERRED → IN SCOPE.** The plane taxonomy ships now as a small SEPARATE
+  `is_part_of` containment reference graph (specific ⊂ grouping; `TYPE RELATION IN plane OUT
+  plane ENFORCED`, `UNIQUE(in,out)` + own `out` index), consumed via the expand-then-
+  `CONTAINSANY` two-step (never a traversal-in-`FROM`). The transmute producer DERIVES and
+  ships the containment mapping as reference data alongside the flat plane tags. deities /
+  gazetteer / lore-glossary remain deferred.
+
 ## 2. The picked families — what each ships
 
 | # | family | core content | oracles (build-time pins) |
 |---|---|---|---|
 | F1 | **spells + classes** | spell nodes; `learnable_by` edges; level/ritual/school as indexed fields | the 987/987 two-source class-edge diff |
 | F2 | **class architecture** | subclass—specialises→class (134 entries / 115 names, 7 heading dialects); feature—belongs_to→class/subclass; feature—granted_at→level (an EDGE with a level property — ASI recurs 39×, a scalar field is wrong); subclass—grants_spell (56 + 28 tables); sub-option families (invocations/metamagic/maneuvers) | PHB features 174/174 (headings vs progression tables); XGtE subclass manifest 31/31 |
-| F3 | **monsters core** | monster nodes; type/CR/size/speed-modes/senses as fields; habitat edges (Appendix B is the ONLY habitat source for the Beast core); group membership; the 59-row 2014→2024 rename alias | Appendix B: CR 500/0 mismatch; Beast sets 85=85; habitat 337/341 |
+| F3 | **monsters core** | monster nodes; type/CR/size/speed-modes/senses as fields; ~~habitat edges~~ **habitat as an indexed `array<string>` field (`.*` element path — 2026-08-24 amendment)** (Appendix B is the ONLY habitat source for the Beast core); group membership; the 59-row 2014→2024 rename alias | Appendix B: CR 500/0 mismatch; Beast sets 85=85; habitat 337/341 |
 | F4 | **monster—casts→spell** | 630 frequency-list edge tokens (630/630 resolve to PHB spells) + inline-action grammar (~94% recall measured) + the 2014-dialect grammar; frequency bucket + upcast rider as edge properties | resolution rate itself (630/630) is the pin |
 | F5 | **conditions + damage types** | 15 condition nodes + 13 damage-type nodes; mechanical immunity edges; the GRAMMAR-grade inflicts-condition edge is defer-able within the family | conditions 15=15 across two sources |
 | F6 | **items** | item—attunable_by→class (89 pairs — the cleanest edge set in the corpus) / species / feat-gated; item—grants_spell (139 pairs; charge-cost as edge property) | attunement DMG-descriptor vs artificer-table diff (located, undiffed — diff at build) |
