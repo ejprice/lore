@@ -110,12 +110,16 @@ def _field_statement(field: str) -> str | None:
 
 
 def _index_statement_over(field: str) -> str | None:
-    """The single ``DEFINE INDEX`` whose FIELDS are EXACTLY ``field`` (None if unbuilt)."""
+    """The single ``DEFINE INDEX`` over ``field`` (None if unbuilt). The field-name is matched
+    at a WORD BOUNDARY (``\\b``) so this matches BOTH a plain index that ENDS at the field AND a
+    UNIQUE index where ``UNIQUE`` follows the field list — a ``\\s*$`` anchor here would never
+    match a correct ``… FIELDS <field> UNIQUE`` emission (the C-DEF the adversary caught). ``\\b``
+    still requires the WHOLE field token (``capability_hash_extra`` does not match)."""
     matches = [
         statement
         for statement in _agent_statements()
         if _DEFINE_INDEX.match(statement)
-        and re.search(rf"FIELDS\s+{field}\s*$", statement, re.IGNORECASE)
+        and re.search(rf"FIELDS\s+{field}\b", statement, re.IGNORECASE)
     ]
     assert len(matches) <= 1, f"expected at most one DEFINE INDEX over agent.{field}, got {matches!r}"
     return matches[0] if matches else None
@@ -578,6 +582,44 @@ class TestVerifyCapabilityAdmission:
         )
         # A's valid capability under A's token -> ACCEPT (positive control: nothing else changed).
         assert await verify(capability, _token(_EMAIL_ALICE)) == result.agent.id
+
+    async def test_an_ownerless_agents_capability_is_denied(self, cap_env: Any) -> None:
+        """⚠ THE OWNERLESS-AGENT BINDING PIN (W2.2 condition 3, ∀-over-agents — owned AND
+        ownerless). The binding pin above uses only OWNED agents, a monoculture on owner-PRESENCE.
+        But the contract itself sanctions ownerless agents
+        (``test_register_without_a_credential_is_ownerless_not_fabricated``: the pre-cutover
+        loopback fleet, Fork 2) — and such an agent still MINTS a capability on create (W2.3). Its
+        ``owner_principal`` is NONE, so the binding (``agent.owner_principal == token principal``)
+        can be satisfied by NO token → it must DENY under EVERY principal's token. None is never a
+        wildcard. RED at HEAD (verify_capability absent); REDDENS a None-permissive build that
+        treats a NONE owner as matching any principal in conditions 3 AND 4 — the confused-deputy
+        door §3.2 forbids, reproduced live by the adversary (an ownerless cap resolving under a
+        foreign token)."""
+        verify = _verify_capability(cap_env)
+        assert verify is not None, "verify_capability unbuilt"
+        # An OWNERLESS register (owner_principal_id=None) still mints a capability (W2.3 create-branch mint).
+        ownerless = await _register_owned(cap_env, name="free_worker", session="s2", owner_bare=None)
+        ownerless_cap = getattr(ownerless, "capability", None)
+        assert ownerless_cap, "an ownerless register still mints a capability (W2.3 create-branch mint)"
+        # No owner -> no principal can satisfy the binding -> DENY under ANY principal's token.
+        assert await verify(ownerless_cap, _token(_EMAIL_ALICE)) is None, (
+            "an ownerless agent's capability must DENY under a principal's token — owner_principal "
+            "is NONE and None matches NO principal (fail-closed binding, W2.2 condition 3)"
+        )
+        assert await verify(ownerless_cap, _token(_EMAIL_BOB)) is None, (
+            "... and under EVERY other principal's token too — a NONE owner is never a wildcard match"
+        )
+        # POSITIVE CONTROL: an OWNED agent's capability under its OWN principal RESOLVES — so this
+        # pin discriminates deny-for-ownerless from accept-for-owned, not 'denies everything'.
+        owned = await _register_owned(
+            cap_env, name="alice_worker", session="s1", owner_bare=cap_env.alice_bare
+        )
+        owned_cap = getattr(owned, "capability", None)
+        assert owned_cap, "capability mint unbuilt"
+        assert await verify(owned_cap, _token(_EMAIL_ALICE)) == owned.agent.id, (
+            "positive control: an OWNED agent's capability under its OWNER's token must RESOLVE — "
+            "this pin denies the ownerless door, it does not deny everything"
+        )
 
     async def test_a_retired_agents_capability_is_denied_next_call_no_cache(
         self, cap_env: Any
