@@ -402,6 +402,20 @@ The house rules for reading and writing rows. Each one was found the hard way.
     (`FIELDS classes.*, level`) and a scalar one (`FIELDS name, source_book UNIQUE`): a
     trailing-column-only predicate TableScans. Useful corollary: ONE `UNIQUE(name, source_book)`
     serves both cross-book uniqueness and the leading-column exact-name lookup.
+  - **[PROBED 2026-08-24, 3.2.4 — re-confirmed forward off 3.2.1, plus the OR/empty facts;
+    `scripts/probe_dnd_multitag_schema.py`, self-checking, exit 0]** over a `FIELDS <f>.*`
+    element-path index: `<f> CONTAINSANY [a, b]` **and** a same-field OR
+    (`'a' INSIDE <f> OR 'b' INSIDE <f>`) are **BOTH `UnionIndexScan`** (each disjunct an
+    `IndexScan` child) — so the `IN`-in-`OR` TableScan trap above does **NOT** extend to two
+    array-containment disjuncts; `CONTAINSANY` is the cleaner plan (no residual `Filter`
+    wrapper the OR carries). ⚠ **But `<f> CONTAINSANY []` (empty set) TableScans** — an emitter
+    MUST omit the clause when the set is empty, exactly the omit-when-empty rule the `IN`-in-`OR`
+    note carries. The bare-index silent-`[]` equality trap and **member-exact** array membership
+    (`'Forest' INSIDE <f>` does NOT match an element `'Foresthome'`; `IN` on a joined STRING is
+    substring — the false-match a joined column would ship) both reproduce **unchanged on 3.2.4**.
+    Corroborates §4's plain-table-read pattern: a two-level containment taxonomy expands via
+    indexed edge reads (`WHERE in = $x` leading, `WHERE out = $y` with its own index) then feeds
+    an indexed `CONTAINSANY $expanded` — never a traversal-in-`FROM` (§6.6 item 13).
 - **`UPSERT`** is insert-first ("INSERT, otherwise UPDATE"). Gotcha: `UPSERT <id> … WHERE` on an
   existing id whose WHERE fails **cannot create** a row.
 - **`record<t>` links do NOT auto-clean on target delete** — but graph RELATION edges **do**
