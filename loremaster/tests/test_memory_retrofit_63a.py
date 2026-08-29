@@ -26,6 +26,9 @@ STORE LAW cited: §1.4 (option<> dirty rows), §2 (record<> links; CONTENT). Liv
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +37,7 @@ import pytest_asyncio
 from _governed_contract import (
     MEMORY_TABLE,
     absent_scope,
+    access_token,
     admin,
     apply_ddl,
     authorize_filter_ids,
@@ -432,24 +436,69 @@ async def retrofit_world() -> Any:
         await drop_database(env)
 
 
-async def _exercise_remember(backend: Any, *, text: str, capability: str, **kwargs: Any) -> Any:
-    """The ONE place the RETROFITTED ``remember`` is called (FORK 5 — isolated per the 62
-    ``_call_stamp_owner`` precedent; the design's shape is ``capability=``). A signature ruling is a
-    ONE-function edit. RED at HEAD: ``remember`` has no ``capability`` param → TypeError."""
-    return await backend.remember(text, kind="fact", capability=capability, **kwargs)
+@dataclass(frozen=True)
+class _Credential:
+    """The TOOL-LAYER credential the ``_exercise_*`` seam resolves to a
+    :class:`lorerunes.pdp.Subject` (design §10.5 CLARIFICATION, 2026-08-29). It carries the
+    principal EMAIL (the access-token subject), the raw capability TOKEN (62's ``register`` mint),
+    and the identity stores + ``AgentRegistry`` that ``governed.resolve_subject`` reads — everything
+    the ONE production constructor needs, since a test's call site may pass only ``capability=``."""
+
+    email: str
+    token: str
+    registry: Any
+    principal_store: Any
+    keep_store: Any
 
 
-async def _exercise_recall(backend: Any, *, query: str, capability: str) -> Any:
-    """The ONE place the RETROFITTED ``recall`` is called (FORK 5 — isolated). RED at HEAD."""
-    return await backend.recall(query, capability=capability)
+async def _subject_from_capability(capability: Any) -> Any:
+    """Resolve a tool-layer credential to a :class:`lorerunes.pdp.Subject` via the REAL production
+    constructor ``governed.resolve_subject`` (design §10.5 CLARIFICATION shape point 1, 2026-08-29 —
+    the R-a.2 ONE ``Subject(`` site). A test-side ``Subject(...)`` construction is FORBIDDEN here: it
+    would make the routing observation a fixture rather than the production seam. ONE helper, three
+    verbs — the capability→Subject resolution is policy that must AGREE across
+    recall/remember/invalidate (ONE IMPLEMENTATION)."""
+    return await governed.resolve_subject(
+        access_token(subject=capability.email),
+        capability.token,
+        registry=capability.registry,
+        principal_store=capability.principal_store,
+        keep_store=capability.keep_store,
+    )
 
 
-async def _exercise_invalidate(backend: Any, *, memory_id: str, capability: str) -> Any:
+async def _exercise_remember(
+    backend: Any, *, text: str, capability: Any, **kwargs: Any
+) -> Any:
+    """The ONE place the RETROFITTED ``remember`` is called (FORK 5 / §10.5 — isolated per the 62
+    ``_call_stamp_owner`` precedent, so the ruling stays a one-function-family edit). §10.5 Reading A
+    (CONFIRMED 2026-08-29): this seam plays the TOOL-LAYER role — it resolves ``capability`` → a
+    typed ``Subject`` and calls ``backend.remember(..., subject=subject)``. The BACKEND takes
+    ``subject=`` and NEVER a capability string (it must not read the environment). ``scope=`` (via
+    ``**kwargs``) is the ONE wire argument that legitimately crosses beside ``subject=`` — a
+    PDP-validated request, not identity (§2.4). RED before the 63a build (``resolve_subject`` /
+    ``backend.remember(subject=)`` unbuilt)."""
+    subject = await _subject_from_capability(capability)
+    return await backend.remember(text, kind="fact", subject=subject, **kwargs)
+
+
+async def _exercise_recall(backend: Any, *, query: str, capability: Any) -> Any:
+    """The ONE place the RETROFITTED ``recall`` is called (FORK 5 / §10.5 — isolated). §10.5 Reading
+    A: resolve ``capability`` → ``Subject`` at this tool-layer seam, then
+    ``backend.recall(query, subject=subject)``. RED before the 63a build."""
+    subject = await _subject_from_capability(capability)
+    return await backend.recall(query, subject=subject)
+
+
+async def _exercise_invalidate(backend: Any, *, memory_id: str, capability: Any) -> Any:
     """The ONE place the RETROFITTED ``invalidate`` (the backend's close/retire write path) is
-    called (FORK 5 — isolated, mirroring ``_exercise_remember``; §10.5 names ``invalidate`` a
-    retrofitted backend method). RED at HEAD: ``invalidate`` has no ``capability`` param → TypeError,
-    and today (``local.py``) issues a BARE ungoverned ``UPDATE … SET valid_until``."""
-    return await backend.invalidate(memory_id, capability=capability)
+    called (FORK 5 / §10.5 — isolated, mirroring ``_exercise_remember``). §10.5 Reading A: resolve
+    ``capability`` → ``Subject`` here, then ``backend.invalidate(memory_id, subject=subject)`` — the
+    close authorizes the WRITE on the existing (possibly foreign-owned) row via ``guarded_write``.
+    RED before the 63a build (``invalidate`` today, ``local.py``, issues a BARE ungoverned
+    ``UPDATE … SET valid_until`` with no ``subject``)."""
+    subject = await _subject_from_capability(capability)
+    return await backend.invalidate(memory_id, subject=subject)
 
 
 class TestIdentityLessCallsDeny:
@@ -828,20 +877,34 @@ class TestExplicitScopeArgumentIsGrantableValidated:
 
 
 @pytest_asyncio.fixture()
-async def alice_capability(retrofit_world: Any) -> str:
-    return await _mint_capability(retrofit_world, email=_EMAIL_ALICE, agent_name="alice_worker")
+async def alice_capability(retrofit_world: Any) -> AsyncIterator[_Credential]:
+    async with _minted_credential(
+        retrofit_world, email=_EMAIL_ALICE, agent_name="alice_worker"
+    ) as credential:
+        yield credential
 
 
 @pytest_asyncio.fixture()
-async def bob_capability(retrofit_world: Any) -> str:
-    return await _mint_capability(retrofit_world, email=_EMAIL_BOB, agent_name="bob_worker")
+async def bob_capability(retrofit_world: Any) -> AsyncIterator[_Credential]:
+    async with _minted_credential(
+        retrofit_world, email=_EMAIL_BOB, agent_name="bob_worker"
+    ) as credential:
+        yield credential
 
 
-async def _mint_capability(retrofit_world: Any, *, email: str, agent_name: str) -> str:
-    """Register an owned agent for ``email`` and return its raw capability (62's register mint)."""
+@asynccontextmanager
+async def _minted_credential(
+    retrofit_world: Any, *, email: str, agent_name: str
+) -> AsyncIterator[_Credential]:
+    """Register an owned agent for ``email`` (62's ``register`` mint) and yield the TOOL-LAYER
+    :class:`_Credential` the ``_exercise_*`` seam resolves to a ``Subject`` (§10.5). The
+    ``AgentRegistry`` is kept OPEN for the test's duration — ``resolve_subject`` verifies the
+    capability against it (62's ``verify_capability``/``stamp_owner`` seam) — and closed on
+    teardown. The principal/keep stores are the SAME live instances ``retrofit_world`` built on the
+    ONE unified DB, so the resolved Subject reads the same identities the backend writes against."""
     from loremaster.agents import AgentRegistry
 
-    _backend, principal_store, _keep_store, _admin, env, _keep = retrofit_world
+    _backend, principal_store, keep_store, _admin, env, _keep = retrofit_world
     principal = await principal_store.get_by_email(email)
     registry = AgentRegistry(
         url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
@@ -851,9 +914,15 @@ async def _mint_capability(retrofit_world: Any, *, email: str, agent_name: str) 
         result = await registry.register(
             agent_name, session="s1", role="worker", owner_principal_id=_bare(str(principal.id))
         )
-        capability = getattr(result, "capability", None)
-        assert capability, "capability mint unbuilt (62 wave 2)"
-        return str(capability)
+        token = getattr(result, "capability", None)
+        assert token, "capability mint unbuilt (62 wave 2)"
+        yield _Credential(
+            email=email,
+            token=str(token),
+            registry=registry,
+            principal_store=principal_store,
+            keep_store=keep_store,
+        )
     finally:
         await registry.close()
 
