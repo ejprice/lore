@@ -26,6 +26,8 @@ Store-free: ``_build_tools`` + registration touch NO SurrealDB (the reach-pin id
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import loremaster.server as server_mod
@@ -148,10 +150,107 @@ class TestTheVerbRoutingCoverageIsACheckedVariable:
         )
 
 
+class TestEveryRoutedVerbHasABehaviouralObservation:
+    """§10.2(i) META-PIN (INSTRUMENT-0) — the set of verbs with a BEHAVIOURAL routing test ⊇
+    ``_GOVERNED_VERBS_ROUTED``. The STRUCTURAL ``derived == routed ∪ pending`` pin above certifies
+    the SET; this certifies each ROUTED entry is not a LIE. A verb declared routed with no
+    observation is the hidden-constant reach defect — a routed reach nobody exercises. The observed
+    set is DERIVED by AST-scanning the test tree for ``@observes_routing`` markers (never a
+    hand-list), xdist-safe (pure source AST, no cross-worker runtime state)."""
+
+    def test_the_observation_scanner_finds_the_memory_behavioural_markers(self) -> None:
+        """⚠ ANTI-VACUITY (GREEN at HEAD). The scanner must FIND the memory routing markers (placed
+        on the F3-isolation + owner-stamp behavioural tests in test_memory_retrofit_63a) — else the
+        meta-pin below passes over an EMPTY observed set, the exact INSTRUMENT-0 vacuity it guards
+        against. REDDENS a broken scanner OR a build that drops the memory behavioural markers."""
+        observed = _behaviourally_observed_verbs()
+        assert _MEMORY_VERBS <= observed, (
+            f"the observation scanner did not find the memory behavioural markers "
+            f"{sorted(_MEMORY_VERBS)} — found {sorted(observed)}; the meta-pin would be vacuous"
+        )
+
+    def test_every_routed_verb_has_a_behavioural_observation(self) -> None:
+        """⚠ GREEN DISCRIMINATOR (GREEN at HEAD — ``_GOVERNED_VERBS_ROUTED`` unbuilt/empty — AND on
+        the correct build, where the memory verbs are BOTH routed AND observed). REDDENS the
+        INSTRUMENT-0 defect: a build that adds a ``(tool, verb)`` to ``_GOVERNED_VERBS_ROUTED``
+        (declaring it routed) but ships NO ``@observes_routing`` behavioural test for it — a routed
+        reach nobody observes, on a correctly-granted constant, where no other gate can see it."""
+        routed = _as_verb_set(
+            getattr(server_mod, "_GOVERNED_VERBS_ROUTED", None), "_GOVERNED_VERBS_ROUTED"
+        )
+        observed = _behaviourally_observed_verbs()
+        unobserved = routed - observed
+        assert not unobserved, (
+            f"these verbs are DECLARED routed but have NO behavioural routing test "
+            f"(@observes_routing) — the hidden-constant reach defect (INSTRUMENT-0): "
+            f"{sorted(unobserved)}"
+        )
+
+
+class TestTheVerbDerivationIsFailClosedAtTheToolLevel:
+    """§10.2(i)(B) / §10.4 — a governed TOOL with no recognised dispatch table contributes EXACTLY
+    ONE verb ``(tool, tool)``, never zero. A zero-verb tool would VANISH from the derived set →
+    tool-level orphan detection LOST (the hidden cost of D1's per-tool relaxation — a NEW governed
+    tool would be silently exempt from the coverage pin)."""
+
+    def test_a_governed_tool_with_no_dispatch_table_derives_exactly_one_verb(self) -> None:
+        """⚠ GREEN DISCRIMINATOR (GREEN at HEAD). ``_dispatch_verbs`` on an unknown governed tool
+        (not single-verb, no ``_COMMS_ACTIONS``/``_TASK_ACTIONS``/``_FINDING_ACTIONS``) FAIL-CLOSES
+        to its own single ``(tool, tool)`` verb — never ``()``. REDDENS a derivation that returns
+        ``()`` for an unknown tool (a silent exemption — the switched-off-scanner §10.4 names). The
+        existing synthetic-VERB discriminator does NOT cover this TOOL-level case."""
+        synthetic_tool = "lore_synthetic_ungoverned_tool_63a"
+        verbs = _dispatch_verbs(synthetic_tool)
+        assert verbs == (synthetic_tool,), (
+            f"a governed tool with no dispatch table must derive exactly its single (tool, tool) "
+            f"verb, never zero (fail-closed at the tool level, §10.4); got {verbs!r}"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # helpers — tolerate either a set of (tool, verb) tuples or of "tool:verb"/["tool","verb"] rows,
 # since the exact SHAPE of the constants is the builder's (the pin checks the SET, not the encoding).
 # --------------------------------------------------------------------------- #
+
+
+def _behaviourally_observed_verbs() -> frozenset[tuple[str, str]]:
+    """The ``(tool, verb)`` set that HAS a behavioural routing test — DERIVED by AST-scanning the
+    63a/64 test tree for ``@observes_routing("tool", "verb")`` markers (never a hand-list —
+    INSTRUMENT-0). xdist-safe: pure source AST over files, no cross-worker runtime state."""
+    tests_dir = Path(__file__).resolve().parent
+    observed: set[tuple[str, str]] = set()
+    for path in sorted(tests_dir.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for decorator in node.decorator_list:
+                pair = _observes_routing_args(decorator)
+                if pair is not None:
+                    observed.add(pair)
+    return frozenset(observed)
+
+
+def _observes_routing_args(decorator: ast.expr) -> tuple[str, str] | None:
+    """If ``decorator`` is a call to ``observes_routing("tool", "verb")`` (bare or attribute-qualified),
+    return ``(tool, verb)``; else ``None``."""
+    if not isinstance(decorator, ast.Call):
+        return None
+    func = decorator.func
+    is_marker = (isinstance(func, ast.Name) and func.id == "observes_routing") or (
+        isinstance(func, ast.Attribute) and func.attr == "observes_routing"
+    )
+    if not is_marker or len(decorator.args) != 2:
+        return None
+    tool_arg, verb_arg = decorator.args
+    if (
+        isinstance(tool_arg, ast.Constant)
+        and isinstance(verb_arg, ast.Constant)
+        and isinstance(tool_arg.value, str)
+        and isinstance(verb_arg.value, str)
+    ):
+        return (tool_arg.value, verb_arg.value)
+    return None
 
 
 def _as_verb(key: Any) -> tuple[str, str]:

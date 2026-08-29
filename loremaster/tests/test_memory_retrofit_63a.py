@@ -26,12 +26,14 @@ STORE LAW cited: §1.4 (option<> dirty rows), §2 (record<> links; CONTENT). Liv
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from _governed_contract import (
     MEMORY_TABLE,
+    absent_scope,
     admin,
     apply_ddl,
     authorize_filter_ids,
@@ -39,15 +41,35 @@ from _governed_contract import (
     build_principal_and_keep_stores,
     governed_overlay_ddl,
     member,
+    observes_routing,
     python_allowed_ids,
     read_filter_ids,
     seed_memory_governed,
 )
-from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
+from _surreal_harness import (
+    connect_admin,
+    drop_database,
+    make_env,
+    run,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+    unique_database,
+)
+from loremaster.config import LoreConfig
+from loremaster.server import LoreServer, build_app_context
 from loremaster.store import surreal_schema
+from loresigil.testing import FakeEmbedder
+
+# The store-free tool-surface builder (the reach-pin idiom) — for the §10.5 capability= schema pin.
+from test_mutating_set_derivation import _build_tools
 
 import lorerunes as pdp
 from loremaster import governed
+
+_SURREAL_TEST_NAMESPACE = "lore_test"
+_SURREAL_USER_ENV = "SURREAL_USER"
+_SURREAL_PASS_ENV = "SURREAL_PASS"
 
 _DIM = 8
 _EMAIL_ALICE = "alice@example.com"
@@ -69,6 +91,8 @@ _HOSTILE_ROWS: tuple[tuple[str, str | None, str | None, str | None], ...] = (
     ("m10", None, None, "server"),  # NONE-owner server row (readable by all)
     ("m11", None, None, "agent-private"),  # NONE-owner private row (owned by nobody)
     ("m12", None, None, None),  # NONE-SCOPE dirty/legacy row (§2.3; FORK 1 — pinned observably)
+    ("m13", "alice", "ag_a1", None),  # EXACT-OWNER NONE-scope legacy row (§10.1 rider (ii) — the
+    #                                   DELETE positive control: its owner CAN hard-delete it)
 )
 
 # The rows the Python ``authorize`` side CAN represent (FORK 1 — ``Resource`` requires a domain
@@ -181,6 +205,106 @@ class TestF2SingleBrainOverTheRealMemoryTable:
 
 
 # =========================================================================== #
+# F2 (DELETE leg) — DELETE is scope-INDEPENDENT on DIRTY rows (design §10.1 rider (ii), 61 D4(a)).
+# The POSITIVE CONTROL that a NONE-scope row is NOT universally invisible.
+# =========================================================================== #
+
+# The targeted DELETE probe: an EXACT-owner NONE-scope row (m13), an UNOWNED NONE-scope row (m12),
+# and an EXACT-owner domain-scope control (m1). Intersecting the store's DELETE-filter result with
+# this small set keeps the single-brain oracle focused on the dirty-row question.
+_DELETE_PROBE_IDS = frozenset({"m13", "m12", "m1"})
+
+
+def _delete_allowed_ids(subject: Any, rows: tuple[tuple[str, Any, Any, Any], ...]) -> set[str]:
+    """The Python ``authorize(subject, DELETE, ·)`` verdict over ``rows`` INCLUDING NONE-scope rows
+    (the DELETE leg CANNOT skip them — they are the whole question). Constructs
+    ``Resource(scope=absent_scope())`` for a NONE-scope row, so at HEAD it RAISES (FORK 1 unbuilt →
+    behavioural RED) and on the correct build it evaluates the scope-independent DELETE predicate."""
+    allowed: set[str] = set()
+    for row_id, owner_principal, owner_agent, scope in rows:
+        raw_scope: Any = scope if scope is not None else absent_scope()
+        resource = pdp.Resource(
+            table=MEMORY_TABLE,
+            owner_principal=owner_principal,
+            owner_agent=owner_agent,
+            scope=raw_scope,
+        )
+        if pdp.authorize(subject, pdp.Action.DELETE, resource).allowed:
+            allowed.add(row_id)
+    return allowed
+
+
+class TestF2DeleteIsScopeIndependentOnDirtyRows:
+    """§10.1 rider (ii) / 61 D4(a) — DELETE is scope-INDEPENDENT: an exact ``(principal, agent)``
+    owner CAN hard-delete its OWN NONE-scope legacy row, single-brain (Python ``authorize`` ==
+    store ``authorize_filter``). This is THE positive control that a NONE-scope row is NOT
+    universally invisible — WITHOUT it, a build that special-cases ``None`` → "deny everything"
+    passes every READ-only pin (design §10.1 rider (ii))."""
+
+    _PROBE_ROWS = tuple(row for row in _HOSTILE_ROWS if row[0] in _DELETE_PROBE_IDS)
+
+    async def test_the_delete_filter_is_single_brain_over_none_scope_dirty_rows(
+        self, oracle_conn: Any
+    ) -> None:
+        """⚠ RED at HEAD (``Resource(scope=None)`` raises — FORK 1 unbuilt). For the OWNER
+        (alice/ag_a1): the Python DELETE-allowed set EQUALS the store DELETE-filter set over the
+        dirty probe rows, and it CONTAINS m13 (owner deletes its own NONE-scope row — positive) and
+        EXCLUDES m12 (an UNOWNED NONE-scope row is not deletable by alice — negative). For a NON-owner
+        (bob): both sets are empty and m13 is absent. REDDENS a build that special-cases None → deny
+        (m13 wrongly excluded, Python≠store) AND one that lets a non-owner delete a NONE-scope row."""
+        owner = member("alice", "ag_a1", frozenset())
+        non_owner = member("bob", "ag_b1", frozenset())
+
+        owner_python = _delete_allowed_ids(owner, self._PROBE_ROWS)
+        owner_store = (
+            await authorize_filter_ids(oracle_conn, owner, pdp.Action.DELETE, MEMORY_TABLE)
+        ) & _DELETE_PROBE_IDS
+        assert owner_python == owner_store, (
+            f"DELETE single-brain diverged for the owner: python={sorted(owner_python)} "
+            f"store={sorted(owner_store)}"
+        )
+        assert "m13" in owner_python, (
+            "the exact (principal, agent) owner must be able to DELETE its own NONE-scope legacy row "
+            "(61 D4(a) — DELETE is scope-independent); a build denying it special-cases None→deny"
+        )
+        assert "m12" not in owner_python, (
+            "an UNOWNED NONE-scope row must NOT be deletable by a member — NONE scope is not "
+            "universally deletable, only by the exact owner"
+        )
+
+        non_owner_python = _delete_allowed_ids(non_owner, self._PROBE_ROWS)
+        non_owner_store = (
+            await authorize_filter_ids(oracle_conn, non_owner, pdp.Action.DELETE, MEMORY_TABLE)
+        ) & _DELETE_PROBE_IDS
+        assert non_owner_python == non_owner_store == set(), (
+            f"a non-owner must DELETE none of the probe rows (incl. m13): "
+            f"python={sorted(non_owner_python)} store={sorted(non_owner_store)}"
+        )
+
+    async def test_a_none_scope_owned_row_is_read_write_invisible_but_delete_able_to_its_owner(
+        self, oracle_conn: Any
+    ) -> None:
+        """⚠ RED at HEAD (``Resource(scope=None)`` raises). THE CONTRAST that discriminates BOTH
+        wrong builds: for the owner of m13 (a NONE-scope owned row), READ and WRITE are DENIED
+        (scope-dependent — no scope disjunct matches) while DELETE is ALLOWED (scope-independent
+        owner check). REDDENS a build that special-cases None→deny-everything (DELETE wrongly False)
+        AND a build that lets an owner READ/WRITE a NONE-scope row via the scope-dependent path."""
+        owner = member("alice", "ag_a1", frozenset())
+        m13_resource = pdp.Resource(
+            table=MEMORY_TABLE, owner_principal="alice", owner_agent="ag_a1", scope=absent_scope()
+        )
+        assert not pdp.authorize(owner, pdp.Action.READ, m13_resource).allowed, (
+            "a NONE-scope owned row must be READ-invisible even to its owner (scope-dependent)"
+        )
+        assert not pdp.authorize(owner, pdp.Action.WRITE, m13_resource).allowed, (
+            "a NONE-scope owned row must be WRITE-invisible even to its owner (scope-dependent)"
+        )
+        assert pdp.authorize(owner, pdp.Action.DELETE, m13_resource).allowed, (
+            "a NONE-scope owned row must be DELETE-able by its owner (scope-INDEPENDENT, 61 D4(a))"
+        )
+
+
+# =========================================================================== #
 # F3 — CROSS-PRINCIPAL ISOLATION ∀ read verbs + served-COUNT == served-SET (design §3.2 F3, §6).
 # The store-level isolation is F2's read_filter leg; here the TOOL-level (recall) served count.
 # =========================================================================== #
@@ -273,11 +397,142 @@ class TestIdentityLessCallsDeny:
             await backend.remember("anything", kind="fact")
 
 
+# --------------------------------------------------------------------------- #
+# §10.5(ii) — the TOOL-LAYER identity-less DENY twin (the backend-level twin is above). The design
+# names the tool layer as ``AppContext.recall``/``remember`` (capability= at the composition root);
+# the ONLY robust, non-trapping way to exercise the retrofitted handler is a REAL AppContext (a
+# duck ``self`` would trap the builder if the deny routes through ``resolve_subject``, which reads
+# the identity stores the builder wires into AppContext). So this boots the genuine handler via
+# ``build_app_context`` (the ``test_memory_cutover`` / ``test_mcp_server._make_context`` pattern).
+# --------------------------------------------------------------------------- #
+
+
+def _boot_config(slug: str, root: Path) -> LoreConfig:
+    """A validated config on the dev harness with ``surreal.database`` UNSET (derives from the
+    uuid-unique ``slug``), so each boot writes its own throwaway DB (mirrors
+    ``test_memory_cutover._config``)."""
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
+        "project": {"slug": slug, "root": "."},
+        "embedding": {
+            "backend": "tei",
+            "base_url": "http://localhost:8080",
+            "endpoint": "/embed",
+            "model": "voyageai/voyage-4-nano",
+            "dim": _DIM,
+            "truncate": False,
+            "max_input_tokens": 8192,
+            "max_batch_texts": 32,
+            "concurrency": 2,
+            "connect_timeout_s": 5,
+            "api_key_env": "LORE_TEI_KEY",
+            "tokenizer": "voyage-4-nano",
+        },
+        "surreal": {
+            "url": surreal_url(),
+            "namespace": _SURREAL_TEST_NAMESPACE,
+            "user_env": _SURREAL_USER_ENV,
+            "password_env": _SURREAL_PASS_ENV,
+        },
+        "roots": [
+            {"tier": "custom", "watch": "live", "path": str(root), "include": ["**/*.py"]}
+        ],
+        "include": [],
+        "exclude_dirs": [".git"],
+        "exclude_globs": [],
+        "chunkers": {".py": {"chunker": "python_ast"}},
+        "watcher": {
+            "enabled": True,
+            "observer": "inotify",
+            "debounce_ms": 1500,
+            "reconcile_interval_s": 600,
+        },
+        "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9244},
+    }
+    return LoreConfig.model_validate(payload)
+
+
+@pytest_asyncio.fixture()
+async def app_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """A REAL booted :class:`AppContext` on a throwaway DB (FakeEmbedder, no background tasks) — the
+    tool-layer surface the MCP tools dispatch through. Reaped on exit (NEVER :18500)."""
+    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
+    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
+    slug = unique_database()
+    context = await build_app_context(
+        server=LoreServer(_boot_config(slug, tmp_path)),
+        embedder=FakeEmbedder(dim=_DIM),
+        manifest_path=tmp_path / "m.db",
+        snapshot_root=tmp_path / "snap",
+        start_tasks=False,
+        calibration_engine=None,
+    )
+    try:
+        yield context
+    finally:
+        await context.aclose()
+        await drop_database(make_env(database=slug, dim=_DIM))
+
+
+class TestIdentityLessToolLayerCallsDeny:
+    """§10.5(ii) — the TOOL-LAYER twin of ``TestIdentityLessCallsDeny``: an identity-less call at the
+    ``AppContext`` handler (the MCP tool surface) DENIES with a :class:`~loremaster.governed.
+    GovernedDenied` teaching error — NEVER a ``TypeError`` (``capability=`` must be OPTIONAL) and
+    NEVER the pre-retrofit unfiltered answer. Closes the tool-layer bypass: an unauthenticated read
+    of the fleet's memory must fail at the composition root too, not only at the backend."""
+
+    async def test_an_identity_less_tool_recall_denies(self, app_context: Any) -> None:
+        """⚠ RED at HEAD — today ``AppContext.recall(query)`` renders a digest with NO identity.
+        Post-retrofit an identity-less tool call raises ``GovernedDenied``. REDDENS a build that
+        keeps answering identity-less tool calls AND one that denies via a bare ``TypeError``
+        (``capability=`` must be optional per §10.5, an absent identity is a TEACHING deny)."""
+        with pytest.raises(governed.GovernedDenied):
+            await app_context.recall("anything")
+
+    async def test_an_identity_less_tool_remember_denies(self, app_context: Any) -> None:
+        """⚠ RED at HEAD — today ``AppContext.remember(text, kind=…)`` writes with NO owner. Post-
+        retrofit an identity-less tool write raises ``GovernedDenied``. REDDENS a build that writes
+        an ownerless row from the tool layer, or that denies via a bare ``TypeError``."""
+        with pytest.raises(governed.GovernedDenied):
+            await app_context.remember("anything", kind="fact")
+
+
+class TestTheCapabilityParamDescriptionIsOneSharedConstant:
+    """§10.5 rider (i) — the ``capability=`` parameter description is ONE shared constant across
+    every governed tool (the packet-45 ``_comms_identity_agent_description`` idiom), NEVER N copies
+    of the teaching prose. A per-tool copy is how the teaching drifts (PKT-28 C1: served prose no
+    gate checks)."""
+
+    async def test_lore_recall_and_lore_remember_share_one_capability_description(
+        self, tmp_path: Path
+    ) -> None:
+        """⚠ RED at HEAD — today neither ``lore_recall`` nor ``lore_remember`` has a ``capability=``
+        param, so the description is ABSENT. Post-retrofit both carry an OPTIONAL ``capability=``
+        whose description is BYTE-IDENTICAL across the two (one shared source). REDDENS a build that
+        ships N divergent copies of the teaching prose, or that adds the param to only one tool."""
+        tools = {tool.name: tool for tool in await _build_tools(tmp_path)}
+        descriptions: dict[str, Any] = {}
+        for name in ("lore_recall", "lore_remember"):
+            properties = (tools[name].parameters or {}).get("properties", {})
+            capability = properties.get("capability")
+            assert capability is not None, (
+                f"{name} has no capability= param — the retrofit's OPTIONAL identity seam is unbuilt "
+                f"(§10.5). Post-retrofit every governed tool carries it."
+            )
+            descriptions[name] = capability.get("description")
+        assert all(descriptions.values()) and len(set(descriptions.values())) == 1, (
+            f"the capability= description must be ONE shared constant across governed tools (packet-45 "
+            f"idiom), never N copies: {descriptions}"
+        )
+
+
 class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
     """§0 item 2 + §2.4 — remember ROUTES through the stamp (the stored owner is the RESOLVED
     subject, never a caller arg — F4) and defaults a note's scope to the canonical PROJECT keep
     (§10-N — so the fleet still sees a fleet agent's fresh note)."""
 
+    @observes_routing("lore_remember", "lore_remember")
     async def test_a_remembered_note_is_owner_stamped_from_the_credential(
         self, retrofit_world: Any, alice_capability: str
     ) -> None:
@@ -352,6 +607,7 @@ class TestF3RecallIsolationAcrossPrincipals:
     """F3 / §6 item 1 — recall by principal B never returns principal A's private rows (the runtime
     routing observation for the READ verb: isolation holds IFF recall routes through read_filter)."""
 
+    @observes_routing("lore_recall", "lore_recall")
     async def test_recall_by_bob_does_not_surface_alices_private_note(
         self, retrofit_world: Any, alice_capability: str, bob_capability: str
     ) -> None:

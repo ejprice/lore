@@ -37,7 +37,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from _surreal_harness import SurrealConnection, run
 
@@ -45,6 +45,52 @@ from _surreal_harness import SurrealConnection, run
 # gate, which loaded a not-yet-built package). The 63a substrate under test lives in
 # ``loremaster.governed`` (stubbed → NotImplementedError until the builder wires it).
 import lorerunes as pdp
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+# --------------------------------------------------------------------------- #
+# FORK 1 (design §10.1) — the ABSENT (unmigrated legacy) scope as a typecheck-safe value.
+# --------------------------------------------------------------------------- #
+
+
+def absent_scope() -> Any:
+    """The ABSENT (unmigrated legacy) scope value — ``None``, typed ``Any`` DELIBERATELY.
+
+    FORK 1 (design §10.1) WIDENS ``lorerunes.pdp.Resource.scope`` to ``str | None`` (a BUILDER
+    task); ``None`` means one thing: an unmigrated legacy row's absent scope. A pin must construct
+    ``Resource(scope=absent_scope())`` to prove the widening — but at HEAD ``Resource.scope: str``,
+    so a LITERAL ``scope=None`` would fail ``scripts/typecheck.sh`` (and a ``type: ignore`` would
+    flip to an *unused-ignore* error the day the builder widens it). Returning ``Any`` keeps the
+    typecheck gate GREEN in BOTH worlds while the runtime pin stays RED-until-built: at HEAD
+    ``Resource.__post_init__`` calls ``_is_valid_scope(None)`` which RAISES (a behavioural RED for
+    the right reason — the widening is unbuilt), and on the correct build it constructs."""
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Routing OBSERVATION marker (design §3.1, §10.2(i)) — the STRUCTURAL half of the #420 instrument.
+# --------------------------------------------------------------------------- #
+
+
+def observes_routing(tool: str, verb: str) -> Callable[[_F], _F]:
+    """MACHINE-READABLE marker: the decorated test BEHAVIOURALLY observes that ``(tool, verb)``
+    routes through the governed substrate (``read_filter`` on a read verb; ``stamp_owner`` /
+    ``guarded_write`` on a write verb — observed by its EFFECT: isolation holds, the stamp is the
+    resolved subject, a hostile ``owner_*=`` is ignored).
+
+    A NO-OP at runtime (returns the function unchanged, so it is xdist-safe — no cross-worker
+    module state); its VALUE is the AST-visible decorator CALL that the routing META-PIN collects
+    (``test_governed_routing_63a`` ::``TestEveryRoutedVerbHasABehaviouralObservation``). INSTRUMENT-0
+    (design §10.2(i)): a verb declared routed in ``_GOVERNED_VERBS_ROUTED`` with NO
+    ``@observes_routing`` decorator ANYWHERE in the test tree is the hidden-constant reach defect —
+    a routed declaration nobody observes. The decorated test's own assertions are the BEHAVIOURAL
+    half; this marker is the STRUCTURAL half that makes the coverage a checked variable."""
+
+    def _decorate(func: _F) -> _F:
+        return func
+
+    return _decorate
+
 
 # --------------------------------------------------------------------------- #
 # The EXPLAIN plan-walker — MIRRORED from the shipped
@@ -335,18 +381,40 @@ async def authorize_filter_ids(
 
 
 class FakeRegistry:
-    """A minimal ``AgentRegistry`` stand-in for the substrate seams. ``verify_capability``
-    returns the POST-#425 verified PAIR ``(agent_id, owner_principal_id)`` (or ``None`` = deny),
-    exactly what the closed ``stamp_owner`` reads in ONE round-trip. A test wires the result it
-    wants; the fail-closed pins wire ``None``."""
+    """A minimal ``AgentRegistry`` stand-in for the substrate seams, mirroring the POST-#425 real
+    seam SHAPE (design §10.3(iii) / FORK 3).
+
+    The #425 closure keeps ``verify_capability -> str | None`` byte-compatible (13 shipped 62 call
+    sites pin the BARE agent id) and moves the four admission conditions + the single verified
+    SELECT into ONE internal pair-yielding path
+    ``_verify_capability_owner(presented, token) -> (agent_id, owner_principal_id) | None`` that
+    ``stamp_owner`` consumes in ONE round-trip. So the fake exposes EXACTLY that pair of methods,
+    with ``verify_capability`` delegating to ``_verify_capability_owner()[0]`` — never a
+    tuple-returning ``verify_capability``, the LITERAL shape §10.3 rejects: *a fake whose signature
+    differs from the real seam is a fake that cannot fail.*
+
+    A test wires the PAIR it wants (``(agent_id, owner_principal_id)``); the fail-closed pins wire
+    ``None``. ``verify_calls`` counts LOGICAL round-trips — ONE increment per pair-path call,
+    surrogate for the real registry's ONE-read #425 property (the round-trip count itself is pinned
+    on the REAL registry in ``test_425_stamp_owner_63a.py``, form-agnostic)."""
 
     def __init__(self, verify_result: tuple[str, str] | None) -> None:
         self._verify_result = verify_result
         self.verify_calls = 0
 
-    async def verify_capability(self, presented: str, access_token: Any) -> tuple[str, str] | None:
+    async def _verify_capability_owner(
+        self, presented: str, access_token: Any
+    ) -> tuple[str, str] | None:
+        """The shared pair-path #425 collapses the double read into (design §5 / §10.3). ONE
+        logical round-trip → ONE increment; ``stamp_owner`` consumes the returned pair."""
         self.verify_calls += 1
         return self._verify_result
+
+    async def verify_capability(self, presented: str, access_token: Any) -> str | None:
+        """Byte-identical to the real seam's shape: the BARE agent id (or ``None``), derived from
+        the shared pair-path's first element — never the tuple (§10.3(iii))."""
+        pair = await self._verify_capability_owner(presented, access_token)
+        return None if pair is None else pair[0]
 
 
 def access_token(*, subject: str, role: str = "member") -> Any:
