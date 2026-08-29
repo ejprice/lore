@@ -7,12 +7,14 @@ SPEC: ``docs/design/2026-08-28-packet63-retrofit-rulings.md`` §0 item 2 (lore_r
 filter on read; identity-less call DENIES — removed-behavior 1), §2.4 (default scope = the project
 keep — §10-N), §3.2 (the four families F2/F3/F4), §6 (the §9 isolation target).
 
-⚠ FORK 5 (REPORT-contract-63a.md): the EXACT seam by which identity flows into the retrofitted
-recall/remember (a ``capability=`` arg resolved to a Subject inside, vs a ``subject=`` arg) is a
-builder/design ruling. Following the 62 ``_call_stamp_owner`` precedent, the retrofitted call is
-ISOLATED in ``_exercise_recall`` / ``_exercise_remember`` so a signature ruling stays a ONE-function
-edit and traps no build (C-DEF). The design's stated shape is ``capability=``; the pins assert
-OBSERVABLE behaviour (isolation, owner stamp, default scope, identity-less DENY), never the wiring.
+⚠ FORK 5 (design §10.5, CONFIRMED 2026-08-29 — REPORT-contract-63a-4.md): identity flows into the
+retrofitted recall/remember/invalidate as a typed ``subject=`` at the BACKEND, resolved from a
+``capability`` at the TOOL layer (Reading A; Reading B — the backend accepting a capability string —
+is REJECTED, it makes the backend read the environment). Following the 62 ``_call_stamp_owner``
+precedent, the tool-layer resolution is ISOLATED in ``_exercise_recall`` / ``_exercise_remember`` /
+``_exercise_invalidate`` (via ``_subject_from_capability``) so the ruling stayed a one-function-family
+edit and traps no build. The pins assert OBSERVABLE behaviour (isolation, owner stamp, default scope,
+identity-less DENY), never the wiring.
 
 ⚠ THE RUNTIME ROUTING OBSERVATION IS BEHAVIOURAL, not a spy (#420 memory leg): recall routes
 through ``read_filter`` IFF cross-principal isolation holds (F3 — B cannot see A's private rows);
@@ -334,7 +336,7 @@ class TestF3RecallServesOnlyTheCallerVisibleSet:
 
     @observes_routing("lore_recall", "lore_recall")
     async def test_recall_serves_the_caller_filtered_set_not_the_unfiltered_total(
-        self, retrofit_world: Any, alice_capability: str, bob_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential, bob_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``capability`` param).
         Over a ≥2-principal hostile fixture where a shared query matches BOTH alice's visible rows AND
@@ -661,7 +663,7 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
 
     @observes_routing("lore_remember", "lore_remember")
     async def test_a_remembered_note_is_owner_stamped_from_the_credential(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (no ``capability`` param → TypeError; routing unbuilt). The stored row's
         ``owner_principal`` names ALICE (derived from the verified capability), proving remember
@@ -683,7 +685,7 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
         )
 
     async def test_a_remembered_note_defaults_to_the_project_keep_scope(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD. §2.4/§10-N: a note with no explicit scope defaults to ``keep:<project>``
         (NOT principal-private — that would silently privatise the fleet's shared notebook). So a
@@ -700,7 +702,7 @@ class TestRememberStampsTheOwnerAndDefaultsToProjectScope:
         )
 
     async def test_a_hostile_owner_argument_does_not_move_the_stamp(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (F4 anti-injection). A caller passing ``owner_principal=<bob>`` /
         ``as_agent=`` / ``created_by=`` must NOT move the stamp — the owner stays ALICE (server-
@@ -736,7 +738,7 @@ class TestF3RecallIsolationAcrossPrincipals:
 
     @observes_routing("lore_recall", "lore_recall")
     async def test_recall_by_bob_does_not_surface_alices_private_note(
-        self, retrofit_world: Any, alice_capability: str, bob_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential, bob_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (no identity → TypeError; unbuilt). Alice remembers a principal-private
         note; Bob's recall of the same text must return NOTHING of alice's — cross-principal
@@ -765,7 +767,7 @@ class TestInvalidateRoutesThroughGuardedWrite:
 
     @observes_routing("lore_remember", "lore_remember")
     async def test_a_member_cannot_close_a_foreign_owned_row(
-        self, retrofit_world: Any, alice_capability: str, bob_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential, bob_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``capability`` param).
         alice remembers a note (default project-keep scope, alice's household); bob — NOT householded
@@ -792,7 +794,7 @@ class TestInvalidateRoutesThroughGuardedWrite:
         )
 
     async def test_an_owner_can_close_its_own_row(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD. THE POSITIVE CONTROL for the deny pin: alice (householded in the project
         keep) CAN close her OWN project-scoped note → ``valid_until`` is set. Without it, a build that
@@ -824,7 +826,7 @@ class TestExplicitScopeArgumentIsGrantableValidated:
     injection / unauthorized scope assignment), and it was unpinned."""
 
     async def test_an_ungrantable_scope_argument_denies_with_a_teaching_error(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``scope`` validation).
         alice (householded ONLY in the project keep) tries to ``remember(scope=keep:<bob's keep>)`` —
@@ -849,7 +851,7 @@ class TestExplicitScopeArgumentIsGrantableValidated:
         )
 
     async def test_a_grantable_scope_argument_is_accepted_and_applied(
-        self, retrofit_world: Any, alice_capability: str
+        self, retrofit_world: Any, alice_capability: _Credential
     ) -> None:
         """⚠ RED at HEAD. THE POSITIVE CONTROL: a GRANTABLE explicit ``scope=`` (a fixed scope —
         ``principal-private`` is always grantable, ``_grantable`` returns True) is ACCEPTED and the

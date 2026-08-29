@@ -661,6 +661,37 @@ AcquireConnection = Callable[[], Awaitable[_SurrealConnection]]
 DropConnection = Callable[[_SurrealConnection], Awaitable[None]]
 
 
+@dataclass(frozen=True)
+class StoreHandle:
+    """The connection-OWNER triple a governed store injects into the shared substrate
+    (design ``docs/design/2026-08-28-packet63-retrofit-rulings.md`` §10.6 — packet 63a).
+
+    A frozen bundle of EXACTLY the three values :func:`run_query` and
+    :func:`execute_transaction` already take as separate keyword arguments — ``acquire``
+    (the owner's lazy :meth:`_ensure_connection`), ``drop`` (its self-heal
+    :meth:`_drop_connection`), and ``url`` — so :func:`~loremaster.governed.guarded_write`
+    and :func:`~loremaster.governed.report_unmigrated_governed_rows` reach the store through
+    the ONE retry/self-heal driver and NEVER a raw connection (design §10.6 R4). It carries
+    connection callables, so it lives in ``loremaster`` (this module, beside the seams),
+    NEVER ``lorerunes`` (predicates only).
+
+    Every governed store exposes it through ONE accessor (e.g.
+    :attr:`~loremaster.memory.local.LocalMemoryBackend.handle`), so a caller that composes a
+    guarded write borrows the owner's real driver rather than cloning a connection lifecycle
+    (ONE IMPLEMENTATION, #102/#120). 64's task/finding ledgers expose the same accessor over
+    their own owner triple — the substrate signature stays table-agnostic.
+
+    This is a data-carrier, not a mechanism: it holds the callables; the driver seams own
+    the retry/self-heal/classification policy. The adversary's ``run_governed_query(
+    connection, …)`` shim is the WRONG direction — it takes a raw connection, the exact SDK
+    escape R4 forbids.
+    """
+
+    acquire: AcquireConnection
+    drop: DropConnection
+    url: str
+
+
 def is_connection_error(error: BaseException) -> bool:
     """Classify a caught operation error as transport (``True``) or domain (``False``).
 

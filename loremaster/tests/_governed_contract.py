@@ -199,15 +199,26 @@ def field_statement(ddl: str, table: str, column: str) -> str | None:
 def index_statement(ddl: str, table: str, column: str) -> str | None:
     """The single ``DEFINE INDEX`` over ``<table>.<column>`` (None if absent); at-most-one.
 
-    Matches an index whose FIELDS clause is EXACTLY ``<column>`` (a single-column index) so a
-    composite that merely mentions the column is not mistaken for it (the §4.1 two-separate-
-    indexes ruling — a composite is leading-column-only)."""
+    Matches an index whose FIELDS clause LEADS with ``<column>`` as its SOLE column (a
+    single-column index) so a composite that merely mentions the column is not mistaken for it
+    (the §4.1 two-separate-indexes ruling — a composite is leading-column-only).
+
+    ⚠ BLOCKER 1 (adversary-63a-2 #431, folded 2026-08-29): the pattern is NOT end-anchored. The
+    governed-INDEX mutation pin (``test_the_governed_indexes_route_through_the_shared_emitter``)
+    APPENDS ``COMMENT '…'`` to the whole ``DEFINE INDEX`` statement, so ``FIELDS scope`` is no
+    longer at end-of-string — an end-anchored ``…$`` returned None on a CORRECT ``_plain_index``
+    build and reddened the mutation pin (schema 23/24). ``FIELDS\\s+<col>\\b\\s*(?:UNIQUE\\b)?
+    (?!\\s*,)`` TOLERATES a trailing clause (``COMMENT``, ``SEARCH ANALYZER``, …) while still
+    rejecting a composite ``FIELDS scope, owner`` (the negative lookahead vetoes a following
+    comma). Adversary-proven → schema 24/24."""
     matches = [
         statement
         for statement in ddl_statements(ddl)
         if _DEFINE_INDEX.match(statement)
         and re.search(rf"ON\s+{re.escape(table)}\b", statement, re.IGNORECASE)
-        and re.search(rf"FIELDS\s+{re.escape(column)}\s*(?:UNIQUE)?\s*$", statement, re.IGNORECASE)
+        and re.search(
+            rf"FIELDS\s+{re.escape(column)}\b\s*(?:UNIQUE\b)?(?!\s*,)", statement, re.IGNORECASE
+        )
     ]
     assert len(matches) <= 1, f"expected ≤1 single-column DEFINE INDEX over {table}.{column}, got {matches!r}"
     return matches[0] if matches else None
@@ -487,6 +498,47 @@ async def build_principal_and_keep_stores(env: Any) -> tuple[Any, Any]:
     await principal_store.ensure_ready()
     await keep_store.ensure_ready()
     return principal_store, keep_store
+
+
+def store_handle(
+    connection: SurrealConnection,
+    *,
+    url: str,
+    on_acquire: Callable[[int], Awaitable[None]] | None = None,
+) -> tuple[Any, dict[str, int]]:
+    """A test :class:`~loremaster.store._txn.StoreHandle` over a shared, signed-in test connection,
+    plus an ACQUIRE COUNTER — the BLOCKER-2 (design §10.6) substrate/migration seam. The
+    substrate/migration modules build a handle THIS way so ``governed.guarded_write(store=…)`` /
+    ``governed.report_unmigrated_governed_rows(store, …)`` reach the SAME per-test DB the fixture
+    seeded, through the ONE retry/self-heal driver (never a raw connection — R4).
+
+    Returns ``(handle, calls)``:
+    - ``calls['acquire']`` counts every acquire the driver made through this handle — the
+      MUTATION-PROOF instrument for §10.6 rider (iv): every guarded_write pin asserts
+      ``calls['acquire'] >= 1``, so a build that bypasses the handle for ANY statement (a
+      hand-rolled ``connection.query`` inside guarded_write) reddens.
+    - ``on_acquire(n)`` (optional) fires BEFORE the n-th acquire returns the connection — the §10.6
+      rider (iii) TOCTOU injection point: land a re-scope UPDATE on acquire #2, deterministically
+      between guarded_write's pre-read (``run_query`` = acquire #1) and its guarded mutation
+      (``execute_transaction`` = acquire #2), with NO 8-way race.
+
+    ``drop`` is a no-op: the fixture owns the connection's lifecycle, so a substrate self-heal must
+    NOT close it out from under the test (the real ``LocalMemoryBackend.handle`` wires the backend's
+    own ``_drop_connection`` — that is the accessor the retrofit invalidate route uses)."""
+    from loremaster.store._txn import StoreHandle
+
+    calls = {"acquire": 0}
+
+    async def _acquire() -> Any:
+        calls["acquire"] += 1
+        if on_acquire is not None:
+            await on_acquire(calls["acquire"])
+        return connection
+
+    async def _drop(_connection: Any) -> None:
+        return None
+
+    return StoreHandle(acquire=_acquire, drop=_drop, url=url), calls
 
 
 def python_allowed_ids(

@@ -39,6 +39,7 @@ from _governed_contract import (
     member,
     read_filter_ids,
     seed_memory_legacy,
+    store_handle,
 )
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
 from loremaster.store import surreal_schema
@@ -276,14 +277,18 @@ class TestTheBootWarningCount:
         count and the ``migrate-governed`` remedy). REDDENS a build with no forgotten-backfill alarm
         (the #131 silent-(None,None) shape). The surface is the builder's (``ensure_ready`` or a
         boot hook); this pins that SOME governed-boot surface reports the count > 0."""
-        _p, _k, connection, _env = migration_world
+        _p, _k, connection, env = migration_world
         report = getattr(governed, "report_unmigrated_governed_rows", None)
         assert report is not None, (
             "no governed-boot NONE-scope count surface exists (governed.report_unmigrated_governed_rows) "
             "— §2.3's forgotten-backfill alarm (#131 silent-(None,None) class) is unbuilt"
         )
+        # §10.6 R4: report_unmigrated_governed_rows takes a StoreHandle (driver-routed), NEVER a raw
+        # connection — the R4 AST pin (test_governed_substrate_63a) proves governed.py issues no
+        # direct SDK call, and this call site passes the handle the ruling requires.
+        handle, _calls = store_handle(connection, url=env.url)
         with caplog.at_level(logging.WARNING):
-            count = await report(connection, MEMORY_TABLE)
+            count = await report(handle, MEMORY_TABLE)
         assert count >= 1, f"the dirty memory table has a NONE-scope row; count must be ≥1, got {count}"
         assert any("migrate-governed" in record.getMessage() for record in caplog.records), (
             "the boot NONE-count must WARN with the migrate-governed remedy (a count nobody renders "

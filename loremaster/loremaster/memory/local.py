@@ -58,6 +58,7 @@ from loremaster.memory.backend import (
 from loremaster.memory.ledger import MemoryLedger, MemoryRecord
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    StoreHandle,
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
@@ -454,6 +455,20 @@ class LocalMemoryBackend:
             params=params or {},
             logger=logger,
         )
+
+    @property
+    def handle(self) -> StoreHandle:
+        """The connection-owner :class:`~loremaster.store._txn.StoreHandle` this backend injects
+        into :func:`~loremaster.governed.guarded_write` (design §10.6) — STUB / runnable-RED (63a).
+
+        The ONE accessor every governed store exposes over its own driver triple: the builder
+        returns ``StoreHandle(acquire=self._ensure_connection, drop=self._drop_connection,
+        url=self._url)`` — the SAME callables :meth:`_query` already hands the driver — so a
+        composed guarded write borrows this backend's real retry/self-heal lifecycle rather than
+        cloning it (ONE IMPLEMENTATION). The retrofitted ``invalidate`` write path routes through
+        ``governed.guarded_write(store=self.handle)``.
+        """
+        raise NotImplementedError("63a builder: LocalMemoryBackend.handle (design §10.6)")
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.

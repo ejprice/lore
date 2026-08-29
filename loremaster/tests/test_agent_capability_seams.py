@@ -338,15 +338,24 @@ class TestStampOwnerSeam:
         await _assert_stamp_owner_fail_closed(seam_env, _token(_EMAIL_ALICE), "not-a-real-capability")
         await _assert_stamp_owner_fail_closed(seam_env, _token(_EMAIL_ALICE), "")
 
-    async def test_stamp_owner_routes_through_verify_capability(
+    async def test_stamp_owner_routes_through_the_shared_verify_capability_owner(
         self, seam_env: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """⚠ MUTATION (R1.1 — ROUTING-IS-NOT-SHARING). stamp_owner derives owner_agent by CALLING
-        the ONE verification seam, not a hand-rolled lookup. Perturb ``verify_capability`` to a
-        loud sentinel; stamp_owner must surface it. RED at HEAD; REDDENS a build that hand-derives
-        the agent instead of routing through verify_capability."""
-        verify = getattr(seam_env.registry, "verify_capability", None)
-        assert verify is not None, "verify_capability unbuilt"
+        """⚠ RE-KEYED for #425 (design §10.3; adversary-63a-2 §CORPSE B; folded 2026-08-29 by
+        contract-63a-5). The PRE-#425 form patched ``verify_capability`` and expected stamp_owner to
+        break — but §10.3 COLLAPSES the double read: ``stamp_owner`` consumes the SHARED
+        ``_verify_capability_owner(presented, token) -> (agent_id, owner_principal_id)`` pair-path
+        DIRECTLY (ONE round-trip), and ``verify_capability`` returns its ``[0]``. So on the correct
+        #425 build stamp_owner NO LONGER calls ``verify_capability`` — the old pin FALSE-RED on a
+        correct build, and a builder could 'fix' it WRONG by re-routing stamp_owner back through
+        ``verify_capability`` (reintroducing the second ``owner_principal_of`` read — the #425 TOCTOU
+        this packet closes). Two legs pin the correct routing and RED that wrong re-route.
+
+        ⚠ RED-until-#425-built (both legs) for the RIGHT reason: at HEAD ``_verify_capability_owner``
+        is unbuilt and stamp_owner still routes through ``verify_capability`` (the pre-#425 world),
+        so leg A cannot surface the boom (the shared path is not called) and leg B DOES surface it
+        (stamp_owner calls verify_capability). GREEN on the correct #425 build; leg B is the
+        discriminator that REDDENS the wrong re-route."""
         result = await seam_env.registry.register(
             "alice_worker", session="s1", role="worker", owner_principal_id=seam_env.alice_bare
         )
@@ -354,8 +363,28 @@ class TestStampOwnerSeam:
         assert capability, "capability mint unbuilt"
 
         async def _boom(*_a: Any, **_k: Any) -> Any:
-            raise RuntimeError("stamp-owner-routes-through-verify")
+            raise RuntimeError("stamp-owner-routes-through-shared-pair-path")
 
-        monkeypatch.setattr(seam_env.registry, "verify_capability", _boom)
-        with pytest.raises(RuntimeError, match="stamp-owner-routes-through-verify"):
-            await _call_stamp_owner(seam_env, _token(_EMAIL_ALICE), capability)
+        # LEG A (positive) — stamp_owner reads the owner pair through the SHARED
+        # ``_verify_capability_owner`` (§10.3). Patch it to a loud sentinel; stamp_owner must SURFACE
+        # it. ``raising=False`` because at HEAD the shared path is unbuilt (RED-until-built).
+        with monkeypatch.context() as patched:
+            patched.setattr(seam_env.registry, "_verify_capability_owner", _boom, raising=False)
+            with pytest.raises(RuntimeError, match="stamp-owner-routes-through-shared-pair-path"):
+                await _call_stamp_owner(seam_env, _token(_EMAIL_ALICE), capability)
+
+        # LEG B (discriminator) — stamp_owner does NOT route through ``verify_capability`` (§425: ONE
+        # read via the shared path, never verify_capability + a second ``owner_principal_of`` read).
+        # Patch verify_capability to the boom; stamp_owner must COMPLETE with a valid owner pair, NOT
+        # surface it. A build that re-routes stamp_owner through verify_capability surfaces the boom
+        # (or returns no valid pair) → RED, catching the exact wrong 'fix' the corpse warns of.
+        with monkeypatch.context() as patched:
+            patched.setattr(seam_env.registry, "verify_capability", _boom)
+            owner_principal, owner_agent = await _call_stamp_owner(
+                seam_env, _token(_EMAIL_ALICE), capability
+            )
+        assert owner_agent == result.agent.id and seam_env.alice_bare in str(owner_principal), (
+            "stamp_owner routed through verify_capability (its boom surfaced, or it returned no valid "
+            "pair) — §425 requires stamp_owner to read ONCE via the SHARED _verify_capability_owner, "
+            f"NOT verify_capability + a second read: got ({owner_principal!r}, {owner_agent!r})"
+        )

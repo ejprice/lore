@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from lorerunes.pdp import Action, Subject
 
+    from loremaster.store._txn import StoreHandle
+
 
 class GovernedDenied(Exception):
     """A governed access was DENIED (fail-closed). Carries a TEACHING message naming the
@@ -111,16 +113,45 @@ async def guarded_write(
     row_id: str,
     set_fragment: str | None,
     audit: Any,
+    store: StoreHandle,
 ) -> GuardedWriteResult:
-    """THE single-row WRITE/DELETE/SET_SCOPE path (design §1.2 item 3) — single-brain on writes.
+    """THE single-row WRITE/DELETE/SET_SCOPE path (design §1.2 item 3 + §10.6) — single-brain on
+    writes, reaching the store through the injected owner driver.
+
+    ``store`` is the owning store's :class:`~loremaster.store._txn.StoreHandle` (design §10.6): the
+    pre-read runs via ``run_query(acquire=store.acquire, drop=store.drop, url=store.url, …)`` and
+    the guarded mutation + the ``requires_audit`` fragment compose via ``compose(mutation, audit)``
+    → ``execute_transaction(…, acquire=store.acquire, drop=store.drop, url=store.url)`` — ONE
+    verified multi-statement transaction (store-ref §3), every SDK call inside the retry/self-heal
+    driver (R4; the ``_sdk_guard`` runtime gate sees no escape). NEVER a raw connection, NEVER a
+    single-statement ``query=`` seam (it cannot run the mutation AND its audit CREATE as one
+    verified ``BEGIN … COMMIT`` — design §10.6 "why the alternatives fail").
 
     Read the row's ``(owner_principal, owner_agent, scope)`` → build ``Resource`` → ``authorize()``
     (deny → :class:`GovernedDenied`; ``requires_audit`` → compose ``AuditStore.append_fragment``
     into the SAME transaction) → execute the mutation as a GUARDED statement carrying
-    ``authorize_filter(subject, action, table).to_surql()`` in its WHERE, and check the returned
-    row count (0 ⇒ :class:`GovernedConflict`). The Python gate and the store guard are the SAME
-    tree evaluated twice, so a write cannot land on a row the filter would exclude.
+    ``authorize_filter(subject, action, table).to_surql()`` in its WHERE and a ``RETURN``, and read
+    ``row_count`` BACK from the guarded statement's returned rows (the ``messages.py`` ack-CAS
+    precedent — the ACTUAL stamp, never a pre-read count; 0 ⇒ :class:`GovernedConflict`). The
+    Python gate and the store guard are the SAME tree evaluated twice, so a write cannot land on a
+    row the filter would exclude.
 
     ``set_fragment`` is the SurrealQL SET body for a WRITE/SET_SCOPE and ``None`` for a DELETE.
     """
-    raise NotImplementedError("63a builder: guarded_write (design §1.2 item 3)")
+    raise NotImplementedError("63a builder: guarded_write (design §1.2 item 3 / §10.6)")
+
+
+async def report_unmigrated_governed_rows(store: StoreHandle, table: str) -> int:
+    """The §2.3 forgotten-backfill alarm (design §1.2 item 5 / §2.3, §10.6 R4) — STUB / runnable-RED.
+
+    Runs the bounded ``SELECT count() FROM <table> WHERE scope IS NONE GROUP ALL`` (IndexScan on
+    3.2.4 — probe-63 P5) through the injected ``store`` :class:`~loremaster.store._txn.StoreHandle`
+    (``run_query`` over ``store.acquire``/``store.drop``/``store.url`` — R4: no raw connection, no
+    direct SDK call in ``governed.py``), logs the non-zero count at WARNING naming the
+    ``migrate-governed`` remedy (the #131 silent-``(None, None)`` class: a count nobody renders is a
+    hope), and returns it. The builder fills the body; the SHAPE (a ``StoreHandle`` in, an int out)
+    is the contract.
+    """
+    raise NotImplementedError(
+        "63a builder: report_unmigrated_governed_rows (design §2.3 / §10.6 R4)"
+    )

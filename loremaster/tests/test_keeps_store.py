@@ -800,6 +800,18 @@ _WRITE_PATH_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
         keep_id=_WRAP_PROBE_GHOST_KEEP, new_keeper_email=_KEEPER_EMAIL
     ),
     "delete_keep": lambda store: store.delete_keep(keep_id=_WRAP_PROBE_GHOST_KEEP),
+    # packet 63a SF-63-4 (adversary-63a-2 §CORPSE C, registered 2026-08-29 by contract-63a-5): the
+    # deterministic-key CAS mint. A NEW KeepStore write path — its CREATE/RELATE lands it in the
+    # DERIVED _WRITE_PATHS the moment the builder implements it (its stub body carries no mutating
+    # literal, so at HEAD it is NOT yet derived → test_the_derived_write_path_set_matches_the_coverage
+    # _map is RED-until-built here, the correct contract-first direction). Under fault injection the
+    # patched keeps-seam raises inside the CAS (the key read / the create txn), so this probe key
+    # serves. The transport-propagate leg additionally pins that the CAS does NOT swallow a transport
+    # fault / exhausted contention as a UNIQUE conflict (store-ref §5: re-read a CONFLICT, never a
+    # dropped socket).
+    "get_or_create_keyed": lambda store: store.get_or_create_keyed(
+        "project:wrap-probe", type="project", keeper_email=_KEEPER_EMAIL, name="wrap"
+    ),
 }
 
 
