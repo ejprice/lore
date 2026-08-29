@@ -1125,6 +1125,35 @@ def _unique_index(table: str, name: str, fields: tuple[str, ...]) -> str:
     return f"DEFINE INDEX IF NOT EXISTS {name} ON {table} FIELDS {', '.join(fields)} UNIQUE"
 
 
+# --------------------------------------------------------------------------- #
+# The GOVERNED-column emitter (packet 63a — STUB / runnable-RED, contract-63a).
+#
+# ⚠ These are CONTRACT STUBS. The builder (63a GREEN) fills the bodies AND wires them into
+# ``_memory_statements`` (63a) / ``_message_statements`` (63b) / ``_task_statements`` +
+# ``_finding_statements`` (64) / ``_brief_statements`` (63c). They are the ONE emitter for the
+# three governed columns + two indexes (design §4.1) — a table's slice CALLS them, never
+# re-declares the columns (ONE-IMPLEMENTATION; mutation-proven: change the index set here → every
+# governed table's schema pin moves, R-a.5 / §3.2 RIDER). Store law: FIELD OVERWRITE + INDEX
+# IF NOT EXISTS (§1.1); option<> with NO ASSERT/DEFAULT (§1.4 — a required col or an ASSERT
+# poisons every legacy row); TWO separate indexes on scope AND owner_principal (a composite is
+# leading-column-only, #413 fact 4), owner_agent NOT indexed at 63 (§4.1 named trigger).
+# --------------------------------------------------------------------------- #
+
+
+def _governed_field_specs() -> tuple[tuple[str, str, str], ...]:
+    """The three governed columns' ``(name, type_expr, constraint)`` specs (design §4.1) —
+    consumed by each governed table's ``_<table>_statements`` via :func:`_define_field`
+    (OVERWRITE). STUB: builder fills; NO ASSERT/DEFAULT (option<> un-poisons legacy rows)."""
+    raise NotImplementedError("63a builder: the ONE governed-column field emitter (design §4.1)")
+
+
+def _governed_index_statements(table: str) -> list[str]:
+    """The governed indexes for ``table`` — plain ``IF NOT EXISTS`` on ``scope`` AND
+    ``owner_principal`` (NOT ``owner_agent``; NOT a composite), via :func:`_plain_index`
+    (design §4.1). STUB: builder fills."""
+    raise NotImplementedError("63a builder: the ONE governed-index emitter (design §4.1)")
+
+
 def _analyzer_statement(analyzer_name: str) -> str:
     """The ``DEFINE ANALYZER`` statement for the code-identifier tokenizer."""
     return (

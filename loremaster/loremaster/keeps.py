@@ -517,6 +517,31 @@ class KeepStore:
             raise KeepStoreError(f"created keep {keep_id!r} did not read back")
         return created
 
+    async def get_or_create_keyed(
+        self, key: str, *, type: str, keeper_email: str, name: str | None = None  # noqa: A002
+    ) -> Keep:
+        """Get-or-create the keep addressed by the deterministic natural key ``key`` (SF-63-4;
+        packet 63a — STUB / runnable-RED, contract-63a).
+
+        The idempotent, race-safe mint behind the canonical project keep (``key='project:lore'``,
+        design §2.2) and 63b's session keeps (``key='session:<session>'``). Reads by the UNIQUE
+        ``keep.key`` index; on a miss, CREATEs (like :meth:`create_keep`, with ``key`` set) and,
+        on a concurrent-``register`` UNIQUE conflict, RE-READS and returns the winner — the
+        hot-row CAS mint (store reference §5: a UNIQUE index is the backstop, never a
+        de-duplicator; re-read on conflict, never a second row). Store law §1.8: the many manual
+        keeps carrying a NONE key coexist under the UNIQUE index. STUB: builder fills.
+
+        Args:
+            key: The deterministic natural key (e.g. ``'project:lore'``, ``'session:<id>'``).
+            type: The keep type (``project``/``session``/…); server-validated by the closed ASSERT.
+            keeper_email: The principal who keeps the space (auto-householded, Fork D).
+            name: An optional human label.
+
+        Returns:
+            The existing or freshly-minted :class:`Keep` bearing ``key``.
+        """
+        raise NotImplementedError("63a builder: KeepStore.get_or_create_keyed CAS mint (SF-63-4)")
+
     async def get_keep(self, keep_id: str) -> Keep | None:
         """Read a keep by id, or ``None`` on a miss.
 

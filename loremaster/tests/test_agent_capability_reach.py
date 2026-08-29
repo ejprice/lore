@@ -91,21 +91,27 @@ class TestTheGovernedSurfaceReachPin:
         self, tmp_path: Any
     ) -> None:
         """⚠ RED at HEAD — the wave-2 adjudication mapping ``_GOVERNED_TOOLS_PENDING_OWNER_STAMP``
-        is unbuilt. COVERAGE-AS-A-CHECKED-VARIABLE: its KEYS must EQUAL the DERIVED governed set
-        (no orphan governed tool, no ghost entry), and every value is a non-empty adjudication
-        TRIGGER (owner+trigger, R4.2). REDDENS: a NEW governed tool not added to the mapping
-        (RED_ORPHANED), a stale entry (ghost), or a blank trigger (an un-adjudicated red)."""
+        is unbuilt. COVERAGE-AS-A-CHECKED-VARIABLE: every pending governed tool is a governed tool
+        (no ghost entry), and every value is a non-empty adjudication TRIGGER (owner+trigger, R4.2).
+
+        ⚠ RELAXED by packet 63a (contract-63a, directly-caused; disclosed in REPORT-contract-63a.md
+        FORK 4). Design R-a.5 removes lore_remember/lore_recall from this per-TOOL dict at 63a GREEN
+        (they become ROUTED — still governed), so the original exact equality ``governed == pending``
+        would break (governed=6, pending=4). It is relaxed to ``pending ⊆ governed`` (a pending tool
+        is a governed tool). The full ORPHAN-DETECTION (a NEW governed tool/verb neither routed nor
+        adjudicated → RED) is PRESERVED — RELOCATED to the finer per-VERB #420 instrument
+        ``test_governed_routing_63a.py::test_every_governed_verb_is_routed_or_adjudicated`` (two
+        instruments, two granularities — R-a.5). REDDENS: a ghost pending entry, or a blank trigger."""
         adjudication = getattr(server_mod, "_GOVERNED_TOOLS_PENDING_OWNER_STAMP", None)
         assert isinstance(adjudication, dict), (
             "loremaster.server._GOVERNED_TOOLS_PENDING_OWNER_STAMP (a dict governed-tool -> trigger) "
             "is unbuilt — the derived reach pin's adjudication record (R4.1/R4.2, Fork 4)"
         )
         governed = await _governed(tmp_path)
-        assert governed == frozenset(adjudication), (
-            f"the governed set (DERIVED from partition_tools_by_population) must EQUAL the pending "
-            f"owner-stamp adjudication keys — orphan (new governed tool unadjudicated): "
-            f"{sorted(governed - frozenset(adjudication))!r}; ghost (stale entry): "
-            f"{sorted(frozenset(adjudication) - governed)!r}"
+        assert frozenset(adjudication) <= governed, (
+            f"a PENDING owner-stamp tool is not (any longer) a governed tool — ghost entries: "
+            f"{sorted(frozenset(adjudication) - governed)!r}. (Orphan detection — a new governed tool "
+            f"neither routed nor adjudicated — moved to the per-verb #420 pin at 63a, R-a.5.)"
         )
         blank = [tool for tool, trigger in adjudication.items() if not (trigger and str(trigger).strip())]
         assert not blank, (

@@ -126,6 +126,7 @@ from loremaster.store.surreal_schema import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from loremaster.governed import MigrateGovernedResult
     from loremaster.keeps import KeepStore
     from loremaster.principal_keys import PrincipalKey, PrincipalKeyStore
 
@@ -976,6 +977,35 @@ def build_keep_store(config: LoreConfig) -> KeepStore:
         user=resolve_config_value(config.surreal.user_env),
         password=resolve_secret(config.surreal.password_env),
     )
+
+
+async def migrate_governed(
+    *,
+    table: str,
+    connection: Any,
+    keep_store: KeepStore,
+    principal_store: PrincipalStore,
+    registry: Any = None,
+    dry_run: bool = False,
+) -> MigrateGovernedResult:
+    """The idempotent governed-column backfill for ONE table (design §1.2 item 5 / §2 — packet
+    63a STUB / runnable-RED, contract-63a). Backs the ``lore-adm migrate-governed`` CLI verb.
+
+    Per the per-table :class:`~loremaster.governed.LegacyMapping` (§2.1): ``memory`` legacy rows
+    → owner NONE/NONE, ``scope = keep:<project>`` (the canonical project keep minted via
+    :meth:`KeepStore.get_or_create_keyed` ``key='project:lore'``); ``message`` rows → ``owner_agent
+    = sender``, ``owner_principal = sender.owner_principal``, scope = project keep — REFUSING
+    LOUD if ``agent`` has not been migrated first (§2.6 the checked ORDER: it asserts the agent
+    NONE-count is 0). Idempotent: a second run backfills 0 and exits clean. NEVER run at boot
+    (§2.3) — only at the 65 cutover. ``dry_run`` reports counts without writing. STUB: builder
+    fills.
+
+    Returns:
+        A :class:`~loremaster.governed.MigrateGovernedResult` with the receipts. Refuses (sets
+        ``refused=True`` + ``reason``) on the agent-first ORDER precondition or a multi-principal
+        ``agent`` table (§2.1) — never a silent partial widening of visibility.
+    """
+    raise NotImplementedError("63a builder: migrate_governed backfill verb (design §1.2 item 5)")
 
 
 def build_parser() -> argparse.ArgumentParser:
