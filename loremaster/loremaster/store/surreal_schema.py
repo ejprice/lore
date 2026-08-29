@@ -1143,15 +1143,31 @@ def _unique_index(table: str, name: str, fields: tuple[str, ...]) -> str:
 def _governed_field_specs() -> tuple[tuple[str, str, str], ...]:
     """The three governed columns' ``(name, type_expr, constraint)`` specs (design §4.1) —
     consumed by each governed table's ``_<table>_statements`` via :func:`_define_field`
-    (OVERWRITE). STUB: builder fills; NO ASSERT/DEFAULT (option<> un-poisons legacy rows)."""
-    raise NotImplementedError("63a builder: the ONE governed-column field emitter (design §4.1)")
+    (OVERWRITE). NO ASSERT/DEFAULT: ``memory``/``message`` are POPULATED tables, so a required
+    field OR an ASSERT poisons every legacy row's next UPDATE and a DEFAULT does not rescue it
+    (§1.4) — the scope DOMAIN is enforced at the WRITE seam (``Resource``/``_is_valid_scope`` in
+    ``lorerunes.pdp``, ONE vocabulary), never a store ASSERT. The owners are ``record<>`` LINKS
+    (store-ref §2), ``scope`` a plain string; all ``option<>`` (NONE for an unmigrated legacy row)."""
+    return (
+        ("owner_principal", f"option<record<{PRINCIPAL_TABLE}>>", ""),
+        ("owner_agent", f"option<record<{AGENT_TABLE}>>", ""),
+        ("scope", "option<string>", ""),
+    )
 
 
 def _governed_index_statements(table: str) -> list[str]:
-    """The governed indexes for ``table`` — plain ``IF NOT EXISTS`` on ``scope`` AND
-    ``owner_principal`` (NOT ``owner_agent``; NOT a composite), via :func:`_plain_index`
-    (design §4.1). STUB: builder fills."""
-    raise NotImplementedError("63a builder: the ONE governed-index emitter (design §4.1)")
+    """The governed indexes for ``table`` — TWO plain ``IF NOT EXISTS`` indexes, on ``scope`` AND
+    ``owner_principal`` (design §4.1). ``owner_agent`` is DELIBERATELY NOT indexed at 63 (it never
+    LEADS a READ disjunct — it appears only ANDed under ``scope='agent-private' AND
+    owner_principal=…``; the re-open trigger is the first ``owner_agent``-leading LIST read). NOT
+    a composite: a composite is leading-column-only (#413 fact 4), and the READ predicate leads
+    with ``scope`` (three disjuncts) and ``owner_principal`` (the ``principal-private`` one), so
+    two SEPARATE single-column indexes serve it. Plain (non-UNIQUE — a scope/owner is shared by
+    many rows), ``IF NOT EXISTS`` (never OVERWRITE — an index OVERWRITE rebuilds → boot crash, §1.1)."""
+    return [
+        _plain_index(table, f"{table}_scope", ("scope",)),
+        _plain_index(table, f"{table}_owner_principal", ("owner_principal",)),
+    ]
 
 
 def _analyzer_statement(analyzer_name: str) -> str:
@@ -1252,6 +1268,13 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
         _define_field(MEMORY_TABLE, name, type_expr, constraint=constraint)
         for name, type_expr, constraint in _MEMORY_FIELD_SPECS
     ]
+    # packet 63a (design §4.1): the three GOVERNED columns via the ONE shared emitter (never
+    # re-declared per table — ROUTING-IS-NOT-SHARING; mutation-proven by the schema module's
+    # emitter pins). memory is a POPULATED table, so option<> with NO ASSERT/DEFAULT (§1.4).
+    statements += [
+        _define_field(MEMORY_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _governed_field_specs()
+    ]
     statements.append(_hnsw_index(MEMORY_TABLE, _MEMORY_VECTOR_FIELD, dim))
     statements += [
         _fulltext_index(MEMORY_TABLE, field, analyzer_name) for field in MEMORY_FULLTEXT_FIELDS
@@ -1259,6 +1282,8 @@ def _memory_statements(dim: int, analyzer_name: str) -> list[str]:
     statements.append(
         _plain_index(MEMORY_TABLE, f"{MEMORY_TABLE}_valid_until", (_MEMORY_VALID_UNTIL_FIELD,))
     )
+    # The two governed READ indexes (scope, owner_principal) via the ONE shared emitter.
+    statements += _governed_index_statements(MEMORY_TABLE)
     return statements
 
 
@@ -2149,6 +2174,12 @@ _KEEP_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("keeper", f"record<{PRINCIPAL_TABLE}>", ""),
     ("name", "option<string>", _NON_EMPTY_STRING_ASSERT),
     ("created_at", "datetime", "DEFAULT time::now()"),
+    # packet 63a SF-63-4 (design §2.2/§4.1): the deterministic NATURAL KEY that addresses the
+    # canonical project keep (``key='project:<slug>'``) + 63b's session keeps
+    # (``key='session:<id>'``). option<string> with NO ASSERT/DEFAULT — a MANUAL keep carries a
+    # NONE key, and §1.8 says many NONE keys coexist under the UNIQUE index below (only a real
+    # non-NONE key maps to ≤1 row). The keep table is populated, so option<> per §1.4.
+    ("key", "option<string>", ""),
 )
 
 # The ``member_of`` edge's NON-DOMAIN edge-local fields (the ``briefed`` idiom —
@@ -2189,6 +2220,10 @@ def _keep_statements() -> list[str]:
         for name, type_expr, constraint in (*_KEEP_FIELD_SPECS, *type_spec)
     ]
     statements.append(_plain_index(KEEP_TABLE, f"{KEEP_TABLE}_keeper", ("keeper",)))
+    # packet 63a SF-63-4 (design §2.2/§4.1): the UNIQUE index over ``key`` — the backstop that
+    # makes a real (non-NONE) key map to ≤1 row, while §1.8 lets the many manual-keep NONE keys
+    # coexist. IF NOT EXISTS (never OVERWRITE — an index OVERWRITE rebuilds → boot crash, §1.1).
+    statements.append(_unique_index(KEEP_TABLE, f"{KEEP_TABLE}_key", ("key",)))
     return statements
 
 

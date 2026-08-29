@@ -152,12 +152,14 @@ class Resource:
     column) or a non-empty id (never an empty-string forgery). No default for ``scope`` (PKT-28
     C1). An absent owner matches NO owner predicate (``None != any id``), but scope predicates
     still apply — a NONE-owner ``server`` row is readable by all, a NONE-owner private row by
-    nobody."""
+    nobody. ``scope=None`` (FORK 1, packet 63a §10.1) means the ABSENT (unmigrated legacy) scope —
+    NOT "any scope": it matches no member ``scope=$x`` disjunct (member-invisible, admin-visible),
+    while the empty string stays a forgery that raises."""
 
     table: str
     owner_principal: str | None
     owner_agent: str | None
-    scope: str
+    scope: str | None
 
     def __post_init__(self) -> None:
         if not self.table:
@@ -173,10 +175,17 @@ class Resource:
                     f"Resource.{field_name} when present must be non-empty (SEC-F3) — "
                     "None means absent-owner, an empty string is a forgery vector"
                 )
-        if not _is_valid_scope(self.scope):
+        # FORK 1 (packet 63a, design §10.1): ``scope=None`` is the ABSENT (unmigrated legacy)
+        # scope — the ONE new branch. It constructs (a NONE-scope option<> column, §1.4/§2.3),
+        # matches NO member ``scope=$x`` disjunct (so a legacy row is member-invisible /
+        # admin-visible, fail-closed), and is scope-INDEPENDENT for DELETE (61 D4(a)). The
+        # EMPTY-STRING forgery vector and every non-domain string STILL raise (the widening is
+        # narrow: only the literal ``None`` is admitted). ``to_surql`` never reads a ``Resource``,
+        # so the emitted SurrealQL is byte-identical — 63 adds nothing to the predicate.
+        if self.scope is not None and not _is_valid_scope(self.scope):
             raise ValueError(
                 f"scope {self.scope!r} is not one of {sorted(_VALID_FIXED_SCOPES)} "
-                f"or {KEEP_SCOPE_PREFIX}<non-empty-id>"
+                f"or {KEEP_SCOPE_PREFIX}<non-empty-id> (None = the absent/legacy scope, §10.1)"
             )
 
 

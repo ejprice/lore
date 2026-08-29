@@ -34,12 +34,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loresigil.base import Embedder
 from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal, RecordID
 
+from loremaster import governed
 from loremaster.extension import DEFAULT_KEY_VERSION
 from loremaster.memory.backend import (
     IMPORTANCE_DEFAULTS_BY_KIND,
@@ -87,11 +88,23 @@ from loremaster.store.query_text import (
     truncate_at_word_boundary,
 )
 from loremaster.store.surreal_schema import (
+    AGENT_TABLE,
     DEFAULT_ANALYZER_NAME,
+    KEEP_TABLE,
     MEMORY_FULLTEXT_FIELDS,
     MEMORY_TABLE,
+    PRINCIPAL_TABLE,
     generate_memory_ddl,
 )
+
+# packet 63a governed retrofit: the shared substrate seams (read_filter / guarded_write) + the
+# scope-grant predicate. ``pdp`` is imported as a MODULE so a ``_grantable`` monkeypatch on
+# ``lorerunes.pdp._grantable`` lands at the call site (the mutation-proof of the scope validation —
+# a ``from … import _grantable`` binding would NOT see the patch; ROUTING-IS-NOT-SHARING).
+from lorerunes import pdp
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from lorerunes.pdp import Subject
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +165,12 @@ _COL_SUPERSEDED_BY = "superseded_by"
 _COL_EXPIRES_AT = "expires_at"
 _COL_CREATED_AT = "created_at"
 _COL_EMBEDDING = "embedding"
+# packet 63a GOVERNED columns (design §4.1): the owner pair (record<> links) + the scope string.
+_COL_OWNER_PRINCIPAL = "owner_principal"
+_COL_OWNER_AGENT = "owner_agent"
+_COL_SCOPE = "scope"
+# The canonical PROJECT-keep natural key is ONE shared constant (``governed.PROJECT_KEEP_KEY``) so
+# ``remember``'s default-scope read and the migration mint address the SAME keep (design §2.2).
 
 # The durable-ledger metadata keys the write-through stamps so a future replay
 # can restore the v2 wire fields (a pre-v2 row lacks them; the replay DEFAULTS
@@ -468,7 +487,9 @@ class LocalMemoryBackend:
         cloning it (ONE IMPLEMENTATION). The retrofitted ``invalidate`` write path routes through
         ``governed.guarded_write(store=self.handle)``.
         """
-        raise NotImplementedError("63a builder: LocalMemoryBackend.handle (design §10.6)")
+        return StoreHandle(
+            acquire=self._ensure_connection, drop=self._drop_connection, url=self._url
+        )
 
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.
@@ -495,6 +516,8 @@ class LocalMemoryBackend:
         text: str,
         *,
         kind: str,
+        subject: Subject | None = None,
+        scope: str | None = None,
         importance: float | None = None,
         source: MemorySource | None = None,
         labels: list[str] | None = None,
@@ -529,7 +552,20 @@ class LocalMemoryBackend:
         Raises:
             ValueError: ``importance`` is outside ``[0, 1]``.
             MemoryNotFoundError: ``supersedes`` names an unknown memory id.
+            governed.GovernedDenied: no ``subject`` (an identity-less write — the owner is
+                server-derived from the credential, never absent), or an explicit ``scope=`` the
+                caller may not grant.
         """
+        # §10.5 removed-behavior 1: an identity-less write DENIES (never an ownerless row). The
+        # owner is server-derived from the resolved Subject; a hostile ``owner_*=`` arg cannot
+        # move it because there IS no such parameter (F4 — the strongest anti-injection).
+        if subject is None:
+            raise governed.GovernedDenied(
+                "lore_remember requires a verified identity — register an owned agent "
+                "(`lore_comms action=register`) and present its capability; an identity-less "
+                "write is denied (the owner is server-derived, never absent)"
+            )
+        resolved_scope = await self._resolve_write_scope(subject, scope)
         resolved_importance = self._resolve_importance(kind, importance)
         resolved_source = source if source is not None else MemorySource(kind=_DEFAULT_SOURCE_KIND)
         resolved_labels = list(labels or ())
@@ -579,34 +615,100 @@ class LocalMemoryBackend:
                 supersedes=supersedes,
                 vector=vector,
             )
+            # Stamp the GOVERNED columns from the RESOLVED subject (never a caller arg — F4) + the
+            # PDP-validated scope. Owners bind as record<> links (store-ref §2). ``remember`` is a
+            # CREATE of a NEW row (the creator owns it), so it stamps directly — it is ``invalidate``
+            # (a write on an EXISTING, possibly foreign-owned row) that routes through guarded_write.
+            content[_COL_OWNER_PRINCIPAL] = RecordID(PRINCIPAL_TABLE, subject.principal_id)
+            content[_COL_OWNER_AGENT] = RecordID(AGENT_TABLE, subject.agent_id)
+            content[_COL_SCOPE] = resolved_scope
             fragments = [self._upsert_fragment(memory_id, content)]
             if supersedes is not None:
                 fragments.append(self._close_superseded_fragment(supersedes, memory_id, now))
             await self._apply(fragments)
         return memory_id
 
-    async def invalidate(self, memory_id: str) -> None:
+    async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
         """Retire a memory with no successor (``valid_until`` set, ``superseded_by`` None).
+
+        The GOVERNED write path (packet 63a, design §1.1/§2.5): closing a row is a WRITE on an
+        EXISTING (possibly FOREIGN-owned) row, so it authorizes through
+        :func:`~loremaster.governed.guarded_write` — a member cannot retire ANOTHER principal's
+        note (single-brain on writes: a denied close never mutates), while the owner / a household
+        member can. An identity-less call DENIES.
 
         Args:
             memory_id: The id of the memory to retire.
+            subject: The resolved :class:`lorerunes.pdp.Subject` whose WRITE reach is checked.
 
         Raises:
+            governed.GovernedDenied: no ``subject`` (identity-less), or the subject may not WRITE
+                the target row (a foreign-owned note).
+            governed.GovernedConflict: the row vanished / was re-scoped between the read and the
+                guarded mutation (LOUD, never a silent no-op).
             MemoryNotFoundError: ``memory_id`` does not exist.
         """
-        # Under the rebuild lock (see :attr:`_rebuild_lock`) so the existence check
-        # and the retire UPDATE never straddle the table recreate's drop→re-define
-        # window — a transiently-dropped table would otherwise report a live memory
-        # as missing, or the UPDATE would touch a half-built table.
+        if subject is None:
+            raise governed.GovernedDenied(
+                "lore invalidate requires a verified identity — an identity-less close is denied"
+            )
+        # Under the rebuild lock (see :attr:`_rebuild_lock`) so the existence check and the guarded
+        # write never straddle the table recreate's drop→re-define window — a transiently-dropped
+        # table would otherwise report a live memory as missing.
         async with self._rebuild_lock:
             if not await self._row_exists(memory_id):
                 raise MemoryNotFoundError(
                     f"cannot invalidate unknown memory {memory_id!r}: no such memory exists"
                 )
-            await self._query(
-                f"UPDATE type::record('{MEMORY_TABLE}', $id) SET {_COL_VALID_UNTIL} = $now",
-                {"id": memory_id, "now": datetime.now(UTC)},
+            # The guarded WRITE carries authorize_filter(WRITE) in its WHERE (single-brain), so a
+            # foreign-owned row is excluded in the SAME statement. ``time::now()`` self-stamps the
+            # close server-side (no param through the raw set_fragment).
+            await governed.guarded_write(
+                subject,
+                pdp.Action.WRITE,
+                table=MEMORY_TABLE,
+                row_id=memory_id,
+                set_fragment=f"{_COL_VALID_UNTIL} = time::now()",
+                audit=None,
+                store=self.handle,
             )
+
+    async def _resolve_write_scope(self, subject: Subject, scope: str | None) -> str:
+        """Resolve a ``remember`` write's scope (design §2.4). An OMITTED scope defaults to the
+        canonical PROJECT keep (so a fresh fleet note stays fleet-visible, §10-N). An EXPLICIT
+        ``scope=`` is a PDP-VALIDATED REQUEST, not an identity claim: it is checked by the SAME
+        ``lorerunes.pdp._grantable`` predicate the SET_SCOPE action uses (the fixed scopes + the
+        caller's OWN keeps are grantable) — a keep the caller is NOT householded in DENIES with a
+        teaching error. Calling ``_grantable`` via the ``pdp`` MODULE (not a bound import) is what
+        makes the validation mutation-provable (ROUTING-IS-NOT-SHARING)."""
+        if scope is None:
+            return await self._default_project_scope()
+        if not pdp._grantable(subject, scope):  # noqa: SLF001 - the ruled shared grant predicate
+            raise governed.GovernedDenied(
+                f"scope {scope!r} is not grantable by {subject.principal_id}/{subject.agent_id} — "
+                "you are not householded in that keep; run `lore-adm add-household` to join it first"
+            )
+        return scope
+
+    async def _default_project_scope(self) -> str:
+        """The canonical PROJECT keep's ``keep:<id>`` scope, resolved by ONE indexed read of the
+        ``keep.key`` UNIQUE index (design §2.2, SF-63-4). A missing project keep is a MISCONFIGURED
+        deployment, not a silent fallback to ``principal-private`` (which would hide the fleet's
+        shared notebook) — it DENIES LOUD (the project keep is minted by ``lore-adm
+        migrate-governed`` at the cutover)."""
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_ID_KEY} FROM {KEEP_TABLE} WHERE key = $k",
+                {"k": governed.PROJECT_KEEP_KEY},
+            )
+        )
+        if not rows:
+            raise governed.GovernedDenied(
+                f"the canonical project keep (key={governed.PROJECT_KEEP_KEY!r}) is not provisioned "
+                "— a governed write cannot default its scope to the fleet's shared keep; run "
+                "`lore-adm migrate-governed` at the cutover (it mints the project keep)"
+            )
+        return pdp.keep_scope(self._bare_id(rows[0].get(_ID_KEY)))
 
     # -- reads --------------------------------------------------------------
 
@@ -614,6 +716,7 @@ class LocalMemoryBackend:
         self,
         query: str,
         *,
+        subject: Subject | None = None,
         k: int = _DEFAULT_RECALL_K,
         include: str | None = None,
         as_of: datetime | None = None,
@@ -648,6 +751,14 @@ class LocalMemoryBackend:
         Raises:
             ValueError: ``lens`` is supplied (unsupported in P7).
         """
+        # §10.5 removed-behavior 1: an identity-less read DENIES (never the pre-retrofit unfiltered
+        # answer). An unauthenticated read of the fleet's memory is exactly what the retrofit closes.
+        if subject is None:
+            raise governed.GovernedDenied(
+                "lore_recall requires a verified identity — register an owned agent "
+                "(`lore_comms action=register`) and present its capability; an identity-less "
+                "read of the fleet's memory is denied"
+            )
         if lens is not None:
             raise ValueError(
                 f"the local memory backend does not support a recall lens (got {lens!r}); "
@@ -662,6 +773,13 @@ class LocalMemoryBackend:
         query_vector = await self._embedder.embed_query(query)
         async with self._rebuild_lock:
             filter_conditions, params = self._build_recall_filter(include, as_of, labels, kind)
+            # THE read splice (R-a.3): the SAME authorize_filter(READ) fragment every governed list
+            # read carries, so recall serves ONLY the caller's visible set (F3 cross-principal
+            # isolation) — a row the caller cannot see never enters the answer even when it matches
+            # the query. Both hybrid arms AND this fragment (single-brain with the Python gate).
+            read_fragment, read_params = governed.read_filter(subject, MEMORY_TABLE)
+            filter_conditions.append(f"({read_fragment})")
+            params.update(read_params)
             rows = await self._hybrid_search(query_vector, query, k, filter_conditions, params)
             # Resolve drift for EVERY recalled ref in ONE oracle call (the batch read),
             # then annotate each row's refs against that shared existing-chunk set —

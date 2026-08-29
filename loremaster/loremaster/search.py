@@ -1194,7 +1194,20 @@ class SearchPipeline:
         # P7 cutover: the memory dependency is the SurrealDB-backed
         # ``MemoryBackend`` protocol, whose read is ``recall(query, k=...)``
         # (the retired ``MemoryStore.recall_memory`` shape is gone).
-        return list(await self._memory_store.recall(query, k=_MEMORY_RECALL_K))
+        #
+        # packet 63a: memory is now GOVERNED (per-principal). ``search_code`` is a SHARED-READ
+        # tool with no caller identity wired yet (the caller-``Subject`` threading lands 63b/64),
+        # so an identity-less enrichment recall DENIES. Degrade to NO memory boost rather than
+        # fail the whole code search — and, crucially, this is the ISOLATION-correct behavior: an
+        # identity-less search must never boost with (or leak) a principal's governed memory. At
+        # 63b/64 ``search_code`` threads the caller's ``Subject`` so the boost is scoped to what
+        # they may see. ⚠ DIRECTLY-CAUSED by the 63a memory retrofit; disclosed in REPORT-build-63a.
+        from loremaster.governed import GovernedDenied
+
+        try:
+            return list(await self._memory_store.recall(query, k=_MEMORY_RECALL_K))
+        except GovernedDenied:
+            return []
 
     def _apply_memory_boost(
         self,

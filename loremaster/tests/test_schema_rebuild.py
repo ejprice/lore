@@ -95,6 +95,20 @@ from loremaster.store.surreal import SurrealStore
 from loremaster.store.surreal_schema import MEMORY_TABLE
 from loresigil.testing import FakeEmbedder
 
+import lorerunes as pdp
+
+# CORPSE-A (packet 63a): the backend's recall/remember now REQUIRE a ``subject`` (None ->
+# GovernedDenied). This suite pins the embedding-schema REBUILD (drop -> re-DDL -> replay),
+# never governance (the 63a contract pins that), so every governed call routes through ONE
+# ADMIN subject: AllRows keeps recall unfiltered, preserving every assertion; remember carries
+# scope='server' (grantable by any subject) so no per-test project keep need exist.
+_GOV_SUBJECT = pdp.Subject(
+    principal_id="corpse_a_admin",
+    agent_id="corpse_a_agent",
+    role=pdp.PRINCIPAL_ROLE_ADMIN,
+    visible_keep_ids=frozenset(),
+)
+
 # ---------------------------------------------------------------------------
 # Production-realistic constants (same values the existing test suite uses,
 # derived from test_indexer.py/_config — clause 5: same source of truth).
@@ -2724,8 +2738,12 @@ class TestMemoryJoinsSchemaRebuild:
                 start_tasks=False,
             )
             await _settle(getattr(first, "schema_rebuild_task", None))
-            await first.memory_backend.remember(self._NOTE_1, kind="fact")
-            await first.memory_backend.remember(self._NOTE_2, kind="fact")
+            await first.memory_backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
+            await first.memory_backend.remember(
+                self._NOTE_2, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
             await first.aclose()
 
             second_embedder = RecordingEmbedder(dim=_DIM)
@@ -2750,7 +2768,7 @@ class TestMemoryJoinsSchemaRebuild:
                     "(0 means the memory table never joined the rebuild)"
                 )
                 for note in (self._NOTE_1, self._NOTE_2):
-                    recalled = await second.memory_backend.recall(note, k=5)
+                    recalled = await second.memory_backend.recall(note, k=5, subject=_GOV_SUBJECT)
                     assert any(note in text for text in _recalled_texts(recalled)), (
                         f"a re-embedded memory must remain recallable: {note!r}"
                     )
@@ -2786,7 +2804,9 @@ class TestMemoryJoinsSchemaRebuild:
                 start_tasks=False,
             )
             await _settle(getattr(first, "schema_rebuild_task", None))
-            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.memory_backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
             await first.aclose()
 
             second = await build_app_context(
@@ -2801,7 +2821,7 @@ class TestMemoryJoinsSchemaRebuild:
                 assert task is not None, "a dim change must spawn the rebuild task"
                 await _settle(task)
 
-                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5, subject=_GOV_SUBJECT)
                 assert any(self._NOTE_1 in text for text in _recalled_texts(recalled)), (
                     "after a dim change the memory must re-embed at the NEW width and "
                     "remain recallable (the memory HNSW index was resized in place); a "
@@ -2838,7 +2858,9 @@ class TestMemoryJoinsSchemaRebuild:
                 start_tasks=False,
             )
             await _settle(getattr(first, "schema_rebuild_task", None))
-            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.memory_backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
             await first.aclose()
 
             second_embedder = RecordingEmbedder(dim=_DIM)
@@ -2857,7 +2879,7 @@ class TestMemoryJoinsSchemaRebuild:
                     "a steady-state boot must re-embed NOTHING — the memory table is "
                     f"not needlessly rebuilt; saw {second_embedder.total_embedded} embeds"
                 )
-                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5, subject=_GOV_SUBJECT)
                 assert any(self._NOTE_1 in text for text in _recalled_texts(recalled))
             finally:
                 await second.aclose()
@@ -2893,8 +2915,12 @@ class TestMemoryJoinsSchemaRebuild:
                 start_tasks=False,
             )
             await _settle(getattr(first, "schema_rebuild_task", None))
-            await first.memory_backend.remember(self._NOTE_1, kind="fact")
-            await first.memory_backend.remember(self._NOTE_2, kind="fact")
+            await first.memory_backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
+            await first.memory_backend.remember(
+                self._NOTE_2, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
             await first.aclose()
 
             # Boot 2 (fingerprint B) with a BOMB embedder → the memory rebuild raises.
@@ -2937,7 +2963,7 @@ class TestMemoryJoinsSchemaRebuild:
             try:
                 await _settle(getattr(healed, "schema_rebuild_task", None))
                 for note in (self._NOTE_1, self._NOTE_2):
-                    recalled = await healed.memory_backend.recall(note, k=5)
+                    recalled = await healed.memory_backend.recall(note, k=5, subject=_GOV_SUBJECT)
                     assert any(note in text for text in _recalled_texts(recalled)), (
                         f"an interrupted memory must be recallable after recovery: {note!r}"
                     )
@@ -2978,7 +3004,9 @@ class TestMemoryJoinsSchemaRebuild:
             try:
                 await _settle(getattr(ctx, "schema_rebuild_task", None))
                 # A normally-remembered note (store + ledger).
-                await ctx.memory_backend.remember(self._NOTE_1, kind="fact")
+                await ctx.memory_backend.remember(
+                    self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+                )
 
                 # A note that reached ONLY the durable ledger (the write-through-
                 # first state of a concurrent remember mid-rebuild) — no store row.
@@ -2999,7 +3027,7 @@ class TestMemoryJoinsSchemaRebuild:
                 await ctx.memory_backend.rebuild_embeddings()
 
                 for note in (self._NOTE_1, self._NOTE_2):
-                    recalled = await ctx.memory_backend.recall(note, k=5)
+                    recalled = await ctx.memory_backend.recall(note, k=5, subject=_GOV_SUBJECT)
                     assert any(note in text for text in _recalled_texts(recalled)), (
                         f"a ledger-durable memory must survive the rebuild: {note!r}"
                     )
@@ -3034,7 +3062,9 @@ class TestMemoryJoinsSchemaRebuild:
             )
             await first.index(reconcile=True)  # populate the chunk index under the writer lock
             await _settle(getattr(first, "schema_rebuild_task", None))
-            await first.memory_backend.remember(self._NOTE_1, kind="fact")
+            await first.memory_backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )
             first_status = await first.index()
             assert first_status.files_indexed >= 1, (
                 "test setup: the seed build must populate the chunk index"
@@ -3062,7 +3092,7 @@ class TestMemoryJoinsSchemaRebuild:
                 assert status.files_indexed >= 1, (
                     "the chunk index must stay populated after the rebuild"
                 )
-                recalled = await second.memory_backend.recall(self._NOTE_1, k=5)
+                recalled = await second.memory_backend.recall(self._NOTE_1, k=5, subject=_GOV_SUBJECT)
                 assert any(self._NOTE_1 in text for text in _recalled_texts(recalled)), (
                     "the memory must remain recallable after a rebuild that also "
                     "re-embedded the chunk corpus"
@@ -3113,14 +3143,18 @@ class TestMemoryJoinsSchemaRebuild:
         assert isinstance(window, _WindowBarrierMemoryBackend)
         try:
             await backend.ensure_ready()
-            await backend.remember(self._NOTE_1, kind="fact")  # baseline: store + ledger
+            await backend.remember(
+                self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            )  # baseline: store + ledger
 
             serialized = getattr(backend, "_rebuild_lock", None) is not None
 
             task_rebuild = asyncio.create_task(backend.rebuild_embeddings())
             await window.window_open.wait()  # REMOVE done; (fixed: rebuild lock held)
 
-            task_remember = asyncio.create_task(backend.remember(self._NOTE_2, kind="fact"))
+            task_remember = asyncio.create_task(backend.remember(
+                self._NOTE_2, kind="fact", subject=_GOV_SUBJECT, scope="server"
+            ))
             await window.remember_entered.wait()
 
             if not serialized:
@@ -3154,7 +3188,7 @@ class TestMemoryJoinsSchemaRebuild:
             # ...and every note is recallable against the healthy recreated table
             # (the racer correctly re-embedded, not skipped by the divergence guard).
             for note in (self._NOTE_1, self._NOTE_2):
-                recalled = await backend.recall(note, k=5)
+                recalled = await backend.recall(note, k=5, subject=_GOV_SUBJECT)
                 assert any(note in text for text in _recalled_texts(recalled)), (
                     f"a memory must remain recallable after the raced recreate: {note!r}"
                 )
@@ -3179,14 +3213,14 @@ class TestMemoryJoinsSchemaRebuild:
         assert isinstance(window, _WindowBarrierMemoryBackend)
         try:
             await backend.ensure_ready()
-            await backend.remember(self._NOTE_1, kind="fact")
+            await backend.remember(self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server")
 
             serialized = getattr(backend, "_rebuild_lock", None) is not None
 
             task_rebuild = asyncio.create_task(backend.rebuild_embeddings())
             await window.window_open.wait()
 
-            task_recall = asyncio.create_task(backend.recall(self._NOTE_1, k=5))
+            task_recall = asyncio.create_task(backend.recall(self._NOTE_1, k=5, subject=_GOV_SUBJECT))
             await window.recall_entered.wait()
 
             if not serialized:
@@ -3234,8 +3268,8 @@ class TestMemoryJoinsSchemaRebuild:
         backend, ledger = _make_memory_backend(LocalMemoryBackend, slug, tmp_path)
         try:
             await backend.ensure_ready()
-            await backend.remember(self._NOTE_1, kind="fact")
-            await backend.remember(self._NOTE_2, kind="fact")
+            await backend.remember(self._NOTE_1, kind="fact", subject=_GOV_SUBJECT, scope="server")
+            await backend.remember(self._NOTE_2, kind="fact", subject=_GOV_SUBJECT, scope="server")
 
             replayed = await asyncio.wait_for(backend.rebuild_embeddings(), timeout=60)
             assert replayed >= 2, (
@@ -3243,7 +3277,7 @@ class TestMemoryJoinsSchemaRebuild:
                 f"self-deadlocking; replayed {replayed}"
             )
             for note in (self._NOTE_1, self._NOTE_2):
-                recalled = await backend.recall(note, k=5)
+                recalled = await backend.recall(note, k=5, subject=_GOV_SUBJECT)
                 assert any(note in text for text in _recalled_texts(recalled)), (
                     f"a note must be recallable after the locked rebuild: {note!r}"
                 )

@@ -80,6 +80,7 @@ from loremaster.principals import PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
+    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
     _SurrealConnection,
@@ -539,8 +540,93 @@ class KeepStore:
 
         Returns:
             The existing or freshly-minted :class:`Keep` bearing ``key``.
+
+        Raises:
+            KeepStoreError: No principal carries ``keeper_email``, OR the store rejected the create.
+                The WHOLE verb (including its internal reads) wraps a raw engine
+                ``SurrealStoreError`` as this domain error (consumer law); transport /
+                exhausted-contention faults pass through untouched (store reference §3/§5).
         """
-        raise NotImplementedError("63a builder: KeepStore.get_or_create_keyed CAS mint (SF-63-4)")
+        # The WHOLE verb — the key read, the keeper resolution, the CAS create, the read-back — is
+        # under ONE wrap (finding #400): a raw engine rejection at ANY step surfaces as
+        # KeepStoreError, while transport / exhausted contention passes through (both SUBCLASS
+        # SurrealStoreError, store-ref §3). This is what the corpse-C rejection-wrap pin demands
+        # (the injection hits the initial key READ first).
+        with wrap_store_rejection(
+            KeepStoreError,
+            f"could not get-or-create the {type!r} keep keyed {key!r} for keeper {keeper_email!r}",
+        ):
+            existing = await self.get_by_key(key)
+            if existing is not None:
+                return existing
+            keeper_id = await self._resolve_principal_id(keeper_email)
+            keep_id = str(ULID())  # a bare, client-minted ULID (Crockford, colon-free)
+            content_fragments = [
+                f"keeper: type::record('{PRINCIPAL_TABLE}', $kid)",
+                "type: $type",
+                "key: $key",
+            ]
+            params: dict[str, Any] = {
+                "keep_id": keep_id, "kid": keeper_id, "type": type, "key": key,
+            }
+            if name is not None:
+                content_fragments.append("name: $name")
+                params["name"] = name
+            params["keeper_edge"] = RecordID(PRINCIPAL_TABLE, keeper_id)
+            params["keep_edge"] = RecordID(KEEP_TABLE, keep_id)
+            fragment = TxnFragment(
+                statements=[
+                    f"CREATE type::record('{KEEP_TABLE}', $keep_id) "
+                    f"CONTENT {{ {', '.join(content_fragments)} }}",
+                    f"RELATE $keeper_edge->{MEMBER_OF_RELATION}->$keep_edge",
+                ],
+                params=params,
+            )
+            statement_text, merged_params = compose(fragment)
+            try:
+                await execute_transaction(
+                    statement_text,
+                    merged_params,
+                    acquire=self._ensure_connection,
+                    drop=self._drop_connection,
+                    url=self._url,
+                )
+            except (SurrealConnectionError, TxnContentionExhaustedError):
+                # Transport / exhausted contention belongs to the retry/lifecycle layer — it is
+                # NOT a UNIQUE conflict, and must NEVER be swallowed by the CAS re-read (store-ref
+                # §5: re-read a genuine CONFLICT, never a dropped socket).
+                raise
+            except SurrealStoreError:
+                # The hot-row CAS (store-ref §5): a concurrent ``register`` may have minted this
+                # UNIQUE key between our read-miss and this CREATE. If the key now resolves, that
+                # IS the conflict → return the winner, never a second row. If it still does not,
+                # the rejection was genuine (an unruled type, a ghost keeper) → re-raise (the wrap
+                # translates it to KeepStoreError).
+                winner = await self.get_by_key(key)
+                if winner is not None:
+                    return winner
+                raise
+            created = await self.get_keep(keep_id)
+            if created is None:  # pragma: no cover - a just-committed row must read back
+                raise KeepStoreError(f"created keyed keep {keep_id!r} did not read back")
+            return created
+
+    async def get_by_key(self, key: str) -> Keep | None:
+        """Read the keep bearing the deterministic natural ``key`` (SF-63-4), or ``None`` on a miss.
+
+        The UNIQUE ``keep.key`` index makes a real (non-NONE) key map to ≤1 row (§1.8); a manual
+        keep carrying a NONE key is never matched by ``WHERE key = $k`` (store-ref §1.8). Uses the
+        explicit :data:`_KEEP_READ_PROJECTION` (never ``SELECT *`` — store-ref §2) and the ``key``
+        index (a plain equality on the indexed column IndexScans — schema pin P6). The natural-key
+        address the write path resolves the canonical project keep by (design §2.2).
+        """
+        rows = PrincipalStore._as_rows(
+            await self._query(
+                f"SELECT {_KEEP_READ_PROJECTION} FROM {KEEP_TABLE} WHERE key = $k",
+                {"k": key},
+            )
+        )
+        return self._row_to_keep(rows[0]) if rows else None
 
     async def get_keep(self, keep_id: str) -> Keep | None:
         """Read a keep by id, or ``None`` on a miss.

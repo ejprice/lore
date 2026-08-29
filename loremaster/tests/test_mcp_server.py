@@ -136,6 +136,22 @@ from render_injection_scaffold import (
 )
 from test_comms_wiring import _backdate_heartbeat, _open_context
 
+# CORPSE-A / removed-behaviour-1 (packet 63a): the governed memory retrofit makes the
+# TOOL-LAYER ``AppContext.recall``/``remember`` DENY every memory call at 63a — identity-less
+# AND capability-bearing — because the capability->Subject composition root ("present path")
+# is NOT wired until 63b/64 (design R6/§10.5). These pins exercise the PRE-retrofit tool-layer
+# ANSWER (save/recall/filters/metadata folding), which is deliberately removed at 63a; the
+# underlying BEHAVIOUR they cover is retained at the backend layer (test_memory_backend.py) and
+# the DENY itself is pinned by test_memory_retrofit_63a::TestIdentityLessToolLayerCallsDeny.
+# ⚠ DISCLOSED FORK (REPORT-build-63a §FORK-Y): re-enable + re-point these to the capability
+# path when 63b/64 wires the composition root (the deny will start FAILING them then — the
+# self-signal to re-point). Lead/operator: confirm skip vs re-point.
+_TOOL_LAYER_63A_SKIP = (
+    "packet 63a governs the memory tools: the AppContext tool layer DENIES until the 63b/64 "
+    "capability->Subject composition root is wired (design R6/§10.5); backend-layer behaviour "
+    "is retained in test_memory_backend.py. Re-enable + re-point at 63b/64."
+)
+
 _DIM = 2048
 
 # The namespace every throwaway per-test SurrealDB database lives under (mirrors
@@ -2667,6 +2683,7 @@ class TestToolBehaviourEndToEnd:
         assert result.status == "confirmed"
         assert result.rebuilding_caveat is None
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_remember_then_recall_roundtrips(
         self, indexed_context: AppContext
     ) -> None:
@@ -6609,6 +6626,7 @@ class TestSaveMemoryCutover:
     """save_memory gains the v2 wire params (kind / refs / importance / …), validates
     them honestly, and PRESERVES the v0.3 deterministic id derivation."""
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_returns_a_uuid5_id(self, cutover_ctx: AppContext) -> None:
         # The id is the deterministic uuid5 the memory model has always minted.
         memory_id = await getattr(cutover_ctx, "remember")(
@@ -6617,6 +6635,7 @@ class TestSaveMemoryCutover:
         parsed = uuid.UUID(str(memory_id))
         assert parsed.version == 5, "save_memory must return a deterministic uuid5 id"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_with_refs_mints_the_v03_deterministic_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6632,6 +6651,7 @@ class TestSaveMemoryCutover:
             "a save with refs must mint the v0.3 deterministic id (text+refs → same id)"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_no_refs_matches_the_v03_empty_stamp_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6644,6 +6664,7 @@ class TestSaveMemoryCutover:
             "a bare save must still mint the v0.3 deterministic id (backward compat)"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_over_the_digest_threshold_gets_a_guidance_warning(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6655,6 +6676,7 @@ class TestSaveMemoryCutover:
         expected_id = derive_memory_id(long_note, derive_refs_stamp([]))
         assert expected_id in rendered, "the note must still be saved under its real id"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_under_the_digest_threshold_is_unchanged(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6674,6 +6696,7 @@ class TestSaveMemoryCutover:
             "an invalid kind must raise a tool-level error naming the bad value"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_rejects_out_of_range_importance(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6690,6 +6713,7 @@ class TestRecallMemoryCutover:
     """recall_memory surfaces text + refs (chunk keys) + kind + importance, flags a
     drifted ref, and NEVER surfaces a superseded note."""
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_recall_surfaces_text_refs_and_kind(self, cutover_ctx: AppContext) -> None:
         note = "champion routing lives in pkg/routing.py, not pricing.py"
         await getattr(cutover_ctx, "remember")(note, kind="decision", refs=[_CUTOVER_CHUNK_KEY])
@@ -6701,6 +6725,7 @@ class TestRecallMemoryCutover:
         assert _CUTOVER_CHUNK_KEY in rendered, "recall must surface the note's chunk ref key"
         assert "decision" in rendered, "recall must surface the memory kind"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_recall_flags_a_drifted_ref(self, cutover_ctx: AppContext) -> None:
         # A ref to a chunk that does NOT exist in the (empty) index is a DRIFTED ref
         # — the recall surfaces a drift signal so the agent re-verifies, never
@@ -6715,6 +6740,7 @@ class TestRecallMemoryCutover:
             "a recalled ref whose chunk no longer exists must be flagged as drifted"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_recall_never_surfaces_a_superseded_note(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8320,6 +8346,7 @@ class TestSaveMemoryReservedMetadataGuard:
     never becomes recallable and the durable ledger's row count is unchanged --
     so a guard that persisted-then-raised could never pass these tests."""
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_metadata_lore_ref_key_is_rejected_naming_the_reserved_prefix(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8357,6 +8384,7 @@ class TestSaveMemoryReservedMetadataGuard:
             "UNCHANGED -- proving the guard fires before any write"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_metadata_key_embedding_the_prefix_is_rejected_by_label_not_key(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8391,6 +8419,7 @@ class TestSaveMemoryReservedMetadataGuard:
             "UNCHANGED -- proving the guard fires before any write"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_benign_metadata_key_succeeds_and_never_folds_into_the_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8407,6 +8436,7 @@ class TestSaveMemoryReservedMetadataGuard:
             "fold into the deterministic id (id must equal the bare empty-stamp id)"
         )
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_legitimate_refs_param_still_folds_into_the_deterministic_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8460,6 +8490,7 @@ class TestRecallMemoryFilters:
     backend contract), no filter (existing behaviour unchanged), and the two
     combined (intersection, not union)."""
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_kind_filter_excludes_other_kinds(self, cutover_ctx: AppContext) -> None:
         await _seed_map_impact_notes(cutover_ctx)
 
@@ -8473,6 +8504,7 @@ class TestRecallMemoryFilters:
         assert _MAP_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
         assert _IMPACT_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_labels_filter_returns_only_the_matching_label(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8490,6 +8522,7 @@ class TestRecallMemoryFilters:
         assert _MAP_GOTCHA_NOTE not in rendered, "a differently-labelled note must be excluded"
         assert _MAP_FACT_NOTE not in rendered, "a differently-labelled note must be excluded"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_no_filters_returns_every_note_unchanged(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8504,6 +8537,7 @@ class TestRecallMemoryFilters:
         assert _MAP_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
         assert _IMPACT_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
 
+    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_kind_and_labels_filters_intersect(self, cutover_ctx: AppContext) -> None:
         # kind="fact" ALONE would also match the impact note; labels=["area=map"]
         # ALONE would also match the gotcha note -- only the note satisfying

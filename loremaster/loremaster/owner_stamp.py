@@ -75,15 +75,21 @@ async def stamp_owner(
             garbage, unverified, or binding-mismatch), or the verified agent has no owning
             principal — fail-closed (R2.1); no owner is fabricated.
     """
-    owner_agent = await registry.verify_capability(agent_capability, access_token)
-    if owner_agent is None:
+    # #425 (packet 63a §10.3): read the owner pair in ONE store round-trip through the SHARED
+    # pair-yielding path — the verified SELECT already projects the owning principal id, so there
+    # is NO second owner read and therefore NO read-to-read TOCTOU window a concurrent re-stamp
+    # could exploit (design §5). ``verify_capability`` (which returns the pair's ``[0]``) is NOT
+    # called here — routing stamp_owner back through it would reintroduce the second read this
+    # closure removes (corpse B leg B catches exactly that wrong re-route).
+    pair = await registry._verify_capability_owner(agent_capability, access_token)  # noqa: SLF001
+    if pair is None:
         raise OwnerStampError(
             "capability did not verify under the transport token — fail-closed (R2.1); no "
             "owner is stamped for an absent / garbage / unverified / binding-mismatched "
             "capability (the confused-deputy door §3.2.2 forbids)"
         )
-    owner_principal = await registry.owner_principal_of(owner_agent)
-    if owner_principal is None:
+    owner_agent, owner_principal = pair
+    if not owner_principal:
         raise OwnerStampError(
             "the verified agent has no owning principal — fail-closed (R2.1); a governed "
             "write is never stamped with a null owner"

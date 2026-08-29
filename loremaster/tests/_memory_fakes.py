@@ -284,6 +284,8 @@ class FakeMemoryBackend:
         text: str,
         *,
         kind: str,
+        subject: Any = None,
+        scope: str | None = None,
         importance: float | None = None,
         source: MemorySource | None = None,
         labels: list[str] | None = None,
@@ -353,8 +355,12 @@ class FakeMemoryBackend:
             old_row.superseded_by = memory_id
         return memory_id
 
-    async def invalidate(self, memory_id: str) -> None:
-        """Retire a memory with no successor (``valid_until`` set, ``superseded_by`` None)."""
+    async def invalidate(self, memory_id: str, *, subject: Any = None) -> None:
+        """Retire a memory with no successor (``valid_until`` set, ``superseded_by`` None).
+
+        ``subject`` is accepted for governed-signature parity with
+        :class:`~loremaster.memory.local.LocalMemoryBackend` (packet 63a) and IGNORED — this fake
+        pins pre-retrofit MEMORY behaviour, not governance (the 63a contract pins that)."""
         await asyncio.sleep(0)
         row = self._rows.get(memory_id)
         if row is None:
@@ -369,6 +375,7 @@ class FakeMemoryBackend:
         self,
         query: str,
         *,
+        subject: Any = None,
         k: int = _DEFAULT_RECALL_K,
         include: str | None = None,
         as_of: datetime | None = None,

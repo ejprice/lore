@@ -4057,6 +4057,7 @@ class AppContext:
         self,
         text: str,
         *,
+        capability: str | None = None,
         refs: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
         kind: str = _DEFAULT_MEMORY_KIND,
@@ -4119,6 +4120,11 @@ class AppContext:
             *_metadata_to_labels(metadata),
             *(labels or []),
         ]
+        # packet 63a (§10.5, R6): the OPTIONAL ``capability`` is accepted at the tool surface, but
+        # the composition root that resolves it to a verified ``Subject`` is NOT wired here yet
+        # (``AppContext`` carries no principal/keep stores at 63a) — so this reaches the governed
+        # backend with NO ``subject=``, and the backend's identity-less DENY fires (GovernedDenied,
+        # a teaching error — NEVER an ownerless write). The present-path resolution lands 63b/64.
         memory_id = await self.memory_backend.remember(
             text,
             kind=kind,
@@ -4137,6 +4143,7 @@ class AppContext:
         query: str,
         k: int = _DEFAULT_RECALL_K,
         *,
+        capability: str | None = None,
         kind: str | None = None,
         labels: list[str] | None = None,
     ) -> str:
@@ -4147,8 +4154,13 @@ class AppContext:
         renders each note's text + kind + importance + score + refs, drift-marking a
         ref whose chunk no longer exists. ``kind`` and ``labels`` are pass-through
         filters onto the backend's own semantics (``kind`` an exact match,
-        ``labels`` an ALL-match); omitting both leaves the unfiltered recall path
-        byte-identical to before their addition.
+        ``labels`` an ALL-match).
+
+        packet 63a (§10.5, R6): the OPTIONAL ``capability`` is accepted at the tool surface, but
+        the composition root that resolves it to a verified ``Subject`` is NOT wired here yet, so
+        this reaches the governed backend with NO ``subject=`` and the backend's identity-less DENY
+        fires (GovernedDenied, a teaching error — NEVER the pre-retrofit unfiltered answer). The
+        present-path resolution lands with the 63b/64 composition root.
         """
         recalled = await self.memory_backend.recall(query, k=k, kind=kind, labels=labels)
         return self._render_recalled_memories(recalled)
@@ -10674,12 +10686,99 @@ _REVIEWED_GOVERNED_TOOLS: frozenset[str] = frozenset(
 _PENDING_OWNER_STAMP_TRIGGER = "packet 63/64 routes this tool's governed write through loremaster.stamp_owner"
 _GOVERNED_TOOLS_PENDING_OWNER_STAMP: dict[str, str] = {
     "lore_comms": _PENDING_OWNER_STAMP_TRIGGER,
-    "lore_recall": _PENDING_OWNER_STAMP_TRIGGER,
-    "lore_remember": _PENDING_OWNER_STAMP_TRIGGER,
+    # packet 63a (design R-a.5): ``lore_recall``/``lore_remember`` SELF-DESTRUCT from this
+    # per-TOOL pending dict — the memory verbs are ROUTED at 63a (the per-VERB #420 pin below
+    # carries the finer adjudication). The reach test is relaxed to ``pending ⊆ governed``.
     "lore_tasks": _PENDING_OWNER_STAMP_TRIGGER,
     "lore_claim_task": _PENDING_OWNER_STAMP_TRIGGER,
     "lore_findings": _PENDING_OWNER_STAMP_TRIGGER,
 }
+
+# packet 63a (design §3.1, §10.2, #420) — the PER-VERB routing-coverage adjudication, the finer
+# sibling of the per-TOOL dict above. Every governed ``(tool, verb)`` is either ROUTED through the
+# substrate (``governed.resolve_subject`` + ``read_filter``/``guarded_write``) or adjudicated PENDING
+# here with a NON-EMPTY trigger. The set is DERIVED at test time as
+# ``partition_tools_by_population(live).governed`` × each tool's OWN dispatch table
+# (``_COMMS_ACTIONS`` / ``_TASK_ACTIONS`` / ``_FINDING_ACTIONS``; a single-verb tool's verb is the
+# tool). The coverage pin (``test_governed_routing_63a``) asserts ``derived == routed ∪ pending``, so
+# a NEW comms/task/finding action grows ``derived`` and REDS the pin until a human adjudicates it
+# HERE with a trigger (INSTRUMENT-0: the constant is the adjudication; the derived set is the check —
+# a hand-list is DELIBERATE so a new verb cannot be silently absorbed). Each pending entry
+# self-destructs into ``_GOVERNED_VERBS_ROUTED`` as its wave lands.
+_GOVERNED_VERBS_ROUTED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("lore_remember", "lore_remember"),
+        ("lore_recall", "lore_recall"),
+    }
+)
+
+# Per-wave triggers (the packet that routes each family). Non-empty by construction.
+_ROUTE_63B_MESSAGE = (
+    "packet 63b routes this lore_comms verb (the comms MESSAGE family + the session-keep binding "
+    "at register — send/drain/ack/await/story)"
+)
+_ROUTE_63C_REMAINDER = (
+    "packet 63c routes this lore_comms verb (the comms REMAINDER: brief_* + the fleet/heartbeat "
+    "agent roster as a governed population — SF-63-2)"
+)
+_ROUTE_64_TASKS = "packet 64 routes this lore_tasks verb (the tasks governed retrofit — task ownership)"
+_ROUTE_64_FINDINGS = (
+    "packet 64 routes this lore_findings verb (the findings governed retrofit — finding ownership)"
+)
+_ROUTE_64_CLAIM = "packet 64 routes lore_claim_task (the task-ownership claim retrofit)"
+
+_GOVERNED_VERBS_PENDING_ROUTING: dict[tuple[str, str], str] = {
+    # lore_comms — the MESSAGE family + register (63b).
+    ("lore_comms", "register"): _ROUTE_63B_MESSAGE,
+    ("lore_comms", "send"): _ROUTE_63B_MESSAGE,
+    ("lore_comms", "drain"): _ROUTE_63B_MESSAGE,
+    ("lore_comms", "ack"): _ROUTE_63B_MESSAGE,
+    ("lore_comms", "await"): _ROUTE_63B_MESSAGE,
+    ("lore_comms", "story"): _ROUTE_63B_MESSAGE,
+    # lore_comms — the REMAINDER: briefs + roster (63c).
+    ("lore_comms", "brief_get"): _ROUTE_63C_REMAINDER,
+    ("lore_comms", "brief_publish"): _ROUTE_63C_REMAINDER,
+    ("lore_comms", "brief_ack"): _ROUTE_63C_REMAINDER,
+    ("lore_comms", "fleet"): _ROUTE_63C_REMAINDER,
+    ("lore_comms", "heartbeat"): _ROUTE_63C_REMAINDER,
+    # lore_tasks (64).
+    ("lore_tasks", "create"): _ROUTE_64_TASKS,
+    ("lore_tasks", "create_many"): _ROUTE_64_TASKS,
+    ("lore_tasks", "query"): _ROUTE_64_TASKS,
+    ("lore_tasks", "get"): _ROUTE_64_TASKS,
+    ("lore_tasks", "blockers"): _ROUTE_64_TASKS,
+    ("lore_tasks", "transition"): _ROUTE_64_TASKS,
+    ("lore_tasks", "supersede"): _ROUTE_64_TASKS,
+    ("lore_tasks", "rollup"): _ROUTE_64_TASKS,
+    # lore_findings (64).
+    ("lore_findings", "report"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "query"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "get"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "chain_head"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "acknowledge"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "resolve"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "wontfix"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "annotate"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "acknowledge_many"): _ROUTE_64_FINDINGS,
+    ("lore_findings", "resolve_many"): _ROUTE_64_FINDINGS,
+    # lore_claim_task (64) — a single-verb tool.
+    ("lore_claim_task", "lore_claim_task"): _ROUTE_64_CLAIM,
+}
+
+# packet 63a (design §10.5 rider (i)) — the ONE shared teaching description for the OPTIONAL
+# ``capability=`` identity seam, carried BYTE-IDENTICAL by every governed tool (the packet-45
+# ``_comms_identity_agent_description`` idiom — never N drifting copies of the prose that no gate
+# checks, PKT-28 C1). ⚠ 63a BOUND (R6): the composition root that resolves ``capability`` → a
+# verified ``Subject`` (``governed.resolve_subject``) is NOT wired here yet — ``AppContext`` holds
+# no principal/keep stores at 63a — so BOTH an identity-less AND a capability-bearing memory call
+# DENY with a teaching error; the present-path resolution lands with the 63b/64 composition root.
+_CAPABILITY_PARAM_DESCRIPTION = (
+    "Your agent capability — the '<name>:<secret>' token `lore_comms action=register` minted for "
+    "this session. It identifies you so the fleet's governed memory is scoped to what you may see "
+    "and stamps your notes with your ownership; a hostile owner argument cannot forge it. Omit it "
+    "only for an anonymous call, which is denied — an unauthenticated read/write of the shared "
+    "memory is exactly what governance closes."
+)
 
 
 def partition_tools_by_population(
@@ -11119,9 +11218,11 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        capability: Annotated[str | None, Field(description=_CAPABILITY_PARAM_DESCRIPTION)] = None,
     ) -> str:
         return await _app_context(context).remember(
             text,
+            capability=capability,
             refs=refs,
             metadata=metadata,
             kind=kind,
@@ -11189,8 +11290,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        capability: Annotated[str | None, Field(description=_CAPABILITY_PARAM_DESCRIPTION)] = None,
     ) -> str:
-        return await _app_context(context).recall(query, k, kind=kind, labels=labels)
+        return await _app_context(context).recall(query, k, capability=capability, kind=kind, labels=labels)
 
     @_gated_tool(
         name="lore_claim_task",

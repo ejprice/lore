@@ -135,6 +135,62 @@ from loresigil.testing import FakeEmbedder
 from pydantic import SecretStr, ValidationError
 from surrealdb.errors import ErrorKind, ServerError
 
+import lorerunes as pdp
+
+# ===========================================================================
+# CORPSE-A (packet 63a) — the governed retrofit makes the backend's
+# recall/remember/invalidate REQUIRE a ``subject`` (None → GovernedDenied,
+# ``test_memory_retrofit_63a``). This suite certifies PRE-retrofit MEMORY
+# behaviour (dedup, ordering, drift, supersede, durability) — never governance
+# — so every governed call routes through ONE shared ADMIN subject. An admin's
+# ``read_filter`` is ``AllRows`` (UNFILTERED), so recall behaves EXACTLY as
+# before the retrofit and every original assertion is byte-preserved; remember
+# carries an explicit ``scope='server'`` (grantable by any subject) so no
+# per-test project keep need exist. The governance itself is pinned by the 63a
+# contract, never re-tested here (the removed-behaviour-dual adjudication).
+# ===========================================================================
+_GOV_SUBJECT = pdp.Subject(
+    principal_id="corpse_a_admin",
+    agent_id="corpse_a_agent",
+    role=pdp.PRINCIPAL_ROLE_ADMIN,
+    visible_keep_ids=frozenset(),
+)
+_GOV_SCOPE = "server"
+
+
+class _GovernedTestBackend:
+    """Transparent proxy that injects the shared ADMIN ``subject`` (+ ``scope='server'`` on
+    writes) into every recall/remember/invalidate, so this pre-retrofit suite's calls satisfy the
+    63a governed signature WITHOUT editing 100+ call sites — an admin's AllRows filter keeps recall
+    unfiltered, preserving every assertion. Every OTHER attribute (``handle`` / ``_query`` /
+    ``_connection`` / ``ensure_ready`` / ``restore_from_ledger`` / …) delegates to the wrapped
+    backend, in BOTH directions (``__getattr__`` for reads, ``__setattr__`` for the durability
+    seams that assign ``backend._connection``), so the wrapper is invisible to everything but the
+    three governed verbs."""
+
+    def __init__(self, inner: Any) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self._inner, name, value)
+
+    async def remember(self, text: str, **kwargs: Any) -> str:
+        kwargs.setdefault("subject", _GOV_SUBJECT)
+        kwargs.setdefault("scope", _GOV_SCOPE)
+        return cast(str, await self._inner.remember(text, **kwargs))
+
+    async def recall(self, query: str, **kwargs: Any) -> Any:
+        kwargs.setdefault("subject", _GOV_SUBJECT)
+        return await self._inner.recall(query, **kwargs)
+
+    async def invalidate(self, memory_id: str, **kwargs: Any) -> None:
+        kwargs.setdefault("subject", _GOV_SUBJECT)
+        await self._inner.invalidate(memory_id, **kwargs)
+
+
 # ===========================================================================
 # INDEPENDENT ORACLES — expected values from the P7 REQUIREMENT, not the impl.
 # These are hand-written from the plan so a WRONG constant in the implementation
@@ -410,7 +466,7 @@ async def make_backend(
             created.append(backend)
             if ensure:
                 await backend.ensure_ready()
-            return backend
+            return cast(LocalMemoryBackend, _GovernedTestBackend(backend))
     else:
 
         async def _factory(
@@ -438,7 +494,7 @@ async def make_backend(
             created.append(typed_backend)
             if ensure:
                 await typed_backend.ensure_ready()
-            return typed_backend
+            return cast(LocalMemoryBackend, _GovernedTestBackend(typed_backend))
 
     try:
         yield _factory
@@ -1677,7 +1733,9 @@ async def real_backend(
     )
     await backend.ensure_ready()
     try:
-        yield backend
+        # CORPSE-A: wrap so recall/remember carry the shared ADMIN subject (see _GovernedTestBackend);
+        # ``_connection`` / ``_query`` / ``_analyze_query`` still delegate to the real backend.
+        yield cast(LocalMemoryBackend, _GovernedTestBackend(backend))
     finally:
         await backend.close()
         await drop_database(env)

@@ -247,6 +247,11 @@ _CAPABILITY_HASH_LOOKUP_PARAM = "h"
 _OWNER_EMAIL_ALIAS = "owner_email"
 _OWNER_STATUS_ALIAS = "owner_status"
 _OWNER_EXPIRES_AT_ALIAS = "owner_expires_at"
+# #425 (packet 63a §10.3): the bare owning-principal id the ONE verified SELECT now ALSO
+# projects, so ``stamp_owner`` reads the owner pair in ONE round-trip (no second
+# ``owner_principal_of`` read, no TOCTOU window). Distinct from ``_OWNER_EMAIL_ALIAS`` (the
+# dereferenced ``owner_principal.email`` used by the binding check).
+_OWNER_ID_ALIAS = "owner_id"
 
 
 class Agent(BaseModel):
@@ -866,9 +871,75 @@ class AgentRegistry:
 
     # -- capability verification (packet 62 wave 2, the anti-spoofing seam) ---
 
-    async def verify_capability(  # noqa: PLR0911
+    async def _verify_capability_owner(  # noqa: PLR0911
         self, presented: str, access_token: AccessToken
-    ) -> str | None:
+    ) -> tuple[str, str] | None:
+        """The SHARED pair-yielding verification path (#425, packet 63a §10.3) — ONE store
+        round-trip yielding ``(agent_id, owner_principal_id)`` on success, ``None`` on any deny.
+
+        Collapses ``verify_capability``'s double read: the ONE verified SELECT (which already
+        dereferences ``owner_principal.email``/``.status``/``.expires_at`` for the binding + admission
+        checks, W2.2) now ALSO projects the bare ``owner_principal`` id, so :func:`loremaster.stamp_owner`
+        derives BOTH halves of the owner pair from THIS one read — no second
+        ``owner_principal_of(agent_id)`` round-trip, and therefore no read-to-read TOCTOU window a
+        concurrent re-stamp could exploit (#425). ``verify_capability`` returns this call's ``[0]``
+        (the bare agent id — its shipped shape is byte-unchanged for the 13 call sites that pin it).
+
+        The four admission conditions are UNCHANGED and live ONCE here (ROUTING-IS-NOT-SHARING); see
+        :meth:`verify_capability`'s docstring for their statement. A uniform ``None`` deny with no
+        oracle: the denial reason is laundered into a DEBUG log, never returned.
+        """
+        now = datetime.now(UTC)
+        # ONE IMPLEMENTATION (W2.6): the SHARED wire-format parse (module attribute so the mutation
+        # pin can patch it). A malformed credential denies uniformly BEFORE any hash/DB step.
+        if parse_credential(presented) is None:
+            self._deny_capability("malformed-credential")
+            return None
+        rows = self._as_rows(
+            await self._query(
+                f"SELECT {_ID_KEY}, {_COL_STATUS}, {_COL_CAPABILITY_EXPIRES_AT}, "
+                f"{_COL_OWNER_PRINCIPAL} AS {_OWNER_ID_ALIAS}, "
+                f"{_COL_OWNER_PRINCIPAL}.email AS {_OWNER_EMAIL_ALIAS}, "
+                f"{_COL_OWNER_PRINCIPAL}.status AS {_OWNER_STATUS_ALIAS}, "
+                f"{_COL_OWNER_PRINCIPAL}.expires_at AS {_OWNER_EXPIRES_AT_ALIAS} "
+                f"FROM {AGENT_TABLE} WHERE {_COL_CAPABILITY_HASH} = ${_CAPABILITY_HASH_LOOKUP_PARAM}",
+                {_CAPABILITY_HASH_LOOKUP_PARAM: sha512_hex(presented)},
+            )
+        )
+        if not rows:
+            self._deny_capability("no-such-capability")
+            return None
+        row = rows[0]
+        # (2) the agent itself is not retired (no-cache revocation, W2-R3).
+        if row.get(_COL_STATUS) == STATUS_RETIRED:
+            self._deny_capability("agent-retired")
+            return None
+        # (3) THE BINDING (W2-R2): owner_principal == the transport token's principal.
+        # A NONE owner reads owner_email None (store §2) → matches no principal → DENY.
+        owner_email = row.get(_OWNER_EMAIL_ALIAS)
+        token_principal = access_token.subject
+        if not owner_email or not token_principal or str(owner_email) != str(token_principal):
+            self._deny_capability("binding-mismatch")
+            return None
+        # (4) the OWNING principal is active + unexpired (transitive via owner_principal).
+        if row.get(_OWNER_STATUS_ALIAS) != _PRINCIPAL_STATUS_ACTIVE:
+            self._deny_capability("owner-inactive")
+            return None
+        owner_expires_at = self._to_aware_utc(row.get(_OWNER_EXPIRES_AT_ALIAS))
+        if owner_expires_at is not None and owner_expires_at <= now:
+            self._deny_capability("owner-expired")
+            return None
+        # (4b, ESC-3) the OPTIONAL capability expiry — enforced only when SET.
+        capability_expires_at = self._to_aware_utc(row.get(_COL_CAPABILITY_EXPIRES_AT))
+        if capability_expires_at is not None and capability_expires_at <= now:
+            self._deny_capability("capability-expired")
+            return None
+        # The binding proved ``owner_principal`` is non-NONE (a NONE owner denies at cond. 3),
+        # so the projected owner id is present — the SECOND half #425 removes the second read for.
+        owner_principal_id = self._bare_id(row.get(_OWNER_ID_ALIAS))
+        return self._bare_id(row.get(_ID_KEY)), owner_principal_id
+
+    async def verify_capability(self, presented: str, access_token: AccessToken) -> str | None:
         """Verify a presented ``<name>:<secret>`` capability under a transport token.
 
         THE anti-spoofing seam (design W2.2; also reached as ``resolve_agent`` via
@@ -911,76 +982,12 @@ class AgentRegistry:
             The bare agent id the capability resolves to on success, or ``None`` on
             ANY failure (uniform deny, no oracle).
         """
-        now = datetime.now(UTC)
-        # ONE IMPLEMENTATION (W2.6): the SHARED wire-format parse (module attribute so
-        # the mutation pin can patch it). A malformed credential denies uniformly
-        # BEFORE any hash/DB step — no per-shape oracle.
-        if parse_credential(presented) is None:
-            return self._deny_capability("malformed-credential")
-        rows = self._as_rows(
-            await self._query(
-                f"SELECT {_ID_KEY}, {_COL_STATUS}, {_COL_CAPABILITY_EXPIRES_AT}, "
-                f"{_COL_OWNER_PRINCIPAL}.email AS {_OWNER_EMAIL_ALIAS}, "
-                f"{_COL_OWNER_PRINCIPAL}.status AS {_OWNER_STATUS_ALIAS}, "
-                f"{_COL_OWNER_PRINCIPAL}.expires_at AS {_OWNER_EXPIRES_AT_ALIAS} "
-                f"FROM {AGENT_TABLE} WHERE {_COL_CAPABILITY_HASH} = ${_CAPABILITY_HASH_LOOKUP_PARAM}",
-                {_CAPABILITY_HASH_LOOKUP_PARAM: sha512_hex(presented)},
-            )
-        )
-        if not rows:
-            return self._deny_capability("no-such-capability")
-        row = rows[0]
-        # (2) the agent itself is not retired (no-cache revocation, W2-R3).
-        if row.get(_COL_STATUS) == STATUS_RETIRED:
-            return self._deny_capability("agent-retired")
-        # (3) THE BINDING (W2-R2): owner_principal == the transport token's principal.
-        # A NONE owner reads owner_email None (store §2) → matches no principal → DENY.
-        owner_email = row.get(_OWNER_EMAIL_ALIAS)
-        token_principal = access_token.subject
-        if not owner_email or not token_principal or str(owner_email) != str(token_principal):
-            return self._deny_capability("binding-mismatch")
-        # (4) the OWNING principal is active + unexpired (transitive via owner_principal).
-        if row.get(_OWNER_STATUS_ALIAS) != _PRINCIPAL_STATUS_ACTIVE:
-            return self._deny_capability("owner-inactive")
-        owner_expires_at = self._to_aware_utc(row.get(_OWNER_EXPIRES_AT_ALIAS))
-        if owner_expires_at is not None and owner_expires_at <= now:
-            return self._deny_capability("owner-expired")
-        # (4b, ESC-3) the OPTIONAL capability expiry — enforced only when SET.
-        capability_expires_at = self._to_aware_utc(row.get(_COL_CAPABILITY_EXPIRES_AT))
-        if capability_expires_at is not None and capability_expires_at <= now:
-            return self._deny_capability("capability-expired")
-        return self._bare_id(row.get(_ID_KEY))
-
-    async def owner_principal_of(self, agent_id: str) -> str | None:
-        """Return the bare record id of the principal that OWNS ``agent_id``, else None.
-
-        Used by :func:`loremaster.stamp_owner` to derive the ``owner_principal`` half of
-        a governed write's owner pair from the VERIFIED agent — the binding condition
-        (:meth:`verify_capability` cond. 3) has already proved this owning principal IS
-        the transport token's principal, so reading it off the verified row is exactly
-        "owner_principal from the token", expressed as the record id the PDP stamps.
-        ``None`` for an ownerless or unknown agent (fail-closed for the caller).
-
-        Args:
-            agent_id: The bare agent id (as returned by :meth:`verify_capability`).
-
-        Returns:
-            The owning principal's bare record id, or ``None`` if the agent is
-            ownerless or does not exist.
-        """
-        rows = self._as_rows(
-            await self._query(
-                f"SELECT {_COL_OWNER_PRINCIPAL} FROM type::record('{AGENT_TABLE}', "
-                f"${_ROW_ID_PARAM})",
-                {_ROW_ID_PARAM: agent_id},
-            )
-        )
-        if not rows:
-            return None
-        owner = rows[0].get(_COL_OWNER_PRINCIPAL)
-        if owner is None:
-            return None
-        return self._bare_id(owner)
+        # #425 (packet 63a §10.3): delegate to the SHARED pair-yielding path — the FOUR admission
+        # conditions + the ONE verified SELECT live there ONCE — and return its bare agent id
+        # (``[0]``), keeping this method's shipped ``str | None`` shape byte-compatible for the 13
+        # call sites that pin the bare id. ``stamp_owner`` consumes the PAIR directly (no second read).
+        pair = await self._verify_capability_owner(presented, access_token)
+        return None if pair is None else pair[0]
 
     @staticmethod
     def _deny_capability(reason: str) -> None:

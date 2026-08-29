@@ -63,6 +63,18 @@ from loremaster.server import AppContext, LoreServer, build_app_context
 from loremaster.tasks import TaskLedger
 from loresigil.testing import FakeEmbedder
 
+import lorerunes as pdp
+
+# CORPSE-A (packet 63a): the backend's recall now REQUIRES a ``subject`` (None → GovernedDenied).
+# This suite pins the cutover's LEDGER-RESTORE recall (governance is pinned by the 63a contract),
+# so its recall carries ONE ADMIN subject — AllRows keeps recall unfiltered, preserving the assertion.
+_GOV_SUBJECT = pdp.Subject(
+    principal_id="corpse_a_admin",
+    agent_id="corpse_a_agent",
+    role=pdp.PRINCIPAL_ROLE_ADMIN,
+    visible_keep_ids=frozenset(),
+)
+
 # The production embedding dimensionality every FakeEmbedder fixture uses.
 _DIM = 2048
 
@@ -360,7 +372,9 @@ class TestBootLedgerRestore:
             # FakeEmbedder the query embeds to the stored note's own vector (cosine
             # 1.0), an independent ranking oracle. The restore ran at boot, so the
             # note is present WITHOUT this test ever calling save_memory.
-            recalled = await getattr(ctx, "memory_backend").recall(_SEED_MEMORY_TEXT, k=5)
+            recalled = await getattr(ctx, "memory_backend").recall(
+                _SEED_MEMORY_TEXT, k=5, subject=_GOV_SUBJECT
+            )
 
             # Assert: the seeded note is recalled (the boot restore replayed it into
             # the SurrealDB backend). The FIRST seed carries the query's own text.
@@ -420,7 +434,9 @@ class TestBootLedgerRestore:
                 "document-embed calls"
             )
             # And the memory is still recallable (the second boot did not lose it).
-            recalled = await getattr(second_ctx, "memory_backend").recall(_SEED_MEMORY_TEXT, k=5)
+            recalled = await getattr(second_ctx, "memory_backend").recall(
+                _SEED_MEMORY_TEXT, k=5, subject=_GOV_SUBJECT
+            )
             assert any(_SEED_MEMORY_TEXT in getattr(m, "text", "") for m in recalled), (
                 "the seeded memory must still be recallable after the inert second boot"
             )

@@ -519,6 +519,17 @@ class TestTheCascadeForwardScopeIsPinned:
             ("keeper", surreal_schema.KEEP_TABLE),  # REFUSE-LIVE-DEPENDENCY
             ("actor_principal", surreal_schema.AUDIT_TABLE),  # DANGLE-TOLERATED (§9 immutable history)
             ("owner_principal", surreal_schema.AGENT_TABLE),  # DANGLE-TOLERATED (packet 62 R3.2 / I4)
+            # packet 63a: the FIRST governed-ROW owner_principal link (the retrofit), the exact
+            # new link this pin's re-open trigger anticipated. CLASSIFIED **LIVE-DEPENDENCY** per
+            # the docstring (a governed row's owner must not silently point at a ghost). ``memory``
+            # is a POPULATED table so the column is ``option<record<principal>>`` (NONE for legacy /
+            # UNOWNED rows). ⚠ DEFERRED DELETE-DISPOSITION (DISCLOSED FORK, REPORT-build-63a §FORK-Z):
+            # PrincipalStore.delete's actual cascade/refuse for memory-row owners is a DESIGN
+            # decision the design §2.1 did NOT specify, and it is LATENT at 63a (commit-only, the
+            # single-principal dogfood fleet deletes no principal). Re-open trigger: the first
+            # principal-delete against a store holding an owned memory row (63b/64 wires it —
+            # cascade the owned rows, or refuse the delete, never a silent dangle).
+            ("owner_principal", surreal_schema.MEMORY_TABLE),  # LIVE-DEPENDENCY (delete-disposition DEFERRED)
         }
         assert found == expected, (
             f"the set of record<principal> links changed — cascade forward-scope PIN THE "

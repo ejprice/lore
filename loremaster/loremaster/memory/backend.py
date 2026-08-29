@@ -41,7 +41,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from lorerunes.pdp import Subject
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -317,6 +320,8 @@ class MemoryBackend(Protocol):
         text: str,
         *,
         kind: str,
+        subject: Subject | None = None,
+        scope: str | None = None,
         importance: float | None = None,
         source: MemorySource | None = None,
         labels: list[str] | None = None,
@@ -347,11 +352,14 @@ class MemoryBackend(Protocol):
         """
         ...
 
-    async def invalidate(self, memory_id: str) -> None:
+    async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
         """Retire a memory with no successor.
 
         Args:
             memory_id: The id of the memory to retire.
+            subject: The governed identity authorizing the close (packet 63a) — the retrofitted
+                backend routes it through ``guarded_write``; ``None`` denies. Optional for a
+                fake/legacy backend that does not govern.
 
         Raises:
             MemoryNotFoundError: ``memory_id`` does not exist.
@@ -362,6 +370,7 @@ class MemoryBackend(Protocol):
         self,
         query: str,
         *,
+        subject: Subject | None = None,
         k: int = 5,
         include: str | None = None,
         as_of: datetime | None = None,

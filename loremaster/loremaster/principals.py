@@ -119,10 +119,16 @@ from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
     KEEP_TABLE,
+    MEMORY_TABLE,
     PRINCIPAL_KEY_TABLE,
     PRINCIPAL_TABLE,
     generate_principal_ddl,
 )
+
+# The principal role the migration prefers as THE operator (the project keep's keeper). Kept as
+# the shipped value string (mirrors ``lorerunes.pdp.PRINCIPAL_ROLE_ADMIN`` without importing the
+# PDP into the store-orchestration CLI); ``Principal.role`` is validated against ``_PRINCIPAL_ROLES``.
+_ROLE_ADMIN = "admin"
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -1013,9 +1019,141 @@ async def migrate_governed(
         ``refused=True`` + ``reason``) on the agent-first ORDER precondition or a multi-principal
         ``agent`` table (§2.1) — never a silent partial widening of visibility.
     """
-    raise NotImplementedError(
-        "63a builder: migrate_governed backfill verb (design §1.2 item 5 / §10.6 R4)"
+    from loremaster.governed import MigrateGovernedResult
+
+    if table == MEMORY_TABLE:
+        return await _migrate_memory_scope(store, keep_store, principal_store, dry_run=dry_run)
+    if table == "message":
+        # §2.6 agent-first ORDER, fail-closed: a message row's owner_principal is read from
+        # ``sender.owner_principal`` (NONE for every un-migrated agent), so migrating messages
+        # before the ``agent`` table would silently land them member-invisible. At packet 63a only
+        # ``memory`` is migrated (memory is 63a's governed consumer); the agent/message migration
+        # lands in 63b, so this REFUSES rather than half-widen — naming the precondition.
+        return MigrateGovernedResult(
+            table=table,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=True,
+            reason=(
+                "cannot migrate `message` rows before the `agent` table is migrated — a message's "
+                "owner_principal is read from sender.owner_principal, NONE for every un-migrated "
+                "agent (§2.6 agent-first ORDER); run migrate-governed for `agent` first. The "
+                "agent/message migration lands in packet 63b."
+            ),
+        )
+    return MigrateGovernedResult(
+        table=table,
+        scanned=0,
+        backfilled=0,
+        already_migrated=0,
+        refused=True,
+        reason=(
+            f"migrate-governed does not support table {table!r} at packet 63a — only `memory` "
+            "(message/agent land 63b, brief lands 63c, task/finding land 64)"
+        ),
     )
+
+
+async def _migrate_memory_scope(
+    store: StoreHandle,
+    keep_store: KeepStore,
+    principal_store: PrincipalStore,
+    *,
+    dry_run: bool,
+) -> MigrateGovernedResult:
+    """Backfill the ``memory`` legacy rows' NONE scope to the canonical PROJECT keep (§2.1/§2.2).
+
+    UNOWNED-LEGACY: memory has no author column, so a legacy row's owner stays NONE/NONE (never
+    fabricated) and only its ``scope`` is backfilled to ``keep:<project>`` — the fleet's shared
+    keep, so a fleet member of the project household regains sight of its own memory. Idempotent:
+    a re-run finds 0 NONE-scope rows and backfills nothing. All store access routes through the
+    injected ``store`` handle's driver (R4).
+    """
+    from lorerunes.pdp import keep_scope
+
+    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult
+
+    # Resolve THE operator principal (the project keep's keeper): the single-principal fleet's one
+    # principal, or its single admin. Ambiguity is a REFUSAL, never a guess (§2.1 hard rule).
+    principals = await principal_store.list()
+    admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+    if len(admins) == 1:
+        operator = admins[0]
+    elif len(principals) == 1:
+        operator = principals[0]
+    else:
+        return MigrateGovernedResult(
+            table=MEMORY_TABLE,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=True,
+            reason=(
+                f"cannot resolve THE operator principal to keep the project keep "
+                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
+                "operator principal (or a single admin) before migrating"
+            ),
+        )
+
+    # Mint / get the canonical project keep (idempotent CAS on the UNIQUE key, SF-63-4).
+    project_keep = await keep_store.get_or_create_keyed(
+        key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
+    )
+    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
+
+    unmigrated = await _scope_count(store, MEMORY_TABLE, none=True)
+    already = await _scope_count(store, MEMORY_TABLE, none=False)
+    if dry_run or unmigrated == 0:
+        return MigrateGovernedResult(
+            table=MEMORY_TABLE,
+            scanned=unmigrated + already,
+            backfilled=0,
+            already_migrated=already,
+            refused=False,
+        )
+    # The backfill UPDATE, driver-routed (R4). ``scope IS NONE`` is index-served on the scope index
+    # (probe-63 P5), so this is bounded even on a large dirty store.
+    await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed memory-scope backfill",
+        label="governed.memory_backfill.rejected",
+        statement=f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE",
+        params={"scope": project_scope},
+        logger=logger,
+    )
+    return MigrateGovernedResult(
+        table=MEMORY_TABLE,
+        scanned=unmigrated + already,
+        backfilled=unmigrated,
+        already_migrated=already,
+        refused=False,
+    )
+
+
+async def _scope_count(store: StoreHandle, table: str, *, none: bool) -> int:
+    """Count the rows of ``table`` whose ``scope`` IS (``none=True``) / IS NOT NONE, driver-routed.
+
+    Index-served on the scope index (``= NONE`` / a real scope both IndexScan on 3.2.4 — probe-63
+    P5). A ``count() … GROUP ALL`` over an empty set returns no row, so an absent count reads 0.
+    """
+    result = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed scope count",
+        label="governed.scope_count.rejected",
+        statement=(
+            f"SELECT count() FROM {table} WHERE scope IS {'NONE' if none else 'NOT NONE'} GROUP ALL"
+        ),
+        params={},
+        logger=logger,
+    )
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        return int(result[0].get("count", 0) or 0)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1139,6 +1277,24 @@ def build_parser() -> argparse.ArgumentParser:
         "delete-keep", help="delete a keep and cascade its household edges (irreversible)"
     )
     delete_keep.add_argument("--keep", required=True, help="the keep's id")
+
+    # -- governed migration (packet 63a, design §1.2 item 5 / §2) — the idempotent backfill verb
+    # run ONCE at the 65 cutover (NEVER at boot, §2.3). 63a migrates `memory` (its consumer);
+    # message/agent land 63b, brief 63c, task/finding 64.
+    migrate_governed_parser = subcommands.add_parser(
+        "migrate-governed",
+        help="backfill a governed table's owner/scope columns (run once at the 65 cutover)",
+    )
+    migrate_governed_parser.add_argument(
+        "--table", required=True, help="the governed table to migrate (63a supports: memory)"
+    )
+    # ⚠ FORK (disclosed, REPORT-build-63a §FORK): design §1.2 item 5 specifies a `[--dry-run]`
+    # preview flag, but the shipped 2026-08-20 ruling STRUCK the dry-run/--execute paradigm from
+    # this CLI (pinned by test_principals_cli.py::test_source_contains_no_execute_flag_or_dry_run,
+    # which scans ALL code strings). The 63a CONTRACT (test_the_parser_accepts_migrate_governed)
+    # requires only `--table`, so the CLI flag is OMITTED to comply with the shipped ruling; the
+    # `migrate_governed(dry_run=…)` FUNCTION param survives for the design's preview intent +
+    # programmatic use. Reconcile the design-vs-ruling conflict at the lead's discretion.
 
     return parser
 
@@ -1337,6 +1493,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
     # ``_require_config`` runs FIRST (before any branch), so a missing ``--config`` is a
     # loud ``SystemExit`` for EVERY verb, keep verbs included.
     config = load_surreal_only_config(_require_config(args))
+    if args.command == "migrate-governed":
+        return await _dispatch_migrate_governed(args, config)
     if args.command in _KEEP_VERB_HANDLERS:
         return await _dispatch_keep(args, config)
     # Lazy import: ``loremaster.principal_keys`` imports THIS module (``Principal``), so
@@ -1372,6 +1530,56 @@ async def _dispatch(args: argparse.Namespace) -> int:
     finally:
         await keep_store.close()
         await key_store.close()
+        await principal_store.close()
+
+
+async def _dispatch_migrate_governed(args: argparse.Namespace, config: LoreConfig) -> int:
+    """Build the stores + a driver ``StoreHandle`` over the unified store and run
+    :func:`migrate_governed` (packet 63a). The governed tables (``memory`` at 63a) live in the SAME
+    database the principal/keep stores connect to, so a handle over the principal store's own
+    driver reaches them — and every store access inside the verb routes through it (R4). Receipts to
+    stdout; a REFUSAL / domain failure is a stderr line + exit 1 (Unix philosophy: loud on failure).
+    """
+    from loremaster.keeps import KeepStoreError
+
+    principal_store = build_principal_store(config)
+    keep_store = build_keep_store(config)
+    try:
+        # The ``member_of`` ENFORCED endpoint (``principal``) FIRST, then keep+member_of.
+        await principal_store.ensure_ready()
+        await keep_store.ensure_ready()
+        handle = StoreHandle(
+            acquire=principal_store._ensure_connection,  # noqa: SLF001 - the driver triple, same module
+            drop=principal_store._drop_connection,  # noqa: SLF001
+            url=principal_store._url,  # noqa: SLF001
+        )
+        result = await migrate_governed(
+            table=args.table,
+            store=handle,
+            keep_store=keep_store,
+            principal_store=principal_store,
+        )
+        if result.refused:
+            print(
+                f"{_CLI_PROG}: migrate-governed --table {result.table} REFUSED: {result.reason}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"migrate-governed --table {result.table}: scanned={result.scanned} "
+            f"backfilled={result.backfilled} already_migrated={result.already_migrated}"
+        )
+        return 0
+    except (
+        PrincipalStoreError,
+        KeepStoreError,
+        SurrealConnectionError,
+        ValueError,
+    ) as error:
+        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        await keep_store.close()
         await principal_store.close()
 
 
