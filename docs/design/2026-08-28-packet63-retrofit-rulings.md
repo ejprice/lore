@@ -147,7 +147,7 @@ proposals for the contract author; the SHAPES are the ruling.
    (`_param_name`, collision-free by construction). The wrapper exists so the splice is one
    function, not a pattern.
 3. **`loremaster.governed.guarded_write(subject, action, *, table, row_id, set_fragment,
-   audit) -> GuardedWriteResult`** — the single-row WRITE/DELETE/SET_SCOPE path: read the row's
+   audit, store) -> GuardedWriteResult`** (`store` = the owning store's driver HANDLE — §10.6) — the single-row WRITE/DELETE/SET_SCOPE path: read the row's
    `(owner_principal, owner_agent, scope)` → build `Resource` → `authorize()` (deny → teaching
    error; `requires_audit` → compose `AuditStore.append_fragment` into the SAME transaction —
    61a built `append_fragment` for exactly *"what 63/64 compose"*) → execute the mutation as a
@@ -812,6 +812,59 @@ writable-set question for the lead, not a scope question for the operator.
   trigger *"63b derives `lore_comms` verbs from `_COMMS_ACTIONS` itself and keys the meta-pin on
   each verb's effect"* — the memory verbs' behavioural legs (F3/F4 effects) are what make the
   63a instance honest meanwhile.
+
+---
+
+### 10.6 BLOCKER 2 (adversary-63a-2, `lore_comms #8015`) — `guarded_write` reaches the store through the OWNER'S DRIVER HANDLE, injected
+- **Ruling — option (c), a typed injection of the connection-OWNER triple; NOT a raw connection,
+  NOT a single-statement `query=` seam, NOT a per-store method.** `guarded_write(..., store=)`
+  takes ONE value carrying exactly what the shared driver seams already take — `acquire`,
+  `drop`, `url` (`store/_txn.py::run_query` / `execute_transaction` signatures) — packaged as a
+  small frozen `StoreHandle(acquire, drop, url)` in `loremaster/store/_txn.py` beside the seams
+  (loremaster, not lorerunes: it carries connection callables). Every governed store exposes it
+  through ONE accessor (`LocalMemoryBackend.handle` → its own `_ensure_connection` /
+  `_drop_connection` / `_url`; 64's task/finding ledgers the same — they already own that triple,
+  the packet-48 owner idiom). Inside `guarded_write`: the pre-read via `run_query(acquire=…,
+  drop=…, url=…)`; the guarded mutation + the audit fragment via `compose(mutation, audit)` →
+  `execute_transaction(…, acquire=…, drop=…, url=…)` — ONE verified multi-statement transaction
+  (store-ref §3), every SDK call inside the retry/self-heal driver (#120/#108; the `_sdk_guard`
+  runtime gate sees no escape).
+- **Why the alternatives fail, each on a law:** (b) a method on the memory store makes 64 write a
+  second copy per store — #102. (a-raw) a `connection=` param is an SDK escape past the driver —
+  the R4 class the adversary itself flagged. (a-query) `query=self._query` is the SINGLE-statement
+  seam (`run_query`): it cannot run the mutation AND the audit CREATE as one verified `BEGIN …
+  COMMIT` — either two round-trips (a mutation without its audit row is exactly the §9 "compromised
+  admin erases its trail" shape, from the other side) or a hand-rolled multi-statement string
+  through the statement[0]-only `.query()` trap. The adversary's `query=` reference passed the
+  pins only because no pin yet exercises audit ATOMICITY — a green measurement after a silent
+  design gap (rider below).
+- **Not MAJOR:** a table-agnostic substrate signature mirroring the shape every store already
+  passes to the driver; changes 4 frozen substrate call sites + the retrofit backend (directly
+  caused — a contract fix). 64 consumes it unchanged.
+- **RIDERS — and pin it like this:** (i) **the FALSE-PASS vanished-conflict pin gets a REAL
+  handle and a positive control in the SAME test:** the owner's guarded write on an existing row
+  returns `row_count == 1` through that handle, THEN the row is deleted and the identical call
+  raises `GovernedConflict` — so a no-handle / dead-seam build cannot pass (it fails leg one);
+  `row_count` is read BACK from the guarded statement's `RETURN` (the `messages.py` ack-CAS
+  precedent — the ACTUAL stamp, never a pre-read count). (ii) **audit atomicity, both legs:** an
+  admin bypass write appends exactly +1 audit row (existing pin) AND a mutation the store REJECTS
+  (a `set_fragment` violating an ASSERT) appends ZERO — before == after — proving the audit rides
+  the same transaction, not a second round-trip. (iii) **the TOCTOU leg uses the injected
+  handle as the instrument:** wrap `acquire` so a re-scope `UPDATE` lands between `guarded_write`'s
+  pre-read and its mutation → `GovernedConflict`, the row untouched — deterministic, no 8-way race
+  needed for THIS property. (iv) **mutation-prove the driver routing:** swap the handle's
+  `acquire` for one that counts → every `guarded_write` pin observes ≥1 acquire; a build that
+  bypasses the handle for any statement reds it. (v) **DRY:** the contract author runs
+  `lore_search("connection owner acquire drop url handle")` before minting `StoreHandle` and
+  records the row (the adversary's `run_governed_query(connection, …)` shim is the wrong
+  direction — it takes a raw connection).
+- **R4 — `migrate_governed` / `report_unmigrated_governed_rows` → RULED: the SAME `StoreHandle`,
+  never a raw connection.** Production code in `governed.py` issues no `connection.query`; both
+  route through `run_query` / `execute_transaction` over the injected handle. `lore-adm
+  migrate-governed` builds the handle the way every store does (the shared `bootstrap_session`
+  + the store's owner triple — borrow the target store's `handle`), so the verb and the tool
+  path share one driver and one retry policy. Pin: an AST/`_sdk_guard` leg that `governed.py`
+  contains no direct SDK call site.
 
 ---
 
