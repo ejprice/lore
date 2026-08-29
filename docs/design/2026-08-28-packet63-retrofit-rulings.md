@@ -281,9 +281,9 @@ migration).
   a known legacy note returns nothing → the smoke fails; (2) a bounded boot-time
   `SELECT count() FROM <t> WHERE scope IS NONE GROUP ALL` per governed table, logged at
   WARNING with the count and the verb to run (the #131 lesson: a silent `(None, None)` for
-  months is the failure shape; a count nobody renders is a hope). The count query is a
-  TableScan on a NONE predicate — bounded by table size, run ONCE per boot, and REPORTED as
-  such in §4.4's probe (P5) so nobody later mistakes it for an index-served read.
+  months is the failure shape; a count nobody renders is a hope). The count query is INDEX-SERVED on 3.2.4 (access `= NONE` on the `scope` index — probe-63 P5,
+  lead-verified 2026-08-28), cheaper than a bounded TableScan; run ONCE per boot, and its plan
+  is REPORTED in §4.4's probe (P5) so the claim stays measured, never believed.
 - **The dirty-store pin family (§3.2 F1) seeds the legacy rows UNDER THE OLD DDL** — the
   store-ref §1.4 trap verbatim: *"a fixture that writes its legacy row after the migration
   cannot see this hazard at all."* Two seeds are required: (S1) a synthetic old-DDL seed for
@@ -504,7 +504,7 @@ controls, throwaway `test_<pid>_<uuid4>` DB on `ws://127.0.0.1:18000` — NEVER 
 | P2 | the FULL `_member_filter(READ).to_surql()` for a member with 2 keeps | same | `UnionIndexScan` of `IndexScan` children, no `TableScan` of `memory` (#413 fact 3 re-confirmed on the real table) |
 | P3 | P2 over the REAL `_message_statements` DDL | `message` with legacy rows (NONE owner/scope) + migrated rows | same verdict |
 | P4 | the §4.3 step-(2) shape `WHERE id IN $ids AND (<fragment>)` | `message` | index-served (record-id `IN` + the fragment); report the plan — if the planner degrades to a TableScan under `id IN` + OR, the fallback is per-id `type::record` reads, and the probe says which |
-| P5 | `WHERE scope IS NONE` (the §2.3 boot count) | both | **REPORTED, not required** — expected TableScan; the doc says so, so nobody later reads the count as index-served |
+| P5 | `WHERE scope IS NONE` (the §2.3 boot count) | both | **REPORTED, not required** — measured **IndexScan (`= NONE` on the `scope` index)** on 3.2.4 (probe-63, lead-verified 2026-08-28; a correction of this doc's earlier TableScan expectation — the P8d prose-currency class) |
 | P6 | `WHERE key = $k` on `keep` after SF-63-4's UNIQUE index, with ≥2 NONE-key keeps present | `keep` | IndexScan; the two NONE rows coexist (§1.8 re-confirmed on THIS column) |
 | C+ | positive controls | both | an un-indexed column equality → TableScan; `WHERE owner_agent = $a` alone → TableScan (proves the walker sees a TableScan AND documents the un-indexed `owner_agent` bound of §4.1) |
 
