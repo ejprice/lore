@@ -310,26 +310,79 @@ class TestF2DeleteIsScopeIndependentOnDirtyRows:
 # =========================================================================== #
 
 
-class TestF3ServedCountEqualsServedSet:
-    """F3 / trust-doctrine Leg 1 — the served COUNT of a filtered read equals the served SET size.
-    A count over the UNFILTERED table beside a filtered listing is a FALSE CLEAR."""
+class TestF3RecallServesOnlyTheCallerVisibleSet:
+    """F3 / trust-doctrine Leg 1 (design §3.2 F3, §6 item 2) — the REAL ``recall`` serves ONLY the
+    caller's visible rows: its served-set SIZE reflects the caller-VISIBLE matches, never the
+    unfiltered total. A row the caller cannot see never enters the answer, even when it matches the
+    query — *a count over the unfiltered table beside a filtered listing is a false clear.*
 
-    async def test_read_filter_count_equals_read_filter_set_size(self, oracle_conn: Any) -> None:
-        """⚠ RED at HEAD (``read_filter`` NotImplementedError). ``SELECT count() WHERE <read_filter>``
-        must equal the SIZE of ``SELECT id WHERE <read_filter>`` — same predicate, both filtered.
-        REDDENS a build that counts over the whole table (``SELECT count() FROM memory``) beside a
-        filtered id listing (the exact false-clear §6 item 2 forbids)."""
-        subject = member("alice", "ag_a1", frozenset({pdp.keep_scope("k1")}))
-        fragment, params = governed.read_filter(subject, MEMORY_TABLE)
-        id_rows = await run(oracle_conn, f"SELECT id FROM {MEMORY_TABLE} WHERE {fragment}", params)
-        count_rows = await run(
-            oracle_conn, f"SELECT count() FROM {MEMORY_TABLE} WHERE {fragment} GROUP ALL", params
+    ⚠ MISSING PIN 4 (adversary §MISSING-PINS): this REPLACES the tautological
+    ``test_read_filter_count_equals_read_filter_set_size``, which built ONE ``read_filter`` fragment
+    and used it on BOTH sides (``SELECT count() … WHERE {frag}`` and ``SELECT id … WHERE {frag}``) —
+    so ``count == size`` held TRIVIALLY on any build, while its docstring PROMISED to red a build
+    that counts over the whole table. Its assertion never exercised ``recall``, where the false clear
+    lives (a failure message promising a check the assertion never performs — CLAUDE.md). ⚠ MEMORY
+    NOTE: ``recall`` reports NO separate count line — ``AppContext._render_recalled_memories``
+    renders one block per served row (``server.py``) — so the realizable Leg-1 property for memory is
+    that the served SET is the caller-filtered set, size-discriminated against the unfiltered total.
+    (The literal "separately-computed count over the whole table" false clear belongs to comms
+    ``drain``/``rollup``, 63b/64, where a count IS reported; flagged to lead-63 in the report.)"""
+
+    @observes_routing("lore_recall", "lore_recall")
+    async def test_recall_serves_the_caller_filtered_set_not_the_unfiltered_total(
+        self, retrofit_world: Any, alice_capability: str, bob_capability: str
+    ) -> None:
+        """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``capability`` param).
+        Over a ≥2-principal hostile fixture where a shared query matches BOTH alice's visible rows AND
+        a bob principal-private row INVISIBLE to alice, alice's ``recall`` serves ONLY her visible
+        matches — the served set NEVER contains bob's row, and its size is STRICTLY BELOW the
+        unfiltered matching total (measured from the store, not a literal). REDDENS the false clear §6
+        item 2 forbids: a build whose ``recall`` serves the unfiltered set (bob's private row appears,
+        served size == the whole-table total) — the count-over-the-whole-table-beside-a-filtered-
+        listing defect. Ranking-robust: bob's row is EXCLUDED by the read filter regardless of the
+        hybrid-search ordering, so the ``not in`` / ``subset`` legs cannot flake on a correct build."""
+        backend, _p, _k, admin_conn, _env, _keep = retrofit_world
+        # alice's two VISIBLE matching rows: one default (project-keep) scoped, one her own
+        # principal-private. Distinct texts (identical text collapses to ONE deterministic id).
+        await _exercise_remember(backend, text="marker topic alpha", capability=alice_capability)
+        await _exercise_remember(
+            backend, text="marker topic beta", capability=alice_capability, scope="principal-private"
         )
-        served_set_size = len(id_rows) if isinstance(id_rows, list) else 0
-        served_count = count_rows[0]["count"] if count_rows else 0
-        assert served_count == served_set_size, (
-            f"served count {served_count} != served set size {served_set_size} — the count must be "
-            f"OVER THE FILTERED set (Leg 1), never the unfiltered table"
+        # ... and a bob principal-private row INVISIBLE to alice, matching the SAME query token.
+        await _exercise_remember(
+            backend, text="marker topic gamma", capability=bob_capability, scope="principal-private"
+        )
+        alice_visible_texts = {"marker topic alpha", "marker topic beta"}
+
+        served = await _exercise_recall(backend, query="marker topic", capability=alice_capability)
+        served_texts = {memory.text for memory in served}
+
+        # The unfiltered matching total, MEASURED from the store (all three seeds share the token) —
+        # the count a false-clear build would report beside a filtered listing.
+        unfiltered_total = _count(
+            await run(admin_conn, f"SELECT count() FROM {MEMORY_TABLE} GROUP ALL")
+        )
+        assert unfiltered_total == 3, (
+            f"fixture setup failed — expected 3 seeded memory rows, store holds {unfiltered_total}"
+        )
+        # Anti-vacuity: recall is not empty (a build that over-denies alice's OWN rows would pass the
+        # negatives trivially — this catches it).
+        assert served_texts, "alice's recall returned NOTHING — a build that over-denies her own rows"
+        # Leg-1 NEGATIVE (the false clear): bob's invisible private row never enters alice's answer.
+        assert "marker topic gamma" not in served_texts, (
+            "alice's recall surfaced bob's principal-private note — the served set is the UNFILTERED "
+            "table, not the caller-filtered set (the exact false clear §6 item 2 forbids)"
+        )
+        # Every served row is alice-visible (no foreign leak of ANY kind).
+        assert served_texts <= alice_visible_texts, (
+            f"alice's recall served a row she cannot see: {sorted(served_texts - alice_visible_texts)}"
+        )
+        # Leg-1 COUNT corollary: the served count is the caller-filtered count, STRICTLY BELOW the
+        # unfiltered total (an unfiltered build serves all 3 → not < 3 → RED). No dup inflation.
+        assert len(served) == len(served_texts), "recall served duplicate rows (id-collapse broken)"
+        assert len(served) < unfiltered_total, (
+            f"alice's recall served {len(served)} rows == the unfiltered total {unfiltered_total} — a "
+            f"count over the whole table, not the caller-filtered set (trust Leg 1)"
         )
 
 
@@ -343,7 +396,22 @@ class TestF3ServedCountEqualsServedSet:
 async def retrofit_world() -> Any:
     """A real ``LocalMemoryBackend`` on a fresh DB + a PrincipalStore/KeepStore + alice & bob
     principals + a canonical project keep (``key='project:lore'``, alice's household) — enough to
-    exercise the retrofitted recall/remember over live behaviour."""
+    exercise the retrofitted recall/remember over live behaviour.
+
+    ⚠ MISSING PIN 1 (C-DEF fix, adversary §MISSING-PINS): the project keep is minted via
+    ``get_or_create_keyed(key='project:lore', …)`` — the SF-63-4 verb (``keeps.py``) — NOT
+    ``create_keep`` (which sets NO ``key``). Design §2.2 RULES that ``remember``'s default-scope
+    resolution finds the project keep by ONE indexed read ``KeepStore.get_by_key('project:lore')``,
+    and store law §1.8 says a ``key IS NONE`` row is never matched by ``WHERE key=$k`` — so a
+    ``create_keep``-minted (keyless) keep is UNRESOLVABLE by the ruled path, making
+    ``test_a_remembered_note_defaults_to_the_project_keep_scope`` UNSATISFIABLE by a §2.2-compliant
+    build (it would have to resolve by ``(type,name)``, the exact path §2.2 rejects). The migration
+    module's own ``test_the_verb_backfills_the_project_keep_scope`` already asserts the project keep
+    is ``WHERE key='project:lore'`` — this fix makes the two consistent.
+    ⚠ ``get_or_create_keyed`` is a builder-GREEN stub, so at HEAD this fixture raises
+    ``NotImplementedError`` → every ``retrofit_world``-dependent test is a SETUP-ERROR RED at HEAD
+    (HONEST: the keyed-keep mechanism is a builder deliverable, like the absent schema columns; on a
+    correct build the fixture succeeds and every body assertion runs meaningfully)."""
     env = make_env(database=unique_database(), dim=_DIM)
     principal_store, keep_store = await build_principal_and_keep_stores(env)
     backend = await build_memory_backend(env)
@@ -351,7 +419,9 @@ async def retrofit_world() -> Any:
     await apply_ddl(admin_conn, governed_overlay_ddl(MEMORY_TABLE), url=env.url)
     await principal_store.create(email=_EMAIL_ALICE, role="member")
     await principal_store.create(email=_EMAIL_BOB, role="member")
-    project_keep = await keep_store.create_keep(keeper_email=_EMAIL_ALICE, type="project", name="lore")
+    project_keep = await keep_store.get_or_create_keyed(
+        key="project:lore", type="project", keeper_email=_EMAIL_ALICE, name="lore"
+    )
     try:
         yield backend, principal_store, keep_store, admin_conn, env, project_keep
     finally:
@@ -372,6 +442,14 @@ async def _exercise_remember(backend: Any, *, text: str, capability: str, **kwar
 async def _exercise_recall(backend: Any, *, query: str, capability: str) -> Any:
     """The ONE place the RETROFITTED ``recall`` is called (FORK 5 — isolated). RED at HEAD."""
     return await backend.recall(query, capability=capability)
+
+
+async def _exercise_invalidate(backend: Any, *, memory_id: str, capability: str) -> Any:
+    """The ONE place the RETROFITTED ``invalidate`` (the backend's close/retire write path) is
+    called (FORK 5 — isolated, mirroring ``_exercise_remember``; §10.5 names ``invalidate`` a
+    retrofitted backend method). RED at HEAD: ``invalidate`` has no ``capability`` param → TypeError,
+    and today (``local.py``) issues a BARE ungoverned ``UPDATE … SET valid_until``."""
+    return await backend.invalidate(memory_id, capability=capability)
 
 
 class TestIdentityLessCallsDeny:
@@ -626,6 +704,124 @@ class TestF3RecallIsolationAcrossPrincipals:
         )
 
 
+class TestInvalidateRoutesThroughGuardedWrite:
+    """§1.1 / §2.5 (MISSING PIN 2) — the backend's ``invalidate``/supersede write path is GOVERNED:
+    closing a memory row authorizes the WRITE on the EXISTING (possibly foreign-owned) row via
+    ``governed.guarded_write``, so a member cannot retire ANOTHER principal's note. This is the
+    contract's ONLY exercise of the ``guarded_write`` seam through a real retrofit consumer (the
+    F2/F3 legs exercise ``read_filter``; the substrate module pins ``guarded_write`` directly, but
+    NOTHING proved ``invalidate`` ROUTES through it — ``write_verbs=('remember','invalidate')`` in
+    ``_memory_case`` is decoration no runner iterates). The mutating write verb is the DANGEROUS one:
+    it touches an existing row, and at HEAD ``invalidate`` issues a BARE ungoverned ``UPDATE``."""
+
+    @observes_routing("lore_remember", "lore_remember")
+    async def test_a_member_cannot_close_a_foreign_owned_row(
+        self, retrofit_world: Any, alice_capability: str, bob_capability: str
+    ) -> None:
+        """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``capability`` param).
+        alice remembers a note (default project-keep scope, alice's household); bob — NOT householded
+        in the project keep — tries to ``invalidate`` it. The close routes through ``guarded_write``,
+        which authorizes the WRITE on the existing row → bob is DENIED (``GovernedDenied``) AND the
+        row is UNCHANGED (still valid — a denied close never mutates, single-brain on writes).
+        REDDENS the wrong build the adversary names: ``invalidate`` issues a bare ``UPDATE`` bypassing
+        ``guarded_write`` → bob retires alice's note (no exception raised, ``valid_until`` set). This
+        is the behavioural routing observation for the WRITE verb — routing proven by its EFFECT."""
+        backend, _p, _k, admin_conn, _env, _keep = retrofit_world
+        memory_id = await _exercise_remember(
+            backend, text="alice note to keep", capability=alice_capability
+        )
+        with pytest.raises(governed.GovernedDenied):
+            await _exercise_invalidate(backend, memory_id=memory_id, capability=bob_capability)
+        row = _one(
+            await run(
+                admin_conn, "SELECT valid_until FROM type::record('memory', $id)", {"id": _bare(memory_id)}
+            )
+        )
+        assert row["valid_until"] is None, (
+            "a DENIED invalidate retired the row — a member closed another principal's note; the "
+            "close must route through guarded_write (single-brain on writes), not a bare UPDATE"
+        )
+
+    async def test_an_owner_can_close_its_own_row(
+        self, retrofit_world: Any, alice_capability: str
+    ) -> None:
+        """⚠ RED at HEAD. THE POSITIVE CONTROL for the deny pin: alice (householded in the project
+        keep) CAN close her OWN project-scoped note → ``valid_until`` is set. Without it, a build that
+        special-cases invalidate to "deny everything" would pass the deny pin above while breaking
+        every legitimate close (a guard nobody can pass is as wrong as one nobody can fail)."""
+        backend, _p, _k, admin_conn, _env, _keep = retrofit_world
+        memory_id = await _exercise_remember(
+            backend, text="alice note to retire", capability=alice_capability
+        )
+        await _exercise_invalidate(backend, memory_id=memory_id, capability=alice_capability)
+        row = _one(
+            await run(
+                admin_conn, "SELECT valid_until FROM type::record('memory', $id)", {"id": _bare(memory_id)}
+            )
+        )
+        assert row["valid_until"] is not None, (
+            "alice could not close her OWN note — the owner's legitimate invalidate was denied "
+            "(a build that special-cases invalidate to deny-everything)"
+        )
+
+
+class TestExplicitScopeArgumentIsGrantableValidated:
+    """§2.4 (MISSING PIN 3) — an explicit ``scope=`` on ``remember`` is a PDP-VALIDATED REQUEST,
+    checked by the SAME ``lorerunes.pdp._grantable`` predicate the SET_SCOPE action uses (61 D4(b)):
+    the fixed scopes + the caller's OWN keeps are grantable; a keep the caller is NOT householded in
+    → DENY with a teaching error naming ``lore-adm add-household``. The contract's other F4 pin
+    (``test_a_hostile_owner_argument_does_not_move_the_stamp``) fuzzes only ``owner_principal=``; a
+    caller-supplied ``scope=`` into a foreign keep is a DIFFERENT injection door (cross-keep
+    injection / unauthorized scope assignment), and it was unpinned."""
+
+    async def test_an_ungrantable_scope_argument_denies_with_a_teaching_error(
+        self, retrofit_world: Any, alice_capability: str
+    ) -> None:
+        """⚠ RED at HEAD (retrofit unbuilt — ``get_or_create_keyed`` stub / no ``scope`` validation).
+        alice (householded ONLY in the project keep) tries to ``remember(scope=keep:<bob's keep>)`` —
+        a keep she is not householded in. ``_grantable(alice, that keep)`` is False → ``GovernedDenied``
+        with a teaching message naming ``lore-adm add-household``. REDDENS the wrong build the
+        adversary names: ``remember`` writes the caller's ``scope=`` verbatim, never calling
+        ``_grantable`` → a member files a note into a keep it is not in (cross-keep injection).
+        MUTATION-PROOF (§9-rider-3, routing-is-not-sharing): patch ``lorerunes.pdp._grantable`` to
+        ``return True`` → this DENY vanishes → the pin REDs, proving the write-time scope validation
+        routes through ``_grantable``, not a hand-rolled copy (builder/adversary runs the mutation)."""
+        backend, principal_store, keep_store, _admin, _env, _project_keep = retrofit_world
+        # A keep alice is NOT householded in — kept by BOB, so alice cannot grant its scope.
+        bob_keep = await keep_store.create_keep(keeper_email=_EMAIL_BOB, type="project", name="bobspace")
+        with pytest.raises(governed.GovernedDenied) as denial:
+            await _exercise_remember(
+                backend, text="cross-keep injection attempt", capability=alice_capability,
+                scope=pdp.keep_scope(_bare(str(bob_keep.id))),
+            )
+        assert "lore-adm add-household" in str(denial.value), (
+            f"the deny must TEACH the fix (name `lore-adm add-household`, design §2.4), got: "
+            f"{denial.value!r}"
+        )
+
+    async def test_a_grantable_scope_argument_is_accepted_and_applied(
+        self, retrofit_world: Any, alice_capability: str
+    ) -> None:
+        """⚠ RED at HEAD. THE POSITIVE CONTROL: a GRANTABLE explicit ``scope=`` (a fixed scope —
+        ``principal-private`` is always grantable, ``_grantable`` returns True) is ACCEPTED and the
+        stored row carries THAT scope. Without it, a build that denies EVERY explicit ``scope=`` (or
+        one that IGNORES it and writes the default project scope) would pass the deny pin above.
+        REDDENS both: a deny-everything build (the write fails) AND an ignore-scope build (the stored
+        scope is the project keep, not ``principal-private``)."""
+        backend, _p, _k, admin_conn, _env, _project_keep = retrofit_world
+        memory_id = await _exercise_remember(
+            backend, text="alice private via explicit scope", capability=alice_capability,
+            scope="principal-private",
+        )
+        row = _one(
+            await run(admin_conn, "SELECT scope FROM type::record('memory', $id)", {"id": _bare(memory_id)})
+        )
+        assert row["scope"] == "principal-private", (
+            f"a grantable explicit scope= (principal-private) was not applied — got scope={row['scope']!r} "
+            f"(a build that ignores scope= and writes the default project keep, or denies all scope=)"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # capability fixtures (register real owned agents so recall/remember have a credential).
 # --------------------------------------------------------------------------- #
@@ -670,6 +866,11 @@ async def _mint_capability(retrofit_world: Any, *, email: str, agent_name: str) 
 def _one(rows: Any) -> Any:
     assert rows, f"expected one row, got {rows!r}"
     return rows[0]
+
+
+def _count(rows: Any) -> int:
+    """The ``count`` of a ``SELECT count() … GROUP ALL`` result (0 on an empty table)."""
+    return rows[0]["count"] if rows else 0
 
 
 def _bare(record_id: str) -> str:
