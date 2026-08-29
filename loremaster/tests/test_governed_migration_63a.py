@@ -77,9 +77,12 @@ async def migration_world() -> Any:
 
 
 async def _migrate_memory(migration_world: Any, *, dry_run: bool = False) -> Any:
-    principal_store, keep_store, connection, _env = migration_world
+    principal_store, keep_store, connection, env = migration_world
+    # §10.6 R4: migrate_governed takes the OWNER'S DRIVER HANDLE (a StoreHandle over the target
+    # store's connection), never a raw connection — it routes the backfill through run_query /
+    # execute_transaction. store_handle builds that handle over the fixture's admin connection.
     return await principals.migrate_governed(
-        table=MEMORY_TABLE, connection=connection, keep_store=keep_store,
+        table=MEMORY_TABLE, store=store_handle(connection, url=env.url)[0], keep_store=keep_store,
         principal_store=principal_store, dry_run=dry_run,
     )
 
@@ -243,7 +246,7 @@ class TestTheAgentFirstOrderIsChecked:
             # trap: a pin that passes for the wrong reason at HEAD). The contract shape is a RETURNED
             # ``MigrateGovernedResult(refused=True, reason=…)`` (the CLI maps refused → exit non-zero).
             result = await principals.migrate_governed(
-                table="message", connection=connection, keep_store=keep_store,
+                table="message", store=store_handle(connection, url=env.url)[0], keep_store=keep_store,
                 principal_store=principal_store, registry=registry,
             )
             assert result.refused and not result.backfilled, (

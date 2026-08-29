@@ -133,16 +133,21 @@ class TestResolveSubjectIsFailClosed:
 
                 raise KeepStoreError("keep store unreachable (wrong-instance / dead)")
 
-        with pytest.raises((governed.GovernedDenied, Exception)):  # noqa: B017,PT011 - see below
-            subject = await governed.resolve_subject(
+        # ⚠ NARROWED to GovernedDenied (was a broad ``(GovernedDenied, Exception)`` catch that
+        # PASSED at HEAD by swallowing resolve_subject's stub NotImplementedError — a vacuous
+        # GREEN when it should be RED-until-built). The design (§1.2 item 1 / this class docstring)
+        # rules a keep-resolution failure fails-closed as GovernedDenied SPECIFICALLY — so a stub
+        # build reds (NotImplementedError ≠ GovernedDenied), a build that swallows the resolver
+        # error into a subject reds ("DID NOT RAISE"), and a build that lets the raw KeepStoreError
+        # propagate reds too. Matches the two sibling deny pins above.
+        with pytest.raises(governed.GovernedDenied):
+            await governed.resolve_subject(
                 access_token(subject=_EMAIL_ALICE),
                 "cap:verified",
                 registry=registry,
                 principal_store=principal_store,
                 keep_store=_BrokenKeepStore(),
             )
-            # If it did NOT raise, it must at least not have swallowed the failure into a subject.
-            assert subject is None, "resolve_subject must fail-closed on a keep-resolution failure"
 
     async def test_the_happy_path_builds_a_correct_subject(self, governed_world: Any) -> None:
         """⚠ RED at HEAD. A verified capability + a known member principal + resolvable keeps →

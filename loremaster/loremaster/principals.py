@@ -101,6 +101,7 @@ from loremaster.index.records import sha512_hex
 from loremaster.sanitise import safe_str
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    StoreHandle,
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
@@ -982,14 +983,14 @@ def build_keep_store(config: LoreConfig) -> KeepStore:
 async def migrate_governed(
     *,
     table: str,
-    connection: Any,
+    store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
     registry: Any = None,
     dry_run: bool = False,
 ) -> MigrateGovernedResult:
-    """The idempotent governed-column backfill for ONE table (design §1.2 item 5 / §2 — packet
-    63a STUB / runnable-RED, contract-63a). Backs the ``lore-adm migrate-governed`` CLI verb.
+    """The idempotent governed-column backfill for ONE table (design §1.2 item 5 / §2 / §10.6 R4 —
+    packet 63a STUB / runnable-RED, contract-63a). Backs the ``lore-adm migrate-governed`` CLI verb.
 
     Per the per-table :class:`~loremaster.governed.LegacyMapping` (§2.1): ``memory`` legacy rows
     → owner NONE/NONE, ``scope = keep:<project>`` (the canonical project keep minted via
@@ -1000,12 +1001,21 @@ async def migrate_governed(
     (§2.3) — only at the 65 cutover. ``dry_run`` reports counts without writing. STUB: builder
     fills.
 
+    The backfill UPDATE and the §2.6 agent-NONE-count both route through the injected ``store``
+    :class:`~loremaster.store._txn.StoreHandle` — :func:`~loremaster.store._txn.run_query` /
+    :func:`~loremaster.store._txn.execute_transaction` over ``store.acquire`` / ``store.drop`` /
+    ``store.url`` (design §10.6 R4: no raw connection, no direct SDK call in this module; the verb
+    borrows the target store's OWN retry/self-heal driver, so the verb and the tool path share one
+    driver and one retry policy).
+
     Returns:
         A :class:`~loremaster.governed.MigrateGovernedResult` with the receipts. Refuses (sets
         ``refused=True`` + ``reason``) on the agent-first ORDER precondition or a multi-principal
         ``agent`` table (§2.1) — never a silent partial widening of visibility.
     """
-    raise NotImplementedError("63a builder: migrate_governed backfill verb (design §1.2 item 5)")
+    raise NotImplementedError(
+        "63a builder: migrate_governed backfill verb (design §1.2 item 5 / §10.6 R4)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
