@@ -162,8 +162,11 @@ proposals for the contract author; the SHAPES are the ruling.
    `_message_statements`, and later `_task_statements`/`_finding_statements` (64) and
    `_brief_statements` (63c). Mutation proof: change the index set here → every governed
    table's schema pin moves.
-5. **`lore-adm migrate-governed --table <t> [--dry-run]`** (`principals.py` CLI family, the
-   60/61 `lore-adm` precedent) — the idempotent backfill verb, parametrised by a per-table
+5. **`lore-adm migrate-governed --table <t>`** (`principals.py` CLI family, the 60/61
+   `lore-adm` precedent; ⚠ NO `--dry-run` and NO `dry_run=` — the operator STRUCK that paradigm
+   from `lore-adm` on 2026-08-20 (*"Gate none. I hate that paradigm."*, packet-49 rulings), a
+   ruling this line first shipped in ignorance of — corrected §10.7-W; the PREVIEW role is the
+   separate READ verb `report-unmigrated --table <t>`) — the idempotent backfill verb, parametrised by a per-table
    `LegacyMapping` (§2.1) — ONE verb, N table rows, receipts-printing (rows scanned / backfilled
    / already-migrated / refused), exit non-zero on a precondition failure. Runs at the 65
    cutover, NEVER at boot (§2.3).
@@ -210,6 +213,10 @@ proposals for the contract author; the SHAPES are the ruling.
 | `message` | `sender: record<agent>` — a REAL link; `agent.owner_principal` is `option<>` and NONE for every pre-62 agent | `= sender` (exact, resolvable, no heuristics) | `= sender.owner_principal` **after the agent backfill** (below); NONE if the agent is unresolvable (a dangling `sender` link — store-ref §2, links do not auto-clean — is a #105-class ghost: COUNT and REPORT it, leave NONE) | **OWNED-BY-LINK.** One `UPDATE message SET owner_agent = sender, owner_principal = sender.owner_principal WHERE scope IS NONE` — a field-through-hop on the WRITE side only (a one-shot migration, not a read predicate; §4's un-indexable-hop rule is a READ-path rule). |
 | `agent` (the link target both depend on) | `owner_principal` NONE for all legacy rows | — | **backfill to the operator's real principal** (the 62 Fork-2 ruling: the local fleet IS the operator's principal, no sentinel) | **PRECONDITION-GUARDED.** The verb asserts, BEFORE writing, that EVERY legacy agent's `owner_principal` is NONE (`SELECT count() … WHERE owner_principal IS NOT NONE GROUP ALL` = 0). A store where any agent already carries a DIFFERENT owner is a multi-principal store → the verb REFUSES loud and names the rows; the operator adjudicates by hand. This is the single-principal-fleet premise turned into a checked precondition rather than a belief. |
 | `brief` (63c) | `created_by: string` — an agent NAME with no session (`AppContext.comms` docstring: *"records `Brief.created_by` as the acting agent's own name"*) | NONE | NONE | **UNOWNED-LEGACY** — a bare name resolves to N agent rows across sessions (the registry id is `uuid5(session, name)`), so "best-effort" is a guess wearing a mapping. Do not guess. Briefs are project-wide standing instructions; the project keep's household reads + supersedes them (a new version is a new row, owned by its publisher). |
+
+**Principal-DELETE disposition of `memory.owner_principal` (the FIFTH `record<principal>` link,
+the first on a GOVERNED row — §10.7-Z, SF-63-5 CONFIRM):** ORPHAN-TO-NONE, AUDITED — never
+cascade-delete (destroys household notes), never a silent dangle; REFUSE-loud meanwhile.
 
 The **hard rule this table encodes:** a legacy row is owned by a LINK or by NOBODY. A string is
 never promoted to an owner (§3.2.2 — identity never from a free-form value, and a migration is
@@ -865,6 +872,87 @@ writable-set question for the lead, not a scope question for the operator.
   + the store's owner triple — borrow the target store's `handle`), so the verb and the tool
   path share one driver and one retry policy. Pin: an AST/`_sdk_guard` leg that `governed.py`
   contains no direct SDK call site.
+
+---
+
+### 10.7 build-63a forks (`lore_comms #8021`, build GREEN @ `a8c17c1`) — Y · Z · W
+
+**10.7-Y — the tool layer: RULED "wire it, don't skip it" — RECOMMEND a bounded 63a-ii BEFORE the
+cold audit; skip-with-trigger ACCEPTED only as the lead's sequencing call, with two riders.**
+- **The fork as posed (skip vs re-point 18 tests) is downstream of a scope narrowing I did not
+  make:** R6 leaves the `AppContext` composition root UNWIRED, so the served `lore_recall` /
+  `lore_remember` DENY every call — identity-bearing included. §1.1 named those two tools as 63a's
+  retrofit and §10.5 ruled `capability=` at the tool surface resolved by the ONE constructor; a
+  backend-only retrofit with a deny-all tool layer is fail-CLOSED (no leak, a teaching error — the
+  designed degraded state, not a false clear) but it is NOT the retrofit 63a was scoped to ship.
+  The build's own trigger says so: *"the deny will start FAILING them then"* — a skipped test is a
+  hope with a filename (CLAUDE.md), and 18 of them is a hand-list of hopes.
+- **Recommendation (A):** a bounded **63a-ii** wave (~0.05–0.10): ONE `AppContext._resolve_subject
+  (capability)` helper (reads `get_access_token()`, calls `governed.resolve_subject` with the
+  context's registry / principal store / keep store — the helper every governed handler in 63b/63c/
+  64 then CALLS, never re-spells); `capability=` on the two memory tools (the shared parameter
+  description, §10.5 rider (i)); the 18 `test_mcp_server` bodies RE-POINTED to the capability path
+  (an `app_context` fixture that registers an agent, captures the minted capability, patches
+  `get_access_token`) — not skipped. Then the cold audit grades a memory retrofit whose SERVED
+  surface works. *"If the next agent would just do what you could do now, do it now."*
+- **If the lead rules sequence (B — skip until 63b), two riders make the deferral honest:**
+  (i) the #420 adjudication SPLITS the memory verbs' status — backend-ROUTED (green) vs tool-layer-
+  WIRED (RED_ADJUDICATED, trigger "63a-ii / 63b wires the composition root") — so the currency gate
+  shows the gap instead of a green "routed" over an unwired tool (coverage-as-a-checked-variable);
+  (ii) the skip set is DERIVED, not enumerated: a pin asserts every `test_mcp_server` test carrying
+  `_TOOL_LAYER_63A_SKIP` calls `AppContext.recall/remember`, and that no OTHER test does so
+  un-skipped — a 19th silently-red tool-layer test cannot hide behind the 18.
+- **FORK-D1 rider (surfaced, not narrowed):** `search.py::_recall_memory` now swallows
+  `GovernedDenied` → `[]`. A silently-absent memory boost is the #131 shape (a feature empty for
+  months, invisible). The `search_code` render NAMES the withheld boost in one derived line
+  (*"memory boost withheld: identity-less call"*) until 63b threads the Subject — Leg 1, the bound
+  is a fact in the response, never a silent `[]`.
+
+**10.7-Z — `memory.owner_principal` delete disposition: RULED ORPHAN-TO-NONE, AUDITED; REFUSE-loud
+until the mechanism lands (64) — flagged SF-63-5 CONFIRM to the operator (data semantics; the
+R3.2/FR-4 precedent), non-blocking.**
+- **Ruling:** on a hard principal-delete, every governed row the principal owns gets an ADMIN
+  `SET_OWNER → NONE` (owner_principal AND owner_agent cleared) in the SAME transaction as the
+  delete — each an audited load-bearing bypass (`_member_filter(SET_OWNER)` is `NoRows`, so
+  `requires_audit` fires per row; the trail records who orphaned what). The rows then carry the
+  §2.1 UNOWNED-LEGACY semantics ALREADY ruled: a keep-scoped note stays with its household, a
+  `server` note stays visible, a `principal-private` note becomes admin-only by construction
+  (`owner_principal = $p` matches nobody — invisible, never leaked). Nothing is destroyed, nothing
+  dangles, nothing leaks.
+- **Why not the alternatives:** CASCADE-DELETE vanishes keep-scoped notes other household
+  members rely on (the FR-4 argument, on rows instead of keeps) — REJECTED. REFUSE-WHILE-OWNING
+  makes every principal with one saved note undeletable until an admin re-owns each row — correct
+  only as the INTERIM. A silent DANGLE is the `PrincipalStore.delete` docstring's own named
+  anti-pattern (*"a governed row's owner, a LIVE dependency → cascade-or-refuse, NOT … dangle"*).
+- **Sequencing (deferral with a RULING, an owner and a trigger — not an open question):** the
+  orphaning mechanism is 64's admin `set_owner` (§2.5 already names 64 as its first consumer)
+  applied over the derived set of governed tables; **meanwhile `PrincipalStore.delete` REFUSES**
+  when `SELECT count() FROM memory WHERE owner_principal = $p GROUP ALL` > 0 (an IndexScan on the
+  §4.1 index — free), naming the count and the 64 mechanism. PIN THE MISS: a test asserts the
+  refusal with one owned memory row present and goes RED the day orphaning lands (delete the pin
+  with the mechanism). The exact-set pin's class for this link becomes `ORPHAN-AUDITED (refuse
+  meanwhile)`. Lands in 63a-ii if (A) above is taken; otherwise the first 63b fix-wave.
+  Re-open trigger unchanged: the first principal-delete against a store holding an owned
+  governed row.
+
+**10.7-W — `--dry-run`: RULED the shipped operator ruling WINS; the design is corrected, the pin is
+NOT exempted, and the `dry_run=` function parameter is DELETED.**
+- §1.2 item 5 shipped `[--dry-run]` in ignorance of the 2026-08-20 operator ruling (*"Gate none. I
+  hate that paradigm."* — no dry-run, no `--execute`, anywhere in `lore-adm`); my error, corrected
+  in §1.2 above. Exempting `migrate-governed` from
+  `test_principals_cli::test_source_contains_no_execute_flag_or_dry_run` is REJECTED — a pin
+  exemption is how a struck paradigm creeps back one verb at a time.
+- **The programmatic `migrate_governed(dry_run=)` param goes too:** the CLI cannot reach it, so it
+  is an unreachable branch contradicting the ruling's spirit (a `lore_dead_code` candidate wearing a
+  feature's name); `MigrateGovernedResult.dry_run` with it. **The PREVIEW role the design wanted is a
+  READ verb** — `report_unmigrated_governed_rows` already exists; expose it as `lore-adm
+  report-unmigrated --table <t>` (a read, exactly the class the operator's ruling allows —
+  `list`/`list-keys`). Receipts stay: `migrate-governed` prints scanned / backfilled /
+  already-migrated / refused AFTER executing, silent-on-success is NOT the idiom for a migration
+  (it is a one-shot cutover verb whose counts ARE the receipt — loud by design, §2.3).
+- **RIDERS:** a bare grep for `dry_run` / `dry-run` over `governed.py`, `principals.py`, and the 63a
+  test modules → 0 hits (each residual gets a file + verdict); `lore_dead_code` shows no
+  `MigrateGovernedResult.dry_run` residue.
 
 ---
 
