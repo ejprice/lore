@@ -274,7 +274,10 @@ migration).
   Python leg must map a NONE-scope row to DENY (never raise on `Resource` construction, never
   skip it) so `authorize(row) ≡ filter.matches(row)` holds on dirty rows too — 61b's oracle F2
   bound (*"omits option<> NONE-owner rows"*) is CLOSED here by a dirty-row oracle leg over BOTH
-  NONE-owner and NONE-scope rows.
+  NONE-owner and NONE-scope rows. **Mechanism (contract-63a FORK 1, ruled §10.1): widen
+  `lorerunes.pdp.Resource.scope` to `str | None` — `None` = the ABSENT (unmigrated legacy) scope,
+  a named `lorerunes` touch; the empty-string forgery and every non-domain string still RAISE;
+  `to_surql` never reads a `Resource`, so the emitted SurrealQL is byte-identical.**
 - **Therefore the backfill is a FUNCTIONAL necessity, not a nicety:** without it the fleet
   loses sight of its own memory and history the moment the cutover boots. The verb (§1.2 item
   5) runs at the cutover; a forgotten run is LOUD in two places: (1) the deploy smoke's recall of
@@ -370,7 +373,11 @@ are single-verb tools whose verb is the tool). Each `(tool, verb)` is either OBS
 through `resolve_subject` + (`read_filter` | `guarded_write`) — observed at RUNTIME by
 instrumenting the seams in the test (the CLAUDE.md instrument lesson: enforce at runtime,
 check coverage as a variable — a `(tool, verb)` the test never exercised is RED, not green) —
-or RED_ADJUDICATED in `scripts/pending_contracts.yaml` with owner + trigger. **The set REDS
+or RED_ADJUDICATED in the `loremaster.server` constant `_GOVERNED_VERBS_PENDING_ROUTING:
+dict[tuple[str, str], str]` (`(tool, verb) → trigger`, the direct sibling of 62's per-TOOL
+`_GOVERNED_TOOLS_PENDING_OWNER_STAMP`) — NOT `scripts/pending_contracts.yaml`, whose
+`extra="forbid"` schema is typecheck-bound (`PendingBound.files[].missing_symbols`) and cannot
+carry a verb adjudication (contract-63a FORK 2, ruled §10.2). **The set REDS
 when it grows and the observed set does not** (a new comms action, a new tool). 64's legs are
 adjudicated *"packet 64 routes lore_tasks.<verb>"* at 63a close and self-destruct as 64 lands.
 
@@ -519,9 +526,12 @@ pin. The probe's exit status is a 63a gate receipt.
 
 **RULING: close it — collapse to ONE read.** `verify_capability` already PROJECTS
 `owner_principal` (aliased `owner_email`) in its single verified SELECT and returns only the
-agent id; `stamp_owner` then re-reads `owner_principal_of(agent_id)`. Have `verify_capability`
-return the verified `(agent_id, owner_principal_id)` pair (project the bare owner id beside the
-email it already reads) and have `stamp_owner` use it; DELETE `owner_principal_of` —
+agent id; `stamp_owner` then re-reads `owner_principal_of(agent_id)`. **Close it ADDITIVELY
+(contract-63a FORK 3, ruled §10.3):** keep `verify_capability -> str | None` byte-compatible (13
+shipped 62 call sites pin the bare id); move the four-condition check + the single SELECT into ONE
+internal pair-yielding path that ALSO projects the bare owner id, have `verify_capability` return
+its first element and `stamp_owner` consume the pair (ONE `_query` round-trip, the conditions
+living ONCE — ROUTING-IS-NOT-SHARING); DELETE `owner_principal_of` —
 `lore_impact` (2026-08-28 @ `8128c50`) shows `stamp_owner` as its ONLY production consumer
 and zero covering tests (re-confirm at build time; the count is a heuristic).
 
@@ -634,7 +644,7 @@ everything (§10-K); (iv) the `to`-edge count that wakes `await` may count an in
 | `_governed_field_specs` / `_governed_index_statements` | grep `_define_field(\|_plain_index(` in `surreal_schema.py` | the per-table `_*_statements` idiom (Variant A/B, packet-48 memory) | **EXTENDED** the emitter idiom — one shared spec tuple consumed by N `_<table>_statements` |
 | `lore-adm migrate-governed` + `LegacyMapping` | grep `migrate\|backfill` in `loremaster/` + `scripts/` | no data-migration verb exists (only DDL `REMOVE FIELD IF EXISTS` in `_memory_statements`) | **HAND-ROLLED** — the first row-backfill in the repo; the `lore-adm` CLI family is the home (60/61 precedent) |
 | `KeepStore.get_or_create_keyed` | `lore_get_symbol("KeepStore.create_keep")` | non-idempotent `ulid()` create + keeper auto-household in one txn | **EXTENDED** `create_keep` — same txn shape + a UNIQUE-conflict CAS re-read (store-ref §5) |
-| `verify_capability` → returns the pair (#425) | `lore_get_symbol` + `lore_impact("AgentRegistry.owner_principal_of")` (run 2026-08-28 @ `8128c50`) | a second read of a column the first SELECT already projects; **exactly 1 prod consumer (`loremaster.owner_stamp.stamp_owner`), 0 tests** | **EXTENDED** `verify_capability`; `owner_principal_of` DELETED with the #425 closure (its only consumer stops calling it — re-confirm with `lore_impact` at build, the count is a heuristic) |
+| `verify_capability` → returns the pair (#425) | `lore_get_symbol` + `lore_impact("AgentRegistry.owner_principal_of")` (run 2026-08-28 @ `8128c50`) | a second read of a column the first SELECT already projects; **exactly 1 prod consumer (`loremaster.owner_stamp.stamp_owner`), 0 tests** | **EXTENDED** `verify_capability` ADDITIVELY (its return shape is unchanged; the shared pair-yielding path underneath is the extension — §10.3); `owner_principal_of` DELETED with the #425 closure (its only consumer stops calling it — re-confirm with `lore_impact` at build, the count is a heuristic) |
 
 **Removed-behaviour inventory (the tdd Phase 0 / adversary P6b instrument — the builder
 enumerates; these are the items I can already see):** (1) `lore_recall`/`lore_remember` today
@@ -678,6 +688,97 @@ the keeper-gated foreign-principal DENY is NEW behaviour, pinned); (5) `owner_pr
 9. **Prose currency (P8d class):** at each wave close, a BARE grep for the retired premise
    *"free-form created_by"* / *"no governed tool routes"* / `owner_principal_of` across
    `loremaster/`, `docs/`, and the two tool descriptions; every hit gets a file + verdict.
+
+---
+
+## 10. Contract-phase rulings (2026-08-28, contract-63a — `lore_comms #8007`)
+
+Five forks surfaced by the 63a RED contract (`REPORT-contract-63a.md` §ESCALATIONS; 52 RED / 12
+GREEN, gate-clean). Each ruled here so the ruling lives in the committed artifact. **None is
+MAJOR → operator**; the one candidate (10.1) is a minimal additive widening of a shared type that
+the §2.3 rider ALREADY required, with every shipped pin green — a lorerunes touch is a
+writable-set question for the lead, not a scope question for the operator.
+
+### 10.1 FORK 1 — `Resource.scope: str | None` → RULED reading (1), a NAMED `lorerunes` touch
+- **Ruling:** widen `lorerunes.pdp.Resource.scope` to `str | None`. `None` means ONE thing — an
+  ABSENT (unmigrated legacy) scope. `__post_init__` keeps rejecting `""` (the forgery vector,
+  SEC-F3) and every non-domain string (`_is_valid_scope` unchanged); only the literal `None`
+  branch is new. Reading (2) — a NONE-scope short-circuit OUTSIDE `authorize` — is REJECTED: it is
+  a second decision path, the #102 defect the single-brain exists to prevent.
+- **Why not MAJOR:** the shipped 61 domain pin (`lorerunes/tests/test_pdp_core.py::
+  test_resource_rejects_a_scope_outside_the_domain`, parametrised over `"public" "keep" "keep:"
+  "private" "" "Server"`) does NOT name `None`, and `test_resource_has_no_default_for_scope`
+  still holds (no default) — every shipped pin stays green; `to_surql` never reads a `Resource`,
+  so §4.2's "63 adds nothing to the predicate" is literally true; and `matches` needs no change
+  (`None == 'server'` is False, `None in keeps` is False, `AllRows` is True).
+- **RIDERS — and pin it like this:** (i) a NEW lorerunes pin: `Resource(scope=None)` constructs;
+  for every member `Subject`, READ/WRITE/SET_SCOPE `matches` is False and admin is True;
+  `Resource(scope="")` still raises. (ii) ⚠ **DELETE is scope-INDEPENDENT (61 D4(a))** — an exact
+  `(principal, agent)` owner CAN hard-delete its own NONE-scope row; the F2 dirty-row oracle
+  leg MUST include `Action.DELETE` as the positive control that a NONE-scope row is not
+  universally invisible (a fixture that only tests READ would pass a build that special-cases
+  `None` to "deny everything"). (iii) the `Resource` docstring says `None` = legacy/unmigrated,
+  never "any scope"; the 61 Fork D rider sentence in `2026-08-22-packet61-pdp-audit-rulings.md`
+  is NOT edited (archived rulings stay as ruled — this doc supersedes it by citation). (iv) the
+  lead names the `lorerunes` file in 63a's builder writable set explicitly (R-a.2's
+  "one production `Subject` constructor" pin is untouched by this).
+
+### 10.2 FORK 2 — the per-verb adjudication home → CONFIRMED `_GOVERNED_VERBS_PENDING_ROUTING`
+- **Ruling:** `loremaster.server._GOVERNED_VERBS_PENDING_ROUTING: dict[tuple[str, str], str]`
+  (`(tool, verb) → trigger`), sibling of 62's `_GOVERNED_TOOLS_PENDING_OWNER_STAMP`. §3.1 is
+  corrected above; `scripts/pending_contracts.yaml` stays a typecheck-bound registry.
+- **RIDERS:** (i) the STRUCTURAL half (`derived == routed ∪ pending`, `routed ∩ pending = ∅`,
+  non-blank triggers) is admissible ONLY because each ROUTED entry has a BEHAVIOURAL leg — so a
+  meta-pin asserts that the set of verbs with a behavioural routing test ⊇ `_GOVERNED_VERBS_ROUTED`
+  (a verb declared routed with no observation is the hidden-constant reach defect, INSTRUMENT-0);
+  (ii) the verb DERIVATION is fail-closed at the TOOL level: a governed tool with no recognised
+  dispatch table contributes exactly ONE verb `(tool, tool)` — never zero (see 10.4).
+
+### 10.3 FORK 3 — #425 → RULED the ADDITIVE close (§5 corrected above)
+- **Ruling:** `verify_capability -> str | None` keeps its shape (13 shipped call sites pin the
+  bare id — re-derived by grep this session; 12 in `test_agent_capability.py`, 1 in
+  `test_agent_capability_seams.py`). The four admission conditions + the single SELECT move into
+  ONE internal pair-yielding path (name for the builder: `_verify_capability_owner(presented,
+  token) -> tuple[agent_id, owner_principal_id] | None`) that additionally projects the bare owner
+  id; `verify_capability` returns its `[0]`; `stamp_owner` consumes the pair; `owner_principal_of`
+  is DELETED (1 prod consumer, 0 tests — measured). Same one-read / no-TOCTOU property, zero
+  breakage, and the conditions live ONCE.
+- **RIDERS:** (i) mutation — alter ONE admission condition in the shared path → BOTH the 62
+  `verify_capability` pins AND the 63a `stamp_owner` pins move (a `verify_capability` that
+  stopped delegating would be a private copy wearing the shared name); (ii) `stamp_owner` issues
+  exactly ONE `_query` (already pinned, form-agnostic — keep it so); (iii) ⚠ the contract's
+  `FakeRegistry.verify_capability` currently returns `tuple[str, str] | None` — the LITERAL shape
+  this ruling rejects. A fake whose signature differs from the real seam is a fake that cannot
+  fail: rename it to the ruled pair-path name and keep `verify_capability`'s shape on the fake
+  identical to the real one. The adversary checks fake-shape == real-shape.
+
+### 10.4 FORK 4 — D1 (tool-level pin relaxed to `pending ⊆ governed`) → CONFIRMED, with a rider
+- **Ruling:** the relaxation is legitimate — `lore_remember`/`lore_recall` leave the per-TOOL
+  pending dict at 63a while staying governed, so exact equality cannot hold; orphan detection
+  RELOCATES to the per-verb pin (`test_governed_routing_63a.py::
+  test_every_governed_verb_is_routed_or_adjudicated`, `derived == routed ∪ pending`).
+- **RIDER (the condition under which the relocation preserves what it claims):** a NEW governed
+  TOOL is caught by the verb pin ONLY if it contributes ≥1 derived verb. So the verb derivation
+  defaults a tool with no recognised dispatch table to the single verb `(tool, tool)`
+  (fail-closed), and a discriminator pins it: a synthetic governed TOOL with no dispatch table
+  reds the verb pin (the existing synthetic-VERB discriminator does not cover this case). Without
+  that rider, D1 would have silently LOST tool-level orphan detection — the exact class the
+  reach law names.
+
+### 10.5 FORK 5 — the identity seam → CONFIRMED `capability=` at the TOOL, `subject=` at the BACKEND
+- **Ruling:** two layers, one constructor, one error type. The MCP tool surface takes an
+  OPTIONAL `capability=` (`lore_recall(capability=…)`, `lore_remember(capability=…)`), resolved to
+  a `Subject` at the `AppContext` via `resolve_subject` (R-a.2 — the ONE constructor; the tool
+  layer is the composition root that may read the token/registry). The BACKEND
+  (`LocalMemoryBackend.recall/remember/invalidate`) takes an OPTIONAL typed `subject=` and NEVER a
+  capability string (it must not read the environment). An absent identity at EITHER layer is
+  `GovernedDenied` with a teaching message naming `lore_comms action=register` as the mint —
+  never a `TypeError`, never a silent empty result (removed-behaviour 1).
+- **RIDERS:** (i) the `capability=` parameter description is ONE shared constant across every
+  governed tool (the packet-45 guarded `agent=` description idiom at `server.py` — never N
+  copies of the teaching prose); (ii) the identity-less pins hold at BOTH layers (the contract's
+  backend-level pins stand; add the tool-level twin); (iii) `_exercise_recall/_exercise_remember`
+  stay the ONLY place the wiring is spelled, so this ruling is a one-function edit.
 
 ---
 
