@@ -779,6 +779,39 @@ writable-set question for the lead, not a scope question for the operator.
   copies of the teaching prose); (ii) the identity-less pins hold at BOTH layers (the contract's
   backend-level pins stand; add the tool-level twin); (iii) `_exercise_recall/_exercise_remember`
   stay the ONLY place the wiring is spelled, so this ruling is a one-function edit.
+- **CLARIFICATION (2026-08-29, contract-63a-3 §FORK / `lore_comms #8012`) — Reading A CONFIRMED
+  as the faithful §10.5 implementation; Reading B (the backend accepts `capability=` and resolves it
+  internally) is REJECTED — it makes the backend read the environment (registry + token), the
+  layering §10.5 forbids.** At `631701e` the `_exercise_*` seam still calls
+  `backend.<verb>(…, capability=…)` (inherited from the pre-§10.5 contract), so on a compliant
+  build the whole `retrofit_world` suite would `TypeError` — a latent C-DEF the adversary's
+  satisfiability bound did not cover. The reshape is exactly rider (iii)'s one-function-family
+  edit, and its SHAPE is ruled here so it is not improvised: (1) `_exercise_recall/_remember/
+  _invalidate` play the TOOL-LAYER role — each resolves `capability → Subject` by calling the REAL
+  `governed.resolve_subject(access_token(subject=<email>), capability, registry=…,
+  principal_store=…, keep_store=…)` from `retrofit_world`, then calls
+  `backend.<verb>(…, subject=subject)`; a test-side `Subject(...)` construction is FORBIDDEN (it
+  would make the routing observation a fixture, not the production seam — R-a.2's spirit in the
+  test tree). (2) The backend signature is `subject: Subject | None = None` and `None →
+  GovernedDenied` (teaching), so the existing backend-level identity-less pins
+  (`backend.recall("anything")`) survive UNCHANGED; the tool-level twin
+  (`AppContext.recall(query)` with no `capability=` → `GovernedDenied`, never `TypeError`) is the
+  separate pin rider (ii) already names. (3) `scope=` is the ONE wire argument that legitimately
+  crosses into the backend beside `subject=` — it is a PDP-validated REQUEST (§2.4, `_grantable`
+  against the Subject), not identity. (4) F4's hostile-ARGUMENT fuzz (`owner_*=`, `as_agent=`,
+  `created_by=`) lives at the TOOL surface (the 62 input-schema pin + an unknown arg refused by
+  the MCP layer); at the backend, with a typed `Subject`, a hostile kwarg is merely a `TypeError`
+  and proves nothing — the backend-level F4 leg pins the EFFECT: the stored `(owner_principal,
+  owner_agent)` equals the resolved Subject's, whatever else the call carried. (5) Sequencing: the
+  reshape lands BEFORE the adversary re-grades (a re-graded seam is the baseline the builder
+  builds to); the reshaper's writable set is `_exercise_*` + the capability fixtures ONLY.
+- **Surfaced, not silently narrowed (adversary R1/R2, latent for 63b/64):** the
+  `_dispatch_verbs` `{lore_comms → …}` map in `test_governed_routing_63a.py` is a hidden hand-list
+  (the exact class 10.2 rider (ii) forbids), and the `@observes_routing` meta-pin observes a MARKER
+  rather than the effect-for-that-verb. Acceptable at 63a ONLY as RED_ADJUDICATED bounds with the
+  trigger *"63b derives `lore_comms` verbs from `_COMMS_ACTIONS` itself and keys the meta-pin on
+  each verb's effect"* — the memory verbs' behavioural legs (F3/F4 effects) are what make the
+  63a instance honest meanwhile.
 
 ---
 
