@@ -196,6 +196,28 @@ _MEMORY_DETAIL_LEVEL: DetailLevel = "summary"
 # of the code-hit list.
 _MEMORY_SECTION_HEADER = "memories:"
 
+# packet 63a-ii (FORK-D1, design §10.7-Y): when the memory-boost recall is DENIED — memory is
+# governed since the 63a retrofit and ``search_code`` carries no caller ``Subject`` until 63b —
+# the render NAMES the withheld boost in ONE derived line (a Leg-1 FACT), never a silent ``[]``
+# (the #131 shape: a feature empty for months, invisible because nothing rendered its absence).
+# A plain static NOTICE_KIND entry (no stored free text → no sanitiser pass).
+_MEMORY_WITHHELD_NOTICE = (
+    "memory boost withheld: identity-less call "
+    "(governed since 63a; 63b threads the caller's identity)"
+)
+
+
+@dataclass(frozen=True)
+class _MemoryRecall:
+    """The outcome of ``search_code``'s ONE enrichment recall (FORK-D1, packet 63a-ii): the
+    recalled memories and whether the boost was WITHHELD by a governed deny. ``withheld`` is a
+    Leg-1 fact the render names — DISTINCT from an empty ``recalled`` with no deny (a healthy
+    no-match), so a silently-absent boost (the #131 shape) can never masquerade as 'nothing
+    matched'."""
+
+    recalled: list[RecalledMemory]
+    withheld: bool
+
 # T3: the counted elision notice for recalled memories beyond the injection
 # cap — never a silent drop. "matching memory hit(s)" (not "entries", cf.
 # :data:`_SEARCH_ELISION_TEMPLATE` in server.py) since this counts ONLY the
@@ -1036,8 +1058,10 @@ class SearchPipeline:
         candidates = self._server.rerank(candidates, ctx)
 
         # Step 5: recall project memory ONCE, then boost referenced candidates and
-        # (below, after formatting) inject the visible memory entries.
-        recalled = await self._recall_memory(query)
+        # (below, after formatting) inject the visible memory entries. A WITHHELD boost (a governed
+        # deny — FORK-D1) carries no recalled rows but IS named in the render below.
+        recall = await self._recall_memory(query)
+        recalled = recall.recalled
         candidates = self._apply_memory_boost(candidates, recalled, ctx)
 
         # Step 6 (item 9): config-gated reranker seam (post-RRF, pre-format).
@@ -1080,10 +1104,15 @@ class SearchPipeline:
         absence_notice = _cosine_absence_verdict(partitioned_pairs, query)
 
         memory_entries = self._inject_memories(recalled)
+        # FORK-D1: a WITHHELD boost is NAMED in one derived render line (a Leg-1 fact, never a
+        # silent []); placed with the other trailing notices, before the memories: block (empty
+        # here, since a withheld recall carries no rows).
+        withheld_notice = self._memory_withheld_notice() if recall.withheld else None
         return [
             *partitioned_hits,
             *([detail_miss_notice] if detail_miss_notice is not None else []),
             *([absence_notice] if absence_notice is not None else []),
+            *([withheld_notice] if withheld_notice is not None else []),
             *memory_entries,
         ]
 
@@ -1183,14 +1212,16 @@ class SearchPipeline:
 
     # -- step 5: memory recall / boost / visible injection ------------------
 
-    async def _recall_memory(self, query: str) -> list[RecalledMemory]:
-        """Recall project memory for ``query`` once (``[]`` with no memory store).
+    async def _recall_memory(self, query: str) -> _MemoryRecall:
+        """Recall project memory for ``query`` once (empty with no memory store).
 
         A single recall drives BOTH the silent score-boost and the visible
-        injection, so the two never double-query the memory collection.
+        injection, so the two never double-query the memory collection. Returns a
+        :class:`_MemoryRecall` so a WITHHELD boost (a governed deny) is a fact the
+        caller can render — never conflated with an empty no-match (FORK-D1).
         """
         if self._memory_store is None:
-            return []
+            return _MemoryRecall(recalled=[], withheld=False)
         # P7 cutover: the memory dependency is the SurrealDB-backed
         # ``MemoryBackend`` protocol, whose read is ``recall(query, k=...)``
         # (the retired ``MemoryStore.recall_memory`` shape is gone).
@@ -1201,13 +1232,19 @@ class SearchPipeline:
         # fail the whole code search — and, crucially, this is the ISOLATION-correct behavior: an
         # identity-less search must never boost with (or leak) a principal's governed memory. At
         # 63b/64 ``search_code`` threads the caller's ``Subject`` so the boost is scoped to what
-        # they may see. ⚠ DIRECTLY-CAUSED by the 63a memory retrofit; disclosed in REPORT-build-63a.
+        # they may see. ⚠ DIRECTLY-CAUSED by the 63a memory retrofit.
+        #
+        # FORK-D1 (packet 63a-ii, §10.7-Y): a swallowed deny that returned a silent ``[]`` is the
+        # #131 shape (a feature empty for months, invisible because nothing rendered its absence).
+        # So the deny is caught here but REPORTED as ``withheld=True`` — ``search_code`` NAMES it in
+        # the render (a Leg-1 fact), distinct from an empty ``recalled`` with no deny (a no-match).
         from loremaster.governed import GovernedDenied
 
         try:
-            return list(await self._memory_store.recall(query, k=_MEMORY_RECALL_K))
+            recalled = list(await self._memory_store.recall(query, k=_MEMORY_RECALL_K))
         except GovernedDenied:
-            return []
+            return _MemoryRecall(recalled=[], withheld=True)
+        return _MemoryRecall(recalled=recalled, withheld=False)
 
     def _apply_memory_boost(
         self,
@@ -1273,6 +1310,20 @@ class SearchPipeline:
         """
         return SearchResult(
             formatted=_MEMORY_SECTION_HEADER,
+            chunk_key="",
+            detail_level=_MEMORY_DETAIL_LEVEL,
+            stale=False,
+            score=0.0,
+            kind=NOTICE_KIND,
+        )
+
+    @staticmethod
+    def _memory_withheld_notice() -> SearchResult:
+        """The FORK-D1 render line naming a WITHHELD (governed-denied) memory boost — a Leg-1 fact,
+        so a silently-absent boost (the #131 shape) can never pass unremarked. A static NOTICE_KIND
+        entry (server-composed, a fixed constant → no stored free text, so no sanitiser pass)."""
+        return SearchResult(
+            formatted=_MEMORY_WITHHELD_NOTICE,
             chunk_key="",
             detail_level=_MEMORY_DETAIL_LEVEL,
             stale=False,

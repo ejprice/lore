@@ -1152,6 +1152,74 @@ class TestVisibleMemoryInjection:
         )
 
 
+class _DenyingMemoryBackend:
+    """A memory backend whose ``recall`` DENIES with :class:`~loremaster.governed.GovernedDenied`
+    — the FORK-D1 fixture (packet 63a-ii). Since the 63a retrofit memory is governed, and
+    ``search_code``'s enrichment recall carries NO caller ``Subject`` until 63b, the boost recall
+    is refused. ``recall_calls`` records that the pipeline still ATTEMPTED the boost (so the notice
+    is the deny doing the work, never a store that was never called)."""
+
+    def __init__(self) -> None:
+        self.recall_calls = 0
+
+    async def recall(self, query: str, *, k: int = 5) -> list[RecalledMemory]:
+        from loremaster.governed import GovernedDenied
+
+        self.recall_calls += 1
+        raise GovernedDenied("identity-less recall of the fleet's governed memory (test)")
+
+
+class TestMemoryBoostWithheldNotice:
+    """FORK-D1 (design §10.7-Y): a DENIED memory boost is NAMED in the render — one derived line, a
+    Leg-1 fact — never a silent ``[]`` (the #131 shape). The code search still succeeds (a governed
+    memory boost is an enrichment, never a hard dependency of code search)."""
+
+    async def test_a_denied_boost_is_named_in_the_render(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        from loremaster.search import _MEMORY_WITHHELD_NOTICE
+
+        indexed, server = await _index_single(tmp_path, embedder)
+        denying = _DenyingMemoryBackend()
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, memory_store=denying
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        # The boost was ATTEMPTED (so the notice reflects a real deny, not a never-called store)...
+        assert denying.recall_calls == 1, "search_code must still attempt the memory boost"
+        # ...the code search still SUCCEEDED (the boost degrades, never fails the search)...
+        assert any(r.kind == _HIT_KIND for r in results), "a denied boost must not fail code search"
+        # ...and the withheld boost is NAMED in exactly ONE render line (a fact, never a silent []).
+        withheld = [
+            r for r in results if r.kind == _NOTICE_KIND and _MEMORY_WITHHELD_NOTICE in r.formatted
+        ]
+        notices = [r.formatted for r in results if r.kind == _NOTICE_KIND]
+        assert len(withheld) == 1, (
+            f"a denied memory boost must be NAMED in ONE render line "
+            f"({_MEMORY_WITHHELD_NOTICE!r}); a silent [] is the #131 shape. notices={notices}"
+        )
+        # Nothing was recalled, so there is no memories: block — the notice is the only memory signal.
+        assert not any(r.kind == _MEMORY_KIND for r in results)
+
+    async def test_a_healthy_empty_recall_names_no_withheld_boost(
+        self, tmp_path: Path, embedder: FakeEmbedder
+    ) -> None:
+        # POSITIVE CONTROL: a memory store that returns [] WITHOUT denying shows NO withheld notice
+        # — so the notice above is the DENY doing the work, never a line that always fires on an
+        # empty boost (a fixture that could not distinguish deny from empty would be decoration).
+        from loremaster.search import _MEMORY_WITHHELD_NOTICE
+
+        indexed, server = await _index_single(tmp_path, embedder)
+        pipeline = _make_pipeline(
+            indexed=indexed, embedder=embedder, server=server, memory_store=_FakeMemoryBackend([])
+        )
+        results = await pipeline.search_code("champion routing warehouse", k=5)
+        assert any(r.kind == _HIT_KIND for r in results)
+        assert not any(
+            _MEMORY_WITHHELD_NOTICE in r.formatted for r in results if r.kind == _NOTICE_KIND
+        ), "a healthy empty recall must NOT emit the withheld-boost notice (positive control)"
+
+
 # --------------------------------------------------------------------------- #
 # item 7 — per-hit graph enrichment (ref-joins v1.0 + signature + cap + failure)
 # --------------------------------------------------------------------------- #
