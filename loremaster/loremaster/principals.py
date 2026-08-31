@@ -250,6 +250,28 @@ class PrincipalHasKeepsError(PrincipalStoreError):
     """
 
 
+class PrincipalOwnsGovernedRowsError(PrincipalStoreError):
+    """Raised when a hard-delete is REFUSED because the principal owns ≥1 GOVERNED row
+    (packet 63a-ii, SF-63-5 / design §10.7-Z — the INTERIM refuse).
+
+    ``memory.owner_principal`` is the FIRST ``record<principal>`` link on a GOVERNED row: a
+    governed row's owner is a LIVE dependency (never the retired-history dangle the agent /
+    audit back-links tolerate). Hard-deleting the owner would silently dangle it. Packet 64's
+    admin ``set_owner`` orphans every owned governed row to NONE (audited) IN the delete
+    transaction; until that mechanism lands the delete REFUSES loud instead — naming the count
+    and the packet-64 mechanism — so nothing dangles and nothing leaks.
+
+    Subclasses :class:`PrincipalStoreError` so the CLI's existing ``except PrincipalStoreError``
+    (:func:`_dispatch`) launders it to a ``lore-adm:`` stderr line + ``exit 1`` with NO new catch
+    clause — symmetric with :class:`PrincipalHasKeepsError`.
+    """
+
+
+# The GOVERNED owner column SF-63-5's refuse read filters on (design §4.1; the ONE name the
+# schema emitter defines — ``surreal_schema._governed_field_specs``).
+_COL_OWNER_PRINCIPAL = "owner_principal"
+
+
 # :meth:`PrincipalStore.list` shadows the builtin ``list`` in the class namespace, so
 # a bare ``list[...]`` return annotation on a method defined AFTER it would resolve to
 # the METHOD, not the type (mypy ``valid-type``). These module-scope aliases resolve
@@ -418,6 +440,17 @@ class PrincipalStore:
             params=params or {},
             logger=logger,
         )
+
+    async def _table_exists(self, table: str) -> bool:
+        """Whether ``table`` is DEFINED on this database (via ``INFO FOR DB``).
+
+        Fail-CLOSED for a safety gate (SF-63-5): a store / connection error during the probe
+        PROPAGATES (never silently read as 'absent'), so a caller that refuses a delete on this can
+        never fail OPEN on a transient fault — only a genuinely-undefined table reads ``False``.
+        """
+        info = await self._query("INFO FOR DB")
+        tables = info.get("tables", {}) if isinstance(info, dict) else {}
+        return table in tables
 
     # -- create / read ------------------------------------------------------
 
@@ -689,9 +722,12 @@ class PrincipalStore:
         The delete deliberately does NOT touch the two dangling back-links: those rows
         are retired-not-deleted history, a stale ``record<principal>`` back-link does NOT
         auto-clean (store law §2) and is not a correctness break, and cascading them
-        would erase audit / fleet history. When ANY NEW ``record<principal>`` link is
-        added — e.g. 63/64's future GOVERNED-ROW ``owner_principal`` (a governed row's
-        owner, a LIVE dependency → cascade-or-refuse, NOT this agent-node dangle) — this
+        would erase audit / fleet history. The FIFTH ``record<principal>`` link —
+        ``memory.owner_principal`` (packet 63a-ii), a GOVERNED row's owner — IS a LIVE
+        dependency (not this agent-node dangle), so it takes the REFUSE-INTERIM disposition
+        below (SF-63-5 / design §10.7-Z): until packet 64's admin ``set_owner`` orphans
+        owned governed rows to NONE (audited) inside the delete, an owner of ≥1 governed
+        row is REFUSED loud. When a further NEW ``record<principal>`` link is added this
         MUST be revisited; the exact-set pin in ``test_principal_keys_schema.py`` reds
         until it is.
 
@@ -706,6 +742,9 @@ class PrincipalStore:
             PrincipalNotFoundError: No principal carries ``email``.
             PrincipalHasKeepsError: The principal keeps ≥1 keep (§FR-4) — the delete is
                 refused, no rows removed, the kept keep ids named.
+            PrincipalOwnsGovernedRowsError: The principal owns ≥1 governed row (SF-63-5) —
+                the delete is refused (INTERIM, until packet 64's ``set_owner`` orphaning
+                mechanism), no rows removed, the count + mechanism named.
         """
         principal = await self.get_by_email(email)
         if principal is None:
@@ -732,6 +771,33 @@ class PrincipalStore:
                 f"keep(s) ({', '.join(kept_keep_ids)}) — reassign the keeper "
                 f"(lore-adm set-keeper) or delete the keep (lore-adm delete-keep) first"
             )
+        # ⚠ SF-63-5 REFUSE-WHILE-OWNING-A-GOVERNED-ROW (BEFORE any DELETE — packet 63a-ii,
+        # design §10.7-Z). ``memory.owner_principal`` is a ``record<principal>`` link on a GOVERNED
+        # row — a LIVE dependency, NOT the retired-history dangle the agent/audit back-links
+        # tolerate. Hard-deleting the owner would silently dangle it. Packet 64's admin
+        # ``set_owner`` will orphan every owned governed row to NONE (audited) INSIDE the delete
+        # transaction; until that mechanism lands, REFUSE loud — naming the count + the mechanism —
+        # rather than dangle. The count is an IndexScan on the §4.1 ``memory_owner_principal`` index.
+        # ⚠ TOLERANT of a store WITHOUT the memory table (a pre-retrofit / principal-only store owns
+        # no governed rows): gated on table EXISTENCE, never on swallowing an error — a connection
+        # fault during the existence probe PROPAGATES (fail-CLOSED), never read as "0 owned rows".
+        if await self._table_exists(MEMORY_TABLE):
+            owned_rows = self._as_rows(
+                await self._query(
+                    f"SELECT count() FROM {MEMORY_TABLE} "
+                    f"WHERE {_COL_OWNER_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
+                    f"GROUP ALL",
+                    {"pid": principal_id_part},
+                )
+            )
+            owned_count = int(owned_rows[0].get("count", 0)) if owned_rows else 0
+            if owned_count > 0:
+                raise PrincipalOwnsGovernedRowsError(
+                    f"cannot delete principal {email!r}: they own {owned_count} governed "
+                    f"{MEMORY_TABLE} row(s) — a governed row's owner is a LIVE dependency (never a "
+                    f"silent dangle). Packet 64's admin `set_owner` orphans them to NONE (audited) "
+                    f"inside the delete; until then the delete is refused (SF-63-5)"
+                )
         # Count the keys about to be cascaded — the CLI's audit line reports it. A
         # separate read (execute_transaction returns None), taken just before the
         # atomic cascade; for an admin op the tiny window is acceptable.
