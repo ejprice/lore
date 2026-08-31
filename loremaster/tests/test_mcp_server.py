@@ -79,6 +79,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
+from _governed_contract import _bare, access_token
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -96,6 +97,7 @@ from loremaster.agents import Agent, AgentRegistry
 from loremaster.briefs import BriefLedger
 from loremaster.config import LoreConfig
 from loremaster.findings import Finding, FindingActivityWindow
+from loremaster.governed import PROJECT_KEEP_KEY
 from loremaster.map import _BUDGET_FLOOR as _PRODUCTION_MAP_BUDGET_FLOOR
 from loremaster.map import _ELISION_FRAGMENT as _PRODUCTION_MAP_ELISION_FRAGMENT
 from loremaster.memory.backend import MemoryRef, derive_memory_id, derive_refs_stamp
@@ -137,20 +139,11 @@ from render_injection_scaffold import (
 from test_comms_wiring import _backdate_heartbeat, _open_context
 
 # CORPSE-A / removed-behaviour-1 (packet 63a): the governed memory retrofit makes the
-# TOOL-LAYER ``AppContext.recall``/``remember`` DENY every memory call at 63a — identity-less
-# AND capability-bearing — because the capability->Subject composition root ("present path")
-# is NOT wired until 63b/64 (design R6/§10.5). These pins exercise the PRE-retrofit tool-layer
-# ANSWER (save/recall/filters/metadata folding), which is deliberately removed at 63a; the
-# underlying BEHAVIOUR they cover is retained at the backend layer (test_memory_backend.py) and
-# the DENY itself is pinned by test_memory_retrofit_63a::TestIdentityLessToolLayerCallsDeny.
-# ⚠ DISCLOSED FORK (REPORT-build-63a §FORK-Y): re-enable + re-point these to the capability
-# path when 63b/64 wires the composition root (the deny will start FAILING them then — the
-# self-signal to re-point). Lead/operator: confirm skip vs re-point.
-_TOOL_LAYER_63A_SKIP = (
-    "packet 63a governs the memory tools: the AppContext tool layer DENIES until the 63b/64 "
-    "capability->Subject composition root is wired (design R6/§10.5); backend-layer behaviour "
-    "is retained in test_memory_backend.py. Re-enable + re-point at 63b/64."
-)
+# packet 63a-ii (design §10.7-Y, operator ruling A): the AppContext composition root
+# (``_resolve_subject``) is now WIRED, so ``lore_recall``/``lore_remember`` WORK for a
+# capability-bearing call. The 18 tool-layer tests that 63a SKIPPED (the composition root was
+# unwired) are RE-POINTED to the capability path via the ``governed_ctx`` fixture (below) — not
+# skipped. The ``_TOOL_LAYER_63A_SKIP`` constant + skip markers are DELETED with the FORK.
 
 _DIM = 2048
 
@@ -2683,16 +2676,17 @@ class TestToolBehaviourEndToEnd:
         assert result.status == "confirmed"
         assert result.rebuilding_caveat is None
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_remember_then_recall_roundtrips(
-        self, indexed_context: AppContext
+        self, governed_ctx: _GovernedAppContext
     ) -> None:
         # P7 cutover: remember takes the memory ``kind``; recall surfaces the note
         # text (its exact return SHAPE is pinned in TestRecallMemoryCutover).
+        # packet 63a-ii (FORK-Y): re-pointed off ``indexed_context`` onto the WIRED governed
+        # surface (``governed_ctx``); this pure memory round-trip needs no code index.
         note = "champion routing lives in pkg/router.py"
-        await getattr(indexed_context, "remember")(note, kind="fact")
+        await getattr(governed_ctx, "remember")(note, kind="fact")
         rendered = _render_text(
-            await getattr(indexed_context, "recall")("where is champion routing", k=5)
+            await getattr(governed_ctx, "recall")("where is champion routing", k=5)
         )
         assert note in rendered
 
@@ -6622,11 +6616,114 @@ async def cutover_ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
         await ctx.aclose()
 
 
+# --------------------------------------------------------------------------- #
+# packet 63a-ii (design §10.7-Y): the SERVED memory tool layer, WIRED. The 63a build left the
+# AppContext composition root unwired, so ``lore_recall``/``lore_remember`` DENIED every call
+# (identity-bearing included) and 18 tool-layer tests were SKIPPED. 63a-ii wires
+# ``AppContext._resolve_subject`` (the ONE shared seam) so a capability-bearing tool call WORKS —
+# and RE-POINTS those 18 tests to the capability path (not skipped), per the operator's FORK-Y
+# ruling (A). The re-point uses a transparent proxy so each test BODY is byte-unchanged (the
+# corpse-A ``_GovernedTestBackend`` idiom): only the fixture parameter moves from
+# ``cutover_ctx``/``indexed_context`` to ``governed_ctx``.
+# --------------------------------------------------------------------------- #
+
+# The governed identity the ``governed_ctx`` fixture admits: an owned agent whose minted capability
+# the proxy presents, and the project keep's keeper (so a default-scope remember resolves).
+_GOVERNED_TOOL_EMAIL = "mcp-runner@example.com"
+_GOVERNED_TOOL_AGENT = "mcp_worker"
+
+
+class _GovernedAppContext:
+    """A transparent :class:`AppContext` proxy that injects the fixture's captured ``capability``
+    into ``remember``/``recall`` so the composition root (:meth:`AppContext._resolve_subject`)
+    resolves a real ``Subject``, delegating EVERY other attribute to the wrapped context (the
+    corpse-A ``_GovernedTestBackend`` proxy idiom). This keeps each re-pointed test BODY
+    byte-identical — they still call ``getattr(ctx, "remember")(...)`` / ``recall`` and reach
+    ``ctx.memory_backend`` — while routing them through the real governed tool surface instead of
+    the pre-retrofit identity-less deny.
+    """
+
+    _governed_context: AppContext
+    _governed_capability: str
+
+    def __init__(self, context: AppContext, capability: str) -> None:
+        self._governed_context = context
+        self._governed_capability = capability
+
+    async def remember(self, text: str, **kwargs: Any) -> str:
+        kwargs.setdefault("capability", self._governed_capability)
+        return await self._governed_context.remember(text, **kwargs)
+
+    async def recall(self, query: str, *args: Any, **kwargs: Any) -> str:
+        kwargs.setdefault("capability", self._governed_capability)
+        return await self._governed_context.recall(query, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        # Plain instance attrs (set in __init__) resolve via normal lookup, so __getattr__ is
+        # only reached for a genuine miss — delegate it to the wrapped context.
+        return getattr(self.__dict__["_governed_context"], name)
+
+
+@pytest_asyncio.fixture()
+async def governed_ctx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[_GovernedAppContext]:
+    """A real :class:`AppContext` over an empty corpus with a WIRED governed identity (packet
+    63a-ii, FORK-Y): an admitted principal + an owned agent (whose minted ``capability`` the proxy
+    presents), a canonical project keep (``key='project:lore'`` kept by that principal, so a
+    default-scope ``remember`` resolves the fleet's shared scope — §2.4/§10-N), and
+    ``loremaster.server.get_access_token`` patched to return that principal's transport token. The
+    yielded :class:`_GovernedAppContext` makes the served ``remember``/``recall`` tool layer work
+    end-to-end — the re-point target for the 18 formerly-skipped tool-layer tests.
+    """
+    slug = _slug()
+    live = tmp_path / "live"
+    live.mkdir(parents=True, exist_ok=True)
+    config = _config(slug, live)
+    ctx = await _make_context(config=config, tmp_path=tmp_path)
+    try:
+        # build_app_context always wires the composition-root identity stores (packet 63a-ii);
+        # assert so mypy narrows the ``... | None`` attrs and a regression that drops them is loud.
+        assert ctx._principal_store is not None, "governed AppContext must wire a PrincipalStore"  # noqa: SLF001
+        assert ctx._keep_store is not None, "governed AppContext must wire a KeepStore"  # noqa: SLF001
+        # Admit the principal + register its owned agent on the AppContext's OWN composition-root
+        # stores (same unified DB), capturing the one-time capability the proxy presents.
+        principal = await ctx._principal_store.create(  # noqa: SLF001 - test wires the composition root
+            email=_GOVERNED_TOOL_EMAIL, role="member"
+        )
+        registration = await ctx.agent_registry.register(
+            _GOVERNED_TOOL_AGENT, session="s1", role="worker", owner_principal_id=_bare(principal)
+        )
+        capability = str(registration.capability)
+        # The canonical project keep (kept by the principal) so a default-scope remember resolves
+        # (``_default_project_scope`` reads ``keep.key == 'project:lore'``; an absent keep DENIES).
+        await ctx._keep_store.get_or_create_keyed(  # noqa: SLF001
+            key=PROJECT_KEEP_KEY, type="project", keeper_email=_GOVERNED_TOOL_EMAIL, name="lore"
+        )
+        # The ambient transport token the composition root reads: its ``subject`` IS the principal
+        # email (the token_verifier's contract). Patched at the server module's binding site.
+        monkeypatch.setattr(
+            "loremaster.server.get_access_token",
+            lambda: access_token(subject=_GOVERNED_TOOL_EMAIL),
+        )
+        yield _GovernedAppContext(ctx, capability)
+    finally:
+        await ctx.aclose()
+
+
 class TestSaveMemoryCutover:
     """save_memory gains the v2 wire params (kind / refs / importance / …), validates
     them honestly, and PRESERVES the v0.3 deterministic id derivation."""
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
+    @pytest_asyncio.fixture()
+    async def cutover_ctx(
+        self, governed_ctx: _GovernedAppContext
+    ) -> _GovernedAppContext:
+        """packet 63a-ii (FORK-Y): route this class's tool-layer memory tests through the WIRED
+        governed surface (``governed_ctx`` presents a real capability), replacing the pre-retrofit
+        deny the 63a skip stood in for. Test bodies + signatures stay byte-unchanged."""
+        return governed_ctx
+
     async def test_save_memory_returns_a_uuid5_id(self, cutover_ctx: AppContext) -> None:
         # The id is the deterministic uuid5 the memory model has always minted.
         memory_id = await getattr(cutover_ctx, "remember")(
@@ -6635,7 +6732,6 @@ class TestSaveMemoryCutover:
         parsed = uuid.UUID(str(memory_id))
         assert parsed.version == 5, "save_memory must return a deterministic uuid5 id"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_with_refs_mints_the_v03_deterministic_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6651,7 +6747,6 @@ class TestSaveMemoryCutover:
             "a save with refs must mint the v0.3 deterministic id (text+refs → same id)"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_no_refs_matches_the_v03_empty_stamp_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6664,7 +6759,6 @@ class TestSaveMemoryCutover:
             "a bare save must still mint the v0.3 deterministic id (backward compat)"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_over_the_digest_threshold_gets_a_guidance_warning(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6676,7 +6770,6 @@ class TestSaveMemoryCutover:
         expected_id = derive_memory_id(long_note, derive_refs_stamp([]))
         assert expected_id in rendered, "the note must still be saved under its real id"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_under_the_digest_threshold_is_unchanged(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6696,7 +6789,6 @@ class TestSaveMemoryCutover:
             "an invalid kind must raise a tool-level error naming the bad value"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_save_memory_rejects_out_of_range_importance(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -6713,7 +6805,15 @@ class TestRecallMemoryCutover:
     """recall_memory surfaces text + refs (chunk keys) + kind + importance, flags a
     drifted ref, and NEVER surfaces a superseded note."""
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
+    @pytest_asyncio.fixture()
+    async def cutover_ctx(
+        self, governed_ctx: _GovernedAppContext
+    ) -> _GovernedAppContext:
+        """packet 63a-ii (FORK-Y): route this class's tool-layer memory tests through the WIRED
+        governed surface (``governed_ctx`` presents a real capability), replacing the pre-retrofit
+        deny the 63a skip stood in for. Test bodies + signatures stay byte-unchanged."""
+        return governed_ctx
+
     async def test_recall_surfaces_text_refs_and_kind(self, cutover_ctx: AppContext) -> None:
         note = "champion routing lives in pkg/routing.py, not pricing.py"
         await getattr(cutover_ctx, "remember")(note, kind="decision", refs=[_CUTOVER_CHUNK_KEY])
@@ -6725,7 +6825,6 @@ class TestRecallMemoryCutover:
         assert _CUTOVER_CHUNK_KEY in rendered, "recall must surface the note's chunk ref key"
         assert "decision" in rendered, "recall must surface the memory kind"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_recall_flags_a_drifted_ref(self, cutover_ctx: AppContext) -> None:
         # A ref to a chunk that does NOT exist in the (empty) index is a DRIFTED ref
         # — the recall surfaces a drift signal so the agent re-verifies, never
@@ -6740,7 +6839,6 @@ class TestRecallMemoryCutover:
             "a recalled ref whose chunk no longer exists must be flagged as drifted"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_recall_never_surfaces_a_superseded_note(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8346,7 +8444,15 @@ class TestSaveMemoryReservedMetadataGuard:
     never becomes recallable and the durable ledger's row count is unchanged --
     so a guard that persisted-then-raised could never pass these tests."""
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
+    @pytest_asyncio.fixture()
+    async def cutover_ctx(
+        self, governed_ctx: _GovernedAppContext
+    ) -> _GovernedAppContext:
+        """packet 63a-ii (FORK-Y): route this class's tool-layer memory tests through the WIRED
+        governed surface (``governed_ctx`` presents a real capability), replacing the pre-retrofit
+        deny the 63a skip stood in for. Test bodies + signatures stay byte-unchanged."""
+        return governed_ctx
+
     async def test_metadata_lore_ref_key_is_rejected_naming_the_reserved_prefix(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8384,7 +8490,6 @@ class TestSaveMemoryReservedMetadataGuard:
             "UNCHANGED -- proving the guard fires before any write"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_metadata_key_embedding_the_prefix_is_rejected_by_label_not_key(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8419,7 +8524,6 @@ class TestSaveMemoryReservedMetadataGuard:
             "UNCHANGED -- proving the guard fires before any write"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_benign_metadata_key_succeeds_and_never_folds_into_the_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8436,7 +8540,6 @@ class TestSaveMemoryReservedMetadataGuard:
             "fold into the deterministic id (id must equal the bare empty-stamp id)"
         )
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_legitimate_refs_param_still_folds_into_the_deterministic_id(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8490,7 +8593,15 @@ class TestRecallMemoryFilters:
     backend contract), no filter (existing behaviour unchanged), and the two
     combined (intersection, not union)."""
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
+    @pytest_asyncio.fixture()
+    async def cutover_ctx(
+        self, governed_ctx: _GovernedAppContext
+    ) -> _GovernedAppContext:
+        """packet 63a-ii (FORK-Y): route this class's tool-layer memory tests through the WIRED
+        governed surface (``governed_ctx`` presents a real capability), replacing the pre-retrofit
+        deny the 63a skip stood in for. Test bodies + signatures stay byte-unchanged."""
+        return governed_ctx
+
     async def test_kind_filter_excludes_other_kinds(self, cutover_ctx: AppContext) -> None:
         await _seed_map_impact_notes(cutover_ctx)
 
@@ -8504,7 +8615,6 @@ class TestRecallMemoryFilters:
         assert _MAP_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
         assert _IMPACT_FACT_NOTE not in rendered, "kind='gotcha' must exclude a fact note"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_labels_filter_returns_only_the_matching_label(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8522,7 +8632,6 @@ class TestRecallMemoryFilters:
         assert _MAP_GOTCHA_NOTE not in rendered, "a differently-labelled note must be excluded"
         assert _MAP_FACT_NOTE not in rendered, "a differently-labelled note must be excluded"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_no_filters_returns_every_note_unchanged(
         self, cutover_ctx: AppContext
     ) -> None:
@@ -8537,7 +8646,6 @@ class TestRecallMemoryFilters:
         assert _MAP_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
         assert _IMPACT_FACT_NOTE in rendered, "an unfiltered recall must still surface every note"
 
-    @pytest.mark.skip(reason=_TOOL_LAYER_63A_SKIP)
     async def test_kind_and_labels_filters_intersect(self, cutover_ctx: AppContext) -> None:
         # kind="fact" ALONE would also match the impact note; labels=["area=map"]
         # ALONE would also match the gotcha note -- only the note satisfying

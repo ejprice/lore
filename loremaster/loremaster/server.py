@@ -66,7 +66,7 @@ from uuid import uuid4
 
 import anyio
 from fastmcp import Context, FastMCP
-from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.dependencies import get_access_token, get_http_headers
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.tool import ToolResult
 from lorescribe.javascript import JavascriptChunker
@@ -243,6 +243,7 @@ from loremaster.tasks import TaskSpec as _TaskSpec
 from loresigil import backoff
 
 if TYPE_CHECKING:
+    from lorerunes.pdp import Subject
     from loresigil.base import Embedder
 
     from loremaster.agents import Agent, AgentFleetWindow, AgentRegistry, FleetRoster
@@ -261,11 +262,13 @@ if TYPE_CHECKING:
     from loremaster.index.indexer import Indexer
     from loremaster.index.reconcile import ReconcileEngine
     from loremaster.index.surreal_manifest import SurrealManifest
+    from loremaster.keeps import KeepStore
     from loremaster.memory.backend import (
         ExistingChunksFn,
         MemoryBackend,
         RecalledMemory,
     )
+    from loremaster.principals import PrincipalStore
     from loremaster.render import Rendered
     from loremaster.sanitise import SafeLine
     from loremaster.search import SearchPipeline
@@ -2724,6 +2727,8 @@ class AppContext:
         agent_registry: AgentRegistry,
         brief_ledger: BriefLedger,
         message_ledger: MessageLedger,
+        principal_store: PrincipalStore | None = None,
+        keep_store: KeepStore | None = None,
         calibration_engine: CalibrationEngine | None = None,
         ingest_backends: Sequence[Any] = (),
     ) -> None:
@@ -2774,6 +2779,14 @@ class AppContext:
         # connection, constructed + ensure_ready()'d eagerly at
         # build_app_context time and closed in the same ordered unwind).
         self.message_ledger = message_ledger
+        # packet 63a-ii (§10.7-Y / §10.5): the identity stores the governed composition root
+        # (:meth:`_resolve_subject`) reads — the PrincipalStore (``get_by_email``) and KeepStore
+        # (``resolve_visible_keeps``) alongside the ``agent_registry`` (``stamp_owner`` verify).
+        # Both own their OWN SurrealDB connection (same posture as the ledgers), constructed +
+        # ensure_ready()'d eagerly in ``build_app_context`` and closed in the same ordered unwind /
+        # ``aclose``. ``None`` when a test builds a context without the governed identity path.
+        self._principal_store = principal_store
+        self._keep_store = keep_store
         # P8c wire-up: the boot token-calibration engine (voyage->claude budget
         # scaling). The budget path reads its ``served_constant`` (falling back to
         # the committed ``TOKEN_BUDGET_CALIBRATION`` when absent), ``index_status``
@@ -4120,11 +4133,13 @@ class AppContext:
             *_metadata_to_labels(metadata),
             *(labels or []),
         ]
-        # packet 63a (§10.5, R6): the OPTIONAL ``capability`` is accepted at the tool surface, but
-        # the composition root that resolves it to a verified ``Subject`` is NOT wired here yet
-        # (``AppContext`` carries no principal/keep stores at 63a) — so this reaches the governed
-        # backend with NO ``subject=``, and the backend's identity-less DENY fires (GovernedDenied,
-        # a teaching error — NEVER an ownerless write). The present-path resolution lands 63b/64.
+        # packet 63a-ii (§10.5 / §10.7-Y): resolve the tool-surface ``capability`` to a verified
+        # ``Subject`` at the composition root (:meth:`_resolve_subject` — the ONE shared seam every
+        # governed handler in 63b/63c/64 CALLS, never re-spells). An absent / unverified identity
+        # raises GovernedDenied (a teaching error, NEVER an ownerless write); a verified capability
+        # stamps the owner SERVER-SIDE inside the backend (F4 — there is no caller-facing owner
+        # arg). The note's scope defaults to the canonical project keep (§2.4/§10-N) in the backend.
+        subject = await self._resolve_subject(capability)
         memory_id = await self.memory_backend.remember(
             text,
             kind=kind,
@@ -4132,11 +4147,40 @@ class AppContext:
             source=source,
             labels=composed_labels or None,
             supersedes=supersedes,
+            subject=subject,
         )
         if len(text) > _MEMORY_DIGEST_WARNING_CHARS:
             warning = _MEMORY_DIGEST_WARNING_TEMPLATE.format(length=len(text))
             return f"{memory_id}\n{warning}"
         return memory_id
+
+    async def _resolve_subject(self, capability: str | None) -> Subject:
+        """THE composition root — resolve a tool-surface ``capability`` to a verified
+        :class:`~lorerunes.pdp.Subject` (packet 63a-ii, design §10.5 / §10.7-Y).
+
+        This is the ONE shared seam every governed tool handler CALLS (never re-spells): the tool
+        layer is the composition root that may read the ambient transport token
+        (``get_access_token()`` — the ``token_verifier`` sets ``subject = principal.email``) and the
+        context's identity stores, then delegates to the R-a.2 single ``Subject`` constructor
+        :func:`loremaster.governed.resolve_subject` (verify capability via ``stamp_owner`` → owner
+        agent; principal via ``PrincipalStore.get_by_email``; visible keeps via
+        ``resolve_visible_keeps``). FAIL-CLOSED: an absent / unverified capability, an unknown
+        principal, or an unreachable keep store → :class:`~loremaster.governed.GovernedDenied` with
+        a teaching message (NEVER a ``TypeError``, NEVER a silent empty result) — so an
+        identity-less tool call (``capability=None`` with no ambient token) denies here exactly as
+        the backend-level identity-less pins require. 63b/63c/64 CALL this; they do not re-implement
+        the token/registry read.
+        """
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        token = get_access_token()
+        return await governed.resolve_subject(
+            token,
+            capability,
+            registry=self.agent_registry,
+            principal_store=self._principal_store,
+            keep_store=self._keep_store,
+        )
 
     async def recall(
         self,
@@ -4156,13 +4200,16 @@ class AppContext:
         filters onto the backend's own semantics (``kind`` an exact match,
         ``labels`` an ALL-match).
 
-        packet 63a (§10.5, R6): the OPTIONAL ``capability`` is accepted at the tool surface, but
-        the composition root that resolves it to a verified ``Subject`` is NOT wired here yet, so
-        this reaches the governed backend with NO ``subject=`` and the backend's identity-less DENY
-        fires (GovernedDenied, a teaching error — NEVER the pre-retrofit unfiltered answer). The
-        present-path resolution lands with the 63b/64 composition root.
+        packet 63a-ii (§10.5 / §10.7-Y): the OPTIONAL ``capability`` is resolved to a verified
+        ``Subject`` at the composition root (:meth:`_resolve_subject`), so the backend read is
+        SCOPED to the caller's visible set (F3 cross-principal isolation). An absent / unverified
+        identity raises GovernedDenied (a teaching error — NEVER the pre-retrofit unfiltered
+        answer).
         """
-        recalled = await self.memory_backend.recall(query, k=k, kind=kind, labels=labels)
+        subject = await self._resolve_subject(capability)
+        recalled = await self.memory_backend.recall(
+            query, k=k, kind=kind, labels=labels, subject=subject
+        )
         return self._render_recalled_memories(recalled)
 
     @staticmethod
@@ -8642,6 +8689,12 @@ class AppContext:
         await self.agent_registry.close()
         await self.brief_ledger.close()
         await self.message_ledger.close()
+        # packet 63a-ii: the governed composition-root identity stores each own a
+        # connection too (``None`` when a context was built without the governed path).
+        if self._principal_store is not None:
+            await self._principal_store.close()
+        if self._keep_store is not None:
+            await self._keep_store.close()
 
 
 class StoryMessage(BaseModel):
@@ -9081,8 +9134,10 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
     from loremaster.index.snapshots import SnapshotStamper
     from loremaster.index.surreal_manifest import SurrealManifest
     from loremaster.index.watcher import LiveWatcher
+    from loremaster.keeps import KeepStore
     from loremaster.memory.ledger import MemoryLedger
     from loremaster.memory.local import LocalMemoryBackend
+    from loremaster.principals import PrincipalStore
     from loremaster.search import SearchPipeline
     from loremaster.source.local_directory import LocalDirectorySourceProvider
     from loremaster.store.surreal import build_store
@@ -9314,6 +9369,31 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
         )
         await message_ledger.ensure_ready()
         write_stack_readied.append(message_ledger)
+        # packet 63a-ii (§10.7-Y / §10.5): the identity stores the governed composition root
+        # (:meth:`AppContext._resolve_subject`) reads — a PrincipalStore (``get_by_email``) + a
+        # KeepStore (``resolve_visible_keeps`` / the project-keep resolution) over the SAME unified
+        # database, each owning its OWN connection (the ledger posture), constructed EAGERLY +
+        # ensure_ready()'d here and closed on the same ordered unwind / in ``aclose``. Principal
+        # FIRST (the ``member_of`` relation's ENFORCED ``IN principal`` endpoint the keep slice
+        # needs), then the keep slice — the ordering ``_dispatch_keep`` documents.
+        principal_store = PrincipalStore(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await principal_store.ensure_ready()
+        write_stack_readied.append(principal_store)
+        keep_store = KeepStore(
+            url=config.surreal.url,
+            namespace=config.surreal.namespace,
+            database=surreal_database,
+            user=surreal_user,
+            password=surreal_password,
+        )
+        await keep_store.ensure_ready()
+        write_stack_readied.append(keep_store)
         # Replay the durable ledger into the backend ONCE at boot (FP-06): the
         # first boot re-embeds the seeded rows, a second over an in-sync store is a
         # pure no-op (zero document embeds — the divergence guard). Inside the ready
@@ -9446,6 +9526,8 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
         agent_registry=agent_registry,
         brief_ledger=brief_ledger,
         message_ledger=message_ledger,
+        principal_store=principal_store,
+        keep_store=keep_store,
         calibration_engine=calibration_engine,
         # Seam-12 (F4): the ingesting extensions' domain-store backends, so
         # ``AppContext.aclose`` closes them on normal shutdown (they are also on the
@@ -9590,6 +9672,10 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
         # close them on the failure path too (both readied before this point).
         await agent_registry.close()
         await brief_ledger.close()
+        # packet 63a-ii: the composition-root identity stores each own a connection too.
+        await message_ledger.close()
+        await principal_store.close()
+        await keep_store.close()
         await snapshot_stamper.close()
         await diff_engine.close()
         await manifest.close()
@@ -10705,6 +10791,12 @@ _GOVERNED_TOOLS_PENDING_OWNER_STAMP: dict[str, str] = {
 # HERE with a trigger (INSTRUMENT-0: the constant is the adjudication; the derived set is the check —
 # a hand-list is DELIBERATE so a new verb cannot be silently absorbed). Each pending entry
 # self-destructs into ``_GOVERNED_VERBS_ROUTED`` as its wave lands.
+# packet 63a-ii (design §10.7-Y, operator ruling A): the memory verbs are now tool-layer-WIRED
+# (green), not merely backend-routed — ``AppContext.recall``/``remember`` resolve ``capability`` →
+# ``Subject`` through the ONE composition root (:meth:`AppContext._resolve_subject`) and thread it to
+# the governed backend, so a capability-bearing served call WORKS (the pre-retrofit deny survives
+# ONLY for an identity-less call). The #420 adjudication for these two verbs is therefore ROUTED end
+# to end (tool surface + backend), no longer an R6 backend-only bound.
 _GOVERNED_VERBS_ROUTED: frozenset[tuple[str, str]] = frozenset(
     {
         ("lore_remember", "lore_remember"),
@@ -10768,10 +10860,10 @@ _GOVERNED_VERBS_PENDING_ROUTING: dict[tuple[str, str], str] = {
 # packet 63a (design §10.5 rider (i)) — the ONE shared teaching description for the OPTIONAL
 # ``capability=`` identity seam, carried BYTE-IDENTICAL by every governed tool (the packet-45
 # ``_comms_identity_agent_description`` idiom — never N drifting copies of the prose that no gate
-# checks, PKT-28 C1). ⚠ 63a BOUND (R6): the composition root that resolves ``capability`` → a
-# verified ``Subject`` (``governed.resolve_subject``) is NOT wired here yet — ``AppContext`` holds
-# no principal/keep stores at 63a — so BOTH an identity-less AND a capability-bearing memory call
-# DENY with a teaching error; the present-path resolution lands with the 63b/64 composition root.
+# checks, PKT-28 C1). packet 63a-ii (§10.7-Y): the composition root that resolves ``capability`` →
+# a verified ``Subject`` (``AppContext._resolve_subject`` → ``governed.resolve_subject``) IS wired
+# now — ``AppContext`` holds the principal/keep stores — so a capability-bearing memory call WORKS
+# (scoped to the caller's visible set + owner-stamped); only an identity-less call DENIES.
 _CAPABILITY_PARAM_DESCRIPTION = (
     "Your agent capability — the '<name>:<secret>' token `lore_comms action=register` minted for "
     "this session. It identifies you so the fleet's governed memory is scoped to what you may see "
