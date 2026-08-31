@@ -4659,8 +4659,10 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         results = await indexed_context.search("champion routing", path="pkg/nope.py")
         notices = [r for r in results if r.kind == "notice"]
         assert notices, "a path filter matching nothing must render a teaching notice"
-        message = notices[0].formatted
-        assert "pkg/nope.py" in message
+        # packet 63a-ii (FORK-D1): an identity-less search now also carries the withheld-boost
+        # notice, so select the TEACHING notice by content rather than assuming it is notices[0].
+        message = next((n.formatted for n in notices if "pkg/nope.py" in n.formatted), "")
+        assert "pkg/nope.py" in message, "a path filter miss must render a teaching notice naming it"
         assert "pkg/router.py" in message or "pkg/base.py" in message, (
             "the teach should name a nearby real indexed path"
         )
@@ -4681,7 +4683,9 @@ class TestSearchParamsCutBudgetAndTeachingMiss:
         results = await indexed_context.search("champion routing", tier="loresigil")
         notices = [r for r in results if r.kind == "notice"]
         assert notices, "a tier filter matching nothing must render a teaching notice"
-        message = notices[0].formatted
+        # packet 63a-ii (FORK-D1): an identity-less search also carries the withheld-boost notice,
+        # so select the TEACHING notice by content rather than assuming it is notices[0].
+        message = next((n.formatted for n in notices if "loresigil" in n.formatted), "")
         assert "loresigil" in message, "the teach must name the missed tier value"
         assert "custom" in message, "the teach must name the actual configured tier(s)"
         assert "subtree" not in message, "a tier-only miss must not carry path/subtree wording"
