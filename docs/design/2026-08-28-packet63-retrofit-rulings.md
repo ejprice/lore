@@ -215,7 +215,7 @@ proposals for the contract author; the SHAPES are the ruling.
 | `brief` (63c) | `created_by: string` — an agent NAME with no session (`AppContext.comms` docstring: *"records `Brief.created_by` as the acting agent's own name"*) | NONE | NONE | **UNOWNED-LEGACY** — a bare name resolves to N agent rows across sessions (the registry id is `uuid5(session, name)`), so "best-effort" is a guess wearing a mapping. Do not guess. Briefs are project-wide standing instructions; the project keep's household reads + supersedes them (a new version is a new row, owned by its publisher). |
 
 **Principal-DELETE disposition of `memory.owner_principal` (the FIFTH `record<principal>` link,
-the first on a GOVERNED row — §10.7-Z, SF-63-5 CONFIRM):** ORPHAN-TO-NONE, AUDITED — never
+the first on a GOVERNED row — §10.7-Z, SF-63-5 **operator CONFIRMED 2026-08-30**):** ORPHAN-TO-NONE, AUDITED — never
 cascade-delete (destroys household notes), never a silent dangle; REFUSE-loud meanwhile.
 
 The **hard rule this table encodes:** a legacy row is owned by a LINK or by NOBODY. A string is
@@ -879,6 +879,9 @@ writable-set question for the lead, not a scope question for the operator.
 
 **10.7-Y — the tool layer: RULED "wire it, don't skip it" — RECOMMEND a bounded 63a-ii BEFORE the
 cold audit; skip-with-trigger ACCEPTED only as the lead's sequencing call, with two riders.**
+**⚠ OPERATOR CHOSE (A) — 63a-ii before the cold audit — 2026-08-30 (via lead-63 /
+AskUserQuestion, `lore_comms #8023`); the skip-with-trigger alternative and its two riders are
+MOOT. The cold audit grades the WHOLE 63a (`a8c17c1` + 63a-ii).**
 - **The fork as posed (skip vs re-point 18 tests) is downstream of a scope narrowing I did not
   make:** R6 leaves the `AppContext` composition root UNWIRED, so the served `lore_recall` /
   `lore_remember` DENY every call — identity-bearing included. §1.1 named those two tools as 63a's
@@ -909,8 +912,8 @@ cold audit; skip-with-trigger ACCEPTED only as the lead's sequencing call, with 
   is a fact in the response, never a silent `[]`.
 
 **10.7-Z — `memory.owner_principal` delete disposition: RULED ORPHAN-TO-NONE, AUDITED; REFUSE-loud
-until the mechanism lands (64) — flagged SF-63-5 CONFIRM to the operator (data semantics; the
-R3.2/FR-4 precedent), non-blocking.**
+until the mechanism lands (64) — SF-63-5 **operator CONFIRMED 2026-08-30 (ruling adopted:
+orphan-to-NONE audited + refuse-loud interim + pin-the-miss; via lead-63, `lore_comms #8023`)**.**
 - **Ruling:** on a hard principal-delete, every governed row the principal owns gets an ADMIN
   `SET_OWNER → NONE` (owner_principal AND owner_agent cleared) in the SAME transaction as the
   delete — each an audited load-bearing bypass (`_member_filter(SET_OWNER)` is `NoRows`, so
