@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 import yaml
+from _governed_contract import build_memory_backend
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -285,6 +286,71 @@ class TestParserSurface:
         with pytest.raises(SystemExit):
             parser.parse_args(["suspend"])  # missing required --email
 
+    def test_no_dry_run_mechanism_survives_the_governed_migration_surface(self) -> None:
+        """FORK-W (§10.7-W): the dry-run paradigm is STRUCK — ``migrate-governed`` always executes;
+        the read-only preview is the separate ``report-unmigrated`` verb. Two legs:
+
+        (1) RUNTIME MECHANISM — no ``dry_run`` PARAMETER on ``migrate_governed`` /
+        ``_migrate_memory_scope``, no ``dry_run`` FIELD on ``MigrateGovernedResult``, and
+        ``migrate-governed`` rejects a ``--dry-run`` flag. This is the robust guard: it reds the day
+        a param/field/flag is re-introduced, regardless of spelling.
+
+        (2) BARE GREP (the §10.7-W rider) — over ``governed.py`` + ``principals.py`` + the 63a test
+        modules, every ``dry[_-]run`` textual hit is PROSE (a comment or a docstring documenting the
+        struck paradigm), never a live code token. A comment/docstring residual is allowed and
+        adjudicated in REPORT-build-63a-ii; a NEW code token (param/kwarg/flag/field/attr) reds."""
+        import dataclasses
+        import inspect
+
+        from loremaster.governed import MigrateGovernedResult
+
+        from loremaster import governed
+
+        # (1) runtime mechanism.
+        assert "dry_run" not in inspect.signature(p_module.migrate_governed).parameters, (
+            "migrate_governed must not carry a dry_run parameter (the struck paradigm)"
+        )
+        assert "dry_run" not in inspect.signature(p_module._migrate_memory_scope).parameters, (
+            "_migrate_memory_scope must not carry a dry_run parameter (the struck paradigm)"
+        )
+        assert "dry_run" not in {f.name for f in dataclasses.fields(MigrateGovernedResult)}, (
+            "MigrateGovernedResult must not carry a dry_run field (the struck paradigm)"
+        )
+        parser = p_module.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["migrate-governed", "--table", "memory", "--dry-run"])
+
+        # (2) bare grep — every textual residual must be PROSE, never a live code token.
+        tests_dir = Path(__file__).parent
+        scope_files = [
+            Path(governed.__file__),
+            Path(p_module.__file__),
+            *sorted(tests_dir.glob("test_*_63a.py")),
+            tests_dir / "_governed_contract.py",
+        ]
+        # A LIVE code token: a def-parameter, a keyword/default/field/annotation (dry_run[:=]), an
+        # attribute access (.dry_run), or a quoted CLI flag string. Prose (backticked ``dry-run``,
+        # a hyphenated "dry-run mode") matches NONE of these.
+        mechanism = re.compile(
+            r"""def\s+\w+\([^)]*\bdry_run\b   # a function parameter
+              | \bdry_run\s*[:=]              # kwarg / default / field / annotation
+              | \.dry_run\b                   # an attribute access
+              | ["']--?dry[_-]run["']         # a quoted CLI option string
+            """,
+            re.VERBOSE,
+        )
+        offenders: list[str] = []
+        for path in scope_files:
+            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue  # a comment is prose documenting the struck paradigm, not a mechanism
+                if mechanism.search(line):
+                    offenders.append(f"{path.name}:{lineno}: {line.strip()}")
+        assert not offenders, (
+            "a LIVE dry_run code token resurfaced (the struck paradigm) — every residual must be "
+            "prose:\n" + "\n".join(offenders)
+        )
+
 
 # --------------------------------------------------------------------------- #
 # __main__-guard-last — its OWN AST pin (clone test_server_entrypoint; per-file,
@@ -298,6 +364,41 @@ def _is_main_guard(node: ast.stmt) -> bool:
         return False
     left = node.test.left
     return isinstance(left, ast.Name) and left.id == "__name__"
+
+
+class TestReportUnmigratedVerb:
+    """packet 63a-ii (§10.7-W): ``lore-adm report-unmigrated --table <t>`` is the read-only PREVIEW
+    verb the struck dry-run paradigm no longer fills — it counts a governed table's un-migrated
+    (NONE-scope) rows WITHOUT writing (``report_unmigrated_governed_rows`` over an injected
+    StoreHandle, R4). A READ, the class the operator's ruling allows (like ``list``/``list-keys``)."""
+
+    def test_the_parser_accepts_report_unmigrated(self) -> None:
+        parser = p_module.build_parser()
+        namespace = parser.parse_args(["report-unmigrated", "--table", "memory"])
+        assert namespace.command == "report-unmigrated" and namespace.table == "memory", namespace
+
+    async def test_report_unmigrated_counts_over_a_provisioned_table(
+        self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Provision the governed memory table (its ensure_ready wires the scope column + index);
+        # empty ⇒ zero NONE-scope rows. Exercises the dispatch happy path end to end.
+        backend = await build_memory_backend(cli_env.env)
+        await backend.close()
+        rc = await _run_cli(cli_env.argv("report-unmigrated", "--table", "memory"))
+        out = capsys.readouterr().out
+        assert rc == 0, f"report-unmigrated must succeed over a provisioned table; out={out!r}"
+        assert "unmigrated=0" in out, f"the READ verb must print the NONE-scope count; out={out!r}"
+
+    async def test_report_unmigrated_on_an_absent_table_fails_loud_not_a_traceback(
+        self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # No memory table provisioned: the READ must fail LOUD (exit 1 + a stderr line), never a
+        # traceback (Unix philosophy — loud on failure; the missing-table rejection is caught).
+        rc = await _run_cli(cli_env.argv("report-unmigrated", "--table", "memory"))
+        assert rc == 1, "report-unmigrated over an absent governed table must exit non-zero"
+        assert p_module._CLI_PROG in capsys.readouterr().err, (
+            "a failure must be a stderr line, not a crash"
+        )
 
 
 class TestMainGuardIsLast:

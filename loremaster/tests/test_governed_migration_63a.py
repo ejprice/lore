@@ -76,14 +76,15 @@ async def migration_world() -> Any:
         await drop_database(env)
 
 
-async def _migrate_memory(migration_world: Any, *, dry_run: bool = False) -> Any:
+async def _migrate_memory(migration_world: Any) -> Any:
     principal_store, keep_store, connection, env = migration_world
     # §10.6 R4: migrate_governed takes the OWNER'S DRIVER HANDLE (a StoreHandle over the target
     # store's connection), never a raw connection — it routes the backfill through run_query /
     # execute_transaction. store_handle builds that handle over the fixture's admin connection.
+    # packet 63a-ii (§10.7-W): the dry-run paradigm was STRUCK — migrate-governed always executes.
     return await principals.migrate_governed(
         table=MEMORY_TABLE, store=store_handle(connection, url=env.url)[0], keep_store=keep_store,
-        principal_store=principal_store, dry_run=dry_run,
+        principal_store=principal_store,
     )
 
 
@@ -300,7 +301,8 @@ class TestTheBootWarningCount:
 
 
 class TestTheMigrateGovernedCliVerbExists:
-    """§1.2 item 5 — ``lore-adm migrate-governed --table <t> [--dry-run]`` is a real CLI verb."""
+    """§1.2 item 5 — ``lore-adm migrate-governed --table <t>`` is a real CLI verb that always
+    EXECUTES (§10.7-W struck the preview paradigm); the read-only preview is ``report-unmigrated``."""
 
     def test_the_parser_accepts_migrate_governed(self) -> None:
         """⚠ RED at HEAD — ``build_parser()`` rejects the unknown subcommand. The builder adds the

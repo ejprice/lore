@@ -73,7 +73,9 @@ class MigrateGovernedResult:
     """Receipts of a ``lore-adm migrate-governed`` run over ONE table (design §1.2 item 5 /
     §2.1) — receipts-printing: rows scanned / backfilled / already-migrated, and a LOUD
     ``refused`` (with ``reason``) on a precondition failure (the agent-first ORDER, or a
-    multi-principal ``agent`` table). ``dry_run`` reports the counts without writing."""
+    multi-principal ``agent`` table). The migration is a one-shot cutover verb that always
+    EXECUTES (the dry-run/--execute paradigm was struck 2026-08-20 — §10.7-W); the counts ARE
+    the receipt. The read-only PREVIEW is the separate ``report-unmigrated`` verb."""
 
     table: str
     scanned: int

@@ -993,7 +993,6 @@ async def migrate_governed(
     keep_store: KeepStore,
     principal_store: PrincipalStore,
     registry: Any = None,
-    dry_run: bool = False,
 ) -> MigrateGovernedResult:
     """The idempotent governed-column backfill for ONE table (design §1.2 item 5 / §2 / §10.6 R4 —
     packet 63a STUB / runnable-RED, contract-63a). Backs the ``lore-adm migrate-governed`` CLI verb.
@@ -1004,8 +1003,9 @@ async def migrate_governed(
     = sender``, ``owner_principal = sender.owner_principal``, scope = project keep — REFUSING
     LOUD if ``agent`` has not been migrated first (§2.6 the checked ORDER: it asserts the agent
     NONE-count is 0). Idempotent: a second run backfills 0 and exits clean. NEVER run at boot
-    (§2.3) — only at the 65 cutover. ``dry_run`` reports counts without writing. STUB: builder
-    fills.
+    (§2.3) — only at the 65 cutover. A one-shot cutover verb that always EXECUTES (the
+    dry-run/--execute paradigm was struck 2026-08-20 — §10.7-W); the read-only preview is the
+    separate ``report-unmigrated`` verb.
 
     The backfill UPDATE and the §2.6 agent-NONE-count both route through the injected ``store``
     :class:`~loremaster.store._txn.StoreHandle` — :func:`~loremaster.store._txn.run_query` /
@@ -1022,7 +1022,7 @@ async def migrate_governed(
     from loremaster.governed import MigrateGovernedResult
 
     if table == MEMORY_TABLE:
-        return await _migrate_memory_scope(store, keep_store, principal_store, dry_run=dry_run)
+        return await _migrate_memory_scope(store, keep_store, principal_store)
     if table == "message":
         # §2.6 agent-first ORDER, fail-closed: a message row's owner_principal is read from
         # ``sender.owner_principal`` (NONE for every un-migrated agent), so migrating messages
@@ -1059,8 +1059,6 @@ async def _migrate_memory_scope(
     store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
-    *,
-    dry_run: bool,
 ) -> MigrateGovernedResult:
     """Backfill the ``memory`` legacy rows' NONE scope to the canonical PROJECT keep (§2.1/§2.2).
 
@@ -1104,7 +1102,7 @@ async def _migrate_memory_scope(
 
     unmigrated = await _scope_count(store, MEMORY_TABLE, none=True)
     already = await _scope_count(store, MEMORY_TABLE, none=False)
-    if dry_run or unmigrated == 0:
+    if unmigrated == 0:
         return MigrateGovernedResult(
             table=MEMORY_TABLE,
             scanned=unmigrated + already,
@@ -1288,13 +1286,19 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_governed_parser.add_argument(
         "--table", required=True, help="the governed table to migrate (63a supports: memory)"
     )
-    # ⚠ FORK (disclosed, REPORT-build-63a §FORK): design §1.2 item 5 specifies a `[--dry-run]`
-    # preview flag, but the shipped 2026-08-20 ruling STRUCK the dry-run/--execute paradigm from
-    # this CLI (pinned by test_principals_cli.py::test_source_contains_no_execute_flag_or_dry_run,
-    # which scans ALL code strings). The 63a CONTRACT (test_the_parser_accepts_migrate_governed)
-    # requires only `--table`, so the CLI flag is OMITTED to comply with the shipped ruling; the
-    # `migrate_governed(dry_run=…)` FUNCTION param survives for the design's preview intent +
-    # programmatic use. Reconcile the design-vs-ruling conflict at the lead's discretion.
+    # packet 63a-ii (§10.7-W): the dry-run/--execute paradigm was STRUCK (2026-08-20 operator
+    # ruling); migrate-governed always EXECUTES. The read-only PREVIEW role the design wanted is
+    # this SEPARATE `report-unmigrated` verb — a READ (the class the operator's ruling allows,
+    # like `list`/`list-keys`) over `report_unmigrated_governed_rows`: it counts a table's
+    # NONE-scope (member-invisible) rows without writing, so an operator can see what a
+    # migrate-governed run WOULD backfill.
+    report_unmigrated_parser = subcommands.add_parser(
+        "report-unmigrated",
+        help="report a governed table's un-migrated (NONE-scope) row count (a read; never writes)",
+    )
+    report_unmigrated_parser.add_argument(
+        "--table", required=True, help="the governed table to inspect (63a supports: memory)"
+    )
 
     return parser
 
@@ -1495,6 +1499,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
     config = load_surreal_only_config(_require_config(args))
     if args.command == "migrate-governed":
         return await _dispatch_migrate_governed(args, config)
+    if args.command == "report-unmigrated":
+        return await _dispatch_report_unmigrated(args, config)
     if args.command in _KEEP_VERB_HANDLERS:
         return await _dispatch_keep(args, config)
     # Lazy import: ``loremaster.principal_keys`` imports THIS module (``Principal``), so
@@ -1580,6 +1586,39 @@ async def _dispatch_migrate_governed(args: argparse.Namespace, config: LoreConfi
         return 1
     finally:
         await keep_store.close()
+        await principal_store.close()
+
+
+async def _dispatch_report_unmigrated(args: argparse.Namespace, config: LoreConfig) -> int:
+    """Report a governed table's un-migrated (NONE-scope) row count — the read-only PREVIEW verb
+    (packet 63a-ii, §10.7-W: the preview role the struck dry-run paradigm no longer fills). Builds
+    a driver ``StoreHandle`` over the unified store (the ``_dispatch_migrate_governed`` idiom) and
+    runs :func:`~loremaster.governed.report_unmigrated_governed_rows` (R4: no raw connection). A
+    READ — it never writes; the count goes to stdout, a domain/transport failure to stderr + exit 1.
+    """
+    from loremaster.governed import report_unmigrated_governed_rows
+
+    principal_store = build_principal_store(config)
+    try:
+        await principal_store.ensure_ready()
+        handle = StoreHandle(
+            acquire=principal_store._ensure_connection,  # noqa: SLF001 - the driver triple, same module
+            drop=principal_store._drop_connection,  # noqa: SLF001
+            url=principal_store._url,  # noqa: SLF001
+        )
+        count = await report_unmigrated_governed_rows(handle, args.table)
+        print(f"report-unmigrated --table {args.table}: unmigrated={count}")
+        return 0
+    except (
+        PrincipalStoreError,
+        # SurrealStoreError subsumes SurrealConnectionError AND a rejected SELECT (e.g. the
+        # governed table does not exist on this store) — loud on failure, never a traceback.
+        SurrealStoreError,
+        ValueError,
+    ) as error:
+        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
+        return 1
+    finally:
         await principal_store.close()
 
 
