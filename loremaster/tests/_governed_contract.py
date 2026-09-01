@@ -33,8 +33,10 @@ exit. NO skip marker for an unreachable store — that is a LOUD failure, not a 
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, TypeVar
@@ -276,6 +278,12 @@ class GovernedTableCase:
     #: The tool's READ verbs and WRITE verbs (derived from its dispatch table; F3/F4 ∀).
     read_verbs: tuple[str, ...] = field(default_factory=tuple)
     write_verbs: tuple[str, ...] = field(default_factory=tuple)
+    #: F5 (design §10.9-A): the SOURCE of the module whose raw mutations of ``table`` are enforced
+    #: (e.g. ``lambda: Path(local.__file__).read_text()``), and the deny-by-default WRITE ALLOWLIST —
+    #: one (site, justification, pin) triple per raw (unguarded) mutation of ``table``. A raw mutation
+    #: NOT in the allowlist is a violation (deny-by-default). 64 supplies its table's own pair.
+    mutation_source: Callable[[], str] | None = None
+    write_allowlist: tuple[GovernedWriteAllowlistEntry, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -564,3 +572,259 @@ def python_allowed_ids(
         if pdp.authorize(subject, action, resource).allowed:
             allowed.add(row_id)
     return allowed
+
+
+# =========================================================================== #
+# F5 — GOVERNED-TABLE WRITE-ENFORCEMENT COMPLETENESS (design §10.9-A, packet 63a-iv)
+#
+# The deny-by-default, coverage-as-a-checked-variable instrument that closes the
+# enumerate-the-forbidden CLASS (memory write verbs were guarded ONE AT A TIME, each round green at
+# every gate — the instrument lesson). REUSABLE, parametrised per governed table via
+# GovernedTableCase.mutation_source + .write_allowlist; 63b (message) / 64 (task/finding) supply
+# their own pair and call the SAME runners — NEVER a cloned module (design §3.2 RIDER).
+#
+# THREE layers (design §10.9-A):
+#  L1 STRUCTURAL (AST, derived): every RAW SurrealQL mutation of the table, keyed by enclosing
+#     function, must be ∈ the ALLOWLIST. A new unclassified raw mutation site REDS (deny-by-default).
+#  L2a STRUCTURAL guard-context coverage: every allowlisted FRAME + guarded_write wraps its mutation
+#     in ``governed.write_guard`` (reach as a checked variable — the allowlist grows → this covers it).
+#  L2b RUNTIME (in the suite): the store seam is instrumented; every OBSERVED table mutation carries
+#     a non-None ``governed.active_write_guard()`` context (a context-LESS mutation is UNCLASSIFIED),
+#     across every seam path exercised. RED until the guard-context is built + wired.
+# =========================================================================== #
+
+_MUTATION_VERBS = ("UPSERT", "UPDATE", "DELETE", "REMOVE")
+# A raw SurrealQL mutation STATEMENT shape (verb immediately targeting a record/table — never prose):
+# ``UPSERT|UPDATE|DELETE type::record(`` or ``… <tablename>`` ; ``REMOVE TABLE|FIELD|INDEX``.
+_RAW_MUTATION_STMT = re.compile(
+    r"\b(UPSERT|UPDATE|DELETE)\s+(?:type::record\(|\{?\w)|(\bREMOVE\s+(?:TABLE|FIELD|INDEX)\b)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, order=True)
+class MutationSite:
+    """A raw governed-table mutation, keyed by its enclosing function + the SurrealQL verb (design
+    §10.9-A L1). The unit the allowlist classifies and the AST scan derives. ``order=True`` so a
+    diagnostic ``sorted(derived - allowlist)`` renders deterministically."""
+
+    function: str
+    verb: str  # one of _MUTATION_VERBS (upper-cased)
+
+
+@dataclass(frozen=True)
+class GovernedWriteAllowlistEntry:
+    """One deny-by-default allowlist entry (design §10.9-A layer 3): a (site, justification, pin,
+    frames) 4-tuple. ``pin`` is the EVIDENCE — a test node/name whose existence justifies the raw
+    write; an entry whose pin is deleted leaves the allowlist. ``frames`` are the functions that must
+    wrap the statement's execution in ``governed.write_guard`` (the statement's enclosing function
+    for a self-contained mutation; the CALLERS for a shared fragment-builder like _upsert_fragment)."""
+
+    site: MutationSite
+    justification: str
+    pin: str
+    frames: tuple[str, ...]
+
+
+def _statement_shape(node: ast.expr) -> str | None:
+    """Reconstruct a statement's SHAPE string from a Constant/JoinedStr — literal parts verbatim,
+    ``{name}`` for a ``{var}`` interpolation, ``{EXPR}`` otherwise. Enough to recognise a SurrealQL
+    mutation targeting a table whose name is an interpolated MODULE CONSTANT (``{MEMORY_TABLE}``)."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                inner = value.value
+                parts.append("{" + inner.id + "}" if isinstance(inner, ast.Name) else "{EXPR}")
+        return "".join(parts)
+    return None
+
+
+def _targets_table(shape: str, table: str, table_const_hint: str) -> bool:
+    """True iff a statement shape targets ``table`` — either the literal table name or its
+    interpolated module-constant name (e.g. ``{MEMORY_TABLE}``)."""
+    return bool(re.search(rf"\b{re.escape(table)}\b", shape)) or table_const_hint in shape
+
+
+def _enclosing_functions(tree: ast.AST) -> dict[int, str]:
+    """Map each AST node id → the name of its nearest enclosing FunctionDef (``<module>`` if none)."""
+    owner: dict[int, str] = {}
+
+    def walk(node: ast.AST, current: str) -> None:
+        name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else current
+        for child in ast.iter_child_nodes(node):
+            owner[id(child)] = name
+            walk(child, name)
+
+    owner[id(tree)] = "<module>"
+    walk(tree, "<module>")
+    return owner
+
+
+def _docstring_node_ids(tree: ast.AST) -> set[int]:
+    """The node ids of every module/class/function docstring Constant (so prose naming a verb —
+    'UPSERT the new row' — is never mistaken for a statement)."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", [])
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def governed_table_raw_mutation_sites(
+    source: str, table: str, *, table_const_hint: str = "MEMORY_TABLE"
+) -> frozenset[MutationSite]:
+    """AST-derive every RAW SurrealQL mutation STATEMENT of ``table`` in ``source``, keyed by
+    enclosing function (design §10.9-A L1 — the ``_SCANNED_MEMBERS`` statement-shape idiom, NEVER a
+    name list). Docstrings/prose excluded; only real SurrealQL mutation syntax counted. This is what
+    makes a NEW unclassified write site RED — the derived set GROWS and the allowlist does not."""
+    tree = ast.parse(source)
+    owner = _enclosing_functions(tree)
+    docstrings = _docstring_node_ids(tree)
+    sites: set[MutationSite] = set()
+    for node in ast.walk(tree):
+        if id(node) in docstrings or not isinstance(node, (ast.Constant, ast.JoinedStr)):
+            continue
+        shape = _statement_shape(node)
+        if not shape or not _RAW_MUTATION_STMT.search(shape):
+            continue
+        if not _targets_table(shape, table, table_const_hint):
+            continue
+        verb_match = re.search(r"\b(UPSERT|UPDATE|DELETE|REMOVE)\b", shape, re.IGNORECASE)
+        assert verb_match is not None  # _RAW_MUTATION_STMT matched, so a verb is present
+        sites.add(MutationSite(function=owner.get(id(node), "<module>"), verb=verb_match.group(1).upper()))
+    return frozenset(sites)
+
+
+def governed_table_guarded_write_frames(
+    source: str, table: str, *, table_const_hint: str = "MEMORY_TABLE"
+) -> frozenset[str]:
+    """Every function calling ``guarded_write(table=<table>)`` — the GUARDED (safe-by-construction)
+    set. A guarded_write call carries no raw mutation string (governed.py builds it), so it is NOT a
+    raw site; this set is reported for completeness / the L1 anti-vacuity leg."""
+    tree = ast.parse(source)
+    owner = _enclosing_functions(tree)
+    frames: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or call_name(node) != "guarded_write":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "table":
+                value = keyword.value
+                hit = (isinstance(value, ast.Name) and value.id == table_const_hint) or (
+                    isinstance(value, ast.Constant) and value.value == table
+                )
+                if hit:
+                    frames.add(owner.get(id(node), "<module>"))
+    return frozenset(frames)
+
+
+def call_name(call: ast.Call) -> str | None:
+    """The called name of an ``ast.Call`` — the attribute (``a.b()`` → ``b``) or the bare id
+    (``f()`` → ``f``), else None. ONE implementation for every AST scanner here (and the per-table
+    modules), so a scanner never re-hand-rolls the func-name idiom."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def function_calls_write_guard(source: str, function: str) -> bool:
+    """True iff ``function`` (in ``source``) calls ``write_guard(...)`` / ``governed.write_guard(...)``
+    (design §10.9-A L2a — the frame sets its own guard context). RED at HEAD (unwired)."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function:
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call) and call_name(inner) == "write_guard":
+                    return True
+    return False
+
+
+@dataclass(frozen=True)
+class ObservedWrite:
+    """One governed-table mutation observed at the store seam under test (design §10.9-A L2b)."""
+
+    label: str | None  # the active write_guard label, or None (an UNCLASSIFIED write — the red signal)
+    verb: str
+    seam: str  # which seam function ran it (execute_transaction / run_query / execute_read_transaction)
+
+
+def _mutation_verb_for_table(statement: str, table: str) -> str | None:
+    """The mutation verb if ``statement`` (a RESOLVED runtime statement, possibly a BEGIN…COMMIT
+    block) mutates ``table`` — else None (a read, or a mutation of another table). The audit CREATE
+    inside a composed guarded txn targets ``audit`` (not ``table``), so it is correctly ignored."""
+    for verb, pattern in (
+        ("UPSERT", rf"\bUPSERT\s+type::record\('{re.escape(table)}'"),
+        ("UPDATE", rf"\bUPDATE\s+type::record\('{re.escape(table)}'"),
+        ("DELETE", rf"\bDELETE\s+type::record\('{re.escape(table)}'"),
+        ("REMOVE", rf"\bREMOVE\s+TABLE\s+(?:IF\s+EXISTS\s+)?{re.escape(table)}\b"),
+        # table-form (UPDATE <table> SET … / DELETE <table> …), tolerated for 64's verbs.
+        ("UPDATE", rf"\bUPDATE\s+{re.escape(table)}\b"),
+        ("DELETE", rf"\bDELETE\s+{re.escape(table)}\b"),
+    ):
+        if re.search(pattern, statement, re.IGNORECASE):
+            return verb
+    return None
+
+
+@contextlib.contextmanager
+def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
+    """Instrument the STORE SEAM (design §10.9-A L2b): patch the ``execute_transaction`` / ``run_query``
+    / ``execute_read_transaction`` names IMPORTED INTO ``loremaster.memory.local`` +
+    ``loremaster.governed`` so every statement mutating ``table`` is recorded together with the active
+    ``governed.active_write_guard()`` label at call time. Patching the imported names (not the source
+    module) is required — the seams are bound by name in each module (finding: monkeypatch the imported
+    name). getattr-tolerant on the guard-context: at HEAD ``active_write_guard`` is unbuilt → every
+    observed mutation records label=None → the F5 runtime pin reds (deny-by-default)."""
+    import loremaster.governed as governed_mod
+    import loremaster.memory.local as local_mod
+
+    observed: list[ObservedWrite] = []
+    read_guard = getattr(governed_mod, "active_write_guard", lambda: None)
+
+    def _statement_of(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+        candidate = kwargs.get("statement", args[0] if args else None)
+        return candidate if isinstance(candidate, str) else None
+
+    def _wrap(original: Callable[..., Any], seam: str) -> Callable[..., Any]:
+        async def _instrumented(*args: Any, **kwargs: Any) -> Any:
+            statement = _statement_of(args, kwargs)
+            if statement is not None:
+                verb = _mutation_verb_for_table(statement, table)
+                if verb is not None:
+                    observed.append(ObservedWrite(label=read_guard(), verb=verb, seam=seam))
+            return await original(*args, **kwargs)
+
+        return _instrumented
+
+    patches: list[tuple[Any, str, Any]] = []
+    for module, attr, seam in (
+        (local_mod, "execute_transaction", "execute_transaction"),
+        (local_mod, "run_query", "run_query"),
+        (governed_mod, "execute_read_transaction", "execute_read_transaction"),
+        (governed_mod, "run_query", "run_query"),
+    ):
+        original = getattr(module, attr, None)
+        if original is None:
+            continue
+        patches.append((module, attr, original))
+        setattr(module, attr, _wrap(original, seam))
+    try:
+        yield observed
+    finally:
+        for module, attr, original in patches:
+            setattr(module, attr, original)
