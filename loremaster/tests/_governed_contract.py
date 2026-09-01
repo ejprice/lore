@@ -35,10 +35,15 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import importlib
 import re
+import sys
+import tomllib
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
+from types import ModuleType
 from typing import Any, TypeVar
 
 from _surreal_harness import SurrealConnection, run
@@ -594,12 +599,6 @@ def python_allowed_ids(
 # =========================================================================== #
 
 _MUTATION_VERBS = ("UPSERT", "UPDATE", "DELETE", "REMOVE")
-# A raw SurrealQL mutation STATEMENT shape (verb immediately targeting a record/table — never prose):
-# ``UPSERT|UPDATE|DELETE type::record(`` or ``… <tablename>`` ; ``REMOVE TABLE|FIELD|INDEX``.
-_RAW_MUTATION_STMT = re.compile(
-    r"\b(UPSERT|UPDATE|DELETE)\s+(?:type::record\(|\{?\w)|(\bREMOVE\s+(?:TABLE|FIELD|INDEX)\b)",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True, order=True)
@@ -644,10 +643,33 @@ def _statement_shape(node: ast.expr) -> str | None:
     return None
 
 
-def _targets_table(shape: str, table: str, table_const_hint: str) -> bool:
-    """True iff a statement shape targets ``table`` — either the literal table name or its
-    interpolated module-constant name (e.g. ``{MEMORY_TABLE}``)."""
-    return bool(re.search(rf"\b{re.escape(table)}\b", shape)) or table_const_hint in shape
+def _raw_mutation_of_table(shape: str, table: str, table_const_hint: str) -> str | None:
+    """The mutation VERB iff ``shape`` is a raw SurrealQL statement whose verb IMMEDIATELY targets
+    ``table`` (its literal name or interpolated module constant ``{table_const_hint}``), else None.
+
+    ⚠ TABLE-TARGETED, not merely table-MENTIONING (packet 63a-v precision fix, finding #446 sibling):
+    the verb's operand must BE the table — ``UPSERT/UPDATE/DELETE (type::record('<t>'|{HINT}) | <t> |
+    {HINT})`` or ``REMOVE TABLE|FIELD|INDEX <t>``. This REJECTS prose that merely names a verb and the
+    table in the same sentence. Live receipt: principals.py's SF-63-5 refusal message *"…the delete
+    is refused … they own N governed {MEMORY_TABLE} row(s)…"* was matched by the OLD loose
+    ``\\b(UPSERT|UPDATE|DELETE)\\s+(?:type::record\\(|\\{?\\w)`` (``delete`` + ``is``) AS A MEMORY
+    DELETE — a false positive INVISIBLE while F5 scanned only ``memory/local.py``, surfaced the
+    instant the whole-tree scan reached ``principals.py``. Docstrings are already excluded by
+    :func:`_docstring_node_ids`; this closes the NON-docstring prose f-string hole (the P8d law:
+    prose mentions carry no structural anchors, so anchor on the verb→target adjacency)."""
+    target = (
+        rf"(?:type::record\(\s*['\"]?)?"
+        rf"(?:{re.escape(table)}\b|\{{{re.escape(table_const_hint)}\}})"
+    )
+    write = re.search(rf"\b(UPSERT|UPDATE|DELETE)\s+{target}", shape, re.IGNORECASE)
+    if write is not None:
+        return write.group(1).upper()
+    remove = re.search(
+        rf"\b(REMOVE)\s+(?:TABLE|FIELD|INDEX)\b\s+(?:IF\s+EXISTS\s+)?{target}",
+        shape,
+        re.IGNORECASE,
+    )
+    return "REMOVE" if remove is not None else None
 
 
 def _enclosing_functions(tree: ast.AST) -> dict[int, str]:
@@ -708,13 +730,12 @@ def governed_table_raw_mutation_sites(
         if id(node) in docstrings or not isinstance(node, (ast.Constant, ast.JoinedStr)):
             continue
         shape = _statement_shape(node)
-        if not shape or not _RAW_MUTATION_STMT.search(shape):
+        if not shape:
             continue
-        if not _targets_table(shape, table, table_const_hint):
+        verb = _raw_mutation_of_table(shape, table, table_const_hint)
+        if verb is None:
             continue
-        verb_match = re.search(r"\b(UPSERT|UPDATE|DELETE|REMOVE)\b", shape, re.IGNORECASE)
-        assert verb_match is not None  # _RAW_MUTATION_STMT matched, so a verb is present
-        sites.add(MutationSite(function=owner.get(id(node), "<module>"), verb=verb_match.group(1).upper()))
+        sites.add(MutationSite(function=owner.get(id(node), "<module>"), verb=verb))
     return frozenset(sites)
 
 
@@ -753,25 +774,45 @@ def call_name(call: ast.Call) -> str | None:
     return None
 
 
-def function_calls_write_guard(source: str, function: str) -> bool:
-    """True iff ``function`` (in ``source``) calls ``write_guard(...)`` / ``governed.write_guard(...)``
-    (design §10.9-A L2a — the frame sets its own guard context). RED at HEAD (unwired)."""
+def function_calls_named(source: str, function: str, called: str) -> bool:
+    """True iff ``function`` (in ``source``) calls ``<called>(...)`` / ``<x>.<called>(...)`` anywhere
+    in its body. ONE implementation for every "does this frame enter a named context manager" scan
+    (design §10.9-A L2a — a frame that sets its own attribution channel): ``write_guard`` for a
+    guarded local write, ``governed_exempt`` for the admin-CLI migrate site (§10.9-A CORRECTION
+    step 4). Keyed on the CALLED name only, so it is table- and channel-agnostic (63b/64 reuse)."""
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function:
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Call) and call_name(inner) == "write_guard":
+                if isinstance(inner, ast.Call) and call_name(inner) == called:
                     return True
     return False
 
 
+def function_calls_write_guard(source: str, function: str) -> bool:
+    """True iff ``function`` (in ``source``) calls ``write_guard(...)`` / ``governed.write_guard(...)``
+    (design §10.9-A L2a — the frame sets its own guard context). RED at HEAD (unwired). ONE
+    IMPLEMENTATION: delegates to :func:`function_calls_named` (the channel-agnostic scan)."""
+    return function_calls_named(source, function, "write_guard")
+
+
 @dataclass(frozen=True)
 class ObservedWrite:
-    """One governed-table mutation observed at the store seam under test (design §10.9-A L2b)."""
+    """One governed-table mutation observed at the store seam under test (design §10.9-A L2b).
+
+    ``exempt`` and ``origin_site`` are the §10.9-A CORRECTION (packet 63a-v) both-ways channel: a
+    non-``write_guard`` admin site (the migrate-governed backfill) carries a NAMED
+    :func:`governed.governed_exempt` token instead of a label, and the observer records the
+    ORIGINATING production ``(file, symbol)`` INDEPENDENTLY from the call stack (the ``_sdk_guard``
+    precedent) — so a site BORROWING another site's exempt token fails the ``(file, symbol)`` match
+    (design step 4) and F5's own runtime reach becomes a checked variable (finding #446). Both
+    default so the 63a-iv construction ``ObservedWrite(label=…, verb=…, seam=…)`` is unchanged."""
 
     label: str | None  # the active write_guard label, or None (an UNCLASSIFIED write — the red signal)
     verb: str
     seam: str  # which seam function ran it (execute_transaction / run_query / execute_read_transaction)
+    exempt: str | None = None  # the active governed_exempt NAME (or None) — the admin-attribution channel
+    origin_site: tuple[str, str] | None = None  # (repo-relative file, function) of the originating prod frame
 
 
 def _mutation_verb_for_table(statement: str, table: str) -> str | None:
@@ -793,7 +834,9 @@ def _mutation_verb_for_table(statement: str, table: str) -> str | None:
 
 
 @contextlib.contextmanager
-def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
+def observe_governed_table_writes(
+    table: str, *, extra_modules: Sequence[ModuleType] | None = None
+) -> Iterator[list[ObservedWrite]]:
     """Instrument the STORE SEAM (design §10.9-A L2b): patch the ``execute_transaction`` / ``run_query``
     / ``execute_read_transaction`` names IMPORTED INTO ``loremaster.memory.local`` +
     ``loremaster.governed`` so every statement mutating ``table`` is recorded together with the active
@@ -810,12 +853,24 @@ def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
     them would pass both layers unobserved. Right-sized (design §10.9-A: "a production-mode assert is
     OPTIONAL") — both are boot/admin, never member verbs, and every member-reachable write carries
     BOTH structural + runtime coverage. RE-OPEN TRIGGER: either frame becoming member-reachable, or
-    the L2b battery being asked to certify a boot/admin write path."""
+    the L2b battery being asked to certify a boot/admin write path.
+
+    ⚠ 63a-v EXTENSION (design §10.9-A CORRECTION, finding #446): ``extra_modules`` widens the seam
+    reach BEYOND the two default modules — the 63a-v L2b battery passes the modules DERIVED from the
+    whole-tree allowlist files (:func:`seam_modules_for_tree_allowlist`), so ``principals`` (the
+    migrate-governed backfill seam) is instrumented too. This makes the OBSERVER's OWN reach a
+    checked variable (F5's reach was a hidden constant `local.py` — the class #446 closes): a NEW
+    allowlisted site in a NEW file joins the observer's patch-set by the same derivation. Each
+    observed mutation also records its NAMED ``governed.active_exempt()`` token (the admin channel,
+    getattr-tolerant → None at HEAD) and its ORIGINATING production ``(file, symbol)`` from the call
+    stack, so :func:`classify_tree_observed_write` can catch a site borrowing another's exempt token
+    (design step 4)."""
     import loremaster.governed as governed_mod
     import loremaster.memory.local as local_mod
 
     observed: list[ObservedWrite] = []
     read_guard = getattr(governed_mod, "active_write_guard", lambda: None)
+    read_exempt = getattr(governed_mod, "active_exempt", lambda: None)
 
     def _statement_of(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
         candidate = kwargs.get("statement", args[0] if args else None)
@@ -827,18 +882,37 @@ def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
             if statement is not None:
                 verb = _mutation_verb_for_table(statement, table)
                 if verb is not None:
-                    observed.append(ObservedWrite(label=read_guard(), verb=verb, seam=seam))
+                    observed.append(
+                        ObservedWrite(
+                            label=read_guard(),
+                            verb=verb,
+                            seam=seam,
+                            exempt=read_exempt(),
+                            origin_site=_originating_prod_site(),
+                        )
+                    )
             return await original(*args, **kwargs)
 
         return _instrumented
 
-    patches: list[tuple[Any, str, Any]] = []
-    for module, attr, seam in (
+    default_targets = [
         (local_mod, "execute_transaction", "execute_transaction"),
         (local_mod, "run_query", "run_query"),
         (governed_mod, "execute_read_transaction", "execute_read_transaction"),
         (governed_mod, "run_query", "run_query"),
-    ):
+    ]
+    extra_targets = [
+        (module, attr, attr)
+        for module in (extra_modules or ())
+        for attr in ("execute_transaction", "run_query", "execute_read_transaction")
+    ]
+    patches: list[tuple[Any, str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for module, attr, seam in default_targets + extra_targets:
+        key = (id(module), attr)
+        if key in seen:
+            continue  # dedupe so a module passed in extra_modules is not double-patched (breaks restore)
+        seen.add(key)
         original = getattr(module, attr, None)
         if original is None:
             continue
@@ -849,3 +923,200 @@ def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
     finally:
         for module, attr, original in patches:
             setattr(module, attr, original)
+
+
+# =========================================================================== #
+# F5 WHOLE-TREE REACH (design §10.9-A CORRECTION, packet 63a-v, finding #446)
+#
+# #446: F5's OWN reach was a hidden constant — L1 scanned ``memory/local.py`` ONLY (the
+# ``_local_source`` hand-pick), so the governed ``scope`` write in
+# ``principals.py::_migrate_memory_scope`` was INVISIBLE to all three layers. The class §10.9
+# exists to close (reach-as-hidden-constant), reproduced INSIDE the instrument built to close it.
+#
+# THE CORRECTION (design §10.9-A CORRECTION): L1's file set is an OUTPUT, never an input. The
+# scanner takes NO file list — it walks the production source of EVERY workspace member, the member
+# roots DERIVED from ``[tool.uv.workspace] members`` (the ``registration_sites.py`` seam), so a NEW
+# file gaining a governed write of ``table`` grows the derived set and REDS until classified
+# (deny-by-default over the whole tree). Parametrised by TABLE — 63b passes MESSAGE_TABLE/TO_RELATION,
+# 64 passes task/finding; the memory instance is its first parametrisation (ONE implementation).
+# =========================================================================== #
+
+#: The workspace repo root — ``loremaster/tests/_governed_contract.py`` → parents[2]. The ONE place
+#: the whole-tree scan and the stack-origin walk derive member roots from (never a hand-list).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def declared_workspace_members(repo_root: Path = _REPO_ROOT) -> tuple[str, ...]:
+    """The workspace members, read from the ONE file that defines them — ``[tool.uv.workspace]
+    members`` in ``pyproject.toml`` (the SAME from-truth seam as
+    ``scripts/registration_sites.py::declared_members``; a member joins F5's reach by the same
+    derivation that registers it everywhere else). Sorted for determinism."""
+    manifest = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    members: list[str] = manifest["tool"]["uv"]["workspace"]["members"]
+    return tuple(sorted(members))
+
+
+def derive_member_source_roots(repo_root: Path = _REPO_ROOT) -> tuple[Path, ...]:
+    """The PRODUCTION package root of every workspace member, DERIVED from the members list (design
+    §10.9-A CORRECTION step 1). For a member dir ``<m>`` the production package is ``<m>/<m>`` (the
+    uv-workspace convention here — verified: all four members carry ``<m>/<m>/__init__.py``); the
+    test tree ``<m>/tests`` is a sibling, excluded by walking the package dir. NEVER a hand-picked
+    file or a ``[local.py, principals.py]`` list: a builder that hard-codes such a list makes this
+    derivation FALSE (pinned). Resolved, existence-filtered."""
+    roots: list[Path] = []
+    for member in declared_workspace_members(repo_root):
+        package = (repo_root / member / member).resolve()
+        if package.is_dir():
+            roots.append(package)
+    return tuple(roots)
+
+
+def _iter_member_python_files(roots: Sequence[Path]) -> Iterator[Path]:
+    """Every production ``.py`` under the member roots, EXCLUDING test trees (a ``tests`` path
+    component / ``test_*.py`` / ``conftest.py`` — the existing convention). Deterministic order."""
+    for root in roots:
+        for path in sorted(root.rglob("*.py")):
+            if "tests" in path.parts or path.name.startswith("test_") or path.name == "conftest.py":
+                continue
+            yield path
+
+
+@dataclass(frozen=True, order=True)
+class TreeMutationSite:
+    """A raw governed-table mutation across the WHOLE workspace tree, keyed by (repo-relative posix
+    file, enclosing function, verb) — the whole-tree analog of :class:`MutationSite` (design §10.9-A
+    CORRECTION L1). ``file`` distinguishes same-named functions in different modules; ``order=True``
+    renders a deterministic diagnostic ``sorted(derived - allowlisted)``."""
+
+    file: str
+    function: str
+    verb: str
+
+
+def governed_table_raw_mutation_sites_in_tree(
+    table: str,
+    *,
+    repo_root: Path = _REPO_ROOT,
+    table_const_hint: str = "MEMORY_TABLE",
+) -> frozenset[TreeMutationSite]:
+    """AST-derive every RAW SurrealQL mutation of ``table`` across the production source of EVERY
+    workspace member (design §10.9-A CORRECTION step 1). Takes NO file list: the member roots are
+    DERIVED from ``[tool.uv.workspace] members`` under ``repo_root`` (the live call passes the real
+    repo; the fixture-tree discriminator passes a synthetic repo whose ``pyproject.toml`` declares
+    synthetic members — so the discriminator exercises the from-truth root derivation END-TO-END,
+    not a ``roots=`` override). Per-file derivation reuses the local.py-scoped
+    :func:`governed_table_raw_mutation_sites` (ONE implementation of the statement-shape scan — the
+    #444 concatenation bound + the docstring/prose exclusion are inherited, table-parametrised).
+
+    This is what makes F5's reach a CHECKED VARIABLE (finding #446): a NEW file anywhere in the tree
+    gaining a governed ``table`` write GROWS the derived set → deny-by-default reds until it is
+    classified. A builder that keeps a hand-list (``local.py`` only, or ``[local, principals]``)
+    fails the from-truth roots pin AND the whole-tree grows-and-reds discriminator."""
+    walk_roots = derive_member_source_roots(repo_root)
+    sites: set[TreeMutationSite] = set()
+    for path in _iter_member_python_files(walk_roots):
+        rel = path.relative_to(repo_root).as_posix() if path.is_relative_to(repo_root) else path.as_posix()
+        for site in governed_table_raw_mutation_sites(
+            path.read_text(encoding="utf-8"), table, table_const_hint=table_const_hint
+        ):
+            sites.add(TreeMutationSite(file=rel, function=site.function, verb=site.verb))
+    return frozenset(sites)
+
+
+@dataclass(frozen=True)
+class TreeWriteAllowlistEntry:
+    """One WHOLE-TREE deny-by-default allowlist entry (design §10.9-A CORRECTION). Extends the
+    local.py :class:`GovernedWriteAllowlistEntry` with the FILE (a tree site is (file, function,
+    verb)) and the L2 ATTRIBUTION CHANNEL:
+
+    - ``exempt_name`` — the NAMED ``governed.governed_exempt`` token a non-``write_guard`` admin site
+      carries (design step 4: migrate-governed uses ``governed_exempt("migrate-governed")`` rather
+      than ``write_guard``, because it is NOT member-reachable — exempt-WITH-JUSTIFICATION, never
+      silently dropped). ``None`` ⟺ the site attributes via ``write_guard`` frames instead.
+    - ``runtime_observed`` — whether the L2b battery exercises the site. The #445 boot/admin bound:
+      ``_recreate_memory_table`` / ``_replay_record`` carry L2a structural coverage ONLY (never
+      member verbs), so they are ``runtime_observed=False`` with their named re-open trigger."""
+
+    site: TreeMutationSite
+    justification: str
+    pin: str
+    frames: tuple[str, ...]
+    exempt_name: str | None = None
+    runtime_observed: bool = True
+
+
+def _originating_prod_site() -> tuple[str, str] | None:
+    """The ORIGINATING production ``(repo-relative file, function)`` for the mutation being observed
+    — the nearest call-stack frame executing under a workspace-member PRODUCTION root (design
+    §10.9-A CORRECTION step 2; the ``_sdk_guard`` ``co_filename`` walk). This substrate and the test
+    trees live under ``<m>/tests`` (a sibling of ``<m>/<m>``), so they are NOT under a production
+    root and are skipped — the first matching frame is the real caller (e.g.
+    ``_migrate_memory_scope``). ``None`` when no production frame is on the stack (a mutation issued
+    directly by a test — an escape with no production origin)."""
+    roots = derive_member_source_roots()
+    frame: Any = sys._getframe(1)
+    while frame is not None:
+        try:
+            resolved = Path(frame.f_code.co_filename).resolve()
+        except (OSError, ValueError):  # pragma: no cover - defensive on a synthetic/exec frame
+            frame = frame.f_back
+            continue
+        if any(resolved.is_relative_to(root) for root in roots):
+            rel = (
+                resolved.relative_to(_REPO_ROOT).as_posix()
+                if resolved.is_relative_to(_REPO_ROOT)
+                else resolved.as_posix()
+            )
+            return (rel, frame.f_code.co_name)
+        frame = frame.f_back
+    return None
+
+
+def classify_tree_observed_write(
+    observed: ObservedWrite, allowlist: Sequence[TreeWriteAllowlistEntry]
+) -> bool:
+    """True iff the observed mutation is ATTRIBUTED (design §10.9-A CORRECTION L2b, deny-by-default,
+    ONE uniform rule): EITHER it carries a ``write_guard`` label, OR it carries a NAMED
+    ``governed_exempt`` token whose allowlist entry's site MATCHES the stack-derived origin. A site
+    BORROWING another site's token fails the ``(file, symbol)`` match (design step 4). A mutation
+    matching neither is UNCLASSIFIED (the red signal). getattr-tolerant at HEAD: ``active_exempt`` is
+    unbuilt → ``exempt`` is None → the migrate write is unclassified → RED-until-built."""
+    if observed.label is not None:
+        return True
+    if observed.exempt is None or observed.origin_site is None:
+        return False
+    for entry in allowlist:
+        if entry.exempt_name == observed.exempt:
+            return (entry.site.file, entry.site.function) == observed.origin_site
+    return False
+
+
+def _module_for_repo_relative_file(rel: str, repo_root: Path = _REPO_ROOT) -> ModuleType | None:
+    """Import the module for a repo-relative production file path (e.g.
+    ``loremaster/loremaster/principals.py`` → ``loremaster.principals``). Derives the dotted name
+    relative to the member DIR, so the observer's patch-set is DERIVED from the allowlist files (not
+    a hand-list of modules) — the observer's own reach a checked variable (#446). None if the path
+    is under no known member dir."""
+    parts = Path(rel).with_suffix("").parts
+    for member in declared_workspace_members(repo_root):
+        if len(parts) >= 2 and parts[0] == member:
+            return importlib.import_module(".".join(parts[1:]))
+    return None
+
+
+def seam_modules_for_tree_allowlist(
+    allowlist: Sequence[TreeWriteAllowlistEntry], repo_root: Path = _REPO_ROOT
+) -> tuple[ModuleType, ...]:
+    """The distinct modules whose store seam the L2b observer must patch — DERIVED from the
+    whole-tree allowlist entries' files (design §10.9-A CORRECTION step 2, the observer's reach a
+    checked variable). Passed as ``observe_governed_table_writes(..., extra_modules=…)`` so a NEW
+    allowlisted site in a NEW file joins the observer's patch-set by the same derivation that
+    classifies it (never a hand-list of modules)."""
+    modules: list[ModuleType] = []
+    seen: set[str] = set()
+    for entry in allowlist:
+        module = _module_for_repo_relative_file(entry.site.file, repo_root)
+        if module is not None and module.__name__ not in seen:
+            seen.add(module.__name__)
+            modules.append(module)
+    return tuple(modules)
