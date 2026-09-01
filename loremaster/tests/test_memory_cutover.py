@@ -247,7 +247,14 @@ def _seed_ledger(path: Path) -> list[str]:
     try:
         for text in (_SEED_MEMORY_TEXT, _SEED_MEMORY_TEXT_2):
             refs_stamp = derive_refs_stamp([])  # no refs → the empty stamp
-            memory_id = derive_memory_id(text, refs_stamp)
+            # #439 (design §10.9-B): the production deterministic id folds the owner pair; use the
+            # shared subject these tests recall under so the restore keys + re-mints in place.
+            memory_id = derive_memory_id(
+                text,
+                refs_stamp,
+                owner_principal=_GOV_SUBJECT.principal_id,
+                owner_agent=_GOV_SUBJECT.agent_id,
+            )
             ledger.record(
                 memory_id=memory_id,
                 text=text,

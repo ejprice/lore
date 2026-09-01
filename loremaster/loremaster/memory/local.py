@@ -592,7 +592,16 @@ class LocalMemoryBackend:
         resolved_source = source if source is not None else MemorySource(kind=_DEFAULT_SOURCE_KIND)
         resolved_labels = list(labels or ())
         refs_stamp = derive_refs_stamp(self._refs_from_labels(resolved_labels))
-        memory_id = derive_memory_id(text, refs_stamp)
+        # #439 (design §10.9-B): fold the RESOLVED owner pair into the id so a content
+        # collision across DIFFERENT owners is UNREPRESENTABLE (the create-path UPSERT can
+        # never name a foreign-owned row). ``subject`` is non-None here (an identity-less
+        # write already denied above). Same (owner, text, refs) still dedups in place.
+        memory_id = derive_memory_id(
+            text,
+            refs_stamp,
+            owner_principal=subject.principal_id,
+            owner_agent=subject.agent_id,
+        )
         now = datetime.now(UTC)
         resolved_expires = self._resolve_expiry(kind, expires_at, now)
 
@@ -675,7 +684,11 @@ class LocalMemoryBackend:
             content[_COL_OWNER_PRINCIPAL] = RecordID(PRINCIPAL_TABLE, subject.principal_id)
             content[_COL_OWNER_AGENT] = RecordID(AGENT_TABLE, subject.agent_id)
             content[_COL_SCOPE] = resolved_scope
-            await self._apply([self._upsert_fragment(memory_id, content)])
+            # F5 (design §10.9-A L2a/L2b): the create-path UPSERT is an allowlisted RAW memory
+            # mutation; run it inside ``governed.write_guard`` so the F5 runtime seam attributes it
+            # to this frame (a memory write outside every guard is UNCLASSIFIED — deny-by-default).
+            with governed.write_guard("remember"):
+                await self._apply([self._upsert_fragment(memory_id, content)])
         return memory_id
 
     async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
@@ -950,7 +963,11 @@ class LocalMemoryBackend:
         :meth:`remember`, so a note that reached only the ledger is replayed by
         :meth:`restore_from_ledger` — no memory is lost.
         """
-        await self._query(f"REMOVE TABLE IF EXISTS {MEMORY_TABLE}")
+        # F5 (design §10.9-A L2a): the boot/admin REMOVE TABLE is an allowlisted RAW memory mutation
+        # (RES-1 — reachable only from ``rebuild_embeddings``); run it inside ``governed.write_guard``
+        # so it is attributable at the F5 seam like every other memory-table mutation.
+        with governed.write_guard("_recreate_memory_table"):
+            await self._query(f"REMOVE TABLE IF EXISTS {MEMORY_TABLE}")
         await self.ensure_ready()
         logger.debug(
             "memory.schema.recreated", extra={"database": self._database, "dim": self._dim}
@@ -1126,12 +1143,16 @@ class LocalMemoryBackend:
         stored ``importance`` inside the UPDATE makes each bump atomic; the
         ``math::min`` (a single-array form) still clamps at the ceiling.
         """
-        for memory in memories:
-            await self._query(
-                f"UPDATE type::record('{MEMORY_TABLE}', $id) SET {_COL_IMPORTANCE} = "
-                f"math::min([$ceiling, {_COL_IMPORTANCE} + $step])",
-                {"id": memory.id, "ceiling": _IMPORTANCE_CEILING, "step": REINFORCEMENT_STEP},
-            )
+        # F5 (design §10.9-A L2a/L2b + §10.9-C): the reinforcement bump is an allowlisted RAW memory
+        # mutation on the NON-governed ``importance`` column ONLY; run it inside
+        # ``governed.write_guard`` so the F5 seam attributes each observed bump to this frame.
+        with governed.write_guard("_reinforce"):
+            for memory in memories:
+                await self._query(
+                    f"UPDATE type::record('{MEMORY_TABLE}', $id) SET {_COL_IMPORTANCE} = "
+                    f"math::min([$ceiling, {_COL_IMPORTANCE} + $step])",
+                    {"id": memory.id, "ceiling": _IMPORTANCE_CEILING, "step": REINFORCEMENT_STEP},
+                )
 
     def _row_to_recalled(
         self, row: dict[str, Any], existing_chunks: set[str]
@@ -1269,7 +1290,11 @@ class LocalMemoryBackend:
             supersedes=supersedes if isinstance(supersedes, str) else None,
             vector=vector,
         )
-        await self._apply([self._upsert_fragment(record.memory_id, content)])
+        # F5 (design §10.9-A L2a): the ledger-replay UPSERT is an allowlisted RAW memory mutation
+        # (RES-1 boot/admin — the STORED id, never a re-derivation); run it inside
+        # ``governed.write_guard`` so it is attributable at the F5 seam.
+        with governed.write_guard("_replay_record"):
+            await self._apply([self._upsert_fragment(record.memory_id, content)])
 
     # -- write helpers ------------------------------------------------------
 

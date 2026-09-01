@@ -464,7 +464,15 @@ def _backend_recalled(
     """
     now = datetime.now(UTC)
     return RecalledMemory(
-        id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"memory:{text}:{','.join(chunk_keys)}")),
+        # A realistic, well-formed uuid5 in the #439 owner-folded shape production now mints
+        # (design §10.9-B); the pipeline reads only .text/.score/.refs, so the fixture owner is a
+        # placeholder — this id value is never asserted against a real backend mint.
+        id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"memory:fixture:fixture:{text}:{','.join(chunk_keys)}",
+            )
+        ),
         text=text,
         score=score,
         kind=kind,

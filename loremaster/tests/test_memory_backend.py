@@ -25,14 +25,14 @@ Two new modules the STUB phase will create, imported here as the contract:
       ``REINFORCEMENT_STEP`` — the plan-pinned defaults.
 * ``loremaster.memory.local`` — ``LocalMemoryBackend`` (async).
 
-IDENTITY BACKWARD-COMPAT: memory ids stay ``uuid5``-content-derived exactly as
-the v0.3 ledger mints them —
-``uuid5(NAMESPACE_URL, f"memory:{note_text}:{refs_stamp}")`` where ``refs_stamp``
-is the sorted, ``,``-joined ``chunk_key@key_version`` stamp of the memory's
-``lore_ref`` labels (empty when it carries none). This is reconstructed
-INDEPENDENTLY below (mirroring ``test_memory_durability.expected_memory_id``) so
-the ledger replay re-mints identical ids — the seam that keeps a restore an
-in-place overwrite, never a duplicate.
+IDENTITY: memory ids are ``uuid5``-content-derived and DETERMINISTIC. Since #439
+(design §10.9-B) the ``uuid5`` name folds the OWNER pair too —
+``uuid5(NAMESPACE_URL, f"memory:{owner_principal}:{owner_agent}:{note_text}:{refs_stamp}")``
+— where ``refs_stamp`` is the sorted, ``,``-joined ``chunk_key@key_version`` stamp
+of the memory's ``lore_ref`` labels (empty when it carries none). This is
+reconstructed INDEPENDENTLY below (folding the shared ADMIN owner this suite
+mints under) so the ledger replay re-mints identical ids — the seam that keeps a
+restore an in-place overwrite, never a duplicate.
 
 HERMETIC HARNESS: a real per-test SurrealDB database (``_surreal_harness`` — a
 unique throwaway db under the ``lore_test`` namespace, reaped on exit), the
@@ -157,6 +157,12 @@ _GOV_SUBJECT = pdp.Subject(
 )
 _GOV_SCOPE = "server"
 
+# The owner pair the shared ADMIN subject folds into every backend-minted memory id (#439 owner
+# fold, design §10.9-B). The independent id oracle + the frozen literals below fold the SAME pair, so
+# ``expected_memory_id(note)`` matches what ``remember`` (via ``_GovernedTestBackend``) mints.
+_OWNER_PRINCIPAL = _GOV_SUBJECT.principal_id
+_OWNER_AGENT = _GOV_SUBJECT.agent_id
+
 
 class _GovernedTestBackend:
     """Transparent proxy that injects the shared ADMIN ``subject`` (+ ``scope='server'`` on
@@ -258,29 +264,43 @@ def expected_refs_stamp(lore_refs: list[tuple[str, int]]) -> str:
     return _REF_JOIN.join(stamped)
 
 
-def expected_memory_id(note_text: str, lore_refs: list[tuple[str, int]] | None = None) -> str:
+def expected_memory_id(
+    note_text: str,
+    lore_refs: list[tuple[str, int]] | None = None,
+    *,
+    owner_principal: str = _OWNER_PRINCIPAL,
+    owner_agent: str = _OWNER_AGENT,
+) -> str:
     """The deterministic ``uuid5`` id for a memory, computed from the convention.
 
-    ``uuid5(NAMESPACE_URL, "memory:{note_text}:{refs_stamp}")``. Independent
-    oracle for the dedup/overwrite/backward-compat invariants.
+    ``uuid5(NAMESPACE_URL, "memory:{owner_principal}:{owner_agent}:{note_text}:{refs_stamp}")``
+    (#439 owner fold, design §10.9-B). Independent oracle for the
+    dedup/overwrite/backward-compat invariants — the owner pair defaults to the
+    shared ADMIN subject this suite mints under, so ``expected_memory_id(note)``
+    matches what ``remember`` mints via ``_GovernedTestBackend``.
     """
     refs_stamp = expected_refs_stamp(list(lore_refs or ()))
-    name = _ID_SEPARATOR.join((_ID_PREFIX, note_text, refs_stamp))
+    name = _ID_SEPARATOR.join(
+        (_ID_PREFIX, owner_principal, owner_agent, note_text, refs_stamp)
+    )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
 
 
 # --- Pinned LITERAL uuid5 ids (belt-and-braces on the convention) -----------
 # The note text + chunk key the literals were computed for. If either the id
 # scheme or these literals drift, the pin below breaks loudly — the point.
+# RECOMPUTED for the #439 owner fold (owner corpse_a_admin/corpse_a_agent) by an
+# INDEPENDENT convention reimplementation (scripts/compute_ownerfold_golden_ids_63a_iv.py —
+# raw uuid5, not derive_memory_id), so they stay a genuine cross-check.
 PG_NOTE = (
     "PG 18 mounts the data volume at /var/lib/postgresql, not "
     "/var/lib/postgresql/data, or pg_ctlcluster errors at startup."
 )
 PINNED_CHUNK_KEY = "loremaster:loremaster/memory/store.py:symbol:MemoryStore:0"
 
-_LITERAL_ID_NO_REFS = "e2bc45a8-8fda-54f1-af83-8a8d1a6b46e6"
-_LITERAL_ID_REF_V1 = "7f7e4e9a-d085-5b08-8d2d-12dc695fbdce"
-_LITERAL_ID_REF_V3 = "e48db6b6-3dd4-572a-843b-8203fcd3d58b"
+_LITERAL_ID_NO_REFS = "9f902f95-3ca3-507e-8378-64edeb5c3e3e"
+_LITERAL_ID_REF_V1 = "263cce46-ef64-53a0-9e56-1b4564865257"
+_LITERAL_ID_REF_V3 = "68e0d114-91ca-5207-90e2-98d8176c63bc"
 
 # ===========================================================================
 # Production-representative memory prose — the ACTUAL range/shape of operator
@@ -1511,24 +1531,37 @@ class TestMovedMemoryIdHelpersParity:
 
     def test_memory_id_ascii_no_stamp(self) -> None:
         assert (
-            derive_memory_id("PG 18 mounts the data volume at /var/lib/postgresql", "")
-            == "9907af1b-5a77-53c1-a600-c09400ba6600"
+            derive_memory_id(
+                "PG 18 mounts the data volume at /var/lib/postgresql",
+                "",
+                owner_principal=_OWNER_PRINCIPAL,
+                owner_agent=_OWNER_AGENT,
+            )
+            == "a7ed71cd-b3d4-5efc-97d8-d72c5dc2387a"
         )
 
     def test_memory_id_ascii_with_stamp(self) -> None:
         assert (
             derive_memory_id(
-                "PG 18 mounts the data volume at /var/lib/postgresql", "a_chunk@1,b_chunk@2"
+                "PG 18 mounts the data volume at /var/lib/postgresql",
+                "a_chunk@1,b_chunk@2",
+                owner_principal=_OWNER_PRINCIPAL,
+                owner_agent=_OWNER_AGENT,
             )
-            == "1bc26fcc-e469-584a-b83a-977467292bf8"
+            == "85095576-efeb-544e-b2bc-14ff7e1e29fd"
         )
 
     def test_memory_id_unicode_note_text_no_stamp(self) -> None:
         # A non-ASCII note (arrows, accents, emoji, CJK) hashes identically before
         # and after the move — the uuid5 name is the raw unicode string.
         assert (
-            derive_memory_id("SurrealDB RecordID → str(id) everywhere; café ☕ naïve — 日本語", "")
-            == "0ed95165-983e-56e2-aad4-023ba8b1ceae"
+            derive_memory_id(
+                "SurrealDB RecordID → str(id) everywhere; café ☕ naïve — 日本語",
+                "",
+                owner_principal=_OWNER_PRINCIPAL,
+                owner_agent=_OWNER_AGENT,
+            )
+            == "6aa88d6f-9b70-5d78-b592-5be74c3d6995"
         )
 
     def test_memory_id_unicode_note_text_with_stamp(self) -> None:
@@ -1536,17 +1569,24 @@ class TestMovedMemoryIdHelpersParity:
             derive_memory_id(
                 "SurrealDB RecordID → str(id) everywhere; café ☕ naïve — 日本語",
                 "a_chunk@1,b_chunk@2",
+                owner_principal=_OWNER_PRINCIPAL,
+                owner_agent=_OWNER_AGENT,
             )
-            == "ff67ea31-7066-5e4c-8a9e-62d8b55d3244"
+            == "f5355796-304f-5a36-9356-cc16f331da36"
         )
 
     def test_memory_id_empty_note_text_no_stamp(self) -> None:
-        assert derive_memory_id("", "") == "21b8f686-bdd7-5438-af5b-3dfd49cd02a5"
+        assert (
+            derive_memory_id(
+                "", "", owner_principal=_OWNER_PRINCIPAL, owner_agent=_OWNER_AGENT
+            )
+            == "16ddd5ce-18b0-5220-9a14-b1374b0818f6"
+        )
 
     def test_memory_id_empty_note_text_with_stamp(self) -> None:
-        assert derive_memory_id("", "a_chunk@1,b_chunk@2") == (
-            "3f735716-59d8-5843-a3ac-b4ce33870f7b"
-        )
+        assert derive_memory_id(
+            "", "a_chunk@1,b_chunk@2", owner_principal=_OWNER_PRINCIPAL, owner_agent=_OWNER_AGENT
+        ) == ("cffa6d96-9e3e-56d4-9b11-85bc7b245251")
 
     # -- end-to-end: reproduce THIS FILE'S pre-existing independent literals --
 
@@ -1555,15 +1595,19 @@ class TestMovedMemoryIdHelpersParity:
         # this module pinned INDEPENDENTLY (``_LITERAL_ID_*`` computed from the
         # documented convention, not from any code under test) — a cross-check
         # tying the moved helpers to the file's own oracle.
-        assert derive_memory_id(PG_NOTE, derive_refs_stamp([])) == _LITERAL_ID_NO_REFS
+        _owner = {"owner_principal": _OWNER_PRINCIPAL, "owner_agent": _OWNER_AGENT}
+        assert derive_memory_id(PG_NOTE, derive_refs_stamp([]), **_owner) == _LITERAL_ID_NO_REFS
         assert (
-            derive_memory_id(PG_NOTE, derive_refs_stamp([MemoryRef(chunk_key=PINNED_CHUNK_KEY)]))
+            derive_memory_id(
+                PG_NOTE, derive_refs_stamp([MemoryRef(chunk_key=PINNED_CHUNK_KEY)]), **_owner
+            )
             == _LITERAL_ID_REF_V1
         )
         assert (
             derive_memory_id(
                 PG_NOTE,
                 derive_refs_stamp([MemoryRef(chunk_key=PINNED_CHUNK_KEY, key_version=3)]),
+                **_owner,
             )
             == _LITERAL_ID_REF_V3
         )
@@ -1575,9 +1619,12 @@ class TestMovedMemoryIdHelpersParity:
         chunk_key = "odoo:custom:models/account.py:symbol:AccountMove:0"
         ref = MemoryRef(chunk_key=chunk_key, key_version=3)
         assert derive_refs_stamp([ref]) == expected_refs_stamp([(chunk_key, 3)])
-        assert derive_memory_id(PG_NOTE, derive_refs_stamp([ref])) == (
-            expected_memory_id(PG_NOTE, [(chunk_key, 3)])
-        )
+        assert derive_memory_id(
+            PG_NOTE,
+            derive_refs_stamp([ref]),
+            owner_principal=_OWNER_PRINCIPAL,
+            owner_agent=_OWNER_AGENT,
+        ) == (expected_memory_id(PG_NOTE, [(chunk_key, 3)]))
 
 
 # ===========================================================================

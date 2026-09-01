@@ -6649,10 +6649,19 @@ class _GovernedAppContext:
 
     _governed_context: AppContext
     _governed_capability: str
+    #: The resolved subject's owner pair (#439 owner fold) — the id derivation folds these, so a
+    #: test that pins ``remember``'s minted id computes ``derive_memory_id(..., owner_principal=,
+    #: owner_agent=)`` over THIS pair (ground truth: resolved via the real ``_resolve_subject`` seam).
+    _owner_principal: str
+    _owner_agent: str
 
-    def __init__(self, context: AppContext, capability: str) -> None:
+    def __init__(
+        self, context: AppContext, capability: str, owner_principal: str, owner_agent: str
+    ) -> None:
         self._governed_context = context
         self._governed_capability = capability
+        self._owner_principal = owner_principal
+        self._owner_agent = owner_agent
 
     async def remember(self, text: str, **kwargs: Any) -> str:
         kwargs.setdefault("capability", self._governed_capability)
@@ -6710,7 +6719,10 @@ async def governed_ctx(
             "loremaster.server.get_access_token",
             lambda: access_token(subject=_GOVERNED_TOOL_EMAIL),
         )
-        yield _GovernedAppContext(ctx, capability)
+        # Resolve the subject through the REAL composition-root seam (the same one ``remember``
+        # uses) so a test pinning the minted id folds the ACTUAL owner pair (#439), never a guess.
+        subject = await ctx._resolve_subject(capability)  # noqa: SLF001 - test reads the resolved owner
+        yield _GovernedAppContext(ctx, capability, subject.principal_id, subject.agent_id)
     finally:
         await ctx.aclose()
 
@@ -6745,10 +6757,13 @@ class TestSaveMemoryCutover:
         note = "the discount rounding rule lives in pkg/pricing/rules.py"
         memory_id = await getattr(cutover_ctx, "remember")(note, refs=[_CUTOVER_CHUNK_KEY])
         expected = derive_memory_id(
-            note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+            note,
+            derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
         )
         assert memory_id == expected, (
-            "a save with refs must mint the v0.3 deterministic id (text+refs → same id)"
+            "a save with refs must mint the deterministic id (owner+text+refs → same id)"
         )
 
     async def test_save_memory_no_refs_matches_the_v03_empty_stamp_id(
@@ -6758,9 +6773,14 @@ class TestSaveMemoryCutover:
         # mints the v0.3 empty-stamp id, so an old note and a new one collapse.
         note = "champion routing warehouse selection lives in pkg/routing.py"
         memory_id = await getattr(cutover_ctx, "remember")(note)
-        expected = derive_memory_id(note, derive_refs_stamp([]))
+        expected = derive_memory_id(
+            note,
+            derive_refs_stamp([]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
+        )
         assert memory_id == expected, (
-            "a bare save must still mint the v0.3 deterministic id (backward compat)"
+            "a bare save must still mint the deterministic id (empty-stamp, owner-folded)"
         )
 
     async def test_save_memory_over_the_digest_threshold_gets_a_guidance_warning(
@@ -6771,7 +6791,12 @@ class TestSaveMemoryCutover:
         long_note = "x" * 600
         rendered = await getattr(cutover_ctx, "remember")(long_note)
         assert "atomic" in rendered.lower()
-        expected_id = derive_memory_id(long_note, derive_refs_stamp([]))
+        expected_id = derive_memory_id(
+            long_note,
+            derive_refs_stamp([]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
+        )
         assert expected_id in rendered, "the note must still be saved under its real id"
 
     async def test_save_memory_under_the_digest_threshold_is_unchanged(
@@ -6779,7 +6804,12 @@ class TestSaveMemoryCutover:
     ) -> None:
         note = "a short atomic fact"
         memory_id = await getattr(cutover_ctx, "remember")(note)
-        expected = derive_memory_id(note, derive_refs_stamp([]))
+        expected = derive_memory_id(
+            note,
+            derive_refs_stamp([]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
+        )
         assert memory_id == expected, (
             "a short save's return must stay the bare id — no warning noise"
         )
@@ -8538,7 +8568,12 @@ class TestSaveMemoryReservedMetadataGuard:
         memory_id = await getattr(cutover_ctx, "remember")(
             note, metadata={"author": "ejprice", "reviewed": "yes"}
         )
-        expected_empty_stamp_id = derive_memory_id(note, derive_refs_stamp([]))
+        expected_empty_stamp_id = derive_memory_id(
+            note,
+            derive_refs_stamp([]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
+        )
         assert memory_id == expected_empty_stamp_id, (
             "a benign metadata key is a plain label, never a ref — it must not "
             "fold into the deterministic id (id must equal the bare empty-stamp id)"
@@ -8553,7 +8588,10 @@ class TestSaveMemoryReservedMetadataGuard:
         note = "champion routing warehouse selection lives in pkg/routing.py"
         memory_id = await getattr(cutover_ctx, "remember")(note, refs=[_CUTOVER_CHUNK_KEY])
         expected_with_ref_id = derive_memory_id(
-            note, derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)])
+            note,
+            derive_refs_stamp([MemoryRef(chunk_key=_CUTOVER_CHUNK_KEY)]),
+            owner_principal=getattr(cutover_ctx, "_owner_principal"),  # resolved owner (#439)
+            owner_agent=getattr(cutover_ctx, "_owner_agent"),
         )
         assert memory_id == expected_with_ref_id, (
             "the legitimate refs= path must still mint the v0.3 deterministic id "

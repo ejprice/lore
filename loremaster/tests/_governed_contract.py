@@ -688,7 +688,18 @@ def governed_table_raw_mutation_sites(
     """AST-derive every RAW SurrealQL mutation STATEMENT of ``table`` in ``source``, keyed by
     enclosing function (design §10.9-A L1 — the ``_SCANNED_MEMBERS`` statement-shape idiom, NEVER a
     name list). Docstrings/prose excluded; only real SurrealQL mutation syntax counted. This is what
-    makes a NEW unclassified write site RED — the derived set GROWS and the allowlist does not."""
+    makes a NEW unclassified write site RED — the derived set GROWS and the allowlist does not.
+
+    ⚠ NAMED BOUND (finding #444 — WHEN YOU CANNOT CLOSE A HOLE, PIN IT): the scan targets the
+    LITERAL table name or its interpolated module CONSTANT (``{MEMORY_TABLE}``). A raw write whose
+    table name is a runtime VARIABLE (``tbl = self._which_table(); f"UPDATE type::record('{tbl}',
+    …)"``) renders ``{tbl}`` in :func:`_statement_shape`, matches NEITHER anchor, and is never
+    derived — so deny-by-default never fires for it (adversary-63a-iv §F-2, wrong-build D'). NOT
+    closed deliberately: all real memory sites use the ``MEMORY_TABLE`` constant, so widening the
+    scan to a dynamic table name buys nothing and adds false-positive risk. This bound is PINNED by
+    ``test_memory_enforcement_bounds_63a_iv.py`` (it goes RED the day the scan is widened to catch a
+    dynamically-named site — delete the pin then and say so). RE-OPEN TRIGGER: any production write
+    that constructs a governed table name dynamically (a non-constant table argument)."""
     tree = ast.parse(source)
     owner = _enclosing_functions(tree)
     docstrings = _docstring_node_ids(tree)
@@ -789,7 +800,17 @@ def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
     ``governed.active_write_guard()`` label at call time. Patching the imported names (not the source
     module) is required — the seams are bound by name in each module (finding: monkeypatch the imported
     name). getattr-tolerant on the guard-context: at HEAD ``active_write_guard`` is unbuilt → every
-    observed mutation records label=None → the F5 runtime pin reds (deny-by-default)."""
+    observed mutation records label=None → the F5 runtime pin reds (deny-by-default).
+
+    ⚠ NAMED BOUND (finding #445 — L2b runtime reach): the L2b battery observes the three
+    MEMBER-VERB seam paths (remember→execute_transaction, _reinforce→run_query,
+    guarded_write→execute_read_transaction). The two remaining allowlisted frames — ``_replay_record``
+    and ``_recreate_memory_table`` — are boot/admin/replay paths NOT exercised by the battery, so
+    they carry L2a (structural ``function_calls_write_guard``) coverage ONLY; a runtime-escape inside
+    them would pass both layers unobserved. Right-sized (design §10.9-A: "a production-mode assert is
+    OPTIONAL") — both are boot/admin, never member verbs, and every member-reachable write carries
+    BOTH structural + runtime coverage. RE-OPEN TRIGGER: either frame becoming member-reachable, or
+    the L2b battery being asked to certify a boot/admin write path."""
     import loremaster.governed as governed_mod
     import loremaster.memory.local as local_mod
 

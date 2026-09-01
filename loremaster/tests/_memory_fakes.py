@@ -305,7 +305,17 @@ class FakeMemoryBackend:
         resolved_source = source if source is not None else MemorySource(kind=_DEFAULT_SOURCE_KIND)
         resolved_labels = list(labels or ())
         refs_stamp = derive_refs_stamp(_refs_from_labels(resolved_labels))
-        memory_id = derive_memory_id(text, refs_stamp)
+        # #439 (design §10.9-B): fold the owner pair into the id EXACTLY as the real backend does
+        # (``LocalMemoryBackend.remember``) — the fake calls the SAME ``derive_memory_id`` (ONE
+        # derivation policy), supplying the owner from its ``subject``. A fake that minted the
+        # owner-less id would silently diverge from the real backend and test the retired scheme
+        # (the adversary's P5 divergence). ``subject`` may be None for a legacy non-governed caller;
+        # an empty owner is then folded consistently (this fake never enforces governance).
+        owner_principal = getattr(subject, "principal_id", None) or ""
+        owner_agent = getattr(subject, "agent_id", None) or ""
+        memory_id = derive_memory_id(
+            text, refs_stamp, owner_principal=owner_principal, owner_agent=owner_agent
+        )
         now = _utc_now()
         resolved_expires = self._resolve_expiry(kind, expires_at, now)
 

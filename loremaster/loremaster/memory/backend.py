@@ -10,9 +10,11 @@ Qdrant-era module was deleted at P8a once every consumer was off it):
   derivation. These moved here from the Qdrant-era ``loremaster.memory.store``
   (where they were ``MemoryStore`` classmethods)
   so the local SurrealDB backend, the fakes, and the durable ledger replay share
-  ONE id-minting source of truth. The
-  id scheme is UNCHANGED (``uuid5`` over ``memory:{text}:{refs_stamp}``), so a
-  restore re-mints byte-identical ids — pinned by
+  ONE id-minting source of truth. Since #439 (design §10.9-B) the id folds the
+  OWNER pair (``owner_principal`` + ``owner_agent``) alongside the note ``text``
+  and its refs stamp, so a content collision across DIFFERENT owners is
+  unrepresentable; a restore re-mints byte-identical ids from the SAME
+  (owner, text, refs) basis — pinned by
   ``test_memory_backend.TestMovedMemoryIdHelpersParity``.
 * :class:`MemorySource` — the provenance of a memory note (``kind``/``ref``/
   ``trust``). ``trust`` is a two-value **enum**
@@ -94,8 +96,9 @@ ExistingChunksFn = Callable[[Sequence[str]], Awaitable[set[str]]]
 # The pure id-minting contract every backend + the durable ledger replay share.
 # Moved here from the Qdrant-era ``loremaster.memory.store`` (formerly
 # ``MemoryStore`` classmethods) so that module could be deleted (it was, at P8a)
-# while these survive as the ONE source of truth. The scheme is UNCHANGED, so a
-# restore re-mints byte-identical ids (pinned by ``test_memory_backend``'s parity suite).
+# while these survive as the ONE source of truth. Since #439 the id folds the
+# owner pair too (design §10.9-B), so a restore re-mints byte-identical ids from
+# the same (owner, text, refs) basis (pinned by ``test_memory_backend``'s parity suite).
 
 # UUID5 name components, joined by ``_ID_SEPARATOR``. ``memory`` namespaces the id
 # so a memory id can never collide with a structural chunk point id.
@@ -171,25 +174,39 @@ def refs_from_stamp(refs_stamp: str) -> list[MemoryRef]:
     return refs
 
 
-def derive_memory_id(text: str, refs_stamp: str) -> str:
-    """Derive the deterministic ``uuid5`` id for a note + its refs stamp.
+def derive_memory_id(
+    text: str, refs_stamp: str, *, owner_principal: str, owner_agent: str
+) -> str:
+    """Derive the deterministic ``uuid5`` id for an OWNER's note + its refs stamp.
 
-    The id is ``uuid5(NAMESPACE_URL, "memory:{text}:{refs_stamp}")`` where the
-    refs stamp comes from :func:`derive_refs_stamp`. Identical (text, refs) ⇒
-    identical id (dedup); the same text with different refs ⇒ a distinct id
-    (distinct corrections). Taking the precomputed stamp (rather than the raw
-    refs) keeps the ledger row and the id in lock-step — the ledger stores the
-    SAME stamp the id is minted from.
+    Since #439 (design §10.9-B) the id folds the OWNER pair
+    (``owner_principal`` + ``owner_agent``) alongside the note ``text`` and its
+    refs stamp: the ``uuid5`` name is
+    ``memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}``. Identical
+    (owner, text, refs) ⇒ identical id (per-owner dedup — the same agent
+    re-saving its own note collapses to one row); a DIFFERENT ``owner_principal``
+    OR ``owner_agent`` ⇒ a DISTINCT id, so a content collision across owners is
+    unrepresentable and a create-path UPSERT can never name a foreign-owned row.
+    The same owner + text with different refs ⇒ a distinct id (distinct
+    corrections). Taking the precomputed stamp (rather than the raw refs) keeps
+    the ledger row and the id in lock-step — the ledger stores the SAME stamp the
+    id is minted from.
 
     Args:
         text: The note text.
         refs_stamp: The order-insensitive refs stamp (from
             :func:`derive_refs_stamp`).
+        owner_principal: The resolved owning principal id — folded into the id so
+            a content collision across principals is unrepresentable (#439).
+        owner_agent: The resolved owning agent id — folded into the id so a
+            collision across sibling agents of one principal is unrepresentable.
 
     Returns:
         The deterministic point id as a canonical UUID string.
     """
-    name = _ID_SEPARATOR.join((_ID_PREFIX, text, refs_stamp))
+    name = _ID_SEPARATOR.join(
+        (_ID_PREFIX, owner_principal, owner_agent, text, refs_stamp)
+    )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
 
 

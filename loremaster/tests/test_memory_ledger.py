@@ -34,14 +34,19 @@ from loremaster.memory.backend import MemoryRef
 from loremaster.memory.ledger import MemoryLedger
 
 # --- The deterministic-id convention, reconstructed INDEPENDENTLY -----------
-# The memory point id is uuid5(NAMESPACE_URL, "memory:{text}:{refs_stamp}") — a
-# shared domain convention reproduced here so a test computes the expected id
-# from the convention WITHOUT reading it back from the code under test (which
-# would be tautological).
+# The memory point id is
+# uuid5(NAMESPACE_URL, "memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}")
+# — a shared domain convention (since #439, design §10.9-B) reproduced here so a test
+# computes the expected id from the convention WITHOUT reading it back from the code
+# under test (which would be tautological). The ledger keys on whatever id it is
+# handed, so these ledger tests fold a FIXED owner pair: they pin the ledger's own
+# dedup/retrieval, not the owner semantics (those are the 63a-iv contract's job).
 _ID_PREFIX = "memory"
 _ID_SEPARATOR = ":"
 _REF_FIELD_SEPARATOR = "@"
 _REF_JOIN = ","
+_OWNER_PRINCIPAL = "ledger_owner_principal"
+_OWNER_AGENT = "ledger_owner_agent"
 
 
 def expected_refs_stamp(refs: list[MemoryRef]) -> str:
@@ -61,12 +66,17 @@ def expected_refs_stamp(refs: list[MemoryRef]) -> str:
 def expected_memory_id(text: str, refs: list[MemoryRef] | None = None) -> str:
     """The deterministic ``uuid5`` id for a memory, computed from the convention.
 
-    Independent oracle: ``uuid5(NAMESPACE_URL, "memory:{text}:{refs_stamp}")`` —
-    used to assert the ledger keys on the SAME id the backend mints (so a repeated
-    record upserts one row rather than appending a duplicate).
+    Independent oracle:
+    ``uuid5(NAMESPACE_URL, "memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}")``
+    (#439 owner fold, design §10.9-B) — used to assert the ledger keys on a STABLE
+    id (so a repeated record upserts one row rather than appending a duplicate). The
+    ledger is owner-agnostic (it keys on the id it is handed), so a fixed owner pair
+    is folded here.
     """
     refs_stamp = expected_refs_stamp(list(refs or ()))
-    name = _ID_SEPARATOR.join((_ID_PREFIX, text, refs_stamp))
+    name = _ID_SEPARATOR.join(
+        (_ID_PREFIX, _OWNER_PRINCIPAL, _OWNER_AGENT, text, refs_stamp)
+    )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
 
 

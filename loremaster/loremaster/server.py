@@ -11224,8 +11224,9 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             (" semantically recalled by lore_recall,", "lore_recall"),
             (
                 " SHARED across every agent on this project, and survives restarts. "
-                "Re-saving the same text dedups (same id). This is the project's "
-                "shared notebook, distinct from your own cross-project memory.",
+                "Re-saving the same text as the same agent dedups in place (same id); "
+                "a different agent's identical text is a distinct note. This is the "
+                "project's shared notebook, distinct from your own cross-project memory.",
                 None,
             ),
         ),

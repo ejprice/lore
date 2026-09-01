@@ -15,7 +15,10 @@ tasks/findings (64) CALL — never patterns they clone (§1.1 countermand; CLAUD
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -195,6 +198,43 @@ def read_filter(subject: Subject, table: str) -> tuple[str, dict[str, Any]]:
     return pdp.authorize_filter(subject, pdp.Action.READ, table).to_surql()
 
 
+# --------------------------------------------------------------------------- #
+# F5 GUARDED-WRITE ATTRIBUTION (design §10.9-A layer 2) — the runtime guard-context.
+#
+# The enforcement-completeness instrument attributes every governed-table mutation to the FRAME that
+# issued it. ``write_guard(label)`` is a stdlib-``contextvars`` context manager each allowlisted frame
+# (and ``guarded_write``) enters around its store mutation; ``active_write_guard()`` reads the
+# innermost active label. The F5 runtime seam (``_governed_contract.observe_governed_table_writes``)
+# samples that label at each store seam, so a memory mutation running with label=None is UNCLASSIFIED
+# (deny-by-default, L2b). ``contextvars`` is the exact primitive — task-local, async-safe (the label
+# stays set across the ``await`` inside the ``with``), auto-reset — so no bespoke stack is hand-rolled.
+# --------------------------------------------------------------------------- #
+
+_ACTIVE_WRITE_GUARD: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "loremaster_active_write_guard", default=None
+)
+
+
+def active_write_guard() -> str | None:
+    """The label of the innermost active :func:`write_guard`, or ``None`` outside every guard
+    (design §10.9-A L2b — a mutation observed with ``None`` here is UNATTRIBUTED)."""
+    return _ACTIVE_WRITE_GUARD.get()
+
+
+@contextlib.contextmanager
+def write_guard(label: str) -> Iterator[None]:
+    """Attribute every governed-table mutation executed within the block to ``label`` (design
+    §10.9-A layer 2). The label is task-local (``contextvars``), so it stays set across the ``await``
+    that runs the store mutation and is reset on exit even if the mutation raises. Each allowlisted
+    memory-write frame and :func:`guarded_write` enters this around its store seam so a runtime
+    mutation is always attributable at the F5 seam (``ROUTING-IS-NOT-SHARING`` at runtime)."""
+    token = _ACTIVE_WRITE_GUARD.set(label)
+    try:
+        yield
+    finally:
+        _ACTIVE_WRITE_GUARD.reset(token)
+
+
 async def guarded_write(
     subject: Subject,
     action: Action,
@@ -321,14 +361,17 @@ async def guarded_write(
     statement_text, merged_params = compose(*fragments)
     # ONE verified BEGIN…COMMIT through the injected driver (acquire #2) — every statement checked
     # (store-ref §3). A domain rejection (the guarded set violating a schema ASSERT) rolls the whole
-    # transaction — including the composed audit — back and PROPAGATES (not swallowed).
-    results = await execute_read_transaction(
-        statement_text,
-        merged_params,
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-    )
+    # transaction — including the composed audit — back and PROPAGATES (not swallowed). The mutation
+    # runs inside ``write_guard`` so the F5 runtime seam attributes it to this guarded frame (§10.9-A
+    # L2b) — every governed-table write is classified, never anonymous at the seam.
+    with write_guard("guarded_write"):
+        results = await execute_read_transaction(
+            statement_text,
+            merged_params,
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+        )
     # row_count from the mutation's RETURN BY SHAPE: the BEGIN/COMMIT envelope carries None entries,
     # so the first LIST result is the mutation's affected rows (composed first, before the audit).
     row_payloads = [entry for entry in results if isinstance(entry, list)]

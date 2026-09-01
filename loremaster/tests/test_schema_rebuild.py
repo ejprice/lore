@@ -3011,7 +3011,14 @@ class TestMemoryJoinsSchemaRebuild:
                 # A note that reached ONLY the durable ledger (the write-through-
                 # first state of a concurrent remember mid-rebuild) — no store row.
                 refs_stamp = derive_refs_stamp([])
-                ledger_only_id = derive_memory_id(self._NOTE_2, refs_stamp)
+                # #439 (design §10.9-B): a concurrent remember mid-rebuild folds the owner pair into
+                # its id; use the same subject NOTE_1 was remembered under so the replay is faithful.
+                ledger_only_id = derive_memory_id(
+                    self._NOTE_2,
+                    refs_stamp,
+                    owner_principal=_GOV_SUBJECT.principal_id,
+                    owner_agent=_GOV_SUBJECT.agent_id,
+                )
                 ledger = MemoryLedger(str(_memory_ledger_path(manifest_path, slug)))
                 try:
                     ledger.record(
