@@ -1039,7 +1039,9 @@ enumerate-the-forbidden failure the instrument lesson names. This section closes
 
 **10.9-A — ENFORCEMENT COMPLETENESS → RULED: the three-layer instrument, deny-by-default,
 reusable per governed table (lands in §3.2 as pin family F5; 63b/64 parametrise, never clone).**
-1. **STRUCTURAL (AST, derived):** a scan derives every mutation site in `memory/local.py` whose
+1. **STRUCTURAL (AST, derived):** a scan derives every mutation site — ⚠ its FILE reach was a
+   hidden constant here (`memory/local.py` only) and is CORRECTED by the 10.9-A CORRECTION
+   below (#446): the scan walks the WHOLE derived production tree, never a file — whose
    statement shape targets `MEMORY_TABLE` with `UPSERT`/`UPDATE`/`DELETE`/`REMOVE` (the
    `_SCANNED_MEMBERS` idiom — a statement-shape derivation, never a name list); each derived site
    must be ∈ (GUARDED sites ∪ the CREATE-OWNS-IT allowlist). A NEW write site reds until
@@ -1056,6 +1058,48 @@ reusable per governed table (lands in §3.2 as pin family F5; 63b/64 parametrise
    `_reinforce` (10.9-C's two pins); `restore_from_ledger`/`rebuild_embeddings` (boot/admin only —
    the standing RES-1 bound); `migrate-governed` (its own preconditions). Entries are
    (site, justification, pin) triples; an entry whose pin is deleted leaves the allowlist.
+
+**10.9-A CORRECTION (2026-09-01, finding #446 / `lore_comms #8041` — F5's OWN reach was a hidden
+constant, the class §10.9 exists to close, inside the instrument built to close it; operator ruled
+the importance call: COVER IT NOW). The ruled MECHANISM:**
+1. **L1's file set is an OUTPUT, never an input.** The scanner takes NO file list: it walks the
+   production source of EVERY workspace member — the member roots DERIVED from
+   `[tool.uv.workspace] members` (the `registration_sites.py` / `_SCANNED_MEMBERS` seam, so a new
+   member joins the net by the same derivation that registers it everywhere else; test trees
+   excluded by the existing convention) — and returns `governed_mutation_sites(table) ->
+   {(file, symbol)}`: every site whose static statement text (string constants AND f-string
+   static parts + `MEMORY_TABLE`-symbol interpolations) carries a mutation verb
+   (`UPSERT`/`UPDATE`/`DELETE`/`REMOVE`) targeting the table. Bare, anchor-free matching (the P8d
+   sweep law). `principals.py::_migrate_memory_scope` falls out of this derivation — nothing
+   names it.
+2. **L1 ↔ L2 CROSS-CHECK, BOTH directions (the growth detector that makes the derivation itself
+   from-truth).** L2's runtime instrument matches the RESOLVED statement text at the
+   `StoreHandle`/`_query` seam (interpolation-blind-proof: at runtime the table name is literal)
+   and records each observed mutation's originating `(file, symbol)` from the call stack (the
+   `_sdk_guard` file:line precedent). The pin diffs both ways: a runtime-observed mutation whose
+   site is NOT in L1's derived set = an L1 blind spot (e.g. a concatenation-assembled statement —
+   the named #137-class static bound) → RED; an L1 site never observed by the suite = a coverage
+   gap → RED. Neither layer's reach is a constant; each checks the other (the
+   `mutation_proof.py` both-ways lesson).
+3. **The scanner's own discriminators (so the meta-reach is not the seventh defeat one level
+   up):** a fixture-tree leg — a synthetic file with an f-string `MEMORY_TABLE` UPDATE is FOUND; a
+   SELECT-only file is NOT flagged (precision control); a concatenation-obfuscated mutation is
+   NOT found and the test SAYS SO (the documented static bound L2 covers). And the live-tree run
+   must find the KNOWN classified set — reds when the derived set grows past the classification.
+4. **`migrate-governed` (`principals.py::_migrate_memory_scope`) is the allowlist's second
+   evidence-backed triple:** justification = admin-CLI-only reachability (no MCP tool path
+   reaches it) · the statement can only touch UNMIGRATED rows (`WHERE scope IS NONE` — a
+   statement-shape pin; drop the WHERE → RED; a NONE-scope row has no owner to seize) ·
+   idempotent + precondition-guarded (§2.1) · R4 driver-routed. **And it DOES take an L2 context:**
+   a NAMED exempt frame (`governed_exempt("migrate-governed", …)`) rather than
+   structural-only — so L2 keeps ONE uniform rule (every observed mutation carries the guard
+   context or a NAMED exempt token matching its own allowlist entry), and the migration's runtime
+   observations classify instead of red-ing. A site borrowing another site's token fails the
+   `(file, symbol)` match.
+5. **63b/64 reuse:** the scanner is parametrised by TABLE (`MESSAGE_TABLE`/`TO_RELATION` at 63b;
+   `task`/`finding` at 64) — ONE implementation in the shared test substrate
+   (`_governed_contract`), per-table classification registries beside the code they classify.
+   This IS the F5 that §3.2 promised 63b/64; the memory instance is its first parametrisation.
 
 **10.9-B — DEDUP × OWNERSHIP (#439's root) → RULED: fold the EXACT owner pair into
 `derive_memory_id` — `uuid5("memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}")`
