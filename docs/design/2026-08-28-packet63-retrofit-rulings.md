@@ -1100,6 +1100,26 @@ the importance call: COVER IT NOW). The ruled MECHANISM:**
    `task`/`finding` at 64) — ONE implementation in the shared test substrate
    (`_governed_contract`), per-table classification registries beside the code they classify.
    This IS the F5 that §3.2 promised 63b/64; the memory instance is its first parametrisation.
+6. **step-2 refinement (2026-09-01, contract-63a-v §FORK / `lore_comms #8044`) — the literal
+   origin∈L1 match is UNSOUND for fragment-builders and the contract's chosen reading is BLESSED
+   as the faithful realisation:** runtime classification = the guard LABEL is present OR the
+   exempt token names an allowlist entry whose registered site == the stack `origin_site`;
+   `origin_site` is consulted ONLY for that exempt match. Why this loses nothing: an
+   unlabeled/untokened runtime write REDS regardless of how its statement was assembled (the
+   concat case), and a smuggled mutation LITERAL riding a legit label is still caught one layer
+   down — L1 derives it wherever it lives and reds it unclassified. The layers complement; the
+   origin∈L1 check at L2 was redundant where it was sound and false-positive where it was not.
+   **The additive frames-match channel is REJECTED** — a set of legitimate seam-caller frames is
+   a hand-list of callers, the relocated-constant antipattern this very section exists to kill,
+   and it catches nothing the label does not. **Two riders:** (R1) the exempt-origin match is
+   sound ONLY for SELF-CONTAINED entries (literal and seam call in one symbol — true of
+   `_migrate_memory_scope`); pin the premise: an allowlist-validity check asserts every exempt
+   entry's derived literal site == its seam-call site, so a future non-self-contained candidate
+   REDS the check and surfaces the design question instead of the match being quietly loosened.
+   (R2) a production site HAND-SETTING the guard label without calling `guarded_write` passes
+   both layers — an accepted bound under the gate's stated threat model (the honest developer,
+   not the hostile author — the #138 class), NAMED in the instrument's docstring, never closed by
+   false positives.
 
 **10.9-B — DEDUP × OWNERSHIP (#439's root) → RULED: fold the EXACT owner pair into
 `derive_memory_id` — `uuid5("memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}")`
