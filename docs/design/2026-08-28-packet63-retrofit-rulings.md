@@ -1007,6 +1007,102 @@ NOT exempted, and the `dry_run=` function parameter is DELETED.**
 
 ---
 
+### 10.9 DESIGN ESCALATION (#439 / cold-audit-63a-iii NO-GO — the SAME class twice): the structural ruling
+
+Ground-truthed this session at `b0453c7`: `derive_memory_id` has exactly ONE production caller
+(`local.py:595`, the remember path); the ledger REPLAY uses the STORED `record.memory_id`
+(`local.py:869`/`:1239`), never a re-derivation; `_reinforce` runs on the SERVED post-filter
+recalled set (`local.py:841`). The class: memory write verbs were guarded ONE AT A TIME
+(invalidate → supersede-close → now the create path), each round green at every gate — the
+enumerate-the-forbidden failure the instrument lesson names. This section closes the CLASS.
+
+**10.9-A — ENFORCEMENT COMPLETENESS → RULED: the three-layer instrument, deny-by-default,
+reusable per governed table (lands in §3.2 as pin family F5; 63b/64 parametrise, never clone).**
+1. **STRUCTURAL (AST, derived):** a scan derives every mutation site in `memory/local.py` whose
+   statement shape targets `MEMORY_TABLE` with `UPSERT`/`UPDATE`/`DELETE`/`REMOVE` (the
+   `_SCANNED_MEMBERS` idiom — a statement-shape derivation, never a name list); each derived site
+   must be ∈ (GUARDED sites ∪ the CREATE-OWNS-IT allowlist). A NEW write site reds until
+   classified. Deny-by-default: unclassified = violation, never "probably fine".
+2. **RUNTIME, coverage-as-a-checked-variable (in the suite):** the `StoreHandle`/`_query` seam is
+   instrumented under test with a guard context (set by `guarded_write` and by each allowlisted
+   frame); every OBSERVED memory-table mutation must carry a context, AND the observed-site set
+   must COVER the AST-derived set (a site the suite never executed is RED, not green — reach is a
+   checked variable, the sixth-defeat lesson). A production-mode assert is OPTIONAL, not required
+   (right-sizing; the AST+observed pair is the requirement).
+3. **The allowlist is SMALL and each entry EVIDENCE-BACKED (a pin, never an opinion):** after
+   10.9-B — the owner-folded `remember` UPSERT (evidence: the id embeds the caller's OWN verified
+   pair, so it cannot name a foreign row via any public path — pinned by the F-A constructions);
+   `_reinforce` (10.9-C's two pins); `restore_from_ledger`/`rebuild_embeddings` (boot/admin only —
+   the standing RES-1 bound); `migrate-governed` (its own preconditions). Entries are
+   (site, justification, pin) triples; an entry whose pin is deleted leaves the allowlist.
+
+**10.9-B — DEDUP × OWNERSHIP (#439's root) → RULED: fold the EXACT owner pair into
+`derive_memory_id` — `uuid5("memory:{owner_principal}:{owner_agent}:{text}:{refs_stamp}")`
+(exact field order the builder's choice, PINNED once chosen). Guard-the-collision alone is
+REJECTED.**
+- **The removed behaviour is a BUG, not a feature (adjudicated old-bug-not-re-pinned, the P8d
+  dual):** under the global content-address, ANY author re-saving identical text already REPLACED
+  the row wholesale — invisible pre-ownership, a silent re-own/re-scope/revive the moment owners
+  exist (#439's three live constructions). Cross-owner dedup was never designed; it was the
+  defect wearing a feature's name.
+- **Pair-folding makes the foreign collision UNREPRESENTABLE** — allowlist-the-safe applied to
+  IDENTITY: the safe dedup set ("the same agent re-saving its own note", the taught contract's
+  actual purpose) is small and preserved exactly; the forbidden set (every cross-owner collision
+  path) never needs enumerating. It ALSO kills the existence ORACLE that dooms guard-the-collision
+  as a primary: a member whose text collides with an INVISIBLE private row would receive a DENY
+  that reveals the hidden row exists — an isolation leak built into the guard itself.
+- **No WHERE-guard on the UPSERT:** store-ref §2 — `UPSERT <id> … WHERE` on an existing id whose
+  WHERE fails is a silent no-op (cannot create), the §2 degradation shape; the unrepresentability
+  comes from the DERIVATION, pinned by mutation: remove the owner fold → the F-A constructions
+  (the cold audit's §REPRO, promoted to contract pins) go GREEN-for-the-attacker → the pin reds.
+- **Verified consequences:** ledger replay is UNAFFECTED (stored id, never re-derived — verified;
+  the `MemoryRecord`/backend docstrings saying "re-mints from text+refs_stamp" are STALE PROSE to
+  correct, P8d class); legacy content-addressed rows can never collide with owner-folded ids →
+  the legacy population is create-path-immune, supersede (guarded) stays their only door;
+  intra-principal sibling seizure (construction 2, LIVE today) dies the same way.
+- **Served prose (Leg 1):** the `lore_remember` description's *"Re-saving the same text dedups
+  (same id)"* gains *"for the same agent"* — corrected WITH the derivation, swept by the bare
+  retired-prose grep. Cross-agent duplicates within a principal are the accepted cost
+  (recall noise; explicit `supersedes=` remains the correction path) — dropped-deliberately,
+  inventoried.
+
+**10.9-C — F-B (`_reinforce`) → RULED: ACCEPT as a read-side-effect on a NON-governed column,
+allowlisted with TWO pins:** (i) the bump set ≡ the SERVED set — a row the caller cannot READ is
+never bumped (holds by construction today: `_reinforce(memories)` runs on the post-filter list —
+pin it so a refactor to pre-filter candidates reds); (ii) the bump statement touches ONLY
+`importance` (statement-shape pin — the day it grows a second column it leaves the allowlist and
+must route through `guarded_write`). Governing it would cost N guarded writes per recall for a
+bounded, ceiling-capped ranking bump on rows the caller already legitimately reads — rigor
+misallocated. Folded into SF-63-6 for operator visibility (the audit asked).
+
+**10.9-D — RES-ATOM → RULED: the fix SHAPE is named now, the residual stands as a pinned bound
+meanwhile.** The sound order is **authorize-first, execute-later**: `authorize()` the close
+(Python leg, deny before ANY durable effect) → write the ledger row → execute the guarded close +
+the new-row UPSERT as ONE composed `execute_transaction` (the guarded close as a FRAGMENT — give
+`guarded_write` a compose-with-caller shape, the `append_fragment` idiom one level up). Deny-first
+is preserved; crash-after-ledger replays the successor; close+create are in-store atomic. True
+cross-store atomicity with the SQLite ledger is impossible — that bound stays named. Owner: 63b
+(the trigger the audit suggested), finding to be FILED for the ledger row (rider); until then the
+disclosed window stands as a documented LOW bound.
+
+**OPERATOR-MAJOR? → RULED NOT MAJOR, with ONE CONFIRM flag (SF-63-6).** Grounds: 10.9-B removes
+a now-observable defect while preserving the taught contract's purpose — the ownership-isolation
+design it enforces is ALREADY operator-ruled (§9 / the 3-way rule); 10.9-A is enforcement
+engineering under the reach law the operator himself set (the "allowlist the safe" ruling, packet
+01). The same-class-twice law demanded the DESIGN be escalated — it was, to the design authority,
+and this section is that escalation discharged. **SF-63-6 (CONFIRM, non-blocking, recommend
+ADOPT):** per-agent dedup semantics + the taught-prose change + the F-B read-side-effect
+acceptance. If the operator vetoes pair-folding, the fallback is guard-the-collision WITH the
+existence-oracle cost accepted and named in the render — I recommend against it.
+
+**Wave shape:** ONE fix wave (63a-iv), full pipeline (contract → adversary → build → cold-audit):
+the 10.9-B fold + its promoted §REPRO pins · the 10.9-A instrument (F5) · the 10.9-C pins · the
+stale-prose corrections · PLUS the still-pending §10.8 audit-DDL wiring (RES-2-DDL — ruled, not
+yet landed at `b0453c7`). RES-A1's named bound (no `scope=` on the wire today) stays with its
+existing triggers; 63b consumes F5 parametrised for `message`.
+
+---
+
 *Every ruling above is within delegated authority; the four §7 sub-forks were CONFIRM items and are
 now operator-CONFIRMED 2026-08-28 with every recommendation adopted (`lore_comms #8001`) — nothing in
 this doc remains open for the operator. The security-auditor is the arbiter of §6; the
