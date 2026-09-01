@@ -959,6 +959,54 @@ NOT exempted, and the `dry_run=` function parameter is DELETED.**
 
 ---
 
+### 10.8 #438 — the production audit-DDL gap: RULED (b) WIRE IT NOW (63a-iii/-iv), not deferred
+
+- **Ruling: option (b).** `server.py::build_app_context` constructs an `AuditStore` and
+  `ensure_ready()`s `generate_audit_ddl()` on the SAME database the governed stores use, at boot,
+  alongside the other write-stack readies. Cost: one call over an emitter + store that already
+  exist (61a); a no-op re-apply every later boot (§1.1). The 64 trigger (RES-4/RES-5 — making the
+  trail LOAD-BEARING with read verbs when the task/finding ledgers land) keeps its scope: wiring
+  the DDL now takes nothing from 64.
+- **Why the deferral (a) fails, on three named laws — verified this session at `b0453c7`:**
+  1. **The green pin is the fixture fiction, verbatim (#131 / "THE TEST ENVIRONMENT IS A
+     FICTION").** `server.py` contains ZERO `AuditStore`/`generate_audit_ddl` references (grep),
+     while the 63a audit pins call `audit_store.ensure_ready()` in their OWN fixtures — the test
+     guarantees exactly the condition production lacks, so the +1-audit-row pin is green in the
+     one world where the gap cannot appear.
+  2. **The half-closed state POISONS its own re-opening (store-ref §1.7).** A production
+     admin-bypass write would AUTO-CREATE `audit` SCHEMALESS; thereafter 64's proper
+     `DEFINE TABLE IF NOT EXISTS audit SCHEMAFULL` is a SILENT NO-OP on it — the deferral is not
+     cleanly re-openable; one pre-64 bypass leaves a permanently schemaless trail (no
+     `action` ASSERT, no field typing) that only manual surgery fixes. This is #107's shape
+     pointed at the audit trail itself.
+  3. **The "latent / unreachable" premise is BELIEVED, not constructed.** It holds only if the
+     fleet's principal is a `member`; packet 65 provisions that principal and its role is not yet
+     fixed. If the operator's principal is `admin`, the §2.1 migration MANUFACTURES
+     admin-bypass-shaped acts: deleting or superseding an UNOWNED-LEGACY row (owner NONE) fails
+     every member predicate and succeeds as admin → `requires_audit` fires → the schemaless
+     auto-create, at the first post-cutover cleanup of a legacy row. A bound resting on an
+     unprovisioned role is not a bound.
+  Also rejected: a fail-closed interim (deny admin bypasses while the table is absent) — strictly
+  worse than the one-line wiring it would exist to avoid.
+- **NOT operator-major:** it completes the §9 erase-the-trail mechanism 61a/63a already ruled
+  (the operator ruled the audit carve-out itself in the authorization model); production-touching
+  is pre-authorized; no scope moves.
+- **RIDERS — and pin it like this:**
+  (i) **the pin lives at the COMPOSITION ROOT, not in a fixture:** build the app context via the
+  PRODUCTION `build_app_context` against a fresh DB with NO test-side audit ensure, then assert
+  `INFO FOR TABLE audit` shows SCHEMAFULL with the call-time `action` ASSERT present — the #131
+  class closed by construction, not by another fixture.
+  (ii) **a discriminating leg proves it is THE schemaful table:** through that same
+  production-built context, an admin-bypass `guarded_write` lands its audit row (+1), AND a
+  composed fragment carrying an out-of-domain `action` is REJECTED by the ASSERT — an
+  auto-created schemaless table passes the first and fails the second, so the pair discriminates.
+  (iii) **in-image:** the packet-65 conformance run (#139) includes the audit-table INFO
+  assertion — the artifact, not the recipe.
+  (iv) **#438 is RESOLVED with the wiring commit**, its note naming this section; the 64
+  trigger (trail-load-bearing read verbs) stays OPEN as 64's own row.
+
+---
+
 *Every ruling above is within delegated authority; the four §7 sub-forks were CONFIRM items and are
 now operator-CONFIRMED 2026-08-28 with every recommendation adopted (`lore_comms #8001`) — nothing in
 this doc remains open for the operator. The security-auditor is the arbiter of §6; the
