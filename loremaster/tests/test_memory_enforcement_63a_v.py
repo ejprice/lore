@@ -47,6 +47,7 @@ from _governed_contract import (
     declared_workspace_members,
     derive_member_source_roots,
     exempt_entry_is_self_contained,
+    exempt_frame_raw_memory_mutations,
     function_calls_named,
     governed_table_raw_mutation_sites_in_tree,
     observe_governed_table_writes,
@@ -546,6 +547,134 @@ class TestEveryExemptAllowlistEntryIsSelfContained:
         ) is True, (
             "the self-containment POSITIVE CONTROL failed — the predicate cannot recognise a genuinely "
             "self-contained entry, so its False above is for the WRONG reason (a probe needs a control)"
+        )
+
+
+# =========================================================================== #
+# R3 (design §10.9-A CORRECTION step 6, adversary-63a-v2 §R3 / finding #448) — the EXEMPT-FRAME
+# SINGLE-SHAPE ∀-pin, the SIBLING premise R1 left open. R1 pinned that the exempt-origin match is
+# SOUND (literal site == seam-call site). But the both-ways classifier trusts the WHOLE frame: ANY
+# mutation co-located in ``_migrate_memory_scope``, running under the ``migrate-governed`` token,
+# has runtime origin == the registered site BY CONSTRUCTION, so it classifies True. The frame's
+# raw-mutation SET was still a HIDDEN CONSTANT (assumed = its one blessed ``WHERE scope IS NONE``
+# write). A SECOND co-located memory ``UPDATE`` (a seizure, ``WHERE scope = <owned>``) an HONEST
+# developer could add — believing F5 covers it — launders past ALL layers: L1 collapses the two
+# SAME-VERB UPDATEs to ONE (file, function, verb) site, the base-3 first-match WHERE-none pin is
+# SHADOWED by the blessed write, and the exempt token classifies the seizure. This pin makes the
+# frame's raw-mutation SET a CHECKED VARIABLE ∀ — the reach-as-hidden-constant class ONE LEVEL DOWN,
+# inside the exempt channel R1 hardened. TEST-INFRA INVARIANT (GREEN now — the real frame holds
+# exactly its one write), NOT a production hook: it REDS the day the frame grows, forcing the
+# design question to be re-adjudicated before the laundering can ship.
+# =========================================================================== #
+
+
+class TestTheExemptFrameHoldsOnlyItsGuardedMutation:
+    """§10.9-A CORRECTION step 6 R3 — the both-ways classifier blesses the WHOLE exempt frame (a
+    co-located mutation has runtime origin == the entry's registered site by construction), so the
+    frame's ENTIRE raw-mutation set — not just the ONE statement the allowlist adjudicated — must be
+    a CHECKED VARIABLE. Today ``_migrate_memory_scope`` holds EXACTLY its one ``WHERE scope IS NONE``
+    UPDATE, so the LIVE pin is a TEST-INFRA INVARIANT (GREEN now); the discrimination — that it is
+    NOT count-blind, verb-collapsing, or first-match — is proven by a SYNTHETIC exempt frame carrying
+    a SECOND co-located SAME-VERB UPDATE (the adversary's own construction, finding #448)."""
+
+    def test_the_exempt_frame_holds_exactly_its_one_none_scope_guarded_mutation(self) -> None:
+        """⚠ GREEN at HEAD (a test-infra invariant) — ∀ exempt allowlist entries, the entry's frame
+        holds EXACTLY ONE raw memory mutation AND it is ``WHERE scope IS NONE``-restricted (the
+        allowlisted shape). ANTI-VACUITY: ≥1 exempt entry (migrate-governed) exists, so the ∀ is
+        non-empty. Reddens the day the exempt frame grows a SECOND co-located memory write — a seizure
+        (``WHERE scope = <owned>``, caught by BOTH legs) OR even a benign second ``WHERE scope IS
+        NONE`` write (caught by the count leg): EITHER voids the exemption's soundness, because the
+        classifier blesses the WHOLE frame, not the one adjudicated statement — so the design question
+        must be re-adjudicated, NOT the frame silently trusted. This closes adversary-63a-v2 §R3: the
+        base-3 ``test_migrate_memory_scope_updates_only_none_scope_rows`` reads only the FIRST
+        ``UPDATE … SET scope`` shape (a blessed write shadows a co-located seizure); this walks ALL
+        co-located memory mutations, not the first."""
+        exempt_entries = [e for e in MEMORY_TREE_ALLOWLIST if e.exempt_name is not None]
+        assert exempt_entries, (
+            "R3 anti-vacuity: no exempt allowlist entry to check — migrate-governed must be present, "
+            "else the exempt-frame single-shape ∀-pin is vacuous (design §10.9-A CORRECTION step 6 R3)"
+        )
+        for entry in exempt_entries:
+            source = (_REPO_ROOT / entry.site.file).read_text(encoding="utf-8")
+            mutations = exempt_frame_raw_memory_mutations(entry, source=source)
+            assert len(mutations) == 1, (
+                f"exempt frame {entry.site.function!r} in {entry.site.file} holds "
+                f"{len(mutations)} raw memory mutations, not EXACTLY ONE: {mutations!r}. The "
+                f"both-ways classifier blesses the WHOLE frame (a co-located write has runtime "
+                f"origin == the registered site BY CONSTRUCTION), so a SECOND co-located memory "
+                f"write launders past L1 (two same-verb UPDATEs collapse to one site) and the "
+                f"first-match WHERE-none pin (the blessed write shadows it). Re-adjudicate the "
+                f"exemption per design §10.9-A CORRECTION step 6 R3 — do NOT trust the frame."
+            )
+            only = mutations[0]
+            assert re.search(r"WHERE\s+scope\s+IS\s+NONE", only, re.IGNORECASE), (
+                f"the exempt frame {entry.site.function!r}'s raw memory mutation does not restrict "
+                f"to WHERE scope IS NONE — it can touch an OWNED row (a seizure), so it may no "
+                f"longer ride the exempt frame and must route through guarded_write: {only!r}"
+            )
+
+    def test_the_single_shape_pin_reds_an_exempt_frame_with_a_second_seizure_write(self) -> None:
+        """⚠ THE R3 DISCRIMINATION MUTATION-PROOF (the adversary's own construction, finding #448) —
+        the pin is NOT count-blind, verb-collapsing, or first-match: a SYNTHETIC exempt frame carrying
+        a SECOND co-located SAME-VERB UPDATE (the blessed ``WHERE scope IS NONE`` write + a SEIZURE
+        ``WHERE scope = <owned>``) yields TWO statements — so the exactly-one leg reds AND the seizure
+        fails the WHERE-none leg — while a single-mutation positive control yields ONE WHERE-none
+        statement (so it passes). Both synthetics use the SAME frame name AND the SAME exempt token,
+        so an extractor that special-cased the token or function name, returned a CONSTANT one-element
+        list, or COLLAPSED the two same-verb UPDATEs (the exact L1 bug §R3 walks around) is CAUGHT (a
+        probe needs a POSITIVE CONTROL — CLAUDE.md PKT-28 C1). ⚠ The second write is a SAME-VERB
+        UPDATE deliberately: the adversary's P0 showed a DIFFERENT verb (DELETE) already reds at L1
+        (the derived set grows); the same-verb UPDATE is the one L1 COLLAPSES — the whole of R3."""
+        token = "second-write-frame"  # the SAME token on both — defeats a name/token-special-cased build
+        # A seizure co-located with the blessed write: TWO same-verb UPDATEs in the ONE exempt frame.
+        # The blessed WHERE-none write must NOT shadow the seizure (collect-ALL, never first-match).
+        two_write_source = (
+            'MEMORY_TABLE = "memory"\n\n\n'
+            "async def _do_write(x):\n"
+            "    await run_query(f\"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE\")\n"
+            "    await run_query(f\"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope = $victim\")\n"
+        )
+        one_write_source = (
+            'MEMORY_TABLE = "memory"\n\n\n'
+            "async def _do_write(x):\n"
+            "    await run_query(f\"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE\")\n"
+        )
+        second_write = TreeWriteAllowlistEntry(
+            site=TreeMutationSite("synthetic/pkg/seize.py", "_do_write", "UPDATE"),
+            justification="synthetic — a second co-located seizure UPDATE launders through the frame",
+            pin="test_the_single_shape_pin_reds_an_exempt_frame_with_a_second_seizure_write",
+            frames=("_do_write",),
+            exempt_name=token,
+        )
+        one_write = TreeWriteAllowlistEntry(
+            site=TreeMutationSite("synthetic/pkg/one.py", "_do_write", "UPDATE"),
+            justification="synthetic positive control — the frame holds exactly its one blessed write",
+            pin="test_the_single_shape_pin_reds_an_exempt_frame_with_a_second_seizure_write",
+            frames=("_do_write",),
+            exempt_name=token,
+        )
+
+        seized = exempt_frame_raw_memory_mutations(second_write, source=two_write_source)
+        assert len(seized) == 2, (
+            f"the extractor did NOT see BOTH same-verb UPDATEs co-located in the exempt frame — it "
+            f"collapses / first-matches / returns a constant (the exact §R3 laundering door): {seized!r}"
+        )
+        # The exactly-one leg reds (2 ≠ 1) AND the seizure fails the WHERE-none leg — either alone
+        # excludes the wrong build; both fire on the adversary's seizure construction.
+        assert not all(
+            re.search(r"WHERE\s+scope\s+IS\s+NONE", shape, re.IGNORECASE) for shape in seized
+        ), (
+            f"a seizure (WHERE scope = <owned>) co-located in the exempt frame passed the WHERE-none "
+            f"∀-check — the shape leg is vacuous: {seized!r}"
+        )
+
+        control = exempt_frame_raw_memory_mutations(one_write, source=one_write_source)
+        assert len(control) == 1 and re.search(
+            r"WHERE\s+scope\s+IS\s+NONE", control[0], re.IGNORECASE
+        ), (
+            f"the single-mutation POSITIVE CONTROL did not yield exactly one WHERE-none statement — "
+            f"the extractor cannot recognise a compliant frame, so its len==2 above is for the WRONG "
+            f"reason (a probe needs a control): {control!r}"
         )
 
 

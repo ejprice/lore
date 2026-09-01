@@ -1120,6 +1120,59 @@ def exempt_entry_is_self_contained(entry: TreeWriteAllowlistEntry, *, source: st
     )
 
 
+def exempt_frame_raw_memory_mutations(
+    entry: TreeWriteAllowlistEntry,
+    *,
+    source: str,
+    table: str = MEMORY_TABLE,
+    table_const_hint: str = "MEMORY_TABLE",
+) -> list[str]:
+    """EVERY raw SurrealQL mutation STATEMENT of ``table`` co-located in an EXEMPT entry's frame
+    (``entry.site.function``), as reconstructed statement SHAPES — the ∀-SET the both-ways
+    classifier trusts the WHOLE frame for (design §10.9-A CORRECTION step 6 R3 /
+    adversary-63a-v2 §R3 / finding #448).
+
+    WHY A LIST OF STATEMENTS, NOT A SET OF SITES: the both-ways classifier
+    (:func:`classify_tree_observed_write`) blesses ANY mutation running under a matching exempt
+    token whose runtime origin equals the entry's registered ``(file, symbol)`` — so it trusts the
+    frame's ENTIRE raw-mutation set, not the ONE statement the allowlist adjudicated. But the
+    whole-tree scanner :func:`governed_table_raw_mutation_sites` keys by (function, VERB) and
+    COLLAPSES two same-verb writes in one function to ONE :class:`MutationSite`; and the base-3
+    justification pin reads only the FIRST ``UPDATE … SET scope`` shape. A SECOND co-located memory
+    write (a seizure ``UPDATE {table} SET scope … WHERE scope = <owned>``) therefore launders past
+    L1 (collapsed) and the first-match shape pin (shadowed) while the exempt token classifies it
+    (co-located ⇒ origin match holds) — adversary-63a-v2 §R3, the reach-as-hidden-constant class ONE
+    LEVEL DOWN inside the exempt channel R1 hardened. This returns the shape of EVERY matching
+    statement (a LIST — never a verb-keyed set, never first-match), so the R3 pin can make the
+    frame's raw-mutation SET a CHECKED VARIABLE ∀: exactly one, and that one the allowlisted shape.
+
+    ONE IMPLEMENTATION (design §3.2 RIDER): reuses the SAME statement-shape primitives as the
+    whole-tree scan — :func:`_statement_shape` / :func:`_raw_mutation_of_table` /
+    :func:`_enclosing_functions` / :func:`_docstring_node_ids` — so the #444 concatenation static
+    bound and the docstring/prose exclusion are inherited, table-parametrised. It DIFFERS from
+    :func:`governed_table_raw_mutation_sites` in exactly the axis R3 turns on: it aggregates
+    STATEMENTS (order-independent list), never (function, verb) sites, so two same-verb UPDATEs
+    are TWO entries, not one. Source-parametrised (pure): the live pin reads ``entry.site.file``;
+    the R3 discrimination mutation-proof passes a SYNTHETIC frame source. 63b/64 exempt entries
+    reuse this predicate — a governed table's contract is a parametrisation, never a copy."""
+    tree = ast.parse(source)
+    owner = _enclosing_functions(tree)
+    docstrings = _docstring_node_ids(tree)
+    shapes: list[str] = []
+    for node in ast.walk(tree):
+        if id(node) in docstrings or not isinstance(node, (ast.Constant, ast.JoinedStr)):
+            continue
+        if owner.get(id(node), "<module>") != entry.site.function:
+            continue
+        shape = _statement_shape(node)
+        if not shape:
+            continue
+        if _raw_mutation_of_table(shape, table, table_const_hint) is None:
+            continue
+        shapes.append(shape)
+    return shapes
+
+
 def _module_for_repo_relative_file(rel: str, repo_root: Path = _REPO_ROOT) -> ModuleType | None:
     """Import the module for a repo-relative production file path (e.g.
     ``loremaster/loremaster/principals.py`` → ``loremaster.principals``). Derives the dotted name
