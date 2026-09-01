@@ -961,6 +961,27 @@ NOT exempted, and the `dry_run=` function parameter is DELETED.**
 
 ### 10.8 #438 — the production audit-DDL gap: RULED (b) WIRE IT NOW (63a-iii/-iv), not deferred
 
+> **⚠ SUPERSEDED / CORRECTED 2026-09-01 (finding #440; `lore_comms #8037`) — THE PREMISE OF THIS
+> SECTION IS EMPIRICALLY FALSE; #438 was a false alarm, resolved not-a-defect.** The audit table is
+> ALREADY readied SCHEMAFULL + action-ASSERT on the production memory DB before any write can land:
+> `generate_ddl` UNCONDITIONALLY folds `_audit_statements()` (surreal_schema.py, the 61a-w4 fold —
+> re-verified in source by this sidecar 2026-09-01), `SurrealStore.ensure_ready` applies it, and
+> `build_app_context` readies the write store BEFORE constructing `LocalMemoryBackend` on the SAME
+> `surreal_database` (re-verified). Lead-verified live probe (test store, after `ensure_ready()`
+> only): `DEFINE TABLE audit … SCHEMAFULL`; out-of-domain action `'EXFILTRATE'` REJECTED by the
+> ASSERT — with the positive control, the §1.7 schemaless-auto-create hazard CANNOT trigger.
+> **All three grounds below fall** (pt 1 fixture-fiction: moot, the table is real in prod; pt 2
+> schemaless-poison: moot, never schemaless; pt 3 admin-reachability: moot as a hazard).
+> **The instrument confession, kept deliberately (P8d):** this section's grep keyed on the NAMES
+> `AuditStore|generate_audit_ddl` and missed the SHARED seam `_audit_statements` both emitters fold
+> — the "keyed on a name" instrument defeat, inside a ruling that cited the instrument lesson.
+> Necessary-but-insufficient grounds read as sufficient.
+> **What survives of this section:** the redundant explicit AuditStore wiring is DROPPED
+> (ONE-IMPLEMENTATION — `generate_ddl` already owns the audit table); contract-63a-iv's item-5
+> pins land as GREEN REGRESSION GUARDS (they red if `_audit_statements` ever leaves `generate_ddl`
+> or the ready order flips — the class closed properly); rider (iii) STANDS — the packet-65
+> in-image conformance (#139) still asserts the audit table's INFO in the deployed artifact.
+
 - **Ruling: option (b).** `server.py::build_app_context` constructs an `AuditStore` and
   `ensure_ready()`s `generate_audit_ddl()` on the SAME database the governed stores use, at boot,
   alongside the other write-stack readies. Cost: one call over an emitter + store that already
@@ -1097,8 +1118,10 @@ existence-oracle cost accepted and named in the render — I recommend against i
 
 **Wave shape:** ONE fix wave (63a-iv), full pipeline (contract → adversary → build → cold-audit):
 the 10.9-B fold + its promoted §REPRO pins · the 10.9-A instrument (F5) · the 10.9-C pins · the
-stale-prose corrections · PLUS the still-pending §10.8 audit-DDL wiring (RES-2-DDL — ruled, not
-yet landed at `b0453c7`). RES-A1's named bound (no `scope=` on the wire today) stays with its
+stale-prose corrections. (**CORRECTED 2026-09-01, #440:** the "still-pending §10.8 audit-DDL
+wiring" this line originally carried is MOOT — §10.8's premise fell (see its banner); the
+63a-iv wave instead lands contract item-5 as GREEN regression guards on the existing
+`generate_ddl` fold + ready order.) RES-A1's named bound (no `scope=` on the wire today) stays with its
 existing triggers; 63b consumes F5 parametrised for `message`.
 
 ---
