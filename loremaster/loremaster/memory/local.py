@@ -41,6 +41,7 @@ from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal, RecordID
 
 from loremaster import governed
+from loremaster.audit import AuditStore
 from loremaster.extension import DEFAULT_KEY_VERSION
 from loremaster.memory.backend import (
     IMPORTANCE_DEFAULTS_BY_KIND,
@@ -491,6 +492,27 @@ class LocalMemoryBackend:
             acquire=self._ensure_connection, drop=self._drop_connection, url=self._url
         )
 
+    @property
+    def audit_store(self) -> AuditStore:
+        """The :class:`~loremaster.audit.AuditStore` this backend supplies to
+        :func:`~loremaster.governed.guarded_write` on its bypass-reachable CLOSE paths
+        (``invalidate`` + the supersede-close), so an admin BYPASS close is AUDITED (RES-2, design
+        §10.6 rider v). Built from THIS backend's OWN connection params — the SAME accessor idiom as
+        :meth:`handle` — so ``build_memory_backend`` needs no new argument (ONE IMPLEMENTATION).
+
+        Used ONLY as the composable ``append_fragment`` builder: the audit CREATE rides the guarded
+        mutation's OWN ``BEGIN … COMMIT`` through :meth:`handle`, so this instance NEVER opens a
+        connection of its own (``append_fragment`` is pure) — a fresh instance per access leaks
+        nothing, exactly as :meth:`handle` returns a fresh ``StoreHandle`` each call.
+        """
+        return AuditStore(
+            url=self._url,
+            namespace=self._namespace,
+            database=self._database,
+            user=self._user,
+            password=self._password,
+        )
+
     async def _apply(self, fragments: list[TxnFragment]) -> None:
         """Compose ``fragments`` into ONE transaction and run it atomically.
 
@@ -589,6 +611,36 @@ class LocalMemoryBackend:
                     f"cannot supersede unknown memory {supersedes!r}: no such memory exists"
                 )
 
+            # The supersede-CLOSE is a WRITE on an EXISTING, possibly FOREIGN-owned row (design
+            # §2.5 / cold-audit §F1: "both route through guarded_write/the stamp"), so it authorizes
+            # through :func:`~loremaster.governed.guarded_write` exactly like :meth:`invalidate` — a
+            # member cannot retire ANOTHER principal's note (single-brain on writes; a denied close
+            # raises GovernedDenied and never mutates). It runs BEFORE the durable ledger write and
+            # the new-row UPSERT, so a DENIED close leaves NO orphan successor — neither a ledger row
+            # nor a Surreal row (the conscious atomicity trade: the old ONE-txn compose of
+            # [upsert, close] is dropped for close-first authorization; a member superseding a
+            # foreign row is stopped before any part of the new note lands). The close is
+            # bypass-reachable (an admin may close a foreign row), so it carries the backend's own
+            # ``audit_store`` (RES-2) — an admin bypass close is AUDITED, a member self-close is not.
+            if supersedes is not None:
+                await governed.guarded_write(
+                    subject,
+                    pdp.Action.WRITE,
+                    table=MEMORY_TABLE,
+                    row_id=supersedes,
+                    # ``superseded_by`` is ``option<string>`` (surreal_schema) — a STRING literal,
+                    # NEVER ``type::record()`` (that field-coerces and rolls the txn back). The new
+                    # ``memory_id`` is a deterministic uuid5 (hex+dashes — safe to inline). The
+                    # close ``valid_until`` self-stamps server-side (``guarded_write``'s raw
+                    # ``set_fragment`` takes no bound params of its own).
+                    set_fragment=(
+                        f"{_COL_VALID_UNTIL} = time::now(), "
+                        f"{_COL_SUPERSEDED_BY} = '{memory_id}'"
+                    ),
+                    audit=self.audit_store,
+                    store=self.handle,
+                )
+
             # Durable write-through FIRST: the ledger row is the copy a Surreal
             # failure/wipe cannot touch, keyed on the deterministic id so a re-save
             # collapses to one row and a restore re-mints in place.
@@ -617,15 +669,13 @@ class LocalMemoryBackend:
             )
             # Stamp the GOVERNED columns from the RESOLVED subject (never a caller arg — F4) + the
             # PDP-validated scope. Owners bind as record<> links (store-ref §2). ``remember`` is a
-            # CREATE of a NEW row (the creator owns it), so it stamps directly — it is ``invalidate``
-            # (a write on an EXISTING, possibly foreign-owned row) that routes through guarded_write.
+            # CREATE of a NEW row (the creator owns it), so it stamps directly — it is the WRITE on
+            # an EXISTING, possibly foreign-owned row (``invalidate`` AND the supersede-close above)
+            # that routes through guarded_write.
             content[_COL_OWNER_PRINCIPAL] = RecordID(PRINCIPAL_TABLE, subject.principal_id)
             content[_COL_OWNER_AGENT] = RecordID(AGENT_TABLE, subject.agent_id)
             content[_COL_SCOPE] = resolved_scope
-            fragments = [self._upsert_fragment(memory_id, content)]
-            if supersedes is not None:
-                fragments.append(self._close_superseded_fragment(supersedes, memory_id, now))
-            await self._apply(fragments)
+            await self._apply([self._upsert_fragment(memory_id, content)])
         return memory_id
 
     async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
@@ -669,7 +719,9 @@ class LocalMemoryBackend:
                 table=MEMORY_TABLE,
                 row_id=memory_id,
                 set_fragment=f"{_COL_VALID_UNTIL} = time::now()",
-                audit=None,
+                # The backend's own AuditStore (RES-2) — an admin BYPASS close is AUDITED (+1 audit
+                # row in the SAME txn); a member self-close (requires_audit False) writes no trail.
+                audit=self.audit_store,
                 store=self.handle,
             )
 
@@ -1291,26 +1343,6 @@ class LocalMemoryBackend:
                 f"UPSERT type::record('{MEMORY_TABLE}', ${id_param}) CONTENT ${content_param}"
             ],
             params={id_param: memory_id, content_param: content},
-        )
-
-    @staticmethod
-    def _close_superseded_fragment(old_id: str, new_id: str, now: datetime) -> TxnFragment:
-        """The fragment that closes the superseded row (audit trail preserved).
-
-        Stamps ``valid_until=now`` + ``superseded_by=<new id>`` on the old row; it
-        is KEPT (never deleted) so ``include="superseded"`` / ``as_of`` can still
-        surface it. Distinct param names from :meth:`_upsert_fragment` so the two
-        compose without a collision.
-        """
-        old_param = f"{_WRITE_PARAM_PREFIX}old_id"
-        now_param = f"{_WRITE_PARAM_PREFIX}now"
-        by_param = f"{_WRITE_PARAM_PREFIX}superseded_by"
-        return TxnFragment(
-            statements=[
-                f"UPDATE type::record('{MEMORY_TABLE}', ${old_param}) "
-                f"SET {_COL_VALID_UNTIL} = ${now_param}, {_COL_SUPERSEDED_BY} = ${by_param}"
-            ],
-            params={old_param: old_id, now_param: now, by_param: new_id},
         )
 
     async def _embed_document(self, text: str, memory_id: str) -> list[float]:

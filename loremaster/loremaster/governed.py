@@ -266,6 +266,20 @@ async def guarded_write(
             )
         requires_audit = decision.requires_audit
 
+    # (2b) RES-2 (cold-audit §RES) — an AUDITED bypass (``requires_audit`` fired — a write a member
+    # could not make) with NO audit sink is REFUSED here, BEFORE the mutation is composed or run,
+    # rather than executed UNAUDITED: a mutation without its audit row is the §9 "compromised admin
+    # erases its trail" shape from the fail-OPEN side (design §10.6 rider ii). The subject IS
+    # authorized — the TRAIL is what is missing — so this is a DISTINCT type from GovernedDenied (a
+    # per-caller denial) / GovernedConflict (a vanished row). Any consumer whose path can reach an
+    # admin bypass MUST wire a real audit sink.
+    if requires_audit and audit is None:
+        raise GovernedAuditUnavailable(
+            f"the {action.value} on {table}:{row_id} is an audited bypass (requires_audit) but no "
+            "AuditStore was supplied — refusing to run it UNAUDITED (RES-2 / §9 erase-the-trail); "
+            "the consumer must wire a real audit sink for any bypass-reachable write"
+        )
+
     # (3) the guarded mutation: carry authorize_filter(action) in the WHERE (the SAME tree the
     # Python gate evaluated), so the write re-checks ownership in the SAME statement — no
     # read-then-write TOCTOU window on the governed columns. RETURN the affected rows so row_count
@@ -286,7 +300,9 @@ async def guarded_write(
     # append_fragment "for what 63/64 compose"): the audit RIDES the mutation's BEGIN…COMMIT, so a
     # rejected mutation rolls the audit back too (no landed audit for a write that never happened).
     audited = False
-    if requires_audit and audit is not None:
+    # ``requires_audit`` here implies ``audit is not None`` — step (2b) already REFUSED the
+    # requires_audit-with-no-sink case, so the compose is unconditional on the flag (no silent skip).
+    if requires_audit:
         fragments.append(
             audit.append_fragment(
                 actor_principal=subject.principal_id,
