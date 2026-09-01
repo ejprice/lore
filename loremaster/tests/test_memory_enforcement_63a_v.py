@@ -46,6 +46,7 @@ from _governed_contract import (
     classify_tree_observed_write,
     declared_workspace_members,
     derive_member_source_roots,
+    exempt_entry_is_self_contained,
     function_calls_named,
     governed_table_raw_mutation_sites_in_tree,
     observe_governed_table_writes,
@@ -446,6 +447,150 @@ class TestTheScannerIsTableParametrised:
         assert not as_memory, (
             f"the scanner derived a MEMORY site from a message-only tree — it is not table-keyed: "
             f"{sorted(as_memory)}"
+        )
+
+
+# =========================================================================== #
+# R1 (design §10.9-A CORRECTION step 6, adversary-63a-v §MISSING-PINS) — the EXEMPT-ENTRY
+# SELF-CONTAINMENT VALIDITY pin. The exempt-origin (file, symbol) match in
+# classify_tree_observed_write is SOUND only for SELF-CONTAINED entries (literal site == seam-call
+# site). Pin the premise ∀ exempt entries so a future NON-self-contained candidate (a
+# fragment-builder: literal in _build_X, seam in _drain — 63b/64) REDS the check and surfaces the
+# design question, INSTEAD of the match being quietly loosened. This makes the exempt-match's
+# soundness condition — the hidden constant the adversary's REACH ATTACK named, one level up inside
+# the exempt channel — a CHECKED VARIABLE.
+# =========================================================================== #
+
+
+class TestEveryExemptAllowlistEntryIsSelfContained:
+    """§10.9-A CORRECTION step 6 R1 — the exempt-origin match's SOUNDNESS PREMISE (self-containment)
+    is a CHECKED VARIABLE ∀ exempt entries, not a hidden constant verified for migrate-governed
+    alone. migrate-governed IS self-contained today (its ``UPDATE {MEMORY_TABLE} … WHERE scope IS
+    NONE`` literal AND its ``run_query`` both live in ``_migrate_memory_scope``), so the LIVE pin is a
+    TEST-INFRA INVARIANT (GREEN now); the discrimination — that the check is NOT vacuous — is proven
+    by a SYNTHETIC non-self-contained entry (the second test, the adversary's own construction)."""
+
+    def test_every_exempt_allowlist_entry_is_self_contained(self) -> None:
+        """⚠ GREEN at HEAD (a test-infra invariant) — every exempt allowlist entry's L1-derived
+        literal site IS its seam-call site (``function_calls_named``: the enclosing function of the
+        raw mutation literal ALSO calls ``run_query``/``execute_transaction`` in its own file).
+        ANTI-VACUITY: at least one exempt entry (migrate-governed) exists, so the ∀ is non-empty.
+        Reddens the day a NON-self-contained exempt entry joins the allowlist (a fragment-builder
+        whose literal and seam call live in DIFFERENT symbols) — at which point the exempt-origin
+        (file, symbol) match is UNSOUND and design step 6 R1 must be re-adjudicated, NOT the match
+        quietly loosened."""
+        exempt_entries = [e for e in MEMORY_TREE_ALLOWLIST if e.exempt_name is not None]
+        assert exempt_entries, (
+            "R1 anti-vacuity: no exempt allowlist entry to check — migrate-governed must be present, "
+            "else the self-containment premise pin is vacuous (design §10.9-A CORRECTION step 6 R1)"
+        )
+        for entry in exempt_entries:
+            source = (_REPO_ROOT / entry.site.file).read_text(encoding="utf-8")
+            assert exempt_entry_is_self_contained(entry, source=source), (
+                f"exempt allowlist entry {entry.site} (token {entry.exempt_name!r}) is NOT "
+                f"self-contained: its enclosing function {entry.site.function!r} does not call the "
+                f"store seam (run_query/execute_transaction) in {entry.site.file}. The exempt-origin "
+                f"(file, symbol) match in classify_tree_observed_write is therefore UNSOUND for it "
+                f"(the runtime origin ≠ the L1 literal site). Re-adjudicate per design §10.9-A "
+                f"CORRECTION step 6 R1 — do NOT loosen the match."
+            )
+
+    def test_the_self_containment_check_reds_a_non_self_contained_exempt_entry(self) -> None:
+        """⚠ THE R1 DISCRIMINATION MUTATION-PROOF (the adversary's own construction) — the check is
+        NOT vacuous: a SYNTHETIC exempt entry whose literal (``_build_fragment``) and seam call
+        (``_drain``) live in DIFFERENT symbols FAILS the self-containment predicate, while a
+        self-contained control (literal AND seam call in ``_do_write``) PASSES. Both synthetics carry
+        the SAME exempt token, so a predicate that special-cased the token name — or returned a
+        constant — fails one of the two legs (a probe needs a POSITIVE CONTROL — CLAUDE.md PKT-28
+        C1). This excludes the wrong build the adversary warned of: a check that passes only
+        migrate-governed but does not red a genuine non-self-contained entry."""
+        # A fragment-builder shape: the raw memory UPDATE literal is BUILT in _build_fragment, but the
+        # seam call fires from a DIFFERENT frame (_drain) — the exact non-self-contained future
+        # candidate design step 6 R1 names (literal in _build_X, seam in _drain).
+        non_self_contained_source = (
+            'MEMORY_TABLE = "memory"\n\n\n'
+            "def _build_fragment(x):\n"
+            "    return f\"UPDATE type::record('{MEMORY_TABLE}', $id) SET scope = 'k'\"\n\n\n"
+            "async def _drain(x):\n"
+            "    await run_query(statement=_build_fragment(x))\n"
+        )
+        self_contained_source = (
+            'MEMORY_TABLE = "memory"\n\n\n'
+            "async def _do_write(x):\n"
+            "    await run_query(f\"UPDATE type::record('{MEMORY_TABLE}', $id) SET scope = 'k'\")\n"
+        )
+        token = "fragment-builder"  # the SAME token on both — defeats a name-special-cased predicate
+        non_self_contained = TreeWriteAllowlistEntry(
+            site=TreeMutationSite("synthetic/pkg/frag.py", "_build_fragment", "UPDATE"),
+            justification="synthetic — the literal is in _build_fragment, the seam fires from _drain",
+            pin="test_the_self_containment_check_reds_a_non_self_contained_exempt_entry",
+            frames=("_drain",),
+            exempt_name=token,
+        )
+        self_contained = TreeWriteAllowlistEntry(
+            site=TreeMutationSite("synthetic/pkg/whole.py", "_do_write", "UPDATE"),
+            justification="synthetic positive control — literal AND seam call both in _do_write",
+            pin="test_the_self_containment_check_reds_a_non_self_contained_exempt_entry",
+            frames=("_do_write",),
+            exempt_name=token,
+        )
+        assert exempt_entry_is_self_contained(
+            non_self_contained, source=non_self_contained_source
+        ) is False, (
+            "a NON-self-contained exempt entry (literal in _build_fragment, seam call in _drain) "
+            "PASSED the self-containment check — R1's premise pin is vacuous (the exempt-origin match "
+            "would be unsound for it and NOTHING would catch the mis-siting)"
+        )
+        assert exempt_entry_is_self_contained(
+            self_contained, source=self_contained_source
+        ) is True, (
+            "the self-containment POSITIVE CONTROL failed — the predicate cannot recognise a genuinely "
+            "self-contained entry, so its False above is for the WRONG reason (a probe needs a control)"
+        )
+
+
+# =========================================================================== #
+# R2 (design §10.9-A CORRECTION step 6, adversary-63a-v §MISSING-PINS) — the #138-class
+# HAND-SET-LABEL accepted bound, NAMED in the instrument docstring. A production site that hand-sets
+# a write_guard LABEL without calling guarded_write passes BOTH F5 layers — an ACCEPTED bound under
+# the gate's threat model (the honest developer, not the hostile author). RED-until-built: the
+# classifier's docstring does not name it yet (grep = 0 hits at fold).
+# =========================================================================== #
+
+
+class TestTheHandSetLabelBoundIsNamedInTheInstrumentDocstring:
+    """§10.9-A CORRECTION step 6 R2 + "A GATE NEEDS A THREAT MODEL — WRITE DOWN WHO IT IS FOR"
+    (CLAUDE.md). ``classify_tree_observed_write`` returns True on ANY write carrying a write_guard
+    label (``if observed.label is not None: return True``) — so a site that hand-sets the label
+    WITHOUT routing through ``guarded_write`` is CLASSIFIED. That is an ACCEPTED bound under the
+    gate's threat model (the honest developer, not the hostile author — the #138 class), never closed
+    by false positives. A gate whose accepted bound is UNNAMED is one the next engineer meets by an
+    outage, or "helpfully" closes — re-opening a settled trade. ⚠ RED-until-built: the docstring must
+    NAME the bound; at fold it does not."""
+
+    def test_classify_tree_observed_write_docstring_names_the_hand_set_label_bound(self) -> None:
+        """⚠ RED-until-built (a NON-TRAPPING named-bound docstring pin) — the classifier's docstring
+        must NAME the #138-class hand-set-label bound + its threat model. Non-trapping: it requires
+        ONLY the three load-bearing concept tokens the design + CLAUDE.md gate-law use — the mechanism
+        symbol (``guarded_write``, the seam a hand-set label BYPASSES), the threat-model term of art
+        (``honest`` [developer], not the hostile author), and the finding CLASS (``138`` — WHEN YOU
+        CANNOT CLOSE A HOLE, PIN IT) — never an exact phrasing. GREEN once the builder adds the bound
+        to ``classify_tree_observed_write``'s docstring in ``_governed_contract.py`` (design step 6
+        R2). ⚠ COORDINATION: that file must be in the builder's writable set (see REPORT §DECISIONS)."""
+        doc = (classify_tree_observed_write.__doc__ or "").lower()
+        required = {
+            "guarded_write": "the mechanism — a hand-set write_guard LABEL bypasses guarded_write",
+            "honest": "the threat model — the honest developer, not the hostile author",
+            "138": "the accepted-bound CLASS (#138 — WHEN YOU CANNOT CLOSE A HOLE, PIN IT)",
+        }
+        missing = {token: why for token, why in required.items() if token not in doc}
+        assert not missing, (
+            "classify_tree_observed_write's docstring does NOT name the #138-class hand-set-label "
+            f"accepted bound (design §10.9-A CORRECTION step 6 R2). Missing concept(s): {missing}. "
+            "Add a NAMED BOUND clause: a production site that hand-sets a write_guard label WITHOUT "
+            "calling guarded_write passes BOTH F5 layers — an ACCEPTED bound under this gate's threat "
+            "model (the honest developer, not the hostile author — the #138 class), never closed by "
+            "false positives."
         )
 
 

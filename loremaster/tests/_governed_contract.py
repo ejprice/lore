@@ -1091,6 +1091,35 @@ def classify_tree_observed_write(
     return False
 
 
+def exempt_entry_is_self_contained(entry: TreeWriteAllowlistEntry, *, source: str) -> bool:
+    """True iff an EXEMPT allowlist entry is SELF-CONTAINED — its L1-derived literal site IS its
+    seam-call site: the function enclosing the raw mutation literal (``entry.site.function``) ALSO
+    calls the store seam (``run_query`` / ``execute_transaction``) in ``source`` (design §10.9-A
+    CORRECTION step 6, RIDER R1 — ``lore_comms #8044`` / this doc's step 6).
+
+    WHY THIS IS THE PREMISE THE EXEMPT-ORIGIN MATCH RESTS ON: the both-ways classifier
+    (:func:`classify_tree_observed_write`) matches an exempt token by the RUNTIME ``(file, symbol)``
+    origin against the allowlist entry's registered ``site``. That match is SOUND only when the
+    literal (what L1 derives the site FROM) and the seam call (what the runtime origin walk sees) are
+    the SAME symbol — true of ``_migrate_memory_scope`` (the ``UPDATE {MEMORY_TABLE} … WHERE scope IS
+    NONE`` literal AND its ``run_query`` both live in it). For a NON-self-contained future candidate —
+    a fragment-builder whose literal is in ``_build_X`` but whose seam fires from ``_drain`` (63b/64) —
+    L1's site (``_build_X``) and the runtime origin (``_drain``) DIFFER, so the origin match would be
+    UNSOUND (a red with no design signal, or a mis-sited entry dodging it). Making self-containment a
+    CHECKED VARIABLE ∀ exempt entries surfaces that design question at allowlist-VALIDITY time — the
+    reach-as-hidden-constant class one level up, inside the exempt channel (adversary-63a-v §P1c REACH
+    ATTACK's own finding; THE LEVER: an askable premise, not a remembered property).
+
+    ONE IMPLEMENTATION (design §3.2 RIDER): reuses :func:`function_calls_named` (the channel-agnostic
+    'does this frame call ``<name>``' scan) — the SAME seam already used for the ``write_guard`` /
+    ``governed_exempt`` L2a checks. Source-parametrised (pure): the live pin reads ``entry.site.file``;
+    the R1 discrimination mutation-proof passes a SYNTHETIC non-self-contained source. 63b/64 exempt
+    entries reuse this predicate — a governed table's contract is a parametrisation, never a copy."""
+    return function_calls_named(source, entry.site.function, "run_query") or function_calls_named(
+        source, entry.site.function, "execute_transaction"
+    )
+
+
 def _module_for_repo_relative_file(rel: str, repo_root: Path = _REPO_ROOT) -> ModuleType | None:
     """Import the module for a repo-relative production file path (e.g.
     ``loremaster/loremaster/principals.py`` → ``loremaster.principals``). Derives the dotted name
