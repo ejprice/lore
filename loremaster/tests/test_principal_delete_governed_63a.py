@@ -18,6 +18,7 @@ reaped.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -171,3 +172,109 @@ class TestDeleteRefusesWhileOwningGovernedRows:
         assert await principal_store.get_by_email(_LONER_EMAIL) is None, (
             "a principal owning no governed row must delete cleanly"
         )
+
+
+# =========================================================================== #
+# RES-3 (cold-audit REPORT-cold-audit-63a §RES) — the SF-63-5 fault-PROPAGATION leg, previously
+# correct-by-construction but UNPINNED. Authored by contract-63a-iii. This is a REGRESSION GATE:
+# GREEN at HEAD (dd5c9b2 — `_table_exists` has no try/except, so a probe fault propagates); it does
+# NOT pin an unbuilt fix. It closes the class: a future `except: return False` refactor of
+# `_table_exists` would fail OPEN (silently read a fault as "table absent" → "0 owned rows" → the
+# delete dangles `memory.owner_principal`), with every other gate green. The mutation proof below
+# is the fail-open that this gate reddens.
+# =========================================================================== #
+
+
+class TestTableExistsProbeFaultPropagates:
+    """⚠ RES-3 REGRESSION GATE — GREEN at HEAD (``dd5c9b2``). ``PrincipalStore._table_exists`` runs
+    ``INFO FOR DB`` with NO local try/except, so a connection/store fault during the probe
+    PROPAGATES out of ``delete`` (the principal is NOT deleted) rather than being silently read as
+    "table absent" → "0 owned rows" (which would let the delete dangle ``memory.owner_principal``,
+    SF-63-5 / §10.7-Z). Two positive controls pin the DISCRIMINATION: a GENUINELY-absent memory
+    table reads ``False`` (delete PROCEEDS), and a present table with an owned row REFUSES (the
+    existing ``TestDeleteRefusesWhileOwningGovernedRows`` pins) — so this is neither an always-raise
+    nor an always-refuse probe."""
+
+    async def test_a_probe_fault_propagates_and_the_owner_is_untouched(
+        self, governed_delete_env: tuple[PrincipalStore, SurrealEnv], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GREEN at HEAD (``dd5c9b2``); MUTATION-PROOF: wrap ``_table_exists``'s ``INFO FOR DB`` in
+        ``except Exception: return False`` → the fault is swallowed → the owner (who owns a governed
+        row) is silently DELETED → this pin reds. A synthetic store fault is injected at the
+        ``INFO FOR DB`` probe ONLY (every other ``_query`` passes through to the real seam), so the
+        delete reaches ``_table_exists``, which must let the fault PROPAGATE — and the owner and its
+        owned memory row survive untouched (a delete that cannot PROVE the memory table's existence
+        must NOT proceed)."""
+        principal_store, env = governed_delete_env
+        owner_before = await principal_store.get_by_email(_OWNER_EMAIL)
+        assert owner_before is not None
+
+        original_query = principal_store._query
+
+        class _ProbeFault(RuntimeError):
+            """A synthetic store/connection fault raised AT the INFO FOR DB probe (never a genuine
+            'table absent' — that returns False, a distinct outcome the controls pin)."""
+
+        async def _query_faulting_on_info(statement: str, params: Any = None) -> Any:
+            if "INFO FOR DB" in statement:
+                raise _ProbeFault("injected store/connection fault during the _table_exists probe")
+            return await original_query(statement, params)
+
+        # Shadow the bound method with an instance attribute — `delete`'s `self._query(...)` resolves
+        # the instance attribute first, so the INFO FOR DB probe raises while every other query works.
+        monkeypatch.setattr(principal_store, "_query", _query_faulting_on_info)
+
+        with pytest.raises(_ProbeFault):
+            await principal_store.delete(email=_OWNER_EMAIL)
+
+        # The probe fault must PROPAGATE fail-CLOSED: the owner and its owned row are UNTOUCHED.
+        # (get_by_email is a SELECT — it passes through the injected _query to the real seam.)
+        assert await principal_store.get_by_email(_OWNER_EMAIL) is not None, (
+            "a _table_exists probe fault did NOT propagate — the owner was deleted, so the fault was "
+            "silently read as '0 owned rows' (RES-3: a future `except: return False` re-opens a "
+            "silent delete-of-an-owning-principal, every other gate green)"
+        )
+        assert await _memory_row_count(env, owner_bare_id=_bare(owner_before)) == 1, (
+            "the owner's governed memory row was touched despite a probe fault — the delete must not "
+            "proceed when it cannot PROVE the memory table's existence (fail-closed, SF-63-5)"
+        )
+
+    async def test_a_genuinely_absent_memory_table_lets_the_delete_proceed(self) -> None:
+        """POSITIVE CONTROL (GREEN at HEAD): on a pre-retrofit store with NO memory table,
+        ``_table_exists`` returns ``False`` (a genuine absence, NOT a fault) → ``delete`` PROCEEDS. So
+        the fault-propagation above is the FAULT doing the work, not ``_table_exists`` always raising
+        or always refusing. A principal that keeps nothing and owns nothing (there IS no memory table
+        to own a row in) deletes cleanly — the SF-63-5 refuse is TOLERANT of a memory-less store."""
+        from loremaster.keeps import KeepStore
+        from loremaster.principal_keys import PrincipalKeyStore
+
+        env = make_env(database=unique_database(), dim=_DIM)
+        principal_store = PrincipalStore(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user,
+            password=env.password,
+        )
+        key_store = PrincipalKeyStore(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user,
+            password=env.password,
+        )
+        keep_store = KeepStore(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user,
+            password=env.password,
+        )
+        await principal_store.ensure_ready()  # principal (link target)
+        await key_store.ensure_ready()  # the principal_key cascade-count reads
+        await keep_store.ensure_ready()  # the refuse-while-keeping read (§FR-4)
+        # ⚠ DELIBERATELY NO build_memory_backend — the memory table is GENUINELY ABSENT here.
+        try:
+            await principal_store.create(email="pre_retrofit@example.com")
+            cascaded = await principal_store.delete(email="pre_retrofit@example.com")
+            assert cascaded == 0, "a keeps-nothing principal cascades zero principal_key rows"
+            assert await principal_store.get_by_email("pre_retrofit@example.com") is None, (
+                "on a store with NO memory table, _table_exists must return False (genuine absence) "
+                "and the delete must PROCEED — never refuse/raise on a genuinely-absent table"
+            )
+        finally:
+            await keep_store.close()
+            await key_store.close()
+            await principal_store.close()
+            await drop_database(env)

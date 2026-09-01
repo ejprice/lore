@@ -457,6 +457,75 @@ class TestGuardedWriteComposesAudit:
 
 
 # =========================================================================== #
+# RES-2 (cold-audit §RES) — guarded_write REFUSES an audited bypass with NO audit sink, rather
+# than run it UNAUDITED (the §9 "compromised admin erases its trail" shape, from the fail-OPEN
+# side). Authored by contract-63a-iii against the cold-audit NO-GO residual.
+# =========================================================================== #
+
+
+class TestGuardedWriteRefusesAnUnauditedBypass:
+    """RES-2 — an admin BYPASS write (``requires_audit`` fired) with ``audit is None`` must be
+    REFUSED, not silently run unaudited. At HEAD ``dd5c9b2`` ``guarded_write`` gates the audit
+    compose on ``if requires_audit and audit is not None`` — so ``audit=None`` SKIPS the audit and
+    the bypass proceeds UNAUDITED (design §10.6 rider ii: a mutation without its audit row is the
+    §9 erase-the-trail shape). The subject IS authorized (admin AllRows) — the TRAIL is missing —
+    so the refusal is a DISTINCT :class:`~loremaster.governed.GovernedAuditUnavailable`, never a
+    per-caller ``GovernedDenied``. (The +1-audit-row POSITIVE CONTROL — a bypass WITH a real audit
+    store appends exactly one row — is the sibling ``TestGuardedWriteComposesAudit`` pin, unchanged.)"""
+
+    async def test_an_admin_bypass_with_no_audit_store_refuses_and_does_not_mutate(
+        self, governed_world: Any
+    ) -> None:
+        """⚠ RED before the 63a-iii fix (measured at ``dd5c9b2``). An admin writes a row owned by a
+        DIFFERENT principal (``requires_audit=True``) with ``audit=None``: at HEAD the audit compose
+        is skipped and the mutation LANDS unaudited; post-fix ``guarded_write`` raises
+        ``GovernedAuditUnavailable`` BEFORE composing the mutation, so the row is UNCHANGED. REDDENS
+        the fail-open — a build that runs the bypass without a trail (no raise) AND a build that
+        writes the row before refusing (a refusal that still mutates)."""
+        _p, _k, connection, env, _keep = governed_world
+        handle, _calls = store_handle(connection, url=env.url)
+        await seed_memory_governed(
+            connection, row_id="unaudited_row", dim=_DIM, owner_principal="bob", owner_agent="ag_b1",
+            scope="agent-private", note_text="original",
+        )
+        with pytest.raises(governed.GovernedAuditUnavailable):
+            await governed.guarded_write(
+                admin("alice", "ag_a1"), pdp.Action.WRITE, table=MEMORY_TABLE, row_id="unaudited_row",
+                set_fragment="note_text = 'admin-touched'", audit=None, store=handle,
+            )
+        row = _one(await run(connection, "SELECT note_text FROM type::record('memory', 'unaudited_row')"))
+        assert row["note_text"] == "original", (
+            "an unaudited admin bypass MUTATED the row — guarded_write must refuse a requires_audit "
+            "write with no audit sink BEFORE the mutation (RES-2 / §9 erase-the-trail), never run it"
+        )
+
+    async def test_a_non_bypass_write_with_no_audit_store_still_succeeds(
+        self, governed_world: Any
+    ) -> None:
+        """DISCRIMINATOR (a probe needs a control): a NON-bypass write — a member on its OWN row,
+        ``requires_audit=False`` — with ``audit=None`` must still SUCCEED. Proves the RES-2 refusal
+        fires SPECIFICALLY on the audited bypass, never as a blanket ``audit=None`` refusal. GREEN in
+        BOTH worlds (HEAD and post-fix); a build that refuses every ``audit=None`` write reds HERE
+        (and would have broken every legitimate member close, which passes ``audit=None`` today)."""
+        _p, _k, connection, env, _keep = governed_world
+        handle, _calls = store_handle(connection, url=env.url)
+        await seed_memory_governed(
+            connection, row_id="own_unaudited", dim=_DIM, owner_principal="alice", owner_agent="ag_a1",
+            scope="agent-private", note_text="original",
+        )
+        result = await governed.guarded_write(
+            member("alice", "ag_a1", frozenset()), pdp.Action.WRITE, table=MEMORY_TABLE,
+            row_id="own_unaudited", set_fragment="note_text = 'updated'", audit=None, store=handle,
+        )
+        assert result.row_count == 1, f"the non-bypass own-row write must land, got {result!r}"
+        row = _one(await run(connection, "SELECT note_text FROM type::record('memory', 'own_unaudited')"))
+        assert row["note_text"] == "updated", (
+            "a member's OWN-row write (requires_audit False) was refused with audit=None — the RES-2 "
+            "refusal must fire ONLY on an audited bypass, never a blanket audit=None refusal"
+        )
+
+
+# =========================================================================== #
 # §10.6 R4 — the whole governed substrate reaches the store through the injected driver, never a
 # raw connection. Two instruments: the AUTOUSE runtime _sdk_guard (conftest) watches EXECUTED
 # paths absolutely (any connection.query off the driver reds, in the pins above); this AST pin

@@ -815,6 +815,100 @@ class TestInvalidateRoutesThroughGuardedWrite:
             "(a build that special-cases invalidate to deny-everything)"
         )
 
+    # ----------------------------------------------------------------------- #
+    # MISSING PIN 2's SUPERSEDE leg (the QUANTIFIER-LAW fix — cold-audit REPORT-cold-audit-63a §F1).
+    # The class above pinned the invariant "no member closes a foreign row" on ONE of the two write
+    # verbs design §2.5 names ("both route through guarded_write/the stamp"). `remember(supersedes=X)`
+    # ALSO closes an EXISTING, possibly foreign-owned row (`_close_superseded_fragment` — a WRITE),
+    # and the shipped build routed only invalidate: the supersede-close is a BARE ungoverned UPDATE,
+    # so bob retires alice's note by id. Added by contract-63a-iii — completing the under-quantified
+    # pin, not weakening it. RED before the 63a-iii fix (proven LIVE in the cold audit's §F1 repro).
+    # ----------------------------------------------------------------------- #
+
+    @observes_routing("lore_remember", "lore_remember")
+    async def test_a_member_cannot_supersede_close_a_foreign_owned_row(
+        self, retrofit_world: Any, alice_capability: _Credential, bob_capability: _Credential
+    ) -> None:
+        """⚠ RED before the 63a-iii fix (measured at ``dd5c9b2`` — cold-audit §F1, CONFIRMED live).
+        The QUANTIFIER-LAW twin of ``test_a_member_cannot_close_a_foreign_owned_row``: alice remembers
+        a note (default project-keep scope, alice's household); bob — NOT householded in the project
+        keep — calls ``remember(supersedes=<alice's id>)``. The supersede-CLOSE of the old row routes
+        through ``guarded_write`` (design §2.5: 'both route through guarded_write/the stamp'), which
+        authorizes the WRITE on the existing row → bob is DENIED (``GovernedDenied``) AND alice's row
+        is UNCHANGED (``valid_until`` still None, ``superseded_by`` unset — a denied close never
+        mutates). REDDENS the shipped build the cold audit reproduced: the bare
+        ``_close_superseded_fragment`` UPDATE (no WHERE guard, no authorize_filter) lets bob retire
+        alice's note by id — no exception, ``valid_until`` set, ``superseded_by`` → bob's note
+        (REPORT-cold-audit-63a §F1). Behavioural routing observation for the WRITE verb — routing
+        proven by its EFFECT (a denied member cannot close a foreign row through EITHER close verb)."""
+        backend, _p, _k, admin_conn, _env, _keep = retrofit_world
+        alice_memory_id = await _exercise_remember(
+            backend, text="alice note bob must not retire", capability=alice_capability
+        )
+        before = _one(
+            await run(
+                admin_conn,
+                "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
+                {"id": _bare(alice_memory_id)},
+            )
+        )
+        assert before["valid_until"] is None, "fixture: alice's note must start live (valid_until None)"
+        with pytest.raises(governed.GovernedDenied):
+            await _exercise_remember(
+                backend, text="bob hostile replacement of alice's note",
+                capability=bob_capability, supersedes=alice_memory_id,
+            )
+        after = _one(
+            await run(
+                admin_conn,
+                "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
+                {"id": _bare(alice_memory_id)},
+            )
+        )
+        assert after["valid_until"] is None, (
+            "a DENIED supersede RETIRED alice's note — bob closed a foreign-owned row through the "
+            "supersede path; the supersede-close must route through guarded_write (§2.5), not a bare "
+            "UPDATE (cold-audit §F1)"
+        )
+        assert after["superseded_by"] is None, (
+            "a DENIED supersede stamped superseded_by on alice's note — the foreign close leaked "
+            "through the unguarded supersede path (cold-audit §F1: the supersession chain is corrupted)"
+        )
+
+    @observes_routing("lore_remember", "lore_remember")
+    async def test_an_owner_can_supersede_close_its_own_row(
+        self, retrofit_world: Any, alice_capability: _Credential
+    ) -> None:
+        """POSITIVE CONTROL / DISCRIMINATOR for the supersede deny above (GREEN in BOTH worlds — the
+        bare UPDATE at HEAD already closes an OWNER's row correctly, and a guarded build allows the
+        owner too). alice (householded in the project keep) supersedes her OWN project-scoped note →
+        the close SUCCEEDS: her old row carries ``valid_until`` (set) + ``superseded_by`` → the NEW
+        note (chain correct). Without it, a build that special-cases the supersede-close to
+        deny-everything would pass the deny pin above while breaking every legitimate supersession (a
+        guard nobody can pass is as wrong as one nobody can fail)."""
+        backend, _p, _k, admin_conn, _env, _keep = retrofit_world
+        old_id = await _exercise_remember(
+            backend, text="alice note to supersede", capability=alice_capability
+        )
+        new_id = await _exercise_remember(
+            backend, text="alice replacement note", capability=alice_capability, supersedes=old_id
+        )
+        row = _one(
+            await run(
+                admin_conn,
+                "SELECT valid_until, superseded_by FROM type::record('memory', $id)",
+                {"id": _bare(old_id)},
+            )
+        )
+        assert row["valid_until"] is not None, (
+            "alice could not supersede-close her OWN note — the owner's legitimate supersede was "
+            "denied (a build special-casing the supersede-close to deny-everything)"
+        )
+        assert row["superseded_by"] is not None and str(row["superseded_by"]).endswith(_bare(new_id)), (
+            f"the superseded chain is wrong: old.superseded_by must point at the new note {new_id}, "
+            f"got {row['superseded_by']!r}"
+        )
+
 
 class TestExplicitScopeArgumentIsGrantableValidated:
     """§2.4 (MISSING PIN 3) — an explicit ``scope=`` on ``remember`` is a PDP-VALIDATED REQUEST,
@@ -871,6 +965,119 @@ class TestExplicitScopeArgumentIsGrantableValidated:
             f"a grantable explicit scope= (principal-private) was not applied — got scope={row['scope']!r} "
             f"(a build that ignores scope= and writes the default project keep, or denies all scope=)"
         )
+
+
+# =========================================================================== #
+# RES-2 (cold-audit §RES) — the memory close paths WIRE A REAL AuditStore so an admin BYPASS is
+# AUDITED (the §9 erase-the-trail shape, from the consumer side). Authored by contract-63a-iii.
+# =========================================================================== #
+
+
+class TestMemoryBypassCloseIsAudited:
+    """RES-2 — a memory CLOSE that is an admin BYPASS (a close a member could not make →
+    ``requires_audit`` fires) leaves a trail: exactly +1 ``audit`` row. At HEAD ``dd5c9b2``
+    ``invalidate`` calls ``guarded_write(..., audit=None)`` and the supersede-close is an ungoverned
+    bare UPDATE, so an admin bypass close runs UNAUDITED (0 rows) — the §9 'compromised admin erases
+    its trail' shape (design §10.6 rider ii). Companion to the substrate pin
+    ``TestGuardedWriteRefusesAnUnauditedBypass`` (which REFUSES an unaudited bypass at the seam): the
+    memory consumer must therefore SUPPLY a real ``AuditStore`` on its bypass-reachable close paths —
+    the natural shape is the backend building its own from its connection params (mirroring the
+    ``LocalMemoryBackend.handle`` accessor idiom, §10.6 rider v), so ``build_memory_backend`` needs
+    NO new argument. Quantified over BOTH close verbs (invalidate + supersede) per the QUANTIFIER LAW.
+    ⚠ The +1-audit-row POSITIVE CONTROL at the SUBSTRATE seam (a bypass WITH a real store appends one
+    row) is the unchanged ``TestGuardedWriteComposesAudit`` pin; here the property is proven end-to-end
+    through the real memory consumer."""
+
+    async def test_an_admin_bypass_invalidate_appends_exactly_one_audit_row(
+        self, retrofit_world: Any, alice_capability: _Credential
+    ) -> None:
+        """⚠ RED before the 63a-iii fix (measured at ``dd5c9b2``). carol (ADMIN, AllRows) invalidates
+        ALICE's project-scoped note — a bypass a member could not make (``requires_audit`` fires) →
+        exactly +1 ``audit`` row lands. At HEAD ``invalidate`` passes ``audit=None`` so the bypass runs
+        UNAUDITED (0 rows). REDDENS a build whose invalidate does not wire a real ``AuditStore`` (no
+        trail for an admin bypass — RES-2 / §9)."""
+        backend, principal_store, _k, admin_conn, env, _keep = retrofit_world
+        # carol: an ADMIN principal (AllRows) — the bypass actor. Minted here (retrofit_world seeds
+        # only alice+bob members); her capability is a REAL registry mint verified by resolve_subject.
+        await principal_store.create(email="carol@example.com", role="admin")
+        audit_store = _build_audit_store(env)
+        await audit_store.ensure_ready()  # the `audit` table exists in BOTH worlds → the count is defined
+        try:
+            alice_id = await _exercise_remember(
+                backend, text="alice note carol will retire", capability=alice_capability
+            )
+            before = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            async with _minted_credential(
+                retrofit_world, email="carol@example.com", agent_name="carol_admin"
+            ) as carol_capability:
+                await _exercise_invalidate(backend, memory_id=alice_id, capability=carol_capability)
+            after = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            assert after == before + 1, (
+                f"an admin bypass invalidate must append exactly ONE audit row (the trail), "
+                f"before={before} after={after} — the memory close path did not wire a real AuditStore "
+                f"(RES-2 / §9 erase-the-trail); a bypass with no sink must not run silently"
+            )
+        finally:
+            await audit_store.close()
+
+    async def test_an_admin_bypass_supersede_close_appends_exactly_one_audit_row(
+        self, retrofit_world: Any, alice_capability: _Credential
+    ) -> None:
+        """⚠ RED before the 63a-iii fix (``dd5c9b2``) — the supersede twin (quantifier over BOTH close
+        verbs). carol (ADMIN) supersedes ALICE's note: her supersede-CLOSE of alice's row is an admin
+        bypass → +1 ``audit`` row. At HEAD the supersede-close is a bare ungoverned UPDATE (no guard,
+        no audit) → 0 rows. REDDENS a build whose supersede-close does not route through
+        ``guarded_write`` WITH a real ``AuditStore`` (cold-audit §F1 supersede leg + RES-2 compounded:
+        the admin supersede leaves neither a guard nor a trail)."""
+        backend, principal_store, _k, admin_conn, env, _keep = retrofit_world
+        await principal_store.create(email="carol@example.com", role="admin")
+        audit_store = _build_audit_store(env)
+        await audit_store.ensure_ready()
+        try:
+            alice_id = await _exercise_remember(
+                backend, text="alice note carol will supersede", capability=alice_capability
+            )
+            before = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            async with _minted_credential(
+                retrofit_world, email="carol@example.com", agent_name="carol_admin"
+            ) as carol_capability:
+                await _exercise_remember(
+                    backend, text="carol replacement of alice's note",
+                    capability=carol_capability, supersedes=alice_id,
+                )
+            after = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            assert after == before + 1, (
+                f"an admin bypass supersede-close must append exactly ONE audit row, before={before} "
+                f"after={after} — the supersede-close did not route through guarded_write WITH a real "
+                f"AuditStore (cold-audit §F1 supersede leg + RES-2)"
+            )
+        finally:
+            await audit_store.close()
+
+    async def test_a_member_self_close_appends_no_audit_row(
+        self, retrofit_world: Any, alice_capability: _Credential
+    ) -> None:
+        """DISCRIMINATOR (before==after only when it SHOULD — fixtures-must-discriminate): alice
+        invalidates her OWN note — NOT a bypass (``requires_audit`` False) → ZERO audit rows. GREEN in
+        BOTH worlds; proves the +1 above is the BYPASS being audited, not every close writing a row. A
+        build that audits EVERY close (or NONE) reds against one of these three legs."""
+        backend, _p, _k, admin_conn, env, _keep = retrofit_world
+        audit_store = _build_audit_store(env)
+        await audit_store.ensure_ready()
+        try:
+            alice_id = await _exercise_remember(
+                backend, text="alice note alice will retire", capability=alice_capability
+            )
+            before = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            await _exercise_invalidate(backend, memory_id=alice_id, capability=alice_capability)
+            after = _count(await run(admin_conn, "SELECT count() FROM audit GROUP ALL"))
+            assert after == before, (
+                f"a member closing its OWN note (not a bypass, requires_audit False) appended an audit "
+                f"row (before={before} after={after}) — only an admin BYPASS is audited, never a "
+                f"legitimate self-close"
+            )
+        finally:
+            await audit_store.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -946,6 +1153,21 @@ def _count(rows: Any) -> int:
 
 def _bare(record_id: str) -> str:
     return record_id.partition(":")[2] or record_id
+
+
+def _build_audit_store(env: Any) -> Any:
+    """Construct an :class:`~loremaster.audit.AuditStore` on the SAME unified test DB (the
+    ``test_governed_substrate_63a._build_audit_store`` idiom — a test-fixture CONSTRUCTOR, not
+    policy, so mirroring it is trivia not a §6 clone). DRY note (contract-63a-iii): the shared home
+    would be ``_governed_contract`` (out of this contract's writable set); folding the two local
+    copies there is a cheap follow-up, flagged in the report's Reuse ledger."""
+    from loremaster.audit import AuditStore
+    from pydantic import SecretStr
+
+    password = env.password if isinstance(env.password, SecretStr) else SecretStr(str(env.password))
+    return AuditStore(
+        url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=password
+    )
 
 
 def _memory_case() -> Any:

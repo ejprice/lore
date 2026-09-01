@@ -59,6 +59,23 @@ class GovernedConflict(Exception):
     no-op: there is no read-then-write TOCTOU window on the governed columns."""
 
 
+class GovernedAuditUnavailable(Exception):
+    """An AUDITED governed write was required (``requires_audit`` fired — an admin BYPASS a member
+    could not make) but NO :class:`~loremaster.audit.AuditStore` was supplied (``audit is None``),
+    so the write would run UNAUDITED. REFUSED, never run: a mutation without its audit row is the
+    §9 "compromised admin erases its trail" shape from the other side (design §10.6 rider ii),
+    exactly the fail-OPEN a silent skip creates. This is a PROGRAMMING/CONFIG error — the subject
+    IS authorized; the trail is what is missing — so it is a DISTINCT type from :class:`GovernedDenied`
+    (a per-caller authorization refusal) and :class:`GovernedConflict` (a vanished row). Any consumer
+    whose path can reach an admin bypass MUST wire a real audit sink.
+
+    RES-2 (`docs/plans/v2/receipts/…/REPORT-cold-audit-63a.md` §RES). CONTRACT STUB authored by
+    ``contract-63a-iii``: the ``raise`` site is a builder deliverable (63a-iii GREEN) inside
+    :func:`guarded_write`, BEFORE composing the guarded mutation, when ``requires_audit and audit is
+    None``. At HEAD ``dd5c9b2`` ``guarded_write`` SILENTLY SKIPS the audit (`if requires_audit and
+    audit is not None`) and proceeds — the fail-open this type closes."""
+
+
 @dataclass(frozen=True)
 class GuardedWriteResult:
     """The outcome of :func:`guarded_write` (design §1.2 item 3). ``row_count`` is the guarded
