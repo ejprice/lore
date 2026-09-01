@@ -1090,9 +1090,9 @@ a now-observable defect while preserving the taught contract's purpose — the o
 design it enforces is ALREADY operator-ruled (§9 / the 3-way rule); 10.9-A is enforcement
 engineering under the reach law the operator himself set (the "allowlist the safe" ruling, packet
 01). The same-class-twice law demanded the DESIGN be escalated — it was, to the design authority,
-and this section is that escalation discharged. **SF-63-6 (CONFIRM, non-blocking, recommend
-ADOPT):** per-agent dedup semantics + the taught-prose change + the F-B read-side-effect
-acceptance. If the operator vetoes pair-folding, the fallback is guard-the-collision WITH the
+and this section is that escalation discharged. **SF-63-6 — operator CONFIRMED 2026-09-01, ADOPT (via lead-63; the structural close —
+owner-fold + F5 + F-B-as-read-side-effect — is ratified):** per-agent dedup semantics + the
+taught-prose change + the F-B read-side-effect acceptance. If the operator vetoes pair-folding, the fallback is guard-the-collision WITH the
 existence-oracle cost accepted and named in the render — I recommend against it.
 
 **Wave shape:** ONE fix wave (63a-iv), full pipeline (contract → adversary → build → cold-audit):
