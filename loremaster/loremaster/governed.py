@@ -235,6 +235,50 @@ def write_guard(label: str) -> Iterator[None]:
         _ACTIVE_WRITE_GUARD.reset(token)
 
 
+# --------------------------------------------------------------------------- #
+# F5 EXEMPT ATTRIBUTION (design §10.9-A CORRECTION step 4, packet 63a-v, finding #446) — the
+# admin-channel counterpart to :func:`write_guard`.
+#
+# A NON-member-reachable governed-table write (the ``lore-adm migrate-governed`` backfill in
+# ``principals._migrate_memory_scope``) is NOT a per-caller guarded write, so it does not enter
+# :func:`write_guard`. Instead it enters :func:`governed_exempt` with the NAMED admin token whose
+# allowlist entry evidences the exemption (``migrate-governed``). The F5 runtime seam
+# (``_governed_contract.observe_governed_table_writes``) samples :func:`active_exempt` — together with
+# the mutation's originating ``(file, symbol)`` from the call stack — so a write carrying an exempt
+# token whose site MATCHES its stack origin classifies (design step 4), while a site BORROWING the
+# token from a foreign origin fails the match. This is a verbatim mirror of the ``write_guard`` /
+# ``active_write_guard`` idiom (ONE contextvar-guard implementation, not a cloned policy): the SAME
+# task-local, async-safe-across-``await``, auto-reset-on-exit ``contextvars`` primitive.
+# --------------------------------------------------------------------------- #
+
+_ACTIVE_EXEMPT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "loremaster_active_exempt", default=None
+)
+
+
+def active_exempt() -> str | None:
+    """The NAME of the innermost active :func:`governed_exempt`, or ``None`` outside every exempt
+    block (design §10.9-A CORRECTION step 4 — the admin-attribution channel the F5 runtime seam
+    samples alongside the mutation's stack origin)."""
+    return _ACTIVE_EXEMPT.get()
+
+
+@contextlib.contextmanager
+def governed_exempt(name: str) -> Iterator[None]:
+    """Attribute every governed-table mutation executed within the block to the NAMED admin
+    exemption ``name`` (design §10.9-A CORRECTION step 4) — the exempt-channel counterpart to
+    :func:`write_guard` for a governed write that is NOT member-reachable (so cannot ride a
+    per-caller ``write_guard``) but IS evidenced by an allowlist entry (``migrate-governed``). The
+    name is task-local (``contextvars``), so it stays set across the ``await`` that runs the store
+    mutation and is reset on exit even if the mutation raises. The F5 runtime seam pairs this token
+    with the mutation's stack origin so a BORROWED token (a foreign origin) fails the site match."""
+    token = _ACTIVE_EXEMPT.set(name)
+    try:
+        yield
+    finally:
+        _ACTIVE_EXEMPT.reset(token)
+
+
 async def guarded_write(
     subject: Subject,
     action: Action,

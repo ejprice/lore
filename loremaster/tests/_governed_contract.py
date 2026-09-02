@@ -1101,7 +1101,20 @@ def classify_tree_observed_write(
     ``governed_exempt`` token whose allowlist entry's site MATCHES the stack-derived origin. A site
     BORROWING another site's token fails the ``(file, symbol)`` match (design step 4). A mutation
     matching neither is UNCLASSIFIED (the red signal). getattr-tolerant at HEAD: ``active_exempt`` is
-    unbuilt → ``exempt`` is None → the migrate write is unclassified → RED-until-built."""
+    unbuilt → ``exempt`` is None → the migrate write is unclassified → RED-until-built.
+
+    ⚠ NAMED ACCEPTED BOUND (finding #138 class — the HAND-SET-LABEL bound; design §10.9-A CORRECTION
+    step 6 R2 + CLAUDE.md "A GATE NEEDS A THREAT MODEL — WRITE DOWN WHO IT IS FOR"). The first leg
+    (``if observed.label is not None: return True``) blesses ANY write carrying a ``write_guard``
+    label — so a production site that hand-sets the label WITHOUT routing through
+    ``governed.guarded_write`` (the mechanism the label is meant to witness) passes BOTH F5 layers
+    and is CLASSIFIED. That is an ACCEPTED bound, NOT a defect: F5 is a static net for the HONEST
+    developer (who adds a governed write and forgets to attribute it — the #131 class), never a
+    boundary against the HOSTILE author (who can commit anything and already ships arbitrary code —
+    the #138 class). Naming this bound is the WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT rule (#138): a gate
+    whose accepted bound is unnamed is one the next engineer meets by an outage, or "helpfully"
+    closes — re-opening a settled trade. RE-OPEN TRIGGER: the threat model changing to an untrusted
+    contributor / hosted deployment (63b's runtime root-fix territory, task 571ef1a)."""
     if observed.label is not None:
         return True
     if observed.exempt is None or observed.origin_site is None:

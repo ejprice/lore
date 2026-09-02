@@ -1136,7 +1136,7 @@ async def _migrate_memory_scope(
     """
     from lorerunes.pdp import keep_scope
 
-    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult
+    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
 
     # Resolve THE operator principal (the project keep's keeper): the single-principal fleet's one
     # principal, or its single admin. Ambiguity is a REFUSAL, never a guess (§2.1 hard rule).
@@ -1177,17 +1177,22 @@ async def _migrate_memory_scope(
             refused=False,
         )
     # The backfill UPDATE, driver-routed (R4). ``scope IS NONE`` is index-served on the scope index
-    # (probe-63 P5), so this is bounded even on a large dirty store.
-    await run_query(
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-        noun="governed memory-scope backfill",
-        label="governed.memory_backfill.rejected",
-        statement=f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE",
-        params={"scope": project_scope},
-        logger=logger,
-    )
+    # (probe-63 P5), so this is bounded even on a large dirty store. It is NOT member-reachable
+    # (admin-CLI-only), so it attributes at the F5 runtime seam via the NAMED
+    # ``governed_exempt("migrate-governed")`` frame rather than a per-caller ``write_guard`` (design
+    # §10.9-A CORRECTION step 4 / L2b) — exempt-WITH-JUSTIFICATION (the allowlist's second
+    # evidence-backed triple), never a silently unattributed governed write.
+    with governed_exempt("migrate-governed"):
+        await run_query(
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+            noun="governed memory-scope backfill",
+            label="governed.memory_backfill.rejected",
+            statement=f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE",
+            params={"scope": project_scope},
+            logger=logger,
+        )
     return MigrateGovernedResult(
         table=MEMORY_TABLE,
         scanned=unmigrated + already,
