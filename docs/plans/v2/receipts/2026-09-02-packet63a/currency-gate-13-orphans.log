@@ -1,0 +1,22 @@
+========================================================================
+GATE CURRENCY — is every CLAIMED gate green, or owned?
+  manifest   : ('typecheck', 'ruff', 'pytest') (3 gates)
+  typecheck    GREEN
+  ruff         GREEN
+  pytest       RED_ORPHANED — 13 residual(s) with NO owner
+      ORPHAN: loremaster/tests/test_ast_reach_helpers.py :: loremaster.tests.test_ast_reach_helpers.TestNoTestFileHandRollsAWholeTreeParserOutsideTheAllowlist::test_no_unallowlisted_whole_tree_parser_clone_survives
+      ORPHAN: loremaster/tests/test_link5_render_containment.py :: loremaster.tests.test_link5_render_containment.TestTheDerivedPartitionHasNoDoor::test_every_registered_free_text_param_is_gated_or_contained
+      ORPHAN: loremaster/tests/test_engine_rejection_seam.py :: loremaster.tests.test_engine_rejection_seam.TestTheRoutedSetIsDerivedAndComplete::test_the_routed_set_equals_the_invocation_map[keep]
+      ORPHAN: loremaster/tests/test_engine_rejection_seam.py :: loremaster.tests.test_engine_rejection_seam.TestTheRoutedSetIsDerivedAndComplete::test_the_routed_set_equals_the_known_wrapping_verbs[keep]
+      ORPHAN: loremaster/tests/test_schema_rebuild.py :: loremaster.tests.test_schema_rebuild.TestRebuildingNoticeSeam::test_a8a_search_code_empty_in_progress_raises_rebuilding_error
+      ORPHAN: loremaster/tests/test_secret_typing.py :: loremaster.tests.test_secret_typing.TestOutgoingAuthHeadersGoThroughATypedSeam::test_secretstr_is_minted_only_where_a_credential_ORIGINATES
+      ORPHAN: loremaster/tests/test_schema_rebuild.py :: loremaster.tests.test_schema_rebuild.TestRebuildingNoticeSeam::test_a8a_search_code_rebuilding_error_survives_mcp_serialization
+      ORPHAN: loremaster/tests/test_schema_fold_coverage.py :: loremaster.tests.test_schema_fold_coverage.TestFoldCoverageMutationProofsOnRealSource::test_removing_a_real_fold_call_reds_the_scan
+      ORPHAN: loremaster/tests/test_schema_fold_coverage.py :: loremaster.tests.test_schema_fold_coverage.TestFoldCoverageMutationProofsOnRealSource::test_removing_a_real_variable_returning_fold_call_reds_the_scan
+      ORPHAN: loremaster/tests/test_schema_fold_coverage.py :: loremaster.tests.test_schema_fold_coverage.TestFoldCoverageOnRealSchema::test_the_real_schema_has_zero_fold_coverage_findings
+      ORPHAN: loremaster/tests/test_schema_fold_coverage.py :: loremaster.tests.test_schema_fold_coverage.TestFoldCoverageOnRealSchema::test_every_folded_and_standalone_name_is_a_real_slice_fn
+      ORPHAN: loremaster/tests/test_tool_allowlist.py :: loremaster.tests.test_tool_allowlist.TestServedProseNamesExactlyTheEnabledTools::test_served_lore_tokens_equal_the_enabled_set[subset]
+      ORPHAN: loremaster/tests/test_tool_allowlist.py :: loremaster.tests.test_tool_allowlist.TestEveryDescriptionCrossRefDropsItsDisabledReferent::test_every_crossref_drops_its_disabled_referent
+CURRENCY   : FAIL — RED with nobody's name on it: pytest
+  (this is NOT the deploy receipt: it answers 'is every gate owned', never 'may this ship')
+CURRENCY_EXIT=1
