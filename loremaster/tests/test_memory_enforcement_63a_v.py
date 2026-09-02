@@ -287,10 +287,22 @@ class TestMigrateGovernedIsAnEvidenceBackedTriple:
         )
 
     def test_migrate_memory_scope_updates_only_none_scope_rows(self) -> None:
-        """⚠ GREEN at HEAD — the migrate-governed JUSTIFICATION pin (the statement-shape leg): the
-        backfill UPDATE targets ``WHERE scope IS NONE`` ONLY (a NONE-scope row has no owner to
-        seize). Reddens the day the migrate grows a write that touches a NON-NONE-scope row — at
-        which point it leaves the exemption and must route through guarded_write (design step 4)."""
+        """⚠ GREEN at HEAD — the migrate-governed JUSTIFICATION pin (the statement-shape leg). WHAT IT
+        ACTUALLY CHECKS: it reads the FIRST ``UPDATE … SET scope`` statement in ``_migrate_memory_scope``
+        (``_migrate_backfill_update_statement``, first-match) and asserts that statement CONTAINS the
+        ``WHERE scope IS NONE`` SUBSTRING. It catches an honest edit that drops/relocates the WHERE
+        clause on the FIRST backfill UPDATE, at which point the migrate must route through guarded_write
+        (design step 4).
+
+        ⚠ TWO ACCEPTED BOUNDS (finding #449, adversary-63a-v3 §BASE3 — this is a first-match SUBSTRING
+        presence check, NOT a proof the migrate touches only NONE-scope rows; the old docstring's
+        "reddens the day the migrate grows a write that touches a NON-NONE-scope row" was a FALSE GATE):
+        it does NOT red on (a) a co-located SECOND seizure write AFTER the blessed one (first-match
+        shadows it — the R3 count leg ``TestTheExemptFrameHoldsOnlyItsGuardedMutation`` delivers THAT
+        ∀-half), nor (b) an OR-extended FIRST statement ``WHERE scope IS NONE OR scope =
+        $victim`` that seizes owned rows while still containing the substring (the #449 R4-a bound,
+        pinned in ``TestTheAcceptedF5BoundsArePinned``). F5 is a static HONEST-DEVELOPER net; those are
+        the #138 HOSTILE-AUTHOR class it does not defend; the runtime root-fix is 63b (task 571ef1a)."""
         update = _migrate_backfill_update_statement(_principals_source())
         assert update is not None, (
             "no raw memory UPDATE found in _migrate_memory_scope — the migrate-governed site moved; "
@@ -720,6 +732,128 @@ class TestTheHandSetLabelBoundIsNamedInTheInstrumentDocstring:
             "calling guarded_write passes BOTH F5 layers — an ACCEPTED bound under this gate's threat "
             "model (the honest developer, not the hostile author — the #138 class), never closed by "
             "false positives."
+        )
+
+
+# =========================================================================== #
+# R4 — THE PINNED ACCEPTED BOUNDS (finding #449, operator OPTION A 2026-09-02, via lead-63).
+# Adversary-63a-v3's R4 hunt found TWO reach-recessions that launder past R1+R2+R3 on the reference
+# build: (a) the exempt-frame single-shape pin AND the base-3 justification pin match ``WHERE scope
+# IS NONE`` by SUBSTRING, so a single OR-extended seizure passes; and (c) the raw-mutation VERB-SET
+# (``_raw_mutation_of_table`` + the runtime ``_mutation_verb_for_table``) is a bounded enumeration
+# UPSERT/UPDATE/DELETE/REMOVE, so an INSERT/CREATE/RELATE memory seizure is invisible end-to-end.
+# The operator ACCEPTED BOTH as BOUNDS in 63a: F5 is a static HONEST-DEVELOPER net (it catches the
+# honest mistake at the shapes/verbs it enumerates); the substring/exotic-verb laundering is the
+# #138 HOSTILE-AUTHOR class F5 explicitly does NOT defend (R2's already-named threat model). THE
+# RUNTIME ROOT-FIX (verb/shape-AGNOSTIC mutation detection as a PROPERTY + a statement-scoped
+# exemption of the exact adjudicated statement) is DEFERRED to 63b (task 571ef1a), its natural home.
+#
+# These are PIN-THE-MISS bounds (CLAUDE.md WHEN YOU CANNOT CLOSE A HOLE, PIN IT), NOT discriminating
+# security pins: each asserts the bound EXISTS TODAY and carries the deliberate-DELETION instruction
+# for when the 63b root-fix closes it — so the bound cannot be silently inherited nor silently
+# "fixed" (finding #449). Each also carries a probe-honesty POSITIVE CONTROL proving the matcher is
+# not blind, so the GREEN witness is a genuine laundering path (CLAUDE.md PKT-28 C1).
+# =========================================================================== #
+
+
+class TestTheAcceptedF5BoundsArePinned:
+    """finding #449 (operator OPTION A) — the two adversary-63a-v3 R4 reach-recessions, pinned as
+    ACCEPTED BOUNDS. GREEN at HEAD (the bounds are REAL today); each REDS the day the 63b runtime
+    root-fix closes it — at which point delete the pin + the named-bound docstring it points at and
+    say so. NOT a discriminating security pin: F5 is a static honest-developer net, and these are the
+    #138 hostile-author holes it does not defend (design §10.9-A CORRECTION step 6 R2 threat model)."""
+
+    def test_r4a_the_shape_leg_matches_where_scope_is_none_by_substring(self) -> None:
+        r"""⚠ KNOWN ACCEPTED BOUND #449 (R4-a) — the exempt-frame single-shape pin
+        (``test_the_exempt_frame_holds_exactly_its_one_none_scope_guarded_mutation``) and the base-3
+        justification pin (``test_migrate_memory_scope_updates_only_none_scope_rows``) both check the
+        blessed shape by the SUBSTRING ``re.search(r"WHERE\s+scope\s+IS\s+NONE")``, not by an exact
+        ``WHERE == scope IS NONE``. So a SINGLE OR-extended statement ``… WHERE scope IS NONE OR scope
+        = $victim`` — ONE statement (R3 count leg passes), CONTAINING the substring (R3/base-3 shape leg
+        passes) — LAUNDERS while seizing OWNED rows (adversary-63a-v3 §R4-a; the wrong build went 22
+        passed / 0 failed on the full 63a-v suite). F5 is a static HONEST-DEVELOPER net; this substring
+        bound is the #138 HOSTILE-AUTHOR class F5 does not defend; the runtime root-fix is 63b (task
+        571ef1a). If you closed this deliberately (the 63b root-fix), DELETE this pin + the R4-a bound
+        docstring on ``exempt_frame_raw_memory_mutations`` and say so."""
+        # An OR-extended seizure, co-located as the frame's ONE mutation — the R3 extraction path.
+        seizure_source = (
+            'MEMORY_TABLE = "memory"\n\n\n'
+            "async def _do_write(x):\n"
+            "    await run_query(\n"
+            '        f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE OR scope = $victim"\n'
+            "    )\n"
+        )
+        seizure_entry = TreeWriteAllowlistEntry(
+            site=TreeMutationSite("synthetic/pkg/r4a.py", "_do_write", "UPDATE"),
+            justification="#449 R4-a bound witness — an OR-extended seizure that keeps the substring",
+            pin="test_r4a_the_shape_leg_matches_where_scope_is_none_by_substring",
+            frames=("_do_write",),
+            exempt_name="r4a-bound",
+        )
+        mutations = exempt_frame_raw_memory_mutations(seizure_entry, source=seizure_source)
+        # R3 COUNT leg would PASS — the seizure is ONE statement (the count leg's blind spot).
+        assert len(mutations) == 1, (
+            f"expected the OR-extended seizure to be ONE co-located statement; got {mutations!r}. If "
+            f"the extractor changed, the #449 R4-a bound may be closing — re-adjudicate, do not "
+            f"silently repair this pin."
+        )
+        only = mutations[0]
+        # R3/base-3 SHAPE leg (the SUBSTRING matcher) still classifies the seizure as the allowlisted
+        # shape — the accepted bound. The positive control below proves the matcher is NOT blind.
+        assert re.search(r"WHERE\s+scope\s+IS\s+NONE", only, re.IGNORECASE), (
+            "the WHERE-scope-IS-NONE SUBSTRING matcher no longer accepts an OR-extended seizure — the "
+            "#449 R4-a accepted bound has been CLOSED. If you closed it deliberately (the 63b runtime "
+            "root-fix: exact-shape / statement-scoped exemption), DELETE this pin + the R4-a bound "
+            f"docstring on exempt_frame_raw_memory_mutations and say so. statement: {only!r}"
+        )
+        # PROBE-HONESTY POSITIVE CONTROL (adversary-63a-v3 §R4-a) — the substring matcher CAN see a
+        # MISSING substring, so the GREEN above is a genuine laundering path, not a blind check.
+        no_substring_seizure = "UPDATE memory SET scope = $scope WHERE scope = $victim"
+        assert not re.search(r"WHERE\s+scope\s+IS\s+NONE", no_substring_seizure, re.IGNORECASE), (
+            "the substring matcher matched a statement with NO `scope IS NONE` clause — the probe is "
+            "blind, so the bound witness above is vacuous (CLAUDE.md PKT-28 C1)"
+        )
+
+    def test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration(self) -> None:
+        """⚠ KNOWN ACCEPTED BOUND #449 (R4-c) — the static extractor ``_raw_mutation_of_table`` (reused
+        by the whole-tree scan AND ``exempt_frame_raw_memory_mutations``) and the runtime observer
+        ``_mutation_verb_for_table`` both count only the verb-set UPSERT/UPDATE/DELETE/REMOVE. An
+        ``INSERT … ON DUPLICATE KEY UPDATE`` / ``CREATE`` / ``RELATE`` memory seizure is INVISIBLE to
+        BOTH: the extractor returns None (so L1/R3 never count it) and the observer returns None (so it
+        is never RECORDED → deny-by-default cannot fire) — end-to-end blind (adversary-63a-v3 §R4-c;
+        SurrealDB supports INSERT..ON DUPLICATE KEY UPDATE, surrealql-tests 5776). F5 is a static
+        HONEST-DEVELOPER net; this verb-set bound is the #138 HOSTILE-AUTHOR class F5 does not defend;
+        the runtime root-fix (mutation detection as a PROPERTY, not a verb enumeration) is 63b (task
+        571ef1a). If you closed this deliberately (the 63b root-fix), DELETE this pin + the R4-c bound
+        docstrings on ``_raw_mutation_of_table`` / ``_mutation_verb_for_table`` and say so."""
+        from _governed_contract import _mutation_verb_for_table, _raw_mutation_of_table
+
+        exotic = (
+            "INSERT INTO memory (id, scope) VALUES ($id, 'x') ON DUPLICATE KEY UPDATE scope = 'x'",
+            "CREATE type::record('memory', $id) SET scope = 'seized'",
+            "RELATE $principal->owns->type::record('memory', $id)",
+        )
+        for statement in exotic:
+            # STATIC extractor: not derived → L1/R3 never count it.
+            assert _raw_mutation_of_table(statement, MEMORY_TABLE, "MEMORY_TABLE") is None, (
+                f"the static extractor now counts an exotic-verb memory mutation — the #449 R4-c bound "
+                f"is closing. If deliberate (63b), delete this pin + the bound docstrings: {statement!r}"
+            )
+            # RUNTIME observer: None → never recorded → deny-by-default cannot fire.
+            assert _mutation_verb_for_table(statement, MEMORY_TABLE) is None, (
+                f"the runtime observer now records an exotic-verb memory mutation — the #449 R4-c bound "
+                f"is closing. If deliberate (63b), delete this pin + the bound docstrings: {statement!r}"
+            )
+        # PROBE-HONESTY POSITIVE CONTROL (adversary-63a-v3 §R4-c) — an IN-SET verb (UPDATE) IS seen by
+        # BOTH, so the None above is a genuine verb-set miss, not a blind extractor/observer.
+        in_set = "UPDATE type::record('memory', $id) SET scope = 'x'"
+        assert _raw_mutation_of_table(in_set, MEMORY_TABLE, "MEMORY_TABLE") == "UPDATE", (
+            "the static extractor cannot see an in-set UPDATE — the probe is blind, so the R4-c bound "
+            "witness above is vacuous (CLAUDE.md PKT-28 C1)"
+        )
+        assert _mutation_verb_for_table(in_set, MEMORY_TABLE) == "UPDATE", (
+            "the runtime observer cannot see an in-set UPDATE — the probe is blind, so the R4-c bound "
+            "witness above is vacuous (CLAUDE.md PKT-28 C1)"
         )
 
 

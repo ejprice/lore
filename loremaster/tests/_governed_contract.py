@@ -656,7 +656,19 @@ def _raw_mutation_of_table(shape: str, table: str, table_const_hint: str) -> str
     DELETE — a false positive INVISIBLE while F5 scanned only ``memory/local.py``, surfaced the
     instant the whole-tree scan reached ``principals.py``. Docstrings are already excluded by
     :func:`_docstring_node_ids`; this closes the NON-docstring prose f-string hole (the P8d law:
-    prose mentions carry no structural anchors, so anchor on the verb→target adjacency)."""
+    prose mentions carry no structural anchors, so anchor on the verb→target adjacency).
+
+    ⚠ NAMED ACCEPTED BOUND (finding #449 — WHEN YOU CANNOT CLOSE A HOLE, PIN IT / A GATE NEEDS A
+    THREAT MODEL): the counted verb-set is a BOUNDED ENUMERATION — ``UPSERT``/``UPDATE``/``DELETE`` +
+    ``REMOVE TABLE|FIELD|INDEX``. An ``INSERT … ON DUPLICATE KEY UPDATE`` / ``CREATE`` / ``RELATE``
+    memory seizure returns None here, so it is never derived (L1/R3 never count it). This is F5's
+    THREAT MODEL working as stated: F5 is a static HONEST-DEVELOPER net (it catches the honest mistake
+    at the verbs it enumerates); the exotic-verb laundering is the #138 HOSTILE-AUTHOR class F5 does
+    NOT defend. The runtime root-fix (mutation detection as a PROPERTY, not a verb enumeration) is
+    DEFERRED to 63b (task 571ef1a). PINNED by ``TestTheAcceptedF5BoundsArePinned::
+    test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration`` (RED the day 63b closes it — delete
+    the pin + this clause then, and say so). RE-OPEN TRIGGER: 63b's F5 runtime parametrization, or the
+    first time an exempt/migrate frame becomes member-reachable or served."""
     target = (
         rf"(?:type::record\(\s*['\"]?)?"
         rf"(?:{re.escape(table)}\b|\{{{re.escape(table_const_hint)}\}})"
@@ -818,7 +830,16 @@ class ObservedWrite:
 def _mutation_verb_for_table(statement: str, table: str) -> str | None:
     """The mutation verb if ``statement`` (a RESOLVED runtime statement, possibly a BEGIN…COMMIT
     block) mutates ``table`` — else None (a read, or a mutation of another table). The audit CREATE
-    inside a composed guarded txn targets ``audit`` (not ``table``), so it is correctly ignored."""
+    inside a composed guarded txn targets ``audit`` (not ``table``), so it is correctly ignored.
+
+    ⚠ NAMED ACCEPTED BOUND (finding #449 — the RUNTIME half of the R4-c verb-set bound): this observer
+    matches the SAME bounded verb-set as :func:`_raw_mutation_of_table` (UPSERT/UPDATE/DELETE/REMOVE,
+    plus table-form UPDATE/DELETE). An INSERT/CREATE/RELATE memory mutation returns None → it is never
+    RECORDED → deny-by-default cannot fire on it. Accepted under F5's HONEST-DEVELOPER threat model
+    (the #138 HOSTILE-AUTHOR exotic-verb class is out of scope); the property-based root-fix is 63b
+    (task 571ef1a). PINNED by ``TestTheAcceptedF5BoundsArePinned::
+    test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration`` (delete the pin + this clause when
+    63b closes it)."""
     for verb, pattern in (
         ("UPSERT", rf"\bUPSERT\s+type::record\('{re.escape(table)}'"),
         ("UPDATE", rf"\bUPDATE\s+type::record\('{re.escape(table)}'"),
@@ -1154,7 +1175,19 @@ def exempt_frame_raw_memory_mutations(
     STATEMENTS (order-independent list), never (function, verb) sites, so two same-verb UPDATEs
     are TWO entries, not one. Source-parametrised (pure): the live pin reads ``entry.site.file``;
     the R3 discrimination mutation-proof passes a SYNTHETIC frame source. 63b/64 exempt entries
-    reuse this predicate — a governed table's contract is a parametrisation, never a copy."""
+    reuse this predicate — a governed table's contract is a parametrisation, never a copy.
+
+    ⚠ NAMED ACCEPTED BOUND (finding #449 — the R4-a SHAPE-SUBSTRING bound): this returns the frame's
+    raw-mutation STATEMENTS, but the callers that adjudicate the blessed SHAPE (the R3 exempt-frame
+    single-shape pin + the base-3 justification pin) match ``WHERE scope IS NONE`` by SUBSTRING, not by
+    an exact ``WHERE == scope IS NONE``. So a single OR-extended statement ``… WHERE scope IS NONE OR
+    scope = $victim`` is ONE statement (the count leg passes) that CONTAINS the substring (the shape
+    leg passes) yet seizes OWNED rows. Accepted under F5's HONEST-DEVELOPER threat model (the #138
+    HOSTILE-AUTHOR class is out of scope); the exact-shape / statement-scoped root-fix is 63b (task
+    571ef1a). PINNED by ``TestTheAcceptedF5BoundsArePinned::
+    test_r4a_the_shape_leg_matches_where_scope_is_none_by_substring`` (RED the day 63b closes it —
+    delete the pin + this clause then, and say so). RE-OPEN TRIGGER: 63b's statement-scoped exemption,
+    or the first time an exempt frame becomes member-reachable or served."""
     tree = ast.parse(source)
     owner = _enclosing_functions(tree)
     docstrings = _docstring_node_ids(tree)
