@@ -54,7 +54,6 @@ for an unreachable store — a LOUD failure, never a skip. pytest runs ``-n auto
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -69,22 +68,27 @@ from _governed_contract import (
     SURREALQL_MUTATION_KEYWORDS,
     SURREALQL_READ_KEYWORDS,
     SURREALQL_STATEMENT_KEYWORDS,
+    ExemptToken,
     ObservedEffect,
     ObservedWrite,
     RowDelta,
     SchemaDelta,
+    SchemaSnapshot,
     TreeMutationSite,
     TreeWriteAllowlistEntry,
     _raw_mutation_of_table,
+    apply_ddl,
     classify_tree_observed_write,
     derive_surrealql_statement_keywords_from_corpus,
     function_calls_named,
     governed_populations,
     governed_table_raw_mutation_sites_in_tree,
     observe_governed_table_writes,
+    schema_snapshot_from_info,
     store_handle,
 )
 from _surreal_harness import (
+    connect_admin,
     drop_database,
     make_env,
     run,
@@ -131,9 +135,16 @@ _GOV_SUBJECT = pdp.Subject(
 )
 
 # The GOLDEN adjudicated migrate statement (design §1.4 — an oracle the adjudicator WROTE DOWN, not
-# read from production, so leg 2 can red when the production constant drifts). The 63b-i-a builder
-# defines ``principals.MIGRATE_MEMORY_SCOPE_STATEMENT`` == this literal and passes it BOTH to the
-# seam and to ``governed_exempt(name, statement=…)`` (ONE source in code).
+# read from production, so leg 2 can red when the production statement drifts). ⚠ §1.9 item 1
+# (adversary F-TRAP-2) — the adjudicated statement is a FUNCTION-LOCAL variable inside
+# ``principals._migrate_memory_scope``: the 63b-i-a builder assigns
+# ``stmt = f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE"`` and passes it BOTH to
+# ``governed_exempt(name, statement=stmt)`` AND to ``run_query(statement=stmt)`` — ONE source in
+# code, derived at the entry's OWN site. It is NEVER a module constant
+# ``principals.MIGRATE_MEMORY_SCOPE_STATEMENT``: the L1 whole-tree scan attributes a module-level
+# literal to ``<module>`` scope, so a module constant is an L1 ORPHAN → RED (and R1 self-containment
+# demands the literal live in the SAME symbol as the seam call + the exempt entry). Stated once
+# (§1.9 item 1): an exempt-adjudicated statement lives in the function that EXECUTES it.
 _MIGRATE_GOLDEN = f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE"
 
 
@@ -142,22 +153,46 @@ def _normalise(statement: str) -> str:
     return " ".join(statement.split())
 
 
-def _memory_ddl_object_names() -> frozenset[str]:
-    """The schema object names ``generate_memory_ddl`` DEFINES — the DERIVED golden for the
-    ``ensure_ready`` DDL frame's effect predicate (design §5.1 Q1: "the golden is the emitter's own
-    output, never hand-written"). Parsed from the emitter's own DDL string (DEFINE ANALYZER / TABLE
-    / FIELD / INDEX names + REMOVE FIELD names), so a schema change the emitter does NOT make is an
-    unexpected object outside this set → the DDL-frame effect predicate reds."""
-    ddl = surreal_schema.generate_memory_ddl(dim=_DIM)
-    names: set[str] = set()
-    for match in re.finditer(
-        r"\b(?:DEFINE|REMOVE)\s+(?:ANALYZER|TABLE|FIELD|INDEX|EVENT)\s+"
-        r"(?:OVERWRITE\s+|IF\s+NOT\s+EXISTS\s+|IF\s+EXISTS\s+)?([A-Za-z_][\w:]*)",
-        ddl,
-        re.IGNORECASE,
-    ):
-        names.add(match.group(1))
-    return frozenset(names)
+# =========================================================================== #
+# THE CONSTRUCTED ensure_ready ORACLE (design §1.9 item 4, SUPERSEDING the retired DDL-text regex
+# _memory_ddl_object_names). The expected memory schema is the ENGINE's OWN rendering of
+# generate_memory_ddl(dim) on a VIRGIN database — never a hand-model of the engine's implicit
+# expansions (array-element field defs render as embedding[*]/embedding.*, measured — the exact
+# #107/#131 "the test environment is a fiction" class the DDL-text regex fell to). A session-cached
+# fixture (keyed by dim) mints one more harness DB, applies the SAME emitter, reads INFO FOR TABLE,
+# and caches the SchemaSnapshot here so _effect_ensure_ready — called by the classifier, which cannot
+# take a fixture arg — can read it. Trust-doctrine CONSTRUCTION, not reasoning: the oracle is the
+# engine's own rendering of the same recipe, correct for every implicit expansion it has or will have.
+# =========================================================================== #
+
+_ENSURE_READY_ORACLE: dict[int, SchemaSnapshot] = {}
+
+
+async def _read_memory_schema_snapshot(dim: int) -> SchemaSnapshot:
+    """Apply ``generate_memory_ddl(dim)`` to a VIRGIN harness DB and return the engine's own rendered
+    ``memory`` schema as a :class:`SchemaSnapshot` (design §1.9 item 4). Reaped on exit."""
+    env = make_env(database=unique_database(), dim=dim)
+    connection = await connect_admin(env)
+    try:
+        await apply_ddl(connection, surreal_schema.generate_memory_ddl(dim=dim), url=env.url)
+        return schema_snapshot_from_info(await run(connection, f"INFO FOR TABLE {MEMORY_TABLE}"))
+    finally:
+        await connection.close()
+        await drop_database(env)
+
+
+@pytest_asyncio.fixture()
+async def ensure_ready_oracle() -> SchemaSnapshot:
+    """The CONSTRUCTED ensure_ready oracle (design §1.9 item 4). FUNCTION-scoped but the snapshot is
+    CACHED in the module holder keyed by dim, so the virgin-DB apply happens ONCE per worker (a
+    session-scoped async fixture would fight pytest-asyncio's function-scoped event loop under
+    ``-n auto``). Populates the holder :func:`_effect_ensure_ready` reads; yields the snapshot for the
+    non-vacuity pin. A test that CLASSIFIES an ``ensure_ready`` write MUST depend on this fixture."""
+    oracle = _ENSURE_READY_ORACLE.get(_DIM)
+    if oracle is None:
+        oracle = await _read_memory_schema_snapshot(_DIM)
+        _ENSURE_READY_ORACLE[_DIM] = oracle
+    return oracle
 
 
 # =========================================================================== #
@@ -227,15 +262,22 @@ def _effect_recreate(effect: ObservedEffect) -> bool:
 
 
 def _effect_ensure_ready(effect: ObservedEffect) -> bool:
-    """The ``ensure_ready`` DDL apply (design §5.1 Q1): the schema delta touches ONLY objects
-    ``generate_memory_ddl`` DEFINES (the DERIVED golden — the emitter's own output) AND NO ROWS move
-    (a DDL frame that moves rows is RED). Satisfies the virgin (no table → full schema) AND re-apply
-    (idempotent, empty delta) cases: both touch only emitter-managed objects and move no rows."""
+    """The ``ensure_ready`` DDL apply (design §5.1 Q1 / §1.9 item 4): NO ROWS move AND the after-schema
+    EQUALS the CONSTRUCTED oracle (``generate_memory_ddl`` on a virgin DB, engine-rendered) by DICT
+    EQUALITY — no regex, no hand-model of implicit expansions (the retired ``_memory_ddl_object_names``
+    class). Satisfies the virgin (no table → full schema == oracle) AND re-apply (idempotent,
+    after-schema still == oracle) cases. The oracle is populated by the ``ensure_ready_oracle``
+    fixture; classifying an ensure_ready write without it is a LOUD raise, never a vacuous False."""
     if effect.row_deltas:
-        return False
-    managed = _memory_ddl_object_names()
-    touched = effect.schema_delta.added | effect.schema_delta.removed | effect.schema_delta.changed
-    return touched <= managed
+        return False  # a DDL frame that MOVES rows is RED (short-circuit — no oracle needed)
+    oracle = _ENSURE_READY_ORACLE.get(_DIM)
+    if oracle is None:
+        raise RuntimeError(
+            "the ensure_ready oracle is not populated — a test classifying an ensure_ready write must "
+            "depend on the `ensure_ready_oracle` fixture (design §1.9 item 4); this is a LOUD failure, "
+            "never a vacuous False"
+        )
+    return effect.schema_after is not None and effect.schema_after == oracle
 
 
 # =========================================================================== #
@@ -287,9 +329,10 @@ _MIGRATE_ENTRY = TreeWriteAllowlistEntry(
 _ENSURE_READY_ENTRY = TreeWriteAllowlistEntry(
     site=TreeMutationSite(_LOCAL, "ensure_ready", "DEFINE"),
     justification=(
-        "the boot/rebuild memory DDL apply (§5.1 Q1). A LABEL frame (write_guard('ensure_ready')) "
-        "with no raw literal — it passes generate_memory_ddl(), not a literal — so l1_site=False; "
-        "its effect is the schema delta == the emitter's own managed objects, no rows moved."
+        "the boot/rebuild memory DDL apply (§5.1 Q1 / §1.9 item 4). A LABEL frame "
+        "(write_guard('ensure_ready')) with no raw literal — it passes generate_memory_ddl(), not a "
+        "literal — so l1_site=False; its effect is the after-schema == the CONSTRUCTED oracle "
+        "(generate_memory_ddl on a virgin DB, engine-rendered — dict equality, no regex), no rows moved."
     ),
     pin="test_ensure_ready_carries_the_ddl_frame_label_and_effect",
     frames=("ensure_ready",),
@@ -647,53 +690,72 @@ class TestTheExemptMechanismIsStatementScoped:
     independent. RED at HEAD (``governed_exempt`` takes no ``statement`` kwarg; ``active_exempt``
     returns a bare name; the classifier is 2-leg)."""
 
-    def test_governed_exempt_takes_a_statement_and_active_exempt_returns_the_pair(self) -> None:
+    def test_governed_exempt_takes_a_statement_and_active_exempt_returns_the_token(self) -> None:
         """⚠ RED at HEAD — ``governed_exempt(name)`` has no ``statement`` kwarg and ``active_exempt``
-        returns the bare name. On the build ``governed_exempt(name, *, statement)`` carries the pair
-        and ``active_exempt()`` returns ``(name, statement)`` (design §1.4). Behavioural RED: calling
-        with ``statement=`` raises TypeError today — caught here as the unbuilt-signal, never leaked."""
-        # Any-bridge (the absent_scope idiom): call the not-yet-widened signature through an
-        # Any-typed reference so mypy stays green in BOTH worlds — at HEAD the ``statement`` kwarg
-        # raises TypeError (the behavioural RED), on the build it binds.
+        returns the bare name. On the build ``governed_exempt(name, *, statement)`` is a CLASS context
+        manager whose ``__enter__`` captures ``sys._getframe(1)`` (§1.9 item 3c), and ``active_exempt()``
+        returns an ``ExemptToken(name, statement, origin)`` — ``origin`` = the ``(file, co_name)`` of
+        the frame ENTERING the ``with`` (THIS test), exactly one up, with NO ``contextlib`` frame in
+        between (the class-CM form removes the filename skip-list). Behavioural RED: ``statement=``
+        raises TypeError today — caught here as the unbuilt-signal, never leaked. Read by ATTRIBUTE
+        (production returns ``governed.ExemptToken``, structurally identical to the substrate twin)."""
+        # Any-bridge (the absent_scope idiom): call the not-yet-widened signature through an Any-typed
+        # reference so mypy stays green in BOTH worlds — at HEAD ``statement`` raises TypeError, on the
+        # build it binds and active_exempt() returns the ExemptToken.
         exempt_cm: Any = governed_mod.governed_exempt
         active_exempt: Any = governed_mod.active_exempt
         try:
             with exempt_cm("probe", statement=_MIGRATE_GOLDEN):
-                pair = active_exempt()
+                token = active_exempt()
         except TypeError:
             pytest.fail(
-                "governed_exempt does not accept a keyword-only `statement` (design §1.4 statement-"
-                "scoped exemption unbuilt) — the exemption cannot name ONE exact statement"
+                "governed_exempt does not accept a keyword-only `statement` (design §1.4 / §1.9 item 3c "
+                "statement-scoped exemption unbuilt) — the exemption cannot name ONE exact statement"
             )
-        assert isinstance(pair, tuple) and pair == ("probe", _MIGRATE_GOLDEN), (
-            f"active_exempt() must return the (name, statement) PAIR the block set (§1.4), got {pair!r}"
+        assert token is not None and getattr(token, "name", None) == "probe", (
+            f"active_exempt() must return an ExemptToken carrying the block's name (§1.9 item 3c): {token!r}"
+        )
+        assert getattr(token, "statement", None) == _MIGRATE_GOLDEN, (
+            f"the ExemptToken's golden statement is not the block's statement (§1.9 item 3c), got {token!r}"
+        )
+        origin = getattr(token, "origin", None)
+        assert (
+            isinstance(origin, tuple)
+            and len(origin) == 2
+            and origin[1] == "test_governed_exempt_takes_a_statement_and_active_exempt_returns_the_token"
+        ), (
+            "the ExemptToken.origin must be the (file, co_name) of the frame that ENTERED the `with` "
+            f"(sys._getframe(1) — THIS test, §1.9 item 3c), never the driver/contextlib frame: got {origin!r}"
         )
 
     async def test_the_live_migrate_write_classifies_by_all_four_legs(
         self, migration_world: Any  # noqa: F811 (pytest fixture imported by name)
     ) -> None:
         """⚠ RED at HEAD — drive the REAL ``migrate_governed`` under the effect observer; the backfill
-        UPDATE must be OBSERVED with a state-diff effect, originate in
-        ``principals::_migrate_memory_scope`` (the guard's reach genuinely extends there — no
-        ``extra_modules``), carry the ``('migrate-governed', golden)`` exempt PAIR, and CLASSIFY by
-        all four legs. RED at HEAD: no ``statement`` on the token, effect unbuilt, 2-leg classifier."""
+        UPDATE must be OBSERVED with a state-diff effect, carry an ``ExemptToken('migrate-governed',
+        golden, origin=(principals, _migrate_memory_scope))`` whose ``origin`` is captured at the
+        ``governed_exempt`` CONTEXT ENTRY (§1.9 item 3c — NOT the call-time ``_txn`` driver frame), and
+        CLASSIFY by all four legs. RED at HEAD: no ``statement`` on the token, no ``origin`` on the
+        token, effect unbuilt, 2-leg classifier."""
         principal_store, keep_store, connection, env = migration_world
         handle, _calls = store_handle(connection, url=env.url)
         with observe_governed_table_writes(MEMORY_TABLE) as observed:
             await principals_mod.migrate_governed(
                 table=MEMORY_TABLE, store=handle, keep_store=keep_store, principal_store=principal_store
             )
+        # leg-4 origin is a field of the exempt TOKEN (context-entry capture), not o.origin_site (the
+        # call-time _txn driver frame). Read by attribute so HEAD's bare-name str exempt → None → RED.
         migrate = [
             o
             for o in observed
-            if o.origin_site == (_PRINCIPALS, "_migrate_memory_scope")
+            if getattr(o.exempt, "origin", None) == (_PRINCIPALS, "_migrate_memory_scope")
             and o.effect is not None
             and not o.effect.is_empty
         ]
         assert migrate, (
-            f"the migrate backfill was not observed as an effect originating in "
-            f"principals._migrate_memory_scope (reach / effect unbuilt): "
-            f"{[(o.origin_site, o.effect is not None) for o in observed]}"
+            f"the migrate backfill was not observed as an effect carrying an ExemptToken whose origin "
+            f"is principals._migrate_memory_scope (reach / effect / token-origin unbuilt): "
+            f"{[(getattr(o.exempt, 'origin', o.exempt), o.effect is not None) for o in observed]}"
         )
         unclassified = [o for o in migrate if not classify_tree_observed_write(o, MEMORY_TREE_ALLOWLIST)]
         assert not unclassified, (
@@ -722,8 +784,8 @@ class TestTheExemptMechanismIsStatementScoped:
         )
         seizure = ObservedWrite(
             label=None,
-            exempt=("migrate-governed", widened),  # token carries the WIDENED text (≠ golden)
-            origin_site=(_PRINCIPALS, "_migrate_memory_scope"),
+            # token carries the WIDENED text (≠ golden); origin is the REAL migrate site (legs 1/4 pass)
+            exempt=ExemptToken("migrate-governed", widened, (_PRINCIPALS, "_migrate_memory_scope")),
             statement=widened,
             effect=effect,
         )
@@ -756,8 +818,9 @@ class TestTheExemptMechanismIsStatementScoped:
         )
         write = ObservedWrite(
             label=None,
-            exempt=("migrate-governed", _MIGRATE_GOLDEN),  # token statement == golden (legs 1/2/4 pass)
-            origin_site=(_PRINCIPALS, "_migrate_memory_scope"),
+            # token statement == golden AND origin == the real migrate site (legs 1/2/4 pass) — ONLY
+            # the effect differs, so the rejection below is leg 3 (effect), not leg 2 or 4.
+            exempt=ExemptToken("migrate-governed", _MIGRATE_GOLDEN, (_PRINCIPALS, "_migrate_memory_scope")),
             statement=_MIGRATE_GOLDEN,
             effect=seizing_effect,
         )
@@ -771,10 +834,13 @@ class TestTheExemptMechanismIsStatementScoped:
         )
 
     def test_leg4_reds_a_borrowed_token_from_a_foreign_origin(self) -> None:
-        """⚠ LEG 4 (origin) — a site BORROWING the migrate token+golden+effect from a DIFFERENT
-        origin fails the (file, symbol) match. RED at HEAD (2-leg classifier keyed on the bare name
-        would also reject a tuple, so this may pass at HEAD for the wrong reason — the leg-2/3 pins
-        above are the discriminating REDs; this pins the origin leg survives the 4-leg rewrite)."""
+        """⚠ LEG 4 (origin) — a site BORROWING the migrate token+golden+effect but whose ``origin`` was
+        captured at a DIFFERENT frame fails the ``token.origin == entry.site`` match (§1.9 item 3c: the
+        origin is a field of the TOKEN, captured at context entry — a helper entering
+        ``governed_exempt`` on the migrate frame's behalf yields a foreign origin). Legs 1/2/3 pass;
+        ONLY the token's origin is foreign. RED at HEAD (the 2-leg classifier keyed on the bare name
+        rejects an ExemptToken, so this passes at HEAD for the wrong reason — the leg-2/3 pins above
+        and MISSING PIN #1 are the discriminating REDs; this pins the origin leg survives the rewrite)."""
         clean_effect = ObservedEffect(
             row_deltas=(
                 RowDelta(
@@ -789,14 +855,16 @@ class TestTheExemptMechanismIsStatementScoped:
         )
         borrowed = ObservedWrite(
             label=None,
-            exempt=("migrate-governed", _MIGRATE_GOLDEN),
-            origin_site=(_PRINCIPALS, "_some_other_function"),  # a FOREIGN origin
+            # the token's ORIGIN is a FOREIGN frame (the borrowed-token construction, §1.9 item 3c) —
+            # name+statement+effect all match the migrate entry; only leg 4 (origin) rejects it.
+            exempt=ExemptToken("migrate-governed", _MIGRATE_GOLDEN, (_PRINCIPALS, "_some_other_function")),
             statement=_MIGRATE_GOLDEN,
             effect=clean_effect,
         )
         assert classify_tree_observed_write(borrowed, MEMORY_TREE_ALLOWLIST) is False, (
-            "a foreign site borrowing the migrate token+golden+effect CLASSIFIED — leg 4 (origin) is "
-            "not enforced; any site could launder a governed write through the exemption (§1.4 leg 4)"
+            "a foreign site borrowing the migrate token+golden+effect (its ExemptToken.origin captured "
+            "at a foreign frame) CLASSIFIED — leg 4 (token.origin == entry.site) is not enforced; any "
+            "site could launder a governed write through the exemption (§1.4 / §1.9 item 3c leg 4)"
         )
 
     def test_the_golden_is_proven_both_ways(self) -> None:
@@ -815,6 +883,114 @@ class TestTheExemptMechanismIsStatementScoped:
             "both-ways golden proof (§1.4) rests on entry.statement being the adjudicated text"
         )
         assert _MIGRATE_ENTRY.statement, "the exempt entry carries NO golden statement (§1.4 leg 2 vacuous)"
+
+
+class TestTheClassifierRunsALabelFramesEffectPredicate:
+    """§1.4 / §1.9 item 3 (adversary MISSING PIN #1) — the LABEL leg is NARROWED: a labeled write
+    classifies ONLY IF its matched entry's ``effect`` predicate HOLDS for the observed effect. A
+    labeled write whose effect FAILS its entry predicate is UNCLASSIFIED. RED at HEAD: the 2-leg
+    classifier blesses ANY label (``if observed.label is not None: return True``), re-widening the
+    #138/R2 hand-set-label bound §1.4 narrows — the EXACT wrong build the adversary walked through
+    (``WB-label-ignores-effect``, 30/30 green). Every i-a memory label entry carries an effect
+    predicate (§1.9 item 3 opening), so this ∀ is exercisable across the whole allowlist."""
+
+    def test_a_reinforce_labeled_write_that_seizes_a_governed_column_is_unclassified(self) -> None:
+        """⚠ RED at HEAD (MISSING PIN #1) — a ``_reinforce``-labeled write whose effect ALSO changes a
+        GOVERNED column ({importance, scope}) FAILS ``_effect_reinforce`` (importance ONLY) →
+        UNCLASSIFIED. POSITIVE CONTROL: the same label with an {importance}-only effect → CLASSIFIED.
+        At HEAD ``if label is not None: return True`` blesses the seizure → RED. Pure-unit."""
+        seizing = ObservedEffect(
+            row_deltas=(
+                RowDelta(
+                    id="s",
+                    kind="updated",
+                    changed_columns=frozenset({_COL_IMPORTANCE, _COL_SCOPE}),
+                    before={_COL_IMPORTANCE: 0.1, _COL_SCOPE: "keep:k"},
+                    after={_COL_IMPORTANCE: 0.5, _COL_SCOPE: "seized"},
+                ),
+            ),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+        )
+        assert _effect_reinforce(seizing) is False, (
+            "control: a {importance, scope} change must FAIL the reinforce effect predicate, else the "
+            "rejection below would not be the classifier RUNNING the predicate"
+        )
+        seizing_write = ObservedWrite(label="_reinforce", statement="<reinforce seizure>", effect=seizing)
+        assert classify_tree_observed_write(seizing_write, MEMORY_TREE_ALLOWLIST) is False, (
+            "a _reinforce-labeled write that ALSO seized the scope column CLASSIFIED — the classifier "
+            "blesses any label WITHOUT running its entry's effect predicate (MISSING PIN #1; the "
+            "#138/R2 re-widening; §1.4 label-effect unbuilt)"
+        )
+        clean = ObservedEffect(
+            row_deltas=(
+                RowDelta(
+                    id="c",
+                    kind="updated",
+                    changed_columns=frozenset({_COL_IMPORTANCE}),
+                    before={_COL_IMPORTANCE: 0.1},
+                    after={_COL_IMPORTANCE: 0.5},
+                ),
+            ),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+        )
+        assert _effect_reinforce(clean) is True, "control: an {importance}-only bump must PASS the predicate"
+        clean_write = ObservedWrite(label="_reinforce", statement="<reinforce bump>", effect=clean)
+        assert classify_tree_observed_write(clean_write, MEMORY_TREE_ALLOWLIST) is True, (
+            "POSITIVE CONTROL: a clean _reinforce write (importance only) must CLASSIFY — else the "
+            "classifier denies the honest frame too (a build that always denies labels; §1.4)"
+        )
+
+    def test_every_label_frame_rejects_an_effect_its_predicate_denies(self) -> None:
+        """⚠ RED at HEAD (MISSING PIN #1, GENERALISED ∀ label frame) — for EVERY non-exempt allowlist
+        entry carrying an effect predicate, a write carrying that entry's label but an effect the
+        predicate REJECTS is UNCLASSIFIED. The classifier must RUN the matched entry's effect ∀ label
+        frame, not just ``_reinforce``. Each row SELF-CHECKS (``entry.effect(rejected) is False``) so a
+        future widening that ACCEPTS the candidate fails LOUDLY (pick a new rejected effect), never
+        silently — the fixture-discriminates law. At HEAD every one reds (``if label is not None:
+        return True``)."""
+        # Candidate rejected effects; per entry we use the FIRST its predicate denies (the self-check).
+        # Together they cover every i-a label predicate: two-scope-rows fails reinforce (scope≠
+        # importance) / recreate (empty schema) / ensure_ready (has rows) / guarded_write (2 rows);
+        # row-plus-schema fails upsert (schema non-empty).
+        two_scope_rows = ObservedEffect(
+            row_deltas=(
+                RowDelta("b1", "updated", frozenset({_COL_SCOPE}), {_COL_SCOPE: None}, {_COL_SCOPE: "x"}),
+                RowDelta("b2", "updated", frozenset({_COL_SCOPE}), {_COL_SCOPE: None}, {_COL_SCOPE: "y"}),
+            ),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+        )
+        row_plus_schema = ObservedEffect(
+            row_deltas=(
+                RowDelta("c1", "updated", frozenset({_COL_SCOPE}), {_COL_SCOPE: None}, {_COL_SCOPE: "x"}),
+            ),
+            schema_delta=SchemaDelta(
+                added=frozenset({"__hostile_index"}), removed=frozenset(), changed=frozenset()
+            ),
+        )
+        candidates = (two_scope_rows, row_plus_schema)
+        checked = 0
+        for entry in MEMORY_TREE_ALLOWLIST:
+            if entry.exempt_name is not None or entry.effect is None or not entry.frames:
+                continue  # exempt frames are the four-leg legs above; label leg needs frames + effect
+            rejected = next((eff for eff in candidates if entry.effect(eff) is False), None)
+            assert rejected is not None, (
+                f"no candidate rejected effect for label entry {entry.site.function} — its predicate "
+                f"ACCEPTS both candidates; add a rejected effect this pin can discriminate with"
+            )
+            label = entry.frames[0]
+            off_predicate = ObservedWrite(
+                label=label, statement=f"<{label} off-predicate>", effect=rejected
+            )
+            assert classify_tree_observed_write(off_predicate, MEMORY_TREE_ALLOWLIST) is False, (
+                f"a '{label}'-labeled write whose effect its OWN entry predicate REJECTS was CLASSIFIED "
+                f"— the classifier does not RUN this label frame's effect predicate (MISSING PIN #1 "
+                f"generalised ∀ label frame; §1.4 label-effect): {entry.site.function}"
+            )
+            checked += 1
+        assert checked >= 4, (
+            f"expected ≥4 non-exempt label frames exercised (upsert/reinforce/recreate/ensure_ready/"
+            f"guarded_write) — only {checked}; the ∀ generalisation went vacuous"
+        )
 
 
 # =========================================================================== #
@@ -944,6 +1120,61 @@ class TestTheGovernedPopulationSetIsADerivedOutput:
             f"as RED_ADJUDICATED(owner=63b-ii)); a SURPRISE population is a deny-by-default RED"
         )
 
+    def test_the_population_derivation_reach_is_a_checked_variable(self) -> None:
+        """⚠ RED at HEAD (adversary MISSING PIN #2 / §1.9 item 2) — ``governed_populations()`` is
+        DERIVED from ``surreal_schema``, NEVER a literal. Fed a SYNTHETIC schema source, a NEW
+        ``_widget_statements`` that CALLS ``_governed_field_specs`` GROWS the set to include ``widget``,
+        and a ``_define_relation_table('widget_edge', 'widget', …)`` whose endpoint is governed JOINS.
+        Mutation proof: adding a ``_governed_field_specs`` caller MUST change the output. This is the
+        reach-as-a-checked-variable pin the adversary found MISSING — it catches ``return
+        frozenset({MEMORY_TABLE})`` (a hardcode passes ``test_the_derived_population_set_is_the_known_
+        set`` but FAILS here). It ALSO pins the §1.9 item 2 / F-TRAP-1 correction: an emitter with a
+        DIRECT ``owner_principal`` field (the packet-62 ``agent`` shape) that does NOT call
+        ``_governed_field_specs`` is NOT included — the derivation keys on the CALLER, not a field name.
+        The synthetic source uses the REAL helper names (``_governed_field_specs`` /
+        ``_define_relation_table(name, in_table, out_table)``) so the build's derivation recognises it."""
+        baseline_source = (
+            "def _governed_field_specs():\n    return []\n\n"
+            "def _define_relation_table(name, in_table, out_table):\n    return ''\n\n"
+            "def _memory_statements():\n    return _governed_field_specs()\n\n"
+            # F-TRAP-1 shape: agent carries a DIRECT owner_principal field, NOT via _governed_field_specs
+            "def _agent_statements():\n"
+            "    return ['DEFINE FIELD owner_principal ON agent TYPE option<record>']\n"
+        )
+        try:
+            baseline = governed_populations(schema_source=baseline_source)
+        except NotImplementedError:
+            pytest.fail(
+                "governed_populations is unbuilt (§1.5c-iii / §1.9 item 2) — its reach over the SET of "
+                "populations cannot be exercised on a synthetic source; the reach is a hidden constant"
+            )
+        assert baseline == frozenset({MEMORY_TABLE}), (
+            f"the synthetic baseline (only _memory_statements calls _governed_field_specs) did NOT "
+            f"derive exactly {{memory}} — the derivation is not keyed on _governed_field_specs CALLERS "
+            f"(§1.9 item 2 / F-TRAP-1: agent's owner_principal is a DIRECT field, not a governed slice): "
+            f"{sorted(baseline)}"
+        )
+        grown_source = baseline_source + (
+            "def _widget_statements():\n    return _governed_field_specs()\n\n"
+            "def _widget_edge_statements():\n"
+            "    return _define_relation_table('widget_edge', 'widget', 'note')\n"
+        )
+        grown = governed_populations(schema_source=grown_source)
+        assert grown != baseline, (
+            "adding a _governed_field_specs caller (_widget_statements) to the synthetic schema did "
+            "NOT change the derived population set — governed_populations is a HARDCODED literal, not a "
+            "derivation (the frozenset({memory}) wrong build; MISSING PIN #2 / §1.9 item 2 reach)"
+        )
+        assert "widget" in grown, (
+            f"a NEW emitter calling _governed_field_specs did NOT join the governed-population set — "
+            f"the derivation does not key on _governed_field_specs callers (§1.9 item 2): {sorted(grown)}"
+        )
+        assert "widget_edge" in grown, (
+            f"a relation table (_define_relation_table) whose endpoint 'widget' is governed did NOT "
+            f"join the population set — the relation-endpoint leg of the derivation is missing "
+            f"(§1.9 item 2 ∪ relation tables with a governed endpoint): {sorted(grown)}"
+        )
+
 
 class TestCoverageIsACheckedVariableOverTheRuntimeObservedFrames:
     """§1.5c-ii — coverage is a CHECKED VARIABLE: EVERY ``runtime_observed=True`` allowlist entry's
@@ -976,8 +1207,10 @@ class TestCoverageIsACheckedVariableOverTheRuntimeObservedFrames:
                 if write.label:
                     observed_channels.add(write.label)
                 if write.exempt is not None:
-                    name = write.exempt[0] if isinstance(write.exempt, tuple) else write.exempt
-                    observed_channels.add(name)
+                    # The channel NAME — duck-typed: ExemptToken.name (production's governed.ExemptToken
+                    # AND the substrate twin are DIFFERENT classes, so isinstance would be wrong), else
+                    # the bare str (HEAD). str() coerces for the set[str] type + the sorted diagnostics.
+                    observed_channels.add(str(getattr(write.exempt, "name", write.exempt)))
 
         # member battery (remember · _reinforce · guarded_write via invalidate).
         backend, *_member_rest = retrofit_world
@@ -1068,41 +1301,64 @@ class TestEnsureReadyIsAnAllowlistedDdlFrame:
             "UNATTRIBUTED at the F5 seam, so the DDL leg is non-satisfiable on every fixture (§5.1 Q1)"
         )
 
-    def test_the_ensure_ready_effect_predicate_discriminates(self) -> None:
-        """The DDL-frame effect predicate (design §5.1 Q1) is DERIVED from the emitter's own output:
-        a schema delta touching ONLY objects ``generate_memory_ddl`` defines, with NO rows moved,
-        classifies; a delta touching an UNMANAGED object, or one that moves rows, reds. GREEN at HEAD
-        (pure predicate) — the discrimination the DDL-frame classification rests on. What WRONG build
-        passes this? one whose effect predicate is ``lambda _: True`` — caught by the seizure legs."""
-        managed = sorted(_memory_ddl_object_names())
-        assert managed, "generate_memory_ddl defines NO parseable schema objects — the golden is vacuous"
+    async def test_the_ensure_ready_effect_predicate_discriminates(
+        self, ensure_ready_oracle: Any
+    ) -> None:
+        """The DDL-frame effect predicate (design §5.1 Q1 / §1.9 item 4) is the CONSTRUCTED oracle,
+        compared by DICT EQUALITY (no regex): a no-rows effect whose ``schema_after`` == the oracle
+        classifies; one that MOVES ROWS reds; one whose after-schema differs by even ONE field reds
+        (the NON-VACUITY leg — §1.9 item 4). GREEN at HEAD (the predicate + the live oracle read are
+        contract-side, independent of the builder). What WRONG build passes this? one whose predicate
+        is ``lambda e: not e.row_deltas`` (ignores the schema) — CAUGHT by the non-vacuity leg."""
+        oracle = ensure_ready_oracle
         good = ObservedEffect(
             row_deltas=(),
-            schema_delta=SchemaDelta(added=frozenset(managed[:1]), removed=frozenset(), changed=frozenset()),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+            schema_after=oracle,
         )
-        assert _effect_ensure_ready(good) is True, "a delta touching only emitter-managed objects must pass"
-        unmanaged = ObservedEffect(
-            row_deltas=(),
-            schema_delta=SchemaDelta(
-                added=frozenset({"scope_backdoor_index"}), removed=frozenset(), changed=frozenset()
-            ),
-        )
-        assert _effect_ensure_ready(unmanaged) is False, (
-            "a DDL delta touching an object generate_memory_ddl does NOT define passed the ensure_ready "
-            "effect predicate — a DDL frame could smuggle an unmanaged schema change (§5.1 Q1)"
+        assert _effect_ensure_ready(good) is True, (
+            "an after-schema == the constructed oracle, no rows moved, must classify (§1.9 item 4)"
         )
         moves_rows = ObservedEffect(
             row_deltas=(
                 RowDelta("r", "updated", frozenset({_COL_SCOPE}), {_COL_SCOPE: None}, {_COL_SCOPE: "x"}),
             ),
-            schema_delta=SchemaDelta(added=frozenset(managed[:1]), removed=frozenset(), changed=frozenset()),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+            schema_after=oracle,
         )
         assert _effect_ensure_ready(moves_rows) is False, (
-            "a DDL frame that MOVED rows passed the ensure_ready effect predicate — a DDL frame that "
-            "moves rows is RED (§5.1 Q1)"
+            "a DDL frame that MOVED rows passed the ensure_ready predicate — a DDL frame that moves "
+            "rows is RED (§5.1 Q1)"
+        )
+        # NON-VACUITY (§1.9 item 4): the oracle DDL + one EXTRA field renders a DIFFERENT snapshot →
+        # the dict-equality compare must red, proving it is not vacuously equal for any no-rows effect.
+        env = make_env(database=unique_database(), dim=_DIM)
+        connection = await connect_admin(env)
+        try:
+            await apply_ddl(connection, surreal_schema.generate_memory_ddl(dim=_DIM), url=env.url)
+            await run(connection, f"DEFINE FIELD __oracle_probe ON {MEMORY_TABLE} TYPE option<string>")
+            extra = schema_snapshot_from_info(await run(connection, f"INFO FOR TABLE {MEMORY_TABLE}"))
+        finally:
+            await connection.close()
+            await drop_database(env)
+        assert extra != oracle, (
+            "control: adding a field to the oracle DB did not change its INFO FOR TABLE snapshot — the "
+            "oracle comparison would be vacuous (schema_snapshot_from_info collapses distinct schemas)"
+        )
+        smuggled = ObservedEffect(
+            row_deltas=(),
+            schema_delta=SchemaDelta(frozenset(), frozenset(), frozenset()),
+            schema_after=extra,
+        )
+        assert _effect_ensure_ready(smuggled) is False, (
+            "an after-schema with ONE EXTRA field (not in the constructed oracle) PASSED the ensure_"
+            "ready predicate — the oracle comparison is vacuous / a DDL frame could smuggle an unmanaged "
+            "schema change (§1.9 item 4 non-vacuity)"
         )
 
-    async def test_the_rebuild_arc_is_observed_and_classified(self, rebuild_world: Any) -> None:
+    async def test_the_rebuild_arc_is_observed_and_classified(
+        self, rebuild_world: Any, ensure_ready_oracle: Any
+    ) -> None:
         """⚠ RED at HEAD (§1.6-vi DDL leg) — drive ``rebuild_embeddings`` under the effect observer
         and assert the arc: a REMOVE (label ``_recreate_memory_table``, a schema-removal effect) → an
         ensure_ready re-DEFINE (label ``ensure_ready``, a schema delta == the emitter's managed

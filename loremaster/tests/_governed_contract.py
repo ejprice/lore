@@ -861,6 +861,77 @@ def function_calls_write_guard(source: str, function: str) -> bool:
 
 
 @dataclass(frozen=True)
+class ExemptToken:
+    """The token an active ``governed.governed_exempt(name, *, statement)`` block installs in
+    ``_ACTIVE_EXEMPT`` (design §1.9 item 3c — SUPERSEDES the §1.4 ``(name, statement)`` tuple).
+    ``active_exempt()`` returns THIS or ``None``. Frozen: the channel ``name`` + the GOLDEN
+    ``statement`` + the ``origin`` ``(repo-relative file, co_name)`` of the frame that ENTERED the
+    ``with`` block — captured by ``__enter__`` walking ``sys._getframe(1)`` (exactly one up, with NO
+    ``contextlib`` frame between, so there is NO filename skip-list — the relocated-constant
+    antipattern item 3c removes). WHY origin lives in the TOKEN, not in the observer's call-time walk
+    (adversary GOTCHA-C, measured): at SDK-call time the immediate production caller is ALWAYS the
+    ``store._txn`` driver, so leg-4's origin cannot come from the call-time stack; it must be captured
+    where the business frame IS the immediate caller — context entry. The classifier's leg 4 matches
+    ``token.origin == (entry.site.file, entry.site.function)``; a helper borrowing the token on
+    another frame's behalf yields a foreign origin → leg 4 RED. ``write_guard`` NEVER consults origin
+    (the label leg has none).
+
+    ★CONTRACT SHAPE★ — the 63b-i-a builder builds a STRUCTURALLY IDENTICAL ``governed.ExemptToken``
+    (the exempt-API value type, §1.9 item 5) that production ``active_exempt()`` returns; this
+    test-side twin is what the pure-unit pins CONSTRUCT (production's type is unbuilt at HEAD). The
+    classifier reads BOTH by attribute (``.name`` / ``.statement`` / ``.origin``), so the field names
+    are the contract — the builder must match them."""
+
+    name: str
+    statement: str
+    origin: tuple[str, str]  # (repo-relative file, co_name) of the frame that ENTERED the exempt block
+
+
+@dataclass(frozen=True)
+class SchemaSnapshot:
+    """The engine's OWN rendering of a table's schema — the ``fields`` / ``indexes`` / ``events``
+    maps ``INFO FOR TABLE`` reports, each ``name → the engine-rendered definition string``, taken
+    VERBATIM (design §1.9 item 4). NO regex, no hand-model of the engine's implicit expansions: an
+    array-element field renders however the engine renders it (``embedding[*]`` / ``embedding.*`` —
+    the exact #107/#131 "the test environment is a fiction" class the retired DDL-text regex
+    ``_memory_ddl_object_names`` fell to). Compared by DICT EQUALITY against the CONSTRUCTED
+    ensure_ready oracle (the SAME emitter applied to a virgin DB, rendered the SAME way, §1.9 item 4)."""
+
+    fields: dict[str, str]
+    indexes: dict[str, str]
+    events: dict[str, str]
+
+
+def schema_snapshot_from_info(info: Any) -> SchemaSnapshot:
+    """Normalise a raw ``INFO FOR TABLE`` result into a :class:`SchemaSnapshot`, tolerant of the two
+    shapes its two readers hand it, so both render IDENTICALLY (design §1.9 item 4): the observer
+    reads before/after schema via the UNWRAPPED ``query_raw`` (the ``[{"result": {…}, "status": …}]``
+    envelope, §1.9 item 3a); the ensure_ready-oracle fixture reads via ``.query()`` (the bare
+    ``{fields, indexes, events, …}`` dict, possibly single-element-list-wrapped). ONE normaliser is
+    what makes ``after.schema == oracle.schema`` a FAIR, engine-rendered compare rather than a
+    parse-vs-parse race. The per-object definition strings are taken VERBATIM — no parse, no regex."""
+    node: Any = info
+    # query_raw rpc envelope: {'id':.., 'result': [{'result': <map>, 'status': ..}]} (SDK 2.0.0).
+    if isinstance(node, dict) and isinstance(node.get("result"), list):
+        node = node["result"]
+    if isinstance(node, list):
+        node = node[0] if node else {}
+    if isinstance(node, dict) and isinstance(node.get("result"), dict):
+        node = node["result"]  # a wrapped statement result → the info map
+    if not isinstance(node, dict):
+        node = {}
+
+    def _as_str_map(value: Any) -> dict[str, str]:
+        return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
+
+    return SchemaSnapshot(
+        fields=_as_str_map(node.get("fields")),
+        indexes=_as_str_map(node.get("indexes")),
+        events=_as_str_map(node.get("events")),
+    )
+
+
+@dataclass(frozen=True)
 class RowDelta:
     """One row's change across a SINGLE observed SDK call (design §1.2 — the effect, not the
     statement). ``kind`` ∈ {created, updated, deleted}; ``changed_columns`` the columns whose value
@@ -904,6 +975,13 @@ class ObservedEffect:
 
     row_deltas: tuple[RowDelta, ...]
     schema_delta: SchemaDelta
+    # 63b-i-a (design §1.9 item 4): the FULL engine-rendered schema AFTER the call — ``INFO FOR
+    # TABLE`` read via the UNWRAPPED ``query_raw`` and normalised by :func:`schema_snapshot_from_info`.
+    # The ``ensure_ready`` DDL-frame effect predicate compares THIS against the CONSTRUCTED oracle
+    # (``generate_memory_ddl`` on a virgin DB) by DICT EQUALITY — the retired ``_memory_ddl_object_
+    # names`` regex is gone. ``None`` ⟺ the observer captured no schema (a pure row write) OR HEAD
+    # (the effect-based observer is unbuilt). ``is_empty`` is unaffected (it is the row+delta test).
+    schema_after: SchemaSnapshot | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -917,12 +995,14 @@ class ObservedWrite:
     63b-i-a WIDENS this (design §1.2 / §1.3): detection is the EFFECT, so an observed write carries
     its ``effect`` (the ObservedEffect state diff) — the classifier reads THAT, never the statement.
     ``statement`` is captured EVIDENCE ONLY (the failure message + the exempt golden match, §1.4);
-    it is NEVER consulted for detection. ``exempt`` carries the ``(name, statement)`` PAIR that
-    :func:`governed.active_exempt` returns under the new statement-scoped exemption (§1.4), not the
-    bare name. ``origin_site`` is the guard's own attributed ``(repo-relative file, function)`` (the
-    ``_sdk_guard`` precedent) — a site BORROWING another's exempt token fails the match (design
-    step 4). ``verb`` / ``seam`` default to None (a pure-DDL call has no row verb) and are retained
-    only as coarse evidence — the effect KIND lives in ``effect.row_deltas[].kind``.
+    it is NEVER consulted for detection. ``exempt`` is the :class:`ExemptToken` that
+    :func:`governed.active_exempt` returns under the statement-scoped exemption (design §1.9 item 3c:
+    ``name`` + golden ``statement`` + the context-entry ``origin`` — SUPERSEDES the §1.4
+    ``(name, statement)`` tuple; the LEG-4 origin now lives IN the token, not in a call-time walk).
+    ``origin_site`` is the guard's own CALL-TIME attributed ``(repo-relative file, function)`` — for
+    an exempt write that is the ``store._txn`` driver (GOTCHA-C), so it is EVIDENCE ONLY now; leg-4
+    reads ``exempt.origin`` instead. ``verb`` / ``seam`` default to None (a pure-DDL call has no row
+    verb) and are retained only as coarse evidence — the effect KIND lives in ``effect.row_deltas[].kind``.
 
     ★CONTRACT SHAPE★ — the 63b-i-a builder's rewritten observer constructs these from the guard
     hook (§1.8); at HEAD the fields default so the contract COLLECTS and the effect-based pins RED
@@ -931,12 +1011,15 @@ class ObservedWrite:
     label: str | None  # the active write_guard label, or None (an UNCLASSIFIED write — the red signal)
     verb: str | None = None  # coarse evidence only (the effect KIND lives in effect.row_deltas[].kind)
     seam: str | None = None  # coarse evidence only (retired as a classified field)
-    # active governed_exempt token. §1.4: the 63b model carries the (name, statement) PAIR (what
-    # active_exempt() returns on the build). The union admits the bare-name str the CURRENT
-    # active_exempt returns at HEAD, so the 2-leg classifier body stays type-valid until the builder
-    # narrows both to the tuple — the absent_scope Any-bridge idiom, one field over.
-    exempt: str | tuple[str, str] | None = None
-    origin_site: tuple[str, str] | None = None  # (repo-rel file, function) of the guard-attributed frame
+    # active governed_exempt token. §1.9 item 3c: the build carries an ExemptToken (name + golden
+    # statement + context-entry origin) — what active_exempt() returns on the build. The union admits
+    # the bare-name str the CURRENT (2-leg) active_exempt returns at HEAD, so the observer body stays
+    # type-valid until the builder narrows active_exempt to ExemptToken — the absent_scope Any-bridge
+    # idiom, one field over. The classifier reads ExemptToken by attribute (.name/.statement/.origin),
+    # so production's structurally-identical governed.ExemptToken flows through unchanged.
+    exempt: str | ExemptToken | None = None
+    # call-time guard-attributed site — EVIDENCE ONLY now (leg 4 reads exempt.origin, §1.9 item 3c):
+    origin_site: tuple[str, str] | None = None
     statement: str | None = None  # the executed SurrealQL — EVIDENCE ONLY, never classified on (§1.2)
     effect: ObservedEffect | None = None  # the observed state diff (§1.2 — the EFFECT the classifier reads)
 
@@ -972,34 +1055,51 @@ def _mutation_verb_for_table(statement: str, table: str) -> str | None:
 def observe_governed_table_writes(
     table: str, *, extra_modules: Sequence[ModuleType] | None = None
 ) -> Iterator[list[ObservedWrite]]:
-    """Instrument the STORE SEAM (design §10.9-A L2b): patch the ``execute_transaction`` / ``run_query``
-    / ``execute_read_transaction`` names IMPORTED INTO ``loremaster.memory.local`` +
-    ``loremaster.governed`` so every statement mutating ``table`` is recorded together with the active
-    ``governed.active_write_guard()`` label at call time. Patching the imported names (not the source
-    module) is required — the seams are bound by name in each module (finding: monkeypatch the imported
-    name). getattr-tolerant on the guard-context: at HEAD ``active_write_guard`` is unbuilt → every
-    observed mutation records label=None → the F5 runtime pin reds (deny-by-default).
+    """Register ``table`` as a governed population the F5 EFFECT observer watches, and yield the list
+    of :class:`ObservedWrite`\\ s it records for the block (design §1.3 / §1.8 / §1.9 item 3, which
+    SUPERSEDE the 63a-v seam-name-patching + ``extra_modules`` shape below).
 
-    ⚠ NAMED BOUND (finding #445 — L2b runtime reach): the L2b battery observes the three
-    MEMBER-VERB seam paths (remember→execute_transaction, _reinforce→run_query,
-    guarded_write→execute_read_transaction). The two remaining allowlisted frames — ``_replay_record``
-    and ``_recreate_memory_table`` — are boot/admin/replay paths NOT exercised by the battery, so
-    they carry L2a (structural ``function_calls_write_guard``) coverage ONLY; a runtime-escape inside
-    them would pass both layers unobserved. Right-sized (design §10.9-A: "a production-mode assert is
-    OPTIONAL") — both are boot/admin, never member verbs, and every member-reachable write carries
-    BOTH structural + runtime coverage. RE-OPEN TRIGGER: either frame becoming member-reachable, or
-    the L2b battery being asked to certify a boot/admin write path.
+    ★CONTRACT SHAPE★ — the 63b-i-a builder REWRITES this to the RULED mechanism; at HEAD the body is
+    the retired verb-observer (it patches seam names and fills ``effect=None``), which is exactly why
+    the effect-based pins RED behaviorally (``effect`` is None, never a real state diff) and the
+    reach pin REDs (no ``_CALL_HOOKS`` to detach). The RULED shape the builder must build:
 
-    ⚠ 63a-v EXTENSION (design §10.9-A CORRECTION, finding #446): ``extra_modules`` widens the seam
-    reach BEYOND the two default modules — the 63a-v L2b battery passes the modules DERIVED from the
-    whole-tree allowlist files (:func:`seam_modules_for_tree_allowlist`), so ``principals`` (the
-    migrate-governed backfill seam) is instrumented too. This makes the OBSERVER's OWN reach a
-    checked variable (F5's reach was a hidden constant `local.py` — the class #446 closes): a NEW
-    allowlisted site in a NEW file joins the observer's patch-set by the same derivation. Each
-    observed mutation also records its NAMED ``governed.active_exempt()`` token (the admin channel,
-    getattr-tolerant → None at HEAD) and its ORIGINATING production ``(file, symbol)`` from the call
-    stack, so :func:`classify_tree_observed_write` can catch a site borrowing another's exempt token
-    (design step 4)."""
+    - **ONE persistent dispatcher, appended to ``_sdk_guard._CALL_HOOKS`` ONCE at ``_governed_
+      contract`` import** (design §1.9 item 3b) — NOT appended per ``observe_…`` call. ``observe_
+      governed_table_writes(table)`` only REGISTERS ``(table, sink)`` in a module registry the
+      dispatcher consults, and UN-registers on exit. WHY persistent-not-per-observe (GOTCHA-B,
+      measured): the detach pin (§1.6-v) CLEARS ``_CALL_HOOKS`` then enters this CM — a per-observe
+      append would re-arm behind the clear and the pin would RED on a CORRECT build. So §1.3's
+      "the F5 battery fixture appends/removes its hook" is SUPERSEDED: the fixture registers
+      populations; the hook is persistent (§1.9 item 3b).
+    - **Observe at the ``query_raw`` door ONLY** (design §1.9 item 3a; #454). ``.query`` DELEGATES to
+      ``.query_raw`` internally and the guard patches BOTH — a hook firing on ``.query`` re-enters
+      through the patched ``query_raw`` and DEADLOCKS on the observer's held non-reentrant lock.
+      ``query_raw`` is the narrow waist every SurrealQL statement passes through — the harness's own
+      door partition proves it: ``test_the_UNCOUNTABLE_door_set_is_DERIVED_from_the_SDK_and_DENIES_BY_
+      DEFAULT`` (``test_query_tasks_bounded.py``) routes select/create/insert/upsert/update/delete
+      through ``query_raw`` and puts the own-RPC doors (begin/commit/cancel/live/kill/use) in
+      UNCOUNTABLE. THE OBSERVER'S REACH ≡ THE ``query_raw`` DOOR ≡ that pin's partition (a CHECKED
+      variable, not a hidden constant): a door the SDK adds that bypasses ``query_raw`` lands in
+      UNCOUNTABLE and REDS that pin — the seventh defeat caught one instrument over.
+    - **Read before/after state via the UNWRAPPED ``query_raw``** — ``type(conn).query_raw.__wrapped__``
+      (the ``_sdk_guard`` extension sets ``_guarded.__wrapped__ = original``, §1.9 item 3a/5) — so the
+      observer's own ``SELECT *`` / ``INFO FOR TABLE`` reads NEVER re-enter the guard or the observer
+      (§1.2 self-attack: the observer's reads are excluded). Schema is normalised through
+      :func:`schema_snapshot_from_info` into ``ObservedEffect.schema_after``. §1.8's ``event.original``
+      read guidance is SUPERSEDED by this ``__wrapped__`` read.
+    - **The dispatcher builds an ``ObservedWrite`` per call**: ``label = governed.active_write_guard()``,
+      ``exempt = governed.active_exempt()`` (the :class:`ExemptToken`, §1.9 item 3c — carrying the
+      leg-4 origin), ``origin_site`` = the guard's own call-time attribution (evidence only),
+      ``statement`` = the door's args (evidence only), and ``effect`` = the before/after state diff.
+      It holds ONE ``asyncio.Lock`` across before→await→after so a ``gather`` of two writes attributes
+      each to its OWN per-call delta (design §1.6-iv / §1.9 item 3d — the lock STAYS; the 8-way
+      concern never arises because the observer is armed only inside F5 battery blocks).
+    - ``extra_modules`` / :func:`seam_modules_for_tree_allowlist` / the observer-patch-set meta-pin
+      are RETIRED (design §1.3 / §1.7): once the reach is the SDK class via the guard hook, "does the
+      patch-set cover this module?" is UNASKABLE. A ``getattr``-tolerant guard-context read keeps the
+      HEAD body type-valid (``active_write_guard`` / ``active_exempt`` unbuilt → label/exempt None →
+      deny-by-default RED)."""
     import loremaster.governed as governed_mod
     import loremaster.memory.local as local_mod
 
@@ -1228,25 +1328,45 @@ def _originating_prod_site() -> tuple[str, str] | None:
 def classify_tree_observed_write(
     observed: ObservedWrite, allowlist: Sequence[TreeWriteAllowlistEntry]
 ) -> bool:
-    """True iff the observed mutation is ATTRIBUTED (design §10.9-A CORRECTION L2b, deny-by-default,
-    ONE uniform rule): EITHER it carries a ``write_guard`` label, OR it carries a NAMED
-    ``governed_exempt`` token whose allowlist entry's site MATCHES the stack-derived origin. A site
-    BORROWING another site's token fails the ``(file, symbol)`` match (design step 4). A mutation
-    matching neither is UNCLASSIFIED (the red signal). getattr-tolerant at HEAD: ``active_exempt`` is
-    unbuilt → ``exempt`` is None → the migrate write is unclassified → RED-until-built.
+    """True iff the observed mutation is ATTRIBUTED (design §10.9-A CORRECTION L2b, §1.4, §1.9 item 3
+    — deny-by-default). Two channels; the LABEL leg is NARROWED by §1.4 (it now RUNS the matched
+    entry's effect predicate) and the EXEMPT leg is FOUR-leg:
 
-    ⚠ NAMED ACCEPTED BOUND (finding #138 class — the HAND-SET-LABEL bound; design §10.9-A CORRECTION
-    step 6 R2 + CLAUDE.md "A GATE NEEDS A THREAT MODEL — WRITE DOWN WHO IT IS FOR"). The first leg
-    (``if observed.label is not None: return True``) blesses ANY write carrying a ``write_guard``
-    label — so a production site that hand-sets the label WITHOUT routing through
-    ``governed.guarded_write`` (the mechanism the label is meant to witness) passes BOTH F5 layers
-    and is CLASSIFIED. That is an ACCEPTED bound, NOT a defect: F5 is a static net for the HONEST
-    developer (who adds a governed write and forgets to attribute it — the #131 class), never a
-    boundary against the HOSTILE author (who can commit anything and already ships arbitrary code —
-    the #138 class). Naming this bound is the WHEN-YOU-CANNOT-CLOSE-A-HOLE-PIN-IT rule (#138): a gate
-    whose accepted bound is unnamed is one the next engineer meets by an outage, or "helpfully"
-    closes — re-opening a settled trade. RE-OPEN TRIGGER: the threat model changing to an untrusted
-    contributor / hosted deployment (63b's runtime root-fix territory, task 571ef1a)."""
+    - **LABEL leg** — the write carries a ``write_guard`` label that MATCHES an allowlist entry's
+      ``frames``, AND that entry's ``effect`` predicate HOLDS for ``observed.effect``. A labeled
+      write whose effect FAILS its entry predicate is UNCLASSIFIED (adversary MISSING PIN #1 / §1.4:
+      "the classifier RUNS a label entry's effect predicate ∀ label frame" — the naive
+      ``if observed.label is not None: return True`` re-widens the R2/#138 bound this narrows).
+    - **EXEMPT leg** — the write carries an :class:`ExemptToken` and its entry (keyed
+      ``entry.exempt_name == token.name``) satisfies ALL FOUR legs: (1) name; (2) golden text —
+      ``normalise(token.statement) == normalise(entry.statement) == normalise(observed.statement)``;
+      (3) effect — ``entry.effect(observed.effect)`` holds; (4) origin —
+      ``token.origin == (entry.site.file, entry.site.function)`` (the origin captured at CONTEXT
+      ENTRY, §1.9 item 3c — NOT ``observed.origin_site``, which at runtime is the call-time ``_txn``
+      driver). Legs 2 and 3 are INDEPENDENT (2 catches a different-shaped statement smuggled under
+      the token; 3 catches a golden edited to bless a seizure). A site BORROWING another's token
+      yields a foreign ``token.origin`` → leg 4 RED.
+
+    The token is read BY ATTRIBUTE (``.name`` / ``.statement`` / ``.origin``), so production's
+    structurally-identical ``governed.ExemptToken`` and this substrate's :class:`ExemptToken` flow
+    through the SAME classifier. A mutation matching NEITHER channel is UNCLASSIFIED (the red signal).
+
+    ★CONTRACT SHAPE★ — the 63b-i-a builder REWRITES the body to the above; at HEAD it is the retired
+    2-leg rule (``if label is not None: return True`` — the exact re-widening MISSING PIN #1 REDs —
+    plus a bare-name exempt compare), getattr-tolerant so ``active_exempt`` unbuilt → ``exempt`` None
+    → the migrate write is unclassified → RED-until-built.
+
+    ⚠ NAMED ACCEPTED BOUND, NARROWED (finding #138 class — the HAND-SET-LABEL bound; §10.9-A step 6
+    R2 STANDS narrowed by §1.4/§1.7 + CLAUDE.md "A GATE NEEDS A THREAT MODEL — WRITE DOWN WHO IT IS
+    FOR"). Under the LABEL leg a hand-set ``write_guard`` label still classifies a write WHOSE EFFECT
+    ITS ENTRY PREDICATE ALLOWS — so a production site that hand-sets a label without routing through
+    ``governed.guarded_write`` can launder an effect the predicate PERMITS (e.g. an ``importance``-only
+    bump under ``_reinforce``). The effect predicate NARROWS what such a hand-set label can launder
+    (it can no longer seize a governed column under ``_reinforce`` — MISSING PIN #1) but does NOT
+    CLOSE the class. That is an ACCEPTED bound, NOT a defect: F5 is a static net for the HONEST
+    developer (#131), never a boundary against the HOSTILE author (#138, who already ships arbitrary
+    code). RE-OPEN TRIGGER: the threat model changing to an untrusted contributor / hosted deployment
+    (task 571ef1a's own territory)."""
     if observed.label is not None:
         return True
     if observed.exempt is None or observed.origin_site is None:
@@ -1392,20 +1512,34 @@ def seam_modules_for_tree_allowlist(
 # =========================================================================== #
 
 
-def governed_populations(repo_root: Path = _REPO_ROOT) -> frozenset[str]:
-    """DERIVE the set of governed table populations from ``surreal_schema`` (design §1.5c-iii).
+def governed_populations(
+    schema_source: str | None = None, *, repo_root: Path = _REPO_ROOT
+) -> frozenset[str]:
+    """DERIVE the governed table population set from ``surreal_schema`` (design §1.5c-iii, §1.9 item 2).
 
-    ★BUILDER DELIVERABLE★ (RED-until-built): the F5 cases are
-    ``{t : t's DDL slice calls _governed_field_specs}`` ∪ ``{relation tables whose IN or OUT is in
-    that set}`` — walked from the ``generate_*_ddl`` emitter output (the ``owner_principal`` field
-    definitions + the ``TYPE RELATION IN x OUT y`` clauses), NEVER a hand list. This is an OUTPUT:
-    the population pin asserts ``governed_populations() == {expected}`` and that a surprise governed
-    population REDS until an F5 case exists for it.
+    ★BUILDER DELIVERABLE★ (RED-until-built). The F5 cases are, by AST over ``surreal_schema``:
+    ``{t : the ``_<t>_statements`` emitter (or any surreal_schema emitter for t) CALLS
+    ``_governed_field_specs``}`` ∪ ``{relation tables whose ``_define_relation_table(name, IN, OUT)``
+    call has IN or OUT in that set}``. ⚠ §1.9 item 2 CORRECTS §1.5c-iii's "owner_principal field
+    definitions" wording (adversary F-TRAP-1): ``agent.owner_principal`` is a packet-62 DIRECT field,
+    so walking ``owner_principal`` presence wrongly yields ``{memory, agent, briefed, to}`` — the
+    derivation KEYS ON ``_governed_field_specs`` CALLERS, never a field name. At ``e4b8945`` this
+    yields ``{memory}``; ii-a's DDL grows it to ``{memory, message, to}`` (RED_ADJUDICATED(owner=63b-ii)).
 
-    At HEAD this is a stub: raise so the population pin REDS for the right reason (the derivation is
-    unbuilt), never a hardcoded ``{MEMORY_TABLE}`` that would make the OUTPUT pin vacuous."""
+    REACH IS A CHECKED VARIABLE (§1.9 item 2 / adversary MISSING PIN #2): pass ``schema_source`` — a
+    SYNTHETIC ``surreal_schema`` source TEXT — to AST-derive from THAT instead of the real module (the
+    fixture-tree-discriminator idiom :func:`governed_table_raw_mutation_sites_in_tree` uses, one file
+    over: exercise the derivation END-TO-END on a synthetic input, not a ``roots=`` override).
+    ``None`` ⟹ read the real ``surreal_schema.py`` under ``repo_root``. Adding a ``_governed_field_
+    specs`` caller (or a governed-endpoint relation table) to a synthetic source MUST grow the output
+    — the mutation proof the population reach pin runs. A hardcoded ``frozenset({MEMORY_TABLE})``
+    passes the value pin but FAILS that growth pin (the whole point: an OUTPUT, never a hand list).
+
+    At HEAD this is a stub: raise so the population pins RED for the right reason (the derivation is
+    unbuilt), never a hardcoded ``{MEMORY_TABLE}`` that would make the OUTPUT pins vacuous."""
     raise NotImplementedError(
-        "governed_populations is a 63b-i-a builder deliverable (design §1.5c-iii): derive the "
-        "governed table set from surreal_schema (tables whose DDL slice calls _governed_field_specs, "
-        "plus relation tables with a governed endpoint). RED-until-built."
+        "governed_populations is a 63b-i-a builder deliverable (design §1.5c-iii / §1.9 item 2): "
+        "AST-derive the governed table set from surreal_schema (tables whose emitter CALLS "
+        "_governed_field_specs, plus relation tables with a governed endpoint via "
+        "_define_relation_table(name, IN, OUT)); honour a synthetic `schema_source`. RED-until-built."
     )
