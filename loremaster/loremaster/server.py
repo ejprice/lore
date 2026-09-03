@@ -10878,13 +10878,31 @@ _GOVERNED_VERBS_PENDING_ROUTING: dict[tuple[str, str], str] = {
 # a verified ``Subject`` (``AppContext._resolve_subject`` → ``governed.resolve_subject``) IS wired
 # now — ``AppContext`` holds the principal/keep stores — so a capability-bearing memory call WORKS
 # (scoped to the caller's visible set + owner-stamped); only an identity-less call DENIES.
-_CAPABILITY_PARAM_DESCRIPTION = (
-    "Your agent capability — the '<name>:<secret>' token `lore_comms action=register` minted for "
-    "this session. It identifies you so the fleet's governed memory is scoped to what you may see "
-    "and stamps your notes with your ownership; a hostile owner argument cannot forge it. Omit it "
-    "only for an anonymous call, which is denied — an unauthenticated read/write of the shared "
-    "memory is exactly what governance closes."
-)
+def _capability_param_description(enabled: Collection[str]) -> str:
+    """The shared OPTIONAL ``capability=`` identity-seam description, guarded (packet 63a).
+
+    Carried BYTE-IDENTICAL by lore_recall / lore_remember (design §10.5 rider (i)) through the
+    packet-45 ``_comms_identity_agent_description`` idiom — ONE ``_guarded_description``
+    implementation, never N drifting copies of prose no gate checks (PKT-28 C1). Its ONE
+    cross-reference — the ``lore_comms action=register`` clause naming where the
+    ``<name>:<secret>`` token is minted — is authored as its OWN guarded segment, so on a
+    surface where lore_comms is DISABLED that reference drops (E2/MP-1) while the mandatory
+    param text stays intact; at the full universe every guard passes and the result is
+    byte-exact to the historical constant.
+    """
+    return _guarded_description(
+        enabled,
+        ("Your agent capability — the '<name>:<secret>' token", None),
+        (" `lore_comms action=register`", "lore_comms"),
+        (
+            " minted for "
+            "this session. It identifies you so the fleet's governed memory is scoped to what you may see "
+            "and stamps your notes with your ownership; a hostile owner argument cannot forge it. Omit it "
+            "only for an anonymous call, which is denied — an unauthenticated read/write of the shared "
+            "memory is exactly what governance closes.",
+            None,
+        ),
+    )
 
 
 def partition_tools_by_population(
@@ -11325,7 +11343,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
-        capability: Annotated[str | None, Field(description=_CAPABILITY_PARAM_DESCRIPTION)] = None,
+        capability: Annotated[
+            str | None,
+            Field(description=_capability_param_description(_REGISTERING_ENABLED.get())),
+        ] = None,
     ) -> str:
         return await _app_context(context).remember(
             text,
@@ -11397,7 +11418,10 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
-        capability: Annotated[str | None, Field(description=_CAPABILITY_PARAM_DESCRIPTION)] = None,
+        capability: Annotated[
+            str | None,
+            Field(description=_capability_param_description(_REGISTERING_ENABLED.get())),
+        ] = None,
     ) -> str:
         return await _app_context(context).recall(query, k, capability=capability, kind=kind, labels=labels)
 
