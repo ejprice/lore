@@ -33,12 +33,20 @@ THE PROPERTY (§Fork J — STRUCTURAL primary, allowlist-the-safe prose backstop
   of slice fns is DERIVED by AST from the subject SOURCE (every top-level ``def`` whose
   name matches ``^_[a-z0-9_]+_statements$``), re-derived each run, never a hand-list.
   EVERY slice fn that EMITS ≥1 statement must be EITHER
-    (a) **FOLDED** — its name appears as a call in ``generate_ddl``'s body (also AST-
+    (a) **FOLDED** — REACHABLE from ``generate_ddl`` through slice-fn calls (also AST-
         derived), OR
-    (b) **STANDALONE** — its name appears as a call in SOME other top-level
-        ``generate_*_ddl`` function (also AST-derived — the ``generate_agent_ddl`` /
-        ``generate_graph_ddl`` / … slices a dedicated store's ``ensure_ready`` applies).
-  A slice fn that EMITS statements yet is in NEITHER set is DEAD DDL wearing an
+    (b) **STANDALONE** — REACHABLE from SOME other top-level ``generate_*_ddl`` function
+        (also AST-derived — the ``generate_agent_ddl`` / ``generate_graph_ddl`` / … slices
+        a dedicated store's ``ensure_ready`` applies).
+  ⚠ Reachability is a ROOTED TRANSITIVE closure, DIRECT or through a nested slice fn
+  (packet 63a finding #452, reconciled 2026-09-03): a folded slice may itself CALL another
+  ``_*_statements`` slice — the real ``_memory_statements`` → ``_governed_index_statements``
+  shared-emitter shape (surreal_schema §4.1). The child's statements run wherever the parent
+  runs, so it is covered; a DIRECT-only check false-flags it. The closure stays rooted at real
+  entry points, so a slice reachable ONLY through an UNFOLDED parent is still uncovered (no
+  false-clear) — see :meth:`TestFoldCoverageStructuralDiscrimination.
+  test_a_nested_slice_whose_parent_is_unfolded_is_flagged`.
+  A slice fn that EMITS statements yet is reachable from NEITHER root is DEAD DDL wearing an
   implementation — it REDS the scan. This catches the *"NOT folded into generate_ddl"*
   lie STRUCTURALLY, with **no forbidden literal**.
 
@@ -301,6 +309,19 @@ def _emitter_src(name: str) -> str:
     return f'def {name}() -> list[str]:\n    return [_define_table("x")]\n\n\n'
 
 
+def _nesting_slice_src(name: str, child: str) -> str:
+    """An EMITTING slice fn that FOLDS a nested child slice — the packet-63a
+    ``_memory_statements`` → ``_governed_index_statements`` shape (design §4.1): a top-level
+    ``_*_statements`` slice calls ANOTHER top-level ``_*_statements`` slice. The child's
+    statements run wherever the parent runs, so coverage must follow the call TRANSITIVELY."""
+    return (
+        f"def {name}() -> list[str]:\n"
+        f'    statements: list[str] = [_define_table("x")]\n'
+        f"    statements += {child}()\n"
+        f"    return statements\n\n\n"
+    )
+
+
 def _generate_ddl_src(*folds: str) -> str:
     lines = "    statements: list[str] = []\n"
     for fn in folds:
@@ -429,6 +450,38 @@ class TestFoldCoverageStructuralDiscrimination:
             _generate_named_ddl_src("generate_side_ddl", "_side_statements"),  # … but standalone
         )
         assert _scan_fold_fn()(src) == []
+
+    def test_a_nested_slice_folded_via_a_folded_parent_is_not_flagged(self) -> None:
+        # packet 63a (finding #452): the `_memory_statements` → `_governed_index_statements`
+        # shape. A `_*_statements` slice folded into generate_ddl may itself CALL another
+        # `_*_statements` slice; the child's statements DO run (via the parent), so it is
+        # COVERED transitively. A DIRECT-only coverage check false-flags the child as dead DDL.
+        src = _module(
+            _slice_src("_child_statements", emits=True),
+            _nesting_slice_src("_parent_statements", "_child_statements"),
+            _generate_ddl_src("_parent_statements"),  # parent folded; child nested inside parent
+        )
+        assert _scan_fold_fn()(src) == [], (
+            "a nested slice folded via a FOLDED parent (the 63a `_governed_index_statements` "
+            f"shape) must be recognized as covered, not flagged; got {_scan_fold_fn()(src)!r}"
+        )
+
+    def test_a_nested_slice_whose_parent_is_unfolded_is_flagged(self) -> None:
+        # THE rooted-ness discriminator: transitive coverage must be REACHABLE FROM an entry
+        # point, NOT merely "called by some slice". A child called ONLY by an UNFOLDED parent has
+        # statements that never run -> BOTH must be flagged. A wrong build that treats "called by
+        # any slice" as covered (an unrooted closure) would false-CLEAR the child and pass —
+        # this pin REDS that wrong build, keeping the transitive broadening in the SAFE direction.
+        src = _module(
+            _slice_src("_lonelychild_statements", emits=True),
+            _nesting_slice_src("_deadparent_statements", "_lonelychild_statements"),
+            _generate_ddl_src(),  # NOTHING folded -> parent unreachable -> child unreachable
+        )
+        flagged = {getattr(f, "slice_fn", None) for f in _scan_fold_fn()(src)}
+        assert flagged == {"_deadparent_statements", "_lonelychild_statements"}, (
+            "a nested child reachable only through an UNFOLDED parent must be flagged (its "
+            f"statements never run) — the transitive closure must be ROOTED; got {flagged!r}"
+        )
 
     def test_a_genuinely_empty_stub_is_exempt(self) -> None:
         # RED-phase legitimacy: a `return []` stub that is not yet folded must NOT red the

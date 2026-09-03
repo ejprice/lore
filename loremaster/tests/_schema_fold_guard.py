@@ -12,10 +12,14 @@ WHAT IT GUARDS
 a top-level ``def _*_statements(...) -> list[str]`` returning its table's statements;
 :func:`~loremaster.store.surreal_schema.generate_ddl` FOLDS the shared slices by CALLING
 them, and a dedicated store's ``ensure_ready`` applies the rest through a standalone
-``generate_*_ddl`` entry point. A slice that EMITS statements yet is folded NOWHERE and
-consumed by NO standalone generator is DEAD DDL wearing an implementation — the #398/#399
-defect (a builder greened a RED-STUB slice but left a ``# … emit [] / NOT folded`` comment,
-so committed code carried a present-tense claim contradicting the running code).
+``generate_*_ddl`` entry point. A folded slice may itself CALL another slice (a nested shared
+sub-emitter, e.g. ``_memory_statements`` → ``_governed_index_statements``, packet 63a §4.1):
+that nested slice's statements run wherever its parent runs, so coverage is a ROOTED TRANSITIVE
+closure over slice-fn calls, not a one-level direct check. A slice that EMITS statements yet is
+reachable from NEITHER ``generate_ddl`` NOR any standalone ``generate_*_ddl`` (directly or through
+a covered parent) is DEAD DDL wearing an implementation — the #398/#399 defect (a builder greened
+a RED-STUB slice but left a ``# … emit [] / NOT folded`` comment, so committed code carried a
+present-tense claim contradicting the running code).
 
 PURE SOURCE / AST — one code path grades the real module and every synthetic fixture
 --------------------------------------------------------------------------------------
@@ -27,9 +31,10 @@ is just a string, so the real schema and the mutation copies travel the identica
 THE TWO LEGS
 ------------
 * PRIMARY — :func:`scan_schema_fold_coverage` (STRUCTURAL, undefeatable by rewording): every
-  emitting ``_*_statements`` slice must be FOLDED (called in ``generate_ddl``) or STANDALONE
-  (called in some other ``generate_*_ddl``). No forbidden literal — the coverage is a set
-  relation over AST-derived call sites.
+  emitting ``_*_statements`` slice must be FOLDED (reachable from ``generate_ddl``) or STANDALONE
+  (reachable from some other ``generate_*_ddl``) — DIRECTLY, or transitively through a nested
+  slice fn. No forbidden literal — the coverage is a set relation over an AST-derived, rooted
+  transitive call closure.
 * BACKSTOP — :func:`scan_stale_emptiness_prose` (allowlist-the-safe, a KNOWN BOUND): a
   folded/standalone emitting slice whose docstring or leading comment asserts emptiness in a
   phrasing from the CLOSED :data:`KNOWN_EMPTINESS_PHRASES` set is flagged. Best-effort — a
@@ -216,29 +221,63 @@ def _is_standalone_generator(name: str) -> bool:
     )
 
 
-def derive_folded_slices(source: str) -> set[str]:
-    """Slice-fn names appearing as a CALL in the body of top-level ``generate_ddl``.
+def _reachable_slices(
+    defs: dict[str, _ModuleDef], slices: set[str], start: _ModuleDef
+) -> set[str]:
+    """Every slice fn reachable from ``start`` by following calls THROUGH slice fns — the
+    TRANSITIVE fold closure, ROOTED at ``start``.
 
-    Intersected with the real slice-fn set, so a phantom call (a ``_*_statements`` name with no
-    def) can never inflate the folded set past the actual slices.
+    A slice folded into an entry point may itself CALL another slice — a nested shared
+    sub-emitter, e.g. ``_memory_statements`` → ``_governed_index_statements`` (packet 63a design
+    §4.1, the parameterized governed-index emitter reused across governed tables). Its statements
+    DO run wherever the parent runs, so it is genuinely COVERED; a DIRECT-only check false-flags
+    it as dead DDL. Rooting the closure at the real entry point keeps the guard honest in the SAFE
+    direction: a slice reachable ONLY through a slice that is itself NOT reachable from an entry
+    point stays uncovered (flagged), so this broadens coverage to genuine nested folds WITHOUT
+    admitting a slice whose statements never run (no new false-clear). ``start`` itself is not
+    included unless a slice calls back into it. Intersecting with the real ``slices`` set at every
+    hop means a phantom ``_*_statements`` call (a name with no def) can never inflate the closure.
+    """
+    reached: set[str] = set()
+    frontier = list(_called_names(start) & slices)
+    while frontier:
+        name = frontier.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        callee = defs.get(name)
+        if callee is not None:
+            frontier.extend((_called_names(callee) & slices) - reached)
+    return reached
+
+
+def derive_folded_slices(source: str) -> set[str]:
+    """Slice fns reachable from top-level ``generate_ddl`` — DIRECTLY, or transitively through a
+    nested slice fn (the packet-63a ``_memory_statements`` → ``_governed_index_statements`` shape).
+
+    A rooted transitive closure (:func:`_reachable_slices`), intersected with the real slice-fn set
+    so a phantom call (a ``_*_statements`` name with no def) can never inflate the folded set.
     """
     slices = derive_slice_fns(source)
-    for node in _module_defs(source):
-        if node.name == _GLOBAL_GENERATOR:
-            return _called_names(node) & slices
-    return set()
+    defs = {node.name: node for node in _module_defs(source)}
+    root = defs.get(_GLOBAL_GENERATOR)
+    if root is None:
+        return set()
+    return _reachable_slices(defs, slices, root)
 
 
 def derive_standalone_slices(source: str) -> dict[str, set[str]]:
-    """Each slice-fn name called in SOME top-level ``generate_*_ddl`` OTHER than ``generate_ddl``,
-    mapped to the set of ``generate_*_ddl`` names that call it (the evidence)."""
+    """Each slice-fn name reachable from SOME top-level ``generate_*_ddl`` OTHER than
+    ``generate_ddl`` — DIRECTLY, or transitively through a nested slice fn — mapped to the set of
+    those ``generate_*_ddl`` names whose closure reaches it (the evidence)."""
     slices = derive_slice_fns(source)
+    defs = {node.name: node for node in _module_defs(source)}
     standalone: dict[str, set[str]] = {}
     for node in _module_defs(source):
         if not _is_standalone_generator(node.name):
             continue
-        for called in _called_names(node) & slices:
-            standalone.setdefault(called, set()).add(node.name)
+        for reached in _reachable_slices(defs, slices, node):
+            standalone.setdefault(reached, set()).add(node.name)
     return standalone
 
 
