@@ -644,3 +644,66 @@ finding (§3.1) — number in the `lore_findings` ledger, `area=memory-backend`,
 *Every ruling above is within the authority delegated for 63b (operator, 2026-09-03). The lead
 implements; a contract that fails three times is the lead's escalation, not mine. Standing by for
 follow-ups — this doc grows by dated addenda, never by silent rewrites of a ruled section.*
+
+---
+
+## 5.1 ADDENDUM (2026-09-03, `lore_comms` q:63b-i-split #9001) — 63b-i SPLIT into i-a (F5 instrument) → i-b (memory fidelity): RULED, with the one coupling that matters
+
+**The split is APPROVED and F5-first is the right order** — i-b's new mutation shapes must land under a
+net that can already see them (the R4 lesson stated as an ordering). Two questions, ruled:
+
+### Q1 — the `_recreate_memory_table` observed-flip (§1.5c-ii / §1.6-vi): **i-a owns the flip AND its pin — and the flip drags in a work item §1 did not spell out.**
+
+Ground truth at `cedb20d` (`memory/local.py`): `_recreate_memory_table` wraps ONLY the `REMOVE TABLE IF
+EXISTS memory` in `write_guard("_recreate_memory_table")`, then calls `await self.ensure_ready()` —
+which re-applies `generate_memory_ddl()` through `execute_transaction` **outside any guard**. Under §1's
+DDL leg (`INFO FOR TABLE` diff), that re-DEFINE is a schema mutation of a governed population with NO
+label → UNCLASSIFIED → RED. And it is not only the rebuild path: **every backend fixture calls
+`ensure_ready()` at construction**, so on a virgin test DB the FIRST DDL apply is a schema delta
+(no table → table) on every F5 battery run. Therefore the DDL leg is NON-SATISFIABLE on ANY fixture
+until the boot DDL is classified — that is F5 instrument completeness, not #436, and it is i-a's:
+
+- **`ensure_ready` becomes an allowlisted DDL frame** in i-a: `write_guard("ensure_ready")` around its
+  `execute_transaction` (a label, not an exempt token — it is not member-reachable but it is the same
+  frame every boot; the honest-developer threat model is satisfied by the label + the effect predicate).
+  **Effect predicate:** the schema delta equals the diff produced by applying `generate_memory_ddl()`
+  itself (DERIVED — the golden is the emitter's own output, never hand-written), and the ROW set is
+  unchanged (a DDL frame that moves rows is RED). This generalises: in ii-a the same entry covers
+  `_message_statements`' first apply (`DEFINE TABLE OVERWRITE to …` re-applied unchanged is a no-delta,
+  store-ref §1.5's probed "does not rebuild").
+- **The flip itself:** `_RECREATE_ENTRY.runtime_observed=False` → removed; the i-a battery drives
+  `rebuild_embeddings` under observation with the CURRENT replay and asserts the arc
+  `REMOVE TABLE` (label `_recreate_memory_table`, schema delta: table gone, rows gone) →
+  `ensure_ready` (schema delta: table back, per the derived golden) → `_replay_record` UPSERTs
+  (row deltas, label present). #445's bound shrinks to nothing on `memory`; its clause in
+  `observe_governed_table_writes`'s docstring is deleted in i-a.
+- **i-b's relationship to this entry:** #436 changes `_replay_record`'s EFFECT (more columns stamped;
+  a predecessor-close UPDATE inside the replay txn) — it WIDENS `_UPSERT_ENTRY`'s effect predicate for
+  the `_replay_record` frame (a per-entry DATA change in the test substrate), never the instrument.
+  `_recreate_memory_table` and `ensure_ready` are UNTOUCHED by #436.
+
+### Q2 — other §1 ↔ §2/§3 couplings that would make a §1 coverage leg non-satisfiable without #441/#436's sites: **NONE.** i-a goes 0-failed against the CURRENT memory sites. Enumerated, leg by leg (§1.5c):
+
+| §1 leg | against the current tree | i-b's later touch |
+|---|---|---|
+| (i) every L1-derived site ∈ one entry — with the WIDENED keyword grammar | the widened grammar derives the SAME four sites (`_upsert_fragment` UPSERT · `_reinforce` UPDATE · `_recreate_memory_table` REMOVE · `_migrate_memory_scope` UPDATE): the schema emitter's `DEFINE …` literals interpolate `{name}`/`{table}`, not `{MEMORY_TABLE}` → the #444 dynamic-name static bound (covered at L2 by the DDL leg); SF-63-5's prose fails the verb→target adjacency. The contract asserts the derived set as an OUTPUT — a surprise site is classified in i-a | #441 adds NO new literal site in `local.py` (the close fragment is BUILT by `governed.GuardedPlan.fragments`, whose `UPDATE type::record('{table}', …)` is a dynamic-name literal → not derived; L2 sees its effect under `remember`'s label); #436's predecessor-close `UPDATE type::record('{MEMORY_TABLE}', $p) …` in `_replay_record` IS a new derived site → i-b registers it on `_UPSERT_ENTRY`'s sibling (frame `_replay_record`) |
+| (ii) every entry's frames observed with a NON-EMPTY effect | `remember` (create) · `_replay_record` (restore battery) · `_reinforce` (⚠ fixture alignment: the bump must change the value — seed a row BELOW the importance ceiling) · `_recreate_memory_table` + `ensure_ready` (Q1) · `_migrate_memory_scope` (NONE→keep) · `guarded_write` via `invalidate` and the CURRENT two-txn supersede — all present today | #441 collapses the supersede to ONE call under `remember`'s label producing TWO row deltas; i-b WIDENS `remember`'s effect predicate to `{created row owned by subject} ∪ {updated predecessor: changed ⊆ {valid_until, superseded_by}}`. `guarded_write`'s own entry stays "exactly one governed row changed or deleted" (its standalone callers) |
+| (iii) population derivation | yields `{memory}` at `cedb20d` — no relation table has `memory` as an endpoint; `_message_statements` does not yet call `_governed_field_specs` (§4.F). One case → satisfiable. ii-a's DDL grows the set → the `message`/`to` cases are the `RED_ADJUDICATED(owner=63b-ii)` rows | none |
+| four-leg exempt for migrate (§1.4) | i-a introduces `principals.MIGRATE_MEMORY_SCOPE_STATEMENT` + `governed_exempt(name, *, statement)` (production edits in i-a's writable set); golden + effect satisfiable against the current statement | none (§4.C's two NEW legs are ii-a's entries) |
+| reach = the guard hook (§1.3/§1.8) | `_sdk_guard` hook + `require_observations` — independent of every memory change | none |
+| §1.6-ix no-effect / revert bound pins | constructed in i-a | none |
+
+**So the dependency runs ONE way, i-a → i-b:** i-b's contract is written AGAINST i-a's LANDED instrument
+and its satisfiability receipt is run with the F5 battery as the regression floor — an i-b mutation that
+lands unlabelled or off-predicate reds i-a's pins, which is the net working. i-b's writable set therefore
+INCLUDES the F5 allowlist DATA (`test_memory_enforcement_*` entries / effect predicates) and EXCLUDES the
+instrument (`_governed_contract.py`'s detector, `_sdk_guard.py`'s hook) — a change i-b needs in the
+instrument itself is a STOP-and-flag back to this doc, never a quiet edit.
+
+**Writable-set cut, for the briefs:** i-a — `loremaster/governed.py` (exempt API only), `principals.py`
+(`_migrate_memory_scope`: the statement constant + kwarg), `memory/local.py` (`ensure_ready` label,
+`_recreate_memory_table` flip only), `tests/_governed_contract.py`, `tests/_sdk_guard.py`,
+`tests/test_memory_enforcement_*` (+ deletion of the R4-a/R4-c pins). i-b — `governed.py`
+(`authorize_guarded`/`GuardedPlan` split), `memory/local.py` (`remember`/`invalidate`/`_replay_record`/
+`_build_content`), `memory/ledger.py` (`retire`/`delete`), `server.py` (recall render + `render_subject_
+bound`), the F5 allowlist DATA, `tests/test_memory_*` for #441/#436/#437.
