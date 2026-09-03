@@ -5764,7 +5764,7 @@ class AppContext:
     # not-found — never a false-positive rebuild signal.
 
     async def _raise_if_empty_during_rebuild(self, results: list[Any]) -> None:
-        """Raise a :class:`SchemaRebuildingError` when ``results`` is empty mid-rebuild.
+        """Raise a :class:`SchemaRebuildingError` when the SUBSTANTIVE result is empty mid-rebuild.
 
         The shared seam for the sole surviving list-returning corpus read tool
         (search — what_imports/blast_radius/tests_for were folded into
@@ -5772,19 +5772,33 @@ class AppContext:
         An empty result while a rebuild is in progress would mislead the agent
         into believing the project genuinely has no match; raising instead
         surfaces the rebuilding notice on a wire-survivable channel so the
-        agent retries. A non-empty result, or an idle store, is a no-op (the
-        caller returns the plain result unchanged).
+        agent retries. A substantive result (a code HIT or a recalled MEMORY),
+        or an idle store, is a no-op (the caller returns the plain result
+        unchanged).
+
+        SUBSTANTIVE emptiness, not raw list length: a :data:`NOTICE_KIND` entry
+        is metadata ABOUT the result (the memory-withheld notice minted since
+        63a-ii, the filter-miss teach, the absence verdict), never a corpus
+        match. The class contract keys on "the tool's SUBSTANTIVE result would
+        be EMPTY", so a result carrying ONLY notices — no hit, no memory — is
+        empty for this gate and still raises mid-rebuild. Before 63a the raw
+        ``if results`` check silently passed the moment ANY notice rode along;
+        63a-ii's unconditional withheld notice on an identity-less call made
+        that misfire the norm, so an empty search during a rebuild stopped
+        raising (finding #452) — this restores the documented contract.
 
         Args:
-            results: The substantive list result of a corpus read tool.
+            results: The list result of a corpus read tool; each element carries
+                a ``.kind`` (hit / memory / notice).
 
         Raises:
-            SchemaRebuildingError: When ``results`` is empty and a rebuild is in
-                progress (the message carries the rebuild + progress notice).
+            SchemaRebuildingError: When no substantive (non-notice) result is
+                present and a rebuild is in progress (the message carries the
+                rebuild + progress notice).
         """
         from loremaster.index.schema import rebuilding_notice
 
-        if results:
+        if any(result.kind != NOTICE_KIND for result in results):
             return
         notice = await rebuilding_notice(self.manifest)
         if notice is None:
