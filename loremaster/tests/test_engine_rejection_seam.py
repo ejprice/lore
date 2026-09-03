@@ -312,6 +312,14 @@ _KEEP_GHOST = f"{KEEP_TABLE}:{ghost_id('engine_rejection_seam_keep')}"
 
 _KEEP_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
     "create_keep": lambda s: s.create_keep(keeper_email=_KEEPER_EMAIL, type="project", name="wrap"),
+    # packet 63a (SF-63-4): the idempotent CAS mint (get-or-create by the UNIQUE natural key).
+    # A routed WRITE path — its WHOLE body is under one wrap_store_rejection (finding #400), so it
+    # joins the DERIVED routed set and the reach law requires this fault-injection invocation.
+    # Injection hits the INITIAL key READ first (get_by_key -> self._query -> keeps run_query),
+    # exactly like create_keep's first seam call, so the wrap translates/passes-through identically.
+    "get_or_create_keyed": lambda s: s.get_or_create_keyed(
+        key="project:wrap", type="project", keeper_email=_KEEPER_EMAIL, name="wrap"
+    ),
     "add_household_member": lambda s: s.add_household_member(
         keep_id=_KEEP_GHOST, member_email=_MEMBER_EMAIL
     ),
@@ -323,7 +331,7 @@ _KEEP_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
     ),
     "set_keeper": lambda s: s.set_keeper(keep_id=_KEEP_GHOST, new_keeper_email=_KEEPER_EMAIL),
     "delete_keep": lambda s: s.delete_keep(keep_id=_KEEP_GHOST),
-    # packet 61b-w2 (Fork F / D1): the born-wrapped READ verb. Unlike the 6 write verbs
+    # packet 61b-w2 (Fork F / D1): the born-wrapped READ verb. Unlike the 7 write verbs
     # above, list_keeps_for_member is a SELECT-only read — but it FEEDS the PDP's
     # visible_keep_ids, so D1 made it born-wrapped (a raw engine error mid-authorization is
     # exactly the consumer-law leak). It routes through wrap_store_rejection, so the reach
