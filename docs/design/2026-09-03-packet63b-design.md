@@ -707,3 +707,98 @@ instrument itself is a STOP-and-flag back to this doc, never a quiet edit.
 (`authorize_guarded`/`GuardedPlan` split), `memory/local.py` (`remember`/`invalidate`/`_replay_record`/
 `_build_content`), `memory/ledger.py` (`retire`/`delete`), `server.py` (recall render + `render_subject_
 bound`), the F5 allowlist DATA, `tests/test_memory_*` for #441/#436/#437.
+
+---
+
+## 1.9 ADDENDUM (2026-09-03, `lore_comms` q:63b-i-a-adversary #9007 — adversary-63b-i-a INSUFFICIENT, 1st contract) — five design-adjacent items RULED; two of my own examples CORRECTED
+
+Graded against `REPORT-adversary-63b-i-a.md` (measured in a provenance-asserted scratch at `519c0bb`) +
+finding #454. The two class-(A) missing pins (the classifier must RUN a label entry's effect predicate ∀
+label frame; `governed_populations()`'s reach must be a checked variable, not `frozenset({memory})`) are
+CONFIRMED as exactly §1.4 / §1.5c-iii's intent — the contract adds them; in i-a EVERY memory label entry
+carries an effect predicate (`remember`: created rows only, owner pair non-NONE — owner ≡ subject stays
+F4's pin; `_reinforce`: `{importance}`; `_replay_record`: created rows only at i-a, widened by i-b;
+`_recreate_memory_table`: schema-only delta, rows gone; `ensure_ready`: item 4 below; `guarded_write`:
+exactly one row changed or deleted).
+
+### Item 1 — §1.4's module-level constant was WRONG; the exempt statement is FUNCTION-LOCAL. CONFIRMED.
+L1 attributes a literal to its DEFINING scope (`_enclosing_functions` → `<module>`), and R1
+self-containment (10.9-A step-2, standing) already demands literal + seam call + exempt entry in ONE
+symbol — my `principals.MIGRATE_MEMORY_SCOPE_STATEMENT` example violated my own retained rule. **RULED:**
+the adjudicated statement is a FUNCTION-LOCAL variable inside `_migrate_memory_scope`, passed to BOTH
+`governed_exempt(…, statement=stmt)` and `run_query(statement=stmt)` — still ONE source, now derived at
+the entry's own site. §1.4's example text is superseded by this paragraph; the contract's
+`_MIGRATE_GOLDEN` docstring must stop teaching the module-constant trap (F-TRAP-2). The general rule,
+stated once: **an exempt-adjudicated statement lives in the function that executes it — never a module
+constant** (the L1 scan is the enforcer: a module-scope orphan is RED by construction, which is correct).
+"Make L1 attribute a module constant to its using function" is REJECTED — a name-flow analysis is a new
+reach surface for no gain.
+
+### Item 2 — populations derive from `_governed_field_specs` CALLERS, not from `owner_principal` presence. CONFIRMED; §1.5c-iii's wording corrected.
+`agent.owner_principal` is a packet-62 DIRECT field, so "walk the `owner_principal` field definitions"
+wrongly yields `{memory, agent, briefed, to}` (F-TRAP-1). **RULED:** `governed_populations()` = {t :
+`_<t>_statements` (or any `surreal_schema` emitter for t) CALLS `_governed_field_specs`} — an AST walk
+over `surreal_schema.py` — ∪ {relation tables whose `_define_relation_table(name, IN, OUT)` call has IN
+or OUT in that set} — also AST. At `cedb20d`: `{memory}`; ii-a's DDL grows it to `{memory, message, to}`.
+Missing-pin #2's synthetic-schema mutation proof is the instrument (a fixture source with a new
+`_governed_field_specs` caller MUST grow the output).
+
+### Item 3 — the observer mechanism: GOTCHA-A/B/C are RULED as the mechanism; §1.8's `event.original` wording is superseded.
+- **(a) Observe at `query_raw` ONLY.** Measured (#454): `.query` delegates to `.query_raw` internally and
+  the guard patches both, so a hook firing on `.query` re-enters through the patched `query_raw` and
+  deadlocks on the observer's held non-reentrant lock. `query_raw` is the narrow waist every SurrealQL
+  statement passes through — the harness's own door partition proves it (`COUNTABLE_DOORS` routes
+  select/create/insert/upsert/update/delete through `query_raw`; the UNCOUNTABLE own-RPC doors
+  `begin/commit/cancel/live/kill/use` carry no statement). **Reach statement, so this is not a hidden
+  constant:** observer reach ≡ the `query_raw` door ≡ the set the partition pin derives; the pin
+  `test_the_UNCOUNTABLE_door_set_is_DERIVED…` is cited BY NAME in the observer's docstring as the
+  reach's evidence, and a door the SDK adds that bypasses `query_raw` lands in UNCOUNTABLE and reds
+  that pin — the seventh defeat is thereby caught one instrument over. The before/after reads use the
+  UNWRAPPED `query_raw` — `_sdk_guard` sets `_guarded.__wrapped__ = original` (one line, inside the
+  `_sdk_guard` EXTENSION already ruled), and the observer reads `type(conn).query_raw.__wrapped__`.
+- **(b) ONE persistent dispatcher + a registry.** The dispatcher hook is appended to `_CALL_HOOKS` once
+  (at `_governed_contract` import); `observe_governed_table_writes(table)` only REGISTERS `(table,
+  sink)` in a registry the dispatcher consults and un-registers on exit. The detach pin (§1.6-v) then
+  clears `_CALL_HOOKS` and proves zero observations — a per-observe append would re-arm behind the
+  clear and red the pin on a correct build (measured, GOTCHA-B). §1.3's sentence "the F5 battery fixture
+  appends/removes its hook" is superseded: the fixture registers populations; the hook is persistent.
+- **(c) Origin is captured at exempt CONTEXT ENTRY — and WITHOUT a filename skip-list.** At SDK-call
+  time the immediate production caller is always `_txn.py`'s driver, so leg-4's origin cannot come from
+  the call-time walk. **RULED:** `governed_exempt` becomes a small CLASS context manager (`__enter__` /
+  `__exit__` doing the contextvar set/reset) instead of a `@contextlib.contextmanager` generator, and
+  `__enter__` captures `sys._getframe(1)` — the frame executing the `with` statement, exactly one up,
+  with NO `contextlib.py` frame in between — as `(repo-relative file, co_name)`. This removes the
+  `contextlib.py`-by-filename skip GOTCHA-C had to discover (a skip-list is the relocated-constant
+  antipattern, even a two-entry one). The token in `_ACTIVE_EXEMPT` is a frozen `ExemptToken(name,
+  statement, origin)`; `active_exempt()` returns it or `None`. `write_guard` is unchanged (the label leg
+  never consults origin). Pin: a helper that calls `governed_exempt` on the migrate frame's behalf
+  yields an origin ≠ `_migrate_memory_scope` → leg 4 RED (the borrowed-token construction, retained).
+- **(d) The serialising lock stays** (§1.6-iv); the adversary's measurement confirms the 8-way concern
+  never arises because the observer is armed only inside F5 battery blocks.
+
+### Item 4 — F-TRAP-3: the `ensure_ready` oracle is ENGINE-RENDERED; the DDL-text regex is RETIRED. RULED (d), superseding (a)/(b)/(c).
+The oracle was written against the DDL STRING and the engine reports array-element definitions as
+`embedding.*` / `labels.*` — precisely the #107/#131 class the adversary names ("the test environment is
+a fiction"), and any of (a)/(b)/(c) keeps a hand-model of the engine's implicit expansions alive (the
+next one — an `object` field, an `array<object>` path — reds again). **RULED:** the expected schema is
+obtained by CONSTRUCTION: apply `generate_memory_ddl()` (the SAME emitter, same dim) to a virgin
+harness database (`_surreal_harness.unique_database()` — one more mint, a session-scoped fixture keyed
+by dim) and read `INFO FOR TABLE memory` there; `_effect_ensure_ready` is then `after.schema ==
+oracle.schema` as MAPS (`fields` / `indexes` / `events` keys + their rendered definition strings — dict
+equality, no regex anywhere) AND `rows_before == rows_after`. `_memory_ddl_object_names()` is deleted.
+Trust-doctrine construction, not reasoning: the oracle is the engine's own rendering of the same
+recipe, so it is correct for every implicit expansion the engine has or will have. Pin the oracle's
+non-vacuity: a synthetic DDL with one extra field applied to the oracle DB must make the comparison red.
+
+### Item 5 — writable-set fork: origin capture is WITHIN "exempt API only". RULED, not a widening.
+"Exempt API" = `governed_exempt` (now the class form) + `active_exempt` + the `_ACTIVE_EXEMPT`
+contextvar + the `ExemptToken` value type — leg-4 origin capture is a field of that token, produced by
+that function. Nothing else in `governed.py` moves in i-a; the `authorize_guarded`/`GuardedPlan` split
+remains i-b's. `_sdk_guard.py` gains exactly two lines beyond the hook (`__wrapped__` on `_guarded`;
+nothing else) — inside the extension already in i-a's writable set.
+
+**Superseded text in this doc (a reader must not follow the older wording):** §1.4's
+`principals.MIGRATE_MEMORY_SCOPE_STATEMENT` example (→ item 1) · §1.5c-iii "owner_principal field
+definitions" (→ item 2) · §1.3 "the F5 battery fixture appends/removes its hook" and §1.8's
+`event.original` read guidance (→ item 3) · §5.1's ensure_ready golden phrasing "the schema delta
+equals applying generate_memory_ddl()" is kept in intent and made CONCRETE by item 4.
