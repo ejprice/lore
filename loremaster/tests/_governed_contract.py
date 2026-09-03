@@ -600,6 +600,48 @@ def python_allowed_ids(
 
 _MUTATION_VERBS = ("UPSERT", "UPDATE", "DELETE", "REMOVE")
 
+# =========================================================================== #
+# 63b-i-a (design §1.5a) — L1's verb list is INVERTED to a DERIVED grammar. The static scan's job
+# is DEMOTED to a coverage floor (L2 detects by effect); its keyword set is no longer a hand list
+# but the vendor's statement index, so a keyword the engine gains cannot silently escape L1's reach.
+# ★CONTRACT SHAPES★ the 63b-i-a builder fills; RED-until-built so the currency + grammar pins fire.
+# =========================================================================== #
+
+#: The committed keyword constant the derived grammar keys on (design §1.5a). ★BUILDER★: DERIVE +
+#: COMMIT the real set from the corpus (below) — the uppercased statement page stems. Empty at HEAD
+#: so the currency pin (SURREALQL_STATEMENT_KEYWORDS == derive_…()) REDS until the builder commits it.
+SURREALQL_STATEMENT_KEYWORDS: frozenset[str] = frozenset()
+
+#: The MUTATION keywords whose operand position the grammar MUST classify (a subset of the constant
+#: above — the write/DDL verbs). A keyword here with no operand rule in ``_raw_mutation_of_table``
+#: REDS "classify its operand position" (design §1.5a / §1.6-viii). The READ safe set (SELECT / INFO
+#: / SHOW / LIVE) is the complement — never a mutation.
+SURREALQL_MUTATION_KEYWORDS: frozenset[str] = frozenset(
+    {"UPDATE", "UPSERT", "DELETE", "CREATE", "INSERT", "RELATE", "REMOVE", "DEFINE", "ALTER", "REBUILD"}
+)
+SURREALQL_READ_KEYWORDS: frozenset[str] = frozenset({"SELECT", "INFO", "SHOW", "LIVE"})
+
+
+def derive_surrealql_statement_keywords_from_corpus(
+    repo_root: Path | None = None,
+) -> frozenset[str]:
+    """DERIVE the SurrealQL statement keyword set from the ``surrealdb-docs`` corpus (design §1.5a).
+
+    ★BUILDER DELIVERABLE★ (RED-until-built): read the ``surrealdb-docs`` tier ``source`` named in
+    ``lore.yaml`` → its ``reference/query-language/statements/*.mdx`` PAGE STEMS → the uppercased
+    keyword set (``update.mdx`` → ``UPDATE``; ``live-select.mdx`` → ``LIVE``; ``if-else.mdx`` →
+    ``IF`` — the builder pins the normalisation). Keyed on the CONFIG-named root, never a hardcoded
+    path. Where the corpus is UNREADABLE (the in-image conformance profile, packet 01a) this RAISES
+    and the currency pin is ``RED_ADJUDICATED`` with that trigger (design §1.5a) — NEVER skipped.
+
+    At HEAD this is a stub: raise so the currency pin REDS for the right reason (the derivation is
+    unbuilt), never a silent empty set that would make the currency pin vacuously green."""
+    raise NotImplementedError(
+        "derive_surrealql_statement_keywords_from_corpus is a 63b-i-a builder deliverable (design "
+        "§1.5a): read the surrealdb-docs tier source from lore.yaml and derive the keyword set from "
+        "its statements/*.mdx page stems. RED-until-built."
+    )
+
 
 @dataclass(frozen=True, order=True)
 class MutationSite:
@@ -808,23 +850,95 @@ def function_calls_write_guard(source: str, function: str) -> bool:
     return function_calls_named(source, function, "write_guard")
 
 
+# =========================================================================== #
+# 63b-i-a — THE EFFECT (design §1.2): detection is a before/after STATE DIFF of a governed
+# population per SDK call, NEVER a statement classification. These are the ★CONTRACT SHAPES★ the
+# 63b-i-a BUILDER fills (the observer BODY that produces them + the classifier that reads them);
+# authored here as stubs so the RED contract COLLECTS (the 63a ``governed.py``-stub precedent). A
+# RowDelta/SchemaDelta/ObservedEffect are pure DATA containers (no body to build); the builder-owned
+# LOGIC is the observer that constructs them from ``SELECT *`` + ``INFO FOR TABLE`` diffs.
+# =========================================================================== #
+
+
+@dataclass(frozen=True)
+class RowDelta:
+    """One row's change across a SINGLE observed SDK call (design §1.2 — the effect, not the
+    statement). ``kind`` ∈ {created, updated, deleted}; ``changed_columns`` the columns whose value
+    differs (the full non-id column set for a create/delete, the diff for an update); ``before`` /
+    ``after`` the row dicts (``before`` None for a create, ``after`` None for a delete). ``id`` is
+    the bare row id. This is what an allowlist entry's effect predicate adjudicates PER changed row
+    (design §1.4 leg 3: ``entry.effect`` holds ∀ changed row)."""
+
+    id: str
+    kind: str  # "created" | "updated" | "deleted"
+    changed_columns: frozenset[str]
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class SchemaDelta:
+    """The ``INFO FOR TABLE`` delta across ONE observed SDK call (design §1.2 DDL leg): the field /
+    index / event names ADDED, REMOVED, or CHANGED. ``is_empty`` ⟺ the call made no DDL mutation of
+    the table — a non-empty delta IS a DDL mutation (``REMOVE TABLE`` / ``DEFINE FIELD OVERWRITE``
+    with a change / ``REMOVE INDEX`` …). store-ref §1 (INFO FOR TABLE) is the source; the builder
+    fills the observer that computes it from before/after INFO snapshots."""
+
+    added: frozenset[str]
+    removed: frozenset[str]
+    changed: frozenset[str]
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.added or self.removed or self.changed)
+
+
+@dataclass(frozen=True)
+class ObservedEffect:
+    """The FULL state diff of ONE registered governed population across ONE observed SDK call
+    (design §1.2): the per-row deltas + the schema delta. A GOVERNANCE EVENT ⟺ NOT ``is_empty`` —
+    a no-effect write (``SET scope = scope``) yields an empty ObservedEffect and is NOT a governance
+    event (§1.2 self-attack row 1). The unit an allowlist entry's ``effect`` predicate adjudicates
+    (design §1.4 — a ROW entry checks per-row deltas + empty schema; a DDL frame like ``ensure_ready``
+    checks the schema delta == its golden AND no rows moved, §5.1 Q1)."""
+
+    row_deltas: tuple[RowDelta, ...]
+    schema_delta: SchemaDelta
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.row_deltas and self.schema_delta.is_empty
+
+
 @dataclass(frozen=True)
 class ObservedWrite:
-    """One governed-table mutation observed at the store seam under test (design §10.9-A L2b).
+    """One governed-population state change observed at the SDK-connection seam under test.
 
-    ``exempt`` and ``origin_site`` are the §10.9-A CORRECTION (packet 63a-v) both-ways channel: a
-    non-``write_guard`` admin site (the migrate-governed backfill) carries a NAMED
-    :func:`governed.governed_exempt` token instead of a label, and the observer records the
-    ORIGINATING production ``(file, symbol)`` INDEPENDENTLY from the call stack (the ``_sdk_guard``
-    precedent) — so a site BORROWING another site's exempt token fails the ``(file, symbol)`` match
-    (design step 4) and F5's own runtime reach becomes a checked variable (finding #446). Both
-    default so the 63a-iv construction ``ObservedWrite(label=…, verb=…, seam=…)`` is unchanged."""
+    63b-i-a WIDENS this (design §1.2 / §1.3): detection is the EFFECT, so an observed write carries
+    its ``effect`` (the ObservedEffect state diff) — the classifier reads THAT, never the statement.
+    ``statement`` is captured EVIDENCE ONLY (the failure message + the exempt golden match, §1.4);
+    it is NEVER consulted for detection. ``exempt`` carries the ``(name, statement)`` PAIR that
+    :func:`governed.active_exempt` returns under the new statement-scoped exemption (§1.4), not the
+    bare name. ``origin_site`` is the guard's own attributed ``(repo-relative file, function)`` (the
+    ``_sdk_guard`` precedent) — a site BORROWING another's exempt token fails the match (design
+    step 4). ``verb`` / ``seam`` default to None (a pure-DDL call has no row verb) and are retained
+    only as coarse evidence — the effect KIND lives in ``effect.row_deltas[].kind``.
+
+    ★CONTRACT SHAPE★ — the 63b-i-a builder's rewritten observer constructs these from the guard
+    hook (§1.8); at HEAD the fields default so the contract COLLECTS and the effect-based pins RED
+    behaviorally (``effect`` is None / statement-derived, never a real state diff)."""
 
     label: str | None  # the active write_guard label, or None (an UNCLASSIFIED write — the red signal)
-    verb: str
-    seam: str  # which seam function ran it (execute_transaction / run_query / execute_read_transaction)
-    exempt: str | None = None  # the active governed_exempt NAME (or None) — the admin-attribution channel
-    origin_site: tuple[str, str] | None = None  # (repo-relative file, function) of the originating prod frame
+    verb: str | None = None  # coarse evidence only (the effect KIND lives in effect.row_deltas[].kind)
+    seam: str | None = None  # coarse evidence only (retired as a classified field)
+    # active governed_exempt token. §1.4: the 63b model carries the (name, statement) PAIR (what
+    # active_exempt() returns on the build). The union admits the bare-name str the CURRENT
+    # active_exempt returns at HEAD, so the 2-leg classifier body stays type-valid until the builder
+    # narrows both to the tuple — the absent_scope Any-bridge idiom, one field over.
+    exempt: str | tuple[str, str] | None = None
+    origin_site: tuple[str, str] | None = None  # (repo-rel file, function) of the guard-attributed frame
+    statement: str | None = None  # the executed SurrealQL — EVIDENCE ONLY, never classified on (§1.2)
+    effect: ObservedEffect | None = None  # the observed state diff (§1.2 — the EFFECT the classifier reads)
 
 
 def _mutation_verb_for_table(statement: str, table: str) -> str | None:
@@ -1064,6 +1178,24 @@ class TreeWriteAllowlistEntry:
     frames: tuple[str, ...]
     exempt_name: str | None = None
     runtime_observed: bool = True
+    # 63b-i-a (design §1.4): the STATEMENT-scoped exemption + effect-based classification. ★SHAPE★:
+    #   ``statement`` — the GOLDEN adjudicated SurrealQL (an oracle the adjudicator wrote down), compared
+    #     whitespace-normalised against BOTH the exempt token's statement AND the observed executed
+    #     statement (leg 2). "" ⟺ this entry is a plain write_guard LABEL frame (no exempt golden).
+    #   ``effect`` — the adjudicated EFFECT predicate over the WHOLE ObservedEffect (rows + schema delta;
+    #     see the report's "Substrate-shape decision" — one field serves a row entry AND a DDL frame).
+    #     A row entry's predicate checks per-row deltas + an empty schema delta; a DDL frame's checks the
+    #     schema delta == its golden AND no rows moved (§5.1 Q1). None ⟺ no effect adjudication yet (the
+    #     builder wires the classifier to REQUIRE it for every 63b-new frame; §1.4).
+    statement: str = ""
+    effect: Callable[[ObservedEffect], bool] | None = None
+    # 63b-i-a (design §5.1 Q1): a DDL/LABEL frame carries an effect predicate but has NO L1 raw
+    # mutation LITERAL — ``ensure_ready`` passes ``generate_memory_ddl()`` (a call result), not a
+    # literal SurrealQL string, so the L1 AST scan never derives it as a site. ``l1_site=False``
+    # marks such a label-only entry so the L1 containment ghost-check EXCLUDES it (it is covered by
+    # the L2 effect leg + L2a ``function_calls_write_guard``, never by a derived L1 site). Default
+    # True — a site-backed entry (a raw literal L1 derives). Substrate-shape (report §decision).
+    l1_site: bool = True
 
 
 def _originating_prod_site() -> tuple[str, str] | None:
@@ -1248,3 +1380,32 @@ def seam_modules_for_tree_allowlist(
             seen.add(module.__name__)
             modules.append(module)
     return tuple(modules)
+
+
+# =========================================================================== #
+# 63b-i-a (design §1.5c-iii) — THE GOVERNED-POPULATION SET is DERIVED from ``surreal_schema``, so a
+# new governed table joins F5's reach by the SAME derivation that governs it (the growth detector
+# ONE LEVEL UP: reach as a checked variable over the SET of populations, not only over sites within
+# one). At ``e4b8945`` the derivation yields ``{memory}`` (§5.1 Q2 iii — ``_message_statements`` does
+# not yet call ``_governed_field_specs``); ii-a's DDL grows it to {memory, message, to}. A governed
+# population with no F5 case is RED (deny-by-default over the population SET).
+# =========================================================================== #
+
+
+def governed_populations(repo_root: Path = _REPO_ROOT) -> frozenset[str]:
+    """DERIVE the set of governed table populations from ``surreal_schema`` (design §1.5c-iii).
+
+    ★BUILDER DELIVERABLE★ (RED-until-built): the F5 cases are
+    ``{t : t's DDL slice calls _governed_field_specs}`` ∪ ``{relation tables whose IN or OUT is in
+    that set}`` — walked from the ``generate_*_ddl`` emitter output (the ``owner_principal`` field
+    definitions + the ``TYPE RELATION IN x OUT y`` clauses), NEVER a hand list. This is an OUTPUT:
+    the population pin asserts ``governed_populations() == {expected}`` and that a surprise governed
+    population REDS until an F5 case exists for it.
+
+    At HEAD this is a stub: raise so the population pin REDS for the right reason (the derivation is
+    unbuilt), never a hardcoded ``{MEMORY_TABLE}`` that would make the OUTPUT pin vacuous."""
+    raise NotImplementedError(
+        "governed_populations is a 63b-i-a builder deliverable (design §1.5c-iii): derive the "
+        "governed table set from surreal_schema (tables whose DDL slice calls _governed_field_specs, "
+        "plus relation tables with a governed endpoint). RED-until-built."
+    )

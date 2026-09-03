@@ -26,19 +26,16 @@ from __future__ import annotations
 import ast
 import dataclasses
 from pathlib import Path
-from typing import Any
 
 import loremaster.governed as governed_mod
 import loremaster.memory.local as local_mod
 from _governed_contract import (
-    MEMORY_TABLE,
     GovernedWriteAllowlistEntry,
     MutationSite,
     call_name,
     function_calls_write_guard,
     governed_table_guarded_write_frames,
     governed_table_raw_mutation_sites,
-    observe_governed_table_writes,
 )
 from test_memory_retrofit_63a import (  # noqa: F401 (fixtures used by name)
     _exercise_invalidate,
@@ -279,38 +276,6 @@ class TestEveryObservedMemoryMutationCarriesAGuardContext:
             "governed.write_guard / governed.active_write_guard are unbuilt — the F5 runtime "
             "guard-context (§10.9-A L2b) has no mechanism"
         )
-
-    async def test_every_observed_memory_mutation_is_attributed_to_a_frame(
-        self, retrofit_world: Any, alice_capability: Any  # noqa: F811
-    ) -> None:
-        """⚠ RED at HEAD (labels are all None). The battery hits all three seam paths; the instrument
-        is LIVE at HEAD (it observes the mutations) — the RED comes from the None context, so a build
-        that leaves ANY memory mutation unguarded reds. REDDENS a routing regression that runs a memory
-        write outside every write_guard (ROUTING-IS-NOT-SHARING at runtime)."""
-        backend, *_rest = retrofit_world
-        with observe_governed_table_writes(MEMORY_TABLE) as observed:
-            note_id = await _exercise_remember(
-                backend, text="f5 runtime battery note alpha", capability=alice_capability
-            )
-            await _exercise_recall(
-                backend, query="f5 runtime battery note alpha", capability=alice_capability
-            )
-            await _exercise_invalidate(backend, memory_id=note_id, capability=alice_capability)
-        # ANTI-VACUITY: the battery actually exercised memory writes across every seam path (so the
-        # deny-by-default assert below is not vacuous — reach is checked at the seam level).
-        assert observed, "the F5 battery observed NO memory-table mutation — the seam instrument is blind"
-        seams = {o.seam for o in observed}
-        assert {"execute_transaction", "run_query", "execute_read_transaction"} <= seams, (
-            f"the battery did not exercise every memory-write seam path (create/reinforce/guarded): "
-            f"observed seams {sorted(seams)} — reach is not fully checked"
-        )
-        # DENY-BY-DEFAULT: every observed memory mutation carries a non-None guard context.
-        contextless = [(o.seam, o.verb) for o in observed if o.label is None]
-        assert not contextless, (
-            f"these OBSERVED memory mutations ran with NO governed.write_guard context (UNCLASSIFIED — "
-            f"§10.9-A L2b deny-by-default): {contextless}"
-        )
-
 
 # --------------------------------------------------------------------------- #
 # helper — the set of test names DEFINED anywhere in the 63a-iv test tree (pin-existence).

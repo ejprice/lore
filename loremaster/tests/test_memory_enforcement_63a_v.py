@@ -40,7 +40,6 @@ import loremaster.memory.local as local_mod
 import loremaster.principals as principals_mod
 from _governed_contract import (
     MEMORY_TABLE,
-    ObservedWrite,
     TreeMutationSite,
     TreeWriteAllowlistEntry,
     classify_tree_observed_write,
@@ -50,13 +49,14 @@ from _governed_contract import (
     exempt_frame_raw_memory_mutations,
     function_calls_named,
     governed_table_raw_mutation_sites_in_tree,
-    observe_governed_table_writes,
-    seam_modules_for_tree_allowlist,
-    store_handle,
 )
 
-# The migration fixture + the store handle idiom (DRY — the ONE migration world, never re-wired).
-from test_governed_migration_63a import migration_world  # noqa: F401 (fixture used by name)
+# 63b-i-a (design §1.4/§1.5) — the F5 INSTRUMENT was replaced (statement-classified → effect-based).
+# The whole-tree allowlist now LIVES in test_memory_enforcement_63b_ia (widened with the golden
+# statement + the effect predicate), the SINGLE source; 63a-v's STANDS L1/R1/R3 pins import it.
+# ``L1_ALLOWLISTED_SITES`` is the site-backed subset the L1 containment ghost-check applies to (a
+# DDL/label frame — ensure_ready/guarded_write — has no raw literal site, so it is excluded).
+from test_memory_enforcement_63b_ia import L1_ALLOWLISTED_SITES, MEMORY_TREE_ALLOWLIST
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,56 +72,15 @@ _PRINCIPALS = _rel(principals_mod)
 
 
 # --------------------------------------------------------------------------- #
-# The WHOLE-TREE deny-by-default WRITE ALLOWLIST (design §10.9-A CORRECTION). Four (site,
-# justification, pin, frames [, exempt_name, runtime_observed]) entries — the 3 local.py sites (the
-# 63a-iv coverage, now file-keyed) + migrate-governed (the SECOND evidence-backed triple, #446).
+# The whole-tree deny-by-default WRITE ALLOWLIST now LIVES in test_memory_enforcement_63b_ia (the
+# 63b effect model — widened with the golden statement + effect predicate; the 4 site-backed L1
+# entries + the 2 DDL/label frames ensure_ready/guarded_write). The 63a-v STANDS pins below (L1
+# whole-tree scan, prose-rejection, R1 self-containment, R3 single-shape, R2 hand-set-label,
+# table-parametrisation, migrate-enters-governed_exempt L2a) import it. The L1 containment ghost
+# leg keys on ``L1_ALLOWLISTED_SITES`` (the l1_site=True subset — a label frame has no raw literal).
 # --------------------------------------------------------------------------- #
 
-_UPSERT_ENTRY = TreeWriteAllowlistEntry(
-    site=TreeMutationSite(_LOCAL, "_upsert_fragment", "UPSERT"),
-    justification=(
-        "deterministic-id UPSERT; the CREATE caller folds the owner pair into the id (#439) so it "
-        "cannot name a foreign row, the REPLAY caller uses the STORED id (RES-1)."
-    ),
-    pin="test_a_non_owner_reremember_mints_a_distinct_id_and_does_not_seize_or_rescope",
-    frames=("remember", "_replay_record"),
-)
-_REINFORCE_ENTRY = TreeWriteAllowlistEntry(
-    site=TreeMutationSite(_LOCAL, "_reinforce", "UPDATE"),
-    justification="read-side-effect on the NON-governed importance column only (§10.9-C).",
-    pin="test_the_reinforce_update_sets_only_the_importance_column",
-    frames=("_reinforce",),
-)
-_RECREATE_ENTRY = TreeWriteAllowlistEntry(
-    site=TreeMutationSite(_LOCAL, "_recreate_memory_table", "REMOVE"),
-    justification="boot/admin table recreate, reachable ONLY via rebuild_embeddings (RES-1).",
-    pin="test_recreate_memory_table_is_reachable_only_from_rebuild_embeddings",
-    frames=("_recreate_memory_table",),
-    runtime_observed=False,  # #445 boot/admin bound — L2a structural coverage only, never a member verb
-)
-_MIGRATE_ENTRY = TreeWriteAllowlistEntry(
-    site=TreeMutationSite(_PRINCIPALS, "_migrate_memory_scope", "UPDATE"),
-    justification=(
-        "the migrate-governed backfill (§10.9-A CORRECTION step 4). Evidence: admin-CLI-only "
-        "reachability (no MCP tool path reaches it); the statement can only touch UNMIGRATED rows "
-        "(WHERE scope IS NONE — a NONE-scope row has no owner to seize); idempotent + "
-        "precondition-guarded (single-operator resolution or REFUSE, §2.1); R4 driver-routed. It is "
-        "NOT member-reachable, so it attributes via a NAMED governed_exempt('migrate-governed') "
-        "frame rather than write_guard — exempt-WITH-JUSTIFICATION, never silently dropped."
-    ),
-    pin="test_migrate_memory_scope_updates_only_none_scope_rows",
-    frames=("_migrate_memory_scope",),
-    exempt_name="migrate-governed",
-)
-MEMORY_TREE_ALLOWLIST: tuple[TreeWriteAllowlistEntry, ...] = (
-    _UPSERT_ENTRY,
-    _REINFORCE_ENTRY,
-    _RECREATE_ENTRY,
-    _MIGRATE_ENTRY,
-)
-
 _DERIVED = governed_table_raw_mutation_sites_in_tree  # shorthand; the from-truth whole-tree scan
-_ALLOWLISTED_SITES = frozenset(entry.site for entry in MEMORY_TREE_ALLOWLIST)
 
 
 def _principals_source() -> str:
@@ -145,9 +104,9 @@ class TestTheWholeTreeReachIsAnOutput:
         anywhere in the tree without re-adjudication."""
         derived = _DERIVED(MEMORY_TABLE)
         assert derived, "the whole-tree scan derived NO raw memory mutation — the scanner is blind"
-        assert derived == _ALLOWLISTED_SITES, (
+        assert derived == L1_ALLOWLISTED_SITES, (
             f"whole-tree raw-mutation set moved. new (unadjudicated): "
-            f"{sorted(derived - _ALLOWLISTED_SITES)};\n  gone: {sorted(_ALLOWLISTED_SITES - derived)}"
+            f"{sorted(derived - L1_ALLOWLISTED_SITES)};\n  gone: {sorted(L1_ALLOWLISTED_SITES - derived)}"
         )
 
     def test_migrate_memory_scope_is_now_within_f5_reach(self) -> None:
@@ -166,8 +125,8 @@ class TestTheWholeTreeReachIsAnOutput:
         unclassified raw write anywhere in the tree (orphan) OR removing an allowlist entry (its
         derived site becomes an orphan — the migrate-governed triple's orphan-on-removal mutation)."""
         derived = _DERIVED(MEMORY_TABLE)
-        orphans = derived - _ALLOWLISTED_SITES
-        ghosts = _ALLOWLISTED_SITES - derived
+        orphans = derived - L1_ALLOWLISTED_SITES
+        ghosts = L1_ALLOWLISTED_SITES - derived
         assert not orphans, (
             f"UNCLASSIFIED raw memory mutation(s) across the tree (deny-by-default): {sorted(orphans)}"
         )
@@ -319,114 +278,6 @@ class TestMigrateGovernedIsAnEvidenceBackedTriple:
         defined = _defined_test_names()
         missing = [(e.site, e.pin) for e in MEMORY_TREE_ALLOWLIST if e.pin not in defined]
         assert not missing, f"allowlist entries whose evidencing PIN does not exist: {missing}"
-
-
-# =========================================================================== #
-# L1 ↔ L2 both-ways cross-check — the classifier controls + the LIVE migration attribution.
-# =========================================================================== #
-
-
-class TestTheClassifierDiscriminatesBothWays:
-    """§10.9-A CORRECTION step 2 — the classifier (the uniform L2b rule) accepts a write_guard label
-    OR a NAMED exempt token whose allowlist site MATCHES the stack origin, and REJECTS everything
-    else. Pure-logic controls (both directions), GREEN at HEAD — they mutation-prove the classifier
-    can SEE an escape and can catch a BORROWED token (design step 4)."""
-
-    def _site(self) -> tuple[str, str]:
-        return (_MIGRATE_ENTRY.site.file, _MIGRATE_ENTRY.site.function)
-
-    def test_a_write_guard_label_classifies(self) -> None:
-        observed = ObservedWrite(label="remember", verb="UPSERT", seam="execute_transaction")
-        assert classify_tree_observed_write(observed, MEMORY_TREE_ALLOWLIST) is True
-
-    def test_a_matching_exempt_token_classifies(self) -> None:
-        observed = ObservedWrite(
-            label=None, verb="UPDATE", seam="run_query",
-            exempt="migrate-governed", origin_site=self._site(),
-        )
-        assert classify_tree_observed_write(observed, MEMORY_TREE_ALLOWLIST) is True, (
-            "a migrate write carrying its OWN exempt token from its OWN site must classify"
-        )
-
-    def test_a_bare_unattributed_write_is_unclassified(self) -> None:
-        """The observed-not-classified escape (an L1 blind spot, e.g. a concatenation-assembled
-        write, running with no label and no exempt) — the RED signal."""
-        observed = ObservedWrite(label=None, verb="UPDATE", seam="run_query")
-        assert classify_tree_observed_write(observed, MEMORY_TREE_ALLOWLIST) is False, (
-            "a memory mutation with NO label and NO exempt token must be UNCLASSIFIED (deny-by-default)"
-        )
-
-    def test_a_borrowed_exempt_token_is_unclassified(self) -> None:
-        """THE #446 STEP-4 CONTROL — a site BORROWING the migrate-governed token from a DIFFERENT
-        origin fails the (file, symbol) match, so it cannot launder a foreign write through the
-        admin exemption."""
-        borrowed = ObservedWrite(
-            label=None, verb="UPDATE", seam="run_query",
-            exempt="migrate-governed", origin_site=(_PRINCIPALS, "_some_other_function"),
-        )
-        assert classify_tree_observed_write(borrowed, MEMORY_TREE_ALLOWLIST) is False, (
-            "a site borrowing migrate-governed's exempt token was CLASSIFIED — the (file, symbol) "
-            "match is not enforced, so any site can launder a governed write through the exemption"
-        )
-
-    def test_the_observer_patch_set_is_derived_from_the_allowlist(self) -> None:
-        """THE META-REACH PIN (GREEN at HEAD) — the L2b observer's patch-set (which modules' store
-        seam it instruments) is DERIVED from the whole-tree allowlist files, NOT a hand-list. So a
-        NEW allowlisted site in a NEW file joins the observer's reach by the SAME derivation that
-        classifies it (F5's OWN reach a checked variable — the #446 lesson). Reddens the day
-        ``principals`` (the migrate seam's module) drops out of the derived patch-set."""
-        modules = seam_modules_for_tree_allowlist(MEMORY_TREE_ALLOWLIST)
-        names = {m.__name__ for m in modules}
-        assert principals_mod.__name__ in names, (
-            f"the migrate-governed seam module (principals) is NOT in the observer's DERIVED "
-            f"patch-set {sorted(names)} — the observer would never see the migration write"
-        )
-        assert local_mod.__name__ in names, "the local.py seam module dropped out of the derived patch-set"
-
-
-class TestTheLiveMigrationWriteIsAttributed:
-    """§10.9-A CORRECTION step 2 (the LIVE both-ways leg) — the observer's reach extends to
-    ``principals`` and the real migrate-governed backfill write is CLASSIFIED. ⚠ RED at HEAD: the
-    migration write is observed UNCLASSIFIED (no exempt token), the exact three-layer gap the cold
-    audit found (F5 blind to a governed write live in a sibling module)."""
-
-    async def test_the_live_migration_write_is_attributed(self, migration_world: Any) -> None:  # noqa: F811
-        """⚠ RED at HEAD — drives the REAL ``migrate_governed`` (a NONE-scope legacy row, alice the
-        operator) inside the instrumented seam and asserts the backfill UPDATE is (1) OBSERVED with
-        origin ``principals::_migrate_memory_scope`` (the observer's reach genuinely extends to
-        principals — the coverage the cold audit found MISSING) and (2) CLASSIFIED. At HEAD the write
-        carries NO exempt token (``active_exempt`` unbuilt) ⇒ UNCLASSIFIED ⇒ RED. On the correct
-        build the ``governed_exempt("migrate-governed")`` frame classifies it."""
-        principal_store, keep_store, connection, env = migration_world
-        handle, _calls = store_handle(connection, url=env.url)
-        modules = seam_modules_for_tree_allowlist(MEMORY_TREE_ALLOWLIST)
-        with observe_governed_table_writes(MEMORY_TABLE, extra_modules=modules) as observed:
-            await principals_mod.migrate_governed(
-                table=MEMORY_TABLE, store=handle, keep_store=keep_store, principal_store=principal_store
-            )
-        # ANTI-VACUITY: the migration actually issued the backfill UPDATE and the observer SAW it
-        # originating in _migrate_memory_scope (proving the observer's reach extends to principals —
-        # the L1-blind-spot / coverage gap the cold audit named).
-        migrate_writes = [
-            o for o in observed if o.origin_site == (_PRINCIPALS, "_migrate_memory_scope")
-        ]
-        assert migrate_writes, (
-            f"the observer did NOT see the migrate-governed backfill UPDATE originating in "
-            f"principals._migrate_memory_scope — its reach does not extend to principals (observed: "
-            f"{[(o.seam, o.verb, o.origin_site) for o in observed]})"
-        )
-        # DENY-BY-DEFAULT: every observed migration write is CLASSIFIED (label OR valid exempt).
-        unclassified = [
-            (o.seam, o.verb, o.origin_site)
-            for o in migrate_writes
-            if not classify_tree_observed_write(o, MEMORY_TREE_ALLOWLIST)
-        ]
-        assert not unclassified, (
-            f"the migrate-governed backfill ran UNATTRIBUTED at the F5 seam (§10.9-A CORRECTION L2b "
-            f"deny-by-default — no write_guard label, no valid exempt token): {unclassified}"
-        )
-
-
 # =========================================================================== #
 # Table parametrisation — the scanner is reusable for 63b/64 (design step 5, ONE implementation).
 # =========================================================================== #
@@ -733,130 +584,6 @@ class TestTheHandSetLabelBoundIsNamedInTheInstrumentDocstring:
             "model (the honest developer, not the hostile author — the #138 class), never closed by "
             "false positives."
         )
-
-
-# =========================================================================== #
-# R4 — THE PINNED ACCEPTED BOUNDS (finding #449, operator OPTION A 2026-09-02, via lead-63).
-# Adversary-63a-v3's R4 hunt found TWO reach-recessions that launder past R1+R2+R3 on the reference
-# build: (a) the exempt-frame single-shape pin AND the base-3 justification pin match ``WHERE scope
-# IS NONE`` by SUBSTRING, so a single OR-extended seizure passes; and (c) the raw-mutation VERB-SET
-# (``_raw_mutation_of_table`` + the runtime ``_mutation_verb_for_table``) is a bounded enumeration
-# UPSERT/UPDATE/DELETE/REMOVE, so an INSERT/CREATE/RELATE memory seizure is invisible end-to-end.
-# The operator ACCEPTED BOTH as BOUNDS in 63a: F5 is a static HONEST-DEVELOPER net (it catches the
-# honest mistake at the shapes/verbs it enumerates); the substring/exotic-verb laundering is the
-# #138 HOSTILE-AUTHOR class F5 explicitly does NOT defend (R2's already-named threat model). THE
-# RUNTIME ROOT-FIX (verb/shape-AGNOSTIC mutation detection as a PROPERTY + a statement-scoped
-# exemption of the exact adjudicated statement) is DEFERRED to 63b (task 571ef1a), its natural home.
-#
-# These are PIN-THE-MISS bounds (CLAUDE.md WHEN YOU CANNOT CLOSE A HOLE, PIN IT), NOT discriminating
-# security pins: each asserts the bound EXISTS TODAY and carries the deliberate-DELETION instruction
-# for when the 63b root-fix closes it — so the bound cannot be silently inherited nor silently
-# "fixed" (finding #449). Each also carries a probe-honesty POSITIVE CONTROL proving the matcher is
-# not blind, so the GREEN witness is a genuine laundering path (CLAUDE.md PKT-28 C1).
-# =========================================================================== #
-
-
-class TestTheAcceptedF5BoundsArePinned:
-    """finding #449 (operator OPTION A) — the two adversary-63a-v3 R4 reach-recessions, pinned as
-    ACCEPTED BOUNDS. GREEN at HEAD (the bounds are REAL today); each REDS the day the 63b runtime
-    root-fix closes it — at which point delete the pin + the named-bound docstring it points at and
-    say so. NOT a discriminating security pin: F5 is a static honest-developer net, and these are the
-    #138 hostile-author holes it does not defend (design §10.9-A CORRECTION step 6 R2 threat model)."""
-
-    def test_r4a_the_shape_leg_matches_where_scope_is_none_by_substring(self) -> None:
-        r"""⚠ KNOWN ACCEPTED BOUND #449 (R4-a) — the exempt-frame single-shape pin
-        (``test_the_exempt_frame_holds_exactly_its_one_none_scope_guarded_mutation``) and the base-3
-        justification pin (``test_migrate_memory_scope_updates_only_none_scope_rows``) both check the
-        blessed shape by the SUBSTRING ``re.search(r"WHERE\s+scope\s+IS\s+NONE")``, not by an exact
-        ``WHERE == scope IS NONE``. So a SINGLE OR-extended statement ``… WHERE scope IS NONE OR scope
-        = $victim`` — ONE statement (R3 count leg passes), CONTAINING the substring (R3/base-3 shape leg
-        passes) — LAUNDERS while seizing OWNED rows (adversary-63a-v3 §R4-a; the wrong build went 22
-        passed / 0 failed on the full 63a-v suite). F5 is a static HONEST-DEVELOPER net; this substring
-        bound is the #138 HOSTILE-AUTHOR class F5 does not defend; the runtime root-fix is 63b (task
-        571ef1a). If you closed this deliberately (the 63b root-fix), DELETE this pin + the R4-a bound
-        docstring on ``exempt_frame_raw_memory_mutations`` and say so."""
-        # An OR-extended seizure, co-located as the frame's ONE mutation — the R3 extraction path.
-        seizure_source = (
-            'MEMORY_TABLE = "memory"\n\n\n'
-            "async def _do_write(x):\n"
-            "    await run_query(\n"
-            '        f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE OR scope = $victim"\n'
-            "    )\n"
-        )
-        seizure_entry = TreeWriteAllowlistEntry(
-            site=TreeMutationSite("synthetic/pkg/r4a.py", "_do_write", "UPDATE"),
-            justification="#449 R4-a bound witness — an OR-extended seizure that keeps the substring",
-            pin="test_r4a_the_shape_leg_matches_where_scope_is_none_by_substring",
-            frames=("_do_write",),
-            exempt_name="r4a-bound",
-        )
-        mutations = exempt_frame_raw_memory_mutations(seizure_entry, source=seizure_source)
-        # R3 COUNT leg would PASS — the seizure is ONE statement (the count leg's blind spot).
-        assert len(mutations) == 1, (
-            f"expected the OR-extended seizure to be ONE co-located statement; got {mutations!r}. If "
-            f"the extractor changed, the #449 R4-a bound may be closing — re-adjudicate, do not "
-            f"silently repair this pin."
-        )
-        only = mutations[0]
-        # R3/base-3 SHAPE leg (the SUBSTRING matcher) still classifies the seizure as the allowlisted
-        # shape — the accepted bound. The positive control below proves the matcher is NOT blind.
-        assert re.search(r"WHERE\s+scope\s+IS\s+NONE", only, re.IGNORECASE), (
-            "the WHERE-scope-IS-NONE SUBSTRING matcher no longer accepts an OR-extended seizure — the "
-            "#449 R4-a accepted bound has been CLOSED. If you closed it deliberately (the 63b runtime "
-            "root-fix: exact-shape / statement-scoped exemption), DELETE this pin + the R4-a bound "
-            f"docstring on exempt_frame_raw_memory_mutations and say so. statement: {only!r}"
-        )
-        # PROBE-HONESTY POSITIVE CONTROL (adversary-63a-v3 §R4-a) — the substring matcher CAN see a
-        # MISSING substring, so the GREEN above is a genuine laundering path, not a blind check.
-        no_substring_seizure = "UPDATE memory SET scope = $scope WHERE scope = $victim"
-        assert not re.search(r"WHERE\s+scope\s+IS\s+NONE", no_substring_seizure, re.IGNORECASE), (
-            "the substring matcher matched a statement with NO `scope IS NONE` clause — the probe is "
-            "blind, so the bound witness above is vacuous (CLAUDE.md PKT-28 C1)"
-        )
-
-    def test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration(self) -> None:
-        """⚠ KNOWN ACCEPTED BOUND #449 (R4-c) — the static extractor ``_raw_mutation_of_table`` (reused
-        by the whole-tree scan AND ``exempt_frame_raw_memory_mutations``) and the runtime observer
-        ``_mutation_verb_for_table`` both count only the verb-set UPSERT/UPDATE/DELETE/REMOVE. An
-        ``INSERT … ON DUPLICATE KEY UPDATE`` / ``CREATE`` / ``RELATE`` memory seizure is INVISIBLE to
-        BOTH: the extractor returns None (so L1/R3 never count it) and the observer returns None (so it
-        is never RECORDED → deny-by-default cannot fire) — end-to-end blind (adversary-63a-v3 §R4-c;
-        SurrealDB supports INSERT..ON DUPLICATE KEY UPDATE, surrealql-tests 5776). F5 is a static
-        HONEST-DEVELOPER net; this verb-set bound is the #138 HOSTILE-AUTHOR class F5 does not defend;
-        the runtime root-fix (mutation detection as a PROPERTY, not a verb enumeration) is 63b (task
-        571ef1a). If you closed this deliberately (the 63b root-fix), DELETE this pin + the R4-c bound
-        docstrings on ``_raw_mutation_of_table`` / ``_mutation_verb_for_table`` and say so."""
-        from _governed_contract import _mutation_verb_for_table, _raw_mutation_of_table
-
-        exotic = (
-            "INSERT INTO memory (id, scope) VALUES ($id, 'x') ON DUPLICATE KEY UPDATE scope = 'x'",
-            "CREATE type::record('memory', $id) SET scope = 'seized'",
-            "RELATE $principal->owns->type::record('memory', $id)",
-        )
-        for statement in exotic:
-            # STATIC extractor: not derived → L1/R3 never count it.
-            assert _raw_mutation_of_table(statement, MEMORY_TABLE, "MEMORY_TABLE") is None, (
-                f"the static extractor now counts an exotic-verb memory mutation — the #449 R4-c bound "
-                f"is closing. If deliberate (63b), delete this pin + the bound docstrings: {statement!r}"
-            )
-            # RUNTIME observer: None → never recorded → deny-by-default cannot fire.
-            assert _mutation_verb_for_table(statement, MEMORY_TABLE) is None, (
-                f"the runtime observer now records an exotic-verb memory mutation — the #449 R4-c bound "
-                f"is closing. If deliberate (63b), delete this pin + the bound docstrings: {statement!r}"
-            )
-        # PROBE-HONESTY POSITIVE CONTROL (adversary-63a-v3 §R4-c) — an IN-SET verb (UPDATE) IS seen by
-        # BOTH, so the None above is a genuine verb-set miss, not a blind extractor/observer.
-        in_set = "UPDATE type::record('memory', $id) SET scope = 'x'"
-        assert _raw_mutation_of_table(in_set, MEMORY_TABLE, "MEMORY_TABLE") == "UPDATE", (
-            "the static extractor cannot see an in-set UPDATE — the probe is blind, so the R4-c bound "
-            "witness above is vacuous (CLAUDE.md PKT-28 C1)"
-        )
-        assert _mutation_verb_for_table(in_set, MEMORY_TABLE) == "UPDATE", (
-            "the runtime observer cannot see an in-set UPDATE — the probe is blind, so the R4-c bound "
-            "witness above is vacuous (CLAUDE.md PKT-28 C1)"
-        )
-
-
 # --------------------------------------------------------------------------- #
 # helpers — synthetic sources + the migrate-UPDATE extractor + defined-test-name derivation.
 # --------------------------------------------------------------------------- #
