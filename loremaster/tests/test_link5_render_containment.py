@@ -699,7 +699,31 @@ _CHARSET_GATED: frozenset[str] = frozenset({"agent", "session", "name", "to"})
 #: free text by `_render_recalled_memories` (which serves `memory.text`/`kind`, not labels).
 #: RE-OPEN TRIGGER: a served render begins embedding a caller `labels` value — then move it
 #: into `_PARAM_CLASS` (attribution) and drive it, exactly as `refs` is driven below.
-_NOT_SERVED_OUT: frozenset[str] = frozenset({"labels"})
+#:
+#: `capability` (packet 63a, finding #452): the `<name>:<secret>` verified-credential arg on
+#: `lore_recall`/`lore_remember`. It is a CREDENTIAL — echoing its VALUE would ITSELF be the
+#: defect (design §F3a), so its non-service is by construction and STRONGER than `labels`'s
+#: (its value is never rendered ANYWHERE, deliberately, not merely never rendered as free text).
+#: TRACE (symbols, all `lore` tier — the value is passed only DOWN, never OUT): the tool
+#: wrappers `server.recall`/`server.remember` pass `capability` solely to
+#: `AppContext.recall`/`AppContext.remember`, which pass it solely to `AppContext._resolve_subject`
+#: → `governed.resolve_subject` → `owner_stamp.stamp_owner` →
+#: `AgentRegistry._verify_capability_owner` (`credentials.parse_credential` + the
+#: `AgentRegistry.verify_capability` seam). Every consumer NEUTRALISES the value, never renders it:
+#:   * parse — `parse_credential` returns a uniform `None` on any malformed input (no raise, no echo);
+#:   * verify — `verify_capability`'s denial reason is laundered to a DEBUG log via
+#:     `_deny_capability` ("a fixed vocabulary token — NEVER the raw credential", §F3a); a uniform
+#:     `None` deny reaches the caller, never the credential;
+#:   * DENY render — `stamp_owner`'s `OwnerStampError` and `resolve_subject`'s `GovernedDenied` are
+#:     FIXED teaching strings; the ONLY `!r` on that path is `{email!r}` (the transport token's
+#:     principal — a DIFFERENT value, not this param);
+#:   * SUCCESS render — a verified `capability` resolves to a `pdp.Subject` that SCOPES the backend
+#:     read; recall then serves `_render_recalled_memories` (memory text/kind/…) and remember serves
+#:     the deterministic memory id — neither embeds the credential.
+#: RE-OPEN TRIGGER: any served render OR error begins embedding a caller `capability` value (an echo
+#: of the raw credential) — that is a §F3a credential leak: STOP-and-flag it FIRST, then (only if
+#: the echo is somehow legitimate) move it into a driven `_PARAM_CLASS` containment class.
+_NOT_SERVED_OUT: frozenset[str] = frozenset({"labels", "capability"})
 
 #: Every non-charset-gated STRING param → the containment CLASS that holds it. Completeness
 #: (this mapping ∪ _CHARSET_GATED == the derived universe) is asserted below, so a NEW
