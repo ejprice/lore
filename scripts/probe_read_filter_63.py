@@ -42,10 +42,15 @@ The DDL under test is applied through the REAL top-level generators
 (``generate_memory_ddl`` / ``generate_message_ddl`` / ``generate_keep_ddl`` — the
 EXACT slices ``LocalMemoryBackend.ensure_ready`` / ``MessageLedger.ensure_ready``
 apply, each inside one ``BEGIN … COMMIT`` via ``execute_transaction``), then the
-§4.1 governed overlay is applied ON TOP. The overlay DDL is transcribed VERBATIM
-from design §4.1 (the ``_governed_field_specs`` / ``_governed_index_statements``
-emitter it describes is NOT yet built — this probe runs BEFORE 63a's contract is
-frozen, which is the point). The READ predicate under test is produced by the REAL
+§4.1 governed overlay is applied ON TOP by the REAL shipped emitter
+(``_governed_field_specs`` / ``_governed_index_statements`` — design §1.2 item 4, the
+SAME one ``_memory_statements`` wires in; when this probe was FIRST written that
+emitter did not exist and the overlay transcribed §4.1 verbatim — 63a is now CLOSED,
+so the probe applies the emitter directly). On ``message`` this overlay is the
+LOAD-BEARING step (63b's ``_message_statements`` governed wiring is not yet built, so
+the probe applies the emitter directly and the proof is INDEPENDENT of that wiring);
+on ``memory`` it is a redundant-but-idempotent re-apply (``generate_memory_ddl``
+already bakes the emitter in at 63a). The READ predicate under test is produced by the REAL
 emitter (``authorize_filter(subject, Action.READ, table).to_surql()`` — for a
 member this IS ``_member_filter``, ``pdp.py:432``), never a hand-typed WHERE (§4.2).
 
@@ -109,6 +114,9 @@ from loremaster.store.surreal_schema import (
     KEEP_TABLE,
     MEMORY_TABLE,
     MESSAGE_TABLE,
+    _define_field,
+    _governed_field_specs,
+    _governed_index_statements,
     generate_agent_ddl,
     generate_keep_ddl,
     generate_memory_ddl,
@@ -328,25 +336,34 @@ def _ddl(statements: list[str]) -> str:
 
 
 def _governed_overlay(table: str) -> str:
-    """The §4.1 governed columns + indexes, transcribed VERBATIM (the emitter that
-    will produce this — ``_governed_field_specs``/``_governed_index_statements`` —
-    is not yet built; this probe runs before 63a's contract is frozen).
+    """The §4.1 governed columns + indexes for ``table``, emitted by the REAL
+    production seam — ``_governed_field_specs`` (the three ``option<>`` columns) via
+    ``_define_field`` (OVERWRITE) + ``_governed_index_statements`` (the two plain
+    indexes) — the SAME emitter ``_memory_statements`` wires in (design §1.2 item 4).
 
-    ``option<>`` per store-ref §1.4 (a required field poisons every legacy row);
-    ``OVERWRITE`` for fields per §1.1 (the only clause that lands a changed def);
-    PLAIN ``IF NOT EXISTS`` indexes on ``scope`` AND ``owner_principal`` per §1.1/§1.5
-    (an index OVERWRITE rebuilds and can hard-fail boot). ``owner_agent`` is NOT
-    indexed at 63 (§4.1 named-trigger bound — its C+ control below documents it).
+    When this probe was first written the emitter did not exist and this overlay
+    transcribed §4.1 verbatim; 63a is now CLOSED, so the probe applies the SHIPPED
+    emitter directly — the message index-service proof rests on production code, not a
+    copy of it (ROUTING-IS-NOT-SHARING / no reference-pattern-to-clone). Applied to
+    ``MESSAGE_TABLE`` it is INDEPENDENT of the not-yet-built 63b ``_message_statements``
+    governed wiring: the exact columns/indexes 63b will bake in are proven
+    index-serving here, by the emitter, before that wiring lands. (On ``MEMORY_TABLE``
+    the overlay is now REDUNDANT — ``generate_memory_ddl`` already bakes the same
+    emitter in at 63a — but idempotent: OVERWRITE fields re-write an identical def and
+    ``IF NOT EXISTS`` indexes no-op.)
+
+    The emitter carries ``option<>`` fields (store-ref §1.4 — a required field poisons
+    every legacy row), ``OVERWRITE`` for fields (§1.1 — the only clause that lands a
+    changed def), and PLAIN ``IF NOT EXISTS`` indexes on ``scope`` AND
+    ``owner_principal`` only (§1.1/§1.5); ``owner_agent`` is deliberately NOT indexed
+    at 63 (§4.1 named-trigger bound — its C+ control below documents it).
     """
-    return _ddl(
-        [
-            f"DEFINE FIELD OVERWRITE owner_principal ON {table} TYPE option<record<{PRINCIPAL_TABLE}>>",
-            f"DEFINE FIELD OVERWRITE owner_agent ON {table} TYPE option<record<{AGENT_TABLE}>>",
-            f"DEFINE FIELD OVERWRITE scope ON {table} TYPE option<string>",
-            f"DEFINE INDEX IF NOT EXISTS {table}_scope ON {table} FIELDS scope",
-            f"DEFINE INDEX IF NOT EXISTS {table}_owner_principal ON {table} FIELDS owner_principal",
-        ]
-    )
+    statements = [
+        _define_field(table, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _governed_field_specs()
+    ]
+    statements += _governed_index_statements(table)
+    return _ddl(statements)
 
 
 def _keep_key_overlay() -> str:
@@ -374,7 +391,13 @@ async def _setup_schema(connection: Any) -> None:
     await _apply_ddl(connection, generate_memory_ddl(dim=DIM))
     await _apply_ddl(connection, generate_message_ddl())
     await _apply_ddl(connection, _governed_overlay(MEMORY_TABLE))
-    await _apply_ddl(connection, _governed_overlay(MESSAGE_TABLE))
+    message_overlay = _governed_overlay(MESSAGE_TABLE)
+    print(
+        "\n=== §4.1 GOVERNED OVERLAY on message (REAL emitter, applied ON TOP of "
+        "generate_message_ddl) ==="
+    )
+    print("   " + message_overlay.rstrip().replace("\n", "\n   "))
+    await _apply_ddl(connection, message_overlay)
     await _apply_ddl(connection, _keep_key_overlay())
 
 
@@ -777,19 +800,21 @@ def _verdict(report: ProbeReport) -> None:
     p5m = cls("P5 memory scope IS NONE (boot count)")
     p5x = cls("P5 message scope IS NONE (boot count)")
     print("\n=== P5 BOOT-COUNT VERDICT (`scope IS NONE`, §2.3) ===")
-    if p5m == "TableScan" and p5x == "TableScan":
+    if p5m == "IndexScan" and p5x == "IndexScan":
         print(
-            "  `scope IS NONE` TableScans on both tables, as the design (§2.3/§4.4) expected —\n"
-            "  the boot count is bounded by table size, run ONCE per boot, NOT index-served."
+            "  `scope IS NONE` is served as an IndexScan (`= NONE` on the `scope` index) on BOTH\n"
+            "  tables — exactly as design §2.3/§4.4 records. (The design doc's earlier `TableScan`\n"
+            "  expectation was already CORRECTED to IndexScan on 2026-08-28, citing this probe —\n"
+            "  a P8d prose-currency fix; there is nothing left to correct here.) The boot count is\n"
+            "  index-served (cheaper than a bounded TableScan), run ONCE per boot; it does NOT\n"
+            "  re-open the §4.1 index ruling (the read filter is unaffected)."
         )
     else:
         print(
-            f"  ⚠ DESIGN-DOC CORRECTION (not a blocker): the design §2.3/§4.4 states `scope IS NONE`\n"
-            f"     is a TableScan; on 3.2.4 it is served as {p5m} (memory) / {p5x} (message) — the\n"
-            f"     plain index on the option<> `scope` column ALSO serves the NONE predicate. This\n"
-            f"     is BETTER than feared (the boot count is index-served), but §2.3/§4.4's stated\n"
-            f"     'TableScan' expectation is empirically FALSE on 3.2.4 and should be corrected.\n"
-            f"     It does NOT re-open the §4.1 index ruling (the read filter is unaffected)."
+            f"  ⚠ P5 UNEXPECTED (investigate): design §2.3/§4.4 records `scope IS NONE` as an\n"
+            f"     IndexScan (`= NONE` on the `scope` index, corrected 2026-08-28); on THIS run it\n"
+            f"     is {p5m} (memory) / {p5x} (message). The read filter is unaffected either way\n"
+            f"     (§4.1), but the boot-count plan no longer matches the recorded expectation."
         )
 
 
