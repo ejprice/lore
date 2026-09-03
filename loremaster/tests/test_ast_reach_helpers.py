@@ -891,6 +891,59 @@ _ALLOWED_WHOLE_TREE_CLONE_FILES: dict[str, str] = {
         "``parse_production_trees`` gains a member-scripts / ``roots=`` parameter that can express "
         "the loremaster-package-plus-scripts reach — then migrate."
     ),
+    # ── packet 63a additions (finding #452): five 63a test files the Layer-2 lint flags,
+    #    each an evidence-backed non-adopter. NB the sanctioned F5 whole-tree parser
+    #    ``_governed_contract.governed_table_raw_mutation_sites_in_tree`` is NOT here — it
+    #    lives in a non-``test_*`` file the detector's ``glob("test_*.py")`` never reaches,
+    #    so an entry for it would be DEAD (the dead-entry pin would strike it).
+    "test_governed_routing_63a.py": (
+        "63a routing TEST-TREE meta-scanner (``_behaviourally_observed_verbs``): globs the TEST "
+        "dir and ast.parses each ``test_*.py`` to ENUMERATE ``@observes_routing(tool, verb)`` "
+        "markers — the SAME test-dir-enumeration class as this file's own entry above, NOT a "
+        "whole-tree PRODUCTION parse. ``parse_production_trees`` scans PRODUCTION source (the "
+        "workspace members' package roots), never the test tree, so it cannot express this reach. "
+        "RE-OPEN TRIGGER: this scan ever parses a workspace-.py PRODUCTION source (then it is a "
+        "real adopter and migrates)."
+    ),
+    "test_governed_substrate_63a.py": (
+        "single-package loremaster ``Subject(...)`` construction-site scan "
+        "(``_subject_construction_sites``) — ``loremaster/loremaster``-scoped (§7). ``Subject`` is "
+        "a loremaster concept, absent from lorerunes/loresigil/lorescribe, so widening to "
+        "whole-tree is a scope change, not consolidation. Same class as the loremaster-scoped "
+        "``test_retry_seam``/``test_render_seam_pins`` entries above. RE-OPEN TRIGGER: ``Subject`` "
+        "construction becomes cross-member, OR ``parse_production_trees`` gains a single-package "
+        "``roots=`` parameter that expresses a one-package reach."
+    ),
+    "test_memory_enforcement_63a_iv.py": (
+        "63a memory-enforcement TEST-TREE meta-scanner (``_defined_test_names``): globs the TEST "
+        "dir and ast.parses each ``test_*.py`` to ENUMERATE ``def test_*`` names for the "
+        "allowlist-pin-existence leg — a test-dir enumeration (same class as this file's own "
+        "entry), NOT a whole-tree PRODUCTION parse; ``parse_production_trees`` scans production "
+        "source, not the test tree. RE-OPEN TRIGGER: this scan ever parses a workspace-.py "
+        "PRODUCTION source."
+    ),
+    "test_memory_enforcement_63a_v.py": (
+        "63a memory-enforcement TEST-TREE meta-scanner (``_defined_test_names``, the same "
+        "enumeration as its ``_iv`` sibling): globs the TEST dir and ast.parses each ``test_*.py`` "
+        "to ENUMERATE ``def test_*`` names — a test-dir enumeration, NOT a whole-tree PRODUCTION "
+        "parse. RE-OPEN TRIGGER: this scan ever parses a workspace-.py PRODUCTION source. "
+        "(⚠ ``_defined_test_names`` is duplicated verbatim across ``_iv``/``_v`` — a DRY flag "
+        "for 63b, out of this reach-reconciliation's scope.)"
+    ),
+    "test_principals_cli.py": (
+        "FALSE-POSITIVE of the Layer-2 name-keyed lint (allowlist-the-safe, §7): "
+        "``test_no_dry_run_mechanism_survives_the_governed_migration_surface`` co-occurs the three "
+        "leg-names WITHOUT being a tree parse — ``re.COMPILE`` (a REGEX compile, sharing the "
+        "``compile`` parse-primitive NAME), ``read_text``, and a test-dir ``glob('test_*_63a.py')`` "
+        "— to run the §10.7-W BARE-GREP over a BOUNDED, HARDCODED ``scope_files`` list "
+        "(governed.py, principals.py, the 63a test modules, _governed_contract.py). It calls no "
+        "``ast.parse``, produces no ``ast.Module``, and spans no production tree, so it is not a "
+        "whole-tree clone and ``parse_production_trees`` cannot express it. Same NAME-collision "
+        "class the detector already excludes for ``walk`` (``ast.walk`` vs ``os.walk``). RE-OPEN "
+        "TRIGGER: this test drops the hardcoded ``scope_files`` list for a workspace-wide "
+        "``ast.parse``, OR the Layer-2 lint learns to tell ``re.compile`` from ``builtins.compile`` "
+        "(then this entry goes dead and is struck)."
+    ),
 }
 
 
