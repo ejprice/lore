@@ -1041,6 +1041,19 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # spike-surreal TEST-store probe minting ``SecretStr("spikeroot")`` (the hardcoded dev literal,
         # no real secret) to call ``signin_credentials``/``bootstrap_session`` (#211), settling the
         # Fork-E/F read-filter index behaviour via EXPLAIN. Same re-open trigger as the probes above.
+        # ADJUDICATED (fix6-secret-typing, packet 63a, #452): ``probe_read_filter_63.py`` and
+        # ``probe_dnd_defense_objects.py`` are the SAME shape — spike-surreal TEST-store probes
+        # (``URL = "ws://127.0.0.1:18000/rpc"``, the :18000 TEST store) each minting
+        # ``SecretStr("spikeroot")`` (the hardcoded dev literal, no real secret) to call
+        # ``signin_credentials``/``bootstrap_session``, which GENUINELY require a SecretStr (#211 —
+        # ``signin_credentials(*, user: str, password: SecretStr)``), so a bare ``str`` is a type
+        # error AND a runtime ``AttributeError`` at ``password.get_secret_value()``. The credential
+        # ORIGINATES at the module-level ``PASSWORD = "spikeroot"`` literal — these throwaway probes
+        # have no config resolver, so that literal is a composition root exactly like an env var at
+        # ``config.py::resolve_secret``. NOT attack shape S6 (no bare str re-wrapped from an upstream
+        # typed seam). Re-open trigger: if either ever sources a REAL secret (env, argv, secret file)
+        # instead of the ``"spikeroot"`` literal, it is a genuine production credential and must move
+        # to config.py's resolver seam.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
@@ -1051,6 +1064,8 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
             "scripts/probe_unique_nullable_48.py",
             "scripts/probe_member_of_cascade.py",
             "scripts/probe_read_filter_61b.py",
+            "scripts/probe_read_filter_63.py",
+            "scripts/probe_dnd_defense_objects.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)
