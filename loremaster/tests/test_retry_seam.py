@@ -3699,6 +3699,41 @@ class TestNoCallerEverReadsAnEngineMessage:
         )
 
 
+class TestTheGovernedConflictClassIsRegisteredInTheSeam:
+    """§2.5 rider v (finding #456) — the governed-conflict marker + fixed label + typed error JOIN the
+    seam's classification family, all in ``store/_txn.py`` (the ``_LABEL_HOME``). This enumeration reds
+    until the new member is registered — the instrument that stops the member being silently dropped,
+    and keeps the classification family whole after the wave.
+    """
+
+    def test_the_governed_conflict_marker_label_and_type_are_registered_in_the_seam(self) -> None:
+        """⚠ RED at HEAD (§2.5 rider v). ``_GOVERNED_CONFLICT_MARKER`` (the FIXED prefix our code
+        authors into the THROW — the classification key), ``_ERROR_CLASS_GOVERNED_CONFLICT`` (the fixed
+        teaching label) and ``TxnGovernedConflictError`` (the typed subclass) are all defined in
+        ``_txn.py``; the typed error SUBCLASSES ``SurrealStoreError`` (so every ``except
+        SurrealStoreError`` keeps catching it) and the label never embeds the raw marker (rider ii)."""
+        from loremaster.store import _txn
+        from loremaster.store.surreal import SurrealStoreError
+
+        for attribute in (
+            "_GOVERNED_CONFLICT_MARKER",
+            "_ERROR_CLASS_GOVERNED_CONFLICT",
+            "TxnGovernedConflictError",
+        ):
+            assert hasattr(_txn, attribute), (
+                f"_txn.{attribute} is UNBUILT (§2.5 rider v) — the governed-conflict classification "
+                "member is not registered in the seam; RED-until-built"
+            )
+        assert issubclass(_txn.TxnGovernedConflictError, SurrealStoreError), (
+            "TxnGovernedConflictError must subclass SurrealStoreError (§2.5 point 1 — the "
+            "TxnContentionExhaustedError precedent)"
+        )
+        assert "governed_conflict:" not in _txn._ERROR_CLASS_GOVERNED_CONFLICT, (
+            "the fixed label leaks the raw `governed_conflict:` marker (§2.5 rider ii): "
+            f"{_txn._ERROR_CLASS_GOVERNED_CONFLICT!r}"
+        )
+
+
 class TestTheAttemptFloorOutlivesItsBriefsConsumer:
     """``_MAX_TXN_CONFLICT_ATTEMPTS`` SURVIVES this wave — it is the seam's guaranteed
     attempt FLOOR (audit-102 B1), the pre-#102 five-attempt guarantee every caller had

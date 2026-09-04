@@ -34,7 +34,9 @@ at HEAD because it does not.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from datetime import UTC, datetime
 from typing import Any
 
@@ -127,30 +129,85 @@ class TestTheBoundLineIsDerivedFromTheSubject:
 
 # =========================================================================== #
 # §3.3 pin (ii) — coverage as a CHECKED VARIABLE: every governed READ render prepends the bound line.
-# At i-b the governed-read population is MEMORY (recall → _render_recalled_memories). Comms reads are
-# 63b-ii's (RED_ADJUDICATED there). This pin is a STRUCTURAL derivation over the memory read render.
+# The reach is DERIVED from truth (the #420 idiom), NOT a hardcoded render name: a NEW governed read
+# render that omits the bound line reds without anyone editing the pin.
 # =========================================================================== #
 
 
-class TestEveryGovernedReadRenderCarriesTheBoundLine:
-    """§3.3 pin (ii) — the memory READ render (``recall`` → ``_render_recalled_memories``) prepends the
-    Subject-scope bound line on EVERY path, INCLUDING the empty case (where Leg 1 matters most)."""
+def _governed_read_render_methods() -> dict[str, list[str]]:
+    """DERIVE, from truth, the governed-READ render methods on :class:`AppContext` (§3.3 pin ii — the
+    #420 idiom: reach as a CHECKED VARIABLE, never a hardcoded render name).
 
-    def test_the_recall_render_takes_the_subject_and_calls_render_subject_bound(self) -> None:
-        """⚠ RED at HEAD (§3.3 pin ii, coverage). ``_render_recalled_memories`` must take ``subject``
-        and call ``render_subject_bound`` — a governed read render that omits it is a scope-diff leak.
-        Structural: its signature carries ``subject`` and its source references ``render_subject_bound``.
-        At HEAD it takes only ``recalled`` and references neither → reds."""
-        signature = inspect.signature(AppContext._render_recalled_memories)
-        assert "subject" in signature.parameters, (
-            "AppContext._render_recalled_memories does not take `subject` — the recall render cannot "
-            f"prepend the Subject-scope bound line (design §3.3 pin ii). signature={signature}"
+    The from-truth signal for 'a governed verb' is a call to ``self._resolve_subject(...)`` —
+    ``AppContext``'s documented ONE composition root that EVERY governed tool handler calls (server.py:
+    "the ONE shared seam every governed tool handler CALLS"). A governed verb that RENDERS a scoped
+    result is a governed READ render: collect the ``self._render_*`` methods each
+    ``_resolve_subject``-calling ``AppContext`` coroutine invokes. Write verbs (``remember`` /
+    ``invalidate``) resolve a subject too but render no ``_render_*`` digest (they return an id /
+    confirmation), so they fall out BY CONSTRUCTION.
+
+    At i-b the only governed-read render is the memory read (``recall`` → ``_render_recalled_memories``);
+    the comms reads (``drain`` / ``await`` wake / ``story`` / rollup) are 63b-ii and JOIN this set the
+    day their ``_resolve_subject``-calling handlers land — so a NEW governed read render that omits the
+    bound line reds the coverage pin below WITHOUT anyone editing it (the growth property §3.3 pin ii
+    requires). Returns ``{entry_point_method_name: [render_method_name, ...]}``.
+    """
+    renders: dict[str, list[str]] = {}
+    for name, function in inspect.getmembers(AppContext, predicate=inspect.isfunction):
+        try:
+            source = textwrap.dedent(inspect.getsource(function))
+        except (OSError, TypeError):
+            continue
+        self_calls = {
+            node.func.attr
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+        }
+        if "_resolve_subject" not in self_calls:
+            continue
+        render_calls = sorted(call for call in self_calls if call.startswith("_render_"))
+        if render_calls:
+            renders[name] = render_calls
+    return renders
+
+
+class TestEveryGovernedReadRenderCarriesTheBoundLine:
+    """§3.3 pin (ii) — EVERY governed READ render prepends the Subject-scope bound line, with the reach
+    DERIVED as a checked variable (not a hardcoded name), INCLUDING the empty case (where Leg 1 matters
+    most)."""
+
+    def test_every_governed_read_render_calls_render_subject_bound(self) -> None:
+        """⚠ RED at HEAD (§3.3 pin ii, coverage as a CHECKED VARIABLE — the #420 idiom). DERIVE the
+        governed-read render set from truth (:func:`_governed_read_render_methods`) and assert EVERY
+        such render (a) takes ``subject`` and (b) references ``render_subject_bound``. The reach is not
+        a hardcoded name: a NEW governed read render (63b-ii's drain/story/rollup) that omits the bound
+        line reds this pin with NO edit. At HEAD the ONE derived render (``_render_recalled_memories``)
+        takes only ``recalled`` and references neither → reds."""
+        render_map = _governed_read_render_methods()
+        all_renders = {render for renders in render_map.values() for render in renders}
+        # Non-vacuity (the switched-off-scanner guard): the derivation MUST find the known i-b memory
+        # read render, else the reach derivation is broken and the pin tests nothing.
+        assert "_render_recalled_memories" in all_renders, (
+            "the governed-read render derivation found no memory read render — the from-truth reach "
+            f"(_resolve_subject-calling entry points → _render_* calls) is broken. derived: {render_map}"
         )
-        source = inspect.getsource(AppContext._render_recalled_memories)
-        assert "render_subject_bound" in source, (
-            "AppContext._render_recalled_memories does not call render_subject_bound — the governed "
-            "read render omits the bound line (design §3.3 pin ii, coverage as a checked variable)"
-        )
+        for render_name in sorted(all_renders):
+            render_fn = getattr(AppContext, render_name)
+            signature = inspect.signature(render_fn)
+            assert "subject" in signature.parameters, (
+                f"governed-read render AppContext.{render_name} does not take `subject` — it cannot "
+                f"prepend the Subject-scope bound line (design §3.3 pin ii). signature={signature}"
+            )
+            source = inspect.getsource(render_fn)
+            assert "render_subject_bound" in source, (
+                f"governed-read render AppContext.{render_name} does not call render_subject_bound — a "
+                "governed read render that omits the bound line is a scope-diff leak (design §3.3 pin "
+                "ii, coverage as a checked variable): every render reached from a governed READ verb "
+                "(derived from the _resolve_subject composition root) must prepend it."
+            )
 
     def test_the_empty_recall_render_still_names_the_bound(self) -> None:
         """⚠ RED-until-built (§3.3 pin ii, the empty case). An EMPTY recall render prepends the bound

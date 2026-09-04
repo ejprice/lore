@@ -80,6 +80,7 @@ from _surreal_harness import (
 from loremaster.memory.ledger import MemoryLedger
 from loremaster.memory.local import LocalMemoryBackend
 from loremaster.store import surreal_schema
+from loremaster.store.surreal import SurrealStoreError
 from loresigil.testing import FakeEmbedder
 
 import lorerunes as pdp
@@ -431,12 +432,18 @@ class TestTheComposedConflictGuardIsInStore:
     async def test_a_rescope_on_the_composed_transaction_conflicts_and_rolls_back(
         self, governed_db: Any
     ) -> None:
-        """⚠ RED-until-built (§2.4 rider i, the composed path). A re-scope landing BETWEEN
-        ``authorize_guarded``'s pre-read (acquire #1) and the composed transaction (acquire #2) moves
-        the predecessor out of alice's WRITE reach → the composed close matches ZERO rows → the
-        in-store THROW aborts the WHOLE transaction → :class:`GovernedConflict`, the successor UPSERT
-        does NOT land, and the predecessor is UNCHANGED. POSITIVE CONTROL: no re-scope → both the
-        close and the successor land in ONE transaction. Deterministic (the acquire wrap), no race."""
+        """⚠ RED-until-built (§2.4 rider i + §2.5 rider i, the composed path at the STORE layer). A
+        re-scope landing BETWEEN ``authorize_guarded``'s pre-read (acquire #1) and the composed
+        transaction (acquire #2) moves the predecessor out of alice's WRITE reach → the composed close
+        matches ZERO rows → the in-store THROW aborts the WHOLE transaction, the successor UPSERT does
+        NOT land, and the predecessor is UNCHANGED. §2.5 (finding #456, RULED): the STORE seam
+        classifies the ``governed_conflict:`` THROW into the TYPED
+        :class:`~loremaster.store._txn.TxnGovernedConflictError` (a ``SurrealStoreError`` subclass)
+        carrying the FIXED label — never the raw marker/suffix (rider ii hygiene). Asserting
+        :class:`GovernedConflict` HERE is impossible (``execute_transaction`` cannot import ``governed``
+        — a layering fact); the governed-layer mapping to :class:`GovernedConflict` is pinned by
+        ``test_a_conflicting_guarded_close_surfaces_governed_conflict`` below. Deterministic (the
+        acquire wrap), no race."""
         _require_new_api()
         from loremaster.store._txn import execute_transaction
 
@@ -463,20 +470,31 @@ class TestTheComposedConflictGuardIsInStore:
         successor = _successor_fragment("race_succ")
         close = plan.fragments("valid_until = time::now(), superseded_by = 'race_succ'")
         statement_text, params = _compose_all([*close, successor])
-        # The in-store THROW aborts the WHOLE composed transaction (any raise). NOTE (finding #456,
-        # §2.2 Reading A): `governed` maps this to GovernedConflict, but `execute_transaction` (the
-        # STORE layer) raises SurrealStoreError — it CANNOT import `governed` (a layering fact), so the
-        # GovernedConflict TYPE is asserted at the `remember`/`guarded_write` layer, NOT here. What is
-        # asserted HERE is the type-INDEPENDENT ROLLBACK (the atomicity property) + that the conflict
-        # is DETECTABLE (the classified `governed_conflict` marker reaches the caller — Reading A).
-        with pytest.raises(Exception) as conflict:  # noqa: PT011 - classified below
+        # §2.5 (finding #456, RULED): the in-store THROW aborts the WHOLE composed transaction, and
+        # the STORE seam classifies the `governed_conflict:` THROW into the TYPED
+        # `TxnGovernedConflictError` (a `SurrealStoreError` subclass). `execute_transaction` CANNOT
+        # import `governed` (a layering fact), so `GovernedConflict` is UNREACHABLE here; it is pinned
+        # at the governed layer by `test_a_conflicting_guarded_close_surfaces_governed_conflict`.
+        from loremaster.store._txn import TxnGovernedConflictError
+
+        with pytest.raises(SurrealStoreError) as conflict:  # noqa: PT011 - typed + hygiene below
             await execute_transaction(
                 statement_text, params, acquire=handle.acquire, drop=handle.drop, url=handle.url,
             )
-        assert "governed_conflict" in str(conflict.value), (
-            "the composed conflict did not surface the `governed_conflict` marker to the caller — "
-            "`governed` cannot map it to GovernedConflict (finding #456 / §2.2 Reading A needs a `_txn` "
-            f"classification, outside i-b's writable set). got: {conflict.value!r}"
+        assert isinstance(conflict.value, TxnGovernedConflictError), (
+            "the composed conflict was NOT classified as the TYPED TxnGovernedConflictError at the "
+            f"store seam (§2.5 rider i / finding #456) — got {type(conflict.value).__name__}: "
+            f"{conflict.value!r}"
+        )
+        message = str(conflict.value)
+        # §2.5 rider ii hygiene: the raised message carries the FIXED label, NEVER the raw
+        # `governed_conflict:` marker nor the THROW's `<t>:<id>` forensic suffix (which rides only the
+        # server-side `_log_rollback` record).
+        assert "governed_conflict:" not in message, (
+            f"the raw `governed_conflict:` marker LEAKED into the raised message (§2.5 rider ii): {message!r}"
+        )
+        assert "race_pred" not in message and "race_succ" not in message, (
+            f"the THROW's table/row suffix LEAKED into the raised message (§2.5 rider ii): {message!r}"
         )
         # The successor UPSERT was rolled back WITH the conflicting close (whole-transaction abort).
         assert await _memory_row(connection, "race_succ") is None, (
@@ -518,6 +536,64 @@ class TestTheComposedConflictGuardIsInStore:
         )
         assert await _memory_row(connection, "ok_succ") is not None, (
             "the composed transaction did not land the successor"
+        )
+
+    async def test_a_conflicting_guarded_close_surfaces_governed_conflict(
+        self, governed_db: Any
+    ) -> None:
+        """⚠ RED at HEAD (§2.5 rider vi / §2.4 rider i — the GovernedConflict END-TO-END mapping).
+        A re-scope landing BETWEEN ``guarded_write``'s pre-read (acquire #1) and its guarded mutation
+        (acquire #2) makes the guarded close match ZERO rows. On the §2.5 reference build the STORE
+        raises the TYPED :class:`~loremaster.store._txn.TxnGovernedConflictError` and ``guarded_write``
+        maps it to :class:`GovernedConflict` via ``raise GovernedConflict(...) from error`` — so the
+        surfaced exception's ``__cause__`` IS a ``TxnGovernedConflictError``. At HEAD ``guarded_write``
+        raises :class:`GovernedConflict` via the OLD Python ``row_count == 0`` branch with NO such
+        cause AND the type is UNBUILT, so this reds on the cause/type-unbuilt leg (the discriminator),
+        never on the raise itself. This is the ONE pin that proves the store→governed TYPE mapping
+        (§2.5 point 4); the STORE-layer classification is pinned by the composed rescope pin above and
+        by ``test_surreal_store.py::TestDomainRejectionErrorType``. Deterministic (the acquire wrap)."""
+        _require_new_api()
+        import importlib
+
+        connection, env = governed_db
+        await seed_memory_governed(
+            connection, row_id="gw_pred", dim=_DIM, owner_principal="alice", owner_agent="ag_a1",
+            scope="agent-private", note_text="original",
+        )
+        alice = member("alice", "ag_a1", frozenset())
+
+        async def _rescope_on_second_acquire(acquire_number: int) -> None:
+            if acquire_number == 2:
+                await run(
+                    connection,
+                    f"UPDATE type::record('{MEMORY_TABLE}', 'gw_pred') "
+                    "SET owner_agent = type::record('agent', 'ag_b1')",
+                )
+
+        handle, _calls = store_handle(connection, url=env.url, on_acquire=_rescope_on_second_acquire)
+        with pytest.raises(governed.GovernedConflict) as conflict:
+            await governed.guarded_write(
+                alice, pdp.Action.WRITE, table=MEMORY_TABLE, row_id="gw_pred",
+                set_fragment="valid_until = time::now()", audit=None, store=handle,
+            )
+        # The discriminator: on the reference build GovernedConflict is raised FROM the store's typed
+        # conflict; at HEAD the OLD Python branch raises it with no such cause and the type is unbuilt.
+        txn_module = importlib.import_module("loremaster.store._txn")
+        governed_conflict_type = getattr(txn_module, "TxnGovernedConflictError", None)
+        assert governed_conflict_type is not None, (
+            "loremaster.store._txn.TxnGovernedConflictError is UNBUILT (§2.5) — guarded_write cannot "
+            "yet map the store's typed conflict to GovernedConflict; RED-until-built"
+        )
+        assert isinstance(conflict.value.__cause__, governed_conflict_type), (
+            "guarded_write raised GovernedConflict but NOT `from` a TxnGovernedConflictError — the "
+            "§2.5 store→governed TYPE mapping is not wired (at HEAD the OLD Python row_count==0 branch "
+            f"raises it with no such cause). __cause__={conflict.value.__cause__!r}"
+        )
+        # The conflicting guarded close rolled back — the predecessor is UNCHANGED (still open).
+        predecessor = await _memory_row(connection, "gw_pred")
+        assert predecessor is not None and predecessor.get("valid_until") is None, (
+            "the predecessor was CLOSED despite the conflict — the guarded close must not land on a "
+            "row the filter now excludes"
         )
 
 

@@ -81,7 +81,11 @@ from loremaster.store._txn import (
     _ERROR_CLASS_UNSPECIFIED,
     _MAX_TXN_CONFLICT_ATTEMPTS,
     _RETRYABLE_CONFLICT_MARKER,
+    TxnFragment,
     _classify_engine_error,
+    _FailedStatement,
+    _rollback_verdict,
+    compose,
     execute_transaction,
 )
 from loremaster.store.candidate import Candidate
@@ -854,6 +858,199 @@ class TestDomainRejectionErrorType:
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert store._connection is connection_before
         assert await store.count() == 0  # nothing partially persisted
+
+    # ------------------------------------------------------------------------ #
+    # §2.5 (finding #456) — the governed-conflict THROW is classified into the TYPED
+    # ``TxnGovernedConflictError`` sub-family of ``SurrealStoreError``, at both raise sites, via ONE
+    # mapping helper, with the raw marker/suffix kept OUT of the raised message (rider ii). The
+    # UNIT pins below are pure (no store); the live pin at the end exercises the transaction seam.
+    # ------------------------------------------------------------------------ #
+
+    def test_the_classifier_maps_the_governed_conflict_marker_to_the_fixed_label(self) -> None:
+        """⚠ RED at HEAD (§2.5 point 2 / finding #456). ``_classify_engine_error`` maps a
+        ``governed_conflict:<t>:<id>`` THROW result → the fixed ``_ERROR_CLASS_GOVERNED_CONFLICT``
+        label (a membership check like ``_ASSERT_VIOLATION_MARKER``). At HEAD there is no such branch,
+        so the marker falls through to ``_ERROR_CLASS_UNSPECIFIED`` → reds."""
+        from loremaster.store import _txn
+
+        governed_label = getattr(_txn, "_ERROR_CLASS_GOVERNED_CONFLICT", None)
+        assert governed_label is not None, (
+            "_txn._ERROR_CLASS_GOVERNED_CONFLICT is UNBUILT (§2.5 point 1) — RED-until-built"
+        )
+        raw = "An error occurred: governed_conflict:memory:some_row_id"
+        assert _classify_engine_error(raw) == governed_label, (
+            "the classifier did not map the governed_conflict marker to the fixed label (§2.5 point 2) "
+            f"— got {_classify_engine_error(raw)!r}, not the governed label {governed_label!r}"
+        )
+        # A NON-governed rejection is untouched by the new branch (it stays its own class).
+        assert _classify_engine_error("some unrelated rejection") == _ERROR_CLASS_UNSPECIFIED
+
+    def test_the_domain_rejection_helper_maps_the_governed_label_to_the_typed_error(self) -> None:
+        """⚠ RED at HEAD (§2.5 point 3 — the ONE mapping helper). ``_domain_rejection_error(label,
+        msg)`` returns ``TxnGovernedConflictError`` iff ``label == _ERROR_CLASS_GOVERNED_CONFLICT``,
+        else the PLAIN ``SurrealStoreError`` — never a cloned ``if label ==`` at each raise site. RED
+        at HEAD: neither ``_domain_rejection_error`` nor ``TxnGovernedConflictError`` is built."""
+        from loremaster.store import _txn
+
+        helper = getattr(_txn, "_domain_rejection_error", None)
+        governed_type = getattr(_txn, "TxnGovernedConflictError", None)
+        governed_label = getattr(_txn, "_ERROR_CLASS_GOVERNED_CONFLICT", None)
+        assert helper is not None and governed_type is not None and governed_label is not None, (
+            "_txn._domain_rejection_error / TxnGovernedConflictError / _ERROR_CLASS_GOVERNED_CONFLICT "
+            "are UNBUILT (§2.5 point 1/3) — RED-until-built"
+        )
+        governed_error = helper(governed_label, f"rejected ({governed_label}); see the server log")
+        assert type(governed_error) is governed_type, (
+            "_domain_rejection_error did not return TxnGovernedConflictError for the governed label "
+            f"(§2.5 point 3) — got {type(governed_error).__name__}"
+        )
+        assert isinstance(governed_error, SurrealStoreError), (
+            "TxnGovernedConflictError must SUBCLASS SurrealStoreError so every existing `except "
+            "SurrealStoreError` keeps catching it (§2.5 point 1 — the TxnContentionExhaustedError shape)"
+        )
+        plain = helper(_ERROR_CLASS_ASSERT_VIOLATION, f"rejected ({_ERROR_CLASS_ASSERT_VIOLATION})")
+        assert type(plain) is SurrealStoreError, (
+            f"_domain_rejection_error returned {type(plain).__name__} for a NON-governed label — only "
+            "the governed label maps to the typed subclass (§2.5 point 3)"
+        )
+
+    def test_the_governed_conflict_label_carries_no_raw_marker_or_suffix(self) -> None:
+        """⚠ RED at HEAD (§2.5 rider ii — the label's own hygiene). The FIXED label teaches WHAT
+        happened without leaking the raw ``governed_conflict:`` marker or any ``<t>:<id>`` forensic
+        suffix — a build that set the label TO the raw marker reintroduces finding #456's C-DEF."""
+        from loremaster.store import _txn
+
+        governed_label = getattr(_txn, "_ERROR_CLASS_GOVERNED_CONFLICT", None)
+        assert governed_label is not None, (
+            "_ERROR_CLASS_GOVERNED_CONFLICT is UNBUILT (§2.5) — RED-until-built"
+        )
+        assert "governed_conflict:" not in governed_label, (
+            f"the fixed label leaks the raw `governed_conflict:` marker (§2.5 rider ii): {governed_label!r}"
+        )
+        assert "governed conflict" in governed_label.lower(), (
+            f"the fixed label must teach 'governed conflict' in prose (§2.5 point 1): {governed_label!r}"
+        )
+
+    def test_a_governed_conflict_rollback_is_a_domain_rejection_never_retried(self) -> None:
+        """§2.5 point 2 / rider iii — ``_rollback_verdict`` is UNCHANGED: a governed-conflict THROW is
+        a DOMAIN rejection (``is_conflict=False``), so it is NEVER retried (retrying re-runs the same
+        stale guard and THROWs again). POSITIVE CONTROL: a ``can be retried`` rollback IS a conflict.
+        GREEN at HEAD (the verdict already routes a non-``can be retried`` THROW to the domain branch)
+        — a guard that reds if a wrong build ever flips a governed conflict to retryable."""
+        governed_stmt = _FailedStatement(
+            index=0, raw_result="An error occurred: governed_conflict:memory:r1"
+        )
+        is_conflict, root_cause = _rollback_verdict([governed_stmt])
+        assert is_conflict is False, (
+            "a governed_conflict THROW was classified as a RETRYABLE conflict — it would be retried "
+            "against the same stale guard forever (§2.5 point 2 / rider iii)"
+        )
+        assert root_cause is governed_stmt  # the domain root cause is the THROW entry itself
+        retry_stmt = _FailedStatement(
+            index=0, raw_result=f"Cannot COMMIT: Transaction conflict; {_RETRYABLE_CONFLICT_MARKER}"
+        )
+        assert _rollback_verdict([retry_stmt])[0] is True, (
+            "positive control: a genuine retryable conflict must still classify as is_conflict=True"
+        )
+
+    def test_both_domain_raise_sites_build_their_rejection_via_the_one_mapping_helper(self) -> None:
+        """⚠ RED at HEAD (§2.5 point 3 — ONE mapping, both sites; ROUTING-IS-NOT-SHARING). BOTH domain
+        raise sites — ``run_query`` (single statement) and ``_run_verified_transaction`` (behind
+        ``execute_transaction`` AND ``execute_read_transaction``) — must build their raised error via
+        the SHARED ``_domain_rejection_error``, never a hand-rolled ``SurrealStoreError(...)``: a
+        cloned ``if label ==`` at either site is a private copy of the mapping. At HEAD both raise
+        ``SurrealStoreError(...)`` directly → reds."""
+        import inspect as _inspect
+
+        from loremaster.store import _txn
+
+        for fn_name in ("run_query", "_run_verified_transaction"):
+            source = _inspect.getsource(getattr(_txn, fn_name))
+            assert "_domain_rejection_error" in source, (
+                f"_txn.{fn_name} does not build its domain rejection via the shared "
+                "_domain_rejection_error — the governed→typed mapping is not routed through ONE seam "
+                "(§2.5 point 3 / ROUTING-IS-NOT-SHARING); a cloned mapping at each site is copy #2."
+            )
+
+    @pytest.mark.parametrize("entry_point", ["execute_transaction", "execute_read_transaction"])
+    async def test_a_governed_conflict_throw_via_the_transaction_seam_raises_the_typed_error(
+        self, entry_point: str, governed_conflict_conn: tuple[Any, SurrealEnv], caplog: Any
+    ) -> None:
+        """⚠ RED at HEAD (§2.5 rider i — the transaction raise site, LIVE). A ``governed_conflict:``
+        THROW inside a composed ``BEGIN…COMMIT``, run through ``execute_transaction`` /
+        ``execute_read_transaction`` (both behind ``_run_verified_transaction``), raises the TYPED
+        ``TxnGovernedConflictError`` + hygiene (the fixed label, never the raw marker/suffix — rider
+        ii). At HEAD the classifier has no governed branch → a plain ``SurrealStoreError`` → reds.
+        POSITIVE CONTROLs: (a) a NON-governed THROW → plain ``SurrealStoreError`` (never the subclass);
+        (b) the server-side rollback log DOES carry the raw text (the forensics survive — rider ii)."""
+        from loremaster.store import _txn
+
+        governed_type = getattr(_txn, "TxnGovernedConflictError", None)
+        assert governed_type is not None, (
+            "TxnGovernedConflictError is UNBUILT (§2.5) — RED-until-built"
+        )
+        connection, env = governed_conflict_conn
+        seam = getattr(_txn, entry_point)
+
+        async def _acquire() -> Any:
+            return connection
+
+        async def _drop(_connection: Any) -> None:
+            return None
+
+        statement, params = compose(
+            TxnFragment(statements=['THROW "governed_conflict:probe_t:target_row"'], params={})
+        )
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(SurrealStoreError) as exc:
+                await seam(statement, params, acquire=_acquire, drop=_drop, url=env.url)
+        assert isinstance(exc.value, governed_type), (
+            f"a governed_conflict THROW via {entry_point} was not classified as the typed "
+            f"TxnGovernedConflictError (§2.5 rider i) — got {type(exc.value).__name__}"
+        )
+        message = str(exc.value)
+        assert (
+            "governed_conflict:" not in message
+            and "probe_t" not in message
+            and "target_row" not in message
+        ), f"the raised message LEAKED the raw marker/suffix (§2.5 rider ii): {message!r}"
+        # rider ii positive control: the forensics survive server-side (the raw suffix IS logged —
+        # `_log_rollback` records it under `engine_result`/`failed_statements`, `run_query` under
+        # `engine_error`), even though the RAISED message above never carries it.
+        assert any(
+            "target_row" in record.getMessage()
+            or "target_row" in str(getattr(record, "engine_result", ""))
+            or "target_row" in str(getattr(record, "failed_statements", ""))
+            or "target_row" in str(getattr(record, "engine_error", ""))
+            for record in caplog.records
+        ), (
+            "the raw THROW text did not reach the server-side rollback log — the forensics were lost "
+            "(§2.5 rider ii positive control)"
+        )
+        # POSITIVE CONTROL: a NON-governed THROW → the PLAIN SurrealStoreError, never the subclass.
+        other_statement, other_params = compose(
+            TxnFragment(statements=['THROW "an unrelated domain rejection"'], params={})
+        )
+        with pytest.raises(SurrealStoreError) as plain_exc:
+            await seam(other_statement, other_params, acquire=_acquire, drop=_drop, url=env.url)
+        assert type(plain_exc.value) is SurrealStoreError, (
+            f"a NON-governed THROW via {entry_point} raised {type(plain_exc.value).__name__} — only the "
+            "governed marker maps to the typed subclass (§2.5 point 3)"
+        )
+
+
+@pytest_asyncio.fixture()
+async def governed_conflict_conn() -> Any:
+    """A fresh admin connection + env for the §2.5 governed-conflict transaction-seam pins — a raw
+    connection wrapped as a ``StoreHandle`` triple so a ``governed_conflict:`` THROW can be run through
+    ``execute_transaction`` / ``execute_read_transaction`` directly. Reaped on exit."""
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    connection = await connect_admin(env)
+    try:
+        yield connection, env
+    finally:
+        await connection.close()
+        await drop_database(env)
 
 
 # The closed allow-list of real chunk columns that are legitimate exact-match
