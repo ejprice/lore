@@ -36,15 +36,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
-import importlib
 import re
-import sys
 import tomllib
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
 from typing import Any, TypeVar
 from weakref import WeakKeyDictionary
 
@@ -1122,33 +1119,6 @@ class ObservedWrite:
     effect: ObservedEffect | None = None  # the observed state diff (§1.2 — the EFFECT the classifier reads)
 
 
-def _mutation_verb_for_table(statement: str, table: str) -> str | None:
-    """The mutation verb if ``statement`` (a RESOLVED runtime statement, possibly a BEGIN…COMMIT
-    block) mutates ``table`` — else None (a read, or a mutation of another table). The audit CREATE
-    inside a composed guarded txn targets ``audit`` (not ``table``), so it is correctly ignored.
-
-    ⚠ NAMED ACCEPTED BOUND (finding #449 — the RUNTIME half of the R4-c verb-set bound): this observer
-    matches the SAME bounded verb-set as :func:`_raw_mutation_of_table` (UPSERT/UPDATE/DELETE/REMOVE,
-    plus table-form UPDATE/DELETE). An INSERT/CREATE/RELATE memory mutation returns None → it is never
-    RECORDED → deny-by-default cannot fire on it. Accepted under F5's HONEST-DEVELOPER threat model
-    (the #138 HOSTILE-AUTHOR exotic-verb class is out of scope); the property-based root-fix is 63b
-    (task 571ef1a). PINNED by ``TestTheAcceptedF5BoundsArePinned::
-    test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration`` (delete the pin + this clause when
-    63b closes it)."""
-    for verb, pattern in (
-        ("UPSERT", rf"\bUPSERT\s+type::record\('{re.escape(table)}'"),
-        ("UPDATE", rf"\bUPDATE\s+type::record\('{re.escape(table)}'"),
-        ("DELETE", rf"\bDELETE\s+type::record\('{re.escape(table)}'"),
-        ("REMOVE", rf"\bREMOVE\s+TABLE\s+(?:IF\s+EXISTS\s+)?{re.escape(table)}\b"),
-        # table-form (UPDATE <table> SET … / DELETE <table> …), tolerated for 64's verbs.
-        ("UPDATE", rf"\bUPDATE\s+{re.escape(table)}\b"),
-        ("DELETE", rf"\bDELETE\s+{re.escape(table)}\b"),
-    ):
-        if re.search(pattern, statement, re.IGNORECASE):
-            return verb
-    return None
-
-
 # --------------------------------------------------------------------------- #
 # THE EFFECT OBSERVER (design §1.2 / §1.3 / §1.8 / §1.9 item 3) — ONE persistent dispatcher on the
 # ``_sdk_guard`` hook chain + a per-block registry. Detection is a before/after STATE DIFF of each
@@ -1346,51 +1316,44 @@ if _f5_dispatcher not in _sdk_guard._CALL_HOOKS:
 
 @contextlib.contextmanager
 def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
-    """Register ``table`` as a governed population the F5 EFFECT observer watches, and yield the list
-    of :class:`ObservedWrite`\\ s it records for the block (design §1.3 / §1.8 / §1.9 item 3, which
-    SUPERSEDE the 63a-v seam-name-patching + ``extra_modules`` shape below).
+    """Register ``table`` as a governed population the F5 EFFECT observer watches for the block, and
+    yield the list of :class:`ObservedWrite`\\ s it records (design §1.2 / §1.3 / §1.8 / §1.9 item 3).
+    Detection is a before/after STATE DIFF per SDK call — verb-, shape- and table-generic — NEVER a
+    statement classification.
 
-    ★CONTRACT SHAPE★ — the 63b-i-a builder REWRITES this to the RULED mechanism; at HEAD the body is
-    the retired verb-observer (it patches seam names and fills ``effect=None``), which is exactly why
-    the effect-based pins RED behaviorally (``effect`` is None, never a real state diff) and the
-    reach pin REDs (no ``_CALL_HOOKS`` to detach). The RULED shape the builder must build:
+    THE BUILT MECHANISM (a per-block registry + ONE persistent dispatcher; the 63a-v seam-name-patching
+    + ``extra_modules`` shape is RETIRED, design §1.3 / §1.7 — once the reach is the SDK ``query_raw``
+    door, "does the patch-set cover this module?" is UNASKABLE):
 
-    - **ONE persistent dispatcher, appended to ``_sdk_guard._CALL_HOOKS`` ONCE at ``_governed_
-      contract`` import** (design §1.9 item 3b) — NOT appended per ``observe_…`` call. ``observe_
-      governed_table_writes(table)`` only REGISTERS ``(table, sink)`` in a module registry the
-      dispatcher consults, and UN-registers on exit. WHY persistent-not-per-observe (GOTCHA-B,
-      measured): the detach pin (§1.6-v) CLEARS ``_CALL_HOOKS`` then enters this CM — a per-observe
-      append would re-arm behind the clear and the pin would RED on a CORRECT build. So §1.3's
-      "the F5 battery fixture appends/removes its hook" is SUPERSEDED: the fixture registers
-      populations; the hook is persistent (§1.9 item 3b).
-    - **Observe at the ``query_raw`` door ONLY** (design §1.9 item 3a; #454). ``.query`` DELEGATES to
-      ``.query_raw`` internally and the guard patches BOTH — a hook firing on ``.query`` re-enters
-      through the patched ``query_raw`` and DEADLOCKS on the observer's held non-reentrant lock.
-      ``query_raw`` is the narrow waist every SurrealQL statement passes through — the harness's own
-      door partition proves it: ``test_the_UNCOUNTABLE_door_set_is_DERIVED_from_the_SDK_and_DENIES_BY_
-      DEFAULT`` (``test_query_tasks_bounded.py``) routes select/create/insert/upsert/update/delete
-      through ``query_raw`` and puts the own-RPC doors (begin/commit/cancel/live/kill/use) in
-      UNCOUNTABLE. THE OBSERVER'S REACH ≡ THE ``query_raw`` DOOR ≡ that pin's partition (a CHECKED
-      variable, not a hidden constant): a door the SDK adds that bypasses ``query_raw`` lands in
-      UNCOUNTABLE and REDS that pin — the seventh defeat caught one instrument over.
-    - **Read before/after state via the UNWRAPPED ``query_raw``** — ``type(conn).query_raw.__wrapped__``
-      (the ``_sdk_guard`` extension sets ``_guarded.__wrapped__ = original``, §1.9 item 3a/5) — so the
-      observer's own ``SELECT *`` / ``INFO FOR TABLE`` reads NEVER re-enter the guard or the observer
-      (§1.2 self-attack: the observer's reads are excluded). Schema is normalised through
-      :func:`schema_snapshot_from_info` into ``ObservedEffect.schema_after``. §1.8's ``event.original``
-      read guidance is SUPERSEDED by this ``__wrapped__`` read.
-    - **The dispatcher builds an ``ObservedWrite`` per call**: ``label = governed.active_write_guard()``,
-      ``exempt = governed.active_exempt()`` (the :class:`ExemptToken`, §1.9 item 3c — carrying the
-      leg-4 origin), ``origin_site`` = the guard's own call-time attribution (evidence only),
-      ``statement`` = the door's args (evidence only), and ``effect`` = the before/after state diff.
-      It holds ONE ``asyncio.Lock`` across before→await→after so a ``gather`` of two writes attributes
-      each to its OWN per-call delta (design §1.6-iv / §1.9 item 3d — the lock STAYS; the 8-way
-      concern never arises because the observer is armed only inside F5 battery blocks).
-    - ``extra_modules`` / :func:`seam_modules_for_tree_allowlist` / the observer-patch-set meta-pin
-      are RETIRED (design §1.3 / §1.7): once the reach is the SDK class via the guard hook, "does the
-      patch-set cover this module?" is UNASKABLE. A ``getattr``-tolerant guard-context read keeps the
-      HEAD body type-valid (``active_write_guard`` / ``active_exempt`` unbuilt → label/exempt None →
-      deny-by-default RED)."""
+    - **Registration, not hooking.** This CM only appends ``(table, sink)`` to the module registry
+      :data:`_F5_REGISTRY` and removes it on exit. The hook itself, :func:`_f5_dispatcher`, is appended
+      to ``_sdk_guard._CALL_HOOKS`` ONCE at import (§1.9 item 3b) — NEVER per-observe: a per-observe
+      append would re-arm behind the detach pin's ``_CALL_HOOKS.clear()`` and RED it on a CORRECT build
+      (GOTCHA-B). With no population registered the dispatcher returns the coroutine unchanged (zero
+      overhead on the suite's ``query_raw`` traffic).
+    - **``query_raw`` door ONLY** (§1.9 item 3a; #454). The dispatcher acts on ``query_raw`` and skips
+      ``.query``, which DELEGATES to ``.query_raw`` through the patched door — a hook firing on
+      ``.query`` would re-enter and DEADLOCK on the observer's held lock. ``query_raw`` is the narrow
+      waist every SurrealQL statement passes through, and THE OBSERVER'S REACH ≡ THE ``query_raw`` DOOR
+      is a CHECKED variable, not a hidden constant:
+      ``test_the_UNCOUNTABLE_door_set_is_DERIVED_from_the_SDK_and_DENIES_BY_DEFAULT``
+      (``test_query_tasks_bounded.py``) partitions the SDK doors, so a door the SDK adds that bypasses
+      ``query_raw`` lands in UNCOUNTABLE and REDS that pin — the seventh defeat caught one instrument over.
+    - **Reads via the UNWRAPPED door.** :func:`_f5_observed_call` diffs each registered population's
+      ``SELECT *`` rows + ``INFO FOR TABLE`` schema across the call, reading through
+      ``type(conn).query_raw.__wrapped__`` (:func:`_f5_unwrapped_query_raw`; the ``_sdk_guard`` extension
+      sets ``_guarded.__wrapped__ = original``, §1.9 item 3a/5) — so the observer's own reads NEVER
+      re-enter the guard, the hook chain, or the observer (§1.2 self-attack: the observer's reads are
+      excluded). Schema is normalised through :func:`schema_snapshot_from_info` into
+      ``ObservedEffect.schema_after``.
+    - **One :class:`ObservedWrite` per NON-EMPTY effect.** The dispatcher captures ``label =
+      governed.active_write_guard()`` and ``exempt = governed.active_exempt()`` (the :class:`ExemptToken`
+      carrying the leg-4 origin, §1.9 item 3c) from the call's contextvars, records the ``statement`` as
+      EVIDENCE ONLY (never classified on, §1.2), and builds ``effect`` = the :class:`ObservedEffect`
+      before/after state diff. It holds ONE per-loop ``asyncio.Lock`` across before→await→after so a
+      ``gather`` of two writes attributes each to its OWN per-call delta (§1.6-iv / §1.9 item 3d). A
+      read / no-op (``SET scope = scope``) / rolled-back txn nets an EMPTY effect and is NOT recorded
+      (§1.2 self-attack rows 1 & 4)."""
     sink: list[ObservedWrite] = []
     registration = (table, sink)
     _F5_REGISTRY.append(registration)
@@ -1536,33 +1499,6 @@ class TreeWriteAllowlistEntry:
     # the L2 effect leg + L2a ``function_calls_write_guard``, never by a derived L1 site). Default
     # True — a site-backed entry (a raw literal L1 derives). Substrate-shape (report §decision).
     l1_site: bool = True
-
-
-def _originating_prod_site() -> tuple[str, str] | None:
-    """The ORIGINATING production ``(repo-relative file, function)`` for the mutation being observed
-    — the nearest call-stack frame executing under a workspace-member PRODUCTION root (design
-    §10.9-A CORRECTION step 2; the ``_sdk_guard`` ``co_filename`` walk). This substrate and the test
-    trees live under ``<m>/tests`` (a sibling of ``<m>/<m>``), so they are NOT under a production
-    root and are skipped — the first matching frame is the real caller (e.g.
-    ``_migrate_memory_scope``). ``None`` when no production frame is on the stack (a mutation issued
-    directly by a test — an escape with no production origin)."""
-    roots = derive_member_source_roots()
-    frame: Any = sys._getframe(1)
-    while frame is not None:
-        try:
-            resolved = Path(frame.f_code.co_filename).resolve()
-        except (OSError, ValueError):  # pragma: no cover - defensive on a synthetic/exec frame
-            frame = frame.f_back
-            continue
-        if any(resolved.is_relative_to(root) for root in roots):
-            rel = (
-                resolved.relative_to(_REPO_ROOT).as_posix()
-                if resolved.is_relative_to(_REPO_ROOT)
-                else resolved.as_posix()
-            )
-            return (rel, frame.f_code.co_name)
-        frame = frame.f_back
-    return None
 
 
 def classify_tree_observed_write(
@@ -1762,37 +1698,6 @@ def exempt_frame_raw_memory_mutations(
             continue
         shapes.append(shape)
     return shapes
-
-
-def _module_for_repo_relative_file(rel: str, repo_root: Path = _REPO_ROOT) -> ModuleType | None:
-    """Import the module for a repo-relative production file path (e.g.
-    ``loremaster/loremaster/principals.py`` → ``loremaster.principals``). Derives the dotted name
-    relative to the member DIR, so the observer's patch-set is DERIVED from the allowlist files (not
-    a hand-list of modules) — the observer's own reach a checked variable (#446). None if the path
-    is under no known member dir."""
-    parts = Path(rel).with_suffix("").parts
-    for member in declared_workspace_members(repo_root):
-        if len(parts) >= 2 and parts[0] == member:
-            return importlib.import_module(".".join(parts[1:]))
-    return None
-
-
-def seam_modules_for_tree_allowlist(
-    allowlist: Sequence[TreeWriteAllowlistEntry], repo_root: Path = _REPO_ROOT
-) -> tuple[ModuleType, ...]:
-    """The distinct modules whose store seam the L2b observer must patch — DERIVED from the
-    whole-tree allowlist entries' files (design §10.9-A CORRECTION step 2, the observer's reach a
-    checked variable). Passed as ``observe_governed_table_writes(..., extra_modules=…)`` so a NEW
-    allowlisted site in a NEW file joins the observer's patch-set by the same derivation that
-    classifies it (never a hand-list of modules)."""
-    modules: list[ModuleType] = []
-    seen: set[str] = set()
-    for entry in allowlist:
-        module = _module_for_repo_relative_file(entry.site.file, repo_root)
-        if module is not None and module.__name__ not in seen:
-            seen.add(module.__name__)
-            modules.append(module)
-    return tuple(modules)
 
 
 # =========================================================================== #
