@@ -60,6 +60,14 @@ from loresigil.testing import FakeEmbedder
 
 _DIM = 8
 _SERVER_SCOPE = "server"
+# A distinct, grantable, NON-server scope (``lorerunes.pdp.SCOPE_AGENT_PRIVATE`` — a FIXED scope, so
+# ``lorerunes.pdp._grantable`` admits it for ANY subject, incl. the admin fixture subjects below).
+# Seeded on the ``live`` dirty row so the fidelity fixture carries SCOPE DIVERSITY (≥2 distinct
+# scopes). Without it ``scope`` is a value-monoculture (``"server"`` on every row) and a replay build
+# that COLLAPSES every scope to the ``"server"`` constant — a governance-visibility WIDENING
+# (``agent-private``/``keep:`` → ``server``) that #436 exists to prevent — passes the whole contract
+# unseen (adversary-63b-i-b-2 BLOCKER). Mirrors the OWNER-diversity carrier (two distinct owner pairs).
+_PRIVATE_SCOPE = "agent-private"
 
 # TWO admin governance Subjects — DISTINCT (principal, agent) pairs so the fidelity fixture carries
 # OWNER DIVERSITY (a build that hardcodes one owner on replay fails on the other — fixtures must
@@ -156,9 +164,13 @@ def _diff_snapshots(
 
 async def _seed_dirty_lifecycle(backend: LocalMemoryBackend) -> dict[str, str]:
     """Create the FULL lifecycle spectrum through the backend (design §3.2's dirty store): a live
-    owned row, a SUPERSEDED pair, an INVALIDATED row, and an admin-BYPASS-closed foreign row — every
-    row owned by a real Subject and recorded in the ledger. Returns the ids by role."""
-    live = await backend.remember("a live owned note", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE)
+    owned row (carrying a NON-server ``agent-private`` scope — the scope-diversity carrier), a
+    SUPERSEDED pair, an INVALIDATED row, and an admin-BYPASS-closed foreign row — every row owned by a
+    real Subject and recorded in the ledger. The store therefore carries ≥2 DISTINCT scopes
+    (``agent-private`` on ``live`` + ``server`` on the rest), so a replay that collapses scope to a
+    constant is discriminated by the fidelity byte-diff (the SCOPE twin of the owner-diversity
+    carrier). Returns the ids by role."""
+    live = await backend.remember("a live owned note", kind="fact", subject=_ADMIN_A, scope=_PRIVATE_SCOPE)
     pred = await backend.remember("a predecessor note", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE)
     succ = await backend.remember(
         "a successor note", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE, supersedes=pred
@@ -189,7 +201,9 @@ class TestRebuildIsFaithfulAcrossEveryLifecycleState:
         these stamps and ``_replay_record`` re-stamps ``created_at``/``valid_from`` to the rebuild
         instant and drops owner/scope/valid_until — so the diff is non-empty, and the failure NAMES
         each changed row+column (design §3.2 mutation proof: dropping ANY one stamp reds its column).
-        ANTI-VACUITY: the dirty store has ≥5 rows spanning 4 lifecycle states + 2 distinct owners."""
+        ANTI-VACUITY: the dirty store has ≥5 rows spanning 4 lifecycle states + 2 distinct owners +
+        2 distinct scopes (``agent-private`` + ``server``) — so the ∀ is neither fate- nor
+        column-vacuous, and a scope-collapsing replay reds the ``scope`` column here."""
         backend, _ledger, connection, _env = dirty_world
         ids = await _seed_dirty_lifecycle(backend)
         before = await _snapshot_stamps(connection)
@@ -214,6 +228,23 @@ class TestRebuildIsFaithfulAcrossEveryLifecycleState:
         assert len(owners) >= 2, (
             f"the dirty store carries only {len(owners)} distinct owner principal(s) — a single-owner "
             "fixture cannot discriminate a build that hardcodes the owner on replay"
+        )
+
+    async def test_the_dirty_store_carries_scope_diversity(self, dirty_world: Any) -> None:
+        """FIXTURES-MUST-DISCRIMINATE guard — the SCOPE twin of ``…owner_diversity`` (adversary-63b-
+        i-b-2 BLOCKER): the dirty store has ≥2 DISTINCT scopes, so ``test_rebuild_preserves…`` cannot
+        pass with a build that COLLAPSES scope to a constant on replay (``scope = "server"``
+        unconditionally, or the precise ``"server" if scope is not None else None`` corruption — a
+        governance-visibility WIDENING #436 exists to prevent). Green at HEAD and on the build — it
+        protects the property above, it is not itself the #436 pin. Without the non-server seed a
+        scope monoculture let a scope-collapsing replay pass the whole contract unseen."""
+        backend, _ledger, connection, _env = dirty_world
+        await _seed_dirty_lifecycle(backend)
+        snapshot = await _snapshot_stamps(connection)
+        scopes = {row["scope"] for row in snapshot.values() if row["scope"] is not None}
+        assert len(scopes) >= 2, (
+            f"the dirty store carries only {len(scopes)} distinct scope(s) — a single-scope fixture "
+            "cannot discriminate a build that collapses scope to a constant on replay"
         )
 
 
