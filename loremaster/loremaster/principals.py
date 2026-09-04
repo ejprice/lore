@@ -1182,14 +1182,20 @@ async def _migrate_memory_scope(
     # ``governed_exempt("migrate-governed")`` frame rather than a per-caller ``write_guard`` (design
     # §10.9-A CORRECTION step 4 / L2b) — exempt-WITH-JUSTIFICATION (the allowlist's second
     # evidence-backed triple), never a silently unattributed governed write.
-    with governed_exempt("migrate-governed"):
+    # §1.9 item 1 (adversary F-TRAP-2): the adjudicated statement is a FUNCTION-LOCAL variable,
+    # NEVER a module constant. L1 attributes a module-level literal to ``<module>`` scope (an L1
+    # orphan → RED), and R1 self-containment demands the literal, the seam call, and the exempt entry
+    # live in the SAME symbol. ONE source in code, passed to BOTH the statement-scoped exemption (the
+    # golden the F5 classifier's leg 2 matches) AND the executed statement.
+    backfill_statement = f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE"
+    with governed_exempt("migrate-governed", statement=backfill_statement):
         await run_query(
             acquire=store.acquire,
             drop=store.drop,
             url=store.url,
             noun="governed memory-scope backfill",
             label="governed.memory_backfill.rejected",
-            statement=f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE",
+            statement=backfill_statement,
             params={"scope": project_scope},
             logger=logger,
         )

@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -301,6 +302,38 @@ def _require_a_root_the_code_runs_from(production_root: Path, witness: Any) -> N
     )
 
 
+@dataclass(frozen=True)
+class CallEvent:
+    """One guarded SDK-door call, handed to every hook in :data:`_CALL_HOOKS` (design §1.8 / §1.9
+    item 3a). ``method`` is the door name (``"query_raw"``, ``"query"``, …); ``connection`` the live
+    SDK connection (``self``); ``args`` / ``kwargs`` the door's own arguments (statement + params);
+    ``site`` the guard's immediate-caller attribution (``None`` for a non-production caller);
+    ``original`` the UNWRAPPED door function the guard is about to call. A hook uses ``method`` to
+    act on ONE door (the F5 observer acts on ``query_raw`` ONLY, §1.9 item 3a) and reads before/after
+    state via the UNWRAPPED door ``type(connection).query_raw.__wrapped__`` (set below)."""
+
+    method: str
+    connection: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    site: str | None
+    original: Any
+
+
+#: A call hook: ``(event, coro) -> coro``. Given a :class:`CallEvent` and the door's coroutine,
+#: return a (possibly wrapping) coroutine. Threaded in registration order AFTER the guard's own
+#: judgement, so the frame-depth walk :func:`install` relies on is untouched.
+CallHook = Callable[["CallEvent", Any], Any]
+
+#: The PERSISTENT hook chain the guard's wrapper applies to every door coroutine (design §1.8 /
+#: §1.9 item 3b). Module-level and hook-agnostic — ``install()`` stays autouse and knows nothing
+#: about any particular hook. The F5 effect observer (``_governed_contract``) appends ONE persistent
+#: dispatcher here at import, never per-observe, so the detach pin (§1.6-v) can clear this list and
+#: prove ZERO observations on a correct build. A hook that RAISES is LOUD — never swallowed (a broken
+#: observer is a test failure, not a silent un-observation, §1.8).
+_CALL_HOOKS: list[CallHook] = []
+
+
 def install(
     monkeypatch: Any,
     *,
@@ -384,9 +417,19 @@ def install(
                     report.multi_statement_violations.append(
                         SdkEscape(method=method_name, site=site)
                     )
-            return original(self, *args, **kwargs)  # the coroutine; the caller awaits it
+            # The door coroutine, threaded through every persistent hook AFTER _judge() (so the
+            # frame depth the walk relies on is untouched, design §1.8 / §1.9 item 3a). A hook that
+            # RAISES propagates — never swallowed into a silent un-observation (§1.8).
+            coro = original(self, *args, **kwargs)  # the coroutine; the caller awaits it
+            for hook in _CALL_HOOKS:
+                coro = hook(CallEvent(method_name, self, args, kwargs, site, original), coro)
+            return coro
 
         _guarded._sdk_guarded = True  # type: ignore[attr-defined]
+        # §1.9 item 3a/5: the observer reads before/after state via the UNWRAPPED door
+        # (``type(conn).query_raw.__wrapped__``), so its own SELECT/INFO reads never re-enter the
+        # guard or the observer. The ONE extra line beyond the hook, inside this extension.
+        _guarded.__wrapped__ = original  # type: ignore[attr-defined]
         return _guarded
 
     for connection_class in SDK_CONNECTION_CLASSES:

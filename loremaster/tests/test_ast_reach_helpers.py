@@ -930,6 +930,18 @@ _ALLOWED_WHOLE_TREE_CLONE_FILES: dict[str, str] = {
         "(⚠ ``_defined_test_names`` is duplicated verbatim across ``_iv``/``_v`` — a DRY flag "
         "for 63b, out of this reach-reconciliation's scope.)"
     ),
+    # packet 63b-i-a addition (F5 build full-suite gate): the reviser's new contract module
+    # inlines the same TEST-TREE enumeration as ``_iv``/``_v``; evidence-backed non-adopter.
+    "test_memory_enforcement_63b_ia.py": (
+        "63b-i-a F5 TEST-TREE meta-scanner (``test_every_entry_pin_is_a_defined_test``, the §1.5c "
+        "layer-3 evidencing pin): globs the TEST dir and ast.parses each ``test_*.py`` to ENUMERATE "
+        "``def test_*`` names, verifying every ``MEMORY_TREE_ALLOWLIST`` entry's evidencing ``pin`` "
+        "exists — a test-dir enumeration (same class as this file's own entry and the ``_iv``/``_v`` "
+        "siblings), NOT a whole-tree PRODUCTION parse; ``parse_production_trees`` scans production "
+        "source, not the test tree. RE-OPEN TRIGGER: this scan ever parses a workspace-.py PRODUCTION "
+        "source. (⚠ inlines the same enumeration as ``_iv``/``_v``'s ``_defined_test_names`` — the "
+        "standing 63b DRY flag, out of this reconciliation's scope.)"
+    ),
     "test_principals_cli.py": (
         "FALSE-POSITIVE of the Layer-2 name-keyed lint (allowlist-the-safe, §7): "
         "``test_no_dry_run_mechanism_survives_the_governed_migration_surface`` co-occurs the three "

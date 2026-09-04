@@ -18,8 +18,10 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import logging
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loremaster.store._txn import (
@@ -236,47 +238,100 @@ def write_guard(label: str) -> Iterator[None]:
 
 
 # --------------------------------------------------------------------------- #
-# F5 EXEMPT ATTRIBUTION (design §10.9-A CORRECTION step 4, packet 63a-v, finding #446) — the
-# admin-channel counterpart to :func:`write_guard`.
+# F5 EXEMPT ATTRIBUTION (design §1.4 / §1.9 item 3c/5, packet 63b-i-a — SUPERSEDES the 63a-v
+# CORRECTION step 4 bare-name shape) — the admin-channel counterpart to :func:`write_guard`.
 #
 # A NON-member-reachable governed-table write (the ``lore-adm migrate-governed`` backfill in
 # ``principals._migrate_memory_scope``) is NOT a per-caller guarded write, so it does not enter
 # :func:`write_guard`. Instead it enters :func:`governed_exempt` with the NAMED admin token whose
-# allowlist entry evidences the exemption (``migrate-governed``). The F5 runtime seam
-# (``_governed_contract.observe_governed_table_writes``) samples :func:`active_exempt` — together with
-# the mutation's originating ``(file, symbol)`` from the call stack — so a write carrying an exempt
-# token whose site MATCHES its stack origin classifies (design step 4), while a site BORROWING the
-# token from a foreign origin fails the match. This is a verbatim mirror of the ``write_guard`` /
-# ``active_write_guard`` idiom (ONE contextvar-guard implementation, not a cloned policy): the SAME
-# task-local, async-safe-across-``await``, auto-reset-on-exit ``contextvars`` primitive.
+# allowlist entry evidences the exemption (``migrate-governed``). 63b-i-a makes the exemption
+# STATEMENT-SCOPED and ORIGIN-BEARING: ``governed_exempt(name, *, statement)`` is a CLASS context
+# manager whose ``__enter__`` captures ``sys._getframe(1)`` — the frame executing the ``with``,
+# exactly one up, with NO ``contextlib`` frame in between (so there is NO filename skip-list, the
+# relocated-constant antipattern §1.9 item 3c removes) — as the token's ``origin`` ``(repo-relative
+# file, co_name)``. WHY origin lives in the TOKEN and not in a call-time stack walk (§1.9 item 3c,
+# measured GOTCHA-C): at SDK-call time the immediate production caller is ALWAYS the ``store._txn``
+# driver, so leg-4's origin cannot come from the call-time stack; it must be captured where the
+# business frame IS the immediate caller — context entry. The F5 runtime seam
+# (``_governed_contract.observe_governed_table_writes``) samples :func:`active_exempt` and the
+# classifier's leg 4 matches ``token.origin == (entry.site.file, entry.site.function)``; a helper
+# borrowing the token on another frame's behalf yields a foreign origin → leg 4 RED. This stays a
+# verbatim ``contextvars`` mirror of the ``write_guard`` idiom (task-local, async-safe-across-
+# ``await``, auto-reset-on-exit); ``write_guard`` NEVER consults origin (the label leg has none).
 # --------------------------------------------------------------------------- #
 
-_ACTIVE_EXEMPT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+#: The workspace repo root — ``loremaster/loremaster/governed.py`` → ``parents[2]`` — the ONE place
+#: the origin capture derives a repo-relative posix path from (the SAME key shape the F5 allowlist's
+#: ``TreeMutationSite.file`` carries), never a hand-list.
+_GOVERNED_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class ExemptToken:
+    """The token an active :func:`governed_exempt` block installs in ``_ACTIVE_EXEMPT`` (design §1.9
+    item 3c). Frozen: the channel ``name`` + the GOLDEN ``statement`` the exemption scopes to + the
+    ``origin`` ``(repo-relative file, co_name)`` of the frame that ENTERED the ``with`` block.
+    :func:`active_exempt` returns THIS or ``None``. The F5 classifier reads it BY ATTRIBUTE
+    (``.name`` / ``.statement`` / ``.origin``), so a structurally-identical test-side twin flows
+    through the SAME classifier — the field names are the contract."""
+
+    name: str
+    statement: str
+    origin: tuple[str, str]  # (repo-relative file, co_name) of the frame that ENTERED the block
+
+
+_ACTIVE_EXEMPT: contextvars.ContextVar[ExemptToken | None] = contextvars.ContextVar(
     "loremaster_active_exempt", default=None
 )
 
 
-def active_exempt() -> str | None:
-    """The NAME of the innermost active :func:`governed_exempt`, or ``None`` outside every exempt
-    block (design §10.9-A CORRECTION step 4 — the admin-attribution channel the F5 runtime seam
-    samples alongside the mutation's stack origin)."""
+def active_exempt() -> ExemptToken | None:
+    """The :class:`ExemptToken` of the innermost active :func:`governed_exempt`, or ``None`` outside
+    every exempt block (design §1.9 item 3c — the admin-attribution channel the F5 runtime seam
+    samples; the classifier's four-leg exemption reads name ∧ golden statement ∧ effect ∧ origin)."""
     return _ACTIVE_EXEMPT.get()
 
 
-@contextlib.contextmanager
-def governed_exempt(name: str) -> Iterator[None]:
-    """Attribute every governed-table mutation executed within the block to the NAMED admin
-    exemption ``name`` (design §10.9-A CORRECTION step 4) — the exempt-channel counterpart to
-    :func:`write_guard` for a governed write that is NOT member-reachable (so cannot ride a
-    per-caller ``write_guard``) but IS evidenced by an allowlist entry (``migrate-governed``). The
-    name is task-local (``contextvars``), so it stays set across the ``await`` that runs the store
-    mutation and is reset on exit even if the mutation raises. The F5 runtime seam pairs this token
-    with the mutation's stack origin so a BORROWED token (a foreign origin) fails the site match."""
-    token = _ACTIVE_EXEMPT.set(name)
+def _exempt_repo_relative(filename: str) -> str:
+    """A frame's ``co_filename`` as a repo-relative posix path (the ``TreeMutationSite.file`` shape),
+    or the resolved absolute posix path when it lives outside the workspace (a synthetic/exec frame)."""
+    resolved = Path(filename).resolve()
     try:
-        yield
-    finally:
-        _ACTIVE_EXEMPT.reset(token)
+        return resolved.relative_to(_GOVERNED_REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
+class governed_exempt:
+    """Attribute every governed-table mutation executed within the block to the NAMED,
+    STATEMENT-SCOPED admin exemption ``name`` (design §1.4 / §1.9 item 3c) — the exempt-channel
+    counterpart to :func:`write_guard` for a governed write that is NOT member-reachable (so cannot
+    ride a per-caller ``write_guard``) but IS evidenced by an allowlist entry (``migrate-governed``).
+
+    A CLASS context manager (NOT ``@contextlib.contextmanager``) precisely so ``__enter__`` can
+    capture ``sys._getframe(1)`` — the frame executing the ``with`` statement, exactly one up, with
+    NO ``contextlib`` generator frame in between (§1.9 item 3c: the class form removes the filename
+    skip-list). The installed :class:`ExemptToken` carries ``name`` + the GOLDEN ``statement`` + that
+    frame's ``(repo-relative file, co_name)`` origin; the token is task-local (``contextvars``), so
+    it stays set across the ``await`` that runs the store mutation and is reset on exit even if the
+    mutation raises. A helper entering this on another frame's behalf yields a FOREIGN origin, so the
+    F5 classifier's leg-4 origin match rejects a borrowed token."""
+
+    def __init__(self, name: str, *, statement: str) -> None:
+        self._name = name
+        self._statement = statement
+        self._reset: contextvars.Token[ExemptToken | None] | None = None
+
+    def __enter__(self) -> ExemptToken:
+        frame = sys._getframe(1)  # the frame executing the `with`, exactly one up (no contextlib frame)
+        origin = (_exempt_repo_relative(frame.f_code.co_filename), frame.f_code.co_name)
+        token = ExemptToken(self._name, self._statement, origin)
+        self._reset = _ACTIVE_EXEMPT.set(token)
+        return token
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._reset is not None:
+            _ACTIVE_EXEMPT.reset(self._reset)
 
 
 async def guarded_write(

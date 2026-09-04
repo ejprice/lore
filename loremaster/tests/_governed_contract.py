@@ -34,6 +34,7 @@ exit. NO skip marker for an unreachable store — that is a LOUD failure, not a 
 from __future__ import annotations
 
 import ast
+import asyncio
 import contextlib
 import importlib
 import re
@@ -45,7 +46,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, TypeVar
+from weakref import WeakKeyDictionary
 
+import _sdk_guard
+import yaml
 from _surreal_harness import SurrealConnection, run
 
 # lorerunes (61) is BUILT — import the PDP surface directly (unlike the 61b oracle's importlib
@@ -607,10 +611,46 @@ _MUTATION_VERBS = ("UPSERT", "UPDATE", "DELETE", "REMOVE")
 # ★CONTRACT SHAPES★ the 63b-i-a builder fills; RED-until-built so the currency + grammar pins fire.
 # =========================================================================== #
 
-#: The committed keyword constant the derived grammar keys on (design §1.5a). ★BUILDER★: DERIVE +
-#: COMMIT the real set from the corpus (below) — the uppercased statement page stems. Empty at HEAD
-#: so the currency pin (SURREALQL_STATEMENT_KEYWORDS == derive_…()) REDS until the builder commits it.
-SURREALQL_STATEMENT_KEYWORDS: frozenset[str] = frozenset()
+#: The committed keyword constant the derived grammar keys on (design §1.5a). DERIVED + COMMITTED
+#: 2026-09-03 (63b-i-a) from the ``surrealdb-docs`` 3.2 corpus by
+#: :func:`derive_surrealql_statement_keywords_from_corpus` — the uppercased top-level statement page
+#: stems + sub-statement DIRECTORIES (``define`` / ``alter``), first hyphen-segment, the ``overview``
+#: navigation page excluded. The currency pin (``SURREALQL_STATEMENT_KEYWORDS == derive_…()``) reds
+#: on drift, so this constant is REGENERATED from the corpus, never hand-edited: a keyword the vendor
+#: adds → the derivation grows → RED "classify its operand position"; a keyword deleted → RED.
+SURREALQL_STATEMENT_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "ACCESS",
+        "ALTER",
+        "BEGIN",
+        "BREAK",
+        "CANCEL",
+        "COMMIT",
+        "CONTINUE",
+        "CREATE",
+        "DEFINE",
+        "DELETE",
+        "EXPLAIN",
+        "FOR",
+        "IF",
+        "INFO",
+        "INSERT",
+        "KILL",
+        "LET",
+        "LIVE",
+        "REBUILD",
+        "RELATE",
+        "REMOVE",
+        "RETURN",
+        "SELECT",
+        "SHOW",
+        "SLEEP",
+        "THROW",
+        "UPDATE",
+        "UPSERT",
+        "USE",
+    }
+)
 
 #: The MUTATION keywords whose operand position the grammar MUST classify (a subset of the constant
 #: above — the write/DDL verbs). A keyword here with no operand rule in ``_raw_mutation_of_table``
@@ -620,6 +660,10 @@ SURREALQL_MUTATION_KEYWORDS: frozenset[str] = frozenset(
     {"UPDATE", "UPSERT", "DELETE", "CREATE", "INSERT", "RELATE", "REMOVE", "DEFINE", "ALTER", "REBUILD"}
 )
 SURREALQL_READ_KEYWORDS: frozenset[str] = frozenset({"SELECT", "INFO", "SHOW", "LIVE"})
+
+#: The ``lore.yaml`` tier whose ``source`` roots the SurrealQL statement corpus (design §1.5a — the
+#: currency derivation is keyed on the CONFIG-named root, never a hardcoded path).
+_SURREALDB_DOCS_TIER = "surrealdb-docs"
 
 
 def derive_surrealql_statement_keywords_from_corpus(
@@ -634,13 +678,49 @@ def derive_surrealql_statement_keywords_from_corpus(
     path. Where the corpus is UNREADABLE (the in-image conformance profile, packet 01a) this RAISES
     and the currency pin is ``RED_ADJUDICATED`` with that trigger (design §1.5a) — NEVER skipped.
 
-    At HEAD this is a stub: raise so the currency pin REDS for the right reason (the derivation is
-    unbuilt), never a silent empty set that would make the currency pin vacuously green."""
-    raise NotImplementedError(
-        "derive_surrealql_statement_keywords_from_corpus is a 63b-i-a builder deliverable (design "
-        "§1.5a): read the surrealdb-docs tier source from lore.yaml and derive the keyword set from "
-        "its statements/*.mdx page stems. RED-until-built."
-    )
+    ⚠ Where the corpus is UNREADABLE (the in-image conformance profile, packet 01a — no
+    ``lore.yaml`` tier source on disk) this RAISES a ``FileNotFoundError`` (NOT ``NotImplementedError``
+    — the derivation IS built), so the currency pin is ``RED_ADJUDICATED`` with that trigger rather
+    than skipped or vacuously green. On the dev host the corpus IS readable and this returns the set."""
+    root = repo_root if repo_root is not None else _REPO_ROOT
+    config = yaml.safe_load((root / "lore.yaml").read_text(encoding="utf-8"))
+    source: Path | None = None
+    for tier in config.get("roots", []):
+        if isinstance(tier, dict) and tier.get("tier") == _SURREALDB_DOCS_TIER:
+            source = Path(str(tier["source"]))
+            break
+    if source is None:
+        raise FileNotFoundError(
+            f"no {_SURREALDB_DOCS_TIER!r} tier declared in {root / 'lore.yaml'} — the SurrealQL "
+            "statement-keyword grammar cannot derive its keyword set from the vendor corpus"
+        )
+    statements_dir = source / "reference" / "query-language" / "statements"
+    if not statements_dir.is_dir():
+        raise FileNotFoundError(
+            f"the surrealdb-docs statement corpus is unreadable at {statements_dir} (the in-image "
+            "conformance profile, packet 01a) — the keyword-currency pin is RED_ADJUDICATED with "
+            "that trigger, never skipped (design §1.5a)"
+        )
+    keywords: set[str] = set()
+    for entry in statements_dir.iterdir():
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir():
+            # A sub-statement DIRECTORY (``define/`` / ``alter/`` — each holds DEFINE FIELD, DEFINE
+            # TABLE, … pages): the directory name IS the statement keyword.
+            stem = entry.name
+        elif entry.suffix == ".mdx":
+            stem = entry.stem
+        else:
+            continue
+        # Normalisation (pinned, design §1.5a): the FIRST hyphen-segment, uppercased —
+        # ``update`` → UPDATE, ``live-select`` → LIVE, ``if-else`` → IF. The ``overview`` navigation
+        # index page (present at every level of the docs tree) is NOT a statement keyword.
+        keyword = stem.split("-", 1)[0].upper()
+        if keyword == "OVERVIEW":
+            continue
+        keywords.add(keyword)
+    return frozenset(keywords)
 
 
 @dataclass(frozen=True, order=True)
@@ -700,30 +780,48 @@ def _raw_mutation_of_table(shape: str, table: str, table_const_hint: str) -> str
     :func:`_docstring_node_ids`; this closes the NON-docstring prose f-string hole (the P8d law:
     prose mentions carry no structural anchors, so anchor on the verb→target adjacency).
 
-    ⚠ NAMED ACCEPTED BOUND (finding #449 — WHEN YOU CANNOT CLOSE A HOLE, PIN IT / A GATE NEEDS A
-    THREAT MODEL): the counted verb-set is a BOUNDED ENUMERATION — ``UPSERT``/``UPDATE``/``DELETE`` +
-    ``REMOVE TABLE|FIELD|INDEX``. An ``INSERT … ON DUPLICATE KEY UPDATE`` / ``CREATE`` / ``RELATE``
-    memory seizure returns None here, so it is never derived (L1/R3 never count it). This is F5's
-    THREAT MODEL working as stated: F5 is a static HONEST-DEVELOPER net (it catches the honest mistake
-    at the verbs it enumerates); the exotic-verb laundering is the #138 HOSTILE-AUTHOR class F5 does
-    NOT defend. The runtime root-fix (mutation detection as a PROPERTY, not a verb enumeration) is
-    DEFERRED to 63b (task 571ef1a). PINNED by ``TestTheAcceptedF5BoundsArePinned::
-    test_r4c_the_raw_mutation_verb_set_is_a_bounded_enumeration`` (RED the day 63b closes it — delete
-    the pin + this clause then, and say so). RE-OPEN TRIGGER: 63b's F5 runtime parametrization, or the
-    first time an exempt/migrate frame becomes member-reachable or served."""
+    63b-i-a (design §1.5a/§1.5b): the verb list is INVERTED to a DERIVED grammar keyed on
+    :data:`SURREALQL_STATEMENT_KEYWORDS` (the vendor statement index), keeping the verb→operand
+    ADJACENCY. The R4-c exotic verbs (``CREATE`` / ``INSERT`` / ``RELATE``) and the DDL verbs
+    (``DEFINE`` / ``ALTER`` / ``REBUILD`` / ``REMOVE``) now DERIVE here, so a keyword the engine gains
+    cannot silently escape L1's reach; L2's effect leg covers whatever the static grammar cannot see
+    (a dynamically-named write, a concatenation-assembled verb — the #444 static bound STANDS at L1).
+    The R4-a/R4-c ACCEPTED-BOUND pins are DELETED (their own instruction) — the statement-scoped exempt
+    (§1.4) and the effect model close R4-a/R4-c at L2.
+
+    The operand grammar (design §1.5a — the target must BE the verb's operand, never merely mentioned):
+    ``UPDATE|UPSERT|DELETE|CREATE <t>`` · ``INSERT [IGNORE|RELATION] INTO <t>`` · ``RELATE …->…<t>…`` ·
+    ``REMOVE TABLE <t>`` / ``REMOVE FIELD|INDEX|EVENT … ON [TABLE] <t>`` · ``DEFINE TABLE <t>`` /
+    ``DEFINE FIELD|INDEX|EVENT … ON [TABLE] <t>`` · ``ALTER TABLE <t>`` · ``REBUILD INDEX … ON [TABLE]
+    <t>``. ``<t>`` is the literal table name or its interpolated module constant ``{table_const_hint}``
+    — the schema emitter's ``DEFINE … {table}``/``{name}`` param interpolations match NEITHER anchor
+    (the #444 dynamic-name bound), so the widened grammar derives the SAME governed sites, not the
+    emitter's own DDL literals (design §5.1 Q2 leg i)."""
     target = (
         rf"(?:type::record\(\s*['\"]?)?"
         rf"(?:{re.escape(table)}\b|\{{{re.escape(table_const_hint)}\}})"
     )
-    write = re.search(rf"\b(UPSERT|UPDATE|DELETE)\s+{target}", shape, re.IGNORECASE)
-    if write is not None:
-        return write.group(1).upper()
-    remove = re.search(
-        rf"\b(REMOVE)\s+(?:TABLE|FIELD|INDEX)\b\s+(?:IF\s+EXISTS\s+)?{target}",
-        shape,
-        re.IGNORECASE,
+    # verb → operand-position pattern (ORDER-independent — each keys on one keyword's own operand
+    # syntax). ``[^;]*?`` keeps a match WITHIN one statement (the reconstructed shapes carry no
+    # embedded ``;``). READ keywords (SELECT/INFO/SHOW/LIVE) have no rule → the safe set, never a site.
+    grammar: tuple[tuple[str, str], ...] = (
+        ("UPDATE", rf"\bUPDATE\s+{target}"),
+        ("UPSERT", rf"\bUPSERT\s+{target}"),
+        ("DELETE", rf"\bDELETE\s+{target}"),
+        ("CREATE", rf"\bCREATE\s+{target}"),
+        ("INSERT", rf"\bINSERT\s+(?:IGNORE\s+|RELATION\s+)?INTO\s+{target}"),
+        ("RELATE", rf"\bRELATE\b[^;]*?->[^;]*?{target}"),
+        ("REMOVE", rf"\bREMOVE\s+TABLE\b\s+(?:IF\s+EXISTS\s+)?{target}"),
+        ("REMOVE", rf"\bREMOVE\s+(?:FIELD|INDEX|EVENT|ANALYZER)\b[^;]*?\bON\s+(?:TABLE\s+)?{target}"),
+        ("DEFINE", rf"\bDEFINE\s+TABLE\b\s+(?:OVERWRITE\s+|IF\s+NOT\s+EXISTS\s+)?{target}"),
+        ("DEFINE", rf"\bDEFINE\s+(?:FIELD|INDEX|EVENT|ANALYZER)\b[^;]*?\bON\s+(?:TABLE\s+)?{target}"),
+        ("ALTER", rf"\bALTER\s+TABLE\b\s+(?:IF\s+EXISTS\s+)?{target}"),
+        ("REBUILD", rf"\bREBUILD\s+INDEX\b[^;]*?\bON\s+(?:TABLE\s+)?{target}"),
     )
-    return "REMOVE" if remove is not None else None
+    for verb, pattern in grammar:
+        if re.search(pattern, shape, re.IGNORECASE):
+            return verb
+    return None
 
 
 def _enclosing_functions(tree: ast.AST) -> dict[int, str]:
@@ -1051,10 +1149,203 @@ def _mutation_verb_for_table(statement: str, table: str) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- #
+# THE EFFECT OBSERVER (design §1.2 / §1.3 / §1.8 / §1.9 item 3) — ONE persistent dispatcher on the
+# ``_sdk_guard`` hook chain + a per-block registry. Detection is a before/after STATE DIFF of each
+# registered governed population per ``query_raw`` call: verb-agnostic, shape-agnostic, table-generic.
+# --------------------------------------------------------------------------- #
+
+#: The active ``(table, sink)`` registrations the persistent dispatcher consults (design §1.9 item
+#: 3b). ``observe_governed_table_writes`` appends/removes; the dispatcher is appended to
+#: ``_sdk_guard._CALL_HOOKS`` ONCE at import (below) — NEVER per-observe (GOTCHA-B: a per-observe
+#: append would re-arm behind the detach pin's ``_CALL_HOOKS.clear()`` and red it on a correct build).
+_F5_REGISTRY: list[tuple[str, list[ObservedWrite]]] = []
+
+#: ONE serialising lock PER EVENT LOOP (design §1.6-iv / §1.9 item 3d). Per-loop, NOT module-global:
+#: pytest-asyncio mints a fresh function-scoped loop per test under ``-n auto`` and an ``asyncio.Lock``
+#: reused across a finished loop raises. A ``WeakKeyDictionary`` lets a dead loop's lock be collected.
+_F5_OBSERVER_LOCKS: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
+
+
+def _f5_observer_lock() -> asyncio.Lock:
+    """The serialising lock for the CURRENT running event loop — created lazily so it binds to the
+    live loop. Held across before→await→after so a ``gather`` of two writes attributes each to its OWN
+    per-call delta (§1.6-iv: without it, two interleaved calls SMEAR each other's deltas)."""
+    loop = asyncio.get_running_loop()
+    lock = _F5_OBSERVER_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _F5_OBSERVER_LOCKS[loop] = lock
+    return lock
+
+
+def _f5_unwrapped_query_raw(connection: Any) -> Any:
+    """The UNWRAPPED ``query_raw`` door — ``type(conn).query_raw.__wrapped__`` (``_sdk_guard`` sets
+    ``_guarded.__wrapped__ = original``, §1.9 item 3a). The observer's own ``SELECT *`` / ``INFO FOR
+    TABLE`` reads go through THIS, so they never re-enter the guard, the hook chain, or the observer
+    (no re-entry, no deadlock — §1.2 "the observer's own reads are excluded"). Falls back to the class
+    door when the guard is not armed (no ``__wrapped__``). Returns ``Any`` — a bound method or the
+    guard wrapper, both callable."""
+    door: Any = type(connection).query_raw
+    return getattr(door, "__wrapped__", door)
+
+
+def _f5_unwrap_query_raw_rows(envelope: Any) -> list[dict[str, Any]]:
+    """The row list out of a ``query_raw`` rpc envelope ``{'result': [{'result': <rows>}]}`` (SDK
+    2.0.0) — the SAME digging :func:`schema_snapshot_from_info` does over ``INFO FOR TABLE``, so both
+    readers normalise identically and the diff is a fair, engine-rendered compare (C-DEF #1)."""
+    node: Any = envelope
+    if isinstance(node, dict) and isinstance(node.get("result"), list):
+        node = node["result"]
+    if isinstance(node, list):
+        node = node[0] if node else {}
+    if isinstance(node, dict) and "result" in node:
+        node = node["result"]
+    return [row for row in node if isinstance(row, dict)] if isinstance(node, list) else []
+
+
+async def _f5_read_state(
+    connection: Any, table: str
+) -> tuple[dict[str, dict[str, Any]], SchemaSnapshot]:
+    """The governed population's full state — rows keyed by BARE id + the schema snapshot — read via
+    the UNWRAPPED ``query_raw`` (never re-entering the guard or the observer, §1.2)."""
+    query_raw = _f5_unwrapped_query_raw(connection)
+    rows_envelope = await query_raw(connection, f"SELECT * FROM {table}")
+    rows = {
+        _bare(row["id"]): row for row in _f5_unwrap_query_raw_rows(rows_envelope) if "id" in row
+    }
+    info_envelope = await query_raw(connection, f"INFO FOR TABLE {table}")
+    return rows, schema_snapshot_from_info(info_envelope)
+
+
+def _f5_row_deltas(
+    before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]
+) -> tuple[RowDelta, ...]:
+    """The per-row diff across ONE observed call — created / updated / deleted by id. A row present in
+    both with NO differing column yields NO delta (a no-op write is not a governance event, §1.2 self-
+    attack row 1). ``SELECT *`` OMITS a NONE column (store-ref §2), so an absent key reads as None —
+    a legacy row's NONE scope compares equal to Python ``None`` and unequal to a backfilled value, so
+    the migrate diff yields ``changed_columns == {scope}``."""
+    deltas: list[RowDelta] = []
+    for row_id in sorted(set(before) | set(after)):
+        before_row = before.get(row_id)
+        after_row = after.get(row_id)
+        if before_row is not None and after_row is None:
+            columns = frozenset(key for key in before_row if key != "id")
+            deltas.append(RowDelta(row_id, "deleted", columns, before_row, None))
+        elif before_row is None and after_row is not None:
+            columns = frozenset(key for key in after_row if key != "id")
+            deltas.append(RowDelta(row_id, "created", columns, None, after_row))
+        elif before_row is not None and after_row is not None:
+            changed = frozenset(
+                key
+                for key in (set(before_row) | set(after_row)) - {"id"}
+                if before_row.get(key) != after_row.get(key)
+            )
+            if changed:
+                deltas.append(RowDelta(row_id, "updated", changed, before_row, after_row))
+    return tuple(deltas)
+
+
+def _f5_schema_delta(before: SchemaSnapshot, after: SchemaSnapshot) -> SchemaDelta:
+    """The ``INFO FOR TABLE`` delta across one observed call — field / index / event names added,
+    removed, or changed (prefixed by kind so a field and an index of the same name never collide)."""
+    added: set[str] = set()
+    removed: set[str] = set()
+    changed: set[str] = set()
+    for kind, before_map, after_map in (
+        ("field", before.fields, after.fields),
+        ("index", before.indexes, after.indexes),
+        ("event", before.events, after.events),
+    ):
+        for name in set(after_map) - set(before_map):
+            added.add(f"{kind}:{name}")
+        for name in set(before_map) - set(after_map):
+            removed.add(f"{kind}:{name}")
+        for name in set(before_map) & set(after_map):
+            if before_map[name] != after_map[name]:
+                changed.add(f"{kind}:{name}")
+    return SchemaDelta(frozenset(added), frozenset(removed), frozenset(changed))
+
+
+def _f5_statement_of(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+    """The ``query_raw`` statement text, EVIDENCE ONLY (never consulted for detection, §1.2). The SDK
+    passes it positionally (``query_raw(query, params)``), as does the ``.query`` delegation."""
+    candidate = args[0] if args else kwargs.get("query")
+    return candidate if isinstance(candidate, str) else None
+
+
+async def _f5_observed_call(
+    event: _sdk_guard.CallEvent,
+    coro: Any,
+    registrations: list[tuple[str, list[ObservedWrite]]],
+) -> Any:
+    """Diff every registered governed population before/after ONE observed ``query_raw`` call, under
+    ONE lock held across before→await→after (§1.6-iv). Records an :class:`ObservedWrite` per
+    registration whose effect is NON-EMPTY — a read / no-op / rolled-back txn nets an empty effect and
+    is NOT a governance event (§1.2 self-attack rows 1 & 4)."""
+    import loremaster.governed as governed_mod
+
+    connection = event.connection
+    async with _f5_observer_lock():
+        # label / exempt captured at CALL time in this task's contextvars (§1.8) — the issuing
+        # ``with write_guard(...)`` / ``with governed_exempt(...)`` block is active across the await.
+        # ``active_exempt`` returns production's ``governed.ExemptToken``, a class DISTINCT from this
+        # substrate's structurally-identical twin — the classifier reads BOTH by attribute (duck-typed,
+        # C-DEF #2). The getattr Any-bridge keeps the assignment type-valid across that class split.
+        label = governed_mod.active_write_guard()
+        read_exempt = getattr(governed_mod, "active_exempt", lambda: None)
+        exempt = read_exempt()
+        statement = _f5_statement_of(event.args, event.kwargs)
+        before = {table: await _f5_read_state(connection, table) for table, _sink in registrations}
+        result = await coro
+        after = {table: await _f5_read_state(connection, table) for table, _sink in registrations}
+        for table, sink in registrations:
+            before_rows, before_schema = before[table]
+            after_rows, after_schema = after[table]
+            effect = ObservedEffect(
+                row_deltas=_f5_row_deltas(before_rows, after_rows),
+                schema_delta=_f5_schema_delta(before_schema, after_schema),
+                schema_after=after_schema,
+            )
+            if effect.is_empty:
+                continue  # a no-effect call is not a governance event (§1.2)
+            sink.append(
+                ObservedWrite(
+                    label=label,
+                    verb=effect.row_deltas[0].kind if effect.row_deltas else None,
+                    seam=event.method,
+                    origin_site=None,  # EVIDENCE ONLY, unused (leg 4 reads exempt.origin, §1.9 item 3c)
+                    exempt=exempt,
+                    statement=statement,
+                    effect=effect,
+                )
+            )
+    return result
+
+
+def _f5_dispatcher(event: _sdk_guard.CallEvent, coro: Any) -> Any:
+    """The ONE persistent hook (appended to ``_sdk_guard._CALL_HOOKS`` at import, §1.9 item 3b). Acts
+    on ``query_raw`` ONLY — ``.query`` DELEGATES to ``.query_raw`` through the patched door, so a hook
+    firing on ``.query`` re-enters and DEADLOCKS on the observer lock (#454 / GOTCHA-A). When no
+    population is registered it returns the coroutine UNCHANGED (zero overhead on the suite's whole
+    ``query_raw`` traffic)."""
+    if event.method != "query_raw":
+        return coro
+    registrations = list(_F5_REGISTRY)
+    if not registrations:
+        return coro
+    return _f5_observed_call(event, coro, registrations)
+
+
+# Append the ONE persistent dispatcher to the guard's hook chain at IMPORT (design §1.9 item 3b) —
+# idempotent against a module reload; NEVER per-observe (GOTCHA-B, above).
+if _f5_dispatcher not in _sdk_guard._CALL_HOOKS:
+    _sdk_guard._CALL_HOOKS.append(_f5_dispatcher)
+
+
 @contextlib.contextmanager
-def observe_governed_table_writes(
-    table: str, *, extra_modules: Sequence[ModuleType] | None = None
-) -> Iterator[list[ObservedWrite]]:
+def observe_governed_table_writes(table: str) -> Iterator[list[ObservedWrite]]:
     """Register ``table`` as a governed population the F5 EFFECT observer watches, and yield the list
     of :class:`ObservedWrite`\\ s it records for the block (design §1.3 / §1.8 / §1.9 item 3, which
     SUPERSEDE the 63a-v seam-name-patching + ``extra_modules`` shape below).
@@ -1100,64 +1391,13 @@ def observe_governed_table_writes(
       patch-set cover this module?" is UNASKABLE. A ``getattr``-tolerant guard-context read keeps the
       HEAD body type-valid (``active_write_guard`` / ``active_exempt`` unbuilt → label/exempt None →
       deny-by-default RED)."""
-    import loremaster.governed as governed_mod
-    import loremaster.memory.local as local_mod
-
-    observed: list[ObservedWrite] = []
-    read_guard = getattr(governed_mod, "active_write_guard", lambda: None)
-    read_exempt = getattr(governed_mod, "active_exempt", lambda: None)
-
-    def _statement_of(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
-        candidate = kwargs.get("statement", args[0] if args else None)
-        return candidate if isinstance(candidate, str) else None
-
-    def _wrap(original: Callable[..., Any], seam: str) -> Callable[..., Any]:
-        async def _instrumented(*args: Any, **kwargs: Any) -> Any:
-            statement = _statement_of(args, kwargs)
-            if statement is not None:
-                verb = _mutation_verb_for_table(statement, table)
-                if verb is not None:
-                    observed.append(
-                        ObservedWrite(
-                            label=read_guard(),
-                            verb=verb,
-                            seam=seam,
-                            exempt=read_exempt(),
-                            origin_site=_originating_prod_site(),
-                        )
-                    )
-            return await original(*args, **kwargs)
-
-        return _instrumented
-
-    default_targets = [
-        (local_mod, "execute_transaction", "execute_transaction"),
-        (local_mod, "run_query", "run_query"),
-        (governed_mod, "execute_read_transaction", "execute_read_transaction"),
-        (governed_mod, "run_query", "run_query"),
-    ]
-    extra_targets = [
-        (module, attr, attr)
-        for module in (extra_modules or ())
-        for attr in ("execute_transaction", "run_query", "execute_read_transaction")
-    ]
-    patches: list[tuple[Any, str, Any]] = []
-    seen: set[tuple[int, str]] = set()
-    for module, attr, seam in default_targets + extra_targets:
-        key = (id(module), attr)
-        if key in seen:
-            continue  # dedupe so a module passed in extra_modules is not double-patched (breaks restore)
-        seen.add(key)
-        original = getattr(module, attr, None)
-        if original is None:
-            continue
-        patches.append((module, attr, original))
-        setattr(module, attr, _wrap(original, seam))
+    sink: list[ObservedWrite] = []
+    registration = (table, sink)
+    _F5_REGISTRY.append(registration)
     try:
-        yield observed
+        yield sink
     finally:
-        for module, attr, original in patches:
-            setattr(module, attr, original)
+        _F5_REGISTRY.remove(registration)
 
 
 # =========================================================================== #
@@ -1368,12 +1608,65 @@ def classify_tree_observed_write(
     code). RE-OPEN TRIGGER: the threat model changing to an untrusted contributor / hosted deployment
     (task 571ef1a's own territory)."""
     if observed.label is not None:
-        return True
-    if observed.exempt is None or observed.origin_site is None:
-        return False
+        return _label_leg_classifies(observed, allowlist)
+    return _exempt_leg_classifies(observed, allowlist)
+
+
+def _normalise_statement(statement: str) -> str:
+    """Whitespace-collapse a SurrealQL statement for the golden compare (design §1.4 leg 2) — the SAME
+    rule the contract module's ``_normalise`` applies, so the classifier's leg-2 match and the golden
+    both-ways proof agree by construction."""
+    return " ".join(statement.split())
+
+
+def _label_leg_classifies(
+    observed: ObservedWrite, allowlist: Sequence[TreeWriteAllowlistEntry]
+) -> bool:
+    """The LABEL leg (§1.4 / adversary MISSING PIN #1) — NARROWED: a labeled write classifies iff its
+    label matches a (non-exempt) entry's ``frames`` AND that entry's ``effect`` predicate HOLDS for the
+    observed effect. A labeled write whose effect FAILS its entry predicate is UNCLASSIFIED — the naive
+    ``if observed.label is not None: return True`` re-widens the R2/#138 hand-set-label bound."""
     for entry in allowlist:
-        if entry.exempt_name == observed.exempt:
-            return (entry.site.file, entry.site.function) == observed.origin_site
+        if entry.exempt_name is not None or observed.label not in entry.frames:
+            continue
+        if entry.effect is None:
+            return True  # a legacy label frame carrying no effect predicate classifies on the label
+        if observed.effect is not None and entry.effect(observed.effect):
+            return True
+    return False
+
+
+def _exempt_leg_classifies(
+    observed: ObservedWrite, allowlist: Sequence[TreeWriteAllowlistEntry]
+) -> bool:
+    """The EXEMPT leg (§1.4 / §1.9 item 3c) — FOUR legs, read BY ATTRIBUTE so production's
+    ``governed.ExemptToken`` and this substrate's twin flow through the SAME classifier. Legs 2 (golden
+    text == token == observed) and 3 (the effect predicate) are INDEPENDENT; leg 4 is the context-entry
+    origin match (a borrowed token from a foreign frame fails). A missing ``name`` (HEAD's bare-name
+    ``str`` exempt) is unclassified."""
+    exempt = observed.exempt
+    token_name = getattr(exempt, "name", None)
+    if token_name is None:
+        return False
+    token_statement = getattr(exempt, "statement", None)
+    token_origin = getattr(exempt, "origin", None)
+    for entry in allowlist:
+        if entry.exempt_name != token_name:  # leg 1 — the channel name
+            continue
+        legs_2_and_3_hold = (
+            token_statement is not None
+            and observed.statement is not None
+            # leg 2 — golden text (catches a different-shaped statement smuggled under the token):
+            and _normalise_statement(token_statement)
+            == _normalise_statement(entry.statement)
+            == _normalise_statement(observed.statement)
+            # leg 3 — effect (catches a golden EDITED to bless a seizure whose text matched):
+            and entry.effect is not None
+            and observed.effect is not None
+            and entry.effect(observed.effect)
+        )
+        # leg 4 — origin captured at CONTEXT ENTRY (§1.9 item 3c): a borrowed token yields a foreign one.
+        return legs_2_and_3_hold and token_origin == (entry.site.file, entry.site.function)
     return False
 
 
@@ -1512,9 +1805,80 @@ def seam_modules_for_tree_allowlist(
 # =========================================================================== #
 
 
-def governed_populations(
-    schema_source: str | None = None, *, repo_root: Path = _REPO_ROOT
-) -> frozenset[str]:
+#: The ``surreal_schema`` emitter whose CALLERS define the governed node set (design §1.9 item 2)
+#: and the relation-table emitter whose governed endpoints extend it — the anchor names the
+#: derivation keys on, the same way ``function_calls_write_guard`` keys on ``write_guard``.
+_GOVERNED_FIELD_SPECS_EMITTER = "_governed_field_specs"
+_DEFINE_RELATION_EMITTER = "_define_relation_table"
+
+
+def _schema_string_constants(tree: ast.AST) -> dict[str, str]:
+    """Module-level ``NAME = "value"`` string constants, so a ``_define_relation_table(TO_RELATION,
+    MESSAGE_TABLE, AGENT_TABLE)`` call resolves its endpoints exactly as a literal ``'widget'`` does."""
+    constants: dict[str, str] = {}
+    for node in getattr(tree, "body", []):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            for assign_target in node.targets:
+                if isinstance(assign_target, ast.Name):
+                    constants[assign_target.id] = node.value.value
+    return constants
+
+
+def _resolve_schema_table(node: ast.expr, constants: dict[str, str]) -> str | None:
+    """A ``_define_relation_table`` endpoint argument resolved to a table name — a string literal
+    verbatim, a ``Name`` via the module string constants, else ``None``."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    return None
+
+
+def _governed_node_tables(tree: ast.AST) -> set[str]:
+    """The governed NODE tables — a ``_<t>_statements`` emitter that CALLS ``_governed_field_specs``
+    governs ``t`` (§1.9 item 2 — keyed on the CALLER, NEVER a field name; ``agent.owner_principal`` is
+    a direct packet-62 field, so an ``owner_principal``-presence walk wrongly yields {memory, agent})."""
+    nodes: set[str] = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls_governed_specs = any(
+            isinstance(inner, ast.Call) and call_name(inner) == _GOVERNED_FIELD_SPECS_EMITTER
+            for inner in ast.walk(func)
+        )
+        if not calls_governed_specs:
+            continue
+        emitter_match = re.fullmatch(r"_(?P<table>\w+)_statements", func.name)
+        if emitter_match is not None:
+            nodes.add(emitter_match.group("table"))
+    return nodes
+
+
+def _governed_relation_tables(
+    tree: ast.AST, nodes: set[str], constants: dict[str, str]
+) -> set[str]:
+    """Relation tables with a governed ENDPOINT — ``_define_relation_table(name, IN, OUT)`` whose IN or
+    OUT is a governed node. So ``to`` (IN message, OUT agent) is NOT governed at this HEAD and joins
+    only once ``message`` becomes governed (ii-a)."""
+    relations: set[str] = set()
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or call_name(call) != _DEFINE_RELATION_EMITTER:
+            continue
+        if len(call.args) < 3:
+            continue
+        relation_name = _resolve_schema_table(call.args[0], constants)
+        in_table = _resolve_schema_table(call.args[1], constants)
+        out_table = _resolve_schema_table(call.args[2], constants)
+        if relation_name is not None and (in_table in nodes or out_table in nodes):
+            relations.add(relation_name)
+    return relations
+
+
+def governed_populations(schema_source: str | None = None) -> frozenset[str]:
     """DERIVE the governed table population set from ``surreal_schema`` (design §1.5c-iii, §1.9 item 2).
 
     ★BUILDER DELIVERABLE★ (RED-until-built). The F5 cases are, by AST over ``surreal_schema``:
@@ -1535,11 +1899,14 @@ def governed_populations(
     — the mutation proof the population reach pin runs. A hardcoded ``frozenset({MEMORY_TABLE})``
     passes the value pin but FAILS that growth pin (the whole point: an OUTPUT, never a hand list).
 
-    At HEAD this is a stub: raise so the population pins RED for the right reason (the derivation is
-    unbuilt), never a hardcoded ``{MEMORY_TABLE}`` that would make the OUTPUT pins vacuous."""
-    raise NotImplementedError(
-        "governed_populations is a 63b-i-a builder deliverable (design §1.5c-iii / §1.9 item 2): "
-        "AST-derive the governed table set from surreal_schema (tables whose emitter CALLS "
-        "_governed_field_specs, plus relation tables with a governed endpoint via "
-        "_define_relation_table(name, IN, OUT)); honour a synthetic `schema_source`. RED-until-built."
-    )
+    ``None`` ⟹ read the real ``surreal_schema.py`` via the imported module's ``__file__`` (keyed on
+    the module, never a hardcoded path)."""
+    if schema_source is None:
+        from loremaster.store import surreal_schema
+
+        schema_source = Path(surreal_schema.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(schema_source)
+    constants = _schema_string_constants(tree)
+    nodes = _governed_node_tables(tree)
+    relations = _governed_relation_tables(tree, nodes, constants)
+    return frozenset(nodes | relations)

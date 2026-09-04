@@ -421,13 +421,21 @@ class LocalMemoryBackend:
         """
         await self._ensure_connection()
         ddl = generate_memory_ddl(dim=self._dim, analyzer_name=self._analyzer_name)
-        await execute_transaction(
-            f"BEGIN;\n{ddl}COMMIT;\n",
-            {},
-            acquire=self._ensure_connection,
-            drop=self._drop_connection,
-            url=self._url,
-        )
+        # F5 (design §5.1 Q1 / §1.9 item 4): the boot/rebuild memory DDL apply is a SCHEMA mutation
+        # of a governed population — run it inside ``governed.write_guard`` so the F5 runtime seam
+        # attributes the schema delta to this frame (an unlabelled DDL apply is UNCLASSIFIED —
+        # deny-by-default; and every backend fixture calls ensure_ready on a virgin DB, so the DDL
+        # leg is non-satisfiable on any fixture until the boot apply is classified). Its effect
+        # predicate is the after-schema == the CONSTRUCTED oracle (``generate_memory_ddl`` on a
+        # virgin DB, engine-rendered — dict equality, no regex), no rows moved.
+        with governed.write_guard("ensure_ready"):
+            await execute_transaction(
+                f"BEGIN;\n{ddl}COMMIT;\n",
+                {},
+                acquire=self._ensure_connection,
+                drop=self._drop_connection,
+                url=self._url,
+            )
         logger.debug("memory.schema.ready", extra={"database": self._database})
 
     async def close(self) -> None:
