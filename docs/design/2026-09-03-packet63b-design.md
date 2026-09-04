@@ -802,3 +802,77 @@ nothing else) — inside the extension already in i-a's writable set.
 definitions" (→ item 2) · §1.3 "the F5 battery fixture appends/removes its hook" and §1.8's
 `event.original` read guidance (→ item 3) · §5.1's ensure_ready golden phrasing "the schema delta
 equals applying generate_memory_ddl()" is kept in intent and made CONCRETE by item 4.
+
+---
+
+## 2.5 ADDENDUM (2026-09-04, `lore_comms` q:63b-i-b-2.2gap #10002 / finding #456) — the `governed_conflict:` marker → `GovernedConflict` mapping: RULED as a TYPED classification in `_txn.py`; `_txn.py` joins i-b's writable set, SCOPED
+
+### The gap, as measured (contract-63b-i-b, `scripts/probe_supersede_throw_rollback.py`, :18000, exit 0)
+The rollback CORE of §2.2 holds: the in-store `LET … RETURN AFTER; IF array::len(…) = 0 { THROW
+"governed_conflict:<t>:<id>" }` aborts the whole composed `BEGIN…COMMIT`, the preceding UPSERT is rolled
+back, `_assert_envelope_integrity` accepts the fragment, and the engine surfaces the marker in the raw
+`query_raw` result (`kind='Thrown'`, `"An error occurred: governed_conflict:probe_t:target"`). What §2.2
+left UNSPECIFIED is the last hop: `_run_verified_transaction` raises a plain `SurrealStoreError` whose
+message is a CLASSIFIED generic label + the server-log hint — by design (the `_classify_engine_error`
+hygiene boundary: *"never a slice of `raw_result` itself"*) — so the marker never reaches `governed`. My
+§2.2 sentence *"the driver's semantic root-cause selector surfaces the THROW text; `governed` maps the
+marker"* conflated SELECTING the entry (which `_domain_root_cause` does, as measured) with SURFACING its
+text (which the boundary forbids). Superseded by this section.
+
+### RULING — Reading A, sharpened to the seam's own shape (Reading B REJECTED: it clones the verification and re-exposes raw text — ROUTING-IS-NOT-SHARING and the hygiene boundary in one move)
+1. **ONE marker, ONE label, ONE typed error, in `_txn.py`, beside their precedents:**
+   `_GOVERNED_CONFLICT_MARKER = "governed_conflict:"` (a FIXED prefix OUR code authors into the THROW — the
+   classification key; the `<t>:<id>` suffix is free-form forensics), `_ERROR_CLASS_GOVERNED_CONFLICT`
+   (a fixed teaching label: *"governed conflict — the guarded row moved between authorization and the
+   write; re-authorize and re-issue"*), and `class TxnGovernedConflictError(SurrealStoreError)` — the
+   exact shape of `TxnContentionExhaustedError`: a SUBCLASS so every existing `except SurrealStoreError`
+   keeps catching it, a generic message + `_SERVER_LOG_HINT`, and **NO attributes parsed from the text**
+   (the caller already holds table and row).
+2. **Where it slots — the classifier, not the witness.** `_classify_engine_error` gains the marker branch
+   (membership check → the fixed label, like `_ASSERT_VIOLATION_MARKER`). `_rollback_verdict` is
+   UNCHANGED: a governed conflict is a DOMAIN rejection (`is_conflict=False`) — retrying it re-runs the
+   same stale guard and THROWs again, so it is never retried; `_domain_root_cause` already selects the
+   Thrown entry (first non-cascade — measured).
+3. **BOTH raise sites map label → type through ONE helper.** `_run_verified_transaction` (behind
+   `execute_transaction` AND `execute_read_transaction` — the composed `remember` path and the standalone
+   `guarded_write` path) and `run_query` (the single-statement seam, which also consumes
+   `_classify_engine_error`) build their domain rejection via a new shared
+   `_domain_rejection_error(error_class, message) -> SurrealStoreError` that returns
+   `TxnGovernedConflictError` iff the label is the governed one, else the plain type. Two raise sites,
+   one mapping — never a cloned `if label == …` at each.
+4. **`governed` catches the TYPE, never text:** `except TxnGovernedConflictError as error: raise
+   GovernedConflict(f"… {table}:{row_id} …") from error` — in `guarded_write` (standalone) and in the
+   composed path (`remember`, which also runs its ledger compensation on this path per §2.2 step 4).
+   The contract's rider-i/ii pins keep `pytest.raises(governed.GovernedConflict)` — the intended type stands.
+
+### Why this is hygiene-compliant BY THE BOUNDARY'S OWN TERMS (not by the "it's our string" argument)
+The classifier still returns a FIXED label, never a slice; the typed error still carries no raw text;
+the `<t>:<id>` suffix rides only into `_log_rollback` (server-side, structured), exactly as an ASSERT's
+echoed value does today. That the THROW text is authored by `governed` rather than echoed by the engine's
+validation is true, but the ruling does NOT lean on it — a future THROW that interpolated a bound value
+would be equally safe, because the exception never carries the text.
+
+### Writable-set grant — `_txn.py` JOINS i-b, SCOPED to exactly:
+the marker constant · the label constant · `TxnGovernedConflictError` · the `_classify_engine_error`
+branch · `_domain_rejection_error` and its two call sites (`_run_verified_transaction`, `run_query`) ·
+the module docstring line that lists the error classes · the classification tests that EXTEND the
+existing families (`test_surreal_store.py::TestDomainRejectionErrorType` and the `test_retry_seam.py`
+marker/label enumerations — extended, never cloned). Everything else in `_txn.py` — the retry driver,
+`_rollback_verdict`, the cascade markers, the envelope checks — is DO-NOT-TOUCH for i-b. Production-
+touching (the shipped driver) → pre-authorized under CLAUDE.md's pre-production status; no operator
+gate; the cold audit re-runs the R4/#120 seam pins.
+
+### Riders — and pin it like this
+| # | rider | RED when |
+|---|---|---|
+| i | typed on BOTH raise sites | a `governed_conflict:` THROW rejection via `run_query` AND via `execute_transaction`/`execute_read_transaction` each raise `TxnGovernedConflictError` (construct both, on the test store); positive control: an ASSERT rejection on each still raises the plain `SurrealStoreError` |
+| ii | hygiene, both directions | the raised message contains NEITHER the row id NOR the table name from the THROW suffix (byte check) AND `_log_rollback`'s structured record DOES carry the raw text (the forensics survive — positive control) |
+| iii | never retried | a governed-conflict rollback makes EXACTLY one attempt (count via the `acquire` wrap / the guard's intercept count), never a retry; positive control: a `can be retried` rollback retries |
+| iv | one source | mutate `_GOVERNED_CONFLICT_MARKER` (or the THROW prefix in `GuardedPlan.fragments`) → the standalone `invalidate` conflict pin AND the composed supersede conflict pin BOTH red — proving the two paths share the marker and the mapping |
+| v | the label-set enumerations gain the member | whatever pin enumerates `_ERROR_CLASS_*` / the marker constants reds until the new member is registered — that is the instrument, not noise |
+| vi | `GovernedConflict` end-to-end | rider i/ii of §2.4 unchanged — a re-scope injected between `authorize_guarded`'s pre-read and the composed txn raises `governed.GovernedConflict`, successor absent, predecessor untouched, ledger compensated |
+
+**Superseded text in this doc:** §2.2 step 2's last two sentences (*"the driver's SEMANTIC root-cause
+selector … surfaces the THROW text; `governed` maps the `governed_conflict:` marker → `GovernedConflict`"*)
+→ read: the selector picks the Thrown entry; the CLASSIFIER maps it to `TxnGovernedConflictError`;
+`governed` catches the TYPE. §5.1's i-b writable set gains the scoped `_txn.py` grant above.
