@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from loremaster.store._txn import (
     TxnFragment,
+    TxnGovernedConflictError,
     compose,
     execute_read_transaction,
     run_query,
@@ -334,6 +335,134 @@ class governed_exempt:
             _ACTIVE_EXEMPT.reset(self._reset)
 
 
+@dataclass(frozen=True)
+class GuardedPlan:
+    """The frozen output of :func:`authorize_guarded` — the Python authorization leg, NO effect
+    (design §2.2 step 1). Carries the guard fragment/params, ``requires_audit``, the pre-read row,
+    and the identity the composed store transaction needs to build the guarded mutation + audit."""
+
+    subject: Subject
+    action: Action
+    table: str
+    row_id: str
+    guard_fragment: str
+    guard_params: dict[str, Any]
+    requires_audit: bool
+    audit: Any
+    pre_read_row: dict[str, Any] | None
+
+    def fragments(
+        self, set_fragment: str | None, params: dict[str, Any] | None = None
+    ) -> list[TxnFragment]:
+        """The guarded mutation as composable fragments with the conflict guard IN-STORE (§2.2 step 2).
+
+        ``LET $gw_hit = (UPDATE|DELETE type::record('<t>', $gw_id) [SET <set>] WHERE (<guard>)
+        RETURN AFTER|BEFORE)`` then ``IF array::len($gw_hit) = 0 { THROW "governed_conflict:<t>:<id>"
+        }`` (ONE fragment, two statements — ``compose`` supports it), plus the composed audit append
+        when ``requires_audit``. ``params`` carries any bound values ``set_fragment`` references."""
+        if set_fragment is None:
+            guarded = (
+                f"LET $gw_hit = (DELETE type::record('{self.table}', $gw_id) "
+                f"WHERE ({self.guard_fragment}) RETURN BEFORE)"
+            )
+        else:
+            guarded = (
+                f"LET $gw_hit = (UPDATE type::record('{self.table}', $gw_id) SET {set_fragment} "
+                f"WHERE ({self.guard_fragment}) RETURN AFTER)"
+            )
+        conflict_guard = (
+            f'IF array::len($gw_hit) = 0 {{ THROW "governed_conflict:{self.table}:{self.row_id}" }}'
+        )
+        # Merge via a dict literal (NOT ``dict.update()``): the R4 no-raw-SDK scanner
+        # (``test_governed_py_has_no_direct_sdk_call_site``) is NAME-keyed and would flag a
+        # ``.update(`` here as a direct SDK ``update()`` call — a false positive on a dict method.
+        fragment_params: dict[str, Any] = {
+            "gw_id": self.row_id,
+            **self.guard_params,
+            **(params or {}),
+        }
+        fragments = [TxnFragment(statements=[guarded, conflict_guard], params=fragment_params)]
+        if self.requires_audit:
+            fragments.append(
+                self.audit.append_fragment(
+                    actor_principal=self.subject.principal_id,
+                    actor_agent=self.subject.agent_id,
+                    actor_email=self.subject.principal_id,
+                    actor_agent_name=self.subject.agent_id,
+                    action=self.action.value,
+                    target_table=self.table,
+                    target_row=f"{self.table}:{self.row_id}",
+                )
+            )
+        return fragments
+
+
+async def authorize_guarded(
+    subject: Subject,
+    action: Action,
+    *,
+    table: str,
+    row_id: str,
+    audit: Any,
+    store: StoreHandle,
+) -> GuardedPlan:
+    """The PYTHON authorization leg split out of :func:`guarded_write` (design §2.2 step 1).
+
+    Pre-reads the row's governed columns through the injected driver (acquire #1), runs the Python
+    gate (deny → :class:`GovernedDenied`), and the RES-2 refuse (``requires_audit`` with no sink →
+    :class:`GovernedAuditUnavailable`) — BEFORE any durable effect. It MUTATES NOTHING; it returns a
+    frozen :class:`GuardedPlan` the caller composes into ONE store transaction."""
+    pre_read = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed pre-read",
+        label="governed.pre_read.rejected",
+        statement=(
+            f"SELECT owner_principal, owner_agent, scope FROM type::record('{table}', $gw_id)"
+        ),
+        params={"gw_id": row_id},
+        logger=logger,
+    )
+    rows = pre_read if isinstance(pre_read, list) else []
+    requires_audit = False
+    pre_read_row: dict[str, Any] | None = None
+    if rows:
+        row = rows[0] if isinstance(rows[0], dict) else {}
+        pre_read_row = row
+        resource = pdp.Resource(
+            table=table,
+            owner_principal=_bare_or_none(row.get("owner_principal")),
+            owner_agent=_bare_or_none(row.get("owner_agent")),
+            scope=row.get("scope"),
+        )
+        decision = pdp.authorize(subject, action, resource)
+        if not decision.allowed:
+            raise GovernedDenied(
+                f"{subject.role} {subject.principal_id}/{subject.agent_id} may not "
+                f"{action.value} {table}:{row_id} — the row's owner/scope excludes it"
+            )
+        requires_audit = decision.requires_audit
+    if requires_audit and audit is None:
+        raise GovernedAuditUnavailable(
+            f"the {action.value} on {table}:{row_id} is an audited bypass (requires_audit) but no "
+            "AuditStore was supplied — refusing to run it UNAUDITED (RES-2 / §9 erase-the-trail); "
+            "the consumer must wire a real audit sink for any bypass-reachable write"
+        )
+    guard_fragment, guard_params = pdp.authorize_filter(subject, action, table).to_surql()
+    return GuardedPlan(
+        subject=subject,
+        action=action,
+        table=table,
+        row_id=row_id,
+        guard_fragment=guard_fragment,
+        guard_params=guard_params,
+        requires_audit=requires_audit,
+        audit=audit,
+        pre_read_row=pre_read_row,
+    )
+
+
 async def guarded_write(
     subject: Subject,
     action: Action,
@@ -367,120 +496,37 @@ async def guarded_write(
 
     ``set_fragment`` is the SurrealQL SET body for a WRITE/SET_SCOPE and ``None`` for a DELETE.
     """
-    # (1) pre-read the row's governed columns THROUGH the injected driver (acquire #1) — never a
-    # raw connection (R4). An explicit projection reads a NONE option<> column back as None
-    # (store-ref §2), so a legacy row yields a NONE-scope Resource (FORK 1).
-    pre_read = await run_query(
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-        noun="governed pre-read",
-        label="governed.pre_read.rejected",
-        statement=(
-            f"SELECT owner_principal, owner_agent, scope FROM type::record('{table}', $gw_id)"
-        ),
-        params={"gw_id": row_id},
-        logger=logger,
+    # ONE IMPLEMENTATION (design §2.2 step 3): guarded_write == authorize_guarded + GuardedPlan.
+    # fragments + execute. The Python authorization leg (pre-read + gate + RES-2 refuse) lives in
+    # authorize_guarded; the conflict guard moves IN-STORE (the LET/THROW GuardedPlan.fragments
+    # emits), so the Python ``row_count == 0 → GovernedConflict`` branch is DELETED (unreachable —
+    # the THROW fires first, §2.5). The store's typed TxnGovernedConflictError maps → GovernedConflict.
+    plan = await authorize_guarded(
+        subject, action, table=table, row_id=row_id, audit=audit, store=store
     )
-    rows = pre_read if isinstance(pre_read, list) else []
-
-    # (2) the Python gate. A row the filter EXCLUDES is a DENY (single-brain — the store guard in
-    # step 3 is the SAME predicate, so a denied write never touches the store). A MISSING row is
-    # NOT a deny — it falls through to the guarded mutation, which matches 0 rows → GovernedConflict
-    # (the vanished-conflict path), so a no-row deny cannot masquerade as a conflict.
-    requires_audit = False
-    if rows:
-        row = rows[0] if isinstance(rows[0], dict) else {}
-        resource = pdp.Resource(
-            table=table,
-            owner_principal=_bare_or_none(row.get("owner_principal")),
-            owner_agent=_bare_or_none(row.get("owner_agent")),
-            scope=row.get("scope"),
-        )
-        decision = pdp.authorize(subject, action, resource)
-        if not decision.allowed:
-            raise GovernedDenied(
-                f"{subject.role} {subject.principal_id}/{subject.agent_id} may not "
-                f"{action.value} {table}:{row_id} — the row's owner/scope excludes it"
-            )
-        requires_audit = decision.requires_audit
-
-    # (2b) RES-2 (cold-audit §RES) — an AUDITED bypass (``requires_audit`` fired — a write a member
-    # could not make) with NO audit sink is REFUSED here, BEFORE the mutation is composed or run,
-    # rather than executed UNAUDITED: a mutation without its audit row is the §9 "compromised admin
-    # erases its trail" shape from the fail-OPEN side (design §10.6 rider ii). The subject IS
-    # authorized — the TRAIL is what is missing — so this is a DISTINCT type from GovernedDenied (a
-    # per-caller denial) / GovernedConflict (a vanished row). Any consumer whose path can reach an
-    # admin bypass MUST wire a real audit sink.
-    if requires_audit and audit is None:
-        raise GovernedAuditUnavailable(
-            f"the {action.value} on {table}:{row_id} is an audited bypass (requires_audit) but no "
-            "AuditStore was supplied — refusing to run it UNAUDITED (RES-2 / §9 erase-the-trail); "
-            "the consumer must wire a real audit sink for any bypass-reachable write"
-        )
-
-    # (3) the guarded mutation: carry authorize_filter(action) in the WHERE (the SAME tree the
-    # Python gate evaluated), so the write re-checks ownership in the SAME statement — no
-    # read-then-write TOCTOU window on the governed columns. RETURN the affected rows so row_count
-    # is read BACK from the actual stamp (the messages.py ack-CAS precedent), never a pre-read count.
-    guard_fragment, guard_params = pdp.authorize_filter(subject, action, table).to_surql()
-    if set_fragment is None:
-        mutation = (
-            f"DELETE type::record('{table}', $gw_id) WHERE ({guard_fragment}) RETURN BEFORE"
-        )
-    else:
-        mutation = (
-            f"UPDATE type::record('{table}', $gw_id) SET {set_fragment} "
-            f"WHERE ({guard_fragment}) RETURN AFTER"
-        )
-    fragments = [TxnFragment(statements=[mutation], params={"gw_id": row_id, **guard_params})]
-
-    # requires_audit → compose the audit append into the SAME transaction (61a built
-    # append_fragment "for what 63/64 compose"): the audit RIDES the mutation's BEGIN…COMMIT, so a
-    # rejected mutation rolls the audit back too (no landed audit for a write that never happened).
-    audited = False
-    # ``requires_audit`` here implies ``audit is not None`` — step (2b) already REFUSED the
-    # requires_audit-with-no-sink case, so the compose is unconditional on the flag (no silent skip).
-    if requires_audit:
-        fragments.append(
-            audit.append_fragment(
-                actor_principal=subject.principal_id,
-                actor_agent=subject.agent_id,
-                # The Subject (lorerunes) carries only ids; the denormalized human email/name are
-                # not on it, so the resolved ids stand in for the non-empty forensic columns.
-                actor_email=subject.principal_id,
-                actor_agent_name=subject.agent_id,
-                action=action.value,
-                target_table=table,
-                target_row=f"{table}:{row_id}",
-            )
-        )
-        audited = True
-
-    statement_text, merged_params = compose(*fragments)
-    # ONE verified BEGIN…COMMIT through the injected driver (acquire #2) — every statement checked
-    # (store-ref §3). A domain rejection (the guarded set violating a schema ASSERT) rolls the whole
-    # transaction — including the composed audit — back and PROPAGATES (not swallowed). The mutation
-    # runs inside ``write_guard`` so the F5 runtime seam attributes it to this guarded frame (§10.9-A
-    # L2b) — every governed-table write is classified, never anonymous at the seam.
+    statement_text, merged_params = compose(*plan.fragments(set_fragment))
+    # ONE verified BEGIN…COMMIT through the injected driver (acquire #2), inside write_guard so the
+    # F5 runtime seam attributes it to this guarded frame. A THROW'd governed conflict aborts the
+    # whole transaction and surfaces as the store's typed TxnGovernedConflictError (§2.5) → mapped to
+    # GovernedConflict here (never text); any other domain rejection rolls back and PROPAGATES.
     with write_guard("guarded_write"):
-        results = await execute_read_transaction(
-            statement_text,
-            merged_params,
-            acquire=store.acquire,
-            drop=store.drop,
-            url=store.url,
-        )
-    # row_count from the mutation's RETURN BY SHAPE: the BEGIN/COMMIT envelope carries None entries,
-    # so the first LIST result is the mutation's affected rows (composed first, before the audit).
-    row_payloads = [entry for entry in results if isinstance(entry, list)]
-    row_count = len(row_payloads[0]) if row_payloads else 0
-    if row_count == 0:
-        raise GovernedConflict(
-            f"the guarded {action.value} on {table}:{row_id} matched ZERO rows — a concurrent "
-            "scope/owner change landed between the read and the guarded mutation (no silent no-op)"
-        )
-    return GuardedWriteResult(row_count=row_count, audited=audited)
+        try:
+            await execute_read_transaction(
+                statement_text,
+                merged_params,
+                acquire=store.acquire,
+                drop=store.drop,
+                url=store.url,
+            )
+        except TxnGovernedConflictError as error:
+            raise GovernedConflict(
+                f"the guarded {action.value} on {table}:{row_id} matched ZERO rows — a concurrent "
+                "scope/owner change landed between the read and the guarded mutation (no silent "
+                "no-op)"
+            ) from error
+    # The in-store THROW fires on a zero-match, so reaching here means the single addressed record
+    # was matched (0-or-1 by construction of ``type::record``): a successful guarded write is one row.
+    return GuardedWriteResult(row_count=1, audited=plan.requires_audit)
 
 
 def _bare(record_id: Any) -> str:

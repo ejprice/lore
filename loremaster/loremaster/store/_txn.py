@@ -186,6 +186,16 @@ class TxnContentionExhaustedError(SurrealStoreError):
         self.elapsed_seconds = elapsed_seconds
 
 
+class TxnGovernedConflictError(SurrealStoreError):
+    """A governed guarded-write matched ZERO rows and THREW ``governed_conflict:`` (§2.5, #456).
+
+    Same shape as :class:`TxnContentionExhaustedError`: a SUBCLASS so every existing
+    ``except SurrealStoreError`` keeps catching it, a generic teaching message, and NO
+    attributes parsed from the raw text (the caller already holds the table and row id).
+    A governed conflict is a DOMAIN rejection (never retried).
+    """
+
+
 class RetryableConflictSignal(Exception):
     """An attempt callable's way of telling :func:`retry_on_conflict` "the engine
     reported a RETRYABLE write-write conflict; try again".
@@ -573,6 +583,12 @@ _ERROR_CLASS_FIELD_COERCION = "field coercion"
 # truncation should make this vanishingly rare in practice — a caller seeing it
 # anyway knows immediately what to retry with, rather than "see the server log".
 _ERROR_CLASS_QUERY_TOO_COMPLEX = "query too complex — reduce or shorten the search terms"
+# §2.5 (#456): the fixed teaching label for a governed-conflict THROW. Names WHAT happened + what
+# to do — never a slice of the raw text, never the raw `governed_conflict:` marker (rider ii).
+_ERROR_CLASS_GOVERNED_CONFLICT = (
+    "governed conflict — the guarded row moved between authorization and the write; "
+    "re-authorize and re-issue"
+)
 _ERROR_CLASS_UNSPECIFIED = "unspecified rejection"
 
 # The substrings (verified live — see the module docstring's ``ASSERT``/coercion
@@ -589,6 +605,10 @@ _FIELD_COERCION_MARKER = "coerce"
 # — the raw, pre-classification ``ValidationError`` text captured against
 # spike-surreal). Matched case-insensitively, same as the other markers.
 _QUERY_RECURSION_DEPTH_MARKER = "recursion depth"
+# §2.5 (#456): the FIXED prefix OUR code authors into the in-store conflict THROW
+# ("governed_conflict:<t>:<id>") — the classification key. The `<t>:<id>` suffix is free-form
+# forensics that rides only the server-side rollback log, never the raised message (rider ii).
+_GOVERNED_CONFLICT_MARKER = "governed_conflict:"
 
 # The correlation hint appended to every classified rollback message, so an
 # operator holding only the (deliberately generic) exception text can still
@@ -629,6 +649,8 @@ def _classify_engine_error(raw_result: object) -> str:
     if _is_retryable_conflict_text(text):
         return _ERROR_CLASS_RETRYABLE_CONFLICT
     lowered = text.lower()
+    if _GOVERNED_CONFLICT_MARKER in lowered:
+        return _ERROR_CLASS_GOVERNED_CONFLICT
     if _ASSERT_VIOLATION_MARKER in lowered:
         return _ERROR_CLASS_ASSERT_VIOLATION
     if _FIELD_COERCION_MARKER in lowered:
@@ -636,6 +658,19 @@ def _classify_engine_error(raw_result: object) -> str:
     if _QUERY_RECURSION_DEPTH_MARKER in lowered:
         return _ERROR_CLASS_QUERY_TOO_COMPLEX
     return _ERROR_CLASS_UNSPECIFIED
+
+
+def _domain_rejection_error(error_class: str, message: str) -> SurrealStoreError:
+    """Build the domain-rejection error for a raise site — §2.5 (#456), the ONE mapping helper.
+
+    Returns :class:`TxnGovernedConflictError` iff ``error_class`` is the governed-conflict label,
+    else the plain :class:`SurrealStoreError`. BOTH raise sites (``run_query`` and
+    ``_run_verified_transaction``) build their rejection through THIS, never a cloned ``if label ==``
+    at each site (ROUTING-IS-NOT-SHARING).
+    """
+    if error_class == _ERROR_CLASS_GOVERNED_CONFLICT:
+        return TxnGovernedConflictError(message)
+    return SurrealStoreError(message)
 
 
 @dataclass(frozen=True)
@@ -1304,8 +1339,9 @@ async def run_query(
                 label,
                 extra={"url": url, "error_class": error_class, "engine_error": str(error)},
             )
-            raise SurrealStoreError(
-                f"SurrealDB {noun} rejected against {url!r} ({error_class}); {_SERVER_LOG_HINT}"
+            raise _domain_rejection_error(
+                error_class,
+                f"SurrealDB {noun} rejected against {url!r} ({error_class}); {_SERVER_LOG_HINT}",
             ) from error
 
     return await retry_on_conflict(_attempt, label=label, url=url)
@@ -1510,10 +1546,11 @@ async def _run_verified_transaction(
         if not is_conflict:
             error_class = _classify_engine_error(root_cause.raw_result)
             _log_rollback(root_cause, statement_count, failed_statements)
-            raise SurrealStoreError(
+            raise _domain_rejection_error(
+                error_class,
                 f"SurrealDB transaction failed and was rolled back: statement "
                 f"{root_cause.index + 1} of {statement_count} was rejected "
-                f"({error_class}); {_SERVER_LOG_HINT}"
+                f"({error_class}); {_SERVER_LOG_HINT}",
             )
         last_conflict = (root_cause, statement_count, failed_statements)
         raise RetryableConflictSignal()

@@ -65,6 +65,7 @@ from loremaster.store._txn import (
     SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
+    TxnGovernedConflictError,
     _SurrealConnection,
     bootstrap_session,
     compose,
@@ -628,39 +629,26 @@ class LocalMemoryBackend:
                     f"cannot supersede unknown memory {supersedes!r}: no such memory exists"
                 )
 
-            # The supersede-CLOSE is a WRITE on an EXISTING, possibly FOREIGN-owned row (design
-            # §2.5 / cold-audit §F1: "both route through guarded_write/the stamp"), so it authorizes
-            # through :func:`~loremaster.governed.guarded_write` exactly like :meth:`invalidate` — a
-            # member cannot retire ANOTHER principal's note (single-brain on writes; a denied close
-            # raises GovernedDenied and never mutates). It runs BEFORE the durable ledger write and
-            # the new-row UPSERT, so a DENIED close leaves NO orphan successor — neither a ledger row
-            # nor a Surreal row (the conscious atomicity trade: the old ONE-txn compose of
-            # [upsert, close] is dropped for close-first authorization; a member superseding a
-            # foreign row is stopped before any part of the new note lands). The close is
-            # bypass-reachable (an admin may close a foreign row), so it carries the backend's own
-            # ``audit_store`` (RES-2) — an admin bypass close is AUDITED, a member self-close is not.
+            # #441 (design §2.2 — 63-rulings §10.9-D realised): authorize the supersede-close FIRST
+            # (the Python leg, deny-first, NO effect) — a member superseding a FOREIGN row is stopped
+            # here before any durable trace lands. The guarded CLOSE then rides the SAME composed
+            # transaction as the new-row UPSERT below (close + create in-store atomic), so a failed
+            # create rolls the close back. Bypass-reachable (an admin may close a foreign row) → the
+            # plan carries the backend's ``audit_store`` (RES-2): an admin bypass close is AUDITED.
+            plan = None
             if supersedes is not None:
-                await governed.guarded_write(
+                plan = await governed.authorize_guarded(
                     subject,
                     pdp.Action.WRITE,
                     table=MEMORY_TABLE,
                     row_id=supersedes,
-                    # ``superseded_by`` is ``option<string>`` (surreal_schema) — a STRING literal,
-                    # NEVER ``type::record()`` (that field-coerces and rolls the txn back). The new
-                    # ``memory_id`` is a deterministic uuid5 (hex+dashes — safe to inline). The
-                    # close ``valid_until`` self-stamps server-side (``guarded_write``'s raw
-                    # ``set_fragment`` takes no bound params of its own).
-                    set_fragment=(
-                        f"{_COL_VALID_UNTIL} = time::now(), "
-                        f"{_COL_SUPERSEDED_BY} = '{memory_id}'"
-                    ),
                     audit=self.audit_store,
                     store=self.handle,
                 )
 
-            # Durable write-through FIRST: the ledger row is the copy a Surreal
-            # failure/wipe cannot touch, keyed on the deterministic id so a re-save
-            # collapses to one row and a restore re-mints in place.
+            # Durable write-through FIRST (FP-06): the ledger row is the copy a Surreal failure
+            # cannot touch, keyed on the deterministic id. It carries the governance + lifecycle
+            # stamps a rebuild reconstructs the row FROM (#436).
             if self._ledger is not None:
                 self._ledger.record(
                     memory_id=memory_id,
@@ -668,35 +656,67 @@ class LocalMemoryBackend:
                     metadata=self._ledger_metadata(
                         kind, resolved_importance, resolved_labels, resolved_source,
                         resolved_expires, supersedes,
+                        owner_principal=subject.principal_id,
+                        owner_agent=subject.agent_id,
+                        scope=resolved_scope,
+                        created_at=now,
                     ),
                     refs_stamp=refs_stamp,
                 )
 
             vector = await self._embed_document(text, memory_id)
+            # Stamp the GOVERNED + lifecycle columns from the RESOLVED subject (never a caller arg —
+            # F4) + the PDP-validated scope. ``remember`` is a CREATE, so created_at == valid_from ==
+            # now (the SAME client instant the supersede-close stamps as the predecessor's
+            # valid_until — so a rebuild reproduces both byte-identically, design §3.2).
             content = self._build_content(
                 text=text,
                 kind=kind,
                 labels=resolved_labels,
                 source=resolved_source,
                 importance=resolved_importance,
-                now=now,
+                created_at=now,
+                valid_from=now,
                 expires_at=resolved_expires,
                 supersedes=supersedes,
                 vector=vector,
+                owner_principal=subject.principal_id,
+                owner_agent=subject.agent_id,
+                scope=resolved_scope,
             )
-            # Stamp the GOVERNED columns from the RESOLVED subject (never a caller arg — F4) + the
-            # PDP-validated scope. Owners bind as record<> links (store-ref §2). ``remember`` is a
-            # CREATE of a NEW row (the creator owns it), so it stamps directly — it is the WRITE on
-            # an EXISTING, possibly foreign-owned row (``invalidate`` AND the supersede-close above)
-            # that routes through guarded_write.
-            content[_COL_OWNER_PRINCIPAL] = RecordID(PRINCIPAL_TABLE, subject.principal_id)
-            content[_COL_OWNER_AGENT] = RecordID(AGENT_TABLE, subject.agent_id)
-            content[_COL_SCOPE] = resolved_scope
-            # F5 (design §10.9-A L2a/L2b): the create-path UPSERT is an allowlisted RAW memory
-            # mutation; run it inside ``governed.write_guard`` so the F5 runtime seam attributes it
-            # to this frame (a memory write outside every guard is UNCLASSIFIED — deny-by-default).
+            # ONE composed transaction: the guarded close (when superseding) + the new-row UPSERT,
+            # under ``write_guard("remember")`` (F5 attributes the whole write to this frame: a
+            # created row + a predecessor close). The close uses ``now`` as valid_until so replay
+            # reproduces it from the successor's ledger created_at.
+            fragments: list[TxnFragment] = []
+            if plan is not None:
+                fragments.extend(
+                    plan.fragments(
+                        f"{_COL_VALID_UNTIL} = $gw_close_ts, {_COL_SUPERSEDED_BY} = $gw_succ",
+                        {"gw_close_ts": now, "gw_succ": memory_id},
+                    )
+                )
+            fragments.append(self._upsert_fragment(memory_id, content))
             with governed.write_guard("remember"):
-                await self._apply([self._upsert_fragment(memory_id, content)])
+                try:
+                    await self._apply(fragments)
+                except Exception as error:
+                    # #441 compensation is SUPERSEDE-SCOPED (design §2.2 step 4 describes the
+                    # COMPOSED supersede flow): delete the durable ledger row ONLY when a guarded
+                    # close was composed (``plan is not None``). A PLAIN ``remember`` (no supersede)
+                    # must KEEP its ledger row on a store failure — that is the FP-06 durability
+                    # guarantee (the ledger is the copy a Surreal failure/wipe cannot touch; a later
+                    # restore re-embeds it), pinned by
+                    # test_memory_backend.py::TestDurabilityWriteThrough. Compensating a plain
+                    # remember would delete the exact row FP-06 exists to preserve.
+                    if plan is not None and self._ledger is not None:
+                        self._ledger.delete(memory_id)
+                    if isinstance(error, TxnGovernedConflictError):
+                        raise governed.GovernedConflict(
+                            f"the supersede-close on {MEMORY_TABLE}:{supersedes} matched ZERO rows "
+                            "— a concurrent scope/owner change landed (no silent no-op)"
+                        ) from error
+                    raise
         return memory_id
 
     async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
@@ -745,6 +765,21 @@ class LocalMemoryBackend:
                 audit=self.audit_store,
                 store=self.handle,
             )
+            # #436/#453 (design §3.2): record the close DURABLY so a rebuild does not REVIVE the
+            # retired memory. Store-first (the store is the arbiter of the close's legality), then
+            # mirror the exact ``valid_until`` the store stamped into the ledger via ``retire``.
+            if self._ledger is not None:
+                closed_rows = self._as_rows(
+                    await self._query(
+                        f"SELECT {_COL_VALID_UNTIL} FROM type::record('{MEMORY_TABLE}', $id)",
+                        {"id": memory_id},
+                    )
+                )
+                closed_at = closed_rows[0].get(_COL_VALID_UNTIL) if closed_rows else None
+                if isinstance(closed_at, datetime):
+                    self._ledger.retire(
+                        memory_id, valid_until=closed_at.isoformat(), superseded_by=None
+                    )
 
     async def _resolve_write_scope(self, subject: Subject, scope: str | None) -> str:
         """Resolve a ``remember`` write's scope (design §2.4). An OMITTED scope defaults to the
@@ -1286,6 +1321,14 @@ class LocalMemoryBackend:
         expires_at = self._parse_iso(metadata.get(_META_EXPIRES_AT))
         supersedes = metadata.get(_META_SUPERSEDES)
         now = datetime.now(UTC)
+        # #436: reconstruct the governance + lifecycle stamps FROM the ledger; a pre-63b row lacks
+        # them → NONE owner/scope (FAIL-CLOSED) and created_at/valid_from default to the replay now.
+        owner_principal = metadata.get(_COL_OWNER_PRINCIPAL)
+        owner_agent = metadata.get(_COL_OWNER_AGENT)
+        scope = metadata.get(_COL_SCOPE)
+        created_at = self._parse_iso(metadata.get(_COL_CREATED_AT)) or now
+        valid_until = self._parse_iso(metadata.get(_COL_VALID_UNTIL))
+        superseded_by = metadata.get(_COL_SUPERSEDED_BY)
         vector = await self._embed_document(record.text, record.memory_id)
         content = self._build_content(
             text=record.text,
@@ -1293,16 +1336,43 @@ class LocalMemoryBackend:
             labels=labels,
             source=source,
             importance=importance,
-            now=now,
+            created_at=created_at,
+            valid_from=created_at,
             expires_at=expires_at,
             supersedes=supersedes if isinstance(supersedes, str) else None,
             vector=vector,
+            owner_principal=owner_principal if isinstance(owner_principal, str) else None,
+            owner_agent=owner_agent if isinstance(owner_agent, str) else None,
+            scope=scope if isinstance(scope, str) else None,
+            valid_until=valid_until,
+            superseded_by=superseded_by if isinstance(superseded_by, str) else None,
         )
         # F5 (design §10.9-A L2a): the ledger-replay UPSERT is an allowlisted RAW memory mutation
         # (RES-1 boot/admin — the STORED id, never a re-derivation); run it inside
         # ``governed.write_guard`` so it is attributable at the F5 seam.
+        fragments: list[TxnFragment] = [self._upsert_fragment(record.memory_id, content)]
+        # #436/#453 (design §3.2 / §5.1 Q2): a record that SUPERSEDES a predecessor composes the
+        # predecessor CLOSE into the SAME replay transaction — the NEW raw L1 site in _replay_record.
+        # The close ts is THIS record's created_at (the successor's create instant == the original
+        # close instant), so the predecessor's valid_until is reproduced byte-identically. Idempotent
+        # (WHERE superseded_by IS NONE OR = this successor's id).
+        if isinstance(supersedes, str):
+            fragments.append(
+                TxnFragment(
+                    statements=[
+                        f"UPDATE type::record('{MEMORY_TABLE}', $rc_pred) "
+                        f"SET {_COL_VALID_UNTIL} = $rc_close_ts, {_COL_SUPERSEDED_BY} = $rc_succ "
+                        f"WHERE {_COL_SUPERSEDED_BY} IS NONE OR {_COL_SUPERSEDED_BY} = $rc_succ"
+                    ],
+                    params={
+                        "rc_pred": supersedes,
+                        "rc_close_ts": created_at,
+                        "rc_succ": record.memory_id,
+                    },
+                )
+            )
         with governed.write_guard("_replay_record"):
-            await self._apply([self._upsert_fragment(record.memory_id, content)])
+            await self._apply(fragments)
 
     # -- write helpers ------------------------------------------------------
 
@@ -1314,12 +1384,18 @@ class LocalMemoryBackend:
         source: MemorySource,
         expires_at: datetime | None,
         supersedes: str | None,
+        *,
+        owner_principal: str,
+        owner_agent: str,
+        scope: str,
+        created_at: datetime,
     ) -> dict[str, Any]:
         """The v2 wire fields stamped into the durable ledger row's JSON metadata.
 
-        Carried so a future replay can restore the row faithfully; a pre-v2 row
-        lacks these and the replay DEFAULTS fill in. Every value is JSON-safe
-        (datetimes as ISO strings) since the ledger serialises via ``json.dumps``.
+        Carried so a future replay can restore the row faithfully; a pre-63b row lacks the
+        governance/lifecycle keys and the replay FAIL-CLOSED defaults fill in (design §3.2 / #436).
+        Every value is JSON-safe (datetimes as ISO strings) since the ledger serialises via
+        ``json.dumps``. ``valid_until``/``superseded_by`` are stamped later by ``retire``.
         """
         return {
             _META_KIND: kind,
@@ -1328,6 +1404,11 @@ class LocalMemoryBackend:
             _META_SOURCE: source.model_dump(),
             _META_EXPIRES_AT: expires_at.isoformat() if expires_at is not None else None,
             _META_SUPERSEDES: supersedes,
+            # #436: the governance + lifecycle stamps a rebuild reconstructs the row FROM.
+            _COL_OWNER_PRINCIPAL: owner_principal,
+            _COL_OWNER_AGENT: owner_agent,
+            _COL_SCOPE: scope,
+            _COL_CREATED_AT: created_at.isoformat(),
         }
 
     @staticmethod
@@ -1338,17 +1419,25 @@ class LocalMemoryBackend:
         labels: list[str],
         source: MemorySource,
         importance: float,
-        now: datetime,
+        created_at: datetime,
+        valid_from: datetime,
         expires_at: datetime | None,
         supersedes: str | None,
         vector: list[float],
+        owner_principal: str | None = None,
+        owner_agent: str | None = None,
+        scope: str | None = None,
+        valid_until: datetime | None = None,
+        superseded_by: str | None = None,
     ) -> dict[str, Any]:
-        """Shape the ``memory`` row content for an UPSERT (save + replay share this).
+        """Shape the ``memory`` row content for an UPSERT (save + replay share this — #436).
 
-        Sets every REQUIRED column; the option columns not set here
-        (``valid_until``/``superseded_by``/``memory_category``) default to
-        ``NONE`` (a live, un-categorised row). ``valid_from`` == ``created_at`` ==
-        ``now`` so a fresh row's temporal window opens at its creation instant.
+        Sets every REQUIRED column plus the governance + lifecycle stamps the caller supplies.
+        ``created_at``/``valid_from`` are PARAMETERS (not ``now``) so a replay reconstructs the
+        ORIGINAL temporal window from the ledger rather than re-stamping the rebuild instant. The
+        owner pair binds as ``record<>`` links; a legacy row with a NONE owner/scope FAILS CLOSED
+        (member-invisible by the 61 predicate). ``valid_until``/``superseded_by`` are set only when
+        present (a live row leaves them NONE).
         """
         content: dict[str, Any] = {
             _COL_NOTE_TEXT: text,
@@ -1356,14 +1445,24 @@ class LocalMemoryBackend:
             _COL_LABELS: list(labels),
             _COL_SOURCE: source.model_dump(),
             _COL_IMPORTANCE: importance,
-            _COL_VALID_FROM: now,
-            _COL_CREATED_AT: now,
+            _COL_VALID_FROM: valid_from,
+            _COL_CREATED_AT: created_at,
             _COL_EMBEDDING: vector,
         }
         if expires_at is not None:
             content[_COL_EXPIRES_AT] = expires_at
         if supersedes is not None:
             content[_COL_SUPERSEDES] = supersedes
+        if owner_principal is not None:
+            content[_COL_OWNER_PRINCIPAL] = RecordID(PRINCIPAL_TABLE, owner_principal)
+        if owner_agent is not None:
+            content[_COL_OWNER_AGENT] = RecordID(AGENT_TABLE, owner_agent)
+        if scope is not None:
+            content[_COL_SCOPE] = scope
+        if valid_until is not None:
+            content[_COL_VALID_UNTIL] = valid_until
+        if superseded_by is not None:
+            content[_COL_SUPERSEDED_BY] = superseded_by
         return content
 
     @staticmethod

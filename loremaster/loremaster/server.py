@@ -4210,13 +4210,34 @@ class AppContext:
         recalled = await self.memory_backend.recall(
             query, k=k, kind=kind, labels=labels, subject=subject
         )
-        return self._render_recalled_memories(recalled)
+        return self._render_recalled_memories(recalled, subject=subject)
 
     @staticmethod
-    def _render_recalled_memories(recalled: list[RecalledMemory]) -> str:
-        """Render recalled memories as a compact markdown digest (never a raw row)."""
+    def render_subject_bound(subject: Any) -> Rendered:
+        """The #437 Subject-scope bound line — ONE function, DERIVED from the typed Subject.
+
+        ``scope: principal <principal_id> · agent <agent_id> · visible via <N> keep(s)`` with
+        ``N = len(subject.visible_keep_ids)``. ``0`` renders ``visible via 0 keep(s)`` — the bound is
+        NAMED, never a silent 'no memories match' (design §3.3 / 63-rulings §6). The server-derived
+        ids route through ``render_attributed`` (the #321 containment seam) so a forged id cannot
+        escape as a bare forgery line. No withheld count anywhere (an existence leak)."""
+        return render_line(
+            "scope: principal {principal} · agent {agent} · visible via {count} keep(s)",
+            principal=render_attributed(subject.principal_id),
+            agent=render_attributed(subject.agent_id),
+            count=len(subject.visible_keep_ids),
+        )
+
+    @staticmethod
+    def _render_recalled_memories(recalled: list[RecalledMemory], *, subject: Any) -> str:
+        """Render recalled memories as a compact markdown digest (never a raw row).
+
+        Prepends the #437 Subject-scope bound line via ``render_subject_bound`` — INCLUDING the empty
+        case (where the Leg-1 SCOPE-DIFF property matters most): an empty result names the caller's
+        scope, never a silent unscoped 'no memories match'."""
+        bound = str(AppContext.render_subject_bound(subject))
         if not recalled:
-            return _NO_MEMORIES_RECALLED
+            return f"{bound}\n{_NO_MEMORIES_RECALLED}"
         blocks: list[str] = []
         for memory in recalled:
             # Drift-mark each ref whose chunk the oracle reported missing so the
@@ -4234,7 +4255,7 @@ class AppContext:
             if rendered_refs:
                 lines.append(f"  refs: {rendered_refs}")
             blocks.append("\n".join(lines))
-        return "\n".join(blocks)
+        return bound + "\n" + "\n".join(blocks)
 
     async def claim_task(
         self,

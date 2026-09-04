@@ -192,6 +192,42 @@ class MemoryLedger:
         row = self._connection.execute("SELECT COUNT(*) FROM memories").fetchone()
         return int(row[0])
 
+    def retire(
+        self, memory_id: str, *, valid_until: str, superseded_by: str | None
+    ) -> None:
+        """Record a memory's CLOSE durably (design §3.2 / #436 / #453).
+
+        Merges ``valid_until`` (ISO) and ``superseded_by`` into the row's JSON metadata, so a
+        rebuild replays the row RETIRED instead of reviving it. Called by ``invalidate`` (and the
+        supersede path) AFTER the store transaction commits (the store is the arbiter of a close's
+        legality). A missing row is a no-op — nothing to retire.
+        """
+        existing = self._connection.execute(
+            f"SELECT {_COLUMN_METADATA} FROM memories WHERE {_COLUMN_MEMORY_ID} = ?",
+            (memory_id,),
+        ).fetchone()
+        if existing is None:
+            return
+        metadata = json.loads(existing[_COLUMN_METADATA])
+        metadata["valid_until"] = valid_until
+        metadata["superseded_by"] = superseded_by
+        self._connection.execute(
+            f"UPDATE memories SET {_COLUMN_METADATA} = ? WHERE {_COLUMN_MEMORY_ID} = ?",
+            (json.dumps(metadata), memory_id),
+        )
+        self._connection.commit()
+
+    def delete(self, memory_id: str) -> None:
+        """Remove a durable memory row (design §2.2 step 4 / #441 compensation).
+
+        Called when a composed supersede transaction fails AFTER the ledger write, so the orphan
+        successor row a rebuild would otherwise revive is removed. A missing row is a no-op.
+        """
+        self._connection.execute(
+            f"DELETE FROM memories WHERE {_COLUMN_MEMORY_ID} = ?", (memory_id,)
+        )
+        self._connection.commit()
+
     def close(self) -> None:
         """Close the underlying database connection."""
         self._connection.close()
