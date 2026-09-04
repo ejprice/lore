@@ -238,13 +238,37 @@ def _effect_reinforce(effect: ObservedEffect) -> bool:
     )
 
 
+#: The columns a supersede/invalidate CLOSE is permitted to touch (design §2.2 / §3.2). An updated
+#: row under the create/replay frame that touches anything else is a governed-column SEIZURE smuggled
+#: into the composed transaction — the exact wrong build the widening below catches.
+_CLOSE_COLUMNS = frozenset({"valid_until", "superseded_by"})
+
+
 def _effect_upsert(effect: ObservedEffect) -> bool:
-    """The create / ledger-replay UPSERT: a non-empty row effect (created or updated memory rows),
-    schema unchanged. (i-a keeps this coarse; i-b WIDENS it — the created row owned by the subject +
-    the predecessor-close delta — a per-entry DATA change, never the instrument, §5.1 Q2 ii.)"""
+    """The create / ledger-replay UPSERT — WIDENED by 63b-i-b (design §5.1 Q2 ii) for the #441
+    composed supersede + #436 composed replay-close: ``remember``/``_replay_record`` now compose the
+    predecessor CLOSE into the SAME transaction as the new-row CREATE, so ONE observed write carries
+    a created row AND an updated predecessor. The effect is CLASSIFIED iff, over a non-empty row set
+    with an unchanged schema, EVERY delta is EITHER a CREATE (remember / replay — the ``owner ≡
+    subject`` check stays F4's SEPARATE pin, not this structural leg) OR a predecessor CLOSE whose
+    changed columns are a subset of ``{valid_until, superseded_by}``. An updated row touching ANY
+    OTHER column (a governed-column seizure composed beside the create) → UNCLASSIFIED; a deleted row
+    (a create/replay never deletes) → UNCLASSIFIED.
+
+    ⚠ 63b-i-a shape was the COARSE ``all(kind in {created, updated})``; this tightens the UPDATE case
+    i-b introduces. At i-a (no composed close) the create/replay frames produce created rows only, so
+    the widened predicate behaves IDENTICALLY to the coarse one on the i-a shapes — the tightening
+    only bites the composed-close write i-b's build adds (the docstring note the i-a author left:
+    'i-a keeps this coarse; i-b WIDENS it')."""
     if not effect.schema_delta.is_empty or not effect.row_deltas:
         return False
-    return all(delta.kind in {"created", "updated"} for delta in effect.row_deltas)
+    for delta in effect.row_deltas:
+        if delta.kind == "created":
+            continue
+        if delta.kind == "updated" and delta.changed_columns <= _CLOSE_COLUMNS:
+            continue
+        return False
+    return True
 
 
 def _effect_guarded_write(effect: ObservedEffect) -> bool:
@@ -294,6 +318,29 @@ _UPSERT_ENTRY = TreeWriteAllowlistEntry(
     ),
     pin="test_a_non_owner_reremember_mints_a_distinct_id_and_does_not_seize_or_rescope",
     frames=("remember", "_replay_record"),
+    effect=_effect_upsert,
+)
+# 63b-i-b (design §5.1 Q2 / §3.2): #436's ledger-replay reconstructs a superseded row's CLOSE by
+# composing ``UPDATE type::record('{MEMORY_TABLE}', $p) SET valid_until/superseded_by`` INTO the SAME
+# replay transaction (boot/admin, RES-1 — never member-reachable). That is a NEW raw L1 site in
+# ``_replay_record`` (distinct from ``_upsert_fragment``'s UPSERT site), so deny-by-default requires
+# its OWN site-backed entry. It is registered on ``_UPSERT_ENTRY``'s SIBLING frame ``_replay_record``:
+# the close is composed with the create into ONE observed write (created row + predecessor close),
+# classified by the SAME widened ``_effect_upsert`` (a seizure fails it, an unlabelled close is
+# deny-by-default). ★RED-AT-b2f9b0e COUPLING★: at HEAD ``_replay_record`` has no UPDATE literal, so
+# this entry's site is not L1-derived and the i-a ghost pin (``test_every_derived_site_is_in_a_site_
+# backed_entry_and_no_ghost``) REDS as a ghost — GREEN once the i-b builder adds the #436 close literal.
+_REPLAY_CLOSE_ENTRY = TreeWriteAllowlistEntry(
+    site=TreeMutationSite(_LOCAL, "_replay_record", "UPDATE"),
+    justification=(
+        "#436/#453 (design §3.2 / §5.1 Q2): the ledger-replay composes the predecessor CLOSE (UPDATE "
+        "valid_until/superseded_by) into the SAME replay transaction as the new-row CREATE. Boot/admin "
+        "(RES-1), never member-reachable; the STORED superseded_by comes from the ledger, never a "
+        "re-derivation. Classified under the _replay_record label by the widened _effect_upsert "
+        "(created row + close, changed columns subset of {valid_until, superseded_by})."
+    ),
+    pin="test_the_replay_close_site_is_registered_and_derived",
+    frames=("_replay_record",),
     effect=_effect_upsert,
 )
 _REINFORCE_ENTRY = TreeWriteAllowlistEntry(
@@ -353,6 +400,7 @@ _GUARDED_WRITE_ENTRY = TreeWriteAllowlistEntry(
 )
 MEMORY_TREE_ALLOWLIST: tuple[TreeWriteAllowlistEntry, ...] = (
     _UPSERT_ENTRY,
+    _REPLAY_CLOSE_ENTRY,  # 63b-i-b: #436 composed replay-close site (design §5.1 Q2)
     _REINFORCE_ENTRY,
     _RECREATE_ENTRY,
     _MIGRATE_ENTRY,
