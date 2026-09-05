@@ -2194,3 +2194,21 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   `connect_spike_test_store()` would collapse fix6's allowlist), and `_defined_test_names` duplicated
   in test_memory_enforcement_63a_{iv,v}.py → 63b. **NEXT = 63b** (comms message family + dedicated
   security-auditor; owns the F5 runtime root-fix task `571ef1a` + #436/#437/#441), then 63c.
+- **2026-09-04 — 63b IN PROGRESS (i-a CLOSED; i-b BUILT, NOT closed; operator-directed checkpoint).**
+  Design ruled + committed (`0280757` + §5.1 `e4b8945` + §1.9 `103c661` + §2.5 `9a42ef4`;
+  sidecar-authoritative per operator delegation). **63b-i-a (F5 runtime root-fix, task `571ef1a`)
+  CLOSED**: effect-based verb/shape-agnostic detection at the `_sdk_guard` `query_raw` door (closes
+  the enumerate-the-forbidden reach class #444/#445/#448/#449). Contract `519c0bb`→`72fc220`
+  (adversary caught 2 reach/quantifier defects + a fixture-fiction oracle → §1.9 → revised →
+  SUFFICIENT; reviser found +2 C-DEFs); build `81250d8` (cold-audit GO, full suite 11077/0, currency
+  PASS); cleanup `b2f9b0e` (4 dead helpers, closed a #446-clone trap for ii-a). **63b-i-b (memory
+  fidelity #441/#436/#453/#437) BUILT (`6738402`), NOT CLOSED**: contract `6f64649`→`61dc97f`→`187201c`
+  (probe caught the §2.2 marker gap #456 → §2.5; adversary F1 §2.5-hygiene C-DEF; re-adversary #436
+  scope-monoculture → reviser-4); build `6738402` correct (target 747/0; builder caught+fixed reference
+  bugs B [R4 false-pos] + C [#131 FP-06 durability]). ⚠ **PENDING (fresh session): the i-b cross-cutting
+  reconciliation fix-wave** — 15 full-suite regressions ALL out of the build's writable set (10
+  render-instrument harnesses need subject + register `render_subject_bound`; 3 stale `63a_iv` twin →
+  delete/update; 1 secret-typing probe origin; 3 typecheck narrowings) + a C-residual
+  compensation-scope design fork (sidecar). Spec: `receipts/2026-09-04-packet63b/REPORT-build-63b-i-b.md`
+  §REGRESSIONS; handoff in `…/REPORT-lead-63b.md` + `lore_recall("63b-i-b build handoff")`. Then
+  cold-audit → i-b CLOSE → 63b-ii-a/ii-b/iii. All i-a+i-b reports → `receipts/2026-09-04-packet63b/`.
