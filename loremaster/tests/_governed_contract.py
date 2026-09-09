@@ -284,12 +284,6 @@ class GovernedTableCase:
     #: The tool's READ verbs and WRITE verbs (derived from its dispatch table; F3/F4 ∀).
     read_verbs: tuple[str, ...] = field(default_factory=tuple)
     write_verbs: tuple[str, ...] = field(default_factory=tuple)
-    #: F5 (design §10.9-A): the SOURCE of the module whose raw mutations of ``table`` are enforced
-    #: (e.g. ``lambda: Path(local.__file__).read_text()``), and the deny-by-default WRITE ALLOWLIST —
-    #: one (site, justification, pin) triple per raw (unguarded) mutation of ``table``. A raw mutation
-    #: NOT in the allowlist is a violation (deny-by-default). 64 supplies its table's own pair.
-    mutation_source: Callable[[], str] | None = None
-    write_allowlist: tuple[GovernedWriteAllowlistEntry, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -585,9 +579,10 @@ def python_allowed_ids(
 #
 # The deny-by-default, coverage-as-a-checked-variable instrument that closes the
 # enumerate-the-forbidden CLASS (memory write verbs were guarded ONE AT A TIME, each round green at
-# every gate — the instrument lesson). REUSABLE, parametrised per governed table via
-# GovernedTableCase.mutation_source + .write_allowlist; 63b (message) / 64 (task/finding) supply
-# their own pair and call the SAME runners — NEVER a cloned module (design §3.2 RIDER).
+# every gate — the instrument lesson). REUSABLE, parametrised per governed table: the WHOLE-TREE
+# deny-by-default allowlist (``TreeWriteAllowlistEntry`` / e.g. ``MEMORY_TREE_ALLOWLIST``, scanned by
+# ``governed_table_raw_mutation_sites_in_tree``) is the shape 63b (message) / 64 (task/finding) reuse
+# — NEVER a cloned module (design §3.2 RIDER).
 #
 # THREE layers (design §10.9-A):
 #  L1 STRUCTURAL (AST, derived): every RAW SurrealQL mutation of the table, keyed by enclosing
@@ -728,20 +723,6 @@ class MutationSite:
 
     function: str
     verb: str  # one of _MUTATION_VERBS (upper-cased)
-
-
-@dataclass(frozen=True)
-class GovernedWriteAllowlistEntry:
-    """One deny-by-default allowlist entry (design §10.9-A layer 3): a (site, justification, pin,
-    frames) 4-tuple. ``pin`` is the EVIDENCE — a test node/name whose existence justifies the raw
-    write; an entry whose pin is deleted leaves the allowlist. ``frames`` are the functions that must
-    wrap the statement's execution in ``governed.write_guard`` (the statement's enclosing function
-    for a self-contained mutation; the CALLERS for a shared fragment-builder like _upsert_fragment)."""
-
-    site: MutationSite
-    justification: str
-    pin: str
-    frames: tuple[str, ...]
 
 
 def _statement_shape(node: ast.expr) -> str | None:
@@ -888,29 +869,6 @@ def governed_table_raw_mutation_sites(
     return frozenset(sites)
 
 
-def governed_table_guarded_write_frames(
-    source: str, table: str, *, table_const_hint: str = "MEMORY_TABLE"
-) -> frozenset[str]:
-    """Every function calling ``guarded_write(table=<table>)`` — the GUARDED (safe-by-construction)
-    set. A guarded_write call carries no raw mutation string (governed.py builds it), so it is NOT a
-    raw site; this set is reported for completeness / the L1 anti-vacuity leg."""
-    tree = ast.parse(source)
-    owner = _enclosing_functions(tree)
-    frames: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or call_name(node) != "guarded_write":
-            continue
-        for keyword in node.keywords:
-            if keyword.arg == "table":
-                value = keyword.value
-                hit = (isinstance(value, ast.Name) and value.id == table_const_hint) or (
-                    isinstance(value, ast.Constant) and value.value == table
-                )
-                if hit:
-                    frames.add(owner.get(id(node), "<module>"))
-    return frozenset(frames)
-
-
 def call_name(call: ast.Call) -> str | None:
     """The called name of an ``ast.Call`` — the attribute (``a.b()`` → ``b``) or the bare id
     (``f()`` → ``f``), else None. ONE implementation for every AST scanner here (and the per-table
@@ -936,13 +894,6 @@ def function_calls_named(source: str, function: str, called: str) -> bool:
                 if isinstance(inner, ast.Call) and call_name(inner) == called:
                     return True
     return False
-
-
-def function_calls_write_guard(source: str, function: str) -> bool:
-    """True iff ``function`` (in ``source``) calls ``write_guard(...)`` / ``governed.write_guard(...)``
-    (design §10.9-A L2a — the frame sets its own guard context). RED at HEAD (unwired). ONE
-    IMPLEMENTATION: delegates to :func:`function_calls_named` (the channel-agnostic scan)."""
-    return function_calls_named(source, function, "write_guard")
 
 
 # =========================================================================== #
@@ -1463,17 +1414,19 @@ def governed_table_raw_mutation_sites_in_tree(
 
 @dataclass(frozen=True)
 class TreeWriteAllowlistEntry:
-    """One WHOLE-TREE deny-by-default allowlist entry (design §10.9-A CORRECTION). Extends the
-    local.py :class:`GovernedWriteAllowlistEntry` with the FILE (a tree site is (file, function,
-    verb)) and the L2 ATTRIBUTION CHANNEL:
+    """One WHOLE-TREE deny-by-default allowlist entry (design §10.9-A CORRECTION). A tree site is
+    (file, function, verb) — the whole-tree shape (superseding the retired per-file local.py entry)
+    — plus the L2 ATTRIBUTION CHANNEL:
 
     - ``exempt_name`` — the NAMED ``governed.governed_exempt`` token a non-``write_guard`` admin site
       carries (design step 4: migrate-governed uses ``governed_exempt("migrate-governed")`` rather
       than ``write_guard``, because it is NOT member-reachable — exempt-WITH-JUSTIFICATION, never
       silently dropped). ``None`` ⟺ the site attributes via ``write_guard`` frames instead.
-    - ``runtime_observed`` — whether the L2b battery exercises the site. The #445 boot/admin bound:
-      ``_recreate_memory_table`` / ``_replay_record`` carry L2a structural coverage ONLY (never
-      member verbs), so they are ``runtime_observed=False`` with their named re-open trigger."""
+    - ``runtime_observed`` — whether the L2b battery exercises the site. Since 63b-i-a §5.1 Q1 the
+      memory table's ``_recreate_memory_table`` and ``_replay_record`` ARE driven under observation
+      (the rebuild / replay batteries), so both carry ``runtime_observed=True`` (the #445 boot/admin
+      bound shrank to nothing); ``runtime_observed=False`` remains for a site no battery can reach,
+      carrying its named re-open trigger."""
 
     site: TreeMutationSite
     justification: str
@@ -1496,7 +1449,7 @@ class TreeWriteAllowlistEntry:
     # mutation LITERAL — ``ensure_ready`` passes ``generate_memory_ddl()`` (a call result), not a
     # literal SurrealQL string, so the L1 AST scan never derives it as a site. ``l1_site=False``
     # marks such a label-only entry so the L1 containment ghost-check EXCLUDES it (it is covered by
-    # the L2 effect leg + L2a ``function_calls_write_guard``, never by a derived L1 site). Default
+    # the L2 effect leg + L2a ``function_calls_named``, never by a derived L1 site). Default
     # True — a site-backed entry (a raw literal L1 derives). Substrate-shape (report §decision).
     l1_site: bool = True
 
@@ -1712,7 +1665,7 @@ def exempt_frame_raw_memory_mutations(
 
 #: The ``surreal_schema`` emitter whose CALLERS define the governed node set (design §1.9 item 2)
 #: and the relation-table emitter whose governed endpoints extend it — the anchor names the
-#: derivation keys on, the same way ``function_calls_write_guard`` keys on ``write_guard``.
+#: derivation keys on, the same way ``function_calls_named`` keys on its ``called`` name.
 _GOVERNED_FIELD_SPECS_EMITTER = "_governed_field_specs"
 _DEFINE_RELATION_EMITTER = "_define_relation_table"
 

@@ -40,7 +40,7 @@ lead may veto): (1) an allowlist entry's ``effect`` predicate takes the WHOLE ``
 (rows + schema delta), not the literal ``Callable[[RowDelta], bool]`` §1.4 wrote — one field serves
 a row entry AND a DDL frame (§5.1 Q1's schema-delta effect). (2) a DDL/label frame (``ensure_ready``
 / ``guarded_write``) carries ``l1_site=False`` — it has NO raw-literal L1 site, so the L1 ghost-check
-excludes it (covered by the L2 effect leg + L2a ``function_calls_write_guard``).
+excludes it (covered by the L2 effect leg + L2a ``function_calls_named``).
 
 The 63a-iv/63a-v F5 pins keyed on the RETIRED verb-based shapes (the 2-leg classifier controls, the
 live-migration ``extra_modules`` leg, the L2b label-seam battery, the R4-a/R4-c bounds, the
@@ -54,6 +54,7 @@ for an unreachable store — a LOUD failure, never a skip. pytest runs ``-n auto
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,7 @@ from _governed_contract import (
     TreeWriteAllowlistEntry,
     _raw_mutation_of_table,
     apply_ddl,
+    call_name,
     classify_tree_observed_write,
     derive_surrealql_statement_keywords_from_corpus,
     function_calls_named,
@@ -1444,6 +1446,52 @@ class TestEnsureReadyIsAnAllowlistedDdlFrame:
         assert _RECREATE_ENTRY.runtime_observed is True, (
             "_recreate_memory_table is still runtime_observed=False (the #445 boot/admin bound) — §5.1 "
             "Q1 FLIPS it: the i-a battery drives rebuild_embeddings under observation"
+        )
+
+
+# Moved VERBATIM from test_memory_enforcement_63a_iv.py (63b-i-b close-out rulings §1.3 C1): this
+# is the evidencing ``pin=`` of ``_RECREATE_ENTRY`` above, so it must live in a surviving module;
+# the 63a-iv twin module was retired in the same sweep. ``_SOURCE()`` reads local.py (helper below).
+def _local_source() -> str:
+    """local.py source for the moved recreate-reachability pin (mirrors the retired 63a-iv helper)."""
+    return Path(local_mod.__file__).read_text(encoding="utf-8")
+
+
+_SOURCE = _local_source
+
+
+class TestRecreateMemoryTableIsBootAdminOnly:
+    """The evidencing pin for the _recreate_memory_table allowlist entry (RES-1) — a REAL test, so the
+    entry is evidence not opinion. AST: _recreate_memory_table is CALLED only from rebuild_embeddings
+    (a boot/admin verb), never from a member-reachable path."""
+
+    def test_recreate_memory_table_is_reachable_only_from_rebuild_embeddings(self) -> None:
+        """⚠ GREEN at HEAD — REDDENS a build that calls _recreate_memory_table from a new caller (a
+        member verb), which would make the REMOVE reachable outside boot/admin (RES-1 broken)."""
+        tree = ast.parse(_SOURCE())
+        callers: set[str] = set()
+        current: list[str] = ["<module>"]
+
+        class _Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                current.append(node.name)
+                self.generic_visit(node)
+                current.pop()
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                current.append(node.name)
+                self.generic_visit(node)
+                current.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if call_name(node) == "_recreate_memory_table":
+                    callers.add(current[-1])
+                self.generic_visit(node)
+
+        _Visitor().visit(tree)
+        assert callers <= {"rebuild_embeddings"}, (
+            f"_recreate_memory_table (a REMOVE TABLE) is called from outside rebuild_embeddings: "
+            f"{sorted(callers - {'rebuild_embeddings'})} — boot/admin-only (RES-1) is broken"
         )
 
 

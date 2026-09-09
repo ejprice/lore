@@ -914,14 +914,6 @@ _ALLOWED_WHOLE_TREE_CLONE_FILES: dict[str, str] = {
         "construction becomes cross-member, OR ``parse_production_trees`` gains a single-package "
         "``roots=`` parameter that expresses a one-package reach."
     ),
-    "test_memory_enforcement_63a_iv.py": (
-        "63a memory-enforcement TEST-TREE meta-scanner (``_defined_test_names``): globs the TEST "
-        "dir and ast.parses each ``test_*.py`` to ENUMERATE ``def test_*`` names for the "
-        "allowlist-pin-existence leg — a test-dir enumeration (same class as this file's own "
-        "entry), NOT a whole-tree PRODUCTION parse; ``parse_production_trees`` scans production "
-        "source, not the test tree. RE-OPEN TRIGGER: this scan ever parses a workspace-.py "
-        "PRODUCTION source."
-    ),
     "test_memory_enforcement_63a_v.py": (
         "63a memory-enforcement TEST-TREE meta-scanner (``_defined_test_names``, the same "
         "enumeration as its ``_iv`` sibling): globs the TEST dir and ast.parses each ``test_*.py`` "
