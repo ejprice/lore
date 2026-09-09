@@ -589,6 +589,21 @@ async def probe(connection: Any) -> ProbeReport:
     )
     _require(report, ctrl_msg_scope, "IndexScan",
              "message_scope must IndexScan or the walker is blind on message.")
+    # §4.F ships TWO governed indexes on message: scope AND owner_principal. The member READ
+    # filter (P3) drives its UnionIndexScan off message_scope ALONE — owner_principal rides as a
+    # residual Filter inside each scope-keyed disjunct (store-ref §2: leading-column disjunction) —
+    # so NO other probe here ever index-scans message_owner_principal. This dedicated single-column
+    # equality is the ONLY receipt that the SECOND §4.F index is live and not mis-defined (a wrong
+    # column / wrong type would leave every OTHER message probe green). Mirrors CTRL memory
+    # owner_principal= exactly.
+    ctrl_msg_op = await explain(
+        report, connection, label="CTRL message owner_principal= (indexed → IndexScan)",
+        table=MESSAGE_TABLE, where=f"owner_principal = type::record('{PRINCIPAL_TABLE}', $p)",
+        params={"p": "alice"},
+    )
+    _require(report, ctrl_msg_op, "IndexScan",
+             "the message_owner_principal index must IndexScan or §4.F's second index is dead "
+             "(the member READ filter never exercises it — it drives off message_scope only).")
     # Walker CAN see a TableScan (unindexed equality), on BOTH real tables.
     ctrl_mem_kind = await explain(
         report, connection, label="CTRL memory kind= (unindexed → TableScan)",
