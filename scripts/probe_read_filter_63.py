@@ -563,7 +563,7 @@ def _read_fragment(table: str) -> tuple[str, dict[str, str]]:
     return authorize_filter(_SUBJECT, Action.READ, table).to_surql()
 
 
-async def probe(connection: Any) -> ProbeReport:
+async def probe(connection: Any) -> ProbeReport:  # noqa: PLR0915 — a flat, linear EXPLAIN-then-_require probe sequence; the statement count is inherent and splitting would fragment the readable linear flow (a de-risking probe script, not production).
     report = ProbeReport()
 
     mem_fragment, mem_params = _read_fragment(MEMORY_TABLE)
