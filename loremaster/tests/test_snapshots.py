@@ -88,6 +88,7 @@ from _surreal_harness import (
     PRODUCTION_DIM,
     TIER_A,
     SurrealEnv,
+    assert_domain_rejection,
     call_until_recovered,
     chunk_record,
     connect_admin,
@@ -1082,7 +1083,7 @@ class TestQueryClassifiedErrorPosture:
         message = str(exc_info.value)
         # A domain rejection is a STORE error, not a connection error, and the
         # healthy connection is never thrown away.
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert stamper._connection is connection_before
         # The raw engine text / the value it carries NEVER reaches the message.

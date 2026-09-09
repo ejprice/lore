@@ -98,6 +98,7 @@ from _surreal_harness import (
     TIER_A,
     TIER_B,
     SurrealEnv,
+    assert_domain_rejection,
     connect_admin,
     run,
     surreal_env,  # noqa: F401 - re-exported pytest fixture
@@ -1154,7 +1155,7 @@ class TestApplyMidTxnFailureRollsBackEverything:
             await apply_bench.store.apply(fragments)
         # A domain/schema rejection is a STORE error, never a connection fault,
         # and must never throw away a healthy connection.
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert apply_bench.store._connection is connection_before
 

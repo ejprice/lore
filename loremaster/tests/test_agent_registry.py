@@ -87,6 +87,7 @@ from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
+    assert_domain_rejection,
     connect_admin,
     drop_database,
     make_env,
@@ -980,7 +981,7 @@ class TestAgentRegistryConnectionLifecycle:
             with pytest.raises(SurrealStoreError) as exc_info:
                 await registry._query("UPDATE agent SET role = $r", {"r": "poison"})
         message = str(exc_info.value)
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert registry._connection is connection_before
         assert _AGENT_SENSITIVE_ENGINE_TEXT not in message

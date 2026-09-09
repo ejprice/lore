@@ -72,6 +72,7 @@ from _surreal_harness import (
     SurrealConnection,
     SurrealEnv,
     admin_db,  # noqa: F401 - re-exported pytest fixture
+    assert_domain_rejection,
     call_until_recovered,
     connect_admin,
     run,
@@ -2763,7 +2764,7 @@ class TestEnsureReadyRaisesOnLateDdlFailure:
             # healthy — must surface as a STORE error, never a silent success.
             with pytest.raises(SurrealStoreError) as exc_info:
                 await broken_graph.ensure_ready()
-            assert type(exc_info.value) is SurrealStoreError
+            assert_domain_rejection(exc_info.value)
             assert not isinstance(exc_info.value, SurrealConnectionError)
             assert broken_graph._connection is not None
         finally:
@@ -3004,7 +3005,7 @@ class TestQueryClassifiedErrorPosture:
         message = str(exc_info.value)
         # A domain rejection is a STORE error, not a connection error, and the
         # healthy connection is never thrown away.
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert graph._connection is connection_before
         # The raw engine text / the value it carries NEVER reaches the message.

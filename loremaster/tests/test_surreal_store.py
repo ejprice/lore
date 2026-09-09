@@ -60,6 +60,7 @@ from _surreal_harness import (
     TIER_B,
     SurrealConnection,
     SurrealEnv,
+    assert_domain_rejection,
     call_until_recovered,
     chunk_record,
     connect_admin,
@@ -751,7 +752,7 @@ class TestReplaceFile:
         # error, never miscategorized as a connection failure — the broad
         # ``pytest.raises(Exception)`` pattern is exactly what let this drift
         # elsewhere, so the type is pinned EXACTLY, not just "a subclass of".
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         # A healthy connection must never be nulled for a rejection that has
         # nothing to do with the transport.
@@ -854,7 +855,7 @@ class TestDomainRejectionErrorType:
         connection_before = store._connection
         with pytest.raises(SurrealStoreError) as exc_info:
             await store.upsert([(poison, unit_vector(0, dim))])
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert store._connection is connection_before
         assert await store.count() == 0  # nothing partially persisted
@@ -886,10 +887,13 @@ class TestDomainRejectionErrorType:
         assert _classify_engine_error("some unrelated rejection") == _ERROR_CLASS_UNSPECIFIED
 
     def test_the_domain_rejection_helper_maps_the_governed_label_to_the_typed_error(self) -> None:
-        """⚠ RED at HEAD (§2.5 point 3 — the ONE mapping helper). ``_domain_rejection_error(label,
-        msg)`` returns ``TxnGovernedConflictError`` iff ``label == _ERROR_CLASS_GOVERNED_CONFLICT``,
-        else the PLAIN ``SurrealStoreError`` — never a cloned ``if label ==`` at each raise site. RED
-        at HEAD: neither ``_domain_rejection_error`` nor ``TxnGovernedConflictError`` is built."""
+        """⚠ RED-until-built (§2.5 point 3 — the ONE mapping helper, SHARPENED by close-out rulings
+        §2.4-1). ``_domain_rejection_error(label, msg)`` returns ``TxnGovernedConflictError`` iff
+        ``label == _ERROR_CLASS_GOVERNED_CONFLICT``, else the TYPED ``TxnDomainRejectionError`` — never a
+        cloned ``if label ==`` at each raise site. ⚠ §2.4-1 SUPERSEDES the §2.5 "plain ``SurrealStoreError``"
+        mapping: a non-governed domain rejection now mints its OWN leaf so the #441 compensation can
+        classify it by type. RED-until-built: neither ``_domain_rejection_error`` nor the typed classes
+        are built at HEAD."""
         from loremaster.store import _txn
 
         helper = getattr(_txn, "_domain_rejection_error", None)
@@ -909,9 +913,18 @@ class TestDomainRejectionErrorType:
             "SurrealStoreError` keeps catching it (§2.5 point 1 — the TxnContentionExhaustedError shape)"
         )
         plain = helper(_ERROR_CLASS_ASSERT_VIOLATION, f"rejected ({_ERROR_CLASS_ASSERT_VIOLATION})")
-        assert type(plain) is SurrealStoreError, (
-            f"_domain_rejection_error returned {type(plain).__name__} for a NON-governed label — only "
-            "the governed label maps to the typed subclass (§2.5 point 3)"
+        # M-class mint contract (close-out rulings §B1.2-M): exact-type on the LEAF the helper MINTS is
+        # CORRECT — §2.4-1 supersedes §2.5's "plain SurrealStoreError" mapping, so a non-governed label
+        # mints the TYPED TxnDomainRejectionError. RED-until-built via the §2.5 getattr idiom.
+        domain_type = getattr(_txn, "TxnDomainRejectionError", None)
+        assert domain_type is not None, (
+            "loremaster.store._txn.TxnDomainRejectionError is UNBUILT (close-out rulings §2.4-1) — "
+            "RED-until-built"
+        )
+        assert type(plain) is domain_type and not isinstance(plain, governed_type), (
+            f"_domain_rejection_error returned {type(plain).__name__} for a NON-governed label — it must "
+            "be EXACTLY TxnDomainRejectionError (the typed domain leaf the helper mints), not "
+            "TxnGovernedConflictError and not the plain SurrealStoreError base (close-out rulings §2.4-1)"
         )
 
     def test_the_governed_conflict_label_carries_no_raw_marker_or_suffix(self) -> None:
@@ -1027,15 +1040,23 @@ class TestDomainRejectionErrorType:
             "the raw THROW text did not reach the server-side rollback log — the forensics were lost "
             "(§2.5 rider ii positive control)"
         )
-        # POSITIVE CONTROL: a NON-governed THROW → the PLAIN SurrealStoreError, never the subclass.
+        # POSITIVE CONTROL: a NON-governed THROW → the TYPED TxnDomainRejectionError (close-out rulings
+        # §2.4-1 supersedes §2.5's "plain SurrealStoreError" mapping), never the governed subclass. Both
+        # raise sites route the ONE _domain_rejection_error helper, so this leaf reaches both.
         other_statement, other_params = compose(
             TxnFragment(statements=['THROW "an unrelated domain rejection"'], params={})
         )
         with pytest.raises(SurrealStoreError) as plain_exc:
             await seam(other_statement, other_params, acquire=_acquire, drop=_drop, url=env.url)
-        assert type(plain_exc.value) is SurrealStoreError, (
-            f"a NON-governed THROW via {entry_point} raised {type(plain_exc.value).__name__} — only the "
-            "governed marker maps to the typed subclass (§2.5 point 3)"
+        domain_type = getattr(_txn, "TxnDomainRejectionError", None)
+        assert domain_type is not None, (
+            "loremaster.store._txn.TxnDomainRejectionError is UNBUILT (close-out rulings §2.4-1) — "
+            "RED-until-built"
+        )
+        assert type(plain_exc.value) is domain_type and not isinstance(plain_exc.value, governed_type), (
+            f"a NON-governed THROW via {entry_point} raised {type(plain_exc.value).__name__} — a "
+            "non-governed domain rejection mints the TYPED TxnDomainRejectionError (close-out rulings "
+            "§2.4-1), not the governed subclass"
         )
 
 
@@ -2121,7 +2142,7 @@ class TestEnsureReadyRaisesOnLateDdlFailure:
             # healthy) rather than a silent success.
             with pytest.raises(SurrealStoreError) as exc_info:
                 await broken_store.ensure_ready()
-            assert type(exc_info.value) is SurrealStoreError
+            assert_domain_rejection(exc_info.value)
             assert not isinstance(exc_info.value, SurrealConnectionError)
             # A domain rejection must never throw away a healthy connection.
             assert broken_store._connection is not None
@@ -4390,7 +4411,7 @@ class TestRecordTraceErrorPosture:
                 latency_ms=_TRACE_LATENCY_MS,
                 session=_TRACE_SESSION,
             )
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert store._connection is connection_before
         # Nothing partially persisted.
@@ -4495,7 +4516,7 @@ class TestQueryMessageHygiene:
         message = str(exc_info.value)
         # A domain rejection is a STORE error, not a connection error, and never
         # tears down the healthy connection (mirrors TestDomainRejectionErrorType).
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert store._connection is connection_before
         # The raw engine text / the value it carries NEVER reaches the message.

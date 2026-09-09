@@ -65,6 +65,7 @@ import pytest_asyncio
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
+    assert_domain_rejection,
     connect_admin,
     drop_database,
     make_env,
@@ -1712,7 +1713,7 @@ class TestQueryClassifiedErrorPosture:
         message = str(exc_info.value)
         # A domain rejection is a STORE error, not a connection error, and the
         # healthy connection is never thrown away.
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert ledger._connection is connection_before
         # The raw engine text / the value it carries NEVER reaches the message.

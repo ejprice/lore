@@ -71,6 +71,7 @@ from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
+    assert_domain_rejection,
     connect_admin,
     drop_database,
     make_env,
@@ -1218,7 +1219,7 @@ class TestQueryClassifiedErrorPosture:
                 await ledger._query("UPDATE finding SET status = $s", {"s": "poison"})
 
         message = str(exc_info.value)
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert ledger._connection is connection_before  # healthy connection kept
         assert _FINDING_SENSITIVE_ENGINE_TEXT not in message

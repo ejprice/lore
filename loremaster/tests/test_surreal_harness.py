@@ -1491,6 +1491,11 @@ _ALLOWED_MODULE_LEVEL_NAMES = frozenset(
         "_run_under_store_retry_seam",
         "_seam_default_deadline_seconds",
         "admin_db",
+        # The ONE shared F2 domain-rejection assertion (close-out rulings §B1.2-I): the ~19
+        # exact-type corpses route through it (brief-base §6, ONE IMPLEMENTATION). It is a test
+        # ASSERTION helper, NOT retry policy — it owns no budget, no backoff, no conflict marker,
+        # which is the property this allowlist protects.
+        "assert_domain_rejection",
         "call_until_recovered",
         "chunk_record",
         "connect_admin",

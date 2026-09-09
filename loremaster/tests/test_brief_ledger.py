@@ -105,6 +105,7 @@ from _comms_fakes import FakeBriefDatabase, FakeBriefLedger
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
+    assert_domain_rejection,
     connect_admin,
     drop_database,
     make_env,
@@ -1585,7 +1586,7 @@ class TestBriefLedgerConnectionLifecycle:
             with pytest.raises(SurrealStoreError) as exc_info:
                 await ledger._query("UPDATE brief SET body = $b", {"b": "poison"})
         message = str(exc_info.value)
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert ledger._connection is connection_before
         assert _BRIEF_SENSITIVE_ENGINE_TEXT not in message

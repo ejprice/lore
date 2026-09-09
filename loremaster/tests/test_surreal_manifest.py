@@ -105,6 +105,7 @@ from _surreal_harness import (
     TIER_A,
     TIER_B,
     SurrealEnv,
+    assert_domain_rejection,
     call_until_recovered,
     connect_admin,
     run,
@@ -436,7 +437,7 @@ class TestSetState:
         connection_before = manifest._connection
         with pytest.raises(SurrealStoreError) as exc_info:
             await manifest.set_state(TIER_A, _PROBE_PATH, _INVALID_STATE)
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         # A healthy connection must never be nulled for a rejection that has
         # nothing to do with the transport.
@@ -585,7 +586,7 @@ class TestReplace:
                 chunk_ids=["poison"],
                 state=_INVALID_STATE,  # out-of-domain — the poison
             )
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert manifest._connection is connection_before
         # The PRIOR row survives completely intact — no orphan, no gap.
@@ -1101,7 +1102,7 @@ class TestEnsureReadyRaisesOnLateDdlFailure:
             # healthy — must surface as a STORE error, never a silent success.
             with pytest.raises(SurrealStoreError) as exc_info:
                 await broken_manifest.ensure_ready()
-            assert type(exc_info.value) is SurrealStoreError
+            assert_domain_rejection(exc_info.value)
             assert not isinstance(exc_info.value, SurrealConnectionError)
             assert broken_manifest._connection is not None
         finally:
@@ -1339,7 +1340,7 @@ class TestQueryClassifiedErrorPosture:
         message = str(exc_info.value)
         # A domain rejection is a STORE error, not a connection error, and the
         # healthy connection is never thrown away.
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert manifest._connection is connection_before
         # The raw engine text / the value it carries NEVER reaches the message.

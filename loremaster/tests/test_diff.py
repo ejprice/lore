@@ -67,6 +67,7 @@ from _surreal_harness import (
     PRODUCTION_DIM,
     TIER_A,
     SurrealEnv,
+    assert_domain_rejection,
     call_until_recovered,
     chunk_record,
     connect_admin,
@@ -782,7 +783,7 @@ class TestQueryClassifiedErrorPosture:
                 await engine._query("SELECT * FROM snapshot")
 
         message = str(exc_info.value)
-        assert type(exc_info.value) is SurrealStoreError
+        assert_domain_rejection(exc_info.value)
         assert not isinstance(exc_info.value, SurrealConnectionError)
         assert engine._connection is connection_before  # healthy connection kept
         assert _DIFF_SENSITIVE_ENGINE_TEXT not in message

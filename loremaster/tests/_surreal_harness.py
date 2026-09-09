@@ -207,6 +207,45 @@ async def run(
     return await connection.query(statement, params)
 
 
+def assert_domain_rejection(error: BaseException) -> None:
+    """Assert ``error`` is a store DOMAIN REJECTION — the ONE shared assertion the F2 exact-type
+    corpses route through (close-out rulings §B1.2-I; brief-base §6, ONE IMPLEMENTATION).
+
+    A domain rejection is the TYPED :class:`~loremaster.store._txn.TxnDomainRejectionError` (a
+    ``SurrealStoreError`` that is NOT the transport subclass). This replaces the retired
+    ``assert type(x) is SurrealStoreError`` spelling, which — since FORK 2 §2.4-1 made
+    ``SurrealStoreError`` a NON-LEAF — certifies the OLD world and reds on the correct build. The
+    check is SHARPER than the corpse it replaces: it also excludes
+    :class:`~loremaster.store._txn.TxnContentionExhaustedError`, so "a store rejection, not a
+    connection error, not exhausted contention" is one predicate the ~19 I-class call sites share
+    (prove sharing by MUTATION: flip the predicate here → every caller reds).
+
+    RED-UNTIL-BUILT: ``TxnDomainRejectionError`` is a §2.4-1 BUILDER deliverable, so the ``getattr``
+    idiom (the §2.5 pins' own idiom) fails with a LEGIBLE message at HEAD rather than an
+    ``ImportError`` that would collapse to a collection error. The ``_txn`` import is IN-FUNCTION per
+    this module's RULING 1 (no module-level store import; pinned in ``test_surreal_harness.py``).
+
+    Args:
+        error: the exception a domain-rejecting call raised (typically ``exc_info.value``).
+    """
+    from loremaster.store import _txn
+
+    domain_rejection_error = getattr(_txn, "TxnDomainRejectionError", None)
+    assert domain_rejection_error is not None, (
+        "loremaster.store._txn.TxnDomainRejectionError is UNBUILT (close-out rulings §2.4-1) — a "
+        "domain rejection cannot yet be asserted by its typed class; RED-until-built"
+    )
+    assert isinstance(error, domain_rejection_error), (
+        "expected a store DOMAIN rejection (TxnDomainRejectionError, a SurrealStoreError subclass), "
+        f"got {type(error).__name__}: {error!r}"
+    )
+    assert not isinstance(error, _txn.SurrealConnectionError), (
+        "a domain rejection must NOT be a SurrealConnectionError — a transport failure has an "
+        "UNKNOWN outcome and is KEPT, never compensated (close-out rulings §2.2); the healthy "
+        f"connection is not thrown away. got {type(error).__name__}: {error!r}"
+    )
+
+
 @dataclass(frozen=True)
 class StoreTraffic:
     """What ONE measured call actually cost at the engine.
