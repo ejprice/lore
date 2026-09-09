@@ -281,15 +281,18 @@ class TestAComposedSupersedeIsOneObservedWriteUnderRemember:
         remember_writes = [w for w in writes if w.label == "remember"]
         guarded_writes = [w for w in writes if w.label == "guarded_write"]
         # The composed supersede is ONE remember write carrying a created row AND a predecessor close.
+        # (``w.effect is not None`` is guaranteed by the ``writes`` filter above — restated at each
+        # access site to narrow ``ObservedEffect | None`` for mypy; always true, changes no behaviour.)
         composed = [
             w for w in remember_writes
-            if any(d.kind == "created" for d in w.effect.row_deltas)
+            if w.effect is not None
+            and any(d.kind == "created" for d in w.effect.row_deltas)
             and any(d.kind == "updated" for d in w.effect.row_deltas)
         ]
         assert composed, (
             "no single `remember`-labelled write carried BOTH a created row and a predecessor close — "
             "the supersede close was not composed into the create's transaction (design §2.2). "
-            f"remember writes' deltas: {[[d.kind for d in w.effect.row_deltas] for w in remember_writes]}; "
+            f"remember writes' deltas: {[[d.kind for d in w.effect.row_deltas] for w in remember_writes if w.effect is not None]}; "
             f"guarded_write writes: {len(guarded_writes)}"
         )
         assert not guarded_writes, (
