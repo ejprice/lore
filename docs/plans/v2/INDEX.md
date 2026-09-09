@@ -2212,3 +2212,18 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   compensation-scope design fork (sidecar). Spec: `receipts/2026-09-04-packet63b/REPORT-build-63b-i-b.md`
   §REGRESSIONS; handoff in `…/REPORT-lead-63b.md` + `lore_recall("63b-i-b build handoff")`. Then
   cold-audit → i-b CLOSE → 63b-ii-a/ii-b/iii. All i-a+i-b reports → `receipts/2026-09-04-packet63b/`.
+- **2026-09-09 — 63b-i-b CLOSED (memory fidelity #441/#436/#453/#437 + F5; full fix, operator Option-B).**
+  Fresh session `lead-63b-s2`. 8 commits `c658781..f64c875`: secret-typing `20a58c0` · typecheck `46288b6`
+  (+ ruff-E501 fix `a047eea`, #460 lead regression) · Class A render-coverage `198bbf2` (FORK-B ruled
+  Reading A — `render_subject_bound` stays out of the leak-capable P-U universe; OUT status a checked
+  variable) · 63a_iv twin retirement `9e0524d` (Class D §1.2+§1.3, module deleted, virtues preserved by
+  named pins) · FORK 2 RED contract `98cf52c` → adversary INSUFFICIENT (B1: the SurrealStoreError→
+  TxnDomainRejectionError retype reds 21 exact-type corpses the 2-file satisfiability hid) → Fable B1
+  ruling (retype STANDS; M/I/P policy via ONE `assert_domain_rejection` helper; whole-tree invariant pin;
+  disjointness pin) → B1 revision `ae180c9` → re-adversary SUFFICIENT → §2.4 build `f64c875` (domain-only
+  #441 compensation + FLAG-1 pair-guarded replay close + FLAG-2 retire-P, shipped together). Cold-audit
+  `cold-audit-63b-ib` **GO** (builder≠grader, FULL suite ALONE 11132/0, currency 0 RED_ORPHANED, typecheck
+  + ruff clean; FORK-B/FLAG-1/2/ONE-mapping mutation receipts all HELD). Residuals (non-blocking): #461
+  (gate mypy-self-destruct on a pytest-only bound — MOOT, bound discharged), #462/obs-1 (ledger.retire
+  foreign-supersede durability edge, LOW). Reports → `receipts/2026-09-09-packet63b-ib/`. NEXT = 63b-ii-a
+  (message write side). ⚠ Fable design-sidecar hit a session-limit mid-wave (recovered); quota risk for ii/iii.

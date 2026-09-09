@@ -840,6 +840,13 @@ text (which the boundary forbids). Superseded by this section.
    `_domain_rejection_error(error_class, message) -> SurrealStoreError` that returns
    `TxnGovernedConflictError` iff the label is the governed one, else the plain type. Two raise sites,
    one mapping — never a cloned `if label == …` at each.
+   > ⚠ **SUPERSEDED (FLAG-6, 2026-09-08 close-out rulings §2.4-1 / FORK 2; built `f64c875`):** the
+   > "else the plain type" clause is RETIRED — `_domain_rejection_error` now returns the NEW
+   > `TxnDomainRejectionError` (a subclass of `SurrealStoreError`; `TxnGovernedConflictError` in turn
+   > subclasses IT) for the non-governed label, so the #441 compensation can narrow to DOMAIN-rejection-
+   > only. `except SurrealStoreError`/`isinstance` are unaffected; only exact-type checks changed
+   > (the B1 corpse reconciliation, `ae180c9`). See `docs/design/2026-09-08-packet63b-ib-closeout-rulings.md`
+   > §"FORK 2 — ADVERSARY BLOCKER B1".
 4. **`governed` catches the TYPE, never text:** `except TxnGovernedConflictError as error: raise
    GovernedConflict(f"… {table}:{row_id} …") from error` — in `guarded_write` (standalone) and in the
    composed path (`remember`, which also runs its ledger compensation on this path per §2.2 step 4).
