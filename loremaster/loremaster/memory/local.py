@@ -64,6 +64,7 @@ from loremaster.store._txn import (
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
+    TxnDomainRejectionError,
     TxnFragment,
     TxnGovernedConflictError,
     _SurrealConnection,
@@ -701,15 +702,33 @@ class LocalMemoryBackend:
                 try:
                     await self._apply(fragments)
                 except Exception as error:
-                    # #441 compensation is SUPERSEDE-SCOPED (design §2.2 step 4 describes the
-                    # COMPOSED supersede flow): delete the durable ledger row ONLY when a guarded
-                    # close was composed (``plan is not None``). A PLAIN ``remember`` (no supersede)
-                    # must KEEP its ledger row on a store failure — that is the FP-06 durability
-                    # guarantee (the ledger is the copy a Surreal failure/wipe cannot touch; a later
-                    # restore re-embeds it), pinned by
-                    # test_memory_backend.py::TestDurabilityWriteThrough. Compensating a plain
-                    # remember would delete the exact row FP-06 exists to preserve.
-                    if plan is not None and self._ledger is not None:
+                    # #441 compensation is DOMAIN-scoped (close-out rulings §2.4-2): delete the
+                    # durable ledger row ONLY when BOTH (a) a guarded supersede-close was composed
+                    # (``plan is not None``) AND (b) the store gave a TYPED DOMAIN REJECTION
+                    # (``TxnDomainRejectionError`` — an ASSERT/coercion/governed-conflict ``ERR`` the
+                    # rollback verdict classified non-retryable). A domain rejection is a KNOWN
+                    # outcome: the txn rolled back, NOTHING landed, retrying would never succeed — so
+                    # the ledger row is a promise the store will never honour, and compensating
+                    # (removing the orphan successor) is correct.
+                    #
+                    # KEEP the row on EVERY other cause. Transport (``SurrealConnectionError``) is an
+                    # UNKNOWN outcome — the COMMIT may have applied server-side with the response lost
+                    # (store-ref §3), so the successor + predecessor-close may be durable; deleting
+                    # the ledger row would then lose a landed write, and — because the ledger is
+                    # AUTHORITATIVE and ``rebuild_embeddings`` replays it (close-out §2.3) —
+                    # permanently. Exhausted contention and cancellation are likewise not store
+                    # rejections. Allowlist the ONE safe class; never enumerate the transport shapes.
+                    #
+                    # The ``plan is not None`` guard STAYS: a PLAIN ``remember`` (no supersede) has no
+                    # orphan-successor semantics and its ledger row is the copy a Surreal failure
+                    # cannot touch — the FP-06 durability guarantee, pinned by
+                    # test_memory_backend.py::TestDurabilityWriteThrough. Keeping the guard leaves
+                    # FP-06's construction unchanged (a plain remember NEVER compensates, on any cause).
+                    if (
+                        isinstance(error, TxnDomainRejectionError)
+                        and plan is not None
+                        and self._ledger is not None
+                    ):
                         self._ledger.delete(memory_id)
                     if isinstance(error, TxnGovernedConflictError):
                         raise governed.GovernedConflict(
@@ -717,6 +736,17 @@ class LocalMemoryBackend:
                             "— a concurrent scope/owner change landed (no silent no-op)"
                         ) from error
                     raise
+            # #458 / close-out rulings §2.4-3(a): retire the PREDECESSOR's own ledger row AFTER the
+            # composed txn commits (store-first — the store is the arbiter of the close's legality;
+            # this runs only past a clean ``_apply``, mirroring ``invalidate``'s durable close). P's
+            # ledger row then replays CLOSED whatever happens to S's replay, so a superseded
+            # predecessor's fidelity no longer depends solely on S's replay-close (FLAG-2). Ship
+            # together with the pair-guarded replay close (b) in ``_replay_record`` — (b) WITHOUT (a)
+            # revives P for an admin-bypass foreign supersede on rebuild (#453 re-opened).
+            if plan is not None and supersedes is not None and self._ledger is not None:
+                self._ledger.retire(
+                    supersedes, valid_until=now.isoformat(), superseded_by=memory_id
+                )
         return memory_id
 
     async def invalidate(self, memory_id: str, *, subject: Subject | None = None) -> None:
@@ -1351,26 +1381,63 @@ class LocalMemoryBackend:
         # (RES-1 boot/admin — the STORED id, never a re-derivation); run it inside
         # ``governed.write_guard`` so it is attributable at the F5 seam.
         fragments: list[TxnFragment] = [self._upsert_fragment(record.memory_id, content)]
-        # #436/#453 (design §3.2 / §5.1 Q2): a record that SUPERSEDES a predecessor composes the
-        # predecessor CLOSE into the SAME replay transaction — the NEW raw L1 site in _replay_record.
-        # The close ts is THIS record's created_at (the successor's create instant == the original
-        # close instant), so the predecessor's valid_until is reproduced byte-identically. Idempotent
-        # (WHERE superseded_by IS NONE OR = this successor's id).
+        # #436/#453/#458 (design §3.2 / §5.1 Q2 / close-out rulings §2.4-3(b)): a record that
+        # SUPERSEDES a predecessor composes the predecessor CLOSE into the SAME replay transaction —
+        # the NEW raw L1 site in _replay_record — but ONLY when P's STORED owner pair
+        # (owner_principal/owner_agent) equals THIS record's stamped pair. Replay is boot/admin (not
+        # hot), so a Python-leg pre-read of P is affordable; the read->close TOCTOU is the §2.3 ms
+        # class. A pair MISMATCH is NOT closed by the back door (an admin-bypass FOREIGN supersede's
+        # cross-owner close would steal/revive a now-foreign row on rebuild) — it logs a WARNING with
+        # both ids and SKIPS the close; P's OWN retired ledger row (§2.4-3(a)) carries its closure
+        # instead. The close ts is THIS record's created_at (the successor's create instant == the
+        # original close instant), so a MATCHED predecessor's valid_until is reproduced
+        # byte-identically. Idempotent (WHERE superseded_by IS NONE OR = this successor's id).
         if isinstance(supersedes, str):
-            fragments.append(
-                TxnFragment(
-                    statements=[
-                        f"UPDATE type::record('{MEMORY_TABLE}', $rc_pred) "
-                        f"SET {_COL_VALID_UNTIL} = $rc_close_ts, {_COL_SUPERSEDED_BY} = $rc_succ "
-                        f"WHERE {_COL_SUPERSEDED_BY} IS NONE OR {_COL_SUPERSEDED_BY} = $rc_succ"
-                    ],
-                    params={
-                        "rc_pred": supersedes,
-                        "rc_close_ts": created_at,
-                        "rc_succ": record.memory_id,
-                    },
+            predecessor_rows = self._as_list(
+                await self._query(
+                    f"SELECT {_COL_OWNER_PRINCIPAL}, {_COL_OWNER_AGENT} "
+                    f"FROM type::record('{MEMORY_TABLE}', $rc_pred)",
+                    {"rc_pred": supersedes},
                 )
             )
+            predecessor = predecessor_rows[0] if predecessor_rows else {}
+            stored_owner_principal = predecessor.get(_COL_OWNER_PRINCIPAL)
+            stored_owner_agent = predecessor.get(_COL_OWNER_AGENT)
+            stored_owner_principal = getattr(stored_owner_principal, "record_id", None) or (
+                str(stored_owner_principal).split(":")[-1]
+                if stored_owner_principal is not None
+                else None
+            )
+            stored_owner_agent = getattr(stored_owner_agent, "record_id", None) or (
+                str(stored_owner_agent).split(":")[-1]
+                if stored_owner_agent is not None
+                else None
+            )
+            if (
+                stored_owner_principal == owner_principal
+                and stored_owner_agent == owner_agent
+            ):
+                fragments.append(
+                    TxnFragment(
+                        statements=[
+                            f"UPDATE type::record('{MEMORY_TABLE}', $rc_pred) "
+                            f"SET {_COL_VALID_UNTIL} = $rc_close_ts, {_COL_SUPERSEDED_BY} = $rc_succ "
+                            f"WHERE {_COL_SUPERSEDED_BY} IS NONE OR {_COL_SUPERSEDED_BY} = $rc_succ"
+                        ],
+                        params={
+                            "rc_pred": supersedes,
+                            "rc_close_ts": created_at,
+                            "rc_succ": record.memory_id,
+                        },
+                    )
+                )
+            else:
+                logger.warning(
+                    "memory.replay.close.pair_mismatch predecessor=%s successor=%s",
+                    supersedes,
+                    record.memory_id,
+                    extra={"predecessor": supersedes, "successor": record.memory_id},
+                )
         with governed.write_guard("_replay_record"):
             await self._apply(fragments)
 

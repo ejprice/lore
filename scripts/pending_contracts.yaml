@@ -56,66 +56,10 @@ version: 1
 # ⚠ DISCHARGED 2026-08-22 (packet 39 WAVE 3 build — builder-39-w23). The packet-39
 # `packet-39-pending-build` entry SELF-DESTRUCTED on its own reopen_trigger and was deleted.
 #
-# ⚠ ADDED 2026-09-09 (contract-63b-ib-fork2-r3) — `packet-63b-ib-fork2-contract`. The FORK-2
-# close-out CONTRACT (docs/design/2026-09-08-packet63b-ib-closeout-rulings.md §"FORK 2", §2.4 + B1)
-# is RED-until-built at HEAD `98cf52c`: 30 pytest pins across 13 test files reference the §2.4-1
-# keystone `loremaster.store._txn.TxnDomainRejectionError`, which is a BUILDER deliverable (absent
-# at HEAD). This is the C-DEF / RED_ADJUDICATED window between the contract commit and the FORK-2
-# build commit — NOT a pass-through state. The entry SELF-DESTRUCTS the day the build lands the
-# keystone symbol (`hasattr` fires → "DELETE the entry with the fix"): the deleter then confirms
-# every registered file is GREEN and removes the entry. Re-derive (`--derive`) before any NEW bound.
-bounds:
-  - id: packet-63b-ib-fork2-contract
-    owner: >-
-      the FORK-2 §2.4 build (the Opus builder who lands close-out-rulings §2.4:
-      loremaster.store._txn.TxnDomainRejectionError + the domain-scoped #441 compensation +
-      retire-P + the pair-guarded replay close). Contract authored by contract-63b-ib-fork2-r3.
-    reopen_trigger: >-
-      the FORK-2 §2.4 build commit lands loremaster.store._txn.TxnDomainRejectionError. This entry
-      SELF-DESTRUCTS on that symbol resolving (the liveness leg's hasattr) — DELETE it with the
-      build after confirming every file below is GREEN. A file still red after the symbol resolves
-      is an INCOMPLETE build (currency then shows RED_ORPHANED — the instrument working).
-    ruling: >-
-      docs/design/2026-09-08-packet63b-ib-closeout-rulings.md §"FORK 2 — C-residual compensation
-      scope" (§2.4) and §"FORK 2 — ADVERSARY BLOCKER B1" (B1.1 the retype STANDS, B1.2 the M/I/P
-      corpse-adjudication via the ONE assert_domain_rejection helper, B1.3-5 the disjointness pin,
-      B1.3-6 corpse edits live in the CONTRACT). Reference build = the adversary's patch_ref.py ref;
-      RED-set derived by whole-suite execution (REPORT-contract-63b-ib-fork2-r3.md M2/M3 inventory).
-    rationale: >-
-      §2.4-1 retypes every non-governed domain rejection from the SurrealStoreError base to the
-      typed TxnDomainRejectionError leaf, so ~21 pre-existing exact-type corpses (11 files) plus the
-      committed FORK-2 §2.4 pins (test_memory_supersede_atomicity / _replay_fidelity) go RED until
-      the build lands the symbol. Every pin is RED-until-built via the repo's
-      getattr(_txn, "TxnDomainRejectionError", None) idiom (a legible message, never a collection
-      error), verified for the RIGHT reason at HEAD (_surreal_harness.py:234 / the getattr guards).
-      pytest adjudication is FILE-level: each file below was verified to have NO red node UNRELATED
-      to this build (REPORT-contract-63b-ib-fork2-r3.md M8) — a genuinely new failure in one of
-      these files during this window would be masked, a bound this entry inherits from the pytest
-      reader's file-granularity, discharged the moment the build lands and the entry is deleted.
-    files:
-      - path: loremaster/tests/test_surreal_store.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_agent_registry.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_brief_ledger.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_diff.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_findings.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_graph_surreal.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_memory_backend.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_snapshots.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_surreal_apply.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_surreal_manifest.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_task_ledger.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_memory_supersede_atomicity_63b_ib.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
-      - path: loremaster/tests/test_memory_replay_fidelity_63b_ib.py
-        missing_symbols: ["loremaster.store._txn.TxnDomainRejectionError"]
+# ⚠ DISCHARGED 2026-09-09 (FORK-2 §2.4 build — builder-63b-ib-fork2). The
+# `packet-63b-ib-fork2-contract` entry SELF-DESTRUCTED on its reopen_trigger:
+# `loremaster.store._txn.TxnDomainRejectionError` landed with the §2.4 build, so the RED-until-built
+# `getattr(_txn, "TxnDomainRejectionError", None)` pins resolved. All 13 registered files were
+# confirmed GREEN (1358 passed, 0 failed) and the entry was deleted with the fix, per the file's own
+# self-destruct rule. `bounds:` is EMPTY again. Re-derive (`--derive`) before any NEW bound.
+bounds: []

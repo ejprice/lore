@@ -163,8 +163,8 @@ class TxnContentionExhaustedError(SurrealStoreError):
     Raised only when :func:`_rollback_verdict` classifies the LATEST rollback
     as a retryable conflict (the engine's own ``"can be retried"`` marker) AND
     the attempt ceiling or wall-clock deadline has been reached — never for a
-    domain/``ASSERT`` rejection, which always raises the plain
-    :class:`SurrealStoreError` immediately, unretried (see
+    domain/``ASSERT`` rejection, which always raises
+    :class:`TxnDomainRejectionError` immediately, unretried (see
     :func:`_rollback_verdict`). Subclasses :class:`SurrealStoreError` so every
     existing ``except SurrealStoreError`` keeps catching it unchanged; a caller
     that must NOT treat exhausted contention as a lost compare-and-set (the
@@ -186,7 +186,28 @@ class TxnContentionExhaustedError(SurrealStoreError):
         self.elapsed_seconds = elapsed_seconds
 
 
-class TxnGovernedConflictError(SurrealStoreError):
+class TxnDomainRejectionError(SurrealStoreError):
+    """A non-retryable DOMAIN rejection: the store said the write is ILLEGAL and rolled back.
+
+    Built by :func:`_domain_rejection_error` for every domain-class engine ``ERR`` the rollback
+    verdict classifies as non-retryable — an ``ASSERT`` violation, a type-coercion failure, a
+    ``governed_conflict:`` throw (the :class:`TxnGovernedConflictError` subclass below), any
+    ``ERR`` that is neither transport nor exhausted contention. A generic teaching message with
+    NO attributes parsed from the raw text (the §2.5 hygiene boundary is unchanged; ledger #31
+    keeps the raw engine text out of the message).
+
+    Subclasses :class:`SurrealStoreError` so every existing ``except SurrealStoreError`` keeps
+    catching it unchanged — the same argument :class:`TxnContentionExhaustedError` makes. It is
+    DISJOINT from :class:`SurrealConnectionError` (transport — an UNKNOWN outcome, the commit may
+    have landed with the response lost) and from :class:`TxnContentionExhaustedError` (a conflict
+    that outlived the budget), so ``isinstance(error, TxnDomainRejectionError)`` means precisely
+    "the store rejected this write, for good" — a KNOWN-illegal outcome, the ONLY class safe to
+    compensate for (close-out rulings §2.4-1; ``LocalMemoryBackend.remember``'s supersede
+    compensation keeps the authoritative ledger row on every other cause and lets replay converge).
+    """
+
+
+class TxnGovernedConflictError(TxnDomainRejectionError):
     """A governed guarded-write matched ZERO rows and THREW ``governed_conflict:`` (§2.5, #456).
 
     Same shape as :class:`TxnContentionExhaustedError`: a SUBCLASS so every existing
@@ -664,13 +685,15 @@ def _domain_rejection_error(error_class: str, message: str) -> SurrealStoreError
     """Build the domain-rejection error for a raise site — §2.5 (#456), the ONE mapping helper.
 
     Returns :class:`TxnGovernedConflictError` iff ``error_class`` is the governed-conflict label,
-    else the plain :class:`SurrealStoreError`. BOTH raise sites (``run_query`` and
-    ``_run_verified_transaction``) build their rejection through THIS, never a cloned ``if label ==``
-    at each site (ROUTING-IS-NOT-SHARING).
+    else :class:`TxnDomainRejectionError` — every domain rejection now carries a typed class
+    (close-out rulings §2.4-1), so a compensation site can gate on
+    ``isinstance(error, TxnDomainRejectionError)`` instead of exact-typing the base. BOTH raise
+    sites (``run_query`` and ``_run_verified_transaction``) build their rejection through THIS,
+    never a cloned ``if label ==`` at each site (ROUTING-IS-NOT-SHARING).
     """
     if error_class == _ERROR_CLASS_GOVERNED_CONFLICT:
         return TxnGovernedConflictError(message)
-    return SurrealStoreError(message)
+    return TxnDomainRejectionError(message)
 
 
 @dataclass(frozen=True)
