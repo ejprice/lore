@@ -470,12 +470,16 @@ async def _drive_finding_transition(value: str) -> str:
 
 
 async def _drive_recalled_memory(value: str) -> str:
+    from _governed_contract import member  # noqa: PLC0415
     from loremaster.memory.backend import RecalledMemory  # noqa: PLC0415
 
     memory = RecalledMemory.model_construct(  # type: ignore[call-arg]
         id="m", text=value, score=0.9, kind="fact", importance=0.5, refs=[]
     )
-    return str(_app()._render_recalled_memories([memory]))
+    # This driver tests the `recalled_memory[text]` door; the subject is incidental, so a fixed
+    # benign valid Subject keeps the benign control marker-free while `value` forges via `text`.
+    subject = member("principal-x", "agent-x", frozenset({"k1"}))
+    return str(_app()._render_recalled_memories([memory], subject=subject))
 
 
 async def _drive_comms_fleet_row(value: str) -> str:
@@ -2092,6 +2096,7 @@ def _probes() -> list[RenderProbe]:
     PendingTraffic = _model("loremaster.messages", "PendingTraffic")
     RecalledMemory = _model("loremaster.memory.backend", "RecalledMemory")
     RecalledRef = _model("loremaster.memory.backend", "RecalledRef")
+    from _governed_contract import member  # noqa: PLC0415
     from loremaster.agents import AgentRegistryError  # noqa: PLC0415
 
     P = RenderProbe
@@ -2099,6 +2104,18 @@ def _probes() -> list[RenderProbe]:
     def brief_behind(forge: bool, *, unbriefed: bool) -> Any:
         return BriefBehindEntry.model_construct(
             agent_name="agent-x", acked_version=(None if unbriefed else 2)
+        )
+
+    def recalled_subject(forge: bool) -> Any:
+        """A forged-id `Subject` for the #437 memory-render bound line: `principal_id`/`agent_id`
+        carry a distinct forgery token when forging (byte-checked CONTAINED via `render_attributed`
+        in `render_subject_bound`), a benign marker-free value otherwise (the probe-needs-a-control
+        leg). Non-empty keep set so the derived `visible via N keep(s)` count is non-vacuous. Built
+        via the shared `member` helper (the project's Subject idiom — DRY, `_governed_contract`)."""
+        return member(
+            _tok(forge, "Subject", "principal_id"),
+            _tok(forge, "Subject", "agent_id"),
+            frozenset({"k1", "k2"}),
         )
 
     return [
@@ -2265,8 +2282,13 @@ def _probes() -> list[RenderProbe]:
             _served("_format_finding_ref", (_T("ref", "id") if g else BENIGN)),
         ]),
         # ---- MEMORY render ----
+        # `_render_recalled_memories(recalled, *, subject)` is subject-KEYWORD-REQUIRED (design
+        # §3.3): it prepends the #437 `render_subject_bound(subject)` scope line INCLUDING the
+        # empty case. Each shape is driven with a forged-id `recalled_subject(g)`, so the bound
+        # line's `principal_id`/`agent_id` are byte-checked contained here too (the P-N net now
+        # exercises `render_subject_bound`'s `render_attributed` route through this probe).
         P("_render_recalled_memories", lambda g: [
-            _served("_render_recalled_memories", []),
+            _served("_render_recalled_memories", [], subject=recalled_subject(g)),
             _served(
                 "_render_recalled_memories",
                 [
@@ -2275,8 +2297,12 @@ def _probes() -> list[RenderProbe]:
                         refs=[RecalledRef.model_construct(chunk_key="ck", key_version=1, drifted=True)],
                     )
                 ],
+                subject=recalled_subject(g),
             ),
-            _served("_render_recalled_memories", [_forge(RecalledMemory, forge=g, refs=[])]),
+            _served(
+                "_render_recalled_memories", [_forge(RecalledMemory, forge=g, refs=[])],
+                subject=recalled_subject(g),
+            ),
         ]),
         # ---- COMMS renders ----
         P("_render_age", lambda g: [_served("_render_age", s) for s in (30, 120, 7200, 200000)]),
