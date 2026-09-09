@@ -42,6 +42,7 @@ pytest runs ``-n auto``.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -415,4 +416,173 @@ class TestLegacyLedgerRowsReplayFailClosed:
         assert row.get("scope") is None, (
             "a legacy ledger row replayed with a scope (must be NONE, member-invisible) — got "
             f"{row.get('scope')!r}"
+        )
+
+
+# =========================================================================== #
+# FORK 2 (close-out rulings §2 — contract-63b-ib-fork2). FLAG-1 + FLAG-2, shipped TOGETHER (§2.4-3):
+#   (a) the SUPERSEDE path retires P's ledger row AFTER the composed txn commits (store-first, mirror
+#       of ``invalidate``) — so P's OWN row replays CLOSED whatever happens to S's replay; and
+#   (b) ``_replay_record`` applies the composed predecessor close ONLY when P's STORED owner pair ==
+#       S's STAMPED pair, else logs WARNING (both ids) + SKIPS — so a boot restore of a
+#       conflict-because-the-row-moved orphan cannot close a now-FOREIGN predecessor by the back door.
+# At HEAD ``_replay_record``'s composed close has NO owner predicate (WHERE superseded_by IS NONE OR =
+# $rc_succ) and no WARNING — so the cross-owner close fires unconditionally (rider v RED-at-HEAD).
+# =========================================================================== #
+
+
+def _warning_haystack(record: logging.LogRecord) -> str:
+    """The full text of a log record — rendered message PLUS its structured fields — so a WARNING's
+    ids are found whether the builder put them in the message or in ``extra=`` (JsonFormatter idiom)."""
+    return f"{record.getMessage()} {record.__dict__}"
+
+
+async def _governed_row(connection: Any, row_id: str) -> dict[str, Any] | None:
+    """The governed + lifecycle columns of one memory row (None if absent) — the rider v/vi observable."""
+    rows = await run(
+        connection,
+        "SELECT id, valid_until, superseded_by, owner_principal, owner_agent, scope "
+        f"FROM type::record('{MEMORY_TABLE}', $rid)",
+        {"rid": row_id},
+    )
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+async def _orphan_the_successor_in_the_store(connection: Any, *, successor: str, predecessor: str) -> None:
+    """Reset the STORE to the pre-close, S-absent state a boot restore converges FROM: delete S from
+    the store and re-open P (``valid_until``/``superseded_by`` NONE). The DURABLE ledger rows are left
+    intact — S (owner A, supersedes=P) is the orphan ``restore_from_ledger`` will replay, P stays owned
+    by whoever created it. (Test scaffolding: the §2.3 crash-window state, constructed deterministically
+    rather than raced.)"""
+    await run(connection, f"DELETE type::record('{MEMORY_TABLE}', $sid)", {"sid": successor})
+    await run(
+        connection,
+        f"UPDATE type::record('{MEMORY_TABLE}', $pid) SET valid_until = NONE, superseded_by = NONE",
+        {"pid": predecessor},
+    )
+
+
+class TestTheReplayCloseIsPairGuarded:
+    """§2.5 rider v (FLAG-1) — a boot restore's composed predecessor close is applied ONLY on an
+    owner-pair MATCH; a cross-owner orphan is SKIPPED with a WARNING naming both ids. RED at HEAD (the
+    close has no owner predicate → it fires across owners)."""
+
+    async def test_a_cross_owner_replay_close_is_skipped_with_a_warning(
+        self, dirty_world: Any, caplog: Any
+    ) -> None:
+        """⚠ RED at HEAD (design §3.2 / §2.4-3b / FLAG-1). Ledger: S (owner A, supersedes=P), P owned
+        by B in the store and OPEN, S absent. ``restore_from_ledger`` must LAND S but SKIP the
+        cross-owner predecessor close (P stays open) and log a WARNING carrying BOTH ids. At HEAD the
+        composed close carries only the idempotency clause (no owner predicate) → it CLOSES the now-
+        foreign predecessor → reds on the ``valid_until`` leg (and the WARNING is absent). Mutation
+        (run against the reference build): delete the owner predicate → this leg reds again."""
+        backend, _ledger, connection, _env = dirty_world
+        predecessor = await backend.remember(
+            "pred owned by B", kind="fact", subject=_ADMIN_B, scope=_SERVER_SCOPE
+        )
+        successor = await backend.remember(
+            "succ owned by A (bypass)", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE,
+            supersedes=predecessor,
+        )
+        await _orphan_the_successor_in_the_store(
+            connection, successor=successor, predecessor=predecessor
+        )
+        assert (await _governed_row(connection, successor)) is None, "setup: S must be absent from the store"
+        seed = await _governed_row(connection, predecessor)
+        assert seed is not None and seed.get("valid_until") is None, (
+            "setup: P must be re-opened and owned by B before the restore"
+        )
+        with caplog.at_level(logging.WARNING, logger="loremaster.memory.local"):
+            await backend.restore_from_ledger()
+        assert (await _governed_row(connection, successor)) is not None, (
+            "restore did not land the absent successor (the UPSERT of S must still happen)"
+        )
+        post = await _governed_row(connection, predecessor)
+        assert post is not None and post.get("valid_until") is None, (
+            "restore CLOSED a now-FOREIGN predecessor across owners — the pair-guarded replay close "
+            "(design §3.2 / §2.4-3b) must SKIP a mismatch. At HEAD the composed close has no owner "
+            f"predicate so it fires unconditionally → RED. got {post!r}"
+        )
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        # "with both ids" — accept them in the rendered message OR the structured extra= fields (this
+        # codebase's JsonFormatter writes extra=), so the pin does not over-fit the builder to one
+        # logging form; it only requires both ids be present in the WARNING record.
+        warned = [
+            record for record in warning_records
+            if predecessor in _warning_haystack(record) and successor in _warning_haystack(record)
+        ]
+        assert warned, (
+            "a SKIPPED cross-owner replay close must log a WARNING naming BOTH ids (design §3.2) — "
+            f"none found. WARNINGs seen: {[record.getMessage() for record in warning_records]}"
+        )
+
+    async def test_a_same_owner_replay_close_still_closes_the_predecessor(
+        self, dirty_world: Any
+    ) -> None:
+        """POSITIVE CONTROL for rider v: a SAME-owner orphan (A supersedes A) — the replay close still
+        APPLIES (P closed, ``superseded_by == S``). Green at HEAD and on the reference build; it
+        discriminates the skip-leg above from a build that never closes anything on replay."""
+        backend, _ledger, connection, _env = dirty_world
+        predecessor = await backend.remember(
+            "pred owned by A", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE
+        )
+        successor = await backend.remember(
+            "succ owned by A", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE,
+            supersedes=predecessor,
+        )
+        await _orphan_the_successor_in_the_store(
+            connection, successor=successor, predecessor=predecessor
+        )
+        await backend.restore_from_ledger()
+        post = await _governed_row(connection, predecessor)
+        assert post is not None and post.get("valid_until") is not None, (
+            "a SAME-owner replay close must CLOSE the predecessor — the positive control shows the "
+            f"close path is live. got {post!r}"
+        )
+        linked = post.get("superseded_by")
+        assert str(linked) == successor, (
+            f"the same-owner replay close must point the predecessor at its successor; got {linked!r}"
+        )
+
+
+class TestAForeignSupersedeSurvivesARebuild:
+    """§2.5 rider vi (FLAG-2) — an admin-bypass FOREIGN supersede survives a full ``rebuild_embeddings``:
+    P stays CLOSED, ``superseded_by == S``. Extends the §3.2 byte-diff fidelity by the CROSS-OWNER
+    lifecycle state the current dirty-world fixture does not force.
+
+    ⚠ GREEN at HEAD (declared): today this shape is faithful ONLY because the replay close is UNGUARDED
+    (S's replay closes P, ledger insertion order P-before-S). Its DISCRIMINATING power is the MUTATION
+    that catches "(b) shipped without (a)": add the pair guard (b) but NOT the supersede-path
+    ``ledger.retire(P)`` (a) → the rebuild replays P open, S's cross-owner close is refused → P revived
+    → this reds. That is why §2.4-3 requires (a) and (b) TOGETHER. (Contract-first note: this pin is a
+    positive-control/regression guard, not a RED-at-HEAD pin — see the report's RED-AT-HEAD section.)"""
+
+    async def test_an_admin_bypass_foreign_supersede_stays_closed_after_rebuild(
+        self, dirty_world: Any
+    ) -> None:
+        backend, _ledger, connection, _env = dirty_world
+        predecessor = await backend.remember(
+            "foreign pred owned by B", kind="fact", subject=_ADMIN_B, scope=_SERVER_SCOPE
+        )
+        successor = await backend.remember(
+            "bypass succ owned by A", kind="fact", subject=_ADMIN_A, scope=_SERVER_SCOPE,
+            supersedes=predecessor,
+        )
+        pre = await _governed_row(connection, predecessor)
+        assert (
+            pre is not None
+            and pre.get("valid_until") is not None
+            and str(pre.get("superseded_by")) == successor
+        ), f"setup: the bypass supersede must close P against S in the store; got {pre!r}"
+        await backend.rebuild_embeddings()
+        post = await _governed_row(connection, predecessor)
+        assert (
+            post is not None
+            and post.get("valid_until") is not None
+            and str(post.get("superseded_by")) == successor
+        ), (
+            "a rebuild REVIVED a cross-owner superseded predecessor (or lost its successor link) — the "
+            "foreign-supersede shape must survive a rebuild (design §3.2 / rider vi). This reds on a "
+            "build that ships the pair guard (b) WITHOUT the supersede-path retire (a): P replays open, "
+            f"S's cross-owner close is refused → P revived. got {post!r}"
         )

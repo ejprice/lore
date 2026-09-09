@@ -695,3 +695,305 @@ def _compose_all(fragments: list[Any]) -> tuple[str, dict[str, Any]]:
     from loremaster.store._txn import compose
 
     return compose(*fragments)
+
+
+# =========================================================================== #
+# FORK 2 (close-out rulings §2 — contract-63b-ib-fork2). The #441 compensation is NARROWED from
+# supersede-scoped-on-ALL-exceptions to DOMAIN-REJECTION-ONLY (§2.4): compensate iff the store REJECTED
+# the composed write (a typed ``TxnDomainRejectionError`` — ASSERT/coercion/``GovernedConflict``); KEEP
+# the authoritative ledger row on transport / exhausted contention / cancellation (unknown-or-unlanded
+# outcome → replay converges, §2.3). At HEAD ``remember``'s ``except Exception`` deletes on ALL
+# exceptions (the permanent-loss path §2.2 names). These pins are RED-at-HEAD for that reason.
+# =========================================================================== #
+
+
+def _arm_one_shot_txn_fault(
+    monkeypatch: pytest.MonkeyPatch, connection: Any, *, error: BaseException
+) -> dict[str, int]:
+    """Arm a ONE-SHOT store fault on the FIRST composed ``BEGIN … COMMIT`` transaction that runs
+    through ``connection`` (§2.5 rider i injection). ``error`` is raised in place of the real
+    ``query_raw`` result exactly once, gated on a ``BEGIN`` statement.
+
+    WHY ``query_raw`` and WHY ``BEGIN``-gated: the single-statement pre-read seam ``run_query`` calls
+    ``connection.query`` (not ``query_raw``), so ``_row_exists`` and ``authorize_guarded``'s pre-read
+    are UNTOUCHED; only the TRANSACTION seam ``_txn_query_raw`` calls ``query_raw`` — and within
+    ``remember`` the ONLY composed transaction is the close+create ``_apply``. So the fault fires
+    AFTER ``authorize_guarded`` and AFTER the durable ``ledger.record(S)``, on the composed txn alone
+    — exactly the §2.2 window. A ``KeyError`` (the probe-verified in-flight-drop signal, ``_txn_query_raw``
+    docstring / §2.2 / #422) or any ``_CONNECTION_ERRORS`` member self-heals to
+    :class:`SurrealConnectionError`; a :class:`TxnContentionExhaustedError` propagates as itself.
+    Returns a mutable ``{"fired": n}`` counter (a POSITIVE-CONTROL instrument: a build whose composed
+    txn never ran leaves ``fired == 0`` — the fault didn't reach the seam under test)."""
+    real_query_raw = connection.query_raw
+    state = {"fired": 0}
+
+    async def _poisoned(query: str, *args: Any, **kwargs: Any) -> Any:
+        # The SDK's ``query()`` delegates to ``query_raw`` too (async_ws.py), so a single-statement
+        # pre-read also lands here — gate on ``BEGIN`` so ONLY the composed close+create transaction
+        # fires (``_txn_query_raw`` passes the full ``BEGIN … COMMIT`` text; pre-reads pass a bare
+        # SELECT). Forward every arg (``session_id`` / ``txn_id`` kwargs) unchanged.
+        if state["fired"] == 0 and query.lstrip().upper().startswith("BEGIN"):
+            state["fired"] += 1
+            raise error
+        return await real_query_raw(query, *args, **kwargs)
+
+    monkeypatch.setattr(connection, "query_raw", _poisoned, raising=False)
+    return state
+
+
+class TestTransportAndContentionKeepTheSupersedeLedgerRow:
+    """§2.5 rider i (transport keeps the row) + rider iv behavioural cell (exhausted contention keeps
+    the row). A non-domain failure on the composed supersede is UNKNOWN-or-unlanded → the authoritative
+    ledger row is KEPT and replay converges (§2.2/§2.3). RED at HEAD (compensation deletes on ALL
+    exceptions)."""
+
+    async def test_a_transport_failure_on_the_composed_supersede_keeps_the_ledger_row(
+        self, supersede_world: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD (§2.5 rider i). A transport failure (an in-flight socket drop →
+        :class:`SurrealConnectionError`) on the COMPOSED supersede txn must KEEP the successor's
+        durable ledger row — the ``COMMIT`` may have landed server-side with the response lost, the
+        ledger is authoritative, and ``restore_from_ledger`` converges (design §2.3). At HEAD the
+        ``except Exception`` deletes the row on ANY failure → the successor is LOST → reds.
+
+        Then replay converges: ``restore_from_ledger`` lands S and closes P byte-identically
+        (``valid_until == S.created_at``, ``superseded_by == S``). POSITIVE-CONTROL for the injection:
+        the fault counter fired exactly once."""
+        from loremaster.store._txn import SurrealConnectionError
+
+        backend, ledger, connection, _env = supersede_world
+        predecessor_id = await backend.remember(
+            "predecessor note transport", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE
+        )
+        before_ids = {record.memory_id for record in ledger.all_records()}
+        live = backend._connection
+        assert live is not None, "the backend must hold a live connection after the seed remember"
+        counter = _arm_one_shot_txn_fault(
+            monkeypatch, live, error=KeyError("injected in-flight ws reset 0f3e-uuid")
+        )
+        with pytest.raises(SurrealConnectionError):
+            await backend.remember(
+                "successor note transport", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE,
+                supersedes=predecessor_id,
+            )
+        assert counter["fired"] == 1, "the injected transport fault did not reach the composed txn seam"
+        new_ids = {record.memory_id for record in ledger.all_records()} - before_ids
+        assert len(new_ids) == 1, (
+            "a TRANSPORT failure on the composed supersede DELETED the successor's durable ledger row "
+            "— compensation must be DOMAIN-scoped (§2.4-2): a transport outcome is UNKNOWN (the COMMIT "
+            "may have landed), the ledger is authoritative, replay converges. At HEAD the except-Exception "
+            f"deletes on all failures → row lost. new ledger ids after the failed supersede: {new_ids}"
+        )
+        successor_id = new_ids.pop()
+        replayed = await backend.restore_from_ledger()
+        assert replayed >= 1, "the kept successor was not replayed on restore"
+        successor = await _memory_row(connection, successor_id)
+        predecessor = await _memory_row(connection, predecessor_id)
+        assert successor is not None, "restore did not land the kept successor"
+        assert predecessor is not None and str(predecessor.get("superseded_by")) == successor_id, (
+            f"restore did not close the predecessor against the kept successor; got {predecessor!r}"
+        )
+        assert predecessor.get("valid_until") is not None, "the replayed close did not stamp valid_until"
+
+    async def test_exhausted_contention_on_the_composed_supersede_keeps_the_ledger_row(
+        self, supersede_world: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD (§2.5 rider iv — the classification is the TYPED class, not a name scan). A
+        :class:`TxnContentionExhaustedError` (a retryable conflict that outlived the budget) on the
+        composed supersede must KEEP the ledger row — exhausted contention is NOT a domain rejection
+        (the store never said the write is illegal). At HEAD the ``except Exception`` deletes on it →
+        reds. A build that KEEPS transport but classifies by ``isinstance(SurrealConnectionError)``
+        (enumerating the forbidden) would still DELETE here — this cell is why the classification must
+        allowlist the domain class, not deny the transport shapes."""
+        from loremaster.store._txn import TxnContentionExhaustedError
+
+        backend, ledger, _connection, _env = supersede_world
+        predecessor_id = await backend.remember(
+            "predecessor note contention", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE
+        )
+        before_ids = {record.memory_id for record in ledger.all_records()}
+        live = backend._connection
+        assert live is not None
+        counter = _arm_one_shot_txn_fault(
+            monkeypatch, live,
+            error=TxnContentionExhaustedError(
+                "injected exhausted contention", attempts=8, elapsed_seconds=0.1
+            ),
+        )
+        with pytest.raises(TxnContentionExhaustedError):
+            await backend.remember(
+                "successor note contention", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE,
+                supersedes=predecessor_id,
+            )
+        assert counter["fired"] == 1, "the injected contention fault did not reach the composed txn seam"
+        new_ids = {record.memory_id for record in ledger.all_records()} - before_ids
+        assert len(new_ids) == 1, (
+            "EXHAUSTED CONTENTION on the composed supersede DELETED the successor's ledger row — "
+            "contention is not a store rejection (§2.4-2), so the row must be KEPT (replay converges). "
+            f"new ledger ids after the failed supersede: {new_ids}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("supersede", "cause", "row_survives"),
+    [
+        (False, "transport", True),   # FP-06: a plain remember keeps its row on transport (plan is None)
+        (False, "domain", True),      # FP-06 extended to the reject cause: plain × domain also KEEPS
+        (True, "transport", True),    # ⚠ RED at HEAD — the ONE cell HEAD violates (it deletes)
+        (True, "domain", False),      # a store rejection of a supersede compensates (the kept behaviour)
+    ],
+)
+class TestCompensationIsDomainScopedAcrossShapesAndCauses:
+    """§2.5 rider ii — THE QUANTIFIER LAW as a 2×2: ``{plain, supersede} × {transport, domain}``, the
+    invariant being *the durable ledger row SURVIVES a non-domain failure* (and a supersede's DOMAIN
+    rejection compensates). Every cell forced by fixture — none 'not covered'. Only ``supersede ×
+    transport`` reds at HEAD, because at HEAD the invariant is conditioned on the ONE shape FP-06's
+    fixture forced (plain), so a supersede under the same #422-class WS reset silently gets the
+    OPPOSITE behaviour (§2.2). The domain cause is a real store ASSERT rejection (``_poison_note_text``);
+    the transport cause is the one-shot ``query_raw`` fault."""
+
+    async def test_the_ledger_row_survives_iff_the_failure_is_not_a_supersede_domain_rejection(
+        self, supersede_world: Any, monkeypatch: pytest.MonkeyPatch,
+        supersede: bool, cause: str, row_survives: bool,
+    ) -> None:
+        from loremaster.store._txn import SurrealConnectionError, SurrealStoreError
+
+        backend, ledger, connection, env = supersede_world
+        predecessor_id = None
+        if supersede:
+            predecessor_id = await backend.remember(
+                "predecessor note quantifier", kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE
+            )
+        before_ids = {record.memory_id for record in ledger.all_records()}
+
+        if cause == "domain":
+            await _poison_note_text(connection, env.url)
+            note = _POISON_NOTE
+            expected_type: type[BaseException] = SurrealStoreError
+        else:
+            live = backend._connection
+            assert live is not None
+            _arm_one_shot_txn_fault(
+                monkeypatch, live, error=KeyError("injected in-flight ws reset quantifier")
+            )
+            note = "quantifier transport note"
+            expected_type = SurrealConnectionError
+
+        with pytest.raises(expected_type):
+            await backend.remember(
+                note, kind="fact", subject=_ADMIN, scope=_SERVER_SCOPE, supersedes=predecessor_id
+            )
+        new_ids = {record.memory_id for record in ledger.all_records()} - before_ids
+        survived = len(new_ids) == 1
+        assert survived is row_survives, (
+            f"cell (supersede={supersede}, cause={cause}): the ledger row "
+            f"{'SURVIVED' if survived else 'was DELETED'} but the ruling says it must "
+            f"{'SURVIVE' if row_survives else 'be COMPENSATED'} (§2.4-2 / rider ii — compensate iff a "
+            f"SUPERSEDE hit a DOMAIN rejection). At HEAD only (supersede=True, cause=transport) reds. "
+            f"new ledger ids: {new_ids}"
+        )
+
+
+class TestCompensationClassifiesByTheTypedDomainErrorAndTeachesIt:
+    """§2.5 rider iv (positive/allowlist source pin) + rider vii (served-prose drift instrument). The
+    compensation gates on the TYPED ``TxnDomainRejectionError`` (allowlist the safe class), and its
+    served comment no longer teaches the retired ``SUPERSEDE-SCOPED`` rule."""
+
+    def test_the_compensation_gates_on_the_typed_domain_rejection_class(self) -> None:
+        """⚠ RED-until-built (§2.4-1/-2 / rider iv). ``remember``'s compensation must reference
+        ``TxnDomainRejectionError`` — allowlisting the domain-rejection class, NOT the ``plan is not
+        None``-only gate at HEAD (which deletes on every cause). Positive/allowlist form (the instrument
+        lesson: allowlist the safe, do not enumerate the forbidden transport shapes — the behavioural
+        transport/contention cells above do the deny half). RED at HEAD because the symbol is unbuilt
+        and unreferenced."""
+        import importlib
+        import inspect
+
+        txn = importlib.import_module("loremaster.store._txn")
+        assert getattr(txn, "TxnDomainRejectionError", None) is not None, (
+            "loremaster.store._txn.TxnDomainRejectionError is UNBUILT (§2.4-1) — the compensation cannot "
+            "yet classify by the typed domain class; RED-until-built"
+        )
+        source = inspect.getsource(LocalMemoryBackend.remember)
+        assert "TxnDomainRejectionError" in source, (
+            "remember's #441 compensation must gate on isinstance(error, TxnDomainRejectionError) "
+            "(§2.4-2 / rider iv) — allowlist the domain-rejection class; at HEAD it gates only on "
+            "`plan is not None`, deleting the ledger row on transport/contention too"
+        )
+
+    def test_the_compensation_comment_no_longer_teaches_the_retired_supersede_scoped_rule(self) -> None:
+        """⚠ RED at HEAD (§2.5 rider vii — the P8d served-prose drift class as an INSTRUMENT). The
+        narrowing makes compensation DOMAIN-scoped; the ``remember`` comment must no longer teach the
+        retired ``SUPERSEDE-SCOPED`` rule an agent reads. BARE, anchor-free, case-insensitive (P8d
+        sweep discipline). RED at HEAD (the comment reads 'compensation is SUPERSEDE-SCOPED')."""
+        import inspect
+
+        source = inspect.getsource(LocalMemoryBackend.remember)
+        assert "supersede-scoped" not in source.lower(), (
+            "remember still teaches the retired 'SUPERSEDE-SCOPED' compensation rule — the narrowing "
+            "makes it DOMAIN-scoped (§2.4-2). A comment teaching the retired rule is the P8d prose-drift "
+            "class a gate must catch."
+        )
+
+
+class TestDomainRejectionErrorType:
+    """§2.5 rider iii — the ONE mapping helper, store-free unit. ``_domain_rejection_error`` returns the
+    TYPED ``TxnDomainRejectionError`` for a non-governed domain label; ``TxnGovernedConflictError``
+    subclasses it; transport / contention are NOT domain rejections. Both raise sites (``run_query`` +
+    ``_run_verified_transaction``) build their rejection through THIS one helper (ROUTING-IS-SHARING,
+    visible in source), so a mutation here reds BOTH the direct pin AND the behavioural control leg.
+    NOTE (coordination): the close-out ruling's rider iii names this class ``test_surreal_store::
+    TestDomainRejectionErrorType``; it lives HERE (my writable set does not include ``test_surreal_store.py``)
+    — flagged in the report. RED-at-HEAD via the absent symbol."""
+
+    def test_the_typed_domain_class_exists_and_governed_conflict_subclasses_it(self) -> None:
+        """⚠ RED-until-built (§2.4-1). ``TxnDomainRejectionError(SurrealStoreError)`` exists,
+        ``TxnGovernedConflictError`` subclasses it, and transport/contention do NOT — so the
+        compensation's ``isinstance(error, TxnDomainRejectionError)`` KEEPS a transport/contention
+        failure and COMPENSATES a domain one."""
+        import importlib
+
+        txn = importlib.import_module("loremaster.store._txn")
+        domain_cls = getattr(txn, "TxnDomainRejectionError", None)
+        assert domain_cls is not None, (
+            "loremaster.store._txn.TxnDomainRejectionError is UNBUILT (§2.4-1) — RED-until-built"
+        )
+        assert issubclass(domain_cls, txn.SurrealStoreError), (
+            "TxnDomainRejectionError must subclass SurrealStoreError (every existing `except "
+            "SurrealStoreError` keeps catching it)"
+        )
+        assert issubclass(txn.TxnGovernedConflictError, domain_cls), (
+            "TxnGovernedConflictError must subclass TxnDomainRejectionError (§2.4-1) — a governed "
+            "conflict IS a domain rejection, so both compensate through the ONE isinstance check"
+        )
+        assert not issubclass(txn.SurrealConnectionError, domain_cls), (
+            "SurrealConnectionError must NOT be a TxnDomainRejectionError — a transport failure is KEPT "
+            "(the loss path §2.2 names is exactly a transport misclassified as compensable)"
+        )
+        assert not issubclass(txn.TxnContentionExhaustedError, domain_cls), (
+            "TxnContentionExhaustedError must NOT be a TxnDomainRejectionError — exhausted "
+            "contention KEEPS the row"
+        )
+
+    def test_the_one_mapping_helper_returns_the_typed_domain_error_for_a_non_governed_label(self) -> None:
+        """⚠ RED-until-built (§2.4-1 / rider iii). ``_domain_rejection_error`` returns the TYPED
+        ``TxnDomainRejectionError`` for a non-governed engine class (never a plain ``SurrealStoreError``,
+        which the compensation cannot tell apart from a transport failure), and
+        ``TxnGovernedConflictError`` for the governed label. Mutation proof (rider iii, run against the
+        reference build): make the non-governed branch return a plain ``SurrealStoreError`` → this reds
+        (``type(other) is not TxnDomainRejectionError``) AND the transport-keep behavioural leg reds."""
+        import importlib
+
+        txn = importlib.import_module("loremaster.store._txn")
+        domain_cls = getattr(txn, "TxnDomainRejectionError", None)
+        assert domain_cls is not None, "TxnDomainRejectionError is UNBUILT (§2.4-1) — RED-until-built"
+        governed_rejection = txn._domain_rejection_error(txn._ERROR_CLASS_GOVERNED_CONFLICT, "m")
+        assert isinstance(governed_rejection, txn.TxnGovernedConflictError), (
+            "the governed label must map to TxnGovernedConflictError (unchanged)"
+        )
+        other_rejection = txn._domain_rejection_error("some_other_engine_class", "m")
+        assert type(other_rejection) is domain_cls, (
+            "a non-governed domain rejection must be the TYPED TxnDomainRejectionError — a plain "
+            "SurrealStoreError is indistinguishable from a transport failure at the compensation site; "
+            f"got {type(other_rejection).__name__}"
+        )
