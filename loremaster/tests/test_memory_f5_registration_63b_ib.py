@@ -292,7 +292,8 @@ class TestAComposedSupersedeIsOneObservedWriteUnderRemember:
         assert composed, (
             "no single `remember`-labelled write carried BOTH a created row and a predecessor close — "
             "the supersede close was not composed into the create's transaction (design §2.2). "
-            f"remember writes' deltas: {[[d.kind for d in w.effect.row_deltas] for w in remember_writes if w.effect is not None]}; "
+            "remember writes' deltas: "
+            f"{[[d.kind for d in w.effect.row_deltas] for w in remember_writes if w.effect is not None]}; "
             f"guarded_write writes: {len(guarded_writes)}"
         )
         assert not guarded_writes, (
