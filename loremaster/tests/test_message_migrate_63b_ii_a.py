@@ -34,8 +34,10 @@ pytest runs ``-n auto``.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from _governed_contract import (
     apply_ddl,
@@ -156,6 +158,59 @@ async def message_world() -> Any:
         await drop_database(env)
 
 
+@pytest_asyncio.fixture()
+async def ambiguous_message_world() -> Any:
+    """Like ``message_world`` but with TWO principals (both members, ZERO admins) so THE operator is
+    AMBIGUOUS. The two agents (sender + recipient) are MIGRATED (owned by the FIRST principal), so the
+    §2.6 agent-first precondition is SATISFIED — a message migrate here refuses on the §2.1 OPERATOR
+    AMBIGUITY, never on agent-first. One real NONE-owner legacy message (``send`` does not stamp owner
+    at HEAD). This is the MP-3 message-leg ambiguity fixture the adversary named. Reaped."""
+    env = make_env(database=unique_database(), dim=8)
+    principal_store, keep_store = await build_principal_and_keep_stores(env)
+    connection = await connect_admin(env)
+    await apply_ddl(connection, surreal_schema.generate_agent_ddl(), url=env.url)
+    await apply_ddl(connection, surreal_schema.generate_message_ddl(), url=env.url)
+    await apply_ddl(connection, governed_overlay_ddl(_MESSAGE_TABLE), url=env.url)
+    # TWO principals, ZERO admins → resolve_operator_principal is AMBIGUOUS (§2.1).
+    await principal_store.create(email="operator@example.com", role="member")
+    await principal_store.create(email="second@example.com", role="member")
+    operator = (await principal_store.list())[0]
+    registry = AgentRegistry(
+        url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+    )
+    ledger = MessageLedger(
+        url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+    )
+    try:
+        # MIGRATED agents (owner_principal set) → agent-first is SATISFIED, so the ONLY refuse a
+        # correct build can raise here is the operator AMBIGUITY (never agent-first).
+        sender = (
+            await registry.register(
+                "sender_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+            )
+        ).agent
+        recipient = (
+            await registry.register(
+                "recipient_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+            )
+        ).agent
+        result = await ledger.send(
+            sender=_Ref(sender.id, sender.name),
+            session="s1",
+            body="a legacy message from before the cutover",
+            grade="signal",
+            recipients=[_Ref(recipient.id, recipient.name)],
+        )
+        yield principal_store, keep_store, registry, ledger, connection, env, result.message.id, sender
+    finally:
+        await ledger.close()
+        await registry.close()
+        await connection.close()
+        await keep_store.close()
+        await principal_store.close()
+        await drop_database(env)
+
+
 async def _migrate(connection: Any, env: Any, *, table: str, keep_store: Any, principal_store: Any) -> Any:
     """Drive ``migrate_governed`` for ``table`` through a StoreHandle over the fixture connection (R4:
     the verb borrows the target store's driver, never a raw connection)."""
@@ -199,6 +254,79 @@ class TestResolveOperatorPrincipalIsLifted:
                 f"hand-rolls its own operator-principal resolution (a #102 clone, not the ONE lifted "
                 f"helper; design §4.C / §6)"
             )
+
+    async def test_the_operator_resolution_is_shared_by_mutation(
+        self, agent_world: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD (adversary MP-3 — the routing-not-sharing KILLER for the AGENT leg). The
+        structural ``function_calls_named`` route pin above is satisfied by a leg that CALLS
+        ``resolve_operator_principal`` yet hand-rolls its OWN operator decision underneath
+        (ROUTING-IS-NOT-SHARING, #102/#120). This is the VALUE-mutation that closes that door: perturb
+        the SHARED ``principals.resolve_operator_principal`` and watch the AGENT leg's stamped owner
+        move with it. POSITIVE CONTROL: an UNPATCHED migrate stamps the resolved operator (the
+        resolution reaches the stamp at all); then, with the seam patched to a DISTINCT fixed principal
+        P*, a FRESH NONE-owner agent is stamped to P* — a private copy would ignore the patch and stamp
+        the real operator. RED at HEAD: the 63a stub refuses (no stamp), so neither leg's owner lands.
+
+        SCOPING (SAID — REPORT-reviser-63b-ii-a.md §Flags): the adversary sketched 'all THREE legs'
+        resolution changes'. The memory leg's routing is the EXTRACTION source
+        (``_migrate_memory_scope`` becomes a caller — the structural pin covers it); the MESSAGE leg's
+        value-routing is ``test_message_migrate_refuses_on_multi_principal_ambiguity`` (its ambiguity
+        refuse comes from THIS shared seam). So each leg's routing is value-proven; a single-call
+        'all three' shape needs a combined memory+agent+message world the split fixtures do not
+        provide, and the discrimination does not require it.
+
+        ⚠ ASSUMPTION (flagged, report §Flags): ``resolve_operator_principal`` is ASYNC — the extraction
+        source ``_migrate_memory_scope`` ``await``s ``principal_store.list()`` inside the block it lifts
+        — and returns a PRINCIPAL whose ``.id`` is read to stamp the owner (a ``record<principal>`` link,
+        store-ref §2, which does not validate existence, so P* need not be provisioned). A sync /
+        other-shape build reddens this with a legible ``await``/attribute signal — a builder-visible
+        correction, never a silent trap."""
+        principal_store, keep_store, registry, connection, env = agent_world
+        await principal_store.create(email="operator@example.com", role="member")
+        operator = (await principal_store.list())[0]
+        # POSITIVE CONTROL — unpatched: the single operator resolves and the stamp lands.
+        ag_control = (await registry.register("ag_control", session="s1", role="builder")).agent
+        control = await _migrate(
+            connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store
+        )
+        assert not control.refused and control.backfilled >= 1, (
+            f"positive control: an unpatched agent migrate must stamp the resolved operator, got {control!r}"
+        )
+        # THE MUTATION — a DISTINCT fixed principal P* returned by the SHARED seam.
+        p_star = SimpleNamespace(
+            id=f"{_PRINCIPAL_TABLE}:pstar_mutation", email="pstar-mutation@example.com", role="member"
+        )
+
+        async def _fixed_operator(_principal_store: Any) -> Any:
+            return p_star
+
+        monkeypatch.setattr(principals, "resolve_operator_principal", _fixed_operator, raising=False)
+        ag_mutated = (await registry.register("ag_mutated", session="s1", role="builder")).agent
+        mutated = await _migrate(
+            connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store
+        )
+        assert not mutated.refused and mutated.backfilled >= 1, (
+            f"the patched agent migrate must still backfill the fresh NONE-owner agent, got {mutated!r}"
+        )
+        rows = {
+            _bare(row["id"]): str(row["owner_principal"])
+            for row in await run(
+                connection,
+                f"SELECT id, owner_principal FROM {_AGENT_TABLE} "
+                f"WHERE id IN [type::record('{_AGENT_TABLE}', $c), type::record('{_AGENT_TABLE}', $m)]",
+                {"c": _bare(ag_control.id), "m": _bare(ag_mutated.id)},
+            )
+        }
+        assert rows[_bare(ag_mutated.id)] == f"{_PRINCIPAL_TABLE}:pstar_mutation", (
+            f"the agent migrated UNDER THE PATCH was NOT stamped to the perturbed operator P* — the "
+            f"agent leg hand-rolls its own operator resolution instead of routing through the SHARED "
+            f"resolve_operator_principal (ROUTING-IS-NOT-SHARING, #102/#120; adversary MP-3): {rows}"
+        )
+        assert rows[_bare(ag_control.id)] == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
+            f"the control agent (migrated unpatched) must stay stamped to the real operator, unchanged "
+            f"by the later patched run (idempotent — the migrate touches only NONE-owner agents): {rows}"
+        )
 
 
 # =========================================================================== #
@@ -335,9 +463,28 @@ class TestMigrateMessageOwner:
         assert str(row["owner_agent"]) == f"{_AGENT_TABLE}:{_bare(sender.id)}", (
             f"message.owner_agent must be the SENDER (§4.C), got {row['owner_agent']!r}"
         )
-        assert str(row["owner_principal"]) == str(sender.owner_principal), (
-            f"message.owner_principal must be the sender's owner_principal (§4.C), got "
-            f"{row['owner_principal']!r} vs sender {sender.owner_principal!r}"
+        # ⚠ MP-1 FIX (reviser-63b-ii-a, adversary REPORT-adversary-63b-ii-a.md §MP-1 BLOCKER / C-DEF).
+        # The old line asserted ``str(sender.owner_principal)`` — but ``agents.Agent`` is
+        # ConfigDict(extra="forbid") and has NO ``owner_principal`` field (its fields end at
+        # ``declared_cadence``), so on ANY correct build the migrate SUCCEEDS, the row IS stamped, and
+        # the test then raises ``AttributeError: 'Agent' object has no attribute 'owner_principal'`` —
+        # UNSATISFIABLE (RED at HEAD only because the stub refuses before reaching the line). Read the
+        # SENDER AGENT's stored ``owner_principal`` FROM THE STORE and compare (the adversary's door-build:
+        # the fixture registered the sender with ``owner_principal_id=_bare(operator.id)``).
+        sender_owner_rows = await run(
+            connection,
+            f"SELECT owner_principal FROM type::record('{_AGENT_TABLE}', $s)",
+            {"s": _bare(sender.id)},
+        )
+        assert sender_owner_rows and sender_owner_rows[0]["owner_principal"] is not None, (
+            "precondition: the sender agent must carry a stored owner_principal (the message_world "
+            f"fixture registered it with owner_principal_id set), got {sender_owner_rows!r}"
+        )
+        sender_owner_principal = sender_owner_rows[0]["owner_principal"]
+        assert str(row["owner_principal"]) == str(sender_owner_principal), (
+            f"message.owner_principal must be the SENDER AGENT's stored owner_principal (§4.C), read "
+            f"from the store (agents.Agent carries no owner_principal field — MP-1 C-DEF fix): got "
+            f"{row['owner_principal']!r} vs sender agent's stored {sender_owner_principal!r}"
         )
         assert isinstance(row["scope"], str) and row["scope"].startswith("keep:"), (
             f"message.scope must be backfilled to keep:<project> (§4.C), got {row['scope']!r}"
@@ -375,6 +522,64 @@ class TestMigrateMessageOwner:
         )
         assert result.reason and "agent" in result.reason.lower(), (
             f"the message-migrate refusal must name the agent-first precondition, got {result.reason!r}"
+        )
+
+    async def test_message_migrate_refuses_before_the_agent_table_is_migrated_with_two_none_owner_agents(
+        self, agent_world: Any
+    ) -> None:
+        """§2.6 — R5-ADJACENT (adversary residual R5): the refuse pin above uses ONE NONE-owner agent,
+        so a build that refuses only when the count is EXACTLY 1 would pass it. This HARDENS the count
+        to >1 — with TWO NONE-owner agents present, ``migrate_governed(table='message')`` must STILL
+        REFUSE (refused=True, 0 backfilled) naming the agent-first precondition. GREEN at HEAD (the 63a
+        stub refuses) AND on the correct build (a genuine count>0 check); REDDENS a build that refuses
+        only at count==1 (the mild quantifier softness the adversary flagged)."""
+        principal_store, keep_store, registry, connection, env = agent_world
+        await principal_store.create(email="operator@example.com", role="member")
+        await registry.register("ag_unowned_one", session="s1", role="builder")
+        await registry.register("ag_unowned_two", session="s1", role="builder")
+        await apply_ddl(connection, surreal_schema.generate_message_ddl(), url=env.url)
+        await apply_ddl(connection, governed_overlay_ddl(_MESSAGE_TABLE), url=env.url)
+        result = await _migrate(
+            connection, env, table=_MESSAGE_TABLE, keep_store=keep_store, principal_store=principal_store
+        )
+        assert result.refused and result.backfilled == 0, (
+            f"migrate message must REFUSE with TWO NONE-owner agents present (§2.6 agent-first is "
+            f"count>0, never count==1), got {result!r}"
+        )
+        assert result.reason and "agent" in result.reason.lower(), (
+            f"the refusal must name the agent-first precondition, got {result.reason!r}"
+        )
+
+    async def test_message_migrate_refuses_on_multi_principal_ambiguity(
+        self, ambiguous_message_world: Any
+    ) -> None:
+        """⚠ RED at HEAD (adversary MP-3 quantifier gap — the MESSAGE leg's operator-ambiguity refuse
+        is UNPINNED). The agent leg (``test_agent_migrate_refuses_on_multi_principal_ambiguity``) and
+        the memory leg (63a) each pin the multi-principal ambiguity refuse; the message leg pinned only
+        agent-first. With the agents MIGRATED (agent-first SATISFIED) and TWO principals / ZERO admins,
+        ``migrate_governed(table='message')`` must REFUSE on the §2.1 OPERATOR AMBIGUITY — the message
+        leg consults the SHARED ``resolve_operator_principal`` (for the project keep keeper, exactly as
+        the memory leg does; the structural route pin already REQUIRES the call), whose ambiguity is a
+        REFUSAL. The reason names the PRINCIPAL/OPERATOR ambiguity, NOT agent-first — so a message leg
+        that SKIPS or hand-rolls the ambiguity decision (routing-not-sharing) reddens. RED at HEAD (the
+        63a stub refuses with a DIFFERENT reason — 'lands in packet 63b' — naming neither operator nor
+        ambiguity). ⚠ This pins a CONSEQUENCE of the existing structural route pin (the message leg
+        calls resolve_operator_principal); flagged in REPORT-reviser-63b-ii-a.md §Flags as depending on
+        the message leg resolving the project keep through that shared seam."""
+        principal_store, keep_store, _registry, _ledger, connection, env, _message_id, _sender = (
+            ambiguous_message_world
+        )
+        result = await _migrate(
+            connection, env, table=_MESSAGE_TABLE, keep_store=keep_store, principal_store=principal_store
+        )
+        assert result.refused and result.backfilled == 0, (
+            f"migrate message must REFUSE on multi-principal ambiguity when agents ARE migrated (§2.1 — "
+            f"the shared resolve_operator_principal cannot pick THE operator), got {result!r}"
+        )
+        reason = (result.reason or "").lower()
+        assert "principal" in reason and ("operator" in reason or "ambigu" in reason or "single" in reason), (
+            f"the message-migrate refusal must NAME the operator ambiguity (§2.1), not agent-first (the "
+            f"agents ARE migrated) and not the 63a stub 'lands in packet 63b'. got: {result.reason!r}"
         )
 
     def test_migrate_message_owner_wraps_its_write_in_governed_exempt(self) -> None:

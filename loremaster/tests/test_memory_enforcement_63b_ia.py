@@ -1144,15 +1144,22 @@ class TestL1IsACoverageFloorWithADerivedGrammar:
 class TestTheGovernedPopulationSetIsADerivedOutput:
     """§1.5c-iii — the governed-population set is DERIVED from ``surreal_schema`` (tables whose DDL
     slice calls ``_governed_field_specs`` ∪ relation tables with a governed endpoint), an OUTPUT, so
-    a new governed table joins F5's reach by the same derivation that governs it. At ``e4b8945`` the
-    derivation yields ``{memory}`` (message/to arrive in ii-a). RED at HEAD (derivation unbuilt)."""
+    a new governed table joins F5's reach by the same derivation that governs it. The known-set pin
+    below is RED_ADJUDICATED(owner=63b-ii): edited to the ii-a grown set {memory, message, to} by
+    reviser-63b-ii-a (see its docstring). The synthetic-source reach pin stays keyed on {memory}."""
 
     def test_the_derived_population_set_is_the_known_set(self) -> None:
-        """⚠ RED at HEAD — ``governed_populations()`` derives ``{memory}`` at this HEAD (an OUTPUT, not
-        a hand list). At HEAD the derivation raises (unbuilt). REDDENS a surprise governed population
-        with no F5 case, OR a build that hardcodes the set instead of deriving it from surreal_schema.
-        ⚠ ii-a's DDL grows the set to {memory, message, to} — those cases are RED_ADJUDICATED(owner=
-        63b-ii) rows; at i-a the set is exactly {memory}, satisfiable."""
+        """⚠ RED_ADJUDICATED(owner=63b-ii) — RED at HEAD, GREEN once the ii-a §4.F build wires
+        ``_governed_field_specs`` / ``_governed_index_statements`` into ``_message_statements``.
+        ``governed_populations()`` DERIVES the set from ``surreal_schema`` (an OUTPUT, not a hand
+        list); ii-a's §4.F DDL grows the KNOWN set to EXACTLY {memory, message, to} (``to`` joins
+        because its IN endpoint ``message`` becomes governed). Edited from ``== {memory}`` to the
+        grown set by reviser-63b-ii-a (adversary FLAG F-A / ruling §7 item 1): this i-a known-set
+        assertion and the ii-a ``test_the_derived_population_set_grows_to_memory_message_to`` now
+        AGREE, so both are GREEN on the ii-a build — the old ``== {memory}`` CONTRADICTED the ii-a
+        pin (both could not be green). At ``a4eb097`` HEAD (§4.F unwired) the derivation yields
+        {memory} ≠ the grown set → RED. REDDENS a SURPRISE governed population with no F5 case, OR a
+        build that hardcodes the set instead of deriving it from surreal_schema."""
         try:
             populations = governed_populations()
         except NotImplementedError:
@@ -1164,10 +1171,13 @@ class TestTheGovernedPopulationSetIsADerivedOutput:
             f"the memory table is not in the derived governed-population set {sorted(populations)} — "
             f"the derivation does not see the emitter's _governed_field_specs slice (§1.5c-iii)"
         )
-        assert populations == frozenset({MEMORY_TABLE}), (
-            f"the derived governed-population set moved from the known i-a set {{memory}}: "
-            f"{sorted(populations)}. A new governed population needs an F5 case (message/to ride ii-a "
-            f"as RED_ADJUDICATED(owner=63b-ii)); a SURPRISE population is a deny-by-default RED"
+        assert populations == frozenset(
+            {MEMORY_TABLE, surreal_schema.MESSAGE_TABLE, surreal_schema.TO_RELATION}
+        ), (
+            f"the derived governed-population set is {sorted(populations)}, not the ii-a known set "
+            f"{{memory, message, to}} — §4.F is unwired (message/to ride ii-a as "
+            f"RED_ADJUDICATED(owner=63b-ii)), OR a SURPRISE population appeared (a new governed table "
+            f"needs an F5 case; deny-by-default over the population SET, §1.5c-iii)"
         )
 
     def test_the_population_derivation_reach_is_a_checked_variable(self) -> None:

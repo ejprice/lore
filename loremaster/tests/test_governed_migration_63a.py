@@ -241,6 +241,18 @@ class TestTheAgentFirstOrderIsChecked:
             url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
         )
         await registry.ensure_ready()
+        # ⚠ MP-2 FIX (reviser-63b-ii-a, adversary REPORT-adversary-63b-ii-a.md §MP-2 BLOCKER; Fable ruling
+        # ``docs/design/2026-09-09-packet63b-ii-a-owner-resolution-ruling.md`` §7 item 6). Register a
+        # GENUINE NONE-owner agent (owner_principal_id omitted → NONE, Fork 2) so the §2.6 agent-first
+        # precondition is NON-VACUOUS on a CORRECT §4.C build. WITHOUT it the agent table is EMPTY →
+        # 0 NONE-owner agents → the agent-first check is vacuously satisfied → the message migrate
+        # PROCEEDS → the owner-count on the (absent) message table raises TxnDomainRejectionError, and
+        # the ``refused=True`` / reason-names-"agent" asserts are never reached (a BLOCKER on a correct
+        # build, GREEN only against the 63a stub that refuses regardless). This test's own docstring
+        # claims "its owner_principal NONE for every agent" — this makes that TRUE. The stub at HEAD
+        # ignores agents, so this ADD does not change the RED/GREEN-at-HEAD verdict; it only makes the
+        # refuse REAL on the built path.
+        await registry.register("ag_legacy_none_owner", session="s1", role="builder")
         try:
             # ⚠ NO bare-except: at HEAD ``migrate_governed`` raises NotImplementedError, which must
             # RED here (unbuilt) — NOT be swallowed as a "refusal" (the fixtures-must-discriminate

@@ -10,13 +10,14 @@ WHAT THIS FILE OWNS (the F5 case-registry DATA seam, per the ii-a writable set):
 that make {memory, message, to} a CHECKED VARIABLE. The i-a MEMORY instrument
 (``_governed_contract``'s detector, the guard hook) is UNTOUCHED — imported, never edited.
 
-THE RED_ADJUDICATED(owner=63b-ii) PIN (design §5 / §1.9 item 2 / FLAG F-A in the report): at HEAD
-``test_memory_enforcement_63b_ia.py::TestTheDerivedPopulationSetIsExactlyMemory::
-test_the_derived_population_set_is_the_known_set`` asserts ``governed_populations() == {memory}``. §4.F
-wiring flips it RED — its OWN docstring says "message/to ride ii-a as RED_ADJUDICATED(owner=63b-ii)". A
-sibling pin here (``test_the_derived_population_set_grows_to_memory_message_to``) asserts the NEW known
-set; the i-a pin must be updated to it (an i-a-file edit → FLAG F-A, exact edit in the report). Both
-cannot be green at once, so the lead grants the one-line i-a edit or moves the known-set assertion here.
+THE RED_ADJUDICATED(owner=63b-ii) PIN (design §5 / §1.9 item 2 / FLAG F-A): the i-a pin
+``test_memory_enforcement_63b_ia.py::TestTheGovernedPopulationSetIsADerivedOutput::
+test_the_derived_population_set_is_the_known_set`` (⚠ the ORIGINAL contract cited the non-existent
+class ``TestTheDerivedPopulationSetIsExactlyMemory`` — corrected here by reviser-63b-ii-a) formerly
+asserted ``governed_populations() == {memory}``. The granted F-A cross-file edit updated its known set to
+``{memory, message, to}`` (RED_ADJUDICATED(owner=63b-ii), RED at HEAD until §4.F wires the emitter),
+so it and the sibling pin here (``test_the_derived_population_set_grows_to_memory_message_to``) now
+AGREE — both GREEN on the ii-a build (the old ``== {memory}`` CONTRADICTED this file's grown-set pin).
 
 SCOPE SPLIT with ii-b (design §5): ii-a registers ALL ``to`` L1 sites (send RELATE + drain/ack UPDATE)
 so deny-by-default is satisfied the moment ``to`` becomes a population, with the send/drain/ack effect
@@ -42,6 +43,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import loremaster.server as server_mod
 import pytest
 import pytest_asyncio
 from _governed_contract import (
@@ -51,6 +53,7 @@ from _governed_contract import (
     SchemaDelta,
     TreeMutationSite,
     TreeWriteAllowlistEntry,
+    access_token,
     classify_tree_observed_write,
     governed_populations,
     governed_table_raw_mutation_sites_in_tree,
@@ -76,13 +79,16 @@ def _empty_schema() -> SchemaDelta:
 # =========================================================================== #
 # THE ADJUDICATED EFFECT PREDICATES (design §1.4 / §4.A / §4.B / §4.C) — each says what its frame is
 # ALLOWED to do over the WHOLE ObservedEffect. Pure functions; unit-pinned below AND applied by the
-# classifier via the allowlist entry. (The owner ≡ SUBJECT exact match is F4's separate behavioural
-# pin — these structural legs check the SHAPE of the change, per the memory _effect_upsert precedent.)
+# classifier via the allowlist entry. (The owner ≡ SUBJECT exact match is R1's separate behavioural
+# pin ``test_a_credentialed_send_stamps_exactly_the_subjects_pair`` in test_comms_send_scope_63b_ii_a.py
+# — these structural legs check the SHAPE of the change, incl. owner_agent==sender (R8), per the memory
+# _effect_upsert precedent.)
 # =========================================================================== #
 
 _COL_OWNER_PRINCIPAL = "owner_principal"
 _COL_OWNER_AGENT = "owner_agent"
 _COL_SCOPE = "scope"
+_COL_SENDER = "sender"  # R8 — the message row's own sender (RecordID(agent, sender.id)); owner_agent == this
 _COL_SEEN_AT = "seen_at"
 _COL_ACKED_AT = "acked_at"
 _COL_ACK_NOTE = "ack_note"
@@ -91,10 +97,18 @@ _ACK_COLUMNS = frozenset({_COL_ACKED_AT, _COL_ACK_NOTE})
 
 def _effect_send_message(effect: ObservedEffect) -> bool:
     """``send`` creates a governed ``message`` row: EVERY delta is a CREATE whose row carries a
-    non-NONE owner pair AND scope (design §4.A — the created message's (owner_principal, owner_agent)
-    is the subject's pair and scope is the session keep; the ==subject exactness is F4's pin, this is
-    the structural leg). Schema unchanged. A create with a NONE owner/scope (the HEAD, unstamped) →
-    REJECTED. ``SELECT *`` omits a NONE column, so an absent key reads as None."""
+    non-NONE owner pair AND scope, AND whose ``owner_agent`` IS the row's own ``sender`` (R8 — reviser).
+
+    Design §4.A: the created message's ``(owner_principal, owner_agent)`` is the RESOLVED subject's
+    pair and ``scope`` is the session keep. The ==SUBJECT owner EXACTNESS (the stamped pair equals the
+    resolved Subject — Reading A / a hardcoded operator / any non-None owner would otherwise pass) is
+    the BEHAVIOURAL pin ``test_a_credentialed_send_stamps_exactly_the_subjects_pair`` (R1) in
+    ``test_comms_send_scope_63b_ii_a.py`` — a classifier sees ROWS, not tokens (stated bound B3). So the
+    STRONGEST structural leg the classifier CAN run is: ``owner_agent == sender`` — the message CREATE
+    writes ``sender: RecordID(agent, sender.id)`` and a correct send stamps ``owner_agent`` to the
+    SUBJECT's agent, which IS the sender; both are on the row, so this leg REJECTS a build that stamps
+    ``owner_agent`` to ANY agent but the sender. Schema unchanged. A create with a NONE owner/scope
+    (the HEAD, unstamped) → REJECTED. ``SELECT *`` omits a NONE column, so an absent key reads as None."""
     if not effect.schema_delta.is_empty or not effect.row_deltas:
         return False
     for delta in effect.row_deltas:
@@ -104,6 +118,10 @@ def _effect_send_message(effect: ObservedEffect) -> bool:
         if after.get(_COL_OWNER_PRINCIPAL) is None or after.get(_COL_OWNER_AGENT) is None:
             return False
         if after.get(_COL_SCOPE) is None:
+            return False
+        # R8 — the owner agent the classifier CAN see IS the row's own sender (the ==subject exactness
+        # is R1's behavioural pin; a classifier sees rows, not tokens). Rejects any-agent-but-the-sender.
+        if after.get(_COL_OWNER_AGENT) != after.get(_COL_SENDER):
             return False
     return True
 
@@ -183,7 +201,8 @@ _SEND_MESSAGE_ENTRY = TreeWriteAllowlistEntry(
     site=TreeMutationSite(_MESSAGES_PY, "_send_fragment", "CREATE"),
     justification=(
         "send CREATEs the governed message node (design §4.A). The owner pair is the resolved Subject "
-        "(F4's separate pin), the scope is the session keep resolved via governed.resolve_write_scope."
+        "(R1's separate pin test_a_credentialed_send_stamps_exactly_the_subjects_pair; owner_agent IS "
+        "the sender, R8), the scope is the session keep resolved via governed.resolve_write_scope."
     ),
     pin="test_a_labelled_send_message_create_classifies",
     frames=("send",),
@@ -399,15 +418,27 @@ class TestTheEffectPredicatesDiscriminate:
     FIXTURES-MUST-DISCRIMINATE). GREEN — they validate the DATA the classifier applies."""
 
     def test_send_message_accepts_a_stamped_create_and_rejects_an_unstamped_one(self) -> None:
-        stamped = _created("m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k")
+        stamped = _created(
+            "m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k", sender="agent:x"
+        )
         assert _effect_send_message(_effect(stamped)), "a fully-stamped message create must classify"
-        unstamped = _created("m2", owner_agent="agent:x", scope="keep:k")  # owner_principal absent → None
+        unstamped = _created("m2", owner_agent="agent:x", scope="keep:k", sender="agent:x")
         assert not _effect_send_message(_effect(unstamped)), (
             "a message create with a NONE owner_principal (the HEAD/unstamped shape) must be REJECTED"
         )
-        no_scope = _created("m3", owner_principal="principal:a", owner_agent="agent:x")
+        no_scope = _created("m3", owner_principal="principal:a", owner_agent="agent:x", sender="agent:x")
         assert not _effect_send_message(_effect(no_scope)), (
             "a message create with NONE scope must be REJECTED"
+        )
+        # R8 — the owner agent must BE the sender; a create stamping owner_agent to a DIFFERENT agent
+        # than the sender is REJECTED (the ==subject exactness is R1's
+        # test_a_credentialed_send_stamps_exactly_the_subjects_pair in test_comms_send_scope_63b_ii_a.py).
+        wrong_owner = _created(
+            "m4", owner_principal="principal:a", owner_agent="agent:other", scope="keep:k", sender="agent:x"
+        )
+        assert not _effect_send_message(_effect(wrong_owner)), (
+            "a message create whose owner_agent is NOT the sender must be REJECTED (R8 — the owner "
+            "agent IS the sender; a build stamping any agent but the sender reds here)"
         )
 
     def test_send_to_accepts_creates_and_rejects_an_update(self) -> None:
@@ -477,14 +508,18 @@ class TestClassificationOfMessageWrites:
     denied; a label does not launder an off-predicate effect) holds for send/drain/ack."""
 
     def test_an_unlabelled_message_create_is_unclassified(self) -> None:
-        stamped = _created("m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k")
+        stamped = _created(
+            "m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k", sender="agent:x"
+        )
         write = ObservedWrite(label=None, effect=_effect(stamped))
         assert not classify_tree_observed_write(write, MESSAGE_TREE_ALLOWLIST), (
             "an UNLABELLED message create classified — deny-by-default is not firing (§1.2)"
         )
 
     def test_a_labelled_send_message_create_classifies(self) -> None:
-        stamped = _created("m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k")
+        stamped = _created(
+            "m1", owner_principal="principal:a", owner_agent="agent:x", scope="keep:k", sender="agent:x"
+        )
         write = ObservedWrite(label="send", effect=_effect(stamped))
         assert classify_tree_observed_write(write, MESSAGE_TREE_ALLOWLIST), (
             "a clean stamped send message create under the `send` label did NOT classify (§4.A)"
@@ -493,7 +528,7 @@ class TestClassificationOfMessageWrites:
     def test_a_labelled_send_with_an_unstamped_effect_is_unclassified(self) -> None:
         """The label leg RUNS the effect predicate (§1.4): a `send`-labelled message create with a NONE
         owner (the HEAD shape) does NOT classify — the label does not launder an unstamped write."""
-        unstamped = _created("m1", owner_agent="agent:x", scope="keep:k")  # owner_principal None
+        unstamped = _created("m1", owner_agent="agent:x", scope="keep:k", sender="agent:x")
         write = ObservedWrite(label="send", effect=_effect(unstamped))
         assert not classify_tree_observed_write(write, MESSAGE_TREE_ALLOWLIST), (
             "a `send`-labelled but UNSTAMPED message create classified — the label leg does not run the "
@@ -579,8 +614,46 @@ def _config(slug: str) -> LoreConfig:
     )
 
 
+_E_ALICE = "alice@example.com"
+
+
+def _bare(value: Any) -> str:
+    text = str(getattr(value, "id", value))
+    return text.split(":", 1)[-1] if ":" in text else text
+
+
+async def _register_owned(
+    ctx: AppContext, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
+) -> tuple[str, str]:
+    """Register an agent OWNED by ``owner_principal_id`` DIRECTLY on the registry (the wire_world
+    idiom), returning its one-time ``(capability, bare agent id)``. Until R7 lands the tool ``register``
+    renders but does not RETURN the raw credential, so a credentialed send mints its capability here."""
+    result = await ctx.agent_registry.register(
+        name, session=session, role=role, owner_principal_id=owner_principal_id
+    )
+    assert result.capability is not None, f"the first register of {name!r} must mint a capability"
+    return str(result.capability), _bare(result.agent.id)
+
+
 @pytest_asyncio.fixture()
-async def ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
+async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
+    """A REAL AppContext with a SWITCHABLE ambient transport token (patch
+    ``loremaster.server.get_access_token`` to read ``holder['email']`` — the wire_world idiom) + ONE
+    ``alice`` member principal. The credentialed harness the LIVE send classification drives, so a
+    CORRECT build's send RESOLVES its subject (rather than DENYING a tokenless call) and writes a
+    properly-owned message row the F5 observer captures + classifies. ⚠ FIXTURE DUPLICATION (flag,
+    report §Flags): mirrors send_scope + capability — the established per-file 'fixture DATA, local,
+    deliberately not imported' convention. Reaped (NEVER :18500)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-enforcement-dummy")
+    monkeypatch.setenv("LORE_TEI_KEY", "enforcement-dummy")
+    holder: dict[str, str | None] = {"email": None}
+
+    def _patched_get_access_token() -> Any:
+        email = holder["email"]
+        return access_token(subject=email if email is not None else "")
+
+    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
+
     slug = f"test_{uuid.uuid4().hex}"
     _pending_slugs.append(slug)
     context = await build_app_context(
@@ -590,43 +663,63 @@ async def ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
         snapshot_root=tmp_path / f"{slug}-snap",
         start_tasks=False,
     )
-    principal_store = context._principal_store  # noqa: SLF001 - provision an operator for the keep mint
+    principal_store = context._principal_store  # noqa: SLF001 - provision the credentialed principal
     assert principal_store is not None
-    await principal_store.create(email="operator@example.com", role="member")
+    alice = await principal_store.create(email=_E_ALICE, role="member")
     try:
-        yield context
+        yield {"ctx": context, "holder": holder, "alice_email": _E_ALICE, "alice_pid": _bare(alice.id)}
     finally:
         await context.aclose()
 
 
 class TestTheLiveSendClassifiesUnderF5:
-    """design §5 ii-a — a REAL send's governed message write is OBSERVED and CLASSIFIED under
-    ``MESSAGE_TREE_ALLOWLIST``. RED at HEAD: send sets no ``write_guard('send')`` label and stamps no
-    owner/scope, so the observed message create is label=None + unstamped → UNCLASSIFIED."""
+    """design §5 ii-a — a REAL CREDENTIALED send's governed message write is OBSERVED and CLASSIFIED
+    under ``MESSAGE_TREE_ALLOWLIST``. RED at HEAD: send accepts no ``capability=`` (the §4.D seam is
+    unbuilt), and even were it accepted it sets no ``write_guard('send')`` label and stamps no
+    owner/scope → the observed message create is label=None + unstamped → UNCLASSIFIED. Driven
+    CREDENTIALED (reviser): a tokenless send on a CORRECT build DENIES (no message row → the anti-vacuity
+    would spuriously fail), so the harness presents a real token + capability and the send classifies
+    for the RIGHT reason — a properly-owned, `send`-labelled row whose owner_agent IS the sender (R8)."""
 
-    async def test_a_real_send_message_write_is_observed_and_classifies(self, ctx: AppContext) -> None:
-        """⚠ RED at HEAD — drive ``comms(action='send')`` under the F5 observer on ``message``; the
-        observed message CREATE must CLASSIFY (label `send`, effect predicate holds). At HEAD it is
-        observed with label=None and a NONE owner → unclassified → this reds. ANTI-VACUITY: the send
-        genuinely created a governed message row (the observed set is non-empty)."""
-        await ctx.comms(action="register", agent="sender_x", session="s1", role="builder")
+    async def test_a_real_send_message_write_is_observed_and_classifies(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — drive a CREDENTIALED ``comms(action='send', capability=…)`` under the F5
+        observer on ``message``; the observed message CREATE must CLASSIFY (label `send`; the effect
+        predicate holds — non-NONE owner pair + scope + owner_agent==sender, R8). At HEAD ``comms`` does
+        not accept ``capability=`` (§4.D unbuilt) → a legible ``pytest.fail`` RED; on a partial build
+        the create is label=None/unstamped → unclassified → reds. ANTI-VACUITY: the send genuinely
+        created a governed message row (the observed set is non-empty)."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["alice_email"]
+        # A CREDENTIALED sender owned by alice (its capability minted off the registry) + a recipient.
+        sender_cap, _sender_agent = await _register_owned(
+            ctx, "sender_x", owner_principal_id=cred["alice_pid"], session="s1"
+        )
         await ctx.comms(action="register", agent="recip_x", session="s1", role="builder")
         with observe_governed_table_writes(_MESSAGE_TABLE) as observed:
-            await ctx.comms(
-                action="send", agent="sender_x", session="s1", to=["recip_x"],
-                body="a governed send", grade="signal",
-            )
+            try:
+                await ctx.comms(
+                    action="send", agent="sender_x", session="s1", to=["recip_x"],
+                    body="a governed send", grade="signal", capability=sender_cap,
+                )
+            except TypeError as error:  # HEAD: `comms` has no `capability=` param (§4.D seam unbuilt)
+                pytest.fail(
+                    f"AppContext.comms does not accept capability= — the §4.D seam is unbuilt, so a "
+                    f"credentialed send cannot even be issued (RED-at-HEAD for the right reason): {error}"
+                )
         creates = [
             w for w in observed
             if w.effect is not None and any(d.kind == "created" for d in w.effect.row_deltas)
         ]
         assert creates, (
-            "the send created NO observed message row — the F5 observer saw nothing (anti-vacuity)"
+            "the credentialed send created NO observed message row — the F5 observer saw nothing "
+            "(anti-vacuity). On a correct build a credentialed send WRITES a governed message row"
         )
         unclassified = [w for w in creates if not classify_tree_observed_write(w, MESSAGE_TREE_ALLOWLIST)]
         assert not unclassified, (
             "the live send's message CREATE did NOT classify under MESSAGE_TREE_ALLOWLIST — send is "
-            "unlabelled (no write_guard('send')) and/or unstamped (NONE owner/scope), so the governed "
-            "write is unattributed (design §4.A / §5 ii-a). labels="
+            "unlabelled (no write_guard('send')) and/or unstamped (NONE owner/scope, or owner_agent ≠ "
+            "sender), so the governed write is unattributed (design §4.A / §5 ii-a; R8). labels="
             f"{[w.label for w in creates]}"
         )

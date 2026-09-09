@@ -15,16 +15,18 @@ TWO layers, split so the RED reasons stay legible:
   · the BEHAVIOUR (harness, real store via ``build_app_context``) — register mints a resolvable
     ``session:<s>`` keep; a send with NO session keep DENIES with a "register first" teaching.
 
-⚠ FLAG F-KEEPER (report §Decisions — a genuine §5/SF-63-1 ambiguity I do NOT resolve silently):
-SF-63-1 says the keep's keeper is "the first registrant", and §4.D says register's identity comes from
-the transport token. But the PRE-CUTOVER local fleet registers with NO capability/token, so HOW register
-resolves the keeper principal to mint the keep is underspecified. Reading A: register resolves THE
-operator principal (the lifted ``resolve_operator_principal`` single-principal resolution, consistent
-with migrate). Reading B: the keep is keyed at register but its keeper is filled from the agent's
-``owner_principal`` when one exists, ownerless otherwise. These produce different keeper assertions, so
-the SF-63-1 pins below assert only the UNAMBIGUOUS core (key + type + resolvability) and I flag the
-keeper mechanism to the lead. The harness creates ONE operator principal so the mint has a keeper under
-EITHER reading.
+FLAG F-KEEPER RESOLVED by the ruling ``docs/design/2026-09-09-packet63b-ii-a-owner-resolution-ruling.md``
+§3 (this module REVISED by ``reviser-63b-ii-a``): the keep's keeper is the REGISTRANT's admitted
+principal, read from the transport token through the SAME lifted seam ``governed.resolve_principal``
+that ``resolve_subject`` reads it from (§3.1). Reading A (``resolve_operator_principal``) is REJECTED as
+copy #2 of owner derivation — it is a migrate-time fleet-wide guess with a REFUSE, not a served-path
+resolver, and would make principal B's session A's the moment B is householded (§2.2 / §3.1). A tokenless
+register succeeds OWNERLESS and mints NO keep (reading α, §3.2). The behavioural layer is now a
+CREDENTIALED harness (the ``test_wire_isolation_63a.py::wire_world`` idiom): ≥2 member principals + one
+ADMIN, so ``resolve_operator_principal`` gives a DIFFERENT answer (the admin) than the NON-admin
+registrant — the WB-2 ownership-forgery detector Reading A fails. R3 pins the keeper EXACTLY (the
+registrant, not the admin); R1 the send owner EXACTLY (the sender's pair, not the keeper); R2 the
+tokenless-send DENY; R5 the send-half grant flip; R4 the ONE-derivation sharing by mutation.
 
 STORE LAW cited: §1.8 (``keep.key`` UNIQUE over option<> — the deterministic natural key), §2 (CONTENT
 writes). Live TEST store ``ws://127.0.0.1:18000`` (NEVER :18500). Per-test unique DB, reaped. NO skip.
@@ -39,9 +41,10 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import loremaster.server as server_mod
 import pytest
 import pytest_asyncio
-from _governed_contract import build_memory_backend, member
+from _governed_contract import access_token, build_memory_backend, member
 from _surreal_harness import drop_database as drop_surreal_database
 from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
 from loremaster.config import LoreConfig
@@ -269,10 +272,56 @@ def _config(slug: str) -> LoreConfig:
     )
 
 
+_E_ALICE = "alice@example.com"
+_E_BOB = "bob@example.com"
+_E_CAROL = "carol@example.com"
+
+
+def _bare(value: Any) -> str:
+    text = str(getattr(value, "id", value))
+    return text.split(":", 1)[-1] if ":" in text else text
+
+
+async def _register_owned(
+    ctx: AppContext, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
+) -> tuple[str, str]:
+    """Register an agent OWNED by ``owner_principal_id`` DIRECTLY on the registry (the wire_world
+    idiom), returning its one-time ``(capability, bare agent id)``. Until R7 lands the tool ``register``
+    renders but does not RETURN the raw credential, so a credentialed send mints its capability here."""
+    result = await ctx.agent_registry.register(
+        name, session=session, role=role, owner_principal_id=owner_principal_id
+    )
+    assert result.capability is not None, f"the first register of {name!r} must mint a capability"
+    return str(result.capability), _bare(result.agent.id)
+
+
+async def _message_count(ctx: AppContext, session: str) -> int:
+    """The number of ``message`` rows in ``session`` — the zero-rows / anti-vacuity instrument (R2)."""
+    rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only count of the message rows
+        "SELECT count() FROM message WHERE session = $s GROUP ALL", {"s": session}
+    )
+    return rows[0]["count"] if isinstance(rows, list) and rows else 0
+
+
 @pytest_asyncio.fixture()
-async def ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
-    """A real AppContext over an empty corpus (build_app_context, start_tasks=False) with ONE operator
-    principal provisioned (so a register-time keep mint has a keeper under either FLAG F-KEEPER reading)."""
+async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
+    """A CREDENTIALED real ``AppContext`` (the ``test_wire_isolation_63a.py::wire_world`` idiom): patch
+    ``loremaster.server.get_access_token`` to a switchable ``holder`` + provision THREE principals —
+    ``alice``/``bob`` (members) and ``carol`` (ADMIN). alice is the NON-admin registrant/keeper; carol
+    exists so ``resolve_operator_principal`` (the single admin) gives a DIFFERENT answer than alice —
+    the WB-2 ownership-forgery detector Reading A fails (§3 / ruling §5 preamble). Reaped (NEVER
+    :18500). ⚠ FIXTURE DUPLICATION (flag, report §Flags): the credentialed harness mirrors capability +
+    enforcement — the established per-file 'fixture DATA, local, deliberately not imported' convention."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-send-scope-dummy")
+    monkeypatch.setenv("LORE_TEI_KEY", "send-scope-dummy")
+    holder: dict[str, str | None] = {"email": None}
+
+    def _patched_get_access_token() -> Any:
+        email = holder["email"]
+        return access_token(subject=email if email is not None else "")
+
+    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
+
     slug = f"test_{uuid.uuid4().hex}"
     _pending_slugs.append(slug)
     context = await build_app_context(
@@ -282,22 +331,34 @@ async def ctx(tmp_path: Path) -> AsyncIterator[AppContext]:
         snapshot_root=tmp_path / f"{slug}-snap",
         start_tasks=False,
     )
-    await _ps(context).create(email="operator@example.com", role="member")
+    principal_store = _ps(context)
+    alice = await principal_store.create(email=_E_ALICE, role="member")
+    bob = await principal_store.create(email=_E_BOB, role="member")
+    carol = await principal_store.create(email=_E_CAROL, role="admin")
     try:
-        yield context
+        yield {
+            "ctx": context,
+            "holder": holder,
+            "emails": {"alice": _E_ALICE, "bob": _E_BOB, "carol": _E_CAROL},
+            "pids": {"alice": _bare(alice.id), "bob": _bare(bob.id), "carol": _bare(carol.id)},
+        }
     finally:
         await context.aclose()
 
 
 class TestRegisterMintsTheSessionKeep:
-    """SF-63-1 — ``register`` MINTS the session keep ``session:<session>`` (type ``session``), so a
-    later ``send`` in that session can resolve it by key. Asserts the UNAMBIGUOUS core (key + type +
-    resolvability); the KEEPER mechanism is FLAG F-KEEPER."""
+    """SF-63-1 — ``register`` MINTS the session keep ``session:<session>`` (type ``session``), kept by
+    the REGISTRANT's admitted principal (ruling §3), so a later ``send`` in that session can resolve it
+    by key. Driven CREDENTIALED (the ambient token is the registrant's email). R3 adds the keeper
+    EXACTNESS + the SF-63-1 foreign gate + the keeper's-own-second-agent positive control."""
 
-    async def test_a_fresh_register_mints_a_resolvable_session_keep(self, ctx: AppContext) -> None:
-        """⚠ RED at HEAD — after ``comms(action="register", session="s1", …)`` a keep bearing key
-        ``session:s1`` and type ``session`` exists (resolvable by ``KeepStore.get_by_key``). At HEAD
-        ``_comms_register`` mints NO keep → ``get_by_key`` returns None → reds (SF-63-1 unbuilt)."""
+    async def test_a_fresh_register_mints_a_resolvable_session_keep(self, cred: dict[str, Any]) -> None:
+        """⚠ RED at HEAD — after a CREDENTIALED ``comms(action="register", session="s1", …)`` a keep
+        bearing key ``session:s1`` and type ``session`` exists (resolvable by ``KeepStore.get_by_key``).
+        At HEAD ``_comms_register`` reads no token and mints NO keep → ``get_by_key`` returns None →
+        reds (SF-63-1 unbuilt)."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
         await ctx.comms(action="register", agent="ag_one", session="s1", role="builder")
         keep = await _ks(ctx).get_by_key("session:s1")
         assert keep is not None, (
@@ -308,10 +369,13 @@ class TestRegisterMintsTheSessionKeep:
             f"the register-minted keep must be type 'session' (SF-63-1), got {keep.type!r}"
         )
 
-    async def test_register_is_idempotent_on_the_session_keep(self, ctx: AppContext) -> None:
-        """⚠ RED at HEAD — a SECOND register in the same session resolves the SAME keep (the
-        ``get_or_create_keyed`` CAS on the UNIQUE ``keep.key`` — store-ref §1.8), never a second row.
-        RED at HEAD (no keep minted at all). Discriminates a build that mints a NEW keep per register."""
+    async def test_register_is_idempotent_on_the_session_keep(self, cred: dict[str, Any]) -> None:
+        """⚠ RED at HEAD — a SECOND register in the same session (by the keeper's own second agent)
+        resolves the SAME keep (the ``get_or_create_keyed`` CAS on the UNIQUE ``keep.key`` — store-ref
+        §1.8), never a second row. RED at HEAD (no keep minted at all). Discriminates a build that mints
+        a NEW keep per register."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
         await ctx.comms(action="register", agent="ag_one", session="s1", role="builder")
         first = await _ks(ctx).get_by_key("session:s1")
         assert first is not None, "SF-63-1 unbuilt: first register minted no session keep"
@@ -323,51 +387,141 @@ class TestRegisterMintsTheSessionKeep:
             f"{second.id if second else None!r}"
         )
 
+    async def test_register_mints_the_session_keep_kept_by_the_registrants_principal(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — R3 keeper EXACTNESS (ruling §3). The session keep's keeper is the REGISTRANT's
+        principal (alice, a NON-admin member), NOT ``resolve_operator_principal``'s answer (carol, the
+        single ADMIN — Reading A / WB-2). At HEAD register mints no keep → ``get_by_key`` None → reds
+        (SF-63-1 unbuilt). On a Reading-A build the keeper is carol → the ``== alice`` assert reds (the
+        ownership-forgery WB-2 fails to catch: a keeper=admin would make principal B's session A's)."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]  # alice is a NON-admin member; carol is the admin
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await _ks(ctx).get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
+        assert keep.keeper_id == cred["pids"]["alice"], (
+            f"the session keep's keeper must be the REGISTRANT's principal (alice), NOT "
+            f"resolve_operator_principal's answer (carol, the single admin — Reading A / WB-2). got "
+            f"keeper_id={keep.keeper_id!r}, alice={cred['pids']['alice']!r}, carol={cred['pids']['carol']!r}"
+        )
+        assert keep.keeper_id != cred["pids"]["carol"], (
+            "the keeper is the ADMIN (carol) — Reading A (keeper = resolve_operator_principal = the "
+            "single admin) is the ownership-forgery WB-2 cannot see; the keeper is the REGISTRANT (§3)"
+        )
+
+    async def test_a_foreign_principals_register_into_a_kept_session_denies_naming_the_remedy_not_the_keeper(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — R3 the SF-63-1 foreign gate (ruling §3.1 step 4). alice keeps ``session:s1``;
+        bob (a FOREIGN principal, not householded) registering into it is DENIED with a teaching that
+        names the SESSION and the ``add-household`` remedy — and NOT the keeper's identity (63-rulings
+        §6 existence-leak stance) — and writes NO agent row (#97: a rejected call has no side effect).
+        At HEAD alice's register mints no keep → the ``keep is not None`` guard reds (SF-63-1 unbuilt);
+        even reached, HEAD has no foreign gate → bob's register succeeds → the ``raises`` reds."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await _ks(ctx).get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: alice's register minted no session keep"
+        cred["holder"]["email"] = cred["emails"]["bob"]  # a FOREIGN principal, not householded in s1
+        with pytest.raises(governed.GovernedDenied) as excinfo:
+            await ctx.comms(action="register", agent="bob_w1", session="s1", role="builder")
+        message = str(excinfo.value)
+        assert "s1" in message and "household" in message.lower(), (
+            f"a foreign register deny must NAME the session + the add-household remedy (ruling §3.1 step "
+            f"4), got: {message!r}"
+        )
+        assert cred["emails"]["alice"] not in message, (
+            f"a foreign register deny must NOT leak the keeper's identity (63-rulings §6 existence-leak "
+            f"stance — a foreign principal must not learn who keeps a session), got: {message!r}"
+        )
+        rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only side-effect check
+            "SELECT count() FROM agent WHERE name = $n GROUP ALL", {"n": "bob_w1"}
+        )
+        assert (rows[0]["count"] if isinstance(rows, list) and rows else 0) == 0, (
+            "a DENIED foreign register wrote an agent row for bob_w1 — a rejected call must have NO side "
+            "effect (the dispatcher's #97 law)"
+        )
+
+    async def test_the_keepers_own_second_agent_registers_fine(self, cred: dict[str, Any]) -> None:
+        """R3 POSITIVE CONTROL (63-rulings §9 item 7) — the keeper's OWN second agent joins the session
+        it keeps WITHOUT a foreign-gate deny (a gate that denied its own keeper's agents would be a
+        false positive that made the deny above meaningless). GREEN at HEAD (no gate) AND on the build
+        (alice is auto-householded as the keeper). Proves the foreign deny is not a blanket refusal."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        # alice's SECOND agent in the SAME session must register fine (auto-householded keeper).
+        await ctx.comms(action="register", agent="alice_w2", session="s1", role="builder")
+
+
+async def _credentialed_send(ctx: AppContext, **kwargs: Any) -> Any:
+    """Drive a CREDENTIALED ``comms(action='send', …)``; at HEAD ``comms`` rejects ``capability=`` (the
+    §4.D seam is unbuilt) → a LEGIBLE ``pytest.fail`` RED rather than a raw ``TypeError`` traceback. Use
+    only where the send is expected to SUCCEED or to raise ``GovernedDenied`` on the BUILT path."""
+    try:
+        return await ctx.comms(action="send", **kwargs)
+    except TypeError as error:
+        pytest.fail(
+            f"AppContext.comms rejected capability= — the §4.D seam is unbuilt (RED-at-HEAD for the "
+            f"right reason): {error}"
+        )
+
 
 class TestSendResolvesTheSessionKeepScope:
-    """§4.A — ``send`` resolves ``session:<session>`` by KEY and stamps the message scope through the
-    lifted grant seam; a MISSING session keep at send is a teaching DENY, never a fallback."""
+    """§4.A — a CREDENTIALED ``send`` resolves ``session:<session>`` by KEY and stamps the message scope
+    through the lifted grant seam; a MISSING session keep at send is a teaching DENY, never a fallback.
+    Adds R1 (owner EXACTNESS — the send owner is the SENDER's pair, not the keeper), R2 (a tokenless
+    send DENIES and writes nothing), R5 (the §4.A send-half grant flip). All driven CREDENTIALED."""
 
     async def test_a_send_with_no_session_keep_denies_teaching_register_first(
-        self, ctx: AppContext
+        self, cred: dict[str, Any]
     ) -> None:
-        """⚠ RED at HEAD — a ``send`` in a session with NO session keep DENIES with a teaching message
-        naming ``register`` (§4.A: missing keep → GovernedDenied 'register first', never the project
-        keep, never NONE). To reach ``send`` the sender+recipient must be registered; on the correct
-        build register MINTS the keep, so the missing-keep state is manufactured by DELETING it before
-        the send. At HEAD register mints no keep (so the delete is a no-op) AND send performs no keep
-        resolution → the send SUCCEEDS instead of denying → reds (§4.A unbuilt)."""
-        sender = await ctx.comms(action="register", agent="sender_a", session="s1", role="builder")
+        """⚠ RED at HEAD — a CREDENTIALED ``send`` in a session with NO session keep DENIES with a
+        teaching naming ``register`` (§4.A: missing keep → 'register first', never the project keep,
+        never NONE). CREDENTIALED so ``_resolve_subject`` SUCCEEDS and the deny is the MISSING KEEP —
+        NOT a missing IDENTITY (whose deny ALSO contains 'register', the fixture-doesn't-discriminate
+        trap a tokenless drive fell into). The missing-keep state is manufactured by DELETING the keep
+        register minted. At HEAD ``comms`` rejects ``capability=`` (§4.D unbuilt) → the wrapper reds."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        sender_cap, _sender_agent = await _register_owned(
+            ctx, "sender_a", owner_principal_id=cred["pids"]["alice"], session="s1"
+        )
         await ctx.comms(action="register", agent="recip_a", session="s1", role="builder")
-        # Manufacture the missing-keep state: delete any session keep register may have minted.
         await _ks(ctx)._query(  # noqa: SLF001 - test-only teardown of the minted keep
             "DELETE keep WHERE key = $k", {"k": "session:s1"}
         )
-        assert sender is not None  # register returned (the send below is the pinned behaviour)
-        with pytest.raises(governed.GovernedDenied) as excinfo:
-            await ctx.comms(
-                action="send", agent="sender_a", session="s1", to=["recip_a"],
-                body="a note with no session keep", grade="signal",
-            )
+        try:
+            with pytest.raises(governed.GovernedDenied) as excinfo:
+                await ctx.comms(
+                    action="send", agent="sender_a", session="s1", to=["recip_a"],
+                    body="a note with no session keep", grade="signal", capability=sender_cap,
+                )
+        except TypeError as error:  # HEAD: `comms` rejects capability= (§4.D unbuilt)
+            pytest.fail(f"AppContext.comms rejected capability= — the §4.D seam is unbuilt: {error}")
         assert "register" in str(excinfo.value).lower(), (
             f"the missing-session-keep send DENIAL must teach 'register first' (§4.A), got: {excinfo.value}"
         )
 
-    async def test_a_send_stamps_the_message_scope_to_the_session_keep(self, ctx: AppContext) -> None:
-        """⚠ RED at HEAD — a ``send`` in a session whose keep exists stamps the created message row's
-        ``scope`` = the session keep's scope (``keep:<session-keep-id>``), resolved via the lifted
-        ``resolve_write_scope``. RED at HEAD for a compound reason (message has no scope column until
-        §4.F; send resolves no keep; SF-63-1 mints no keep) — this is the WRITE-side outcome §4.A owns;
-        it depends on §4.F (piece 1) + SF-63-1 + the lift all landing, so its GREEN is the ii-a
-        integration. (Report §Decisions: the finest-grained RED reasons are carried by the piece-1/
-        resolve_write_scope/SF-63-1 pins; this pin is the composed behavioural outcome.)"""
+    async def test_a_send_stamps_the_message_scope_to_the_session_keep(self, cred: dict[str, Any]) -> None:
+        """⚠ RED at HEAD — a CREDENTIALED ``send`` in a session whose keep exists stamps the created
+        message row's ``scope`` = the session keep's scope (``keep:<session-keep-id>``), resolved via the
+        lifted ``resolve_write_scope``. RED at HEAD (SF-63-1 mints no keep → the ``keep is not None``
+        guard reds); its GREEN is the ii-a integration (§4.F + SF-63-1 + the lift all landing)."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        sender_cap, _sender_agent = await _register_owned(
+            ctx, "sender_b", owner_principal_id=cred["pids"]["alice"], session="s2"
+        )
         await ctx.comms(action="register", agent="sender_b", session="s2", role="builder")
         await ctx.comms(action="register", agent="recip_b", session="s2", role="builder")
         keep = await _ks(ctx).get_by_key("session:s2")
         assert keep is not None, "SF-63-1 unbuilt: no session keep to stamp the send scope from"
-        await ctx.comms(
-            action="send", agent="sender_b", session="s2", to=["recip_b"],
-            body="a scoped note", grade="signal",
+        await _credentialed_send(
+            ctx, agent="sender_b", session="s2", to=["recip_b"],
+            body="a scoped note", grade="signal", capability=sender_cap,
         )
         rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only read of the message row
             "SELECT scope FROM message WHERE session = $s", {"s": "s2"}
@@ -375,4 +529,223 @@ class TestSendResolvesTheSessionKeepScope:
         assert rows and rows[0]["scope"] == pdp.keep_scope(str(keep.id).split(":", 1)[-1]), (
             f"the sent message's scope must be the session keep's scope (§4.A via resolve_write_scope), "
             f"got {rows[0]['scope'] if rows else '<no message row>'!r}"
+        )
+
+    async def test_a_credentialed_send_stamps_exactly_the_subjects_pair(self, cred: dict[str, Any]) -> None:
+        """⚠ RED at HEAD — R1 owner EXACTNESS (ruling §2.3, the F4 effect leg the enforcement file's
+        docstring PROMISED and nobody wrote). A (alice) keeps ``session:s1`` and HOUSEHOLDS B (bob); B's
+        agent sends → the created message's owner is B's ``(principal, agent)`` pair, NOT the keeper A
+        (Reading A / WB-2), NOT None (reading B), and its ``owner_agent`` IS the row's own ``sender``.
+        This is the pin that makes the enforcement live-classify's non-None owner a REAL leg rather than
+        a false clear (a build stamping the keeper/operator/any-non-None passes the non-None check but
+        FAILS here). RED at HEAD: SF-63-1 mints no keep → the ``keep is not None`` guard reds."""
+        ctx = cred["ctx"]
+        ks = _ks(ctx)
+        cred["holder"]["email"] = cred["emails"]["alice"]  # A = the keeper
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await ks.get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: alice's register minted no session keep"
+        bob_cap, bob_agent = await _register_owned(
+            ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
+        )
+        await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])  # A households B
+        cred["holder"]["email"] = cred["emails"]["bob"]  # B sends with B's own token + capability
+        await _credentialed_send(
+            ctx, agent="bob_w1", session="s1", to=["alice_w1"],
+            body="B's note into A's session", grade="signal", capability=bob_cap,
+        )
+        rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only read of the message row
+            "SELECT owner_principal, owner_agent, sender FROM message WHERE session = $s", {"s": "s1"}
+        )
+        assert rows, "the credentialed send created no message row"
+        row = rows[0]
+        assert str(row["owner_principal"]) == f"principal:{cred['pids']['bob']}", (
+            f"the send owner_principal must be the SENDER B's principal (§2.3 subject.principal_id), NOT "
+            f"the keeper A (Reading A / WB-2), NOT None. got {row['owner_principal']!r}; "
+            f"bob=principal:{cred['pids']['bob']} alice(keeper)=principal:{cred['pids']['alice']}"
+        )
+        assert str(row["owner_principal"]) != f"principal:{cred['pids']['alice']}", (
+            "the send owner_principal is the KEEPER A (Reading A) — the ownership forgery R1 exists to "
+            "catch: B's send owned by A the moment A householded B (§2.2 / WB-2)"
+        )
+        assert str(row["owner_agent"]) == f"agent:{bob_agent}", (
+            f"the send owner_agent must be the SENDER B's agent, got {row['owner_agent']!r}"
+        )
+        assert str(row["owner_agent"]) == str(row["sender"]), (
+            f"the send owner_agent must equal the row's own sender (R8 structural leg), got "
+            f"owner_agent={row['owner_agent']!r} sender={row['sender']!r}"
+        )
+
+    async def test_a_tokenless_send_denies_and_creates_no_message_row(self, cred: dict[str, Any]) -> None:
+        """⚠ RED at HEAD — R2 (anti-vacuity INVERTED). A TOKENLESS ``send`` (no ambient token, no
+        capability) DENIES with ``GovernedDenied`` and creates ZERO message rows — the deny fires at
+        the unconditional ``_resolve_subject`` (§2.3), BEFORE any write. At HEAD ``_comms_send`` resolves
+        no subject → the send SUCCEEDS and WRITES a row → the ``raises`` reds (DID NOT RAISE) and the
+        zero-rows assert would red. CONTROL: the SAME send CREDENTIALED writes exactly ONE row (so the
+        tokenless deny is the MISSING IDENTITY, not a send that never works)."""
+        ctx = cred["ctx"]
+        holder = cred["holder"]
+        holder["email"] = cred["emails"]["alice"]
+        alice_cap, _alice_agent = await _register_owned(
+            ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
+        )
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        await ctx.comms(action="register", agent="recip", session="s1", role="builder")
+        before = await _message_count(ctx, "s1")
+        # TOKENLESS: clear the ambient token and present NO capability → the write must DENY, writing nothing.
+        holder["email"] = None
+        with pytest.raises(governed.GovernedDenied):
+            await ctx.comms(
+                action="send", agent="alice_w1", session="s1", to=["recip"],
+                body="a tokenless note", grade="signal",
+            )
+        after = await _message_count(ctx, "s1")
+        assert after == before == 0, (
+            f"a tokenless send must create ZERO message rows (the deny fires at _resolve_subject, before "
+            f"any write) — before={before} after={after}. At HEAD the unenforced send writes a row → reds"
+        )
+        # CONTROL — the SAME send CREDENTIALED writes exactly one row.
+        holder["email"] = cred["emails"]["alice"]
+        await _credentialed_send(
+            ctx, agent="alice_w1", session="s1", to=["recip"],
+            body="a credentialed note", grade="signal", capability=alice_cap,
+        )
+        assert await _message_count(ctx, "s1") == 1, (
+            "the credentialed control send must write exactly ONE message row — proving the tokenless "
+            "deny above is the MISSING IDENTITY, not a send that never works"
+        )
+
+    async def test_a_sender_removed_from_the_session_household_is_denied_at_send(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — R5 the §4.A send-half grant flip (§6). B is householded then REMOVED; B's
+        send then DENIES, because ``send`` resolves the session scope through
+        ``resolve_write_scope(subject, session_scope, default=session_scope)`` with ``session_scope``
+        EXPLICIT (never None), so ``_grantable(subject, session_scope)`` runs on EVERY send and a removed
+        member is no longer householded → GovernedDenied. RED at HEAD: SF-63-1 mints no keep → the
+        ``keep is not None`` guard reds (and at HEAD send checks no household → would succeed)."""
+        ctx = cred["ctx"]
+        ks = _ks(ctx)
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await ks.get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
+        bob_cap, _bob_agent = await _register_owned(
+            ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
+        )
+        await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
+        await ks.remove_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
+        cred["holder"]["email"] = cred["emails"]["bob"]
+        try:
+            with pytest.raises(governed.GovernedDenied):
+                await ctx.comms(
+                    action="send", agent="bob_w1", session="s1", to=["alice_w1"],
+                    body="a note from a removed member", grade="signal", capability=bob_cap,
+                )
+        except TypeError as error:  # HEAD: `comms` rejects capability= (§4.D unbuilt)
+            pytest.fail(f"AppContext.comms rejected capability= — the §4.D seam is unbuilt: {error}")
+
+    async def test_perturbing_the_lifted_seam_changes_send(
+        self, cred: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD — R5 the send-half MUTATION proof (the twin of the remember-half in
+        ``TestTheSharedGrantPredicateIsProvenByMutation``). POSITIVE CONTROL: a REMOVED member's send
+        DENIES on the unperturbed path. Then a PERMISSIVE ``governed.resolve_write_scope`` (grant check
+        removed) makes the SAME removed-member send SUCCEED — ONLY IF ``send`` routes through the lifted
+        seam. So BOTH halves flip under the seam mutation, as §4.A's rider demands. RED at HEAD: SF-63-1
+        mints no keep → the ``keep is not None`` guard reds."""
+        ctx = cred["ctx"]
+        ks = _ks(ctx)
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await ks.get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
+        bob_cap, _bob_agent = await _register_owned(
+            ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
+        )
+        await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
+        await ks.remove_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
+        cred["holder"]["email"] = cred["emails"]["bob"]
+        # POSITIVE CONTROL — the removed member's send DENIES on the unperturbed grant path.
+        try:
+            with pytest.raises(governed.GovernedDenied):
+                await ctx.comms(
+                    action="send", agent="bob_w1", session="s1", to=["alice_w1"],
+                    body="control", grade="signal", capability=bob_cap,
+                )
+        except TypeError as error:
+            pytest.fail(f"AppContext.comms rejected capability= — the §4.D seam is unbuilt: {error}")
+
+        def _permissive(subject: Any, scope: Any, *, default: Any) -> Any:
+            return default if scope is None else scope
+
+        monkeypatch.setattr(governed, "resolve_write_scope", _permissive, raising=False)
+        # With the seam permissive, a ROUTED send accepts the session scope even for the removed member.
+        # If send does NOT route through the seam, it still denies → this reds.
+        try:
+            await ctx.comms(
+                action="send", agent="bob_w1", session="s1", to=["alice_w1"],
+                body="routed", grade="signal", capability=bob_cap,
+            )
+        except governed.GovernedDenied:
+            pytest.fail(
+                "a removed member's send STILL denied under a permissive governed.resolve_write_scope — "
+                "send does NOT route through the lifted seam (§4.A / §6 send-half unbuilt; "
+                "ROUTING-IS-NOT-SHARING)"
+            )
+        except TypeError as error:
+            pytest.fail(f"AppContext.comms rejected capability= — the §4.D seam is unbuilt: {error}")
+
+
+class TestThePrincipalResolutionIsSharedByMutation:
+    """R4 VALUE-mutation (ruling §3.1 / §3.3 — ONE derivation). The send owner (Q1, via
+    ``resolve_subject``) and the keep keeper (Q2, via ``_comms_register``) are BOTH the transport
+    token's admitted principal, resolved through ONE lifted ``governed.resolve_principal``. Perturb that
+    seam to return a FIXED admitted principal P* and watch BOTH move: a private copy on either path does
+    NOT move. The STRUCTURAL twin (``function_calls_named``) lives in
+    ``test_comms_capability_63b_ii_a.py``."""
+
+    async def test_perturbing_resolve_principal_changes_both_send_owner_and_keep_keeper(
+        self, cred: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD — perturb ``governed.resolve_principal`` → a DISTINCT admitted principal P*.
+        (a) ``resolve_subject`` (send's identity) must then resolve P* as the Subject's principal; at
+        HEAD ``resolve_subject`` INLINES ``principal_store.get_by_email`` (no ``resolve_principal`` call)
+        → the Subject stays alice → the ``== P*`` assert reds. (b) a register's minted keep must then be
+        kept by P*; at HEAD ``_comms_register`` mints no keep → the ``keep is not None`` guard reds.
+        POSITIVE CONTROL: unpatched, ``resolve_subject`` resolves alice's REAL principal."""
+        ctx = cred["ctx"]
+        ks = _ks(ctx)
+        # A DISTINCT admitted principal P* the SHARED seam will return for EVERY token.
+        p_star = await _ps(ctx).create(email="pstar@example.com", role="member")
+        p_star_pid = _bare(p_star.id)
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        alice_cap, _alice_agent = await _register_owned(
+            ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
+        )
+        # POSITIVE CONTROL — unpatched, resolve_subject resolves alice's real principal.
+        control_subject = await ctx._resolve_subject(alice_cap)  # noqa: SLF001 - the composition root
+        assert control_subject.principal_id == cred["pids"]["alice"], (
+            f"positive control: unpatched _resolve_subject must resolve alice's real principal, got "
+            f"{control_subject.principal_id!r}"
+        )
+
+        async def _fixed_principal(access_token: Any, *, principal_store: Any) -> Any:
+            return p_star
+
+        monkeypatch.setattr(governed, "resolve_principal", _fixed_principal, raising=False)
+        # (a) SEND owner (Q1): resolve_subject now yields P* as the principal.
+        mutated_subject = await ctx._resolve_subject(alice_cap)  # noqa: SLF001
+        assert mutated_subject.principal_id == p_star_pid, (
+            f"perturbing governed.resolve_principal did NOT change resolve_subject's principal (got "
+            f"{mutated_subject.principal_id!r}, expected {p_star_pid!r}) — resolve_subject does not route "
+            f"through the shared resolve_principal (ruling §3.1; a private get_by_email copy)"
+        )
+        # (b) KEEP keeper (Q2): a register now mints a keep kept by P*.
+        await ctx.comms(action="register", agent="reg_after_patch", session="s9", role="builder")
+        keep = await ks.get_by_key("session:s9")
+        assert keep is not None and keep.keeper_id == p_star_pid, (
+            f"perturbing governed.resolve_principal did NOT change the register-minted keep's keeper — "
+            f"_comms_register does not route through the shared resolve_principal (ruling §3.1 / §3.3 "
+            f"ONE derivation: Q1 and Q2 must be the SAME seam). keep={keep!r}, expected keeper {p_star_pid!r}"
         )
