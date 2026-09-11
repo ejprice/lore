@@ -151,24 +151,57 @@ def _governed_read_render_methods() -> dict[str, list[str]]:
     day their ``_resolve_subject``-calling handlers land — so a NEW governed read render that omits the
     bound line reds the coverage pin below WITHOUT anyone editing it (the growth property §3.3 pin ii
     requires). Returns ``{entry_point_method_name: [render_method_name, ...]}``.
+
+    ⚠ 63b-ii-b §9.3 / lore #464 — the RECEIVER set is WIDENED from ``self`` alone to
+    ``{self, cls, AppContext}`` (the class's own ``__name__``, DERIVED not spelled). The i-b derivation
+    matched only ``self._resolve_subject`` / ``self._render_*``; but EVERY comms handler calls its
+    renders (and its helpers) as ``AppContext._render_*(...)`` — the duck-typed-harness idiom the
+    handlers document (``_comms_story``: *"the duck-typed handler harness … resolves correctly"*). As
+    keyed on ``self`` only, the ii-b comms renders were INVISIBLE to this pin — the instrument lesson's
+    receiver-name row, a false clear in the pin built to prevent false clears. Widening the receiver is
+    a TEST-side fix (it touches no production call idiom, so it does not break ``_comms_story``'s
+    documented ``AppContext.<method>(self, …)`` harness invariant). The
+    non-vacuity floor ``test_the_derivation_reaches_the_ii_b_comms_renders`` below asserts the widened
+    reach actually finds them, so the widening cannot be silently vacuous.
     """
+    receiver_names = {"self", "cls", AppContext.__name__}
     renders: dict[str, list[str]] = {}
     for name, function in inspect.getmembers(AppContext, predicate=inspect.isfunction):
         try:
             source = textwrap.dedent(inspect.getsource(function))
         except (OSError, TypeError):
             continue
-        self_calls = {
+        tree = ast.parse(source)
+        receiver_calls = {
             node.func.attr
-            for node in ast.walk(ast.parse(source))
+            for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "self"
+            and node.func.value.id in receiver_names
         }
-        if "_resolve_subject" not in self_calls:
+        if "_resolve_subject" not in receiver_calls:
             continue
-        render_calls = sorted(call for call in self_calls if call.startswith("_render_"))
+        # ⚠ 63b-ii-b §9.1 — a governed WRITE verb (``send`` / ``remember`` / ``invalidate``) ALSO
+        # resolves a Subject, but its receipt render is NOT a governed READ render and does NOT carry
+        # the scope bound line (writes render a confirmation, never a scoped result — the render-scout
+        # confirmed ``_render_comms_send`` takes no ``subject``). The from-truth signal that separates
+        # a WRITE from a READ is ``governed.write_guard`` (a governed write wraps its mutation in it;
+        # a governed read never does — there is no ``read_guard``). So a method calling ``write_guard``
+        # is EXCLUDED, else the widened receiver reach would pull ``_render_comms_send`` into the set
+        # and the coverage pin would falsely demand a bound line from a WRITE receipt. This is a
+        # from-truth predicate, NOT a hand-exclusion of a render name (which the #464 lesson forbids).
+        # ⚠ SPEC-GAP the contract author closed (report §Spec-interface): §9.3 rules the receiver
+        # widening but is silent on the send-write-render it newly admits; α (this write_guard
+        # exclusion) chosen over β (hand-excluding _render_comms_send by name).
+        call_names = {
+            (node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name))
+        }
+        if "write_guard" in call_names:
+            continue
+        render_calls = sorted(call for call in receiver_calls if call.startswith("_render_"))
         if render_calls:
             renders[name] = render_calls
     return renders
@@ -208,6 +241,48 @@ class TestEveryGovernedReadRenderCarriesTheBoundLine:
                 "ii, coverage as a checked variable): every render reached from a governed READ verb "
                 "(derived from the _resolve_subject composition root) must prepend it."
             )
+
+    def test_the_derivation_reaches_the_ii_b_comms_renders(self) -> None:
+        """⚠ RED at HEAD (63b-ii-b §9.3 / lore #464) — the NON-VACUITY FLOOR naming the ii-b comms
+        renders, so the widened receiver reach (self/cls/AppContext) is proven to actually FIND them
+        rather than being a silently vacuous widening (INSTRUMENT-0: reach as a checked variable).
+
+        The coverage pin above governs EVERY render in the DERIVED set; this floor asserts that set ⊇
+        the six ii-b governed-read renders. At HEAD the four comms read handlers (``_comms_drain`` /
+        ``_comms_await`` / ``_comms_story`` / ``_comms_ack``) and ``_rollup`` do NOT call
+        ``_resolve_subject``, so their renders are absent from the derived set → this reds. GREEN when
+        each ii-b read handler resolves a Subject (its first act, mirroring ``_comms_send`` / ``recall``)
+        AND the widened derivation reaches its ``AppContext._render_*`` call — at which point the
+        coverage pin above forces each to take ``subject`` + call ``render_subject_bound`` (§9.1 R7/P4),
+        WITH NO edit to either pin (the growth property). A FLOOR (⊇), like the
+        ``_render_recalled_memories`` non-vacuity assert — never the EXACT set (§9.3: a floor, so a
+        seventh governed read render joins without churning this list).
+        """
+        all_renders = {
+            render for renders in _governed_read_render_methods().values() for render in renders
+        }
+        # §9.3's named floor — the six ii-b governed-read renders (drain, await NON-empty + EMPTY,
+        # story, ack, and the rollup message leg's top-level render). ``_render_rollup`` is named per
+        # §9.3; §9.4 lets the builder render the message leg inside it OR via a
+        # ``_render_rollup_messages`` it calls directly — either way ``_rollup`` still calls the
+        # top-level ``_render_rollup``, so this floor holds regardless of that sub-helper choice.
+        ii_b_floor = {
+            "_render_comms_drain",
+            "_render_comms_await",
+            "_render_comms_await_empty",
+            "_render_comms_story",
+            "_render_comms_ack",
+            "_render_rollup",
+        }
+        missing = ii_b_floor - all_renders
+        assert not missing, (
+            f"the governed-read render derivation does NOT reach the ii-b comms renders {sorted(missing)} "
+            f"— either their read handlers do not resolve a Subject yet (RED at HEAD, the expected "
+            f"state), or the widened receiver reach (self/cls/AppContext) fails to find their "
+            f"AppContext._render_* calls (a #464 regression). Once each handler resolves a Subject, the "
+            f"coverage pin above forces each render to carry the bound line with NO edit. derived: "
+            f"{sorted(all_renders)}"
+        )
 
     def test_the_empty_recall_render_still_names_the_bound(self) -> None:
         """⚠ RED-until-built (§3.3 pin ii, the empty case). An EMPTY recall render prepends the bound

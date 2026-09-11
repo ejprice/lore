@@ -38,7 +38,8 @@ import asyncio
 import contextlib
 import re
 import tomllib
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -294,6 +295,7 @@ class GovernedTableCase:
 # --------------------------------------------------------------------------- #
 
 MEMORY_TABLE = "memory"
+MESSAGE_TABLE = "message"  # 63b-ii-b: the message node table (seed_message_legacy's target).
 _PRINCIPAL_TABLE = "principal"
 _AGENT_TABLE = "agent"
 
@@ -354,6 +356,59 @@ def pdp_record(table: str, bare_id: str) -> Any:
     from surrealdb import RecordID
 
     return RecordID(table, bare_id)
+
+
+# --------------------------------------------------------------------------- #
+# MESSAGE seeder (63b-ii-b §12.6 step 0) — the ONE raw legacy-``message`` writer both dirty-store
+# legs share (F-DUP / ONE IMPLEMENTATION: a second raw-CREATE clone is the #102 seam).
+# --------------------------------------------------------------------------- #
+
+
+async def seed_message_legacy(
+    connection: SurrealConnection,
+    *,
+    sender_id: str,
+    session: str,
+    seq: int,
+    row_id: str | None = None,
+    **overrides: Any,
+) -> str:
+    """A RAW ``CREATE message`` that BYPASSES the ledger's app caps — the hypothesis under test in the
+    §12.6 dirty-store legs (a row the app cap would REFUSE). Writes every REQUIRED birth column with a
+    legal default, binds ``sender`` as a ``record<agent>`` LINK (store-ref §2), leaves the governed
+    columns (``owner_principal``/``owner_agent``/``scope``) UNSET (a pre-cutover legacy row — an
+    ``option<>`` unset reads NONE), and applies any ``**overrides`` VERBATIM (e.g.
+    ``body="z"*(MESSAGE_BODY_MAX_CHARS+1)``, ``grade="urgent"``, ``refs=[...]``). ``CONTENT`` (never
+    ``SET session=$session``) — ``session`` is a PROTECTED variable name (store-ref §2). Returns the
+    bare message id.
+
+    ONE IMPLEMENTATION (63b-ii-b §12.6 step 0): both dirty-store legs + Leg B call THIS, never a second
+    raw-CREATE clone (``test_comms_schema.py::_create_message`` predates it; this is the shared home so
+    the two files cannot drift about what a legacy row's shape is)."""
+    message_id = row_id if row_id is not None else uuid.uuid4().hex
+    content: dict[str, Any] = {
+        "seq": seq,
+        "session": session,
+        "thread": overrides.pop("thread", session),
+        "sender": pdp_record(_AGENT_TABLE, sender_id),
+        "grade": overrides.pop("grade", "signal"),
+        "body": overrides.pop("body", f"legacy body {seq}"),
+        "refs": overrides.pop("refs", []),
+        "task_id": overrides.pop("task_id", None),
+        "question": overrides.pop("question", False),
+        "created_at": overrides.pop("created_at", datetime.now(UTC)),
+    }
+    # governed overlay columns, only when a caller stamps them (a legacy row leaves them NONE):
+    for governed_col in ("owner_principal", "owner_agent", "scope"):
+        if governed_col in overrides:
+            content[governed_col] = overrides.pop(governed_col)
+    content.update(overrides)  # any remaining explicit column, verbatim.
+    await run(
+        connection,
+        f"CREATE type::record('{MESSAGE_TABLE}', $id) CONTENT $content",
+        {"id": message_id, "content": content},
+    )
+    return message_id
 
 
 # --------------------------------------------------------------------------- #
@@ -468,6 +523,62 @@ def governed_overlay_ddl(table: str) -> str:
     )
 
 
+def frozen_asserted_message_ddl() -> str:
+    """A FROZEN capture of ``message``'s ASSERT-bearing DDL as ``generate_message_ddl()`` emitted it
+    at ``0566587`` — the five ASSERT-bearing rows verbatim + the governed overlay (63b-ii-b §12.6).
+    ⚠ HAND-CAPTURED, NOT re-derived from the emitter: the whole point is that this OLD world SURVIVES
+    the emitter dropping the asserts (an emitter-derived old world would drop them too). ONE
+    IMPLEMENTATION — Leg A (drop lands, ``test_comms_schema.py``) and Leg B's C-control (migrate
+    raises, ``test_message_migrate_dirty_store_63b_ii_b.py``) BOTH call this, so the two files cannot
+    drift about what production's asserted shape is. A ``test_frozen_old_world_matches_the_emitters_
+    current_asserts`` control pins that these literals still match what the emitter asserts at HEAD."""
+    table = MESSAGE_TABLE
+    return (
+        f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
+        f"DEFINE FIELD OVERWRITE seq ON {table} TYPE int;\n"
+        f"DEFINE FIELD OVERWRITE session ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE thread ON {table} TYPE string ASSERT string::len($value) <= 256;\n"
+        f"DEFINE FIELD OVERWRITE sender ON {table} TYPE record<{_AGENT_TABLE}>;\n"
+        f"DEFINE FIELD OVERWRITE grade ON {table} TYPE string ASSERT $value IN ['signal', 'directive'];\n"
+        f"DEFINE FIELD OVERWRITE body ON {table} TYPE string ASSERT string::len($value) <= 4000;\n"
+        f"DEFINE FIELD OVERWRITE refs ON {table} TYPE array<string> DEFAULT [] "
+        f"ASSERT array::len($value) <= 20;\n"
+        f"DEFINE FIELD OVERWRITE refs[*] ON {table} TYPE string ASSERT string::len($value) <= 256;\n"
+        f"DEFINE FIELD OVERWRITE task_id ON {table} TYPE option<string> "
+        f"ASSERT string::len($value) <= 256;\n"
+        f"DEFINE FIELD OVERWRITE question ON {table} TYPE bool DEFAULT false;\n"
+        f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime;\n"
+        f"DEFINE FIELD OVERWRITE owner_principal ON {table} TYPE option<record<principal>>;\n"
+        f"DEFINE FIELD OVERWRITE owner_agent ON {table} TYPE option<record<{_AGENT_TABLE}>>;\n"
+        f"DEFINE FIELD OVERWRITE scope ON {table} TYPE option<string>;\n"
+    )
+
+
+def unbounded_message_ddl() -> str:
+    """The ``message`` node + governed overlay with NO ASSERT on any field — a world that NEVER
+    shipped (it exists to ACCEPT the violators Leg B migrates). Every birth field, ``refs`` DEFAULT [],
+    ``question`` DEFAULT false, the three governed columns option<>. Leg B seeds its six legacy
+    violators under THIS, then migrates the SCHEMA with the current emitter (63b-ii-b §12.6 Leg B)."""
+    table = MESSAGE_TABLE
+    return (
+        f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
+        f"DEFINE FIELD OVERWRITE seq ON {table} TYPE int;\n"
+        f"DEFINE FIELD OVERWRITE session ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE thread ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE sender ON {table} TYPE record<{_AGENT_TABLE}>;\n"
+        f"DEFINE FIELD OVERWRITE grade ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE body ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE refs ON {table} TYPE array<string> DEFAULT [];\n"
+        f"DEFINE FIELD OVERWRITE refs[*] ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE task_id ON {table} TYPE option<string>;\n"
+        f"DEFINE FIELD OVERWRITE question ON {table} TYPE bool DEFAULT false;\n"
+        f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime;\n"
+        f"DEFINE FIELD OVERWRITE owner_principal ON {table} TYPE option<record<principal>>;\n"
+        f"DEFINE FIELD OVERWRITE owner_agent ON {table} TYPE option<record<{_AGENT_TABLE}>>;\n"
+        f"DEFINE FIELD OVERWRITE scope ON {table} TYPE option<string>;\n"
+    )
+
+
 async def build_memory_backend(env: Any) -> Any:
     """A ready :class:`LocalMemoryBackend` on a fresh unified DB (a :class:`FakeEmbedder` +
     a no-op chunk oracle — the ``make_backend`` idiom, trimmed). Caller owns close + drop."""
@@ -506,6 +617,144 @@ async def build_principal_and_keep_stores(env: Any) -> tuple[Any, Any]:
     await principal_store.ensure_ready()
     await keep_store.ensure_ready()
     return principal_store, keep_store
+
+
+# --------------------------------------------------------------------------- #
+# The ONE shared CREDENTIALED-AppContext harness (ii-a §11.3 F-DUP) — the wire_world / cred idiom
+# lifted here so every governed test agrees on the token-switching seam's SHAPE, instead of 4 private
+# copies (wire_world + the 3 ii-a cred fixtures). ADD-only: the F5 substrate above is UNTOUCHED.
+# --------------------------------------------------------------------------- #
+
+
+def _credentialed_config(slug: str, *, dim: int) -> Any:
+    """A minimal valid :class:`~loremaster.config.LoreConfig` pointed at the spike TEST store
+    (``ws://127.0.0.1:18000``, NEVER :18500) — the ``cred`` / ``wire_world`` local-config idiom,
+    lifted. The surreal user/pass are read from ``SURREAL_USER``/``SURREAL_PASS`` (set by
+    :func:`credentialed_app_context`)."""
+    from loremaster.config import LoreConfig
+
+    return LoreConfig.model_validate(
+        {
+            "schema_version": 1,
+            "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
+            "project": {"slug": slug, "root": "."},
+            "embedding": {
+                "backend": "tei", "base_url": "http://localhost:8080", "endpoint": "/embed",
+                "model": "voyageai/voyage-4-nano", "dim": dim, "truncate": False,
+                "max_input_tokens": 8192, "max_batch_texts": 32, "concurrency": 2,
+                "connect_timeout_s": 5, "api_key_env": "LORE_TEI_KEY", "tokenizer": "voyage-4-nano",
+            },
+            "surreal": {
+                "url": _surreal_test_url(), "namespace": "lore_test",
+                "user_env": "SURREAL_USER", "password_env": "SURREAL_PASS",
+            },
+            "roots": [], "include": [], "exclude_dirs": [".git"], "exclude_globs": [],
+            "chunkers": {".py": {"chunker": "python_ast"}},
+            "watcher": {"enabled": False, "observer": "inotify", "debounce_ms": 1500,
+                        "reconcile_interval_s": 600},
+            "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9235},
+        }
+    )
+
+
+def _surreal_test_url() -> str:
+    from _surreal_harness import surreal_url
+
+    return str(surreal_url())
+
+
+@contextlib.asynccontextmanager
+async def credentialed_app_context(
+    monkeypatch: Any, tmp_path: Path, *, principals: dict[str, str], dim: int = 8
+) -> AsyncIterator[dict[str, Any]]:
+    """ONE shared credentialed-AppContext harness (ii-a §11.3 F-DUP): a REAL booted
+    :class:`~loremaster.server.AppContext` with a SWITCHABLE ambient transport token + ``principals``
+    provisioned. ``principals`` maps ``name -> role`` (emails ``<name>@example.com``); set
+    ``holder['email']`` to a provisioned email to ACT AS that principal, or ``None`` for an
+    empty-subject token (identity-less → ``GovernedDenied``). Yields
+    ``{ctx, holder, pids, emails, admin_conn, env}`` — ``pids``/``emails`` map name→bare principal id /
+    email, ``admin_conn`` is a signed-in ADMIN connection on the SAME db (for raw seeding), ``env`` the
+    ``SurrealEnv``. Reaped on exit (NEVER :18500).
+
+    SHARING is provable BY MUTATION (§11.3): change how ``holder`` feeds ``access_token`` (the token
+    shape) and EVERY caller's resolved identity flips — pinned by the F-DUP mutation test. This lift
+    is the shared HOME; ``wire_world`` + the 3 ii-a ``cred`` fixtures are the private copies the BUILD
+    wave converges onto it (report §F-DUP: not churned in the RED contract before the adversary)."""
+    import loremaster.server as server_mod
+    from _surreal_harness import (
+        connect_admin,
+        drop_database,
+        make_env,
+        surreal_password,
+        surreal_user,
+        unique_database,
+    )
+    from loremaster.server import LoreServer, build_app_context
+    from loresigil.testing import FakeEmbedder
+
+    monkeypatch.setenv("SURREAL_USER", surreal_user())
+    monkeypatch.setenv("SURREAL_PASS", surreal_password().get_secret_value())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-credentialed-harness-dummy")
+    monkeypatch.setenv("LORE_TEI_KEY", "credentialed-harness-dummy")
+
+    holder: dict[str, str | None] = {"email": None}
+
+    def _patched_get_access_token() -> Any:
+        email = holder["email"]
+        return access_token(subject=email if email is not None else "")
+
+    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
+
+    slug = unique_database()
+    context = await build_app_context(
+        server=LoreServer(_credentialed_config(slug, dim=dim)),
+        embedder=FakeEmbedder(dim=dim),
+        manifest_path=tmp_path / f"{slug}-m.db",
+        snapshot_root=tmp_path / f"{slug}-snap",
+        start_tasks=False,
+    )
+    env = make_env(database=slug, dim=dim)
+    admin_conn = await connect_admin(env)
+    principal_store = context._principal_store  # noqa: SLF001 - provision the credentialed principals
+    assert principal_store is not None, (
+        "the composition root did not wire the principal store — the credentialed harness needs a real "
+        "AppContext with a principal store"
+    )
+    pids: dict[str, str] = {}
+    emails: dict[str, str] = {}
+    for name, role in principals.items():
+        email = f"{name}@example.com"
+        principal = await principal_store.create(email=email, role=role)
+        pids[name] = _bare(principal.id)
+        emails[name] = email
+    try:
+        yield {
+            "ctx": context,
+            "holder": holder,
+            "pids": pids,
+            "emails": emails,
+            "admin_conn": admin_conn,
+            "env": env,
+        }
+    finally:
+        await admin_conn.close()
+        await context.aclose()
+        await drop_database(env)
+
+
+async def register_owned(
+    ctx: Any, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
+) -> tuple[str, str]:
+    """Register an agent OWNED by ``owner_principal_id`` DIRECTLY on the registry (the wire_world /
+    ii-a ``_register_owned`` idiom), returning its one-time ``(capability, bare agent id)``. Until R7
+    the tool ``register`` renders but does not RETURN the raw credential, so a credentialed call mints
+    its capability here. Lifted (F-DUP §11.3) so the ii-a ``cred`` files + the ii-b tests share ONE
+    minting seam."""
+    result = await ctx.agent_registry.register(
+        name, session=session, role=role, owner_principal_id=owner_principal_id
+    )
+    assert result.capability is not None, f"the first register of {name!r} must mint a capability"
+    return str(result.capability), _bare(result.agent.id)
 
 
 def store_handle(

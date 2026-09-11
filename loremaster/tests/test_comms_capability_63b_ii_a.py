@@ -41,7 +41,7 @@ import dataclasses
 import inspect
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -63,12 +63,18 @@ _CAPABILITY_REQUIRED_IN_II_A = frozenset({"send"})
 # The four READS flip TRUE in ii-b WITH their read-shape enforcement — FALSE in ii-a (a True they do
 # not yet enforce is the typed-applicability lie, PKT-28 C1).
 _REQUIRED_IN_II_B_NOT_YET = frozenset({"drain", "ack", "await", "story"})
+# ⚠ 63b-ii-b (RULING §4 / ii-a §11.5): the READS flip TRUE in ii-b WITH their read-shape enforcement.
+# The requires_capability=True set GROWS from {send} to the FIVE message-family verbs. ii-b "updates
+# the literal" (ii-a §4's own instruction). This is what the exact-set pin now asserts (RED at HEAD:
+# at HEAD only send is True).
+_CAPABILITY_REQUIRED_IN_II_B = _CAPABILITY_REQUIRED_IN_II_A | _REQUIRED_IN_II_B_NOT_YET
 # register MINTS identity (False by construction); heartbeat/brief_*/fleet flip in 63c (RED_ADJUDICATED).
 _NON_CAPABILITY_IN_63B = frozenset(
     {"register", "heartbeat", "brief_get", "brief_publish", "brief_ack", "fleet"}
 )
-# In ii-a, EVERY verb OTHER than send is requires_capability=False.
-_FALSE_IN_II_A = _REQUIRED_IN_II_B_NOT_YET | _NON_CAPABILITY_IN_63B
+# The verbs that STAY requires_capability=False through ii-b (register + the 63c-deferred set). In ii-b
+# the reads LEAVE the false-set (they flip True), so the "still False" pin checks ONLY these.
+_FALSE_IN_II_B = _NON_CAPABILITY_IN_63B
 
 _DIM = 8
 
@@ -107,34 +113,51 @@ class TestCommsActionSpecCarriesRequiresCapability:
                 f"message-family WRITE verb ii-a ENFORCES (an unconditional _resolve_subject)"
             )
 
-    def test_the_non_send_verbs_do_not_require_capability_in_ii_a(self) -> None:
-        """⚠ RED at HEAD (field absent → getattr None ≠ False). In ii-a EXACTLY ``send`` is True; every
-        other verb is False: ``register`` MINTS identity; drain/ack/await/story flip in ii-b WITH their
-        read-shape enforcement (a True they do not yet enforce is the typed-applicability lie, PKT-28
-        C1); heartbeat/brief_*/fleet flip in 63c (RED_ADJUDICATED→63c). A build that flips a READ verb
-        True in ii-a OVER-REACHES (ii-b's job); a HEAD with no field reds."""
-        for verb in sorted(_FALSE_IN_II_A):
+    def test_the_deferred_verbs_do_not_require_capability_in_ii_b(self) -> None:
+        """The verbs that STAY False through ii-b: ``register`` MINTS identity (False by construction),
+        and heartbeat/brief_*/fleet flip in 63c (RED_ADJUDICATED→63c). ⚠ UPDATED for ii-b (was
+        ``test_the_non_send_verbs_do_not_require_capability_in_ii_a``, which also asserted the READS
+        False — they flip TRUE in ii-b, so they LEAVE the false-set; the rename-sweep DUAL). GREEN at
+        HEAD AND after the ii-b build (these six never flip in 63b). REDDENS a build that over-reaches
+        (flips a 63c verb early)."""
+        for verb in sorted(_FALSE_IN_II_B):
             spec = _COMMS_ACTIONS[verb]
             assert getattr(spec, "requires_capability", None) is False, (
-                f"comms verb {verb!r} must be requires_capability=False in ii-a (RULING §4 — only send "
-                f"flips in ii-a; drain/ack/await/story in ii-b; heartbeat/brief_*/fleet in 63c). got "
+                f"comms verb {verb!r} must be requires_capability=False through ii-b (RULING §4 — "
+                f"register MINTS identity; heartbeat/brief_*/fleet flip in 63c). got "
                 f"{getattr(spec, 'requires_capability', '<no field>')!r}"
             )
 
-    def test_the_capability_set_is_EXACTLY_send_in_ii_a_surfaced_not_narrowed(self) -> None:
+    def test_the_reads_require_capability_in_ii_b(self) -> None:
+        """⚠ RED at HEAD (63b-ii-b RULING §4) — the four READ verbs (drain/ack/await/story) flip
+        ``requires_capability=True`` in ii-b, WITH their read-shape enforcement (each handler resolves
+        the Subject UNCONDITIONALLY and filters, §4.B/§4.E). At HEAD they are False (ii-a deferred them)
+        → this reds. On the ii-b build each is True AND its handler calls ``_resolve_subject`` (the
+        effect-keyed coverage floor above then governs them)."""
+        for verb in sorted(_REQUIRED_IN_II_B_NOT_YET):
+            spec = _COMMS_ACTIONS[verb]
+            assert getattr(spec, "requires_capability", None) is True, (
+                f"comms READ verb {verb!r} must flip requires_capability=True in ii-b (RULING §4) — its "
+                f"read shape resolves the Subject and filters (§4.B/§4.E); a name is not enough (§9). got "
+                f"{getattr(spec, 'requires_capability', '<no field>')!r}"
+            )
+
+    def test_the_capability_set_is_EXACTLY_the_five_in_ii_b_surfaced_not_narrowed(self) -> None:
         """⚠ RED at HEAD — the SET of verbs with ``requires_capability=True`` is DERIVED from
-        ``_COMMS_ACTIONS`` and must EQUAL EXACTLY ``{send}`` in ii-a (the §10.5 'surfaced, not narrowed'
-        trigger: a NEW/moved comms verb forces a requires_capability decision, it does not default into
-        the unguarded set). ⚠ ii-b UPDATES this literal to {send, drain, ack, await, story} WHEN it
-        enforces the reads. At HEAD no verb has the field → the True-set is empty → reds."""
+        ``_COMMS_ACTIONS`` and must EQUAL EXACTLY ``{send, drain, ack, await, story}`` in ii-b (the
+        §10.5 'surfaced, not narrowed' trigger: a NEW/moved comms verb forces a requires_capability
+        decision, it does not default into the unguarded set). ⚠ UPDATED for ii-b (was
+        ``..._is_EXACTLY_send_in_ii_a...`` asserting ``{send}`` — the rename-sweep DUAL: the ii-a
+        literal certified the OLD world and ii-b updates it). At HEAD only ``send`` is True → reds."""
         required = {
             verb for verb, spec in _COMMS_ACTIONS.items()
             if getattr(spec, "requires_capability", False)
         }
-        assert required == set(_CAPABILITY_REQUIRED_IN_II_A), (
-            f"the requires_capability=True set is {sorted(required)}, not the ii-a set {{send}} — a "
-            f"new/moved comms verb must DECIDE its capability applicability (surfaced, not narrowed; "
-            f"RULING §4 / §10.5). ii-b grows this literal to {{send, drain, ack, await, story}}"
+        assert required == set(_CAPABILITY_REQUIRED_IN_II_B), (
+            f"the requires_capability=True set is {sorted(required)}, not the ii-b set "
+            f"{sorted(_CAPABILITY_REQUIRED_IN_II_B)} — a new/moved comms verb must DECIDE its capability "
+            f"applicability (surfaced, not narrowed; RULING §4 / §10.5). 63c grows it further "
+            f"(heartbeat/brief_*/fleet)."
         )
 
 
@@ -343,6 +366,54 @@ class TestEveryCapabilityRequiredVerbDeniesWithoutOne:
                 action="send", agent="r6_sender", session="s1", to=["r6_recip"],
                 body="a send with no capability", grade="signal",
             )
+
+    async def test_every_capability_required_verb_denies_without_one(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """R6 (ii-a §11.5 obligation for ii-b) — the per-verb no-cap-deny DRIVER TABLE keyed on the
+        True-set DERIVED from ``_COMMS_ACTIONS``, WITH a COVERAGE ASSERTION: every True verb has a
+        driver row; a True verb WITHOUT one reds (INSTRUMENT-0 — reach as a checked variable, so
+        growing the True-set cannot silently outrun the behavioural leg).
+
+        For each True verb, a well-formed call with NO capability under a VALID token must DENY
+        (``GovernedDenied``). At HEAD the True-set is ``{send}`` (driven → denies → GREEN); once ii-b
+        flips the reads True they JOIN the True-set and are driven with NO edit — the exact-set /
+        reads-require-capability pins above carry the RED-at-HEAD "flip these", and THIS pin guarantees
+        each flipped verb is behaviourally enforced (F-D's dead/guarded ``_resolve_subject`` reddens
+        here), not merely typed. A GREEN-at-HEAD INSTRUMENT that grows with the flip."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["alice_email"]  # a VALID token — the deny is the missing CAPABILITY
+        # actors every driver reuses (register MINTS identity — no capability on register).
+        await ctx.comms(action="register", agent="r6t_a", session="s1", role="builder")
+        await ctx.comms(action="register", agent="r6t_b", session="s1", role="builder")
+        # The per-verb DRIVER TABLE: verb → a well-formed NO-capability call. Keyed by verb so the
+        # coverage assertion diffs it against the DERIVED True-set (a hand map whose COVERAGE is the
+        # checked variable — the SAFE set is small + enumerable; the True-set is derived from truth).
+        drivers: dict[str, Callable[[], Awaitable[Any]]] = {
+            "send": lambda: ctx.comms(
+                action="send", agent="r6t_a", session="s1", to=["r6t_b"], body="x", grade="signal"
+            ),
+            "drain": lambda: ctx.comms(action="drain", agent="r6t_a", session="s1"),
+            "ack": lambda: ctx.comms(action="ack", agent="r6t_a", session="s1", seqs=[0]),
+            "await": lambda: ctx.comms(action="await", agent="r6t_a", session="s1"),
+            "story": lambda: ctx.comms(action="story", agent="r6t_a", session="s1", task_id="t-r6"),
+        }
+        required = {
+            verb for verb, spec in _COMMS_ACTIONS.items()
+            if getattr(spec, "requires_capability", False)
+        }
+        assert required, "the requires_capability=True set is EMPTY — R6's ∀ would be vacuous (§4 unbuilt)"
+        # COVERAGE ASSERTION (INSTRUMENT-0): every True verb has a driver row. A True verb this table
+        # cannot exercise is a blind spot — growing the True-set MUST grow the driver map, or this reds.
+        uncovered = required - drivers.keys()
+        assert not uncovered, (
+            f"requires_capability verbs {sorted(uncovered)} have NO driver row in the R6 table — the "
+            f"behavioural ∀ cannot exercise them, so a flipped-True verb could be name-only-enforced "
+            f"undetected (ii-a §11.5: reach as a checked variable). Add a driver row for each."
+        )
+        for verb in sorted(required):
+            with pytest.raises(governed.GovernedDenied):
+                await drivers[verb]()
 
 
 class TestTheRegisterResponseServesTheCapabilityOnce:

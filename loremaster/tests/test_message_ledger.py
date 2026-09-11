@@ -3178,6 +3178,22 @@ async def _thread_len_trigger(ledger: Any) -> Any:
     )
 
 
+async def _task_id_len_trigger(ledger: Any) -> Any:
+    """63b-ii-b W15 — an over-length ``task_id``. The parity set covers error CLASSES, so at HEAD the
+    fake oracle was UNPINNED for the ``task_id`` FIELD specifically (only thread/refs exercise
+    ``MessagePointerError``); this pins the oracle PER FIELD, not per class (§12.5 D-M2). The store
+    ASSERT on ``task_id`` DROPS in ii-b, so the app cap (``_reject_oversize_pointers``' ``task_id`` leg)
+    is the ONE remaining enforcement — this is its parity pin."""
+    return await ledger.send(
+        sender=_ref(SENDER_LEAD),
+        session=SESSION_WAVE7,
+        body=BODY_SIGNAL,
+        grade=_msg().MESSAGE_GRADE_SIGNAL,
+        recipients=[_ref(AGENT_FIXER_B)],
+        task_id="x" * (_msg().MESSAGE_POINTER_MAX_CHARS + 1),
+    )
+
+
 async def _empty_recipients_trigger(ledger: Any) -> Any:
     return await ledger.send(
         sender=_ref(SENDER_LEAD),
@@ -3228,6 +3244,7 @@ _PARITY_SCENARIOS: tuple[_ParityScenario, ...] = (
     _ParityScenario("refs_count", "MessagePointerError", _refs_count_trigger),
     _ParityScenario("refs_entry_len", "MessagePointerError", _refs_len_trigger),
     _ParityScenario("thread_len", "MessagePointerError", _thread_len_trigger),
+    _ParityScenario("task_id_len", "MessagePointerError", _task_id_len_trigger),
     _ParityScenario("empty_recipients", "EmptyRecipientSetError", _empty_recipients_trigger),
     _ParityScenario("unknown_recipient", "UnknownRecipientError", _unknown_recipient_trigger),
     _ParityScenario("unknown_sender", "UnknownSenderError", _unknown_sender_trigger),

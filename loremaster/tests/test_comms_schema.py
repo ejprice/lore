@@ -67,18 +67,34 @@ probe stays C2's").
 
 from __future__ import annotations
 
+import ast
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, get_args
 
 import pytest
+import pytest_asyncio
+from _governed_contract import (
+    build_principal_and_keep_stores,
+    derive_member_source_roots,
+    frozen_asserted_message_ddl,
+    governed_table_raw_mutation_sites,
+    member,
+    seed_message_legacy,
+)
 from _surreal_harness import (
     SurrealConnection,
     SurrealEnv,
     admin_db,  # noqa: F401 - re-exported pytest fixture
+    connect_admin,
+    drop_database,
+    make_env,
     run,
+    unique_database,
 )
+from loremaster.agents import AgentRegistry
+from loremaster.messages import MessageLedger
 from loremaster.store.surreal_schema import (
     AGENT_TABLE,
     ANSWERS_TO_RELATION,
@@ -117,6 +133,16 @@ def _schema() -> Any:
 def generate_message_ddl() -> str:
     """The packet-03 DDL generator, resolved at CALL time (see above)."""
     return str(_schema().generate_message_ddl())
+
+
+def _messages() -> Any:
+    """``loremaster.messages`` (the ledger + its grade vocabulary), read at CALL
+    time — the same lazy idiom as :func:`_schema`, so this file stays COLLECTABLE
+    at a HEAD that has not yet shipped a symbol P-G2/P2-m reference (never a
+    module-level import of a governance surface still under construction)."""
+    import loremaster.messages
+
+    return loremaster.messages
 
 # --- local contract constants -------------------------------------------------
 #
@@ -1693,10 +1719,41 @@ class TestMessageDdlOffline:
         assert type_fragment in statement, f"{field}: expected {type_fragment!r} in {statement!r}"
 
     def test_grade_is_a_closed_two_value_domain(self) -> None:
+        """P-G2 (63b-ii-b §13.3, the ALIGNMENT pin). ``grade``'s store ASSERT is
+        KEPT (R19: its violation set is EXACTLY the reader's rejection set — a
+        junk grade cannot be decoded into ``InboxEntry.grade: MessageGrade``, so
+        the store guard is reader-aligned, not a duplicated length cap). This pin
+        proves the ONE-source claim §13.1 rests on BY MUTATION: the set inside the
+        emitted ASSERT == ``MESSAGE_GRADES`` == ``set(get_args(MessageGrade))``.
+
+        Mutation proof (declared): append a grade to ``_MESSAGE_GRADES`` → the DDL
+        set and the frozenset move together, the ``Literal`` does NOT → this pin
+        RED. That is "prove sharing by mutation" for the vocabulary's single
+        source; a lenient decode (dropping the ASSERT and widening the Literal)
+        would silently mis-grade a directive, worse than the loud store refusal.
+        """
         statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, "grade")
-        assert "ASSERT" in statement
+        assert "ASSERT" in statement, (
+            f"the grade ASSERT is GONE — R19 (63b-ii-b §13) KEEPS it: a store that can hold a "
+            f"grade its reader cannot decode is a total drain-decode denial from one row. "
+            f"served: {statement!r}"
+        )
         assert "'signal'" in statement
         assert "'directive'" in statement
+        # P-G2: the three vocabulary surfaces are ONE source, proven by equality.
+        match = re.search(r"ASSERT \$value IN \[([^\]]*)\]", statement)
+        assert match, f"could not parse the grade ASSERT's IN-set from {statement!r}"
+        ddl_grades = set(re.findall(r"'([^']*)'", match.group(1)))
+        assert ddl_grades, "the grade ASSERT's IN-set parsed EMPTY — a vacuous alignment pin"
+        message_grades = set(_messages().MESSAGE_GRADES)
+        literal_grades = set(get_args(_messages().MessageGrade))
+        assert ddl_grades == message_grades == literal_grades, (
+            f"the grade vocabulary DRIFTED across its three surfaces — DDL ASSERT "
+            f"{sorted(ddl_grades)}, MESSAGE_GRADES {sorted(message_grades)}, "
+            f"Literal {sorted(literal_grades)}. They MUST be one source (§13.1): the store "
+            f"ASSERT rejects exactly the values the reader's Literal decode rejects, or the "
+            f"reader-alignment R19 rests on is a fiction."
+        )
 
     def test_body_carries_a_length_bound_the_store_itself_enforces(self) -> None:
         """The app-level teaching reject is the primary guard; the schema ASSERT
@@ -1933,20 +1990,37 @@ class TestMessageDdlOffline:
                 assert "IF NOT EXISTS" in statement, statement
 
 
-class TestThePointerBoundsHaveTheirSTOREBackstop:
-    """DD-3.c — enforce at BOTH layers, mirroring ``body`` exactly.
+class TestTheMessageStoreCarriesNoAssertALegacyRowCanViolate:
+    """63b-ii-b §12/§13 (D-M11, renamed from ``TestThePointerBoundsHaveTheirSTOREBackstop``).
 
-    THE WRONG BUILD THIS EXISTS FOR, named by the design's own adversary: a
-    LEDGER-ONLY build. Every teaching reject passes, every surface pin passes,
-    and any future writer that does not go through ``MessageLedger.send`` lands
-    an unbounded row silently. ``body`` has carried a store ASSERT since packet
-    03 for precisely that reason; the pointer class gets the same treatment or it
-    does not have the same guarantee.
+    ⚠ SUPERSESSION (§12.9 R18 / §5 D3): the store no longer backstops the four
+    LENGTH bounds on ``message`` (thread · body · refs count · refs[*] · task_id)
+    NOR the ``to.ack_note`` bound. **Neither table keeps "both layers"** — the app
+    cap in ``MessageLedger.send`` / ``.ack`` is the ONE implementation of each
+    length policy (ONE IMPLEMENTATION, #102). ``grade`` is the SOLE exception the
+    store still asserts (R19, §13.1): its violation set is EXACTLY the reader's
+    rejection set (``InboxEntry.grade: MessageGrade`` — a junk grade cannot decode),
+    so it is a reader-aligned domain guard, not a duplicated length cap.
+
+    WHY the length ASSERTs were DROPPED, not kept: ``message`` is UPDATE-able (the
+    §4.C cutover migrate re-validates every legacy row in ONE statement) and ``to``
+    is UPDATE-HOT (drain stamps it in one statement over the window) — a store
+    constraint either table carries is DD-3.c, a legacy row that violates it
+    refusing the whole statement (total inbox denial on ``to``; a refused cutover on
+    ``message``). Cite §3.4 (``to``) and §12.4 (``message``) for the ∀ invariant,
+    pinned in ``TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate`` below.
+
+    What SURVIVES here: the two NON-assert virtues (``refs`` keeps ``DEFAULT []``;
+    ``refs[*]`` keeps ``OVERWRITE`` — a bare re-definition of an implicit array
+    element path raises, AND on ``:18500`` the OVERWRITE is what drops the stored
+    ASSERT, Leg A's live twin). The four deleted length legs and the ``ack_note``
+    leg are named in the commit message (the rename-sweep law), replaced by the ∀
+    pin + Leg A/B.
 
     Pins the EMITTED statement, never ``INFO FOR TABLE``'s echo — the engine
     NORMALISES what it echoes (``option<string>`` comes back as
-    ``none | string``, a closure's ``|$r|`` as ``|$r: any|``), so an echo-diffing
-    pin mismatches against a correct build. House idiom: assert what we send.
+    ``none | string``), so an echo-diffing pin mismatches a correct build. House
+    idiom: assert what we send.
     """
 
     @staticmethod
@@ -1958,69 +2032,62 @@ class TestThePointerBoundsHaveTheirSTOREBackstop:
         )
         return matches[0]
 
-    def test_refs_carries_its_COUNT_assert(self) -> None:
+    def test_refs_still_carries_its_DEFAULT_but_no_COUNT_assert(self) -> None:
+        """D-M3 SPLIT: the COUNT-ASSERT half is DELETED (``TestNoGovernedTable…``'s
+        P2-m asserts the inverse ∀ — no ASSERT on any emitted ``message`` field but
+        the exempted ``grade``); the ``DEFAULT []`` half is KEPT — a ref-less send
+        must still omit the field, and a DEFAULT is not a violation source
+        (store-ref §1.4)."""
         statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, "refs")
-        assert (
-            f"ASSERT array::len($value) <= {_schema().MESSAGE_REFS_MAX_COUNT}" in statement
-        ), (
-            f"refs has no store-level COUNT backstop, so a writer that bypasses the ledger "
-            f"stores a thousand-entry list silently: {statement!r}"
-        )
         assert "DEFAULT []" in statement, (
-            f"the composed `DEFAULT [] ASSERT …` clause lost its DEFAULT — a ref-less send "
-            f"must still be able to omit the field: {statement!r}"
+            f"the `refs` DEFAULT [] is GONE — a ref-less send must still be able to omit the "
+            f"field (a spec row that keeps its type must keep its DEFAULT): {statement!r}"
+        )
+        assert "ASSERT" not in statement, (
+            f"`refs` still carries a store ASSERT — 63b-ii-b §12.3 DROPS the count bound: the "
+            f"app cap `_reject_oversize_pointers` is the ONE implementation, and a store ASSERT "
+            f"on this UPDATE-able table is DD-3.c (a legacy over-count row refuses the whole 65 "
+            f"cutover migrate). served: {statement!r}"
         )
 
-    def test_the_ELEMENT_row_carries_the_per_entry_assert_AND_overwrite(self) -> None:
-        """⚠ THE ELEMENT ROW MUST BE ``OVERWRITE``, and that is not style.
+    def test_the_ELEMENT_row_stays_OVERWRITE_and_carries_no_assert(self) -> None:
+        """D-M4 SPLIT: the per-entry ASSERT half is DELETED (``TestNoGovernedTable…``'s
+        P2-m asserts the inverse ∀); the ``OVERWRITE`` half is KEPT and gains a
+        SECOND reason.
 
-        ``DEFINE FIELD … TYPE array<T>`` IMPLICITLY DEFINES ``<field>.*``, so the
-        element definition is ALWAYS a re-definition — a bare one raises *"The
-        field 'refs.*' already exists"* and takes the whole DDL apply down. The
-        house ``_define_field`` emits ``OVERWRITE`` for every field, which is
-        what makes this work; this pin is what stops someone "tidying" the
-        element row onto a different emitter.
+        Reason (i), unchanged: ``TYPE array<T>`` IMPLICITLY defines ``<field>.*``,
+        so the element definition is ALWAYS a re-definition — a bare ``DEFINE``
+        raises *"The field 'refs.*' already exists"* and takes the whole apply down.
+        Reason (ii), NEW (§12.3 refs[*] row): the stored ``refs[*]`` definition on
+        the long-lived store CARRIES the ASSERT today; only an emitted ``OVERWRITE
+        refs[*] … TYPE string`` with no clause DROPS it (store-ref §1.2). Deleting
+        the spec ROW would leave that ASSERT in the store FOREVER (#107 from the
+        other side) — Leg A (``TestTheMessageAssertsAreDroppedFromADIRTYStore``) is
+        this pin's live twin.
         """
         statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, "refs[*]")
-        assert (
-            f"ASSERT string::len($value) <= {_schema().MESSAGE_POINTER_MAX_CHARS}" in statement
-        ), (
-            f"refs entries have no store-level LENGTH backstop — the per-entry bound is what "
-            f"stops a 100KB payload riding one 'pointer': {statement!r}"
-        )
         assert statement.startswith("DEFINE FIELD OVERWRITE refs[*] "), (
             f"the element row is not OVERWRITE. `TYPE array<T>` implicitly defines `<field>.*`, "
-            f"so this is always a RE-definition and a bare DEFINE raises 'The field refs.* "
-            f"already exists', failing the entire apply: {statement!r}"
+            f"so this is always a RE-definition: a bare DEFINE raises 'The field refs.* already "
+            f"exists' (reason i), AND only an OVERWRITE re-lands the clause-free definition that "
+            f"drops the stored ASSERT on :18500 (reason ii): {statement!r}"
+        )
+        assert "ASSERT" not in statement, (
+            f"`refs[*]` still carries a store ASSERT — §12.3 DROPS the per-entry length bound "
+            f"(kept only as the app cap `_reject_oversize_pointers`); the ROW stays (reasons "
+            f"i/ii above) but its constraint becomes `\"\"`: {statement!r}"
         )
 
-    @pytest.mark.parametrize("field_name", ["thread", "task_id"])
-    def test_the_pointer_LABELS_carry_bare_length_asserts(self, field_name: str) -> None:
-        """⚠ BARE — no ``$value = NONE OR`` guard. An ``option<>`` field's ASSERT
-        is NOT evaluated when the value is absent (probed), so the guard is cruft
-        that teaches the next author it is required. Pinned in both directions:
-        the bound is present AND the guard is absent."""
-        statement = self._field(generate_message_ddl(), _schema().MESSAGE_TABLE, field_name)
-        assert (
-            f"ASSERT string::len($value) <= {_schema().MESSAGE_POINTER_MAX_CHARS}" in statement
-        ), f"{field_name} has no store-level pointer bound: {statement!r}"
-        assert "NONE OR" not in statement, (
-            f"{field_name} carries a NONE-guard the engine does not need — an option<> field's "
-            f"ASSERT is not evaluated on an absent value, and the guard teaches the next author "
-            f"a rule that does not exist: {statement!r}"
-        )
-
-    def test_the_ack_note_carries_the_BODY_cap_not_the_pointer_cap(self) -> None:
-        """DD-3.f. A note is message-grade PROSE, so it takes the BODY constant —
-        and the two constants must be DIFFERENT for this pin to have force."""
-        assert _schema().MESSAGE_BODY_MAX_CHARS != _schema().MESSAGE_POINTER_MAX_CHARS, (
-            "the body and pointer caps are equal, so this pin cannot tell which one the note "
-            "took — re-derive it before trusting it"
-        )
-        statement = self._field(generate_message_ddl(), _schema().TO_RELATION, "ack_note")
-        assert (
-            f"ASSERT string::len($value) <= {_schema().MESSAGE_BODY_MAX_CHARS}" in statement
-        ), f"the ack note has no store-level bound, or took the wrong one: {statement!r}"
+    # D-M5 (63b-ii-b §12.5): ``test_the_pointer_LABELS_carry_bare_length_asserts``
+    # [thread, task_id] DELETED-WITH-REPLACEMENT — both halves are moot with no
+    # ASSERT, and P2-m covers the inverse ∀. The NONE-guard lesson (an option<>
+    # ASSERT is not evaluated on NONE) survives in ``_reject_oversize_pointers``'s
+    # ``value is not None`` leg, pinned by the app-cap positive control.
+    #
+    # D3 / W3 (§5 / §12.3): ``test_the_ack_note_carries_the_BODY_cap_not_the_pointer_cap``
+    # DELETED-WITH-REPLACEMENT — it certifies the corpse (the emitted ``to`` statement
+    # CONTAINS the ASSERT that §3 DROPS). Replaced by P2 (∀ fields of ``to`` carry no
+    # constraint) in ``TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate``.
 
 
 class TestThreadIsREQUIREDAndNonOptional:
@@ -2064,6 +2131,188 @@ class TestThreadIsREQUIREDAndNonOptional:
         assert "option" not in thread[0], (
             f"the emitted thread definition is optional: {thread[0]!r}"
         )
+
+
+def _overwrite_field_statements(ddl: str, table: str) -> dict[str, str]:
+    """Every ``DEFINE FIELD OVERWRITE <f> ON <table> …`` statement, keyed by field.
+
+    Keyword-agnostic on the FIELD token (via :data:`_DEFINE_FIELD_RE`, so ``refs[*]``
+    resolves) but REQUIRES the ``OVERWRITE`` guard — the house emitter uses it for
+    every field, and a regression to ``IF NOT EXISTS`` is a different pin's subject
+    (``_field_statement``). Used by the ∀ constraint pins below to DERIVE the field
+    set from the emitted DDL (INSTRUMENT 0: the reach is the emitter's own output,
+    not a hand list), so a field added later is covered with no edit.
+    """
+    fields: dict[str, str] = {}
+    for statement in _statements(ddl):
+        if not statement.startswith("DEFINE FIELD OVERWRITE "):
+            continue
+        match = _DEFINE_FIELD_RE.match(statement)
+        if match and match.group("table") == table:
+            fields[match.group("field")] = statement
+    return fields
+
+
+# The per-table constraint spec the ∀ pin below is parametrized over — ONE pin, not
+# two clones (P2 for ``to``, P2-m for ``message``; §12.4 / §13.3 RECOMMENDED shape).
+# Each entry: (table-accessor, birth set, birth-DEFAULT set, reader-aligned ASSERT
+# exemptions, non-vacuity floor). The birth set is the fields present at the table's
+# BIRTH (always populated on every legacy row, so a constraint on them is not a
+# poison source); every field OUTSIDE it was added post-birth and MUST be option<>.
+# The exemptions are reader-aligned ASSERTs kept DELIBERATELY (§13.1): a field whose
+# store-violation set == its reader-rejection set (only ``grade`` today) — a JUDGEMENT,
+# so it is a hand constant, kept honest by the non-vacuity leg (an exempted field MUST
+# carry an ASSERT) + P-G2 (the ASSERT must equal the reader's set).
+class _ConstraintSpec:
+    """A governed table's ∀-no-constraint spec (§3.4 P2 / §12.4 P2-m / §13.3)."""
+
+    def __init__(
+        self,
+        table_attr: str,
+        *,
+        birth: frozenset[str],
+        birth_defaults: frozenset[str],
+        exemptions: frozenset[str],
+        floor: frozenset[str],
+    ) -> None:
+        self.table_attr = table_attr
+        self.birth = birth
+        self.birth_defaults = birth_defaults
+        self.exemptions = exemptions
+        self.floor = floor
+
+
+_TO_CONSTRAINT_SPEC = _ConstraintSpec(
+    "TO_RELATION",
+    # birth (df59f76 birth of ``to``): every field populated at RELATE time.
+    birth=frozenset({"session", "created_at", "seen_at", "acked_at", "ack_note"}),
+    birth_defaults=frozenset(),  # ``to`` carries NO DEFAULT (a seen_at DEFAULT would
+    # make every edge look stamped — the spec's own comment / design ruling 4).
+    exemptions=frozenset(),  # ``to`` has NO reader-aligned constraint — ack_note is
+    # ``str | None`` on the reader (§13.1's own worked example: not reader-aligned).
+    floor=frozenset({"ack_note"}),  # the field DD-3.c is about — a derivation that
+    # loses it must RED, not pass.
+)
+_MESSAGE_CONSTRAINT_SPEC = _ConstraintSpec(
+    "MESSAGE_TABLE",
+    # birth = df59f76 fields + the 1a6010f ``refs[*]`` element row. Written at birth,
+    # populated on every legacy row.
+    birth=frozenset(
+        {
+            "seq",
+            "session",
+            "thread",
+            "sender",
+            "grade",
+            "body",
+            "refs",
+            "refs[*]",
+            "task_id",
+            "question",
+            "created_at",
+        }
+    ),
+    birth_defaults=frozenset({"refs", "question"}),  # a post-birth DEFAULT falsely
+    # promises to rescue legacy rows (store-ref §1.4: it does not).
+    exemptions=frozenset({"grade"}),  # R19 (§13.1): grade's violation set == the
+    # reader's Literal-decode rejection set → reader-aligned, kept deliberately.
+    floor=frozenset({"body", "refs[*]", "owner_principal"}),  # a derivation that
+    # misses the element row or the governed overlay must RED.
+)
+
+
+class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
+    """P2 (``to``, §3.4) ∪ P2-m (``message``, §12.4/§13.3) — ONE parametrized pin.
+
+    THE INVARIANT (the quantifier law): a governed, UPDATE-hot/-able table carries
+    **no constraint a legacy row can violate**, stated ∀ EMITTED fields, not the one
+    field the ruling was derived on. ``to`` is UPDATE-hot (``drain`` stamps it in one
+    statement over the window → a legacy over-cap ``ack_note`` edge denies the WHOLE
+    drain: total inbox denial). ``message`` is UPDATE-able (the §4.C cutover migrate
+    re-validates every legacy row in one statement → a legacy violator refuses the
+    whole 65 cutover). Either way a store constraint is a loaded gun; the app cap in
+    the ONE writer (``MessageLedger.send``/``.ack``) is the ONE implementation.
+
+    Per field, ∀: no ``ASSERT`` (except the reader-aligned EXEMPTION set — ``grade``
+    only, R19); ``DEFAULT`` only on the birth-DEFAULT set (a post-birth DEFAULT does
+    NOT rescue legacy rows, store-ref §1.4); every POST-BIRTH field is ``option<>``
+    (a required post-birth field poisons every legacy row's next UPDATE).
+
+    This is a FIX pin at HEAD (HEAD emits the length/ack_note ASSERTs → RED) that
+    becomes the INVARIANT guard after the builder's W1/W9 drop (GREEN, RED the day a
+    constraint returns). Its failure message carries the DD-3.c bound and the widen/
+    heal/narrow obligation.
+
+    Mutation proof (declared, from ``--collect-only``): re-add ANY dropped ASSERT to
+    ``_TO_FIELD_SPECS``/``_MESSAGE_FIELD_SPECS`` → RED for that table; add a spec row
+    ``("x", "string", "")`` → RED (non-option post-birth); add ``("y",
+    "option<string>", "DEFAULT 'z'")`` → RED (post-birth DEFAULT); drop ``grade``'s
+    ASSERT → the message exemption non-vacuity leg RED; restore → GREEN.
+    """
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            pytest.param(_TO_CONSTRAINT_SPEC, id="to"),
+            pytest.param(_MESSAGE_CONSTRAINT_SPEC, id="message"),
+        ],
+    )
+    def test_no_field_carries_a_constraint_a_legacy_row_can_violate(
+        self, spec: _ConstraintSpec
+    ) -> None:
+        table = getattr(_schema(), spec.table_attr)
+        fields = _overwrite_field_statements(generate_message_ddl(), table)
+        assert fields, (
+            f"derived NO emitted `DEFINE FIELD OVERWRITE … ON {table}` statements — a "
+            f"derivation that finds nothing MUST red, not pass (INSTRUMENT-0 non-vacuity)"
+        )
+        assert spec.floor <= set(fields), (
+            f"the derived {table} field set {sorted(fields)} is missing the non-vacuity floor "
+            f"{sorted(spec.floor)} — the emitter or the parser regressed; a vacuous ∀ pin "
+            f"passes for a fixture reason (INSTRUMENT-0)"
+        )
+        # exemption non-vacuity: a reader-aligned exemption over a field with NO ASSERT
+        # is a STALE exemption (the ASSERT it excuses is gone) — RED.
+        for exempt in spec.exemptions:
+            assert exempt in fields, (
+                f"the exemption set names `{exempt}`, which the emitter does not declare on "
+                f"{table} — a stale exemption"
+            )
+            assert "ASSERT" in fields[exempt], (
+                f"`{table}.{exempt}` is EXEMPT from the no-ASSERT rule (reader-aligned, §13.1) "
+                f"but carries NO ASSERT — a stale exemption. Either the reader-aligned guard "
+                f"was dropped (R19 regression: `grade` must keep it) or the exemption is dead. "
+                f"served: {fields[exempt]!r}"
+            )
+        for field, statement in sorted(fields.items()):
+            has_assert = "ASSERT" in statement
+            if field in spec.exemptions:
+                continue  # its ASSERT is required, checked above (non-vacuity).
+            assert not has_assert, (
+                f"`{table}.{field}` carries a store ASSERT — DD-3.c: {table} is UPDATE-"
+                f"hot/-able (drain stamps `to` in one statement over the window; the §4.C "
+                f"cutover migrate re-validates every `message` row in one statement), so a "
+                f"legacy row violating this ASSERT refuses the WHOLE statement (total inbox "
+                f"denial on `to`; a refused cutover on `message`) — 63b-ii-b §3.4/§12.4. The "
+                f"app cap in `MessageLedger` is the ONE implementation. Adding one DELIBERATELY? "
+                f"you owe (a) a heal that runs BEFORE the first UPDATE and (b) the §6/§12.6 "
+                f"dirty-store pin inverted — then delete this exemption-free rule for the field "
+                f"and say so. served: {statement!r}"
+            )
+            if "DEFAULT" in statement:
+                assert field in spec.birth_defaults, (
+                    f"`{table}.{field}` carries a DEFAULT but is not in the birth-DEFAULT set "
+                    f"{sorted(spec.birth_defaults)} — a POST-BIRTH DEFAULT falsely promises to "
+                    f"rescue legacy rows (store-ref §1.4: a DEFAULT applies at CREATE, never to "
+                    f"an existing row's missing value): {statement!r}"
+                )
+            if field not in spec.birth:
+                type_part = statement.split(" TYPE ", 1)[1]
+                assert type_part.startswith("option<"), (
+                    f"`{table}.{field}` was added AFTER the table's birth but is not "
+                    f"`option<>` — a required post-birth field on a POPULATED table poisons "
+                    f"every legacy row's next UPDATE (store-ref §1.4). served: {statement!r}"
+                )
 
 
 class TestMessageSchemaLive:
@@ -2213,6 +2462,16 @@ class TestMessageSchemaLive:
     async def test_an_out_of_domain_grade_is_rejected_by_the_store(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
+        """KEPT (63b-ii-b §13.3 D-M6, re-dated 2026-09-11): now certifies R19 — the
+        grade ASSERT is the SOLE store constraint that SURVIVES the DD-3.c drop,
+        because a junk grade is a row the reader (``InboxEntry.grade: MessageGrade``,
+        a ``Literal``) could never decode. This live rejection is that guard's cake
+        (the offline P-G2 pin proves the recipe / the one-source alignment). The
+        four LENGTH live rejections in this class DELETE-with-replacement (D-M6) —
+        their bounds move to the app cap, and Leg A asserts the inverse (dropped)
+        live property. ``test_both_legal_grades_are_accepted`` stays as this pin's
+        positive control (an over-strict ASSERT would pass here while breaking every
+        real send)."""
         connection, _env = admin_db
         await run(connection, generate_message_ddl())
         with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
@@ -2231,78 +2490,33 @@ class TestMessageSchemaLive:
         await run(connection, generate_message_ddl())
         await _create_message(connection, session="wave7", seq=5, grade=grade)
 
-    async def test_an_oversize_body_is_rejected_by_the_store_backstop(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_message_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(
-                connection,
-                session="wave7",
-                seq=6,
-                body="z" * (_schema().MESSAGE_BODY_MAX_CHARS + 1),
-            )
-
-    # --- WAVE 3 / C4: the LIVE leg DD-3.c's rider named ----------------------
+    # --- D-M6 (63b-ii-b §12.5 / §13.3): the FOUR length live rejections DELETED --
     #
-    # DD-3.c says enforce the pointer bounds "mirroring ``body`` EXACTLY", and
-    # ``body``'s instrumentation has TWO parts: an offline DDL pin and the LIVE
-    # behavioural pin directly above. The design wave shipped only the offline
-    # half. That is not a live defect — the behaviour is correct today — it is a
-    # missing INSTRUMENT, and the gap it leaves is precisely the one the
-    # OVERWRITE clause exists to close: **pinning the emitted statement proves
-    # the RECIPE; only a live write proves the CAKE.** An emission pin cannot see
-    # a definition that emits perfectly and never lands on the engine.
-
-    async def test_an_oversize_REF_ENTRY_is_rejected_by_the_store_backstop(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_message_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(
-                connection,
-                session="wave7",
-                seq=20,
-                refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)],
-            )
-
-    async def test_an_over_COUNT_refs_list_is_rejected_by_the_store_backstop(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_message_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(
-                connection,
-                session="wave7",
-                seq=21,
-                refs=[f"r{index}" for index in range(_schema().MESSAGE_REFS_MAX_COUNT + 1)],
-            )
-
-    @pytest.mark.parametrize("field_name", ["thread", "task_id"])
-    async def test_an_oversize_pointer_LABEL_is_rejected_by_the_store_backstop(
-        self,
-        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
-        field_name: str,
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_message_ddl())
-        oversize = "t" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(
-                connection, session="wave7", seq=22, **{field_name: oversize}
-            )
+    # ``test_an_oversize_body_is_rejected_by_the_store_backstop``,
+    # ``test_an_oversize_REF_ENTRY_is_rejected_by_the_store_backstop``,
+    # ``test_an_over_COUNT_refs_list_is_rejected_by_the_store_backstop`` and
+    # ``test_an_oversize_pointer_LABEL_is_rejected_by_the_store_backstop``[thread,
+    # task_id] all certified the CORPSE (the store rejecting a length violator) —
+    # the rename-sweep law. §12.3 DROPS all four length ASSERTs; their bounds move
+    # to the app cap (``test_message_ledger.py``, D-M2, ∀ error classes) and Leg A
+    # (``TestTheMessageAssertsAreDroppedFromADIRTYStore``) asserts the INVERSE live
+    # property on a dirty store. Named here so the deletion is visible (the
+    # rename-sweep law: "all remaining hits are X" is banned). The GRADE rejection
+    # above is KEPT (R19), and the two KEPT positive controls
+    # (``test_both_legal_grades_are_accepted`` / the pointer-row one below) stand as
+    # Leg A's fixture-liveness controls (a legal row still lands).
 
     async def test_POSITIVE_CONTROL_a_legal_pointer_row_IS_accepted(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        """Without this, every reject leg above is satisfied by a schema that
-        refuses EVERYTHING — and the omitted-``task_id`` half additionally proves
-        the bare (unguarded) ASSERT on an ``option<>`` field is not evaluated
-        when the value is absent, i.e. that the missing NONE-guard is CORRECT
-        rather than lucky."""
+        """KEPT (D-M6): a legal pointer row still LANDS after the slice applies —
+        Leg A's fixture-liveness control (a migrated store that refused everything
+        would pass Leg A's "accepted after migrating" assertions for the wrong
+        reason). ⚠ Prose re-dated 2026-09-11: the old ``option<>``-NONE-guard claim
+        is GONE — §12.3 dropped ``task_id``'s ASSERT, so there is no store ASSERT
+        left on ``task_id`` for an omitted value to skip; the NONE-guard lesson now
+        lives in ``_reject_oversize_pointers``' ``value is not None`` leg (app cap,
+        pinned in ``test_message_ledger.py``)."""
         connection, _env = admin_db
         await run(connection, generate_message_ddl())
         message_id = await _create_message(
@@ -2576,243 +2790,492 @@ class TestEnforcedIsLiveOnTheDeliveryEdge:
         assert _one(rows)["count"] == 1
 
 
-class TestThePointerBoundsMigrateADIRTYStore:
-    """WAVE 3 / C4 — the §1.6 dirty-store leg DD-3.c's rider named explicitly:
-    *"the message-slice dirty-store pin gains the narrowed-assert leg."*
+# The SIX violator shapes the ii-b DROP is measured against (§12.6 Leg A / §13.3). FIVE are LENGTH
+# bounds that DROP (their rows become ACCEPTED after the current emitter re-lands them clause-free);
+# ``grade`` is the reader-aligned domain guard that STAYS (R19 — a junk grade the reader cannot decode).
+_MESSAGE_LENGTH_VIOLATOR_SHAPES = ("body", "thread", "refs_count", "refs_entry", "task_id")
+_MESSAGE_GRADE_VIOLATOR_SHAPE = "grade"
 
-    **A virgin-DB fixture cannot see this by construction**, and that is the
-    whole point of the shape: on a fresh database the field does not exist, so
-    any clause creates it WITH the bound and every test passes while no
-    long-lived store ever gains it. The narrowing has to be applied to a store
-    that ALREADY carries the old, unbounded definition — which is the only
-    configuration where a silent no-op is distinguishable from a migration.
 
-    Shape, exactly §1.6's: apply the OLD (unbounded) DDL -> write a row under it
-    -> apply the NEW DDL -> assert the bound is LIVE **and** the old row
-    survived. The BASELINE leg is what stops "the bound is live" from being true
-    because it was always live.
+class TestTheMessageAssertsAreDroppedFromADIRTYStore:
+    """P1-m Leg A (63b-ii-b §12.6 / §13.3) — INVERTED from ``TestThePointerBoundsMigrateADIRTYStore``.
+
+    THE #107 DIRECTION: the DROP must LAND on a store that ALREADY carries the ASSERTed definitions
+    (production's shape at :18500). A definition that emits perfectly and never LANDS is invisible to
+    every offline pin (P2-m); this live leg proves the ``OVERWRITE`` re-lands the CLAUSE-FREE field on
+    a DIRTY store. Its twin — the DD-3.c direction (the real migrate SURVIVES legacy violators) — is
+    Leg B (``test_message_migrate_dirty_store_63b_ii_b``). Each is blind exactly where the other is
+    strong (the trust doctrine's two-leg shape, at test scale).
+
+    §13.3: the FOUR length ASSERTs DROP (five violator SHAPES — body/thread/refs-count/refs-entry/
+    task_id — become ACCEPTED, values byte-intact); ``grade='urgent'`` STAYS REJECTED (R19 keeps the
+    grade ASSERT). BASELINE (positive control): under the FROZEN asserted DDL every shape is refused —
+    without it, "accepted after migrating" could be true because the shape was never refused.
+
+    Mutation proof (declared, from ``--collect-only``): re-add ONE length ASSERT (say ``body``) →
+    exactly the ``body`` accept-parametrization RED with the engine's *"must conform to"* text, the
+    other four length shapes GREEN, and P2-m RED; restore → GREEN. Per-shape discrimination is what
+    the parametrization buys — a build that drops four of five is caught on the fifth, BY NAME.
     """
 
     @staticmethod
-    def _old_message_ddl() -> str:
-        """The message node as it stood BEFORE the pointer bounds — same fields,
-        no ASSERTs on refs/thread/task_id."""
-        table = _schema().MESSAGE_TABLE
-        return (
-            f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
-            f"DEFINE FIELD OVERWRITE seq ON {table} TYPE int;\n"
-            f"DEFINE FIELD OVERWRITE session ON {table} TYPE string;\n"
-            f"DEFINE FIELD OVERWRITE thread ON {table} TYPE string;\n"
-            f"DEFINE FIELD OVERWRITE sender ON {table} TYPE record<{AGENT_TABLE}>;\n"
-            f"DEFINE FIELD OVERWRITE grade ON {table} TYPE string;\n"
-            f"DEFINE FIELD OVERWRITE body ON {table} TYPE string;\n"
-            f"DEFINE FIELD OVERWRITE refs ON {table} TYPE array<string> DEFAULT [];\n"
-            f"DEFINE FIELD OVERWRITE task_id ON {table} TYPE option<string>;\n"
-            f"DEFINE FIELD OVERWRITE question ON {table} TYPE bool DEFAULT false;\n"
-            f"DEFINE FIELD OVERWRITE created_at ON {table} TYPE datetime;\n"
-        )
-
-    async def _dirty_old_world(self, connection: SurrealConnection) -> str:
-        """Old DDL + one row that the NEW bounds would refuse."""
+    async def _apply_asserted_old_world(connection: SurrealConnection) -> None:
+        """agent DDL + the FROZEN asserted ``message`` DDL — production's shape before the ii-b drop.
+        The frozen DDL is the SHARED ``frozen_asserted_message_ddl`` (ONE IMPLEMENTATION: Leg B's
+        C-control uses the SAME capture, so the two files cannot drift about production's shape)."""
         await run(connection, generate_agent_ddl())
-        await run(connection, self._old_message_ddl())
-        await _create_agent(
-            connection,
-            agent_id=_agent_record_id("wave7", "lead"),
-            name="lead",
-            session="wave7",
-        )
-        return await _create_message(
-            connection,
-            session="wave7",
-            seq=90,
-            refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 5)],
-        )
+        await run(connection, frozen_asserted_message_ddl())
 
-    async def test_BASELINE_the_old_world_really_accepts_an_oversize_pointer(
+    @staticmethod
+    def _violator_overrides(shape: str) -> dict[str, Any]:
+        """The seed-override for one violator shape (sizes DERIVED from the caps, so they track the
+        constant)."""
+        pointer = _schema().MESSAGE_POINTER_MAX_CHARS
+        body_cap = _schema().MESSAGE_BODY_MAX_CHARS
+        refs_cap = _schema().MESSAGE_REFS_MAX_COUNT
+        return {
+            "body": {"body": "z" * (body_cap + 1)},
+            "thread": {"thread": "t" * (pointer + 1)},
+            "refs_count": {"refs": [f"r{index}" for index in range(refs_cap + 1)]},
+            "refs_entry": {"refs": ["r" * (pointer + 1)]},
+            "task_id": {"task_id": "t" * (pointer + 1)},
+            "grade": {"grade": "urgent"},
+        }[shape]
+
+    @staticmethod
+    def _assert_value_byte_intact(row: dict[str, Any], shape: str) -> None:
+        """A migration converges the SCHEMA, never the DATA (store-ref §1.4): the over-cap value the
+        DROP now admits must survive byte-intact (this ruling adds no heal)."""
+        pointer = _schema().MESSAGE_POINTER_MAX_CHARS
+        body_cap = _schema().MESSAGE_BODY_MAX_CHARS
+        refs_cap = _schema().MESSAGE_REFS_MAX_COUNT
+        if shape == "body":
+            assert len(row["body"]) == body_cap + 1, row
+        elif shape == "thread":
+            assert len(row["thread"]) == pointer + 1, row
+        elif shape == "refs_count":
+            assert len(row["refs"]) == refs_cap + 1, row
+        elif shape == "refs_entry":
+            assert len(row["refs"][0]) == pointer + 1, row
+        elif shape == "task_id":
+            assert len(row["task_id"]) == pointer + 1, row
+        else:  # pragma: no cover - the parametrization only passes length shapes here
+            raise AssertionError(f"no byte-intact check for shape {shape!r}")
+
+    async def test_frozen_old_world_matches_the_emitters_current_asserts(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        """Without this, "the bound is live after migrating" could be true
-        because it was ALWAYS live — and the migration itself untested."""
-        connection, _env = admin_db
-        message_id = await self._dirty_old_world(connection)
-        assert message_id, "the OLD definition was supposed to accept an oversize ref"
-
-    async def test_the_bound_is_LIVE_after_applying_the_new_ddl_to_a_dirty_store(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        """THE #107 SHAPE. A definition that emits perfectly and never LANDS is
-        invisible to every offline pin — this is the leg that would catch it."""
-        connection, _env = admin_db
-        await self._dirty_old_world(connection)
-        await run(connection, generate_message_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_message(
-                connection,
-                session="wave7",
-                seq=91,
-                refs=["r" * (_schema().MESSAGE_POINTER_MAX_CHARS + 1)],
+        """CONTROL — the frozen old world is a FAITHFUL capture of what the emitter asserts TODAY:
+        every ASSERT literal in the frozen DDL also appears in ``generate_message_ddl()`` at HEAD. If
+        the emitter's ASSERT literals drift from the frozen capture, this reds (so the frozen fact
+        cannot silently rot). It does NOT assert the emitter KEEPS them — that is what Leg A's drop
+        legs test; this only pins that the frozen 'old world' is the SAME asserted world the emitter
+        currently ships."""
+        del admin_db  # offline control (no engine)
+        emitted = generate_message_ddl()
+        for assert_literal in (
+            "ASSERT string::len($value) <= 4000",
+            "ASSERT string::len($value) <= 256",
+            "ASSERT array::len($value) <= 20",
+            "ASSERT $value IN ['signal', 'directive']",
+        ):
+            assert assert_literal in emitted, (
+                f"the frozen 0566587 old world carries {assert_literal!r} but the current emitter does "
+                f"NOT — the frozen capture has drifted from what :18500 holds; re-capture it before "
+                f"trusting Leg A (this is HEAD's asserted world, and Leg A's drop legs are RED against it)"
             )
 
-    async def test_the_row_written_under_the_OLD_definition_SURVIVES(
+    @pytest.mark.parametrize("shape", (*_MESSAGE_LENGTH_VIOLATOR_SHAPES, _MESSAGE_GRADE_VIOLATOR_SHAPE))
+    async def test_BASELINE_the_asserted_old_world_refuses_every_violator(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        shape: str,
+    ) -> None:
+        """Positive control: under the FROZEN asserted DDL, EACH of the six violator shapes is REJECTED
+        by the engine — without it, "accepted after migrating" could be true because the shape was
+        never refused. GREEN at HEAD and after the build (the frozen world is unchanged)."""
+        connection, _env = admin_db
+        await self._apply_asserted_old_world(connection)
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
+            await seed_message_legacy(
+                connection, sender_id="lead", session="wave7", seq=1, **self._violator_overrides(shape)
+            )
+
+    async def test_CONTROL_a_clean_row_lands_under_the_asserted_old_world(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        """A narrowing converges the SCHEMA and never the DATA: the pre-existing
-        row is left INTACT and readable, never rewritten and never dropped. (It
-        is write-poisoned — any future UPDATE of it is refused — which is the
-        accepted §1.4 consequence, and harmless here because message rows are
-        never UPDATEd after create.)"""
+        """Fixture-liveness control (§12.6 step 1): a CLEAN legacy row IS accepted under the asserted
+        DDL — proving the table is live and the BASELINE rejections above are the ASSERTs, not a dead
+        table refusing everything."""
         connection, _env = admin_db
-        message_id = await self._dirty_old_world(connection)
+        await self._apply_asserted_old_world(connection)
+        message_id = await seed_message_legacy(
+            connection, sender_id="lead", session="wave7", seq=2, body="a clean body"
+        )
+        assert message_id
+
+    @pytest.mark.parametrize("shape", _MESSAGE_LENGTH_VIOLATOR_SHAPES)
+    async def test_the_length_assert_DROPS_and_the_value_survives_byte_intact(
+        self,
+        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
+        shape: str,
+    ) -> None:
+        """⚠ RED at HEAD (the #107 direction) — apply the frozen asserted DDL, then re-apply the
+        CURRENT ``generate_message_ddl()``; under the ii-b ruling it re-lands ``{shape}`` CLAUSE-FREE
+        (``OVERWRITE`` = full replace, drops the omitted ASSERT — store-ref §1.2), so a formerly-refused
+        length violator is now ACCEPTED and its over-cap value survives byte-intact (store-ref §1.4: a
+        migration converges schema, never data). At HEAD the emitter STILL emits the length ASSERT →
+        the seed RAISES → RED for the right reason (the OVERWRITE did not drop it). An emitter that
+        regressed to ``IF NOT EXISTS`` (the #107 no-op) also reds here."""
+        connection, _env = admin_db
+        await self._apply_asserted_old_world(connection)
         await run(connection, generate_message_ddl())
-        rows = await run(
-            connection,
-            f"SELECT seq, refs FROM type::record('{_schema().MESSAGE_TABLE}', $id)",
-            {"id": message_id},
+        try:
+            message_id = await seed_message_legacy(
+                connection, sender_id="lead", session="wave7", seq=3, **self._violator_overrides(shape)
+            )
+        except Exception as error:  # noqa: BLE001 - RED-at-HEAD surface (the ASSERT still lands)
+            pytest.fail(
+                f"RED-at-HEAD (right reason): the {shape!r} length ASSERT is STILL on the store after "
+                f"re-applying generate_message_ddl() — the ii-b OVERWRITE drop has not landed on the "
+                f"dirty store (§12.6 Leg A / #107 direction). engine: {error}"
+            )
+        row = _one(
+            await run(
+                connection,
+                f"SELECT body, thread, refs, task_id FROM "
+                f"type::record('{_schema().MESSAGE_TABLE}', $id)",
+                {"id": message_id},
+            )
         )
-        surviving = _one(rows)
-        assert surviving["seq"] == 90, "the pre-existing row did not survive the narrowing"
-        assert len(surviving["refs"][0]) > _schema().MESSAGE_POINTER_MAX_CHARS, (
-            "the surviving row's over-length ref was REWRITTEN — a narrowing must converge "
-            "the schema without touching the data"
-        )
+        self._assert_value_byte_intact(row, shape)
+
+    async def test_the_grade_assert_STAYS_after_migrating_a_dirty_store(
+        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    ) -> None:
+        """R19 (§13.3) — the grade ASSERT is the SOLE store constraint that SURVIVES the drop: a junk
+        ``grade`` is a row the reader (``InboxEntry.grade: MessageGrade``) could never decode. After
+        re-applying the current emitter, ``grade='urgent'`` is STILL REJECTED. GREEN at HEAD AND after
+        the build (grade kept throughout); a build that DROPS grade's ASSERT (the R19 wrong build) reds
+        here (the seed would be accepted)."""
+        connection, _env = admin_db
+        await self._apply_asserted_old_world(connection)
+        await run(connection, generate_message_ddl())
+        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface (grade domain)
+            await seed_message_legacy(
+                connection, sender_id="lead", session="wave7", seq=4, grade="urgent"
+            )
 
     async def test_the_migration_is_idempotent_on_an_already_migrated_store(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        """``ensure_ready`` re-applies this DDL on EVERY boot, so a second apply
-        must be a clean no-op — the element row is the one that would raise here
-        if it ever lost its ``OVERWRITE``."""
+        """KEPT (§12.6 step 5) — ``ensure_ready`` re-applies the DDL on EVERY boot, so a second apply
+        must be a clean no-op; the ``refs[*]`` element row is the one that would RAISE here if it ever
+        lost its ``OVERWRITE`` (a bare re-definition of an implicit array element path)."""
         connection, _env = admin_db
-        await self._dirty_old_world(connection)
+        await self._apply_asserted_old_world(connection)
         await run(connection, generate_message_ddl())
         await run(connection, generate_message_ddl())
-        message_id = await _create_message(
-            connection, session="wave7", seq=92, refs=["docs/plans/v2/INDEX.md"]
+        message_id = await seed_message_legacy(
+            connection, sender_id="lead", session="wave7", seq=5, refs=["docs/plans/v2/INDEX.md"]
         )
         assert message_id
 
 
-class TestTheAckNoteNarrowingAgainstADIRTYDeliveryEdge:
-    """WAVE 3 — the `to` HALF of the same rider, and the half that can actually
-    hurt.
+class TestTheSingleWriterFloorPerTable:
+    """P3 (63b-ii-b §12.7 / §3.4) — the per-table single-writer FLOOR: exactly ONE production writer
+    per governed message write, over the DERIVED production-member reach (INSTRUMENT-0: a new writer in
+    ANY member file reds — reach is a CHECKED VARIABLE, not a hand list of files).
 
-    DD-3.c's migration bullet said a later narrowing *"cannot write-poison
-    (message rows are never UPDATEd)"*. **That is true of `message` and FALSE of
-    `to`**, where DD-3.f puts `ack_note` — and the clause was STRUCK on
-    2026-07-25 after the round-2 cold audit reproduced the consequence.
+    | write | allowlist (EXACT) |
+    |---|---|
+    | ``to.ack_note`` in a SET/CONTENT | ``{MessageLedger.ack}`` |
+    | ``message`` CREATE | ``{MessageLedger._send_fragment}`` |
+    | ``message`` UPDATE/UPSERT/INSERT | ``{principals._migrate_message_owner}`` |
 
-    Why `to` is different, and why it is worse than a per-row rejection:
-    ``MessageLedger.drain`` UPDATEs `to` on EVERY call, in ONE guarded statement
-    over the whole window. SurrealDB re-validates the WHOLE record on write, so a
-    single legacy edge carrying an over-cap ``ack_note`` fails that statement —
-    and because it is one statement over the window, **the agent cannot drain ANY
-    of its inbox.** Total denial.
+    THREAT MODEL (a gate needs one, CLAUDE.md): the HONEST developer who adds a SECOND production writer
+    of a governed message column WITHOUT the ledger's app caps — a new CREATE outside ``_send_fragment``,
+    or a new UPDATE path inheriting DD-3.c (the day this grows a second entry, §12.4 re-open trigger (i)
+    has fired and the author owes the heal + inverted Leg B). NOT a hostile author (``"ack_" + "note"``,
+    a table-name variable — #138's shape, ledgered, not paid for in false positives). This is the STATIC
+    FLOOR; the ∀ instrument is F5's effect predicate (ii-a), whose reach is the battery's executed
+    frames. ⚠ D-M8 (§13.3): the reader-decode invariant is STORE-guarded (grade ASSERT kept, R19), so
+    this floor carries NO D-M8 statement — grade is closed at the store, not by this scan.
 
-    Production exposure at this deploy is ZERO (`message`/`to` have never been
-    deployed — that is the free window this wave used). This pin is not for
-    today; it is so that the next narrowing of a `to` field meets the mechanism
-    DELIBERATELY instead of rediscovering it from an outage. The sibling class
-    above covers `message`, where the original reasoning happened to hold;
-    shipping the instrument only for the table that cannot hurt us would repeat
-    the exact rider-skipping this correction is about.
-    """
+    The site derivation REUSES ``governed_table_raw_mutation_sites`` (the F5 registration derivation) for
+    the table-level CREATE/UPDATE rows rather than a second regex (ONE IMPLEMENTATION); the ``ack_note``
+    COLUMN row needs a column-aware scan (a SET/CONTENT literal mentioning ``ack_note``), since the
+    table-level ``to`` derivation also carries ``drain``'s ``seen_at`` UPDATE.
+
+    GREEN at HEAD (the writers ARE exactly the allowlist); RED the day a second site lands. Non-vacuity:
+    each scan MUST find its known site (a scan that finds nothing is broken)."""
 
     @staticmethod
-    def _old_to_ddl() -> str:
-        """The delivery edge as it stood BEFORE `ack_note` was bounded."""
-        relation = _schema().TO_RELATION
-        return (
-            f"DEFINE TABLE OVERWRITE {relation} TYPE RELATION "
-            f"IN {_schema().MESSAGE_TABLE} OUT {AGENT_TABLE} ENFORCED SCHEMAFULL;\n"
-            f"DEFINE FIELD OVERWRITE session ON {relation} TYPE string;\n"
-            f"DEFINE FIELD OVERWRITE created_at ON {relation} TYPE datetime;\n"
-            f"DEFINE FIELD OVERWRITE seen_at ON {relation} TYPE option<datetime>;\n"
-            f"DEFINE FIELD OVERWRITE acked_at ON {relation} TYPE option<datetime>;\n"
-            f"DEFINE FIELD OVERWRITE ack_note ON {relation} TYPE option<string>;\n"
+    def _production_sources() -> list[str]:
+        """Every production-member ``.py`` source — the DERIVED reach (a new writer in ANY member file
+        is in scope), NOT a hand list of the three modules the allowlist happens to name today."""
+        return [
+            path.read_text(encoding="utf-8")
+            for root in derive_member_source_roots()
+            for path in root.rglob("*.py")
+        ]
+
+    @staticmethod
+    def _table_verb_writers(
+        sources: list[str], table: str, verbs: set[str], *, table_const_hint: str
+    ) -> set[str]:
+        # ⚠ ``table_const_hint`` is load-bearing: the derivation matches the literal table name OR the
+        # interpolated module CONSTANT ``{<hint>}``. The DEFAULT hint is ``MEMORY_TABLE``, so calling it
+        # for ``message`` without the correct hint matches every MEMORY writer via ``{MEMORY_TABLE}`` —
+        # measured 2026-09-11 (a false-positive that pulled _upsert_fragment/_reinforce into the set).
+        writers: set[str] = set()
+        for source in sources:
+            for site in governed_table_raw_mutation_sites(source, table, table_const_hint=table_const_hint):
+                if site.verb in verbs:
+                    writers.add(site.function)
+        return writers
+
+    @staticmethod
+    def _ack_note_set_writers(sources: list[str]) -> set[str]:
+        """Enclosing functions whose source contains a mutation literal that WRITES ``ack_note`` (a
+        ``SET``/``CONTENT`` clause naming it) — the column-specific floor. A SELECT projection of
+        ``ack_note`` (drain's read) carries no ``SET``/``CONTENT`` and is excluded."""
+        writers: set[str] = set()
+        for source in sources:
+            tree = ast.parse(source)
+            owner: dict[int, str] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for child in ast.walk(node):
+                        owner[id(child)] = node.name
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Constant, ast.JoinedStr)):
+                    continue
+                segment = ast.get_source_segment(source, node) or ""
+                if "ack_note" in segment and ("SET" in segment or "CONTENT" in segment):
+                    function = owner.get(id(node))
+                    if function is not None:
+                        writers.add(function)
+        return writers
+
+    def test_the_message_CREATE_writer_is_exactly_send_fragment(self) -> None:
+        writers = self._table_verb_writers(
+            self._production_sources(), _schema().MESSAGE_TABLE, {"CREATE"}, table_const_hint="MESSAGE_TABLE"
+        )
+        assert writers == {"_send_fragment"}, (
+            f"the production writers of a raw `message` CREATE are {sorted(writers)}, not exactly "
+            f"{{_send_fragment}} — a second CREATE site bypasses the ledger's send caps (P3, §12.7). "
+            f"If deliberate, route it through MessageLedger.send or extend the allowlist WITH a reason."
         )
 
-    async def _dirty_edges(self, connection: SurrealConnection) -> str:
-        """One POISONED edge (over-cap ack_note) and one CLEAN edge, both written
-        under the OLD definition. Returns the recipient agent id."""
-        await run(connection, generate_agent_ddl())
-        await run(connection, f"DEFINE TABLE IF NOT EXISTS {_schema().MESSAGE_TABLE} SCHEMALESS")
-        await run(connection, self._old_to_ddl())
-        agent_id = _agent_record_id("wave7", "fixer-b")
-        await _create_agent(connection, agent_id=agent_id, name="fixer-b", session="wave7")
-        for index, note in enumerate(
-            ["a legal note", "n" * (_schema().MESSAGE_BODY_MAX_CHARS + 1)]
-        ):
-            message_id = uuid.uuid4().hex
-            await run(
-                connection,
-                f"CREATE type::record('{_schema().MESSAGE_TABLE}', $id) CONTENT $content",
-                {"id": message_id, "content": {"body": f"m{index}"}},
-            )
-            await run(
-                connection,
-                f"RELATE $message->{_schema().TO_RELATION}->$agent SET "
-                f"session = 'wave7', created_at = $now, ack_note = $note",
-                {
-                    "message": RecordID(_schema().MESSAGE_TABLE, message_id),
-                    "agent": RecordID(AGENT_TABLE, agent_id),
-                    "now": datetime.now(UTC),
-                    "note": note,
-                },
-            )
-        return agent_id
+    def test_the_message_UPDATE_writer_is_exactly_migrate_message_owner(self) -> None:
+        writers = self._table_verb_writers(
+            self._production_sources(),
+            _schema().MESSAGE_TABLE,
+            {"UPDATE", "UPSERT", "INSERT"},
+            table_const_hint="MESSAGE_TABLE",
+        )
+        assert writers == {"_migrate_message_owner"}, (
+            f"the production writers of a raw `message` UPDATE/UPSERT/INSERT are {sorted(writers)}, not "
+            f"exactly {{_migrate_message_owner}} — a new `message` UPDATE path inherits DD-3.c (§12.4 "
+            f"re-open trigger (i): it owes the heal + inverted Leg B). If deliberate, extend the "
+            f"allowlist WITH a reason and the owed instruments."
+        )
 
-    async def test_BASELINE_the_old_definition_really_accepts_an_oversize_note(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    def test_the_to_ack_note_writer_is_exactly_ack(self) -> None:
+        writers = self._ack_note_set_writers(self._production_sources())
+        assert writers == {"ack"}, (
+            f"the production writers of `to.ack_note` (a SET/CONTENT naming it) are {sorted(writers)}, "
+            f"not exactly {{ack}} — a second writer lands an unbounded/ungoverned note bypassing "
+            f"MessageLedger.ack's `_reject_oversize_note` cap (P3, §3.4/§12.7)."
+        )
+
+
+_LEGAL_NOTE = "a legal note"
+
+
+class TestALegacyOverCapNoteCannotDenyADrain:
+    """P1 (63b-ii-b §6 / §5 D4) — INVERTED from ``TestTheAckNoteNarrowingAgainstADIRTYDeliveryEdge``.
+
+    THE `to` HALF of DD-3.c, and the half that can actually hurt: ``drain`` UPDATEs `to` on EVERY call
+    in ONE statement over the whole window, and SurrealDB re-validates the WHOLE record on write — so a
+    single legacy edge carrying an over-cap ``ack_note`` would fail that statement and the agent could
+    not drain ANY of its inbox (TOTAL DENIAL, measured — probe 63b-ii-b §3). This pin ASSERTS THE FIX:
+    under the ii-b ruling (``to.ack_note`` ASSERT dropped) a dirty over-cap edge is served + stamped,
+    and its over-cap value survives byte-intact.
+
+    Driven through the REAL ``MessageLedger.drain`` in the §4.B one-txn shape (ROUTING IS NOT SHARING —
+    a hand-typed copy of drain's UPDATE could drift from drain), with the dirty edge VISIBLE to the
+    draining Subject (else it is excluded by the read_filter and the pin passes for C4's false-clear
+    reason — the assertion in the main pin FORCES visibility: BOTH seqs must be served AND stamped).
+
+    RED at HEAD: the ii-b drain takes NO Subject/read_filter argument (§4.B unbuilt) → the call raises
+    TypeError → a legible RED. On the ii-b build the ASSERT is gone and the one-txn drain serves +
+    stamps both edges. Mutation proof (declared, from ``--collect-only``): re-add the ASSERT to
+    ``_TO_FIELD_SPECS`` → this pin RED with the engine's ``ack_note … must conform to`` text (the
+    whole-window UPDATE aborts); restore → GREEN. That is "RED the day the hazard reopens", demonstrated.
+    """
+
+    @pytest_asyncio.fixture()
+    async def dirty_to_world(self) -> Any:
+        """A store carrying REAL governed (server-scope, member-visible) message rows and TWO delivery
+        edges to ONE recipient — both ``seen_at`` NONE, one with an over-cap ``ack_note``, one clean —
+        written under the DOWNGRADED (unbounded) ``to.ack_note`` world, then the CURRENT emitter
+        re-lands the schema (store-ref §1.4 trap: the edges are written UNDER the old definition). The
+        message rows are REAL (not a SCHEMALESS stand-in) because the ii-b drain reads them through the
+        read_filter. Yields ``(ledger, recipient_bare, subject, connection, env)``. Reaped (NEVER
+        :18500)."""
+        env = make_env(database=unique_database(), dim=8)
+        principal_store, keep_store = await build_principal_and_keep_stores(env)
+        connection = await connect_admin(env)
+        registry = AgentRegistry(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user,
+            password=env.password,
+        )
+        ledger = MessageLedger(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user,
+            password=env.password,
+        )
+        try:
+            # 1. REAL agent + message + `to` DDL, then DOWNGRADE `to.ack_note` to unbounded (the
+            #    "before it was bounded" world) — the edges' over-cap note is written under THIS.
+            await run(connection, generate_agent_ddl())
+            await run(connection, generate_message_ddl())
+            await run(
+                connection,
+                f"DEFINE FIELD OVERWRITE ack_note ON {_schema().TO_RELATION} TYPE option<string>",
+            )
+            # 2. one member principal + one recipient agent owned by it (a governed member Subject).
+            await principal_store.create(email="recip@example.com", role="member")
+            principal = (await principal_store.list())[0]
+            principal_bare = str(principal.id).split(":", 1)[-1]
+            recipient = (
+                await registry.register(
+                    "recip", session="wave7", role="builder", owner_principal_id=principal_bare
+                )
+            ).agent
+            recipient_bare = str(recipient.id).split(":", 1)[-1]
+            # 3. TWO REAL server-scope messages (member-visible) + 4. their delivery edges, one over-cap
+            #    ack_note, one clean, both seen_at NONE — RELATEd under the downgraded (unbounded) note.
+            cap = _schema().MESSAGE_BODY_MAX_CHARS
+            for seq, note in enumerate((_LEGAL_NOTE, "n" * (cap + 1))):
+                message_id = await seed_message_legacy(
+                    connection, sender_id=recipient_bare, session="wave7", seq=seq, scope="server"
+                )
+                await run(
+                    connection,
+                    f"RELATE $message->{_schema().TO_RELATION}->$agent SET "
+                    f"session = 'wave7', created_at = $now, ack_note = $note",
+                    {
+                        "message": RecordID(_schema().MESSAGE_TABLE, message_id),
+                        "agent": RecordID(AGENT_TABLE, recipient_bare),
+                        "now": datetime.now(UTC),
+                        "note": note,
+                    },
+                )
+            # 5. MIGRATE: re-apply the CURRENT emitter (re-lands `to.ack_note` — asserted at HEAD, so the
+            #    over-cap edge is write-poisoned; clause-free after the ii-b build, so it is not).
+            await run(connection, generate_message_ddl())
+            subject = member(principal_bare, recipient_bare, frozenset())
+            yield ledger, recipient_bare, subject, connection, env
+        finally:
+            await ledger.close()
+            await registry.close()
+            await connection.close()
+            await keep_store.close()
+            await principal_store.close()
+            await drop_database(env)
+
+    @staticmethod
+    async def _drain(ledger: Any, agent_id: str, subject: Any, *, peek: bool = False) -> Any:
+        """Call the REAL ii-b ``MessageLedger.drain`` with the Subject/read_filter arg. RED-at-HEAD
+        surface: at HEAD ``drain`` has no ``subject`` kwarg → TypeError → a legible ``pytest.fail``
+        (the §4.B one-txn read-governance is unbuilt), never a bare crash."""
+        try:
+            return await ledger.drain(agent_id=agent_id, limit=10, peek=peek, subject=subject)
+        except TypeError as error:
+            pytest.fail(
+                "RED-at-HEAD (right reason): MessageLedger.drain does not accept a `subject` argument — "
+                "the ii-b §4.B one-txn read-governance (drain resolves + filters by the Subject) is "
+                f"unbuilt. engine/py: {error}"
+            )
+
+    async def test_BASELINE_the_downgraded_world_accepts_both_edges(
+        self, dirty_to_world: Any
     ) -> None:
-        connection, _env = admin_db
-        agent_id = await self._dirty_edges(connection)
+        """Positive control: the downgraded (unbounded) world accepted BOTH edges (over-cap + clean) —
+        without it "served after the fix" could be true because the over-cap edge was never created.
+        GREEN throughout (the over-cap edge survives the migrate, write-poisoned but READABLE)."""
+        _ledger, recipient_bare, _subject, connection, _env = dirty_to_world
         rows = await run(
-            connection, f"SELECT count() FROM {_schema().TO_RELATION} GROUP ALL"
+            connection,
+            f"SELECT count() FROM {_schema().TO_RELATION} WHERE out = $agent GROUP ALL",
+            {"agent": RecordID(AGENT_TABLE, recipient_bare)},
         )
-        assert _one(rows)["count"] == 2, "the OLD definition was supposed to accept both edges"
-        assert agent_id
+        assert _one(rows)["count"] == 2, "the downgraded world was supposed to accept BOTH edges"
 
-    async def test_a_WHOLE_WINDOW_stamp_is_DENIED_by_ONE_legacy_edge(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    async def test_a_dirty_over_cap_note_edge_is_SERVED_and_STAMPED_not_denied(
+        self, dirty_to_world: Any
     ) -> None:
-        """THE MECHANISM, reproduced: not a per-row rejection — TOTAL DENIAL.
+        """⚠ RED at HEAD (via the missing Subject arg) — the load-bearing pin. Drive the REAL ii-b
+        drain over the dirty window: it RETURNS (no aborted txn), serves BOTH messages, STAMPS both
+        edges (``stamped_seqs`` == both seqs — which forces both VISIBLE and stamped; a dirty edge
+        masked by C4 would be missing), the read-back shows both ``seen_at IS NOT NONE``, and the
+        over-cap ``ack_note`` value SURVIVES unchanged (a migration converges schema, never data —
+        store-ref §1.4). Under a wrong build that keeps/re-adds the ``to.ack_note`` ASSERT the
+        whole-window UPDATE aborts and NOTHING is served or stamped (the measured total denial)."""
+        ledger, recipient_bare, subject, connection, _env = dirty_to_world
+        result = await self._drain(ledger, recipient_bare, subject)
+        assert sorted(result.stamped_seqs) == [0, 1], (
+            f"the drain did not STAMP both edges — a dirty over-cap ack_note edge denied the whole "
+            f"window (DD-3.c), or the dirty edge was invisible (C4 false clear). "
+            f"stamped={result.stamped_seqs!r}"
+        )
+        assert sorted(entry.seq for entry in result.entries) == [0, 1], (
+            f"the drain did not SERVE both messages: {[e.seq for e in result.entries]!r}"
+        )
+        stamped = await run(
+            connection,
+            f"SELECT seen_at, ack_note FROM {_schema().TO_RELATION} WHERE out = $agent",
+            {"agent": RecordID(AGENT_TABLE, recipient_bare)},
+        )
+        rows = stamped if isinstance(stamped, list) else []
+        assert rows and all(row.get("seen_at") is not None for row in rows), (
+            f"a delivery edge was left UNSTAMPED after the drain: {rows!r}"
+        )
+        over_cap = [row for row in rows if row.get("ack_note") not in (None, _LEGAL_NOTE)]
+        assert over_cap and all(
+            len(row["ack_note"]) == _schema().MESSAGE_BODY_MAX_CHARS + 1 for row in over_cap
+        ), (
+            f"the over-cap ack_note value did not survive byte-intact — a migration converges the "
+            f"schema without touching the data (store-ref §1.4), and this ruling adds no heal: {over_cap!r}"
+        )
 
-        The drain's real shape is one guarded UPDATE over the whole window, and
-        the engine re-validates the WHOLE record on write, so the poisoned edge
-        takes the clean one down with it.
-        """
-        connection, _env = admin_db
-        agent_id = await self._dirty_edges(connection)
-        await run(connection, generate_message_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await run(
-                connection,
-                f"UPDATE {_schema().TO_RELATION} SET seen_at = $now "
-                f"WHERE out = $agent AND seen_at IS NONE",
-                {"now": datetime.now(UTC), "agent": RecordID(AGENT_TABLE, agent_id)},
-            )
-
-    async def test_CONTROL_the_same_stamp_over_the_CLEAN_edge_alone_is_ACCEPTED(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
+    async def test_CONTROL_an_already_seen_edge_is_outside_the_drain_window(
+        self, dirty_to_world: Any
     ) -> None:
-        """The discriminating control — without it the rejection above could be
-        the statement, the schema, or the fixture rather than the poisoned edge.
-        Same statement, same post-migration schema, scoped to the clean edge."""
-        connection, _env = admin_db
-        agent_id = await self._dirty_edges(connection)
-        await run(connection, generate_message_ddl())
+        """C-control (§6 step 6) — the drain's window predicate is ``seen_at IS NONE``: an edge already
+        stamped is OUTSIDE the window and is NOT re-stamped. Pre-stamp the CLEAN edge, then drain: it
+        serves + stamps ONLY the still-unseen (over-cap) edge — proving the window predicate is drain's
+        real one, and that the dirty edge is served even when it is the ONLY one in the window (the
+        sharpest DD-3.c case). RED at HEAD via the missing Subject arg."""
+        ledger, recipient_bare, subject, connection, _env = dirty_to_world
+        # pre-stamp the CLEAN edge (seq 0) out of the window.
         clean = await run(
             connection,
-            f"SELECT id FROM {_schema().TO_RELATION} WHERE out = $agent "
-            f"AND ack_note = 'a legal note'",
-            {"agent": RecordID(AGENT_TABLE, agent_id)},
+            f"SELECT id FROM {_schema().TO_RELATION} WHERE out = $agent AND ack_note = $note",
+            {"agent": RecordID(AGENT_TABLE, recipient_bare), "note": _LEGAL_NOTE},
         )
         assert clean, "fixture check: the clean edge must exist"
         await run(
             connection,
             f"UPDATE {_schema().TO_RELATION} SET seen_at = $now WHERE id = $edge",
             {"now": datetime.now(UTC), "edge": _one(clean)["id"]},
+        )
+        result = await self._drain(ledger, recipient_bare, subject)
+        assert sorted(result.stamped_seqs) == [1], (
+            f"the drain re-stamped an already-seen edge or missed the dirty over-cap edge (which is now "
+            f"the ONLY one in the window — the sharpest DD-3.c case): stamped={result.stamped_seqs!r}"
         )
 
 
