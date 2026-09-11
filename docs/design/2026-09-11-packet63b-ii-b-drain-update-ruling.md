@@ -1050,3 +1050,208 @@ the set WITH its P-G2-shaped alignment pin, or it is not exempt.
   P-G3 is a test, the contract author's row). No file outside the writable set touched; §0–§12 untouched.
 - Escalations: none owed to the operator (the operator delegated this fork here). One rider raised for the
   fidelity read (F-1, §13.2 — the §4.B decode/stamp ordering), not re-opening any accepted item.
+
+---
+
+# §14 — ADDENDUM 2026-09-11 · FIDELITY READ: ruling (§0–§13) vs the frozen RED contract `4aaf45f` (sidecar-63b-ii-b-2)
+
+brief-base v14 read · brief project v7 read.
+**Graded:** `4aaf45f` · HEAD-at-report: `8000385` · DIFFERENT (1 behind) — `8000385` touches ONLY
+`scripts/probe_drain_read_63b_ii_b.py` (ruff style; `git show --stat`), nothing this read rests on.
+Read: every file in `4aaf45f`'s stat (7 test files + `REPORT-contract-63b-ii-b.md`), the production
+seams the pins drive (`_txn.py::run_query` raise site, `governed.py::write_guard`, the F5 classifier in
+`_governed_contract.py`, the `to`-tree allowlist in `test_message_enforcement_63b_ii_a.py`), and one
+`--collect-only` (2 ids, 251 deselected). No test was RUN by me — the RED/GREEN receipts are the
+contract author's (report §"RED-at-HEAD run receipts"), cited not re-derived; this read grades
+RULING-vs-CONTRACT (did each ruled pin land AS RULED), which is the instrument the adversary's
+contract-frame cannot supply.
+
+## 14.0 Verdict
+
+**GO WITH THREE FIDELITY GAPS + ONE MECHANISM RULING**, none a re-open of an accepted item:
+- **MP-7 (new, the DUAL missed it): a CORPSE CERTIFIER survives** — `test_comms_schema.py::
+  TestMessageDdlOffline::test_body_carries_a_length_bound_the_store_itself_enforces` (collected at
+  HEAD) asserts `"ASSERT" in statement` for `message.body` and pins the `<= 4000` bound. It certifies
+  the OLD world and is a **C-DEF**: it CANNOT pass the correct build (W9 drops `body`'s ASSERT) — the
+  builder is trapped between P2-m (demands no ASSERT) and this pin (demands one). Its docstring is the
+  P8d-class stale prose verbatim (*"the schema ASSERT is the backstop that makes a bypassing writer fail
+  LOUDLY"*). The DUAL ledger deleted the LIVE body rejection and the pointer/ack_note OFFLINE pins but
+  not this offline body pin — the same class as ii-a's MP-5/MP-6. **Fix: DELETE-with-replacement (P2-m
+  is the inverse ∀; D-M2 the app cap), named in the commit message.**
+- **G1 — P4 landed for ONE of five carriers.** §9.1/§8 P4: the bound line EXACTLY ONCE per served
+  READ response, *"render pins per verb"* — drain, await (non-empty AND EMPTY — *"where Leg 1 matters
+  most"*), story, ack. The contract has the once-count for `drain` only
+  (`test_a_multi_entry_drain_carries_the_bound_line_exactly_once`). The structural coverage pin (P5)
+  forces PRESENCE of `render_subject_bound` in each derived render's source; it cannot see a
+  sub-render CLONE (`_render_story_message` per message; the await-empty path) — the exact wrong build
+  §9.1's count exists for. **Fix: the once-count for `await` (≥2 rows), `await`-EMPTY (timeout),
+  `story` (≥2 messages — the per-message sub-render is the clone risk), `ack` (≥2 seqs).** The drain
+  pin's shape is right; parametrize or sibling it.
+- **G2 — P6 landed for its TOKENLESS half only.** §9.4 ruled BOTH: tokenless = the one identity line
+  (LANDED, `test_the_tokenless_rollup_message_leg_names_the_identity_bound`, incl. the no-count leak
+  check) AND *with a verified capability: `total` is the FILTERED count and the bound line HEADS the
+  LEG (leg-scoped, not response-scoped — the task/finding legs are ungoverned until 64)*. The second
+  half is unpinned: a build that puts the scope line at the RESPONSE head (over-claiming about the
+  task/finding legs) or serves an UNFILTERED count passes. **Fix: one capability-bearing rollup pin —
+  bound line immediately above `messages activity (k):`, NOT the first line of the response, and `k`
+  equals the Subject-visible count with a foreign-principal message present (the Leg-1 diff).**
+- **Dev-4 — the `write_guard` READ/WRITE exclusion is REJECTED as a mechanism (§14.2); ruled
+  replacement: an explicit, non-vacuous WRITE-receipt exemption set, corroborated from truth.** A
+  contract adaptation of a §9.3 gap, ruled here (the ruling was silent; the fill is mine to make) —
+  NOT a ruling change for the operator.
+- **Dev-3 — BLESSED with one tightening (§14.1).** Construction-isolation + the positive control
+  discriminates R19's wrong build exactly as the field-name assertion would have; a bare
+  `pytest.raises(Exception)` is loosened one notch too far, and the tightening is ACHIEVABLE.
+
+Everything else ruled in §0–§13 LANDED AS RULED (§14.3 table). The two deferrals (read-verb corpse,
+F-DUP convergence of `wire_world` + the 3 ii-a `cred` fixtures) are lead rulings (§11.3), not gaps.
+
+## 14.1 Dev-3 adjudicated — P-G3 without the engine's field name
+
+**The author's claim is TRUE, verified at the raise site:** `store/_txn.py::run_query` raises
+`_domain_rejection_error(error_class, f"SurrealDB {noun} rejected against {url!r} ({error_class});
+{_SERVER_LOG_HINT}")` — the engine's `"grade … must conform to"` text is LOGGED under the seam's label
+and NEVER interpolated into the raised message (ledger #31, by design). §13.3's *"engine text naming
+`grade`"* was written against the engine's surface, not the driver's wrapped one; the ruling's
+expectation was wrong about the instrument, and the author was right to say so rather than assert a
+string that cannot appear.
+
+**Does construction-isolation still discriminate?** Yes — the wrong build for R19 is *"drops the grade
+ASSERT"*; under it the junk-grade fixture MIGRATES (no raise) → `pytest.raises` fails → RED; the
+sibling `test_CONTROL_a_legal_grade_fixture_migrates_cleanly` (same two rows, `directive` instead of
+`urgent`, `backfilled == 2`) stays GREEN, so the pair isolates the grade as the ONLY refusing
+difference. That is "a probe needs a control" done correctly, and it is not weaker than the field-name
+assertion for the R19 wrong build. Zero-rows-stamped is already asserted (both rows read back
+NONE-owner). `test_the_grade_assert_STAYS_after_migrating_a_dirty_store` (Leg A) and P2-m's exemption
+non-vacuity red on the same wrong build — three independent instruments.
+
+**Where it IS one notch weaker, and the achievable tightening (REQUIRED):** `pytest.raises(Exception)`
+admits a raise for the WRONG reason — a transport fault (`SurrealConnectionError`), a governed
+conflict (`TxnGovernedConflictError`), a fixture `TypeError`. The control halves that door (the same
+fixture with a legal grade succeeds), but the class label IS in the wrapped message, so pin it:
+`pytest.raises(TxnDomainRejectionError, match=r"\(assert violation\)")` — the driver's own
+`_ERROR_CLASS_ASSERT_VIOLATION` label, the typed domain-rejection class (`_domain_rejection_error`
+returns exactly it for a non-governed-conflict rejection). Same tightening for Leg B's C-CONTROL
+(`test_C_CONTROL_the_frozen_asserted_ddl_makes_the_migrate_RAISE`), which drives the SAME seam. The
+raw-connection seeds (Leg A BASELINE / grade-STAYS, `seed_message_legacy` over `run`) see the SDK's
+own error, not the driver's — the house `# noqa: B017` idiom stands there; a `match="must conform"`
+would be nicer but is not required.
+
+**Mutation-proof declaration:** the report's declared RED sets stand; add the match-string to the
+expected-RED reasoning (a build that raises for another reason now reds by TYPE, not by luck).
+
+## 14.2 Dev-4 RULED — the `write_guard` exclusion re-introduces the hidden-constant class; replaced
+
+**What the author built:** the widened derivation (`self`/`cls`/`AppContext` receivers — #464, LANDED
+as ruled, with the six-render non-vacuity floor) EXCLUDES any Subject-resolving handler whose source
+calls `write_guard`, on the premise *"a governed read never does — there is no `read_guard`"*.
+
+**Why the premise is FALSE for two of the six ruled carriers, derived from truth:**
+- F5's classifier (`_governed_contract.py`, the `observed.label not in entry.frames` leg) classifies a
+  NON-exempt governed-table mutation iff `governed.active_write_guard()` at mutation time equals one of
+  the allowlist entry's `frames`. The `to`-tree allowlist (`test_message_enforcement_63b_ii_a.py`)
+  registers `_DRAIN_TO_ENTRY` with `frames=("drain",)` and `_ACK_TO_ENTRY` with `frames=("ack",)`, and
+  both entries say *"ii-b drives the LIVE classification"*.
+- Therefore the ii-b `drain` and `ack` — READ verbs that STAMP `to` — MUST execute their stamp inside
+  `write_guard("drain")` / `write_guard("ack")` to classify at all (an unlabelled mutation is
+  UNCLASSIFIED → deny-by-default). WHERE the builder enters it is the builder's choice; the ONE
+  precedent in the tree (`_comms_send`: `with governed.write_guard("send"): … self.message_ledger.
+  send(...)`) puts it in the HANDLER. A builder mirroring the precedent writes `with governed.
+  write_guard("drain"): result = await self.message_ledger.drain(...)` in `_comms_drain` — and the
+  exclusion silently removes `_comms_drain`'s (and `_comms_ack`'s) renders from the derived set.
+- The premise is TRUE at HEAD only because ii-b's reads are UNBUILT (no read stamps under a label
+  yet) — the fixture guarantees the one condition under which the defect is invisible (CLAUDE.md, THE
+  TEST ENVIRONMENT IS A FICTION). GREEN at HEAD proves nothing about it.
+- The floor (`ii_b_floor - all_renders == ∅`) WOULD red for those two — the six named renders are
+  protected — but with a failure message naming two causes that are both wrong (*"handlers do not
+  resolve a Subject yet … or the receiver reach fails"*), and the builder's path of least resistance
+  is to move `write_guard` OUT of the handler to satisfy a test — an undocumented production constraint
+  invented by a test mechanism. And a SEVENTH read-that-stamps (a future `mark-read`, a `story` that
+  records a view) is outside the floor and silently excluded: the reach receded one level (the STOP
+  rule's tell).
+
+**The class:** this is the instrument lesson's row *"keyed on X, defeated by a site that spells it
+differently"* — the hidden constant is the belief *reads never enter `write_guard`*, and it is a
+DENY-rule over reads keyed on an idiom reads legitimately use. β (hand-exclude `_render_comms_send` by
+name) was rejected as "the #464 hand-list" — but that conflates two things. #464's defect was a hidden
+REACH constant (receiver names) that silently EXCLUDED sites. A visible, non-vacuous EXEMPTION is the
+opposite instrument: it ALLOWLISTS THE SAFE (the write receipts permitted to omit the bound — small,
+enumerable), and everything else that resolves a Subject is demanded to carry the bound
+(deny-by-default on omission). §13.3 established exactly this shape for P2-m's `{grade}`: *"an
+exemption is a JUDGEMENT, so it must be written down by a person, kept honest by non-vacuity."*
+
+**RULING (binding; a contract adaptation, not a ruling change):**
+1. **Remove the `write_guard` exclusion from `_governed_read_render_methods`.** The derived set is EVERY
+   Subject-resolving handler's top-level `_render_*` calls (receivers `self`/`cls`/`AppContext` as
+   built).
+2. **Add an explicit exemption constant** — the WRITE-RECEIPT renders permitted to omit the bound — in
+   the coverage pin, beside the floor: at `4aaf45f` exactly `{"_render_comms_send"}` (derived this
+   read: `_comms_send` is the ONLY Subject-resolving handler in `server.py` whose renders are receipts;
+   `remember` resolves a Subject but calls no `_render_*`; `recall` is a carrier). Comment: *"a governed
+   WRITE renders a receipt, never a scoped result — §9.1: send is not a carrier."*
+3. **Non-vacuity, both directions:** (a) every exempted render MUST be in the derived set (its handler
+   DOES resolve a Subject) — else the exemption is stale → RED; (b) **from-truth corroboration on the
+   SAFE side only**: the exempted render's handler source MUST contain a WRITE-family seam
+   (`write_guard(` AND/OR `resolve_write_scope(`/`guarded_write(`) — a read someone "exempted" to skip
+   the bound has none → RED. This uses the author's signal in the direction where it cannot hide a
+   read: as a positive requirement on an exemption, never as an exclusion of the population.
+4. **The coverage pin then demands `subject` + `render_subject_bound` of every derived render NOT in
+   the exemption set** — so the day a builder wraps `drain`'s stamp in `write_guard("drain")` in the
+   handler, `_render_comms_drain` is still demanded to carry the bound (correct), and the day a NEW
+   governed write verb lands (63c `brief_publish`), its receipt render is DEMANDED to carry a bound
+   until its author adds the exemption consciously — surfaced, not narrowed (R6's own property).
+5. **Mutation proof (declared):** delete `_render_comms_send` from the exemption → the coverage pin
+   reds on it (it carries no bound); add a fake exemption `"_render_comms_drain"` → leg (b) reds (no
+   write seam in `_comms_drain`) once built, leg (a) at HEAD; restore → GREEN.
+6. The floor's failure message names the THREE causes: handler resolves no Subject · receiver reach
+   regressed · render wrongly exempted.
+
+**For the adversary (report §"Spec-interface", the flagged constraint):** *"the reference build's read
+handlers must NOT call `write_guard` (else excluded from coverage)"* is WITHDRAWN by this ruling — the
+reference build MAY attribute drain/ack at the handler exactly as send does; F5's `frames` REQUIRE the
+label somewhere on the path.
+
+## 14.3 Per-pin fidelity table (ruled → landed)
+
+| ruled pin | where landed | verdict |
+|---|---|---|
+| R1/W1 + P2 [`to`] ∀ (§3.4) | `TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate[to]` — birth set, no DEFAULT, post-birth `option<`, floor `{ack_note}`, failure text carries the heal/pin obligation | **LANDED** (the message conflates `to`/`message` wording into one — acceptable; the re-open trigger (drain stops being whole-window) is in the docstring, not the failure text — nit) |
+| P2-m + `{grade}` exemption + non-vacuity (§12.4/§13.3) | same pin, `[message]`: birth set = df59f76 + `refs[*]`; `birth_defaults={refs,question}`; `exemptions={grade}` with BOTH legs (exempt field present in the emitted set AND carries an ASSERT); floor `{body, refs[*], owner_principal}` | **LANDED AS RULED** — ONE parametrized pin over a `table → (birth, defaults, exemptions, floor)` spec (§13.3's recommended shape). Confirmed: the non-vacuity leg is present. |
+| P-G2 alignment (§13.3) | `TestMessageDdlOffline::test_grade_is_a_closed_two_value_domain` (test_comms_schema) — parses the emitted IN-set, asserts non-empty, `== MESSAGE_GRADES == get_args(MessageGrade)`; plus the ledger file's original two-leg pin stands | **LANDED** — but note it is a SECOND pin with the SAME NAME as `test_message_ledger.py::…::test_grade_is_a_closed_two_value_domain` (two files, one name). Not a defect (different modules), a grep hazard for the sweep law — nit: suffix one. |
+| P1-m-A Leg A (§12.6 / §13.3) | `TestTheMessageAssertsAreDroppedFromADIRTYStore`: frozen 0566587 world (shared `frozen_asserted_message_ddl`) → BASELINE refuses all six → clean-row control → current emitter → five length shapes ACCEPTED byte-intact → grade STAYS refused → idempotent; plus a frozen-world-matches-emitter control | **LANDED AS RULED** (the extra control that the frozen capture cannot rot is a good addition) |
+| P1-m-B Leg B (§12.6 / §13.3) | `TestTheRealMigrateSurvivesLegacyViolators`: unbounded world + governed overlay + migrated sender + operator; six rows (5 length + clean) via the shared seeder; REAL `principals.migrate_governed(table="message")` through `store_handle`; not refused, `backfilled == 6`, owner/scope stamped, values byte-intact; idempotent; C-CONTROL (frozen DDL → RAISES, zero stamped) | **LANDED AS RULED** — `scanned == 6` / `already_migrated == 0` not asserted on the first call (nit); tighten the C-CONTROL's `raises` per §14.1. |
+| P-G3 (§13.3) | `TestAJunkGradeLegacyRowRefusesTheCutover` + legal-grade control | **LANDED with Dev-3** (§14.1: bless + tighten) |
+| P1 dirty-`to` drain (§6) | `TestALegacyOverCapNoteCannotDenyADrain`: `generate_message_ddl()` → downgrade `ack_note` → REAL governed messages (server scope) + two edges under the unbounded note → re-apply emitter → REAL `MessageLedger.drain(subject=)`; asserts return, `stamped_seqs == [0,1]`, both served, both `seen_at` set, over-cap note byte-intact; BASELINE; C-control (pre-seen edge outside the window, dirty edge served ALONE) | **LANDED AS RULED** — the one-txn leg is one leg (drain IS the §4.B path), stated. |
+| P3 per-table floor (§12.7) | `TestTheSingleWriterFloorPerTable`: reach = `derive_member_source_roots()` (derived, not a file list); CREATE/UPDATE rows REUSE `governed_table_raw_mutation_sites` (with the `table_const_hint` trap named — a measured false positive); the `ack_note` column row is an AST scan over SET/CONTENT literals; exact allowlists; D-M8 statement removed | **LANDED AS RULED** |
+| P5 #464 widening + floor (§9.3) | receivers `{self, cls, AppContext.__name__}` (derived, not spelled) + `test_the_derivation_reaches_the_ii_b_comms_renders` (⊇ the six) | **LANDED** — the exclusion mechanism is §14.2's ruling |
+| R6 driver table (W8 / ii-a §11.5) | `test_every_capability_required_verb_denies_without_one`: True-set DERIVED from `_COMMS_ACTIONS`; `drivers` keyed by verb; **coverage assertion `required - drivers.keys() == ∅`** + non-empty guard; every True verb driven → `GovernedDenied`; plus reads-require + exact-five FIX pins | **LANDED AS RULED** — a real coverage assertion, not a hand-list (the hand map's COVERAGE is the checked variable). Nit: `_REQUIRED_IN_II_B_NOT_YET` is now a stale NAME (they are required in ii-b). |
+| P4 once-per-response (§9.1) | drain only | **PARTIAL → G1** |
+| P6 rollup (§9.4) | tokenless half | **PARTIAL → G2** |
+| P7 invisible-seq ack (§9.5) | `TestAnAckOfAnInvisibleSeqIsUnknownMessage`: fate `unknown_message`, `acked_count == 0`, invisible edge `acked_at` NONE, ∀-request one fate; CONTROL visible seq → `acked` + stamped | **LANDED AS RULED** |
+| F-1 decode-before-stamp (§13.2) | `TestTheDrainDecodesBeforeItStamps`: monkeypatched `_row_to_inbox_entry` (instance-method signature matches) raises; edges must stay `seen_at IS NONE`; both ruled shapes admitted (decode-first, or per-row with rejected rows unstamped) | **LANDED AS RULED** (behavioural, the right pick) |
+| D3/W3, D-M3, D-M4, D-M5, D-M6 (4 live length rejections deleted; grade live pin KEPT + re-dated; the two positive controls KEPT), D-M7 inversion, D-M11 rename + docstring | test_comms_schema | **LANDED** — except the offline `body` pin (**MP-7**, above) |
+| W15 `task_id_len` parity | `_task_id_len_trigger` + scenario row | **LANDED** |
+| F-DUP lift (§12.6 step 0) | `_governed_contract.py::{seed_message_legacy, frozen_asserted_message_ddl, unbounded_message_ddl, credentialed_app_context, register_owned}`; both dirty legs + P1 + read-governance call the ONE seeder | **LANDED** — `test_comms_schema._create_message` remains as a second raw-CREATE seeder in the same tree (used by the KEPT live pins); the report names it as predating; converge at build (a DRY row, not a gap). |
+| D-M9 / D-M10 prose, W9 spec edits, §12.8 close-out reads | build wave / lead | n/a here |
+
+## 14.4 Classification for routing
+
+- **Ruling changes needing the operator: NONE.** §14.1 and §14.2 are fills of gaps the ruling left
+  (a wrong assumption about the driver's surface; a silent spec point), both within the 63b design
+  delegation.
+- **Contract revisions owed before the builder (the adversary's re-grade covers them):** MP-7
+  delete-with-replacement · G1 four once-counts · G2 the capability-bearing rollup pin · §14.1's
+  `raises` tightening (P-G3 + C-CONTROL) · §14.2's exemption-set replacement (items 1–6).
+- **Nits (build-wave hygiene, no gate):** the duplicate test name across two files; `already_migrated
+  == 0` on Leg B's first call; `_REQUIRED_IN_II_B_NOT_YET` rename; the second raw seeder.
+
+## 14.5 Discipline receipts
+- Fallbacks to textual search, said: the offline-ASSERT-pin hunt (`awk '/assert "ASSERT" in/'` over
+  `test_comms_schema.py` — how MP-7 was found: the DUAL ledger was a hand-list, the sweep is not), the
+  `write_guard`/`governed_exempt` call-site sweep over production (`find` + `awk`), the Subject-resolving
+  handler enumeration in `server.py` (an `awk` state machine over `async def` bodies). Symbol-level
+  reads via `lore_get_symbol` earlier in this session (`drain`, `send`, `_migrate_message_owner`).
+- Packages considered: none — no mechanism specified. Reuse ledger: none (0 new symbols; §14.2 names
+  a constant the contract author owns).
+- No file outside the writable set touched; §0–§13 unchanged (md5 before/after the append). Not
+  committed — the lead commits.
