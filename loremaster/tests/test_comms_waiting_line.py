@@ -33,9 +33,11 @@ from loremaster.server import AppContext
 from test_comms_tool import (
     _03b_drain,
     _03b_fleet,
+    _governed_ambient_token,  # noqa: F401 - autouse fixture (patches get_access_token for the credentialed send)
     _line_containing,
     _msg,
     _msg_fakes,
+    _send,
 )
 from test_link5_render_containment import FORGERY_MARKER, _leaks
 
@@ -258,11 +260,11 @@ async def _ask_via_dispatcher(
 ) -> int:
     """``asker`` sends a QUESTION (set_status='input_required') to ``to`` through
     the real dispatcher; return its seq. This is what makes ``awaiting_answer``
-    return non-None for ``asker`` — the derived debt LEG D surfaces."""
-    await AppContext.comms(
+    return non-None for ``asker`` — the derived debt LEG D surfaces. packet 63b-ii-a:
+    driven CREDENTIALED via the shared ``_send`` seam (send now enforces identity)."""
+    await _send(
         harness,
-        action="send",
-        agent=asker,
+        sender=asker,
         session=session,
         to=[to],
         body="please confirm the gate is green before I commit",

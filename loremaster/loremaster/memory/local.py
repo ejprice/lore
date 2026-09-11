@@ -817,16 +817,14 @@ class LocalMemoryBackend:
         ``scope=`` is a PDP-VALIDATED REQUEST, not an identity claim: it is checked by the SAME
         ``lorerunes.pdp._grantable`` predicate the SET_SCOPE action uses (the fixed scopes + the
         caller's OWN keeps are grantable) — a keep the caller is NOT householded in DENIES with a
-        teaching error. Calling ``_grantable`` via the ``pdp`` MODULE (not a bound import) is what
-        makes the validation mutation-provable (ROUTING-IS-NOT-SHARING)."""
-        if scope is None:
-            return await self._default_project_scope()
-        if not pdp._grantable(subject, scope):  # noqa: SLF001 - the ruled shared grant predicate
-            raise governed.GovernedDenied(
-                f"scope {scope!r} is not grantable by {subject.principal_id}/{subject.agent_id} — "
-                "you are not householded in that keep; run `lore-adm add-household` to join it first"
-            )
-        return scope
+        teaching error. The grant rule itself is the LIFTED ``governed.resolve_write_scope`` (packet
+        63b-ii-a, ruling §4.A / §6 ONE IMPLEMENTATION): this method is now a CALLER of the ONE seam
+        ``send`` also calls, so a fix to the grant predicate reaches remember AND send. The default
+        project scope is resolved LAZILY (only on the ``scope is None`` leg) and passed IN, keeping
+        the lifted seam pure; calling it via the ``governed`` MODULE (not a bound import) is what
+        makes the sharing mutation-provable (ROUTING-IS-NOT-SHARING)."""
+        default = await self._default_project_scope() if scope is None else scope
+        return governed.resolve_write_scope(subject, scope, default=default)
 
     async def _default_project_scope(self) -> str:
         """The canonical PROJECT keep's ``keep:<id>`` scope, resolved by ONE indexed read of the

@@ -118,8 +118,10 @@ from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_ACTIVE,
     _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
+    AGENT_TABLE,
     KEEP_TABLE,
     MEMORY_TABLE,
+    MESSAGE_TABLE,
     PRINCIPAL_KEY_TABLE,
     PRINCIPAL_TABLE,
     generate_principal_ddl,
@@ -1089,25 +1091,10 @@ async def migrate_governed(
 
     if table == MEMORY_TABLE:
         return await _migrate_memory_scope(store, keep_store, principal_store)
-    if table == "message":
-        # §2.6 agent-first ORDER, fail-closed: a message row's owner_principal is read from
-        # ``sender.owner_principal`` (NONE for every un-migrated agent), so migrating messages
-        # before the ``agent`` table would silently land them member-invisible. At packet 63a only
-        # ``memory`` is migrated (memory is 63a's governed consumer); the agent/message migration
-        # lands in 63b, so this REFUSES rather than half-widen — naming the precondition.
-        return MigrateGovernedResult(
-            table=table,
-            scanned=0,
-            backfilled=0,
-            already_migrated=0,
-            refused=True,
-            reason=(
-                "cannot migrate `message` rows before the `agent` table is migrated — a message's "
-                "owner_principal is read from sender.owner_principal, NONE for every un-migrated "
-                "agent (§2.6 agent-first ORDER); run migrate-governed for `agent` first. The "
-                "agent/message migration lands in packet 63b."
-            ),
-        )
+    if table == AGENT_TABLE:
+        return await _migrate_agent_owner(store, principal_store)
+    if table == MESSAGE_TABLE:
+        return await _migrate_message_owner(store, keep_store, principal_store)
     return MigrateGovernedResult(
         table=table,
         scanned=0,
@@ -1115,10 +1102,30 @@ async def migrate_governed(
         already_migrated=0,
         refused=True,
         reason=(
-            f"migrate-governed does not support table {table!r} at packet 63a — only `memory` "
-            "(message/agent land 63b, brief lands 63c, task/finding land 64)"
+            f"migrate-governed does not support table {table!r} at packet 63b — only `memory`, "
+            "`agent` and `message` (brief lands 63c, task/finding land 64)"
         ),
     )
+
+
+async def resolve_operator_principal(principal_store: PrincipalStore) -> Principal | None:
+    """THE operator principal, or ``None`` on ambiguity (packet 63b-ii-a, ruling §4.C / design §2.1).
+
+    The single-principal fleet's ONE principal, or its single admin; ``None`` when neither disambiguates
+    (0 principals, or ≥2 principals without exactly one admin). ONE IMPLEMENTATION all three governed
+    migrate legs call (the #102 clone-chain class: the ambiguity rule lives ONCE, so a fix reaches
+    memory AND agent AND message — proven by the value-mutation route pin). It answers "who keeps the
+    canonical project keep" (memory / message scope backfill) and "who owns a legacy agent" (agent
+    owner backfill). Ambiguity is a REFUSAL at each caller — a leg turns ``None`` into a teaching
+    :class:`~loremaster.governed.MigrateGovernedResult` ``refused``, NEVER a fabricated guess.
+    """
+    principals = await principal_store.list()
+    admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+    if len(admins) == 1:
+        return admins[0]
+    if len(principals) == 1:
+        return principals[0]
+    return None
 
 
 async def _migrate_memory_scope(
@@ -1138,15 +1145,13 @@ async def _migrate_memory_scope(
 
     from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
 
-    # Resolve THE operator principal (the project keep's keeper): the single-principal fleet's one
-    # principal, or its single admin. Ambiguity is a REFUSAL, never a guess (§2.1 hard rule).
-    principals = await principal_store.list()
-    admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
-    if len(admins) == 1:
-        operator = admins[0]
-    elif len(principals) == 1:
-        operator = principals[0]
-    else:
+    # Resolve THE operator principal (the project keep's keeper) through the ONE shared helper
+    # (ruling §4.C / §6 ONE IMPLEMENTATION — memory AND agent AND message route through it, proven by
+    # the value-mutation route pin). Ambiguity is a REFUSAL, never a guess (§2.1 hard rule).
+    operator = await resolve_operator_principal(principal_store)
+    if operator is None:
+        principals = await principal_store.list()
+        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
         return MigrateGovernedResult(
             table=MEMORY_TABLE,
             scanned=0,
@@ -1229,6 +1234,197 @@ async def _scope_count(store: StoreHandle, table: str, *, none: bool) -> int:
     if isinstance(result, list) and result and isinstance(result[0], dict):
         return int(result[0].get("count", 0) or 0)
     return 0
+
+
+async def _owner_count(store: StoreHandle, table: str, *, none: bool) -> int:
+    """Count the rows of ``table`` whose ``owner_principal`` IS (``none=True``) / IS NOT NONE,
+    driver-routed (packet 63b-ii-a §4.C). The owner twin of :func:`_scope_count`: the agent leg
+    counts NONE-owner agents to backfill, and the message leg reads it on the ``agent`` table for the
+    §2.6 agent-first precondition. A ``count() … GROUP ALL`` over an empty set returns no row, so an
+    absent count reads 0.
+    """
+    result = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed owner count",
+        label="governed.owner_count.rejected",
+        statement=(
+            f"SELECT count() FROM {table} WHERE owner_principal IS "
+            f"{'NONE' if none else 'NOT NONE'} GROUP ALL"
+        ),
+        params={},
+        logger=logger,
+    )
+    if isinstance(result, list) and result and isinstance(result[0], dict):
+        return int(result[0].get("count", 0) or 0)
+    return 0
+
+
+async def _migrate_agent_owner(
+    store: StoreHandle,
+    principal_store: PrincipalStore,
+) -> MigrateGovernedResult:
+    """Backfill every NONE-owner ``agent`` row's ``owner_principal`` to THE operator (§4.C / §2.1).
+
+    OWNED-BY-THE-OPERATOR: the pre-cutover local fleet IS the operator's principal (packet 62 Fork
+    2 — no sentinel), so a legacy ownerless agent is backfilled to the ONE operator principal
+    resolved by the shared :func:`resolve_operator_principal`; multi-principal ambiguity is a
+    REFUSAL, never a guess. Touches ONLY NONE-owner agents (an already-owned agent is left intact —
+    ∀ NONE-owner, never a re-stamp); idempotent (a re-run backfills 0). NOT member-reachable
+    (admin-CLI-only), so the write attributes at the F5 seam via the NAMED
+    ``governed_exempt("migrate-governed")`` frame; all store access is driver-routed (R4). The owner
+    link is set store-side via ``type::record`` (a bare id string does not coerce to a
+    ``record<principal>``, store-ref §2).
+    """
+    from loremaster.governed import MigrateGovernedResult, governed_exempt
+
+    operator = await resolve_operator_principal(principal_store)
+    if operator is None:
+        principals = await principal_store.list()
+        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+        return MigrateGovernedResult(
+            table=AGENT_TABLE,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=True,
+            reason=(
+                f"cannot resolve THE operator principal to own the fleet's agents "
+                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
+                "operator principal (or a single admin) before migrating"
+            ),
+        )
+
+    unmigrated = await _owner_count(store, AGENT_TABLE, none=True)
+    already = await _owner_count(store, AGENT_TABLE, none=False)
+    if unmigrated == 0:
+        return MigrateGovernedResult(
+            table=AGENT_TABLE,
+            scanned=unmigrated + already,
+            backfilled=0,
+            already_migrated=already,
+            refused=False,
+        )
+    operator_id = operator.id.partition(":")[2] or operator.id
+    backfill_statement = (
+        f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner) "
+        "WHERE owner_principal IS NONE"
+    )
+    with governed_exempt("migrate-governed", statement=backfill_statement):
+        await run_query(
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+            noun="governed agent-owner backfill",
+            label="governed.agent_backfill.rejected",
+            statement=backfill_statement,
+            params={"owner": operator_id},
+            logger=logger,
+        )
+    return MigrateGovernedResult(
+        table=AGENT_TABLE,
+        scanned=unmigrated + already,
+        backfilled=unmigrated,
+        already_migrated=already,
+        refused=False,
+    )
+
+
+async def _migrate_message_owner(
+    store: StoreHandle,
+    keep_store: KeepStore,
+    principal_store: PrincipalStore,
+) -> MigrateGovernedResult:
+    """Backfill every legacy ``message`` row's owner from its SENDER + scope to the project keep
+    (§4.C / §2.6). OWNED-BY-LINK: ``owner_agent = sender``, ``owner_principal =
+    sender.owner_principal``, ``scope = keep:<project>``.
+
+    §2.6 the checked agent-first ORDER, fail-closed: a message's owner_principal is read from
+    ``sender.owner_principal``, NONE for every un-migrated agent, so this REFUSES (naming the
+    precondition) while ANY ``agent.owner_principal IS NONE`` (count>0, never only count==1) — never
+    a silent half-widening. Once agents are migrated it resolves the project keep's keeper through
+    the shared :func:`resolve_operator_principal` (ambiguity is a REFUSAL, §2.1), mints/gets the
+    canonical project keep (idempotent CAS, SF-63-4), and backfills ONLY NONE-owner messages (∀
+    NONE-owner, never a re-stamp); idempotent. NOT member-reachable, so the write attributes at the
+    F5 seam via the NAMED ``governed_exempt("migrate-governed")`` frame; store access is
+    driver-routed (R4).
+    """
+    from lorerunes.pdp import keep_scope
+
+    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
+
+    # §2.6 agent-first: refuse while ANY agent is still NONE-owner (count>0, never only count==1).
+    unmigrated_agents = await _owner_count(store, AGENT_TABLE, none=True)
+    if unmigrated_agents > 0:
+        return MigrateGovernedResult(
+            table=MESSAGE_TABLE,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=True,
+            reason=(
+                f"cannot migrate `message` rows before the `agent` table is migrated "
+                f"({unmigrated_agents} NONE-owner agent(s) remain) — a message's owner_principal is "
+                "read from sender.owner_principal, NONE for every un-migrated agent (§2.6 agent-first "
+                "ORDER); run migrate-governed for `agent` first"
+            ),
+        )
+
+    operator = await resolve_operator_principal(principal_store)
+    if operator is None:
+        principals = await principal_store.list()
+        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+        return MigrateGovernedResult(
+            table=MESSAGE_TABLE,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=True,
+            reason=(
+                f"cannot resolve THE operator principal to keep the project keep "
+                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
+                "operator principal (or a single admin) before migrating"
+            ),
+        )
+
+    project_keep = await keep_store.get_or_create_keyed(
+        key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
+    )
+    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
+
+    unmigrated = await _owner_count(store, MESSAGE_TABLE, none=True)
+    already = await _owner_count(store, MESSAGE_TABLE, none=False)
+    if unmigrated == 0:
+        return MigrateGovernedResult(
+            table=MESSAGE_TABLE,
+            scanned=unmigrated + already,
+            backfilled=0,
+            already_migrated=already,
+            refused=False,
+        )
+    backfill_statement = (
+        f"UPDATE {MESSAGE_TABLE} SET owner_agent = sender, "
+        "owner_principal = sender.owner_principal, scope = $scope WHERE owner_principal IS NONE"
+    )
+    with governed_exempt("migrate-governed", statement=backfill_statement):
+        await run_query(
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+            noun="governed message-owner backfill",
+            label="governed.message_backfill.rejected",
+            statement=backfill_statement,
+            params={"scope": project_scope},
+            logger=logger,
+        )
+    return MigrateGovernedResult(
+        table=MESSAGE_TABLE,
+        scanned=unmigrated + already,
+        backfilled=unmigrated,
+        already_migrated=already,
+        refused=False,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

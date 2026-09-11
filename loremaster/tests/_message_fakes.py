@@ -198,7 +198,17 @@ class FakeMessageLedger:
         task_id: str | None = None,
         refs: Sequence[str] | None = None,
         set_status: str | None = None,
+        owner_principal: str | None = None,
+        owner_agent: str | None = None,
+        scope: str | None = None,
     ) -> MessageSendResult:
+        # packet 63b-ii-a: the enforced ``send`` handler threads the resolved Subject's owner pair +
+        # session-keep scope into the CREATE CONTENT. The fake ACCEPTS them (so the dispatcher's
+        # credentialed send call is well-formed) but does not store them: the ``Message`` READ model
+        # carries no owner/scope columns (like production's projection, store-ref §2), and the live
+        # owner-stamp + F5 classification are pinned against the REAL store in the ii-a contract
+        # files, never this fake.
+        _ = (owner_principal, owner_agent, scope)
         await asyncio.sleep(0)
         if grade not in MESSAGE_GRADES:
             # #190 parity: production contains the caller value through

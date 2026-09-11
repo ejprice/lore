@@ -59,6 +59,8 @@ from _comms_fakes import (
     FakeAgentRegistry,
     FakeBriefDatabase,
     FakeBriefLedger,
+    FakeKeepStore,
+    FakePrincipalStore,
 )
 from loremaster.briefs import Brief, BriefBehindEntry, BriefPublishResult
 from loremaster.render import render_attributed
@@ -104,7 +106,9 @@ def _harness() -> tuple[Any, FakeAgentRegistry, FakeBriefLedger]:
     """A minimal ``AppContext``-shaped double over the two shared fake DBs —
     the exact attributes ``AppContext.comms`` touches, nothing else (the
     documented isolation strategy test_comms_tool.py's ``_harness`` uses)."""
-    registry = FakeAgentRegistry(db=FakeAgentDatabase())
+    principal_store = FakePrincipalStore()
+    keep_store = FakeKeepStore(principal_store=principal_store)
+    registry = FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store)
     ledger = FakeBriefLedger(db=FakeBriefDatabase())
 
     async def _no_awaiting_answer(*, agent_id: str) -> None:
@@ -120,6 +124,12 @@ def _harness() -> tuple[Any, FakeAgentRegistry, FakeBriefLedger]:
         agent_registry=registry,
         brief_ledger=ledger,
         message_ledger=SimpleNamespace(awaiting_answer=_no_awaiting_answer),
+        # packet 63b-ii-a: the SF-63-1 register + enforced send read the governed identity stores.
+        # These register/heartbeat/fleet/publish render pins drive TOKENLESS (no ambient token), so
+        # register takes the ownerless reading-α path and never dereferences the stores' contents —
+        # they need only be PRESENT on the double.
+        _principal_store=principal_store,
+        _keep_store=keep_store,
         config=SimpleNamespace(
             comms=SimpleNamespace(stale_heartbeat_s=600, fleet_limit=20, brief_body_warn_chars=4000)
         ),

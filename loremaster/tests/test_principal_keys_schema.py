@@ -530,6 +530,15 @@ class TestTheCascadeForwardScopeIsPinned:
             # principal-delete against a store holding an owned memory row (63b/64 wires it —
             # cascade the owned rows, or refuse the delete, never a silent dangle).
             ("owner_principal", surreal_schema.MEMORY_TABLE),  # LIVE-DEPENDENCY (delete-disposition DEFERRED)
+            # packet 63b-ii-a §4.F: the SECOND governed-ROW owner_principal link — ``message`` joins
+            # the governed population when ``_message_statements`` wires ``_governed_field_specs``.
+            # Same class as ``memory`` above: ``option<record<principal>>`` on a POPULATED table (NONE
+            # for a legacy/UNOWNED message), CLASSIFIED **LIVE-DEPENDENCY** (a governed message's owner
+            # must not silently point at a ghost). ⚠ DELETE-DISPOSITION DEFERRED, exactly as memory's:
+            # ``PrincipalStore.delete``'s cascade/refuse for message-row owners is unspecified and LATENT
+            # at 63b (commit-only, the single-principal dogfood fleet deletes no principal). Re-open
+            # trigger: the first principal-delete against a store holding an owned message row.
+            ("owner_principal", surreal_schema.MESSAGE_TABLE),  # LIVE-DEPENDENCY (delete DEFERRED)
         }
         assert found == expected, (
             f"the set of record<principal> links changed — cascade forward-scope PIN THE "

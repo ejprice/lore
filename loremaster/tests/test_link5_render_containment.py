@@ -35,6 +35,7 @@ import pathlib
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -2317,6 +2318,29 @@ def _probes() -> list[RenderProbe]:
                 _forge(Agent, forge=g),
                 re_registered=True, registered_age_s=1, brief=_forge(Brief, forge=g), brief_age_s=1,
             ),
+            # packet 63b-ii-a governed additions — the SF-63-1 keep line (minted + joined), the
+            # reading-α OWNERLESS bound, and the R7 one-time credential. Each is a new served branch,
+            # so branch reach stays a CHECKED variable (INSTRUMENT 0). session_keep exposes only .key.
+            _served(
+                "_render_comms_register",
+                _forge(Agent, forge=g),
+                re_registered=False, registered_age_s=1, brief=None, brief_age_s=0,
+                capability="agent-x:probe-secret-token-abcdef0123456789",
+                session_keep=SimpleNamespace(key="session:probe"), kept_by_me=True,
+            ),
+            _served(
+                "_render_comms_register",
+                _forge(Agent, forge=g),
+                re_registered=False, registered_age_s=1, brief=None, brief_age_s=0,
+                session_keep=SimpleNamespace(key="session:probe"), kept_by_me=False,
+            ),
+            _served(
+                "_render_comms_register",
+                _forge(Agent, forge=g),
+                re_registered=False, registered_age_s=1, brief=None, brief_age_s=0,
+                ownerless=True,
+                capability="agent-x:probe-secret-token-abcdef0123456789",
+            ),
         ]),
         P("_render_comms_heartbeat", lambda g: [
             _served(
@@ -2857,6 +2881,11 @@ _RENDER_OUT: dict[str, tuple[str, str]] = {
     # -- store_backed (store-free over-drive cannot reach; partition + coherence backstop) --
     "_comms_resolve_recipients": ("store_backed", "a store-free harness can drive it"),
     "_comms_send": ("store_backed", "a store-free harness can drive it"),
+    # packet 63b-ii-a: _comms_register gained SF-63-1 GovernedDenied teaching text that interpolates
+    # the session name (the foreign-gate deny + the keep-store-missing guard) — an ERROR surface, not
+    # a served render row, and store-backed (it reads the registry/principal/keep stores). Same class
+    # as _comms_send; the served register RENDER is _render_comms_register (driven).
+    "_comms_register": ("store_backed", "a store-free harness can drive it"),
     "_resolve_changed_modules": ("store_backed", "a store-free harness can drive it"),
     # -- index_metadata: renders index-snapshot fields (files/chunks counts, git ref, snapshot
     #    id, created_at) — index-derived, never a caller PARAM --

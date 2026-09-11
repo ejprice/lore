@@ -302,6 +302,26 @@ _PROMISE_REGISTRY: dict[str, str] = {
         "directives owing an ack — the real follow-up, unlike drain's 'peek=true' re-run which "
         "await cannot honour (no peek param)"
     ),
+    # --- packet 63b-ii-a: register's governed additions (ruling §3.2 α / §3.4 R7) ------------
+    "⚠ registered OWNERLESS (no transport credential presented) — this agent holds "
+    "no owning principal, so the capability-required verbs ({verbs}) DENY for it; "
+    "present the fleet credential and register a FRESH name, or run `lore-adm "
+    "migrate-governed --table agent` for a legacy row (63c may deny an ownerless "
+    "register outright)": (
+        "reading-α OWNERLESS bound (ruling §3.2) — emitted IFF the register resolved NO admitted "
+        "principal (a tokenless register). §9.7 litmus: a reader who presents the fleet credential "
+        "and registers a fresh name, or runs `lore-adm migrate-governed --table agent`, DOES obtain "
+        "an owned identity — the two real remedies. The {verbs} it names are DERIVED from "
+        "_COMMS_ACTIONS' requires_capability set (INSTRUMENT 0 — a new True verb joins "
+        "automatically), so the deny-set it teaches cannot drift from what the handlers enforce"
+    ),
+    "your one-time capability — present it on every governed call (shown ONCE): "
+    "{cap}": (
+        "R7 one-time capability (ruling §3.4) — emitted IFF this was a FIRST register (the registry "
+        "mints the <name>:<secret> ONCE; a re-register returns None). §9.7 litmus: a reader who "
+        "presents this capability on every governed call IS authorised (send resolves identity from "
+        "it via stamp_owner); it is served here and NOWHERE else (the §F3a no-leak invariant)"
+    ),
 }
 
 # --------------------------------------------------------------------------- #
@@ -485,6 +505,15 @@ _PROMISE_FREE: dict[str, str] = {
     ", ": "join separator",
     " ": "join separator",
     " · ": "join separator",
+    # --- packet 63b-ii-a: register's SF-63-1 session-keep lines (ruling §3.1 step 6) ---------
+    "session keep {key} — minted (you keep it)": (
+        "status report (SF-63-1 session-keep line, keeper variant) — reports that THIS registrant's "
+        "principal keeps the session keep; names no call, promises no runtime mechanism"
+    ),
+    "session keep {key} — joined (kept by another principal)": (
+        "status report (SF-63-1 session-keep line, householded variant) — reports that the "
+        "registrant joined a session keep another principal keeps; names no call, promises nothing"
+    ),
 }
 
 # CLOSED by packet 02a. The residual once documented here — a promise smuggled through
@@ -850,6 +879,24 @@ def _render_register(*, brief: Brief | None) -> str:
     return str(
         AppContext._render_comms_register(
             _agent(), re_registered=False, registered_age_s=5, brief=brief, brief_age_s=10
+        )
+    )
+
+
+def _render_register_governed(*, ownerless: bool = False, capability: str | None = None) -> str:
+    """Drive the REAL register render with the packet-63b-ii-a governed inputs — the reading-α
+    OWNERLESS bound (ruling §3.2) and the R7 one-time capability (§3.4). ``brief=None`` so the only
+    co-emitted brief-section line is the bootstrap ``no 'project' brief`` line, a STRUCTURAL
+    co-emission the register render cannot null out (declared in _MARKER_CO_EMISSION_EXEMPTIONS)."""
+    return str(
+        AppContext._render_comms_register(
+            _agent(),
+            re_registered=False,
+            registered_age_s=5,
+            brief=None,
+            brief_age_s=10,
+            ownerless=ownerless,
+            capability=capability,
         )
     )
 
@@ -1832,6 +1879,31 @@ _PROOF_LIST: list[PromiseProof] = [
         "without stamping; a drain marks them seen and lists any directives to ack",
         render_emit=lambda: _render_await(entries=[_p03_entry(seq=61)], total_pending=1),
         render_no_emit=_render_await_empty,
+    ),
+    # --- packet 63b-ii-a: register's governed additions (ruling §3.2 α / §3.4 R7) -----------
+    # EMIT: a register that resolved NO principal (ownerless=True) carries the α bound line.
+    # NO-EMIT: a credentialed register (ownerless=False) does not. The bootstrap no-brief line
+    # co-occurs (brief=None) — a STRUCTURAL co-emission declared in the exemptions.
+    PromiseProof(
+        literal="⚠ registered OWNERLESS (no transport credential presented) — this agent holds "
+        "no owning principal, so the capability-required verbs ({verbs}) DENY for it; "
+        "present the fleet credential and register a FRESH name, or run `lore-adm "
+        "migrate-governed --table agent` for a legacy row (63c may deny an ownerless "
+        "register outright)",
+        marker="registered OWNERLESS (no transport credential presented)",
+        render_emit=lambda: _render_register_governed(ownerless=True),
+        render_no_emit=lambda: _render_register_governed(ownerless=False),
+    ),
+    # EMIT: a FIRST register (capability minted) carries the one-time credential line.
+    # NO-EMIT: a re-register (capability=None) does not.
+    PromiseProof(
+        literal="your one-time capability — present it on every governed call (shown ONCE): "
+        "{cap}",
+        marker=f"your one-time capability {_EM_DASH} present it on every governed call (shown ONCE):",
+        render_emit=lambda: _render_register_governed(
+            capability="fixer-b:cap-secret-token-abcdef0123456789"
+        ),
+        render_no_emit=lambda: _render_register_governed(capability=None),
     ),
 ]
 
@@ -2899,6 +2971,10 @@ def _proof_literal_containing(fragment: str) -> str:
 
 _REGISTER_ACK_LINE = _proof_literal_containing("ack recorded (via register)")
 _REGISTER_ECHO_LINE = _proof_literal_containing("echo in your report")
+# packet 63b-ii-a: register's governed additions and the bootstrap no-brief line they co-occur with.
+_REGISTER_NO_BRIEF_LINE = _proof_literal_containing("no 'project' brief published yet")
+_REGISTER_ALPHA_LINE = _proof_literal_containing("registered OWNERLESS")
+_REGISTER_CREDENTIAL_LINE = _proof_literal_containing("your one-time capability")
 
 # The ONLY sanctioned co-emission: both lines are rendered by the SAME
 # ``_render_comms_register`` call under ONE structural gate (``brief is not None``),
@@ -2929,6 +3005,19 @@ _MARKER_CO_EMISSION_EXEMPTIONS: dict[tuple[str, str], str] = {
     ),
     (_REGISTER_ECHO_LINE, _REGISTER_ACK_LINE): (
         "the mirror of the above — same render, same single gate"
+    ),
+    (_REGISTER_NO_BRIEF_LINE, _REGISTER_ALPHA_LINE): (
+        "STRUCTURAL, not a fixture collision — the register render ALWAYS emits a brief-section "
+        "line (brief=None → the bootstrap no-brief line; brief present → the ack/echo lines), so a "
+        "new register-render proof cannot avoid co-emitting one. The α proof drives brief=None, so "
+        "the no-brief marker necessarily appears in its emit. The α line is still gated "
+        "independently by the ownerless=False NO-EMIT leg; the no-brief line by its own brief=None "
+        "predicate — no fixture value can make the register render emit NEITHER brief-section line"
+    ),
+    (_REGISTER_NO_BRIEF_LINE, _REGISTER_CREDENTIAL_LINE): (
+        "STRUCTURAL — same reason as the α pair above: the R7 credential proof drives brief=None, "
+        "so the bootstrap no-brief line co-occurs. The credential line is gated independently by "
+        "the capability=None NO-EMIT leg; the no-brief line by its brief=None predicate"
     ),
 }
 

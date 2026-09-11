@@ -92,6 +92,12 @@ class _RegisterCtx:
         self.agent_registry = AgentRegistry(**coord)
         self.task_ledger = TaskLedger(**coord)
         self.brief_ledger = BriefLedger(**coord)
+        # packet 63b-ii-a: ``_comms_register`` reads the governed identity stores. These holder-notice
+        # tests drive a TOKENLESS register (no ambient token patched → ``get_access_token()`` is None),
+        # which takes the ownerless reading-α path and never DEREFERENCES either store — they need only
+        # be PRESENT on the duck-typed context (``resolve_principal`` short-circuits before the lookup).
+        self._principal_store = None
+        self._keep_store = None
         # Fake config namespace exactly as the live comms harnesses do; the STALE
         # threshold is the mutable knob the ONE-IMPLEMENTATION proof perturbs.
         self.config = SimpleNamespace(

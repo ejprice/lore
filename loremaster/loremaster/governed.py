@@ -121,6 +121,61 @@ class LegacyMapping:
     disposition: str
 
 
+async def resolve_principal(access_token: Any, *, principal_store: Any) -> Any:
+    """Resolve the transport token's ADMITTED principal, or ``None`` (packet 63b-ii-a, ruling §3.1).
+
+    The token→admitted-principal derivation LIFTED out of :func:`resolve_subject` step (2) so BOTH
+    the send-owner (Q1, via ``resolve_subject``) and the keep-keeper (Q2, via
+    ``AppContext._comms_register``) share ONE derivation — the SAME admitted principal iff the same
+    token (ruling §3.3; #102 ONE IMPLEMENTATION, proven by mutation). Three legs:
+
+    * the token is ABSENT **or** carries no ``subject`` (``if not email`` — falsiness, so ``""`` and
+      ``None`` both take this leg) → return ``None`` at the SEAM, WITHOUT consulting the store (no
+      email to look up — the None-decision is not a downstream lookup; adversary3 §D-NULLTOKEN);
+    * a ``subject`` IS presented but ``principal_store.get_by_email`` admits none → raise
+      :class:`GovernedDenied` (a presented-but-unadmitted principal is a DENY, NEVER degraded to
+      ``None``/"ownerless");
+    * an admitted principal → return it.
+
+    The ``None`` policy differs per caller and is decided AT the call site: ``resolve_subject``
+    turns ``None`` into a ``GovernedDenied`` (a governed identity requires a principal), while
+    ``_comms_register`` turns it into reading α (an ownerless register, ruling §3.2).
+    """
+    email = getattr(access_token, "subject", None)
+    if not email:
+        return None
+    principal = await principal_store.get_by_email(email)
+    if principal is None:
+        raise GovernedDenied(
+            f"no principal is admitted for {email!r} — the transport token names an unknown "
+            "principal; a governed identity requires an admitted principal"
+        )
+    return principal
+
+
+def resolve_write_scope(subject: Subject, scope: str | None, *, default: str) -> str:
+    """Resolve a governed WRITE's scope through the ONE shared grant predicate (ruling §4.A / §6).
+
+    LIFTED out of ``LocalMemoryBackend._resolve_write_scope`` so ``remember`` (memory) and ``send``
+    (comms) share ONE grant rule, not a pattern each clones (ROUTING-IS-NOT-SHARING; proven by
+    mutation — perturb this seam and every caller's grant behaviour flips). PURE: the caller
+    resolves the ``default`` and passes it in (``send`` passes the session-keep scope EXPLICITLY, so
+    ``_grantable`` runs on every send; ``remember`` passes the canonical project scope only on the
+    None leg). An OMITTED scope (``None``) returns ``default``; an EXPLICIT scope is checked by the
+    SAME ``lorerunes.pdp._grantable`` predicate the SET_SCOPE action uses (the fixed scopes + the
+    caller's OWN keeps are grantable) — a keep the caller is NOT householded in DENIES with a
+    teaching :class:`GovernedDenied`, never a silent fallback to ``default``.
+    """
+    if scope is None:
+        return default
+    if not pdp._grantable(subject, scope):  # noqa: SLF001 - the ruled shared grant predicate
+        raise GovernedDenied(
+            f"scope {scope!r} is not grantable by {subject.principal_id}/{subject.agent_id} — "
+            "you are not householded in that keep; run `lore-adm add-household` to join it first"
+        )
+    return scope
+
+
 async def resolve_subject(
     access_token: Any,
     capability: Any,
@@ -152,20 +207,17 @@ async def resolve_subject(
             "(`lore_comms action=register`) so a governed call carries a verifiable identity"
         ) from error
 
-    # (2) the transport token's principal (its email IS access_token.subject). An unknown
-    # principal DENIES — a Subject is NEVER constructed with a guessed/empty principal (SEC-F3).
-    email = getattr(access_token, "subject", None)
-    if not email:
+    # (2) the transport token's principal, resolved through the ONE lifted seam ``resolve_principal``
+    # (ruling §3.1 / §3.3 — Q1 send-owner and Q2 keep-keeper share this derivation). A None result
+    # (token absent / carries no subject) DENIES here — a Subject is NEVER constructed with a
+    # guessed/empty principal (SEC-F3); a presented-but-unadmitted principal already raised inside.
+    principal = await resolve_principal(access_token, principal_store=principal_store)
+    if principal is None:
         raise GovernedDenied(
             "the transport token carries no principal subject — a governed identity requires an "
             "admitted principal (the token_verifier sets subject = principal.email)"
         )
-    principal = await principal_store.get_by_email(email)
-    if principal is None:
-        raise GovernedDenied(
-            f"no principal is admitted for {email!r} — the transport token names an unknown "
-            "principal; a governed identity requires an admitted principal"
-        )
+    email = principal.email
 
     # (3) the keeps the principal can currently see. A resolver failure (a wrong-instance / dead
     # keep store) fails CLOSED — never a Subject built with a SHORTER keep set (which would

@@ -1735,6 +1735,15 @@ def _message_statements() -> list[str]:
         _define_field(MESSAGE_TABLE, name, type_expr, constraint=constraint)
         for name, type_expr, constraint in _MESSAGE_FIELD_SPECS
     ]
+    # packet 63b §4.F: the three GOVERNED columns on ``message`` via the ONE shared emitter (never
+    # re-declared per table — ROUTING-IS-NOT-SHARING; mutation-proven by the schema module's emitter
+    # pins). ``message`` is a POPULATED table (production carries message rows the day 03b deploys),
+    # so option<> with NO ASSERT/DEFAULT (§1.4). This is what makes ``message`` — and therefore its
+    # ``to`` relation endpoint — join the derived governed-population set ({memory, message, to}).
+    statements += [
+        _define_field(MESSAGE_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _governed_field_specs()
+    ]
     statements.append(_define_sequence(MESSAGE_SEQUENCE_NAME))
     # The two R3(1) hot-path indexes, shipped INSIDE the free window (03a-2 delta
     # row 1): production carries ZERO ``message`` rows until packet 03b deploys,
@@ -1755,6 +1764,9 @@ def _message_statements() -> list[str]:
             MESSAGE_TABLE, f"{MESSAGE_TABLE}_sender_question", ("sender", "question")
         )
     )
+    # packet 63b §4.F: the two governed READ indexes (scope, owner_principal) on ``message`` via the
+    # ONE shared emitter (owner_agent deliberately NOT indexed — #413 leading-column-only, §4.1).
+    statements += _governed_index_statements(MESSAGE_TABLE)
     statements.append(
         _define_relation_table(TO_RELATION, MESSAGE_TABLE, AGENT_TABLE, enforced=True)
     )

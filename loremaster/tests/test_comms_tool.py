@@ -34,16 +34,20 @@ import inspect
 import re
 import textwrap
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any, cast, get_args
 
+import loremaster.server as server_mod
 import pytest
 from _comms_fakes import (
     FakeAgentDatabase,
     FakeAgentRegistry,
     FakeBriefDatabase,
     FakeBriefLedger,
+    FakeKeepStore,
+    FakePrincipalStore,
 )
+from _governed_contract import access_token
 from loremaster.agents import (
     AGENT_NAME_PATTERN,
     Agent,
@@ -249,6 +253,8 @@ def _harness(
     agent_registry: FakeAgentRegistry | None = None,
     brief_ledger: FakeBriefLedger | None = None,
     message_ledger: Any = None,
+    principal_store: FakePrincipalStore | None = None,
+    keep_store: FakeKeepStore | None = None,
     stale_heartbeat_s: int = 600,
     fleet_limit: int = 20,
     drain_limit: int = 20,
@@ -268,14 +274,24 @@ def _harness(
     ledgers) is flagged as an OUT-of-scope decision point in the report, not
     silently assumed covered.
     """
-    return SimpleNamespace(
+    # packet 63b-ii-a: the governed identity substrate the enforced ``send`` + SF-63-1 ``register``
+    # now read (``_principal_store`` / ``_keep_store``). A tokenless register short-circuits before
+    # either is touched (reading α), so an UNCREDENTIALED test needs them present but never exercises
+    # them; a credentialed-send test seeds a principal + drives ``get_access_token`` (see
+    # ``_credentialed_ctx``). The registry is wired to the SAME principal store so its
+    # ``_verify_capability_owner`` can resolve an owner id to its email for the binding check.
+    principal_store = principal_store if principal_store is not None else FakePrincipalStore()
+    keep_store = keep_store if keep_store is not None else FakeKeepStore(principal_store=principal_store)
+    harness = SimpleNamespace(
         agent_registry=agent_registry
         if agent_registry is not None
-        else FakeAgentRegistry(db=FakeAgentDatabase()),
+        else FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store),
         brief_ledger=brief_ledger if brief_ledger is not None else FakeBriefLedger(db=FakeBriefDatabase()),
         message_ledger=message_ledger
         if message_ledger is not None
         else _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase()),
+        _principal_store=principal_store,
+        _keep_store=keep_store,
         config=SimpleNamespace(
             comms=SimpleNamespace(
                 stale_heartbeat_s=stale_heartbeat_s,
@@ -285,6 +301,113 @@ def _harness(
             )
         ),
     )
+    # packet 63b-ii-a: the enforced ``send`` calls ``self._resolve_subject``. Bind the REAL
+    # composition root onto the double (it reads only ``get_access_token()`` + the three attrs the
+    # double already carries), so identity resolution is the real seam, never a fake copy that could
+    # drift from it — ROUTING-IS-NOT-SHARING.
+    harness._resolve_subject = MethodType(AppContext._resolve_subject, harness)  # noqa: SLF001
+    return harness
+
+
+# --------------------------------------------------------------------------- #
+# packet 63b-ii-a — the CREDENTIALED-SEND substrate. ``send`` now enforces identity
+# (an UNCONDITIONAL ``_resolve_subject`` + the agent≡subject check + the session-keep
+# scope grant), so a send driven through the dispatcher needs: a resolvable ambient
+# transport token, the sending agent OWNED by that token's principal + carrying a
+# verifiable capability, and the sender householded in the session keep. This shared
+# substrate credentials the SENDER agents the send-family helpers register, so the
+# tests keep asserting their SEND MECHANICS (recipient sets, receipts, drain/ack,
+# waiting line) rather than re-testing identity (which the 63b-ii-a contract files own).
+# --------------------------------------------------------------------------- #
+
+#: The ambient transport token the patched ``get_access_token`` reads (email → subject).
+#: An autouse fixture resets it to tokenless per test; a credentialed send sets it.
+_ACCESS_HOLDER: dict[str, str | None] = {"email": None}
+#: (session, agent_name) → the agent's one-time capability, captured at credentialed register.
+_CAPS: dict[tuple[str, str], str] = {}
+
+
+@pytest.fixture(autouse=True)
+def _governed_ambient_token(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Patch ``loremaster.server.get_access_token`` to read :data:`_ACCESS_HOLDER` (the wire_world
+    idiom), tokenless by default so a register takes the ownerless reading-α path and a
+    non-credentialed test is byte-unchanged. A credentialed-send test sets the holder via
+    :func:`_credential_agent`. Reset per test so nothing leaks across cases."""
+    _ACCESS_HOLDER["email"] = None
+    _CAPS.clear()
+
+    def _get_access_token() -> Any:
+        email = _ACCESS_HOLDER["email"]
+        return access_token(subject=email if email is not None else "")
+
+    monkeypatch.setattr(server_mod, "get_access_token", _get_access_token)
+    return None
+
+
+async def _credential_agent(
+    harness: Any, *, name: str, session: str = "wave7", role: str = "builder"
+) -> str:
+    """Register ``name`` CREDENTIALED (owned by its own seeded principal) and household it in the
+    session keep, so it can act as a governed sender. Returns its one-time capability (also stored
+    in :data:`_CAPS`). Idempotent on the principal + keep; the session keep is minted by the first
+    credentialed agent and joined by the rest (SF-63-1 / 60 Fork D)."""
+    email = f"{name}@example.com"
+    principal_store = harness._principal_store  # noqa: SLF001
+    keep_store = harness._keep_store  # noqa: SLF001
+    principal = await principal_store.get_by_email(email)
+    if principal is None:
+        principal = await principal_store.create(email=email, role="member")
+    bare = principal.id.split(":", 1)[-1]
+    result = await harness.agent_registry.register(
+        name, session=session, role=role, owner_principal_id=bare
+    )
+    if result.capability is not None:
+        _CAPS[(session, name)] = result.capability
+    keep = await keep_store.get_or_create_keyed(
+        key=f"session:{session}", type="session", keeper_email=email, name=session
+    )
+    await keep_store.add_household_member(keep_id=keep.id, member_email=email)
+    return _CAPS[(session, name)]
+
+
+async def _send(harness: Any, *, sender: str = "lead", session: str = "wave7", **kwargs: Any) -> Any:
+    """Drive a CREDENTIALED ``send`` through the REAL dispatcher (packet 63b-ii-a): credential the
+    ``sender`` if the setup did not already, set the ambient transport token to its principal, and
+    present its capability. Returns the send render. The shared credentialed-send seam every
+    send-family test drives, so the tests exercise SEND MECHANICS while identity enforcement is owned
+    by the ii-a contract files."""
+    cap = _CAPS.get((session, sender))
+    if cap is None:
+        cap = await _credential_agent(harness, name=sender, session=session)
+    _ACCESS_HOLDER["email"] = f"{sender}@example.com"
+    return await AppContext.comms(
+        harness, action="send", agent=sender, session=session, capability=cap, **kwargs
+    )
+
+
+async def _credentialed_harness(
+    *names: str, session: str = "wave7", **harness_kwargs: Any
+) -> tuple[Any, Any]:
+    """A dispatcher double with a principal-store-WIRED registry and each of ``names`` registered
+    CREDENTIALED (owned + householded) and message-ledger-registered — the packet-63b-ii-a
+    replacement for the ``db=…; registry=FakeAgentRegistry(db=db); register(name)`` ownerless idiom
+    the send-family tests used before ``send`` enforced identity. Returns ``(harness, message_ledger)``."""
+    principal_store = FakePrincipalStore()
+    keep_store = FakeKeepStore(principal_store=principal_store)
+    registry = FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store)
+    message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
+    harness = _harness(
+        agent_registry=registry,
+        message_ledger=message_ledger,
+        principal_store=principal_store,
+        keep_store=keep_store,
+        **harness_kwargs,
+    )
+    for name in names:
+        await _credential_agent(harness, name=name, session=session)
+        agent = await registry.get_agent(name, session=session)
+        message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+    return harness, message_ledger
 
 
 async def _register(
@@ -4364,11 +4487,15 @@ class TestNewActionSpecs:
         # design's tool table): a sender may park itself in the same call — the
         # one-call operator question. Per ruling 9 it does NOT store a waiting
         # state; it MARKS the message as the question the derivation reads.
+        # packet 63b-ii-a §4.D: ``capability`` joins the send param surface — the message-family
+        # WRITE verb resolves identity from a verified capability, not merely from ``agent=``.
         assert spec.params == frozenset(
-            {"to", "body", "grade", "thread", "task_id", "refs", "set_status"}
+            {"to", "body", "grade", "thread", "task_id", "refs", "set_status", "capability"}
         )
         assert spec.required == frozenset({"body", "grade"})
         assert spec.requires_registration is True
+        # §4 / RULING §4 — send is the one verb whose requires_capability flips TRUE in ii-a.
+        assert spec.requires_capability is True
 
     def test_drain_params(self) -> None:
         spec = _COMMS_ACTIONS["drain"]
@@ -4415,10 +4542,19 @@ class TestBroadcastFanOut:
 
     @staticmethod
     def _fleet() -> tuple[Any, Any]:
-        db = FakeAgentDatabase()
-        registry = FakeAgentRegistry(db=db)
+        principal_store = FakePrincipalStore()
+        keep_store = FakeKeepStore(principal_store=principal_store)
+        registry = FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store)
         message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
-        return _harness(agent_registry=registry, message_ledger=message_ledger), message_ledger
+        return (
+            _harness(
+                agent_registry=registry,
+                message_ledger=message_ledger,
+                principal_store=principal_store,
+                keep_store=keep_store,
+            ),
+            message_ledger,
+        )
 
     @staticmethod
     async def _populate(harness: Any, message_ledger: Any) -> None:
@@ -4431,7 +4567,9 @@ class TestBroadcastFanOut:
             ("retired-e", "wave7", "retired"),
             ("other-f", "wave9", "active"),  # the CROSS-SESSION control
         ):
-            await registry.register(name, session=session, role="builder")
+            # packet 63b-ii-a: credentialed so the SENDER ("lead") can drive the enforced send;
+            # recipients being owned too is harmless to recipient resolution.
+            await _credential_agent(harness, name=name, session=session)
             if status != "active":
                 await registry.touch(name, session=session, status=status)
             agent = await registry.get_agent(name, session=session)
@@ -4440,6 +4578,7 @@ class TestBroadcastFanOut:
     async def _broadcast_recipients(self) -> list[str]:
         harness, message_ledger = self._fleet()
         await self._populate(harness, message_ledger)
+        _ACCESS_HOLDER["email"] = "lead@example.com"
         await AppContext.comms(
             harness,
             action="send",
@@ -4447,6 +4586,7 @@ class TestBroadcastFanOut:
             session="wave7",
             body="all hands: the gate is red",
             grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+            capability=_CAPS[("wave7", "lead")],
         )
         [message] = list(message_ledger.db.messages.values())
         return sorted(
@@ -4495,13 +4635,17 @@ class TestBroadcastFanOut:
         registry: FakeAgentRegistry = harness.agent_registry
         names = ["lead"] + [f"agent-{index:02d}" for index in range(30)]
         for name in names:
-            await registry.register(name, session="wave7", role="builder")
+            # the SENDER is credentialed (it drives the enforced send); the 30 recipients stay
+            # ownerless — recipient resolution does not require an owner.
+            if name == "lead":
+                await _credential_agent(harness, name=name, session="wave7")
+            else:
+                await registry.register(name, session="wave7", role="builder")
             agent = await registry.get_agent(name, session="wave7")
             message_ledger.register_agent(agent_id=agent.id, name=agent.name)
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             body="all hands",
             grade=_msg().MESSAGE_GRADE_SIGNAL,
@@ -4523,10 +4667,9 @@ class TestBroadcastFanOut:
         """
         harness, message_ledger = self._fleet()
         await self._populate(harness, message_ledger)
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             to=["fixer-b"],
             body="just for you",
@@ -4543,14 +4686,13 @@ class TestBroadcastFanOut:
     async def test_a_broadcast_with_no_other_agent_is_a_teaching_error(self) -> None:
         harness, message_ledger = self._fleet()
         registry: FakeAgentRegistry = harness.agent_registry
-        await registry.register("lead", session="wave7", role="lead")
+        await _credential_agent(harness, name="lead", session="wave7", role="lead")
         agent = await registry.get_agent("lead", session="wave7")
         message_ledger.register_agent(agent_id=agent.id, name=agent.name)
         with pytest.raises(_msg().EmptyRecipientSetError):
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 body="anybody out there",
                 grade=_msg().MESSAGE_GRADE_SIGNAL,
@@ -4569,19 +4711,11 @@ class TestUnregisteredRecipientIsTheEXISTINGTeachingError:
     """
 
     async def test_an_unknown_recipient_names_itself_and_the_live_roster(self) -> None:
-        db = FakeAgentDatabase()
-        registry = FakeAgentRegistry(db=db)
-        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
-        harness = _harness(agent_registry=registry, message_ledger=message_ledger)
-        for name in ("lead", "fixer-b"):
-            await registry.register(name, session="wave7", role="builder")
-            agent = await registry.get_agent(name, session="wave7")
-            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        harness, message_ledger = await _credentialed_harness("lead", "fixer-b")
         with pytest.raises((UnknownAgentError, _msg().UnknownRecipientError)) as excinfo:
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b", "typo-agent"],
                 body="who are you",
@@ -4595,19 +4729,11 @@ class TestUnregisteredRecipientIsTheEXISTINGTeachingError:
         )
 
     async def test_nothing_is_delivered_when_one_recipient_is_unknown(self) -> None:
-        db = FakeAgentDatabase()
-        registry = FakeAgentRegistry(db=db)
-        message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
-        harness = _harness(agent_registry=registry, message_ledger=message_ledger)
-        for name in ("lead", "fixer-b"):
-            await registry.register(name, session="wave7", role="builder")
-            agent = await registry.get_agent(name, session="wave7")
-            message_ledger.register_agent(agent_id=agent.id, name=agent.name)
+        harness, message_ledger = await _credentialed_harness("lead", "fixer-b")
         with pytest.raises(Exception):  # noqa: B017 - either teaching error is acceptable here
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b", "typo-agent"],
                 body="who are you",
@@ -4701,12 +4827,19 @@ class TestBriefPublishTeachesWhenTheAUTHORNamesNoAgentRow:
 class TestDrainAndAckAtTheDispatcher:
     @staticmethod
     async def _ready() -> tuple[Any, Any]:
-        db = FakeAgentDatabase()
-        registry = FakeAgentRegistry(db=db)
+        principal_store = FakePrincipalStore()
+        keep_store = FakeKeepStore(principal_store=principal_store)
+        registry = FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store)
         message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
-        harness = _harness(agent_registry=registry, message_ledger=message_ledger, drain_limit=5)
+        harness = _harness(
+            agent_registry=registry,
+            message_ledger=message_ledger,
+            principal_store=principal_store,
+            keep_store=keep_store,
+            drain_limit=5,
+        )
         for name in ("lead", "fixer-b"):
-            await registry.register(name, session="wave7", role="builder")
+            await _credential_agent(harness, name=name, session="wave7")
             agent = await registry.get_agent(name, session="wave7")
             message_ledger.register_agent(agent_id=agent.id, name=agent.name)
         return harness, message_ledger
@@ -4718,10 +4851,9 @@ class TestDrainAndAckAtTheDispatcher:
         """
         harness, message_ledger = await self._ready()
         for index in range(8):
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b"],
                 body=f"message {index}",
@@ -4741,10 +4873,9 @@ class TestDrainAndAckAtTheDispatcher:
 
     async def test_peek_is_a_real_boolean_param_the_dispatcher_forwards(self) -> None:
         harness, message_ledger = await self._ready()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             to=["fixer-b"],
             body="peek me",
@@ -4759,10 +4890,9 @@ class TestDrainAndAckAtTheDispatcher:
 
     async def test_ack_forwards_the_seqs_list(self) -> None:
         harness, message_ledger = await self._ready()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             to=["fixer-b"],
             body="ack me",
@@ -4790,10 +4920,9 @@ class TestDrainAndAckAtTheDispatcher:
     async def test_an_oversize_body_is_a_teaching_reject_at_the_surface(self) -> None:
         harness, message_ledger = await self._ready()
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - MessageBodyError surface
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b"],
                 body="z" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
@@ -4855,14 +4984,23 @@ async def _03b_fleet(
     drain_limit: int = 20,
     members: tuple[tuple[str, str, str], ...] = _03B_FLEET,
 ) -> tuple[Any, Any]:
-    """A registered fleet plus a message ledger, wired into the dispatcher double."""
-    registry = FakeAgentRegistry(db=FakeAgentDatabase())
+    """A registered fleet plus a message ledger, wired into the dispatcher double. packet
+    63b-ii-a: every agent is registered CREDENTIALED (owned by its own seeded principal, householded
+    in its session keep) so any of them can act as a governed sender through the enforced ``send``;
+    the registry shares the harness's principal store so ``_verify_capability_owner`` resolves."""
+    principal_store = FakePrincipalStore()
+    keep_store = FakeKeepStore(principal_store=principal_store)
+    registry = FakeAgentRegistry(db=FakeAgentDatabase(), principal_store=principal_store)
     message_ledger = _msg_fakes().FakeMessageLedger(db=_msg_fakes().FakeMessageDatabase())
     harness = _harness(
-        agent_registry=registry, message_ledger=message_ledger, drain_limit=drain_limit
+        agent_registry=registry,
+        message_ledger=message_ledger,
+        principal_store=principal_store,
+        keep_store=keep_store,
+        drain_limit=drain_limit,
     )
     for name, session, status in members:
-        await registry.register(name, session=session, role="builder")
+        await _credential_agent(harness, name=name, session=session)
         if status != "active":
             await registry.touch(name, session=session, status=status)
         agent = await registry.get_agent(name, session=session)
@@ -4894,8 +5032,15 @@ async def _deliver(
     refs: list[str] | None = None,
     sender: str = "lead",
 ) -> int:
-    """Send one message through the REAL dispatcher; return its seq."""
-    kwargs: dict[str, Any] = {"to": to, "body": body, "grade": grade}
+    """Send one message through the REAL dispatcher; return its seq. packet 63b-ii-a: the send is
+    driven CREDENTIALED — the ``sender`` is credentialed (if the fleet did not already), the ambient
+    token is set to its principal, and its capability is presented — so the enforced identity check
+    passes and the test exercises the SEND MECHANICS, not the deny path."""
+    cap = _CAPS.get(("wave7", sender))
+    if cap is None:
+        cap = await _credential_agent(harness, name=sender, session="wave7")
+    _ACCESS_HOLDER["email"] = f"{sender}@example.com"
+    kwargs: dict[str, Any] = {"to": to, "body": body, "grade": grade, "capability": cap}
     if thread is not None:
         kwargs["thread"] = thread
     if task_id is not None:
@@ -5138,10 +5283,9 @@ class TestEveryRecipientNameIsCharsetValidatedBeforeAnyStoreTouch:
         rather than an oracle that can never fire."""
         harness, _ = await _03b_fleet()
         assert await _status_of(harness, "idle-c") == "idle"
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="idle-c",
+            sender="idle-c",
             session="wave7",
             to=["fixer-b"],
             body="x",
@@ -5161,12 +5305,16 @@ class TestBroadcastScopeWhenSessionIsOmitted:
 
     async def test_an_omitted_session_broadcasts_to_the_CALLERS_session_ONLY(self) -> None:
         harness, message_ledger = await _03b_fleet()
+        # OMITTED session on purpose (the tested path): credential inline so the send is enforced
+        # WITHOUT passing session= — the handler must resolve the caller's OWN session.
+        _ACCESS_HOLDER["email"] = "lead@example.com"
         await AppContext.comms(
             harness,
             action="send",
             agent="lead",
             body="all hands: the gate is red",
             grade=_msg().MESSAGE_GRADE_DIRECTIVE,
+            capability=_CAPS[("wave7", "lead")],
         )
         assert _recipients_of_last_message(message_ledger) == ["fixer-b", "idle-c", "parked-d"], (
             "a session-omitted broadcast crossed sessions — the fan-out resolved through "
@@ -5178,10 +5326,9 @@ class TestBroadcastScopeWhenSessionIsOmitted:
         their absence above is scoping, not a fixture that forgot to create
         them."""
         harness, message_ledger = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="other-f",
+            sender="other-f",
             session="wave9",
             body="wave9 only",
             grade=_msg().MESSAGE_GRADE_SIGNAL,
@@ -5206,10 +5353,9 @@ class TestARetiredRecipientIsATeachingReject:
     ) -> None:
         harness, message_ledger = await _03b_fleet()
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - teaching reject class is the builder's
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["retired-e"],
                 body="are you there",
@@ -5232,10 +5378,9 @@ class TestARetiredRecipientIsATeachingReject:
         recipient but silently drops it from a MIXED list passes the pin above."""
         harness, message_ledger = await _03b_fleet()
         with pytest.raises(Exception) as excinfo:  # noqa: B017
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b", "retired-e"],
                 body="are you there",
@@ -5325,10 +5470,9 @@ class TestSetStatusIsAClosedVocabularyAtTheSurface:
         the value and then DROPS it passes every reject pin above while leaving
         the debt unregistered — the exact silent miss this ruling removes."""
         harness, message_ledger = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             to=["fixer-b"],
             body="is the gate green?",
@@ -5362,10 +5506,9 @@ class TestSetStatusDoesNotMutateTheSendersStoredStatus:
 
     async def test_an_active_sender_stays_active(self) -> None:
         harness, _ = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="lead",
+            sender="lead",
             session="wave7",
             to=["fixer-b"],
             body="q",
@@ -5379,10 +5522,9 @@ class TestSetStatusDoesNotMutateTheSendersStoredStatus:
 
     async def test_an_idle_sender_flips_to_active_not_to_input_required(self) -> None:
         harness, _ = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="idle-c",
+            sender="idle-c",
             session="wave7",
             to=["fixer-b"],
             body="q",
@@ -5397,10 +5539,9 @@ class TestSetStatusDoesNotMutateTheSendersStoredStatus:
         uniform TOUCH (idle -> active, ``agents.py::touch``) and not from
         set_status at all."""
         harness, _ = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="idle-c",
+            sender="idle-c",
             session="wave7",
             to=["fixer-b"],
             body="q",
@@ -5410,10 +5551,9 @@ class TestSetStatusDoesNotMutateTheSendersStoredStatus:
 
     async def test_a_PARKED_sender_stays_parked(self) -> None:
         harness, _ = await _03b_fleet()
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="parked-d",
+            sender="parked-d",
             session="wave7",
             to=["fixer-b"],
             body="q",
@@ -5584,10 +5724,9 @@ class TestTheDispatcherActuallySERVESEachVerbsRender:
     async def test_send_serves_the_send_render(self) -> None:
         harness, _ = await _03b_fleet()
         rendered = str(
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b"],
                 body="the body",
@@ -6340,9 +6479,10 @@ class TestTheSendsRecipientReadCostScalesWithLenToNotSessionSize:
         kwargs: dict[str, Any] = {"body": "x", "grade": _msg().MESSAGE_GRADE_SIGNAL}
         if to is not None:
             kwargs["to"] = to
-        await AppContext.comms(
-            harness, action="send", agent="lead", session="wave7", **kwargs
-        )
+        # credentialed drive — identity resolution reads the principal/keep stores, NOT the counted
+        # registry get_agent/roster methods, so the recipient-read cost this test measures is
+        # unchanged by the ii-a enforcement.
+        await _send(harness, sender="lead", session="wave7", **kwargs)
         return counts
 
     async def test_an_explicit_send_reads_NO_roster(self) -> None:
@@ -6409,10 +6549,9 @@ class TestEveryBadRecipientIsNamedInONEReject:
     async def test_two_unknown_recipients_are_BOTH_named(self) -> None:
         harness, ledger = await _03b_fleet()
         with pytest.raises((UnknownAgentError, _msg().UnknownRecipientError)) as excinfo:
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b", "typo-one", "typo-two"],
                 body="who are you",
@@ -6435,10 +6574,9 @@ class TestEveryBadRecipientIsNamedInONEReject:
             )
         )
         with pytest.raises(ValueError) as excinfo:
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["gone-a", "gone-b"],
                 body="are you there",
@@ -6460,10 +6598,9 @@ class TestASoloBroadcastADMITSTheConditionInsteadOfBlamingTheCaller:
     async def _solo_broadcast() -> str:
         harness, _ = await _03b_fleet(members=(("lead", "wave7", "active"),))
         with pytest.raises(_msg().EmptyRecipientSetError) as excinfo:
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 body="anybody out there",
                 grade=_msg().MESSAGE_GRADE_SIGNAL,
@@ -7927,10 +8064,9 @@ class TestTheValidationOrderWithTheNewSteps:
         harness, message_ledger = await _03b_fleet()
         assert await _status_of(harness, "idle-c") == "idle"
         with pytest.raises(Exception):  # noqa: B017 - MessageBodyError surface
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="idle-c",
+                sender="idle-c",
                 session="wave7",
                 to=["fixer-b"],
                 body="z" * (_msg().MESSAGE_BODY_MAX_CHARS + 1),
@@ -8104,10 +8240,9 @@ class TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly:
     async def test_a_send_never_crosses_into_another_sessions_row(self) -> None:
         harness, message_ledger = await _03b_fleet(members=self._TWO_SESSIONS)
         with pytest.raises(Exception) as excinfo:  # noqa: B017 - reject class is the builder's
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["victim"],
                 body="for my own session only",
@@ -8129,10 +8264,9 @@ class TestAnExplicitRecipientResolvesInTheCALLERSSessionOnly:
         harness, message_ledger = await _03b_fleet(
             members=(("boss", "wave8", "active"), ("victim", "wave8", "active"))
         )
-        await AppContext.comms(
+        await _send(
             harness,
-            action="send",
-            agent="boss",
+            sender="boss",
             session="wave8",
             to=["victim"],
             body="in-session",
@@ -8166,10 +8300,9 @@ class TestTheSendReceiptCapsAndCountsHonestly:
         )
         harness, _ = await _03b_fleet(members=members)
         return str(
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=self._names(count),
                 body="the body",
@@ -8212,10 +8345,9 @@ class TestTheSendReceiptCapsAndCountsHonestly:
         )
         harness, message_ledger = await _03b_fleet(members=members)
         rendered = str(
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 body="all hands",
                 grade=_msg().MESSAGE_GRADE_SIGNAL,
@@ -8386,10 +8518,9 @@ class TestTheQuestionTeachReachesTheReaderThroughTheDispatcher:
     async def test_a_question_send_serves_the_clearing_rule_teach(self) -> None:
         harness, _ = await _03b_fleet()
         rendered = str(
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b"],
                 body="is the gate green?",
@@ -8407,10 +8538,9 @@ class TestTheQuestionTeachReachesTheReaderThroughTheDispatcher:
     async def test_a_NON_question_send_serves_no_teach(self) -> None:
         harness, _ = await _03b_fleet()
         rendered = str(
-            await AppContext.comms(
+            await _send(
                 harness,
-                action="send",
-                agent="lead",
+                sender="lead",
                 session="wave7",
                 to=["fixer-b"],
                 body="fyi",

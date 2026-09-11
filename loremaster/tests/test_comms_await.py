@@ -64,7 +64,12 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 from loremaster.sanitise import max_backtick_run
 from loremaster.server import AppContext
-from test_comms_tool import _03b_fleet, _line_containing, _msg
+from test_comms_tool import (  # noqa: F401 - _governed_ambient_token is an autouse fixture
+    _03b_fleet,
+    _governed_ambient_token,
+    _line_containing,
+    _msg,
+)
 from test_comms_waiting_line import _ask_via_dispatcher
 from test_link5_render_containment import FORGERY_MARKER, _leaks
 

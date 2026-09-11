@@ -74,10 +74,11 @@ shortcut that imports the test's own fixtures.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from loremaster.agents import (
@@ -165,9 +166,18 @@ def _utc_now() -> datetime:
 class FakeAgentDatabase:
     """The shared in-memory ``agent`` table two or more ``FakeAgentRegistry``
     handles read/write — mirrors ``FakeTaskDatabase``.
+
+    ``owners`` / ``capabilities`` back the packet-63b-ii-a governed seam: ``owners`` maps an
+    ``agent_id`` to its server-derived ``owner_principal_id`` (``None`` for an ownerless register,
+    Fork 2), and ``capabilities`` maps a minted ``<name>:<secret>`` credential to its
+    ``(agent_id, owner_principal_id)`` pair — the fake's stand-in for the ``capability_hash`` /
+    ``owner_principal`` columns :meth:`~loremaster.agents.AgentRegistry._verify_capability_owner`
+    reads in ONE JOIN.
     """
 
     agents: dict[str, Agent] = field(default_factory=dict)
+    owners: dict[str, str | None] = field(default_factory=dict)
+    capabilities: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
 
 class FakeAgentRegistry:
@@ -179,8 +189,14 @@ class FakeAgentRegistry:
     plain in-memory dict rather than a SurrealDB connection.
     """
 
-    def __init__(self, *, db: FakeAgentDatabase | None = None) -> None:
+    def __init__(
+        self, *, db: FakeAgentDatabase | None = None, principal_store: Any = None
+    ) -> None:
         self.db = db if db is not None else FakeAgentDatabase()
+        # packet 63b-ii-a: the fake analog of the real registry's agent→owner_principal JOIN — set
+        # by the credentialed harness so :meth:`_verify_capability_owner` can resolve an owner
+        # principal id to its email for the binding check. None ⇒ no credential ever verifies.
+        self._principal_store = principal_store
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -243,6 +259,7 @@ class FakeAgentRegistry:
         spawned_by: str | None = None,
         task_id: str | None = None,
         cadence: str | None = None,
+        owner_principal_id: str | None = None,
     ) -> AgentRegisterResult:
         # The race window is honestly OPEN before the check (mirrors
         # ``FakeTaskLedger.claim_task``): two concurrent callers can both reach
@@ -269,7 +286,15 @@ class FakeAgentRegistry:
                 heartbeat_at=now,
             )
             self.db.agents[agent_id] = agent
-            return AgentRegisterResult(agent=agent.model_copy(deep=True), re_registered=False)
+            # packet 63b-ii-a — mint-once-on-create: the tool's ``_comms_register`` stamps the
+            # server-derived ``owner_principal_id`` (None for a tokenless/ownerless register, Fork 2)
+            # and captures the one-time ``<name>:<secret>`` credential the register RESPONSE serves
+            # (R7). The fake mirrors that: it stores the owner + a minted capability so
+            # :meth:`_verify_capability_owner` can later verify a credentialed governed call.
+            capability = self._mint_capability(agent_id, owner_principal_id=owner_principal_id)
+            return AgentRegisterResult(
+                agent=agent.model_copy(deep=True), re_registered=False, capability=capability
+            )
         if existing.status == STATUS_RETIRED:
             raise RetiredAgentError(f"agent {name!r} is retired (terminal) — respawns register a fresh name")
         if existing.role != role:
@@ -300,7 +325,53 @@ class FakeAgentRegistry:
         existing.status = STATUS_ACTIVE
         existing.heartbeat_at = now
         # --- end compare-and-set ---
+        # mint-once-on-create: a re-register RE-STAMPS no owner and mints NO new capability (the
+        # secret is served exactly once, at birth — R7), so it returns capability=None.
         return AgentRegisterResult(agent=existing.model_copy(deep=True), re_registered=True)
+
+    # -- packet 63b-ii-a governed seam ------------------------------------------
+
+    def _mint_capability(self, agent_id: str, *, owner_principal_id: str | None) -> str:
+        """Mint + store the one-time ``<name>:<secret>`` credential for a freshly-created agent,
+        recording its ``(agent_id, owner_principal_id)`` pair (the fake's stand-in for the
+        ``capability_hash`` + ``owner_principal`` columns). Mirrors the real registry's
+        mint-once-on-create."""
+        name = self.db.agents[agent_id].name
+        capability = f"{name}:{secrets.token_urlsafe(24)}"
+        self.db.owners[agent_id] = owner_principal_id
+        self.db.capabilities[capability] = (agent_id, owner_principal_id)
+        return capability
+
+    async def _verify_capability_owner(
+        self, presented: str, access_token: Any
+    ) -> tuple[str, str] | None:
+        """The SHARED pair-yielding verification path (mirrors
+        :meth:`~loremaster.agents.AgentRegistry._verify_capability_owner`): returns
+        ``(agent_id, owner_principal_id)`` on success, ``None`` on any deny. The four admission
+        conditions the fake models: the credential is known; the agent is not retired; the owner is
+        non-NONE (an ownerless agent has no owning principal — Fork 2); and THE BINDING — the owner
+        principal's email equals the transport token's ``subject``. Resolves the owner email through
+        the wired principal store (the JOIN's fake analog); with no store wired, no credential
+        verifies."""
+        await asyncio.sleep(0)
+        record = self.db.capabilities.get(presented)
+        if record is None:
+            return None
+        agent_id, owner_principal_id = record
+        agent = self.db.agents.get(agent_id)
+        if agent is None or agent.status == STATUS_RETIRED:
+            return None
+        if owner_principal_id is None:
+            return None  # ownerless — no owning principal to bind against (Fork 2)
+        owner_email = (
+            self._principal_store.email_for_id(owner_principal_id)
+            if self._principal_store is not None
+            else None
+        )
+        token_principal = getattr(access_token, "subject", None)
+        if not owner_email or not token_principal or str(owner_email) != str(token_principal):
+            return None
+        return agent_id, owner_principal_id
 
     # -- read ---------------------------------------------------------------
 
@@ -855,4 +926,132 @@ class FakeBriefLedger:
             if current_max is None or brief_version > current_max:
                 result[edge_agent_id] = brief_version
         return result
+
+
+# ---------------------------------------------------------------------------
+# Principal + Keep fakes (packet 63b-ii-a — the governed identity substrate)
+# ---------------------------------------------------------------------------
+# The comms tool double drives ``AppContext.comms`` unbound against a SimpleNamespace, so once
+# ``send`` gained an UNCONDITIONAL ``_resolve_subject`` and ``register`` gained the SF-63-1 keep
+# mint, the double needed a ``_principal_store`` and a ``_keep_store``. These are the MINIMAL
+# in-memory stands-in for :class:`~loremaster.principals.PrincipalStore` /
+# :class:`~loremaster.keeps.KeepStore`, exposing only the surface the governed comms path calls:
+# ``get_by_email`` (resolve_principal), ``get_by_key`` / ``get_or_create_keyed`` (SF-63-1), and
+# ``list_keeps_for_member`` / ``add_household_member`` / ``remove_household_member`` (the household
+# gate + R5). A tokenless register short-circuits before either store is touched (reading α), so an
+# UNCREDENTIALED comms test needs them present but never exercises them.
+
+
+@dataclass
+class _FakePrincipal:
+    """A minimal principal value (id / email / role) — the shape the governed path reads."""
+
+    id: str
+    email: str
+    role: str
+
+
+class FakePrincipalStore:
+    """MINIMAL in-memory :class:`~loremaster.principals.PrincipalStore` stand-in for the comms
+    double. ``id`` is minted as ``principal:<uuid5(email)>`` so ``str(id).split(':')`` yields a
+    stable bare id, exactly as production's ``str(RecordID)`` does."""
+
+    def __init__(self) -> None:
+        self._by_email: dict[str, _FakePrincipal] = {}
+        self._by_id: dict[str, _FakePrincipal] = {}
+
+    @staticmethod
+    def _principal_id(email: str) -> str:
+        return f"principal:{uuid5(NAMESPACE_URL, f'lore://principal/{email}').hex}"
+
+    async def create(self, *, email: str, role: str = "member") -> _FakePrincipal:
+        await asyncio.sleep(0)
+        principal = _FakePrincipal(id=self._principal_id(email), email=email, role=role)
+        self._by_email[email] = principal
+        self._by_id[principal.id.split(":", 1)[-1]] = principal
+        return principal
+
+    async def get_by_email(self, email: str) -> _FakePrincipal | None:
+        await asyncio.sleep(0)
+        return self._by_email.get(email)
+
+    async def list(self) -> list[_FakePrincipal]:
+        await asyncio.sleep(0)
+        return list(self._by_email.values())
+
+    def email_for_id(self, bare_id: str) -> str | None:
+        """Resolve a bare principal id to its email — the fake analog of the agent→owner_principal
+        JOIN :meth:`FakeAgentRegistry._verify_capability_owner` needs for the binding check."""
+        principal = self._by_id.get(bare_id)
+        return principal.email if principal is not None else None
+
+
+@dataclass
+class _FakeKeep:
+    """A minimal keep value (id / key / type / keeper_id) — the shape the governed path reads."""
+
+    id: str
+    key: str
+    type: str
+    keeper_id: str
+
+
+class FakeKeepStore:
+    """MINIMAL in-memory :class:`~loremaster.keeps.KeepStore` stand-in for the comms double. Models
+    the deterministic natural key (``get_or_create_keyed`` is an idempotent get-or-create on the
+    UNIQUE ``key``), the keeper-auto-household on mint (SF-63-4 / 60 Fork D), and the household set a
+    ``member_of`` edge stands for (``list_keeps_for_member`` / add / remove)."""
+
+    def __init__(self, *, principal_store: FakePrincipalStore) -> None:
+        self._principal_store = principal_store
+        self._by_key: dict[str, _FakeKeep] = {}
+        self._by_id: dict[str, _FakeKeep] = {}
+        #: keep bare-id -> the set of household member emails (the ``member_of`` edge set).
+        self._household: dict[str, set[str]] = {}
+
+    @staticmethod
+    def _keep_id(key: str) -> str:
+        return f"keep:{uuid5(NAMESPACE_URL, f'lore://keep/{key}').hex}"
+
+    async def get_by_key(self, key: str) -> _FakeKeep | None:
+        await asyncio.sleep(0)
+        return self._by_key.get(key)
+
+    async def get_or_create_keyed(
+        self, key: str, *, type: str, keeper_email: str, name: str | None = None  # noqa: A002
+    ) -> _FakeKeep:
+        await asyncio.sleep(0)
+        existing = self._by_key.get(key)
+        if existing is not None:
+            return existing
+        keeper = self._principal_store._by_email.get(keeper_email)
+        if keeper is None:
+            from loremaster.keeps import KeepStoreError
+
+            raise KeepStoreError(f"no principal carries keeper_email {keeper_email!r}")
+        keeper_bare = keeper.id.split(":", 1)[-1]
+        keep = _FakeKeep(id=self._keep_id(key), key=key, type=type, keeper_id=keeper_bare)
+        self._by_key[key] = keep
+        self._by_id[keep.id.split(":", 1)[-1]] = keep
+        # SF-63-4 — the keeper is auto-householded on mint (60 Fork D).
+        self._household[keep.id.split(":", 1)[-1]] = {keeper_email}
+        return keep
+
+    async def list_keeps_for_member(self, *, member_email: str) -> list[str]:
+        await asyncio.sleep(0)
+        return [
+            keep_bare
+            for keep_bare, members in self._household.items()
+            if member_email in members
+        ]
+
+    async def add_household_member(self, *, keep_id: Any, member_email: str) -> None:
+        await asyncio.sleep(0)
+        keep_bare = str(keep_id).split(":", 1)[-1]
+        self._household.setdefault(keep_bare, set()).add(member_email)
+
+    async def remove_household_member(self, *, keep_id: Any, member_email: str) -> None:
+        await asyncio.sleep(0)
+        keep_bare = str(keep_id).split(":", 1)[-1]
+        self._household.get(keep_bare, set()).discard(member_email)
 

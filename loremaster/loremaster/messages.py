@@ -106,6 +106,7 @@ from loremaster.store.surreal_schema import (
     AGENT_TABLE,
     MESSAGE_SEQUENCE_NAME,
     MESSAGE_TABLE,
+    PRINCIPAL_TABLE,
     TO_RELATION,
     generate_message_ddl,
 )
@@ -674,6 +675,9 @@ class MessageLedger:
         task_id: str | None = None,
         refs: Sequence[str] | None = None,
         set_status: str | None = None,
+        owner_principal: str | None = None,
+        owner_agent: str | None = None,
+        scope: str | None = None,
     ) -> MessageSendResult:
         """Send ONE message to every recipient, atomically and all-or-nothing.
 
@@ -773,6 +777,9 @@ class MessageLedger:
             question=set_status == _STATUS_INPUT_REQUIRED,
             created_at=created_at,
             recipients=deduped,
+            owner_principal=owner_principal,
+            owner_agent=owner_agent,
+            scope=scope,
         )
         await self._apply([fragment])
         seq = await self._read_back_seq(message_id)
@@ -945,6 +952,9 @@ class MessageLedger:
         question: bool,
         created_at: datetime,
         recipients: Sequence[AgentRefLike],
+        owner_principal: str | None = None,
+        owner_agent: str | None = None,
+        scope: str | None = None,
     ) -> TxnFragment:
         """The mint + CREATE + N×RELATE fragment for one atomic send.
 
@@ -953,6 +963,17 @@ class MessageLedger:
         param. The ``message`` id is minted in Python (a bare ULID) so it can be
         bound as the RELATE ``in`` endpoint directly (store reference §7 — a
         RELATE endpoint is a bound ``RecordID``, never a ``type::record()`` call).
+
+        The GOVERNED owner stamps (packet 63b-ii-a, design §4.A) are threaded from
+        the credentialed send handler: ``owner_principal``/``owner_agent`` (bare
+        ids → bound ``record<principal>``/``record<agent>`` LINKS, store-ref §2)
+        and ``scope`` (the session-keep scope string). All three are OPTIONAL: the
+        CONTENT always names the columns (so the raw-write shape is stable — the F5
+        site-derivation keys on it), but each is BOUND to ``NONE`` when its argument
+        is absent, so an un-stamped legacy send (the ledger's pre-63b callers, and
+        the migrate fixtures) writes a NONE-owner row — ``message`` stays an
+        ``option<>`` governed table, and every read uses an explicit projection so
+        the added columns never reach a SELECT * decode.
         """
         # ⚠ ``session`` is a PROTECTED variable name (store reference §2): a
         # top-level bound param named ``session`` is rejected outright ("'session'
@@ -971,13 +992,24 @@ class MessageLedger:
             "task_id": task_id,
             "question": question,
             "created_at": created_at,
+            # packet 63b §4.A GOVERNED stamps — bound RecordID owner LINKS (store-ref §2), NONE for
+            # an un-stamped legacy send (option<>). The CONTENT always names the columns (a stable
+            # raw-write shape for the F5 site-derivation); binding NONE writes an unset option<>.
+            "owner_principal_rec": (
+                RecordID(PRINCIPAL_TABLE, owner_principal) if owner_principal is not None else None
+            ),
+            "owner_agent_rec": (
+                RecordID(AGENT_TABLE, owner_agent) if owner_agent is not None else None
+            ),
+            "scope": scope,
         }
         statements: list[str] = [
             f'LET $minted_seq = sequence::nextval("{MESSAGE_SEQUENCE_NAME}")',
             f"CREATE type::record('{MESSAGE_TABLE}', $msg_id) CONTENT "
             "{ seq: $minted_seq, session: $msg_session, thread: $thread, sender: $sender_rec, "
             "grade: $grade, body: $body, refs: $refs, task_id: $task_id, "
-            "question: $question, created_at: $created_at }",
+            "question: $question, created_at: $created_at, "
+            "owner_principal: $owner_principal_rec, owner_agent: $owner_agent_rec, scope: $scope }",
         ]
         for index, ref in enumerate(recipients):
             endpoint_param = f"recipient_{index}"

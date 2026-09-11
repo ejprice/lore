@@ -6044,6 +6044,7 @@ class AppContext:
         set_status: str | None = None,
         seqs: list[int] | None = None,
         peek: bool | None = None,
+        capability: str | None = None,
     ) -> Rendered:
         """Dispatch a ``lore_comms`` action (register/heartbeat/brief_get/
 
@@ -6107,6 +6108,7 @@ class AppContext:
             "set_status": set_status,
             "seqs": seqs,
             "peek": peek,
+            "capability": capability,
         }
         allowed = spec.params | spec.required
         for param_name, value in values.items():
@@ -6186,6 +6188,7 @@ class AppContext:
             set_status=set_status,
             seqs=seqs,
             peek=peek,
+            capability=capability,
         )
 
     async def _with_comms_footer(
@@ -6622,7 +6625,56 @@ class AppContext:
         cadence: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
-        """register — idempotent identity registration + head-brief bootstrap ack."""
+        """register — idempotent identity registration + head-brief bootstrap ack.
+
+        RULING §3.1 / SF-63-1 (packet 63b-ii-a): resolve the REGISTRANT's admitted principal through
+        the ONE lifted seam :func:`~loremaster.governed.resolve_principal` (the SAME derivation
+        ``resolve_subject`` uses for send owners — ruling §3.3 ONE derivation), stamp it as the new
+        agent's ``owner_principal``, and get-or-create the ``session:<s>`` keep kept by that
+        principal (so a later ``send`` resolves its scope by key). A FOREIGN principal registering
+        into a session another principal keeps is DENIED (SF-63-1) BEFORE the agent row is written
+        (#97). A TOKENLESS register succeeds OWNERLESS and mints NO keep (reading α, ruling §3.2):
+        nothing is fabricated, and the render names the bound.
+        """
+        from lorerunes.pdp import keep_scope  # noqa: PLC0415 - house lazy-import idiom
+
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        # §3.1 — the registrant's principal (None = a tokenless register → reading α, below).
+        principal = await governed.resolve_principal(
+            get_access_token(), principal_store=self._principal_store
+        )
+        session_keep: Any = None
+        kept_by_me = False
+        principal_bare: str | None = None
+        if principal is not None:
+            principal_bare = str(principal.id).split(":", 1)[-1]
+            keep_store = self._keep_store
+            if keep_store is None:  # pragma: no cover - a governed AppContext always wires one
+                raise governed.GovernedDenied(
+                    "no keep store is wired — a governed register cannot mint its session keep"
+                )
+            # SF-63-1 — get-or-create the session keep, kept by THIS registrant's principal (the
+            # first registrant with a principal keeps it; the keeper's own later agents join it — the
+            # idempotent CAS on the UNIQUE keep.key, store-ref §1.8).
+            session_keep = await keep_store.get_or_create_keyed(
+                key=f"session:{session}", type="session", keeper_email=principal.email, name=session
+            )
+            # SF-63-1 foreign gate — a principal NOT householded in the (existing) session keep is
+            # DENIED, naming the SESSION + the add-household remedy but NOT the keeper's identity
+            # (63-rulings §6 existence-leak stance). It runs BEFORE register, so a rejected register
+            # writes NO agent row (#97). The keeper's own agents pass (auto-householded on mint).
+            from loremaster.visible_keeps import resolve_visible_keeps  # noqa: PLC0415
+
+            session_keep_bare = str(session_keep.id).split(":", 1)[-1]
+            visible = await resolve_visible_keeps(keep_store, member_email=principal.email)
+            if keep_scope(session_keep_bare) not in visible:
+                raise governed.GovernedDenied(
+                    f"session {session!r} is kept by another principal — you are not householded in "
+                    "it; its keeper must run `lore-adm add-household` for you before you register "
+                    "into this session"
+                )
+            kept_by_me = session_keep.keeper_id == principal_bare
         result = await self.agent_registry.register(
             agent,
             session=session,
@@ -6631,6 +6683,7 @@ class AppContext:
             spawned_by=spawned_by,
             task_id=task_id,
             cadence=cadence,
+            owner_principal_id=principal_bare,
         )
         now = datetime.now(UTC)
         registered_age_s = int((now - result.agent.registered_at).total_seconds())
@@ -6655,6 +6708,10 @@ class AppContext:
             registered_age_s=registered_age_s,
             brief=brief,
             brief_age_s=brief_age_s,
+            capability=result.capability,
+            ownerless=principal is None,
+            session_keep=session_keep,
+            kept_by_me=kept_by_me,
         )
         # #262: DISCLOSE (never refuse) the liveness of the holder of any task this agent
         # associates with. An ADVISORY note only — register stays cheap + idempotent — and
@@ -7067,9 +7124,21 @@ class AppContext:
         task_id: str | None,
         refs: list[str] | None,
         set_status: str | None,
+        capability: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
-        """send — resolve the recipient set, then ONE atomic all-or-nothing write.
+        """send — enforce the caller's identity, then resolve recipients and ONE atomic write.
+
+        §4.D / RULING §2.3 (packet 63b-ii-a) — ``send`` is the message-family WRITE verb ii-a
+        ENFORCES: it resolves the caller's verified :class:`~lorerunes.pdp.Subject` through the ONE
+        composition root :meth:`_resolve_subject` UNCONDITIONALLY (an absent / unverified
+        ``capability`` is a teaching :class:`~loremaster.governed.GovernedDenied` BEFORE any write),
+        requires ``agent=`` to name the identity that capability PROVED (a mismatch denies — no
+        argument moves the stamp), resolves the session keep scope through the lifted
+        :func:`~loremaster.governed.resolve_write_scope` (so a sender removed from the session
+        household loses the room), and stamps the created message's ``(owner_principal, owner_agent,
+        scope)`` = the Subject's pair + the session-keep scope inside a ``write_guard("send")`` frame
+        so the F5 seam attributes the governed write.
 
         Recipient resolution is SESSION-SCOPED, always, against the CALLER's own
         resolved session (§B2.3): delivery targeting is session-bound by id
@@ -7092,6 +7161,45 @@ class AppContext:
           manufactured permanent loss wearing a delivery receipt, which is the
           exact failure this subsystem exists to remove.
         """
+        from lorerunes.pdp import keep_scope  # noqa: PLC0415 - house lazy-import idiom
+
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        # §2.3 — resolve the caller's verified Subject UNCONDITIONALLY (the ONE composition root
+        # reads the ambient token + verifies the capability via stamp_owner). An absent / unverified
+        # identity is a teaching GovernedDenied HERE, before any recipient read or write (R2 the
+        # tokenless-send deny; R6 the no-capability deny).
+        subject = await self._resolve_subject(capability)
+        # §2.3 agent≡subject — the ``agent=`` argument MUST name the identity the capability PROVED,
+        # or a caller could act as an agent whose capability it does not hold (F4's kernel: no
+        # argument moves the stamp; MP-5). ``Agent.id`` is the bare opaque string and
+        # ``subject.agent_id`` is stamp_owner's bare owner agent, so a direct compare is exact.
+        if agent_row.id != subject.agent_id:
+            raise governed.GovernedDenied(
+                f"agent={agent_row.name!r} names an identity the presented capability did not "
+                "prove — the capability verifies as a different agent; a governed send must present "
+                "the capability of the agent it acts as"
+            )
+        # §4.A — resolve the session keep BY KEY; a missing keep is a teaching DENY ('register
+        # first'), never a fallback to the project keep or a NONE scope.
+        keep_store = self._keep_store
+        if keep_store is None:  # pragma: no cover - a governed AppContext always wires a keep store
+            raise governed.GovernedDenied(
+                "no keep store is wired — a governed send cannot resolve its session scope"
+            )
+        session_keep = await keep_store.get_by_key(f"session:{agent_row.session}")
+        if session_keep is None:
+            raise governed.GovernedDenied(
+                f"session {agent_row.session!r} has no session keep — register in this session first "
+                "(`lore_comms action=register`) so the send can resolve its scope"
+            )
+        # §4.A / §6 — the message scope is the session keep's scope, resolved through the ONE lifted
+        # grant seam with the session scope passed EXPLICITLY (never None), so _grantable runs on
+        # EVERY send: a sender the keeper has removed from the household loses the room (R5).
+        session_keep_scope = keep_scope(str(session_keep.id).split(":", 1)[-1])
+        message_scope = governed.resolve_write_scope(
+            subject, session_keep_scope, default=session_keep_scope
+        )
         session_scope = agent_row.session
         recipients: list[_AgentRefLike]
         if to:
@@ -7122,17 +7230,24 @@ class AppContext:
                     f"action=fleet shows who is here), or name recipients with to=[...] once "
                     f"one exists"
                 )
-        result = await self.message_ledger.send(
-            sender=agent_row,
-            session=session_scope,
-            body=body,
-            grade=grade,
-            recipients=recipients,
-            thread=thread,
-            task_id=task_id,
-            refs=refs,
-            set_status=set_status,
-        )
+        # §4.A / §10.9-A — stamp the created message's owner pair + scope from the resolved Subject,
+        # inside a ``write_guard("send")`` so the F5 runtime seam attributes the governed write to
+        # the ``send`` frame (an unattributed governed write is UNCLASSIFIED / denied).
+        with governed.write_guard("send"):
+            result = await self.message_ledger.send(
+                sender=agent_row,
+                session=session_scope,
+                body=body,
+                grade=grade,
+                recipients=recipients,
+                thread=thread,
+                task_id=task_id,
+                refs=refs,
+                set_status=set_status,
+                owner_principal=subject.principal_id,
+                owner_agent=subject.agent_id,
+                scope=message_scope,
+            )
         return AppContext._render_comms_send(
             result, broadcast=not to, session=session_scope
         )
@@ -7421,8 +7536,16 @@ class AppContext:
         registered_age_s: int,
         brief: Brief | None,
         brief_age_s: int,
+        capability: str | None = None,
+        ownerless: bool = False,
+        session_keep: Any = None,
+        kept_by_me: bool = False,
     ) -> Rendered:
-        """register's render (design doc §9.1): bootstrap / full-with-fence variants."""
+        """register's render (design doc §9.1): bootstrap / full-with-fence variants, plus the
+        packet-63b-ii-a governed additions — the SF-63-1 session-keep line (minted/joined), the
+        reading-α OWNERLESS bound line (ruling §3.2), and the R7 one-time capability line (ruling
+        §3.4: a FIRST register serves the ``<name>:<secret>`` credential ONCE, and NO other comms
+        render ever carries it)."""
         if re_registered:
             head = render_line(
                 "re-registered {name} (session {session}, role {role}) — status active "
@@ -7439,27 +7562,75 @@ class AppContext:
                 session=sanitise_line(agent.session),
                 role=render_attributed(agent.role),
             )
+        pieces: list[Rendered] = [head]
         if brief is None:
-            return render_compose(
-                head,
+            pieces.append(
                 render_line(
                     "no 'project' brief published yet — work from your spawn brief; "
                     "re-check with lore_comms action=brief_get"
-                ),
+                )
             )
-        return render_compose(
-            head,
-            render_line(
-                "brief '{name}' v{version} (published {age} ago by {author}) — "
-                "ack recorded (via register)",
-                name=sanitise_line(brief.name),
-                version=brief.version,
-                age=AppContext._render_age(brief_age_s),
-                author=render_attributed(brief.created_by),
-            ),
-            render_fenced(brief.body),
-            render_line("echo in your report: brief project v{version} read", version=brief.version),
-        )
+        else:
+            pieces.append(
+                render_line(
+                    "brief '{name}' v{version} (published {age} ago by {author}) — "
+                    "ack recorded (via register)",
+                    name=sanitise_line(brief.name),
+                    version=brief.version,
+                    age=AppContext._render_age(brief_age_s),
+                    author=render_attributed(brief.created_by),
+                )
+            )
+            pieces.append(render_fenced(brief.body))
+            pieces.append(
+                render_line(
+                    "echo in your report: brief project v{version} read", version=brief.version
+                )
+            )
+        # SF-63-1 (ruling §3.1 step 6) — the session-keep line, credentialed register only. A status
+        # report keyed on whether THIS registrant's principal is the keeper (minted) or joined one
+        # another principal keeps.
+        if session_keep is not None:
+            key = sanitise_line(str(getattr(session_keep, "key", "")))
+            if kept_by_me:
+                pieces.append(render_line("session keep {key} — minted (you keep it)", key=key))
+            else:
+                pieces.append(
+                    render_line(
+                        "session keep {key} — joined (kept by another principal)", key=key
+                    )
+                )
+        # reading α (ruling §3.2) — the OWNERLESS bound line. Names three facts (ruling §3.2): the
+        # agent holds no owner; the capability-required verbs that DENY for it (DERIVED from
+        # _COMMS_ACTIONS, so a new True verb joins automatically — INSTRUMENT 0); and the two
+        # remedies. §9 B1 re-open trigger (63c) rides the prose.
+        if ownerless:
+            deny_verbs = [
+                sanitise_line(verb)
+                for verb, spec in sorted(_COMMS_ACTIONS.items())
+                if getattr(spec, "requires_capability", False)
+            ]
+            pieces.append(
+                render_line(
+                    "⚠ registered OWNERLESS (no transport credential presented) — this agent holds "
+                    "no owning principal, so the capability-required verbs ({verbs}) DENY for it; "
+                    "present the fleet credential and register a FRESH name, or run `lore-adm "
+                    "migrate-governed --table agent` for a legacy row (63c may deny an ownerless "
+                    "register outright)",
+                    verbs=render_join(", ", deny_verbs),
+                )
+            )
+        # R7 (ruling §3.4) — the one-time capability, FIRST register only (a re-register mints none).
+        # Served here and NOWHERE else (the §F3a no-leak invariant; fleet/heartbeat never carry it).
+        if capability is not None:
+            pieces.append(
+                render_line(
+                    "your one-time capability — present it on every governed call (shown ONCE): "
+                    "{cap}",
+                    cap=sanitise_line(capability),
+                )
+            )
+        return render_compose(*pieces)
 
     @staticmethod
     def _render_comms_heartbeat(
@@ -8798,6 +8969,13 @@ class CommsActionSpec:
     params: frozenset[str]
     required: frozenset[str] = frozenset()
     requires_registration: bool = True
+    # §4.D / packet-63b RULING §4: whether this action's handler ENFORCES a verified
+    # ``capability=`` (an unconditional ``_resolve_subject``). TYPED applicability (the
+    # packet-28 "renders take typed applicability, never a name they compare" law), NOT a
+    # hardcoded verb list in the dispatch. It flips TRUE per verb WITH the wave that
+    # enforces it: ``send`` in ii-a; the four reads (drain/ack/await/story) in ii-b; a
+    # ``True`` whose handler does not enforce is the typed-applicability lie (PKT-28 C1).
+    requires_capability: bool = False
     # §B6.2: the action's OWN ``limit`` ceiling, or None for an action that takes
     # no ``limit``. The dispatcher's below-one teaching message derives its range
     # text from THIS rather than from a hardcoded ``_MAX_FLEET_LIMIT`` — served
@@ -8843,11 +9021,17 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
     ),
     _COMMS_ACTION_SEND: CommsActionSpec(
         AppContext._comms_send,
-        params=frozenset({"to", "body", "grade", "thread", "task_id", "refs", "set_status"}),
+        params=frozenset(
+            {"to", "body", "grade", "thread", "task_id", "refs", "set_status", "capability"}
+        ),
         # ``grade`` is REQUIRED: a defaulted grade is a silent policy decision —
         # every message would become a signal (never ack-tracked) or every one a
         # directive (ack-nagging on trivia).
         required=frozenset({"body", "grade"}),
+        # §4.D / RULING §4 — ii-a flips EXACTLY ``send`` (the message-family WRITE verb):
+        # its handler gains an UNCONDITIONAL ``_resolve_subject``, so a name is no longer
+        # enough. The four reads flip in ii-b WITH their read-shape enforcement.
+        requires_capability=True,
     ),
     _COMMS_ACTION_DRAIN: CommsActionSpec(
         AppContext._comms_drain,
@@ -11988,6 +12172,18 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
                 )
             ),
         ] = None,
+        capability: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "For 'send': the raw `<name>:<secret>` capability of the acting agent "
+                    "(the one-time credential the FIRST 'register' response served). A "
+                    "message-family WRITE verb resolves identity from this verified "
+                    "capability, not merely from agent= — an agent name is no longer enough. "
+                    "Omit it for the read/registration verbs."
+                )
+            ),
+        ] = None,
     ) -> str:
         return await _app_context(context).comms(
             action=action,
@@ -12011,6 +12207,7 @@ def _register_tools(mcp: FastMCP, server: LoreServer) -> None:
             set_status=set_status,
             seqs=seqs,
             peek=peek,
+            capability=capability,
         )
 
     @_gated_tool(
