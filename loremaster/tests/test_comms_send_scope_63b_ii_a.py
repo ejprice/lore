@@ -751,6 +751,81 @@ class TestThePrincipalResolutionIsSharedByMutation:
         )
 
 
+class _RaisingPrincipalStore:
+    """A principal store whose ``get_by_email`` RAISES — the short-circuit proof for the unit pin below.
+    §3.1's None-returning legs (token absent / carries no subject) decide at the SEAM, with no email to
+    look up, so a correct ``resolve_principal`` NEVER consults the store on those legs (adversary3
+    §D-NULLTOKEN verified the reference short-circuits). If it IS consulted, the seam reached the store
+    for an identity-less token → the short-circuit is broken → this fails legibly rather than letting a
+    real (or None-returning) store make a dropped-guard build look correct."""
+
+    async def get_by_email(self, email: Any) -> Any:
+        raise AssertionError(
+            f"resolve_principal consulted the principal store (get_by_email({email!r})) for an "
+            f"identity-less token — §3.1's None-returning legs must short-circuit BEFORE the store "
+            f"(the absent/empty-subject decision is at the seam, not a downstream lookup)"
+        )
+
+
+class TestResolvePrincipalReturnsNoneForAnIdentitylessToken:
+    """RULING §3.1 — the lifted ``governed.resolve_principal(access_token, *, principal_store)`` returns
+    ``None`` iff the token is ABSENT **or** carries no subject, and decides so at the SEAM (no store
+    lookup — adversary3 §D-NULLTOKEN). A pure UNIT pin that bypasses the ``cred`` harness: that harness's
+    ``_patched_get_access_token`` can only ever build ``access_token(subject=<str>)`` and NEVER return
+    ``None`` from ``get_access_token()`` — the realistic production absence shape an unauthenticated call
+    yields — so the token-ABSENT leg is structurally unpinnable through it (#131 THE TEST ENVIRONMENT IS
+    A FICTION: the harness guarantees the one condition under which the bug is invisible). MP-6
+    (``TestATokenlessRegisterIsOwnerlessAndMintsNoKeep``) pins only the empty-subject mode, through the
+    register path; this pins BOTH None-returning modes DIRECTLY on the seam. Added per adversary3's
+    D-NULLTOKEN finding (``REPORT-adversary3-63b-ii-a.md`` §D-NULLTOKEN).
+
+    RED at HEAD: ``governed.resolve_principal`` is a builder deliverable that does not exist at
+    ``9138687`` (``lore_verify`` → not_found); the ``getattr`` unbuilt-signal is this file's established
+    idiom (``TestResolveWriteScopeIsLifted``). Tolerant of a sync OR async seam (``_maybe_await``)."""
+
+    async def test_a_none_token_resolves_to_none_without_consulting_the_store(self) -> None:
+        """⚠ RED at HEAD — the REQUIRED leg (adversary3 D-NULLTOKEN). ``resolve_principal(None, …)``
+        returns ``None`` and does NOT raise. The WRONG BUILD it kills: a ``resolve_principal`` that reads
+        ``access_token.subject`` directly (no ``getattr`` guard — the natural non-defensive spelling, a
+        plausible builder cleanup of ``resolve_subject``'s defensive ``getattr``) — it crashes
+        ``AttributeError`` on the ``None`` token yet passes the ENTIRE ``cred``-driven file, because that
+        harness cannot produce a ``None`` token (adversary3 confirmed empirically: the ``.subject``-direct
+        door goes ``21 passed`` on this file). The raising store proves §3.1's decision is at the seam,
+        before any lookup — but the ``.subject``-direct build crashes before ever reaching it."""
+        seam = getattr(governed, "resolve_principal", None)
+        if seam is None:
+            pytest.fail(
+                "governed.resolve_principal unbuilt (ruling §3.1) — the token-absent None leg; the seam "
+                "lifted from resolve_subject step (2) does not exist yet"
+            )
+        result = await _maybe_await(seam(None, principal_store=_RaisingPrincipalStore()))
+        assert result is None, (
+            f"resolve_principal(None, …) must return None for an ABSENT token (§3.1: None iff the token "
+            f"is absent or carries no subject) — never raise, never fabricate. got {result!r}. A build "
+            f"doing `access_token.subject` (no getattr guard) crashes AttributeError here instead of "
+            f"returning None (adversary3 D-NULLTOKEN: the #131 gap the cred harness cannot express)"
+        )
+
+    async def test_an_empty_subject_token_resolves_to_none_without_consulting_the_store(self) -> None:
+        """⚠ RED at HEAD — the companion leg (§3.1 'carries no subject'), pinned DIRECTLY on the seam
+        (MP-6 pins this mode only through the register path). ``access_token(subject="")`` → the subject
+        is falsy → ``None``, store untouched (``resolve_subject`` step (2) uses ``if not email`` —
+        falsiness, so the faithful extraction short-circuits on ``""`` too). Kills a build whose
+        identity-less guard is ``if email is None`` (None-only) rather than ``if not email`` (falsiness):
+        it would fall through to ``get_by_email("")`` → the raising store fires (or a real store's None →
+        GovernedDenied), neither of which is the ruled ``None`` return."""
+        seam = getattr(governed, "resolve_principal", None)
+        if seam is None:
+            pytest.fail("governed.resolve_principal unbuilt (ruling §3.1) — the empty-subject None leg")
+        result = await _maybe_await(
+            seam(access_token(subject=""), principal_store=_RaisingPrincipalStore())
+        )
+        assert result is None, (
+            f"resolve_principal(access_token(subject=''), …) must return None for a token that carries "
+            f"no subject (§3.1) — never raise, never consult the store. got {result!r}"
+        )
+
+
 class TestTheAgentArgumentMustMatchTheCapability:
     """RULING §2.3 / §9 B2 — the ONE agent≡capability MISMATCH case pinned in ii-a (the ≥2×≥2 battery is
     63b-iii's headline; the EQUALITY CHECK ``_bare(agent_row.id) == subject.agent_id`` is BUILT in ii-a).
