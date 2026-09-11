@@ -71,7 +71,6 @@ on any surprise. The LEG-C verdict is DIAGNOSTIC (printed, never an exit gate).
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from datetime import UTC, datetime, timedelta
@@ -83,6 +82,16 @@ from typing import Any
 # ``_read_fragment`` and member ``_SUBJECT`` are the SHIPPED ii-a instrument — not
 # re-cloned here (store-law C1: do not fork a throwaway walker).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from loremaster.store._txn import bootstrap_session, signin_credentials  # noqa: E402
+from loremaster.store.surreal_schema import (  # noqa: E402
+    MESSAGE_BODY_MAX_CHARS,
+    MESSAGE_TABLE,
+    TO_RELATION,
+    generate_agent_ddl,
+    generate_message_ddl,
+    generate_principal_ddl,
+)
+from lorerunes.pdp import AGENT_TABLE  # noqa: E402
 from probe_read_filter_63 import (  # noqa: E402 — deferred until sys.path is primed
     NAMESPACE,
     PASSWORD,
@@ -95,17 +104,6 @@ from probe_read_filter_63 import (  # noqa: E402 — deferred until sys.path is 
     explain,
     unique_database,
 )
-
-from loremaster.store._txn import bootstrap_session, signin_credentials  # noqa: E402
-from loremaster.store.surreal_schema import (  # noqa: E402
-    MESSAGE_BODY_MAX_CHARS,
-    MESSAGE_TABLE,
-    TO_RELATION,
-    generate_agent_ddl,
-    generate_message_ddl,
-    generate_principal_ddl,
-)
-from lorerunes.pdp import AGENT_TABLE  # noqa: E402
 from pydantic import SecretStr  # noqa: E402
 from surrealdb import AsyncSurreal, RecordID  # noqa: E402
 
@@ -350,7 +348,7 @@ def _reading_b_txn(msg_fragment: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-async def probe(connection: Any) -> tuple[ProbeReport, dict[str, Any]]:
+async def probe(connection: Any) -> tuple[ProbeReport, dict[str, Any]]:  # noqa: PLR0915 — a linear diagnostic probe; splitting it hides the leg sequence (ii-a probe precedent)
     report = ProbeReport()
     findings: dict[str, Any] = {}
     msg_fragment, msg_params = _read_fragment(MESSAGE_TABLE)
