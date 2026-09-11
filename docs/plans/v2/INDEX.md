@@ -2227,3 +2227,32 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   (gate mypy-self-destruct on a pytest-only bound — MOOT, bound discharged), #462/obs-1 (ledger.retire
   foreign-supersede durability edge, LOW). Reports → `receipts/2026-09-09-packet63b-ib/`. NEXT = 63b-ii-a
   (message write side). ⚠ Fable design-sidecar hit a session-limit mid-wave (recovered); quota risk for ii/iii.
+- **2026-09-11 — 63b-ii-a CLOSED (message WRITE side — send enforcement + SF-63-1 keep + §4.C migrate).**
+  Session `Lore` (`lead-63b-s2` cont.). The owner-resolution fork was RULED by the Fable sidecar
+  (`docs/design/2026-09-09-packet63b-ii-a-owner-resolution-ruling.md`, binding): **Q1** the send owner is
+  the resolved Subject's pair and a TOKENLESS send DENIES (all 3 adversary readings rejected as mis-posed
+  — the write is forbidden without identity); **Q2** the session-keep keeper is the registrant's principal
+  via a lifted `governed.resolve_principal` shared with `resolve_subject`; a tokenless register succeeds
+  OWNERLESS + mints NO keep (reading α; β=deny-outright → 63c); `requires_capability` flips per verb with
+  its enforcing wave (ii-a = EXACTLY `{send}`). 9 commits `58865ba..eafb8fd`: probe `58865ba` · RED
+  contract `a4eb097` → adversary INSUFFICIENT (MP-1 C-DEF / MP-2 unflagged 63a corpse / MP-3 / MP-4 design
+  fork) → ruling `3497f2a` + ruff-fix `7ab8f60` (F-RUFF-PROBE, pre-existing PLR0915) → revision `4b5a9de`
+  → re-adversary SUFFICIENT + sidecar §11 fidelity read `607907f` caught MP-5 (agent≡capability mismatch)
+  + MP-6 (tokenless-register α) → `9138687` → focused adversary3 INSUFFICIENT-by-one (D-NULLTOKEN, the
+  #131 harness-can't-produce-None gap) → `2ad831c` → build `eafb8fd` (production §7-5 — the two governed
+  lifts + `resolve_operator_principal` + §4.C migrate legs + §4.F DDL {memory,message,to} + the
+  send-enforcement/register-keep/α-render seam — PLUS the operator-ruled D1 all-in-ii-a corpse
+  reconciliation, ~140 tokenless→credentialed sites via ONE shared fake seam + 18 disclosed in-scope
+  regressions). Cold-audit `coldaudit-63b-ii-a` **GO** (builder≠grader, FULL suite ALONE 11223/0/0,
+  currency 0 RED_ORPHANED, typecheck + ruff clean; 7/7 mutation proofs discriminate; DUAL corpse 0
+  assertions removed; #107 OVERWRITE/option<>/ENFORCED intact; served-string α deny-verbs DERIVED;
+  no CONFIRMED defect). Residuals (all benign/ruled): R1 (no dirty-store DDL pin for the NEW message
+  columns — trigger: first CHANGE to a governed message column def) · R2/R3 (the register→send wire
+  battery + the ≥2×≥2 agent≡capability matrix → **63b-iii**) · R4 (builder prose "18" vs enumerated 17,
+  cosmetic) · R5 (stray repo-root `test_*.memory.db` + stale `resume` → sweep before the pkt-65 image
+  build) · **#463** (:18500 lore-store WS drops, dogfood friction, filed). **F-DUP** (the 3×+ credentialed
+  test harness → one shared home in `_governed_contract.py`) DEFERRED to ii-b (measure-then-tune: extract
+  once the read-side consumer set is known; `_governed_contract.py` writable grant held). Reports at root;
+  archive to `receipts/2026-09-11-packet63b-ii-a/` before the pkt-65 image build. COMMIT-ONLY (deploy =
+  pkt-65 joint cutover). **NEXT = 63b-ii-b (message READ side)**, then 63b-iii (dedicated security-auditor).
+  Do NOT start 63c.
