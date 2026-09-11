@@ -436,3 +436,117 @@ it is a floor):
 - Every count in §8 was derived this session by the stated instrument; none is inherited.
 - The attribution reminder injected at session start is overridden by the operator's standing
   `~/.claude/CLAUDE.md` rule and is moot (COMMIT-ONLY; the lead commits).
+
+---
+
+## 11. ADDENDUM (2026-09-11) — fidelity read of the contract revision `4b5a9de` against this ruling
+
+**Graded:** `4b5a9de` · HEAD-at-report: `4b5a9de` · SAME. Instrument: a read of the three revised ii-a
+files + the two lead-granted cross-file diffs (`git show 4b5a9de`) + `REPORT-reviser-63b-ii-a.md`,
+against §2–§9 above; two live probes (11.1). Read-only — this section is the only write. This is a
+FIDELITY read (did the ruling land as ruled), not a grade of the contract's sufficiency: that remains
+the re-adversary's (contract → adversary → build, no skipping).
+
+### 11.1 Verdict: FAITHFUL on R1–R8, §4, §7 items 1–6 — with TWO omissions (11.2)
+
+| ruled | landed as | verdict |
+|---|---|---|
+| R1 owner exactness | `test_a_credentialed_send_stamps_exactly_the_subjects_pair` — A keeps, households B, B sends; owner == B's pair, ≠ keeper, `owner_agent == sender` | faithful (the WB-2 killer) |
+| R2 tokenless send denies, zero rows | `test_a_tokenless_send_denies_and_creates_no_message_row` + credentialed control writes ONE | faithful |
+| R3 keeper exactness + foreign gate + control | three pins; non-admin registrant vs the admin; deny names session+remedy, not the keeper; no agent row | faithful |
+| R4 one derivation by mutation | `TestThePrincipalResolutionIsSharedByMutation` (both paths move to P*) + the structural twin in the capability file | faithful |
+| R5 send-half grant flip | removed-member deny + permissive-seam success (explicit `session_scope`) | faithful — §4.A's rider now flips BOTH halves |
+| R6 ∀ True-verb deny | `test_send_without_a_capability_denies` (anti-vacuity first) | faithful for ii-a; see 11.5 for the ii-b coverage obligation |
+| R7 credential served once (D2 = ii-a) | first render carries a credential that VERIFIES; re-register does not; fleet/heartbeat never | faithful |
+| R8 `owner_agent == sender` classifier leg | predicate + `wrong_owner` unit reject; "F4's separate pin" prose now NAMES R1 | faithful |
+| §4 per-verb flip | True-set EXACTLY `{send}`; reads False until ii-b; 63c verbs False | faithful |
+| §7-6 MP-2 corpse | `test_governed_migration_63a.py` registers a genuine NONE-owner agent (not retired) | faithful |
+| F-A | i-a known-set → `{memory, message, to}`, docstrings dated RED_ADJUDICATED(owner=63b-ii) | faithful |
+
+**Two soundness probes (a pin that cannot pass on a correct build is a C-DEF):**
+- R8's `after["owner_agent"] != after["sender"]` needs SDK value equality. Probed live (installed
+  `surrealdb`, this checkout, 2026-09-11): `RecordID("agent","x1") == RecordID("agent","x1")` → `True`;
+  `!=` on equal ids → `False`; `==` on different ids → `False`. Holds. (`RecordID` is unhashable —
+  irrelevant to the predicate.)
+- R2/R6 drive `capability=None`/omitted: `stamp_owner` → `_verify_capability_owner(None, token)` →
+  `parse_credential(None)` → `is_blank(None)` → `None` → uniform deny → `OwnerStampError` →
+  `GovernedDenied` (`lorerunes.credentials.parse_credential`, read at `4b5a9de`). Never an
+  `AttributeError`. Sound.
+
+### 11.2 TWO ruling items NOT landed — missing pins, each with the wrong build it admits TODAY
+
+- **MP-5 — §9 B2's ONE mismatch case ("pinned in ii-a") is absent.** The capability file's docstring
+  says the ≥2×≥2 battery is iii's (correct) but NO test drives a sibling's capability. Add
+  `test_a_send_with_a_siblings_capability_denies_and_writes_nothing` (send_scope, on `cred`): one
+  principal (alice), two agents (`alice_w1`, `alice_w2` via `_register_owned`), a session keep (tool
+  register), then `comms(action="send", agent="alice_w1", capability=<alice_w2's>, …)` under alice's
+  token → `GovernedDenied` naming the mismatch, and ZERO message rows (`_message_count`). Positive
+  control: the same send with `alice_w1`'s own capability writes one row. **Wrong build admitted
+  today:** a `_comms_send` that omits §2.3's `_bare(agent_row.id) == subject.agent_id` check —
+  `stamp_owner` verifies `alice_w2` (its binding to alice's token HOLDS, so nothing denies), the send
+  proceeds with `sender = alice_w1` and `owner_agent = alice_w2`. It passes R1 (honest fixture), R2,
+  R6, and the live classify (honest send); R8 would catch it only under observation of THIS drive,
+  which nothing drives. This is F4's kernel — the `agent=` ARGUMENT selecting an identity the
+  capability did not prove ("no argument moves the stamp").
+- **MP-6 — §9 B1's α pin ("pinned by the render bound line") is absent.** Nothing drives a tokenless
+  register on the credentialed harness. Add
+  `test_a_tokenless_register_succeeds_ownerless_mints_no_keep_and_names_the_bound` (send_scope):
+  `holder["email"] = None` (the empty-subject token; if the harness can also return `None` from
+  `get_access_token`, drive both) → the register SUCCEEDS (no raise — the 58 tokenless corpse sites
+  already pin that half); then assert (1) the agent row's `owner_principal IS NONE` (F2 at the tool
+  layer, never fabricated), (2) `get_by_key("session:<s>") is None` (no keep kept), (3) the render
+  names the bound: ownerless · the denying verb set (derived: the `requires_capability=True` verbs) ·
+  the two remedies (§3.2). The assertion message carries the §9 B1 re-open trigger (63c). Positive
+  control in the same test: the credentialed register in a fresh session DOES mint a keep. **Wrong
+  build admitted today — the Reading-A HYBRID on the tokenless branch:** `principal = await
+  resolve_principal(...) or await resolve_operator_principal(principal_store)`. It passes R3 (the
+  credentialed registrant alice ≠ carol), passes the corpse (registers succeed), passes R4 (the
+  patched seam returns P*, so the fallback never runs), and FABRICATES the fleet's admin as keeper AND
+  owner for every tokenless register — precisely what §3.2 α forbids ("nothing fabricated") and what
+  the pkt-62 registry pin forbids one layer down.
+
+Both are ~25 lines each on the existing `cred` harness. Route them to the reviser (or the
+re-adversary's contract-fix round) BEFORE the re-adversary grades — a contract graded without them
+certifies a build that fabricates on the tokenless branch and a build that lets `agent=` pick the owner.
+
+### 11.3 F-DUP — RULED: ONE shared credentialed harness; placement folds into D1
+
+The credentialed harness (switchable token holder, principal provisioning, capability minting) is test
+MECHANISM, not fixture DATA — the per-file "fixture DATA, local, deliberately not imported" convention
+covers `_config` dicts, not a token-switching seam whose SHAPE every governed test must agree on. It now
+exists in FOUR copies (`test_wire_isolation_63a.py::wire_world` + the three ii-a files), and D1's
+credential-the-fake work will add a fifth shape unless it shares. Shared home: **`_governed_contract.py`**
+— it already exports `access_token`, `build_memory_backend`, `member`; it IS the governed test
+substrate, and a sibling `_governed_wire.py` fragments it. Shape: `credentialed_app_context(monkeypatch,
+tmp_path, *, principals: dict[str, str]) → {ctx, holder, pids, emails}` + `register_owned(ctx, name, *,
+owner_principal_id, session)`; `wire_world` and the three `cred` fixtures become callers. Sharing is
+proven by mutation (change the helper's token shape → every caller's identity flips). **Placement:**
+with D1 at the BUILD wave — the builder already touches every comms test file; do NOT churn the RED
+contract before the re-adversary grades it. The reviser's 3× copy is ACCEPTED AS-IS for the re-grade.
+The `_governed_contract.py` writable-set grant is the lead's.
+
+### 11.4 F-MP3-SCOPE — the reviser's reading STANDS (not over-constraining)
+
+The message leg resolves the operator UNCONDITIONALLY, mirroring `_migrate_memory_scope`
+(`resolve_operator_principal` → `get_or_create_keyed(PROJECT_KEEP_KEY, keeper_email=operator.email)`),
+so it refuses on ambiguity exactly as the memory leg does. A get-by-key-first variant that only resolves
+the operator on a miss would be a SECOND shape for "the project keep" across legs; §4.C's *"the same
+resolution … lifted to ONE helper"* and ONE IMPLEMENTATION pick one shape. A one-shot admin verb owes
+consistency, not the optimisation. The existing route pin + the reviser's ambiguity pin are correct.
+
+### 11.5 Resolved / informational
+
+- **F-RUFF-PROBE is RESOLVED at `7ab8f60`** (the lead silenced PLR0915 on `scripts/probe_read_filter_63.py`);
+  the reviser graded `3497f2a`, before the fix. Repo-wide ruff is not red on that file at `4b5a9de`.
+- **R6's ∀ is honest in ii-a by the EXACT-SET pin (`{send}`), not by the driver.** ii-b OBLIGATION: the
+  driver becomes a per-verb table keyed on the True-set with a coverage assertion (every True verb has
+  a driver row; a True verb without one reds) — INSTRUMENT 0's reach-as-a-checked-variable, so growing
+  the set cannot silently outrun the behavioural leg.
+- **F-A-RED-ADJUDICATED:** correct as filed; the currency gate carries it under owner=63b-ii (the
+  design's own row).
+
+### 11.6 What the lead does with this (three lines)
+
+1. MP-5 + MP-6 → the reviser (or the re-adversary's fix round) before the re-adversary grades.
+2. D1 per §8, with F-DUP folded in per 11.3 (grant `_governed_contract.py` to the builder).
+3. Re-adversary on the revised contract; then build; then cold audit — no wave skips the adversary.
