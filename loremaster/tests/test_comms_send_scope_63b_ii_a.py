@@ -49,7 +49,7 @@ from _surreal_harness import drop_database as drop_surreal_database
 from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
 from loremaster.config import LoreConfig
 from loremaster.memory import local as local_mod
-from loremaster.server import AppContext, LoreServer, build_app_context
+from loremaster.server import _COMMS_ACTIONS, AppContext, LoreServer, build_app_context
 from loresigil.testing import FakeEmbedder
 
 import lorerunes as pdp
@@ -748,4 +748,148 @@ class TestThePrincipalResolutionIsSharedByMutation:
             f"perturbing governed.resolve_principal did NOT change the register-minted keep's keeper — "
             f"_comms_register does not route through the shared resolve_principal (ruling §3.1 / §3.3 "
             f"ONE derivation: Q1 and Q2 must be the SAME seam). keep={keep!r}, expected keeper {p_star_pid!r}"
+        )
+
+
+class TestTheAgentArgumentMustMatchTheCapability:
+    """RULING §2.3 / §9 B2 — the ONE agent≡capability MISMATCH case pinned in ii-a (the ≥2×≥2 battery is
+    63b-iii's headline; the EQUALITY CHECK ``_bare(agent_row.id) == subject.agent_id`` is BUILT in ii-a).
+    An ``agent=`` selecting an identity the presented capability did NOT prove is F4's kernel: 'no
+    argument moves the stamp'. Added per the design authority's fidelity read (ruling §11.2 MP-5), which
+    found no test drove a sibling's capability."""
+
+    async def test_a_send_with_a_siblings_capability_denies_and_writes_nothing(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — a ``send`` whose ``agent=`` names ``alice_w1`` but whose ``capability=``
+        proves a SIBLING owned by the SAME principal (``alice_w2``) must DENY at the §2.3 agent≡subject
+        check and write ZERO message rows. Both agents are alice's, so ``stamp_owner``'s
+        ``(principal, agent)`` binding for ``alice_w2`` HOLDS under alice's token — ONLY the
+        agent≡subject check can deny. RED at HEAD on the ``keep is not None`` guard (SF-63-1 unbuilt); if
+        the send is reached, ``comms`` rejects ``capability=`` (§4.D unbuilt) → the wrapper reds. The
+        WRONG BUILD it kills (§2.3) is a ``_comms_send`` that OMITS ``_bare(agent_row.id) ==
+        subject.agent_id``: stamp_owner verifies alice_w2, nothing denies, the send proceeds with
+        ``sender=alice_w1`` and ``owner_agent=alice_w2`` — that build passes R1 (honest fixture), R2, R6
+        and the live-classify (an honest send). POSITIVE CONTROL: the SAME send with ``alice_w1``'s OWN
+        capability writes exactly one row."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        # TWO agents, both OWNED BY ALICE; _register_owned mints each one's one-time capability.
+        w1_cap, _w1_agent = await _register_owned(
+            ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
+        )
+        w2_cap, _w2_agent = await _register_owned(
+            ctx, "alice_w2", owner_principal_id=cred["pids"]["alice"], session="s1"
+        )
+        # A session keep (tool register, under alice's token — re-register of alice_w1 mints/joins it).
+        await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
+        keep = await _ks(ctx).get_by_key("session:s1")
+        assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
+        before = await _message_count(ctx, "s1")
+        # MISMATCH — agent= names alice_w1, capability proves the sibling alice_w2.
+        try:
+            with pytest.raises(governed.GovernedDenied) as excinfo:
+                await ctx.comms(
+                    action="send", agent="alice_w1", session="s1", to=["alice_w2"],
+                    body="a note whose agent= does not match the capability", grade="signal",
+                    capability=w2_cap,
+                )
+        except TypeError as error:  # HEAD: `comms` rejects capability= (§4.D unbuilt)
+            pytest.fail(f"AppContext.comms rejected capability= — the §4.D seam is unbuilt: {error}")
+        assert "alice_w1" in str(excinfo.value), (
+            f"the agent≡capability mismatch DENY must NAME the requested agent= (§2.3 teaching 'agent= "
+            f"names X but the capability verifies as Y'), got: {excinfo.value}"
+        )
+        after = await _message_count(ctx, "s1")
+        assert after == before == 0, (
+            f"a mismatched-capability send must write ZERO message rows (the deny fires at the §2.3 "
+            f"agent≡subject check, before any write) — before={before} after={after}. A build that omits "
+            f"the check stamps owner_agent=alice_w2 with sender=alice_w1 and writes a row (F4's kernel: "
+            f"'no argument moves the stamp')"
+        )
+        # POSITIVE CONTROL — the SAME send with alice_w1's OWN capability writes exactly one row.
+        await _credentialed_send(
+            ctx, agent="alice_w1", session="s1", to=["alice_w2"],
+            body="a matching-capability note", grade="signal", capability=w1_cap,
+        )
+        assert await _message_count(ctx, "s1") == 1, (
+            "the control send (agent= matches its own capability) must write exactly ONE row — proving "
+            "the mismatch deny above is the agent≡capability check, not a send that never works"
+        )
+
+
+class TestATokenlessRegisterIsOwnerlessAndMintsNoKeep:
+    """RULING §3.2 (reading α) / §9 B1 — a TOKENLESS register SUCCEEDS OWNERLESS, mints NO keep, and its
+    render NAMES the bound. F2's letter (the pkt-62 registry pin) lifted from the registry to the TOOL
+    layer: nothing is fabricated. Added per the design authority's fidelity read (ruling §11.2 MP-6),
+    which found nothing drove a tokenless register on the credentialed harness. The empty-subject token
+    is the harness's native tokenless mode (``holder['email'] = None`` → ``access_token(subject='')``);
+    the ``get_access_token()``-returns-``None`` variant is NOT natively reachable via this harness (see
+    the report flag)."""
+
+    async def test_a_tokenless_register_succeeds_ownerless_mints_no_keep_and_names_the_bound(
+        self, cred: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD — a tokenless (empty-subject) ``register`` SUCCEEDS (no raise — the 58 corpse
+        sites pin that half), then: (1) the agent row's ``owner_principal`` IS NONE (F2 at the tool layer
+        — never fabricated); (2) NO ``session:<s>`` keep is kept; (3) the render NAMES the α bound
+        (ownerless · the DERIVED requires_capability=True deny-verbs · the two remedies). RED at HEAD on
+        (3): at HEAD the register is already ownerless + keepless, but the render carries NO bound line
+        (F10 — the α-ownerless render is unbuilt). The WRONG BUILD it kills (§3.2 α) is the Reading-A
+        HYBRID ``principal = await resolve_principal(...) or await resolve_operator_principal(...)`` on
+        the tokenless branch: it FABRICATES the fleet's admin as keeper AND owner — passing R3 (alice ≠
+        carol), R4 (the patched seam returns P*, so the fallback never runs) and the corpse (registers
+        succeed) — but (1) reds (owner=carol≠None), (2) reds (a keep is minted), and (3) reds (a keeper
+        line, not the ownerless bound). POSITIVE CONTROL: a CREDENTIALED register in a fresh session
+        DOES mint a keep."""
+        ctx = cred["ctx"]
+        cred["holder"]["email"] = None  # the empty-subject token (harness wraps None → subject="")
+        try:
+            result = await ctx.comms(
+                action="register", agent="ownerless_w1", session="s_tok", role="builder"
+            )
+        except governed.GovernedDenied as error:  # a reading-β build (deny the register) — NOT ruled for ii-a
+            pytest.fail(
+                f"a tokenless register DENIED (reading β) — ii-a rules reading α: ownerless SUCCESS, no "
+                f"keep, a named bound (RULING §3.2; β's re-open trigger is 63c). got: {error}"
+            )
+        rendered = str(result).lower()
+        # (1) F2 at the tool layer — the agent is OWNERLESS, never fabricated.
+        rows = await ctx.agent_registry._query(  # noqa: SLF001 - test-only read of the agent row's owner
+            "SELECT owner_principal FROM agent WHERE name = $n", {"n": "ownerless_w1"}
+        )
+        assert rows, "the tokenless register wrote no agent row (reading α: it must SUCCEED ownerless)"
+        assert rows[0].get("owner_principal") is None, (
+            f"a tokenless register FABRICATED an owner (§3.2 α forbids it; F2 at the tool layer) — the "
+            f"Reading-A hybrid stamps the fleet admin (carol). got owner_principal="
+            f"{rows[0].get('owner_principal')!r}, carol={cred['pids']['carol']!r}"
+        )
+        # (2) no keep kept.
+        assert await _ks(ctx).get_by_key("session:s_tok") is None, (
+            "a tokenless register MINTED a session keep (§3.2 α: an ownerless registrant keeps nothing) "
+            "— the Reading-A hybrid mints one kept by the fabricated admin"
+        )
+        # (3) the render NAMES the α bound — reds at HEAD (no bound line, F10).
+        required = {
+            verb for verb, spec in _COMMS_ACTIONS.items()
+            if getattr(spec, "requires_capability", False)
+        }
+        missing_verbs = [verb for verb in required if verb not in rendered]
+        ownerless_named = any(token in rendered for token in ("ownerless", "no owner", "no owning"))
+        remedies_named = "credential" in rendered and "migrate-governed" in rendered
+        bound_named = ownerless_named and not missing_verbs and remedies_named
+        assert bound_named, (
+            f"the tokenless register render must NAME the α bound (§3.2): the agent holds no owner, the "
+            f"requires_capability=True verbs that deny for it (DERIVED; ii-a={{send}}), and the two "
+            f"remedies (present the fleet credential + register a fresh name / `lore-adm migrate-governed "
+            f"--table agent`). §9 B1 re-open trigger: 63c (when `agent` becomes a governed population, "
+            f"reading β — deny the register — is the natural shape). derived_deny_verbs={sorted(required)} "
+            f"missing_from_render={missing_verbs} render={rendered!r}"
+        )
+        # POSITIVE CONTROL — a CREDENTIALED register in a fresh session DOES mint a keep.
+        cred["holder"]["email"] = cred["emails"]["alice"]
+        await ctx.comms(action="register", agent="cred_w1", session="s_cred", role="builder")
+        assert await _ks(ctx).get_by_key("session:s_cred") is not None, (
+            "the credentialed control register minted NO session keep — the tokenless no-keep above must "
+            "be the MISSING IDENTITY, not a build that never mints keeps (SF-63-1)"
         )
