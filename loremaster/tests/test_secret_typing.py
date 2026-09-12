@@ -1067,6 +1067,15 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # shape S6 (no bare str re-wrapped from an upstream typed seam). Re-open trigger: if it ever
         # sources a REAL secret (env, argv, secret file) instead of the ``"spikeroot"`` literal, it is a
         # genuine production credential and must move to config.py's resolver seam.
+        # ADJUDICATED (builder-63b-ii-b, packet 63b ii-b; lead-63b-iib verified): the SAME shape —
+        # ``probe_drain_read_63b_ii_b.py`` (the DD-3.c drain-UPDATE / read-shape probe, landed 0f36420)
+        # mints ``SecretStr(PASSWORD="spikeroot")`` at :679 for the spike-surreal TEST-store connect
+        # (``URL = ws://127.0.0.1:18000``), the identical throwaway composition-root pattern as the
+        # allowlisted siblings above; NOT attack shape S6 (a module-level literal, no bare str
+        # re-wrapped from an upstream typed seam). The probe wave never reconciled the mint with this
+        # list (our own gate miss). Re-open trigger: if it ever sources a REAL secret (env, argv,
+        # secret file) instead of the ``"spikeroot"`` literal, it is a genuine production credential
+        # and must move to config.py's resolver seam.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
@@ -1080,6 +1089,7 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
             "scripts/probe_read_filter_63.py",
             "scripts/probe_dnd_defense_objects.py",
             "scripts/probe_supersede_throw_rollback.py",
+            "scripts/probe_drain_read_63b_ii_b.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)
