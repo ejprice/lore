@@ -2256,3 +2256,39 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   archive to `receipts/2026-09-11-packet63b-ii-a/` before the pkt-65 image build. COMMIT-ONLY (deploy =
   pkt-65 joint cutover). **NEXT = 63b-ii-b (message READ side)**, then 63b-iii (dedicated security-auditor).
   Do NOT start 63c.
+- **2026-09-12 — 63b-ii-b CLOSED (message READ side + the DD-3.c schema fixes; cold-audit GO). COMMIT-ONLY
+  (deploy = pkt-65 joint cutover).** Session `63b-iib-20260911` (lead `lead-63b-iib`, Opus 4.8 end-to-end
+  via opus48-worker + the Fable design sidecar). Full pipeline: probe → 3 sidecar rulings → contract →
+  adversary(INSUFFICIENT) + sidecar fidelity read(GO+gaps) → reviser → re-adversary(SUFFICIENT) → build →
+  A+B grants → cold-audit(GO) → lead one-receipt verify. HEAD `5d61f9e`. **13-commit chain:** probe
+  `0f36420` (+ pointer `6b351c9`) · rulings `0566587` (DROP `to.ack_note` ASSERT, DD-3.c settled by
+  construction) / `6c6175e` (§7 message DD-3.c: 4 length ASSERTs DROP, grade KEPT R19) / `ad0aa4f` (§14
+  fidelity read) · RED contract `4aaf45f` → ruff-fix `8000385` → revised `5a18951` (2 C-DEF fixes + the
+  drain read_filter pin) · build `ab65bc5` (ASSERT drops) / `6e8a539` (ledger read-governance: the ONE
+  shared `governed.read_filter` splice, decode-first F-1, §9.5α ack) / `c2efdf6` (server.py capability
+  flip {drain,ack,await,story} + `render_subject_bound` + governed rollup leg + the DUAL corpse translate,
+  one green boundary) · `4ba7f9d` (test_secret_typing allowlist — the probe gate-miss) / `5d61f9e` (F-DUP
+  §11.3: 4 credentialed harnesses converged onto the shared home + a mutation-proven sharing pin).
+  **Design authority** = `docs/design/2026-09-11-packet63b-ii-b-drain-update-ruling.md` §0–§14 (binding;
+  Fable sidecar). Two DD-3.c fixes: `to.ack_note` ASSERT dropped (drain's whole-window UPDATE could
+  else abort on a legacy over-cap row → total inbox denial; confirmed live on 3.2.4 by the probe, lead
+  re-ran); 4 `message` length ASSERTs dropped (§7, operator "fix it now"), **grade ASSERT KEPT** (D-M8/R19
+  — its violation set ≡ the reader's own Literal-decode rejection set, so it fails in the reader's
+  direction; the length caps don't, so they drop). Cold-audit `coldaudit-63b-iib` **GO** (builder≠grader,
+  FULL suite ALONE `-n 12`: **11242 passed / 0 failed**; currency **0 RED_ORPHANED**; typecheck + ruff
+  clean; mutation-proved both ways in scratch — re-add `to.ack_note` ASSERT → P1/P2 RED, drop grade →
+  P-G3/P2-m RED, restore GREEN; DUAL sampled not-gutted). Lead one-receipt spot-check: the load-bearing
+  ii-b pins (read-governance + dirty-store migrate + F-DUP mutation) 21/21. **RESIDUALS (non-blocking):**
+  the §4.2/§12.8 `:18500` reachability reads (over-cap `to.ack_note`/`message` rows, expected 0 by
+  construction) DEFERRED to the **pkt-65 deploy smoke** — §4.2's own second option ("OR make the deploy
+  smoke assert it"); the smoke MUST run them before the new drain serves. #466 filed (harness isolates
+  per-test DBs, NOT uvicorn ports/RAM — the MECHANISM behind "run the suite ALONE"). B2 read-filter
+  visibility (accepted), G1 hand-listed once-count carriers (re-open = new row-bearing governed read
+  verb), F-DUP mutation flips wire_world directly + 3 by construction (LOW), the unfiltered `+N more
+  unread` re-ask (bound iv, self-correcting). ⚠ **2 probe-brief gate-miss lessons** (both this wave):
+  probe briefs must require `ruff check .` AND the full-suite/currency, not just self-check exit 0 (the
+  probe `0f36420` shipped 3 ruff errors [lead-fixed `8000385`] + a RED_ORPHANED `test_secret_typing`
+  [fixed `4ba7f9d`]). R2/R3 (register→send wire battery + the ≥2×≥2 agent≡capability matrix) → **63b-iii**.
+  Reports at root; archive to `receipts/2026-09-12-packet63b-ii-b/` (with the ii-a batch + stray
+  `test_*.memory.db`/`resume`) before the pkt-65 image build. **NEXT = 63b-iii (dedicated
+  security-auditor).** Do NOT start 63c.
