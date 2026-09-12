@@ -716,35 +716,45 @@ _MESSAGE_GRADE_DIRECTIVE = "directive"
 _MESSAGE_GRADES = (_MESSAGE_GRADE_SIGNAL, _MESSAGE_GRADE_DIRECTIVE)
 _MESSAGE_GRADE_ALLOWED = ", ".join(f"'{grade}'" for grade in _MESSAGE_GRADES)
 
-# The store-enforced ``message.body`` length bound. This is the BACKSTOP, not the
-# primary guard: :mod:`loremaster.messages` (packet 03a) owns the app-level
-# teaching reject, and imports THIS constant so the two bounds can never drift —
-# a body over the bound that bypasses the ledger fails LOUDLY at the store rather
-# than landing unbounded (ONE source of truth for the policy value, per the DRY
-# law — 03a must import, never re-declare the value).
+# The ``message.body`` / ``to.ack_note`` length bound. The APP layer
+# (:mod:`loremaster.messages`, packet 03a) is the ONE implementation of this cap —
+# its ``send`` / ``_reject_oversize_note`` teaching rejects import THIS constant so
+# there is ONE source of truth for the policy value (per the DRY law — 03a imports,
+# never re-declares). There is NO store ASSERT behind it any more: the ``body`` and
+# ``ack_note`` store bounds were DROPPED in 63b-ii-b (§3 / §13) because ``to`` is
+# UPDATE-hot and ``message`` is UPDATE-able, so a store length constraint is a
+# loaded gun — a legacy row that violates a narrowed cap denies a whole-window drain
+# / refuses the cutover UPDATE, while the reader serves an over-long body fine
+# (DD-3.c). See ``docs/design/2026-09-11-packet63b-ii-b-drain-update-ruling.md``.
 MESSAGE_BODY_MAX_CHARS = 4000
 
-# The POINTER-class length bound (DD-3.a), applied to EACH ``refs`` entry, to
-# ``thread`` and to ``task_id``. ONE constant for one class of field: all three
-# are pointers/labels, and three separate constants would be three things to
-# drift. Derivation of 256: the longest legitimate house pointer is a receipts
-# path plus a section cite (~80-100 chars), so 256 is that with headroom — and it
-# refuses content-smuggling outright, because a body-sized "ref" is a BODY wearing
-# a pointer's name. Without it the body cap is theatre: five unbounded refs per
-# row void the render arithmetic the cap exists to protect.
+# The POINTER-class length bound (DD-3.a), applied by the APP layer to EACH
+# ``refs`` entry, to ``thread`` and to ``task_id`` (``_reject_oversize_pointers``,
+# the ONE implementation). ONE constant for one class of field: all three are
+# pointers/labels, and three separate constants would be three things to drift.
+# Derivation of 256: the longest legitimate house pointer is a receipts path plus
+# a section cite (~80-100 chars), so 256 is that with headroom — and it refuses
+# content-smuggling outright, because a body-sized "ref" is a BODY wearing a
+# pointer's name. The matching store ASSERTs were DROPPED in 63b-ii-b (§12 / §13,
+# the DD-3.c UPDATE-hazard) — the cap lives at the app layer only.
 MESSAGE_POINTER_MAX_CHARS = 256
-# The ``refs`` COUNT bound (DD-3.b). The drain render already caps the DISPLAY at
+# The ``refs`` COUNT bound (DD-3.b), enforced at the APP layer
+# (``_reject_oversize_pointers``). The drain render already caps the DISPLAY at
 # five with a counted remainder; this bounds STORAGE. 20 admits any real pointer
 # batch and refuses a thousand-entry list. Both constants are strikeable; the
-# mechanism — bounded pointers, REJECT never truncate — is the ruling.
+# mechanism — bounded pointers, REJECT never truncate — is the ruling. The store
+# ASSERT was DROPPED in 63b-ii-b (§12 / §13).
 MESSAGE_REFS_MAX_COUNT = 20
 
 # The ``message`` node table's fields as ``(name, type_expr, constraint)`` triples
 # — the single source of truth :func:`_message_statements` emits one ``DEFINE
 # FIELD`` per, mirroring :data:`_AGENT_FIELD_SPECS`. ``seq`` is the native-sequence
 # ORDERING key; ``sender`` is a real ``record<agent>`` link (a delivery reader can
-# dot-traverse ``in.sender.name``); ``grade`` carries the closed two-value domain;
-# ``body`` carries the length-bound backstop ASSERT; ``refs`` defaults to ``[]`` so
+# dot-traverse ``in.sender.name``); ``grade`` carries the closed two-value domain
+# (the ONE store ASSERT KEPT — 63b-ii-b §13.1: a junk grade is a row the reader
+# could not decode either, so the guard is reader-ALIGNED, not a duplicated cap);
+# ``body``/``thread``/``task_id``/``refs`` carry NO store ASSERT — their length
+# caps live at the app layer only (63b-ii-b §12); ``refs`` defaults to ``[]`` so
 # a ref-less send may omit it; ``task_id`` is ``option``; ``question`` (design
 # ruling 9 — the message ASKS; the waiting state is DERIVED from it, never stored
 # on the agent) is a ``bool`` DEFAULTing to ``false`` so an ordinary send that
@@ -765,35 +775,39 @@ _MESSAGE_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     # silently dropped by the ``IN`` clause and the asker would read "waiting"
     # forever. Flipping this to ``option<string>`` is a silent semantic change,
     # which is why a schema pin holds it (DD-2.b).
-    ("thread", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
+    ("thread", _CHUNK_STRING_TYPE, ""),
     ("sender", f"record<{AGENT_TABLE}>", ""),
     ("grade", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_MESSAGE_GRADE_ALLOWED}]"),
-    ("body", _CHUNK_STRING_TYPE, f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
+    ("body", _CHUNK_STRING_TYPE, ""),
     (
         "refs",
         "array<string>",
-        f"DEFAULT [] ASSERT array::len($value) <= {MESSAGE_REFS_MAX_COUNT}",
+        "DEFAULT []",
     ),
-    # ⚠ THE ELEMENT ROW, and it is why the pair exists. ``TYPE array<T>``
-    # IMPLICITLY DEFINES ``<field>.*``, so this is ALWAYS a re-definition — the
-    # store reference's §1.1 OVERWRITE-for-fields rule applies to it with no
-    # exception, and ``_define_field`` supplies exactly that (a bare definition
-    # raises "The field 'refs.*' already exists"). The element path is what buys
-    # the per-entry ERROR: a rejection names ``refs.*`` and the offending value,
-    # where a whole-array closure assert dumps the entire array instead.
+    # ⚠ THE ELEMENT ROW STAYS even though its ASSERT was DROPPED (63b-ii-b §12),
+    # for TWO reasons. (i) ``TYPE array<T>`` IMPLICITLY DEFINES ``<field>.*``, so
+    # this is ALWAYS a re-definition — the store reference's §1.1
+    # OVERWRITE-for-fields rule applies to it with no exception, and
+    # ``_define_field`` supplies exactly that (a bare definition raises "The field
+    # 'refs.*' already exists"). (ii) The stored ``refs[*]`` definition on a
+    # long-lived store CARRIES the old ASSERT; only an emitted ``OVERWRITE refs[*]
+    # … TYPE string`` with no clause DROPS it (store reference §1.2) — deleting the
+    # row would leave that ASSERT in the store forever (the #107 shape from the
+    # other side). Leg A pins that the drop lands.
     (
         "refs[*]",
         _CHUNK_STRING_TYPE,
-        f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}",
+        "",
     ),
-    # ⚠ BARE asserts on the two pointer labels — NO ``$value = NONE OR`` guard.
-    # An ``option<>`` field's ASSERT is NOT evaluated when the value is absent, so
-    # the guard is pure cruft that would teach the next author it is required.
-    # ``thread`` takes the same bound but NO charset: it is a topic LABEL, not an
-    # identity, it is a bound param at every site, and the surface's own taught
-    # ``q:<topic>`` form contains a ``:`` the identity charset forbids — applying
-    # that charset would reject this packet's own teaching.
-    ("task_id", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_POINTER_MAX_CHARS}"),
+    # ⚠ ``thread`` and ``task_id`` carry NO store ASSERT (63b-ii-b §12) — their
+    # length caps live in the app layer (``_reject_oversize_pointers``), whose
+    # per-entry ``value is not None`` leg is where the option<>-NONE-not-evaluated
+    # lesson now lives (an ``option<>`` ASSERT is not evaluated on NONE; the app
+    # skips None the same way). ``thread`` takes NO charset: it is a topic LABEL,
+    # not an identity, it is a bound param at every site, and the surface's own
+    # taught ``q:<topic>`` form contains a ``:`` the identity charset forbids —
+    # applying that charset would reject this packet's own teaching.
+    ("task_id", "option<string>", ""),
     ("question", "bool", "DEFAULT false"),
     ("created_at", "datetime", ""),
 )
@@ -812,9 +826,14 @@ _TO_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("seen_at", "option<datetime>", ""),
     ("acked_at", "option<datetime>", ""),
     # ``note`` is message-grade PROSE recorded on the edges an ack actually won —
-    # not a pointer — so it takes the BODY constant, not the pointer one, at both
-    # layers exactly as ``body`` does. Bare assert: NONE is not evaluated.
-    ("ack_note", "option<string>", f"ASSERT string::len($value) <= {MESSAGE_BODY_MAX_CHARS}"),
+    # not a pointer — so its length cap takes the BODY constant, not the pointer
+    # one. That cap lives ONLY at the app layer now (``_reject_oversize_note``, the
+    # ONE implementation): ``to`` is UPDATE-hot — ``drain`` stamps every edge in its
+    # window in ONE statement — so a store ASSERT here is DD-3.c, total inbox denial
+    # the first time a legacy edge violates it. ``to`` therefore carries NO
+    # constraint a legacy row can violate (63b-ii-b §3.4, pinned by P2). See
+    # ``docs/design/2026-09-11-packet63b-ii-b-drain-update-ruling.md``.
+    ("ack_note", "option<string>", ""),
 )
 
 # The ``to`` UNIQUE(in, out) index — one delivery edge per (message, recipient)
@@ -1711,8 +1730,9 @@ def _message_statements() -> list[str]:
     """The ``message`` node + the ``message_seq`` sequence + the ``to`` delivery edge.
 
     Emits, in order: the SCHEMAFULL ``message`` node table and one ``DEFINE FIELD``
-    per :data:`_MESSAGE_FIELD_SPECS` entry (the closed ``grade`` domain, the
-    length-bound ``body`` backstop, the ``record<agent>`` ``sender``, the
+    per :data:`_MESSAGE_FIELD_SPECS` entry (the closed ``grade`` domain — the ONE
+    store ASSERT KEPT, 63b-ii-b §13; the ``body``/``thread``/``task_id``/``refs``
+    length caps are app-layer only, §12; the ``record<agent>`` ``sender``; the
     ruling-9 ``question`` bool); the native ``DEFINE SEQUENCE`` backing
     ``message.seq`` (:func:`_define_sequence`); the two R3(1) hot-path indexes
     over ``(seq)`` and ``(sender, question)``; then the ``to`` relation edge —
