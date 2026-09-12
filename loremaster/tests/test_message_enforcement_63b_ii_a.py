@@ -38,12 +38,10 @@ pytest runs ``-n auto``.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import loremaster.server as server_mod
 import pytest
 import pytest_asyncio
 from _governed_contract import (
@@ -53,18 +51,14 @@ from _governed_contract import (
     SchemaDelta,
     TreeMutationSite,
     TreeWriteAllowlistEntry,
-    access_token,
     classify_tree_observed_write,
+    credentialed_app_context,
     governed_populations,
     governed_table_raw_mutation_sites_in_tree,
     observe_governed_table_writes,
+    register_owned,
 )
-from _surreal_harness import drop_database as drop_surreal_database
-from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
-from loremaster.config import LoreConfig
-from loremaster.server import AppContext, LoreServer, build_app_context
 from loremaster.store import surreal_schema
-from loresigil.testing import FakeEmbedder
 
 _MESSAGE_TABLE = surreal_schema.MESSAGE_TABLE  # "message"
 _TO_RELATION = surreal_schema.TO_RELATION  # "to"
@@ -571,105 +565,24 @@ class TestClassificationOfMessageWrites:
 # observed but UNCLASSIFIED). GREEN on the build (labelled `send` + stamped → classified).
 # =========================================================================== #
 
-_SURREAL_TEST_NAMESPACE = "lore_test"
-_SURREAL_USER_ENV = "SURREAL_USER"
-_SURREAL_PASS_ENV = "SURREAL_PASS"
-_pending_slugs: list[str] = []
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _surreal_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
-    try:
-        yield
-    finally:
-        for slug in _pending_slugs:
-            await drop_surreal_database(make_env(database=slug, dim=8))
-        _pending_slugs.clear()
-
-
-def _config(slug: str) -> LoreConfig:
-    return LoreConfig.model_validate(
-        {
-            "schema_version": 1,
-            "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
-            "project": {"slug": slug, "root": "."},
-            "embedding": {
-                "backend": "tei", "base_url": "http://localhost:8080", "endpoint": "/embed",
-                "model": "voyageai/voyage-4-nano", "dim": 8, "truncate": False,
-                "max_input_tokens": 8192, "max_batch_texts": 32, "concurrency": 2,
-                "connect_timeout_s": 5, "api_key_env": "LORE_TEI_KEY", "tokenizer": "voyage-4-nano",
-            },
-            "surreal": {
-                "url": surreal_url(), "namespace": _SURREAL_TEST_NAMESPACE,
-                "user_env": _SURREAL_USER_ENV, "password_env": _SURREAL_PASS_ENV,
-            },
-            "roots": [], "include": [], "exclude_dirs": [".git"], "exclude_globs": [],
-            "chunkers": {".py": {"chunker": "python_ast"}},
-            "watcher": {"enabled": False, "observer": "inotify", "debounce_ms": 1500,
-                        "reconcile_interval_s": 600},
-            "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9233},
-        }
-    )
-
-
-_E_ALICE = "alice@example.com"
-
-
-def _bare(value: Any) -> str:
-    text = str(getattr(value, "id", value))
-    return text.split(":", 1)[-1] if ":" in text else text
-
-
-async def _register_owned(
-    ctx: AppContext, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
-) -> tuple[str, str]:
-    """Register an agent OWNED by ``owner_principal_id`` DIRECTLY on the registry (the wire_world
-    idiom), returning its one-time ``(capability, bare agent id)``. Until R7 lands the tool ``register``
-    renders but does not RETURN the raw credential, so a credentialed send mints its capability here."""
-    result = await ctx.agent_registry.register(
-        name, session=session, role=role, owner_principal_id=owner_principal_id
-    )
-    assert result.capability is not None, f"the first register of {name!r} must mint a capability"
-    return str(result.capability), _bare(result.agent.id)
-
-
 @pytest_asyncio.fixture()
 async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
-    """A REAL AppContext with a SWITCHABLE ambient transport token (patch
-    ``loremaster.server.get_access_token`` to read ``holder['email']`` — the wire_world idiom) + ONE
-    ``alice`` member principal. The credentialed harness the LIVE send classification drives, so a
-    CORRECT build's send RESOLVES its subject (rather than DENYING a tokenless call) and writes a
-    properly-owned message row the F5 observer captures + classifies. ⚠ FIXTURE DUPLICATION (flag,
-    report §Flags): mirrors send_scope + capability — the established per-file 'fixture DATA, local,
-    deliberately not imported' convention. Reaped (NEVER :18500)."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-enforcement-dummy")
-    monkeypatch.setenv("LORE_TEI_KEY", "enforcement-dummy")
-    holder: dict[str, str | None] = {"email": None}
-
-    def _patched_get_access_token() -> Any:
-        email = holder["email"]
-        return access_token(subject=email if email is not None else "")
-
-    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
-
-    slug = f"test_{uuid.uuid4().hex}"
-    _pending_slugs.append(slug)
-    context = await build_app_context(
-        server=LoreServer(_config(slug)),
-        embedder=FakeEmbedder(dim=8),
-        manifest_path=tmp_path / f"{slug}-m.db",
-        snapshot_root=tmp_path / f"{slug}-snap",
-        start_tasks=False,
-    )
-    principal_store = context._principal_store  # noqa: SLF001 - provision the credentialed principal
-    assert principal_store is not None
-    alice = await principal_store.create(email=_E_ALICE, role="member")
-    try:
-        yield {"ctx": context, "holder": holder, "alice_email": _E_ALICE, "alice_pid": _bare(alice.id)}
-    finally:
-        await context.aclose()
+    """A REAL CREDENTIALED AppContext — a CALLER of the shared ``credentialed_app_context`` (§11.3
+    F-DUP: the private per-file credentialed harness CONVERGED onto the ONE lifted home) + ONE ``alice``
+    member principal. The credentialed harness the LIVE send classification drives, so a CORRECT build's
+    send RESOLVES its subject (rather than DENYING a tokenless call) and writes a properly-owned message
+    row the F5 observer captures + classifies. Reaped by the shared home (NEVER :18500). SHARING is
+    provable BY MUTATION (§11.3): change the shared harness's token shape and this file's credentialed
+    identity flips with it — the F-DUP mutation pin."""
+    async with credentialed_app_context(
+        monkeypatch, tmp_path, principals={"alice": "member"}, dim=8
+    ) as world:
+        yield {
+            "ctx": world["ctx"],
+            "holder": world["holder"],
+            "alice_email": world["emails"]["alice"],
+            "alice_pid": world["pids"]["alice"],
+        }
 
 
 class TestTheLiveSendClassifiesUnderF5:
@@ -693,7 +606,7 @@ class TestTheLiveSendClassifiesUnderF5:
         ctx = cred["ctx"]
         cred["holder"]["email"] = cred["alice_email"]
         # A CREDENTIALED sender owned by alice (its capability minted off the registry) + a recipient.
-        sender_cap, _sender_agent = await _register_owned(
+        sender_cap, _sender_agent = await register_owned(
             ctx, "sender_x", owner_principal_id=cred["alice_pid"], session="s1"
         )
         await ctx.comms(action="register", agent="recip_x", session="s1", role="builder")

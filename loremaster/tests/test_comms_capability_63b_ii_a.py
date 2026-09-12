@@ -40,20 +40,14 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import re
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import loremaster.server as server_mod
 import pytest
 import pytest_asyncio
-from _governed_contract import access_token, function_calls_named
-from _surreal_harness import drop_database as drop_surreal_database
-from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
-from loremaster.config import LoreConfig
-from loremaster.server import _COMMS_ACTIONS, AppContext, CommsActionSpec, LoreServer, build_app_context
-from loresigil.testing import FakeEmbedder
+from _governed_contract import access_token, credentialed_app_context, function_calls_named
+from loremaster.server import _COMMS_ACTIONS, AppContext, CommsActionSpec
 
 from loremaster import governed, server
 
@@ -244,93 +238,28 @@ class TestTheCommsToolAcceptsACapabilityParameter:
 
 
 # =========================================================================== #
-# BEHAVIOURAL — a CREDENTIALED harness (the ``test_wire_isolation_63a.py::wire_world`` idiom: patch
-# ``loremaster.server.get_access_token`` to a switchable holder; provision an ``alice`` member
-# principal). R6 (the ∀ deny-without-a-capability) + R7 (register serves the credential once) drive the
-# REAL tool over the real store. ⚠ FIXTURE DUPLICATION (flag, report §Flags): the ``_config`` /
-# ``_surreal_env`` / credentialed harness mirrors send_scope + enforcement — the established per-file
-# 'fixture DATA, local, deliberately not imported' convention (a shared home would be _governed_contract,
-# do-not-touch, or a new shared file outside the writable set).
+# BEHAVIOURAL — R6 (the ∀ deny-without-a-capability) + R7 (register serves the credential once) drive
+# the REAL tool over the real store through the CREDENTIALED harness. §11.3 F-DUP (packet 63b-ii-b):
+# the harness IS now the shared ``credentialed_app_context`` (the ONE credentialing home in
+# ``_governed_contract``); the local ``_config`` / ``_surreal_env`` / patch-token / provisioning
+# boilerplate this file used to duplicate (the ii-a "fixture DATA, local" copy) is REMOVED, and
+# ``cred`` is a CALLER. Sharing is provable by MUTATION — see
+# ``test_wire_isolation_63a.py::TestTheCredentialingSeamIsSharedByMutation``: mutate the shared home's
+# token seam and this fixture's identity flips too.
 # =========================================================================== #
-
-_SURREAL_TEST_NAMESPACE = "lore_test"
-_SURREAL_USER_ENV = "SURREAL_USER"
-_SURREAL_PASS_ENV = "SURREAL_PASS"
-_E_ALICE = "alice@example.com"
-_pending_slugs: list[str] = []
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _surreal_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
-    monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
-    try:
-        yield
-    finally:
-        for slug in _pending_slugs:
-            await drop_surreal_database(make_env(database=slug, dim=_DIM))
-        _pending_slugs.clear()
-
-
-def _config(slug: str) -> LoreConfig:
-    """A minimal valid LoreConfig pointed at the spike test store (the test_comms_wiring idiom —
-    local fixture DATA, deliberately not imported)."""
-    return LoreConfig.model_validate(
-        {
-            "schema_version": 1,
-            "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
-            "project": {"slug": slug, "root": "."},
-            "embedding": {
-                "backend": "tei", "base_url": "http://localhost:8080", "endpoint": "/embed",
-                "model": "voyageai/voyage-4-nano", "dim": _DIM, "truncate": False,
-                "max_input_tokens": 8192, "max_batch_texts": 32, "concurrency": 2,
-                "connect_timeout_s": 5, "api_key_env": "LORE_TEI_KEY", "tokenizer": "voyage-4-nano",
-            },
-            "surreal": {
-                "url": surreal_url(), "namespace": _SURREAL_TEST_NAMESPACE,
-                "user_env": _SURREAL_USER_ENV, "password_env": _SURREAL_PASS_ENV,
-            },
-            "roots": [], "include": [], "exclude_dirs": [".git"], "exclude_globs": [],
-            "chunkers": {".py": {"chunker": "python_ast"}},
-            "watcher": {"enabled": False, "observer": "inotify", "debounce_ms": 1500,
-                        "reconcile_interval_s": 600},
-            "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9234},
-        }
-    )
 
 
 @pytest_asyncio.fixture()
 async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
-    """A REAL AppContext with a SWITCHABLE ambient transport token (patch
-    ``loremaster.server.get_access_token`` to read ``holder['email']``, the wire_world idiom) + ONE
-    ``alice`` member principal. ``ANTHROPIC_API_KEY``/``LORE_TEI_KEY`` set so config key-envs resolve
-    (FakeEmbedder never calls out). Reaped (NEVER :18500)."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-capability-dummy")
-    monkeypatch.setenv("LORE_TEI_KEY", "capability-dummy")
-    holder: dict[str, str | None] = {"email": None}
-
-    def _patched_get_access_token() -> Any:
-        email = holder["email"]
-        return access_token(subject=email if email is not None else "")
-
-    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
-
-    slug = f"test_{uuid.uuid4().hex}"
-    _pending_slugs.append(slug)
-    context = await build_app_context(
-        server=LoreServer(_config(slug)),
-        embedder=FakeEmbedder(dim=_DIM),
-        manifest_path=tmp_path / f"{slug}-m.db",
-        snapshot_root=tmp_path / f"{slug}-snap",
-        start_tasks=False,
-    )
-    principal_store = context._principal_store  # noqa: SLF001 - provision the credentialed principal
-    assert principal_store is not None
-    await principal_store.create(email=_E_ALICE, role="member")
-    try:
-        yield {"ctx": context, "holder": holder, "alice_email": _E_ALICE}
-    finally:
-        await context.aclose()
+    """A REAL AppContext with a switchable ambient token + ONE ``alice`` member principal — the R6/R7
+    behavioural harness, DELEGATED to the shared :func:`credentialed_app_context`. Preserves this
+    file's ``{ctx, holder, alice_email}`` yielded shape (its tests read those keys)."""
+    async with credentialed_app_context(monkeypatch, tmp_path, principals={"alice": "member"}) as world:
+        yield {
+            "ctx": world["ctx"],
+            "holder": world["holder"],
+            "alice_email": world["emails"]["alice"],
+        }
 
 
 class TestEveryCapabilityRequiredVerbDeniesWithoutOne:

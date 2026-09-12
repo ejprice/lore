@@ -41,16 +41,19 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import loremaster.server as server_mod
 import pytest
 import pytest_asyncio
-from _governed_contract import access_token, build_memory_backend, member
+from _governed_contract import (
+    access_token,
+    build_memory_backend,
+    credentialed_app_context,
+    member,
+    register_owned,
+)
 from _surreal_harness import drop_database as drop_surreal_database
-from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
-from loremaster.config import LoreConfig
+from _surreal_harness import make_env, surreal_password, surreal_user
 from loremaster.memory import local as local_mod
-from loremaster.server import _COMMS_ACTIONS, AppContext, LoreServer, build_app_context
-from loresigil.testing import FakeEmbedder
+from loremaster.server import _COMMS_ACTIONS, AppContext
 
 import lorerunes as pdp
 from loremaster import governed
@@ -227,72 +230,22 @@ class TestTheSharedGrantPredicateIsProvenByMutation:
 # LAYER 2 — BEHAVIOUR over the real store (build_app_context). SF-63-1 keep mint + §4.A send scope.
 # =========================================================================== #
 
-_SURREAL_TEST_NAMESPACE = "lore_test"
 _SURREAL_USER_ENV = "SURREAL_USER"
 _SURREAL_PASS_ENV = "SURREAL_PASS"
-_pending_slugs: list[str] = []
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _surreal_env(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+async def _surreal_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set the store credentials for the Layer-1b ``memory_backend`` fixture (which builds its backend
+    directly). The credentialed ``cred`` harness sets its own env + reaps its own db via the shared
+    ``credentialed_app_context`` home, so this fixture no longer tracks any slugs to reap."""
     monkeypatch.setenv(_SURREAL_USER_ENV, surreal_user())
     monkeypatch.setenv(_SURREAL_PASS_ENV, surreal_password().get_secret_value())
-    try:
-        yield
-    finally:
-        for slug in _pending_slugs:
-            await drop_surreal_database(make_env(database=slug, dim=_DIM))
-        _pending_slugs.clear()
-
-
-def _config(slug: str) -> LoreConfig:
-    """A minimal valid LoreConfig pointed at the spike test store (the test_comms_wiring idiom —
-    local, deliberately not imported; fixture DATA, no shared logic)."""
-    return LoreConfig.model_validate(
-        {
-            "schema_version": 1,
-            "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
-            "project": {"slug": slug, "root": "."},
-            "embedding": {
-                "backend": "tei", "base_url": "http://localhost:8080", "endpoint": "/embed",
-                "model": "voyageai/voyage-4-nano", "dim": _DIM, "truncate": False,
-                "max_input_tokens": 8192, "max_batch_texts": 32, "concurrency": 2,
-                "connect_timeout_s": 5, "api_key_env": "LORE_TEI_KEY", "tokenizer": "voyage-4-nano",
-            },
-            "surreal": {
-                "url": surreal_url(), "namespace": _SURREAL_TEST_NAMESPACE,
-                "user_env": _SURREAL_USER_ENV, "password_env": _SURREAL_PASS_ENV,
-            },
-            "roots": [], "include": [], "exclude_dirs": [".git"], "exclude_globs": [],
-            "chunkers": {".py": {"chunker": "python_ast"}},
-            "watcher": {"enabled": False, "observer": "inotify", "debounce_ms": 1500,
-                        "reconcile_interval_s": 600},
-            "server": {"host": "127.0.0.1", "path": "/mcp", "port": 9233},
-        }
-    )
-
-
-_E_ALICE = "alice@example.com"
-_E_BOB = "bob@example.com"
-_E_CAROL = "carol@example.com"
 
 
 def _bare(value: Any) -> str:
     text = str(getattr(value, "id", value))
     return text.split(":", 1)[-1] if ":" in text else text
-
-
-async def _register_owned(
-    ctx: AppContext, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
-) -> tuple[str, str]:
-    """Register an agent OWNED by ``owner_principal_id`` DIRECTLY on the registry (the wire_world
-    idiom), returning its one-time ``(capability, bare agent id)``. Until R7 lands the tool ``register``
-    renders but does not RETURN the raw credential, so a credentialed send mints its capability here."""
-    result = await ctx.agent_registry.register(
-        name, session=session, role=role, owner_principal_id=owner_principal_id
-    )
-    assert result.capability is not None, f"the first register of {name!r} must mint a capability"
-    return str(result.capability), _bare(result.agent.id)
 
 
 async def _message_count(ctx: AppContext, session: str) -> int:
@@ -305,45 +258,25 @@ async def _message_count(ctx: AppContext, session: str) -> int:
 
 @pytest_asyncio.fixture()
 async def cred(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
-    """A CREDENTIALED real ``AppContext`` (the ``test_wire_isolation_63a.py::wire_world`` idiom): patch
-    ``loremaster.server.get_access_token`` to a switchable ``holder`` + provision THREE principals —
-    ``alice``/``bob`` (members) and ``carol`` (ADMIN). alice is the NON-admin registrant/keeper; carol
-    exists so ``resolve_operator_principal`` (the single admin) gives a DIFFERENT answer than alice —
-    the WB-2 ownership-forgery detector Reading A fails (§3 / ruling §5 preamble). Reaped (NEVER
-    :18500). ⚠ FIXTURE DUPLICATION (flag, report §Flags): the credentialed harness mirrors capability +
-    enforcement — the established per-file 'fixture DATA, local, deliberately not imported' convention."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-send-scope-dummy")
-    monkeypatch.setenv("LORE_TEI_KEY", "send-scope-dummy")
-    holder: dict[str, str | None] = {"email": None}
-
-    def _patched_get_access_token() -> Any:
-        email = holder["email"]
-        return access_token(subject=email if email is not None else "")
-
-    monkeypatch.setattr(server_mod, "get_access_token", _patched_get_access_token)
-
-    slug = f"test_{uuid.uuid4().hex}"
-    _pending_slugs.append(slug)
-    context = await build_app_context(
-        server=LoreServer(_config(slug)),
-        embedder=FakeEmbedder(dim=_DIM),
-        manifest_path=tmp_path / f"{slug}-m.db",
-        snapshot_root=tmp_path / f"{slug}-snap",
-        start_tasks=False,
-    )
-    principal_store = _ps(context)
-    alice = await principal_store.create(email=_E_ALICE, role="member")
-    bob = await principal_store.create(email=_E_BOB, role="member")
-    carol = await principal_store.create(email=_E_CAROL, role="admin")
-    try:
+    """A CREDENTIALED real ``AppContext`` — a CALLER of the shared ``credentialed_app_context``
+    (§11.3 F-DUP: the private per-file credentialed harness CONVERGED onto the ONE lifted home). Provisions
+    THREE principals — ``alice``/``bob`` (members) and ``carol`` (ADMIN). alice is the NON-admin
+    registrant/keeper; carol exists so ``resolve_operator_principal`` (the single admin) gives a DIFFERENT
+    answer than alice — the WB-2 ownership-forgery detector Reading A fails (§3 / ruling §5 preamble).
+    Reaped by the shared home (NEVER :18500). SHARING is provable BY MUTATION (§11.3): change the shared
+    harness's token shape and this file's credentialed identity flips with it — the F-DUP mutation pin."""
+    async with credentialed_app_context(
+        monkeypatch,
+        tmp_path,
+        principals={"alice": "member", "bob": "member", "carol": "admin"},
+        dim=_DIM,
+    ) as world:
         yield {
-            "ctx": context,
-            "holder": holder,
-            "emails": {"alice": _E_ALICE, "bob": _E_BOB, "carol": _E_CAROL},
-            "pids": {"alice": _bare(alice.id), "bob": _bare(bob.id), "carol": _bare(carol.id)},
+            "ctx": world["ctx"],
+            "holder": world["holder"],
+            "emails": world["emails"],
+            "pids": world["pids"],
         }
-    finally:
-        await context.aclose()
 
 
 class TestRegisterMintsTheSessionKeep:
@@ -486,7 +419,7 @@ class TestSendResolvesTheSessionKeepScope:
         register minted. At HEAD ``comms`` rejects ``capability=`` (§4.D unbuilt) → the wrapper reds."""
         ctx = cred["ctx"]
         cred["holder"]["email"] = cred["emails"]["alice"]
-        sender_cap, _sender_agent = await _register_owned(
+        sender_cap, _sender_agent = await register_owned(
             ctx, "sender_a", owner_principal_id=cred["pids"]["alice"], session="s1"
         )
         await ctx.comms(action="register", agent="recip_a", session="s1", role="builder")
@@ -512,7 +445,7 @@ class TestSendResolvesTheSessionKeepScope:
         guard reds); its GREEN is the ii-a integration (§4.F + SF-63-1 + the lift all landing)."""
         ctx = cred["ctx"]
         cred["holder"]["email"] = cred["emails"]["alice"]
-        sender_cap, _sender_agent = await _register_owned(
+        sender_cap, _sender_agent = await register_owned(
             ctx, "sender_b", owner_principal_id=cred["pids"]["alice"], session="s2"
         )
         await ctx.comms(action="register", agent="sender_b", session="s2", role="builder")
@@ -545,7 +478,7 @@ class TestSendResolvesTheSessionKeepScope:
         await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
         keep = await ks.get_by_key("session:s1")
         assert keep is not None, "SF-63-1 unbuilt: alice's register minted no session keep"
-        bob_cap, bob_agent = await _register_owned(
+        bob_cap, bob_agent = await register_owned(
             ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
         )
         await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])  # A households B
@@ -586,7 +519,7 @@ class TestSendResolvesTheSessionKeepScope:
         ctx = cred["ctx"]
         holder = cred["holder"]
         holder["email"] = cred["emails"]["alice"]
-        alice_cap, _alice_agent = await _register_owned(
+        alice_cap, _alice_agent = await register_owned(
             ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
         )
         await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
@@ -630,7 +563,7 @@ class TestSendResolvesTheSessionKeepScope:
         await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
         keep = await ks.get_by_key("session:s1")
         assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
-        bob_cap, _bob_agent = await _register_owned(
+        bob_cap, _bob_agent = await register_owned(
             ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
         )
         await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
@@ -660,7 +593,7 @@ class TestSendResolvesTheSessionKeepScope:
         await ctx.comms(action="register", agent="alice_w1", session="s1", role="builder")
         keep = await ks.get_by_key("session:s1")
         assert keep is not None, "SF-63-1 unbuilt: register minted no session keep"
-        bob_cap, _bob_agent = await _register_owned(
+        bob_cap, _bob_agent = await register_owned(
             ctx, "bob_w1", owner_principal_id=cred["pids"]["bob"], session="s1"
         )
         await ks.add_household_member(keep_id=keep.id, member_email=cred["emails"]["bob"])
@@ -720,7 +653,7 @@ class TestThePrincipalResolutionIsSharedByMutation:
         p_star = await _ps(ctx).create(email="pstar@example.com", role="member")
         p_star_pid = _bare(p_star.id)
         cred["holder"]["email"] = cred["emails"]["alice"]
-        alice_cap, _alice_agent = await _register_owned(
+        alice_cap, _alice_agent = await register_owned(
             ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
         )
         # POSITIVE CONTROL — unpatched, resolve_subject resolves alice's real principal.
@@ -849,11 +782,11 @@ class TestTheAgentArgumentMustMatchTheCapability:
         capability writes exactly one row."""
         ctx = cred["ctx"]
         cred["holder"]["email"] = cred["emails"]["alice"]
-        # TWO agents, both OWNED BY ALICE; _register_owned mints each one's one-time capability.
-        w1_cap, _w1_agent = await _register_owned(
+        # TWO agents, both OWNED BY ALICE; register_owned mints each one's one-time capability.
+        w1_cap, _w1_agent = await register_owned(
             ctx, "alice_w1", owner_principal_id=cred["pids"]["alice"], session="s1"
         )
-        w2_cap, _w2_agent = await _register_owned(
+        w2_cap, _w2_agent = await register_owned(
             ctx, "alice_w2", owner_principal_id=cred["pids"]["alice"], session="s1"
         )
         # A session keep (tool register, under alice's token — re-register of alice_w1 mints/joins it).
