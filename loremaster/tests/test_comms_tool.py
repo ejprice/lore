@@ -47,7 +47,7 @@ from _comms_fakes import (
     FakeKeepStore,
     FakePrincipalStore,
 )
-from _governed_contract import access_token
+from _governed_contract import access_token, member
 from loremaster.agents import (
     AGENT_NAME_PATTERN,
     Agent,
@@ -385,6 +385,34 @@ async def _send(harness: Any, *, sender: str = "lead", session: str = "wave7", *
     )
 
 
+# packet 63b-ii-b: the READ verbs (drain/ack/await/story) now require a verified capability
+# (§4.D / RULING §4), exactly as ``send`` has since ii-a. ``_read`` is the read twin of ``_send`` —
+# it credentials ``agent`` (if the setup did not), sets the ambient transport token to its principal,
+# and presents its capability, routed through the SAME ``_credential_agent`` / ``_ACCESS_HOLDER`` /
+# ``_CAPS`` seam ``_send`` uses. Sharing is provable by MUTATION: change how ``_credential_agent``
+# mints / how ``_ACCESS_HOLDER`` feeds ``get_access_token`` and EVERY read+send caller's resolved
+# identity flips together (there is ONE credentialing seam, not a per-verb copy).
+async def _read(
+    harness: Any, action: str, *, agent: str = "fixer-b", session: str = "wave7", **kwargs: Any
+) -> Any:
+    """Drive a CREDENTIALED read (drain/ack/await/story) through the REAL dispatcher."""
+    cap = _CAPS.get((session, agent))
+    if cap is None:
+        cap = await _credential_agent(harness, name=agent, session=session)
+    _ACCESS_HOLDER["email"] = f"{agent}@example.com"
+    return await AppContext.comms(
+        harness, action=action, agent=agent, session=session, capability=cap, **kwargs
+    )
+
+
+# A benign Subject for the RENDER-shape / injection-battery drivers that call ``_render_comms_*``
+# DIRECTLY (packet 63b-ii-b: those renders now take a keyword-only ``subject``, no default — §9.1
+# fixture-default law). The bound line it produces is CONSTANT across a driver's hostile/baseline
+# renders (it names the SUBJECT's ids, never the injected field value), so it never affects the
+# injection oracle's field-value diff.
+_RENDER_SUBJECT = member("p_render_probe", "a_render_probe")
+
+
 async def _credentialed_harness(
     *names: str, session: str = "wave7", **harness_kwargs: Any
 ) -> tuple[Any, Any]:
@@ -601,18 +629,25 @@ class TestCommsActionsTable:
 
     def test_await_params(self) -> None:
         """packet 05a-ii param honesty: ``await`` honours ``agent`` (universal) +
-        an OPTIONAL ``thread`` (F3 client-side narrowing) and declares NO other
-        param — so ``_comms_foreign_param_error`` rejects the rest, mirroring the
-        other read actions. RED (``KeyError``) until the builder registers await.
-        ``thread`` is a PARAM, never ``required``: an await with no thread waits on
-        ALL of the agent's traffic (the common case), so a required thread would
-        break the primary use. NO ``timeout=`` param — the ≤55s bound is a FIXED
-        named constant (F2), never a caller knob."""
+        an OPTIONAL ``thread`` (F3 client-side narrowing) + (packet 63b-ii-b, §4.D)
+        the OPTIONAL ``capability`` identity param — and declares NO other param, so
+        ``_comms_foreign_param_error`` rejects the rest, mirroring the other read
+        actions. ``thread`` is a PARAM, never ``required``: an await with no thread
+        waits on ALL of the agent's traffic (the common case), so a required thread
+        would break the primary use. NO ``timeout=`` param — the ≤55s bound is a FIXED
+        named constant (F2), never a caller knob.
+
+        ⚠ packet 63b-ii-b: ``capability`` JOINED the param set when await flipped
+        ``requires_capability=True`` (the reads govern by the caller's Subject). The
+        old assertion — ``params == {"thread"}`` — certified the pre-ii-b no-capability
+        world (rename-sweep DUAL); it is updated, not deleted, because the F2 "no
+        timeout knob" property it also guards still holds."""
         spec = _COMMS_ACTIONS["await"]
-        assert spec.params == frozenset({"thread"}), (
-            "await must accept ONLY the optional 'thread' narrowing param (plus the "
-            "universal agent/session) — a 'timeout' or other param would violate F2 "
-            "(fixed ≤55s constant) or the strict-param law"
+        assert spec.params == frozenset({"thread", "capability"}), (
+            "await must accept ONLY the optional 'thread' narrowing param + the ii-b "
+            "'capability' identity param (plus the universal agent/session) — a "
+            "'timeout' or other param would violate F2 (fixed ≤55s constant) or the "
+            "strict-param law"
         )
         assert spec.required == frozenset(), (
             "await must have NO required param beyond the universal 'agent' — 'thread' "
@@ -4212,6 +4247,7 @@ async def _render_drain_sender(value: str, _ctx: Any) -> str:
         agent_name="fixer-b",
         limit=20,
         session="wave7",
+        subject=_RENDER_SUBJECT,
     )
 
 
@@ -4221,6 +4257,7 @@ async def _render_drain_thread(value: str, _ctx: Any) -> str:
         agent_name="fixer-b",
         limit=20,
         session="wave7",
+        subject=_RENDER_SUBJECT,
     )
 
 
@@ -4232,6 +4269,7 @@ async def _render_ack_agent_name(value: str, _ctx: Any) -> str:
         # ``note recorded`` line's emit predicate reads it, and it is a branch
         # comparand — same signature-layer rule as ``session`` above).
         note=None,
+        subject=_RENDER_SUBJECT,
     )
 
 
@@ -4279,7 +4317,7 @@ async def _render_story_task_id(value: str, _ctx: Any) -> str:
     agent-controlled field satisfies the per-ACTION completeness pin; story's
     MULTI-LINE body FENCE case (the hostile-fixture containment requirement) lives in
     ``test_comms_story.py::TestStoryContainsStoredFreeTextInAFence``."""
-    return str(AppContext._render_comms_story(CommsStory(task_id=value)))
+    return str(AppContext._render_comms_story(CommsStory(task_id=value), subject=_RENDER_SUBJECT))
 
 
 async def _render_await_thread(value: str, _ctx: Any) -> str:
@@ -4294,6 +4332,7 @@ async def _render_await_thread(value: str, _ctx: Any) -> str:
         AppContext._render_comms_await(
             _drain_result(entries=[_inbox_entry(thread=value)], peeked=True),
             session="wave7",
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -4499,13 +4538,17 @@ class TestNewActionSpecs:
 
     def test_drain_params(self) -> None:
         spec = _COMMS_ACTIONS["drain"]
-        assert spec.params == frozenset({"limit", "peek"})
+        # packet 63b-ii-b §4.D: ``capability`` JOINED drain's param surface when the read
+        # flipped requires_capability=True (governs by the caller's Subject). The old
+        # ``{"limit", "peek"}`` certified the pre-ii-b no-capability world (rename-sweep DUAL).
+        assert spec.params == frozenset({"limit", "peek", "capability"})
         assert spec.required == frozenset()
         assert spec.requires_registration is True
 
     def test_ack_params_and_required(self) -> None:
         spec = _COMMS_ACTIONS["ack"]
-        assert spec.params == frozenset({"seqs", "note"})
+        # packet 63b-ii-b §4.D: ``capability`` JOINED ack's param surface (requires_capability=True).
+        assert spec.params == frozenset({"seqs", "note", "capability"})
         assert spec.required == frozenset({"seqs"})
         assert spec.requires_registration is True
 
@@ -4513,8 +4556,9 @@ class TestNewActionSpecs:
         # packet 05a-iii: ``story`` anchors on a task_id OR a thread (a ONE-OF the
         # AND-semantics ``required`` frozenset cannot express), so ``required`` is
         # empty and the handler validates "at least one anchor" itself.
+        # packet 63b-ii-b §4.D: ``capability`` JOINED story's param surface (requires_capability=True).
         spec = _COMMS_ACTIONS["story"]
-        assert spec.params == frozenset({"task_id", "thread"})
+        assert spec.params == frozenset({"task_id", "thread", "capability"})
         assert spec.required == frozenset()
         assert spec.requires_registration is True
 
@@ -4860,7 +4904,7 @@ class TestDrainAndAckAtTheDispatcher:
                 grade=_msg().MESSAGE_GRADE_SIGNAL,
             )
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert rendered.count("#") >= 5
         remaining = sum(
@@ -4881,7 +4925,7 @@ class TestDrainAndAckAtTheDispatcher:
             body="peek me",
             grade=_msg().MESSAGE_GRADE_SIGNAL,
         )
-        await AppContext.comms(
+        await _read(
             harness, action="drain", agent="fixer-b", session="wave7", peek=True
         )
         assert all(edge.seen_at is None for edge in message_ledger.db.edges.values()), (
@@ -4899,7 +4943,7 @@ class TestDrainAndAckAtTheDispatcher:
             grade=_msg().MESSAGE_GRADE_DIRECTIVE,
         )
         [message] = list(message_ledger.db.messages.values())
-        await AppContext.comms(
+        await _read(
             harness, action="ack", agent="fixer-b", session="wave7", seqs=[message.seq]
         )
         assert all(edge.acked_at is not None for edge in message_ledger.db.edges.values())
@@ -5108,6 +5152,7 @@ def _03b_drain(
             agent_name=agent_name,
             limit=limit,
             session=session,
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -5157,6 +5202,7 @@ def _03b_ack(*, outcomes: list[tuple[int, str]], note: str | None) -> str:
             ),
             agent_name="fixer-b",
             note=note,
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -5571,7 +5617,7 @@ class TestDrainDoesNotUnparkAWaitingAgent:
     async def test_a_parked_agent_that_drains_stays_parked(self) -> None:
         harness, _ = await _03b_fleet()
         await _deliver(harness, to=["parked-d"], grade=_msg().MESSAGE_GRADE_SIGNAL)
-        await AppContext.comms(harness, action="drain", agent="parked-d", session="wave7")
+        await _read(harness, action="drain", agent="parked-d", session="wave7")
         assert await _status_of(harness, "parked-d") == "input_required", (
             "draining un-parked a waiting agent — the waiting state is derived and packet 05's "
             "await is where any change to that is adjudicated (§B11)"
@@ -5580,7 +5626,7 @@ class TestDrainDoesNotUnparkAWaitingAgent:
     async def test_a_parked_agent_that_acks_stays_parked(self) -> None:
         harness, _ = await _03b_fleet()
         seq = await _deliver(harness, to=["parked-d"], grade=_msg().MESSAGE_GRADE_DIRECTIVE)
-        await AppContext.comms(
+        await _read(
             harness, action="ack", agent="parked-d", session="wave7", seqs=[seq]
         )
         assert await _status_of(harness, "parked-d") == "input_required"
@@ -5685,7 +5731,7 @@ class TestTheDrainWindowIsConfigDrivenWithItsOwnCap:
                 harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL, body=f"m{index}"
             )
         rendered = str(
-            await AppContext.comms(
+            await _read(
                 harness, action="drain", agent="fixer-b", session="wave7", limit=999
             )
         )
@@ -5743,7 +5789,7 @@ class TestTheDispatcherActuallySERVESEachVerbsRender:
         harness, _ = await _03b_fleet()
         seq = await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_DIRECTIVE)
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "drained 1 of 1 pending" in rendered, rendered
         assert f"#{seq} [directive] lead→you" in rendered, (
@@ -5757,7 +5803,7 @@ class TestTheDispatcherActuallySERVESEachVerbsRender:
         harness, _ = await _03b_fleet()
         seq = await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_DIRECTIVE)
         rendered = str(
-            await AppContext.comms(
+            await _read(
                 harness, action="ack", agent="fixer-b", session="wave7", seqs=[seq]
             )
         )
@@ -5772,7 +5818,7 @@ class TestTheDispatcherActuallySERVESEachVerbsRender:
         nothing pending ADMITS the condition and names no fault."""
         harness, _ = await _03b_fleet()
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "no unread messages" in rendered, rendered
 
@@ -5825,13 +5871,13 @@ class TestPeekNeverRendersTheAckRequiredTrailer:
         harness, _ = await _03b_fleet()
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_DIRECTIVE)
         peeked = str(
-            await AppContext.comms(
+            await _read(
                 harness, action="drain", agent="fixer-b", session="wave7", peek=True
             )
         )
         assert "ACK REQUIRED" not in peeked, peeked
         stamped = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "ACK REQUIRED" in stamped, stamped
 
@@ -6144,7 +6190,7 @@ class TestTheAdvertisedReAskIsACTUALLYReachable:
         if peek:
             kwargs["peek"] = True
         return str(
-            await AppContext.comms(
+            await _read(
                 harness, action="drain", agent="fixer-b", session="wave7", **kwargs
             )
         )
@@ -6238,7 +6284,7 @@ class TestTheAdvertisedReAskIsACTUALLYReachable:
             if limit is not None:
                 kwargs["limit"] = limit
             rendered = str(
-                await AppContext.comms(
+                await _read(
                     harness, action="drain", agent="fixer-b", session="wave7", **kwargs
                 )
             )
@@ -6328,7 +6374,7 @@ class TestASkewFailureNeverCONSUMESTheInbox:
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         harness.brief_ledger = _BrokenBriefLedger()
         with pytest.raises(_BrokenBriefLedger.Fault):
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         assert all(edge.seen_at is None for edge in ledger.db.edges.values()), (
             "the drain STAMPED its window and then failed in the skew read — those messages "
             "are consumed and no caller ever saw them, which is exactly the permanent loss "
@@ -6340,7 +6386,7 @@ class TestASkewFailureNeverCONSUMESTheInbox:
         stamps at all."""
         harness, ledger = await _03b_fleet()
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
-        await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+        await _read(harness, "drain", agent="fixer-b", session="wave7")
         assert all(edge.seen_at is not None for edge in ledger.db.edges.values())
 
 
@@ -6717,7 +6763,7 @@ class TestTheDrainHeaderCountsTheWHOLEPendingSet:
                 harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL, body=f"m{index}"
             )
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         rows = [line for line in rendered.splitlines() if re.match(r"^#\d+ \[", line)]
         assert "drained 3 of 8 pending" in rendered, rendered
@@ -7253,11 +7299,11 @@ class TestTheAckRenderAccountsForEveryRequestedSeq:
             harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_DIRECTIVE
         )
         not_mine = await _deliver(harness, to=["idle-c"], grade=_msg().MESSAGE_GRADE_SIGNAL)
-        await AppContext.comms(
+        await _read(
             harness, action="ack", agent="fixer-b", session="wave7", seqs=[directive]
         )
         rendered = str(
-            await AppContext.comms(
+            await _read(
                 harness,
                 action="ack",
                 agent="fixer-b",
@@ -8051,7 +8097,7 @@ class TestTheValidationOrderWithTheNewSteps:
         defined relative order rather than a builder's incidental one."""
         harness, _ = await _03b_fleet()
         with pytest.raises(ValueError) as excinfo:
-            await AppContext.comms(
+            await _read(
                 harness, action="drain", agent="fixer-b", session="wave7", limit=0
             )
         assert "limit" in str(excinfo.value)
@@ -8155,7 +8201,7 @@ class TestDrainServesTheSharedBriefSkewBlock:
         harness, _ = await _fleet_with_a_published_brief()
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "you have not acked brief 'project'" in rendered, (
             "a DRAIN by an agent behind the standing brief served no skew block. Production "
@@ -8173,7 +8219,7 @@ class TestDrainServesTheSharedBriefSkewBlock:
         )
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         drain = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         skew = "you have not acked brief 'project'"
         assert skew in heartbeat, heartbeat
@@ -8189,7 +8235,7 @@ class TestDrainServesTheSharedBriefSkewBlock:
         harness, _ = await _fleet_with_a_published_brief()
         await _deliver(harness, to=["lead"], grade=_msg().MESSAGE_GRADE_SIGNAL, sender="fixer-b")
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="lead", session="wave7")
+            await _read(harness, "drain", agent="lead", session="wave7")
         )
         assert "you have not acked brief 'project'" not in rendered, rendered
 
@@ -8203,13 +8249,13 @@ class TestDrainServesTheSharedBriefSkewBlock:
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         harness.brief_ledger = _BrokenBriefLedger()
         with pytest.raises(_BrokenBriefLedger.Fault):
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
 
     async def test_positive_control_the_same_drain_SUCCEEDS_with_a_live_ledger(self) -> None:
         harness, _ = await _03b_fleet()
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "drained 1 of 1 pending" in rendered, rendered
 
@@ -8658,7 +8704,7 @@ class TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock:
         harness = await self._behind_on_a_subscribed_name()
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert f"brief '{self._SUBSCRIBED}' v2 is head" in rendered, (
             "the drain served no SUBSCRIBED-NAME skew line. A build that assembles only the "
@@ -8684,7 +8730,7 @@ class TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock:
         )
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         drain = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         anchor = f"brief '{self._SUBSCRIBED}' v2 is head"
         assert _line_containing(heartbeat, anchor) == _line_containing(drain, anchor), (
@@ -8699,7 +8745,7 @@ class TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock:
         harness = await self._behind_on_a_subscribed_name()
         await _deliver(harness, to=["lead"], grade=_msg().MESSAGE_GRADE_SIGNAL, sender="fixer-b")
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="lead", session="wave7")
+            await _read(harness, "drain", agent="lead", session="wave7")
         )
         assert f"brief '{self._SUBSCRIBED}'" not in rendered, rendered
 
@@ -8714,7 +8760,7 @@ class TestDrainServesTheSUBSCRIBEDNAMEHalfOfTheSkewBlock:
         await _subscribe_and_fall_behind(harness, names=names)
         await _deliver(harness, to=["fixer-b"], grade=_msg().MESSAGE_GRADE_SIGNAL)
         rendered = str(
-            await AppContext.comms(harness, action="drain", agent="fixer-b", session="wave7")
+            await _read(harness, "drain", agent="fixer-b", session="wave7")
         )
         assert "behind on 1 more briefs" in rendered, (
             f"past the {cap}-name display cap the drain must COLLAPSE the remainder and count "

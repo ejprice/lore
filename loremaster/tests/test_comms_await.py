@@ -69,6 +69,7 @@ from test_comms_tool import (  # noqa: F401 - _governed_ambient_token is an auto
     _governed_ambient_token,
     _line_containing,
     _msg,
+    _read,
 )
 from test_comms_waiting_line import _ask_via_dispatcher
 from test_link5_render_containment import FORGERY_MARKER, _leaks
@@ -113,8 +114,9 @@ async def _await_text(
     kwargs: dict[str, Any] = {}
     if thread is not None:
         kwargs["thread"] = thread
+    # packet 63b-ii-b: await is capability-required — credential through the shared ``_read`` seam.
     return str(
-        await AppContext.comms(harness, action="await", agent=agent, session=session, **kwargs)
+        await _read(harness, "await", agent=agent, session=session, **kwargs)
     )
 
 

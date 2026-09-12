@@ -3071,6 +3071,28 @@ class TestNoCommsIdentityReachesQueryTEXT:
             # user / comms / caller-supplied input rather than a code-declared table set — then
             # #219's prose is false and the CODE must change (bind it), not this door.
             ("loremaster/loremaster/store/surreal.py", "entity_table"),
+            # packet 63b-ii-b (builder-63b-ii-b): the READ-GOVERNANCE splice. The message-family
+            # reads splice the ONE read filter into their WHERE — the PARAMETERIZED PDP fragment
+            # `governed.read_filter(subject, MESSAGE_TABLE)` == `pdp.authorize_filter(subject, READ,
+            # table).to_surql()`. Adjudicated INDIVIDUALLY, VERIFIED against messages.py:
+            #   * `read_fragment` — the `(fragment, params)` from `read_filter`, spliced in
+            #     `MessageLedger._resolve_message_ids` (ack's §9.5 seq resolution) and
+            #     `_filter_visible_rows` (drain). The fragment is a STRUCTURAL predicate
+            #     (scope / owner_principal / owner_agent comparisons); EVERY value inside it is a
+            #     BOUND param (`$s_…`/`$p_…`/`$a_…`, content-addressed by `pdp._param_name`), NEVER
+            #     an interpolated comms identity — it is DERIVED from the Subject's TYPED fields by
+            #     the PDP, never caller free text.
+            #   * `filter_clause` — the fixed ` AND ({read_fragment})` wrapper spliced by
+            #     `_resolve_message_ids`, `messages_for_task` (story) and `message_activity_since`
+            #     (rollup rows + count). Same PARAMETERIZED fragment; the only interpolated text is
+            #     the constant ` AND (…)` structure plus the fragment above.
+            # This is the SAME splice `memory/local.py::LocalMemoryBackend.recall` already does
+            # (`filter_conditions.append(f"({read_fragment})")`); it surfaces here only because
+            # messages.py is a comms-scanned file. RE-OPEN TRIGGER: if `pdp.*.to_surql` ever
+            # INTERPOLATED a value into the fragment text instead of binding it, #219's prose is
+            # false and the CODE (the PDP emitter) must change (bind it), never this door.
+            ("loremaster/loremaster/messages.py", "read_fragment"),
+            ("loremaster/loremaster/messages.py", "filter_clause"),
         }
     )
 

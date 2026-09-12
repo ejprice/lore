@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest_asyncio
+from _governed_contract import admin
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -104,8 +105,24 @@ class _RollupCtx:
             self.message_ledger.register_agent(agent_id=agent.id, name=agent.name)
         return agent
 
+    async def _resolve_subject(self, capability: str | None) -> Any:
+        # packet 63b-ii-b: _rollup resolves a Subject for the GOVERNED message leg (§9.4). This LIVE
+        # harness wires no OAuth / keep stores, so it STUBS an ADMIN subject (role=admin ⇒ AllRows
+        # ⇒ the message leg is served UNFILTERED), so the message-section CONTENT tests see the
+        # activity exactly as pre-ii-b. The read FILTER itself is the LIVE read-governance contract's
+        # (test_comms_read_governance_63b_ii_b.py::B2/P7), not these section-shape tests'.
+        _ = capability
+        return admin(agent_id="rollup-caller")
+
     async def rollup(self, *, since: str | None = None, limit: int | None = None) -> str:
-        return str(await AppContext._rollup(cast(AppContext, self), since=since, limit=limit))
+        # Pass a (stub-resolved) capability so the GOVERNED message leg is SERVED — a tokenless
+        # rollup renders `messages: identity required` (§9.4) and would hide the activity content
+        # these section tests assert on.
+        return str(
+            await AppContext._rollup(
+                cast(AppContext, self), since=since, limit=limit, capability="rollup-test-cap"
+            )
+        )
 
 
 @pytest_asyncio.fixture()

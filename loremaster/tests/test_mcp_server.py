@@ -7150,8 +7150,12 @@ class TestRollupDispatch:
         self, rollup_ctx: AppContext
     ) -> None:
         rendered = _render_text(await getattr(rollup_ctx, "tasks")(action="rollup"))
+        # packet 63b-ii-b (§9.4): a TOKENLESS rollup now serves the message leg's
+        # identity-required bound (no count, no rows) in place of the pre-ii-b
+        # activity leg — the old no-message-leg output is the corpse (rename-sweep DUAL).
         assert rendered == (
             f"no ledger activity since {_PKT06_ROLLUP_EPOCH_ISO}\n"
+            "messages: identity required — pass capability=\n"
             f"next cursor: {_PKT06_ROLLUP_EPOCH_ISO}"
         )
 
@@ -7159,8 +7163,10 @@ class TestRollupDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "tasks")(action="rollup", since="2026-01-01T00:00:00Z")
         )
+        # packet 63b-ii-b (§9.4): the TOKENLESS message-leg identity bound (DUAL).
         assert rendered == (
             "no ledger activity since 2026-01-01T00:00:00+00:00\n"
+            "messages: identity required — pass capability=\n"
             "next cursor: 2026-01-01T00:00:00+00:00"
         )
 
@@ -7421,11 +7427,12 @@ class TestRollupDispatch:
         rendered = _render_text(await getattr(rollup_ctx, "tasks")(action="rollup"))
         lines = rendered.splitlines()
 
-        # Exactly 5 lines: header, "tasks transitioned (1):", one leg-1 row,
-        # "findings filed (0):", "reports registered (0):", next-cursor — a
-        # sanitisation regression that let the hostile subject's embedded
+        # header, "tasks transitioned (1):", one leg-1 row, "findings filed (0):",
+        # "reports registered (0):", the TOKENLESS message-leg identity bound
+        # (packet 63b-ii-b §9.4 — inserted before the cursor), next-cursor — 7
+        # lines; a sanitisation regression that let the hostile subject's embedded
         # newlines through would inflate this count.
-        assert len(lines) == 6
+        assert len(lines) == 7
         expected_subject = render_attributed(hostile_subject)
         assert lines[2] == (
             f"- [in_progress] {expected_subject} "
@@ -7463,10 +7470,11 @@ class TestRollupDispatch:
         lines = rendered.splitlines()
 
         # header, "tasks transitioned (1):", one leg-1 row, "findings filed
-        # (0):", "reports registered (1):", one leg-3 row, next-cursor — 7
+        # (0):", "reports registered (1):", one leg-3 row, the TOKENLESS
+        # message-leg identity bound (packet 63b-ii-b §9.4), next-cursor — 8
         # lines; a sanitisation regression that let the corrupted summary's
         # embedded newlines through would inflate this count.
-        assert len(lines) == 7
+        assert len(lines) == 8
         expected_summary = render_attributed(corrupted_summary)
         assert lines[5] == (
             f"- task {task_id} by {render_attributed('me')}: "

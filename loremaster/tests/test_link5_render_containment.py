@@ -1899,10 +1899,35 @@ class RenderProbe:
 
 def _served(method: str, *args: object, **kwargs: object) -> str:
     """Call a real AppContext render (static/class method) and return its served bytes."""
-    result = getattr(_app(), method)(*args, **kwargs)
+    fn = getattr(_app(), method)
+    # packet 63b-ii-b: the governed comms READ renders (drain/ack/await/await_empty/story) gained a
+    # keyword-only ``subject`` (§9.1, no default). Inject a BENIGN one when the render requires it and
+    # a probe did not pass its own — the Subject-scope bound line is CONSTANT across a probe's
+    # forge/benign pair (it names the SUBJECT's ids, never the injected door value), so it never
+    # affects the neutralisation diff. This is the SAME shape the recalled-memory door already uses
+    # (it passes its own ``subject``, so the guard below leaves it untouched).
+    _subject_param = inspect.signature(fn).parameters.get("subject")
+    if (
+        "subject" not in kwargs
+        and _subject_param is not None
+        and _subject_param.default is inspect.Parameter.empty
+    ):
+        from _governed_contract import member  # noqa: PLC0415
+
+        kwargs["subject"] = member("p_link5_probe", "a_link5_probe")
+    result = fn(*args, **kwargs)
     if isinstance(result, list):  # `_render_comms_skew_lines` returns list[Rendered]
         return "\n".join(str(part) for part in result)
     return str(result)
+
+
+def _probe_subject() -> Any:
+    """A benign member Subject for a probe that must pass ``subject`` explicitly (e.g. the
+    ``_render_rollup`` message-leg branch, whose ``subject`` is OPTIONAL so ``_served`` never
+    injects it)."""
+    from _governed_contract import member  # noqa: PLC0415
+
+    return member("p_rollup_probe", "a_rollup_probe")
 
 
 def _T(model_name: str, field: str) -> str:
@@ -2244,6 +2269,18 @@ def _probes() -> list[RenderProbe]:
         P("_render_rollup", lambda g: [
             _served("_render_rollup", _NOW, *_tasks_windows(g, empty=True)),
             _served("_render_rollup", _NOW, *_tasks_windows(g, empty=False)),
+            # packet 63b-ii-b: the GOVERNED message leg (serve_message_leg=True) — drive BOTH
+            # branches so the over-drive reaches them (§9.3-P5 reach-as-a-checked-variable):
+            # tokenless (subject=None -> the identity-required line) and with a Subject (the scope
+            # bound heads the FILTERED activity). subject=None is explicit so _served does not inject.
+            _served(
+                "_render_rollup", _NOW, *_tasks_windows(g, empty=True),
+                serve_message_leg=True, subject=None,
+            ),
+            _served(
+                "_render_rollup", _NOW, *_tasks_windows(g, empty=False),
+                serve_message_leg=True, subject=_probe_subject(),
+            ),
         ]),
         P("_render_chain_head", lambda g: [
             _served(
@@ -2886,6 +2923,15 @@ _RENDER_OUT: dict[str, tuple[str, str]] = {
     # a served render row, and store-backed (it reads the registry/principal/keep stores). Same class
     # as _comms_send; the served register RENDER is _render_comms_register (driven).
     "_comms_register": ("store_backed", "a store-free harness can drive it"),
+    # packet 63b-ii-b: the four message-family READ handlers gained a GovernedDenied agent≡subject
+    # teaching that interpolates ``agent_row.name`` (§4.D) — an ERROR surface, store-backed (they read
+    # the ledger / task / message stores), NOT a served render ROW: the served rows are
+    # ``_render_comms_drain``/``_ack``/``_await``/``_await_empty``/``_story`` (driven + branch-covered
+    # under P-U). Same class as ``_comms_send`` / ``_comms_register`` above.
+    "_comms_drain": ("store_backed", "a store-free harness can drive it"),
+    "_comms_ack": ("store_backed", "a store-free harness can drive it"),
+    "_comms_await": ("store_backed", "a store-free harness can drive it"),
+    "_comms_story": ("store_backed", "a store-free harness can drive it"),
     "_resolve_changed_modules": ("store_backed", "a store-free harness can drive it"),
     # -- index_metadata: renders index-snapshot fields (files/chunks counts, git ref, snapshot
     #    id, created_at) — index-derived, never a caller PARAM --

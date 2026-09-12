@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import importlib.metadata
 import inspect
@@ -4887,7 +4888,9 @@ class AppContext:
             return f"task {task.id} transitioned to done by {render_attributed(actor)}{suffix}"
         return f"task {task.id} transitioned to {task.status} by {render_attributed(actor)}"
 
-    async def _rollup(self, *, since: str | None, limit: int | None) -> str:
+    async def _rollup(
+        self, *, since: str | None, limit: int | None, capability: str | None = None
+    ) -> str:
         """PKT-06 §1: ``lore_tasks action=rollup`` — the fleet's one-call catch-up.
 
         Composes BOTH ledgers' activity in PYTHON (no cross-ledger transaction —
@@ -4916,15 +4919,29 @@ class AppContext:
         )
         roster = await self.agent_registry.roster()
         brief_skew = await AppContext._rollup_brief_skew(self, roster)
-        message_window = await self.message_ledger.message_activity_since(
-            effective_since, limit=effective_limit
+        # §4.E / §9.4 (packet 63b-ii-b) — the message leg is GOVERNED. WITHOUT a
+        # capability the leg is not served: the render names the identity-required bound
+        # instead (never an unfiltered leg, never a withheld COUNT). WITH a verified
+        # capability the Subject is resolved (a PRESENT-but-invalid capability is a
+        # teaching GovernedDenied here, never a silent fallback) and the leg is FILTERED
+        # to the caller's visible set (count + rows), headed by the scope bound.
+        subject = await self._resolve_subject(capability) if capability is not None else None
+        message_window = (
+            await self.message_ledger.message_activity_since(
+                effective_since, limit=effective_limit, subject=subject
+            )
+            if subject is not None
+            else None
         )
-        extra_sections = AppContext._rollup_extra_sections(roster, brief_skew, message_window)
+        extra_sections = AppContext._rollup_extra_sections(roster, brief_skew)
         return AppContext._render_rollup(
             effective_since,
             task_window,
             finding_window,
             extra_sections=extra_sections,
+            subject=subject,
+            message_window=message_window,
+            serve_message_leg=True,
         )
 
     async def _rollup_brief_skew(self, roster: FleetRoster) -> _RollupBriefSkew | None:
@@ -4984,12 +5001,26 @@ class AppContext:
         finding_window: FindingActivityWindow,
         *,
         extra_sections: Sequence[str] = (),
+        subject: Subject | None = None,
+        message_window: MessageActivityWindow | None = None,
+        serve_message_leg: bool = False,
     ) -> str:
         """Render the rollup's counted-elision grammar (design §1, pinned verbatim).
 
+        ⚠ §4.E / §9.4 / §9.3-P5 (packet 63b-ii-b) — the GOVERNED message leg is rendered
+        HERE (not in :meth:`_rollup_extra_sections`), so the i-b governed-read-render
+        derivation reaches ``render_subject_bound`` in THIS render's source. It is
+        LEG-scoped, never the response head (the task/finding legs are ungoverned until
+        64, so a response-head scope line would over-claim): tokenless (``subject`` None)
+        → the ONE ``messages: identity required — pass capability=`` line (no count / no
+        rows); with a verified Subject → the scope bound HEADS the FILTERED
+        ``messages activity (k)`` (``k`` = the caller-VISIBLE count, Leg 1). ``_rollup``
+        passes ``serve_message_leg=True``; the low-level DIRECT-render callers (link5 /
+        injection fixtures) leave it False, so they render the pre-05a-iii text.
+
         The task/finding/reports legs and the ``next cursor`` line are UNCHANGED.
-        Packet 05a-iii inserts ``extra_sections`` (the messages-activity + fleet-health
-        + brief-ack-skew lines, already rendered by :meth:`_rollup_extra_sections`)
+        Packet 05a-iii inserts ``extra_sections`` (the fleet-health + brief-ack-skew
+        lines, already rendered by :meth:`_rollup_extra_sections`)
         BEFORE the cursor —
         UNCONDITIONALLY, so this render gains no branch a driver cannot reach (the
         link5 branch-coverage pin). The sections are EMPTY when there are no agents,
@@ -5036,9 +5067,23 @@ class AppContext:
                     f"- task {task.id} by {render_attributed(task.owner)}: "
                     f"{render_attributed(task.summary or '')} ({report_tail})"
                 )
-        # 05a-iii ADDITIVE sections — inserted UNCONDITIONALLY (empty in the direct-
-        # render callers), so this render gains no un-reachable branch (link5) while
-        # the existing exact-output pins still hold (empty sections ⇒ old text).
+        # §4.E / §9.4 — the GOVERNED message leg, LEG-scoped (rendered HERE so §9.3-P5's
+        # derivation reaches ``render_subject_bound`` in this render's own source).
+        # ``serve_message_leg`` is False for the low-level direct-render callers, so they
+        # render the pre-05a-iii text; ``_rollup`` sets it True.
+        if serve_message_leg:
+            if subject is None:
+                # Tokenless: the one identity-required bound — NO count, NO rows (a count
+                # is an existence leak, 63-rulings §4.3). The activity leg is not served.
+                lines.append(str(render_line("messages: identity required — pass capability=")))
+            else:
+                # With a verified Subject: the scope bound HEADS the FILTERED activity.
+                lines.append(str(cls.render_subject_bound(subject)))
+                lines.extend(cls._rollup_message_activity_lines(message_window))
+        # 05a-iii ADDITIVE sections (fleet-health + brief-ack-skew) — inserted
+        # UNCONDITIONALLY (empty in the direct-render callers), so this render gains no
+        # un-reachable branch (link5) while the existing exact-output pins still hold
+        # (empty sections ⇒ old text).
         lines.extend(extra_sections)
         next_cursor = cls._rollup_next_cursor(effective_since, task_window, finding_window)
         lines.append(f"next cursor: {next_cursor.isoformat()}")
@@ -5048,43 +5093,15 @@ class AppContext:
     def _rollup_extra_sections(
         roster: FleetRoster,
         brief_skew: _RollupBriefSkew | None,
-        message_window: MessageActivityWindow,
     ) -> list[str]:
-        """The rollup's 05a-iii ADDITIVE section lines — messages-activity (B1/B4) +
-        fleet-health (B2) + brief-ack-skew (B3) — rendered through the shared
-        ``render_line``/``render_attributed`` seam (NOT bare f-strings, so this is not
-        a new render candidate the link5 architecture pins must govern). Each section
-        is omitted when it has no content (no messages since the cursor / no
-        non-retired agents / no standing brief), so a rollup with none of them yields
-        ``[]`` and stays byte-identical to before.
+        """The rollup's 05a-iii ADDITIVE section lines — fleet-health (B2) + brief-ack-skew
+        (B3) — rendered through the shared ``render_line``/``render_attributed`` seam (NOT
+        bare f-strings, so this is not a new render candidate the link5 architecture pins
+        must govern). Each section is omitted when it has no content. The GOVERNED message
+        leg is NO LONGER here — it moved INTO :meth:`_render_rollup` (§9.3-P5: the
+        derivation must reach ``render_subject_bound`` in the render's own source).
         """
         sections: list[str] = []
-        # messages-activity (B1) — cursor-bounded by the rollup `since` (B4), omitted
-        # when no message was sent after it. A lightweight activity summary (seq /
-        # sender / thread / grade), NOT the full bodies — those are the story surface.
-        if message_window.rows:
-            shown = len(message_window.rows)
-            if message_window.total > shown:
-                header = render_line(
-                    "messages activity (showing {shown} of {total} — raise limit for more):",
-                    shown=shown,
-                    total=message_window.total,
-                )
-            else:
-                header = render_line("messages activity ({shown}):", shown=shown)
-            sections.append(str(header))
-            for message in message_window.rows:
-                sections.append(
-                    str(
-                        render_line(
-                            "- #{seq} {sender} thread {thread} [{grade}]",
-                            seq=message.seq,
-                            sender=render_attributed(message.sender_name),
-                            thread=render_attributed(message.thread),
-                            grade=render_attributed(message.grade),
-                        )
-                    )
-                )
         counts = roster.status_counts
         parked = counts.get("input_required", 0)
         active = counts.get("active", 0)
@@ -5120,6 +5137,44 @@ class AppContext:
                     str(render_line("- {name} at v{acked}", name=render_attributed(name), acked=acked))
                 )
         return sections
+
+    @staticmethod
+    def _rollup_message_activity_lines(
+        message_window: MessageActivityWindow | None,
+    ) -> list[str]:
+        """The FILTERED activity header + row lines of the rollup's message leg (§4.E /
+        §9.4, packet 63b-ii-b) — the with-a-verified-Subject arm, WITHOUT the scope bound
+        (:meth:`_render_rollup` prepends that so §9.3-P5's derivation reaches
+        ``render_subject_bound`` in the render's own source). ``k`` is the caller-VISIBLE
+        count (Leg 1: the count describes the set its label claims), never the whole-table
+        count. A lightweight summary (seq / sender / thread / grade), NOT the full bodies —
+        those are the story surface.
+        """
+        rows = message_window.rows if message_window is not None else []
+        total = message_window.total if message_window is not None else 0
+        shown = len(rows)
+        if total > shown:
+            header = render_line(
+                "messages activity (showing {shown} of {total} — raise limit for more):",
+                shown=shown,
+                total=total,
+            )
+        else:
+            header = render_line("messages activity ({shown}):", shown=shown)
+        lines: list[str] = [str(header)]
+        for message in rows:
+            lines.append(
+                str(
+                    render_line(
+                        "- #{seq} {sender} thread {thread} [{grade}]",
+                        seq=message.seq,
+                        sender=render_attributed(message.sender_name),
+                        thread=render_attributed(message.thread),
+                        grade=render_attributed(message.grade),
+                    )
+                )
+            )
+        return lines
 
     @staticmethod
     def _rollup_leg_header(label: str, shown: int, total: int) -> str:
@@ -6969,8 +7024,10 @@ class AppContext:
     async def _comms_story(
         self,
         *,
+        agent_row: Agent,
         task_id: str | None = None,
         thread: str | None = None,
+        capability: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
         """story — task-anchored lineage in ONE call (packet 05a-iii).
@@ -6982,7 +7039,22 @@ class AppContext:
         obedience measurement is 06's drill), and routes every stored free-text
         field through the shipped ``render_attributed``/``render_fenced`` seam (ONE
         IMPLEMENTATION). It reshapes no drain SELECT (that is packet 05a-i).
+
+        §4.D / RULING §4 (packet 63b-ii-b) — story is a message-family READ ii-b
+        ENFORCES: it resolves the verified Subject UNCONDITIONALLY, FIRST (R6 deny
+        without a capability), requires ``agent=`` to name the identity it proved
+        (§4.D), and threads that Subject into ``messages_for_task`` so the arc serves
+        only the messages the caller may read (§4.E). The bound line heads the render
+        (§9.1, P4).
         """
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        subject = await self._resolve_subject(capability)
+        if agent_row.id != subject.agent_id:
+            raise governed.GovernedDenied(
+                f"agent={agent_row.name!r} names an identity the presented capability did not "
+                "prove — a governed story must present the capability of the agent it acts as"
+            )
         if task_id is None and thread is None:
             raise ValueError(
                 "story needs a task_id (or thread) to anchor on — it reconstructs "
@@ -7005,19 +7077,22 @@ class AppContext:
             report_path=task.report_path,
             done_summary=task.summary,
             blocked_by=list(task.blocked_by),
-            messages=await AppContext._story_messages(self, anchor),
+            messages=await AppContext._story_messages(self, anchor, subject=subject),
         )
-        return AppContext._render_comms_story(story)
+        return AppContext._render_comms_story(story, subject=subject)
 
-    async def _story_messages(self, task_id: str) -> list[StoryMessage]:
-        """Every message anchored to ``task_id``, oldest-first, projected onto
-        :class:`StoryMessage` with the STRUCTURAL ``question`` marker.
+    async def _story_messages(
+        self, task_id: str, *, subject: Subject | None = None
+    ) -> list[StoryMessage]:
+        """Every message anchored to ``task_id`` the caller may READ, oldest-first,
+        projected onto :class:`StoryMessage` with the STRUCTURAL ``question`` marker.
 
         Reuses the shared :meth:`MessageLedger.messages_for_task` read (ONE
-        IMPLEMENTATION — never a raw message-table query cloned into server.py);
+        IMPLEMENTATION — never a raw message-table query cloned into server.py),
+        threading the caller's ``subject`` so the read filter bounds the arc (§4.E);
         the ``StoredMessage`` → ``StoryMessage`` projection drops the fields the
         render does not use (``task_id``/``created_at``)."""
-        stored = await self.message_ledger.messages_for_task(task_id=task_id)
+        stored = await self.message_ledger.messages_for_task(task_id=task_id, subject=subject)
         return [
             StoryMessage(
                 seq=message.seq,
@@ -7032,8 +7107,13 @@ class AppContext:
         ]
 
     @staticmethod
-    def _render_comms_story(story: CommsStory) -> Rendered:
+    def _render_comms_story(story: CommsStory, *, subject: Subject) -> Rendered:
         """story's render (packet 05a-iii): the task arc as one composed block.
+
+        ⚠ §9.1 / P4 (packet 63b-ii-b) — the FIRST line is the Subject-scope bound
+        (:meth:`render_subject_bound`), once per response; the per-message sub-render
+        (``_render_story_message``) never carries it. ``subject`` is keyword-only, no
+        default (fixture-default law).
 
         NAMES its SET (the arc of THIS task — Leg-1 scope diff) and routes EVERY
         stored free-text field through the shipped containment seam (ONE
@@ -7045,7 +7125,8 @@ class AppContext:
         ``message.question`` — never body prose.
         """
         lines: list[Rendered] = [
-            render_line("story: arc of task {task_id}", task_id=render_attributed(story.task_id))
+            AppContext.render_subject_bound(subject),
+            render_line("story: arc of task {task_id}", task_id=render_attributed(story.task_id)),
         ]
         if story.subject:
             lines.append(render_line("subject: {subject}", subject=render_attributed(story.subject)))
@@ -7329,9 +7410,22 @@ class AppContext:
         agent_row: Agent,
         limit: int | None,
         peek: bool | None,
+        capability: str | None = None,
         **_ignored: Any,
     ) -> Rendered:
         """drain — serve this agent's inbox window, then the SHARED brief-skew block.
+
+        §4.D / RULING §4 (packet 63b-ii-b) — drain is a message-family READ that ii-b
+        ENFORCES: it resolves the caller's verified :class:`~lorerunes.pdp.Subject`
+        through the ONE composition root :meth:`_resolve_subject` UNCONDITIONALLY (an
+        absent / unverified ``capability`` is a teaching
+        :class:`~loremaster.governed.GovernedDenied` BEFORE any read — R6), requires
+        ``agent=`` to name the identity that capability PROVED (§4.D — a mismatch
+        denies), and SERVES only the Subject-visible window (§4.B): the ledger splices
+        the read filter, so an addressed-but-invisible message is neither served nor
+        stamped (§4.3). The Subject-scope bound line heads the served render (§9.1, P4),
+        and the stamp runs inside ``write_guard("drain")`` so the F5 runtime seam
+        attributes the ``to`` mutation.
 
         The window is CONFIG-driven (``comms.drain_limit``, like ``fleet_limit``)
         and clamped to the action's own ``_MAX_DRAIN_LIMIT``, mirroring fleet's
@@ -7348,6 +7442,19 @@ class AppContext:
         it BEFORE the drain also means a skew failure cannot strand an already
         STAMPED window whose render never reached the caller.
         """
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        # §4.D / R6 — resolve the caller's verified Subject UNCONDITIONALLY, FIRST: an
+        # absent / unverified capability denies HERE (before any read or stamp), and
+        # ``agent=`` MUST name the identity the capability proved (§4.D / B2-relay: the
+        # agent≡subject check is the TOOL layer's; the ledger gates by VISIBILITY, never
+        # ownership).
+        subject = await self._resolve_subject(capability)
+        if agent_row.id != subject.agent_id:
+            raise governed.GovernedDenied(
+                f"agent={agent_row.name!r} names an identity the presented capability did not "
+                "prove — a governed drain must present the capability of the agent it acts as"
+            )
         skew_lines = await AppContext._comms_brief_skew_lines(self, agent_row=agent_row)
         # L2 (DD-4.b): the awaiting-answer read must PRECEDE the drain STAMP. A
         # waiting line derived from state read AFTER this agent's own drain
@@ -7357,14 +7464,19 @@ class AppContext:
         display_limit = min(
             limit if limit is not None else self.config.comms.drain_limit, _MAX_DRAIN_LIMIT
         )
-        result = await self.message_ledger.drain(
-            agent_id=agent_row.id, limit=display_limit, peek=bool(peek)
-        )
+        # §4.B — the drain SERVES only the Subject-visible window and STAMPS exactly what
+        # it serves; the stamp runs inside ``write_guard("drain")`` so F5 attributes the
+        # ``to`` mutation to the ``drain`` frame (an unattributed governed write is denied).
+        with governed.write_guard("drain"):
+            result = await self.message_ledger.drain(
+                agent_id=agent_row.id, limit=display_limit, peek=bool(peek), subject=subject
+            )
         inbox = AppContext._render_comms_drain(
             result,
             agent_name=agent_row.name,
             limit=display_limit,
             session=agent_row.session,
+            subject=subject,
         )
         return render_compose(inbox, *waiting_lines, *skew_lines)
 
@@ -7389,9 +7501,22 @@ class AppContext:
         return AppContext._render_comms_waiting_line(waiting, age_s=age_s)
 
     async def _comms_await(
-        self, *, agent_row: Agent, thread: str | None = None, **_ignored: Any
+        self,
+        *,
+        agent_row: Agent,
+        thread: str | None = None,
+        capability: str | None = None,
+        **_ignored: Any,
     ) -> Rendered:
         """await — a bounded, snapshot-first WAIT for this agent's unseen traffic (05a-ii).
+
+        §4.D / RULING §4 (packet 63b-ii-b) — await is a message-family READ ii-b
+        ENFORCES: it resolves the caller's verified Subject UNCONDITIONALLY (R6 deny
+        without a capability), requires ``agent=`` to name the identity it proved
+        (§4.D), and carries that Subject INTO the awaiter's drain seam so the snapshot
+        peeks FILTER by the caller's visibility (§4.E) while the awaiter itself stays
+        subject-blind (R-1). Both render paths carry the Subject-scope bound line
+        (§9.1, P4 — the empty case is where Leg 1 matters most).
 
         Constructs the standalone :class:`~loremaster.inbox_awaiter.InboxAwaiter` (R-1: the
         wait-machine is its OWN primitive, not a ledger method — the ledger stays the
@@ -7413,9 +7538,22 @@ class AppContext:
         The LIVE-wake + real socket-drop non-loss are the DEPLOY-gated build probe (design
         §A.6); these in-process paths prove the state machine + the render.
         """
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        # §4.D / R6 — resolve the caller's verified Subject FIRST (deny without a
+        # capability), and require agent≡subject (the TOOL-layer check, §4.D).
+        subject = await self._resolve_subject(capability)
+        if agent_row.id != subject.agent_id:
+            raise governed.GovernedDenied(
+                f"agent={agent_row.name!r} names an identity the presented capability did not "
+                "prove — a governed await must present the capability of the agent it acts as"
+            )
+        # The awaiter stays subject-BLIND (R-1); the Subject rides its drain seam via a
+        # partial binding, so every peek FILTERS by the caller's visibility (§4.E). await
+        # PEEKS (F1) — nothing is stamped, so no write_guard.
         awaiter = InboxAwaiter(
             connect=AppContext._await_live_connect(self),
-            drain=self.message_ledger.drain,
+            drain=functools.partial(self.message_ledger.drain, subject=subject),
         )
         result = await awaiter.await_inbox(
             agent_id=agent_row.id,
@@ -7423,9 +7561,11 @@ class AppContext:
             thread=thread,
         )
         if result.entries:
-            return AppContext._render_comms_await(result, session=agent_row.session)
+            return AppContext._render_comms_await(
+                result, session=agent_row.session, subject=subject
+            )
         waiting_lines = await AppContext._comms_waiting_lines(self, agent_row=agent_row)
-        return AppContext._render_comms_await_empty(waiting_lines)
+        return AppContext._render_comms_await_empty(waiting_lines, subject=subject)
 
     def _await_live_connect(self) -> Callable[[], Awaitable[Any]]:
         """The ``connect`` factory the awaiter's LIVE subscription rides — a FRESH signed-in
@@ -7452,7 +7592,13 @@ class AppContext:
         return _connect
 
     async def _comms_ack(
-        self, *, agent_row: Agent, seqs: list[int], note: str | None, **_ignored: Any
+        self,
+        *,
+        agent_row: Agent,
+        seqs: list[int],
+        note: str | None,
+        capability: str | None = None,
+        **_ignored: Any,
     ) -> Rendered:
         """ack — write-once CAS over the caller's OWN delivery edges.
 
@@ -7460,9 +7606,29 @@ class AppContext:
         the four-way-ambiguous raw CAS return); the render accounts for all of
         them. Acking another agent's edge leaves that edge untouched and reports
         ``not_addressed`` — the ledger's guarantee, not this handler's.
+
+        §4.D / RULING §4 (packet 63b-ii-b) — ack is a message-family READ+STAMP ii-b
+        ENFORCES: it resolves the verified Subject UNCONDITIONALLY (R6), requires
+        ``agent=`` to name the identity it proved (§4.D), and resolves seqs THROUGH the
+        read filter (§9.5 α — an addressed-but-invisible seq is ``unknown_message``,
+        never a false ``already_acked``). The stamp runs inside ``write_guard("ack")``
+        so F5 attributes the ``to`` mutation, and the bound line heads the render (P4).
         """
-        result = await self.message_ledger.ack(agent_id=agent_row.id, seqs=seqs, note=note)
-        return AppContext._render_comms_ack(result, agent_name=agent_row.name, note=note)
+        from loremaster import governed  # noqa: PLC0415 - house lazy-import idiom (acyclic seam)
+
+        subject = await self._resolve_subject(capability)
+        if agent_row.id != subject.agent_id:
+            raise governed.GovernedDenied(
+                f"agent={agent_row.name!r} names an identity the presented capability did not "
+                "prove — a governed ack must present the capability of the agent it acts as"
+            )
+        with governed.write_guard("ack"):
+            result = await self.message_ledger.ack(
+                agent_id=agent_row.id, seqs=seqs, note=note, subject=subject
+            )
+        return AppContext._render_comms_ack(
+            result, agent_name=agent_row.name, note=note, subject=subject
+        )
 
     async def _comms_brief_skew_lines(self, *, agent_row: Agent) -> list[Rendered]:
         """Read the brief-skew state and render it — the ONE assembly both
@@ -8370,9 +8536,16 @@ class AppContext:
 
     @staticmethod
     def _render_comms_drain(
-        result: MessageDrainResult, *, agent_name: str, limit: int, session: str
+        result: MessageDrainResult, *, agent_name: str, limit: int, session: str, subject: Subject
     ) -> Rendered:
-        """drain's render (§B4): header, rows, elision, then the ack demand.
+        """drain's render (§B4): the Subject-scope bound line, header, rows, elision, ack demand.
+
+        ⚠ §9.1 / P4 (packet 63b-ii-b) — the FIRST line is the Subject-scope bound
+        (:meth:`render_subject_bound`), once per served response, INCLUDING the empty
+        ("no unread") case where the Leg-1 scope diff matters most. ``subject`` is
+        keyword-only with NO default (the fixture-default law at the signature layer,
+        as ``session`` already is): every call site MUST supply it, so a sub-render can
+        never silently omit the bound. The per-row sub-render never carries it.
 
         ``session`` is REQUIRED, never defaulted: it is the ``{context}`` cell's
         thread comparand, and a defaulted comparand lets any call site silently
@@ -8425,10 +8598,11 @@ class AppContext:
                 label means a DELIBERATE conversation" signal.
         """
         del agent_name, limit
+        bound = AppContext.render_subject_bound(subject)
         if not result.entries:
-            return render_line("no unread messages")
+            return render_compose(bound, render_line("no unread messages"))
         shown = len(result.entries)
-        lines: list[Rendered] = []
+        lines: list[Rendered] = [bound]
         if result.peeked:
             lines.append(
                 render_line(
@@ -8585,8 +8759,14 @@ class AppContext:
         ]
 
     @staticmethod
-    def _render_comms_await(result: MessageDrainResult, *, session: str) -> Rendered:
+    def _render_comms_await(
+        result: MessageDrainResult, *, session: str, subject: Subject
+    ) -> Rendered:
         """await's NON-empty render (R-3) — surfaced traffic + the REAL consume teach.
+
+        ⚠ §9.1 / P4 — the FIRST line is the Subject-scope bound
+        (:meth:`render_subject_bound`), once per response; the shared drain-ROW
+        sub-render never carries it. ``subject`` is keyword-only, no default.
 
         REUSES the injection-critical shared seam — :meth:`_render_comms_drain_row` (the
         row header, ``render_attributed``-contained) + :func:`render_fenced` (bodies, a
@@ -8607,11 +8787,12 @@ class AppContext:
         is NOT indented (it must round-trip byte-verbatim so the reader can copy it).
         """
         lines: list[Rendered] = [
+            AppContext.render_subject_bound(subject),
             render_line(
                 "surfaced {shown} of {total} unseen for you — a PEEK; nothing was stamped",
                 shown=len(result.entries),
                 total=result.total_pending,
-            )
+            ),
         ]
         for entry in result.entries:
             lines.append(AppContext._render_comms_drain_row(entry, session=session))
@@ -8631,8 +8812,15 @@ class AppContext:
         return render_compose(*lines)
 
     @staticmethod
-    def _render_comms_await_empty(waiting_lines: list[Rendered]) -> Rendered:
+    def _render_comms_await_empty(
+        waiting_lines: list[Rendered], *, subject: Subject
+    ) -> Rendered:
         """await's EMPTY (timeout) render — the bound named as a FACT + the question debt.
+
+        ⚠ §9.1 / P4 — the FIRST line is the Subject-scope bound
+        (:meth:`render_subject_bound`); this is the EMPTY path, where Leg 1 matters
+        MOST (the render names the caller's scope even with nothing to show).
+        ``subject`` is keyword-only, no default.
 
         The empty line names its SET (``you`` — await is per-caller) and its TIME bound
         (``waited up to Ns … as of my final snapshot``): a point-in-time fact, never a
@@ -8649,7 +8837,7 @@ class AppContext:
             "nothing was stamped",
             budget=int(AWAIT_BUDGET_S),
         )
-        return render_compose(empty, *waiting_lines)
+        return render_compose(AppContext.render_subject_bound(subject), empty, *waiting_lines)
 
     @staticmethod
     def _render_comms_drain_row(entry: InboxEntry, *, session: str) -> Rendered:
@@ -8733,9 +8921,13 @@ class AppContext:
 
     @staticmethod
     def _render_comms_ack(
-        result: MessageAckResult, *, agent_name: str, note: str | None
+        result: MessageAckResult, *, agent_name: str, note: str | None, subject: Subject
     ) -> Rendered:
-        """ack's receipt (§B5): every requested seq, in the group its fate names.
+        """ack's receipt (§B5): the Subject-scope bound line, then every requested seq in its group.
+
+        ⚠ §9.1 / P4 (packet 63b-ii-b) — the FIRST line is the Subject-scope bound
+        (:meth:`render_subject_bound`), once per response; the per-fate group lines
+        never carry it. ``subject`` is keyword-only, no default (fixture-default law).
 
         MEMBERSHIP, not multiplicity: each group lists the DISTINCT seqs whose
         ledger entries carry that outcome, ASCENDING — the one seq-list ordering
@@ -8769,7 +8961,7 @@ class AppContext:
             if entry.seq not in group:
                 group.append(entry.seq)
         acked = sorted(by_outcome[_ACK_OUTCOME_ACKED])
-        lines: list[Rendered] = []
+        lines: list[Rendered] = [AppContext.render_subject_bound(subject)]
         if acked:
             lines.append(
                 render_line(
@@ -9035,31 +9227,39 @@ _COMMS_ACTIONS: dict[str, CommsActionSpec] = {
     ),
     _COMMS_ACTION_DRAIN: CommsActionSpec(
         AppContext._comms_drain,
-        params=frozenset({"limit", "peek"}),
+        params=frozenset({"limit", "peek", "capability"}),
         limit_cap=_MAX_DRAIN_LIMIT,
+        # §4.D / RULING §4 — ii-b flips the four message-family READS to
+        # requires_capability=True WITH their read-shape enforcement: the handler
+        # resolves the Subject UNCONDITIONALLY (_resolve_subject) and its read
+        # FILTERS by that Subject (§4.B/§4.E). A name is no longer enough (§9).
+        requires_capability=True,
     ),
     _COMMS_ACTION_ACK: CommsActionSpec(
         AppContext._comms_ack,
-        params=frozenset({"seqs", "note"}),
+        params=frozenset({"seqs", "note", "capability"}),
         required=frozenset({"seqs"}),
+        requires_capability=True,
     ),
     _COMMS_ACTION_STORY: CommsActionSpec(
         AppContext._comms_story,
-        params=frozenset({"task_id", "thread"}),
+        params=frozenset({"task_id", "thread", "capability"}),
         # Neither is a spec-layer ``required``: the anchor is a ONE-OF (task_id OR
         # thread) that the AND-semantics ``required`` frozenset cannot express, so
         # the handler validates "at least one anchor" itself (teaching ValueError).
         required=frozenset(),
+        requires_capability=True,
     ),
     _COMMS_ACTION_AWAIT: CommsActionSpec(
         AppContext._comms_await,
-        # packet 05a-ii — the bounded snapshot-first WAIT. ``thread`` is the ONLY
+        # packet 05a-ii — the bounded snapshot-first WAIT. ``thread`` is a
         # param (F3 client-side narrowing) and is NEVER ``required``: an await with
         # no thread waits on ALL of the agent's traffic (the common case). NO
         # ``timeout=`` param — the ≤55s bound is a FIXED named constant (F2,
         # AWAIT_BUDGET_S), never a caller knob.
-        params=frozenset({"thread"}),
+        params=frozenset({"thread", "capability"}),
         required=frozenset(),
+        requires_capability=True,
     ),
 }
 

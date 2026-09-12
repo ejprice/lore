@@ -31,12 +31,14 @@ from loremaster.render import Rendered
 from loremaster.sanitise import max_backtick_run
 from loremaster.server import AppContext
 from test_comms_tool import (
+    _RENDER_SUBJECT,
     _03b_drain,
     _03b_fleet,
     _governed_ambient_token,  # noqa: F401 - autouse fixture (patches get_access_token for the credentialed send)
     _line_containing,
     _msg,
     _msg_fakes,
+    _read,
     _send,
 )
 from test_link5_render_containment import FORGERY_MARKER, _leaks
@@ -276,7 +278,8 @@ async def _ask_via_dispatcher(
 
 
 async def _drain_text(harness: Any, *, agent: str, session: str = "wave7") -> str:
-    return str(await AppContext.comms(harness, action="drain", agent=agent, session=session))
+    # packet 63b-ii-b: drain is capability-required — credential through the shared ``_read`` seam.
+    return str(await _read(harness, "drain", agent=agent, session=session))
 
 
 async def _heartbeat_text(harness: Any, *, agent: str, session: str = "wave7") -> str:
@@ -519,7 +522,7 @@ class TestTheSinceReReadReusesTheDrainFence:
         )
         rendered = str(
             AppContext._render_comms_drain(
-                recovered, agent_name="fixer-b", limit=20, session="wave7"
+                recovered, agent_name="fixer-b", limit=20, session="wave7", subject=_RENDER_SUBJECT
             )
         )
         assert _HOSTILE_BODY in rendered, "the recovered body did not round-trip byte-verbatim"

@@ -72,19 +72,25 @@ from typing import Any
 import loremaster.server as server_module
 import pytest
 from _comms_fakes import FakeAgentRegistry, FakeBriefLedger
-from loremaster.agents import Agent, AgentFleetWindow, AgentStatus
-from loremaster.briefs import Brief, BriefAckResult, BriefBehindEntry, BriefPublishResult
-from loremaster.render import render_attributed
-from loremaster.server import _MAX_DRAIN_LIMIT, AppContext
 
 # ONE IMPLEMENTATION: the skew block's surfacing teach has ONE test-side home
 # (``test_comms_render_architecture``) — importing it keeps these registry keys and
 # proof markers from becoming private copies of a sentence four suites assert on.
 # The keys stay an INDEPENDENT transcription of server.py's literals (production
 # cannot import a test constant), so drift in either direction still goes RED.
+from _governed_contract import member
+from loremaster.agents import Agent, AgentFleetWindow, AgentStatus
+from loremaster.briefs import Brief, BriefAckResult, BriefBehindEntry, BriefPublishResult
+from loremaster.render import render_attributed
+from loremaster.server import _MAX_DRAIN_LIMIT, AppContext
 from test_comms_render_architecture import _SKEW_ACKER_TEACH, _SKEW_SURFACING_TEACH
 
 _SERVER_PY = Path(inspect.getfile(AppContext)).resolve().parent / "server.py"
+
+# A benign Subject for the RENDER-direct promise-proof drivers (packet 63b-ii-b: the comms READ
+# renders now take a keyword-only ``subject``). The bound line it produces is CONSTANT across a
+# proof's predicate-true/false renders, so it never affects the emit-iff-predicate diff.
+_RENDER_SUBJECT = member("p_promise_probe", "a_promise_probe")
 
 _RENDER_VERB_NAMES: frozenset[str] = frozenset({"render_line", "render_join"})
 
@@ -1084,6 +1090,7 @@ def _render_drain(
             # rendering byte-identically to its pre-B14 shape (the thread half of
             # the cell is suppressed when thread == session).
             session="wave7",
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -1112,6 +1119,7 @@ def _render_message_ack(*, outcomes: list[tuple[int, str]]) -> str:
             # B5.3 collateral (see the 03b driver block below): ``note`` is a
             # REQUIRED kwarg on the render, so this committed driver names it.
             note=None,
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -1286,6 +1294,7 @@ def _render_drain_03b(
             agent_name="fixer-b",
             limit=limit,
             session=session,
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -1314,6 +1323,7 @@ def _render_ack_03b(*, outcomes: list[tuple[int, str]], note: str | None) -> str
             ),
             agent_name="fixer-b",
             note=note,
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -1381,6 +1391,7 @@ def _render_await(*, entries: list[Any], total_pending: int) -> str:
                 peeked=True,
             ),
             session="wave7",
+            subject=_RENDER_SUBJECT,
         )
     )
 
@@ -1388,7 +1399,7 @@ def _render_await(*, entries: list[Any], total_pending: int) -> str:
 def _render_await_empty() -> str:
     """Drive the REAL await EMPTY (timeout) render with NO outstanding-question debt — the
     consume teach's NO-EMIT leg (the empty render is a bare bound, no drain teach)."""
-    return str(AppContext._render_comms_await_empty([]))
+    return str(AppContext._render_comms_await_empty([], subject=_RENDER_SUBJECT))
 
 
 _PROOF_LIST: list[PromiseProof] = [

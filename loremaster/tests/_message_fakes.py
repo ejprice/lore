@@ -39,7 +39,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from loremaster.agent_existence import format_unknown_agent_refusal
 from loremaster.briefs import AgentRefLike
@@ -66,6 +66,9 @@ from loremaster.messages import (
     WaitingOnAnswer,
 )
 from loremaster.render import render_attributed
+
+if TYPE_CHECKING:
+    from lorerunes.pdp import Subject
 
 STATUS_INPUT_REQUIRED = "input_required"
 
@@ -412,8 +415,21 @@ class FakeMessageLedger:
         )
 
     async def drain(
-        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+        self,
+        *,
+        agent_id: str,
+        limit: int,
+        peek: bool = False,
+        since: int | None = None,
+        subject: Subject | None = None,
     ) -> MessageDrainResult:
+        # packet 63b-ii-b: the fake ACCEPTS ``subject`` so the ii-b dispatcher's read-governance
+        # call works, but IGNORES it — exactly as ``send`` accepts+ignores owner_principal/
+        # owner_agent/scope: this fake carries NO governance columns (store-ref §2), so the
+        # read_filter is the LIVE contract's to enforce (test_comms_read_governance_63b_ii_b.py).
+        # The fake stays the read-MECHANICS oracle (window / stamp / fate), never a second,
+        # friendlier filter.
+        _ = subject
         await asyncio.sleep(0)
         if since is not None:
             # DD-4.c RECOVERY READ: rows keyed by seq (``seq > since``, STRICT),
@@ -461,8 +477,17 @@ class FakeMessageLedger:
     # -- ack ------------------------------------------------------------------
 
     async def ack(
-        self, *, agent_id: str, seqs: Sequence[int], note: str | None = None
+        self,
+        *,
+        agent_id: str,
+        seqs: Sequence[int],
+        note: str | None = None,
+        subject: Subject | None = None,
     ) -> MessageAckResult:
+        # packet 63b-ii-b: ACCEPT+IGNORE ``subject`` (the fake carries no governance columns; the
+        # §9.5 read-filtered seq resolution is the LIVE contract's, not this mechanics oracle's) —
+        # the same deliberate pattern ``send`` uses for owner/scope.
+        _ = subject
         await asyncio.sleep(0)
         # Same discipline as the pointer bounds in ``send``: CALL the policy, do
         # not clone it (see the note there and finding #190).
@@ -561,7 +586,9 @@ class FakeMessageLedger:
     # friendlier one. Re-derived INDEPENDENTLY over ``self.db`` (never a
     # delegation to production's query), so the fake can still FAIL a wrong build.
 
-    async def messages_for_task(self, *, task_id: str) -> list[StoredMessage]:
+    async def messages_for_task(
+        self, *, task_id: str, subject: Subject | None = None
+    ) -> list[StoredMessage]:
         """Every message anchored to ``task_id``, OLDEST-FIRST by ``seq`` — the
         read ``story`` composes a task's message arc over (mirrors the real
         ledger; empty when none carry this ``task_id``).
@@ -570,7 +597,11 @@ class FakeMessageLedger:
         whose ``task_id`` reads NONE (``NONE = $task_id`` is false for a concrete
         id) is EXCLUDED by the predicate, never an error — so a partial stub is
         skipped exactly as the store skips a NONE row (see ``message_activity_since``).
+
+        packet 63b-ii-b: ACCEPT+IGNORE ``subject`` (the fake carries no governance columns;
+        the §4.E read_filter is the LIVE contract's — the fake is the mechanics oracle).
         """
+        _ = subject
         await asyncio.sleep(0)
         matching = [
             message
@@ -581,10 +612,13 @@ class FakeMessageLedger:
         return [self._to_stored_message(message) for message in matching]
 
     async def message_activity_since(
-        self, since: datetime, *, limit: int
+        self, since: datetime, *, limit: int, subject: Subject | None = None
     ) -> MessageActivityWindow:
         """Messages CREATED strictly after ``since``, oldest-first by
         ``created_at``, capped at ``limit``, with an HONEST (uncapped) ``total``.
+
+        packet 63b-ii-b: ACCEPT+IGNORE ``subject`` (the fake carries no governance columns;
+        the §9.4 filtered count is the LIVE contract's — the fake is the mechanics oracle).
 
         Mirrors the real ledger, including its ValueError on a bad ``limit`` and
         its EXCLUSIVE cursor. The filter models the STORE's ``WHERE created_at >
@@ -597,6 +631,7 @@ class FakeMessageLedger:
         being friendlier than the store. ``total`` counts every match, not just the
         capped window.
         """
+        _ = subject
         await asyncio.sleep(0)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             raise ValueError(f"limit must be a positive integer, got {limit!r}")

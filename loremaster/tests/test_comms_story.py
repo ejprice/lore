@@ -50,6 +50,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
+from _governed_contract import admin, member
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -66,6 +67,10 @@ from loremaster.tasks import TaskLedger
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 
 _SESSION = "story-wave"
+# A benign Subject for the RENDER-direct hostile-body driver (packet 63b-ii-b: the story render
+# now takes a keyword-only ``subject``). The bound line it produces is constant across the
+# injection oracle's hostile/baseline renders, so it never affects the field-value diff.
+_STORY_RENDER_SUBJECT = member("p_story_probe", "a_story_probe")
 # Multi-line + row-forge + a fence-shaped backtick run: the hostile-body law.
 _HOSTILE_BODY = f"line one\nline two ```` embedded```\n{_ROW_FORGE_PAYLOAD}"
 # The forge row's own-line prefix — a line that (stripped) starts with this and sits
@@ -112,7 +117,19 @@ class _StoryCtx:
             self.message_ledger.register_agent(agent_id=agent.id, name=agent.name)
         return agent
 
+    async def _resolve_subject(self, capability: str | None) -> Any:
+        # packet 63b-ii-b: ``_comms_story`` now resolves a Subject through the composition root.
+        # This LIVE harness wires no OAuth / keep stores, so it STUBS an ADMIN subject for the
+        # current caller — role=admin ⇒ AllRows read_filter ⇒ the arc is UNFILTERED, so these tests
+        # keep certifying arc COMPOSITION / containment exactly as pre-ii-b (the read FILTER itself
+        # is the LIVE read-governance contract's, test_comms_read_governance_63b_ii_b.py::B2/P7).
+        # ``agent_id`` == the caller's id so the handler's §4.D agent≡subject check passes.
+        _ = capability
+        return self._caller_subject
+
     async def story(self, *, task_id: str, caller: Agent) -> str:
+        # Stub the caller's admin subject BEFORE the handler resolves it (see _resolve_subject).
+        self._caller_subject = admin(agent_id=caller.id)
         rendered = await AppContext._comms_story(
             cast(AppContext, self), agent_row=caller, task_id=task_id
         )
@@ -380,7 +397,7 @@ class TestStoryFencesEveryFreeTextField:
     def test_a_hostile_value_in_a_free_text_field_is_contained(
         self, target: tuple[str, str]
     ) -> None:
-        rendered = str(AppContext._render_comms_story(_hostile_story(target)))
+        rendered = str(AppContext._render_comms_story(_hostile_story(target), subject=_STORY_RENDER_SUBJECT))
         assert not _forged_row_escapes(rendered), (
             f"a hostile value in CommsStory/StoryMessage field {target!r} leaked a forged "
             f"row OUTSIDE its fence — EVERY stored free-text field story renders must route "
