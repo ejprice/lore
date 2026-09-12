@@ -71,12 +71,13 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from surrealdb import AsyncSurreal, RecordID
 from ulid import ULID
 
+from loremaster import governed
 from loremaster.agent_existence import (
     AGENT_ROW_NOUN,
     AGENT_ROW_REMEDY,
@@ -119,6 +120,9 @@ from loremaster.store.surreal_schema import (
 from loremaster.store.surreal_schema import (
     MESSAGE_REFS_MAX_COUNT as MESSAGE_REFS_MAX_COUNT,  # noqa: PLC0414 (re-export; never redefined)
 )
+
+if TYPE_CHECKING:
+    from lorerunes.pdp import Subject
 
 logger = logging.getLogger(__name__)
 
@@ -832,9 +836,15 @@ class MessageLedger:
 
         WHY THE LEDGER AND NOT THE DISPATCHER: this is the ONE writer, and a
         dispatcher-only check leaves every non-tool caller unbounded. Policy lives
-        with the write, and the store ASSERTs are the backstop underneath it — a
-        writer that bypasses this method fails LOUDLY at the engine rather than
-        landing an unbounded row.
+        with the write — and after 63b-ii-b this is the ONE implementation of the
+        length bounds: the ``thread``/``task_id``/``refs``/``refs[*]`` (and
+        ``body``/``ack_note``) store ASSERTs were DROPPED (§12/§13, the DD-3.c
+        UPDATE-hazard: a store length constraint on the UPDATE-able ``message`` /
+        UPDATE-hot ``to`` denies a legacy row's next UPDATE). The second-writer
+        threat — an honest developer landing an unbounded row through a NEW writer —
+        is covered instead by F5 (every governed-table write is observed as a state
+        diff; an unattributed write that LANDS is denied) and the P3 single-writer
+        floor (``test_comms_schema.py::TestTheSingleWriterFloorPerTable``).
 
         WHY IT MATTERS AT ALL: the body cap's whole rationale is bounding the
         worst-case drain render. Five UNBOUNDED refs per row void that arithmetic
@@ -1066,10 +1076,32 @@ class MessageLedger:
         return self._extract_group_count(result)
 
     async def drain(
-        self, *, agent_id: str, limit: int, peek: bool = False, since: int | None = None
+        self,
+        *,
+        agent_id: str,
+        limit: int,
+        peek: bool = False,
+        since: int | None = None,
+        subject: Subject | None = None,
     ) -> MessageDrainResult:
         """Serve this agent's inbox window and (unless ``peek``) stamp EXACTLY the
         rows served as seen.
+
+        ⚠ **READ GOVERNANCE (packet 63b-ii-b, §4.B / §4.3).** When ``subject`` is
+        given, the served window is FILTERED to the messages that Subject may READ
+        — the ONE read splice ``governed.read_filter(subject, MESSAGE_TABLE)`` (==
+        ``authorize_filter(READ).to_surql()``, never a hand-rolled copy) applied to
+        the window's own message ids — and the filter runs BEFORE the decode and the
+        stamp, so an addressed-but-INVISIBLE message is neither served NOR stamped
+        (§4.3). The decode-first ordering (entries built before the stamp UPDATE) is
+        the F-1 shape (§13.2): a decode failure raises before anything is stamped,
+        never leaving a served row stamped-and-lost. ``subject=None`` is a legacy /
+        internal call, UNFILTERED — governance (deny-without-identity) is the TOOL
+        layer's, §4.D: the server resolves the Subject and denies without a
+        capability; this ledger FILTERS when one is present, it does not gate on
+        ownership. The whole-set ``total_pending``/``directive_pending`` counts are
+        NOT filtered (accepted bound iv — they are the recipient's edge counts,
+        labelled "pending deliveries", never "messages you can read").
 
         Two modes, one return shape:
 
@@ -1098,6 +1130,8 @@ class MessageLedger:
                 shape-wise by the ``since=`` recovery read, which never stamps.
             since: When not ``None``, the recovery cursor — serve ``seq > since``
                 (seen or unseen), stamping nothing.
+            subject: The resolved caller Subject whose read filter bounds the served
+                set (§4.B). ``None`` (a legacy / internal call) is unfiltered.
 
         Returns:
             The :class:`MessageDrainResult` of this call.
@@ -1111,6 +1145,7 @@ class MessageLedger:
                     {"agent": agent_rec, "since": since, "limit": limit},
                 )
             )
+            rows = await self._filter_visible_rows(rows, subject)
             total_pending = await self._count_edges(agent_rec, "in.seq > $since", {"since": since})
             directive_pending = await self._count_edges(
                 agent_rec,
@@ -1136,6 +1171,12 @@ class MessageLedger:
         # The store already orders by ``seq``; the sort re-pins it because the
         # adversarial fake / a ``_query`` injection may supply rows seq-decorrelated.
         window = sorted(window_rows, key=lambda row: int(row["seq"]))
+        # THE read splice (§4.B / §4.3, R-a.3): keep ONLY the window rows whose
+        # message the Subject may READ, BEFORE the decode and the stamp below — so an
+        # addressed-but-invisible message is neither served nor stamped. Decode-first
+        # (F-1 / §13.2): ``entries`` is built before the stamp UPDATE, so a decode
+        # failure raises without stamping.
+        window = await self._filter_visible_rows(window, subject)
         total_pending = await self._count_edges(agent_rec, "seen_at IS NONE", {})
         directive_pending = await self._count_edges(
             agent_rec, "seen_at IS NONE AND in.grade = $grade", {"grade": MESSAGE_GRADE_DIRECTIVE}
@@ -1237,13 +1278,63 @@ class MessageLedger:
             question=bool(row.get("question")),
         )
 
+    async def _filter_visible_rows(
+        self, rows: list[dict[str, Any]], subject: Subject | None
+    ) -> list[dict[str, Any]]:
+        """Return only the drain rows whose ``message`` the ``subject`` may READ.
+
+        ``subject is None`` is a legacy / internal call and is UNFILTERED —
+        governance (deny-without-identity) is the TOOL layer's (§4.D); this ledger
+        FILTERS when a Subject is present, it never gates on ownership. With a
+        Subject, splice the ONE read filter (:func:`governed.read_filter` ==
+        ``authorize_filter(READ).to_surql()`` — the single-brain splice, never a
+        hand-rolled copy: a divergent fragment reds the delegation pin) into a
+        ``message`` SELECT keyed by the window's OWN ids, so the scan is bounded by
+        the window (``<= limit``), and keep only the rows the filter returns (§4.3:
+        an invisible message is neither served nor stamped). The IN over ``$window_ids``
+        is a direct record lookup; the fragment IndexScans the governed columns and
+        EXPANDS keeps to per-value equalities (never ``IN`` inside an ``OR`` —
+        store-ref §2 / #413), so the whole read is index-served.
+        """
+        if subject is None or not rows:
+            return rows
+        window_records = [
+            RecordID(MESSAGE_TABLE, self._bare_id(row.get("message_id"))) for row in rows
+        ]
+        read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
+        visible_rows = self._as_rows(
+            await self._query(
+                f"SELECT {_ID_KEY} FROM {MESSAGE_TABLE} "
+                f"WHERE {_ID_KEY} IN $window_ids AND ({read_fragment})",
+                {"window_ids": window_records, **read_params},
+            )
+        )
+        visible = {
+            self._bare_id(row[_ID_KEY]) for row in visible_rows if row.get(_ID_KEY) is not None
+        }
+        return [row for row in rows if self._bare_id(row.get("message_id")) in visible]
+
     # -- ack / awaiting_answer (packet 03a-2 — the CONSUME path) ------------
 
     async def ack(
-        self, *, agent_id: str, seqs: Sequence[int], note: str | None = None
+        self,
+        *,
+        agent_id: str,
+        seqs: Sequence[int],
+        note: str | None = None,
+        subject: Subject | None = None,
     ) -> MessageAckResult:
         """Write-once CAS ack of one or more delivery edges, reporting EVERY
         requested seq's own fate.
+
+        ⚠ **READ GOVERNANCE (packet 63b-ii-b, §9.5 α).** When ``subject`` is given,
+        the seq→message resolution runs THROUGH the ONE read filter
+        (:func:`governed.read_filter`): a seq whose message the Subject may NOT read
+        does not resolve, so it reads back as ``unknown_message`` (never a false
+        ``already_acked(acked_at=None)`` — an invisible message is, to this Subject,
+        indistinguishable from a nonexistent one), the CAS never reaches its edge,
+        and nothing is stamped (§4.3). ``subject=None`` is a legacy / internal call,
+        unfiltered — governance is the tool layer's (§4.D).
 
         The stamp is ONE guarded ``UPDATE`` over the whole requested set —
         ``SET acked_at … WHERE acked_at IS NONE AND out = $me AND in IN $ids`` —
@@ -1279,6 +1370,8 @@ class MessageLedger:
                 ``already_acked``, exactly as two separate calls would read.
             note: The note to record on the edge(s) this call's CAS WINS, or
                 ``None`` to leave ``ack_note`` unset (never a placeholder).
+            subject: The resolved caller Subject whose read filter bounds the seq
+                resolution (§9.5 α). ``None`` (a legacy / internal call) is unfiltered.
 
         Returns:
             The :class:`MessageAckResult` — one :class:`MessageAckEntry` per
@@ -1291,16 +1384,18 @@ class MessageLedger:
             TxnContentionExhaustedError: The CAS outlived the shared retry budget.
         """
         # ``note`` is message-grade PROSE (it is served back later by the history
-        # surface), not a pointer — so it takes the BODY constant, at BOTH layers,
-        # exactly as ``body`` does. Bounded HERE rather than one packet later,
-        # because "unbounded now" is the same bypass discovered by somebody else's
-        # render instead of designed here.
+        # surface), not a pointer — so it takes the BODY constant. This app cap is
+        # now the ONE implementation of the bound (the ``to.ack_note`` store ASSERT
+        # was dropped in 63b-ii-b §3 — ``to`` is UPDATE-hot, so a store constraint is
+        # DD-3.c). Bounded HERE rather than one packet later, because "unbounded now"
+        # is the same bypass discovered by somebody else's render instead of designed
+        # here.
         self._reject_oversize_note(note)
         requested = list(seqs)
         if not requested:
             return MessageAckResult(entries=[], acked_count=0, already_acked_count=0)
         agent_rec = RecordID(AGENT_TABLE, agent_id)
-        message_id_by_seq = await self._resolve_message_ids(requested)
+        message_id_by_seq = await self._resolve_message_ids(requested, subject=subject)
         won_stamps: dict[str, datetime | None] = {}
         stored_stamps: dict[str, datetime | None] = {}
         message_records = [
@@ -1339,18 +1434,34 @@ class MessageLedger:
             ),
         )
 
-    async def _resolve_message_ids(self, seqs: Sequence[int]) -> dict[int, str]:
-        """Map each EXISTING requested ``seq`` to its message's BARE id.
+    async def _resolve_message_ids(
+        self, seqs: Sequence[int], *, subject: Subject | None = None
+    ) -> dict[int, str]:
+        """Map each requested ``seq`` the caller may READ to its message's BARE id.
 
         ONE set-based read over the whole batch. A requested seq missing from the
         result names no message row at all — which is what separates
         ``unknown_message`` from the three conditions the guarded CAS collapses
         together, so a FORGED seq can never read back as an idempotent re-ack.
+
+        When ``subject`` is given the SELECT splices the ONE read filter
+        (:func:`governed.read_filter`, §9.5 α), so an addressed-but-INVISIBLE seq
+        does not resolve either — it too reads back as ``unknown_message`` and its
+        edge is never reached by the CAS or the read-back, so nothing is stamped
+        (§4.3). ``subject=None`` is unfiltered (governance is the tool layer's,
+        §4.D). The fragment EXPANDS keeps to per-value equalities (never ``IN``
+        inside an ``OR`` — store-ref §2 / #413).
         """
+        params: dict[str, Any] = {"seqs": list(dict.fromkeys(seqs))}
+        filter_clause = ""
+        if subject is not None:
+            read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
+            filter_clause = f" AND ({read_fragment})"
+            params.update(read_params)
         rows = self._as_rows(
             await self._query(
-                f"SELECT {_ID_KEY}, seq FROM {MESSAGE_TABLE} WHERE seq IN $seqs",
-                {"seqs": list(dict.fromkeys(seqs))},
+                f"SELECT {_ID_KEY}, seq FROM {MESSAGE_TABLE} WHERE seq IN $seqs{filter_clause}",
+                params,
             )
         )
         return {
@@ -1565,36 +1676,51 @@ class MessageLedger:
     # question read), keyed by task/created_at — NEVER the ``to`` edge, ``drain``,
     # or its per-recipient SELECT (05a-i owns those; hard fence). ADD-ONLY.
 
-    async def messages_for_task(self, *, task_id: str) -> list[StoredMessage]:
-        """Every message anchored to ``task_id``, OLDEST-FIRST by ``seq`` — the read
-        ``story`` composes a task's message arc over (packet 05a-iii).
+    async def messages_for_task(
+        self, *, task_id: str, subject: Subject | None = None
+    ) -> list[StoredMessage]:
+        """Every message anchored to ``task_id`` the caller may READ, OLDEST-FIRST by
+        ``seq`` — the read ``story`` composes a task's message arc over (packet 05a-iii).
 
         A projection of the ``message`` ROW (``sender.name`` resolves the ``sender``
         link), NOT the per-recipient ``to`` edge. The STRUCTURAL ``question`` marker
-        rides through untouched.
+        rides through untouched. When ``subject`` is given the SELECT splices the ONE
+        read filter directly on the ``message`` table (§4.E — this reads ``message``,
+        so no two-step; bare columns, no ``in.`` prefix), so a task-anchored message
+        the Subject may not read never enters the arc. ``subject=None`` is unfiltered
+        (governance is the tool layer's, §4.D).
 
         Args:
             task_id: The task whose messages to return.
+            subject: The resolved caller Subject whose read filter bounds the arc.
+                ``None`` (a legacy / internal call) is unfiltered.
 
         Returns:
-            The task's messages, oldest-first (empty when none carry this task_id).
+            The task's visible messages, oldest-first (empty when none carry this
+            task_id / none are visible).
         """
+        params: dict[str, Any] = {"task_id": task_id}
+        filter_clause = ""
+        if subject is not None:
+            read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
+            filter_clause = f" AND ({read_fragment})"
+            params.update(read_params)
         rows = self._as_rows(
             await self._query(
                 f"SELECT seq, grade, body, refs, thread, question, task_id, "
                 f"sender.name AS sender_name, created_at FROM {MESSAGE_TABLE} "
-                f"WHERE task_id = $task_id ORDER BY seq ASC",
-                {"task_id": task_id},
+                f"WHERE task_id = $task_id{filter_clause} ORDER BY seq ASC",
+                params,
             )
         )
         return [self._row_to_stored_message(row) for row in rows]
 
     async def message_activity_since(
-        self, since: datetime, *, limit: int
+        self, since: datetime, *, limit: int, subject: Subject | None = None
     ) -> MessageActivityWindow:
         """The rollup's messages-activity leg — messages CREATED strictly after
-        ``since``, oldest-first by ``created_at``, capped at ``limit``, with an honest
-        ``total`` (packet 05a-iii).
+        ``since`` the caller may READ, oldest-first by ``created_at``, capped at
+        ``limit``, with an honest ``total`` (packet 05a-iii).
 
         Cursor-bounded by ``created_at`` exactly like the task/finding legs
         (``NONE > $since`` is falsy, so a legacy row is excluded by the WHERE itself),
@@ -1603,14 +1729,24 @@ class MessageLedger:
         WHOLE-``message``-table activity read; it is deliberately NOT ``drain``'s
         per-agent ``seen_at`` cursor (05a-i owns that surface).
 
+        When ``subject`` is given (the ii-b capability-bearing rollup, §9.4) the ONE
+        read filter is spliced into BOTH the row SELECT AND the ``count()`` — so the
+        served ``total`` is the SUBJECT-VISIBLE count (Leg 1: the count describes the
+        set its label claims), never the whole-table count that would leak the
+        existence of messages the caller cannot read. ``subject=None`` is unfiltered
+        (the tokenless leg is not served at all — the server renders the
+        identity-required bound instead, §9.4).
+
         Args:
             since: The EXCLUSIVE lower bound — messages sent STRICTLY after this
                 tz-aware UTC instant.
             limit: The maximum number of rows to return (a positive int).
+            subject: The resolved caller Subject whose read filter bounds the leg
+                (rows AND total). ``None`` (a legacy / internal call) is unfiltered.
 
         Returns:
             The window: ``rows`` (ASC by ``created_at``, capped at ``limit``) and the
-            honest ``total`` (``>= len(rows)``).
+            honest ``total`` (``>= len(rows)``), both over the visible set.
 
         Raises:
             ValueError: ``limit`` is not a positive integer.
@@ -1621,15 +1757,20 @@ class MessageLedger:
         # positive int can never be NONE (the ``LIMIT $k = NONE ⇒ 0 rows`` gotcha),
         # and this keeps NO caller-adjacent value in query TEXT.
         params: dict[str, Any] = {"since": since, "activity_limit": limit}
+        filter_clause = ""
+        if subject is not None:
+            read_fragment, read_params = governed.read_filter(subject, MESSAGE_TABLE)
+            filter_clause = f" AND ({read_fragment})"
+            params.update(read_params)
         rows_result = await self._query(
             f"SELECT seq, grade, body, refs, thread, question, task_id, "
             f"sender.name AS sender_name, created_at FROM {MESSAGE_TABLE} "
-            f"WHERE created_at > $since ORDER BY created_at ASC LIMIT $activity_limit",
+            f"WHERE created_at > $since{filter_clause} ORDER BY created_at ASC LIMIT $activity_limit",
             params,
         )
         rows = [self._row_to_stored_message(row) for row in self._as_rows(rows_result)]
         count_result = await self._query(
-            f"SELECT count() FROM {MESSAGE_TABLE} WHERE created_at > $since GROUP ALL",
+            f"SELECT count() FROM {MESSAGE_TABLE} WHERE created_at > $since{filter_clause} GROUP ALL",
             params,
         )
         return MessageActivityWindow(rows=rows, total=self._extract_group_count(count_result))
