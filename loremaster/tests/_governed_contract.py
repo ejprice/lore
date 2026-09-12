@@ -530,8 +530,10 @@ def frozen_asserted_message_ddl() -> str:
     the emitter dropping the asserts (an emitter-derived old world would drop them too). ONE
     IMPLEMENTATION — Leg A (drop lands, ``test_comms_schema.py``) and Leg B's C-control (migrate
     raises, ``test_message_migrate_dirty_store_63b_ii_b.py``) BOTH call this, so the two files cannot
-    drift about what production's asserted shape is. A ``test_frozen_old_world_matches_the_emitters_
-    current_asserts`` control pins that these literals still match what the emitter asserts at HEAD."""
+    drift about what production's asserted shape is. A
+    ``test_the_frozen_old_world_is_a_faithful_asserted_capture`` control pins that this constant still
+    carries all four length/grade ASSERT literals (self-consistency — NEVER a comparison to the live
+    emitter, which the ii-b build is designed to change; see that control's docstring)."""
     table = MESSAGE_TABLE
     return (
         f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"

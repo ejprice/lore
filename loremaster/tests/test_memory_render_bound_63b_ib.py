@@ -182,29 +182,31 @@ def _governed_read_render_methods() -> dict[str, list[str]]:
         }
         if "_resolve_subject" not in receiver_calls:
             continue
-        # ⚠ 63b-ii-b §9.1 — a governed WRITE verb (``send`` / ``remember`` / ``invalidate``) ALSO
-        # resolves a Subject, but its receipt render is NOT a governed READ render and does NOT carry
-        # the scope bound line (writes render a confirmation, never a scoped result — the render-scout
-        # confirmed ``_render_comms_send`` takes no ``subject``). The from-truth signal that separates
-        # a WRITE from a READ is ``governed.write_guard`` (a governed write wraps its mutation in it;
-        # a governed read never does — there is no ``read_guard``). So a method calling ``write_guard``
-        # is EXCLUDED, else the widened receiver reach would pull ``_render_comms_send`` into the set
-        # and the coverage pin would falsely demand a bound line from a WRITE receipt. This is a
-        # from-truth predicate, NOT a hand-exclusion of a render name (which the #464 lesson forbids).
-        # ⚠ SPEC-GAP the contract author closed (report §Spec-interface): §9.3 rules the receiver
-        # widening but is silent on the send-write-render it newly admits; α (this write_guard
-        # exclusion) chosen over β (hand-excluding _render_comms_send by name).
-        call_names = {
-            (node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name))
-        }
-        if "write_guard" in call_names:
-            continue
+        # ⚠ 63b-ii-b §14.2 (sidecar RULING) — the derived set is EVERY Subject-resolving handler's
+        # top-level ``_render_*`` calls (receivers self/cls/AppContext, as built). The former
+        # ``write_guard`` EXCLUSION was REJECTED (§14.2): the premise "a governed read never enters
+        # write_guard" is FALSE for the ii-b reads — ``drain``/``ack`` STAMP the ``to`` edge and MUST
+        # execute that stamp inside ``write_guard("drain")`` / ``write_guard("ack")`` to classify at
+        # the F5 seam (an unlabelled mutation is UNCLASSIFIED → deny-by-default). So excluding
+        # write_guard-callers would SILENTLY drop ``_render_comms_drain`` / ``_render_comms_ack`` from
+        # the governed set the day a builder mirrors ``_comms_send``'s handler-level guard — a hidden
+        # DENY-rule keyed on an idiom reads legitimately use (the instrument lesson's "keyed on X,
+        # defeated by a site that spells it differently"). The WRITE-RECEIPT renders permitted to omit
+        # the bound are an EXPLICIT, non-vacuous EXEMPTION set in the coverage pin below (allowlist the
+        # SAFE — deny-by-default on omission), NOT a population exclusion.
         render_calls = sorted(call for call in receiver_calls if call.startswith("_render_"))
         if render_calls:
             renders[name] = render_calls
     return renders
+
+
+# §14.2 (sidecar RULING) — the WRITE-RECEIPT renders permitted to OMIT the Subject-scope bound: at
+# ``4aaf45f`` exactly ``_render_comms_send``, the ONLY Subject-resolving handler in server.py whose
+# render is a WRITE receipt (``remember`` resolves a Subject but calls no ``_render_*``; ``recall`` is
+# a carrier). A governed WRITE renders a receipt, never a scoped result — §9.1: send is not a carrier.
+# This is an ALLOWLIST OF THE SAFE (kept honest, both directions, by
+# ``test_the_write_receipt_exemption_is_non_vacuous``), never the #464 hidden reach-list.
+_WRITE_RECEIPT_EXEMPT_RENDERS = {"_render_comms_send"}
 
 
 class TestEveryGovernedReadRenderCarriesTheBoundLine:
@@ -215,10 +217,13 @@ class TestEveryGovernedReadRenderCarriesTheBoundLine:
     def test_every_governed_read_render_calls_render_subject_bound(self) -> None:
         """⚠ RED at HEAD (§3.3 pin ii, coverage as a CHECKED VARIABLE — the #420 idiom). DERIVE the
         governed-read render set from truth (:func:`_governed_read_render_methods`) and assert EVERY
-        such render (a) takes ``subject`` and (b) references ``render_subject_bound``. The reach is not
-        a hardcoded name: a NEW governed read render (63b-ii's drain/story/rollup) that omits the bound
-        line reds this pin with NO edit. At HEAD the ONE derived render (``_render_recalled_memories``)
-        takes only ``recalled`` and references neither → reds."""
+        such render NOT in the WRITE-RECEIPT exemption set (a) takes ``subject`` and (b) references
+        ``render_subject_bound``. The reach is not a hardcoded name: a NEW governed read render (63b-ii's
+        drain/story/rollup) that omits the bound line reds this pin with NO edit. At HEAD the ONE derived
+        NON-exempt render (``_render_recalled_memories``) takes only ``recalled`` and references neither
+        → reds. ``_render_comms_send`` (now in the derived set — §14.2 removed the write_guard exclusion)
+        is EXEMPT (a write receipt is not a carrier); the exemption is kept honest, both directions, by
+        ``test_the_write_receipt_exemption_is_non_vacuous``."""
         render_map = _governed_read_render_methods()
         all_renders = {render for renders in render_map.values() for render in renders}
         # Non-vacuity (the switched-off-scanner guard): the derivation MUST find the known i-b memory
@@ -227,7 +232,11 @@ class TestEveryGovernedReadRenderCarriesTheBoundLine:
             "the governed-read render derivation found no memory read render — the from-truth reach "
             f"(_resolve_subject-calling entry points → _render_* calls) is broken. derived: {render_map}"
         )
-        for render_name in sorted(all_renders):
+        # §14.2 item 4 — demand the bound of every derived render NOT in the write-receipt exemption
+        # (deny-by-default on omission: a new governed WRITE verb's receipt render is DEMANDED to carry
+        # a bound until its author adds it to the exemption consciously — surfaced, not narrowed).
+        governed_renders = all_renders - _WRITE_RECEIPT_EXEMPT_RENDERS
+        for render_name in sorted(governed_renders):
             render_fn = getattr(AppContext, render_name)
             signature = inspect.signature(render_fn)
             assert "subject" in signature.parameters, (
@@ -242,25 +251,72 @@ class TestEveryGovernedReadRenderCarriesTheBoundLine:
                 "(derived from the _resolve_subject composition root) must prepend it."
             )
 
+    def test_the_write_receipt_exemption_is_non_vacuous(self) -> None:
+        """§14.2 items 3 + 5 — the WRITE-RECEIPT exemption is HONEST, both directions, so it cannot
+        silently exempt a read (the failure mode a hidden exclusion would hide):
+
+        (a) STALE guard — every exempted render MUST be in the derived set (its handler resolves a
+            Subject / the receiver reach finds it); a stale name that exempts nothing reds.
+        (b) FROM-TRUTH on the SAFE side ONLY — the exempted render's HANDLER source MUST contain a
+            WRITE-family seam (``write_guard(`` / ``resolve_write_scope(`` / ``guarded_write(``). A
+            governed READ someone 'exempted' to skip the bound has none → reds. The write signal is used
+            as a POSITIVE requirement ON THE EXEMPTION (never as a population exclusion — §14.2's whole
+            point), so it cannot hide a read.
+
+        Mutation proof (declared, §14.2 item 5): delete ``_render_comms_send`` from the exemption → the
+        coverage pin reds on it (it carries no bound); add a fake ``"_render_comms_drain"`` to the
+        exemption → leg (a) reds at HEAD (not yet derived), and once the ii-b drain handler resolves a
+        Subject, leg (b) reds (``_comms_drain`` has no write seam) — restore → GREEN. GREEN at HEAD:
+        ``_comms_send`` resolves a Subject, renders ``_render_comms_send``, and its source carries
+        ``write_guard(`` + ``resolve_write_scope(``."""
+        render_map = _governed_read_render_methods()
+        all_renders = {render for renders in render_map.values() for render in renders}
+        # (a) no STALE exemption — every exempted render is actually derived.
+        stale = _WRITE_RECEIPT_EXEMPT_RENDERS - all_renders
+        assert not stale, (
+            f"the write-receipt exemption names render(s) {sorted(stale)} NOT in the derived governed "
+            f"set — their handler no longer resolves a Subject (or the receiver reach broke), so the "
+            f"exemption is STALE and silently exempts nothing. derived: {sorted(all_renders)}"
+        )
+        # (b) FROM-TRUTH on the SAFE side — each exempted render's HANDLER carries a WRITE-family seam.
+        handler_for = {
+            render: handler for handler, renders in render_map.items() for render in renders
+        }
+        write_seams = ("write_guard(", "resolve_write_scope(", "guarded_write(")
+        for render_name in sorted(_WRITE_RECEIPT_EXEMPT_RENDERS):
+            handler_name = handler_for[render_name]
+            handler_source = inspect.getsource(getattr(AppContext, handler_name))
+            assert any(seam in handler_source for seam in write_seams), (
+                f"exempted render {render_name!r}'s handler AppContext.{handler_name} contains NO "
+                f"WRITE-family seam ({', '.join(write_seams)}) — a governed READ wrongly exempted to "
+                f"skip the Subject-scope bound would look EXACTLY like this. An exemption is a JUDGEMENT "
+                f"kept honest by from-truth non-vacuity (§14.2 item 3b): only a genuine WRITE receipt "
+                f"may omit the bound."
+            )
+
     def test_the_derivation_reaches_the_ii_b_comms_renders(self) -> None:
         """⚠ RED at HEAD (63b-ii-b §9.3 / lore #464) — the NON-VACUITY FLOOR naming the ii-b comms
         renders, so the widened receiver reach (self/cls/AppContext) is proven to actually FIND them
         rather than being a silently vacuous widening (INSTRUMENT-0: reach as a checked variable).
 
-        The coverage pin above governs EVERY render in the DERIVED set; this floor asserts that set ⊇
-        the six ii-b governed-read renders. At HEAD the four comms read handlers (``_comms_drain`` /
-        ``_comms_await`` / ``_comms_story`` / ``_comms_ack``) and ``_rollup`` do NOT call
-        ``_resolve_subject``, so their renders are absent from the derived set → this reds. GREEN when
-        each ii-b read handler resolves a Subject (its first act, mirroring ``_comms_send`` / ``recall``)
-        AND the widened derivation reaches its ``AppContext._render_*`` call — at which point the
-        coverage pin above forces each to take ``subject`` + call ``render_subject_bound`` (§9.1 R7/P4),
-        WITH NO edit to either pin (the growth property). A FLOOR (⊇), like the
-        ``_render_recalled_memories`` non-vacuity assert — never the EXACT set (§9.3: a floor, so a
-        seventh governed read render joins without churning this list).
+        The coverage pin above governs EVERY render in the DERIVED set MINUS the write-receipt
+        exemption; this floor asserts the six ii-b governed-read renders are all in that GOVERNED set
+        (derived − exempt) — so it reds not only when a render is undiscovered but also when one is
+        WRONGLY exempted (§14.2 item 6, the third cause). At HEAD the four comms read handlers
+        (``_comms_drain`` / ``_comms_await`` / ``_comms_story`` / ``_comms_ack``) and ``_rollup`` do NOT
+        call ``_resolve_subject``, so their renders are absent → this reds. GREEN when each ii-b read
+        handler resolves a Subject (its first act, mirroring ``_comms_send`` / ``recall``) AND the
+        widened derivation reaches its ``AppContext._render_*`` call — at which point the coverage pin
+        forces each to take ``subject`` + call ``render_subject_bound`` (§9.1 R7/P4), WITH NO edit to
+        either pin (the growth property). A FLOOR (⊇), like the ``_render_recalled_memories`` non-vacuity
+        assert — never the EXACT set (§9.3: a seventh governed read render joins without churning this).
         """
         all_renders = {
             render for renders in _governed_read_render_methods().values() for render in renders
         }
+        # The GOVERNED set = derived MINUS the write-receipt exemption, so a render WRONGLY exempted
+        # (§14.2 cause 3) is missing from the floor exactly as an undiscovered one is.
+        governed_renders = all_renders - _WRITE_RECEIPT_EXEMPT_RENDERS
         # §9.3's named floor — the six ii-b governed-read renders (drain, await NON-empty + EMPTY,
         # story, ack, and the rollup message leg's top-level render). ``_render_rollup`` is named per
         # §9.3; §9.4 lets the builder render the message leg inside it OR via a
@@ -274,14 +330,16 @@ class TestEveryGovernedReadRenderCarriesTheBoundLine:
             "_render_comms_ack",
             "_render_rollup",
         }
-        missing = ii_b_floor - all_renders
+        missing = ii_b_floor - governed_renders
         assert not missing, (
             f"the governed-read render derivation does NOT reach the ii-b comms renders {sorted(missing)} "
-            f"— either their read handlers do not resolve a Subject yet (RED at HEAD, the expected "
-            f"state), or the widened receiver reach (self/cls/AppContext) fails to find their "
-            f"AppContext._render_* calls (a #464 regression). Once each handler resolves a Subject, the "
-            f"coverage pin above forces each render to carry the bound line with NO edit. derived: "
-            f"{sorted(all_renders)}"
+            f"as GOVERNED (demanded to carry the bound). THREE causes (§14.2 item 6): (1) their read "
+            f"handlers do not resolve a Subject yet (RED at HEAD, the expected state); (2) the widened "
+            f"receiver reach (self/cls/AppContext) fails to find their AppContext._render_* calls (a "
+            f"#464 regression); or (3) one is WRONGLY in the write-receipt exemption set "
+            f"{sorted(_WRITE_RECEIPT_EXEMPT_RENDERS)} (a governed READ render must never be exempted from "
+            f"the bound). Once each handler resolves a Subject, the coverage pin forces each render to "
+            f"carry the bound with NO edit. derived: {sorted(all_renders)}"
         )
 
     def test_the_empty_recall_render_still_names_the_bound(self) -> None:

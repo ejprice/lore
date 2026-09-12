@@ -1718,7 +1718,7 @@ class TestMessageDdlOffline:
         statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, field)
         assert type_fragment in statement, f"{field}: expected {type_fragment!r} in {statement!r}"
 
-    def test_grade_is_a_closed_two_value_domain(self) -> None:
+    def test_grade_ddl_is_a_closed_two_value_domain(self) -> None:
         """P-G2 (63b-ii-b §13.3, the ALIGNMENT pin). ``grade``'s store ASSERT is
         KEPT (R19: its violation set is EXACTLY the reader's rejection set — a
         junk grade cannot be decoded into ``InboxEntry.grade: MessageGrade``, so
@@ -1755,17 +1755,13 @@ class TestMessageDdlOffline:
             f"reader-alignment R19 rests on is a fiction."
         )
 
-    def test_body_carries_a_length_bound_the_store_itself_enforces(self) -> None:
-        """The app-level teaching reject is the primary guard; the schema ASSERT
-        is the backstop that makes a bypassing writer fail LOUDLY rather than
-        landing an unbounded body.
-        """
-        statement = _field_statement(generate_message_ddl(), _schema().MESSAGE_TABLE, "body")
-        assert "ASSERT" in statement
-        cap = _schema().MESSAGE_BODY_MAX_CHARS
-        assert f"string::len($value) <= {cap}" in statement, (
-            f"expected the body length bound (<= {cap}) in {statement!r}"
-        )
+    # MP-7 (sidecar §14.0) — ``test_body_carries_a_length_bound_the_store_itself_enforces`` DELETED
+    # here as a CORPSE CERTIFIER / C-DEF: it asserted ``body``'s store ASSERT (the OLD world) and
+    # CANNOT pass the correct build — W9 (§13.3) DROPS ``body``'s length ASSERT, so it trapped the
+    # builder between P2-m (which demands NO ASSERT) and this pin (which demanded one), every gate
+    # green. Its replacement already exists: ``TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate``
+    # is the inverse ∀ (no field carries a legacy-violable constraint) and D-M2 pins the APP cap
+    # (``MessageLedger`` teaching reject) that replaces the store backstop.
 
     @pytest.mark.parametrize("field", ["seen_at", "acked_at"])
     def test_the_cas_stamp_columns_are_option_datetime(self, field: str) -> None:
@@ -2862,27 +2858,34 @@ class TestTheMessageAssertsAreDroppedFromADIRTYStore:
         else:  # pragma: no cover - the parametrization only passes length shapes here
             raise AssertionError(f"no byte-intact check for shape {shape!r}")
 
-    async def test_frozen_old_world_matches_the_emitters_current_asserts(
+    async def test_the_frozen_old_world_is_a_faithful_asserted_capture(
         self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
     ) -> None:
-        """CONTROL — the frozen old world is a FAITHFUL capture of what the emitter asserts TODAY:
-        every ASSERT literal in the frozen DDL also appears in ``generate_message_ddl()`` at HEAD. If
-        the emitter's ASSERT literals drift from the frozen capture, this reds (so the frozen fact
-        cannot silently rot). It does NOT assert the emitter KEEPS them — that is what Leg A's drop
-        legs test; this only pins that the frozen 'old world' is the SAME asserted world the emitter
-        currently ships."""
+        """CONTROL — the FROZEN old world (``frozen_asserted_message_ddl()``, the 0566587 capture) is a
+        faithful ASSERTED world: its OWN text carries all four length/grade ASSERT literals. This is the
+        control the BASELINE / grade-STAYS / clean-row legs REST ON — if the frozen capture ever lost an
+        ASSERT, "refused under the asserted DDL" would be vacuous, and every drop-leg would be measuring
+        nothing.
+
+        ⚠ A frozen fact is verified against WHAT IT FROZE (0566587), NEVER against the LIVE emitter.
+        The former shape — asserting each literal appears in ``generate_message_ddl()`` — was a C-DEF
+        (adversary Finding 1): the ii-b build is DESIGNED to drop three of these four length ASSERTs
+        from the emitter (W9 / §13.3), so on the correct build the emitter no longer carries them and
+        the pin RED-trapped the builder with every production gate green. Self-consistency of the frozen
+        constant is GREEN at HEAD AND after the build (the constant is immutable) — it is the drop's
+        BEFORE-picture, not a demand that the emitter keep the asserts (that is Leg A's job)."""
         del admin_db  # offline control (no engine)
-        emitted = generate_message_ddl()
+        frozen = frozen_asserted_message_ddl()
         for assert_literal in (
             "ASSERT string::len($value) <= 4000",
             "ASSERT string::len($value) <= 256",
             "ASSERT array::len($value) <= 20",
             "ASSERT $value IN ['signal', 'directive']",
         ):
-            assert assert_literal in emitted, (
-                f"the frozen 0566587 old world carries {assert_literal!r} but the current emitter does "
-                f"NOT — the frozen capture has drifted from what :18500 holds; re-capture it before "
-                f"trusting Leg A (this is HEAD's asserted world, and Leg A's drop legs are RED against it)"
+            assert assert_literal in frozen, (
+                f"the FROZEN 0566587 asserted old world is MISSING {assert_literal!r} — the capture in "
+                f"frozen_asserted_message_ddl() has rotted, so the BASELINE 'refused under the asserted "
+                f"DDL' legs it backstops are vacuous. Re-capture the frozen DDL from 0566587."
             )
 
     @pytest.mark.parametrize("shape", (*_MESSAGE_LENGTH_VIOLATOR_SHAPES, _MESSAGE_GRADE_VIOLATOR_SHAPE))

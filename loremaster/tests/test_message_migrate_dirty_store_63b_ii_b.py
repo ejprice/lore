@@ -42,6 +42,7 @@ from _governed_contract import (
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
 from loremaster.agents import AgentRegistry
 from loremaster.store import surreal_schema
+from loremaster.store._txn import TxnDomainRejectionError
 
 from loremaster import principals
 
@@ -204,6 +205,12 @@ class TestTheRealMigrateSurvivesLegacyViolators:
             f"the migrate must backfill all SIX legacy rows (five violators + one clean), got "
             f"backfilled={result.backfilled!r} (scanned={getattr(result, 'scanned', '?')!r})"
         )
+        # First call over the dirty store: it SCANNED all six and NONE were already migrated
+        # (they were all NONE-owner legacy rows) — the receipt, not just the backfilled count.
+        assert result.scanned == 6 and result.already_migrated == 0, (
+            f"the FIRST migrate over the dirty store must scan all six NONE-owner rows and count zero "
+            f"already-migrated, got scanned={result.scanned!r} already_migrated={result.already_migrated!r}"
+        )
         # every over-cap violator VALUE survives byte-intact + is now owner-stamped.
         for shape in _LENGTH_VIOLATOR_SHAPES:
             row = (
@@ -257,7 +264,12 @@ class TestTheRealMigrateSurvivesLegacyViolators:
         principal_store, keep_store, connection, env, sender_bare = dirty_message_world
         ids = await self._seed_six(connection, sender_bare)
         await apply_ddl(connection, frozen_asserted_message_ddl(), url=env.url)
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation aborts the migrate txn
+        # §14.1 (sidecar): the migrate drives ``run_query`` through the driver, which WRAPS the engine
+        # ASSERT violation as the typed ``TxnDomainRejectionError`` carrying the ``(assert violation)``
+        # class label (the engine's field text is redacted; ledger #31). Pin the TYPE + label so a raise
+        # for the WRONG reason (transport fault, a governed conflict, a fixture TypeError) reds instead
+        # of passing — a bare ``Exception`` would admit them.
+        with pytest.raises(TxnDomainRejectionError, match=r"\(assert violation\)"):
             await _migrate(connection, env, keep_store=keep_store, principal_store=principal_store)
         # ZERO stamped — a whole-statement abort leaves every row NONE-owner.
         for message_id in ids.values():
@@ -310,7 +322,12 @@ class TestAJunkGradeLegacyRowRefusesTheCutover:
             connection, sender_id=sender_bare, session="s1", seq=1, body="a clean legacy body"
         )
         await apply_ddl(connection, surreal_schema.generate_message_ddl(), url=env.url)
-        with pytest.raises(Exception):  # noqa: B017 - the KNOWN-BOUND surface (grade ASSERT poisons it)
+        # §14.1 (sidecar): pin the driver's typed domain rejection + its ``(assert violation)`` class
+        # label (not a bare ``Exception``) — the grade ASSERT is what poisons the migrate, and a raise
+        # for another reason (transport, a fixture error) must RED, not satisfy the KNOWN BOUND. The
+        # sibling positive control isolates the GRADE as the sole refusing difference (the field name
+        # is redacted, so it cannot be matched).
+        with pytest.raises(TxnDomainRejectionError, match=r"\(assert violation\)"):
             await _migrate(connection, env, keep_store=keep_store, principal_store=principal_store)
         for message_id in (junk_id, clean_id):
             row = (

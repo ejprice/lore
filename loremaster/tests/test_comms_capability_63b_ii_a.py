@@ -60,14 +60,15 @@ from loremaster import governed, server
 # The message-family verb whose ``requires_capability`` flips TRUE in ii-a (RULING §4): EXACTLY
 # ``send`` — the one message-family WRITE verb ii-a ENFORCES (an unconditional ``_resolve_subject``).
 _CAPABILITY_REQUIRED_IN_II_A = frozenset({"send"})
-# The four READS flip TRUE in ii-b WITH their read-shape enforcement — FALSE in ii-a (a True they do
-# not yet enforce is the typed-applicability lie, PKT-28 C1).
-_REQUIRED_IN_II_B_NOT_YET = frozenset({"drain", "ack", "await", "story"})
+# The four READS that flip TRUE in ii-b WITH their read-shape enforcement (they were FALSE in ii-a — a
+# True they did not yet enforce would have been the typed-applicability lie, PKT-28 C1). In ii-b they
+# ARE required, so the name no longer says "NOT_YET".
+_READS_REQUIRED_IN_II_B = frozenset({"drain", "ack", "await", "story"})
 # ⚠ 63b-ii-b (RULING §4 / ii-a §11.5): the READS flip TRUE in ii-b WITH their read-shape enforcement.
 # The requires_capability=True set GROWS from {send} to the FIVE message-family verbs. ii-b "updates
 # the literal" (ii-a §4's own instruction). This is what the exact-set pin now asserts (RED at HEAD:
 # at HEAD only send is True).
-_CAPABILITY_REQUIRED_IN_II_B = _CAPABILITY_REQUIRED_IN_II_A | _REQUIRED_IN_II_B_NOT_YET
+_CAPABILITY_REQUIRED_IN_II_B = _CAPABILITY_REQUIRED_IN_II_A | _READS_REQUIRED_IN_II_B
 # register MINTS identity (False by construction); heartbeat/brief_*/fleet flip in 63c (RED_ADJUDICATED).
 _NON_CAPABILITY_IN_63B = frozenset(
     {"register", "heartbeat", "brief_get", "brief_publish", "brief_ack", "fleet"}
@@ -134,7 +135,7 @@ class TestCommsActionSpecCarriesRequiresCapability:
         the Subject UNCONDITIONALLY and filters, §4.B/§4.E). At HEAD they are False (ii-a deferred them)
         → this reds. On the ii-b build each is True AND its handler calls ``_resolve_subject`` (the
         effect-keyed coverage floor above then governs them)."""
-        for verb in sorted(_REQUIRED_IN_II_B_NOT_YET):
+        for verb in sorted(_READS_REQUIRED_IN_II_B):
             spec = _COMMS_ACTIONS[verb]
             assert getattr(spec, "requires_capability", None) is True, (
                 f"comms READ verb {verb!r} must flip requires_capability=True in ii-b (RULING §4) — its "

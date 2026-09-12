@@ -200,6 +200,7 @@ class TestTheDrainDecodesBeforeItStamps:
             raise ValueError("forced decode failure (F-1): a served row must not be stamped-and-lost")
 
         monkeypatch.setattr(MessageLedger, "_row_to_inbox_entry", _boom)
+        decode_reached = False
         try:
             await ledger.drain(agent_id=recipient_bare, limit=10, peek=False, subject=subject)
         except TypeError as error:
@@ -210,7 +211,19 @@ class TestTheDrainDecodesBeforeItStamps:
                 )
             raise
         except ValueError:
-            pass  # the forced decode failure propagated — expected; the edge must be unstamped below.
+            decode_reached = True  # the forced decode failure propagated — the decode WAS reached.
+        # POSITIVE CONTROL (Finding 5) — the forced decode MUST have been reached, or this pin passes
+        # VACUOUSLY: an OVER-filtering build (the inverse of the drain-filter hazard) that serves NOTHING
+        # never calls `_row_to_inbox_entry`, raises no ValueError, and the `seen_at IS NONE` check below
+        # is trivially true because nothing was ever served or stamped. This asserts the instrument fired
+        # (the visible message was served and its decode attempted) so a no-rows-served build cannot
+        # green this pin. NOT reached at HEAD (the TypeError guard `pytest.fail`s first).
+        assert decode_reached, (
+            "the forced decode failure never raised — the drain served NO row to decode, so this pin "
+            "cannot prove decode-before-stamp; it would pass VACUOUSLY for an over-filtering build that "
+            "serves nothing (Finding 5). The read_filter must serve the visible message, then the "
+            "monkeypatched decode fires on it."
+        )
         rows = await run(
             connection,
             f"SELECT seen_at FROM {_TO_RELATION} WHERE out = $agent",
@@ -232,6 +245,95 @@ def _one_row(result: Any) -> dict[str, Any]:
     return row
 
 
+class TestADrainServesOnlyTheVisibleMessage:
+    """B2 / Finding 2 (§4.B) — the DRAIN read_filter FILTERING: the pin the whole wave turns on, and
+    the DUAL of P7 (``TestAnAckOfAnInvisibleSeqIsUnknownMessage``) for the drain verb. A
+    ``drain(subject=)`` SERVES the messages the Subject may see and EXCLUDES the invisible one; the
+    excluded edge is NEITHER served NOR stamped (§4.3 "an invisible message is neither served nor
+    stamped").
+
+    Without this pin, a WRONG build whose ``drain(subject=)`` resolves the Subject (satisfying R6's
+    deny-without-capability and rendering the P4 bound line) but does NOT splice the read_filter into
+    its SELECT — serving ALL of the agent's ``to`` edges, invisible ones included — passes P1 / P4 /
+    F-1 with no pin (verified: every other drain fixture holds only VISIBLE messages). That is exactly
+    the §6 served-COUNT-over-the-served-SET / F4 "no argument moves the visible set beyond the Subject's
+    authz" attack.
+
+    RED at HEAD via the missing ``subject`` arg (the ii-b read-filtered drain is unbuilt). On the ii-b
+    build the visible seq is served, the invisible seq is neither served nor stamped, and the CONTROL
+    proves the exclusion is the read_filter (a principal mismatch), NOT deadness: the FOREIGN principal
+    (the invisible message's OWNER), draining the SAME agent's inbox, DOES see it.
+    """
+
+    @staticmethod
+    async def _drain(ledger: Any, agent_id: str, subject: Any) -> Any:
+        try:
+            return await ledger.drain(agent_id=agent_id, limit=10, peek=False, subject=subject)
+        except TypeError as error:
+            if "subject" in str(error):
+                pytest.fail(
+                    "RED-at-HEAD (right reason): MessageLedger.drain does not accept a `subject` "
+                    f"argument — the §4.B read-filtered drain is unbuilt, so it cannot exclude an "
+                    f"invisible message from the served set. engine/py: {error}"
+                )
+            raise
+
+    async def test_a_drain_serves_only_the_visible_message(self, read_gov_world: Any) -> None:
+        """⚠ RED at HEAD (missing subject arg). Drain as MY Subject → the VISIBLE (server-scope) seq is
+        served and the INVISIBLE seq (a foreign principal's principal-private, addressed to me by a `to`
+        edge) is NOT, and the invisible edge's ``seen_at`` stays NONE (§4.3). A build that resolves the
+        Subject (R6/P4) but forgets to splice the read_filter into the SELECT serves BOTH → this reds."""
+        ledger, recipient_bare, subject, visible_seq, invisible_seq, connection, _env = read_gov_world
+        result = await self._drain(ledger, recipient_bare, subject)
+        served = {entry.seq for entry in result.entries}
+        assert visible_seq in served, (
+            f"the VISIBLE (server-scope) message was NOT served by a drain of MY inbox — the read_filter "
+            f"excludes everything, not just the invisible one (see the CONTROL). served={sorted(served)!r}"
+        )
+        assert invisible_seq not in served, (
+            f"the INVISIBLE message (a FOREIGN principal's principal-private, addressed to me by a `to` "
+            f"edge) was SERVED — the drain did not splice the read_filter into its SELECT, so it serves "
+            f"ALL the agent's edges regardless of the Subject's authz (§6 count-over-set / F4). "
+            f"served={sorted(served)!r}"
+        )
+        edge = await run(
+            connection,
+            f"SELECT seen_at FROM {_TO_RELATION} WHERE out = $agent AND in.seq = $seq",
+            {"agent": RecordID(_AGENT_TABLE, recipient_bare), "seq": invisible_seq},
+        )
+        rows = edge if isinstance(edge, list) else []
+        assert rows and all(row.get("seen_at") is None for row in rows), (
+            f"the INVISIBLE edge was STAMPED by the drain — an invisible message is neither served nor "
+            f"stamped (§4.3). edges={rows!r}"
+        )
+
+    async def test_CONTROL_a_foreign_subject_sees_the_invisible_message(
+        self, read_gov_world: Any
+    ) -> None:
+        """The discriminating control (a probe needs a control): the SAME invisible message IS drainable
+        when the read_filter PERMITS it — a Subject whose PRINCIPAL is the message's OWNER (the foreign
+        principal), draining the SAME agent's inbox, serves it. This proves the exclusion in the pin
+        above is the read_filter (a principal mismatch), NOT a dead/undrainable edge. RED at HEAD via
+        the missing subject arg."""
+        ledger, recipient_bare, _subject, _visible_seq, invisible_seq, connection, _env = read_gov_world
+        owner_row = _one_row(
+            await run(
+                connection,
+                f"SELECT owner_principal FROM {_MESSAGE_TABLE} WHERE seq = $seq",
+                {"seq": invisible_seq},
+            )
+        )
+        foreign_pid = _bare(owner_row["owner_principal"])
+        foreign_subject = member(foreign_pid, recipient_bare, frozenset())
+        result = await self._drain(ledger, recipient_bare, foreign_subject)
+        served = {entry.seq for entry in result.entries}
+        assert invisible_seq in served, (
+            f"the invisible message is NOT drainable even by its OWNER principal — then the exclusion in "
+            f"the pin above could be deadness, not the read_filter. The fixture message must be a live, "
+            f"drainable edge that only MY read_filter excludes. served={sorted(served)!r}"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # P4 (§9.1) + P6 (§9.4) — the served-RESPONSE bound-line pins, driven through a REAL credentialed
 # AppContext (the F-DUP harness). The bound line's distinctive marker is "visible via <N> keep(s)".
@@ -240,21 +342,71 @@ def _one_row(result: Any) -> dict[str, Any]:
 _BOUND_MARKER = "visible via"
 
 
+def _assert_bound_once(rendered: str, *, verb: str) -> None:
+    """P4 (§9.1 R7) — the Subject-scope bound line appears EXACTLY once in a served READ response: on
+    the TOP-LEVEL render, never cloned into a per-row / per-message / per-fate SUB-render. ONE
+    IMPLEMENTATION — every carrier (drain/await/story/ack) calls this shared once-per-response POLICY
+    rather than cloning the count (§9.1 requires the count PER VERB). count 0 = the handler resolved no
+    Subject / the render omits the bound (RED at HEAD); count > 1 = a sub-render clones it (the wrong
+    build the structural presence pin P5 cannot see)."""
+    count = rendered.count(_BOUND_MARKER)
+    assert count == 1, (
+        f"the {verb} response must carry the Subject-scope bound line ({_BOUND_MARKER!r}) EXACTLY once "
+        f"(§9.1 R7/P4: first line of the TOP-LEVEL render; sub-renders never carry it). count={count} — "
+        f"0 means the handler resolved no Subject / the render omits the bound; >1 means a sub-render "
+        f"clones it (the wrong build P5 cannot see). rendered:\n{rendered}"
+    )
+
+
+async def _rendered_read_or_red_at_head(coro: Any, *, verb: str) -> str:
+    """Await a credentialed READ ``ctx.comms(action=<verb>, …, capability=cap)`` and return its rendered
+    text — or ``pytest.fail`` RED-at-HEAD if the read verb does not accept a ``capability`` param yet.
+
+    At HEAD the READ verbs are NOT capability-required (ii-a deferred them, §4/`test_the_reads_require_
+    capability_in_ii_b`), so the dispatcher's foreign-param guard REJECTS ``capability`` for a read
+    (``'capability' applies only to action='send'``) BEFORE the handler runs — a legitimate RED-at-HEAD
+    that reflects the unbuilt read-capability seam. On the ii-b build the read accepts the capability,
+    resolves the Subject, and its render carries the bound line, so ``_assert_bound_once`` then runs."""
+    try:
+        return str(await coro)
+    except ValueError as error:
+        if "capability" in str(error):
+            pytest.fail(
+                f"RED-at-HEAD (right reason): the {verb} verb does not accept a `capability` param yet "
+                f"— it is not capability-required until ii-b, so the dispatcher rejects it as a foreign "
+                f"param ({error}). On the ii-b build the read accepts the capability, resolves the "
+                f"Subject, and its render carries the Subject-scope bound line exactly once."
+            )
+        raise
+
+
 class TestTheServedReadResponseCarriesTheBoundLineExactlyOnce:
     """P4 (§9.1 R7) — a served comms READ response carries the Subject-scope bound line EXACTLY ONCE,
-    on the TOP-LEVEL render; sub-renders (the drain ROWS) never carry it. A count, so a sub-render
-    clone (bound-per-row) reds, and a top-level render omitting it reds.
+    on the TOP-LEVEL render; sub-renders (the drain ROWS, the story per-message blocks, the ack per-fate
+    rows) never carry it. A count, so a sub-render clone (bound-per-row) reds, and a top-level render
+    omitting it reds.
 
-    RED at HEAD: the read handlers do not resolve a Subject and their renders do not carry the bound →
-    the marker count is 0. On the ii-b build a multi-entry drain shows the bound ONCE above N rows."""
+    ⚠ G1 (sidecar §14.0): the once-count is pinned PER VERB — drain, await (NON-empty AND EMPTY, where
+    Leg 1 matters most), story (the per-message sub-render is the clone risk), ack (per-fate rows) —
+    because the structural coverage pin (P5) forces PRESENCE of ``render_subject_bound`` in the derived
+    render's source but CANNOT see a sub-render CLONE. Each sibling drives the REAL handler through a
+    credentialed AppContext to a MULTI-ROW response and asserts the marker appears exactly once.
+
+    RED at HEAD (two-stage, both consistent with the unbuilt read-governance): the READ verbs are not
+    capability-required yet, so the dispatcher rejects ``capability`` as a foreign param
+    (``_rendered_read_or_red_at_head`` turns that into a legible ``pytest.fail``). On the ii-b build the
+    read accepts the capability, resolves the Subject, and a multi-row response shows the bound ONCE
+    above N rows (a sub-render clone → count > 1 → RED)."""
 
     async def test_a_multi_entry_drain_carries_the_bound_line_exactly_once(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
-        """⚠ RED at HEAD (count 0). Drive a CREDENTIALED drain over TWO delivered messages and assert
+        """⚠ RED at HEAD. Drive a CREDENTIALED drain over TWO delivered messages and assert
         ``visible via`` appears EXACTLY once (one top-level bound, not one-per-row). At HEAD the drain
-        handler ignores the capability and its render carries no bound → count 0 → RED. A build that
-        clones the bound into ``_render_comms_drain_row`` → count 3 (2 rows + 1) → RED."""
+        verb is not capability-required → the dispatcher rejects ``capability`` as foreign → RED (via
+        ``_rendered_read_or_red_at_head``). On the ii-b build the drain resolves the Subject and its
+        render carries the bound once (count 1); a build that clones the bound into
+        ``_render_comms_drain_row`` → count 3 (2 rows + 1) → RED."""
         from _governed_contract import credentialed_app_context, register_owned
 
         async with credentialed_app_context(
@@ -265,6 +417,11 @@ class TestTheServedReadResponseCarriesTheBoundLineExactlyOnce:
             cap, _agent_bare = await register_owned(
                 ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
             )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), exactly as the LANDED ii-a send tests do; register_owned only
+            # mints the capability (raw registry), never the keep (idempotent re-register keeps the
+            # capability valid). See REPORT §FINDING: the landed drain P4 pin omitted this.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
             # TWO self-addressed sends (delivered + drainable — kickoff ruling 7), so the drain window
             # has multiple rows and a per-row bound clone would be visible as count > 1.
             for index in range(2):
@@ -272,16 +429,176 @@ class TestTheServedReadResponseCarriesTheBoundLineExactlyOnce:
                     action="send", agent="worker_a", session="s1", to=["worker_a"],
                     body=f"message {index}", grade="signal", capability=cap,
                 )
-            rendered = str(
-                await ctx.comms(action="drain", agent="worker_a", session="s1", capability=cap)
+            rendered = await _rendered_read_or_red_at_head(
+                ctx.comms(action="drain", agent="worker_a", session="s1", capability=cap), verb="drain"
             )
-            count = rendered.count(_BOUND_MARKER)
-            assert count == 1, (
-                f"the drain response must carry the Subject-scope bound line ({_BOUND_MARKER!r}) EXACTLY "
-                f"once (§9.1 R7/P4: first line of the TOP-LEVEL render; the drain ROWS never carry it). "
-                f"count={count} — 0 means the handler resolved no Subject / the render omits the bound "
-                f"(RED at HEAD); >1 means a sub-render clones it. rendered:\n{rendered}"
+            _assert_bound_once(rendered, verb="drain")
+
+    async def test_a_non_empty_await_carries_the_bound_line_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — G1: the once-per-response bound for the AWAIT verb (NON-empty).
+        await shares the drain ROW render, so a per-row clone shows as count > 1. Drive a credentialed
+        await over TWO delivered messages — the real awaiter's snapshot-first returns them WITHOUT a
+        ~55s wait (nothing to wait for) — and assert the bound appears exactly once. At HEAD await is
+        not capability-required → the dispatcher rejects ``capability`` as foreign → RED (via
+        ``_rendered_read_or_red_at_head``); on the ii-b build the await render carries the bound once."""
+        from _governed_contract import credentialed_app_context, register_owned
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}
+        ) as world:
+            ctx, holder, pids = world["ctx"], world["holder"], world["pids"]
+            holder["email"] = world["emails"]["alice"]
+            cap, _agent_bare = await register_owned(
+                ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
             )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), exactly as the LANDED ii-a send tests do; register_owned only
+            # mints the capability (raw registry), never the keep (idempotent re-register keeps the
+            # capability valid). See REPORT §FINDING: the landed drain P4 pin omitted this.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
+            for index in range(2):
+                await ctx.comms(
+                    action="send", agent="worker_a", session="s1", to=["worker_a"],
+                    body=f"await message {index}", grade="signal", capability=cap,
+                )
+            # await PEEKS (stamps nothing); the two UNSEEN messages make the snapshot non-empty, so it
+            # returns at once — no real wait — over the SHARED drain-row render.
+            rendered = await _rendered_read_or_red_at_head(
+                ctx.comms(action="await", agent="worker_a", session="s1", capability=cap),
+                verb="non-empty await",
+            )
+            _assert_bound_once(rendered, verb="non-empty await")
+
+    async def test_an_empty_await_carries_the_bound_line_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD (count 0) — G1: the once-per-response bound for the EMPTY await, where Leg 1
+        matters MOST (the bound names the caller's scope even with nothing to show). Monkeypatch the
+        awaiter to return an EMPTY result IMMEDIATELY (no ~55s real wait) and assert the empty-await
+        render names the bound exactly once. At HEAD await is not capability-required → the dispatcher
+        rejects ``capability`` as foreign → RED (via ``_rendered_read_or_red_at_head``, before the fake
+        awaiter is even reached); on the ii-b build the empty render names the bound once."""
+        import loremaster.server as server_mod
+        from _governed_contract import credentialed_app_context, register_owned
+        from loremaster.messages import MessageDrainResult
+
+        class _EmptyAwaiter:
+            """A fake InboxAwaiter (the ``test_comms_await`` idiom) returning an empty result with no
+            wait — the empty-await RENDER path with no real socket."""
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            async def await_inbox(
+                self, *, agent_id: str, limit: int, thread: str | None = None
+            ) -> Any:
+                return MessageDrainResult(
+                    entries=[], total_pending=0, directive_pending=0, stamped_seqs=[], peeked=True
+                )
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}
+        ) as world:
+            ctx, holder, pids = world["ctx"], world["holder"], world["pids"]
+            holder["email"] = world["emails"]["alice"]
+            cap, _agent_bare = await register_owned(
+                ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
+            )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), exactly as the LANDED ii-a send tests do; register_owned only
+            # mints the capability (raw registry), never the keep (idempotent re-register keeps the
+            # capability valid). See REPORT §FINDING: the landed drain P4 pin omitted this.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
+            monkeypatch.setattr(server_mod, "InboxAwaiter", _EmptyAwaiter, raising=False)
+            rendered = await _rendered_read_or_red_at_head(
+                ctx.comms(action="await", agent="worker_a", session="s1", capability=cap),
+                verb="empty await",
+            )
+            _assert_bound_once(rendered, verb="empty await")
+
+    async def test_a_multi_message_story_carries_the_bound_line_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — G1: the once-per-response bound for the STORY verb. story renders
+        one sub-block PER message (``_render_story_message``) — the per-message sub-render is THE clone
+        risk §9.1's count exists for (the sidecar names it). Anchor a task, send TWO messages carrying
+        its task_id, and assert the story bound appears exactly once above the two message sub-blocks.
+        At HEAD story is not capability-required → the dispatcher rejects ``capability`` as foreign → RED
+        (via ``_rendered_read_or_red_at_head``); on the ii-b build the bound is once, a per-message
+        clone → count 3 → RED."""
+        from _governed_contract import credentialed_app_context, register_owned
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}
+        ) as world:
+            ctx, holder, pids = world["ctx"], world["holder"], world["pids"]
+            holder["email"] = world["emails"]["alice"]
+            cap, _agent_bare = await register_owned(
+                ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
+            )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), exactly as the LANDED ii-a send tests do; register_owned only
+            # mints the capability (raw registry), never the keep (idempotent re-register keeps the
+            # capability valid). See REPORT §FINDING: the landed drain P4 pin omitted this.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
+            task_id = await ctx.task_ledger.create_task(
+                "reticulate the splines", "a two-message task arc", created_by="worker_a"
+            )
+            for index in range(2):
+                await ctx.comms(
+                    action="send", agent="worker_a", session="s1", to=["worker_a"],
+                    body=f"story message {index}", grade="signal", task_id=task_id, capability=cap,
+                )
+            rendered = await _rendered_read_or_red_at_head(
+                ctx.comms(
+                    action="story", agent="worker_a", session="s1", task_id=task_id, capability=cap
+                ),
+                verb="multi-message story",
+            )
+            _assert_bound_once(rendered, verb="multi-message story")
+
+    async def test_a_multi_seq_ack_carries_the_bound_line_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — G1: the once-per-response bound for the ACK verb. ack renders
+        per-fate rows (``_render_comms_ack`` groups by outcome), so a per-fate clone shows as count > 1.
+        Send TWO self-addressed messages, learn their seqs via the admin connection (``seq`` is a global
+        ``sequence::nextval``, not guaranteed 0-based), and ack BOTH; assert the ack response carries
+        the bound exactly once. At HEAD ack is not capability-required → the dispatcher rejects
+        ``capability`` as foreign → RED (via ``_rendered_read_or_red_at_head``); on the ii-b build the
+        bound is once, a per-fate clone → count > 1 → RED."""
+        from _governed_contract import credentialed_app_context, register_owned
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}
+        ) as world:
+            ctx, holder, pids, admin_conn = (
+                world["ctx"], world["holder"], world["pids"], world["admin_conn"]
+            )
+            holder["email"] = world["emails"]["alice"]
+            cap, _agent_bare = await register_owned(
+                ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
+            )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), exactly as the LANDED ii-a send tests do; register_owned only
+            # mints the capability (raw registry), never the keep (idempotent re-register keeps the
+            # capability valid). See REPORT §FINDING: the landed drain P4 pin omitted this.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
+            for index in range(2):
+                await ctx.comms(
+                    action="send", agent="worker_a", session="s1", to=["worker_a"],
+                    body=f"ack message {index}", grade="signal", capability=cap,
+                )
+            seq_rows = await run(admin_conn, f"SELECT seq FROM {_MESSAGE_TABLE} ORDER BY seq ASC")
+            seqs = [int(row["seq"]) for row in (seq_rows if isinstance(seq_rows, list) else [])]
+            assert len(seqs) == 2, f"expected two sent messages to ack, got seqs={seqs!r}"
+            rendered = await _rendered_read_or_red_at_head(
+                ctx.comms(action="ack", agent="worker_a", session="s1", seqs=seqs, capability=cap),
+                verb="multi-seq ack",
+            )
+            _assert_bound_once(rendered, verb="multi-seq ack")
 
 
 class TestTheRollupMessageLegNamesTheCapabilityBound:
@@ -318,4 +635,100 @@ class TestTheRollupMessageLegNamesTheCapabilityBound:
             assert "messages activity" not in rendered, (
                 "the TOKENLESS rollup served a `messages activity (N)` count/rows — that is the "
                 "existence leak §9.4 replaces with the identity-required bound line"
+            )
+
+    async def test_a_capability_bearing_rollup_serves_the_filtered_count_headed_by_the_bound(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — G2 (sidecar §14.0): the WITH-capability half of §9.4 (the tokenless leg is
+        pinned above). A VERIFIED capability yields a FILTERED count — ``messages activity (k)`` where
+        ``k`` = the Subject-VISIBLE count, NOT the unfiltered N+M (the Leg-1 count-describes-its-set
+        property) — AND the scope bound line HEADS THE LEG (immediately above the message-activity line),
+        leg-scoped — NEVER the first line of the response, which would over-claim about the UNGOVERNED
+        task/finding legs (§9.4: they are ungoverned until 64).
+
+        Seed N=2 VISIBLE messages (owned by the caller's principal via the send seam) + M=1 INVISIBLE
+        (a FOREIGN principal's principal-private, raw-seeded), plus one UNGOVERNED task leg so the message
+        leg is not the response head. RED at HEAD: ``_rollup`` has no ``capability=`` seam — the exact
+        ``pass capability=`` the TOKENLESS leg above already teaches the caller — so the ii-b-shaped call
+        raises TypeError. On the ii-b build the message leg filters to k=2 and is headed by the bound.
+
+        ⚠ Interface note (report §Decisions): the correct-build seam is ``_rollup(..., capability=)`` —
+        grounded in the LANDED tokenless leg's own ``pass capability=`` teaching (not this reviser's
+        invention). A builder that resolves the capability elsewhere must expose this seam for the caller
+        the tokenless leg instructs."""
+        from _governed_contract import credentialed_app_context, register_owned
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member", "foreign": "member"}
+        ) as world:
+            ctx, holder, pids, admin_conn = (
+                world["ctx"], world["holder"], world["pids"], world["admin_conn"]
+            )
+            holder["email"] = world["emails"]["alice"]
+            cap, agent_bare = await register_owned(
+                ctx, "worker_a", owner_principal_id=pids["alice"], session="s1"
+            )
+            # Mint the session:s1 keep the send resolves its scope by key — via the register TOOL
+            # (credentialed as alice), the LANDED ii-a idiom; register_owned mints only the capability.
+            await ctx.comms(action="register", agent="worker_a", session="s1", role="builder")
+            # An UNGOVERNED leg (a task) so the message leg is NOT at the response head — a build that
+            # heads the RESPONSE (not the leg) with the bound then over-claims about this task leg.
+            await ctx.task_ledger.create_task(
+                "an ungoverned task leg", "so the message leg is not the response head",
+                created_by="worker_a",
+            )
+            # N = 2 VISIBLE messages (owned by alice's principal via the send seam) ...
+            for index in range(2):
+                await ctx.comms(
+                    action="send", agent="worker_a", session="s1", to=["worker_a"],
+                    body=f"visible activity {index}", grade="signal", capability=cap,
+                )
+            # ... and M = 1 INVISIBLE message (a FOREIGN principal's principal-private) seeded raw, so
+            # the WHOLE-table `message_activity_since` sees N+M but the Subject read_filter sees only N.
+            await seed_message_legacy(
+                admin_conn, sender_id=agent_bare, session="s1", seq=999,
+                scope="principal-private", owner_principal=RecordID("principal", pids["foreign"]),
+            )
+            try:
+                rendered = str(await ctx._rollup(since=None, limit=None, capability=cap))  # noqa: SLF001
+            except TypeError as error:
+                if "capability" in str(error):
+                    pytest.fail(
+                        "RED-at-HEAD (right reason): AppContext._rollup does not accept a `capability` "
+                        "argument — the ii-b rollup capability seam (the `pass capability=` the tokenless "
+                        f"leg already teaches) is unbuilt, so the message leg cannot filter. py: {error}"
+                    )
+                raise
+            lines = rendered.splitlines()
+            activity_lines = [line for line in lines if "messages activity" in line]
+            assert len(activity_lines) == 1, (
+                f"expected exactly one `messages activity` leg line in a capability-bearing rollup, got "
+                f"{activity_lines!r}. rendered:\n{rendered}"
+            )
+            activity_index = lines.index(activity_lines[0])
+            activity_line = activity_lines[0]
+            # (1) FILTERED count: k = the Subject-VISIBLE count (2), NEVER the unfiltered N+M (3).
+            assert "2" in activity_line and "3" not in activity_line, (
+                f"the capability-bearing rollup message leg must serve the FILTERED count 2 (the "
+                f"Subject-visible messages), NOT 3 (the unfiltered set incl. the foreign principal's "
+                f"principal-private message) — a served count describes the set its label claims "
+                f"(Leg 1, §9.4). leg line: {activity_line!r}\nrendered:\n{rendered}"
+            )
+            # (2) the bound HEADS the LEG (immediately above the activity line), never the response head.
+            preceding = next(
+                (lines[i] for i in range(activity_index - 1, -1, -1) if lines[i].strip()), ""
+            )
+            assert _BOUND_MARKER in preceding, (
+                f"the Subject-scope bound line must HEAD the message leg (immediately above `messages "
+                f"activity`); nearest preceding non-empty line was {preceding!r}. rendered:\n{rendered}"
+            )
+            assert lines and _BOUND_MARKER not in lines[0], (
+                "the scope bound is the FIRST line of the response — it must be LEG-scoped (heading the "
+                "message leg only), not response-scoped: the task/finding legs are ungoverned until 64, "
+                f"so a response-head bound over-claims about them (§9.4). rendered:\n{rendered}"
+            )
+            assert rendered.count(_BOUND_MARKER) == 1, (
+                f"the rollup scope bound must appear EXACTLY once (leg-scoped, not per-row/response), "
+                f"got {rendered.count(_BOUND_MARKER)}. rendered:\n{rendered}"
             )
