@@ -2292,3 +2292,31 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   Reports at root; archive to `receipts/2026-09-12-packet63b-ii-b/` (with the ii-a batch + stray
   `test_*.memory.db`/`resume`) before the pkt-65 image build. **NEXT = 63b-iii (dedicated
   security-auditor).** Do NOT start 63c.
+- **2026-09-12 — 63b-iii CLOSED (dedicated security-auditor — cross-principal wire isolation + the §9
+  anti-spoofing bar for the governed comms MESSAGE family). GO. COMMIT-ONLY.** Session `63b-iib-20260911`
+  (lead `lead-63b-iib`). `secaudit-63b-iii` (Opus 4.8, adopting the security-auditor role; report-only,
+  edited/committed nothing) attacked the cross-principal boundary OVER THE WIRE (real `AppContext`
+  handlers, per-call switchable transport token, real `message`/`to` tables on the test store `:18000`,
+  throwaway DBs, `:18500` never touched) in an F3 world (alice + bob member principals, DISJOINT
+  households, an admin AllRows control, ≥2 agents each, one shared session string). **VERDICT GO — 47
+  discriminating checks, all pass, every negative paired with a positive control.** HELD: cross-principal
+  read isolation ∀ read verbs (drain/ack/story/await/rollup — alice saw 0 of bob's session-keep/
+  principal-private/agent-private messages; bob + admin saw all 3 → the probe discriminates); served
+  count == served set (trust-doctrine Leg 1); **SF-63-1** foreign register DENIED without leaking the
+  keeper's identity (0 side-effect rows); **THE BINDING + §4.D matrix** (A-cap-under-B-token / sibling-cap
+  / foreign-cap all DENY; only agent == the capability's proven agent acts); forgery/spoofing uniform-DENY
+  (no existence oracle); no-cache revocation (retired cap + left-keep both stop on the next call). No
+  message-read leak → no fix wave. RESIDUALS: **R-1** drain/await "N pending" count over the recipient
+  EDGE set (ruled accepted bound iv; message-content isolation holds); **R-2 = finding #467** — the
+  AGENT-registry surface (`agent_registry.touch` heartbeat runs BEFORE the §4.D check → a cross-principal
+  liveness write on a DENIED call; `UnknownAgentError` enrichment leaks a foreign session's roster) — LOW
+  severity (liveness/roster, NOT message content), reachable TODAY via the already-ungoverned
+  `heartbeat`/`fleet` verbs (pre-existing, NOT introduced by 63b). **OPERATOR-RULED (2026-09-12):** R-2's
+  home is **63c/SF-63-2** (the agent population as a governed surface) with the already-ruled HARD trigger
+  **63c MUST precede the pkt-65 hosted cutover** (63-rulings §1.1); #467 carries the fix recommendation
+  (gate the touch after identity resolution / by the caller's own agent; session-scope the `UnknownAgent`
+  roster enrichment). **PACKET 63b (govern comms message family) is COMPLETE** (i-a/i-b/ii-a/ii-b/iii all
+  CLOSED). Reports at root; archive the whole 63b-ii + iii batch (git mv → `receipts/2026-09-12-packet63b-
+  ii-b/` + `.../packet63b-iii/`, with the ii-a batch + stray `test_*.memory.db`/`resume`/pointer-symlinks)
+  before the pkt-65 image build. **NEXT = 63c (comms remainder: brief_*/fleet/agent roster as governed,
+  incl. #467); do NOT start it without a fresh operator go.**
