@@ -1076,6 +1076,20 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
         # list (our own gate miss). Re-open trigger: if it ever sources a REAL secret (env, argv,
         # secret file) instead of the ``"spikeroot"`` literal, it is a genuine production credential
         # and must move to config.py's resolver seam.
+        # ADJUDICATED (probe-63c, packet 63c): the SAME shape — ``probe_governed_63c.py`` (the 63c
+        # store+code FACTS probe: DD-3.c on agent/brief, governed read-filter EXPLAINs, #467
+        # registry repro) mints ``SecretStr(PASSWORD)`` where ``PASSWORD = "spikeroot"`` is IMPORTED
+        # from the sibling ``probe_read_filter_63.py`` (the hardcoded spike-surreal dev literal, no
+        # real secret; ``URL = ws://127.0.0.1:18000``, the :18000 TEST store). Minted at its
+        # connect/cleanup ``signin_credentials`` calls AND at its ``AgentRegistry(..., password=...)``
+        # construction (PART E), all of which GENUINELY require a SecretStr (#211 — a bare ``str`` is a
+        # type error AND a runtime ``AttributeError`` at ``password.get_secret_value()``). The
+        # credential ORIGINATES at the ``PASSWORD = "spikeroot"`` module literal a throwaway probe with
+        # no config resolver carries — a composition root exactly like an env var at
+        # ``config.py::resolve_secret``. NOT attack shape S6 (no bare str re-wrapped from an upstream
+        # typed seam). Re-open trigger: if it ever sources a REAL secret (env, argv, secret file)
+        # instead of the ``"spikeroot"`` literal, it is a genuine production credential and must move
+        # to config.py's resolver seam.
         allowed = (
             "loremaster/config.py",
             "scripts/survey_txn_contention_102.py",
@@ -1090,6 +1104,7 @@ class TestOutgoingAuthHeadersGoThroughATypedSeam:
             "scripts/probe_dnd_defense_objects.py",
             "scripts/probe_supersede_throw_rollback.py",
             "scripts/probe_drain_read_63b_ii_b.py",
+            "scripts/probe_governed_63c.py",
         )
         offenders = [
             site for site in _secretstr_mint_sites() if not site.startswith(allowed)
