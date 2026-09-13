@@ -86,11 +86,13 @@ import pytest_asyncio
 from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
 from _surreal_harness import (
     PRODUCTION_DIM,
+    SurrealConnection,
     SurrealEnv,
     assert_domain_rejection,
     connect_admin,
     drop_database,
     make_env,
+    run,
     unique_database,
 )
 from loremaster.agents import (
@@ -100,6 +102,7 @@ from loremaster.agents import (
     Agent,
     AgentIdentityConflictError,
     AgentRegistry,
+    AgentRegistryError,
     AgentRosterMember,
     AmbiguousAgentError,
     FleetRoster,
@@ -109,6 +112,7 @@ from loremaster.agents import (
 )
 from loremaster.server import _MAX_FLEET_LIMIT
 from loremaster.store._txn import SurrealConnectionError, SurrealStoreError, _SurrealConnection
+from loremaster.store.surreal_schema import AGENT_TABLE
 from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
@@ -1016,5 +1020,154 @@ class TestAgentRegistryConnectionLifecycle:
             recovered = await registry.get_agent(AGENT_FIXER_B, session=SESSION_WAVE7)
             assert recovered.name == AGENT_FIXER_B
         finally:
+            await registry.close()
+            await drop_database(env)
+
+
+# =========================================================================== #
+# 63c-i-a — Q3 DROP+MOVE (ruling §4.2): the agent name/session charset + role non-empty checks
+# MOVE out of the store DDL ASSERT and INTO ``AgentRegistry.register``. The writer validates
+# ``name``/``session`` via ``AGENT_NAME_PATTERN.fullmatch`` (the ONE spelling — the SAME object the
+# tool-layer ``_validate_comms_charset`` uses; ``_IDENTIFIER_CHARSET_PATTERN`` in surreal_schema is
+# NOT deleted in i-a because ``brief.name`` still consumes it until 63c-ii — F-regex-twin, lead-ruled)
+# and ``role`` via ``lorerunes.is_blank`` — a TEACHING ``AgentRegistryError`` BEFORE any store I/O.
+#
+# RED before the i-a build (measured @699a6e9): at HEAD ``register`` performs NO charset/role check
+# (F7), so a hostile value reaches the store CREATE and the STILL-PRESENT store ASSERT rejects it
+# with a ``TxnDomainRejectionError`` (a ``SurrealStoreError``, NOT an ``AgentRegistryError`` — checked
+# hierarchy) — so ``pytest.raises(AgentRegistryError)`` lets that store error propagate → these pins
+# ERROR (RED) at HEAD. On the CORRECT build ``register`` raises the teaching ``AgentRegistryError``
+# before the CREATE (zero rows). On the WRONG build (Q3 dropped the store ASSERT but forgot the MOVE)
+# a hostile value is WRITTEN — no raise, count != 0 → RED. All three worlds discriminated.
+# =========================================================================== #
+
+# Hostile identifiers register must refuse app-side (the injection classes the charset guards) —
+# a LOCAL representative set (test_comms_schema.py owns the exhaustive _HOSTILE_IDENTIFIERS; this
+# file need not import it). Includes the empty string and an over-cap name.
+_MOVE_HOSTILE_IDENTIFIERS = ("Bad Name!", "has space", "UPPER", "colon:here", "-lead", "z" * 65, "")
+_MOVE_BLANK_ROLES = ("", " ", "\t", "\n")
+
+
+class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
+    """63c-i-a §4.2 MOVE — ``AgentRegistry.register`` is now the ONE implementation of the agent
+    identity charset (name/session) + role non-empty rules, refusing a hostile value with a TEACHING
+    ``AgentRegistryError`` BEFORE any store I/O. Fixtures DISCRIMINATE: a hostile value AND a valid
+    control (a build whose charset guard is too strict would refuse every real caller)."""
+
+    @staticmethod
+    async def _real_registry() -> tuple[AgentRegistry, SurrealConnection, SurrealEnv]:
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup_connection = await connect_admin(env)
+        await setup_connection.close()
+        registry = AgentRegistry(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+        )
+        await registry.ensure_ready()
+        admin_connection = await connect_admin(env)
+        return registry, admin_connection, env
+
+    @staticmethod
+    async def _agent_row_count(connection: SurrealConnection) -> int:
+        rows = await run(connection, f"SELECT count() FROM {AGENT_TABLE} GROUP ALL")
+        return int(rows[0]["count"]) if rows else 0
+
+    @pytest.mark.parametrize("field", ["name", "session"])
+    @pytest.mark.parametrize("hostile_value", _MOVE_HOSTILE_IDENTIFIERS)
+    async def test_register_refuses_a_hostile_identifier_before_any_store_write(
+        self, field: str, hostile_value: str
+    ) -> None:
+        """⚠ RED before i-a — ``register`` REFUSES a hostile ``name``/``session`` with a teaching
+        ``AgentRegistryError`` (naming the illegal shape + the charset), writing ZERO agent rows.
+        RED at HEAD (register lacks the check → the store ASSERT raises a NON-AgentRegistryError
+        store error, uncaught here). REDDENS the wrong build (ASSERT dropped, no MOVE → the hostile
+        value is WRITTEN, no raise, count != 0)."""
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            kwargs: dict[str, Any] = {"name": AGENT_FIXER_B, "session": SESSION_WAVE7, "role": ROLE_BUILDER}
+            kwargs[field] = hostile_value
+            with pytest.raises(AgentRegistryError) as exc_info:
+                await registry.register(
+                    kwargs["name"], session=kwargs["session"], role=kwargs["role"]
+                )
+            message = str(exc_info.value)
+            assert "assert violation" not in message.lower(), (
+                f"the refusal is a laundered store ASSERT, not a TEACHING register-layer error — the "
+                f"MOVE writes the check into register (§4.2), so a hostile {field} is refused APP-SIDE "
+                f"with a teaching message, never the store's opaque `(assert violation)`: {message!r}"
+            )
+            assert await self._agent_row_count(admin_connection) == 0, (
+                f"a rejected register wrote an agent row — the {field} charset check must run BEFORE "
+                f"any store I/O (#97 / §4.2: a rejected write has no side effect)"
+            )
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    @pytest.mark.parametrize("blank_role", _MOVE_BLANK_ROLES)
+    async def test_register_refuses_a_blank_role_before_any_store_write(self, blank_role: str) -> None:
+        """⚠ RED before i-a — ``register`` REFUSES a blank ``role`` via ``lorerunes.is_blank`` (the
+        SHARED blankness predicate, never a second ``strip()``), teaching, ZERO rows written. RED at
+        HEAD (``role=""`` reaches the store non-empty ASSERT — a store error, not AgentRegistryError,
+        uncaught here — F7 confirmed ``role=""`` passes the dispatcher's ``is None`` check today)."""
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            with pytest.raises(AgentRegistryError) as exc_info:
+                await registry.register(AGENT_FIXER_B, session=SESSION_WAVE7, role=blank_role)
+            assert "assert violation" not in str(exc_info.value).lower(), (
+                f"a blank role must be refused APP-SIDE by is_blank, teaching — not laundered as the "
+                f"store's `(assert violation)`: {str(exc_info.value)!r}"
+            )
+            assert await self._agent_row_count(admin_connection) == 0, (
+                "a rejected (blank-role) register wrote an agent row — the role check must run BEFORE "
+                "any store I/O (§4.2)"
+            )
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    @pytest.mark.parametrize("valid_value", ["fixer-b", "a", "wave7", "z" * 64])
+    async def test_register_accepts_a_valid_identifier_positive_control(self, valid_value: str) -> None:
+        """POSITIVE CONTROL (fixtures-must-discriminate) — a build whose MOVE charset guard is too
+        strict would refuse every real caller while passing the negative pins. A valid name/session
+        registers and writes exactly one row. GREEN at HEAD AND on the correct build."""
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            result = await registry.register(valid_value, session=valid_value, role=ROLE_BUILDER)
+            assert result.re_registered is False
+            assert await self._agent_row_count(admin_connection) == 1, (
+                f"a valid register must write exactly one agent row (valid={valid_value!r})"
+            )
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    async def test_register_charset_check_is_the_ONE_spelling_agent_name_pattern(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ REGEX-TWIN mutation proof (i-a scope), RED before build. ``register``'s charset check is
+        ``AGENT_NAME_PATTERN`` itself — the ONE spelling — not a private copy. Perturb
+        ``agents.AGENT_NAME_PATTERN`` to reject a normally-valid name; ``register`` must now refuse it.
+        RED at HEAD (register consults NO pattern → ``fixer-b`` is accepted → no raise). GREEN on the
+        correct build (register consults the mutated module global → refuses). Proves a change to the
+        pattern MOVES register's behaviour — a private clone would stay green.
+
+        NB (F-regex-twin, lead-ruled): i-a does NOT delete ``_IDENTIFIER_CHARSET_PATTERN`` — ``brief.name``
+        still consumes it until 63c-ii; this pin only proves AGENT's register routes through
+        ``AGENT_NAME_PATTERN``. The single-hit deletion sweep lands in 63c-ii."""
+        import re
+
+        import loremaster.agents as agents_module
+
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            monkeypatch.setattr(agents_module, "AGENT_NAME_PATTERN", re.compile(r"^ZZZ_NO_MATCH$"))
+            with pytest.raises(AgentRegistryError):
+                await registry.register("fixer-b", session="wave7", role=ROLE_BUILDER)
+            assert await self._agent_row_count(admin_connection) == 0
+        finally:
+            await admin_connection.close()
             await registry.close()
             await drop_database(env)

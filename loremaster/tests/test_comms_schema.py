@@ -70,6 +70,7 @@ from __future__ import annotations
 import ast
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
 
@@ -93,7 +94,7 @@ from _surreal_harness import (
     run,
     unique_database,
 )
-from loremaster.agents import AgentRegistry
+from loremaster.agents import AGENT_STATUSES, AgentRegistry, AgentStatus
 from loremaster.messages import MessageLedger
 from loremaster.store.surreal_schema import (
     AGENT_TABLE,
@@ -459,18 +460,15 @@ class TestAgentDdlOffline:
         ddl = generate_agent_ddl()
         assert f"DEFINE TABLE IF NOT EXISTS {AGENT_TABLE} SCHEMAFULL" in ddl
 
-    def test_name_and_session_carry_the_verified_charset_assert(self) -> None:
-        ddl = generate_agent_ddl()
-        for field in ("name", "session"):
-            statement = _field_statement(ddl, AGENT_TABLE, field)
-            assert "TYPE string" in statement
-            assert _IDENTIFIER_CHARSET_ASSERT_TEXT in statement
-
-    def test_role_carries_the_non_empty_assert(self) -> None:
-        ddl = generate_agent_ddl()
-        role = _field_statement(ddl, AGENT_TABLE, "role")
-        assert "TYPE string" in role
-        assert _NON_EMPTY_STRING_ASSERT_TEXT in role
+    # 63c-i-a DUAL (ruling §9 item 6) — DELETED-WITH-REPLACEMENT: the agent name/session charset
+    # DDL-text pin and the role non-empty DDL-text pin certified the OLD asserted world. Q3 DROPs
+    # those three store ASSERTs (→ "") and MOVEs their predicate into ``AgentRegistry.register``
+    # (AGENT_NAME_PATTERN.fullmatch on name/session, ``is_blank`` on role — TEACHING, before store
+    # I/O). Keeping them would trap the builder between this file (ASSERT present) and the new
+    # ``TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate``[agent] pin (ASSERT absent) —
+    # the MP-7 corpse-certifier / C-DEF class. REPLACEMENTS: P2 [agent] (∀ name/session/role carry
+    # NO ASSERT); the register MOVE pins in test_agent_registry.py (the writer refuses, teaching).
+    # ``status`` is KEPT (§4.2), so its two domain pins below STAY.
 
     def test_status_domain_is_exactly_the_four_agent_statuses(self) -> None:
         ddl = generate_agent_ddl()
@@ -488,6 +486,43 @@ class TestAgentDdlOffline:
         ddl = generate_agent_ddl()
         status = _field_statement(ddl, AGENT_TABLE, "status")
         assert f"'{_AGENT_STATUS_ORPHANED}'" not in status
+
+    def test_status_assert_is_KEPT_after_q3(self) -> None:
+        """63c-i-a §4.2 KEEP guard. ``status`` is the ONE agent birth ASSERT Q3 KEEPS (reader-
+        aligned: a junk status RAISES in ``_row_to_agent`` decoding ``AgentStatus``, so
+        ``fleet``/``roster`` deny the WHOLE roster on one junk row). GREEN at HEAD AND after the
+        build; RED the day the ``status`` ASSERT is dropped alongside name/session/role (which it
+        must NOT be — its violation set == the reader's rejection set). The P2 [agent] exemption
+        ``{status}`` non-vacuity leg is the parametrised twin of this guard."""
+        status = _field_statement(generate_agent_ddl(), AGENT_TABLE, "status")
+        assert "ASSERT" in status, (
+            f"agent.status must KEEP its store ASSERT (§4.2 — the ONE reader-aligned agent "
+            f"constraint; a junk status is a total roster-decode denial): {status!r}"
+        )
+
+    def test_status_ddl_vocabulary_aligns_with_the_reader_literal(self) -> None:
+        """P-A2 (63c-i-a §4.3, the P-G2 twin, the ALIGNMENT pin). ``status``'s store ASSERT is
+        KEPT because its violation set is EXACTLY the reader's rejection set — this proves that
+        ONE-source claim BY MUTATION: the set inside the emitted ASSERT == ``AGENT_STATUSES`` ==
+        ``set(get_args(AgentStatus))``.
+
+        Mutation proof (declared): add a status to ``_AGENT_STATUS_ALLOWED``/``AGENT_STATUSES``
+        only → the DDL set moves but the ``Literal`` does not (or vice-versa) → this pin RED. The
+        three surfaces are ONE vocabulary or the KEEP's reader-alignment rests on a fiction."""
+        status = _field_statement(generate_agent_ddl(), AGENT_TABLE, "status")
+        match = re.search(r"ASSERT \$value IN \[([^\]]*)\]", status)
+        assert match, f"could not parse the status ASSERT's IN-set from {status!r}"
+        ddl_statuses = set(re.findall(r"'([^']*)'", match.group(1)))
+        assert ddl_statuses, "the status ASSERT's IN-set parsed EMPTY — a vacuous alignment pin"
+        constant_statuses = set(AGENT_STATUSES)
+        literal_statuses = set(get_args(AgentStatus))
+        assert ddl_statuses == constant_statuses == literal_statuses, (
+            f"the agent status vocabulary DRIFTED across its three surfaces — DDL ASSERT "
+            f"{sorted(ddl_statuses)}, AGENT_STATUSES {sorted(constant_statuses)}, Literal "
+            f"{sorted(literal_statuses)}. They MUST be one source (§4.2): the store ASSERT rejects "
+            f"exactly the values the reader's AgentStatus decode rejects, or the reader-alignment "
+            f"the KEEP rests on is a fiction."
+        )
 
     def test_optional_string_fields_are_option_string(self) -> None:
         ddl = generate_agent_ddl()
@@ -752,51 +787,15 @@ class TestSchemaAppliesAndIsIdempotent:
         assert row["name"] == "idem-probe"
 
 
-class TestAgentCharsetAssert:
-    """The ``name``/``session`` charset ASSERT: hostile shapes rejected, real
-    identifiers accepted (positive control alongside the negative one — an
-    overly-strict ASSERT would silently pass the negative tests while
-    breaking every real caller).
-    """
-
-    @pytest.mark.parametrize("field", ["name", "session"])
-    @pytest.mark.parametrize("hostile_value", _HOSTILE_IDENTIFIERS)
-    async def test_hostile_value_is_rejected(
-        self,
-        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
-        field: str,
-        hostile_value: str,
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_agent_ddl())
-        kwargs: dict[str, Any] = {"name": "fixer-b", "session": "wave7"}
-        kwargs[field] = hostile_value
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_agent(
-                connection,
-                agent_id=uuid.uuid4().hex,
-                name=kwargs["name"],
-                session=kwargs["session"],
-            )
-
-    @pytest.mark.parametrize("field", ["name", "session"])
-    @pytest.mark.parametrize("valid_value", _VALID_IDENTIFIERS)
-    async def test_valid_value_is_accepted(
-        self,
-        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
-        field: str,
-        valid_value: str,
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_agent_ddl())
-        kwargs: dict[str, Any] = {"name": "fixer-b", "session": "wave7"}
-        kwargs[field] = valid_value
-        await _create_agent(
-            connection,
-            agent_id=uuid.uuid4().hex,
-            name=kwargs["name"],
-            session=kwargs["session"],
-        )
+# 63c-i-a DUAL (ruling §9 item 6) — the agent ``TestAgentCharsetAssert`` (a LIVE store-rejection
+# pin: it applied ``generate_agent_ddl()`` and asserted the STORE rejects a hostile ``name``/
+# ``session``) is INVERTED across the contract, not kept here. After Q3 DROPs the agent
+# name/session charset ASSERT, a RAW ``_create_agent`` of a hostile identifier SUCCEEDS (the store
+# no longer rejects it) — so this pin would go RED on the correct build (a corpse). Its two virtues
+# are PRESERVED-WITH-PIN elsewhere: (1) the store now ACCEPTS the dropped-ASSERT shape via the raw
+# seeder — the DD-3.c Leg A drop-lands pin in test_agent_governance_63c_i_a.py; (2) a hostile
+# identifier is REFUSED by the WRITER, teaching, before store I/O — the register MOVE pins in
+# test_agent_registry.py. ``TestBriefCharsetAssert`` below is UNTOUCHED (brief.name's drop is 63c-ii).
 
 
 class TestBriefCharsetAssert:
@@ -2160,7 +2159,13 @@ def _overwrite_field_statements(ddl: str, table: str) -> dict[str, str]:
 # so it is a hand constant, kept honest by the non-vacuity leg (an exempted field MUST
 # carry an ASSERT) + P-G2 (the ASSERT must equal the reader's set).
 class _ConstraintSpec:
-    """A governed table's ∀-no-constraint spec (§3.4 P2 / §12.4 P2-m / §13.3)."""
+    """A governed table's ∀-no-constraint spec (§3.4 P2 / §12.4 P2-m / §13.3 / 63c-i-a §4.3).
+
+    ⚠ 63c-i-a §4.3 STRUCTURAL EXTENSION: the spec gained ``make_ddl`` — the per-table REAL emitter.
+    ``to``/``message`` share ``generate_message_ddl`` (``to`` is a RELATION defined in the message
+    DDL); ``agent`` supplies ``generate_agent_ddl``. Before this, the ∀ pin HARD-CODED
+    ``generate_message_ddl()``, so a third table's fields could not be derived over its OWN emitter
+    (INSTRUMENT-0: the reach must be each table's own output, never a hand-copied statement list)."""
 
     def __init__(
         self,
@@ -2170,12 +2175,14 @@ class _ConstraintSpec:
         birth_defaults: frozenset[str],
         exemptions: frozenset[str],
         floor: frozenset[str],
+        make_ddl: Callable[[], str] = generate_message_ddl,
     ) -> None:
         self.table_attr = table_attr
         self.birth = birth
         self.birth_defaults = birth_defaults
         self.exemptions = exemptions
         self.floor = floor
+        self.make_ddl = make_ddl
 
 
 _TO_CONSTRAINT_SPEC = _ConstraintSpec(
@@ -2215,6 +2222,35 @@ _MESSAGE_CONSTRAINT_SPEC = _ConstraintSpec(
     floor=frozenset({"body", "refs[*]", "owner_principal"}),  # a derivation that
     # misses the element row or the governed overlay must RED.
 )
+_AGENT_CONSTRAINT_SPEC = _ConstraintSpec(
+    "AGENT_TABLE",
+    make_ddl=generate_agent_ddl,  # 63c-i-a §4.3 — derive over agent's OWN emitter, not message's.
+    # birth = the PKT-28 C1 birth field set, GIT-DERIVED (`git log -S _AGENT_FIELD_SPECS` →
+    # cfb36d2, the birth commit; the fields present on every legacy agent row), NOT the ruling's
+    # candidate table (INSTRUMENT-0: derive from history, do not trust a prose list).
+    birth=frozenset(
+        {
+            "name",
+            "session",
+            "role",
+            "model",
+            "status",
+            "spawned_by",
+            "task_id",
+            "checkpoint",
+            "last_note",
+            "registered_at",
+            "heartbeat_at",
+        }
+    ),
+    birth_defaults=frozenset(),  # agent carries NO birth DEFAULT (a status DEFAULT would make a
+    # never-touched row look declared; birth stamps status='active' explicitly at register).
+    exemptions=frozenset({"status"}),  # §4.2 KEEP: status' store-violation set == the reader's
+    # AgentStatus-Literal decode rejection set (a junk status RAISES in _row_to_agent → total roster
+    # denial), so it is reader-aligned and KEPT — the ONLY agent ASSERT that survives Q3.
+    floor=frozenset({"name", "status", "owner_principal", "scope"}),  # a derivation that loses a
+    # birth identity column, the KEPT status, or the governed overlay must RED (non-vacuity).
+)
 
 
 class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
@@ -2240,10 +2276,18 @@ class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
     heal/narrow obligation.
 
     Mutation proof (declared, from ``--collect-only``): re-add ANY dropped ASSERT to
-    ``_TO_FIELD_SPECS``/``_MESSAGE_FIELD_SPECS`` → RED for that table; add a spec row
-    ``("x", "string", "")`` → RED (non-option post-birth); add ``("y",
-    "option<string>", "DEFAULT 'z'")`` → RED (post-birth DEFAULT); drop ``grade``'s
-    ASSERT → the message exemption non-vacuity leg RED; restore → GREEN.
+    ``_TO_FIELD_SPECS``/``_MESSAGE_FIELD_SPECS``/``_AGENT_FIELD_SPECS`` → RED for that
+    table; add a spec row ``("x", "string", "")`` → RED (non-option post-birth); add
+    ``("y", "option<string>", "DEFAULT 'z'")`` → RED (post-birth DEFAULT); drop
+    ``grade``'s / ``status``'s ASSERT → the message / agent exemption non-vacuity leg RED;
+    restore → GREEN.
+
+    ⚠ 63c-i-a: the ``[agent]`` row is a FIX pin RED before the i-a build — HEAD emits the
+    ``name``/``session`` charset ASSERTs + the ``role`` non-empty ASSERT (Q3 DROPs all three,
+    MOVEing them into ``AgentRegistry.register``) AND lacks ``owner_agent``/``scope`` (the floor's
+    ``scope`` is absent → the non-vacuity floor reds before the ∀ check even runs). After the build:
+    GREEN, RED the day an agent constraint returns or the governed overlay regresses. ``status`` is
+    the ONE exempted (KEPT) agent ASSERT — its non-vacuity leg is the KEEP guard.
     """
 
     @pytest.mark.parametrize(
@@ -2251,13 +2295,16 @@ class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
         [
             pytest.param(_TO_CONSTRAINT_SPEC, id="to"),
             pytest.param(_MESSAGE_CONSTRAINT_SPEC, id="message"),
+            pytest.param(_AGENT_CONSTRAINT_SPEC, id="agent"),
         ],
     )
     def test_no_field_carries_a_constraint_a_legacy_row_can_violate(
         self, spec: _ConstraintSpec
     ) -> None:
         table = getattr(_schema(), spec.table_attr)
-        fields = _overwrite_field_statements(generate_message_ddl(), table)
+        # 63c-i-a §4.3: derive over the SPEC's OWN emitter (agent → generate_agent_ddl), never the
+        # hard-coded message emitter — a third table's fields must come from its own output.
+        fields = _overwrite_field_statements(spec.make_ddl(), table)
         assert fields, (
             f"derived NO emitted `DEFINE FIELD OVERWRITE … ON {table}` statements — a "
             f"derivation that finds nothing MUST red, not pass (INSTRUMENT-0 non-vacuity)"

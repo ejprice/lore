@@ -632,3 +632,180 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
             f"owner_principal), got {len(survivors)} — a build that dropped/cleaned any of them "
             f"reddens here (R3.2, ∀ owned agents)"
         )
+
+
+# =========================================================================== #
+# 63c-i-a — W1-1: ``agent`` joins the governed population through the ONE emitter (ruling §2.1).
+# ``_agent_statements`` must retire its hand-rolled pkt-62 ``owner_principal`` field row + inline
+# ``agent_owner_principal`` index and instead append ``_governed_field_specs()`` +
+# ``_governed_index_statements("agent")`` — exactly as ``_memory_statements``/``_message_statements``
+# do — gaining ``owner_agent`` (option<record<agent>>) + ``scope`` (option<string>). Store-ref
+# §1.1 (FIELD OVERWRITE / INDEX IF NOT EXISTS), §1.4 (option<> on a POPULATED table — all three
+# governed columns un-poison legacy rows), §1.8 (the retained UNIQUE capability_hash coexists).
+# =========================================================================== #
+
+_GOVERNED_COLUMNS_63C = ("owner_principal", "owner_agent", "scope")
+
+
+def _governed_field_statement(column: str) -> str | None:
+    """The single ``DEFINE FIELD`` for ``agent.<column>`` in the REAL emitter (None if unbuilt);
+    tolerant of ``OVERWRITE``, at-most-one (a duplicate emitter is a loud failure)."""
+    matches = [
+        statement
+        for statement in _agent_statements()
+        if _DEFINE_FIELD.match(statement)
+        and re.search(rf"\bFIELD\s+(?:OVERWRITE\s+)?{re.escape(column)}\b", statement)
+    ]
+    assert len(matches) <= 1, f"expected ≤1 DEFINE FIELD for agent.{column}, got {matches!r}"
+    return matches[0] if matches else None
+
+
+class TestTheGovernedTripleShape63cIA:
+    """W1-1 (ruling §2.1) — ``owner_agent`` + ``scope`` join ``owner_principal`` as ``option<>``
+    no-ASSERT no-DEFAULT governed columns. ``owner_agent`` is a self-``record<agent>`` link; ``scope``
+    a plain ``option<string>`` (the member-filter key). RED before the 63c-i-a build — the two columns
+    are absent from ``generate_agent_ddl()`` at ``699a6e9``."""
+
+    @pytest.mark.parametrize(
+        ("column", "type_fragment"),
+        [
+            ("owner_agent", "option<record<agent>>"),
+            ("scope", "option<string>"),
+        ],
+    )
+    def test_the_new_governed_column_is_emitted_option_wrapped(
+        self, column: str, type_fragment: str
+    ) -> None:
+        """⚠ RED before 63c-i-a — ``agent`` gains ``owner_agent``/``scope`` via the shared emitter.
+        §1.4: a NEW field on the POPULATED ``agent`` table MUST be ``option<>`` (a required column
+        poisons every legacy agent row's next UPDATE). REDDENS a required-not-option build."""
+        statement = _governed_field_statement(column)
+        assert statement is not None, (
+            f"generate_agent_ddl() emits no DEFINE FIELD for agent.{column} — the governed triple is "
+            f"unbuilt (W1-1: agent must route through _governed_field_specs, ruling §2.1)"
+        )
+        assert type_fragment in statement.replace(" ", ""), (
+            f"agent.{column} must be {type_fragment} (§1.4 governed column shape): {statement!r}"
+        )
+
+    @pytest.mark.parametrize("column", ["owner_agent", "scope"])
+    def test_the_new_governed_column_is_overwrite_no_assert_no_default(self, column: str) -> None:
+        """⚠ §1.1 (#107): only ``OVERWRITE`` lands a changed def; ``IF NOT EXISTS`` is a silent
+        no-op. §1.4: NO ASSERT/NO DEFAULT (an ASSERT poisons legacy rows; a DEFAULT does not rescue
+        them). RED before build; REDDENS an ``IF NOT EXISTS`` / ASSERT / DEFAULT build."""
+        statement = _governed_field_statement(column)
+        assert statement is not None, (
+            f"unbuilt — see test_the_new_governed_column_is_emitted_option_wrapped[{column}]"
+        )
+        upper = statement.upper()
+        assert "OVERWRITE" in upper and "IF NOT EXISTS" not in upper, statement
+        assert "ASSERT" not in upper, (
+            f"agent.{column} must carry NO ASSERT — a governed column ASSERT poisons the legacy rows "
+            f"option<> exists to spare (§1.4): {statement!r}"
+        )
+        assert "DEFAULT" not in upper, (
+            f"agent.{column} must carry NO DEFAULT — a DEFAULT applies at CREATE, never rescuing a "
+            f"legacy row's missing value (§1.4): {statement!r}"
+        )
+
+
+class TestTheGovernedTripleRoutesThroughTheOneEmitter63cIA:
+    """W1-1 anti-twin (ruling §2.1) — the three governed columns + two indexes come from the SHARED
+    ``_governed_field_specs`` / ``_governed_index_statements`` emitter, NOT a hand-rolled twin. The
+    wrong build W1-1 admits keeps the pkt-62 ``owner_principal`` row in ``_AGENT_FIELD_SPECS`` (and/or
+    the inline ``agent_owner_principal`` index) BESIDE the emitter call — every clause pin above stays
+    green while the emitter mutation below cannot reach the twin. Proven BY MUTATION + the once pin."""
+
+    def test_the_three_governed_columns_are_byte_equal_to_the_shared_emitter(self) -> None:
+        """⚠ RED before 63c-i-a — the shared emitter's exact statements are IN the agent DDL. Byte-
+        equality (not a shape check) is what makes ``owner_principal`` PROVABLY the emitter's output,
+        not a coincidentally-identical hand-rolled string. REDDENS a build missing owner_agent/scope
+        or emitting a differently-spelled governed column."""
+        expected = [
+            surreal_schema._define_field(AGENT_TABLE, name, type_expr, constraint=constraint)
+            for name, type_expr, constraint in surreal_schema._governed_field_specs()
+        ]
+        statements = _agent_statements()
+        missing = [statement for statement in expected if statement not in statements]
+        assert not missing, (
+            f"generate_agent_ddl() is missing the shared governed emitter's exact statements "
+            f"{missing!r} — agent's governed columns are not byte-equal to _governed_field_specs() "
+            f"(W1-1: they must come from the ONE emitter, ruling §2.1). emitted: {statements!r}"
+        )
+
+    def test_owner_principal_is_emitted_exactly_once(self) -> None:
+        """⚠ THE W1-1 TWIN DISCRIMINATOR (green before build AND on the correct build; RED on the
+        wrong build). If the builder adds ``_governed_field_specs()`` but forgets to REMOVE the
+        pkt-62 ``owner_principal`` row from ``_AGENT_FIELD_SPECS``, ``owner_principal`` is emitted
+        TWICE — a hand-rolled twin beside the shared emitter (the exact W1-1 wrong build). One
+        occurrence is correct in BOTH the HEAD and the built world; two is the twin."""
+        owner_defs = [
+            statement
+            for statement in _agent_statements()
+            if _DEFINE_FIELD.match(statement)
+            and re.search(r"\bFIELD\s+(?:OVERWRITE\s+)?owner_principal\b", statement)
+        ]
+        assert len(owner_defs) == 1, (
+            f"agent.owner_principal is emitted {len(owner_defs)} times — the W1-1 pkt-62 hand-rolled "
+            f"twin was not retired (owner_principal must come ONLY from _governed_field_specs, never "
+            f"ALSO from _AGENT_FIELD_SPECS): {owner_defs!r}"
+        )
+
+    def test_the_governed_columns_route_through_the_shared_field_emitter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ MUTATION PROOF, RED before 63c-i-a. Perturb ``_governed_field_specs`` to append a probe
+        column; on the correct build ``generate_agent_ddl()`` carries it (agent CALLS the shared
+        emitter). RED at ``699a6e9`` (agent emits owner_principal from ``_AGENT_FIELD_SPECS``, not the
+        shared emitter, so the probe never appears) AND on a hand-rolled-twin build."""
+        original = surreal_schema._governed_field_specs
+        monkeypatch.setattr(
+            surreal_schema,
+            "_governed_field_specs",
+            lambda: (*original(), ("gov_field_probe_63c", "option<string>", "")),
+        )
+        assert "gov_field_probe_63c" in surreal_schema.generate_agent_ddl(), (
+            "generate_agent_ddl() does not route its governed columns through "
+            "_governed_field_specs() — a hand-rolled governed column (the pkt-62 twin) bypasses the "
+            "ONE governed emitter (W1-1, ruling §2.1)"
+        )
+
+    def test_the_governed_indexes_route_through_the_shared_index_emitter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ MUTATION PROOF, RED before 63c-i-a. Perturb ``_governed_index_statements`` to append a
+        probe index; the correct build carries it. RED at ``699a6e9`` (agent emits the
+        ``agent_owner_principal`` index INLINE, not via the shared index emitter) AND on a build that
+        keeps the inline index twin. Store-ref §1.1: governed indexes are ``IF NOT EXISTS``."""
+        original = surreal_schema._governed_index_statements
+        monkeypatch.setattr(
+            surreal_schema,
+            "_governed_index_statements",
+            lambda table: [
+                *original(table),
+                f"DEFINE INDEX IF NOT EXISTS {table}_gov_index_probe_63c ON {table} FIELDS scope",
+            ],
+        )
+        assert "gov_index_probe_63c" in surreal_schema.generate_agent_ddl(), (
+            "generate_agent_ddl() does not route its governed indexes through "
+            "_governed_index_statements() — the inline agent_owner_principal index is a hand-rolled "
+            "twin bypassing the ONE index emitter (W1-1, ruling §2.1)"
+        )
+
+    def test_the_two_governed_indexes_are_emitted_each_once(self) -> None:
+        """⚠ RED before 63c-i-a — the ``agent_scope`` + ``agent_owner_principal`` indexes come from
+        ``_governed_index_statements('agent')``, each exactly once. ``agent_owner_principal`` once is
+        the index half of the twin discriminator: the inline pkt-62 index must be RETIRED, not kept
+        beside the shared one (two ``agent_owner_principal`` DEFINE INDEX statements = the twin)."""
+        indexes = [
+            statement
+            for statement in _agent_statements()
+            if _DEFINE_INDEX.match(statement)
+        ]
+        for index_name in (f"{AGENT_TABLE}_scope", f"{AGENT_TABLE}_owner_principal"):
+            hits = [statement for statement in indexes if index_name in statement]
+            assert len(hits) == 1, (
+                f"agent index {index_name!r} must be emitted exactly once (via "
+                f"_governed_index_statements); got {len(hits)}: {hits!r} — a second occurrence is the "
+                f"pkt-62 inline twin the W1-1 retirement removes (ruling §2.1)"
+            )

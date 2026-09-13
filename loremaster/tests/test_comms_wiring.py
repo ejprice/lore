@@ -262,22 +262,23 @@ class TestAgentRegistryAndBriefLedgerAreConstructed:
 class TestSchemaIsActuallyAppliedNotJustConstructed:
     """Constructing the ledgers is necessary but not sufficient —
     ``ensure_ready()`` must actually have RUN and applied the SCHEMAFULL DDL
-    (spec §0), or the schema-level charset/non-empty ASSERTs (defense-in-depth
-    behind the dispatcher's app-side pre-validation) are silently absent.
-    Proven by exercising the ASSERT itself against a value the LEDGER layer
+    (spec §0), or the schema-level ASSERTs (defense-in-depth behind the
+    dispatcher's app-side pre-validation) are silently absent.
+    Proven by exercising an ASSERT against a value the LEDGER layer
     deliberately does not validate (``REPORT-c1-contract-ledgers.md`` contract
     decisions #5/#6) — a real ``SurrealStoreError`` here is possible only if
-    the DDL was genuinely applied on THIS connection."""
+    the DDL was genuinely applied on THIS connection.
 
-    async def test_agent_registry_charset_assert_is_enforced_by_the_applied_schema(
-        self, ctx: AppContext
-    ) -> None:
-        from loremaster.store._txn import SurrealStoreError
-
-        with pytest.raises(SurrealStoreError):
-            await ctx.agent_registry.register(
-                "Not A Legal Name!", session="wave7", role="builder"
-            )
+    ⚠ 63c-i-a DUAL (ruling §9 item 6, prose REWRITTEN): the AGENT leg of this class
+    (``test_agent_registry_charset_assert_is_enforced_by_the_applied_schema``, which registered a
+    hostile ``name`` and expected the STORE's charset ASSERT to raise ``SurrealStoreError``) is
+    DELETED. Q3 DROPs the agent name charset store ASSERT and MOVEs the check into
+    ``AgentRegistry.register`` (AGENT_NAME_PATTERN.fullmatch) — so the ledger NO LONGER
+    "deliberately does not validate" the name, and a hostile name now raises a register-layer
+    teaching ``AgentRegistryError`` BEFORE store I/O, never a ``SurrealStoreError``. The register-
+    refusal is PRESERVED-WITH-PIN in test_agent_registry.py (the MOVE pins). The BRIEF leg below
+    still exercises a genuine store ASSERT the ledger does not app-validate (``brief.name``'s drop
+    is 63c-ii), so it carries the schema-applied proof for 63c-i-a."""
 
     async def test_brief_ledger_applied_schema_assert_is_enforced(
         self, ctx: AppContext

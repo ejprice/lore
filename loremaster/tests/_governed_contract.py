@@ -296,6 +296,7 @@ class GovernedTableCase:
 
 MEMORY_TABLE = "memory"
 MESSAGE_TABLE = "message"  # 63b-ii-b: the message node table (seed_message_legacy's target).
+AGENT_TABLE = "agent"  # 63c-i-a: the agent node table (seed_agent_* target; the Q1(c) population).
 _PRINCIPAL_TABLE = "principal"
 _AGENT_TABLE = "agent"
 
@@ -409,6 +410,101 @@ async def seed_message_legacy(
         {"id": message_id, "content": content},
     )
     return message_id
+
+
+# --------------------------------------------------------------------------- #
+# AGENT seeders (63c-i-a §4.4 / §6) — the ONE raw legacy/governed-``agent`` writers, lifted here
+# beside the message seeders (F-DUP / ONE IMPLEMENTATION: a second raw-CREATE clone is the #102 seam;
+# the probe's ad-hoc ``_downgrade`` helpers were the precedent, NOT the home). Every 63c agent
+# dirty-store / migrate leg calls THESE, so the schema + migrate contract files cannot drift about
+# what a legacy agent row's shape is.
+# --------------------------------------------------------------------------- #
+
+
+def _agent_content(*, name: str, session: str, role: str, status: str) -> dict[str, Any]:
+    """The REQUIRED (non-``option``) birth columns for an ``agent`` CREATE — ``name``/``session``
+    (identifier charset at HEAD), ``role`` (non-empty at HEAD), ``status`` (the closed domain,
+    KEPT — §4.2), and the two app-stamped datetimes. Every other ``_AGENT_FIELD_SPECS`` column is
+    ``option<>`` (unset ⇒ NONE, un-poisoning), so a birth-only content is a valid row."""
+    now = datetime.now(UTC)
+    return {
+        "name": name,
+        "session": session,
+        "role": role,
+        "status": status,
+        "registered_at": now,
+        "heartbeat_at": now,
+    }
+
+
+async def seed_agent_legacy(
+    connection: SurrealConnection,
+    *,
+    row_id: str,
+    name: str,
+    session: str,
+    role: str = "builder",
+    status: str = "active",
+    **overrides: Any,
+) -> str:
+    """A RAW ``CREATE agent`` that BYPASSES ``AgentRegistry``'s app caps — the hypothesis under test in
+    the §4.4 dirty-store legs (a row the writer would REFUSE: ``role=""`` / a hostile ``name``). Writes
+    the REQUIRED birth columns with the given values, leaves the governed columns
+    (``owner_principal``/``owner_agent``/``scope``) UNSET unless a caller stamps them (a pre-cutover
+    legacy row — an ``option<>`` unset reads NONE), and applies any ``**overrides`` VERBATIM (e.g.
+    ``role=""``, ``name="Bad Name!"``, ``status="urgent"``). ``CONTENT`` (never ``SET session=$session``)
+    — ``session`` is a PROTECTED variable name (store-ref §2). Returns the bare agent id.
+
+    ONE IMPLEMENTATION (§4.4 step 0): the Leg-A / Leg-B / heartbeat legs call THIS, never a second
+    raw-CREATE clone (``test_agent_owns_principal_schema.py::_create_agent`` predates it; this is the
+    shared home so those files cannot drift about a legacy agent's shape)."""
+    agent_id = row_id
+    content = _agent_content(name=name, session=session, role=role, status=status)
+    for governed_col in ("owner_principal", "owner_agent", "scope"):
+        if governed_col in overrides:
+            content[governed_col] = overrides.pop(governed_col)
+    content.update(overrides)  # any remaining explicit column, verbatim (role=""/name=hostile/...).
+    await run(
+        connection,
+        f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT $content",
+        {"id": agent_id, "content": content},
+    )
+    return agent_id
+
+
+async def seed_agent_governed(
+    connection: SurrealConnection,
+    *,
+    row_id: str,
+    name: str,
+    session: str,
+    role: str = "builder",
+    status: str = "active",
+    owner_principal: str | None,
+    owner_agent: str | None,
+    scope: str | None,
+    **overrides: Any,
+) -> str:
+    """A retrofitted ``agent`` row carrying the governed columns. ``None`` ⟺ the store column is NONE
+    (the dirty-row shapes — e.g. ``scope=None, owner_principal=<a 2nd principal>`` for the R-Q5-1
+    row-precondition). Owners bind as ``type::record`` links (store-ref §2 — no live target needed for
+    a ``record<>`` equality). ``**overrides`` apply verbatim (a hostile ``role``/``name`` under a
+    governed shape). Returns the bare agent id."""
+    agent_id = row_id
+    content = _agent_content(name=name, session=session, role=role, status=status)
+    if owner_principal is not None:
+        content["owner_principal"] = pdp_record(_PRINCIPAL_TABLE, owner_principal)
+    if owner_agent is not None:
+        content["owner_agent"] = pdp_record(_AGENT_TABLE, owner_agent)
+    if scope is not None:
+        content["scope"] = scope
+    content.update(overrides)
+    await run(
+        connection,
+        f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT $content",
+        {"id": agent_id, "content": content},
+    )
+    return agent_id
 
 
 # --------------------------------------------------------------------------- #
@@ -578,6 +674,79 @@ def unbounded_message_ddl() -> str:
         f"DEFINE FIELD OVERWRITE owner_principal ON {table} TYPE option<record<principal>>;\n"
         f"DEFINE FIELD OVERWRITE owner_agent ON {table} TYPE option<record<{_AGENT_TABLE}>>;\n"
         f"DEFINE FIELD OVERWRITE scope ON {table} TYPE option<string>;\n"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# AGENT dirty-store DDL (63c-i-a §4.4) — the OLD-world captures the two agent dirty-store legs need,
+# mirroring frozen_asserted_message_ddl / unbounded_message_ddl. Both are MINIMAL (the six birth
+# columns the seeders write + the governed overlay) — SCHEMAFULL, so seeding writes exactly these,
+# and applying the CURRENT emitter OVERWRITES them (adding the real emitter's option<> columns as
+# NONE — un-poisoning, §1.4). The frozen one carries the four BIRTH ASSERTs the current emitter drops
+# on name/session/role (KEEPS status); the unbounded one carries NONE (it exists to ACCEPT violators).
+# --------------------------------------------------------------------------- #
+
+# The four birth ASSERTs at HEAD (surreal_schema _IDENTIFIER_CHARSET_ASSERT / _NON_EMPTY_STRING_ASSERT
+# / _AGENT_STATUS_ALLOWED), HAND-CAPTURED verbatim — the whole point is that this OLD world SURVIVES
+# the emitter DROPPING the name/session/role asserts (an emitter-derived old world would drop them too,
+# so it could never be the C-control). Kept as literals here, NOT imported from the emitter.
+_AGENT_NAME_CHARSET_ASSERT = "ASSERT string::matches($value, '^[a-z0-9][a-z0-9_-]{0,63}$')"
+_AGENT_ROLE_NONEMPTY_ASSERT = "ASSERT string::len(string::trim($value)) > 0"
+_AGENT_STATUS_DOMAIN_ASSERT = "ASSERT $value IN ['active', 'idle', 'input_required', 'retired']"
+
+
+def frozen_asserted_agent_ddl() -> str:
+    """A FROZEN capture of ``agent``'s ASSERT-bearing birth DDL at ``699a6e9`` — the four birth ASSERTs
+    verbatim (``name``/``session`` charset, ``role`` non-empty, ``status`` domain) + the two datetimes +
+    the governed overlay. The OLD asserted world Leg A's BASELINE proves rejects the violators, and Leg
+    B's C-CONTROL proves the REAL migrate RAISES against (63c-i-a §4.4). HAND-CAPTURED, NOT re-derived
+    from the emitter (an emitter-derived old world would drop the asserts the ii build removes, so it
+    could never be the control). A ``test_the_frozen_old_world_is_a_faithful_asserted_capture`` control
+    pins this constant still carries the four birth ASSERT literals (self-consistency — NEVER a compare
+    to the live emitter, which this wave is designed to change)."""
+    table = AGENT_TABLE
+    return (
+        f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
+        f"DEFINE FIELD OVERWRITE name ON {table} TYPE string {_AGENT_NAME_CHARSET_ASSERT};\n"
+        f"DEFINE FIELD OVERWRITE session ON {table} TYPE string {_AGENT_NAME_CHARSET_ASSERT};\n"
+        f"DEFINE FIELD OVERWRITE role ON {table} TYPE string {_AGENT_ROLE_NONEMPTY_ASSERT};\n"
+        f"DEFINE FIELD OVERWRITE status ON {table} TYPE string {_AGENT_STATUS_DOMAIN_ASSERT};\n"
+        f"DEFINE FIELD OVERWRITE registered_at ON {table} TYPE datetime;\n"
+        f"DEFINE FIELD OVERWRITE heartbeat_at ON {table} TYPE datetime;\n"
+    ) + governed_overlay_ddl(table)
+
+
+def unbounded_agent_ddl() -> str:
+    """The ``agent`` birth columns with NO ASSERT on any field + the governed overlay — a world that
+    NEVER shipped (it exists to ACCEPT the violators Leg B migrates). ``status`` too carries no ASSERT
+    here so the junk-status P-A3 row can be SEEDED (its refusal is proven when the CURRENT emitter —
+    which KEEPS the status ASSERT — is applied over it). Leg B seeds its legacy violators under THIS,
+    then migrates the SCHEMA with the current emitter (§4.4 Leg B)."""
+    table = AGENT_TABLE
+    return (
+        f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
+        f"DEFINE FIELD OVERWRITE name ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE session ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE role ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE status ON {table} TYPE string;\n"
+        f"DEFINE FIELD OVERWRITE registered_at ON {table} TYPE datetime;\n"
+        f"DEFINE FIELD OVERWRITE heartbeat_at ON {table} TYPE datetime;\n"
+    ) + governed_overlay_ddl(table)
+
+
+def agent_case() -> GovernedTableCase:
+    """The ``agent`` :class:`GovernedTableCase` (design §3.2 parametrisation) — lazily built so the
+    shared substrate does not import the production schema emitter at module load. ``make_ddl`` is the
+    REAL emitter (``generate_agent_ddl``); the seeders are the F5 home's agent writers. ``read_verbs``/
+    ``write_verbs`` are left empty here — the agent READ-verb (F3) / WRITE-verb (F4) families are
+    63c-i-b's (serving/security), not this data-layer wave's."""
+    from loremaster.store.surreal_schema import generate_agent_ddl
+
+    return GovernedTableCase(
+        table=AGENT_TABLE,
+        make_ddl=generate_agent_ddl,
+        seed_legacy=seed_agent_legacy,
+        seed_governed=seed_agent_governed,
     )
 
 
