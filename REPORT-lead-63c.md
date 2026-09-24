@@ -335,3 +335,15 @@ agent-side at that seam otherwise.
   lease + floor_calibration; pinned by r3b item 7). #355 annotated (3rd receipt: the `tiers_rebuilt` label does not
   mean purged; plan-review routed #355 to packet 11c). `adversary-63c-i-a-r2` ledger-retired. Drained
   #15004/#15008/#16000–#16002 (signals, all already acted on).
+- **2026-09-24 ~19:20 EDT — contract r3 DELIVERED:** r3a `11cbfb2` + r3b `39935f6` (0 attribution lines each;
+  report committed in `39935f6`). Author claims SAT **11405 passed / 0 failed** full suite ALONE `-n 12` on ref
+  (36 GB available); HEAD reds all new pins, zero HEAD-greens turned red; forks A/B/C RULED + amendment-5 riders
+  applied (dim-whenever-present restored + pinned, D17). **BUILDER-BRIEF ITEMS (carry verbatim):** (1) the builder
+  may delete the fake's `except ImportError` guard in `_comms_fakes.py` in REFACTOR — its ONE granted test-tree
+  edit (conditional pin reds until it does); (2) delete both `scripts/pending_contracts.yaml` entries (`…-r2`,
+  `…-r3`) with the build — all 11 self-destruct on the built world; (3) builder notes in
+  `test_agent_governance_63c_i_a.py`'s module docstring (MP-F pair, MP-C constant, A4-bis home body); (4) the two
+  production prose lines the build falsifies (adversary-r2 §11); (5) D3: fold `_create_agent` onto
+  `seed_agent_legacy` in REFACTOR. Finding #477 filed by the author (lore_impact covering-test noise). Process
+  TaskStopped (ledger self-retired). **Spawned `adversary-63c-i-a-r3`** — delta pass over `88205a4..39935f6`,
+  prior-7 kill table + new-instrument attacks + independent SAT, memory-guarded.
