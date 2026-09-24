@@ -113,3 +113,35 @@ bounds:
         missing_symbols: ["register.session_keep_id"]
       - path: loremaster/tests/test_message_migrate_dirty_store_63b_ii_b.py
         missing_symbols: ["register.session_keep_id"]
+  - id: packet-63c-i-a-contract-r3
+    owner: >-
+      the 63c-i-a BUILD (the Opus builder who lands amendment-4 MP-C on the agent migrate: the refusal's
+      id bound as the NAMED constant loremaster.principals._REFUSAL_ID_SAMPLE_SIZE, no literal [:10]).
+      Contract authored by contract-63c-i-a-r3.
+    reopen_trigger: >-
+      the 63c-i-a build commit defines loremaster.principals._REFUSAL_ID_SAMPLE_SIZE. This entry
+      SELF-DESTRUCTS the moment that attribute resolves (the file then produces no attr-defined error) —
+      DELETE it with the build, in the same commit as the packet-63c-i-a-contract-r2 entry. A partial
+      build that lands the constant before the other i-a seams discharges THIS entry only — correct: its
+      claim (one missing module attribute) is then false.
+    ruling: >-
+      docs/design/2026-09-24-packet63c-amendment-4.md §MP-C (the id bound is a NAMED constant in
+      principals.py; the refusal names the FULL count and min(constant, count) ids; the pin READS the
+      constant and seeds constant + 15 traps) — worklist §W item 5. RED-set + mutation receipts:
+      REPORT-contract-63c-i-a-r3.md.
+    rationale: >-
+      test_R_Q5_1_the_row_precondition_refuses_an_owned_but_unscoped_agent reads
+      principals._REFUSAL_ID_SAMPLE_SIZE DIRECTLY (a legible AttributeError RED at HEAD, never a getattr
+      guard that would let a missing constant read as a default), so mypy reds at HEAD on exactly that
+      one read. The pytest reds of the RED contract stay structurally RED_ORPHANED until the build (this
+      registry adjudicates the TYPECHECK leg only).
+    files:
+      - path: loremaster/tests/test_agent_governance_63c_i_a.py
+        missing_symbols: []
+        unsymboled_codes:
+          - code: attr-defined
+            count: 1
+            reason: >-
+              mypy's "Module has no attribute" names loremaster.principals._REFUSAL_ID_SAMPLE_SIZE (1) — the
+              MP-C constant the i-a build lands; the deriver cannot parse a qualified symbol out of that
+              message form.

@@ -73,6 +73,7 @@ Expected until the module lands: collection ERROR in THIS FILE —
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import logging
@@ -84,7 +85,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 import pytest_asyncio
 from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
-from _governed_contract import patch_shared_object_everywhere
+from _governed_contract import identity_sweep_miss_message, patch_shared_object_everywhere
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -1052,6 +1053,10 @@ class TestAgentRegistryConnectionLifecycle:
 _MOVE_BLANK_ROLES = ("", " ", "\t", "\n")
 _LEGAL_NAME = AGENT_FIXER_B  # "fixer-b"
 _LEGAL_SESSION = SESSION_WAVE7  # "wave7" — a DIFFERENT value from the name (per-field mutation legs)
+#: EVERY consumer of the ONE identifier decision (amendment-4 A4-bis — i-a's set): the registry writer,
+#: the server's REFUSE policy, and the server's decision HOME (``_is_comms_charset_legal``, which the
+#: refuse policy AND the ``_comms_traffic_line`` SKIP policy both read). ii adds ``BriefLedger.publish``.
+_IDENTIFIER_DECISION_CONSUMERS = ("register", "refuse-policy", "skip-policy")
 
 
 class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
@@ -1164,44 +1169,76 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
             await registry.close()
             await drop_database(env)
 
+    # DUAL (r3, amendment-4 A4-bis): the r2 pin (params [name]/[session], register + refuse-policy in ONE
+    # body) is RE-KEYED to a consumer axis. Both r2 consumers keep their legs (register, refuse-policy);
+    # the skip-policy HOME leg is NEW. The r2 `assert any(... startswith("lorerunes"))` non-vacuity check
+    # moved INTO the instrument (``expect_in`` — the sweep raises if the home was not patched).
+    @pytest.mark.parametrize("consumer", _IDENTIFIER_DECISION_CONSUMERS)
     @pytest.mark.parametrize("field", ["name", "session"])
     async def test_the_identifier_decision_is_the_SHARED_is_legal_identifier(
-        self, monkeypatch: pytest.MonkeyPatch, field: str
+        self, monkeypatch: pytest.MonkeyPatch, field: str, consumer: str
     ) -> None:
         """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). ONE DECISION, proven BY
-        MUTATION (A4; WB11 is the routing-not-sharing build this kills): perturb the SHARED predicate —
-        in EVERY loaded module holding that object — to reject ONE normally-legal value, the target
-        field's; ``register`` must refuse it (per FIELD, so a build that routes ``name`` through the
-        predicate and ``session`` through a private ``AGENT_NAME_PATTERN.fullmatch`` reds on the
-        ``session`` leg — sidecar F6), AND the TOOL-layer ``AppContext._validate_comms_charset`` must
-        refuse it too (the same decision, two consumers). BASELINE leg first: unpatched, both accept."""
+        MUTATION (A4 → amendment-4 A4-bis; WB11 / N1 / N1c are the routing-not-sharing builds this
+        kills): rebind EVERY module-level binding of THE shared predicate to one that rejects ONE
+        normally-legal value — the target field's — and EVERY consumer of the decision must refuse it:
+
+        * ``register`` — the i-a writer (``AgentRegistryError``, zero rows);
+        * ``refuse-policy`` — ``AppContext._validate_comms_charset`` (the REFUSE policy, ``ValueError``);
+        * ``skip-policy`` — ``AppContext._is_comms_charset_legal``, the server's ONE decision HOME, which
+          BOTH server policies read (``_validate_comms_charset`` refuses on it; ``_comms_traffic_line``'s
+          SKIP gate skips on it). A4 named the refuse policy and missed the home, so the literal A4
+          reading licensed N1 (the home keeps ``AGENT_NAME_PATTERN.fullmatch`` — two deciders) and N1c
+          (the home is a private DRIFTED ``re.fullmatch`` that admits ``fixer.b`` TODAY); both survived
+          r2 at 2521/0 (adversary-r2 MP-A). This leg reds both.
+
+        Per FIELD, so a consumer that routes ``name`` through the predicate and ``session`` through a
+        private check reds on the ``session`` leg (sidecar F6). BASELINE first for the server legs:
+        unpatched, the target is legal (a consumer that refuses everything cannot pass by 'also
+        refusing'); the register baseline is ``test_register_accepts_a_valid_identifier_positive_control``."""
         from loremaster.server import AppContext
 
         import lorerunes
 
         target = _LEGAL_NAME if field == "name" else _LEGAL_SESSION
         shared_predicate = lorerunes.is_legal_identifier
-        registry, admin_connection, env = await self._real_registry()
-        try:
+        if consumer == "refuse-policy":
             AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - BASELINE: legal today
-            patched = patch_shared_object_everywhere(
-                monkeypatch,
-                "is_legal_identifier",
-                shared_predicate,
-                lambda value: value != target and shared_predicate(value),
+        elif consumer == "skip-policy":
+            assert AppContext._is_comms_charset_legal(target) is True, "BASELINE: legal today"  # noqa: SLF001
+        patched = patch_shared_object_everywhere(
+            monkeypatch,
+            "is_legal_identifier",
+            shared_predicate,
+            lambda value: value != target and shared_predicate(value),
+        )  # raises unless lorerunes.is_legal_identifier (the home) was among the patched bindings
+        if consumer == "register":
+            registry, admin_connection, env = await self._real_registry()
+            try:
+                try:
+                    await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+                except AgentRegistryError:
+                    pass
+                else:
+                    pytest.fail(identity_sweep_miss_message(f"register's {field} decision", patched))
+                assert await self._agent_row_count(admin_connection) == 0
+            finally:
+                await admin_connection.close()
+                await registry.close()
+                await drop_database(env)
+        elif consumer == "refuse-policy":
+            try:
+                AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - the REFUSE policy
+            except ValueError:
+                pass
+            else:
+                pytest.fail(identity_sweep_miss_message("the REFUSE policy _validate_comms_charset", patched))
+        else:
+            assert AppContext._is_comms_charset_legal(target) is False, identity_sweep_miss_message(  # noqa: SLF001
+                "the server's decision HOME _is_comms_charset_legal (read by BOTH the refuse policy and "
+                "the _comms_traffic_line SKIP policy) — a second decider (A4-bis / N1 / N1c)",
+                patched,
             )
-            assert any(name.startswith("lorerunes") for name in patched), (
-                f"the shared predicate was not found in its lorerunes home (patched: {patched})"
-            )
-            with pytest.raises(AgentRegistryError):
-                await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
-            assert await self._agent_row_count(admin_connection) == 0
-            with pytest.raises(ValueError):
-                AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - the tool-layer consumer
-        finally:
-            await admin_connection.close()
-            await registry.close()
-            await drop_database(env)
 
     @pytest.mark.parametrize("field", ["name", "session"])
     async def test_register_charset_check_reads_the_ONE_pattern_in_its_lorerunes_home(
@@ -1234,12 +1271,13 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
         try:
             patched = patch_shared_object_everywhere(
                 monkeypatch, "AGENT_NAME_PATTERN", lorerunes.AGENT_NAME_PATTERN, narrowed
-            )
-            assert any(name.startswith("lorerunes") for name in patched), (
-                f"AGENT_NAME_PATTERN was not found in its lorerunes home (patched: {patched})"
-            )
-            with pytest.raises(AgentRegistryError):
+            )  # raises unless lorerunes.AGENT_NAME_PATTERN (the home) was among the patched bindings
+            try:
                 await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            except AgentRegistryError:
+                pass
+            else:
+                pytest.fail(identity_sweep_miss_message(f"register's {field} charset pattern", patched))
             assert await self._agent_row_count(admin_connection) == 0
         finally:
             await admin_connection.close()
@@ -1266,10 +1304,13 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
                 "is_blank",
                 shared_is_blank,
                 lambda value: value == ROLE_BUILDER or shared_is_blank(value),
-            )
-            assert patched, "lorerunes.is_blank was not found in any loaded module"
-            with pytest.raises(AgentRegistryError):
+            )  # raises unless lorerunes.is_blank (the home) was among the patched bindings
+            try:
                 await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            except AgentRegistryError:
+                pass
+            else:
+                pytest.fail(identity_sweep_miss_message("register's blank-role rule", patched))
             assert await self._agent_row_count(admin_connection) == 1, (
                 "a register refused by the (mutated) shared is_blank still wrote a row"
             )
@@ -1277,3 +1318,175 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
             await admin_connection.close()
             await registry.close()
             await drop_database(env)
+
+
+# =========================================================================== #
+# 63c-i-a r3 — amendment-4 A4-bis rider 2: ALLOWLIST-THE-SAFE over every READ of the identifier
+# pattern. The ONE decision is ``lorerunes.is_legal_identifier``; outside ``lorerunes`` the pattern
+# OBJECT may be read for its PROSE (``.pattern``, e.g. a refusal naming the rule) and nothing else —
+# any ``.fullmatch``/``.match``/``.search``/call/argument use of it is a SECOND DECISION, named
+# ``file:line``. This kills N1 (the server home keeps ``AGENT_NAME_PATTERN.fullmatch``) and N1b
+# (``.match``) STATICALLY, without leaning on ``test_anchored_pattern_seam.py`` (adversary-r2 R-9).
+#
+# THREAT MODEL (CLAUDE.md "a gate needs a threat model"): this catches the HONEST developer who
+# reaches for the familiar ``AGENT_NAME_PATTERN.fullmatch(value)`` instead of the shared predicate.
+# It is NOT a boundary against a deliberately unusual author: a pattern reached through
+# ``getattr(module, "AGENT_NAME_PATTERN")``, a container, or a function return is invisible to it
+# (KNOWN BOUND, stated; re-open trigger: a production module that reads the pattern through any of
+# those shapes). A private DRIFTED ``re.fullmatch(<own text>, …)`` never touches the name at all —
+# that door (N1c) is the decision-MUTATION pin's to kill (the ``skip-policy`` leg), not this scan's.
+# =========================================================================== #
+
+#: The ONE attribute of the pattern object that is safe to read outside its ``lorerunes`` home: its
+#: source text, for PROSE (the rule a refusal states). Allowlist the safe — never a list of forbidden
+#: methods (the forbidden set is unbounded: ``fullmatch``/``match``/``search``/``finditer``/``sub``…).
+_SAFE_PATTERN_ATTRIBUTES = frozenset({"pattern"})
+_PATTERN_NAME = "AGENT_NAME_PATTERN"
+#: The ONE package where the pattern may be USED for a decision (its home, amendment-2 A4).
+_PATTERN_HOME_MEMBER = "lorerunes"
+
+
+def _watched_pattern_names(tree: ast.Module) -> tuple[set[str], set[int]]:
+    """The names under which ``tree`` can reach ``AGENT_NAME_PATTERN`` — the name itself, every
+    ``from … import AGENT_NAME_PATTERN as <alias>``, and (to a fixpoint) every plain re-binding
+    ``<alias> = <watched>`` — plus the ids of those re-binding VALUE nodes (the re-export shape, which
+    decides nothing: its target is watched from then on)."""
+    watched = {_PATTERN_NAME}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            watched.update(
+                alias.asname for alias in node.names if alias.name == _PATTERN_NAME and alias.asname
+            )
+    rebinding_values: set[int] = set()
+    grew = True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            value = node.value
+            if not (isinstance(value, ast.Name) and value.id in watched):
+                continue
+            if not all(isinstance(target, ast.Name) for target in targets):
+                continue
+            rebinding_values.add(id(value))
+            new_names = {target.id for target in targets if isinstance(target, ast.Name)} - watched
+            grew = grew or bool(new_names)
+            watched |= new_names
+    return watched, rebinding_values
+
+
+def _pattern_decision_sites(tree: ast.Module, filename: str) -> list[str]:
+    """Every READ of ``AGENT_NAME_PATTERN`` in ``tree`` that is NOT a ``.pattern`` prose read — as
+    ``"<filename>:<line>: <source of the use>"``. Aliases are FOLLOWED (:func:`_watched_pattern_names`);
+    the re-export re-binding is the one other safe read. A module-attribute read
+    (``agents.AGENT_NAME_PATTERN.fullmatch``) is watched by the attribute name."""
+    watched, rebinding_values = _watched_pattern_names(tree)
+    parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    sites: list[str] = []
+    for node in ast.walk(tree):
+        read_name = (
+            node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else None
+        )
+        if read_name not in watched or not isinstance(getattr(node, "ctx", None), ast.Load):
+            continue
+        if id(node) in rebinding_values:
+            continue
+        parent = parents.get(id(node))
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            if parent.attr in _SAFE_PATTERN_ATTRIBUTES:
+                continue
+            parent = parents.get(id(parent), parent)
+        shown = parent if parent is not None else node
+        sites.append(f"{filename}:{getattr(node, 'lineno', 0)}: {ast.unparse(shown)}")
+    return sites
+
+
+class TestTheIdentifierPatternIsReadOnlyForProseOutsideLorerunes63cIA:
+    """amendment-4 A4-bis rider 2 — outside ``lorerunes`` the ONLY read of ``AGENT_NAME_PATTERN`` is
+    ``.pattern`` (prose). A scan over EVERY production workspace member (reach DERIVED from
+    ``pyproject.toml`` and CHECKED by ``assert_scan_reached_every_member``), with synthetic positive
+    and negative controls proving the scanner fires on the doors it names and stays quiet on the safe
+    shapes."""
+
+    def test_no_production_module_outside_lorerunes_DECIDES_with_the_pattern(self) -> None:
+        """⚠ RED before i-a: ``server.py::AppContext._is_comms_charset_legal`` decides with
+        ``AGENT_NAME_PATTERN.fullmatch(value)`` — the second decider A4-bis retires (its body becomes
+        ``return is_legal_identifier(value)``). GREEN on the build: the only reads left are ``.pattern``
+        (refusal prose) and the ``agents.py`` re-export binding."""
+        from _logging_fixtures import assert_scan_reached_every_member, parse_production_trees
+
+        trees = parse_production_trees(include_scripts=False)
+        assert_scan_reached_every_member(trees, extra_roots=())
+        sites: list[str] = []
+        prose_reads = 0
+        for relpath, tree in trees.items():
+            if relpath.split("/", 1)[0] == _PATTERN_HOME_MEMBER:
+                continue
+            sites += _pattern_decision_sites(tree, relpath)
+            prose_reads += sum(
+                1
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute)
+                and node.attr in _SAFE_PATTERN_ATTRIBUTES
+                and isinstance(node.value, (ast.Name, ast.Attribute))
+                and (getattr(node.value, "id", None) or getattr(node.value, "attr", None)) == _PATTERN_NAME
+            )
+        assert prose_reads >= 1, (
+            "ANTI-VACUITY: found NO `AGENT_NAME_PATTERN.pattern` prose read in any production module "
+            "outside lorerunes — the scan is broken, not the tree clean (the refusal prose in server.py "
+            "reads it today)"
+        )
+        assert not sites, (
+            "outside its lorerunes home, AGENT_NAME_PATTERN may be read ONLY for its prose (`.pattern`); "
+            "each site below DECIDES with it — a second decider beside lorerunes.is_legal_identifier "
+            "(amendment-4 A4-bis; ROUTING IS NOT SHARING). Call the shared predicate instead:\n  "
+            + "\n  ".join(sites)
+        )
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("AGENT_NAME_PATTERN.fullmatch(value)\n", id="fullmatch"),
+            pytest.param("AGENT_NAME_PATTERN.match(value)\n", id="match-N1b"),
+            pytest.param("AGENT_NAME_PATTERN.search(value)\n", id="search"),
+            pytest.param("re.fullmatch(AGENT_NAME_PATTERN, value)\n", id="passed-as-argument"),
+            pytest.param("agents.AGENT_NAME_PATTERN.fullmatch(value)\n", id="module-attribute"),
+            pytest.param(
+                "from lorerunes import AGENT_NAME_PATTERN as _P\n_P.fullmatch(value)\n", id="import-alias"
+            ),
+            pytest.param(
+                "from lorerunes import AGENT_NAME_PATTERN as _R\nAGENT_NAME_PATTERN = _R\n"
+                "_LOCAL = AGENT_NAME_PATTERN\n_LOCAL.finditer(value)\n",
+                id="re-export-then-rebind-alias",
+            ),
+        ],
+    )
+    def test_POSITIVE_CONTROL_the_scanner_names_every_decision_door(self, source: str) -> None:
+        """Each door an honest author could plausibly write is NAMED (``file:line``) — so a green
+        real-tree scan is a statement about the tree, not about a blind scanner."""
+        sites = _pattern_decision_sites(ast.parse(source), "synthetic.py")
+        assert len(sites) == 1 and sites[0].startswith("synthetic.py:"), sites
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param("message = AGENT_NAME_PATTERN.pattern\n", id="prose-read"),
+            pytest.param("x = agents.AGENT_NAME_PATTERN.pattern\n", id="module-attribute-prose"),
+            pytest.param(
+                "from lorerunes import AGENT_NAME_PATTERN as _R\nAGENT_NAME_PATTERN = _R\n"
+                "rule = AGENT_NAME_PATTERN.pattern\n",
+                id="re-export-binding-then-prose",
+            ),
+            pytest.param("from lorerunes import AGENT_NAME_PATTERN as AGENT_NAME_PATTERN\n", id="re-export"),
+            pytest.param("OTHER_PATTERN.fullmatch(value)\n", id="unrelated-pattern"),
+        ],
+    )
+    def test_NEGATIVE_CONTROL_the_scanner_stays_quiet_on_the_safe_shapes(self, source: str) -> None:
+        """A gate that refuses honest code gets switched off: prose reads, the re-export binding and
+        an unrelated pattern's decision are NOT flagged."""
+        assert _pattern_decision_sites(ast.parse(source), "synthetic.py") == []

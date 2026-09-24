@@ -498,23 +498,43 @@ def install_parse_guard(
 # ---------------------------------------------------------------------------- #
 
 
+def module_level_bindings_of(target: object) -> list[tuple[str, Any, str]]:
+    """Every MODULE-LEVEL binding of THE object ``target`` across ``sys.modules``, found BY
+    IDENTITY ALONE — ``(module_name, module, binding_name)`` for each ``vars(module)`` entry
+    that ``is target``, whatever it is named (a FROM-import adopter, an alias, the home).
+
+    THE ONE binding-finder for the by-identity mutation instruments (ONE IMPLEMENTATION, lore
+    #102): :func:`_rebind_everywhere` (a context manager, raw ``setattr`` + restore) and
+    ``_governed_contract.patch_shared_object_everywhere`` (``monkeypatch``-scoped, with a
+    caller EXPECTATION) both route here — extracted 63c-i-a r3 (amendment-4 MP-G) instead of a
+    second copy of this loop. ⚠ KNOWN BOUND: module namespaces only — a class attribute, a
+    container member, a default argument or a closure cell holding the object is not found.
+    """
+    bindings: list[tuple[str, Any, str]] = []
+    for module_name, module in list(sys.modules.items()):
+        try:
+            attributes = list(vars(module).items())
+        except TypeError:  # a None placeholder or a module without an ordinary __dict__
+            continue
+        for attribute, value in attributes:
+            if value is target:
+                bindings.append((module_name, module, attribute))
+    return bindings
+
+
 @contextmanager
 def _rebind_everywhere(real: object, fake: object) -> Iterator[None]:
     """Rebind every module attribute that IS ``real`` to ``fake`` for the duration, found BY
     IDENTITY across ``sys.modules`` — so the mutation reaches a FROM-import adopter (which
     binds the object locally) as well as a module-attribute one; a single-module
     ``monkeypatch`` does NOT (A-SUB-3/-5, lore #279). A caller that stays green under the drop
-    never read the shared thing — a private copy wearing the shared name.
+    never read the shared thing — a private copy wearing the shared name. The bindings come
+    from :func:`module_level_bindings_of` (the ONE finder, shared with
+    ``_governed_contract.patch_shared_object_everywhere``).
     """
-    saved: list[tuple[Any, str]] = []
-    for module in list(sys.modules.values()):
-        try:
-            attributes = list(vars(module).items())
-        except TypeError:  # a None placeholder or a module without an ordinary __dict__
-            continue
-        for attribute, value in attributes:
-            if value is real:
-                saved.append((module, attribute))
+    saved: list[tuple[Any, str]] = [
+        (module, attribute) for _module_name, module, attribute in module_level_bindings_of(real)
+    ]
     for module, attribute in saved:
         setattr(module, attribute, fake)
     try:

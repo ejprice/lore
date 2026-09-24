@@ -2022,7 +2022,7 @@ class TestAHostileIdentityIsREFUSEDAtEveryLink0Member:
         """
         import re as _re
 
-        from _governed_contract import patch_shared_object_everywhere
+        from _governed_contract import identity_sweep_miss_message, patch_shared_object_everywhere
         from loremaster.agents import AGENT_NAME_PATTERN as shared_pattern
 
         # 63c-i-a r2 RETARGET (amendment-2 A4): the pattern MOVES to ``lorerunes`` and the decision to
@@ -2033,10 +2033,18 @@ class TestAHostileIdentityIsREFUSEDAtEveryLink0Member:
         # (import-style agnostic; ``_governed_contract.patch_shared_object_everywhere``): its home is
         # ``loremaster.agents`` before the MOVE and ``lorerunes`` after, so this pin is green on both,
         # and a member deciding with a PRIVATE pattern object is still not patched and still caught.
+        # DUAL (r3): the r2 `assert patched, "... not found in any loaded module"` is RE-KEYED into the
+        # instrument's ``expect_in`` (it now RAISES unless THE object was patched at its stated home).
+        # r3 (amendment-4 MP-G): the sweep is keyed on IDENTITY ALONE (an aliased binding moves too)
+        # and the caller's EXPECTATION is ``loremaster.agents.AGENT_NAME_PATTERN`` — the one binding
+        # that holds THE object both before the MOVE (its definition) and after (its re-export).
         patched = patch_shared_object_everywhere(
-            monkeypatch, "AGENT_NAME_PATTERN", shared_pattern, _re.compile(r"^[a-z][a-z_-]{0,63}$")
+            monkeypatch,
+            "AGENT_NAME_PATTERN",
+            shared_pattern,
+            _re.compile(r"^[a-z][a-z_-]{0,63}$"),
+            expect_in=("loremaster.agents",),
         )
-        assert patched, "the shared AGENT_NAME_PATTERN object was not found in any loaded module"
         survivors: list[str] = []
         for member in LINK0_MEMBERS:
             try:
@@ -2044,13 +2052,13 @@ class TestAHostileIdentityIsREFUSEDAtEveryLink0Member:
             except ValueError:
                 continue
             survivors.append(member)
-        assert not survivors, (
-            f"{survivors} kept accepting {CALLER_A[0]!r} after the SHARED charset predicate "
+        assert not survivors, identity_sweep_miss_message(
+            f"{survivors} kept accepting {CALLER_A[0]!r} after the SHARED charset pattern "
             f"was narrowed to forbid digits. Every link-0 member must move with the one "
             f"predicate (Ruling 10 link 1b: extend the call set, NEVER clone the "
-            f"validation) — a member that survives is running its own copy, and it will "
-            f"drift the first time AGENT_NAME_PATTERN legitimately changes. This is the "
-            f"only test that tells DRY from looks-DRY (#102)"
+            f"validation) — a surviving member will drift the first time AGENT_NAME_PATTERN "
+            f"legitimately changes (#102)",
+            patched,
         )
 
 class TestTheSESSIONScopesTheIdentityAndItsInbox:

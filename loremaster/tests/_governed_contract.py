@@ -49,6 +49,7 @@ from weakref import WeakKeyDictionary
 
 import _sdk_guard
 import yaml
+from _logging_fixtures import module_level_bindings_of
 from _surreal_harness import SurrealConnection, run
 
 # lorerunes (61) is BUILT — import the PDP surface directly (unlike the 61b oracle's importlib
@@ -922,29 +923,95 @@ async def credentialed_app_context(
         await drop_database(env)
 
 
-def patch_shared_object_everywhere(
-    patcher: Any, attribute: str, original: object, replacement: object
-) -> list[str]:
-    """Patch ``attribute`` in EVERY loaded module whose ``attribute`` IS ``original`` (the ONE shared
-    object) and return the patched module names — the mutation instrument for "prove sharing by
-    MUTATION" (CLAUDE.md ONE IMPLEMENTATION). Import-style agnostic ON PURPOSE: ``from lorerunes import
-    keep_scope`` binds at import time, so patching only the defining module proves nothing about a
-    caller that imported the name, while patching every module that exposes THE SAME OBJECT covers
-    both styles. A caller with a PRIVATE implementation (an inline copy, its own helper, a second
-    compiled pattern) exposes no attribute that IS ``original``, is not patched, does not move — and is
-    caught by the pin that asserts its behaviour moved. Keyed on IDENTITY (``is``), never on the name
-    alone, so an unrelated same-named attribute is never clobbered. (63c-i-a r2: lifted here so the
-    ``keep_scope`` / ``is_legal_identifier`` / ``is_blank`` / ``AGENT_NAME_PATTERN`` mutation pins share
-    ONE instrument; ``test_secret_typing.py`` carries an older name-keyed private copy.)"""
-    import sys as _sys
+#: Value types whose instances CPython may intern or share by value — an identity sweep over one of
+#: these would rebind every unrelated binding that happens to hold the same small int / string. The
+#: instrument refuses them LOUDLY rather than clobbering the interpreter (a probe needs a control).
+_IDENTITY_SWEEP_REFUSED_TYPES: tuple[type, ...] = (str, bytes, int, float, bool, type(None), tuple)
 
+
+def patch_shared_object_everywhere(
+    patcher: Any,
+    attribute: str,
+    original: object,
+    replacement: object,
+    *,
+    expect_in: Sequence[str] = ("lorerunes",),
+) -> list[str]:
+    """DUAL (r3, amendment-4 MP-G): the r2 body keyed on NAME ∧ identity and returned bare module names;
+    re-keyed to IDENTITY ALONE with a caller EXPECTATION. The r2 virtue ("an unrelated same-named
+    attribute is never clobbered") is PRESERVED — identity alone still never touches a different object.
+
+    Rebind EVERY module-level binding of THE shared object ``original`` — whatever NAME it is bound
+    under — to ``replacement``, and return the patched bindings as ``"<module>.<name>"``. The mutation
+    instrument for "prove sharing by MUTATION" (CLAUDE.md ONE IMPLEMENTATION).
+
+    **Keyed on IDENTITY ALONE** (amendment-4 MP-G, 63c-i-a r3): ``for name, value in vars(module):
+    if value is original``. The r2 version keyed on NAME ∧ identity (``getattr(module, attribute) is
+    original``), so a CORRECT build binding the shared object under an alias (``from lorerunes import
+    keep_scope as _format_keep_scope`` — ordinary hygiene) was never patched and its pin went RED
+    with a message accusing a private copy: a false RED with a lying message (adversary-r2 MP-G,
+    measured). The name-keyed ``_patch_everywhere`` copies had the mirror-image FALSE CLEAR: they
+    rebind a caller's PRIVATE same-named copy too, so a build that shares nothing passes. Identity
+    alone closes both: an aliased binding of THE object moves; a private copy (a DIFFERENT object) is
+    never patched, whatever it is named — including a copy wearing the shared NAME.
+
+    ``attribute`` is the caller's EXPECTATION, not the key: the name under which THE object must be
+    found in every module named by ``expect_in`` (default: its ``lorerunes`` home). If an expected
+    ``"<module>.<attribute>"`` binding was not patched, the sweep RAISES ``AssertionError`` — the probe
+    could not land where the caller said the object lives, so any "did not move" verdict after it
+    would be about a mutation that never happened (#194). Pass ``expect_in=()`` only for an object
+    with no fixed home (a pin that asserts on the returned list itself).
+
+    ⚠ KNOWN BOUND — MODULE-LEVEL bindings only. A class attribute, a container member (a dict of
+    handlers, a list of predicates), a default argument or a closure cell that holds THE object is
+    NOT rebound, so a build that holds the shared object only there reads as "did not move". That is
+    why every calling pin's failure text says *either a private copy, or a binding the sweep cannot
+    reach* (:func:`identity_sweep_miss_message`) — never a bare accusation. RE-OPEN TRIGGER: a
+    CORRECT build that holds the shared object in a non-module binding → the PIN gets a ruling; this
+    helper is NEVER widened by guessing (widening back to NAMES re-opens the false clear above).
+
+    The bindings come from ``_logging_fixtures.module_level_bindings_of`` — the ONE by-identity
+    finder, shared with ``_rebind_everywhere`` (so a change to the reach moves both instruments).
+
+    Refuses (``TypeError``) an ``original`` of an interned/value type (``str``/``int``/``tuple`` …):
+    identity over those is not a statement about sharing and would rebind unrelated bindings.
+    Self-tests: ``test_agent_governance_63c_i_a.py::TestThePatchSharedObjectInstrument63cIA``."""
+    if isinstance(original, _IDENTITY_SWEEP_REFUSED_TYPES):
+        raise TypeError(
+            f"patch_shared_object_everywhere sweeps by IDENTITY; a {type(original).__name__} may be "
+            f"interned/shared by value, so identity over it proves nothing about sharing"
+        )
     patched: list[str] = []
-    for module_name, module in list(_sys.modules.items()):
-        if module is None or getattr(module, attribute, None) is not original:
-            continue
-        patcher.setattr(module, attribute, replacement, raising=True)
-        patched.append(module_name)
+    # THE ONE binding-finder (shared with ``_logging_fixtures._rebind_everywhere`` — never a second
+    # copy of the sys.modules/vars/``is`` loop; 63c-i-a r3 DRY row).
+    for module_name, module, binding_name in module_level_bindings_of(original):
+        patcher.setattr(module, binding_name, replacement, raising=True)
+        patched.append(f"{module_name}.{binding_name}")
+    missing = [
+        f"{module_name}.{attribute}"
+        for module_name in expect_in
+        if f"{module_name}.{attribute}" not in patched
+    ]
+    if missing:
+        raise AssertionError(
+            f"the identity sweep did not find THE shared object at its expected home(s) {missing} — "
+            f"the mutation could not land where the caller said it lives, so no verdict about "
+            f"'moving' is possible; patched: {patched}"
+        )
     return patched
+
+
+def identity_sweep_miss_message(what_did_not_move: str, patched: Sequence[str]) -> str:
+    """The ONE honest failure text for a pin whose behaviour did not move under
+    :func:`patch_shared_object_everywhere` (amendment-4 MP-G rider 2). It names BOTH causes the
+    instrument cannot tell apart — a PRIVATE copy, or a binding the MODULE-LEVEL sweep cannot reach —
+    and lists what WAS patched, so a reader can see whether the consumer's module was among them. ONE
+    function, so the stated bound cannot drift between the pins that quote it."""
+    return (
+        f"{what_did_not_move}: behaviour did not move under the MODULE-LEVEL identity sweep — either "
+        f"a private copy, or a binding the sweep cannot reach (class attribute / container / "
+        f"call-time alias); patched: {list(patched)}"
+    )
 
 
 def registry_level_session_keep_id(session: str) -> str:

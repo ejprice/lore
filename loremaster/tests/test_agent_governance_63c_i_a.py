@@ -35,7 +35,20 @@ amendment-2.md`` §D (15 items; A1 population/resolver, A2 the ``session_keep_id
 provenance-pair invariant, A4 ``lorerunes.is_legal_identifier``). Per-item receipts:
 ``REPORT-contract-63c-i-a-r2.md`` (archived with the wave).
 
+REVISION r3 (``contract-63c-i-a-r3``, 2026-09-24) — executes ``docs/design/2026-09-24-packet63c-
+amendment-4.md`` §W (commit r3a = GATING items 1–6: A4-bis decision consumers, NF-2, MP-B, MP-F, MP-C,
+MP-G; commit r3b = NON-GATING items 7–11). Per-item receipts: ``REPORT-contract-63c-i-a-r3.md``.
+
 BUILDER NOTES — docstring rows the contract cannot pin (amendment-1 N2 / amendment-2 §D items 14-15):
+* amendment-4 MP-F: extend ``AgentRegistry.register``'s ``owner_principal_id`` docstring sentence
+  ("A re-register does NOT re-stamp it (mint-once-on-create …)") to the PAIR — ``session_keep_id`` /
+  ``scope`` / ``owner_agent`` are likewise never stamped on a re-register, for EVERY row (an ownerless or
+  legacy row included); ownerless rows are ``migrate-governed``'s to stamp.
+* amendment-4 MP-C: the refusal's id bound is the NAMED module constant
+  ``principals._REFUSAL_ID_SAMPLE_SIZE`` (the R-Q5-1 pin READS it) — never a literal slice.
+* amendment-4 A4-bis: ``AppContext._is_comms_charset_legal``'s body becomes ``return
+  is_legal_identifier(value)`` (the server's ONE decision home; ``_validate_comms_charset`` and the
+  ``_comms_traffic_line`` SKIP gate keep reading the home and are NOT rewired).
 * ``LegacyMapping`` (``governed.py``) has 0 references — a docstring-shape dataclass. The i-a builder
   adds the agent disposition ``OWNED-BY-THE-OPERATOR`` to ITS DOCSTRING beside memory/brief/message
   (ruling §6); nothing here can observe it (R3/N2 — unpinnable by construction, named so it is not
@@ -48,6 +61,8 @@ BUILDER NOTES — docstring rows the contract cannot pin (amendment-1 N2 / amend
 from __future__ import annotations
 
 import re
+import sys
+import types
 from typing import Any
 
 import pytest
@@ -61,6 +76,7 @@ from _governed_contract import (
     credentialed_app_context,
     frozen_asserted_agent_ddl,
     governed_overlay_ddl,
+    identity_sweep_miss_message,
     observe_governed_table_writes,
     patch_shared_object_everywhere,
     seed_agent_governed,
@@ -78,11 +94,12 @@ from _surreal_harness import (
     run,
     unique_database,
 )
-from loremaster.agents import AgentRegistry, AgentRegistryError
+from loremaster.agents import AGENT_NAME_PATTERN, AgentRegistry, AgentRegistryError
 from loremaster.governed import PROJECT_KEEP_KEY
 from loremaster.store import surreal_schema
 from loremaster.store._txn import SurrealStoreError, TxnDomainRejectionError
 from lorerunes.pdp import keep_scope
+from test_comms_schema import _HOSTILE_IDENTIFIERS
 
 from loremaster import principals
 
@@ -340,11 +357,12 @@ class TestTheRegistryProvenanceSeam63cIA:
     async def test_the_scope_is_formed_by_the_SHARED_keep_scope_formatter(
         self, registry_world: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """⚠ RED at HEAD — ONE IMPLEMENTATION, proven by MUTATION (A2): perturb ``keep_scope`` in EVERY
-        loaded module exposing it (import-style agnostic — the ``_patch_everywhere`` idiom of
-        ``test_secret_typing.py``: a ``from lorerunes import keep_scope`` binding is patched too) and the
-        STAMPED scope must move with it. A private ``f"keep:{…}"`` in the registry is not patched, does
-        not move, and reds here. BASELINE leg first (unpatched → the real formatter's output), so a
+        """⚠ RED at HEAD — ONE IMPLEMENTATION, proven by MUTATION (A2): rebind EVERY module-level
+        binding of THE ``keep_scope`` object (``patch_shared_object_everywhere`` — identity ALONE since
+        r3 / amendment-4 MP-G, so ``from lorerunes import keep_scope as _format_keep_scope`` — a CORRECT
+        aliased build — moves too; the r2 name-keyed sweep false-REDed it) and the STAMPED scope must
+        move with it. A private ``f"keep:{…}"`` in the registry is a different object, is not patched,
+        does not move, and reds here. BASELINE leg first (unpatched → the real formatter's output), so a
         registry that never stamps a scope cannot pass by 'also not moving'."""
         registry, connection = registry_world
         baseline = await registry.register(
@@ -360,8 +378,7 @@ class TestTheRegistryProvenanceSeam63cIA:
         original_keep_scope = keep_scope
         patched = patch_shared_object_everywhere(
             monkeypatch, "keep_scope", original_keep_scope, lambda keep_id: f"mutkeep:{keep_id}"
-        )
-        assert patched, "keep_scope was not found in any loaded module (the probe could not land)"
+        )  # raises if lorerunes.keep_scope (its home) was not among the patched bindings
         mutated = await registry.register(
             "fixer-c", session="wave7", role="builder",
             owner_principal_id="alice_pid", session_keep_id="kpmut",
@@ -371,9 +388,8 @@ class TestTheRegistryProvenanceSeam63cIA:
             f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
             {"id": _bare(mutated.agent.id)},
         )
-        assert rows[0].get("scope") == "mutkeep:kpmut", (
-            f"the stamped scope did NOT move when the SHARED keep_scope formatter was perturbed — the "
-            f"registry formats the scope with a PRIVATE copy (A2: ONE formatter). got {rows!r}"
+        assert rows[0].get("scope") == "mutkeep:kpmut", identity_sweep_miss_message(
+            f"the STAMPED scope (A2: ONE formatter, lorerunes.keep_scope) got {rows!r}", patched
         )
 
     @pytest.mark.parametrize(
@@ -435,6 +451,217 @@ class TestTheRegistryProvenanceSeam63cIA:
         assert (str(observed_owner) if observed_owner is not None else None) == expected_owner, rows
 
 
+    # ------------------------------------------------------------------------------------------- #
+    # r3 (amendment-4 MP-B / MP-F) — the registry's provenance invariants hold on the RE-REGISTER path
+    # too, for EVERY row (not just the one a first register stamped): the quantifier law applied to A3
+    # and to ruling §2.2's mint-once row. Adversary-r2 kill-pins KP-N2 / KP-N10, promoted.
+    # ------------------------------------------------------------------------------------------- #
+
+    @pytest.mark.parametrize(
+        ("owner_principal_id", "session_keep_id"),
+        [
+            pytest.param("alice_pid", None, id="owner-without-keep"),
+            pytest.param(None, "sessionkeep7", id="keep-without-owner"),
+        ],
+    )
+    async def test_an_inconsistent_provenance_pair_is_refused_on_the_RE_REGISTER_path_too(
+        self, registry_world: Any, owner_principal_id: str | None, session_keep_id: str | None
+    ) -> None:
+        """⚠ RED at HEAD (``session_keep_id`` kwarg absent → ``TypeError``) — amendment-4 MP-B: A3's
+        XOR sits BEFORE ``_select_row`` on EVERY path. After a CONSISTENT first register, a RE-register
+        of the same agent with either mixed pair is refused (``AgentRegistryError``) and the row is
+        BYTE-IDENTICAL (full ``SELECT *``). Kills N2 (the XOR moved inside the CREATE branch — a mixed
+        pair on re-register silently accepted; survived r2 at 2521/0)."""
+        registry, connection = registry_world
+        await registry.register(
+            "fixer-b", session="wave7", role="builder",
+            owner_principal_id="alice_pid", session_keep_id="sessionkeep7",
+        )
+        before = await _agent_rows(connection)
+        assert len(before) == 1, before
+        with pytest.raises(AgentRegistryError) as exc_info:
+            await registry.register(
+                "fixer-b", session="wave7", role="builder",
+                owner_principal_id=owner_principal_id, session_keep_id=session_keep_id,
+            )
+        assert "nothing was written" in str(exc_info.value), str(exc_info.value)
+        assert await _agent_rows(connection) == before, (
+            "a refused (mixed-pair) RE-register changed the agent row — A3 refuses BEFORE _select_row "
+            "on every path (amendment-4 MP-B)"
+        )
+
+    @pytest.mark.parametrize("prior_row", ["alpha-register", "legacy-seed"])
+    async def test_a_credentialed_re_register_never_stamps_an_UNSTAMPED_row_mint_once_for_every_row(
+        self, registry_world: Any, prior_row: str
+    ) -> None:
+        """⚠ RED at HEAD (``session_keep_id`` kwarg absent) — amendment-4 MP-F: MINT-ONCE ∀ rows. A row
+        born OWNERLESS and UNSCOPED — an α register ``(None, None)`` or a ``seed_agent_legacy``
+        pre-cutover row — re-registered with a CONSISTENT CREDENTIALED pair keeps ``owner_principal`` /
+        ``owner_agent`` / ``scope`` byte-identical to what it was born with. Why ∀ rows: a
+        re-register that heals ``scope`` + ``owner_agent`` but not ``owner_principal`` mints the REVERSE
+        half-pair A3 forbids at create, and ``WHERE scope IS NONE`` then skips the row FOREVER; healing
+        all three would let any credential CLAIM an ownerless name it never minted (a takeover door).
+        Ownerless rows are ``migrate-governed``'s to stamp, never the re-registering caller's. Kills N10
+        (the heal-scope build; survived r2 at 2521/0). The ``test_re_register_does_not_restamp_…`` pin
+        above is this ∀'s guarded door (a row the first register stamped); this is the unguarded one."""
+        registry, connection = registry_world
+        if prior_row == "alpha-register":
+            first = await registry.register(
+                "fixer-b", session="wave7", role="builder",
+                owner_principal_id=None, session_keep_id=None,
+            )
+            bare_id = _bare(first.agent.id)
+        else:
+            bare_id = await seed_agent_legacy(
+                connection,
+                row_id=AgentRegistry._agent_id("wave7", "fixer-b"),  # noqa: SLF001 - the production id mint
+                name="fixer-b",
+                session="wave7",
+            )
+        projection = f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)"
+        before = await run(connection, projection, {"id": bare_id})
+        # FIXTURE precondition — the population MP-F names: an OWNERLESS, UNSCOPED row. (``owner_agent``
+        # is not constrained here: whether the α CREATE stamps ``owner_agent = self`` is ruling §2.2's
+        # business, pinned elsewhere; this pin asserts only that a RE-register changes NONE of the three.)
+        assert before and before[0].get("owner_principal") is None and before[0].get("scope") is None, (
+            f"FIXTURE: the {prior_row} row must be born ownerless and unscoped: {before!r}"
+        )
+        result = await registry.register(
+            "fixer-b", session="wave7", role="builder",
+            owner_principal_id="alice_pid", session_keep_id="sessionkeep7",
+        )
+        assert result.re_registered is True, "the credentialed call must take the RE-register path"
+        after = await run(connection, projection, {"id": bare_id})
+        assert after == before, (
+            f"a credentialed RE-register STAMPED an unstamped ({prior_row}) row's governed columns — "
+            f"mint-once is CREATE-only for EVERY row (ruling §2.2 row 2, amendment-4 MP-F); a "
+            f"scope-without-owner row escapes the migrate's WHERE scope IS NONE forever. "
+            f"before={before!r} after={after!r}"
+        )
+
+
+# =========================================================================== #
+# amendment-4 MP-G (r3 item 6) — the SHARED mutation instrument ``patch_shared_object_everywhere`` is
+# keyed on IDENTITY ALONE. Self-tests on SYNTHETIC modules (so they are build-independent and GREEN
+# at HEAD): an ALIASED binding of THE object moves (the r2 name∧identity sweep false-REDed exactly
+# this — a correct ``from lorerunes import keep_scope as _format_keep_scope`` build); a private copy
+# (a DIFFERENT object) never moves, whatever it is named — including a copy wearing the SHARED NAME
+# (the name-keyed ``_patch_everywhere`` copies' false CLEAR, now unrepresentable); the caller's
+# EXPECTATION is enforced (a sweep that cannot find THE object at its stated home RAISES, #194).
+# =========================================================================== #
+
+
+def _mpg_shared_decision(value: str) -> bool:
+    """THE shared object the synthetic modules bind (a stand-in for a ``lorerunes`` predicate)."""
+    return bool(value)
+
+
+def _mpg_private_copy(value: str) -> bool:
+    """A PRIVATE copy — behaviourally identical, a DIFFERENT object."""
+    return bool(value)
+
+
+def _mpg_replacement(value: str) -> bool:
+    """The mutation the sweep installs."""
+    return not value
+
+
+class TestThePatchSharedObjectInstrument63cIA:
+    """amendment-4 MP-G rider 3 — three self-tests + the expectation leg + the refused-type leg. Each
+    registers throwaway synthetic modules in ``sys.modules`` (``monkeypatch.setitem`` — undone at
+    teardown) so the sweep's reach is observed on bindings whose shape the test chose."""
+
+    @staticmethod
+    def _synthetic_world(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.ModuleType]:
+        """``_mpg_home.shared`` IS the object (the home); ``_mpg_alias_user._aliased`` IS the object
+        under ANOTHER name (a correct aliased build); ``_mpg_private_other.check`` is a private copy
+        under another name; ``_mpg_private_same_name.shared`` is a private copy WEARING THE SHARED
+        NAME (the name-keyed false-clear shape)."""
+        modules = {
+            "_mpg_home": ("shared", _mpg_shared_decision),
+            "_mpg_alias_user": ("_aliased", _mpg_shared_decision),
+            "_mpg_private_other": ("check", _mpg_private_copy),
+            "_mpg_private_same_name": ("shared", _mpg_private_copy),
+        }
+        world: dict[str, types.ModuleType] = {}
+        for module_name, (binding, value) in modules.items():
+            module = types.ModuleType(module_name)
+            setattr(module, binding, value)
+            monkeypatch.setitem(sys.modules, module_name, module)
+            world[module_name] = module
+        return world
+
+    def test_an_ALIASED_binding_of_the_shared_object_MOVES(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The MP-G receipt, inverted into a pin: a module binding THE object under a different name
+        is rebound. RED on the r2 name∧identity sweep (it skipped every binding not named
+        ``attribute``)."""
+        world = self._synthetic_world(monkeypatch)
+        patched = patch_shared_object_everywhere(
+            monkeypatch, "shared", _mpg_shared_decision, _mpg_replacement, expect_in=("_mpg_home",)
+        )
+        assert world["_mpg_alias_user"]._aliased is _mpg_replacement, identity_sweep_miss_message(
+            "an ALIASED module-level binding of THE shared object", patched
+        )
+        assert "_mpg_alias_user._aliased" in patched, patched
+        assert world["_mpg_home"].shared is _mpg_replacement, patched
+
+    def test_a_private_copy_under_ANOTHER_name_does_NOT_move(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A DIFFERENT object is never rebound — the property every sharing pin rests on (a private
+        copy must stay put so the pin that watches its behaviour can red)."""
+        world = self._synthetic_world(monkeypatch)
+        patched = patch_shared_object_everywhere(
+            monkeypatch, "shared", _mpg_shared_decision, _mpg_replacement, expect_in=("_mpg_home",)
+        )
+        assert world["_mpg_private_other"].check is _mpg_private_copy, patched
+        assert not any(entry.startswith("_mpg_private_other.") for entry in patched), patched
+
+    def test_a_private_copy_WEARING_THE_SHARED_NAME_does_NOT_move(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The name-keyed instruments' FALSE CLEAR (amendment-3 F-3), now unrepresentable: a private
+        copy bound under the SHARED NAME is not rebound, so a build that shares nothing cannot pass a
+        sharing pin by having its copy moved for it. RED on any name-keyed sweep."""
+        world = self._synthetic_world(monkeypatch)
+        patched = patch_shared_object_everywhere(
+            monkeypatch, "shared", _mpg_shared_decision, _mpg_replacement, expect_in=("_mpg_home",)
+        )
+        assert world["_mpg_private_same_name"].shared is _mpg_private_copy, (
+            f"the sweep rebound a PRIVATE copy because it wore the shared name — a name-keyed reach "
+            f"(the false clear MP-G exists to kill); patched: {patched}"
+        )
+        assert "_mpg_private_same_name.shared" not in patched, patched
+
+    def test_the_callers_EXPECTATION_is_enforced_the_sweep_raises_if_the_home_was_not_patched(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``attribute`` + ``expect_in`` are the caller's EXPECTATION: naming a home that does not
+        hold THE object under ``attribute`` RAISES (the mutation could not land where the caller
+        said it lives — #194), both for a module that holds a private copy under that name and for a
+        module that holds THE object under a DIFFERENT name. CONTROL: the true home does not raise
+        (the first self-tests)."""
+        self._synthetic_world(monkeypatch)
+        with pytest.raises(AssertionError, match="expected home"):
+            patch_shared_object_everywhere(
+                monkeypatch, "shared", _mpg_shared_decision, _mpg_replacement,
+                expect_in=("_mpg_private_same_name",),
+            )
+        with pytest.raises(AssertionError, match="expected home"):
+            patch_shared_object_everywhere(
+                monkeypatch, "shared", _mpg_shared_decision, _mpg_replacement,
+                expect_in=("_mpg_alias_user",),
+            )
+
+    @pytest.mark.parametrize("interned", ["agent", 7, None, ("a",)], ids=["str", "int", "None", "tuple"])
+    def test_an_interned_value_type_is_REFUSED_loudly(
+        self, monkeypatch: pytest.MonkeyPatch, interned: object
+    ) -> None:
+        """Identity over an interned / value-shared object says nothing about sharing and would
+        rebind unrelated bindings across the interpreter — the instrument refuses it (TypeError)
+        rather than clobbering ``sys.modules``."""
+        with pytest.raises(TypeError, match="IDENTITY"):
+            patch_shared_object_everywhere(monkeypatch, "x", interned, object(), expect_in=())
+
+
 # =========================================================================== #
 # Q5 §6 — the agent migrate: ONE 3-column scope-keyed statement + the §2.1 ROW-level precondition
 # (finding #470, UNIMPLEMENTED at HEAD). Driven through the REAL migrate_governed(table='agent')
@@ -492,8 +719,13 @@ class TestAgentMigrateScopeKeyed63cIA:
             )
         return ids
 
+    # DUAL (r3, amendment-4 MP-C): the r2 pin (ONE fixture, 2 traps, "EVERY trap id named") is RE-KEYED
+    # to three populations. Virtue kept: at 2 traps every id is still named (below-cap leg); the r2
+    # assertion "every id named" is INVERTED above the cap (bound + 15 → exactly ``bound`` named), because
+    # at N > cap it contradicted the ruled bound (arithmetic alignment — adversary-r2 MP-C / N3).
+    @pytest.mark.parametrize("trap_population", ["below-cap", "at-cap", "above-cap"])
     async def test_R_Q5_1_the_row_precondition_refuses_an_owned_but_unscoped_agent(
-        self, agent_migrate_world: Any
+        self, agent_migrate_world: Any, trap_population: str
     ) -> None:
         """⚠ RED at HEAD (finding #470 / F10) — §2.1's ROW precondition: an ``agent`` row with
         ``scope IS NONE`` but ``owner_principal IS NOT NONE`` means a multi-principal or half-applied
@@ -501,12 +733,20 @@ class TestAgentMigrateScopeKeyed63cIA:
         is owner-keyed and refuses ONLY on operator ambiguity, so it does NOT refuse this store → RED.
 
         r2 (amendment-2 §D item 6 — MP-7 / MP-11 / sidecar F8): the refusal is BYTE-INERT and TEACHES.
-        TWO trap rows (a count of 2 cannot be satisfied by a stray "1" such as the "§2.1" citation —
-        WB9) + three clean legacy rows; the FULL ``SELECT *`` of the table is identical before and
-        after (not a ``scope`` proxy — WB10 stamped owners FIRST, then refused, and a scope-only
-        observation missed it); the reason names the COUNT beside its noun, EVERY trap row id (WB8),
-        and the remedy (§6: adjudicate BY HAND). The CONTROL (same store WITHOUT the trap rows) is the
-        sibling test below.
+        The FULL ``SELECT *`` of the table is identical before and after (not a ``scope`` proxy — WB10
+        stamped owners FIRST, then refused, and a scope-only observation missed it); the reason names
+        the COUNT beside its noun, the offending rows (WB8), and the remedy (§6: adjudicate BY HAND).
+        The CONTROL (same store WITHOUT the trap rows) is the sibling test below.
+
+        r3 (amendment-4 MP-C — "naming the count and the rows (ids, bounded)", ruling §6): the id BOUND
+        is a NAMED constant, ``principals._REFUSAL_ID_SAMPLE_SIZE`` (no literal ``[:10]``), READ here —
+        derived, never restated. The reason names the FULL count and EXACTLY ``min(bound, count)`` of the
+        trap ids. Three populations, so the arithmetic cannot align (CLAUDE.md FIXTURES MUST
+        DISCRIMINATE): ``below-cap`` = 2 (every id named; a count of 2 cannot be satisfied by a stray
+        "1" such as the "§2.1" citation — WB9), ``at-cap`` = the bound (every id named — the boundary),
+        ``above-cap`` = bound + 15 (only ``bound`` ids named — kills N3, the unbounded
+        ``', '.join(every_id)`` that survived r2 at 2521/0, and kills a build that names NONE above the
+        cap). Trap ids are fixed-width (``owned_trap_000``…) so no id is a substring of another.
 
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
@@ -519,8 +759,11 @@ class TestAgentMigrateScopeKeyed63cIA:
         here is owned by a principal that is NOT the operator — this pin must never assert a refusal
         over an operator-owned row, or it would red the trigger's own remedy (amendment-2 §B conflict 2)."""
         principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
+        id_bound = principals._REFUSAL_ID_SAMPLE_SIZE  # the NAMED bound (MP-C) — derived, never restated
+        assert isinstance(id_bound, int) and id_bound >= 1, f"id bound must be a positive int: {id_bound!r}"
+        trap_count = {"below-cap": 2, "at-cap": id_bound, "above-cap": id_bound + 15}[trap_population]
         await self._seed_clean_legacy(connection, count=3)
-        trap_ids = ["already_owned_a", "already_owned_b"]
+        trap_ids = [f"owned_trap_{trap_index:03d}" for trap_index in range(trap_count)]
         for trap_index, trap_id in enumerate(trap_ids):
             # NONE scope but a NON-NONE owner that is NOT the operator (E3: never pin the operator case).
             await seed_agent_governed(
@@ -544,14 +787,16 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"before={before!r} after={after!r}"
         )
         reason = str(result.reason or "")
-        assert re.search(r"\b2\s+(?:agent\s+)?rows?\b", reason), (
-            f"the refusal must NAME the count of owned-but-unscoped rows beside its noun ('2 agent "
-            f"row(s)' — 2 here, so a stray digit cannot satisfy it), got {reason!r}"
+        assert re.search(rf"\b{trap_count}\s+(?:agent\s+)?rows?\b", reason), (
+            f"the refusal must NAME the FULL count of owned-but-unscoped rows beside its noun "
+            f"('{trap_count} agent row(s)'), got {reason!r}"
         )
-        missing_ids = [trap_id for trap_id in trap_ids if trap_id not in reason]
-        assert not missing_ids, (
-            f"the refusal must NAME the offending rows (ids, bounded — §6); missing {missing_ids} in "
-            f"{reason!r}"
+        named = [trap_id for trap_id in trap_ids if trap_id in reason]
+        expected_named = min(id_bound, trap_count)
+        assert len(named) == expected_named, (
+            f"the refusal must name EXACTLY min(_REFUSAL_ID_SAMPLE_SIZE={id_bound}, count={trap_count}) "
+            f"= {expected_named} of the offending row ids (§6 'ids, bounded' — every id up to the bound, "
+            f"never an unbounded list above it); it named {len(named)}: {reason[:400]!r}"
         )
         assert "by hand" in reason.lower(), (
             f"the refusal must TEACH the remedy (§2.1/§6: adjudicate the rows BY HAND before migrating) "
@@ -1109,6 +1354,84 @@ class TestAgentHeartbeatOnALegacyRoleRow63cIA:
                 f"a store-REFUSED touch changed agent rows — the whole-row UPDATE must abort atomically "
                 f"(store-ref §3): before={before!r} after={after!r}"
             )
+        finally:
+            await registry.close()
+            await connection.close()
+            await drop_database(env)
+
+
+class TestAHostileNamedLegacyAgentCannotReRegisterButStillTouches63cIA:
+    """amendment-4 NF-2 (reading a — the MOVE is ∀ calls): ``register`` refuses a hostile ``name`` /
+    ``session`` BEFORE ``_select_row`` on EVERY path — first register and RE-register alike — so a
+    legacy row carrying a hostile identity (seeded under ``unbounded_agent_ddl()``, the DD-3.c survivor
+    population) can NEVER be re-minted through the writer whose job after the MOVE is to refuse that
+    shape. Its SURVIVOR virtue is the ROW — reads, ``touch``, migrate, drain — never a right to
+    re-register (the teaching already says *respawns register a fresh name*). Production cost NIL:
+    through ``lore_comms`` a hostile name is refused at ``_validate_comms_charset`` before the registry.
+
+    Parametrised over the SHARED ``_HOSTILE_IDENTIFIERS`` corpus × {name, session} (one corpus, no
+    narrower local copy; the two fields carry different legal values so a per-field build is seen).
+
+    RED at HEAD for the RIGHT reason: HEAD's register has no app-side check, so the re-register reaches
+    its whole-row UPDATE, which the STILL-ASSERTED current emitter refuses in the STORE
+    (``SurrealStoreError`` — not the teaching ``AgentRegistryError``); and the survivor ``touch`` is
+    refused by the same store ASSERT. GREEN on the build (refused app-side, byte-inert; the touch
+    lands because the Q3 DROP removed the name/session ASSERTs)."""
+
+    @pytest.mark.parametrize("field", ["name", "session"])
+    @pytest.mark.parametrize("hostile_value", _HOSTILE_IDENTIFIERS)
+    async def test_a_hostile_legacy_row_is_refused_on_re_register_and_still_touches(
+        self, field: str, hostile_value: str
+    ) -> None:
+        identity = {"name": "legacy-agent", "session": "wave7"}
+        identity[field] = hostile_value
+        env = make_env(database=unique_database(), dim=_DIM)
+        connection = await connect_admin(env)
+        registry = AgentRegistry(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+        )
+        try:
+            await apply_ddl(connection, unbounded_agent_ddl(), url=env.url)
+            await seed_agent_legacy(
+                connection,
+                row_id=AgentRegistry._agent_id(identity["session"], identity["name"]),  # noqa: SLF001
+                name=identity["name"],
+                session=identity["session"],
+            )
+            await apply_ddl(connection, surreal_schema.generate_agent_ddl(), url=env.url)
+            before = await _agent_rows(connection)
+            assert len(before) == 1, before
+            try:
+                await registry.register(identity["name"], session=identity["session"], role="builder")
+            except AgentRegistryError as error:
+                message = str(error)
+            except SurrealStoreError as error:  # RED-at-HEAD surface ONLY
+                pytest.fail(
+                    "RED-at-HEAD (right reason): the hostile legacy row's RE-register reached the store "
+                    "and was refused by the STILL-PRESENT charset ASSERT — the register MOVE is unbuilt "
+                    f"(amendment-4 NF-2 wants an app-side refusal before _select_row). engine: {error}"
+                )
+            else:
+                pytest.fail(
+                    f"a legacy row with a hostile {field} ({hostile_value!r}) was RE-REGISTERED — the MOVE "
+                    f"is ∀ calls (amendment-4 NF-2): refuse before _select_row on every path"
+                )
+            assert field in message, f"the refusal does not name the FIELD {field!r}: {message!r}"
+            assert AGENT_NAME_PATTERN.pattern in message, f"the refusal does not state the RULE: {message!r}"
+            assert "register again" in message, f"the refusal does not teach the REMEDY: {message!r}"
+            assert await _agent_rows(connection) == before, (
+                "a refused hostile RE-register changed the agent table (byte-inert: zero new rows, the "
+                "legacy row untouched)"
+            )
+            try:
+                touched = await registry.touch(identity["name"], session=identity["session"], note="alive")
+            except SurrealStoreError as error:  # RED-at-HEAD surface ONLY
+                pytest.fail(
+                    "RED-at-HEAD (right reason): the SURVIVOR leg — the hostile legacy row could not "
+                    "heartbeat because the store charset ASSERT still re-validates the whole row on the "
+                    f"touch UPDATE (the Q3 DROP is unbuilt). engine: {error}"
+                )
+            assert touched.name == identity["name"] and touched.last_note == "alive", touched
         finally:
             await registry.close()
             await connection.close()
