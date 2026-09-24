@@ -253,3 +253,10 @@ agent-side at that seam otherwise.
   every sweep) · #355 CORRECTED (my count-leg hypothesis refuted; trigger still unknown) · lore memory: TEI
   capacity gotcha. Process TaskStopped; ledger row already self-retired. Drained #15000/#15001/#15003 (signals,
   already acted on).
+- **2026-09-24 ~18:05Z — contract r2 DELIVERED `88205a4`** (report inside; 0 attribution lines). Author claims:
+  15/15 §D pinned · SAT 11292 passed / 0 failed full suite ALONE `-n 12` on ref · RED@HEAD 70/70 + 78 missing-seam
+  fallout · 22/22 wrong builds PROOF HELD. Deviations D-1 (13 test files' owner-only register fixtures re-keyed —
+  A3/A2 corpses) · D-2 (footer pin retargeted) · D-3/F-1 (E2 control DDL order). Process TaskStopped; ledger
+  self-retired. Forks F-1/F-2/F-3 → sidecar (directive #15005 + wake). **Spawned `adversary-63c-i-a-r2`**
+  (contract-adversary, Opus 5.5) — delta pass, re-derive every claim, independent ref build (contract→adversary law).
+  Operator todo: lore_tasks f4e3b63f… (log the re-embed fallback outcome; #474).
