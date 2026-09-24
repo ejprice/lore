@@ -228,3 +228,12 @@ agent-side at that seam otherwise.
   **#472: operator ordered a READ-ONLY investigation now** → `investigate-472` spawned (Opus 5.5).
   Pending: `adversary-63c-i-a` report; then ONE contract-reviser wave folding adversary missing-pins + sidecar
   GAPs (#1,2,4–8,10) + E1/E2/E3 + D2/D3 → re-adversary delta pass (contract→adversary law, no skip) → build.
+- **2026-09-24 ~16:55Z — adversary-63c-i-a ACTED ON.** Verdict line: `0b8ce37 -> f89a1ae -> SAME` (no test/prod
+  symbol moved). **INSUFFICIENT + UNSATISFIABLE:** 11 surviving wrong builds (kill-pins proven RED-on-wrong /
+  GREEN-on-ref) · correct ref build full suite ALONE `-n 12` = **8 failed / 11254 passed**, all 8 contract
+  defects (missed corpse `TestAgentRoleNonEmptyAssert` x4 · heartbeat leg seeds wrong id -> `UnknownAgentError`
+  on every build, RED for the WRONG reason · 2 exact population-set pins · `TestMigrateAgentOwner` old world).
+  Author's 38/433 RED reproduced. Report committed `b46d3f2`; process TaskStopped + ledger-retired. Its fork (1)
+  = D1 (ruled). Forks (2) MP-10 `briefed` population · (3) MP-12 register scope-kwarg vs forbidden-name pin ·
+  (4) R5 owner=>scope -> **routed to sidecar-63c-2** (directive #15002 + wake), plus a GAP/missing-pin conflict
+  diff so the reviser gets ONE worklist. Filed by adversary: #473 (text-search hook blocks scratch copies too).
