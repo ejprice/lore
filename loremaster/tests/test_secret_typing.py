@@ -1363,26 +1363,25 @@ class TestTheBlanknessPredicateIsGENUINELYSHARED:
     package holds the PREDICATE, not the ENTRY POINT** — pinned below.
     """
 
+    # DUAL (63c-i-a r3, amendment-3 F-3 / amendment-4 §W item 9): the private NAME-keyed
+    # ``_patch_everywhere`` staticmethod is DELETED and its two call sites FOLDED onto the shared
+    # ``_governed_contract.patch_shared_object_everywhere`` (identity ALONE since amendment-4 MP-G).
+    # Its virtue — "import-style agnostic; a private copy is not patched and is caught" — is carried
+    # by the shared instrument, which additionally refuses the name-keyed FALSE CLEAR (a private copy
+    # WEARING the shared name was rebound by the old body) and RAISES unless THE object was patched
+    # at its ``lorerunes`` home (replacing the old ``patched >= 1`` count).
     @staticmethod
-    def _patch_everywhere(patcher: pytest.MonkeyPatch, replacement: object) -> int:
-        """Patch the predicate in EVERY module exposing it; return how many.
+    def _patch_the_shared_predicate(patcher: pytest.MonkeyPatch, replacement: object) -> list[str]:
+        """Rebind every module-level binding of THE ``lorerunes`` blankness predicate (the shared
+        instrument, expectation = its package home)."""
+        import importlib
 
-        Import-style agnostic ON PURPOSE. ``from lorerunes import is_blank``
-        binds at import time, so patching only the defining module would prove
-        nothing about a caller that imported the name. Patching every module that
-        exposes it covers both styles — and a caller with a genuinely PRIVATE
-        implementation (an inline copy, or its own differently-named helper) is
-        not patched, does not change, and is therefore caught.
-        """
-        import sys as _sys
+        from _governed_contract import patch_shared_object_everywhere
 
-        patched = 0
-        for module in list(_sys.modules.values()):
-            if module is None or not hasattr(module, BLANKNESS_PREDICATE):
-                continue
-            patcher.setattr(module, BLANKNESS_PREDICATE, replacement, raising=False)
-            patched += 1
-        return patched
+        shared = getattr(importlib.import_module(SHARED_PREDICATE_PACKAGE), BLANKNESS_PREDICATE)
+        return patch_shared_object_everywhere(
+            patcher, BLANKNESS_PREDICATE, shared, replacement, expect_in=(SHARED_PREDICATE_PACKAGE,)
+        )
 
     def test_the_shared_package_exists_and_owns_the_predicate(self) -> None:
         import importlib
@@ -1483,8 +1482,7 @@ class TestTheBlanknessPredicateIsGENUINELYSHARED:
 
         # LEG 2 — MUTATION: invert the SHARED predicate so nothing is blank. Both
         # callers must now accept. A caller that still rejects has its own copy.
-        patched = self._patch_everywhere(monkeypatch, lambda _value: False)
-        assert patched >= 1, "the predicate was not found in any imported module"
+        self._patch_the_shared_predicate(monkeypatch, lambda _value: False)  # raises if it cannot land
 
         resolved = resolve_secret("LORE_PKT42_SHARED_PREDICATE")
         assert resolved.get_secret_value() == blank, (
@@ -1506,7 +1504,7 @@ class TestTheBlanknessPredicateIsGENUINELYSHARED:
         # must now reject a perfectly good credential.
         from loresigil.factory import EmbeddingConfig
 
-        self._patch_everywhere(monkeypatch, lambda _value: True)
+        self._patch_the_shared_predicate(monkeypatch, lambda _value: True)
         monkeypatch.setenv("LORE_PKT42_SHARED_PREDICATE", FAKE_SECRET)
         with pytest.raises(KeyError):
             resolve_secret("LORE_PKT42_SHARED_PREDICATE")

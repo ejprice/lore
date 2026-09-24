@@ -79,6 +79,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
@@ -1056,7 +1057,10 @@ _LEGAL_SESSION = SESSION_WAVE7  # "wave7" — a DIFFERENT value from the name (p
 #: EVERY consumer of the ONE identifier decision (amendment-4 A4-bis — i-a's set): the registry writer,
 #: the server's REFUSE policy, and the server's decision HOME (``_is_comms_charset_legal``, which the
 #: refuse policy AND the ``_comms_traffic_line`` SKIP policy both read). ii adds ``BriefLedger.publish``.
-_IDENTIFIER_DECISION_CONSUMERS = ("register", "refuse-policy", "skip-policy")
+_IDENTIFIER_DECISION_CONSUMERS = ("register", "refuse-policy", "skip-policy", "fake")
+#: The consumers of the ONE blank-role decision (``lorerunes.is_blank``): the writer and — amendment-3
+#: F-2's third consumer leg — the fake that substitutes it in every fake-driven test.
+_BLANK_ROLE_DECISION_CONSUMERS = ("register", "fake")
 
 
 class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
@@ -1185,6 +1189,8 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
 
         * ``register`` — the i-a writer (``AgentRegistryError``, zero rows);
         * ``refuse-policy`` — ``AppContext._validate_comms_charset`` (the REFUSE policy, ``ValueError``);
+        * ``fake`` — ``FakeAgentRegistry.register`` (amendment-3 F-2 rider 2, r3 item 8: the fake that
+          substitutes the registry in fake-driven tests ROUTES to the same decision);
         * ``skip-policy`` — ``AppContext._is_comms_charset_legal``, the server's ONE decision HOME, which
           BOTH server policies read (``_validate_comms_charset`` refuses on it; ``_comms_traffic_line``'s
           SKIP gate skips on it). A4 named the refuse policy and missed the home, so the literal A4
@@ -1196,49 +1202,73 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
         private check reds on the ``session`` leg (sidecar F6). BASELINE first for the server legs:
         unpatched, the target is legal (a consumer that refuses everything cannot pass by 'also
         refusing'); the register baseline is ``test_register_accepts_a_valid_identifier_positive_control``."""
-        from loremaster.server import AppContext
-
         import lorerunes
 
         target = _LEGAL_NAME if field == "name" else _LEGAL_SESSION
         shared_predicate = lorerunes.is_legal_identifier
-        if consumer == "refuse-policy":
-            AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - BASELINE: legal today
-        elif consumer == "skip-policy":
-            assert AppContext._is_comms_charset_legal(target) is True, "BASELINE: legal today"  # noqa: SLF001
+        if consumer != "register":  # BASELINE: legal today (register's is the positive-control pin)
+            assert not await self._identifier_consumer_refuses(consumer, target, field), (
+                f"BASELINE: {consumer} refused the LEGAL {field} {target!r} before any mutation"
+            )
         patched = patch_shared_object_everywhere(
             monkeypatch,
             "is_legal_identifier",
             shared_predicate,
             lambda value: value != target and shared_predicate(value),
         )  # raises unless lorerunes.is_legal_identifier (the home) was among the patched bindings
-        if consumer == "register":
-            registry, admin_connection, env = await self._real_registry()
+        assert await self._identifier_consumer_refuses(consumer, target, field), identity_sweep_miss_message(
+            f"the {consumer} consumer's {field} decision"
+            + (
+                " (the server's decision HOME, read by BOTH the refuse policy and the _comms_traffic_line "
+                "SKIP policy — a second decider: A4-bis / N1 / N1c)"
+                if consumer == "skip-policy"
+                else ""
+            ),
+            patched,
+        )
+
+    async def _identifier_consumer_refuses(self, consumer: str, target: str, field: str) -> bool:
+        """Whether ``consumer`` REFUSES the identity whose ``field`` is ``target`` — each consumer probed
+        through its own surface, and a refusal that WROTE anyway is a failure, not a refusal."""
+        if consumer in ("skip-policy", "refuse-policy"):
+            return self._server_policy_refuses(consumer, target, field)
+        name = target if field == "name" else _LEGAL_NAME
+        session = target if field == "session" else _LEGAL_SESSION
+        return await self._registry_refuses(consumer, name, session)
+
+    @staticmethod
+    def _server_policy_refuses(consumer: str, target: str, field: str) -> bool:
+        from loremaster.server import AppContext
+
+        if consumer == "skip-policy":
+            return AppContext._is_comms_charset_legal(target) is False  # noqa: SLF001 - the decision HOME
+        try:
+            AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - the REFUSE policy
+        except ValueError:
+            return True
+        return False
+
+    async def _registry_refuses(self, consumer: str, name: str, session: str) -> bool:
+        if consumer == "fake":
+            fake = FakeAgentRegistry()
             try:
-                try:
-                    await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
-                except AgentRegistryError:
-                    pass
-                else:
-                    pytest.fail(identity_sweep_miss_message(f"register's {field} decision", patched))
-                assert await self._agent_row_count(admin_connection) == 0
-            finally:
-                await admin_connection.close()
-                await registry.close()
-                await drop_database(env)
-        elif consumer == "refuse-policy":
+                await fake.register(name, session=session, role=ROLE_BUILDER)
+            except AgentRegistryError:
+                assert fake.db.agents == {}, "a REFUSED fake register stored a row"
+                return True
+            return False
+        registry, admin_connection, env = await self._real_registry()
+        try:
             try:
-                AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - the REFUSE policy
-            except ValueError:
-                pass
-            else:
-                pytest.fail(identity_sweep_miss_message("the REFUSE policy _validate_comms_charset", patched))
-        else:
-            assert AppContext._is_comms_charset_legal(target) is False, identity_sweep_miss_message(  # noqa: SLF001
-                "the server's decision HOME _is_comms_charset_legal (read by BOTH the refuse policy and "
-                "the _comms_traffic_line SKIP policy) — a second decider (A4-bis / N1 / N1c)",
-                patched,
-            )
+                await registry.register(name, session=session, role=ROLE_BUILDER)
+            except AgentRegistryError:
+                assert await self._agent_row_count(admin_connection) == 0, "a REFUSED register wrote a row"
+                return True
+            return False
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
 
     @pytest.mark.parametrize("field", ["name", "session"])
     async def test_register_charset_check_reads_the_ONE_pattern_in_its_lorerunes_home(
@@ -1251,11 +1281,21 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
         ``lorerunes`` one. Replace that object — in every module holding it — with a pattern that
         refuses exactly the target field's legal value; ``register`` must refuse it. Per field (F6).
 
-        ⚠ MEASURED BOUND (r2 mutation proof WB-A4b): CPython's ``re.compile`` CACHE returns the SAME
-        object for an identical pattern string, so a "private copy" in ``agents.py`` compiled from the
-        IDENTICAL text is the shared object — indistinguishable here, and behaviourally identical at
-        birth. The second spelling this pin reds is a DRIFTED copy (proven: a ``{0,64}`` copy reds both
-        legs on the identity assertion) — the drift is the defect, and drift is what it catches."""
+        ⚠ KNOWN BOUND, PINNED AS PROSE (amendment-3 F-5; r2 mutation proof WB-A4b): CPython's
+        ``re.compile`` returns the CACHED object for an identical (pattern text, flags) pair
+        (``re._compile``'s bounded cache — CPython-specific), so a SOURCE-TEXT twin ``AGENT_NAME_PATTERN =
+        re.compile(<same text>)`` in ``agents.py`` is object-identical to the ``lorerunes`` one at birth:
+        the re-export identity assert and the mutation both pass. A runtime instrument cannot see source
+        text. DIRECTION — MISS-only, never a false alarm: the moment the twin's text DRIFTS it is a
+        distinct object and the identity assert reds (proven: a ``{0,64}`` copy reds both legs); a cache
+        eviction between the two compiles would make even a same-text twin distinct → RED on a twin, also
+        correct; a correct build holds ONE object by RE-EXPORT, not by cache, so this pin cannot flake on
+        it. COVERAGE of the birth-twin: the builder's DRY row (A4 says ``agents.py`` RE-EXPORTS — a
+        ``re.compile`` there is a second spelling by construction) and the cold audit's contract-blind
+        diff read. RE-OPEN TRIGGER: this pin REDS and the fix turns out to be a source-text twin → close
+        the bound with an AST scan over the production members (``parse_production_trees`` +
+        ``assert_scan_reached_every_member``): ``re.compile`` calls whose first argument is a string
+        constant equal to ``AGENT_NAME_PATTERN.pattern`` → exactly one site, in ``lorerunes``."""
         import re
 
         import lorerunes
@@ -1284,17 +1324,38 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
             await registry.close()
             await drop_database(env)
 
+    # DUAL (r3, item 8 — amendment-3 F-2 rider 2): the r2 pin (register only) is RE-KEYED to a consumer
+    # axis; its register leg is unchanged, the FAKE leg is new (GREEN at HEAD — ``is_blank`` exists).
+    @pytest.mark.parametrize("consumer", _BLANK_ROLE_DECISION_CONSUMERS)
     async def test_the_blank_role_rule_is_the_SHARED_is_blank(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, consumer: str
     ) -> None:
-        """⚠ RED before i-a — ROUTING IS NOT SHARING (A4 / MP-9c, WB13: a private ``role.strip()``
-        passed every r1 pin). Perturb the SHARED ``lorerunes.is_blank`` — in every loaded module holding
-        that object — so a normal role (``builder``) counts as blank; ``register`` must now refuse it.
-        BASELINE leg first: unpatched, ``builder`` registers (a register that never checks roles would
-        otherwise 'refuse' nothing and fail only here for the wrong reason)."""
+        """⚠ RED before i-a (register leg) — ROUTING IS NOT SHARING (A4 / MP-9c, WB13: a private
+        ``role.strip()`` passed every r1 pin). Perturb the SHARED ``lorerunes.is_blank`` — every
+        module-level binding of THAT object — so a normal role (``builder``) counts as blank; EVERY
+        consumer must now refuse it. BASELINE leg first: unpatched, ``builder`` registers (a register that
+        never checks roles would otherwise 'refuse' nothing and fail only here for the wrong reason)."""
         import lorerunes
 
         shared_is_blank = lorerunes.is_blank
+        if consumer == "fake":
+            fake = FakeAgentRegistry()
+            await fake.register("baseline-agent", session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            assert len(fake.db.agents) == 1, "BASELINE: 'builder' must register on the fake"
+            patched = patch_shared_object_everywhere(
+                monkeypatch,
+                "is_blank",
+                shared_is_blank,
+                lambda value: value == ROLE_BUILDER or shared_is_blank(value),
+            )
+            try:
+                await fake.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            except AgentRegistryError:
+                pass
+            else:
+                pytest.fail(identity_sweep_miss_message("FakeAgentRegistry's blank-role rule", patched))
+            assert len(fake.db.agents) == 1, "a fake register refused by the mutated is_blank stored a row"
+            return
         registry, admin_connection, env = await self._real_registry()
         try:
             await registry.register("baseline-agent", session=_LEGAL_SESSION, role=ROLE_BUILDER)
@@ -1490,3 +1551,163 @@ class TestTheIdentifierPatternIsReadOnlyForProseOutsideLorerunes63cIA:
         """A gate that refuses honest code gets switched off: prose reads, the re-export binding and
         an unrelated pattern's decision are NOT flagged."""
         assert _pattern_decision_sites(ast.parse(source), "synthetic.py") == []
+
+
+# =========================================================================== #
+# 63c-i-a r3 — amendment-4 MP-E + amendment-3 F-2 rider 1, MERGED: ONE parity matrix driven through BOTH
+# the REAL ``AgentRegistry`` and ``FakeAgentRegistry``. "The fake mirrors the WRITER" (amendment-2 A2)
+# was pinned only by a signature-equality PROXY; the fake's stamps were read by NO test, so a fake
+# stamping ``'WRONG'`` passed 2521/0 (adversary-r2 N5). This MEASURES the mirror instead of asserting
+# it: same inputs → same OUTCOME CLASS (registered | refused-with-AgentRegistryError, zero writes) and,
+# on success, the same STAMPS (owner_principal, owner_agent == self, scope == keep_scope(K)).
+# Message parity is deliberately NOT compared (amendment-3 F-2: a fake serves no consumer).
+# =========================================================================== #
+
+_PARITY_KEEP = "sessionkeep7"
+
+
+def _parity_cases() -> list[Any]:
+    """The matrix rows: the provenance pairs (consistent ×2, mixed ×2), every hostile identity of the
+    SHARED corpus × {name, session}, every blank role — one ``pytest.param`` each, ids derived."""
+    base = {"name": _LEGAL_NAME, "session": _LEGAL_SESSION, "role": ROLE_BUILDER}
+    pairs = {
+        "pair-both-set": ("alice_pid", _PARITY_KEEP),
+        "pair-alpha-none": (None, None),
+        "pair-owner-only": ("alice_pid", None),
+        "pair-keep-only": (None, _PARITY_KEEP),
+    }
+    rows: list[Any] = [
+        pytest.param({**base, "owner_principal_id": owner, "session_keep_id": keep}, id=row_id)
+        for row_id, (owner, keep) in pairs.items()
+    ]
+    for index, hostile_value in enumerate(_HOSTILE_IDENTIFIERS):
+        for field in ("name", "session"):
+            rows.append(pytest.param({**base, field: hostile_value}, id=f"hostile-{index:02d}-{field}"))
+    for index, blank_role in enumerate(_MOVE_BLANK_ROLES):
+        rows.append(pytest.param({**base, "role": blank_role}, id=f"blank-role-{index}"))
+    return rows
+
+
+class TestTheFakeRegistryMirrorsTheWriter63cIA:
+    """amendment-4 MP-E (merged with amendment-3 F-2 rider 1) — outcome-class + stamp parity, real vs
+    fake, over the whole matrix. ⚠ RED before i-a on the real side (the ``session_keep_id`` kwarg, the
+    MOVE and the stamps are unbuilt) and, for the identity rows, on the fake side too (its identity
+    leg is inert until ``lorerunes.is_legal_identifier`` exists — FORK-C)."""
+
+    @staticmethod
+    async def _real_outcome(kwargs: dict[str, Any]) -> tuple[Any, ...]:
+        harness = TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA
+        registry, admin_connection, env = await harness._real_registry()  # noqa: SLF001
+        try:
+            try:
+                result = await registry.register(
+                    kwargs["name"], session=kwargs["session"], role=kwargs["role"],
+                    owner_principal_id=kwargs.get("owner_principal_id"),
+                    session_keep_id=kwargs.get("session_keep_id"),
+                )
+            except AgentRegistryError:
+                written = await harness._agent_row_count(admin_connection)  # noqa: SLF001
+                assert written == 0, f"REAL: a refused register wrote {written} row(s)"
+                return ("refused",)
+            bare_id = str(result.agent.id).split(":", 1)[-1]
+            stamped = await run(
+                admin_connection,
+                f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)",
+                {"id": bare_id},
+            )
+            row = stamped[0]
+            owner = row.get("owner_principal")
+            owner_agent = row.get("owner_agent")
+            return (
+                "registered",
+                str(owner).split(":", 1)[-1] if owner is not None else None,
+                owner_agent is not None and str(owner_agent) == f"{AGENT_TABLE}:{bare_id}",
+                row.get("scope"),
+            )
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    @staticmethod
+    async def _fake_outcome(kwargs: dict[str, Any]) -> tuple[Any, ...]:
+        fake = FakeAgentRegistry()
+        try:
+            result = await fake.register(
+                kwargs["name"], session=kwargs["session"], role=kwargs["role"],
+                owner_principal_id=kwargs.get("owner_principal_id"),
+                session_keep_id=kwargs.get("session_keep_id"),
+            )
+        except AgentRegistryError:
+            assert fake.db.agents == {}, f"FAKE: a refused register stored a row: {fake.db.agents!r}"
+            return ("refused",)
+        agent_id = str(result.agent.id).split(":", 1)[-1]
+        return (
+            "registered",
+            fake.db.owners.get(agent_id),
+            fake.db.owner_agents.get(agent_id) == agent_id,
+            fake.db.scopes.get(agent_id),
+        )
+
+    @pytest.mark.parametrize("kwargs", _parity_cases())
+    async def test_the_fake_and_the_real_writer_agree_on_outcome_class_and_stamps(
+        self, kwargs: dict[str, Any]
+    ) -> None:
+        """Same inputs → same outcome class, and on success the same governed stamps. The expected
+        stamps for the consistent pairs are ALSO asserted absolutely (never only 'equal to each other' —
+        two builds that both stamp nothing would agree): ``(alice_pid, owner_agent == self,
+        keep_scope(K))`` for both-set, ``(None, …, None)`` for the α pair."""
+        from lorerunes.pdp import keep_scope
+
+        real = await self._real_outcome(kwargs)
+        fake = await self._fake_outcome(kwargs)
+        assert fake == real, (
+            f"FakeAgentRegistry does NOT mirror the writer on {kwargs!r}: real={real!r} fake={fake!r} "
+            f"(amendment-4 MP-E — outcome class + stamps; a fake that accepts what the writer refuses, or "
+            f"stamps what it does not, is the fixture that hides a tool-layer bug)"
+        )
+        legal_identity = (kwargs["name"], kwargs["session"], kwargs["role"]) == (
+            _LEGAL_NAME,
+            _LEGAL_SESSION,
+            ROLE_BUILDER,
+        )
+        owner, keep = kwargs.get("owner_principal_id"), kwargs.get("session_keep_id")
+        if legal_identity and owner is not None and keep is not None:
+            assert real == ("registered", "alice_pid", True, keep_scope(_PARITY_KEEP)), real
+        elif legal_identity and owner is None and keep is None:
+            assert real[0] == "registered" and real[1] is None and real[3] is None, real
+        else:
+            assert real == ("refused",), real
+
+
+def test_the_fakes_HEAD_RED_import_guard_is_deleted_once_the_predicate_exists() -> None:
+    """amendment-5 FORK-C rider 2 — the fake's ``except ImportError`` guard is a HEAD-RED ACCOMMODATION
+    that must not outlive its premise. GREEN at HEAD (``lorerunes.is_legal_identifier`` is absent — the
+    guard is legitimate); RED the moment the i-a build lands the predicate with the guard still present
+    in ``_comms_fakes.py`` (the builder brief grants the one-line deletion in REFACTOR). Read by AST: an
+    ``except`` handler naming ``ImportError`` anywhere in the fake module. CONTROL: the scan finds the
+    guard TODAY (anti-vacuity — a scan that cannot see the guard would pass the post-build leg vacuously)."""
+    import _comms_fakes
+
+    import lorerunes
+
+    source = Path(_comms_fakes.__file__).read_text(encoding="utf-8")
+    import_error_handlers = [
+        handler.lineno
+        for handler in ast.walk(ast.parse(source))
+        if isinstance(handler, ast.ExceptHandler)
+        and any(
+            isinstance(name, ast.Name) and name.id == "ImportError"
+            for name in ([handler.type] if not isinstance(handler.type, ast.Tuple) else handler.type.elts)
+        )
+    ]
+    if getattr(lorerunes, "is_legal_identifier", None) is None:
+        assert import_error_handlers, (
+            "CONTROL: at HEAD the fake's HEAD-RED guard must be visible to this scan (anti-vacuity)"
+        )
+        return
+    assert not import_error_handlers, (
+        f"lorerunes.is_legal_identifier now EXISTS, so _comms_fakes.py's HEAD-RED `except ImportError` "
+        f"guard (line(s) {import_error_handlers}) has outlived its premise — delete it (amendment-5 FORK-C: "
+        f"the builder's one granted test-tree edit, REFACTOR step)"
+    )

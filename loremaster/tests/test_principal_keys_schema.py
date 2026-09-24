@@ -42,7 +42,6 @@ store is a LOUD failure, not a skip.
 
 from __future__ import annotations
 
-import inspect
 import re
 from datetime import datetime
 from typing import Any
@@ -100,17 +99,11 @@ def _all_schema_ddl() -> str:
     covered the day it lands. A generator with a required arg this cannot supply raises LOUDLY
     (fail-closed: a human must extend the derivation), never a silent skip that shrinks reach.
     """
-    parts: list[str] = []
-    for name in sorted(dir(surreal_schema)):
-        if not (name.startswith("generate_") and name.endswith("_ddl")):
-            continue
-        generator = getattr(surreal_schema, name)
-        if not callable(generator):
-            continue
-        parameters = inspect.signature(generator).parameters
-        kwargs = {"dim": NONDEFAULT_DIM} if "dim" in parameters else {}
-        parts.append(generator(**kwargs))
-    return "\n".join(parts)
+    # 63c-i-a r3: DELEGATES to the ONE shared derivation (FORK-B — this body was one of two private
+    # copies of it; same property, same union, now fail-closed on an unsuppliable required parameter).
+    from _enforced_relations_scaffold import emitted_schema_ddl  # noqa: PLC0415
+
+    return emitted_schema_ddl(dim=NONDEFAULT_DIM)
 
 
 def _key_statements() -> list[str]:

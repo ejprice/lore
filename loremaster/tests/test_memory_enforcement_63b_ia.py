@@ -85,9 +85,11 @@ from _governed_contract import (
     function_calls_named,
     governed_populations,
     governed_table_raw_mutation_sites_in_tree,
+    governed_trio_columns,
     observe_governed_table_writes,
     schema_snapshot_from_info,
     store_handle,
+    synthetic_field_ddl,
 )
 from _surreal_harness import (
     connect_admin,
@@ -1161,108 +1163,112 @@ class TestTheGovernedPopulationSetIsADerivedOutput:
     # ``test_the_population_set_is_an_OUTPUT_not_a_hand_list``.
 
     def test_the_population_derivation_reach_is_a_checked_variable(self) -> None:
-        """⚠ RED at HEAD (adversary MISSING PIN #2 / §1.9 item 2) — ``governed_populations()`` is
-        DERIVED from ``surreal_schema``, NEVER a literal. Fed a SYNTHETIC schema source, a NEW
-        ``_widget_statements`` that CALLS ``_governed_field_specs`` GROWS the set to include ``widget``,
-        and a ``_define_relation_table('widget_edge', 'widget', …)`` whose endpoint is governed JOINS.
-        Mutation proof: adding a ``_governed_field_specs`` caller MUST change the output. This is the
-        reach-as-a-checked-variable pin the adversary found MISSING — it catches ``return
-        frozenset({MEMORY_TABLE})`` (a hardcode passes ``test_the_derived_population_set_is_the_known_
-        set`` but FAILS here). It ALSO pins the §1.9 item 2 / F-TRAP-1 correction: an emitter with a
-        DIRECT ``owner_principal`` field (the packet-62 ``agent`` shape) that does NOT call
-        ``_governed_field_specs`` is NOT included — the derivation keys on the CALLER, not a field name.
-        The synthetic source uses the REAL helper names (``_governed_field_specs`` /
-        ``_define_relation_table(name, in_table, out_table)``) so the build's derivation recognises it."""
-        baseline_source = (
-            "def _governed_field_specs():\n    return []\n\n"
-            "def _define_relation_table(name, in_table, out_table):\n    return ''\n\n"
-            "def _memory_statements():\n    return _governed_field_specs()\n\n"
-            # F-TRAP-1 shape: agent carries a DIRECT owner_principal field, NOT via _governed_field_specs
-            "def _agent_statements():\n"
-            "    return ['DEFINE FIELD owner_principal ON agent TYPE option<record>']\n"
-        )
-        try:
-            baseline = governed_populations(schema_source=baseline_source)
-        except NotImplementedError:
-            pytest.fail(
-                "governed_populations is unbuilt (§1.5c-iii / §1.9 item 2) — its reach over the SET of "
-                "populations cannot be exercised on a synthetic source; the reach is a hidden constant"
-            )
+        """REACH IS A CHECKED VARIABLE (adversary MISSING PIN #2 / §1.9 item 2), RE-KEYED to EMITTED DDL
+        TEXT by 63c-i-a r3 (amendment-4 MP-D point 5). Fed SYNTHETIC emitted DDL: a table defining the
+        FULL governed trio (column names DERIVED from ``_governed_field_specs`` via
+        ``governed_trio_columns``) joins; a NEW such table GROWS the output; a relation whose emitted
+        ``IN`` endpoint is governed JOINS. It catches ``return frozenset({MEMORY_TABLE})`` (a hardcode
+        cannot grow). And §1.9 item 2 / F-TRAP-1, by a different mechanism than r2 (the full-trio rule):
+        a table defining ONLY ``owner_principal`` — the packet-62 ``agent`` shape — does NOT join.
+        GREEN at HEAD (test substrate, no build dependency).
+
+        DUAL (r3): the r2 synthetic inputs were Python SOURCE (``def _memory_statements(): return
+        _governed_field_specs()``); the resolver no longer reads source, so the fixtures are DDL text now —
+        every r2 assertion (baseline == {memory}, growth, relation join, F-TRAP-1 exclusion) is kept."""
+        trio = governed_trio_columns()
+        lone_owner = synthetic_field_ddl("agent", {"owner_principal"})  # the packet-62 F-TRAP-1 shape
+        baseline_ddl = synthetic_field_ddl("memory", trio) + lone_owner
+        baseline = governed_populations(emitted_ddl=baseline_ddl)
         assert baseline == frozenset({MEMORY_TABLE}), (
-            f"the synthetic baseline (only _memory_statements calls _governed_field_specs) did NOT "
-            f"derive exactly {{memory}} — the derivation is not keyed on _governed_field_specs CALLERS "
-            f"(§1.9 item 2 / F-TRAP-1: agent's owner_principal is a DIRECT field, not a governed slice): "
-            f"{sorted(baseline)}"
+            f"the synthetic baseline (memory carries the full trio; agent ONLY owner_principal, the "
+            f"packet-62 F-TRAP-1 shape) did NOT derive exactly {{memory}}: {sorted(baseline)}"
         )
-        grown_source = baseline_source + (
-            "def _widget_statements():\n    return _governed_field_specs()\n\n"
-            "def _widget_edge_statements():\n"
-            "    return _define_relation_table('widget_edge', 'widget', 'note')\n"
+        grown_ddl = (
+            baseline_ddl
+            + synthetic_field_ddl("widget", trio)
+            + "DEFINE TABLE OVERWRITE widget_edge TYPE RELATION IN widget OUT note ENFORCED SCHEMAFULL;\n"
         )
-        grown = governed_populations(schema_source=grown_source)
-        assert grown != baseline, (
-            "adding a _governed_field_specs caller (_widget_statements) to the synthetic schema did "
-            "NOT change the derived population set — governed_populations is a HARDCODED literal, not a "
-            "derivation (the frozenset({memory}) wrong build; MISSING PIN #2 / §1.9 item 2 reach)"
-        )
-        assert "widget" in grown, (
-            f"a NEW emitter calling _governed_field_specs did NOT join the governed-population set — "
-            f"the derivation does not key on _governed_field_specs callers (§1.9 item 2): {sorted(grown)}"
+        grown = governed_populations(emitted_ddl=grown_ddl)
+        assert grown != baseline and "widget" in grown, (
+            f"a NEW table defining the full governed trio did NOT join — governed_populations is not a "
+            f"derivation over the emitted DDL (the frozenset({{memory}}) wrong build): {sorted(grown)}"
         )
         assert "widget_edge" in grown, (
-            f"a relation table (_define_relation_table) whose endpoint 'widget' is governed did NOT "
-            f"join the population set — the relation-endpoint leg of the derivation is missing "
-            f"(§1.9 item 2 ∪ relation tables with a governed endpoint): {sorted(grown)}"
+            f"a relation whose emitted IN endpoint 'widget' is governed did NOT join — the relation leg "
+            f"does not read the emitted IN/OUT (amendment-4 MP-D point 3): {sorted(grown)}"
         )
 
-    def test_a_relation_over_a_RE_EXPORTED_endpoint_joins_and_a_non_str_re_export_does_not(
-        self,
+    @pytest.mark.parametrize(
+        "subset_size", ["one-of-trio", "all-but-one"], ids=["lone-column", "all-but-one-column"]
+    )
+    def test_a_PARTIAL_trio_never_joins_and_the_FULL_trio_always_does(self, subset_size: str) -> None:
+        """amendment-4 MP-D point 2 — the node rule pinned BOTH ways on synthetic DDL: a table carrying a
+        PROPER SUBSET of the governed trio (one column — the packet-62 lone ``owner_principal``; or every
+        column but one) is absent; the same table with the FULL trio is present. Kills a node leg keyed on
+        ANY governed column (the F-TRAP-1 build) and one keyed on a hand-picked pair."""
+        trio = sorted(governed_trio_columns())
+        partial = trio[:1] if subset_size == "one-of-trio" else trio[:-1]
+        assert set(partial) < set(trio), "fixture: the partial set must be a PROPER subset"
+        assert "gadget" not in governed_populations(emitted_ddl=synthetic_field_ddl("gadget", partial)), (
+            f"a table defining only {partial} of the governed trio {trio} JOINED — one governed-looking "
+            f"column is not governed data (F-TRAP-1)"
+        )
+        assert "gadget" in governed_populations(emitted_ddl=synthetic_field_ddl("gadget", trio)), (
+            f"a table defining the FULL governed trio {trio} did not join"
+        )
+
+    @pytest.mark.parametrize(
+        ("edge", "relation_clause", "joins"),
+        [
+            pytest.param("e1", "OVERWRITE e1 TYPE RELATION IN widget OUT x ENFORCED", True, id="in-governed"),
+            pytest.param("e2", "OVERWRITE e2 TYPE RELATION IN x OUT widget", True, id="out-governed"),
+            pytest.param(
+                "e3", "IF NOT EXISTS e3 TYPE RELATION FROM x | widget TO y", True, id="union-endpoint"
+            ),
+            pytest.param(
+                "e4", "OVERWRITE e4 TYPE RELATION IN x OUT y ENFORCED", False, id="no-governed-endpoint"
+            ),
+        ],
+    )
+    def test_the_relation_leg_reads_the_EMITTED_endpoints(
+        self, edge: str, relation_clause: str, joins: bool
     ) -> None:
-        """63c-i-a r2 (amendment-2 A1 / §D item 3 / adversary MP-10) — the reach pin's RE-EXPORT leg.
-        ``surreal_schema`` spells ``AGENT_TABLE`` as ``from lorerunes import AGENT_TABLE as
-        AGENT_TABLE``; a resolver that sees only ``NAME = "literal"`` assigns resolves that endpoint
-        to ``None``, so ``briefed(AGENT_TABLE, brief)`` could never join (the seventh-defeat shape: a
-        reach that resolves one spelling of a constant and not another). GROWTH leg: a synthetic
-        source whose ``_agent_statements`` calls ``_governed_field_specs`` and whose
-        ``_define_relation_table('edge', AGENT_TABLE, 'x')`` endpoint is a lorerunes RE-EXPORT → 'edge'
-        JOINS. NEGATIVE leg: a re-export of a NON-``str`` attribute (``keep_scope``, a function) does
-        not resolve, so its relation does not join — the resolver reads VALUES, it does not treat
-        every imported name as a table. CONTROL leg: the same relation spelled with a LOCAL literal
-        joins too (the two spellings agree). RED before the r2 ``_schema_string_constants`` ImportFrom
-        leg; GREEN after (test substrate, not production — no build dependency)."""
-        re_export_source = (
-            "from lorerunes import AGENT_TABLE as AGENT_TABLE\n"
-            "from lorerunes import keep_scope as NOT_A_TABLE\n\n"
-            "def _governed_field_specs():\n    return []\n\n"
-            "def _define_relation_table(name, in_table, out_table):\n    return ''\n\n"
-            "def _agent_statements():\n    return _governed_field_specs()\n\n"
-            "def _edge_statements():\n"
-            "    return _define_relation_table('edge', AGENT_TABLE, 'x')\n\n"
-            "def _edge_neg_statements():\n"
-            "    return _define_relation_table('edge_neg', NOT_A_TABLE, 'y')\n\n"
-            "def _edge_literal_statements():\n"
-            "    return _define_relation_table('edge_literal', 'agent', 'z')\n"
+        """amendment-4 MP-D point 3 — the relation leg parses ``IN``/``OUT`` (and ``FROM``/``TO``, and a
+        ``a | b`` union) out of the EMITTED statement: spelling (keyword endpoints, ``Attribute``,
+        re-export, relative import — adversary-r2 N4) no longer exists at this level. A relation with no
+        governed endpoint stays out (the ``member_of`` shape).
+
+        DUAL (r3): replaces r2's ``test_a_relation_over_a_RE_EXPORTED_endpoint_joins_and_a_non_str_
+        re_export_does_not`` — its virtue ("a re-exported endpoint joins; a non-table name does not") is
+        now a property of emitted TEXT (a re-export and a literal emit the same bytes), carried by the
+        ``in-governed`` / ``no-governed-endpoint`` legs here and, on the REAL tree, by the ii-a five-set pin
+        (``briefed`` joins through ``AGENT_TABLE``'s re-export) and the KNOWN_RELATION_EDGES cross-check."""
+        statement = f"DEFINE TABLE {relation_clause} SCHEMAFULL"
+        ddl = synthetic_field_ddl("widget", governed_trio_columns()) + statement + ";\n"
+        assert (edge in governed_populations(emitted_ddl=ddl)) is joins, (
+            f"relation {edge!r} ({statement!r}) join={not joins} — the relation leg misread the emitted "
+            f"endpoints"
         )
-        derived = governed_populations(schema_source=re_export_source)
-        assert "agent" in derived, (
-            f"control: the synthetic _agent_statements calls _governed_field_specs, so 'agent' must be "
-            f"governed — the fixture did not set up the endpoint: {sorted(derived)}"
-        )
-        assert "edge_literal" in derived, (
-            f"control: a relation whose endpoint is the LITERAL 'agent' must join — the relation leg "
-            f"itself is broken, so the re-export assertion below would red for the wrong reason: "
-            f"{sorted(derived)}"
-        )
-        assert "edge" in derived, (
-            f"a relation whose IN endpoint is a lorerunes RE-EXPORT (`from lorerunes import AGENT_TABLE "
-            f"as AGENT_TABLE`) did NOT join — _schema_string_constants resolves only local "
-            f"`NAME = 'literal'` assigns, so briefed(AGENT_TABLE, brief) can never join the governed "
-            f"population set (amendment-2 A1 / MP-10): {sorted(derived)}"
-        )
-        assert "edge_neg" not in derived, (
-            f"a relation over a NON-str re-export (a function) joined — the resolver treats any "
-            f"imported name as a table instead of reading its VALUE: {sorted(derived)}"
-        )
+
+    def test_a_relation_statement_whose_endpoints_cannot_be_parsed_FAILS_CLOSED(self) -> None:
+        """amendment-4 MP-D point 3 — a ``TYPE RELATION`` statement whose endpoints the pattern cannot
+        capture RAISES (never ``continue``: a skipped statement is a relation that silently never joins).
+        CONTROL: the same DDL with a parseable statement derives without raising."""
+        base = synthetic_field_ddl("widget", governed_trio_columns())
+        parseable = "DEFINE TABLE OVERWRITE ok TYPE RELATION IN widget OUT x;\n"
+        assert "ok" in governed_populations(emitted_ddl=base + parseable), "CONTROL: parseable relation joins"
+        endpointless = "DEFINE TABLE OVERWRITE bad TYPE RELATION SCHEMAFULL;\n"
+        with pytest.raises(ValueError, match="fail closed"):
+            governed_populations(emitted_ddl=base + endpointless)
+
+    def test_the_old_SOURCE_parameter_is_refused_loudly(self) -> None:
+        """amendment-4 MP-D point 5 — the parameter's meaning changed (Python source → emitted DDL), so it
+        is RENAMED and KEYWORD-ONLY: a caller still passing source text (positionally, or as
+        ``schema_source=``) fails with ``TypeError`` instead of silently deriving nothing."""
+        with pytest.raises(TypeError):
+            governed_populations("def _memory_statements(): ...")  # type: ignore[misc]
+        with pytest.raises(TypeError):
+            governed_populations(schema_source="def _memory_statements(): ...")  # type: ignore[call-arg]
 
 
 class TestCoverageIsACheckedVariableOverTheRuntimeObservedFrames:

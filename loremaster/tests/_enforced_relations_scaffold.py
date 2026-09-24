@@ -153,12 +153,72 @@ ENFORCED_CLAUSE = "ENFORCED"
 
 _DEFINE_RELATION_RE = re.compile(
     r"^DEFINE TABLE (?:OVERWRITE |IF NOT EXISTS )?(?P<name>\S+) TYPE RELATION\b"
+    # 63c-i-a r3 (amendment-4 MP-D point 3): the endpoints are CAPTURED too — optional here so
+    # ``relation_table_statements`` keeps matching every relation statement; a consumer that needs
+    # them (``relation_endpoints``) FAILS CLOSED when they are absent.
+    r"(?:\s+(?:IN|FROM)\s+(?P<in_tables>[^\s|]+(?:\s*\|\s*[^\s|]+)*))?"
+    r"(?:\s+(?:OUT|TO)\s+(?P<out_tables>[^\s|]+(?:\s*\|\s*[^\s|]+)*))?"
 )
 
 
 def statements(ddl: str) -> list[str]:
     """Split a generated DDL blob into its individual statements."""
     return [statement.strip() for statement in ddl.split(";") if statement.strip()]
+
+
+def schema_ddl_generators() -> dict[str, Callable[..., str]]:
+    """EVERY module-level ``generate_*_ddl`` function in ``surreal_schema``, by INSPECTION — the ONE
+    derivation of "the schema's DDL entry points" for the test tree (lifted 63c-i-a r3, amendment-4
+    MP-D point 1; ``test_ddl_write_target_coverage_124._ddl_generators`` and
+    ``test_principal_keys_schema._all_schema_ddl`` delegate here instead of carrying their own copies —
+    ONE IMPLEMENTATION; ratified by amendment-5 FORK-B). Allowlist the safe: the naming contract IS the
+    membership rule, so a new slice generator is covered the day it lands. ⚠ KNOWN BOUND (amendment-5):
+    membership is ``inspect.isfunction`` — a ``generate_*_ddl`` implemented as a callable OBJECT or a
+    ``functools.partial`` is not a function and does NOT join (the retired ``dir()`` + ``callable`` copy
+    would have taken it). RE-OPEN TRIGGER: the first such generator — widen this deliberately, never
+    by guessing. Contrast :data:`ALL_DDL_GENERATORS`, a HAND-LIST that (measured
+    2026-09-24) omits ``generate_lease_ddl`` / ``generate_floor_calibration_ddl`` and three emitters
+    ``generate_ddl`` composes — pinned as a KNOWN BOUND in ``test_message_enforcement_63b_ii_a.py``."""
+    import inspect  # noqa: PLC0415 - scaffold-local, keeps the module header's import surface unchanged
+
+    from loremaster.store import surreal_schema  # noqa: PLC0415
+
+    return {
+        name: generator
+        for name, generator in sorted(inspect.getmembers(surreal_schema, inspect.isfunction))
+        if name.startswith("generate_") and name.endswith("_ddl")
+    }
+
+
+def emit_schema_ddl(generator: Callable[..., str], *, dim: int = MIGRATION_DIM) -> str:
+    """Call one ``generate_*_ddl``: ``dim`` is passed WHENEVER the generator has a ``dim`` parameter
+    (required OR defaulted — amendment-5 FORK-B rider: both retired copies did, and
+    ``test_principal_keys_schema``'s ``NONDEFAULT_DIM`` exists to prove the width is THREADED, which a
+    ``dim: int = 8`` default must not silently stop); other DEFAULTED parameters (``analyzer_name``) keep
+    their defaults. FAIL CLOSED: any OTHER required parameter RAISES naming it — never a silent skip that
+    would shrink every derivation built on it.
+
+    DUAL (r3, amendment-5): the r3b draft passed ``dim`` only when REQUIRED — a narrowing of both
+    retired copies' "whenever present" rule, restored here; the fail-closed leg is kept."""
+    import inspect  # noqa: PLC0415
+
+    kwargs: dict[str, Any] = {}
+    for parameter in inspect.signature(generator).parameters.values():
+        if parameter.name == "dim":
+            kwargs["dim"] = dim
+            continue
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        raise TypeError(
+            f"{getattr(generator, '__name__', generator)!r} requires {parameter.name!r}, which the "
+            f"schema-DDL derivation cannot supply — extend emit_schema_ddl, never skip the generator"
+        )
+    return generator(**kwargs)
+
+
+def emitted_schema_ddl(*, dim: int = MIGRATION_DIM) -> str:
+    """The union of EVERY :func:`schema_ddl_generators` output — the emitted-ARTIFACT corpus."""
+    return "\n".join(emit_schema_ddl(generator, dim=dim) for generator in schema_ddl_generators().values())
 
 
 def relation_table_statements(ddl: str) -> dict[str, str]:
@@ -169,6 +229,28 @@ def relation_table_statements(ddl: str) -> dict[str, str]:
         if match is not None:
             found[match.group("name")] = statement
     return found
+
+
+def relation_endpoints(ddl: str) -> dict[str, tuple[frozenset[str], frozenset[str]]]:
+    """``{edge: (IN tables, OUT tables)}`` for every ``TYPE RELATION`` statement in ``ddl``, parsed from
+    the EMITTED text (a ``IN a | b`` union endpoint yields both). FAIL CLOSED: a relation statement
+    whose IN or OUT the pattern cannot capture RAISES — never ``continue`` (amendment-4 MP-D point 3:
+    a skipped statement is a relation that silently never joins anything)."""
+    endpoints: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    for edge, statement in relation_table_statements(ddl).items():
+        match = _DEFINE_RELATION_RE.match(statement)
+        assert match is not None  # relation_table_statements matched it
+        in_tables, out_tables = match.group("in_tables"), match.group("out_tables")
+        if in_tables is None or out_tables is None:
+            raise ValueError(
+                f"relation statement for {edge!r} carries no parseable IN/OUT endpoints — the "
+                f"population derivation refuses to guess (fail closed): {statement!r}"
+            )
+        endpoints[edge] = (
+            frozenset(part.strip() for part in in_tables.split("|")),
+            frozenset(part.strip() for part in out_tables.split("|")),
+        )
+    return endpoints
 
 
 def every_emitted_relation_table() -> dict[str, tuple[str, str]]:

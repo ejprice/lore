@@ -46,6 +46,15 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _enforced_relations_scaffold import (
+    ALL_DDL_GENERATORS,
+    KNOWN_RELATION_EDGES,
+    emit_schema_ddl,
+    emitted_schema_ddl,
+    relation_endpoints,
+    schema_ddl_generators,
+    statements,
+)
 from _governed_contract import (
     ObservedEffect,
     ObservedWrite,
@@ -55,10 +64,13 @@ from _governed_contract import (
     TreeWriteAllowlistEntry,
     classify_tree_observed_write,
     credentialed_app_context,
+    governed_node_tables,
     governed_populations,
     governed_table_raw_mutation_sites_in_tree,
+    governed_trio_columns,
     observe_governed_table_writes,
     register_owned,
+    synthetic_field_ddl,
 )
 from loremaster.store import surreal_schema
 
@@ -288,10 +300,11 @@ class TestTheGovernedPopulationSetGrows:
         63c-i-a r2 (amendment-2 A1 / §D item 3 / adversary MP-3 + MP-10) — the known set is now
         EXACTLY {agent, briefed, memory, message, to}. Its growth story, dated:
         * ii-a (§4.F): {memory} → {memory, message, to} (``to`` joins via its governed IN ``message``).
-        * i-a (W1-1, ruling §2.1): ``_agent_statements`` calls ``_governed_field_specs`` → ``agent``
-          joins; ``briefed`` (IN = ``agent``) JOINS BY DERIVATION — once the r2 resolver reads the
-          ``from lorerunes import AGENT_TABLE as AGENT_TABLE`` re-export (the r1 resolver could not,
-          which is why the adversary measured ``{agent, memory, message, to}`` on a correct build).
+        * i-a (W1-1, ruling §2.1): ``_agent_statements`` calls ``_governed_field_specs`` → the agent DDL
+          carries the full governed trio → ``agent`` joins; ``briefed`` (emitted ``IN agent``) JOINS BY
+          DERIVATION. (r1's AST resolver could not read the ``AGENT_TABLE`` re-export and r2's could
+          not read a keyword/attribute endpoint; since r3 — amendment-4 MP-D — the derivation reads the
+          EMITTED DDL, where no spelling exists.)
           ``briefed``'s F5 case (seeders, write verbs, labels, evidence) is OWED BY 63c-ii, beside its
           only writers (``brief_ack``'s RELATE and register's auto-ack RELATE, ruling §3.5) — exactly
           as ``to``'s landed with drain/ack. This docstring IS the adjudication point.
@@ -320,31 +333,129 @@ class TestTheGovernedPopulationSetGrows:
 
     def test_the_population_set_is_an_OUTPUT_not_a_hand_list(self) -> None:
         """CONTROL (design §1.9 item 2 mutation proof) — ``governed_populations`` is a real derivation:
-        a SYNTHETIC ``surreal_schema`` source whose ``_message_statements`` calls ``_governed_field_specs``
-        GROWS the output to include message + to; one WITHOUT it does not. GREEN at HEAD (the derivation
-        mechanism is built); it REDDENS a build that hardcodes ``frozenset({'memory'})`` (which passes the
-        value pins above on the real schema but cannot grow on a synthetic input)."""
-        without = (
-            "MESSAGE_TABLE = 'message'\nTO_RELATION = 'to'\nAGENT_TABLE = 'agent'\n"
-            "def _governed_field_specs():\n    return ()\n"
-            "def _memory_statements():\n    _governed_field_specs()\n    return []\n"
-            "def _message_statements():\n    return []\n"
-            "def _define_relation_table(name, in_t, out_t, enforced=True):\n    return ''\n"
+        SYNTHETIC emitted DDL where ``message`` carries the full governed trio (+ a ``to`` relation over
+        it) GROWS the output to include message + to; the same DDL without the trio on ``message`` does
+        not. GREEN at HEAD; it REDDENS a build that hardcodes ``frozenset({'memory'})``.
+
+        DUAL (63c-i-a r3, amendment-4 MP-D point 5): the r2 fixtures were Python SOURCE passed
+        positionally; the resolver now derives from EMITTED DDL through the keyword-only ``emitted_ddl``,
+        so the fixtures are DDL text — both r2 assertions kept verbatim in meaning."""
+        trio = governed_trio_columns()
+        to_relation = f"DEFINE TABLE OVERWRITE {_TO_RELATION} TYPE RELATION IN {_MESSAGE_TABLE} OUT agent;\n"
+        without = synthetic_field_ddl("memory", trio) + to_relation
+        with_message = without + synthetic_field_ddl(_MESSAGE_TABLE, trio)
+        assert _MESSAGE_TABLE not in governed_populations(emitted_ddl=without), (
+            "synthetic DDL where message does NOT carry the governed trio must NOT yield message"
         )
-        with_message = without.replace(
-            "def _message_statements():\n    return []\n",
-            "def _message_statements():\n    _governed_field_specs()\n"
-            "    _define_relation_table(TO_RELATION, MESSAGE_TABLE, AGENT_TABLE)\n    return []\n",
+        assert _TO_RELATION not in governed_populations(emitted_ddl=without), (
+            "`to` must not join while neither endpoint is governed"
         )
-        assert _MESSAGE_TABLE not in governed_populations(without), (
-            "a synthetic schema whose _message_statements does NOT call _governed_field_specs must NOT "
-            "yield message — the derivation is not keyed on the emitter caller (§1.9 item 2)"
-        )
-        grown = governed_populations(with_message)
+        grown = governed_populations(emitted_ddl=with_message)
         assert _MESSAGE_TABLE in grown and _TO_RELATION in grown, (
-            f"a synthetic _message_statements that calls _governed_field_specs (+ a to relation over it) "
-            f"must GROW the output to include message + to — the reach is not a checked variable "
-            f"(a hardcoded frozenset would fail this). got {sorted(grown)}"
+            f"synthetic DDL where message carries the governed trio (+ a to relation over it) must GROW "
+            f"the output to include message + to — the reach is not a checked variable. got {sorted(grown)}"
+        )
+
+    # ------------------------------------------------------------------------------------------------ #
+    # 63c-i-a r3 (amendment-4 MP-D points 1 + 4) — the CORPUS the derivation reads is itself a checked
+    # variable, and the relation INVENTORY and the POPULATION must agree.
+    # ------------------------------------------------------------------------------------------------ #
+
+    def test_the_generator_corpus_is_DERIVED_by_inspection_and_non_vacuous(self) -> None:
+        """amendment-4 MP-D point 1 — ``schema_ddl_generators()`` is every ``generate_*_ddl`` in
+        ``surreal_schema`` by INSPECTION (≥ 10 — anti-vacuity: a broken discovery is not a clean schema),
+        every one of them EMITS through ``emit_schema_ddl`` (required arguments from the signature; an
+        unsuppliable one RAISES), and the real emitted corpus carries ≥ 1 ``TYPE RELATION`` statement (a
+        relation leg that found none is broken, not clean). The last assertion (derived ⊇ the scaffold's
+        HAND-LIST ``ALL_DDL_GENERATORS``) is kept because it is free, but it is VACUOUS-BY-IMPORT
+        (amendment-5 FORK-A): the scaffold imports every hand-listed generator by name, so a generator the
+        module lost is an ``ImportError`` at collection before this pin runs — it detects nothing the
+        import does not. The load-bearing hand-list pin is the KNOWN-BOUND gap pin below."""
+        generators = schema_ddl_generators()
+        assert len(generators) >= 10, f"generator discovery found only {sorted(generators)} (anti-vacuity)"
+        for name, generator in generators.items():
+            assert isinstance(emit_schema_ddl(generator), str), name
+        assert relation_endpoints(emitted_schema_ddl()), "emitted corpus carries NO relation (anti-vacuity)"
+        assert set(ALL_DDL_GENERATORS) <= set(generators), (
+            f"ALL_DDL_GENERATORS names generator(s) the module does not define: "
+            f"{sorted(set(ALL_DDL_GENERATORS) - set(generators))}"
+        )
+
+    def test_emit_threads_dim_WHENEVER_present_and_fails_closed_on_any_other_required_parameter(
+        self,
+    ) -> None:
+        """amendment-5 FORK-B rider — ``emit_schema_ddl`` passes ``dim`` whenever the generator HAS a
+        ``dim`` parameter, REQUIRED or DEFAULTED (so a future ``dim: int = 8`` generator is still emitted
+        at the caller's width — ``test_principal_keys_schema``'s ``NONDEFAULT_DIM`` depends on it); other
+        defaulted parameters keep their defaults; any OTHER required parameter RAISES. Synthetic
+        generators, so the rule is pinned before any real generator exercises the defaulted case."""
+
+        def required_dim(*, dim: int) -> str:
+            return f"required:{dim}"
+
+        def defaulted_dim(*, dim: int = 8, analyzer_name: str = "code_ident") -> str:
+            return f"defaulted:{dim}:{analyzer_name}"
+
+        def needs_something_else(*, tier: str) -> str:
+            return tier
+
+        assert emit_schema_ddl(required_dim, dim=3) == "required:3"
+        assert emit_schema_ddl(defaulted_dim, dim=3) == "defaulted:3:code_ident", (
+            "a DEFAULTED dim was not threaded — the r3b-draft narrowing amendment-5 FORK-B restored"
+        )
+        with pytest.raises(TypeError, match="tier"):
+            emit_schema_ddl(needs_something_else)
+
+    def test_KNOWN_BOUND_the_ALL_DDL_GENERATORS_hand_list_gap_is_EXACTLY_lease_and_floor_calibration(
+        self,
+    ) -> None:
+        """⚠ KNOWN BOUND, PINNED (CLAUDE.md "WHEN YOU CANNOT CLOSE A HOLE, PIN IT"; amendment-4 §MP-D point
+        1 as CORRECTED by amendment-5 FORK-A — reading (c), ratified).
+        ``_enforced_relations_scaffold.ALL_DDL_GENERATORS`` is a HAND-LIST; the ∀-ENFORCED relation pins
+        sweep only what it names. Measured 2026-09-24: of the 15 derived generators, the ones whose EMITTED
+        statements are NOT all covered by the hand-list's union (``generate_ddl`` composes principal /
+        principal_key / audit) are EXACTLY ``generate_lease_ddl`` + ``generate_floor_calibration_ddl`` —
+        neither emits a relation today, so the reach is a hidden constant, not a live hole. Fixing the
+        scaffold is OUTSIDE 63c (the lead files it). This pin is GREEN today and REDDENS the day the gap
+        GROWS (a third unswept emitter — possibly one that emits a relation) or CLOSES (the scaffold now
+        derives its set: delete this pin deliberately). RE-OPEN TRIGGER: either. DECISION POINT
+        (amendment-5): owner = the scaffold-gap finding the lead files; the commit that makes
+        ``ALL_DDL_GENERATORS`` derive from ``schema_ddl_generators()`` deletes this pin and says so."""
+        swept = {
+            statement
+            for generator in ALL_DDL_GENERATORS.values()
+            for statement in statements(generator())
+        }
+        unswept = {
+            name
+            for name, generator in schema_ddl_generators().items()
+            if not set(statements(emit_schema_ddl(generator))) <= swept
+        }
+        assert unswept == {"generate_lease_ddl", "generate_floor_calibration_ddl"}, (
+            f"the ALL_DDL_GENERATORS hand-list gap MOVED: unswept generators are now {sorted(unswept)}. "
+            f"If the scaffold now derives its own set (the gap CLOSED), this is a KNOWN BOUND you closed "
+            f"deliberately — delete this pin and say so. If a NEW emitter joined the unswept set, add it to "
+            f"the sweep (derive ALL_DDL_GENERATORS from schema_ddl_generators) — never to this set."
+        )
+
+    def test_the_relation_INVENTORY_and_the_POPULATION_agree(self) -> None:
+        """amendment-4 MP-D point 4 (the adversary's cross-check) — every edge in
+        ``KNOWN_RELATION_EDGES`` whose declared IN or OUT is a governed NODE is in
+        ``governed_populations()``. The inventory and the population are two derivations of one fact;
+        N4h (an inventory row + ``enforced=True`` for a new relation over a governed table, with the
+        population blind to it) is exactly their disagreement. Anti-vacuity: at least one known edge
+        touches a governed node (``to`` via ``message`` today)."""
+        populations = governed_populations()
+        nodes = governed_node_tables(emitted_schema_ddl())
+        touching = {
+            edge
+            for edge, (in_table, out_table) in KNOWN_RELATION_EDGES.items()
+            if {in_table, out_table} & nodes
+        }
+        assert touching, f"no known relation touches a governed node {sorted(nodes)} (anti-vacuity)"
+        assert touching <= populations, (
+            f"known relation(s) {sorted(touching - populations)} touch a governed node but are NOT in the "
+            f"derived population {sorted(populations)} — the relation inventory and the population disagree"
         )
 
 

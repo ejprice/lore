@@ -109,6 +109,8 @@ from loremaster.briefs import (
 )
 from lorerunes.pdp import keep_scope
 
+from lorerunes import is_blank
+
 # --- the domain's status vocabulary + legal-transition matrix ---------------
 # A DELIBERATE local copy of the same vocabulary/matrix the test modules pin
 # (see ``test_agent_registry.py``'s own ``STATUS_*`` / ``LEGAL_AGENT_TRANSITIONS``
@@ -256,6 +258,56 @@ class FakeAgentRegistry:
 
     # -- register ---------------------------------------------------------------
 
+    @staticmethod
+    def _shared_identifier_predicate() -> Callable[[str], bool] | None:
+        """⚠ HEAD-RED ACCOMMODATION (amendment-5 FORK-C): ``lorerunes.is_legal_identifier`` — imported at
+        CALL time (so the identity-sweep mutation's patched ``lorerunes`` attribute is what is read) —
+        or ``None`` while it does not exist yet. An UNGUARDED import turned 232 HEAD-green tokenless
+        fake-driven tests RED (amendment-3's contrary claim, corrected by amendment-5 §E). The guard is
+        inert ONLY on ``ImportError``. REMOVAL TRIGGER: the 63c-i-a build lands the predicate → the
+        builder deletes the ``try``/``except ImportError`` in its REFACTOR step (the builder brief grants
+        exactly that edit); ``test_agent_registry.py::test_the_fakes_HEAD_RED_import_guard_is_deleted_
+        once_the_predicate_exists`` reds until it does."""
+        try:
+            from lorerunes import is_legal_identifier  # noqa: PLC0415 - call-time read (mutation-visible)
+        except ImportError:  # HEAD-RED accommodation — delete once the build lands the predicate
+            return None
+        return is_legal_identifier
+
+    @staticmethod
+    def _refuse_what_the_writer_refuses(
+        name: str,
+        *,
+        session: str,
+        role: str,
+        owner_principal_id: str | None,
+        session_keep_id: str | None,
+    ) -> None:
+        """The writer's pre-``_select_row`` refusals, mirrored (A3 XOR · Q3 MOVE identity · blank role) —
+        raised before any fake "write", on every path."""
+        # 63c-i-a r2 (amendment-2 A2/A3) — the fake mirrors the WRITER's check, not the schema's: an
+        # inconsistent provenance pair is a server-side caller bug, refused before any "write".
+        if (owner_principal_id is None) != (session_keep_id is None):
+            raise AgentRegistryError(
+                "register called with an owner but no session keep (or the reverse) — a server-side "
+                "caller bug; nothing was written"
+            )
+        # 63c-i-a r3 (amendment-3 F-2 / amendment-4 §W item 8) — the fake mirrors the writer's Q3 MOVE by
+        # ROUTING to the SHARED predicates (never a private re-statement — ROUTING IS NOT SHARING), before
+        # any "write", on EVERY path (NF-2: first register and re-register alike). Type + zero-write
+        # parity only; message parity is deliberately NOT mirrored (a fake serves no consumer, and a
+        # cloned teaching message is #102 in a fake). HEAD-RED accommodation: ``is_legal_identifier`` does
+        # not exist until the i-a build (a module-top import would make
+        # every ``_comms_fakes`` consumer a COLLECTION error at HEAD), so it is read at CALL time.
+        # FORK-C (amendment-5, ratified): the identity leg reads the predicate through ONE guarded helper.
+        identifier_decision = FakeAgentRegistry._shared_identifier_predicate()
+        if identifier_decision is not None:  # None at HEAD only — see the helper's removal trigger
+            for field_name, value in (("name", name), ("session", session)):
+                if not identifier_decision(value):
+                    raise AgentRegistryError(f"fake register: illegal {field_name}; nothing was written")
+        if is_blank(role):
+            raise AgentRegistryError("fake register: blank role; nothing was written")
+
     async def register(
         self,
         name: str,
@@ -269,13 +321,10 @@ class FakeAgentRegistry:
         owner_principal_id: str | None = None,
         session_keep_id: str | None = None,
     ) -> AgentRegisterResult:
-        # 63c-i-a r2 (amendment-2 A2/A3) — the fake mirrors the WRITER's check, not the schema's: an
-        # inconsistent provenance pair is a server-side caller bug, refused before any "write".
-        if (owner_principal_id is None) != (session_keep_id is None):
-            raise AgentRegistryError(
-                "register called with an owner but no session keep (or the reverse) — a server-side "
-                "caller bug; nothing was written"
-            )
+        self._refuse_what_the_writer_refuses(
+            name, session=session, role=role, owner_principal_id=owner_principal_id,
+            session_keep_id=session_keep_id,
+        )
         # The race window is honestly OPEN before the check (mirrors
         # ``FakeTaskLedger.claim_task``): two concurrent callers can both reach
         # this point before either one mutates.

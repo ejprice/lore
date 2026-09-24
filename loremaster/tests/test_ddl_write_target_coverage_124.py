@@ -44,11 +44,10 @@ scopes them out BY CONSTRUCTION — they own no ``*_TABLE`` constant here.
 
 from __future__ import annotations
 
-import inspect
 import re
 from collections.abc import Callable
 
-from _enforced_relations_scaffold import statements
+from _enforced_relations_scaffold import emit_schema_ddl, schema_ddl_generators, statements
 from loremaster.store import surreal_schema
 
 # A tiny embedding width for the generators that build HNSW indexes — this pin reads the
@@ -68,18 +67,16 @@ def _ddl_generators() -> dict[str, Callable[..., str]]:
     ddl`` (harmless for its relation-only sweep, a silent hole for a full-table set). Deriving
     makes that omission unrepresentable.
     """
-    return {
-        name: fn
-        for name, fn in inspect.getmembers(surreal_schema, inspect.isfunction)
-        if name.startswith("generate_") and name.endswith("_ddl")
-    }
+    # 63c-i-a r3: DELEGATES to the ONE shared derivation (FORK-B — this body was one of two private
+    # copies of it; the property and its reach are unchanged).
+    return schema_ddl_generators()
 
 
 def _emit(generator: Callable[..., str]) -> str:
-    """Call a generator, passing ``dim`` only if it accepts one (some build HNSW indexes)."""
-    if "dim" in inspect.signature(generator).parameters:
-        return generator(dim=_MIGRATION_DIM)
-    return generator()
+    """Call a generator, passing ``dim`` only if it requires one (some build HNSW indexes) — delegated
+    to the ONE shared :func:`emit_schema_ddl` (63c-i-a r3, FORK-B), which also FAILS CLOSED on any other
+    required parameter instead of a bare ``TypeError``."""
+    return emit_schema_ddl(generator, dim=_MIGRATION_DIM)
 
 
 def _declared_tables() -> set[str]:

@@ -91,7 +91,9 @@ bounds:
       reported) — the RED set is enumerated in the contract report.
     files:
       - path: loremaster/tests/test_agent_registry.py
-        missing_symbols: []
+        # r3 (contract-63c-i-a-r3, amendment-4 MP-E): the real-vs-fake parity matrix calls
+        # register(..., session_keep_id=...) directly — the SAME kwarg this entry's trigger names.
+        missing_symbols: ["register.session_keep_id"]
         unsymboled_codes:
           - code: attr-defined
             count: 3
@@ -99,6 +101,19 @@ bounds:
               mypy's "Module has no attribute" names lorerunes.is_legal_identifier (1) and
               lorerunes.AGENT_NAME_PATTERN (2) — the A4 MOVE the i-a build lands; the deriver cannot
               parse a qualified symbol out of that message form.
+      - path: loremaster/tests/_comms_fakes.py
+        # r3 (contract-63c-i-a-r3, amendment-5 FORK-C): the fake's guarded CALL-time
+        # `from lorerunes import is_legal_identifier` (a HEAD-RED accommodation). Both codes vanish when
+        # the predicate lands; the builder then also deletes the guard (the conditional pin
+        # test_the_fakes_HEAD_RED_import_guard_is_deleted_once_the_predicate_exists reds until it does).
+        missing_symbols: ["lorerunes.is_legal_identifier"]
+        unsymboled_codes:
+          - code: no-any-return
+            count: 1
+            reason: >-
+              at HEAD the failed import types is_legal_identifier as Any, so the helper's return of it is
+              no-any-return; once lorerunes.is_legal_identifier exists the return is typed and the code
+              disappears (it names no symbol, so it cannot be a missing_symbols entry).
       - path: loremaster/tests/test_comms_read_governance_63b_ii_b.py
         missing_symbols: ["register.session_keep_id"]
       - path: loremaster/tests/test_comms_schema.py

@@ -69,6 +69,7 @@ import pytest
 import pytest_asyncio
 from _governed_contract import (
     AGENT_TABLE,
+    _normalise_statement,
     access_token,
     agent_case,
     apply_ddl,
@@ -978,22 +979,16 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"{[(getattr(o.exempt, 'name', o.exempt), getattr(o.exempt, 'origin', None)) for o in observed]}"
         )
         for write in migrate_writes:
-            token_statement = " ".join(str(getattr(write.exempt, "statement", "")).split())
-            executed = " ".join(str(write.statement or "").split())
+            # Token == executed under the SHARED F5 leg-2 rule (``_normalise_statement``) — never widened.
+            token_statement = _normalise_statement(str(getattr(write.exempt, "statement", "")))
+            executed = _normalise_statement(str(write.statement or ""))
             assert token_statement == executed, (
                 "the migrate-governed token's GOLDEN statement is not the statement the migrate "
                 f"EXECUTED (statement-scoped exempt — leg 2): token={token_statement!r} "
                 f"executed={executed!r}"
             )
-            upper = executed.upper()
-            assert upper.startswith(f"UPDATE {AGENT_TABLE.upper()} ") and upper.endswith(
-                "WHERE SCOPE IS NONE"
-            ), f"the agent backfill must be ONE scope-keyed UPDATE (§6), got {executed!r}"
-            for column in ("owner_principal", "owner_agent", "scope"):
-                assert f"{column} =" in executed, (
-                    f"the agent backfill must SET all three governed columns (§6); {column!r} is not "
-                    f"set in {executed!r}"
-                )
+            _assert_the_backfill_statement_shape(executed)
+
 
     async def test_the_migrate_is_idempotent(self, agent_migrate_world: Any) -> None:
         """GREEN-DISCRIMINATOR — a SECOND migrate backfills ZERO (idempotent), never re-stamps or
@@ -1007,6 +1002,69 @@ class TestAgentMigrateScopeKeyed63cIA:
         assert not second.refused and second.backfilled == 0, (
             f"the SECOND migrate must backfill 0 (idempotent), got {second!r}"
         )
+
+
+
+def _statement_shape(statement: str) -> str:
+    """amendment-4 R-6 (r3 item 10) — NORMALISE, don't widen: the §6 SHAPE asserts read the executed
+    statement through the shared leg-2 whitespace rule, then strip ONE trailing ``;`` and collapse
+    ``\\s*=\\s*`` to `` = ``, so a correct build writing ``WHERE scope IS NONE;`` or ``SET scope=$scope``
+    is not refused for a spelling. The token-vs-executed EQUALITY above is untouched (it is F5's rule)."""
+    shaped = _normalise_statement(statement).rstrip()
+    shaped = shaped.removesuffix(";").rstrip()
+    return re.sub(r"\s*=\s*", " = ", shaped)
+
+
+def _assert_the_backfill_statement_shape(statement: str) -> None:
+    """§6: the agent backfill is ONE scope-keyed UPDATE that SETs all three governed columns — asserted
+    on the R-6-normalised shape."""
+    shaped = _statement_shape(statement)
+    upper = shaped.upper()
+    assert upper.startswith(f"UPDATE {AGENT_TABLE.upper()} ") and upper.endswith("WHERE SCOPE IS NONE"), (
+        f"the agent backfill must be ONE scope-keyed UPDATE (§6), got {statement!r}"
+    )
+    for column in ("owner_principal", "owner_agent", "scope"):
+        assert f"{column} = " in shaped, (
+            f"the agent backfill must SET all three governed columns (§6); {column!r} is not set in "
+            f"{statement!r}"
+        )
+
+
+class TestTheBackfillShapeAssertNormalisesSpellingNeverWidens63cIA:
+    """r3 item 10 (amendment-4 R-6) — the shape assert's CONTROLS, build-independent. Spelling variants
+    of the CORRECT statement pass (trailing ``;``, ``col=$v`` without spaces, extra whitespace); the WRONG
+    statements still fail (owner-keyed WHERE, a missing column, a missing WHERE — WB2's shape)."""
+
+    _CORRECT = (
+        "UPDATE agent SET owner_principal = type::record('principal', $owner), owner_agent = id, "
+        "scope = $scope WHERE scope IS NONE"
+    )
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            pytest.param(_CORRECT, id="canonical"),
+            pytest.param(_CORRECT + ";", id="trailing-semicolon"),
+            pytest.param(_CORRECT.replace(" = ", "="), id="no-spaces-around-equals"),
+            pytest.param(_CORRECT.replace(" ", "  ") + " ;", id="doubled-whitespace-and-spaced-semicolon"),
+        ],
+    )
+    def test_a_correct_statement_passes_in_any_spelling(self, variant: str) -> None:
+        _assert_the_backfill_statement_shape(variant)
+
+    @pytest.mark.parametrize(
+        "wrong",
+        [
+            pytest.param(
+                _CORRECT.replace("WHERE scope IS NONE", "WHERE owner_principal IS NONE"), id="owner-keyed"
+            ),
+            pytest.param(_CORRECT.replace("owner_agent = id, ", ""), id="two-of-three-columns"),
+            pytest.param(_CORRECT.replace(" WHERE scope IS NONE", ""), id="no-where-WB2"),
+        ],
+    )
+    def test_a_wrong_statement_still_fails(self, wrong: str) -> None:
+        with pytest.raises(AssertionError):
+            _assert_the_backfill_statement_shape(wrong)
 
 
 # =========================================================================== #
@@ -1325,13 +1383,18 @@ class TestAgentHeartbeatOnALegacyRoleRow63cIA:
             await drop_database(env)
 
     async def test_CONTROL_the_frozen_asserted_ddl_makes_the_touch_RAISE(self) -> None:
-        """POSITIVE CONTROL (amendment-1 E2) — the leg CAN see a store denial through ``touch``: seed
-        ``role=""`` under ``unbounded_agent_ddl()``, apply ``frozen_asserted_agent_ddl()`` (NEVER the
-        current emitter), then the REAL ``touch`` → the driver's typed store rejection
-        (``SurrealStoreError`` matching ``(assert violation)``) and the row is byte-identical (zero
-        rows changed). GREEN at HEAD AND after the build (the frozen DDL is immutable). REDDENS a
-        ``touch`` that stops re-validating the row (e.g. a MERGE that skips validation) — the Leg B
-        C-control's twin, through the heartbeat seam."""
+        """POSITIVE CONTROL (amendment-1 E2, as corrected by amendment-3 E2-bis) — the leg CAN see a
+        store denial through ``touch``: seed ``role=""`` under ``unbounded_agent_ddl()``, apply the
+        CURRENT emitter to declare every column ``touch`` writes, then apply ``frozen_asserted_agent_ddl()``
+        LAST — the frozen capture is the ONLY source of the refusing ASSERT (``DEFINE FIELD OVERWRITE`` is
+        a full replace; store-ref §1.1/§1.2) — then the REAL ``touch`` → the driver's typed store rejection
+        (``SurrealStoreError`` matching ``(assert violation)``) and the row is byte-identical (zero rows
+        changed). GREEN at HEAD AND after the build. What it KILLS (E2-bis(2) — every write form
+        re-validates the whole record, store-ref §1.4, so a "validation-skipping UPDATE" is not a
+        constructible build): (i) a ``touch`` that stops WRITING the row (an in-memory/cached heartbeat, an
+        early return on a legacy-shaped row); (ii) a ``touch`` that swallows the driver's
+        ``SurrealStoreError`` into a success (the narrowed-``except`` class); (iii) a ``touch`` that writes
+        a different row or table. The Leg B C-control's twin, through the heartbeat seam."""
         env = make_env(database=unique_database(), dim=_DIM)
         connection = await connect_admin(env)
         registry = AgentRegistry(

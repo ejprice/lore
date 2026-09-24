@@ -76,6 +76,7 @@ import loremaster.principals as principals_module
 import pytest
 import pytest_asyncio
 from _enforced_relations_scaffold import ghost_id
+from _governed_contract import patch_shared_object_everywhere
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -669,18 +670,13 @@ def _marker_factory(*_args: Any, **_kwargs: Any) -> Any:
     return _marker_cm()
 
 
-def _patch_everywhere(monkeypatch: pytest.MonkeyPatch, name: str, replacement: Any) -> int:
-    """Rebind ``name`` in EVERY loaded module that exposes it (the ``test_secret_typing.
-    _patch_everywhere`` idiom). Covers both a direct import and a call-time delegator. A store
-    with a genuinely private copy is not patched, does not change, and is caught. Returns the
-    count patched (asserted non-zero so a no-op patch cannot pass vacuously)."""
-    patched = 0
-    for module in list(sys.modules.values()):
-        if module is None or not hasattr(module, name):
-            continue
-        monkeypatch.setattr(module, name, replacement, raising=False)
-        patched += 1
-    return patched
+# DUAL (63c-i-a r3, amendment-3 F-3 / amendment-4 §W item 9): the module-level NAME-keyed
+# ``_patch_everywhere`` (a clone of ``test_secret_typing``'s, #102's reference-pattern shape) is DELETED;
+# both call sites are FOLDED onto ``_governed_contract.patch_shared_object_everywhere`` (identity ALONE).
+# Its virtue — "covers a direct import and a call-time delegator; a private copy is caught; a no-op
+# patch cannot pass vacuously" — is carried by the shared instrument (its ``expect_in`` RAISES unless
+# THE object was patched at its home, replacing the old non-zero count), which also no longer rebinds a
+# private copy that merely WEARS the shared name.
 
 
 def _inject_store_error(monkeypatch: pytest.MonkeyPatch, case: _StoreCase) -> None:
@@ -716,8 +712,9 @@ class TestSharingProvenByMutation:
         case = _CASES_BY_LABEL[label]
         principal, key, keep, _env = stores
         store = _store_under_test(case, principal, key, keep)
-        patched = _patch_everywhere(monkeypatch, _RECLASSIFY, _marker_factory)
-        assert patched, f"{_RECLASSIFY} exposed by NO module — the Layer-1 mutation patched nothing"
+        patch_shared_object_everywhere(
+            monkeypatch, _RECLASSIFY, _load_reclassify(), _marker_factory, expect_in=(_LORERUNES,)
+        )  # raises if the Layer-1 mutation could not land at its lorerunes home
         _inject_store_error(monkeypatch, case)
         with pytest.raises(_WrapInvokedMarker):
             await case.invocations[method_name](store)
@@ -734,8 +731,13 @@ class TestSharingProvenByMutation:
         case = _CASES_BY_LABEL[label]
         principal, key, keep, _env = stores
         store = _store_under_test(case, principal, key, keep)
-        patched = _patch_everywhere(monkeypatch, _WRAP_STORE, _marker_factory)
-        assert patched, f"{_WRAP_STORE} exposed by NO module — the Layer-2 mutation patched nothing"
+        patch_shared_object_everywhere(
+            monkeypatch,
+            _WRAP_STORE,
+            _load_wrap_store(),
+            _marker_factory,
+            expect_in=("loremaster.store._txn",),
+        )  # raises if the Layer-2 mutation could not land at its _txn home
         _inject_store_error(monkeypatch, case)
         with pytest.raises(_WrapInvokedMarker):
             await case.invocations[method_name](store)

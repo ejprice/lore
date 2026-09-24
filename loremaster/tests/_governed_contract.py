@@ -36,11 +36,10 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
-import importlib
 import re
 import tomllib
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2225,7 +2224,8 @@ def exempt_frame_raw_memory_mutations(
 
 
 # =========================================================================== #
-# 63b-i-a (design §1.5c-iii) — THE GOVERNED-POPULATION SET is DERIVED from ``surreal_schema``, so a
+# 63b-i-a (design §1.5c-iii) — THE GOVERNED-POPULATION SET is DERIVED from ``surreal_schema``'s EMITTED
+# DDL (63c-i-a r3 re-key, amendment-4 MP-D — the dated history below speaks of the retired AST form), so a
 # new governed table joins F5's reach by the SAME derivation that governs it (the growth detector
 # ONE LEVEL UP: reach as a checked variable over the SET of populations, not only over sites within
 # one). At ``e4b8945`` the derivation yields ``{memory}`` (§5.1 Q2 iii — ``_message_statements`` does
@@ -2234,132 +2234,95 @@ def exempt_frame_raw_memory_mutations(
 # =========================================================================== #
 
 
-#: The ``surreal_schema`` emitter whose CALLERS define the governed node set (design §1.9 item 2)
-#: and the relation-table emitter whose governed endpoints extend it — the anchor names the
-#: derivation keys on, the same way ``function_calls_named`` keys on its ``called`` name.
-_GOVERNED_FIELD_SPECS_EMITTER = "_governed_field_specs"
-_DEFINE_RELATION_EMITTER = "_define_relation_table"
+# DUAL (63c-i-a r3, amendment-4 MP-D): the AST resolver over ``surreal_schema``'s SOURCE —
+# ``_GOVERNED_FIELD_SPECS_EMITTER`` / ``_DEFINE_RELATION_EMITTER`` / ``_schema_string_constants`` /
+# ``_resolve_schema_table`` / ``_governed_node_tables`` / ``_governed_relation_tables`` — is RETIRED.
+# Its reach was a hand-list of SPELLINGS (Constant, Name→Assign, r2's Name→ImportFrom); keyword
+# endpoints, an ``Attribute``, an ``AnnAssign``, a relative or failed import resolved to None and the
+# relation silently never joined (adversary-r2 N4/N4h: 2521 passed / 0 failed), and the node leg keyed
+# on a helper NAMED ``_<t>_statements`` (a governed slice built in another helper never joined): the
+# reach receded one level per round. Its VIRTUES — (1) an OUTPUT, never a hand-list; (2) keyed on
+# something a field-presence walk cannot fake (a lone packet-62 ``agent.owner_principal``, F-TRAP-1,
+# never joins) — are carried by the emitted-DDL derivation below: (1) by
+# ``schema_ddl_generators`` (every ``generate_*_ddl``, by inspection) + the growth pins; (2) by the
+# FULL-TRIO node leg (one governed column of three does not join), pinned both ways on synthetic DDL.
+# Which EMITTER produced the trio is W1-1's rewrite kill-pin's job, never this resolver's (a hand-rolled
+# trio IS governed data: it joins here AND reds W1-1).
+
+#: ``DEFINE FIELD [OVERWRITE|IF NOT EXISTS] <column> ON [TABLE] <table>`` — the node leg's reader over
+#: EMITTED statements (the ``DEFINE`` keyword forms our generators emit; store-ref §1.1).
+_DEFINE_FIELD_ON_RE = re.compile(
+    r"^DEFINE\s+FIELD\s+(?:OVERWRITE\s+|IF\s+NOT\s+EXISTS\s+)?(?P<column>\S+)\s+ON\s+(?:TABLE\s+)?"
+    r"(?P<table>[^\s;]+)",
+    re.IGNORECASE,
+)
 
 
-def _schema_string_constants(tree: ast.AST) -> dict[str, str]:
-    """Module-level string constants, so a ``_define_relation_table(TO_RELATION, MESSAGE_TABLE,
-    AGENT_TABLE)`` call resolves its endpoints exactly as a literal ``'widget'`` does.
+def governed_trio_columns() -> frozenset[str]:
+    """The governed column NAMES, DERIVED from ``surreal_schema._governed_field_specs()`` (the ONE
+    emitter of the governed trio) — never a hand-list of three strings (amendment-4 MP-D point 2)."""
+    from loremaster.store import surreal_schema  # noqa: PLC0415 - lazy: no schema import at module load
 
-    TWO spellings of a module-level constant, both resolved (63c-i-a r2, amendment-2 A1 / MP-10):
-
-    * ``NAME = "value"`` — a local ``Assign`` of a string literal;
-    * ``from <module> import <name> [as <alias>]`` — a RE-EXPORT. ``surreal_schema`` spells
-      ``AGENT_TABLE`` / ``PRINCIPAL_TABLE`` as ``from lorerunes import AGENT_TABLE as AGENT_TABLE``,
-      and the r1 resolver saw only ``Assign``s, so every relation with a re-exported endpoint
-      resolved to ``None`` and could NEVER join (``briefed(AGENT_TABLE, brief)`` did not join on a
-      correct i-a build; ``to`` joined at ii-a only by the luck of its IN being a local constant) — a
-      reach that resolves one endpoint spelling and not another is the instrument-lesson's
-      seventh-defeat shape. The ImportFrom leg imports the REAL module and reads the attribute: a
-      ``str`` value IS production truth (``lorerunes`` is the stdlib-only constants home); a
-      non-``str`` attribute, a relative import, or a module that cannot be imported is skipped (it is
-      not a table name, and the relation over it does not join).
-    """
-    constants: dict[str, str] = {}
-    for node in getattr(tree, "body", []):
-        if (
-            isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            for assign_target in node.targets:
-                if isinstance(assign_target, ast.Name):
-                    constants[assign_target.id] = node.value.value
-        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
-            try:
-                module = importlib.import_module(node.module)
-            except ImportError:
-                continue
-            for alias in node.names:
-                value = getattr(module, alias.name, None)
-                if isinstance(value, str):
-                    constants[alias.asname or alias.name] = value
-    return constants
+    columns = frozenset(spec[0] for spec in surreal_schema._governed_field_specs())  # noqa: SLF001
+    assert len(columns) >= 2, f"the governed field spec set is implausibly small: {sorted(columns)}"
+    return columns
 
 
-def _resolve_schema_table(node: ast.expr, constants: dict[str, str]) -> str | None:
-    """A ``_define_relation_table`` endpoint argument resolved to a table name — a string literal
-    verbatim, a ``Name`` via the module string constants, else ``None``."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.Name):
-        return constants.get(node.id)
-    return None
+def governed_node_tables(emitted_ddl: str) -> set[str]:
+    """The governed NODE tables of ``emitted_ddl``: a table is governed iff the DDL defines EVERY column
+    of the governed trio ON it (matched ``DEFINE FIELD … <col> ON <table>`` over its statements). A lone
+    ``owner_principal`` (the packet-62 ``agent`` field, F-TRAP-1) is one of three and does NOT join."""
+    from _enforced_relations_scaffold import statements  # noqa: PLC0415
+
+    trio = governed_trio_columns()
+    columns_by_table: dict[str, set[str]] = {}
+    for statement in statements(emitted_ddl):
+        match = _DEFINE_FIELD_ON_RE.match(statement)
+        if match is not None:
+            columns_by_table.setdefault(match.group("table"), set()).add(match.group("column"))
+    return {table for table, columns in columns_by_table.items() if trio <= columns}
 
 
-def _governed_node_tables(tree: ast.AST) -> set[str]:
-    """The governed NODE tables — a ``_<t>_statements`` emitter that CALLS ``_governed_field_specs``
-    governs ``t`` (§1.9 item 2 — keyed on the CALLER, NEVER a field name; ``agent.owner_principal`` is
-    a direct packet-62 field, so an ``owner_principal``-presence walk wrongly yields {memory, agent})."""
-    nodes: set[str] = set()
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        calls_governed_specs = any(
-            isinstance(inner, ast.Call) and call_name(inner) == _GOVERNED_FIELD_SPECS_EMITTER
-            for inner in ast.walk(func)
-        )
-        if not calls_governed_specs:
-            continue
-        emitter_match = re.fullmatch(r"_(?P<table>\w+)_statements", func.name)
-        if emitter_match is not None:
-            nodes.add(emitter_match.group("table"))
-    return nodes
+def governed_relation_tables(emitted_ddl: str, nodes: set[str]) -> set[str]:
+    """The relation tables of ``emitted_ddl`` whose IN or OUT endpoint is a governed node — endpoints
+    PARSED from the emitted ``TYPE RELATION IN <t> OUT <t>`` text (``relation_endpoints``, which FAILS
+    CLOSED on an unparseable statement), so no source spelling exists at this level."""
+    from _enforced_relations_scaffold import relation_endpoints  # noqa: PLC0415
+
+    return {
+        edge
+        for edge, (in_tables, out_tables) in relation_endpoints(emitted_ddl).items()
+        if (in_tables | out_tables) & nodes
+    }
 
 
-def _governed_relation_tables(
-    tree: ast.AST, nodes: set[str], constants: dict[str, str]
-) -> set[str]:
-    """Relation tables with a governed ENDPOINT — ``_define_relation_table(name, IN, OUT)`` whose IN or
-    OUT is a governed node. So ``to`` (IN message, OUT agent) is NOT governed at this HEAD and joins
-    only once ``message`` becomes governed (ii-a)."""
-    relations: set[str] = set()
-    for call in ast.walk(tree):
-        if not isinstance(call, ast.Call) or call_name(call) != _DEFINE_RELATION_EMITTER:
-            continue
-        if len(call.args) < 3:
-            continue
-        relation_name = _resolve_schema_table(call.args[0], constants)
-        in_table = _resolve_schema_table(call.args[1], constants)
-        out_table = _resolve_schema_table(call.args[2], constants)
-        if relation_name is not None and (in_table in nodes or out_table in nodes):
-            relations.add(relation_name)
-    return relations
+def synthetic_field_ddl(table: str, columns: Iterable[str]) -> str:
+    """SYNTHETIC emitted-DDL text defining ``columns`` on ``table`` (one ``DEFINE FIELD OVERWRITE`` each) —
+    the growth/reach pins' fixture for :func:`governed_populations` (pass ``governed_trio_columns()`` for
+    a governed table, a proper subset for the F-TRAP-1 negative). Derived column names, never a restated
+    trio, so a change to ``_governed_field_specs`` moves every fixture built on it."""
+    return "".join(
+        f"DEFINE FIELD OVERWRITE {column} ON {table} TYPE option<string>;\n" for column in sorted(columns)
+    )
 
 
-def governed_populations(schema_source: str | None = None) -> frozenset[str]:
-    """DERIVE the governed table population set from ``surreal_schema`` (design §1.5c-iii, §1.9 item 2).
+def governed_populations(*, emitted_ddl: str | None = None) -> frozenset[str]:
+    """DERIVE the governed table population set from the EMITTED schema DDL (design §1.5c-iii, §1.9 item
+    2 — mechanism re-keyed by amendment-4 MP-D, intent preserved).
 
-    ★BUILDER DELIVERABLE★ (RED-until-built). The F5 cases are, by AST over ``surreal_schema``:
-    ``{t : the ``_<t>_statements`` emitter (or any surreal_schema emitter for t) CALLS
-    ``_governed_field_specs``}`` ∪ ``{relation tables whose ``_define_relation_table(name, IN, OUT)``
-    call has IN or OUT in that set}``. ⚠ §1.9 item 2 CORRECTS §1.5c-iii's "owner_principal field
-    definitions" wording (adversary F-TRAP-1): ``agent.owner_principal`` is a packet-62 DIRECT field,
-    so walking ``owner_principal`` presence wrongly yields ``{memory, agent, briefed, to}`` — the
-    derivation KEYS ON ``_governed_field_specs`` CALLERS, never a field name. At ``e4b8945`` this
-    yields ``{memory}``; ii-a's DDL grows it to ``{memory, message, to}`` (RED_ADJUDICATED(owner=63b-ii)).
+    ``{t : the emitted DDL defines every governed-trio column ON t}`` ∪ ``{relation tables whose emitted
+    IN or OUT endpoint is in that set}``. The corpus is the union of EVERY ``surreal_schema``
+    ``generate_*_ddl`` (``_enforced_relations_scaffold.emitted_schema_ddl`` — by inspection, required
+    arguments from the signature, fail closed), i.e. the ARTIFACT, never the source spelling.
 
-    REACH IS A CHECKED VARIABLE (§1.9 item 2 / adversary MISSING PIN #2): pass ``schema_source`` — a
-    SYNTHETIC ``surreal_schema`` source TEXT — to AST-derive from THAT instead of the real module (the
-    fixture-tree-discriminator idiom :func:`governed_table_raw_mutation_sites_in_tree` uses, one file
-    over: exercise the derivation END-TO-END on a synthetic input, not a ``roots=`` override).
-    ``None`` ⟹ read the real ``surreal_schema.py`` under ``repo_root``. Adding a ``_governed_field_
-    specs`` caller (or a governed-endpoint relation table) to a synthetic source MUST grow the output
-    — the mutation proof the population reach pin runs. A hardcoded ``frozenset({MEMORY_TABLE})``
-    passes the value pin but FAILS that growth pin (the whole point: an OUTPUT, never a hand list).
+    REACH IS A CHECKED VARIABLE: pass ``emitted_ddl`` — SYNTHETIC DDL TEXT — to derive from THAT instead
+    (the growth pins seed a synthetic table carrying the trio / a synthetic relation over it and assert the
+    output GROWS). KEYWORD-ONLY and RENAMED from r2's ``schema_source`` on purpose: its meaning changed
+    from Python source to emitted DDL, so an old caller passing source text fails loudly (``TypeError``)
+    instead of silently deriving nothing."""
+    if emitted_ddl is None:
+        from _enforced_relations_scaffold import emitted_schema_ddl  # noqa: PLC0415
 
-    ``None`` ⟹ read the real ``surreal_schema.py`` via the imported module's ``__file__`` (keyed on
-    the module, never a hardcoded path)."""
-    if schema_source is None:
-        from loremaster.store import surreal_schema
-
-        schema_source = Path(surreal_schema.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(schema_source)
-    constants = _schema_string_constants(tree)
-    nodes = _governed_node_tables(tree)
-    relations = _governed_relation_tables(tree, nodes, constants)
-    return frozenset(nodes | relations)
+        emitted_ddl = emitted_schema_ddl()
+    nodes = governed_node_tables(emitted_ddl)
+    return frozenset(nodes | governed_relation_tables(emitted_ddl, nodes))
