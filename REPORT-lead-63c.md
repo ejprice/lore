@@ -269,3 +269,28 @@ agent-side at that seam otherwise.
   builder may start after item 1 is clean, in parallel with r3 items 2–3 (disjoint files), one adversary delta
   covers 2–3 before cold audit. Noted operator commit `5e3e5a4` (INDEX plan review, another session): its "live
   image 0f5f2dc" CONSISTENT with E3 (0f5f2dc 2026-08-17 predates pkt-62 66b5fa4; image created 2026-08-18 00:03Z).
+- **2026-09-24 ~16:15 EDT — adversary-63c-i-a-r2 ACTED ON.** Verdict line: `88205a4 -> 91c6f5c -> SAME` (no
+  production/test path moved; the adversary's `git diff --stat` over code roots is EMPTY). **INSUFFICIENT:** 7 new
+  wrong builds survive (N1, N1c, N2, N3, N4/N4h, N5, N10); N1c+N2+N3+N5+N10 TOGETHER pass the WHOLE tree
+  11292/0. **BLOCKERS: MP-A** (`_is_comms_charset_legal`, the SKIP-policy consumer of the identity decision, is
+  unpinned AND ORPHANED — in no sub-wave's A4 consumer list) · **MP-D** (population resolver reach is a spelling
+  hand-list, not a checked variable — derive from the emitted DDL). Also MP-B/C/E/F/G. Prior 11/11 KILLED;
+  independent SAT 11292/0; RED@HEAD reproduced exactly (148/2345); WB-2of3 (amendment-3 F-4) PROOF HELD → r3
+  item 1 is NOT gating. DUAL diff independent = author's. Process TaskStopped (ledger retire pending lore).
+- **LEAD DIRECTIVE TO sidecar-63c-2 — TASK 4 (durable copy HERE; lore ledger is DOWN, see next entry):** rule the
+  r2 adversary's decisions in a committed amendment-4: **NF-1** (A4 consumer set includes `_is_comms_charset_legal`;
+  adversary recs yes) · **NF-2** (may a legacy hostile-named agent re-register after the MOVE; recs no) ·
+  **MP-D's fix shape** (resolver reach derived from emitted DDL) · **MP-G ordering** (fix the shared patch helper's
+  aliased-import false-RED + lying message BEFORE amendment-3 F-3's fold). THEN publish ONE consolidated **r3
+  worklist** = amendment-3 §A items 2–3 + adversary-r2 §6 MP-A..MP-G, each tagged GATING / NON-GATING. Evidence:
+  `REPORT-adversary-63c-i-a-r2.md` (committed with this entry). Deliver: doc + native micro-format wake.
+- **2026-09-24 16:12 EDT — lore OUTAGE #2: host global OOM.** Kernel OOM-killer (invoked by `python`) killed
+  lore-surreal's `surreal` (anon-rss ~20 GB) at 15:19:54; systemd restarted it at 15:19:56 (exit 137, restart
+  counter 1). **lore-lore never re-established its store WS** → every lore call "no close frame" for 52 min (the
+  adversary lost ledger access mid-run: its R-1). At OOM: surreal ×2 ≈30.5 GB anon, python ×52 ≈13.3 GB, odoo ≈4.5 GB;
+  `/tmp` is tmpfs (RAM-backed) at 18 GB, 17 GB of it `/tmp/claude-1000` (Claude Code task files, all sessions).
+  Receipts: `docs/plans/v2/receipts/2026-09-24-lore-store-oom/` (kernel OOM dump, surreal restart journal, lore-lore
+  log since 15:15). Action (pre-authorized production op): `podman restart lore-lore` at 16:12:32 (CreateCommand
+  captured first; restart keeps the hand-rolled mounts). Watcher armed. Findings to file when lore serves: lore-lore
+  does not reconnect after a store restart (R-1; cf. #330 "self-healed" in Aug) · host OOM kills the prod store
+  (oom_score_adj 200 makes surreal the preferred victim).

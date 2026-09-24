@@ -1,0 +1,90 @@
+Sep 24 15:19:54 ean.firehawktransam.org systemd[1724348]: lore-surreal.service: The kernel OOM killer killed some processes in this unit.
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058056]: 2026-09-24 15:19:56.165700515 -0400 EDT m=+0.086103493 container died 05ae92f8e4519eb5326ded2341d6fa179e1812ac3965feb3001512b90e4481ec (image=docker.io/surrealdb/surrealdb:v3.2, name=lore-surreal, org.opencontainers.image.source=https://github.com/chainguard-images/images/tree/main/images/glibc-dynamic, org.opencontainers.image.url=https://images.chainguard.dev/directory/image/glibc-dynamic/overview, org.opencontainers.image.vendor=Chainguard, dev.chainguard.image.title=glibc-dynamic, org.opencontainers.image.title=glibc-dynamic, PODMAN_SYSTEMD_UNIT=lore-surreal.service, org.opencontainers.image.created=2026-05-28T07:37:08Z, dev.chainguard.package.main=, org.opencontainers.image.authors=Chainguard Team https://www.chainguard.dev/)
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058056]: 2026-09-24 15:19:56.244918585 -0400 EDT m=+0.165321543 container remove 05ae92f8e4519eb5326ded2341d6fa179e1812ac3965feb3001512b90e4481ec (image=docker.io/surrealdb/surrealdb:v3.2, name=lore-surreal, dev.chainguard.image.title=glibc-dynamic, org.opencontainers.image.url=https://images.chainguard.dev/directory/image/glibc-dynamic/overview, PODMAN_SYSTEMD_UNIT=lore-surreal.service, org.opencontainers.image.created=2026-05-28T07:37:08Z, org.opencontainers.image.source=https://github.com/chainguard-images/images/tree/main/images/glibc-dynamic, org.opencontainers.image.vendor=Chainguard, org.opencontainers.image.authors=Chainguard Team https://www.chainguard.dev/, dev.chainguard.package.main=, org.opencontainers.image.title=glibc-dynamic)
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058056]: 2026-09-24 15:19:56.254222073 -0400 EDT m=+0.174625031 volume remove 08f18b9c397a211e6c60203035d3620153702c3354e3fbff839684b22cef62f7
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: lore-surreal.service: Main process exited, code=exited, status=137/n/a
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: lore-surreal.service: Failed with result 'exit-code'.
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: lore-surreal.service: Consumed 2h 2min 8.138s CPU time over 1w 2d 21h 24min 14.572s wall clock time, 24.6G memory peak.
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: lore-surreal.service: Scheduled restart job, restart counter is at 1.
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: Starting lore SurrealDB production store (:18500, RocksDB, database `lore`)...
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058109]: 2026-09-24 15:19:56.628303901 -0400 EDT m=+0.083248589 volume create 24cfdb7f6612d942b8f9118f5a54e84cbe229d6696e7e42ba5d4efa282731cd2
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058109]: 2026-09-24 15:19:56.641615555 -0400 EDT m=+0.096560243 container create 3ebc2260f9cc5d247714aa7822471f096edc4cb650d3f2fac0fea4cb1c46cd87 (image=docker.io/surrealdb/surrealdb:v3.2, name=lore-surreal, dev.chainguard.package.main=, org.opencontainers.image.authors=Chainguard Team https://www.chainguard.dev/, org.opencontainers.image.created=2026-05-28T07:37:08Z, org.opencontainers.image.source=https://github.com/chainguard-images/images/tree/main/images/glibc-dynamic, org.opencontainers.image.url=https://images.chainguard.dev/directory/image/glibc-dynamic/overview, org.opencontainers.image.title=glibc-dynamic, org.opencontainers.image.vendor=Chainguard, dev.chainguard.image.title=glibc-dynamic, PODMAN_SYSTEMD_UNIT=lore-surreal.service)
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058109]: 2026-09-24 15:19:56.603386902 -0400 EDT m=+0.058331600 image pull 6e2f7f0134c79f659704986384895226bf84452673404060949b2c67d722da3f docker.io/surrealdb/surrealdb:v3.2
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058109]: 2026-09-24 15:19:56.785941596 -0400 EDT m=+0.240886294 container init 3ebc2260f9cc5d247714aa7822471f096edc4cb650d3f2fac0fea4cb1c46cd87 (image=docker.io/surrealdb/surrealdb:v3.2, name=lore-surreal, org.opencontainers.image.source=https://github.com/chainguard-images/images/tree/main/images/glibc-dynamic, PODMAN_SYSTEMD_UNIT=lore-surreal.service, org.opencontainers.image.created=2026-05-28T07:37:08Z, org.opencontainers.image.url=https://images.chainguard.dev/directory/image/glibc-dynamic/overview, dev.chainguard.image.title=glibc-dynamic, org.opencontainers.image.title=glibc-dynamic, org.opencontainers.image.vendor=Chainguard, dev.chainguard.package.main=, org.opencontainers.image.authors=Chainguard Team https://www.chainguard.dev/)
+Sep 24 15:19:56 ean.firehawktransam.org podman[4058109]: 2026-09-24 15:19:56.791940622 -0400 EDT m=+0.246885310 container start 3ebc2260f9cc5d247714aa7822471f096edc4cb650d3f2fac0fea4cb1c46cd87 (image=docker.io/surrealdb/surrealdb:v3.2, name=lore-surreal, dev.chainguard.image.title=glibc-dynamic, PODMAN_SYSTEMD_UNIT=lore-surreal.service, org.opencontainers.image.vendor=Chainguard, org.opencontainers.image.authors=Chainguard Team https://www.chainguard.dev/, org.opencontainers.image.created=2026-05-28T07:37:08Z, org.opencontainers.image.title=glibc-dynamic, dev.chainguard.package.main=, org.opencontainers.image.source=https://github.com/chainguard-images/images/tree/main/images/glibc-dynamic, org.opencontainers.image.url=https://images.chainguard.dev/directory/image/glibc-dynamic/overview)
+Sep 24 15:19:56 ean.firehawktransam.org systemd[1724348]: Started lore SurrealDB production store (:18500, RocksDB, database `lore`).
+Sep 24 15:19:56 ean.firehawktransam.org lore-surreal[4058109]: 3ebc2260f9cc5d247714aa7822471f096edc4cb650d3f2fac0fea4cb1c46cd87
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]:  .d8888b.                                             888 8888888b.  888888b.
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: d88P  Y88b                                            888 888  'Y88b 888  '88b
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: Y88b.                                                 888 888    888 888  .88P
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]:  'Y888b.   888  888 888d888 888d888  .d88b.   8888b.  888 888    888 8888888K.
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]:     'Y88b. 888  888 888P'   888P'   d8P  Y8b     '88b 888 888    888 888  'Y88b
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]:       '888 888  888 888     888     88888888 .d888888 888 888    888 888    888
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: Y88b  d88P Y88b 888 888     888     Y8b.     888  888 888 888  .d88P 888   d88P
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]:  'Y8888P'   'Y88888 888     888      'Y8888  'Y888888 888 8888888P'  8888888P'
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.321337Z  INFO surrealdb_server::env: Running 3.2.4+20260803.93ab219 for linux on x86_64
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.324671Z  INFO surrealdb::core::kvs::ds: Starting kvs store at absolute path rocksdb:/data/store.db
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.336855Z  INFO surrealdb::core::kvs::rocksdb: Background thread count: 64
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362847Z  INFO surrealdb::core::kvs::rocksdb: Maximum background jobs count: 128
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362904Z  INFO surrealdb::core::kvs::rocksdb: Maximum number of open files: 1026
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362925Z  INFO surrealdb::core::kvs::rocksdb: Number of log files to keep: 10
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362934Z  INFO surrealdb::core::kvs::rocksdb: Compaction readahead size: 262144
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362935Z  INFO surrealdb::core::kvs::rocksdb: Maximum concurrent subcompactions: 4
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362955Z  INFO surrealdb::core::kvs::rocksdb: Use separate thread queues: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362956Z  INFO surrealdb::core::kvs::rocksdb: Write-ahead-log file size limit: 0MB
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362969Z  INFO surrealdb::core::kvs::rocksdb: Allow concurrent memtable writes: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362980Z  INFO surrealdb::core::kvs::rocksdb: Avoid unnecessary blocking IO: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362989Z  INFO surrealdb::core::kvs::rocksdb: Allow adaptive write thread yielding: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.362992Z  INFO surrealdb::core::kvs::rocksdb: Setting storage engine log level: warn
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363012Z  INFO surrealdb::core::kvs::rocksdb: Target file size for compaction: 67108864
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363033Z  INFO surrealdb::core::kvs::rocksdb: Target file size compaction multiplier: 2
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363043Z  INFO surrealdb::core::kvs::rocksdb: Number of files to trigger compaction: 2
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363044Z  INFO surrealdb::core::kvs::rocksdb: Level-0 slowdown writes trigger: 8
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363052Z  INFO surrealdb::core::kvs::rocksdb: Level-0 stop writes trigger: 12
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363069Z  INFO surrealdb::core::kvs::rocksdb: Periodic compaction seconds: 3600
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363071Z  INFO surrealdb::core::kvs::rocksdb: Enable separation of keys and values: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363082Z  INFO surrealdb::core::kvs::rocksdb: Minimum blob value size: 4096
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363099Z  INFO surrealdb::core::kvs::rocksdb: Target blob file size: 268435456
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363117Z  INFO surrealdb::core::kvs::rocksdb: Blob compression type: snappy
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363138Z  INFO surrealdb::core::kvs::rocksdb: Enable blob garbage collection: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363139Z  INFO surrealdb::core::kvs::rocksdb: Blob GC age cutoff: 0.5
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363149Z  INFO surrealdb::core::kvs::rocksdb: Blob GC force threshold: 0.5
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363158Z  INFO surrealdb::core::kvs::rocksdb: Blob compaction readahead size: 0
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363160Z  INFO surrealdb::core::kvs::rocksdb: Setting delete compaction factory: 500 / 25 (0.5)
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363173Z  INFO surrealdb::core::kvs::rocksdb: Setting compaction style: level
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363193Z  INFO surrealdb::core::kvs::rocksdb: Setting compression level
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363203Z  INFO surrealdb::core::kvs::rocksdb: Setting bottommost compression type: Zstd
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363206Z  INFO surrealdb::core::kvs::rocksdb: Using Zstd typed dictionary training
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363206Z  INFO surrealdb::core::kvs::rocksdb: Prefix extractor: enabled (surrealdb.TablePrefix.v1)
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363216Z  INFO surrealdb::core::kvs::rocksdb: Memtable prefix bloom ratio: 0.1
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363225Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: total memory limit: 12884901888
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363228Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: block cache size: 8589934592B
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363278Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: write buffer size: 134217728B
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363281Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: maximum write buffers: 32
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363290Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: minimum write buffers to merge: 2
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363310Z  INFO surrealdb::core::kvs::rocksdb: Target block size: 65536
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363321Z  INFO surrealdb::core::kvs::rocksdb: Block cache size: 8589934592
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363322Z  INFO surrealdb::core::kvs::rocksdb: Configuring two-level index search
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363323Z  INFO surrealdb::core::kvs::rocksdb: Use partitioned filters for each SST file
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363324Z  INFO surrealdb::core::kvs::rocksdb: Block size for partitioned metadata: 4096 B
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363328Z  INFO surrealdb::core::kvs::rocksdb: Initial auto-readahead size: 8192
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363337Z  INFO surrealdb::core::kvs::rocksdb: Maximum auto-readahead size: 262144
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363340Z  INFO surrealdb::core::kvs::rocksdb: Number of file reads for auto-readahead: 2
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363341Z  INFO surrealdb::core::kvs::rocksdb: Memory manager: whole key filtering: true
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363405Z  INFO surrealdb::core::kvs::rocksdb: Disk space manager: disabled
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363408Z  INFO surrealdb::core::kvs::rocksdb: Sync mode: every transaction commit
+Sep 24 15:19:57 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:57.363409Z  INFO surrealdb::core::kvs::rocksdb: Grouped commit: enabled (timeout=5000000ns, wait_threshold=12, max_batch_size=4096)
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.182207Z  INFO surrealdb::core::kvs::ds: Started rocksdb kvs store
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.189104Z  INFO surreal::dbs: Operation succeeded operation="check_version" attempts=1
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.189441Z  INFO surreal::dbs: Initialising credentials user=lore
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.190767Z  WARN surrealdb::core::kvs::ds: Credentials were provided, but existing root users were found. The root user 'lore' will not be created
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.190783Z  WARN surrealdb::core::kvs::ds: Consider removing the --user and --pass arguments from the server start command
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.190889Z  INFO surreal::dbs: Operation succeeded operation="initialise_credentials" attempts=1
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.198398Z  INFO surreal::dbs: Operation succeeded operation="Insert node" attempts=1
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.198605Z  INFO surreal::dbs: Operation succeeded operation="Expire nodes" attempts=1
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.198683Z  INFO surreal::dbs: Operation succeeded operation="Remove nodes" attempts=1
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.219461Z  INFO surrealdb::net: Started web server on 127.0.0.1:18500
+Sep 24 15:19:58 ean.firehawktransam.org lore-surreal[4058156]: 2026-09-24T19:19:58.219554Z  INFO surrealdb::net: Listening for a system shutdown signal.

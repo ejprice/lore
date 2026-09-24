@@ -1,0 +1,583 @@
+Sep 24 15:19:54 ean.firehawktransam.org kernel: python invoked oom-killer: gfp_mask=0x140dca(GFP_HIGHUSER_MOVABLE|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+Sep 24 15:19:54 ean.firehawktransam.org kernel: CPU: 18 UID: 1000 PID: 4056650 Comm: python Tainted: P           OE       6.18.45-1-MANJARO #1 PREEMPT(full)  f660c4ad2f97a03a4508cb1a797bb14e53f70a61
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Tainted: [P]=PROPRIETARY_MODULE, [O]=OOT_MODULE, [E]=UNSIGNED_MODULE
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Hardware name: Micro-Star International Co., Ltd. MS-7C59/Creator TRX40 (MS-7C59), BIOS 1.70 05/17/2022
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Call Trace:
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  <TASK>
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  dump_stack_lvl+0x5d/0x80
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  dump_header+0x43/0x1aa
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  oom_kill_process.cold+0x8/0x8a
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  out_of_memory+0x231/0x570
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  __alloc_pages_slowpath.constprop.0+0xc96/0xe60
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  __alloc_frozen_pages_noprof+0x342/0x380
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  alloc_pages_mpol+0x86/0x170
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  vma_alloc_folio_noprof+0x6a/0xd0
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  do_anonymous_page+0x362/0x9d0
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  ? srso_return_thunk+0x5/0x5f
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  ? ___pte_offset_map+0x1b/0x160
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  __handle_mm_fault+0xa5c/0xf10
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  ? asm_sysvec_apic_timer_interrupt+0x1a/0x20
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  handle_mm_fault+0xe7/0x2b0
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  do_user_addr_fault+0x23b/0x730
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  exc_page_fault+0x8f/0x1d0
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  asm_exc_page_fault+0x26/0x30
+Sep 24 15:19:54 ean.firehawktransam.org kernel: RIP: 0033:0x7feda04faa07
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Code: 00 00 c5 fd e7 bf 60 10 00 00 c5 7d e7 87 00 20 00 00 c5 7d e7 8f 20 20 00 00 c5 7d e7 97 40 20 00 00 c5 7d e7 9f 60 20 00 00 <c5> 7d e7 a7 00 30 00 00 c5 7d e7 af 20 30 00 00 c5 7d e7 b7 40 30
+Sep 24 15:19:54 ean.firehawktransam.org kernel: RSP: 002b:00007fff77d50ec8 EFLAGS: 00010203
+Sep 24 15:19:54 ean.firehawktransam.org kernel: RAX: 00007fed3beae048 RBX: 00007fed9a2ebc00 RCX: 0000000000000020
+Sep 24 15:19:54 ean.firehawktransam.org kernel: RDX: 000000000000094c RSI: 00007fed4d78b0c8 RDI: 00007fed41f22080
+Sep 24 15:19:54 ean.firehawktransam.org kernel: RBP: 00007fff77d50f00 R08: ffffffffffffffc8 R09: 00007fed3beae010
+Sep 24 15:19:54 ean.firehawktransam.org kernel: R10: 00000000000015fd R11: 0000000000c00000 R12: 0000000000000002
+Sep 24 15:19:54 ean.firehawktransam.org kernel: R13: 00007fed36c01010 R14: 0000000000000004 R15: 0000000002e1a261
+Sep 24 15:19:54 ean.firehawktransam.org kernel:  </TASK>
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Mem-Info:
+Sep 24 15:19:54 ean.firehawktransam.org kernel: active_anon:12815408 inactive_anon:16793380 isolated_anon:0
+                                                 active_file:382 inactive_file:10967 isolated_file:0
+                                                 unevictable:24010 dirty:7082 writeback:0
+                                                 slab_reclaimable:428624 slab_unreclaimable:737382
+                                                 mapped:9287048 shmem:14581177 pagetables:189509
+                                                 sec_pagetables:10042 bounce:0
+                                                 kernel_misc_reclaimable:0
+                                                 free:220202 free_pcp:131 free_cma:0
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 active_anon:51261632kB inactive_anon:67173520kB active_file:1528kB inactive_file:43868kB unevictable:96040kB isolated(anon):0kB isolated(file):0kB mapped:37148192kB dirty:28328kB writeback:0kB shmem:58324708kB shmem_thp:0kB shmem_pmdmapped:0kB anon_thp:11757568kB kernel_stack:70368kB pagetables:758036kB sec_pagetables:40168kB all_unreclaimable? no Balloon:0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 DMA free:11264kB boost:0kB min:4kB low:16kB high:28kB reserved_highatomic:0KB free_highatomic:0KB active_anon:0kB inactive_anon:0kB active_file:0kB inactive_file:0kB unevictable:0kB writepending:0kB zspages:0kB present:15996kB managed:15360kB mlocked:0kB bounce:0kB free_pcp:0kB local_pcp:0kB free_cma:0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: lowmem_reserve[]: 0 2899 128671 128671 128671
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 DMA32 free:504464kB boost:0kB min:1524kB low:4492kB high:7460kB reserved_highatomic:0KB free_highatomic:0KB active_anon:426552kB inactive_anon:2020392kB active_file:68kB inactive_file:4kB unevictable:8192kB writepending:0kB zspages:0kB present:3034856kB managed:2968728kB mlocked:8192kB bounce:0kB free_pcp:504kB local_pcp:0kB free_cma:0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: lowmem_reserve[]: 0 0 125771 125771 125771
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 Normal free:365080kB boost:370688kB min:436736kB low:565388kB high:694040kB reserved_highatomic:0KB free_highatomic:0KB active_anon:50595240kB inactive_anon:65392948kB active_file:1932kB inactive_file:43884kB unevictable:87848kB writepending:28328kB zspages:0kB present:131057664kB managed:128790384kB mlocked:87844kB bounce:0kB free_pcp:20kB local_pcp:0kB free_cma:0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: lowmem_reserve[]: 0 0 0 0 0
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 DMA: 0*4kB 0*8kB 0*16kB 0*32kB 0*64kB 0*128kB 0*256kB 0*512kB 1*1024kB (U) 1*2048kB (M) 2*4096kB (M) = 11264kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 DMA32: 132*4kB (UME) 433*8kB (UME) 334*16kB (UME) 308*32kB (UME) 323*64kB (UME) 318*128kB (UME) 241*256kB (UME) 157*512kB (UME) 103*1024kB (UME) 20*2048kB (UME) 33*4096kB (ME) = 504248kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 Normal: 1612*4kB (UME) 62*8kB (UME) 181*16kB (UME) 2293*32kB (UM) 3665*64kB (UM) 334*128kB (UM) 4*256kB (U) 1*512kB (U) 0*1024kB 0*2048kB 0*4096kB = 362064kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 hugepages_total=0 hugepages_free=0 hugepages_surp=0 hugepages_size=1048576kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Node 0 hugepages_total=0 hugepages_free=0 hugepages_surp=0 hugepages_size=2048kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 14594854 total pagecache pages
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 0 pages in swap cache
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Free swap  = 0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Total swap = 0kB
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 33527129 pages RAM
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 0 pages HighMem/MovableOnly
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 583511 pages reserved
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 0 pages cma reserved
+Sep 24 15:19:54 ean.firehawktransam.org kernel: 1 pages hwpoisoned
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Tasks state (memory values in pages):
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   2890]   979  2890    21130     3693      128     3565         0    65536        0             0 systemd-timesyn
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   2898]     0  2898    11897     5173     1936     3237         0   114688        0         -1000 systemd-udevd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3513]   980  3513     6184     2859      243     2616         0    90112        0             0 systemd-resolve
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3680]    81  3680     2080     1353      164     1189         0    57344        0          -900 dbus-broker-lau
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3683]    81  3683     2064     1284      367      917         0    57344        0          -900 dbus-broker
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3686]   974  3686     1907     1199        0     1199         0    53248        0             0 avahi-daemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3687]     0  3687     2889      804        0      804         0    61440        0             0 bluetoothd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3694]     0  3694     1827     2832        0     2832         0    57344        0             0 rasdaemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3698]     0  3698     2695     2356      256     2100         0    65536        0             0 smartd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3704]     0  3704     3185     2544      335     2209         0    69632        0             0 systemd-logind
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3705]     0  3705     2534     2363      128     2235         0    61440        0             0 systemd-machine
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3715]     0  3715    61239     2487      384     2103         0   102400        0             0 zed
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3733]     0  3733     1064      396        0      396         0    49152        0             0 atd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   3752]   974  3752     1572      129        0      129         0    53248        0             0 avahi-daemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4156]   981  4156     4780     2255      384     1871         0    77824        0             0 systemd-network
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4265]     0  4265   446739     1832     1310      522         0   184320        0             0 dhcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4266]     0  4266     5908     2215      256     1959         0    81920        0             0 cupsd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4271]     0  4271   413454     7026     4480     2546         0   380928        0             0 libvirtd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4279]     0  4279     3238     2907      256     2651         0    65536        0         -1000 sshd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4292]     0  4292     1828      777      128      649         0    53248        0             0 crond
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4308]     0  4308    78074     2237      514     1723         0   110592        0             0 accounts-daemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4319]   973  4319    79481     3103     1280     1823         0   118784        0             0 colord
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4436]   102  4436    97226     3489      896     2593         0   118784        0             0 polkitd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4508]     0  4508    13429     1153      236      917         0    81920        0             0 master
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4510]    73  4510    13449     1443      256     1187         0    90112        0             0 qmgr
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4630] 65534  4630     2748      391      128      263         0    57344        0             0 dnsmasq
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   4631]     0  4631     2748      257      128      129         0    57344        0             0 dnsmasq
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   5796]     0  5796    80470     3289      896     2393         0   135168        0             0 upowerd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   5809]     0  5809   174137     3124     1664     1460         0   180224        0             0 udisksd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   5882]   133  5882    21660      538        0      538         0    65536        0             0 rtkit-daemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [   7414]     0  7414    80182      238        0      238         0   659456        0          -250 systemd-journal
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 352251]     0 352251     2005      419        0      419         0    57344        0             0 agetty
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 363485]     0 363485    46114     6340     3968     2372         0   147456        0             0 dirmngr
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 839904]     0 839904   128927    19795    16857     2938         0   360448        0             0 fwupd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 840616]   944 840616    80186     2471      337     2134         0   122880        0             0 passimd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2220502]     0 2220502   932459     9772     8649     1123         0   536576        0          -900 snapd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1724348]  1000 1724348     5628     4057     1280     2777         0    86016        0           100 systemd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1724350]  1000 1724350     4888      688      276      412         0    77824        0           100 (sd-pam)
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1724368]  1000 1724368  1207642    26465    24781     1684         0   946176        0           200 rclone
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1726853]  1000 1726853     3806     1196        0     1196         0    69632        0             0 tmux: server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1726856]  1000 1726856     1947      679        0      679         0    57344        0           200 dbus-broker-lau
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1726857]  1000 1726857     2718      931      252      679         0    69632        0           200 dbus-broker
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1728821]  1000 1728821     2824     1729      768      961         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753258]  1000 1753258      265        0        0        0         0    36864        0           200 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753444]  1000 1753444     2455      407        0      407         0    53248        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753445]  1000 1753445     2455      393        0      393         0    61440        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753450]  1000 1753450 15425270  4996874  4993428     3446         0 70610944        0           200 surreal
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753451]  1000 1753451  7051654  2827562  2825051     2511         0 28520448        0           200 surreal
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753703]  1000 1753703    48584     6839     6321      518         0    90112        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753716]  1000 1753716     2455      407        0      407         0    57344        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753717]  1000 1753717     2455      407        0      407         0    61440        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753736] 100998 1753736    56258     5376      512     1536      3328   159744        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1753737] 100000 1753737     7828     6784     4224     2560         0   102400        0           200 supervisord
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754209] 100998 1754209    56291     1050      515      400       135   135168        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754210] 100998 1754210    56258      916      515      401         0   114688        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754211] 100998 1754211    56258      907      515      392         0   114688        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754212] 100998 1754212    56291     1565      515      655       395   126976        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754213] 100998 1754213    56298     1313      515      523       275   126976        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754216] 100998 1754216    56291     2077      515      538      1024   122880        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754217] 100998 1754217    56653     2383      515     1602       266   151552        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754219] 100998 1754219    56653     2256      515     1600       141   131072        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754228]  1000 1754228    48584     6990     6470      520         0    98304        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754283] 100000 1754283     7247     1409      384     1025         0    98304        0           200 nmbd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754284] 100000 1754284     9720     1667      512     1155         0   118784        0           200 smbd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754307] 100000 1754307     9163      547      535       12         0   114688        0           200 smbd-notifyd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754308] 100000 1754308     9170      672      535      137         0   114688        0           200 smbd-cleanupd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754975]  1000 1754975    48583     7505     6854      651         0   106496        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754979]  1000 1754979     2455      395        0      395         0    53248        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1754982]  1000 1754982      265        0        0        0         0    40960        0           200 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1755150]  1000 1755150     2455      386        0      386         0    61440        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1755153]  1000 1755153   328583     6836     4837     1999         0   258048        0           200 caddy
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756543]  1000 1756543    48584     6714     6321      393         0   102400        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756546]  1000 1756546     2455      388        0      388         0    61440        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756548]  1000 1756548      265        0        0        0         0    36864        0           200 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756612]  1000 1756612     2455      395        0      395         0    57344        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756614]  1000 1756614      639        0        0        0         0    36864        0           200 dumb-init
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756618] 100999 1756618    85811    55812    53041     2771         0   585728        0           200 jupyter-lab
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756623]  1000 1756623     2455      388        0      388         0    61440        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756625] 100999 1756625  1112708    32273      256     2065     29952   417792        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756665] 100999 1756665  1112748    10287      623      941      8723   278528        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756666] 100999 1756666  1112744    10024      623      802      8599   253952        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756670] 100999 1756670  1112744     5257      624      537      4096   188416        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756671] 100999 1756671  1113111     2335      624     1572       139   208896        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756672] 100999 1756672  1113142     2224      624     1343       257   204800        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756673] 100999 1756673  1113114     1825      624     1061       140   184320        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756674] 100999 1756674  1113771     5298      752     1227      3319   294912        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1756675] 100999 1756675  1113771     5544      880     1488      3176   294912        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1999338]     0 1999338     2005      546        0      546         0    49152        0             0 agetty
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2009071]     0 2009071    76939     1354        0     1354         0   110592        0             0 lightdm
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2010976]  1000 2010976    98829     1823      128     1695         0   122880        0           200 gnome-keyring-d
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2011653]  1000 2011653    32440     6378        0     2619      3759   131072        0           200 pipewire
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2011655]  1000 2011655   122696     3871     1725     2146         0   204800        0           200 wireplumber
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2011803]  1000 2011803    41999     1469      128     1341         0    86016        0           200 at-spi2-registr
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2011929]  1000 2011929    41419     1431      128     1303         0    81920        0           200 dconf-service
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2012142]  1000 2012142    52137     1739      710     1029         0   155648        0           200 pipewire-pulse
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2012799]  1000 2012799    57413      530        0      530         0    77824        0           200 gpg-agent
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2012803]  1000 2012803    20797      536        0      536         0    65536        0           200 scdaemon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2462002]  1000 2462002    81936     2143      384     1759         0   147456        0           200 gcr-ssh-agent
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2462006]  1000 2462006     3233     1323      256     1067         0    65536        0           200 ssh-agent
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3571946] 100000 3571946    16872     5462      539     4923         0   180224        0           200 smbd-scavenger
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 170761]  1000 170761    48583     7222     6835      387         0   102400        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 170764]  1000 170764     2455      413        0      413         0    57344        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 170766] 129749 170766       58        0        0        0         0    24576        0           200 dumb-init
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 170768] 129749 170768    14921    12100     8572     3528         0   159744        0           200 python3
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081586]  1000 2081586    48584     6738     6343      395         0   102400        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081589]  1000 2081589     2456      395        0      395         0    61440        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081591]  1000 2081591      265        0        0        0         0    40960        0             0 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081606]  1000 2081606     2456      399        0      399         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081608] 100998 2081608    16709     5849     4121     1728         0   122880        0             0 valkey-server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081619]  1000 2081619     2456      390        0      390         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081621] 100998 2081621  2191736    64240      512     2160     61568   647168        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081702] 100998 2081702  2191769   197867      517      786    196564  6180864        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081703] 100998 2081703  2191769   186995      517      788    185690  5722112        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081704] 100998 2081704  2191769   183225      517      785    181923  5447680        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081705] 100998 2081705  2191888   409313      517     1068    407728  4628480        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081706] 100998 2081706  2191736    17434      517      528     16389   270336        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081717] 100998 2081717  2191769    18473      517     1572     16384   262144        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081718] 100998 2081718  2192132     3306      517     2510       279   167936        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2081719] 100998 2081719  2192130     2538      517     1878       143   139264        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2481340]  1000 2481340    41999     1600      128     1472         0    81920        0           200 at-spi2-registr
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193422]     0 3193422  6492795    19242     3750     4228     11264   471040        0             0 Xorg
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193490]     0 3193490    42982     1864      384     1480         0    98304        0             0 lightdm
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193511]   969 3193511     5131     2696      768     1928         0    73728        0           100 systemd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193513]   969 3193513     4888      815      276      539         0    77824        0           100 (sd-pam)
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193534]   969 3193534  1254741    29871    16239     3056     10576   978944        0             0 lightdm-gtk-gre
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193537]   969 3193537     1947      661        0      661         0    53248        0           200 dbus-broker-lau
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193538]   969 3193538     1261      550        0      550         0    53248        0           200 dbus-broker
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193539]   969 3193539    95132     1498      128     1370         0   110592        0           200 at-spi-bus-laun
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193545]   969 3193545     1915      813        0      813         0    57344        0           200 dbus-broker-lau
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193546]   969 3193546     1230      672        0      672         0    57344        0           200 dbus-broker
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193549]   969 3193549    82811     2153      384     1769         0   147456        0           200 gvfsd
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193555]   969 3193555    81256     1220        0     1220         0   106496        0           200 gvfsd-fuse
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3193668]   969 3193668    42319     1355      128     1227         0    94208        0           200 gvfsd-metadata
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3194262]     0 3194262     5017     1334      128     1206         0    77824        0             0 lightdm
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3194263]   969 3194263    41999     1452      128     1324         0    90112        0           200 at-spi2-registr
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 224618]  1000 224618     2825     1714      768      946         0    65536        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 691126]  1000 691126     2825     1865      768     1097         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 707932]  1000 707932  1425412    81777    78557     3220         0  2076672        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 708085]  1000 708085    68181    16486    13440     3046         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 708086]  1000 708086   790578     8955     6860     2095         0   483328        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 708131]  1000 708131    48583     6731     6342      389         0    98304        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 708134]  1000 708134     2456      392        0      392         0    65536        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 708136]  1000 708136   312616     3106     2601      505         0   147456        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2432632]  1000 2432632     2825     1592      640      952         0    57344        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2433057]  1000 2433057  1419178    89809    86767     3042         0  2068480        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2433193]  1000 2433193    65732    15929    13312     2617         0   303104        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674081]  1000 2674081  1423365    82600    79078     3522         0  2043904        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674179]  1000 2674179    68181    15931    13440     2491         0   323584        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674180]  1000 2674180   790710    10319     8118     2201         0   491520        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674226]  1000 2674226    48585     6599     6343      256         0    98304        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674247]  1000 2674247     2456      528        0      528         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2674253]  1000 2674253   312552     2914     2021      893         0   143360        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728265]  1000 2728265  1412071    72867    69982     2885         0  1847296        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2837729]  1000 2837729    68185    16153    13184     2969         0   319488        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3724642]  1000 3724642     2455      393        0      393         0    53248        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3724644] 100998 3724644   825734    55519    52195     3324         0  1114112        0           200 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909876]  1000 3909876    48584     6120     5736      384         0    98304        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909879]  1000 3909879     2456      407        0      407         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909881]  1000 3909881      265        0        0        0         0    36864        0             0 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909884]  1000 3909884     2456      389        0      389         0    65536        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909886] 100998 3909886    16709     6487     3742     2745         0   126976        0             0 valkey-server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909940]  1000 3909940     2456      392        0      392         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3909942] 100998 3909942  2191777    63978      512     1898     61568   655360        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910230] 100998 3910230  2191778   862254      517      823    860914 15564800        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910231] 100998 3910231  2191777   615955      517      952    614486 15233024        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910232] 100998 3910232  2191777   554262      517      821    552924 15126528        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910233] 100998 3910233  2198174  2014102     6900     1455   2005747 17121280        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910234] 100998 3910234  2191987   689589      517      943    688129 11534336        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910236] 100998 3910236  2191777    17591      517      684     16390   266240        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910237] 100998 3910237  2192647     3195      517     2284       394   192512        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3910238] 100998 3910238  2192137     2537      517     1892       128   151552        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4161846]  1000 4161846     2825     1724      768      956         0    65536        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163031]  1000 4163031  1419320    74390    71091     3299         0  1937408        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163198]  1000 4163198    68183    16737    13312     3425         0   307200        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163199]  1000 4163199   807108     9779     7442     2337         0   491520        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163247]  1000 4163247    48583     6470     6342      128         0    98304        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163276]  1000 4163276     2456      399        0      399         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4163282]  1000 4163282   312293     3182     2822      360         0   135168        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255879]  1000 255879    48585     6466     6338      128         0    94208        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255883]  1000 255883     2456      400        0      400         0    61440        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255885]  1000 255885      265        0        0        0         0    45056        0             0 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255896]  1000 255896     2456      394        0      394         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255906] 100998 255906    16709     6631     3741     2890         0   122880        0             0 valkey-server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255945]  1000 255945     2456      398        0      398         0    61440        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 255947] 100998 255947  2191777    64249      512     2169     61568   655360        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256244] 100998 256244  2191821   851947      492      807    850648 15892480        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256245] 100998 256245  2191777   621259      492      926    619841 15532032        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256246] 100998 256246  2191777   570588      492      806    569290 15216640        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256247] 100998 256247  2195941  2105893     4627      936   2100330 17326080        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256248] 100998 256248  2191865   134873      492      935    133446  4022272        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256250] 100998 256250  2191777    17550      492      668     16390   270336        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256251] 100998 256251  2192647     3153      492     2390       271   180224        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 256252] 100998 256252  2192137     2469      492     1846       131   147456        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 263629]  1000 263629     2456      393        0      393         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 263631] 123788 263631  2332419    85217    82440     2777         0  1331200        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 263670] 100998 263670  2195884   159421     2860     2049    154512  5591040        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 263935] 100998 263935  2193084    16021      884     3653     11484   790528        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 263938] 100998 263938  2195689   147466     3120     2055    142291  5435392        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 264264] 100998 264264  2194642   106448     2109     2187    102152  4108288        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [ 264313] 100998 264313  2193504    38596     1396     2048     35152  2109440        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1178620]  1000 1178620     2455      393        0      393         0    53248        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1178623]  1000 1178623     1016      132        0      132         0    45056        0           200 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1178634]  1000 1178634  8278101   278186   278186        0         0 21643264        0           200 qdrant
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1575257]     0 1575257    23981    22579    20940     1639         0   241664        0          -999 atop
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1739917]  1000 1739917  1411105    82998    79473     3525         0  1961984        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1740030]  1000 1740030    69045    16935    14184     2751         0   315392        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1740031]  1000 1740031   790387     8734     6606     2128         0   479232        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1740080]  1000 1740080    48584     6599     6343      256         0   106496        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1740100]  1000 1740100     2456      386        0      386         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1740102]  1000 1740102   312421     2709     2451      258         0   147456        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1910052]  1000 1910052     2456      391        0      391         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1910054] 123788 1910054  2306328    54372    51188     3184         0  1048576        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1910093] 100998 1910093  2192971    10749     1157     1365      8227   360448        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1910352] 100998 1910352  2192554     9168      901     3227      5040   303104        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927395]  1000 1927395     2457      388        0      388         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927397] 123788 1927397  2177774    53253    50001     3252         0   802816        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927443]  1000 1927443     2457      410        0      410         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927445]  1000 1927445     3753     1184      384      800         0    65536        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927463] 100100 1927463     3873      494      361      133         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927464] 100100 1927464     3873      494      361      133         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927465] 100100 1927465     3873      494      361      133         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927466] 100100 1927466     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927467] 100100 1927467     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927468] 100100 1927468     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927469] 100100 1927469     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927470] 100100 1927470     3873      621      361      260         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927471] 100100 1927471     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927472] 100100 1927472     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927473] 100100 1927473     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927474] 100100 1927474     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927475] 100100 1927475     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927476] 100100 1927476     3873      489      361      128         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927477] 100100 1927477     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927478] 100100 1927478     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927479] 100100 1927479     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927480] 100100 1927480     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927481] 100100 1927481     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927483] 100100 1927483     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927484] 100100 1927484     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927485] 100100 1927485     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927486] 100100 1927486     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927487] 100100 1927487     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927488] 100100 1927488     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927489] 100100 1927489     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927490] 100100 1927490     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927491] 100100 1927491     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927492] 100100 1927492     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927493] 100100 1927493     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927494] 100100 1927494     3873      491      361      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927495] 100100 1927495     3873      472      342      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927496] 100100 1927496     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927497] 100100 1927497     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927498] 100100 1927498     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927499] 100100 1927499     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927500] 100100 1927500     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927501] 100100 1927501     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927502] 100100 1927502     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927503] 100100 1927503     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927505] 100100 1927505     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927507] 100100 1927507     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927508] 100100 1927508     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927509] 100100 1927509     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927510] 100100 1927510     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927511] 100100 1927511     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927512] 100100 1927512     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927513] 100100 1927513     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927514] 100100 1927514     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927515] 100100 1927515     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927516] 100100 1927516     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927517] 100100 1927517     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927518] 100100 1927518     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927519] 100100 1927519     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927520] 100100 1927520     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927521] 100100 1927521     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927522] 100100 1927522     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927523] 100100 1927523     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927524] 100100 1927524     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927525] 100100 1927525     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927526] 100100 1927526     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927527] 100100 1927527     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927528] 100100 1927528     3873      492      362      130         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1927529] 100100 1927529     3873      625      362      263         0    61440        0             0 nginx
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928126] 123788 1928126  2229244    85306    81875     3431         0  1056768        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928128] 123788 1928128  2194672    84235    80967     3268         0  1036288        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928130] 123788 1928130  2199006    88719    85558     3161         0  1077248        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928132] 123788 1928132  2194160    82976    79952     3024         0  1024000        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928133] 123788 1928133  2306670    59035    55113     3922         0  1073152        0             0 python3
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928135] 123788 1928135  2177774    53901    50420     3481         0   774144        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928141] 100998 1928141  2205598   791007    11093     1104    778810 12161024        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928182] 100998 1928182  2205118   781043    10984     1097    768962 12115968        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928497] 100998 1928497  2193076    15565      909     3204     11452   802816        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928711] 100998 1928711  2193478    33420     1165      837     31418  1785856        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928812] 100998 1928812  2193004    15873      781     1091     14001   970752        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928954] 100998 1928954  2192979    10632      653     1089      8890   667648        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928955] 100998 1928955  2192979     9737      653     1089      7995   622592        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1928956] 100998 1928956  2193010    13971      781     1221     11969   868352        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1929080] 100998 1929080  2192770     3568      653     1064      1851   299008        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1931896] 100998 1931896  2192969     7550      653     1089      5808   475136        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1931897] 100998 1931897  2192969     7689      653     1217      5819   475136        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1931898] 100998 1931898  2192969     7956      781     1218      5957   475136        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1934298] 100998 1934298  2205737   792320    11529      969    779822 12173312        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1934323] 100998 1934323  2205606   783586    11248     1103    771235 12099584        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1934842] 100998 1934842  2205293   788661    11185      973    776503 12124160        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1936306] 100998 1936306  2205538   787811    11683      973    775155 12148736        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1937210] 100998 1937210  2205052   788041    11204      979    775858 12070912        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [1939563] 100998 1939563  2205148   789341    11325      967    777049 12042240        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417499]  1000 2417499    48583     6045     5789      256         0    90112        0           200 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417502]  1000 2417502     2456      394        0      394         0    53248        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417504]  1000 2417504      265        0        0        0         0    36864        0           200 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417507]  1000 2417507     2456      396        0      396         0    57344        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417509] 100998 2417509    16709     7367     4120     3247         0   126976        0           200 valkey-server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417550]  1000 2417550     2456      390        0      390         0    57344        0           200 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417552] 100998 2417552  2191777    63735      512     1783     61440   659456        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417870] 100998 2417870  2191778   743817      516      537    742764 15298560        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417871] 100998 2417871  2191777   560148      516      670    558962 14516224        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417872] 100998 2417872  2191777   531534      516      670    530348 14229504        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417873] 100998 2417873  2195941  2072770     4640      536   2067594 17170432        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417874] 100998 2417874  2192025   133372      516      661    132195  3473408        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417876] 100998 2417876  2191777    17712      516      811     16385   278528        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417877] 100998 2417877  2192647     2671      516     1882       273   196608        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2417878] 100998 2417878  2192137     2257      516     1608       133   155648        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728121]  1000 2728121     2456      398        0      398         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728123] 123788 2728123  2177573    52610    49525     3085         0   790528        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728896] 123788 2728896  2221617    70384    66842     3542         0   929792        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728898] 123788 2728898  2219569    71609    67549     4060         0   925696        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728900] 123788 2728900  2219825    70465    67177     3288         0   917504        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728902] 123788 2728902  2219569    71511    67563     3948         0   925696        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728903] 123788 2728903    57197    22145    18680     3465         0   299008        0             0 python3
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728905] 123788 2728905  2177573    53653    50287     3366         0   757760        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2728907] 100998 2728907  2198202   391080     5181     1503    384396  9900032        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2729190] 100998 2729190  2193076    14061      780     3115     10166   675840        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2729859] 100998 2729859  2196584   192042     3352      971    187719  5795840        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2729873] 100998 2729873  2196212   226494     3491     1248    221755  6533120        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2729920] 100998 2729920  2197232   235100     3860     1379    229861  6672384        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2730470] 100998 2730470  2196312   337635     3471     1239    332925  8413184        0           200 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2807472]  1000 2807472  1408799    58192    55391     2801         0  1589248        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2807583]  1000 2807583    65735    16417    13440     2977         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2864246]  1000 2864246     2456      404        0      404         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2864249]  1000 2864249      643      256        0      256         0    49152        0             0 tini
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2864252]  1000 2864252   364590   259638   256562     3076         0  2363392        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888645]  1000 2888645  1413994    66891    64287     2604         0  1794048        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888776]  1000 2888776    68083    16300    13184     3116         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888779]  1000 2888779   806853    11040     8317     2723         0   487424        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888823]  1000 2888823    48584     5763     5620      143         0    98304        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888829]  1000 2888829     2456      523        0      523         0    65536        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2888831]  1000 2888831   312229     2673     1694      979         0   139264        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2907906]  1000 2907906  1442503    72614    68644     3970         0  1998848        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [2908084]  1000 2908084    65989    16268    13440     2828         0   307200        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3353836]  1000 3353836     2825     1720      768      952         0    69632        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390737]  1000 3390737  1421194    69698    66336     3362         0  1810432        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390861]  1000 3390861    68082    16052    13184     2868         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390862]  1000 3390862   808883     7331     5112     2219         0   503808        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390944]  1000 3390944    48584     3205     3077      128         0   106496        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390963]  1000 3390963     2456      391        0      391         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3390965]  1000 3390965   312616     2254     1657      597         0   151552        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3436043]  1000 3436043  1409704    60636    57609     3027         0  1589248        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3436249]  1000 3436249    65734    16150    13184     2966         0   315392        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3454633]  1000 3454633     2825     1728      768      960         0    65536        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455023]  1000 3455023  1413873    67728    65137     2591         0  1777664        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455120]  1000 3455120    65732    16065    13184     2881         0   303104        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455121]  1000 3455121   790450     7218     5245     1973         0   487424        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455167]  1000 3455167    48584     3365     3101      264         0   106496        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455186]  1000 3455186     2456      396        0      396         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3455188]  1000 3455188   312421     1985     1402      583         0   147456        0             0 github-mcp-serv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785198]  1000 3785198    48585     3367     3103      264         0   102400        0             0 passt.avx2
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785203]  1000 3785203     2456      388        0      388         0    61440        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785205]  1000 3785205      265        0        0        0         0    36864        0             0 catatonit
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785210]  1000 3785210     2456      398        0      398         0    61440        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785212] 100998 3785212    16709     4405      896     3509         0   131072        0             0 valkey-server
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785252]  1000 3785252     2456      392        0      392         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785254] 100998 3785254  2191777    63462      384     1638     61440   647168        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785611] 100998 3785611  2191778   934451      517      685    933249 15671296        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785612] 100998 3785612  2191777   602327      517      691    601119 15290368        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785613] 100998 3785613  2191777   538722      517      680    537525 14798848        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785614] 100998 3785614  2197640  1105897     6381      551   1098965 14553088        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785615] 100998 3785615  2191987   564153      517      802    562834 11808768        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785617] 100998 3785617  2191777    17458      517      678     16263   262144        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785618] 100998 3785618  2192647     2948      517     2171       260   184320        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3785619] 100998 3785619  2192137     2126      517     1477       132   143360        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3794257]  1000 3794257     2825     1458      511      947         0    65536        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3795065]  1000 3795065  1412907    71422    67820     3602         0  1843200        0             0 claude
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3795438]  1000 3795438    65732    14587    12544     2043         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839124]  1000 3839124  1407654    56997    53652     3345         0  1495040        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839158]  1000 3839158  1411755    56396    52521     3875         0  1560576        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839175]  1000 3839175  1405604    54043    50786     3257         0  1507328        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839370]  1000 3839370    65735    15757    13184     2573         0   307200        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839395]  1000 3839395    65734    16318    13568     2750         0   307200        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3839610]  1000 3839610    65735    16169    13440     2729         0   307200        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3846166]  1000 3846166  1412780    73560    69805     3755         0  1703936        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3846307]  1000 3846307    65991    15786    13312     2474         0   303104        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3917935]  1000 3917935     2058     1085        0     1085         0    49152        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3917936]  1000 3917936     2058      938        0      938         0    57344        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3917937]  1000 3917937     2058     1092        0     1092         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3918735]  1000 3918735     2058     1838        0     1838         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3960944]  1000 3960944  1410849    76531    72988     3543         0  1605632        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3961050]  1000 3961050    65734    15393    13312     2081         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3973013]  1000 3973013  1406817    71481    68245     3236         0  1593344        0             0 2.1.280
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3973148]  1000 3973148    68083    15268    12800     2468         0   315392        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [3973388]  1000 3973388     2057     1518        0     1518         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4000561]  1000 4000561     2058      799        0      799         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4002827]    73 4002827    13435     1724      256     1468         0    86016        0             0 pickup
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4006526]  1000 4006526     2058      803        0      803         0    57344        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4006528]  1000 4006528     2025     1072        0     1072         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4014233]  1000 4014233     2025     1205        0     1205         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028298]  1000 4028298     1521      396        0      396         0    53248        0             0 timeout
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028299]  1000 4028299    59849     3996     2252     1744         0   229376        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028302]  1000 4028302   250876    24915    21885     3030         0   380928        0             0 pytest
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028328]  1000 4028328    87082    52723    49840     2883         0   618496        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028339]  1000 4028339    90482    57043    53908     3135         0   634880        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028342]  1000 4028342   126668    55863    53102     2761         0   647168        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028345]  1000 4028345   126025    55867    52596     3271         0   638976        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028348]  1000 4028348    89419    55497    52217     3280         0   630784        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028351]  1000 4028351   125507    54223    51187     3036         0   630784        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028355]  1000 4028355    81291    48662    45601     3061         0   561152        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028358]  1000 4028358   134943    64271    61232     3039         0   696320        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028361]  1000 4028361   160354    52855    49789     3066         0   634880        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028364]  1000 4028364   140906   106262   103989     2273         0  1122304        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028367]  1000 4028367   130819    59401    57137     2264         0   671744        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028370]  1000 4028370    86161    52006    49611     2395         0   598016        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028652]  1000 4028652     1521      394        0      394         0    49152        0             0 timeout
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028653]  1000 4028653    59848     3925     2259     1666         0   233472        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028657]  1000 4028657   250874    24177    21584     2593         0   385024        0             0 pytest
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028679]  1000 4028679    89349    56347    52949     3398         0   626688        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028682]  1000 4028682    77780    45015    41601     3414         0   528384        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028685]  1000 4028685   125641    55301    52258     3043         0   643072        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028688]  1000 4028688    90187    56152    53129     3023         0   618496        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028691]  1000 4028691   129303    57795    54974     2821         0   667648        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028694]  1000 4028694   124242    52573    49815     2758         0   630784        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028697]  1000 4028697    93543    60883    57744     3139         0   651264        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028700]  1000 4028700    89119    54986    51959     3027         0   614400        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028705]  1000 4028705   161340    53697    50519     3178         0   647168        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028712]  1000 4028712   140068   106725   103273     3452         0  1126400        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028717]  1000 4028717    82817    49873    47131     2742         0   573440        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028721]  1000 4028721    89884    55779    53014     2765         0   626688        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028815]  1000 4028815     1521      400        0      400         0    49152        0             0 timeout
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028816]  1000 4028816    59848     4078     2176     1902         0   229376        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028819]  1000 4028819   250874    24201    21760     2441         0   385024        0             0 pytest
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028830]  1000 4028830   125776    54489    51620     2869         0   638976        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028833]  1000 4028833   126351    55044    52516     2528         0   643072        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028836]  1000 4028836    77024    43138    40264     2874         0   516096        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028845]  1000 4028845   126115    55526    51999     3527         0   634880        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028848]  1000 4028848   130541    59202    56636     2566         0   671744        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028855]  1000 4028855    86948    52234    49720     2514         0   610304        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028858]  1000 4028858   161157    53557    49907     3650         0   647168        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028878]  1000 4028878    91203    56856    54234     2622         0   630784        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028881]  1000 4028881    93787    59639    56766     2873         0   651264        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028884]  1000 4028884    87608    53571    51125     2446         0   626688        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028887]  1000 4028887    82897    50142    46603     3539         0   569344        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4028890]  1000 4028890   141078   107273   104394     2879         0  1142784        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030887]  1000 4030887     1521      397        0      397         0    53248        0             0 timeout
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030888]  1000 4030888    59849     4376     2234     2142         0   233472        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030891]  1000 4030891   250872    23540    21040     2500         0   380928        0             0 pytest
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030919]  1000 4030919   126548    55543    52934     2609         0   638976        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030922]  1000 4030922    77121    42874    39780     3094         0   520192        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030925]  1000 4030925   129622    58048    55341     2707         0   659456        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030928]  1000 4030928   143928    54278    51270     3008         0   659456        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030931]  1000 4030931   126357    54758    52387     2371         0   643072        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030934]  1000 4030934    88957    55048    52511     2537         0   626688        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030937]  1000 4030937    93760    59453    57071     2382         0   663552        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030940]  1000 4030940   160428    52203    49622     2581         0   643072        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030943]  1000 4030943    81051    48829    45695     3134         0   548864        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030948]  1000 4030948   127005    54902    52527     2375         0   651264        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030951]  1000 4030951   138464   105968   103185     2783         0  1097728        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4030954]  1000 4030954    87438    53906    50657     3249         0   618496        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4037249]  1000 4037249     2058      813        0      813         0    49152        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4037252]  1000 4037252     1521      398        0      398         0    53248        0             0 timeout
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4037253]  1000 4037253     2025     1183        0     1183         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4038025]  1000 4038025     2456      390        0      390         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4038027] 123788 4038027  2315559    58759    55741     3018         0  1118208        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4038092] 100998 4038092  2193529    34744     1336     1067     32341  2076672        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4038445] 100998 4038445  2193076    14992      909     1858     12225   884736        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4039083] 100998 4039083  2193670    45714     1421     1058     43235  2572288        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4040369]  1000 4040369     2058     1455        0     1455         0    57344        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4041765]  1000 4041765     2058     1213        0     1213         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4043083]  1000 4043083     2058     1325        0     1325         0    57344        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4043259]  1000 4043259  1410800    69045    65791     3254         0  1548288        0             0 2.1.281
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4043461]  1000 4043461    65990    15714    12928     2786         0   311296        0             0 odt-mcp
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4044231]  1000 4044231     2058     1075        0     1075         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4047506]  1000 4047506     1624      396        0      396         0    53248        0             0 xargs
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4048906]  1000 4048906     2058      819        0      819         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4048908]  1000 4048908     2025      818        0      818         0    65536        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4048922]  1000 4048922   806596     7461     6016     1445         0   491520        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4049042]  1000 4049042     2457      390        0      390         0    57344        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4049044] 123788 4049044  2361706   107637   105693     1944         0  1527808        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4049083] 100998 4049083  2201605   219866     6030     1585    212251  7516160        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4049265] 100998 4049265  2201937   304198     6618     1306    296274 10002432        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4050398]  1000 4050398     2025     1080        0     1080         0    57344        0             0 q4.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4050430]  1000 4050430     2058     1193        0     1193         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4050788]  1000 4050788     2058      925        0      925         0    61440        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4052703]  1000 4052703     2025      810        0      810         0    49152        0             0 q5.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4052815]  1000 4052815     2058      943        0      943         0    53248        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4053129]  1000 4053129     2025      941        0      941         0    53248        0             0 wb_one.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4053130]  1000 4053130     2025      945        0      945         0    57344        0             0 wb_one.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056608]  1000 4056608     2025      795        0      795         0    53248        0             0 run.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056613]  1000 4056613     2025      675        0      675         0    61440        0             0 run.sh
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056644]  1000 4056644    57161     3042     1792     1250         0   225280        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056645]  1000 4056645    57161     2924     1792     1132         0   233472        0             0 uv
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056650]  1000 4056650   509896   210215   207922     2293         0  1900544        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056651]  1000 4056651   509936   222300   220505     1795         0  2015232        0             0 python
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056654]  1000 4056654     1525      395        0      395         0    49152        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056782]  1000 4056782     2025      808        0      808         0    49152        0             0 bash
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056784]  1000 4056784   790442     7672     6016     1656         0   487424        0             0 podman
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056900]  1000 4056900     2457      410        0      410         0    53248        0             0 conmon
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056902] 123788 4056902  2325078    72232    70145     2087         0  1208320        0             0 odoo
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4056969] 100998 4056969  2193036    10085     1029     1053      8003   368640        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057253] 100998 4057253  2196464    39048     3294     1441     34313  1765376        0             0 postgres
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057596]  1000 4057596     1526      396        0      396         0    49152        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057599]  1000 4057599     1526      393        0      393         0    57344        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057632]  1000 4057632     1526      534        0      534         0    53248        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057689]  1000 4057689     1526      409        0      409         0    53248        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057724]  1000 4057724     1526      529        0      529         0    53248        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057760]  1000 4057760     1526      395        0      395         0    49152        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057790]  1000 4057790     1526      528        0      528         0    53248        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057792]  1000 4057792     1526      534        0      534         0    57344        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057830]  1000 4057830     1526      395        0      395         0    49152        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057964]  1000 4057964     1526      409        0      409         0    49152        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: [4057990]  1000 4057990     1526      394        0      394         0    61440        0             0 sleep
+Sep 24 15:19:54 ean.firehawktransam.org kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/lore-surreal.service/libpod-payload-05ae92f8e4519eb5326ded2341d6fa179e1812ac3965feb3001512b90e4481ec,task=surreal,pid=1753450,uid=1000
+Sep 24 15:19:54 ean.firehawktransam.org kernel: Out of memory: Killed process 1753450 (surreal) total-vm:61701080kB, anon-rss:19973712kB, file-rss:13784kB, shmem-rss:0kB, UID:1000 pgtables:68956kB oom_score_adj:200

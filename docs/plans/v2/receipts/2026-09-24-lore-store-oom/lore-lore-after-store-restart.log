@@ -1,0 +1,473 @@
+2026-09-24T15:16:48.200284000-04:00 {"ts": "2026-09-24T19:16:48.199706+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.file.done", "tier": "lore", "file_path": "REPORT-adversary-63c-i-a-r2.md", "n_chunks": 14, "state": "indexed", "duration_ms": 6330.557984, "usage_tokens": null}
+2026-09-24T15:19:14.612893000-04:00 {"ts": "2026-09-24T19:19:14.608842+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1129, in apply\n    statement_text, merged_params = compose(*fragments)\n                                    ~~~~~~~^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 367, in compose\n    raise SurrealStoreError(\n    ...<3 lines>...\n    )\nloremaster.store._txn.SurrealStoreError: composed transaction has 5105 statements, exceeding the hard cap of 5000 statements per transaction \u2014 refused before anything was sent to the server"}
+2026-09-24T15:19:14.625886000-04:00 {"ts": "2026-09-24T19:19:14.625708+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries"}
+2026-09-24T15:19:15.533852000-04:00 {"ts": "2026-09-24T19:19:15.533681+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealdb-docs"}
+2026-09-24T15:19:15.534441000-04:00 {"ts": "2026-09-24T19:19:15.534358+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealql-tests"}
+2026-09-24T15:19:15.535048000-04:00 {"ts": "2026-09-24T19:19:15.534969+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "spectron-docs"}
+2026-09-24T15:19:15.799609000-04:00 {"ts": "2026-09-24T19:19:15.799354+00:00", "level": "INFO", "logger": "loremaster.index.reconcile", "msg": "reconcile.summary", "files_indexed": 1, "files_failed": 1, "files_skipped": 1234, "files_purged": 0, "tiers_rebuilt": ["lore"], "tiers_skipped": ["surrealdb-docs", "surrealql-tests", "spectron-docs"], "duration_ms": 154092.767375}
+2026-09-24T15:29:25.372140000-04:00 {"ts": "2026-09-24T19:29:25.366719+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "REPORT-adversary-63c-i-a-r2.md", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 1489, in _txn_query_raw\n    response = await connection.query_raw(statement, params)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.14/site-packages/surrealdb/connections/async_ws.py\", line 236, in query_raw\n    response = await self._send(message, \"query\", bypass=True)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.14/site-packages/surrealdb/connections/async_ws.py\", line 100, in _send\n    await self.socket.send(message.WS_CBOR_DESCRIPTOR)\n  File \"/app/.venv/lib/python3.14/site-packages/websockets/asyncio/connection.py\", line 485, in send\n    async with self.send_context():\n               ~~~~~~~~~~~~~~~~~^^\n  File \"/usr/local/lib/python3.14/contextlib.py\", line 214, in __aenter__\n    return await anext(self.gen)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/.venv/lib/python3.14/site-packages/websockets/asyncio/connection.py\", line 965, in send_context\n    raise self.protocol.close_exc from original_exc\nwebsockets.exceptions.ConnectionClosedError: no close frame received or sent\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1132, in apply\n    await execute_transaction(\n    ...<5 lines>...\n    )\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 1332, in execute_transaction\n    await _run_verified_transaction(\n    ...<6 lines>...\n    )\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 1446, in _run_verified_transaction\n    await retry_on_conflict(_attempt, deadline_seconds=deadline_seconds)\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 923, in retry_on_conflict\n    return await attempt()\n           ^^^^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 1426, in _attempt\n    response = await _txn_query_raw(statement, params, acquire=acquire, drop=drop, url=url)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 1493, in _txn_query_raw\n    raise SurrealConnectionError(\n        f\"SurrealDB transaction failed against {url!r}: {error}\"\n    ) from error\nloremaster.store._txn.SurrealConnectionError: SurrealDB transaction failed against 'ws://127.0.0.1:18500/rpc': no close frame received or sent"}
+2026-09-24T15:29:25.376297000-04:00 {"ts": "2026-09-24T19:29:25.376103+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "REPORT-adversary-63c-i-a-r2.md", "reason": "store_op_failed_after_retries"}
+2026-09-24T15:32:01.597640000-04:00 {"ts": "2026-09-24T19:32:01.596248+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1129, in apply\n    statement_text, merged_params = compose(*fragments)\n                                    ~~~~~~~^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 367, in compose\n    raise SurrealStoreError(\n    ...<3 lines>...\n    )\nloremaster.store._txn.SurrealStoreError: composed transaction has 5105 statements, exceeding the hard cap of 5000 statements per transaction \u2014 refused before anything was sent to the server"}
+2026-09-24T15:32:01.604419000-04:00 {"ts": "2026-09-24T19:32:01.604244+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries"}
+2026-09-24T15:32:02.531309000-04:00 {"ts": "2026-09-24T19:32:02.531148+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealdb-docs"}
+2026-09-24T15:32:02.531705000-04:00 {"ts": "2026-09-24T19:32:02.531638+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealql-tests"}
+2026-09-24T15:32:02.532135000-04:00 {"ts": "2026-09-24T19:32:02.532078+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "spectron-docs"}
+2026-09-24T15:32:02.807724000-04:00 {"ts": "2026-09-24T19:32:02.807337+00:00", "level": "INFO", "logger": "loremaster.index.reconcile", "msg": "reconcile.summary", "files_indexed": 0, "files_failed": 2, "files_skipped": 1234, "files_purged": 0, "tiers_rebuilt": ["lore"], "tiers_skipped": ["surrealdb-docs", "surrealql-tests", "spectron-docs"], "duration_ms": 166998.901929}
+2026-09-24T15:36:26.038620000-04:00 INFO:     127.0.0.1:50110 - "POST /mcp HTTP/1.1" 200 OK
+2026-09-24T15:36:26.212210000-04:00 [09/24/26 19:36:26] Error calling tool 'lore_comms'                             
+2026-09-24T15:36:26.212335000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:26.212364000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1207 in         │
+2026-09-24T15:36:26.212417000-04:00                     │ _attempt                                                 │
+2026-09-24T15:36:26.212444000-04:00                     │                                                          │
+2026-09-24T15:36:26.212466000-04:00                     │   1204 │   async def _attempt() -> Any:                  │
+2026-09-24T15:36:26.212487000-04:00                     │   1205 │   │   connection = await acquire()              │
+2026-09-24T15:36:26.212576000-04:00                     │   1206 │   │   try:                                      │
+2026-09-24T15:36:26.212634000-04:00                     │ ❱ 1207 │   │   │   return await connection.query(stateme │
+2026-09-24T15:36:26.212657000-04:00                     │   1208 │   │   except (*_CONNECTION_ERRORS, KeyError) as │
+2026-09-24T15:36:26.212682000-04:00                     │   1209 │   │   │   if isinstance(error, KeyError) or is_ │
+2026-09-24T15:36:26.212706000-04:00                     │   1210 │   │   │   │   # A genuine transport/auth fault  │
+2026-09-24T15:36:26.212730000-04:00                     │                                                          │
+2026-09-24T15:36:26.212752000-04:00                     │ /app/.venv/lib/python3.14/site-packages/surrealdb/connec │
+2026-09-24T15:36:26.212773000-04:00                     │ tions/async_ws.py:213 in query                           │
+2026-09-24T15:36:26.212795000-04:00                     │                                                          │
+2026-09-24T15:36:26.212831000-04:00                     │   210 │   │   session_id: UUID | None = None,            │
+2026-09-24T15:36:26.212853000-04:00                     │   211 │   │   txn_id: UUID | None = None,                │
+2026-09-24T15:36:26.212932000-04:00                     │   212 │   ) -> Value:                                    │
+2026-09-24T15:36:26.212957000-04:00                     │ ❱ 213 │   │   response = await self.query_raw(           │
+2026-09-24T15:36:26.213008000-04:00                     │   214 │   │   │   query, vars, session_id=session_id, tx │
+2026-09-24T15:36:26.213033000-04:00                     │   215 │   │   )                                          │
+2026-09-24T15:36:26.213057000-04:00                     │   216 │   │   self.check_response_for_error(response, "q │
+2026-09-24T15:36:26.213081000-04:00                     │                                                          │
+2026-09-24T15:36:26.213101000-04:00                     │                 ... 3 frames hidden ...                  │
+2026-09-24T15:36:26.213171000-04:00                     │                                                          │
+2026-09-24T15:36:26.213220000-04:00                     │ /usr/local/lib/python3.14/contextlib.py:214 in           │
+2026-09-24T15:36:26.213252000-04:00                     │ __aenter__                                               │
+2026-09-24T15:36:26.213277000-04:00                     │                                                          │
+2026-09-24T15:36:26.213300000-04:00                     │   211 │   │   # they are only needed for recreation, whi │
+2026-09-24T15:36:26.213352000-04:00                     │   212 │   │   del self.args, self.kwds, self.func        │
+2026-09-24T15:36:26.213406000-04:00                     │   213 │   │   try:                                       │
+2026-09-24T15:36:26.213431000-04:00                     │ ❱ 214 │   │   │   return await anext(self.gen)           │
+2026-09-24T15:36:26.213454000-04:00                     │   215 │   │   except StopAsyncIteration:                 │
+2026-09-24T15:36:26.213520000-04:00                     │   216 │   │   │   raise RuntimeError("generator didn't y │
+2026-09-24T15:36:26.213560000-04:00                     │   217                                                    │
+2026-09-24T15:36:26.213586000-04:00                     │                                                          │
+2026-09-24T15:36:26.213606000-04:00                     │ /app/.venv/lib/python3.14/site-packages/websockets/async │
+2026-09-24T15:36:26.213629000-04:00                     │ io/connection.py:965 in send_context                     │
+2026-09-24T15:36:26.213655000-04:00                     │                                                          │
+2026-09-24T15:36:26.213678000-04:00                     │    962 │   │   │   self.transport.abort()                │
+2026-09-24T15:36:26.213712000-04:00                     │    963 │   │   │   # Wait for the protocol state to be C │
+2026-09-24T15:36:26.213737000-04:00                     │    964 │   │   │   await asyncio.shield(self.connection_ │
+2026-09-24T15:36:26.213759000-04:00                     │ ❱  965 │   │   │   raise self.protocol.close_exc from or │
+2026-09-24T15:36:26.213787000-04:00                     │    966 │                                                 │
+2026-09-24T15:36:26.213815000-04:00                     │    967 │   def send_data(self) -> None:                  │
+2026-09-24T15:36:26.213840000-04:00                     │    968 │   │   """                                       │
+2026-09-24T15:36:26.213861000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:26.213885000-04:00                     ConnectionClosedError: no close frame received or sent      
+2026-09-24T15:36:26.213918000-04:00                                                                                 
+2026-09-24T15:36:26.213943000-04:00                     The above exception was the direct cause of the following   
+2026-09-24T15:36:26.213966000-04:00                     exception:                                                  
+2026-09-24T15:36:26.213990000-04:00                                                                                 
+2026-09-24T15:36:26.214012000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:26.214039000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/server/s │
+2026-09-24T15:36:26.214069000-04:00                     │ erver.py:1312 in call_tool                               │
+2026-09-24T15:36:26.214092000-04:00                     │                                                          │
+2026-09-24T15:36:26.214115000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/tools/ba │
+2026-09-24T15:36:26.214154000-04:00                     │ se.py:421 in _run                                        │
+2026-09-24T15:36:26.214196000-04:00                     │                                                          │
+2026-09-24T15:36:26.214224000-04:00                     │                 ... 11 frames hidden ...                 │
+2026-09-24T15:36:26.214252000-04:00                     │                                                          │
+2026-09-24T15:36:26.214304000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:923 in          │
+2026-09-24T15:36:26.214336000-04:00                     │ retry_on_conflict                                        │
+2026-09-24T15:36:26.214359000-04:00                     │                                                          │
+2026-09-24T15:36:26.214382000-04:00                     │    920 │   last_conflict_cause: BaseException | None = N │
+2026-09-24T15:36:26.214437000-04:00                     │    921 │   while True:                                   │
+2026-09-24T15:36:26.214479000-04:00                     │    922 │   │   try:                                      │
+2026-09-24T15:36:26.214507000-04:00                     │ ❱  923 │   │   │   return await attempt()                │
+2026-09-24T15:36:26.214530000-04:00                     │    924 │   │   except RetryableConflictSignal as signal: │
+2026-09-24T15:36:26.214555000-04:00                     │    925 │   │   │   last_conflict_cause = signal.__cause_ │
+2026-09-24T15:36:26.214580000-04:00                     │    926 │   │   attempts += 1                             │
+2026-09-24T15:36:26.214603000-04:00                     │                                                          │
+2026-09-24T15:36:26.214625000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1214 in         │
+2026-09-24T15:36:26.214648000-04:00                     │ _attempt                                                 │
+2026-09-24T15:36:26.214672000-04:00                     │                                                          │
+2026-09-24T15:36:26.214696000-04:00                     │   1211 │   │   │   │   # KeyError — see ``_txn_query_raw │
+2026-09-24T15:36:26.214729000-04:00                     │   1212 │   │   │   │   # loudly.                         │
+2026-09-24T15:36:26.214757000-04:00                     │   1213 │   │   │   │   await drop(connection)            │
+2026-09-24T15:36:26.214780000-04:00                     │ ❱ 1214 │   │   │   │   raise SurrealConnectionError(     │
+2026-09-24T15:36:26.214804000-04:00                     │   1215 │   │   │   │   │   f"SurrealDB {noun} failed aga │
+2026-09-24T15:36:26.214856000-04:00                     │   1216 │   │   │   │   ) from error                      │
+2026-09-24T15:36:26.214880000-04:00                     │   1217 │   │   │   if is_retryable_conflict_error(error) │
+2026-09-24T15:36:26.214904000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:26.214926000-04:00                     SurrealConnectionError: SurrealDB agent query failed against
+2026-09-24T15:36:26.214959000-04:00                     'ws://127.0.0.1:18500/rpc': no close frame received or sent 
+2026-09-24T15:36:30.196673000-04:00 INFO:     127.0.0.1:50110 - "POST /mcp HTTP/1.1" 200 OK
+2026-09-24T15:36:30.402662000-04:00 [09/24/26 19:36:30] Error calling tool 'lore_comms'                             
+2026-09-24T15:36:30.402817000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:30.402883000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1207 in         │
+2026-09-24T15:36:30.402920000-04:00                     │ _attempt                                                 │
+2026-09-24T15:36:30.402978000-04:00                     │                                                          │
+2026-09-24T15:36:30.403007000-04:00                     │   1204 │   async def _attempt() -> Any:                  │
+2026-09-24T15:36:30.403034000-04:00                     │   1205 │   │   connection = await acquire()              │
+2026-09-24T15:36:30.403066000-04:00                     │   1206 │   │   try:                                      │
+2026-09-24T15:36:30.403095000-04:00                     │ ❱ 1207 │   │   │   return await connection.query(stateme │
+2026-09-24T15:36:30.403122000-04:00                     │   1208 │   │   except (*_CONNECTION_ERRORS, KeyError) as │
+2026-09-24T15:36:30.403153000-04:00                     │   1209 │   │   │   if isinstance(error, KeyError) or is_ │
+2026-09-24T15:36:30.403208000-04:00                     │   1210 │   │   │   │   # A genuine transport/auth fault  │
+2026-09-24T15:36:30.403309000-04:00                     │                                                          │
+2026-09-24T15:36:30.403344000-04:00                     │ /app/.venv/lib/python3.14/site-packages/surrealdb/connec │
+2026-09-24T15:36:30.403373000-04:00                     │ tions/async_ws.py:213 in query                           │
+2026-09-24T15:36:30.403406000-04:00                     │                                                          │
+2026-09-24T15:36:30.403451000-04:00                     │   210 │   │   session_id: UUID | None = None,            │
+2026-09-24T15:36:30.403485000-04:00                     │   211 │   │   txn_id: UUID | None = None,                │
+2026-09-24T15:36:30.403513000-04:00                     │   212 │   ) -> Value:                                    │
+2026-09-24T15:36:30.403541000-04:00                     │ ❱ 213 │   │   response = await self.query_raw(           │
+2026-09-24T15:36:30.403571000-04:00                     │   214 │   │   │   query, vars, session_id=session_id, tx │
+2026-09-24T15:36:30.403598000-04:00                     │   215 │   │   )                                          │
+2026-09-24T15:36:30.403629000-04:00                     │   216 │   │   self.check_response_for_error(response, "q │
+2026-09-24T15:36:30.403658000-04:00                     │                                                          │
+2026-09-24T15:36:30.403699000-04:00                     │                 ... 3 frames hidden ...                  │
+2026-09-24T15:36:30.403728000-04:00                     │                                                          │
+2026-09-24T15:36:30.403755000-04:00                     │ /usr/local/lib/python3.14/contextlib.py:214 in           │
+2026-09-24T15:36:30.403785000-04:00                     │ __aenter__                                               │
+2026-09-24T15:36:30.403833000-04:00                     │                                                          │
+2026-09-24T15:36:30.403865000-04:00                     │   211 │   │   # they are only needed for recreation, whi │
+2026-09-24T15:36:30.403953000-04:00                     │   212 │   │   del self.args, self.kwds, self.func        │
+2026-09-24T15:36:30.403988000-04:00                     │   213 │   │   try:                                       │
+2026-09-24T15:36:30.404017000-04:00                     │ ❱ 214 │   │   │   return await anext(self.gen)           │
+2026-09-24T15:36:30.404048000-04:00                     │   215 │   │   except StopAsyncIteration:                 │
+2026-09-24T15:36:30.404082000-04:00                     │   216 │   │   │   raise RuntimeError("generator didn't y │
+2026-09-24T15:36:30.404115000-04:00                     │   217                                                    │
+2026-09-24T15:36:30.404146000-04:00                     │                                                          │
+2026-09-24T15:36:30.404174000-04:00                     │ /app/.venv/lib/python3.14/site-packages/websockets/async │
+2026-09-24T15:36:30.404220000-04:00                     │ io/connection.py:965 in send_context                     │
+2026-09-24T15:36:30.404276000-04:00                     │                                                          │
+2026-09-24T15:36:30.404309000-04:00                     │    962 │   │   │   self.transport.abort()                │
+2026-09-24T15:36:30.404341000-04:00                     │    963 │   │   │   # Wait for the protocol state to be C │
+2026-09-24T15:36:30.404375000-04:00                     │    964 │   │   │   await asyncio.shield(self.connection_ │
+2026-09-24T15:36:30.404403000-04:00                     │ ❱  965 │   │   │   raise self.protocol.close_exc from or │
+2026-09-24T15:36:30.404431000-04:00                     │    966 │                                                 │
+2026-09-24T15:36:30.404461000-04:00                     │    967 │   def send_data(self) -> None:                  │
+2026-09-24T15:36:30.404489000-04:00                     │    968 │   │   """                                       │
+2026-09-24T15:36:30.404514000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:30.404544000-04:00                     ConnectionClosedError: no close frame received or sent      
+2026-09-24T15:36:30.404573000-04:00                                                                                 
+2026-09-24T15:36:30.404599000-04:00                     The above exception was the direct cause of the following   
+2026-09-24T15:36:30.404686000-04:00                     exception:                                                  
+2026-09-24T15:36:30.404718000-04:00                                                                                 
+2026-09-24T15:36:30.404784000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:30.404817000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/server/s │
+2026-09-24T15:36:30.404846000-04:00                     │ erver.py:1312 in call_tool                               │
+2026-09-24T15:36:30.404872000-04:00                     │                                                          │
+2026-09-24T15:36:30.404900000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/tools/ba │
+2026-09-24T15:36:30.404929000-04:00                     │ se.py:421 in _run                                        │
+2026-09-24T15:36:30.404955000-04:00                     │                                                          │
+2026-09-24T15:36:30.404982000-04:00                     │                 ... 10 frames hidden ...                 │
+2026-09-24T15:36:30.405014000-04:00                     │                                                          │
+2026-09-24T15:36:30.405046000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:923 in          │
+2026-09-24T15:36:30.405095000-04:00                     │ retry_on_conflict                                        │
+2026-09-24T15:36:30.405127000-04:00                     │                                                          │
+2026-09-24T15:36:30.405163000-04:00                     │    920 │   last_conflict_cause: BaseException | None = N │
+2026-09-24T15:36:30.405252000-04:00                     │    921 │   while True:                                   │
+2026-09-24T15:36:30.405289000-04:00                     │    922 │   │   try:                                      │
+2026-09-24T15:36:30.405336000-04:00                     │ ❱  923 │   │   │   return await attempt()                │
+2026-09-24T15:36:30.405370000-04:00                     │    924 │   │   except RetryableConflictSignal as signal: │
+2026-09-24T15:36:30.405401000-04:00                     │    925 │   │   │   last_conflict_cause = signal.__cause_ │
+2026-09-24T15:36:30.405436000-04:00                     │    926 │   │   attempts += 1                             │
+2026-09-24T15:36:30.405464000-04:00                     │                                                          │
+2026-09-24T15:36:30.405493000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1214 in         │
+2026-09-24T15:36:30.405521000-04:00                     │ _attempt                                                 │
+2026-09-24T15:36:30.405550000-04:00                     │                                                          │
+2026-09-24T15:36:30.405577000-04:00                     │   1211 │   │   │   │   # KeyError — see ``_txn_query_raw │
+2026-09-24T15:36:30.405607000-04:00                     │   1212 │   │   │   │   # loudly.                         │
+2026-09-24T15:36:30.405639000-04:00                     │   1213 │   │   │   │   await drop(connection)            │
+2026-09-24T15:36:30.405669000-04:00                     │ ❱ 1214 │   │   │   │   raise SurrealConnectionError(     │
+2026-09-24T15:36:30.405721000-04:00                     │   1215 │   │   │   │   │   f"SurrealDB {noun} failed aga │
+2026-09-24T15:36:30.405752000-04:00                     │   1216 │   │   │   │   ) from error                      │
+2026-09-24T15:36:30.405780000-04:00                     │   1217 │   │   │   if is_retryable_conflict_error(error) │
+2026-09-24T15:36:30.405809000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:30.405839000-04:00                     SurrealConnectionError: SurrealDB brief query failed against
+2026-09-24T15:36:30.405868000-04:00                     'ws://127.0.0.1:18500/rpc': no close frame received or sent 
+2026-09-24T15:36:44.668809000-04:00 INFO:     127.0.0.1:34276 - "POST /mcp HTTP/1.1" 200 OK
+2026-09-24T15:36:44.875726000-04:00 [09/24/26 19:36:44] Error calling tool 'lore_findings'                          
+2026-09-24T15:36:44.875859000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:44.875972000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1489 in         │
+2026-09-24T15:36:44.876012000-04:00                     │ _txn_query_raw                                           │
+2026-09-24T15:36:44.876042000-04:00                     │                                                          │
+2026-09-24T15:36:44.876069000-04:00                     │   1486 │   """                                           │
+2026-09-24T15:36:44.876140000-04:00                     │   1487 │   connection = await acquire()                  │
+2026-09-24T15:36:44.876329000-04:00                     │   1488 │   try:                                          │
+2026-09-24T15:36:44.876413000-04:00                     │ ❱ 1489 │   │   response = await connection.query_raw(sta │
+2026-09-24T15:36:44.876438000-04:00                     │   1490 │   │   connection.check_response_for_error(respo │
+2026-09-24T15:36:44.876465000-04:00                     │   1491 │   except (*_CONNECTION_ERRORS, KeyError) as err │
+2026-09-24T15:36:44.876494000-04:00                     │   1492 │   │   await drop(connection)                    │
+2026-09-24T15:36:44.876521000-04:00                     │                                                          │
+2026-09-24T15:36:44.876595000-04:00                     │ /app/.venv/lib/python3.14/site-packages/surrealdb/connec │
+2026-09-24T15:36:44.876621000-04:00                     │ tions/async_ws.py:236 in query_raw                       │
+2026-09-24T15:36:44.876665000-04:00                     │                                                          │
+2026-09-24T15:36:44.876690000-04:00                     │   233 │   │   if txn_id is not None:                     │
+2026-09-24T15:36:44.876714000-04:00                     │   234 │   │   │   kwargs["txn"] = txn_id                 │
+2026-09-24T15:36:44.876740000-04:00                     │   235 │   │   message = RequestMessage(RequestMethod.QUE │
+2026-09-24T15:36:44.876778000-04:00                     │ ❱ 236 │   │   response = await self._send(message, "quer │
+2026-09-24T15:36:44.876804000-04:00                     │   237 │   │   return response                            │
+2026-09-24T15:36:44.876829000-04:00                     │   238 │                                                  │
+2026-09-24T15:36:44.876853000-04:00                     │   239 │   async def version(self, session_id: UUID | Non │
+2026-09-24T15:36:44.876878000-04:00                     │                                                          │
+2026-09-24T15:36:44.876912000-04:00                     │                 ... 2 frames hidden ...                  │
+2026-09-24T15:36:44.876935000-04:00                     │                                                          │
+2026-09-24T15:36:44.876957000-04:00                     │ /usr/local/lib/python3.14/contextlib.py:214 in           │
+2026-09-24T15:36:44.876984000-04:00                     │ __aenter__                                               │
+2026-09-24T15:36:44.877005000-04:00                     │                                                          │
+2026-09-24T15:36:44.877027000-04:00                     │   211 │   │   # they are only needed for recreation, whi │
+2026-09-24T15:36:44.877048000-04:00                     │   212 │   │   del self.args, self.kwds, self.func        │
+2026-09-24T15:36:44.877071000-04:00                     │   213 │   │   try:                                       │
+2026-09-24T15:36:44.877094000-04:00                     │ ❱ 214 │   │   │   return await anext(self.gen)           │
+2026-09-24T15:36:44.877117000-04:00                     │   215 │   │   except StopAsyncIteration:                 │
+2026-09-24T15:36:44.877141000-04:00                     │   216 │   │   │   raise RuntimeError("generator didn't y │
+2026-09-24T15:36:44.877164000-04:00                     │   217                                                    │
+2026-09-24T15:36:44.877229000-04:00                     │                                                          │
+2026-09-24T15:36:44.877253000-04:00                     │ /app/.venv/lib/python3.14/site-packages/websockets/async │
+2026-09-24T15:36:44.877277000-04:00                     │ io/connection.py:965 in send_context                     │
+2026-09-24T15:36:44.877300000-04:00                     │                                                          │
+2026-09-24T15:36:44.877322000-04:00                     │    962 │   │   │   self.transport.abort()                │
+2026-09-24T15:36:44.877347000-04:00                     │    963 │   │   │   # Wait for the protocol state to be C │
+2026-09-24T15:36:44.877398000-04:00                     │    964 │   │   │   await asyncio.shield(self.connection_ │
+2026-09-24T15:36:44.877430000-04:00                     │ ❱  965 │   │   │   raise self.protocol.close_exc from or │
+2026-09-24T15:36:44.877456000-04:00                     │    966 │                                                 │
+2026-09-24T15:36:44.877482000-04:00                     │    967 │   def send_data(self) -> None:                  │
+2026-09-24T15:36:44.877505000-04:00                     │    968 │   │   """                                       │
+2026-09-24T15:36:44.877526000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:44.877550000-04:00                     ConnectionClosedError: no close frame received or sent      
+2026-09-24T15:36:44.877593000-04:00                                                                                 
+2026-09-24T15:36:44.877616000-04:00                     The above exception was the direct cause of the following   
+2026-09-24T15:36:44.877651000-04:00                     exception:                                                  
+2026-09-24T15:36:44.877674000-04:00                                                                                 
+2026-09-24T15:36:44.877699000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T15:36:44.877720000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/server/s │
+2026-09-24T15:36:44.877743000-04:00                     │ erver.py:1312 in call_tool                               │
+2026-09-24T15:36:44.877764000-04:00                     │                                                          │
+2026-09-24T15:36:44.877784000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/tools/ba │
+2026-09-24T15:36:44.877808000-04:00                     │ se.py:421 in _run                                        │
+2026-09-24T15:36:44.877828000-04:00                     │                                                          │
+2026-09-24T15:36:44.877848000-04:00                     │                 ... 11 frames hidden ...                 │
+2026-09-24T15:36:44.877878000-04:00                     │                                                          │
+2026-09-24T15:36:44.877912000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1426 in         │
+2026-09-24T15:36:44.877935000-04:00                     │ _attempt                                                 │
+2026-09-24T15:36:44.877956000-04:00                     │                                                          │
+2026-09-24T15:36:44.877977000-04:00                     │   1423 │                                                 │
+2026-09-24T15:36:44.878000000-04:00                     │   1424 │   async def _attempt() -> None:                 │
+2026-09-24T15:36:44.878023000-04:00                     │   1425 │   │   nonlocal last_conflict                    │
+2026-09-24T15:36:44.878080000-04:00                     │ ❱ 1426 │   │   response = await _txn_query_raw(statement │
+2026-09-24T15:36:44.878105000-04:00                     │        url=url)                                          │
+2026-09-24T15:36:44.878130000-04:00                     │   1427 │   │   failed_statements = _failed_statements(re │
+2026-09-24T15:36:44.878166000-04:00                     │   1428 │   │   statement_count = len(response.get("resul │
+2026-09-24T15:36:44.878212000-04:00                     │   1429 │   │   if not failed_statements:                 │
+2026-09-24T15:36:44.878245000-04:00                     │                                                          │
+2026-09-24T15:36:44.878277000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1493 in         │
+2026-09-24T15:36:44.878309000-04:00                     │ _txn_query_raw                                           │
+2026-09-24T15:36:44.878337000-04:00                     │                                                          │
+2026-09-24T15:36:44.878367000-04:00                     │   1490 │   │   connection.check_response_for_error(respo │
+2026-09-24T15:36:44.878392000-04:00                     │   1491 │   except (*_CONNECTION_ERRORS, KeyError) as err │
+2026-09-24T15:36:44.878449000-04:00                     │   1492 │   │   await drop(connection)                    │
+2026-09-24T15:36:44.878473000-04:00                     │ ❱ 1493 │   │   raise SurrealConnectionError(             │
+2026-09-24T15:36:44.878534000-04:00                     │   1494 │   │   │   f"SurrealDB transaction failed agains │
+2026-09-24T15:36:44.878557000-04:00                     │   1495 │   │   ) from error                              │
+2026-09-24T15:36:44.878580000-04:00                     │   1496 │   return response                               │
+2026-09-24T15:36:44.878632000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T15:36:44.878657000-04:00                     SurrealConnectionError: SurrealDB transaction failed against
+2026-09-24T15:36:44.878682000-04:00                     'ws://127.0.0.1:18500/rpc': no close frame received or sent 
+2026-09-24T15:42:21.276380000-04:00 {"ts": "2026-09-24T19:42:21.276171+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.file.done", "tier": "lore", "file_path": "REPORT-adversary-63c-i-a-r2.md", "n_chunks": 25, "state": "indexed", "duration_ms": 18284.025587, "usage_tokens": null}
+2026-09-24T15:44:52.141169000-04:00 {"ts": "2026-09-24T19:44:52.140189+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1129, in apply\n    statement_text, merged_params = compose(*fragments)\n                                    ~~~~~~~^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 367, in compose\n    raise SurrealStoreError(\n    ...<3 lines>...\n    )\nloremaster.store._txn.SurrealStoreError: composed transaction has 5105 statements, exceeding the hard cap of 5000 statements per transaction \u2014 refused before anything was sent to the server"}
+2026-09-24T15:44:52.147145000-04:00 {"ts": "2026-09-24T19:44:52.147027+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries"}
+2026-09-24T15:44:52.999661000-04:00 {"ts": "2026-09-24T19:44:52.999515+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealdb-docs"}
+2026-09-24T15:44:53.000082000-04:00 {"ts": "2026-09-24T19:44:53.000017+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealql-tests"}
+2026-09-24T15:44:53.000506000-04:00 {"ts": "2026-09-24T19:44:53.000440+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "spectron-docs"}
+2026-09-24T15:44:53.254677000-04:00 {"ts": "2026-09-24T19:44:53.254421+00:00", "level": "INFO", "logger": "loremaster.index.reconcile", "msg": "reconcile.summary", "files_indexed": 1, "files_failed": 1, "files_skipped": 1234, "files_purged": 0, "tiers_rebuilt": ["lore"], "tiers_skipped": ["surrealdb-docs", "surrealql-tests", "spectron-docs"], "duration_ms": 170407.2533}
+2026-09-24T15:57:24.571256000-04:00 {"ts": "2026-09-24T19:57:24.564630+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1129, in apply\n    statement_text, merged_params = compose(*fragments)\n                                    ~~~~~~~^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 367, in compose\n    raise SurrealStoreError(\n    ...<3 lines>...\n    )\nloremaster.store._txn.SurrealStoreError: composed transaction has 5105 statements, exceeding the hard cap of 5000 statements per transaction \u2014 refused before anything was sent to the server"}
+2026-09-24T15:57:24.577065000-04:00 {"ts": "2026-09-24T19:57:24.576923+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries"}
+2026-09-24T15:57:25.448612000-04:00 {"ts": "2026-09-24T19:57:25.448459+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealdb-docs"}
+2026-09-24T15:57:25.449040000-04:00 {"ts": "2026-09-24T19:57:25.448976+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealql-tests"}
+2026-09-24T15:57:25.449516000-04:00 {"ts": "2026-09-24T19:57:25.449451+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "spectron-docs"}
+2026-09-24T15:57:25.706832000-04:00 {"ts": "2026-09-24T19:57:25.706580+00:00", "level": "INFO", "logger": "loremaster.index.reconcile", "msg": "reconcile.summary", "files_indexed": 0, "files_failed": 1, "files_skipped": 1235, "files_purged": 0, "tiers_rebuilt": ["lore"], "tiers_skipped": ["surrealdb-docs", "surrealql-tests", "spectron-docs"], "duration_ms": 152443.475493}
+2026-09-24T16:07:57.097766000-04:00 {"ts": "2026-09-24T20:07:57.097548+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.file.done", "tier": "lore", "file_path": "REPORT-adversary-63c-i-a-r2.md", "n_chunks": 41, "state": "indexed", "duration_ms": 31189.309384, "usage_tokens": null}
+2026-09-24T16:10:27.697742000-04:00 {"ts": "2026-09-24T20:10:27.696965+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.store_failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries", "exc_info": "Traceback (most recent call last):\n  File \"/app/loremaster/loremaster/index/indexer.py\", line 660, in _index_chunks\n    await self._store.apply(fragments)\n  File \"/app/loremaster/loremaster/store/surreal.py\", line 1129, in apply\n    statement_text, merged_params = compose(*fragments)\n                                    ~~~~~~~^^^^^^^^^^^^\n  File \"/app/loremaster/loremaster/store/_txn.py\", line 367, in compose\n    raise SurrealStoreError(\n    ...<3 lines>...\n    )\nloremaster.store._txn.SurrealStoreError: composed transaction has 5105 statements, exceeding the hard cap of 5000 statements per transaction \u2014 refused before anything was sent to the server"}
+2026-09-24T16:10:27.703320000-04:00 {"ts": "2026-09-24T20:10:27.703193+00:00", "level": "WARNING", "logger": "loremaster.index.indexer", "msg": "index.file.failed", "tier": "lore", "file_path": "loremaster/tests/test_comms_tool.py", "reason": "store_op_failed_after_retries"}
+2026-09-24T16:10:28.549097000-04:00 {"ts": "2026-09-24T20:10:28.548948+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealdb-docs"}
+2026-09-24T16:10:28.549536000-04:00 {"ts": "2026-09-24T20:10:28.549473+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "surrealql-tests"}
+2026-09-24T16:10:28.549975000-04:00 {"ts": "2026-09-24T20:10:28.549918+00:00", "level": "INFO", "logger": "loremaster.index.indexer", "msg": "index.tier.skip", "tier": "spectron-docs"}
+2026-09-24T16:10:28.804922000-04:00 {"ts": "2026-09-24T20:10:28.804727+00:00", "level": "INFO", "logger": "loremaster.index.reconcile", "msg": "reconcile.summary", "files_indexed": 1, "files_failed": 1, "files_skipped": 1234, "files_purged": 0, "tiers_rebuilt": ["lore"], "tiers_skipped": ["surrealdb-docs", "surrealql-tests", "spectron-docs"], "duration_ms": 183090.559088}
+2026-09-24T16:10:58.100055000-04:00 INFO:     127.0.0.1:58182 - "POST /mcp HTTP/1.1" 200 OK
+2026-09-24T16:10:58.266545000-04:00 [09/24/26 20:10:58] Error calling tool 'lore_comms'                             
+2026-09-24T16:10:58.266690000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T16:10:58.266723000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1207 in         │
+2026-09-24T16:10:58.266749000-04:00                     │ _attempt                                                 │
+2026-09-24T16:10:58.266819000-04:00                     │                                                          │
+2026-09-24T16:10:58.266845000-04:00                     │   1204 │   async def _attempt() -> Any:                  │
+2026-09-24T16:10:58.266869000-04:00                     │   1205 │   │   connection = await acquire()              │
+2026-09-24T16:10:58.266896000-04:00                     │   1206 │   │   try:                                      │
+2026-09-24T16:10:58.266920000-04:00                     │ ❱ 1207 │   │   │   return await connection.query(stateme │
+2026-09-24T16:10:58.266943000-04:00                     │   1208 │   │   except (*_CONNECTION_ERRORS, KeyError) as │
+2026-09-24T16:10:58.266969000-04:00                     │   1209 │   │   │   if isinstance(error, KeyError) or is_ │
+2026-09-24T16:10:58.266992000-04:00                     │   1210 │   │   │   │   # A genuine transport/auth fault  │
+2026-09-24T16:10:58.267014000-04:00                     │                                                          │
+2026-09-24T16:10:58.267036000-04:00                     │ /app/.venv/lib/python3.14/site-packages/surrealdb/connec │
+2026-09-24T16:10:58.267118000-04:00                     │ tions/async_ws.py:213 in query                           │
+2026-09-24T16:10:58.267154000-04:00                     │                                                          │
+2026-09-24T16:10:58.267219000-04:00                     │   210 │   │   session_id: UUID | None = None,            │
+2026-09-24T16:10:58.267247000-04:00                     │   211 │   │   txn_id: UUID | None = None,                │
+2026-09-24T16:10:58.267274000-04:00                     │   212 │   ) -> Value:                                    │
+2026-09-24T16:10:58.267298000-04:00                     │ ❱ 213 │   │   response = await self.query_raw(           │
+2026-09-24T16:10:58.267321000-04:00                     │   214 │   │   │   query, vars, session_id=session_id, tx │
+2026-09-24T16:10:58.267344000-04:00                     │   215 │   │   )                                          │
+2026-09-24T16:10:58.267369000-04:00                     │   216 │   │   self.check_response_for_error(response, "q │
+2026-09-24T16:10:58.267391000-04:00                     │                                                          │
+2026-09-24T16:10:58.267413000-04:00                     │                 ... 3 frames hidden ...                  │
+2026-09-24T16:10:58.267436000-04:00                     │                                                          │
+2026-09-24T16:10:58.267458000-04:00                     │ /usr/local/lib/python3.14/contextlib.py:214 in           │
+2026-09-24T16:10:58.267495000-04:00                     │ __aenter__                                               │
+2026-09-24T16:10:58.267520000-04:00                     │                                                          │
+2026-09-24T16:10:58.267543000-04:00                     │   211 │   │   # they are only needed for recreation, whi │
+2026-09-24T16:10:58.267565000-04:00                     │   212 │   │   del self.args, self.kwds, self.func        │
+2026-09-24T16:10:58.267587000-04:00                     │   213 │   │   try:                                       │
+2026-09-24T16:10:58.267612000-04:00                     │ ❱ 214 │   │   │   return await anext(self.gen)           │
+2026-09-24T16:10:58.267635000-04:00                     │   215 │   │   except StopAsyncIteration:                 │
+2026-09-24T16:10:58.267659000-04:00                     │   216 │   │   │   raise RuntimeError("generator didn't y │
+2026-09-24T16:10:58.267684000-04:00                     │   217                                                    │
+2026-09-24T16:10:58.267706000-04:00                     │                                                          │
+2026-09-24T16:10:58.267731000-04:00                     │ /app/.venv/lib/python3.14/site-packages/websockets/async │
+2026-09-24T16:10:58.267756000-04:00                     │ io/connection.py:965 in send_context                     │
+2026-09-24T16:10:58.267779000-04:00                     │                                                          │
+2026-09-24T16:10:58.267815000-04:00                     │    962 │   │   │   self.transport.abort()                │
+2026-09-24T16:10:58.267838000-04:00                     │    963 │   │   │   # Wait for the protocol state to be C │
+2026-09-24T16:10:58.267864000-04:00                     │    964 │   │   │   await asyncio.shield(self.connection_ │
+2026-09-24T16:10:58.267886000-04:00                     │ ❱  965 │   │   │   raise self.protocol.close_exc from or │
+2026-09-24T16:10:58.267909000-04:00                     │    966 │                                                 │
+2026-09-24T16:10:58.267931000-04:00                     │    967 │   def send_data(self) -> None:                  │
+2026-09-24T16:10:58.267953000-04:00                     │    968 │   │   """                                       │
+2026-09-24T16:10:58.267976000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T16:10:58.268002000-04:00                     ConnectionClosedError: no close frame received or sent      
+2026-09-24T16:10:58.268026000-04:00                                                                                 
+2026-09-24T16:10:58.268050000-04:00                     The above exception was the direct cause of the following   
+2026-09-24T16:10:58.268077000-04:00                     exception:                                                  
+2026-09-24T16:10:58.268101000-04:00                                                                                 
+2026-09-24T16:10:58.268136000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T16:10:58.268162000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/server/s │
+2026-09-24T16:10:58.268195000-04:00                     │ erver.py:1312 in call_tool                               │
+2026-09-24T16:10:58.268218000-04:00                     │                                                          │
+2026-09-24T16:10:58.268242000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/tools/ba │
+2026-09-24T16:10:58.268266000-04:00                     │ se.py:421 in _run                                        │
+2026-09-24T16:10:58.268291000-04:00                     │                                                          │
+2026-09-24T16:10:58.268313000-04:00                     │                 ... 13 frames hidden ...                 │
+2026-09-24T16:10:58.268340000-04:00                     │                                                          │
+2026-09-24T16:10:58.268364000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:923 in          │
+2026-09-24T16:10:58.268389000-04:00                     │ retry_on_conflict                                        │
+2026-09-24T16:10:58.268411000-04:00                     │                                                          │
+2026-09-24T16:10:58.268433000-04:00                     │    920 │   last_conflict_cause: BaseException | None = N │
+2026-09-24T16:10:58.268472000-04:00                     │    921 │   while True:                                   │
+2026-09-24T16:10:58.268498000-04:00                     │    922 │   │   try:                                      │
+2026-09-24T16:10:58.268521000-04:00                     │ ❱  923 │   │   │   return await attempt()                │
+2026-09-24T16:10:58.268546000-04:00                     │    924 │   │   except RetryableConflictSignal as signal: │
+2026-09-24T16:10:58.268570000-04:00                     │    925 │   │   │   last_conflict_cause = signal.__cause_ │
+2026-09-24T16:10:58.268592000-04:00                     │    926 │   │   attempts += 1                             │
+2026-09-24T16:10:58.268616000-04:00                     │                                                          │
+2026-09-24T16:10:58.268639000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1214 in         │
+2026-09-24T16:10:58.268664000-04:00                     │ _attempt                                                 │
+2026-09-24T16:10:58.268688000-04:00                     │                                                          │
+2026-09-24T16:10:58.268712000-04:00                     │   1211 │   │   │   │   # KeyError — see ``_txn_query_raw │
+2026-09-24T16:10:58.268736000-04:00                     │   1212 │   │   │   │   # loudly.                         │
+2026-09-24T16:10:58.268760000-04:00                     │   1213 │   │   │   │   await drop(connection)            │
+2026-09-24T16:10:58.268795000-04:00                     │ ❱ 1214 │   │   │   │   raise SurrealConnectionError(     │
+2026-09-24T16:10:58.268821000-04:00                     │   1215 │   │   │   │   │   f"SurrealDB {noun} failed aga │
+2026-09-24T16:10:58.268845000-04:00                     │   1216 │   │   │   │   ) from error                      │
+2026-09-24T16:10:58.268868000-04:00                     │   1217 │   │   │   if is_retryable_conflict_error(error) │
+2026-09-24T16:10:58.268892000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T16:10:58.268917000-04:00                     SurrealConnectionError: SurrealDB message query failed      
+2026-09-24T16:10:58.268942000-04:00                     against 'ws://127.0.0.1:18500/rpc': no close frame received 
+2026-09-24T16:10:58.268968000-04:00                     or sent                                                     
+2026-09-24T16:11:17.604128000-04:00 INFO:     127.0.0.1:33034 - "GET /mcp HTTP/1.1" 406 Not Acceptable
+2026-09-24T16:11:23.686491000-04:00 INFO:     127.0.0.1:33048 - "POST /mcp HTTP/1.1" 200 OK
+2026-09-24T16:11:24.011592000-04:00 [09/24/26 20:11:23] Error calling tool 'lore_index'                             
+2026-09-24T16:11:24.011716000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T16:11:24.011797000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1207 in         │
+2026-09-24T16:11:24.011839000-04:00                     │ _attempt                                                 │
+2026-09-24T16:11:24.011872000-04:00                     │                                                          │
+2026-09-24T16:11:24.011907000-04:00                     │   1204 │   async def _attempt() -> Any:                  │
+2026-09-24T16:11:24.011936000-04:00                     │   1205 │   │   connection = await acquire()              │
+2026-09-24T16:11:24.011975000-04:00                     │   1206 │   │   try:                                      │
+2026-09-24T16:11:24.012007000-04:00                     │ ❱ 1207 │   │   │   return await connection.query(stateme │
+2026-09-24T16:11:24.012039000-04:00                     │   1208 │   │   except (*_CONNECTION_ERRORS, KeyError) as │
+2026-09-24T16:11:24.012062000-04:00                     │   1209 │   │   │   if isinstance(error, KeyError) or is_ │
+2026-09-24T16:11:24.012161000-04:00                     │   1210 │   │   │   │   # A genuine transport/auth fault  │
+2026-09-24T16:11:24.012221000-04:00                     │                                                          │
+2026-09-24T16:11:24.012246000-04:00                     │ /app/.venv/lib/python3.14/site-packages/surrealdb/connec │
+2026-09-24T16:11:24.012270000-04:00                     │ tions/async_ws.py:213 in query                           │
+2026-09-24T16:11:24.012319000-04:00                     │                                                          │
+2026-09-24T16:11:24.012344000-04:00                     │   210 │   │   session_id: UUID | None = None,            │
+2026-09-24T16:11:24.012369000-04:00                     │   211 │   │   txn_id: UUID | None = None,                │
+2026-09-24T16:11:24.012395000-04:00                     │   212 │   ) -> Value:                                    │
+2026-09-24T16:11:24.012417000-04:00                     │ ❱ 213 │   │   response = await self.query_raw(           │
+2026-09-24T16:11:24.013007000-04:00                     │   214 │   │   │   query, vars, session_id=session_id, tx │
+2026-09-24T16:11:24.013036000-04:00                     │   215 │   │   )                                          │
+2026-09-24T16:11:24.013059000-04:00                     │   216 │   │   self.check_response_for_error(response, "q │
+2026-09-24T16:11:24.013082000-04:00                     │                                                          │
+2026-09-24T16:11:24.013103000-04:00                     │                 ... 3 frames hidden ...                  │
+2026-09-24T16:11:24.013124000-04:00                     │                                                          │
+2026-09-24T16:11:24.013144000-04:00                     │ /usr/local/lib/python3.14/contextlib.py:214 in           │
+2026-09-24T16:11:24.013191000-04:00                     │ __aenter__                                               │
+2026-09-24T16:11:24.013229000-04:00                     │                                                          │
+2026-09-24T16:11:24.013250000-04:00                     │   211 │   │   # they are only needed for recreation, whi │
+2026-09-24T16:11:24.013275000-04:00                     │   212 │   │   del self.args, self.kwds, self.func        │
+2026-09-24T16:11:24.013301000-04:00                     │   213 │   │   try:                                       │
+2026-09-24T16:11:24.013323000-04:00                     │ ❱ 214 │   │   │   return await anext(self.gen)           │
+2026-09-24T16:11:24.013349000-04:00                     │   215 │   │   except StopAsyncIteration:                 │
+2026-09-24T16:11:24.013370000-04:00                     │   216 │   │   │   raise RuntimeError("generator didn't y │
+2026-09-24T16:11:24.013394000-04:00                     │   217                                                    │
+2026-09-24T16:11:24.013418000-04:00                     │                                                          │
+2026-09-24T16:11:24.013439000-04:00                     │ /app/.venv/lib/python3.14/site-packages/websockets/async │
+2026-09-24T16:11:24.013462000-04:00                     │ io/connection.py:965 in send_context                     │
+2026-09-24T16:11:24.013482000-04:00                     │                                                          │
+2026-09-24T16:11:24.013503000-04:00                     │    962 │   │   │   self.transport.abort()                │
+2026-09-24T16:11:24.013538000-04:00                     │    963 │   │   │   # Wait for the protocol state to be C │
+2026-09-24T16:11:24.013562000-04:00                     │    964 │   │   │   await asyncio.shield(self.connection_ │
+2026-09-24T16:11:24.013596000-04:00                     │ ❱  965 │   │   │   raise self.protocol.close_exc from or │
+2026-09-24T16:11:24.013621000-04:00                     │    966 │                                                 │
+2026-09-24T16:11:24.013641000-04:00                     │    967 │   def send_data(self) -> None:                  │
+2026-09-24T16:11:24.013664000-04:00                     │    968 │   │   """                                       │
+2026-09-24T16:11:24.013688000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T16:11:24.013712000-04:00                     ConnectionClosedError: no close frame received or sent      
+2026-09-24T16:11:24.013736000-04:00                                                                                 
+2026-09-24T16:11:24.013760000-04:00                     The above exception was the direct cause of the following   
+2026-09-24T16:11:24.013782000-04:00                     exception:                                                  
+2026-09-24T16:11:24.013803000-04:00                                                                                 
+2026-09-24T16:11:24.013827000-04:00                     ╭─────────── Traceback (most recent call last) ────────────╮
+2026-09-24T16:11:24.013859000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/server/s │
+2026-09-24T16:11:24.013881000-04:00                     │ erver.py:1312 in call_tool                               │
+2026-09-24T16:11:24.013903000-04:00                     │                                                          │
+2026-09-24T16:11:24.013924000-04:00                     │ /app/.venv/lib/python3.14/site-packages/fastmcp/tools/ba │
+2026-09-24T16:11:24.013946000-04:00                     │ se.py:421 in _run                                        │
+2026-09-24T16:11:24.013967000-04:00                     │                                                          │
+2026-09-24T16:11:24.013989000-04:00                     │                 ... 11 frames hidden ...                 │
+2026-09-24T16:11:24.014013000-04:00                     │                                                          │
+2026-09-24T16:11:24.014037000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:923 in          │
+2026-09-24T16:11:24.014060000-04:00                     │ retry_on_conflict                                        │
+2026-09-24T16:11:24.014083000-04:00                     │                                                          │
+2026-09-24T16:11:24.014106000-04:00                     │    920 │   last_conflict_cause: BaseException | None = N │
+2026-09-24T16:11:24.014127000-04:00                     │    921 │   while True:                                   │
+2026-09-24T16:11:24.014161000-04:00                     │    922 │   │   try:                                      │
+2026-09-24T16:11:24.014195000-04:00                     │ ❱  923 │   │   │   return await attempt()                │
+2026-09-24T16:11:24.014223000-04:00                     │    924 │   │   except RetryableConflictSignal as signal: │
+2026-09-24T16:11:24.014254000-04:00                     │    925 │   │   │   last_conflict_cause = signal.__cause_ │
+2026-09-24T16:11:24.014285000-04:00                     │    926 │   │   attempts += 1                             │
+2026-09-24T16:11:24.014320000-04:00                     │                                                          │
+2026-09-24T16:11:24.014352000-04:00                     │ /app/loremaster/loremaster/store/_txn.py:1214 in         │
+2026-09-24T16:11:24.014383000-04:00                     │ _attempt                                                 │
+2026-09-24T16:11:24.014413000-04:00                     │                                                          │
+2026-09-24T16:11:24.014447000-04:00                     │   1211 │   │   │   │   # KeyError — see ``_txn_query_raw │
+2026-09-24T16:11:24.014479000-04:00                     │   1212 │   │   │   │   # loudly.                         │
+2026-09-24T16:11:24.014513000-04:00                     │   1213 │   │   │   │   await drop(connection)            │
+2026-09-24T16:11:24.014540000-04:00                     │ ❱ 1214 │   │   │   │   raise SurrealConnectionError(     │
+2026-09-24T16:11:24.014579000-04:00                     │   1215 │   │   │   │   │   f"SurrealDB {noun} failed aga │
+2026-09-24T16:11:24.014602000-04:00                     │   1216 │   │   │   │   ) from error                      │
+2026-09-24T16:11:24.014626000-04:00                     │   1217 │   │   │   if is_retryable_conflict_error(error) │
+2026-09-24T16:11:24.014650000-04:00                     ╰──────────────────────────────────────────────────────────╯
+2026-09-24T16:11:24.014672000-04:00                     SurrealConnectionError: SurrealDB query failed against      
+2026-09-24T16:11:24.014700000-04:00                     'ws://127.0.0.1:18500/rpc': no close frame received or sent 
