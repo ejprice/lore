@@ -40,3 +40,12 @@ rebuild, and Claude Code does not reconnect by itself (`/mcp` needed).
    upstream retry re-embedded the batch (benign, but not logged), or up to 32 chunks were
    dropped or stored without vectors while the manifest says `indexed`. Only the second is a
    trust-doctrine false clear. Measure: stored chunk count and vector presence for that file vs 471.
+
+## Resolutions (2026-09-24, investigate-472 — `REPORT-investigate-472.md`, archived with packet 63c)
+
+1. **Q1 (why a whole-tier rebuild) is still OPEN.** The #383 count-delta hypothesis is **refuted** on the
+   chunk-count leg: `SurrealManifest.expected_chunks` sums only `indexed` rows, and Σ indexed = 28108 = store count.
+   The unmeasured leads are recorded on #355.
+2. **Q2 (possible false clear) is BENIGN, and #472 is resolved.** `embed.permanent_failure` is batch-scope.
+   `ResilientEmbedder` then re-embeds each text individually and logs nothing when that succeeds. All 471 chunks
+   were stored with correct vectors, and no file in the tier is affected. The misleading event name is filed as #474.
