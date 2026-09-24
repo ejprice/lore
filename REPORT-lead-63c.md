@@ -325,3 +325,13 @@ agent-side at that seam otherwise.
   folded two pre-existing private copies — `test_ddl_write_target_coverage_124.py`, `test_principal_keys_schema.py`
   — outside the named worklist; also found `_logging_fixtures._rebind_everywhere` was a pre-existing identity-keyed
   twin and shared its loop). Deliver a committed amendment-5 + native micro-format wake.
+- **2026-09-24 ~19:00 EDT — sidecar Task 5 ADOPTED (amendment 5, `26511f0`).** FORK-A (c) PIN-THE-MISS ratified ·
+  FORK-B RATIFIED + ONE rider (lifted `emit_schema_ddl` must pass `dim` whenever PRESENT, as both old copies did;
+  name the `isfunction` bound) · FORK-C (b) guarded identity leg ratified + riders (narrow `except ImportError`
+  helper; CONDITIONAL pin — symbol exists ⇒ no guard in `_comms_fakes` source; **BUILDER BRIEF MUST GRANT the one
+  test-tree guard-line deletion in REFACTOR**). All NON-GATING. The r3 author watches for the amendment file itself.
+  Operator reconnected lore (`/mcp reconnect all`). Filed **#478** (lore-lore never reconnects after a store restart)
+  · **#479** (host OOM kills the prod store first; oom_score_adj 200) · **#480** (`ALL_DDL_GENERATORS` misses
+  lease + floor_calibration; pinned by r3b item 7). #355 annotated (3rd receipt: the `tiers_rebuilt` label does not
+  mean purged; plan-review routed #355 to packet 11c). `adversary-63c-i-a-r2` ledger-retired. Drained
+  #15004/#15008/#16000–#16002 (signals, all already acted on).
