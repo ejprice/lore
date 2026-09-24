@@ -299,3 +299,14 @@ agent-side at that seam otherwise.
   a 3rd receipt that the `tiers_rebuilt` label does NOT mean "purged" (for #355). This session's MCP client
   dropped on the restart → operator `/mcp` reconnect needed before filing: R-1 (no reconnect after a store
   restart), host-OOM-kills-prod-store, and the adversary-r2 ledger retire.
+- **2026-09-24 ~16:30 EDT — sidecar Task 4 ADOPTED (amendment 4, `2c30150`).** NF-1 YES (A4-bis:
+  `_is_comms_charset_legal` is the server's ONE decision home) · NF-2 NO · MP-D fix = emitted-DDL derivation, fail
+  closed · MP-G identity-alone before the F-3 fold · §W = ONE 11-item r3 worklist (1–6 GATING, 7–10 NON-GATING,
+  11 PROSE). §E (item 7 supersedes 63b §1.9 item 2's MECHANISM, intent preserved) judged not major → adopted.
+  **LEAD ORCHESTRATION CALL:** r3a+r3b run SEQUENTIALLY in ONE reviser (two commits), not in parallel as the
+  sidecar suggested — no worktrees in this repo, so parallel test-writers in one checkout would contaminate each
+  other's full-suite runs and the adversary's scratch copies. **Spawned `contract-63c-i-a-r3`** (opus55-worker).
+  Memory guard in its brief: ≤1 full suite at a time, don't launch under ~30 GB available (host at 25 GB available
+  now: Shmem 58 GB, only 18 GB of it tmpfs `/tmp` — the rest likely Postgres shared_buffers across the Odoo
+  harness pods; surfaced to the operator). Lead to file on reconnect: `ALL_DDL_GENERATORS` misses lease +
+  floor_calibration (amendment-4 finding), plus the outage-#2 findings.
