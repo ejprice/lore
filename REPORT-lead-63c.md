@@ -294,3 +294,8 @@ agent-side at that seam otherwise.
   captured first; restart keeps the hand-rolled mounts). Watcher armed. Findings to file when lore serves: lore-lore
   does not reconnect after a store restart (R-1; cf. #330 "self-healed" in Aug) · host OOM kills the prod store
   (oom_score_adj 200 makes surreal the preferred victim).
+- **2026-09-24 16:16 EDT — lore-lore back in 240s after the restart (delta boot, NOT a #355 full rebuild):**
+  `reconcile.summary files_indexed 2, files_failed 1 (#383), files_skipped 1233, tiers_rebuilt ["lore"]` —
+  a 3rd receipt that the `tiers_rebuilt` label does NOT mean "purged" (for #355). This session's MCP client
+  dropped on the restart → operator `/mcp` reconnect needed before filing: R-1 (no reconnect after a store
+  restart), host-OOM-kills-prod-store, and the adversary-r2 ledger retire.
