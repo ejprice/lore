@@ -237,3 +237,11 @@ agent-side at that seam otherwise.
   = D1 (ruled). Forks (2) MP-10 `briefed` population · (3) MP-12 register scope-kwarg vs forbidden-name pin ·
   (4) R5 owner=>scope -> **routed to sidecar-63c-2** (directive #15002 + wake), plus a GAP/missing-pin conflict
   diff so the reviser gets ONE worklist. Filed by adversary: #473 (text-search hook blocks scratch copies too).
+- **2026-09-24 ~17:15Z — sidecar Task 2 ADOPTED (amendment 2, `65ca279`).** A1 `briefed` governed from i-a
+  (resolver ImportFrom leg; its F5 case owed by 63c-ii) · A2 registry seam `session_keep_id`, forbidden-name pin
+  re-keyed to the safe set, fakes mirror, unconditional pass · A3 register refuses an inconsistent owner/scope
+  pair pre-I/O · A4 `lorerunes.is_legal_identifier` (fullmatch decision) + `AGENT_NAME_PATTERN` moves to
+  lorerunes; pre-answers F-briefs-import. §E flagged A4 as operator-visible; lead judged it NOT major
+  architecture (it is the CLAUDE.md-designated `lorerunes` home applied verbatim) → adopted, operator informed.
+  §D = ONE 15-item worklist. **Spawned `contract-63c-i-a-r2`** (opus55-worker) to revise 0b8ce37 against §D, with
+  a required full-suite satisfiability receipt. NEXT: re-adversary delta pass on r2 (no skip) → build.
