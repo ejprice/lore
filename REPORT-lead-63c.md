@@ -310,3 +310,18 @@ agent-side at that seam otherwise.
   now: Shmem 58 GB, only 18 GB of it tmpfs `/tmp` — the rest likely Postgres shared_buffers across the Odoo
   harness pods; surfaced to the operator). Lead to file on reconnect: `ALL_DDL_GENERATORS` misses lease +
   floor_calibration (amendment-4 finding), plus the outage-#2 findings.
+- **2026-09-24 ~18:05 EDT — contract r3a COMMITTED `11cbfb2`** (items 1–6, GATING). r3b (items 7–11) done +
+  lane-proven but UNCOMMITTED, held on forks (patch saved by the author at its scratchpad `r3b_snapshot/r3b.patch`).
+  **Operator-directed memory cleanup:** deleted 162,173 files older than 7 days (17.3 GB, none open per lsof) under
+  `/tmp/claude-1000` (tmpfs); /tmp 18 GB → 1.4 GB; host available 19 GB → 35 GB (clears the reviser's 30 GB gate).
+- **LEAD DIRECTIVE TO sidecar-63c-2 — TASK 5 (durable copy HERE; this session's lore MCP is still disconnected):**
+  rule the r3 author's forks, `REPORT-contract-63c-i-a-r3.md` §FORKS (uncommitted, at repo root — read it in place):
+  **FORK-A** (item 7 ⊇-pin direction: amendment-4's literal text vs its parenthetical point opposite ways; the
+  parenthetical reading is RED on a correct build = unsatisfiable; author recs (c) PIN-THE-MISS — assert the known
+  gap is EXACTLY {generate_lease_ddl, generate_floor_calibration_ddl}) · **FORK-C** (item 8: amendment-3 F-2's
+  "unguarded call-time import adds no HEAD reds" is FALSE — measured 55→287 reds over the 11 `_comms_fakes`
+  consumers, 232 HEAD-green tests turn RED; author recs a GUARDED read under which the mirror legs stay visibly RED)
+  · **FORK-B** (ratify: author lifted the generator-discovery helper into `_enforced_relations_scaffold.py` and
+  folded two pre-existing private copies — `test_ddl_write_target_coverage_124.py`, `test_principal_keys_schema.py`
+  — outside the named worklist; also found `_logging_fixtures._rebind_everywhere` was a pre-existing identity-keyed
+  twin and shared its loop). Deliver a committed amendment-5 + native micro-format wake.
