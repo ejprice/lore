@@ -260,3 +260,12 @@ agent-side at that seam otherwise.
   self-retired. Forks F-1/F-2/F-3 → sidecar (directive #15005 + wake). **Spawned `adversary-63c-i-a-r2`**
   (contract-adversary, Opus 5.5) — delta pass, re-derive every claim, independent ref build (contract→adversary law).
   Operator todo: lore_tasks f4e3b63f… (log the re-embed fallback outcome; #474).
+- **2026-09-24 ~18:30Z — sidecar Task 3 ADOPTED (amendment 3, `e6bedd1`).** F-1 reading (b) confirmed (+E2-bis
+  wording fix) · F-2 fake mirrors `is_blank` + `is_legal_identifier` via the shared predicates (r3-NON-GATING) ·
+  F-3 fold THREE name-keyed `_patch_everywhere` copies → the shared instrument (r3-NON-GATING) · F-4(b)
+  column-wise 2-of-3 wrong build IS constructible → r3 item 1 = mutation run, **GATING iff a pin is missing** ·
+  F-5 bound accepted. **Sequencing:** r3 HELD until `adversary-63c-i-a-r2` reports (it scratch-copies the
+  checkout; r3 edits would contaminate its copies). Then r3 (item 1 first) + fold any r2-adversary findings;
+  builder may start after item 1 is clean, in parallel with r3 items 2–3 (disjoint files), one adversary delta
+  covers 2–3 before cold audit. Noted operator commit `5e3e5a4` (INDEX plan review, another session): its "live
+  image 0f5f2dc" CONSISTENT with E3 (0f5f2dc 2026-08-17 predates pkt-62 66b5fa4; image created 2026-08-18 00:03Z).
