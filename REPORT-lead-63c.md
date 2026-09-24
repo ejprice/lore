@@ -245,3 +245,11 @@ agent-side at that seam otherwise.
   architecture (it is the CLAUDE.md-designated `lorerunes` home applied verbatim) → adopted, operator informed.
   §D = ONE 15-item worklist. **Spawned `contract-63c-i-a-r2`** (opus55-worker) to revise 0b8ce37 against §D, with
   a required full-suite satisfiability receipt. NEXT: re-adversary delta pass on r2 (no skip) → build.
+- **2026-09-24 ~17:45Z — investigate-472 CLOSED: #472 BENIGN (resolved).** batch-scope `embed.permanent_failure`
+  → unlogged per-text fallback; 471/471 vectors correct; tier-wide no false clear. Report + README resolutions
+  committed `41b9e21`. ⚠ **DEVIATION (surfaced to operator):** its Run 1 full-rate re-embed 429'd PRODUCTION TEI
+  17:27:55–17:36:26Z (one file 7s→76.7s; zero file failures; killed) + a transient script write to the lore-lore
+  container /tmp. Follow-ups: #474 filed (misleading batch event name) · #383 annotated (re-embeds 505 chunks
+  every sweep) · #355 CORRECTED (my count-leg hypothesis refuted; trigger still unknown) · lore memory: TEI
+  capacity gotcha. Process TaskStopped; ledger row already self-retired. Drained #15000/#15001/#15003 (signals,
+  already acted on).
