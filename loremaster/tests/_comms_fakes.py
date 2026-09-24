@@ -86,6 +86,7 @@ from loremaster.agents import (
     AgentFleetWindow,
     AgentIdentityConflictError,
     AgentRegisterResult,
+    AgentRegistryError,
     AgentRosterMember,
     AgentStatus,
     AmbiguousAgentError,
@@ -106,6 +107,7 @@ from loremaster.briefs import (
     UnknownBriefError,
     UnknownBriefVersionError,
 )
+from lorerunes.pdp import keep_scope
 
 # --- the domain's status vocabulary + legal-transition matrix ---------------
 # A DELIBERATE local copy of the same vocabulary/matrix the test modules pin
@@ -178,6 +180,11 @@ class FakeAgentDatabase:
     agents: dict[str, Agent] = field(default_factory=dict)
     owners: dict[str, str | None] = field(default_factory=dict)
     capabilities: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    # 63c-i-a r2 (amendment-2 A2): the fake analog of the ``owner_agent`` / ``scope`` columns the real
+    # ``register`` stamps inside its CREATE — ``owner_agents[agent_id]`` is the row's own id,
+    # ``scopes[agent_id]`` is ``keep_scope(session_keep_id)`` (``None`` for the α tokenless interim).
+    owner_agents: dict[str, str] = field(default_factory=dict)
+    scopes: dict[str, str | None] = field(default_factory=dict)
 
 
 class FakeAgentRegistry:
@@ -260,7 +267,15 @@ class FakeAgentRegistry:
         task_id: str | None = None,
         cadence: str | None = None,
         owner_principal_id: str | None = None,
+        session_keep_id: str | None = None,
     ) -> AgentRegisterResult:
+        # 63c-i-a r2 (amendment-2 A2/A3) — the fake mirrors the WRITER's check, not the schema's: an
+        # inconsistent provenance pair is a server-side caller bug, refused before any "write".
+        if (owner_principal_id is None) != (session_keep_id is None):
+            raise AgentRegistryError(
+                "register called with an owner but no session keep (or the reverse) — a server-side "
+                "caller bug; nothing was written"
+            )
         # The race window is honestly OPEN before the check (mirrors
         # ``FakeTaskLedger.claim_task``): two concurrent callers can both reach
         # this point before either one mutates.
@@ -286,6 +301,10 @@ class FakeAgentRegistry:
                 heartbeat_at=now,
             )
             self.db.agents[agent_id] = agent
+            # 63c-i-a r2 (A2): mint-once stamps, exactly as the real CREATE — owner_agent = self, scope
+            # formed by the ONE formatter from the server-derived session keep id.
+            self.db.owner_agents[agent_id] = agent_id
+            self.db.scopes[agent_id] = keep_scope(session_keep_id) if session_keep_id is not None else None
             # packet 63b-ii-a — mint-once-on-create: the tool's ``_comms_register`` stamps the
             # server-derived ``owner_principal_id`` (None for a tokenless/ownerless register, Fork 2)
             # and captures the one-time ``<name>:<secret>`` credential the register RESPONSE serves

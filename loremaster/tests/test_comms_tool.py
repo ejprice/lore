@@ -47,7 +47,7 @@ from _comms_fakes import (
     FakeKeepStore,
     FakePrincipalStore,
 )
-from _governed_contract import access_token, member
+from _governed_contract import access_token, member, session_keep_id_for
 from loremaster.agents import (
     AGENT_NAME_PATTERN,
     Agent,
@@ -359,7 +359,15 @@ async def _credential_agent(
         principal = await principal_store.create(email=email, role="member")
     bare = principal.id.split(":", 1)[-1]
     result = await harness.agent_registry.register(
-        name, session=session, role=role, owner_principal_id=bare
+        name,
+        session=session,
+        role=role,
+        owner_principal_id=bare,
+        # 63c-i-a r2 (A3): the owner travels WITH THE session keep (minted here by the first
+        # credentialed agent, joined by the rest — the same get_or_create_keyed the tool uses).
+        session_keep_id=await session_keep_id_for(
+            keep_store, principal_store, owner_principal_id=bare, session=session
+        ),
     )
     if result.capability is not None:
         _CAPS[(session, name)] = result.capability

@@ -84,6 +84,7 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 import pytest_asyncio
 from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
+from _governed_contract import patch_shared_object_everywhere
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -110,12 +111,14 @@ from loremaster.agents import (
     RetiredAgentError,
     UnknownAgentError,
 )
+from loremaster.render import render_fenced
 from loremaster.server import _MAX_FLEET_LIMIT
 from loremaster.store._txn import SurrealConnectionError, SurrealStoreError, _SurrealConnection
 from loremaster.store.surreal_schema import AGENT_TABLE
 from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
+from test_comms_schema import _HOSTILE_IDENTIFIERS
 
 # --- the domain's status vocabulary (the convention this contract decides) ---
 STATUS_ACTIVE = "active"
@@ -1025,34 +1028,38 @@ class TestAgentRegistryConnectionLifecycle:
 
 
 # =========================================================================== #
-# 63c-i-a — Q3 DROP+MOVE (ruling §4.2): the agent name/session charset + role non-empty checks
-# MOVE out of the store DDL ASSERT and INTO ``AgentRegistry.register``. The writer validates
-# ``name``/``session`` via ``AGENT_NAME_PATTERN.fullmatch`` (the ONE spelling — the SAME object the
-# tool-layer ``_validate_comms_charset`` uses; ``_IDENTIFIER_CHARSET_PATTERN`` in surreal_schema is
-# NOT deleted in i-a because ``brief.name`` still consumes it until 63c-ii — F-regex-twin, lead-ruled)
-# and ``role`` via ``lorerunes.is_blank`` — a TEACHING ``AgentRegistryError`` BEFORE any store I/O.
+# 63c-i-a — Q3 DROP+MOVE (ruling §4.2 + amendment-2 A4): the agent name/session charset + role
+# non-empty checks MOVE out of the store DDL ASSERT and INTO ``AgentRegistry.register``. The DECISION
+# lives in ``lorerunes.is_legal_identifier`` (``fullmatch`` over ``AGENT_NAME_PATTERN``, which MOVES to
+# ``lorerunes``; ``agents.py`` re-exports it) and ``lorerunes.is_blank`` — the register refusal is a
+# TEACHING ``AgentRegistryError`` subclass (field · rule in prose · remedy · the value FENCED through
+# the SAME ``render_fenced`` helper ``AppContext._validate_comms_charset`` uses, never ``repr``) raised
+# BEFORE any store I/O. ``_IDENTIFIER_CHARSET_PATTERN`` (surreal_schema) is NOT deleted in i-a —
+# ``brief.name`` consumes it until 63c-ii (F-regex-twin).
 #
-# RED before the i-a build (measured @699a6e9): at HEAD ``register`` performs NO charset/role check
-# (F7), so a hostile value reaches the store CREATE and the STILL-PRESENT store ASSERT rejects it
-# with a ``TxnDomainRejectionError`` (a ``SurrealStoreError``, NOT an ``AgentRegistryError`` — checked
-# hierarchy) — so ``pytest.raises(AgentRegistryError)`` lets that store error propagate → these pins
-# ERROR (RED) at HEAD. On the CORRECT build ``register`` raises the teaching ``AgentRegistryError``
-# before the CREATE (zero rows). On the WRONG build (Q3 dropped the store ASSERT but forgot the MOVE)
-# a hostile value is WRITTEN — no raise, count != 0 → RED. All three worlds discriminated.
+# RED before the i-a build (measured @699a6e9): at HEAD ``register`` performs NO charset/role check, so
+# a hostile value reaches the store CREATE and the STILL-PRESENT store ASSERT rejects it with a
+# ``TxnDomainRejectionError`` (a ``SurrealStoreError``, NOT an ``AgentRegistryError``) → these pins
+# ERROR (RED). On the WRONG build (ASSERT dropped, MOVE forgotten) a hostile value is WRITTEN → RED.
+#
+# r2 (amendment-2 §D item 10 — MP-9 / A4 / sidecar F5 + F6): the hostile matrix is the SHARED
+# ``test_comms_schema._HOSTILE_IDENTIFIERS`` (12 → 13 shapes incl. the trailing newline WB11 walked
+# through; r1's local 7-shape hand-list is DELETED — one corpus); the refusal's TEACHING content is
+# pinned (WB5); ``is_legal_identifier`` / ``is_blank`` / the moved pattern are each proven SHARED by
+# mutation, per field (WB11 / WB13 / F6).
 # =========================================================================== #
 
-# Hostile identifiers register must refuse app-side (the injection classes the charset guards) —
-# a LOCAL representative set (test_comms_schema.py owns the exhaustive _HOSTILE_IDENTIFIERS; this
-# file need not import it). Includes the empty string and an over-cap name.
-_MOVE_HOSTILE_IDENTIFIERS = ("Bad Name!", "has space", "UPPER", "colon:here", "-lead", "z" * 65, "")
 _MOVE_BLANK_ROLES = ("", " ", "\t", "\n")
+_LEGAL_NAME = AGENT_FIXER_B  # "fixer-b"
+_LEGAL_SESSION = SESSION_WAVE7  # "wave7" — a DIFFERENT value from the name (per-field mutation legs)
 
 
 class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
-    """63c-i-a §4.2 MOVE — ``AgentRegistry.register`` is now the ONE implementation of the agent
-    identity charset (name/session) + role non-empty rules, refusing a hostile value with a TEACHING
-    ``AgentRegistryError`` BEFORE any store I/O. Fixtures DISCRIMINATE: a hostile value AND a valid
-    control (a build whose charset guard is too strict would refuse every real caller)."""
+    """63c-i-a §4.2 MOVE — ``AgentRegistry.register`` refuses a hostile identity / blank role with a
+    TEACHING ``AgentRegistryError`` BEFORE any store I/O, through the SHARED ``lorerunes`` predicates.
+    Fixtures DISCRIMINATE: a hostile value AND a valid control (a too-strict guard would refuse every
+    real caller); name and session carry DIFFERENT legal values so a per-field mutation can tell them
+    apart."""
 
     @staticmethod
     async def _real_registry() -> tuple[AgentRegistry, SurrealConnection, SurrealEnv]:
@@ -1072,18 +1079,20 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
         return int(rows[0]["count"]) if rows else 0
 
     @pytest.mark.parametrize("field", ["name", "session"])
-    @pytest.mark.parametrize("hostile_value", _MOVE_HOSTILE_IDENTIFIERS)
+    @pytest.mark.parametrize("hostile_value", _HOSTILE_IDENTIFIERS)
     async def test_register_refuses_a_hostile_identifier_before_any_store_write(
         self, field: str, hostile_value: str
     ) -> None:
-        """⚠ RED before i-a — ``register`` REFUSES a hostile ``name``/``session`` with a teaching
-        ``AgentRegistryError`` (naming the illegal shape + the charset), writing ZERO agent rows.
-        RED at HEAD (register lacks the check → the store ASSERT raises a NON-AgentRegistryError
-        store error, uncaught here). REDDENS the wrong build (ASSERT dropped, no MOVE → the hostile
-        value is WRITTEN, no raise, count != 0)."""
+        """⚠ RED before i-a — ``register`` REFUSES a hostile ``name``/``session`` from the SHARED corpus
+        with a TEACHING ``AgentRegistryError``, writing ZERO rows. The refusal names (i) the FIELD, (ii)
+        the RULE — ``AGENT_NAME_PATTERN.pattern`` itself, DERIVED so a pattern change moves the message
+        with it, (iii) the REMEDY (register again), and (iv) echoes the offending VALUE through
+        ``render_fenced`` — the helper ``_validate_comms_charset`` uses — never bare, never ``repr``
+        (Ruling 10 link 4: ``repr`` escapes newlines and leaves a same-line forgery readable). WB5
+        (``"invalid input"``) and WB11 (``.match`` accepts ``"fixer-b\\n"``) both red here."""
         registry, admin_connection, env = await self._real_registry()
         try:
-            kwargs: dict[str, Any] = {"name": AGENT_FIXER_B, "session": SESSION_WAVE7, "role": ROLE_BUILDER}
+            kwargs: dict[str, Any] = {"name": _LEGAL_NAME, "session": _LEGAL_SESSION, "role": ROLE_BUILDER}
             kwargs[field] = hostile_value
             with pytest.raises(AgentRegistryError) as exc_info:
                 await registry.register(
@@ -1091,9 +1100,17 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
                 )
             message = str(exc_info.value)
             assert "assert violation" not in message.lower(), (
-                f"the refusal is a laundered store ASSERT, not a TEACHING register-layer error — the "
-                f"MOVE writes the check into register (§4.2), so a hostile {field} is refused APP-SIDE "
-                f"with a teaching message, never the store's opaque `(assert violation)`: {message!r}"
+                f"the refusal is a laundered store ASSERT, not a TEACHING register-layer error: {message!r}"
+            )
+            assert field in message, f"the refusal does not name the offending FIELD {field!r}: {message!r}"
+            assert AGENT_NAME_PATTERN.pattern in message, (
+                f"the refusal does not state the RULE (the charset pattern {AGENT_NAME_PATTERN.pattern!r}, "
+                f"derived — never restated): {message!r}"
+            )
+            assert "register again" in message, f"the refusal does not teach the REMEDY: {message!r}"
+            assert str(render_fenced(hostile_value)) in message, (
+                f"the offending value must ride render_fenced (the SAME helper "
+                f"_validate_comms_charset uses — Ruling 10 link 4), never bare or repr: {message!r}"
             )
             assert await self._agent_row_count(admin_connection) == 0, (
                 f"a rejected register wrote an agent row — the {field} charset check must run BEFORE "
@@ -1106,18 +1123,21 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
 
     @pytest.mark.parametrize("blank_role", _MOVE_BLANK_ROLES)
     async def test_register_refuses_a_blank_role_before_any_store_write(self, blank_role: str) -> None:
-        """⚠ RED before i-a — ``register`` REFUSES a blank ``role`` via ``lorerunes.is_blank`` (the
-        SHARED blankness predicate, never a second ``strip()``), teaching, ZERO rows written. RED at
-        HEAD (``role=""`` reaches the store non-empty ASSERT — a store error, not AgentRegistryError,
-        uncaught here — F7 confirmed ``role=""`` passes the dispatcher's ``is None`` check today)."""
+        """⚠ RED before i-a — ``register`` REFUSES a blank ``role`` via ``lorerunes.is_blank``, TEACHING
+        (the field ``role``, the rule — non-blank — and the remedy), ZERO rows written. RED at HEAD
+        (``role=""`` reaches the store non-empty ASSERT — a store error, not AgentRegistryError)."""
         registry, admin_connection, env = await self._real_registry()
         try:
             with pytest.raises(AgentRegistryError) as exc_info:
-                await registry.register(AGENT_FIXER_B, session=SESSION_WAVE7, role=blank_role)
-            assert "assert violation" not in str(exc_info.value).lower(), (
+                await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=blank_role)
+            message = str(exc_info.value)
+            assert "assert violation" not in message.lower(), (
                 f"a blank role must be refused APP-SIDE by is_blank, teaching — not laundered as the "
-                f"store's `(assert violation)`: {str(exc_info.value)!r}"
+                f"store's `(assert violation)`: {message!r}"
             )
+            assert "role" in message, f"the refusal does not name the FIELD 'role': {message!r}"
+            assert "blank" in message, f"the refusal does not state the RULE (non-blank): {message!r}"
+            assert "register again" in message, f"the refusal does not teach the REMEDY: {message!r}"
             assert await self._agent_row_count(admin_connection) == 0, (
                 "a rejected (blank-role) register wrote an agent row — the role check must run BEFORE "
                 "any store I/O (§4.2)"
@@ -1144,29 +1164,115 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
             await registry.close()
             await drop_database(env)
 
-    async def test_register_charset_check_is_the_ONE_spelling_agent_name_pattern(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("field", ["name", "session"])
+    async def test_the_identifier_decision_is_the_SHARED_is_legal_identifier(
+        self, monkeypatch: pytest.MonkeyPatch, field: str
     ) -> None:
-        """⚠ REGEX-TWIN mutation proof (i-a scope), RED before build. ``register``'s charset check is
-        ``AGENT_NAME_PATTERN`` itself — the ONE spelling — not a private copy. Perturb
-        ``agents.AGENT_NAME_PATTERN`` to reject a normally-valid name; ``register`` must now refuse it.
-        RED at HEAD (register consults NO pattern → ``fixer-b`` is accepted → no raise). GREEN on the
-        correct build (register consults the mutated module global → refuses). Proves a change to the
-        pattern MOVES register's behaviour — a private clone would stay green.
+        """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). ONE DECISION, proven BY
+        MUTATION (A4; WB11 is the routing-not-sharing build this kills): perturb the SHARED predicate —
+        in EVERY loaded module holding that object — to reject ONE normally-legal value, the target
+        field's; ``register`` must refuse it (per FIELD, so a build that routes ``name`` through the
+        predicate and ``session`` through a private ``AGENT_NAME_PATTERN.fullmatch`` reds on the
+        ``session`` leg — sidecar F6), AND the TOOL-layer ``AppContext._validate_comms_charset`` must
+        refuse it too (the same decision, two consumers). BASELINE leg first: unpatched, both accept."""
+        from loremaster.server import AppContext
 
-        NB (F-regex-twin, lead-ruled): i-a does NOT delete ``_IDENTIFIER_CHARSET_PATTERN`` — ``brief.name``
-        still consumes it until 63c-ii; this pin only proves AGENT's register routes through
-        ``AGENT_NAME_PATTERN``. The single-hit deletion sweep lands in 63c-ii."""
-        import re
+        import lorerunes
 
-        import loremaster.agents as agents_module
-
+        target = _LEGAL_NAME if field == "name" else _LEGAL_SESSION
+        shared_predicate = lorerunes.is_legal_identifier
         registry, admin_connection, env = await self._real_registry()
         try:
-            monkeypatch.setattr(agents_module, "AGENT_NAME_PATTERN", re.compile(r"^ZZZ_NO_MATCH$"))
+            AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - BASELINE: legal today
+            patched = patch_shared_object_everywhere(
+                monkeypatch,
+                "is_legal_identifier",
+                shared_predicate,
+                lambda value: value != target and shared_predicate(value),
+            )
+            assert any(name.startswith("lorerunes") for name in patched), (
+                f"the shared predicate was not found in its lorerunes home (patched: {patched})"
+            )
             with pytest.raises(AgentRegistryError):
-                await registry.register("fixer-b", session="wave7", role=ROLE_BUILDER)
+                await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
             assert await self._agent_row_count(admin_connection) == 0
+            with pytest.raises(ValueError):
+                AppContext._validate_comms_charset(target, field)  # noqa: SLF001 - the tool-layer consumer
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    @pytest.mark.parametrize("field", ["name", "session"])
+    async def test_register_charset_check_reads_the_ONE_pattern_in_its_lorerunes_home(
+        self, monkeypatch: pytest.MonkeyPatch, field: str
+    ) -> None:
+        """⚠ REGEX-TWIN mutation proof, RED before i-a — RETARGETED to the ``lorerunes`` home (A4: the
+        r1 pin patched ``agents.AGENT_NAME_PATTERN``, which after the MOVE is a RE-EXPORT — patching it
+        moves nothing, so that pin went RED on a correct build and GREEN only on a build that kept a
+        private pattern). ``AGENT_NAME_PATTERN`` is ONE object: ``loremaster.agents`` re-exports the
+        ``lorerunes`` one. Replace that object — in every module holding it — with a pattern that
+        refuses exactly the target field's legal value; ``register`` must refuse it. Per field (F6).
+
+        ⚠ MEASURED BOUND (r2 mutation proof WB-A4b): CPython's ``re.compile`` CACHE returns the SAME
+        object for an identical pattern string, so a "private copy" in ``agents.py`` compiled from the
+        IDENTICAL text is the shared object — indistinguishable here, and behaviourally identical at
+        birth. The second spelling this pin reds is a DRIFTED copy (proven: a ``{0,64}`` copy reds both
+        legs on the identity assertion) — the drift is the defect, and drift is what it catches."""
+        import re
+
+        import lorerunes
+        from loremaster import agents as agents_module
+
+        assert agents_module.AGENT_NAME_PATTERN is lorerunes.AGENT_NAME_PATTERN, (
+            "loremaster.agents.AGENT_NAME_PATTERN is not the lorerunes object — the pattern did not MOVE "
+            "(A4: agents.py re-exports it; a second compiled copy is a second spelling)"
+        )
+        target = _LEGAL_NAME if field == "name" else _LEGAL_SESSION
+        narrowed = re.compile(rf"^(?!{re.escape(target)}$)[a-z0-9][a-z0-9_-]{{0,63}}$")
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            patched = patch_shared_object_everywhere(
+                monkeypatch, "AGENT_NAME_PATTERN", lorerunes.AGENT_NAME_PATTERN, narrowed
+            )
+            assert any(name.startswith("lorerunes") for name in patched), (
+                f"AGENT_NAME_PATTERN was not found in its lorerunes home (patched: {patched})"
+            )
+            with pytest.raises(AgentRegistryError):
+                await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            assert await self._agent_row_count(admin_connection) == 0
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
+
+    async def test_the_blank_role_rule_is_the_SHARED_is_blank(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED before i-a — ROUTING IS NOT SHARING (A4 / MP-9c, WB13: a private ``role.strip()``
+        passed every r1 pin). Perturb the SHARED ``lorerunes.is_blank`` — in every loaded module holding
+        that object — so a normal role (``builder``) counts as blank; ``register`` must now refuse it.
+        BASELINE leg first: unpatched, ``builder`` registers (a register that never checks roles would
+        otherwise 'refuse' nothing and fail only here for the wrong reason)."""
+        import lorerunes
+
+        shared_is_blank = lorerunes.is_blank
+        registry, admin_connection, env = await self._real_registry()
+        try:
+            await registry.register("baseline-agent", session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            assert await self._agent_row_count(admin_connection) == 1, "BASELINE: 'builder' must register"
+            patched = patch_shared_object_everywhere(
+                monkeypatch,
+                "is_blank",
+                shared_is_blank,
+                lambda value: value == ROLE_BUILDER or shared_is_blank(value),
+            )
+            assert patched, "lorerunes.is_blank was not found in any loaded module"
+            with pytest.raises(AgentRegistryError):
+                await registry.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+            assert await self._agent_row_count(admin_connection) == 1, (
+                "a register refused by the (mutated) shared is_blank still wrote a row"
+            )
         finally:
             await admin_connection.close()
             await registry.close()

@@ -51,6 +51,7 @@ from _governed_contract import (
     python_allowed_ids,
     read_filter_ids,
     seed_memory_governed,
+    session_keep_id_for,
 )
 from _surreal_harness import (
     connect_admin,
@@ -1121,7 +1122,13 @@ async def _minted_credential(
     try:
         await registry.ensure_ready()  # the agent table lives on the SAME unified DB as the backend
         result = await registry.register(
-            agent_name, session="s1", role="worker", owner_principal_id=_bare(str(principal.id))
+            agent_name,
+            session="s1",
+            role="worker",
+            owner_principal_id=_bare(str(principal.id)),
+            session_keep_id=await session_keep_id_for(
+                keep_store, principal_store, owner_principal_id=_bare(str(principal.id)), session="s1"
+            ),  # r2 (A3): the owner travels WITH THE session keep
         )
         token = getattr(result, "capability", None)
         assert token, "capability mint unbuilt (62 wave 2)"

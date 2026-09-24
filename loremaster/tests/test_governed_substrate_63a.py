@@ -31,6 +31,7 @@ from _governed_contract import (
     governed_overlay_ddl,
     member,
     seed_memory_governed,
+    session_keep_id_for,
     store_handle,
 )
 from _sdk_guard import SAFE_CONNECTION_METHODS, SDK_CONNECTION_CLASSES
@@ -169,7 +170,13 @@ class TestResolveSubjectIsFailClosed:
         try:
             await registry.ensure_ready()
             result = await registry.register(
-                "alice_worker", session="s1", role="worker", owner_principal_id=_bare(alice.id)
+                "alice_worker",
+                session="s1",
+                role="worker",
+                owner_principal_id=_bare(alice.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(alice.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
             capability = getattr(result, "capability", None)
             assert capability, "capability mint unbuilt (62 wave 2)"

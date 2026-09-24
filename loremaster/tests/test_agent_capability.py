@@ -61,6 +61,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _governed_contract import registry_level_session_keep_id
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -190,7 +191,12 @@ async def _register_owned(env: Any, *, name: str, session: str, owner_bare: str 
     minting its capability. RED-until-built: ``register`` gains an ``owner_principal_id`` kw and
     an ``AgentRegisterResult.capability`` in wave 2, so at HEAD this raises TypeError/AttributeError."""
     return await env.registry.register(
-        name, session=session, role="worker", owner_principal_id=owner_bare
+        name,
+        session=session,
+        role="worker",
+        owner_principal_id=owner_bare,
+        # 63c-i-a r2 (A3): an owner travels WITH its session keep; an ownerless register (Fork 2) with none.
+        session_keep_id=registry_level_session_keep_id(session) if owner_bare is not None else None,
     )
 
 
@@ -880,18 +886,63 @@ class TestRegisterStampsOwnerPrincipalFromTheCredential:
             f"a fabricated/sentinel owner; got {rows!r}"
         )
 
-    async def test_register_exposes_no_display_owner_argument(self) -> None:
-        """⚠ RED at HEAD (R3.3 / §3.2.2). The ONLY owner input is the server-derived
-        ``owner_principal_id`` — ``register`` must expose NO caller-facing ``owner`` / ``as_agent``
-        / ``created_by`` / ``scope`` parameter that could ASSERT ownership (the confused-deputy
-        surface). REDDENS a build that adds a display-owner argument alongside the server-derived
-        one."""
-        params = set(inspect.signature(AgentRegistry.register).parameters)
-        assert "owner_principal_id" in params, (
-            "register must gain the SERVER-derived owner_principal_id kw (R3.3) — unbuilt"
+    # 63c-i-a r2 RE-KEY (amendment-2 A2 / §D item 8 / adversary MP-12). The pin that lived here,
+    # ``test_register_exposes_no_display_owner_argument``, ENUMERATED THE FORBIDDEN —
+    # ``{"owner", "as_agent", "created_by", "scope"} & params == ∅`` — the antipattern six defeats
+    # taught: it blocked the natural seam name (``scope``) and admitted any rename (``session_scope``
+    # walked past it). Its real property — "the registry's provenance inputs are SERVER-DERIVED only
+    # and UNREACHABLE from the wire" — is carried by ALLOWLISTING THE SAFE: (i) the register signature
+    # is an EXACT set whose provenance-bearing members are exactly {owner_principal_id,
+    # session_keep_id}; (ii) the wire surface is DERIVED (``_COMMS_ACTIONS['register'].params`` and the
+    # ``AppContext.comms`` dispatcher signature) and disjoint from them; (iii) the fake's public surface
+    # mirrors the real one (A2: fakes mirror the writer). The F4 foreign-param fuzz keeps refusing
+    # ``owner=``/``as_agent=``/``created_by=``/``scope=`` at the MCP layer (ruling §2.2).
+
+    _REGISTER_PROVENANCE_PARAMS = frozenset({"owner_principal_id", "session_keep_id"})
+    _REGISTER_IDENTITY_PARAMS = frozenset(
+        {"self", "name", "session", "role", "model", "spawned_by", "task_id", "cadence"}
+    )
+
+    def test_register_signature_is_exactly_identity_plus_the_server_derived_provenance_pair(
+        self,
+    ) -> None:
+        """⚠ RED before 63c-i-a (``session_keep_id`` absent). EXACT set: the identity/descriptive params
+        + EXACTLY the two server-derived provenance params (A2). A THIRD provenance-ish kwarg — ``scope``,
+        ``session_scope``, ``owner``, anything — is a deliberate edit that reds here, whatever its name
+        (allowlist the safe; never enumerate the forbidden)."""
+        params = frozenset(inspect.signature(AgentRegistry.register).parameters)
+        assert params == self._REGISTER_IDENTITY_PARAMS | self._REGISTER_PROVENANCE_PARAMS, (
+            f"AgentRegistry.register's parameters are {sorted(params)} — expected EXACTLY the identity "
+            f"set {sorted(self._REGISTER_IDENTITY_PARAMS)} + the server-derived provenance pair "
+            f"{sorted(self._REGISTER_PROVENANCE_PARAMS)} (amendment-2 A2). A new provenance input is a "
+            f"design decision: add it to this allowlist deliberately, with its server-side derivation."
         )
-        display_owner = {"owner", "as_agent", "created_by", "scope"} & params
-        assert not display_owner, (
-            f"register exposes caller-facing owner argument(s) {sorted(display_owner)!r} — the owner "
-            f"is server-derived only; a display owner is the confused-deputy hole (§3.2.2)"
+
+    def test_the_provenance_pair_is_unreachable_from_the_wire(self) -> None:
+        """GREEN before AND after 63c-i-a (a guard). The wire surface is DERIVED, not listed: the
+        ``register`` action's declared params and the ``AppContext.comms`` dispatcher's keyword surface
+        carry NEITHER provenance param — a caller can never hand the registry an owner or a keep."""
+        from loremaster.server import _COMMS_ACTIONS, AppContext
+
+        action_params = frozenset(_COMMS_ACTIONS["register"].params)
+        dispatcher_params = frozenset(inspect.signature(AppContext.comms).parameters)
+        assert action_params, "derived an EMPTY register param set — the derivation is vacuous"
+        leaked = (action_params | dispatcher_params) & self._REGISTER_PROVENANCE_PARAMS
+        assert not leaked, (
+            f"the provenance param(s) {sorted(leaked)} are reachable from the comms wire surface — the "
+            f"owner/keep must be SERVER-derived only (pkt-62 R3.3 / 63c ruling §2.2: no scope= argument "
+            f"on any 63c verb)"
+        )
+
+    def test_the_fake_registry_mirrors_the_real_register_surface(self) -> None:
+        """⚠ RED before 63c-i-a (the real signature gains ``session_keep_id``; the fake must too). A2:
+        the fake mirrors the WRITER — a fake whose ``register`` lacks the kwarg is exactly the condition
+        that tempted a conditional ``**({...} if keep else {})`` splat in the caller (REJECTED by A2)."""
+        from _comms_fakes import FakeAgentRegistry
+
+        real = list(inspect.signature(AgentRegistry.register).parameters)
+        fake = list(inspect.signature(FakeAgentRegistry.register).parameters)
+        assert fake == real, (
+            f"FakeAgentRegistry.register {fake} does not mirror AgentRegistry.register {real} — the "
+            f"fake's PUBLIC surface must match the real registry exactly (its own docstring's contract)"
         )

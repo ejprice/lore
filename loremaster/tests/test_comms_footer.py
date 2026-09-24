@@ -2022,11 +2022,21 @@ class TestAHostileIdentityIsREFUSEDAtEveryLink0Member:
         """
         import re as _re
 
-        import loremaster.server as server_module
+        from _governed_contract import patch_shared_object_everywhere
+        from loremaster.agents import AGENT_NAME_PATTERN as shared_pattern
 
-        monkeypatch.setattr(
-            server_module, "AGENT_NAME_PATTERN", _re.compile(r"^[a-z][a-z_-]{0,63}$")
+        # 63c-i-a r2 RETARGET (amendment-2 A4): the pattern MOVES to ``lorerunes`` and the decision to
+        # ``lorerunes.is_legal_identifier``, so ``loremaster.server.AGENT_NAME_PATTERN`` becomes a mere
+        # re-export binding the decision no longer reads — patching ONLY it (the pre-r2 form) moves
+        # nothing on a correct build (this pin would red there) and green only on a build that kept a
+        # server-private decision. Patch THE ONE pattern OBJECT in every module holding it instead
+        # (import-style agnostic; ``_governed_contract.patch_shared_object_everywhere``): its home is
+        # ``loremaster.agents`` before the MOVE and ``lorerunes`` after, so this pin is green on both,
+        # and a member deciding with a PRIVATE pattern object is still not patched and still caught.
+        patched = patch_shared_object_everywhere(
+            monkeypatch, "AGENT_NAME_PATTERN", shared_pattern, _re.compile(r"^[a-z][a-z_-]{0,63}$")
         )
+        assert patched, "the shared AGENT_NAME_PATTERN object was not found in any loaded module"
         survivors: list[str] = []
         for member in LINK0_MEMBERS:
             try:

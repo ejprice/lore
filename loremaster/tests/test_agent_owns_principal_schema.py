@@ -169,11 +169,19 @@ async def _create_agent(
     variable name, so the whole payload rides ONE ``$content`` bind with ``session`` as an
     inner KEY — a top-level ``$session`` param is rejected outright).
 
-    Supplies every REQUIRED (non-``option``, no-DEFAULT) column: ``name``/``session`` (the
-    identifier-charset ASSERT), ``role`` (non-empty ASSERT), ``status`` (the closed domain),
-    and the two app-stamped datetimes. ``owner_principal`` is written as a bound
-    :class:`~surrealdb.RecordID` (the ``record<>``-value shape) ONLY when ``owner_bare_id`` is
-    given — so an ownerless CREATE exercises the ``option<>`` unset path.
+    Supplies every REQUIRED (non-``option``, no-DEFAULT) column: ``name``/``session``/``role``,
+    ``status`` (the closed domain), and the two app-stamped datetimes. ``owner_principal`` is written
+    as a bound :class:`~surrealdb.RecordID` (the ``record<>``-value shape) ONLY when ``owner_bare_id``
+    is given — so an ownerless CREATE exercises the ``option<>`` unset path.
+
+    Re-dated at 63c-i-a r2 (amendment-2 §D item 14 / sidecar F4): ``name``/``session`` (identifier
+    charset) and ``role`` (non-empty) were STORE-ASSERTed until 63c-i-a (``699a6e9``); after Q3 only
+    ``status`` keeps a store ASSERT — the identifier charset and the non-blank role are validated by
+    ``AgentRegistry.register`` (the ONE implementation, via ``lorerunes.is_legal_identifier`` /
+    ``lorerunes.is_blank``), and a RAW CREATE here bypasses that ON PURPOSE. ⚠ This helper PREDATES
+    the F5 home's ``_governed_contract.seed_agent_legacy`` (a second raw-CREATE of an agent row);
+    operator ruling D3 folds it onto ``seed_agent_legacy`` in the 63c-i-a BUILD's refactor step — the
+    pkt-62 pins here keep their behaviour.
     """
     now = datetime.now(UTC)
     content: dict[str, Any] = {
@@ -790,6 +798,75 @@ class TestTheGovernedTripleRoutesThroughTheOneEmitter63cIA:
             "generate_agent_ddl() does not route its governed indexes through "
             "_governed_index_statements() — the inline agent_owner_principal index is a hand-rolled "
             "twin bypassing the ONE index emitter (W1-1, ruling §2.1)"
+        )
+
+    def test_every_governed_column_and_index_MOVES_with_a_REWRITE_of_the_shared_emitter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED before 63c-i-a — r2 (amendment-2 §D item 5 / adversary MP-5, WB1). The append-only
+        probes above are defeated by a FILTER/DEDUPE twin: a build that keeps the pkt-62
+        ``owner_principal`` row in ``_AGENT_FIELD_SPECS`` + the inline ``agent_owner_principal`` index,
+        calls the emitter, skips already-declared columns and dedupes identical statements, passes
+        byte-equal, once, AND both append probes (measured: WB1 SURVIVED r1, 5 failed / 466 passed —
+        the baseline's own 5). So REWRITE (never append): mutate EVERY shared spec's clause and RENAME
+        EVERY shared index, then require the agent DDL to carry ONLY the mutated forms — every governed
+        ``DEFINE FIELD`` carries the probe, and NO index under the un-renamed ``agent_owner_principal``
+        name survives. A twin keeps emitting the OLD form beside (or instead of) the mutated one → RED.
+        (Ruling §2.1's "the ``agent_owner_principal`` name is preserved" holds on the UNMUTATED build;
+        the rename here is a mutation context — amendment-2 §B MP-5.)"""
+        original_fields = surreal_schema._governed_field_specs
+        original_indexes = surreal_schema._governed_index_statements
+        probe = "COMMENT 'w1_rewrite_probe'"
+        monkeypatch.setattr(
+            surreal_schema,
+            "_governed_field_specs",
+            lambda: tuple(
+                (name, type_expr, f"{constraint} {probe}".strip())
+                for name, type_expr, constraint in original_fields()
+            ),
+        )
+        monkeypatch.setattr(
+            surreal_schema,
+            "_governed_index_statements",
+            lambda table: [
+                statement.replace(f" {table}_", f" {table}_w1rewrite_", 1)
+                for statement in original_indexes(table)
+            ],
+        )
+        statements = _agent_statements()
+        for column in _GOVERNED_COLUMNS_63C:
+            definitions = [
+                statement
+                for statement in statements
+                if _DEFINE_FIELD.match(statement)
+                and re.search(rf"\bFIELD\s+(?:OVERWRITE\s+)?{re.escape(column)}\b", statement)
+            ]
+            assert definitions, (
+                f"no DEFINE FIELD for agent.{column} under the rewritten emitter — unbuilt (W1-1)"
+            )
+            unmutated = [statement for statement in definitions if "w1_rewrite_probe" not in statement]
+            assert not unmutated, (
+                f"agent.{column} is ALSO emitted in a form the shared-emitter REWRITE did not reach — a "
+                f"hand-rolled twin survives beside _governed_field_specs (WB1 / W1-1): {unmutated!r}"
+            )
+        index_names = [
+            match.group(1)
+            for statement in statements
+            if _DEFINE_INDEX.match(statement)
+            and (match := re.search(r"\bINDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s+ON\b", statement))
+        ]
+        survivors = [
+            name for name in index_names if name in {f"{AGENT_TABLE}_owner_principal", f"{AGENT_TABLE}_scope"}
+        ]
+        assert not survivors, (
+            f"the index(es) {survivors} survive the shared index emitter's RENAME — a hand-rolled inline "
+            f"twin (the pkt-62 agent_owner_principal index) is emitted beside _governed_index_statements "
+            f"(WB1 / W1-1). indexes: {index_names!r}"
+        )
+        renamed = {f"{AGENT_TABLE}_w1rewrite_owner_principal", f"{AGENT_TABLE}_w1rewrite_scope"}
+        assert renamed <= set(index_names), (
+            f"the renamed governed indexes {sorted(renamed)} are not emitted — agent does not route its "
+            f"indexes through _governed_index_statements (W1-1). indexes: {index_names!r}"
         )
 
     def test_the_two_governed_indexes_are_emitted_each_once(self) -> None:

@@ -36,6 +36,7 @@ from _governed_contract import (
     build_principal_and_keep_stores,
     frozen_asserted_message_ddl,
     seed_message_legacy,
+    session_keep_id_for,
     store_handle,
     unbounded_message_ddl,
 )
@@ -129,7 +130,13 @@ async def dirty_message_world() -> Any:
         # the message backfill rather than refusing before it).
         sender = (
             await registry.register(
-                "sender_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "sender_agent",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         yield principal_store, keep_store, connection, env, _bare(sender.id)

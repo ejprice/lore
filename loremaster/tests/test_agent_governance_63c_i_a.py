@@ -29,6 +29,20 @@ stamp of them; ``generate_agent_ddl()`` STILL emits the name/session charset + r
 (so the DROP has not landed and a legacy ``touch`` on a ``role=""`` row is refused); and
 ``_migrate_agent_owner`` is OWNER-keyed with NO row-level precondition (F10 / #470). Live TEST store
 ``ws://127.0.0.1:18000`` (NEVER :18500). Per-test unique DB, reaped. NO skip marker. pytest ``-n 12``.
+
+REVISION r2 (``contract-63c-i-a-r2``, 2026-09-24) — executes ``docs/design/2026-09-24-packet63c-
+amendment-2.md`` §D (15 items; A1 population/resolver, A2 the ``session_keep_id`` registry seam, A3 the
+provenance-pair invariant, A4 ``lorerunes.is_legal_identifier``). Per-item receipts:
+``REPORT-contract-63c-i-a-r2.md`` (archived with the wave).
+
+BUILDER NOTES — docstring rows the contract cannot pin (amendment-1 N2 / amendment-2 §D items 14-15):
+* ``LegacyMapping`` (``governed.py``) has 0 references — a docstring-shape dataclass. The i-a builder
+  adds the agent disposition ``OWNED-BY-THE-OPERATOR`` to ITS DOCSTRING beside memory/brief/message
+  (ruling §6); nothing here can observe it (R3/N2 — unpinnable by construction, named so it is not
+  rediscovered at the cold audit).
+* Operator ruling D3: fold ``test_agent_owns_principal_schema.py::_create_agent`` onto
+  ``_governed_contract.seed_agent_legacy`` in the build's REFACTOR step (its docstring is re-dated
+  here; the fold itself is a builder action, not a contract pin).
 """
 
 from __future__ import annotations
@@ -40,12 +54,15 @@ import pytest
 import pytest_asyncio
 from _governed_contract import (
     AGENT_TABLE,
+    access_token,
     agent_case,
     apply_ddl,
     build_principal_and_keep_stores,
     credentialed_app_context,
     frozen_asserted_agent_ddl,
     governed_overlay_ddl,
+    observe_governed_table_writes,
+    patch_shared_object_everywhere,
     seed_agent_governed,
     seed_agent_legacy,
     store_handle,
@@ -61,10 +78,10 @@ from _surreal_harness import (
     run,
     unique_database,
 )
-from loremaster.agents import AgentRegistry
+from loremaster.agents import AgentRegistry, AgentRegistryError
 from loremaster.governed import PROJECT_KEEP_KEY
 from loremaster.store import surreal_schema
-from loremaster.store._txn import TxnDomainRejectionError
+from loremaster.store._txn import SurrealStoreError, TxnDomainRejectionError
 from lorerunes.pdp import keep_scope
 
 from loremaster import principals
@@ -159,6 +176,265 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             assert _bare(second["id"]) == bare_id, "re-register minted a NEW id — not the same row"
 
 
+    async def test_scope_is_THE_session_keep_across_two_sessions(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — r2 (amendment-2 A2 / §D item 7 / adversary MP-8, WB4). Parameter-value
+        monoculture breaker: ONE principal registers into TWO sessions; each row's scope is ITS OWN
+        session's keep — never "a keep the registrant can see" (WB4 stamped ``sorted(visible)[0]``,
+        which a one-session fixture cannot tell apart). The two scopes must also DIFFER (else the two
+        sessions shared a keep and the leg discriminates nothing)."""
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+        ) as world:
+            scopes: dict[str, Any] = {}
+            for agent, session in (("fixer-b", "wave7"), ("fixer-c", "wave8")):
+                row = await self._register_and_read(world, agent=agent, session=session)
+                keep = await world["ctx"]._keep_store.get_by_key(f"session:{session}")  # noqa: SLF001
+                assert keep is not None, f"register did not mint the session keep for {session!r}"
+                assert row.get("scope") == keep_scope(_bare(keep.id)), (
+                    f"{agent}@{session}: scope must be keep:<THIS session's keep>, got "
+                    f"{row.get('scope')!r} (the {session!r} keep is {keep.id!r})"
+                )
+                scopes[session] = row.get("scope")
+            assert scopes["wave7"] != scopes["wave8"], (
+                f"two sessions stamped the SAME scope {scopes!r} — the stamp is not keyed on the session"
+            )
+
+    async def test_a_householded_joiners_agent_is_stamped_with_the_shared_session_keep(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — r2 (A2 / §D item 7 / MP-8, WB12). A SECOND principal admitted to the session
+        via ``add-household`` (a joiner, not the keeper) registers into it: its agent is owned by ITS
+        principal and scoped to the SHARED session keep. The keeper's own LATER agent likewise. WB12
+        stamped the scope only for the keeper (``kept_by_me``), leaving a joiner's agent NONE-scope."""
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member", "bob": "member"}, dim=_DIM
+        ) as world:
+            ctx = world["ctx"]
+            await self._register_and_read(world, agent="keeper-a", session="shared")
+            keep = await ctx._keep_store.get_by_key("session:shared")  # noqa: SLF001
+            assert keep is not None, "the keeper's register did not mint the session keep"
+            await ctx._keep_store.add_household_member(  # noqa: SLF001
+                keep_id=_bare(keep.id), member_email=world["emails"]["bob"]
+            )
+            world["holder"]["email"] = world["emails"]["bob"]
+            await ctx.comms(action="register", agent="joiner-b", session="shared", role="builder")
+            rows = await run(
+                world["admin_conn"],
+                f"SELECT owner_principal, scope FROM {AGENT_TABLE} WHERE name = 'joiner-b'",
+            )
+            assert rows, "the householded joiner's register wrote no agent row"
+            assert str(rows[0]["owner_principal"]) == f"principal:{world['pids']['bob']}", rows
+            assert rows[0].get("scope") == keep_scope(_bare(keep.id)), (
+                f"a householded JOINER's agent must be scoped to the SHARED session keep, got {rows!r}"
+            )
+            later = await self._register_and_read(world, agent="keeper-a2", session="shared")
+            assert later.get("scope") == keep_scope(_bare(keep.id)), (
+                f"the keeper's own later agent must join the same session keep, got {later!r}"
+            )
+
+    async def test_the_tool_passes_session_keep_id_UNCONDITIONALLY(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """⚠ RED at HEAD — r2 (A2 / §D item 8). ``_comms_register`` hands the registry the provenance
+        PAIR on EVERY call — ``session_keep_id=None`` explicitly when no keep was minted (the tokenless
+        α interim), never a conditional splat that omits the kwarg (the adversary's ref2 shape, REJECTED
+        by A2: a conditional kwarg whose only purpose is to keep an un-updated fake from raising is a
+        fixture guaranteeing the condition under which the seam mismatch is invisible). A spy on the
+        REAL registry records the kwargs of a TOKENLESS and a CREDENTIALED register."""
+        import loremaster.server as server_mod
+
+        async with credentialed_app_context(
+            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
+        ) as world:
+            ctx = world["ctx"]
+            recorded: list[dict[str, Any]] = []
+            real_register = ctx.agent_registry.register
+
+            async def _spy(*args: Any, **kwargs: Any) -> Any:
+                recorded.append(dict(kwargs))
+                return await real_register(*args, **kwargs)
+
+            monkeypatch.setattr(ctx.agent_registry, "register", _spy)
+            monkeypatch.setattr(server_mod, "get_access_token", lambda: None)  # tokenless (α)
+            await ctx.comms(action="register", agent="ownerless-a", session="wave7", role="builder")
+            world["holder"]["email"] = world["emails"]["alice"]
+            monkeypatch.setattr(
+                server_mod, "get_access_token", lambda: access_token(subject=world["emails"]["alice"])
+            )
+            await ctx.comms(action="register", agent="owned-a", session="wave8", role="builder")
+            assert len(recorded) == 2, f"expected two registry register calls, got {recorded!r}"
+            tokenless, credentialed = recorded
+            assert "session_keep_id" in tokenless and tokenless["session_keep_id"] is None, (
+                f"a TOKENLESS register must pass session_keep_id=None EXPLICITLY (A2: unconditional, "
+                f"never a conditional splat), got kwargs {sorted(tokenless)!r}"
+            )
+            assert tokenless.get("owner_principal_id") is None, tokenless
+            keep = await ctx._keep_store.get_by_key("session:wave8")  # noqa: SLF001
+            assert keep is not None
+            assert credentialed.get("session_keep_id") == _bare(keep.id), (
+                f"a credentialed register must pass THE session keep's BARE id (the keep the SF-63-1 "
+                f"gate just checked), got {credentialed.get('session_keep_id')!r} vs {keep.id!r}"
+            )
+            assert credentialed.get("owner_principal_id") == world["pids"]["alice"], credentialed
+
+
+# =========================================================================== #
+# A2 + A3 — the REGISTRY seam: ``register(..., owner_principal_id, session_keep_id)`` forms
+# ``scope = keep_scope(session_keep_id)`` through the ONE formatter and stamps ``owner_agent = self``
+# inside the SAME CREATE (mint-once); an inconsistent provenance pair is REFUSED before any store I/O.
+# Driven on the REAL registry (no tool layer) so the seam itself is pinned.
+# =========================================================================== #
+
+
+@pytest_asyncio.fixture()
+async def registry_world() -> Any:
+    """A REAL ``AgentRegistry`` on a fresh per-test DB (``ensure_ready`` applies the current emitter) +
+    an admin connection for read-back. Yields ``(registry, connection)``. Reaped (NEVER :18500)."""
+    env = make_env(database=unique_database(), dim=_DIM)
+    registry = AgentRegistry(
+        url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+    )
+    await registry.ensure_ready()
+    connection = await connect_admin(env)
+    try:
+        yield registry, connection
+    finally:
+        await connection.close()
+        await registry.close()
+        await drop_database(env)
+
+
+async def _agent_rows(connection: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
+    return rows
+
+
+class TestTheRegistryProvenanceSeam63cIA:
+    """A2 (amendment-2) — the registry's provenance INPUT is the bare ``session_keep_id``; the registry
+    forms the scope via ``lorerunes.pdp.keep_scope`` (the ONE formatter) and stamps ``owner_agent``
+    itself. A3 — ``(owner_principal_id is None) != (session_keep_id is None)`` is REFUSED before any
+    store I/O (a server-side caller bug), so R-Q5-1's trap population is unreachable through any writer."""
+
+    async def test_the_registry_stamps_scope_from_session_keep_id_and_owner_agent_self(
+        self, registry_world: Any
+    ) -> None:
+        """⚠ RED at HEAD (no ``session_keep_id`` kwarg → ``TypeError``). A consistent pair lands the full
+        triple in the CREATE: ``owner_principal`` link, ``owner_agent`` = the row's OWN id, ``scope`` =
+        ``keep_scope(session_keep_id)``."""
+        registry, connection = registry_world
+        result = await registry.register(
+            "fixer-b", session="wave7", role="builder",
+            owner_principal_id="alice_pid", session_keep_id="sessionkeep7",
+        )
+        rows = await run(
+            connection,
+            f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)",
+            {"id": _bare(result.agent.id)},
+        )
+        assert str(rows[0]["owner_principal"]) == "principal:alice_pid", rows
+        assert str(rows[0].get("owner_agent")) == f"{AGENT_TABLE}:{_bare(result.agent.id)}", rows
+        assert rows[0].get("scope") == keep_scope("sessionkeep7"), rows
+
+    async def test_the_scope_is_formed_by_the_SHARED_keep_scope_formatter(
+        self, registry_world: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD — ONE IMPLEMENTATION, proven by MUTATION (A2): perturb ``keep_scope`` in EVERY
+        loaded module exposing it (import-style agnostic — the ``_patch_everywhere`` idiom of
+        ``test_secret_typing.py``: a ``from lorerunes import keep_scope`` binding is patched too) and the
+        STAMPED scope must move with it. A private ``f"keep:{…}"`` in the registry is not patched, does
+        not move, and reds here. BASELINE leg first (unpatched → the real formatter's output), so a
+        registry that never stamps a scope cannot pass by 'also not moving'."""
+        registry, connection = registry_world
+        baseline = await registry.register(
+            "fixer-b", session="wave7", role="builder",
+            owner_principal_id="alice_pid", session_keep_id="kpbase",
+        )
+        rows = await run(
+            connection,
+            f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
+            {"id": _bare(baseline.agent.id)},
+        )
+        assert rows[0].get("scope") == keep_scope("kpbase"), f"BASELINE: unpatched stamp wrong: {rows!r}"
+        original_keep_scope = keep_scope
+        patched = patch_shared_object_everywhere(
+            monkeypatch, "keep_scope", original_keep_scope, lambda keep_id: f"mutkeep:{keep_id}"
+        )
+        assert patched, "keep_scope was not found in any loaded module (the probe could not land)"
+        mutated = await registry.register(
+            "fixer-c", session="wave7", role="builder",
+            owner_principal_id="alice_pid", session_keep_id="kpmut",
+        )
+        rows = await run(
+            connection,
+            f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
+            {"id": _bare(mutated.agent.id)},
+        )
+        assert rows[0].get("scope") == "mutkeep:kpmut", (
+            f"the stamped scope did NOT move when the SHARED keep_scope formatter was perturbed — the "
+            f"registry formats the scope with a PRIVATE copy (A2: ONE formatter). got {rows!r}"
+        )
+
+    @pytest.mark.parametrize(
+        ("owner_principal_id", "session_keep_id"),
+        [
+            pytest.param("alice_pid", None, id="owner-without-keep"),
+            pytest.param(None, "sessionkeep7", id="keep-without-owner"),
+        ],
+    )
+    async def test_an_inconsistent_provenance_pair_is_refused_before_any_store_io(
+        self, registry_world: Any, owner_principal_id: str | None, session_keep_id: str | None
+    ) -> None:
+        """⚠ RED at HEAD — A3: a MIXED pair is refused with a teaching ``AgentRegistryError`` (an
+        INTERNAL invariant worded for the engineer) and ZERO rows written. At HEAD the kwarg does not
+        exist (``TypeError``, not ``AgentRegistryError``) → RED. Mutation: invert the XOR → these two
+        RED and the consistent pairs below RED too."""
+        registry, connection = registry_world
+        with pytest.raises(AgentRegistryError) as exc_info:
+            await registry.register(
+                "fixer-b", session="wave7", role="builder",
+                owner_principal_id=owner_principal_id, session_keep_id=session_keep_id,
+            )
+        message = str(exc_info.value)
+        for token in ("owner", "session keep", "nothing was written"):
+            assert token in message, (
+                f"the A3 refusal must say what was inconsistent and that nothing was written "
+                f"(missing {token!r}): {message!r}"
+            )
+        assert await _agent_rows(connection) == [], (
+            "a refused (inconsistent-pair) register wrote an agent row — A3 refuses BEFORE any store I/O"
+        )
+
+    @pytest.mark.parametrize(
+        ("owner_principal_id", "session_keep_id"),
+        [
+            pytest.param(None, None, id="alpha-interim-both-none"),
+            pytest.param("alice_pid", "sessionkeep7", id="both-set"),
+        ],
+    )
+    async def test_a_consistent_provenance_pair_registers(
+        self, registry_world: Any, owner_principal_id: str | None, session_keep_id: str | None
+    ) -> None:
+        """⚠ RED at HEAD (``session_keep_id`` kwarg absent → ``TypeError``). CONTROL for A3: both
+        consistent pairs stay legal AT THE REGISTRY — ``(None, None)`` (the α interim; β is the TOOL
+        layer's rule, not the registry's) and ``(set, set)`` — each writing exactly one row whose
+        governed columns match the pair. A registry that refuses everything fails here."""
+        registry, connection = registry_world
+        result = await registry.register(
+            "fixer-b", session="wave7", role="builder",
+            owner_principal_id=owner_principal_id, session_keep_id=session_keep_id,
+        )
+        rows = await _agent_rows(connection)
+        assert len(rows) == 1, rows
+        assert result.re_registered is False
+        expected_scope = keep_scope(session_keep_id) if session_keep_id is not None else None
+        assert rows[0].get("scope") == expected_scope, rows
+        expected_owner = f"principal:{owner_principal_id}" if owner_principal_id is not None else None
+        observed_owner = rows[0].get("owner_principal")
+        assert (str(observed_owner) if observed_owner is not None else None) == expected_owner, rows
+
+
 # =========================================================================== #
 # Q5 §6 — the agent migrate: ONE 3-column scope-keyed statement + the §2.1 ROW-level precondition
 # (finding #470, UNIMPLEMENTED at HEAD). Driven through the REAL migrate_governed(table='agent')
@@ -221,36 +497,129 @@ class TestAgentMigrateScopeKeyed63cIA:
     ) -> None:
         """⚠ RED at HEAD (finding #470 / F10) — §2.1's ROW precondition: an ``agent`` row with
         ``scope IS NONE`` but ``owner_principal IS NOT NONE`` means a multi-principal or half-applied
-        store, so the migrate REFUSES (``refused=True``, ZERO stamped), naming the count. At HEAD
-        ``_migrate_agent_owner`` is owner-keyed and refuses ONLY on operator ambiguity, so it does NOT
-        refuse this store — it stamps the NONE-owner rows and skips the owned one → ``refused=False``
-        → RED. The CONTROL (same store WITHOUT that row) is the sibling test below."""
+        store, so the migrate REFUSES (``refused=True``, ZERO stamped). At HEAD ``_migrate_agent_owner``
+        is owner-keyed and refuses ONLY on operator ambiguity, so it does NOT refuse this store → RED.
+
+        r2 (amendment-2 §D item 6 — MP-7 / MP-11 / sidecar F8): the refusal is BYTE-INERT and TEACHES.
+        TWO trap rows (a count of 2 cannot be satisfied by a stray "1" such as the "§2.1" citation —
+        WB9) + three clean legacy rows; the FULL ``SELECT *`` of the table is identical before and
+        after (not a ``scope`` proxy — WB10 stamped owners FIRST, then refused, and a scope-only
+        observation missed it); the reason names the COUNT beside its noun, EVERY trap row id (WB8),
+        and the remedy (§6: adjudicate BY HAND). The CONTROL (same store WITHOUT the trap rows) is the
+        sibling test below.
+
+        ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
+        63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
+        so such a store carries owner=operator / scope=NONE rows that this precondition REFUSES —
+        neither multi-principal nor half-applied. MEASURED EMPTY 2026-09-24 (production's image predates
+        pkt 62; pkt-65 ships 62+63 in one image, and under 63c code every register stamps all three
+        columns). RE-OPEN TRIGGER: *"a pkt-62-through-63b image deployed before the 63c cutover."* If it
+        fires, the precondition narrows to ``… AND owner_principal != <the resolved operator>`` and
+        operator-owned NONE-scope rows are stamped scope + owner_agent only. THEREFORE every trap row
+        here is owned by a principal that is NOT the operator — this pin must never assert a refusal
+        over an operator-owned row, or it would red the trigger's own remedy (amendment-2 §B conflict 2)."""
         principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
-        await self._seed_clean_legacy(connection, count=2)
-        # the trap row: NONE scope but a NON-NONE owner (a different principal record link).
-        await seed_agent_governed(
-            connection, row_id="already_owned", name="owned-legacy", session="dead-session",
-            owner_principal="some_other_principal", owner_agent=None, scope=None,
-        )
+        await self._seed_clean_legacy(connection, count=3)
+        trap_ids = ["already_owned_a", "already_owned_b"]
+        for trap_index, trap_id in enumerate(trap_ids):
+            # NONE scope but a NON-NONE owner that is NOT the operator (E3: never pin the operator case).
+            await seed_agent_governed(
+                connection, row_id=trap_id, name=f"owned-legacy-{trap_index}", session="dead-session",
+                owner_principal=f"other_principal_{trap_index}", owner_agent=None, scope=None,
+            )
+        before = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
         result = await _migrate_agent(
             connection, env, keep_store=keep_store, principal_store=principal_store
         )
+        after = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
         assert result.refused is True, (
             "the agent migrate must REFUSE a store with a NONE-scope row that already carries an owner "
             "(§2.1 row precondition / #470) — a multi-principal or half-applied store is adjudicated by "
             f"hand, never silently stamped. got refused={result.refused!r} reason={result.reason!r}"
         )
         assert result.backfilled == 0, f"a refused migrate must stamp ZERO rows, got {result!r}"
-        assert re.search(r"\b1\b", str(result.reason or "")), (
-            f"the refusal reason must NAME the count of owned-but-unscoped rows (1 here), got "
-            f"{result.reason!r}"
+        assert after == before, (
+            "a REFUSED migrate MUTATED agent rows — the refusal must be byte-inert (§6 'ZERO rows "
+            "stamped'): the precondition runs BEFORE any write, never after a stamp (WB10). "
+            f"before={before!r} after={after!r}"
         )
-        # nothing was stamped on the clean rows either — a refusal is all-or-nothing.
-        after = await run(
+        reason = str(result.reason or "")
+        assert re.search(r"\b2\s+(?:agent\s+)?rows?\b", reason), (
+            f"the refusal must NAME the count of owned-but-unscoped rows beside its noun ('2 agent "
+            f"row(s)' — 2 here, so a stray digit cannot satisfy it), got {reason!r}"
+        )
+        missing_ids = [trap_id for trap_id in trap_ids if trap_id not in reason]
+        assert not missing_ids, (
+            f"the refusal must NAME the offending rows (ids, bounded — §6); missing {missing_ids} in "
+            f"{reason!r}"
+        )
+        assert "by hand" in reason.lower(), (
+            f"the refusal must TEACH the remedy (§2.1/§6: adjudicate the rows BY HAND before migrating) "
+            f"— an operator at cutover reads this first. got {reason!r}"
+        )
+
+    async def test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy(
+        self, agent_migrate_world: Any
+    ) -> None:
+        """⚠ RED at HEAD — r2 (amendment-2 §D item 4 / adversary MP-6, WB2 + WB3; old-leg virtue C4).
+        Production's cutover shape: agents registered AFTER 63c (the full triple: a MEMBER owner, their
+        own owner_agent, THE session keep's scope) beside legacy NONE rows. The migrate must NOT refuse
+        (a governed row is owned AND scoped — the precondition keys on ``scope IS NONE``, not on the
+        owner alone: WB3 refused every post-63c store), must backfill EXACTLY the legacy rows, and must
+        leave every governed row BYTE-IDENTICAL (∀ scoped rows untouched — WB2 lost the ``WHERE`` and
+        re-stamped the member owner to the operator and the session scope to the project keep). RED at
+        HEAD: the owner-keyed migrate backfills the NONE-owner rows but leaves ``scope`` NONE, so the
+        legacy rows' scope read-back fails (and ``backfilled`` counts owner, not scope)."""
+        principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
+        member = await principal_store.create(email="member@example.com", role="member")
+        session_scope = keep_scope("sessionkeepmix")
+        governed_ids = [f"gov_{index}" for index in range(2)]
+        for index, governed_id in enumerate(governed_ids):
+            await seed_agent_governed(
+                connection, row_id=governed_id, name=f"gov-{index}", session="live",
+                owner_principal=_bare(member.id), owner_agent=governed_id, scope=session_scope,
+            )
+        legacy_ids = await self._seed_clean_legacy(connection, count=3)
+        governed_before = await run(
+            connection, f"SELECT * FROM {AGENT_TABLE} WHERE scope IS NOT NONE ORDER BY id"
+        )
+        assert len(governed_before) == len(governed_ids), (
+            f"fixture: the two governed rows must be seeded scoped, got {governed_before!r}"
+        )
+        result = await _migrate_agent(
+            connection, env, keep_store=keep_store, principal_store=principal_store
+        )
+        assert result.refused is False, (
+            f"a store of GOVERNED (owner AND scope) + legacy agents was REFUSED — the row precondition "
+            f"must key on `scope IS NONE AND owner_principal IS NOT NONE`, never on the owner alone "
+            f"(WB3): {result.reason!r}"
+        )
+        assert result.backfilled == len(legacy_ids), (
+            f"the migrate must backfill EXACTLY the {len(legacy_ids)} legacy rows, got {result!r}"
+        )
+        governed_after = await run(
             connection,
-            f"SELECT count() FROM {AGENT_TABLE} WHERE scope IS NOT NONE GROUP ALL",
+            f"SELECT * FROM {AGENT_TABLE} WHERE id IN $ids ORDER BY id",
+            {"ids": [row["id"] for row in governed_before]},
         )
-        assert (after[0]["count"] if after else 0) == 0, "a refused migrate stamped a scope somewhere"
+        assert governed_after == governed_before, (
+            "the migrate RE-STAMPED an already-governed agent (member owner / session scope clobbered) "
+            f"— ∀ scoped rows must stay untouched (WB2): before={governed_before!r} "
+            f"after={governed_after!r}"
+        )
+        project_keep = await keep_store.get_by_key(PROJECT_KEEP_KEY)
+        assert project_keep is not None, "the migrate did not mint the canonical project keep"
+        for legacy_id in legacy_ids:
+            row = (
+                await run(
+                    connection,
+                    f"SELECT scope FROM type::record('{AGENT_TABLE}', $id)",
+                    {"id": legacy_id},
+                )
+            )[0]
+            assert row.get("scope") == keep_scope(_bare(project_keep.id)), (
+                f"legacy {legacy_id} was not scope-stamped to the project keep: {row!r}"
+            )
 
     async def test_R_Q5_1_CONTROL_a_clean_store_backfills_every_none_scope_row(
         self, agent_migrate_world: Any
@@ -328,6 +697,58 @@ class TestAgentMigrateScopeKeyed63cIA:
             assert str(row["owner_principal"]) == f"principal:{operator_bare}", (
                 f"{row_id}: owner_principal must be the operator, got {row['owner_principal']!r}"
             )
+
+    async def test_the_migrate_exempt_token_carries_the_EXECUTED_three_column_statement(
+        self, agent_migrate_world: Any
+    ) -> None:
+        """⚠ RED at HEAD — r2 (amendment-2 §B R8-C5 / §D item 13). ``governed_exempt("migrate-governed",
+        statement=…)`` is STATEMENT-SCOPED (``governed.py`` §F5 EXEMPT ATTRIBUTION): the 3-column
+        backfill CHANGES the golden statement, so the token's evidence must MOVE WITH the executed
+        statement or F5's leg 2 reds on the first observed run. The wave that changes the golden owns
+        it (this one — D1's i-b rows are the per-caller ``write_guard`` labels, not this token). Driven
+        under ``observe_governed_table_writes("agent")``: the backfill UPDATE is OBSERVED with an exempt
+        token whose origin is ``principals._migrate_agent_owner``, whose (normalised) statement EQUALS the
+        executed statement, and which is the ONE scope-keyed 3-column UPDATE (§6). RED at HEAD: the
+        token carries the OLD owner-only statement (no ``owner_agent``/``scope`` SET, keyed
+        ``WHERE owner_principal IS NONE``)."""
+        principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
+        await self._seed_clean_legacy(connection, count=2)
+        handle, _calls = store_handle(connection, url=env.url)
+        with observe_governed_table_writes(AGENT_TABLE) as observed:
+            await principals.migrate_governed(
+                table=AGENT_TABLE, store=handle, keep_store=keep_store, principal_store=principal_store
+            )
+        principals_file = "loremaster/loremaster/principals.py"
+        migrate_writes = [
+            write
+            for write in observed
+            if getattr(write.exempt, "name", None) == "migrate-governed"
+            and getattr(write.exempt, "origin", None) == (principals_file, "_migrate_agent_owner")
+            and write.effect is not None
+            and not write.effect.is_empty
+        ]
+        assert migrate_writes, (
+            "the agent backfill was not OBSERVED as an effectful write carrying the migrate-governed "
+            f"exempt token from principals._migrate_agent_owner: "
+            f"{[(getattr(o.exempt, 'name', o.exempt), getattr(o.exempt, 'origin', None)) for o in observed]}"
+        )
+        for write in migrate_writes:
+            token_statement = " ".join(str(getattr(write.exempt, "statement", "")).split())
+            executed = " ".join(str(write.statement or "").split())
+            assert token_statement == executed, (
+                "the migrate-governed token's GOLDEN statement is not the statement the migrate "
+                f"EXECUTED (statement-scoped exempt — leg 2): token={token_statement!r} "
+                f"executed={executed!r}"
+            )
+            upper = executed.upper()
+            assert upper.startswith(f"UPDATE {AGENT_TABLE.upper()} ") and upper.endswith(
+                "WHERE SCOPE IS NONE"
+            ), f"the agent backfill must be ONE scope-keyed UPDATE (§6), got {executed!r}"
+            for column in ("owner_principal", "owner_agent", "scope"):
+                assert f"{column} =" in executed, (
+                    f"the agent backfill must SET all three governed columns (§6); {column!r} is not "
+                    f"set in {executed!r}"
+                )
 
     async def test_the_migrate_is_idempotent(self, agent_migrate_world: Any) -> None:
         """GREEN-DISCRIMINATOR — a SECOND migrate backfills ZERO (idempotent), never re-stamps or
@@ -554,10 +975,23 @@ class TestTheRealAgentMigrateSurvivesLegacyViolators63cIA:
             assert row.get("owner_principal") is not None and isinstance(row.get("scope"), str), (
                 f"{shape}: owner_principal/scope not backfilled, got {row!r}"
             )
+            # r2 (§D item 12 / sidecar F7 / adversary R2): ALL THREE columns on the DIRTY population.
+            assert str(row.get("owner_agent")) == f"{AGENT_TABLE}:{ids[shape]}", (
+                f"{shape}: owner_agent must be the violator row's OWN id (the 3-column stamp holds on the "
+                f"dirty population too — §4.4 Leg B 'all three columns'), got {row.get('owner_agent')!r}"
+            )
             assert row[column] == value, (
                 f"{shape}: the hostile {column} must survive byte-intact (store-ref §1.4), "
                 f"got {row[column]!r}"
             )
+        # r2 (§D item 12): idempotent on the SECOND call over the violators (§4.4 Leg B).
+        second = await _migrate_agent(
+            connection, env, keep_store=keep_store, principal_store=principal_store
+        )
+        assert second.refused is False and second.backfilled == 0, (
+            f"a SECOND migrate over the (now stamped) dirty store must backfill 0 and not refuse — "
+            f"§4.4 Leg B idempotence, got {second!r}"
+        )
 
     async def test_C_CONTROL_the_frozen_asserted_ddl_makes_the_migrate_RAISE(
         self, unbounded_agent_world: Any
@@ -591,13 +1025,36 @@ class TestAgentHeartbeatOnALegacyRoleRow63cIA:
     with ``role=""`` (seeded under the unbounded DDL) must be able to ``heartbeat`` (touch) after the
     Q3 drop lands. RED at HEAD: the current emitter STILL lands the role non-empty ASSERT, so ``touch``
     (a whole-row UPDATE, store-ref §1.4) re-validates ``role=""`` and is REFUSED — the per-agent
-    self-denial reopening. GREEN after the build (role ASSERT dropped → touch succeeds)."""
+    self-denial reopening. GREEN after the build (role ASSERT dropped → touch succeeds).
+
+    r2 (amendment-2 §D item 2 / MP-2 + E2): the r1 leg seeded ``row_id="role_empty"``, but ``touch``
+    resolves the DETERMINISTIC ``AgentRegistry._agent_id(session, name)`` (a uuid5), so it raised
+    ``UnknownAgentError`` on EVERY build and a broad ``except Exception`` relabelled that as the
+    right-reason RED — a failure message promising a check the test never performed (CLAUDE.md's
+    false-gate class; adversary §1). Fixed: the seed id IS the production mint; the ``except`` is
+    narrowed to the driver's typed store rejection. The positive control below (E2's shape — NOT a
+    junk status, which ``_row_to_agent`` decode-rejects before any UPDATE) proves the leg can SEE a
+    store denial through the ``touch`` seam, immune to the build (frozen DDL, never the emitter)."""
+
+    @staticmethod
+    async def _seed_role_empty_legacy_row(connection: Any) -> str:
+        """Seed the ``role=""`` legacy agent at the id ``touch`` will RESOLVE — the production mint
+        ``AgentRegistry._agent_id("wave7", "legacy-agent")``, never a hand-picked id (MP-2)."""
+        return await seed_agent_legacy(
+            connection,
+            row_id=AgentRegistry._agent_id("wave7", "legacy-agent"),  # noqa: SLF001 - the production id mint
+            name="legacy-agent",
+            session="wave7",
+            role="",
+        )
 
     async def test_a_touch_succeeds_on_a_role_empty_legacy_row_after_the_drop(self) -> None:
         """⚠ RED at HEAD — seed a ``role=""`` legacy agent under the unbounded DDL, apply the current
         emitter, then the REAL ``AgentRegistry.touch`` on it SUCCEEDS (a bare heartbeat). At HEAD the
-        role ASSERT still lands → the touch UPDATE re-validates ``role=""`` → RAISES → RED (right
-        reason: the drop is unbuilt). RED the day the role ASSERT returns."""
+        role ASSERT still lands → the touch UPDATE re-validates ``role=""`` → the driver raises its
+        typed store rejection (``SurrealStoreError``, ``(assert violation)``) → RED (right reason: the
+        drop is unbuilt). ANY other exception (e.g. ``UnknownAgentError`` from a mis-seeded id)
+        propagates un-relabelled. RED the day the role ASSERT returns."""
         env = make_env(database=unique_database(), dim=_DIM)
         connection = await connect_admin(env)
         registry = AgentRegistry(
@@ -605,20 +1062,53 @@ class TestAgentHeartbeatOnALegacyRoleRow63cIA:
         )
         try:
             await apply_ddl(connection, unbounded_agent_ddl(), url=env.url)
-            await seed_agent_legacy(
-                connection, row_id="role_empty", name="legacy-agent", session="wave7", role=""
-            )
+            await self._seed_role_empty_legacy_row(connection)
             await apply_ddl(connection, surreal_schema.generate_agent_ddl(), url=env.url)
             try:
                 updated = await registry.touch("legacy-agent", session="wave7", note="alive")
-            except Exception as error:  # noqa: BLE001 - RED-at-HEAD surface (role ASSERT still lands)
+            except SurrealStoreError as error:  # RED-at-HEAD surface ONLY: the store ASSERT refusal
                 pytest.fail(
-                    "RED-at-HEAD (right reason): touch on a role='' legacy row RAISED — the role "
-                    "non-empty ASSERT is STILL on the store after the current emitter (the Q3 drop is "
-                    f"unbuilt), so the whole-row heartbeat UPDATE self-denies (§4.4). engine: {error}"
+                    "RED-at-HEAD (right reason): touch on a role='' legacy row was REFUSED BY THE STORE "
+                    "— the role non-empty ASSERT is STILL on the store after the current emitter (the Q3 "
+                    f"drop is unbuilt), so the whole-row heartbeat UPDATE self-denies (§4.4). engine: {error}"
                 )
             assert updated.name == "legacy-agent", updated
             assert updated.last_note == "alive", updated
+        finally:
+            await registry.close()
+            await connection.close()
+            await drop_database(env)
+
+    async def test_CONTROL_the_frozen_asserted_ddl_makes_the_touch_RAISE(self) -> None:
+        """POSITIVE CONTROL (amendment-1 E2) — the leg CAN see a store denial through ``touch``: seed
+        ``role=""`` under ``unbounded_agent_ddl()``, apply ``frozen_asserted_agent_ddl()`` (NEVER the
+        current emitter), then the REAL ``touch`` → the driver's typed store rejection
+        (``SurrealStoreError`` matching ``(assert violation)``) and the row is byte-identical (zero
+        rows changed). GREEN at HEAD AND after the build (the frozen DDL is immutable). REDDENS a
+        ``touch`` that stops re-validating the row (e.g. a MERGE that skips validation) — the Leg B
+        C-control's twin, through the heartbeat seam."""
+        env = make_env(database=unique_database(), dim=_DIM)
+        connection = await connect_admin(env)
+        registry = AgentRegistry(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+        )
+        try:
+            await apply_ddl(connection, unbounded_agent_ddl(), url=env.url)
+            await self._seed_role_empty_legacy_row(connection)
+            # The current emitter FIRST declares every column ``touch`` writes (the frozen capture
+            # models 6 of the 16 agent columns — R1), THEN the frozen DDL re-lands the role ASSERT by
+            # OVERWRITE. The ASSERT that refuses comes from the FROZEN capture on EVERY build, so the
+            # control stays build-immune (E2: the refusing DDL is never the current emitter).
+            await apply_ddl(connection, surreal_schema.generate_agent_ddl(), url=env.url)
+            await apply_ddl(connection, frozen_asserted_agent_ddl(), url=env.url)
+            before = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
+            with pytest.raises(SurrealStoreError, match=r"\(assert violation\)"):
+                await registry.touch("legacy-agent", session="wave7", note="alive")
+            after = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
+            assert after == before, (
+                f"a store-REFUSED touch changed agent rows — the whole-row UPDATE must abort atomically "
+                f"(store-ref §3): before={before!r} after={after!r}"
+            )
         finally:
             await registry.close()
             await connection.close()

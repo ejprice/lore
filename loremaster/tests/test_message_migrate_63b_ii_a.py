@@ -44,6 +44,7 @@ from _governed_contract import (
     build_principal_and_keep_stores,
     function_calls_named,
     governed_overlay_ddl,
+    session_keep_id_for,
     store_handle,
 )
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
@@ -133,12 +134,24 @@ async def message_world() -> Any:
         # §2.6 agent-first precondition — this fixture forces the BACKFILL fate).
         sender = (
             await registry.register(
-                "sender_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "sender_agent",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         recipient = (
             await registry.register(
-                "recipient_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "recipient_agent",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         result = await ledger.send(
@@ -186,12 +199,24 @@ async def ambiguous_message_world() -> Any:
         # correct build can raise here is the operator AMBIGUITY (never agent-first).
         sender = (
             await registry.register(
-                "sender_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "sender_agent",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         recipient = (
             await registry.register(
-                "recipient_agent", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "recipient_agent",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         result = await ledger.send(
@@ -342,41 +367,66 @@ class TestMigrateAgentOwner:
     async def test_agent_migrate_backfills_only_none_owner_agents_to_the_operator(
         self, agent_world: Any
     ) -> None:
-        """⚠ RED at HEAD (the stub refuses *"does not support table 'agent'"*). With ONE operator
-        principal: a NONE-owner agent is stamped ``owner_principal = principal:<operator>``, while an
-        ALREADY-OWNED agent is left UNTOUCHED (∀ fate forced by a MIX — a build that re-stamps owned
-        agents reddens). Idempotent: a second run backfills 0. REDDENS the stub (no backfill)."""
+        """With ONE operator principal: a legacy (NONE-owner, NONE-scope) agent is stamped
+        ``owner_principal = principal:<operator>``, while an ALREADY-GOVERNED agent is left UNTOUCHED
+        (∀ fate forced by a MIX — a build that re-stamps governed agents reddens). Idempotent: a
+        second run backfills 0.
+
+        63c-i-a r2 RE-KEY (amendment-2 §D item 4 / adversary MP-4): the pre-owned agent used to be
+        registered with an owner and NO scope — the pkt-62 shape, which the 63c §6 ROW precondition
+        (``scope IS NONE AND owner_principal IS NOT NONE`` → REFUSE, finding #470) now refuses, and
+        which the A3 writer invariant makes unreachable through ``register``. The post-63c shape of a
+        governed agent carries owner AND scope (THE session keep), so it is re-registered that way
+        here. The ∀-scoped-rows-untouched virtue (old-leg C4) is asserted on EVERY governed column
+        (owner, owner_agent, scope), and its many-row form is the mixed-store pin
+        ``test_agent_governance_63c_i_a.py::TestAgentMigrateScopeKeyed63cIA::
+        test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy`` (MP-6)."""
         principal_store, keep_store, registry, connection, env = agent_world
         await principal_store.create(email="operator@example.com", role="member")
         operator = (await principal_store.list())[0]
-        # a NONE-owner agent (register with no owner) + a pre-owned agent (owner set at register).
+        # a legacy agent (register with no provenance pair) + a GOVERNED agent (owner + session keep).
         none_owner = (await registry.register("ag_none", session="s1", role="builder")).agent
+        session_keep_id = await session_keep_id_for(
+            keep_store, principal_store, owner_principal_id=_bare(operator.id), session="s1"
+        )
         pre_owned = (
             await registry.register(
-                "ag_owned", session="s1", role="builder", owner_principal_id=_bare(operator.id)
+                "ag_owned",
+                session="s1",
+                role="builder",
+                owner_principal_id=_bare(operator.id),
+                session_keep_id=session_keep_id,
             )
         ).agent
+        governed_projection = f"SELECT id, owner_principal, owner_agent, scope FROM {_AGENT_TABLE} "
+        before_owned = await run(
+            connection,
+            governed_projection + f"WHERE id = type::record('{_AGENT_TABLE}', $b)",
+            {"b": _bare(pre_owned.id)},
+        )
         result = await _migrate(
             connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store
         )
-        assert not result.refused and result.backfilled >= 1, (
-            f"migrate agent must backfill the NONE-owner agent to the operator, got {result!r}"
+        assert not result.refused and result.backfilled == 1, (
+            f"migrate agent must backfill exactly the ONE legacy agent to the operator, got {result!r}"
         )
         rows = {
-            _bare(row["id"]): row["owner_principal"]
+            _bare(row["id"]): row
             for row in await run(
                 connection,
-                f"SELECT id, owner_principal FROM {_AGENT_TABLE} "
-                f"WHERE id IN [type::record('{_AGENT_TABLE}', $a), type::record('{_AGENT_TABLE}', $b)]",
+                governed_projection
+                + f"WHERE id IN [type::record('{_AGENT_TABLE}', $a), type::record('{_AGENT_TABLE}', $b)]",
                 {"a": _bare(none_owner.id), "b": _bare(pre_owned.id)},
             )
         }
-        assert str(rows[_bare(none_owner.id)]) == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
-            f"the NONE-owner agent was not stamped to the operator principal: {rows}"
+        legacy_owner = str(rows[_bare(none_owner.id)]["owner_principal"])
+        assert legacy_owner == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
+            f"the legacy agent was not stamped to the operator principal: {rows}"
         )
-        assert str(rows[_bare(pre_owned.id)]) == f"{_PRINCIPAL_TABLE}:{_bare(operator.id)}", (
-            "the pre-owned agent's owner_principal changed — the migrate must touch ONLY NONE-owner "
-            f"agents (∀ NONE-owner, never a re-stamp): {rows}"
+        assert [rows[_bare(pre_owned.id)]] == before_owned, (
+            "the GOVERNED agent's owner/owner_agent/scope changed — the migrate must touch ONLY "
+            f"NONE-scope agents (∀ scoped rows untouched, never a re-stamp): before={before_owned!r} "
+            f"after={rows[_bare(pre_owned.id)]!r}"
         )
         second = await _migrate(
             connection, env, table=_AGENT_TABLE, keep_store=keep_store, principal_store=principal_store

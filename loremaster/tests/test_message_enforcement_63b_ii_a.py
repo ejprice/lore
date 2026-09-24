@@ -18,6 +18,8 @@ asserted ``governed_populations() == {memory}``. The granted F-A cross-file edit
 ``{memory, message, to}`` (RED_ADJUDICATED(owner=63b-ii), RED at HEAD until §4.F wires the emitter),
 so it and the sibling pin here (``test_the_derived_population_set_grows_to_memory_message_to``) now
 AGREE — both GREEN on the ii-a build (the old ``== {memory}`` CONTRADICTED this file's grown-set pin).
+⚠ 63c-i-a r2 (amendment-2 A1): the i-a copy was DELETED (DUAL comment in place) and the known set is
+now {agent, briefed, memory, message, to}, asserted ONCE, here — see that pin's docstring.
 
 SCOPE SPLIT with ii-b (design §5): ii-a registers ALL ``to`` L1 sites (send RELATE + drain/ack UPDATE)
 so deny-by-default is satisfied the moment ``to`` becomes a population, with the send/drain/ack effect
@@ -262,7 +264,8 @@ TO_TREE_ALLOWLIST: tuple[TreeWriteAllowlistEntry, ...] = (
 class TestTheGovernedPopulationSetGrows:
     """§4.F / §1.5c-iii — once ``_message_statements`` calls ``_governed_field_specs`` (the §4.F
     wiring), ``governed_populations()`` DERIVES {memory, message, to} (``to`` joins because its IN
-    endpoint ``message`` is now governed). RED at HEAD ({memory} only)."""
+    endpoint ``message`` is now governed). 63c-i-a r2: W1-1 grows it to {agent, briefed, memory,
+    message, to} — the exact pin below is the ONE home of the known set."""
 
     def test_message_and_to_join_the_derived_population_set(self) -> None:
         """⚠ RED at HEAD — ``message`` and ``to`` are in the DERIVED population set once §4.F wires the
@@ -280,15 +283,39 @@ class TestTheGovernedPopulationSetGrows:
         )
 
     def test_the_derived_population_set_grows_to_memory_message_to(self) -> None:
-        """⚠ RED at HEAD — the NEW known set is EXACTLY {memory, message, to} (deny-by-default over the
-        SET: a SURPRISE population reds). This is the RED_ADJUDICATED(owner=63b-ii) known-set assertion
-        that SUPERSEDES the i-a ``== {memory}`` pin (FLAG F-A — the lead grants the one-line i-a edit or
-        moves the assertion here; two contradictory equality pins cannot both be green). RED at HEAD
-        (populations == {memory} ≠ the new known set)."""
-        assert governed_populations() == frozenset({_MESSAGE_TABLE, _TO_RELATION, "memory"}), (
-            f"the derived governed-population set is {sorted(governed_populations())}, not the ii-a known "
-            f"set {{memory, message, to}} — §4.F unwired, OR a surprise population appeared (a new "
-            f"governed table needs an F5 case; deny-by-default over the population SET, §1.5c-iii)"
+        """⚠ THE ONE known-set EXACT pin (deny-by-default over the SET: a SURPRISE population reds).
+
+        63c-i-a r2 (amendment-2 A1 / §D item 3 / adversary MP-3 + MP-10) — the known set is now
+        EXACTLY {agent, briefed, memory, message, to}. Its growth story, dated:
+        * ii-a (§4.F): {memory} → {memory, message, to} (``to`` joins via its governed IN ``message``).
+        * i-a (W1-1, ruling §2.1): ``_agent_statements`` calls ``_governed_field_specs`` → ``agent``
+          joins; ``briefed`` (IN = ``agent``) JOINS BY DERIVATION — once the r2 resolver reads the
+          ``from lorerunes import AGENT_TABLE as AGENT_TABLE`` re-export (the r1 resolver could not,
+          which is why the adversary measured ``{agent, memory, message, to}`` on a correct build).
+          ``briefed``'s F5 case (seeders, write verbs, labels, evidence) is OWED BY 63c-ii, beside its
+          only writers (``brief_ack``'s RELATE and register's auto-ack RELATE, ruling §3.5) — exactly
+          as ``to``'s landed with drain/ack. This docstring IS the adjudication point.
+        * ``member_of(PRINCIPAL_TABLE, keep)`` stays OUT: neither endpoint is governed.
+        The i-a file's duplicate exact pin was DELETED (DUAL comment there) — ONE home for the known
+        set, so the next wave's edit cannot reach one copy and not the other. RED before the i-a
+        build (the derivation yields {memory, message, to}). The test NAME keeps its ii-a spelling so
+        existing citations resolve."""
+        populations = governed_populations()
+        known_set = frozenset(
+            {
+                surreal_schema.AGENT_TABLE,
+                surreal_schema.BRIEFED_RELATION,
+                _MESSAGE_TABLE,
+                _TO_RELATION,
+                "memory",
+            }
+        )
+        assert populations == known_set, (
+            f"the derived governed-population set is {sorted(populations)}, not the adjudicated known "
+            f"set {{agent, briefed, memory, message, to}} — either the i-a W1-1 wiring is unbuilt "
+            f"(agent/briefed absent), the resolver cannot read a re-exported endpoint (briefed absent "
+            f"beside agent — amendment-2 A1), OR a SURPRISE population appeared (a new governed table "
+            f"needs an F5 case and an adjudication line in this docstring; §1.5c-iii)"
         )
 
     def test_the_population_set_is_an_OUTPUT_not_a_hand_list(self) -> None:

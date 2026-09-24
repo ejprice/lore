@@ -83,6 +83,7 @@ from _governed_contract import (
     governed_table_raw_mutation_sites,
     member,
     seed_message_legacy,
+    session_keep_id_for,
 )
 from _surreal_harness import (
     SurrealConnection,
@@ -211,6 +212,10 @@ _HOSTILE_IDENTIFIERS = (
     'fixer"b',  # double quote
     "fixer\\b",  # backslash
     "fixer\nb",  # embedded newline
+    "fixer-b\n",  # TRAILING newline — finding #210's class: Python's ``$`` matches before a trailing
+    # "\n", so a ``.match``-based decision accepts it (63c-i-a r2, amendment-2 A4 / adversary WB11). ONE
+    # corpus: the register MOVE pins parametrise over THIS tuple (test_agent_registry.py), never a
+    # narrower local copy.
     "z" * 65,  # one over the 64-char cap
 )
 
@@ -860,42 +865,18 @@ class TestAgentStatusAssert:
             )
 
 
-class TestAgentRoleNonEmptyAssert:
-    async def test_empty_role_is_rejected(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_agent_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_agent(
-                connection, agent_id=uuid.uuid4().hex, name="fixer-b", session="wave7", role=""
-            )
-
-    @pytest.mark.parametrize("whitespace_role", [" ", "   ", "\t"])
-    async def test_whitespace_only_role_is_rejected(
-        self,
-        admin_db: tuple[SurrealConnection, SurrealEnv],  # noqa: F811 - imported fixture
-        whitespace_role: str,
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_agent_ddl())
-        with pytest.raises(Exception):  # noqa: B017 - engine ASSERT violation surface
-            await _create_agent(
-                connection,
-                agent_id=uuid.uuid4().hex,
-                name="fixer-b",
-                session="wave7",
-                role=whitespace_role,
-            )
-
-    async def test_real_role_is_accepted(
-        self, admin_db: tuple[SurrealConnection, SurrealEnv]  # noqa: F811 - imported fixture
-    ) -> None:
-        connection, _env = admin_db
-        await run(connection, generate_agent_ddl())
-        await _create_agent(
-            connection, agent_id=uuid.uuid4().hex, name="fixer-b", session="wave7", role="builder"
-        )
+# 63c-i-a r2 DUAL (amendment-2 §D item 1 / adversary MP-1 — a sibling corpse r1's DUAL missed) —
+# ``TestAgentRoleNonEmptyAssert`` is DELETED-WITH-REPLACEMENT. It applied ``generate_agent_ddl()`` and
+# asserted the STORE rejects a blank/whitespace ``role`` (4 pins) plus a real-role positive control.
+# Q3 DROPs the role non-empty ASSERT (ruling §4.2), so on every correct build the raw CREATE of a
+# blank role SUCCEEDS and the four rejection pins go RED (measured: adversary §2 row 1). Virtues and
+# their replacements: (1) "a blank/whitespace role never lands via the writer" → the register MOVE
+# pins ``test_agent_registry.py::TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA::
+# test_register_refuses_a_blank_role_before_any_store_write`` (``is_blank``-routed, teaching, zero
+# rows) + ``…::test_the_blank_role_rule_is_the_SHARED_is_blank``; (2) "the store now ACCEPTS a
+# legacy blank role" → ``test_agent_governance_63c_i_a.py::TestTheAgentAssertsDropFromADirtyStore63cIA::
+# test_the_assert_DROPS_and_the_value_survives_byte_intact[role]``; (3) "a real role is accepted" →
+# ``…::test_register_accepts_a_valid_identifier_positive_control`` (role="builder" on every param).
 
 
 class TestBriefBodyAndCreatedByNonEmptyAssert:
@@ -2165,7 +2146,16 @@ class _ConstraintSpec:
     ``to``/``message`` share ``generate_message_ddl`` (``to`` is a RELATION defined in the message
     DDL); ``agent`` supplies ``generate_agent_ddl``. Before this, the ∀ pin HARD-CODED
     ``generate_message_ddl()``, so a third table's fields could not be derived over its OWN emitter
-    (INSTRUMENT-0: the reach must be each table's own output, never a hand-copied statement list)."""
+    (INSTRUMENT-0: the reach must be each table's own output, never a hand-copied statement list).
+
+    ⚠ r2 (amendment-2 §D item 11 / sidecar F1 + F10, adversary R4): ``make_ddl`` and the new ``hazard``
+    carry NO DEFAULT (CLAUDE.md: a fixture factory must not default a parameter the code branches
+    on — the r1 ``make_ddl=generate_message_ddl`` default meant a forgotten emitter silently derived
+    over the MESSAGE DDL). ``hazard`` is the per-table prose slot the ∀-no-ASSERT failure message
+    interpolates: WHICH writer re-validates the row (the UPDATE-hot mechanism), WHICH writer is the
+    ONE implementation of the dropped rule, and WHERE the dirty-store pin lives. r1 served the
+    MESSAGE prose (``drain stamps to…``, ``MessageLedger``) for EVERY table — a builder re-adding an
+    agent ASSERT was sent to the wrong writer and the wrong pin (the rider §4.3 named and r1 dropped)."""
 
     def __init__(
         self,
@@ -2175,7 +2165,8 @@ class _ConstraintSpec:
         birth_defaults: frozenset[str],
         exemptions: frozenset[str],
         floor: frozenset[str],
-        make_ddl: Callable[[], str] = generate_message_ddl,
+        make_ddl: Callable[[], str],
+        hazard: str,
     ) -> None:
         self.table_attr = table_attr
         self.birth = birth
@@ -2183,10 +2174,18 @@ class _ConstraintSpec:
         self.exemptions = exemptions
         self.floor = floor
         self.make_ddl = make_ddl
+        self.hazard = hazard
 
 
 _TO_CONSTRAINT_SPEC = _ConstraintSpec(
     "TO_RELATION",
+    make_ddl=generate_message_ddl,  # ``to`` is a RELATION defined in the message DDL.
+    hazard=(
+        "`to` is UPDATE-hot: `drain` stamps the delivery edges in ONE statement over the window, so a "
+        "legacy edge violating this ASSERT refuses the WHOLE drain (total inbox denial). The app cap in "
+        "`MessageLedger.ack` is the ONE implementation; the dirty-store pin is "
+        "test_comms_schema.py::TestALegacyOverCapNoteCannotDenyADrain (63b-ii-b §3.4)"
+    ),
     # birth (df59f76 birth of ``to``): every field populated at RELATE time.
     birth=frozenset({"session", "created_at", "seen_at", "acked_at", "ack_note"}),
     birth_defaults=frozenset(),  # ``to`` carries NO DEFAULT (a seen_at DEFAULT would
@@ -2198,6 +2197,13 @@ _TO_CONSTRAINT_SPEC = _ConstraintSpec(
 )
 _MESSAGE_CONSTRAINT_SPEC = _ConstraintSpec(
     "MESSAGE_TABLE",
+    make_ddl=generate_message_ddl,
+    hazard=(
+        "`message` is UPDATE-able whole-window: the §4.C cutover migrate re-validates every legacy "
+        "`message` row in ONE statement, so a legacy violator refuses the whole 65 cutover. The app cap "
+        "in `MessageLedger.send` is the ONE implementation; the dirty-store pin is "
+        "test_comms_schema.py::TestTheMessageAssertsAreDroppedFromADIRTYStore (63b-ii-b §12.4)"
+    ),
     # birth = df59f76 fields + the 1a6010f ``refs[*]`` element row. Written at birth,
     # populated on every legacy row.
     birth=frozenset(
@@ -2225,6 +2231,15 @@ _MESSAGE_CONSTRAINT_SPEC = _ConstraintSpec(
 _AGENT_CONSTRAINT_SPEC = _ConstraintSpec(
     "AGENT_TABLE",
     make_ddl=generate_agent_ddl,  # 63c-i-a §4.3 — derive over agent's OWN emitter, not message's.
+    hazard=(
+        "`agent` is UPDATE-hot per agent (`AgentRegistry.touch` — every heartbeat — re-validates the "
+        "WHOLE row) and UPDATE-able whole-window (the `migrate-governed --table agent` cutover backfill "
+        "re-validates every legacy agent in ONE statement), so a legacy agent violating this ASSERT can "
+        "never heartbeat again and refuses the whole cutover. The identity rules live in "
+        "`AgentRegistry.register` (the ONE implementation — `lorerunes.is_legal_identifier` / "
+        "`lorerunes.is_blank`); the dirty-store pins are test_agent_governance_63c_i_a.py "
+        "(Leg A / Leg B / the heartbeat leg, 63c ruling §4.4)"
+    ),
     # birth = the PKT-28 C1 birth field set, GIT-DERIVED (`git log -S _AGENT_FIELD_SPECS` →
     # cfb36d2, the birth commit; the fields present on every legacy agent row), NOT the ruling's
     # candidate table (INSTRUMENT-0: derive from history, do not trust a prose list).
@@ -2251,6 +2266,71 @@ _AGENT_CONSTRAINT_SPEC = _ConstraintSpec(
     floor=frozenset({"name", "status", "owner_principal", "scope"}),  # a derivation that loses a
     # birth identity column, the KEPT status, or the governed overlay must RED (non-vacuity).
 )
+
+
+def _constraint_violation_message(
+    spec: _ConstraintSpec, table: str, field: str, statement: str
+) -> str:
+    """The ∀-no-ASSERT RED for ``table.field`` — ONE template, the table's OWN ``hazard`` prose
+    interpolated (r2 / sidecar F1: never another table's writer, never a second copy of the text)."""
+    return (
+        f"`{table}.{field}` carries a store ASSERT — DD-3.c: {spec.hazard}. A legacy row violating "
+        f"this ASSERT refuses the WHOLE statement that re-validates it. Adding one DELIBERATELY? you "
+        f"owe (a) a heal that runs BEFORE the first UPDATE and (b) the dirty-store pin named above "
+        f"inverted — then delete this exemption-free rule for the field and say so. served: "
+        f"{statement!r}"
+    )
+
+
+def _assert_no_violable_constraint(spec: _ConstraintSpec, ddl: str) -> None:
+    """The P2 ∀-no-constraint check over ``ddl`` for ``spec``'s table (the body the parametrized pin
+    runs over the REAL emitter; lifted so the served failure MESSAGE is itself pinnable — r2 §D
+    item 11's content leg drives it on a synthetic violating DDL)."""
+    table = getattr(_schema(), spec.table_attr)
+    # 63c-i-a §4.3: derive over the SPEC's OWN emitter (agent → generate_agent_ddl), never the
+    # hard-coded message emitter — a third table's fields must come from its own output.
+    fields = _overwrite_field_statements(ddl, table)
+    assert fields, (
+        f"derived NO emitted `DEFINE FIELD OVERWRITE … ON {table}` statements — a "
+        f"derivation that finds nothing MUST red, not pass (INSTRUMENT-0 non-vacuity)"
+    )
+    assert spec.floor <= set(fields), (
+        f"the derived {table} field set {sorted(fields)} is missing the non-vacuity floor "
+        f"{sorted(spec.floor)} — the emitter or the parser regressed; a vacuous ∀ pin "
+        f"passes for a fixture reason (INSTRUMENT-0)"
+    )
+    # exemption non-vacuity: a reader-aligned exemption over a field with NO ASSERT
+    # is a STALE exemption (the ASSERT it excuses is gone) — RED.
+    for exempt in spec.exemptions:
+        assert exempt in fields, (
+            f"the exemption set names `{exempt}`, which the emitter does not declare on "
+            f"{table} — a stale exemption"
+        )
+        assert "ASSERT" in fields[exempt], (
+            f"`{table}.{exempt}` is EXEMPT from the no-ASSERT rule (reader-aligned, §13.1) "
+            f"but carries NO ASSERT — a stale exemption. Either the reader-aligned guard "
+            f"was dropped (R19 regression: `grade` must keep it) or the exemption is dead. "
+            f"served: {fields[exempt]!r}"
+        )
+    for field, statement in sorted(fields.items()):
+        has_assert = "ASSERT" in statement
+        if field in spec.exemptions:
+            continue  # its ASSERT is required, checked above (non-vacuity).
+        assert not has_assert, _constraint_violation_message(spec, table, field, statement)
+        if "DEFAULT" in statement:
+            assert field in spec.birth_defaults, (
+                f"`{table}.{field}` carries a DEFAULT but is not in the birth-DEFAULT set "
+                f"{sorted(spec.birth_defaults)} — a POST-BIRTH DEFAULT falsely promises to "
+                f"rescue legacy rows (store-ref §1.4: a DEFAULT applies at CREATE, never to "
+                f"an existing row's missing value): {statement!r}"
+            )
+        if field not in spec.birth:
+            type_part = statement.split(" TYPE ", 1)[1]
+            assert type_part.startswith("option<"), (
+                f"`{table}.{field}` was added AFTER the table's birth but is not "
+                f"`option<>` — a required post-birth field on a POPULATED table poisons "
+                f"every legacy row's next UPDATE (store-ref §1.4). served: {statement!r}"
+            )
 
 
 class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
@@ -2301,61 +2381,94 @@ class TestNoGovernedTableCarriesAConstraintALegacyRowCanViolate:
     def test_no_field_carries_a_constraint_a_legacy_row_can_violate(
         self, spec: _ConstraintSpec
     ) -> None:
+        _assert_no_violable_constraint(spec, spec.make_ddl())
+
+
+# (spec, the field the synthetic DDL violates, tokens the served RED MUST carry, tokens it must NOT)
+_HAZARD_CONTENT_CASES: tuple[tuple[_ConstraintSpec, str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        _AGENT_CONSTRAINT_SPEC,
+        "role",
+        (
+            "AgentRegistry.register",
+            "AgentRegistry.touch",
+            "heartbeat",
+            "migrate-governed --table agent",
+            "test_agent_governance_63c_i_a.py",
+        ),
+        ("MessageLedger", "drain"),
+    ),
+    (
+        _TO_CONSTRAINT_SPEC,
+        "ack_note",
+        ("drain", "MessageLedger.ack", "TestALegacyOverCapNoteCannotDenyADrain"),
+        ("AgentRegistry", "heartbeat"),
+    ),
+    (
+        _MESSAGE_CONSTRAINT_SPEC,
+        "body",
+        ("MessageLedger.send", "cutover", "TestTheMessageAssertsAreDroppedFromADIRTYStore"),
+        ("AgentRegistry", "heartbeat"),
+    ),
+)
+
+
+def _synthetic_violating_ddl(spec: _ConstraintSpec, violating_field: str) -> str:
+    """A minimal DDL for ``spec``'s table that passes every OTHER leg of the ∀ check (floor present,
+    exemptions ASSERTed, post-birth fields ``option<>``) and puts ONE store ASSERT on
+    ``violating_field`` — so the ONLY RED the check can raise is the served ∀-no-ASSERT message."""
+    table = getattr(_schema(), spec.table_attr)
+    statements = []
+    for field in sorted(spec.floor | spec.exemptions | {violating_field}):
+        type_expr = "string" if field in spec.birth else "option<string>"
+        clause = ""
+        if field in spec.exemptions:
+            clause = " ASSERT $value != 'exempt-probe'"
+        if field == violating_field:
+            clause = " ASSERT string::len($value) < 10"
+        statements.append(f"DEFINE FIELD OVERWRITE {field} ON {table} TYPE {type_expr}{clause}")
+    return ";\n".join(statements) + ";"
+
+
+class TestTheConstraintREDNamesTheTablesOwnWriter63cIA:
+    """r2 (amendment-2 §D item 11 / sidecar F1 — THE RIDER §4.3 named and r1 dropped): the P2 ∀ RED is
+    the text a builder who re-adds a constraint reads FIRST, so it must name THAT table's writer, its
+    UPDATE-hot mechanism and its dirty-store pin — never another table's. Drives the SAME check the
+    parametrized pin runs (``_assert_no_violable_constraint``) over a synthetic DDL whose ONLY defect
+    is one store ASSERT, and pins the SERVED message's content. GREEN before AND after the i-a build
+    (prose-only; independent of the emitter). Mutation proof: swap the ``to`` and ``agent`` hazard
+    strings → the ``[agent]`` AND ``[to]`` legs RED (each names the other table's writer)."""
+
+    @pytest.mark.parametrize(
+        ("spec", "violating_field", "required", "forbidden"),
+        [pytest.param(*case, id=case[0].table_attr) for case in _HAZARD_CONTENT_CASES],
+    )
+    def test_the_served_red_names_this_tables_writer_and_pin(
+        self,
+        spec: _ConstraintSpec,
+        violating_field: str,
+        required: tuple[str, ...],
+        forbidden: tuple[str, ...],
+    ) -> None:
+        with pytest.raises(AssertionError) as exc_info:
+            _assert_no_violable_constraint(spec, _synthetic_violating_ddl(spec, violating_field))
+        served = str(exc_info.value)
         table = getattr(_schema(), spec.table_attr)
-        # 63c-i-a §4.3: derive over the SPEC's OWN emitter (agent → generate_agent_ddl), never the
-        # hard-coded message emitter — a third table's fields must come from its own output.
-        fields = _overwrite_field_statements(spec.make_ddl(), table)
-        assert fields, (
-            f"derived NO emitted `DEFINE FIELD OVERWRITE … ON {table}` statements — a "
-            f"derivation that finds nothing MUST red, not pass (INSTRUMENT-0 non-vacuity)"
+        assert f"`{table}.{violating_field}` carries a store ASSERT" in served, (
+            f"the synthetic DDL's ONLY defect is a store ASSERT on {table}.{violating_field}, but the "
+            f"check raised a DIFFERENT red (the fixture did not isolate the ∀-no-ASSERT leg): {served!r}"
         )
-        assert spec.floor <= set(fields), (
-            f"the derived {table} field set {sorted(fields)} is missing the non-vacuity floor "
-            f"{sorted(spec.floor)} — the emitter or the parser regressed; a vacuous ∀ pin "
-            f"passes for a fixture reason (INSTRUMENT-0)"
+        missing = [token for token in required if token not in served]
+        assert not missing, (
+            f"the {table} ∀-no-ASSERT RED does not name {missing} — a builder who re-adds a {table} "
+            f"constraint must be told THIS table's writer, UPDATE-hot mechanism and dirty-store pin "
+            f"(ruling §4.3 rider; sidecar F1). served: {served!r}"
         )
-        # exemption non-vacuity: a reader-aligned exemption over a field with NO ASSERT
-        # is a STALE exemption (the ASSERT it excuses is gone) — RED.
-        for exempt in spec.exemptions:
-            assert exempt in fields, (
-                f"the exemption set names `{exempt}`, which the emitter does not declare on "
-                f"{table} — a stale exemption"
-            )
-            assert "ASSERT" in fields[exempt], (
-                f"`{table}.{exempt}` is EXEMPT from the no-ASSERT rule (reader-aligned, §13.1) "
-                f"but carries NO ASSERT — a stale exemption. Either the reader-aligned guard "
-                f"was dropped (R19 regression: `grade` must keep it) or the exemption is dead. "
-                f"served: {fields[exempt]!r}"
-            )
-        for field, statement in sorted(fields.items()):
-            has_assert = "ASSERT" in statement
-            if field in spec.exemptions:
-                continue  # its ASSERT is required, checked above (non-vacuity).
-            assert not has_assert, (
-                f"`{table}.{field}` carries a store ASSERT — DD-3.c: {table} is UPDATE-"
-                f"hot/-able (drain stamps `to` in one statement over the window; the §4.C "
-                f"cutover migrate re-validates every `message` row in one statement), so a "
-                f"legacy row violating this ASSERT refuses the WHOLE statement (total inbox "
-                f"denial on `to`; a refused cutover on `message`) — 63b-ii-b §3.4/§12.4. The "
-                f"app cap in `MessageLedger` is the ONE implementation. Adding one DELIBERATELY? "
-                f"you owe (a) a heal that runs BEFORE the first UPDATE and (b) the §6/§12.6 "
-                f"dirty-store pin inverted — then delete this exemption-free rule for the field "
-                f"and say so. served: {statement!r}"
-            )
-            if "DEFAULT" in statement:
-                assert field in spec.birth_defaults, (
-                    f"`{table}.{field}` carries a DEFAULT but is not in the birth-DEFAULT set "
-                    f"{sorted(spec.birth_defaults)} — a POST-BIRTH DEFAULT falsely promises to "
-                    f"rescue legacy rows (store-ref §1.4: a DEFAULT applies at CREATE, never to "
-                    f"an existing row's missing value): {statement!r}"
-                )
-            if field not in spec.birth:
-                type_part = statement.split(" TYPE ", 1)[1]
-                assert type_part.startswith("option<"), (
-                    f"`{table}.{field}` was added AFTER the table's birth but is not "
-                    f"`option<>` — a required post-birth field on a POPULATED table poisons "
-                    f"every legacy row's next UPDATE (store-ref §1.4). served: {statement!r}"
-                )
+        leaked = [token for token in forbidden if token in served]
+        assert not leaked, (
+            f"the {table} ∀-no-ASSERT RED names ANOTHER table's writer/mechanism {leaked} — the r1 "
+            f"message served message-only prose for every table (sidecar F1). served: {served!r}"
+        )
 
 
 class TestMessageSchemaLive:
@@ -3201,7 +3314,13 @@ class TestALegacyOverCapNoteCannotDenyADrain:
             principal_bare = str(principal.id).split(":", 1)[-1]
             recipient = (
                 await registry.register(
-                    "recip", session="wave7", role="builder", owner_principal_id=principal_bare
+                    "recip",
+                    session="wave7",
+                    role="builder",
+                    owner_principal_id=principal_bare,
+                    session_keep_id=await session_keep_id_for(
+                        keep_store, principal_store, owner_principal_id=principal_bare, session="wave7"
+                    ),  # r2 (A3): the owner travels WITH THE session keep
                 )
             ).agent
             recipient_bare = str(recipient.id).split(":", 1)[-1]

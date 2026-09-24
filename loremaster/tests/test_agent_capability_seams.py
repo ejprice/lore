@@ -61,6 +61,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _governed_contract import registry_level_session_keep_id
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -232,7 +233,11 @@ class TestParseCredentialIsTheONEImplementation:
         verify = getattr(seam_env.registry, "verify_capability", None)
         assert verify is not None, "AgentRegistry.verify_capability is unbuilt (W2.2)"
         result = await seam_env.registry.register(
-            "alice_worker", session="s1", role="worker", owner_principal_id=seam_env.alice_bare
+            "alice_worker",
+            session="s1",
+            role="worker",
+            owner_principal_id=seam_env.alice_bare,
+            session_keep_id=registry_level_session_keep_id("s1"),  # r2: the A3 consistent pair
         )
         capability = getattr(result, "capability", None)
         assert capability, "capability mint unbuilt"
@@ -304,7 +309,11 @@ class TestStampOwnerSeam:
         agent id and owner_principal names the owning principal — the pair a governed write stamps.
         REDDENS a build whose owner_agent does not follow the verified capability."""
         result = await seam_env.registry.register(
-            "alice_worker", session="s1", role="worker", owner_principal_id=seam_env.alice_bare
+            "alice_worker",
+            session="s1",
+            role="worker",
+            owner_principal_id=seam_env.alice_bare,
+            session_keep_id=registry_level_session_keep_id("s1"),  # r2: the A3 consistent pair
         )
         capability = getattr(result, "capability", None)
         assert capability, "capability mint unbuilt"
@@ -323,7 +332,11 @@ class TestStampOwnerSeam:
         (raise), never return a (owner_principal, owner_agent) pair a governed write would stamp.
         REDDENS a build that returns a live/partial pair when the capability does not verify."""
         result = await seam_env.registry.register(
-            "alice_worker", session="s1", role="worker", owner_principal_id=seam_env.alice_bare
+            "alice_worker",
+            session="s1",
+            role="worker",
+            owner_principal_id=seam_env.alice_bare,
+            session_keep_id=registry_level_session_keep_id("s1"),  # r2: the A3 consistent pair
         )
         capability = getattr(result, "capability", None)
         assert capability, "capability mint unbuilt"
@@ -357,7 +370,11 @@ class TestStampOwnerSeam:
         (stamp_owner calls verify_capability). GREEN on the correct #425 build; leg B is the
         discriminator that REDDENS the wrong re-route."""
         result = await seam_env.registry.register(
-            "alice_worker", session="s1", role="worker", owner_principal_id=seam_env.alice_bare
+            "alice_worker",
+            session="s1",
+            role="worker",
+            owner_principal_id=seam_env.alice_bare,
+            session_keep_id=registry_level_session_keep_id("s1"),  # r2: the A3 consistent pair
         )
         capability = getattr(result, "capability", None)
         assert capability, "capability mint unbuilt"

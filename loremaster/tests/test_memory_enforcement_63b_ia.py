@@ -1144,41 +1144,21 @@ class TestL1IsACoverageFloorWithADerivedGrammar:
 class TestTheGovernedPopulationSetIsADerivedOutput:
     """§1.5c-iii — the governed-population set is DERIVED from ``surreal_schema`` (tables whose DDL
     slice calls ``_governed_field_specs`` ∪ relation tables with a governed endpoint), an OUTPUT, so
-    a new governed table joins F5's reach by the same derivation that governs it. The known-set pin
-    below is RED_ADJUDICATED(owner=63b-ii): edited to the ii-a grown set {memory, message, to} by
-    reviser-63b-ii-a (see its docstring). The synthetic-source reach pin stays keyed on {memory}."""
+    a new governed table joins F5's reach by the same derivation that governs it. The known-set
+    EXACT pin moved out at 63c-i-a r2 (ONE home: the ii-a file's grown-set pin — see the DUAL comment
+    below). The synthetic-source reach pins stay here."""
 
-    def test_the_derived_population_set_is_the_known_set(self) -> None:
-        """⚠ RED_ADJUDICATED(owner=63b-ii) — RED at HEAD, GREEN once the ii-a §4.F build wires
-        ``_governed_field_specs`` / ``_governed_index_statements`` into ``_message_statements``.
-        ``governed_populations()`` DERIVES the set from ``surreal_schema`` (an OUTPUT, not a hand
-        list); ii-a's §4.F DDL grows the KNOWN set to EXACTLY {memory, message, to} (``to`` joins
-        because its IN endpoint ``message`` becomes governed). Edited from ``== {memory}`` to the
-        grown set by reviser-63b-ii-a (adversary FLAG F-A / ruling §7 item 1): this i-a known-set
-        assertion and the ii-a ``test_the_derived_population_set_grows_to_memory_message_to`` now
-        AGREE, so both are GREEN on the ii-a build — the old ``== {memory}`` CONTRADICTED the ii-a
-        pin (both could not be green). At ``a4eb097`` HEAD (§4.F unwired) the derivation yields
-        {memory} ≠ the grown set → RED. REDDENS a SURPRISE governed population with no F5 case, OR a
-        build that hardcodes the set instead of deriving it from surreal_schema."""
-        try:
-            populations = governed_populations()
-        except NotImplementedError:
-            pytest.fail(
-                "governed_populations is unbuilt (§1.5c-iii) — the governed-population set is not "
-                "DERIVED from surreal_schema; F5's reach over the SET of populations is a hidden constant"
-            )
-        assert MEMORY_TABLE in populations, (
-            f"the memory table is not in the derived governed-population set {sorted(populations)} — "
-            f"the derivation does not see the emitter's _governed_field_specs slice (§1.5c-iii)"
-        )
-        assert populations == frozenset(
-            {MEMORY_TABLE, surreal_schema.MESSAGE_TABLE, surreal_schema.TO_RELATION}
-        ), (
-            f"the derived governed-population set is {sorted(populations)}, not the ii-a known set "
-            f"{{memory, message, to}} — §4.F is unwired (message/to ride ii-a as "
-            f"RED_ADJUDICATED(owner=63b-ii)), OR a SURPRISE population appeared (a new governed table "
-            f"needs an F5 case; deny-by-default over the population SET, §1.5c-iii)"
-        )
+    # 63c-i-a r2 DUAL (amendment-2 A1 / §D item 3 / adversary MP-3) — the known-set EXACT pin that
+    # lived here (``test_the_derived_population_set_is_the_known_set``, ``== {memory, message, to}``)
+    # is DELETED-WITH-REPLACEMENT. It asserted the SAME fact as
+    # ``test_message_enforcement_63b_ii_a.py::TestTheGovernedPopulationSetGrows::
+    # test_the_derived_population_set_grows_to_memory_message_to`` — and a second copy of a known set is
+    # where the next wave's edit reaches one and not the other (it went RED on every correct i-a build:
+    # W1-1 makes ``agent`` a ``_governed_field_specs`` caller). Its virtues and their ONE home: (1)
+    # "the derived set is EXACTLY the adjudicated set; a SURPRISE population reds" → the ii-a pin, now
+    # the five-set {agent, briefed, memory, message, to}, which owns the growth story; (2) "memory is
+    # in the set" → that pin's equality; (3) "not a hardcode" → the synthetic reach pin below + the ii-a
+    # ``test_the_population_set_is_an_OUTPUT_not_a_hand_list``.
 
     def test_the_population_derivation_reach_is_a_checked_variable(self) -> None:
         """⚠ RED at HEAD (adversary MISSING PIN #2 / §1.9 item 2) — ``governed_populations()`` is
@@ -1233,6 +1213,55 @@ class TestTheGovernedPopulationSetIsADerivedOutput:
             f"a relation table (_define_relation_table) whose endpoint 'widget' is governed did NOT "
             f"join the population set — the relation-endpoint leg of the derivation is missing "
             f"(§1.9 item 2 ∪ relation tables with a governed endpoint): {sorted(grown)}"
+        )
+
+    def test_a_relation_over_a_RE_EXPORTED_endpoint_joins_and_a_non_str_re_export_does_not(
+        self,
+    ) -> None:
+        """63c-i-a r2 (amendment-2 A1 / §D item 3 / adversary MP-10) — the reach pin's RE-EXPORT leg.
+        ``surreal_schema`` spells ``AGENT_TABLE`` as ``from lorerunes import AGENT_TABLE as
+        AGENT_TABLE``; a resolver that sees only ``NAME = "literal"`` assigns resolves that endpoint
+        to ``None``, so ``briefed(AGENT_TABLE, brief)`` could never join (the seventh-defeat shape: a
+        reach that resolves one spelling of a constant and not another). GROWTH leg: a synthetic
+        source whose ``_agent_statements`` calls ``_governed_field_specs`` and whose
+        ``_define_relation_table('edge', AGENT_TABLE, 'x')`` endpoint is a lorerunes RE-EXPORT → 'edge'
+        JOINS. NEGATIVE leg: a re-export of a NON-``str`` attribute (``keep_scope``, a function) does
+        not resolve, so its relation does not join — the resolver reads VALUES, it does not treat
+        every imported name as a table. CONTROL leg: the same relation spelled with a LOCAL literal
+        joins too (the two spellings agree). RED before the r2 ``_schema_string_constants`` ImportFrom
+        leg; GREEN after (test substrate, not production — no build dependency)."""
+        re_export_source = (
+            "from lorerunes import AGENT_TABLE as AGENT_TABLE\n"
+            "from lorerunes import keep_scope as NOT_A_TABLE\n\n"
+            "def _governed_field_specs():\n    return []\n\n"
+            "def _define_relation_table(name, in_table, out_table):\n    return ''\n\n"
+            "def _agent_statements():\n    return _governed_field_specs()\n\n"
+            "def _edge_statements():\n"
+            "    return _define_relation_table('edge', AGENT_TABLE, 'x')\n\n"
+            "def _edge_neg_statements():\n"
+            "    return _define_relation_table('edge_neg', NOT_A_TABLE, 'y')\n\n"
+            "def _edge_literal_statements():\n"
+            "    return _define_relation_table('edge_literal', 'agent', 'z')\n"
+        )
+        derived = governed_populations(schema_source=re_export_source)
+        assert "agent" in derived, (
+            f"control: the synthetic _agent_statements calls _governed_field_specs, so 'agent' must be "
+            f"governed — the fixture did not set up the endpoint: {sorted(derived)}"
+        )
+        assert "edge_literal" in derived, (
+            f"control: a relation whose endpoint is the LITERAL 'agent' must join — the relation leg "
+            f"itself is broken, so the re-export assertion below would red for the wrong reason: "
+            f"{sorted(derived)}"
+        )
+        assert "edge" in derived, (
+            f"a relation whose IN endpoint is a lorerunes RE-EXPORT (`from lorerunes import AGENT_TABLE "
+            f"as AGENT_TABLE`) did NOT join — _schema_string_constants resolves only local "
+            f"`NAME = 'literal'` assigns, so briefed(AGENT_TABLE, brief) can never join the governed "
+            f"population set (amendment-2 A1 / MP-10): {sorted(derived)}"
+        )
+        assert "edge_neg" not in derived, (
+            f"a relation over a NON-str re-export (a function) joined — the resolver treats any "
+            f"imported name as a table instead of reading its VALUE: {sorted(derived)}"
         )
 
 

@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from _governed_contract import registry_level_session_keep_id
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -91,7 +92,11 @@ async def cap_env() -> Any:
 
 async def _register_alice_worker(cap_env: Any) -> Any:
     result = await cap_env.registry.register(
-        "alice_worker", session="s1", role="worker", owner_principal_id=cap_env.alice_bare
+        "alice_worker",
+        session="s1",
+        role="worker",
+        owner_principal_id=cap_env.alice_bare,
+        session_keep_id=registry_level_session_keep_id("s1"),  # r2: the A3 consistent pair
     )
     capability = getattr(result, "capability", None)
     assert capability, "capability mint unbuilt (62 wave 2) — cannot exercise stamp_owner"

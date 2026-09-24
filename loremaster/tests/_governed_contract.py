@@ -36,6 +36,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import importlib
 import re
 import tomllib
 import uuid
@@ -703,7 +704,15 @@ def frozen_asserted_agent_ddl() -> str:
     from the emitter (an emitter-derived old world would drop the asserts the ii build removes, so it
     could never be the control). A ``test_the_frozen_old_world_is_a_faithful_asserted_capture`` control
     pins this constant still carries the four birth ASSERT literals (self-consistency — NEVER a compare
-    to the live emitter, which this wave is designed to change)."""
+    to the live emitter, which this wave is designed to change).
+
+    ⚠ KNOWN BOUND (63c-i-a r2 / adversary R1, amendment-2 §D item 12): this capture — and
+    :func:`unbounded_agent_ddl` — model only 6 of the ~16 ``agent`` columns (the four ASSERTed birth
+    columns + the two datetimes) plus the governed overlay. The dirty-store legs built on them are
+    therefore BLIND to a TYPE change on any of the other columns (``model``, ``spawned_by``,
+    ``task_id``, ``checkpoint``, ``last_note``, the capability columns, …). That is outside 63c-i-a's
+    change set (it drops ASSERTs; it retypes nothing). RE-OPEN TRIGGER: *any change to the type of an
+    existing ``agent`` column* — that wave extends both captures with the retyped column."""
     table = AGENT_TABLE
     return (
         f"DEFINE TABLE IF NOT EXISTS {table} SCHEMAFULL;\n"
@@ -913,6 +922,67 @@ async def credentialed_app_context(
         await drop_database(env)
 
 
+def patch_shared_object_everywhere(
+    patcher: Any, attribute: str, original: object, replacement: object
+) -> list[str]:
+    """Patch ``attribute`` in EVERY loaded module whose ``attribute`` IS ``original`` (the ONE shared
+    object) and return the patched module names — the mutation instrument for "prove sharing by
+    MUTATION" (CLAUDE.md ONE IMPLEMENTATION). Import-style agnostic ON PURPOSE: ``from lorerunes import
+    keep_scope`` binds at import time, so patching only the defining module proves nothing about a
+    caller that imported the name, while patching every module that exposes THE SAME OBJECT covers
+    both styles. A caller with a PRIVATE implementation (an inline copy, its own helper, a second
+    compiled pattern) exposes no attribute that IS ``original``, is not patched, does not move — and is
+    caught by the pin that asserts its behaviour moved. Keyed on IDENTITY (``is``), never on the name
+    alone, so an unrelated same-named attribute is never clobbered. (63c-i-a r2: lifted here so the
+    ``keep_scope`` / ``is_legal_identifier`` / ``is_blank`` / ``AGENT_NAME_PATTERN`` mutation pins share
+    ONE instrument; ``test_secret_typing.py`` carries an older name-keyed private copy.)"""
+    import sys as _sys
+
+    patched: list[str] = []
+    for module_name, module in list(_sys.modules.items()):
+        if module is None or getattr(module, attribute, None) is not original:
+            continue
+        patcher.setattr(module, attribute, replacement, raising=True)
+        patched.append(module_name)
+    return patched
+
+
+def registry_level_session_keep_id(session: str) -> str:
+    """A SYNTHETIC bare session-keep id for a REGISTRY-LEVEL fixture that has no keep store (the
+    capability / stamp-owner harnesses build a bare ``AgentRegistry`` + ``PrincipalStore`` only).
+
+    63c-i-a r2 (amendment-2 A3): ``register`` refuses an owner without a session keep, and the registry
+    treats ``session_keep_id`` as an OPAQUE server-derived bare id (it formats ``keep_scope(id)``; it
+    never reads the keep). So a fixture that exercises the capability/owner seams — never scope — may
+    hand it this deterministic stand-in. A fixture that HAS a keep store must use
+    :func:`session_keep_id_for` (the real keep production mints) instead."""
+    return f"registrylevel_{session}"
+
+
+async def session_keep_id_for(
+    keep_store: Any, principal_store: Any, *, owner_principal_id: str, session: str
+) -> str:
+    """The bare id of the ``session:<session>`` keep KEPT BY ``owner_principal_id`` — minted (or
+    joined) exactly as ``AppContext._comms_register`` mints it (``get_or_create_keyed(key=
+    f"session:{session}", type="session", keeper_email=<owner email>, name=session)``).
+
+    63c-i-a r2 (amendment-2 A2 + A3): ``AgentRegistry.register`` takes the server-derived provenance
+    PAIR ``(owner_principal_id, session_keep_id)`` and REFUSES a half pair, so every fixture that
+    registers an OWNED agent directly on the registry must also hand it THE session keep — the one
+    production would have minted. ONE seam for every such fixture (never a per-file keep mint), so a
+    change to how production mints the session keep is one edit here."""
+    principals_list = await principal_store.list()
+    owner = next(
+        (principal for principal in principals_list if _bare(principal.id) == owner_principal_id),
+        None,
+    )
+    assert owner is not None, f"no principal {owner_principal_id!r} to keep session {session!r}"
+    keep = await keep_store.get_or_create_keyed(
+        key=f"session:{session}", type="session", keeper_email=owner.email, name=session
+    )
+    return _bare(keep.id)
+
+
 async def register_owned(
     ctx: Any, name: str, *, owner_principal_id: str, session: str, role: str = "builder"
 ) -> tuple[str, str]:
@@ -920,9 +990,23 @@ async def register_owned(
     ii-a ``_register_owned`` idiom), returning its one-time ``(capability, bare agent id)``. Until R7
     the tool ``register`` renders but does not RETURN the raw credential, so a credentialed call mints
     its capability here. Lifted (F-DUP §11.3) so the ii-a ``cred`` files + the ii-b tests share ONE
-    minting seam."""
+    minting seam.
+
+    63c-i-a r2 (amendment-2 A3): the registry refuses an owner without a session keep, so this seam
+    also hands it THE session keep (:func:`session_keep_id_for`) — the consistent pair production's
+    ``_comms_register`` passes."""
+    session_keep_id = await session_keep_id_for(
+        ctx._keep_store,  # noqa: SLF001 - the wired AppContext's own keep store
+        ctx._principal_store,  # noqa: SLF001 - the wired AppContext's own principal store
+        owner_principal_id=owner_principal_id,
+        session=session,
+    )
     result = await ctx.agent_registry.register(
-        name, session=session, role=role, owner_principal_id=owner_principal_id
+        name,
+        session=session,
+        role=role,
+        owner_principal_id=owner_principal_id,
+        session_keep_id=session_keep_id,
     )
     assert result.capability is not None, f"the first register of {name!r} must mint a capability"
     return str(result.capability), _bare(result.agent.id)
@@ -2091,8 +2175,23 @@ _DEFINE_RELATION_EMITTER = "_define_relation_table"
 
 
 def _schema_string_constants(tree: ast.AST) -> dict[str, str]:
-    """Module-level ``NAME = "value"`` string constants, so a ``_define_relation_table(TO_RELATION,
-    MESSAGE_TABLE, AGENT_TABLE)`` call resolves its endpoints exactly as a literal ``'widget'`` does."""
+    """Module-level string constants, so a ``_define_relation_table(TO_RELATION, MESSAGE_TABLE,
+    AGENT_TABLE)`` call resolves its endpoints exactly as a literal ``'widget'`` does.
+
+    TWO spellings of a module-level constant, both resolved (63c-i-a r2, amendment-2 A1 / MP-10):
+
+    * ``NAME = "value"`` — a local ``Assign`` of a string literal;
+    * ``from <module> import <name> [as <alias>]`` — a RE-EXPORT. ``surreal_schema`` spells
+      ``AGENT_TABLE`` / ``PRINCIPAL_TABLE`` as ``from lorerunes import AGENT_TABLE as AGENT_TABLE``,
+      and the r1 resolver saw only ``Assign``s, so every relation with a re-exported endpoint
+      resolved to ``None`` and could NEVER join (``briefed(AGENT_TABLE, brief)`` did not join on a
+      correct i-a build; ``to`` joined at ii-a only by the luck of its IN being a local constant) — a
+      reach that resolves one endpoint spelling and not another is the instrument-lesson's
+      seventh-defeat shape. The ImportFrom leg imports the REAL module and reads the attribute: a
+      ``str`` value IS production truth (``lorerunes`` is the stdlib-only constants home); a
+      non-``str`` attribute, a relative import, or a module that cannot be imported is skipped (it is
+      not a table name, and the relation over it does not join).
+    """
     constants: dict[str, str] = {}
     for node in getattr(tree, "body", []):
         if (
@@ -2103,6 +2202,15 @@ def _schema_string_constants(tree: ast.AST) -> dict[str, str]:
             for assign_target in node.targets:
                 if isinstance(assign_target, ast.Name):
                     constants[assign_target.id] = node.value.value
+        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+            try:
+                module = importlib.import_module(node.module)
+            except ImportError:
+                continue
+            for alias in node.names:
+                value = getattr(module, alias.name, None)
+                if isinstance(value, str):
+                    constants[alias.asname or alias.name] = value
     return constants
 
 

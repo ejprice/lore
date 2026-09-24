@@ -79,7 +79,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 from _finding_fakes import FakeFindingDatabase, FakeFindingLedger
-from _governed_contract import _bare, access_token
+from _governed_contract import _bare, access_token, session_keep_id_for
 from _surreal_harness import (
     PRODUCTION_DIM,
     connect_admin,
@@ -6705,7 +6705,16 @@ async def governed_ctx(
             email=_GOVERNED_TOOL_EMAIL, role="member"
         )
         registration = await ctx.agent_registry.register(
-            _GOVERNED_TOOL_AGENT, session="s1", role="worker", owner_principal_id=_bare(principal)
+            _GOVERNED_TOOL_AGENT,
+            session="s1",
+            role="worker",
+            owner_principal_id=_bare(principal),
+            session_keep_id=await session_keep_id_for(
+                ctx._keep_store,  # noqa: SLF001 - test wires the composition root
+                ctx._principal_store,  # noqa: SLF001 - test wires the composition root
+                owner_principal_id=_bare(principal),
+                session="s1",
+            ),  # r2 (A3): the owner travels WITH THE session keep
         )
         capability = str(registration.capability)
         # The canonical project keep (kept by the principal) so a default-scope remember resolves

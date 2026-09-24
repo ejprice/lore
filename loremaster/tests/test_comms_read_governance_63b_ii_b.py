@@ -19,7 +19,12 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from _governed_contract import build_principal_and_keep_stores, member, seed_message_legacy
+from _governed_contract import (
+    build_principal_and_keep_stores,
+    member,
+    seed_message_legacy,
+    session_keep_id_for,
+)
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
 from loremaster.agents import AgentRegistry
 from loremaster.messages import MessageLedger
@@ -75,7 +80,13 @@ async def read_gov_world() -> Any:
         my_pid, foreign_pid = _bare(mine.id), _bare(foreign.id)
         recipient = (
             await registry.register(
-                "recip", session="wave7", role="builder", owner_principal_id=my_pid
+                "recip",
+                session="wave7",
+                role="builder",
+                owner_principal_id=my_pid,
+                session_keep_id=await session_keep_id_for(
+                    keep_store, principal_store, owner_principal_id=my_pid, session="wave7"
+                ),  # r2 (A3): the owner travels WITH THE session keep
             )
         ).agent
         recipient_bare = _bare(recipient.id)

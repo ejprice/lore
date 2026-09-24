@@ -62,4 +62,54 @@ version: 1
 # `getattr(_txn, "TxnDomainRejectionError", None)` pins resolved. All 13 registered files were
 # confirmed GREEN (1358 passed, 0 failed) and the entry was deleted with the fix, per the file's own
 # self-destruct rule. `bounds:` is EMPTY again. Re-derive (`--derive`) before any NEW bound.
-bounds: []
+#
+# ⚠ ADDED 2026-09-24 (contract-63c-i-a-r2): the 63c-i-a r2 RED contract's TYPECHECK legs.
+bounds:
+  - id: packet-63c-i-a-contract-r2
+    owner: >-
+      the 63c-i-a BUILD (the Opus builder who lands amendment-2 A2/A3/A4 on the agent DATA layer:
+      AgentRegistry.register(..., session_keep_id=...) + the provenance-pair refusal, and
+      lorerunes.is_legal_identifier + the AGENT_NAME_PATTERN MOVE into lorerunes). Contract authored by
+      contract-63c-i-a-r2.
+    reopen_trigger: >-
+      the 63c-i-a build commit lands AgentRegistry.register's session_keep_id kwarg AND
+      lorerunes.is_legal_identifier / lorerunes.AGENT_NAME_PATTERN. This entry SELF-DESTRUCTS on those
+      symbols resolving — DELETE it with the build after confirming every file below is GREEN. A file
+      still red after they resolve is an INCOMPLETE build (currency then shows RED_ORPHANED — the
+      instrument working).
+    ruling: >-
+      docs/design/2026-09-24-packet63c-amendment-2.md §A2 (the registry seam is session_keep_id; the
+      caller passes it unconditionally), §A3 (register refuses an inconsistent owner/keep pair, so every
+      fixture registering an OWNED agent must also pass THE session keep), §A4 (lorerunes gains
+      is_legal_identifier; AGENT_NAME_PATTERN moves there). Reference build + RED-set by execution:
+      REPORT-contract-63c-i-a-r2.md (SATISFIABILITY + RED receipts).
+    rationale: >-
+      The r2 contract calls the not-yet-built seams DIRECTLY (a legible RED at HEAD: TypeError on the
+      kwarg, AttributeError on the lorerunes symbols) rather than through getattr guards, so mypy reds
+      at HEAD on exactly these call sites. pytest reds of a RED contract remain structurally
+      RED_ORPHANED until the build (this registry adjudicates the TYPECHECK legs only, as the r1 author
+      reported) — the RED set is enumerated in the contract report.
+    files:
+      - path: loremaster/tests/test_agent_registry.py
+        missing_symbols: []
+        unsymboled_codes:
+          - code: attr-defined
+            count: 3
+            reason: >-
+              mypy's "Module has no attribute" names lorerunes.is_legal_identifier (1) and
+              lorerunes.AGENT_NAME_PATTERN (2) — the A4 MOVE the i-a build lands; the deriver cannot
+              parse a qualified symbol out of that message form.
+      - path: loremaster/tests/test_comms_read_governance_63b_ii_b.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_comms_schema.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_governed_substrate_63a.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_mcp_server.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_memory_retrofit_63a.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_message_migrate_63b_ii_a.py
+        missing_symbols: ["register.session_keep_id"]
+      - path: loremaster/tests/test_message_migrate_dirty_store_63b_ii_b.py
+        missing_symbols: ["register.session_keep_id"]
