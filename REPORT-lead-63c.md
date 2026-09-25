@@ -769,3 +769,20 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - **Applied by the lead (R5):** the watchdog kill-line rises from 12 → **15 GiB with a ≤10 s poll** in every future spawn brief. Launch gates stay 23/20 GiB, one suite at a time. (The adversary running now keeps its 12 GiB line; it is not re-briefed mid-run.)
 - **Operator decisions surfaced:** R1 harness `shared_buffers` 8→2 GB · R2 a Surreal quadlet `Memory=` cap / OOM priority, so spike dies before prod · R6 **EDAC: 154 corrected errors on one DIMM, 3 pages hwpoisoned — hardware check.** Other-session items: R3 harness pod TTL, R7 the mobile_pricepaper_smoke dart fleet cap, R8 stale agents/containers. R4 (recycle spike-surreal) is deferred until no suite is running.
 - memdiag-1 is standing by.
+
+### 2026-09-25 — adversary r4b-fix: INSUFFICIENT on ONE SAT defect (F-A1); 4 SAME-FAMILY bounds; Task 16 (G5, G6) → sidecar
+Report `REPORT-adversary-63c-i-a-r4b-fix.md` (this commit). **Every author claim was CONFIRMED independently:**
+- SAT on both shapes, full suite ALONE `-n 12`: `11496 passed / 62 skipped / 3 xfailed / 0 failed` each.
+- All 8 kills; RED@HEAD to the id.
+- typecheck 23 = 20 + 3 direct `lorerunes` reads (owned, 11/11 SELF-DESTRUCT).
+- The `hypothesis` rider holds in-image and in scratch.
+- The shared cache home is safe under 8-way cold / 4-way warm concurrency (MEASURED).
+
+LIVE 0. Adversary retired (TaskStop + ledger).
+
+- **F-A1 SAT (FIXED under the pre-ruling):** a correct refusal stating a TRUE count the admitted list omits (`already_migrated` / `backfilled` = 0, the ruling's own "ZERO stamped") is RED in `[above-cap]` and `[perturbed-bound]`. The 12-line fix is verbatim in the report's §8, and proven: every correct variant GREEN on both shapes; PXlie and PX2 still killed.
+- **SAME-FAMILY → KNOWN BOUND (lead records; carrier = the bounded pin's docstring per amendment 13; texts + re-open triggers in the report's §8):** FXtVE, FXand, FXname (fake-guard); RS1combo (ownership). Also DELETE two docstring over-claims: "whatever the handler spells" and "REACHED and TRUSTED".
+- **SIDECAR TASK 16 (NEW-CLASS, report §8) — sidecar-63c-2, please rule:**
+  1. **G5:** the generated legal leg never SAMPLES lengths 28–64 (the 200 derandomized draws max at 27), so a SKIP-gate narrowing on 28–63-char names survives the full suite. The measured closure is one line: `hypothesis.target(float(len(attribution)), label="length")` → max 64, 30 draws at the cap. The two over-claiming prose lines ("in its sample space by construction", "every narrowing conjunct … named or not") need narrowing either way.
+  2. **G6:** single-ASCII-punctuation WIDENINGS (`@`, `+`, `\t` → `-`) survive; sampling measurably cannot close them (0 hits in 200). The measured closure is exhaustive: ∀ ASCII `c`, the rejected one-edit neighbours are never looked up (≤384 in-memory spy calls). The consequence is read-budget-only (one extra registry read; no such identity can register). The adversary flags rigor-to-importance: close it simply, or bound it.
+  3. Right-sizing: this is the 5th contract round on 63c-i-a (r4 → r4a → r4b → r4b-fix → now fix2). Confirm that the fix2 agent (F-A1 + 4 bound docstrings + over-claim deletions + whatever 1–2 add) needs a further narrow adversary ONLY if the ruling adds a pin (2026-07-28 law), and say whether G5/G6's closures are worth that.
