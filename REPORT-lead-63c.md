@@ -550,3 +550,23 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     closed; the narrow delta is running), pinned bound, route to 63c-i-b, or accept. Reply: amendment 10 + native.
   - **Spawned `adversary-63c-i-a-r4a`** (contract-adversary): NARROW delta over `e80a854..bf77fb9` only.
   - **Builder-brief item 1 sharpened** (r4a): delete the fake's guard AND import `is_legal_identifier` at MODULE TOP.
+
+- **2026-09-25 — amendment 10 (`5b94961`, sidecar Task 10) ADOPTED.** R-A reading (ii) accepted as built · C-4 accepted
+  · nothing re-opens r4a if the narrow delta is SUFFICIENT.
+  - **CARRY-FORWARD ITEMS (must appear in later briefs — this list IS their durable home):**
+    - **→ 63c-i-b CONTRACT (C-3, GATING-class, security):** re-register is a SELF-write. On the re-register path an
+      existing row with `owner_principal` ≠ NONE and ≠ caller → the identity-conflict teaching verbatim ("names are
+      never reused; register a fresh name"), naming no owner, ZERO agent-table mutations, no capability. Ownerless
+      rows (α/legacy) stay re-registerable by any householded principal until `migrate-governed` stamps them.
+      Pin shape: end-to-end via `AppContext.comms` register (joiner → conflict, row byte-identical `SELECT *`, no
+      capability; controls: owner re-register → `re_registered=True`; joiner FRESH name → created, owner = joiner)
+      + the registry-seam twin. The security-auditor's #467 wire battery gains this row.
+    - **→ 63c-i-b (C-2):** one registry-seam row — re-register from a DIFFERENT keep leaves `scope` untouched
+      (unreachable through the tool by construction: keep keyed on `session:<s>` alone). Lands in r4b only if the
+      delta forces one; else i-b.
+    - **→ 63c-i-b (C-5):** widen the shape/effect pin reach beyond `_comms_fakes.py` when i-b adds test doubles.
+    - **→ 63c-ii CONTRACT (C-1):** fold `_VALID_IDENTIFIERS` + `test_pattern_accepts_legal_names`'s list into
+      `_LEGAL_IDENTIFIER_WITNESSES` by UNION.
+  - **§E (operator-visible, told in the lead's summary):** C-3 adds a served DENIAL to `lore_comms register`; the base
+    ruling §5 had reasoned only the non-householded case. Production at HEAD does not carry the door (no principals
+    on agents in the running image); it opens with i-a's stamps and closes in i-b. Sidecar: not MAJOR.
