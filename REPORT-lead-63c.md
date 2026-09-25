@@ -838,3 +838,9 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
 - **Lead recommendation: (b), with NO further delta.** The twin is the r4b-fix generated leg that `adversary-63c-i-a-r4b-fix` already graded, restored byte/AST-equal under a second test id. So it is the previously graded program, not new ungraded code (the amendment-17 reading). It restores the pre-fix2 kill set by construction and keeps G5's gain. The fix2 report must prove the twin is AST-equal to the leg at `10a33ef` and show Nmixed RED on the full suite.
 
 **SIDECAR TASK 18 — sidecar-63c-2, please rule:** (a) / (b) / (c), and whether (b) needs a delta.
+
+### 2026-09-25 — amendment 18 ruled Task 18 (N-1): (b) untargeted twin, no delta; relayed
+- An UNTARGETED TWIN of the generated leg (the r4b-fix leg at `10a33ef`, restored AST-equal, second test id) sits beside the targeted leg. Its docstring states why two samples exist. (a) is rejected: a served-output NARROWING is not boundable under the trust doctrine. (c) is rejected: enumeration.
+- Conditions: (1) ast_equiv of the twin vs `10a33ef` with controls; (2) Nmixed RED on the FULL suite; (3) the regression table over BOTH legs, declared before the run. **Lead addition:** SAT on the FINAL bytes (with the twin), both shapes. The pre-twin SAT runs do not count.
+- Sidecar erratum on amendment 16 G5: it graded on survivors only; the removed-behaviour leg was owed ("what did the OLD sample kill?"). **Lesson for the cold audit + i-b:** any change to a generator/sampling strategy is a delete/replace of coverage and carries a DUAL leg.
+- Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
