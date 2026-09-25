@@ -852,3 +852,9 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
   - The candidate door C-1 is in the fix2 report's §CAND.
 - **Carry-forward for the cold audit + i-b:** any change to a sampling/generator strategy is a delete/replace of coverage, and it carries a DUAL leg ("what did the OLD sample kill?").
 - NEXT: `builder-63c-i-a` (items 1–10 per anchor v3 as amended by amendments 13–18; brief in the scratchpad; NO commit and NO deploy — the cold audit comes first) → COLD AUDIT (Opus REFUTE, full suite ALONE) → lead commits → INDEX Log "63c-i-a CLOSED".
+
+### 2026-09-25 — FORK-B1 (builder: the D3 fold's file was outside the writable set) — ruled by the LEAD: (A)
+- This was a lead-brief defect, not a design fork: D3 is a ruled builder action, but `_create_agent` lives in `loremaster/tests/test_agent_owns_principal_schema.py`, which my writable set omitted.
+- Granted for the D3 fold ONLY: delete `_create_agent`; route its 11 sites through `seed_agent_legacy(..., role="worker")` (behaviour-equivalent); nothing else in the file changes. Receipts required: the file diff, identical `--collect-only` ids before and after, green after the fold, and a DUAL row.
+- **Cold-audit carry-forward:** check this test-file edit specifically.
+- Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
