@@ -509,3 +509,19 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     ruled before any round. Rule each MP-R4-* (close in the r4a addendum / pinned KNOWN BOUND / accept), R-1, R-2, R-4,
     and correct amendment-8 KB-5. Reply: amendment 9 committed + native micro-format. Then: ONE r4a addendum carrying
     amendment-8 + amendment-9 rows → NARROW adversary delta on r4a only → builder.
+
+- **2026-09-25 — amendment 9 (`4640232`, sidecar Task 9) ADOPTED on every ruling.** RS1 pinned ∀ callers with the
+  ABSOLUTE real-side expectation (GATING; amendment-8 KB-5's premise was false — erratum) · FX2 closes in the same
+  parity row (absolute real side + `fake == real`) · G1 closed by a LEGAL witness corpus incl. `"a"*64` (+ R-2 header
+  narrowed) · FXg: effect pin removes the predicate at EVERY `lorerunes*` binding · FXf: property-shaped presence pin
+  RESTORED beside the effect pin (amendment-6 MP-3's deletion was a DUAL loss — erratum) · PX2 prose-twin leg
+  (NON-GATING) · R-1: delete r4's redundant premise pin, FORK-A docstring cites packet 07's
+  `test_this_slice_contains_neither_a_relation_table_nor_a_sequence` · R-4 failure text. No r5; STOP-rule holds.
+  - **BUILDER-BRIEF ITEM 8:** the re-register docstring reads "a re-register does NOT re-stamp it — from ANY caller,
+    including a different householded principal". Item 1 (guard deletion) is now concretely "import
+    `lorerunes.is_legal_identifier` at module top" — the restored presence pin demands exactly that.
+  - **ADVERSARY-BRIEF LINE (standing, every future adversary):** "a survivor is a CONTRACT survivor until the full suite
+    is run on it" (adversary-r4 R-1: r3's MP-4 was a scoped-file-set artifact).
+  - **Spawned `contract-63c-i-a-r4a`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4a.md`): ONE addendum
+    = amendment-9 §W rows 1–8 (⊇ amendment-8 §W); SAT full-suite-alone receipt incl. all builder edits; full-suite leg
+    for every survivor claim; memory + parallel-session guard. Then: NARROW adversary delta on r4a only → builder.
