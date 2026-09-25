@@ -525,3 +525,10 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   - **Spawned `contract-63c-i-a-r4a`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4a.md`): ONE addendum
     = amendment-9 §W rows 1–8 (⊇ amendment-8 §W); SAT full-suite-alone receipt incl. all builder edits; full-suite leg
     for every survivor claim; memory + parallel-session guard. Then: NARROW adversary delta on r4a only → builder.
+
+- **2026-09-25 — FORK-MEM (from `contract-63c-i-a-r4a`, blocked 30 min at 24–25 GB available) → LEAD GRANT:** full-suite
+  legs may launch at ≥23 GB. Conditions: one pytest at a time; a 12 GB kill-by-PID watchdog; a process-table check
+  before each launch; stop on a watchdog fire, with no retry. Grounds (measured at grant): no other pytest on the box;
+  memory held by spike-surreal ~16 GB, lore-surreal ~12 GB, four Odoo PG harnesses from other sessions, ~40 GB shared.
+  A single `-n 12` full suite costs ~6–7 GB (today: 28→22, 33→26), so the expected low is ~17 GB; the 2026-09-24 OOM
+  (#479) was from CONCURRENT suites. r4a otherwise reports its rows done: 14/14 builds killed, RED clean.
