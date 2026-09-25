@@ -423,3 +423,17 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   - **Environment note:** operator re-scope `2fd3351` / `26ff7bb` keeps 63c on the critical path (63c → 64 → 65;
     11c is a hard dependency of 65) and starts 17 + 19 + 65-P1 design + 24 in PARALLEL sessions. Every r4+ brief
     carries: `ps` check for other pytest before any full suite, `git add` own paths only.
+
+- **2026-09-24 ~22:40 EDT — amendment 6 ADOPTED** (`3327770`, sidecar-63c-2; standing ruling: sidecar is the
+  authority). MP-1/2/3 GATING (MP-1 = text-twin static ∀ pin with the honest-engineer threat model IN the
+  instrument + SKIP-gate effect leg; MP-3 effect pin REPLACES the spelling pin) · MP-4/5 NON-GATING · R-3: the
+  bound's VALUE is not normative, no ceiling pin · **STOP-rule invoked: r4 is the LAST pre-build contract round**;
+  further identity-class doors after r4 become pinned KNOWN BOUNDS, never r5. §E flags that cap to the operator
+  (told in the lead's turn summary, not escalated — within sidecar authority).
+  - **BUILDER-BRIEF ITEM ADDED (6th):** `surreal_schema._IDENTIFIER_CHARSET_PATTERN = AGENT_NAME_PATTERN.pattern`
+    imported from `lorerunes` (one line; `brief`'s ASSERT stays byte-identical until 63c-ii).
+  - **Sidecar lore client is DOWN** (ECONNREFUSED since outage #2; server answers). Ledger #16005 is un-acked
+    for that reason, not ignored. Until its session restarts, every sidecar directive's durable copy is a
+    committed lead-report entry + native wake.
+  - **Spawned `contract-63c-i-a-r4`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4.md`): §W items
+    1–6 in ONE commit, SAT full-suite-alone receipt incl. the two builder edits, memory + parallel-session guard.
