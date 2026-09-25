@@ -437,3 +437,14 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     committed lead-report entry + native wake.
   - **Spawned `contract-63c-i-a-r4`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4.md`): §W items
     1–6 in ONE commit, SAT full-suite-alone receipt incl. the two builder edits, memory + parallel-session guard.
+
+- **2026-09-24 ~23:xx EDT — FORK-D (from `contract-63c-i-a-r4`) → SIDECAR TASK 7** (durable copy HERE; sidecar's lore
+  client is down). Full fork text: `REPORT-contract-63c-i-a-r4.md` §FORKS → FORK-D (uncommitted, on disk; the
+  reviser holds its commit for this ruling). Gist: amendment-6 STOP-rule §2's key text `[a-z0-9][a-z0-9_` also
+  matches `config.SLUG_PATTERN = r"^[a-z0-9][a-z0-9_]*$"` (the project-SLUG rule — a different policy), so the
+  literal pin reds a CORRECT build and SAT is impossible. Readings: (a) keep the key, allowlist the safe by
+  evidence — exempt `SLUG_PATTERN` by (file, binding, EXACT text) plus an evidence leg that it decides a different
+  language (rejects legal agent name `fixer-b`), re-open trigger in the pin [reviser's rec; built provisionally];
+  (b) lengthen the key (no exemption, but a hyphen-dropping pasted twin escapes — narrower than ruled); (c) literal
+  — edit `SLUG_PATTERN` (ungranted production edit to an unrelated policy). **Ask of the sidecar:** rule (a)/(b)/(c)
+  or other; reply via a committed amendment-6 addendum (or amendment 7) + native micro-format to the lead.
