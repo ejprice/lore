@@ -793,3 +793,25 @@ LIVE 0. Adversary retired (TaskStop + ledger).
 - Watchdog kill-line in the fix2 brief = 15 GiB at ≤10 s polling (memdiag R5).
 - Test store re-budgeted by `surreal-memcap-2` (spike restarted 17:34: 2 GiB block cache + 14×128 MiB write buffers). fix2 waits for any smoke to clear.
 - NEXT: `contract-63c-i-a-r4b-fix2` → builder (9 items; item 6 per amendment 13 F-1) → cold audit.
+
+### 2026-09-25 — SurrealDB ENGINE memory budgets applied (operator directive; `surreal-memcap-2`, report in this commit)
+- **Engine config only, no container/cgroup limits** (the operator corrected the first brief; surreal-memcap-1 was stopped before it touched anything).
+
+  | store | block cache | write buffers | RocksDB limit | + HNSW default | ceiling | restarted |
+  |---|---|---|---|---|---|---|
+  | lore-surreal (prod) | 4.5 GiB | 26 × 128 MiB | 7.75 GiB | 0.25 GiB | 8 GiB | 17:20:53, NRestarts 0 |
+  | spike-surreal (test) | 2 GiB | 14 × 128 MiB | 3.75 GiB | 0.25 GiB | 4 GiB | 17:34:14 |
+
+  The totals are confirmed by the engine's boot-log "Memory manager" lines.
+- lore MCP: transient "no close frame" errors during the prod restart, then self-healed. The lead verified `lore_index()` fresh (sync 46 s, branch head current).
+- **NOT bounded (report §4, stated as facts):**
+  - the transaction and definition caches (item-count caps, not bytes);
+  - per-query and per-connection working memory, which a `-n 12` burst can push above the budget transiently;
+  - RocksDB index/filter blocks, file handles and compaction threads outside the declared limit;
+  - allocator-retained RSS.
+  RE-OPEN TRIGGER: store RSS > 1.5× its ceiling.
+- **Smoke-result correction by the lead:** the agent's "1 failed + 3 errors, unrelated pre-existing gap" in `test_comms_schema.py` was re-run by the lead (`1 failed, 215 passed, 3 errors`, reproduced). These are **63c-i-a contract reds for the RIGHT reason** (unbuilt world), not a store effect and not a pre-existing gap:
+  - the ERRORs = `AgentRegistry.register()` has no `session_keep_id` kwarg yet;
+  - the FAILED `[agent]` = the `agent` floor wants `scope`, which i-a adds.
+  The builder closes both.
+- surreal-memcap-2 retired.
