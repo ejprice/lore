@@ -362,9 +362,8 @@ the operator (lore memory e4131fdc). (2) No AI-attribution trailers, ever.
 - Contract chain: r1 `0b8ce37` → r2 `88205a4` → **r3a `11cbfb2` + r3b `39935f6`** (current contract).
 - Ruling chain: base `699a6e9` + amendments 1 `c4728b1` · 2 `65ca279` · 3 `e6bedd1` · 4 `2c30150` (§W worklist) ·
   5 `26511f0` (FORK-A/B/C). All in `docs/design/2026-09-*-packet63c-*.md`.
-- **RUNNING:** `adversary-63c-i-a-r3` (contract-adversary, Opus 5.5) — delta pass over `88205a4..39935f6`. Prior-7
-  kill table DONE (N2/N3/N4 confirmed killed; rest in its report); now running its new wrong builds (X1…R4).
-  Deliverable `REPORT-adversary-63c-i-a-r3.md` at root. It self-wakes on its lane watcher — do NOT double-drive.
+- ~~RUNNING: `adversary-63c-i-a-r3`~~ → **DONE 2026-09-24 ~22:10 EDT: INSUFFICIENT** (see the wave-log entry at the
+  END of this file — "adversary r3 verdict"). Current step: sidecar Task 6 (rule MP-1…MP-5 + R-3), then reviser r4.
 - **STANDING BY:** `sidecar-63c-2` (fable51-worker, long-running for the whole packet; idle is benign; never
   wake-loop; STOP it + ledger-retire at 63c close). Queued for 63c-ii: F-briefs-import is pre-answered by A4
   (`briefs.py` imports `lorerunes.is_legal_identifier`).
@@ -396,3 +395,31 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
 
 **Open non-63c items (operator-scheduled):** lore_tasks f4e3b63f… (log the re-embed fallback outcome; #474) ·
 #478/#479/#480 · #355 (→ packet 11c; trigger of the ~4h full rebuild still unknown) · #383 cost amplifier.
+
+## Wave log (cont., after RESUME ANCHOR v2)
+
+- **2026-09-24 ~22:10 EDT — adversary r3 verdict: CONTRACT INSUFFICIENT** (graded `39935f6`; report
+  `REPORT-adversary-63c-i-a-r3.md`, committed with this entry). Summary block + §6 MISSING PINS + §8 residuals
+  read IN FULL (the read-the-residuals law).
+  - **Floor held:** 7/7 adversary-r2 survivors KILLED on their declared pins. **SAT reproduced independently:**
+    full suite ALONE `-n 12` on the adversary's own reference = `11405 passed, 62 skipped, 3 xfailed`, 0 failed
+    (= author's count); ruff clean after cleanups; built world = exactly 11 SELF-DESTRUCTs. **RED@HEAD:** 0
+    HEAD-greens turned red; 77 new reds, all right-reason. DUAL: no virtue lost by any fold.
+  - **5 NEW survivors, each with a kill-pin GREEN on ref / RED on its build:** MP-1 (X1 — `_comms_traffic_line`'s
+    SKIP gate hand-rolls the identifier decision; routing-is-not-sharing one call site up; rec. GATING) · MP-2
+    (X2 — `[:10]` literal twin of `_REFUSAL_ID_SAMPLE_SIZE`; the bound is read, never perturbed; rec. GATING) ·
+    MP-3 (X3 — FORK-C guard pin checks a spelling; `except Exception:` passes; rec. GATING-adjacent) · MP-4 (R5 —
+    FORK-A bound's PREMISE "no unswept emitter emits a relation" is unobserved; rec. NON-GATING) · MP-5 (FX1 — parity
+    matrix covers first-register only; fake re-register unmirrored; rec. NON-GATING).
+  - **Fork R-3:** is `_REFUSAL_ID_SAMPLE_SIZE = 10` normative? (adversary: any positive bound + sanity ceiling ≤ 20).
+  - **Prose:** MP-P1 (`test_ddl_write_target_coverage_124.py::_emit` docstring false after amendment-5's `dim`
+    rider) · R-1 (author's "36 parity rows" is 34) · R-2 (author's `r3b_files.txt` run set unpasted).
+  - Convergence across rounds: wrong-build survivors 11 → 7 → 5, every prior survivor killed. The STOP-rule
+    question ("is the reach receding one level deeper each round?") goes to the sidecar with the classification
+    ask — MP-1 is the same class one call site up, which is exactly the tell to rule on, not re-brief.
+  - Actions: `adversary-63c-i-a-r3` TaskStopped + ledger-retired; fallback watcher stopped. **Routed to
+    `sidecar-63c-2` as Task 6** (ledger directive on thread `63c` + native wake): rule MP-1…MP-5 class (GATING /
+    NON-GATING / pinned KNOWN BOUND), R-3, and whether r4 takes all five or the STOP-rule applies to any.
+  - **Environment note:** operator re-scope `2fd3351` / `26ff7bb` keeps 63c on the critical path (63c → 64 → 65;
+    11c is a hard dependency of 65) and starts 17 + 19 + 65-P1 design + 24 in PARALLEL sessions. Every r4+ brief
+    carries: `ps` check for other pytest before any full suite, `git add` own paths only.
