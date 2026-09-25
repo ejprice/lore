@@ -455,3 +455,22 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   (narrows the honest-paste threat model), (c) rejected (ungranted edit to a different policy). Still GATING.
   Erratum recorded: amendment-6 swept with the full class text but pinned the prefix. Relayed to
   `contract-63c-i-a-r4` (native; durable = the committed amendment) — its provisional build is the ruling; commit.
+
+- **2026-09-24 ~23:15 EDT — contract r4 DELIVERED (`e80a854`)**; reviser TaskStopped + ledger-retired. Summary block,
+  §FORKS, candidate bounds and deviations read in full. Trailer-clean; touches only its writable set (+ the appended
+  r3 correction note). SAT: full suite ALONE `-n 12` on its reference `11428 passed, 62 skipped, 3 xfailed`, 0 failed,
+  incl. both builder edits; 10/10 wrong builds killed (X1, X2, X3, X3b-d, R5, FX1, TW, SLUGDRIFT); RED@HEAD 0 greens
+  turned red, 7 new right-reason reds. **These are claims — the r4 adversary re-derives them.**
+  - **DV-1** (a bare `--currency` ran pytest at `-n auto` concurrently with the agent's own lane) is a RECURRENCE of
+    #466 whose root cause is the DEFAULT in `scripts/gates.yaml` (pytest leg hard-codes `-n auto`); annotated on #466
+    (→ packet 09b). Every brief from here says: currency only as `--legs typecheck,ruff` or `--currency -- -n 12`.
+  - **SIDECAR TASK 8 (durable copy HERE; its lore client is down):** rule (1) **FORK-E** — amendment-6 R-3 "the FULL
+    count on a separate line": reviser picked reading (i) (count asserted independently of the id sample; no newline
+    requirement) over (ii) (a `\n` in the refusal text); ruling needed only if (ii) was meant. (2) **KB-1…KB-5**
+    (`REPORT-contract-63c-i-a-r4.md` §Candidate KNOWN BOUNDS): KB-1 hostile corpus lacks a DOTTED shape (one-entry
+    close, grows corpus-parametrised pins) · KB-2 reworded/runtime-assembled class evades the text pin (threat-model
+    boundary) · KB-3 reach excludes `scripts/` · KB-4 a docstring quoting the rule text reds the pin · KB-5 re-register
+    parity covers only the three ruled sequences. For each: pinned KNOWN BOUND (and who writes the pin, given r4 was
+    the last contract round) / accepted-unpinned with trigger / close. Reply: committed amendment 8 + native
+    micro-format.
+  - **Spawned `adversary-63c-i-a-r4`** (contract-adversary) on `39935f6..e80a854` in parallel with Task 8.
