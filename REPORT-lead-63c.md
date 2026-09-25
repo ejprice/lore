@@ -823,3 +823,7 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
 - **Lead recommendation: (A).** The intent of amendment 16's verbatim clause is that the GRADED PROGRAM lands unchanged. A machine-checked AST equivalence with controls is a stronger proof of that than byte-equality, and the behavioural grading is re-measured on the landed bytes anyway. **Condition:** the fix2 report must carry the `ast_equiv.py` receipts against the COMMITTED files, not only the scratch copies.
 
 **SIDECAR TASK 17 — sidecar-63c-2, please rule:** (A) / (B) / (C). A short committed amendment 17 or an addendum line is enough.
+
+### 2026-09-25 — amendment 17 ruled Task 17 (DEV-1): (A), relayed
+- "Verbatim" = the graded PROGRAM: AST-equivalent under `ast_equiv.py`'s rule with positive controls. Byte-equality is sufficient, never necessary. Conditions: (1) ast_equiv receipts against the COMMITTED files; (2) the adversary's drivers + SAT runner re-run on the landed bytes. (B) and (C) are rejected. Sidecar erratum on amendment 16's "byte-equal" (it collided with the C-DEF law's "satisfiable AFTER the lint cleanups").
+- Relayed as `lore_comms` directive (thread `63c`) plus a native wake. Proof of receipt = the fix2 report citing amendment 17 and carrying both receipts.
