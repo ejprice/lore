@@ -629,3 +629,8 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   - **BUILDER-BRIEF ITEM 9 (permissive, not a requirement):** "you MAY collapse `_shared_identifier_predicate` to a direct
     `is_legal_identifier(value)` call in REFACTOR". If left, the cold audit's residual table names the dead `None` branch
     for a post-build tidy (owner: the i-b contract author).
+
+- **2026-09-25 ~08:00 EDT — FORK-MEM grant WIDENED (pre-emptive, to `contract-63c-i-a-r4b`):** the idle baseline fell to ~21 GB
+  available (a 5th Odoo PG harness from another session appeared; lore-surreal grew 12.2 → 13.9 GB RSS). A full suite may
+  launch at ≥20 GB with `-n 8` (counts are -n-independent) when <23 GB; watchdog, one-at-a-time and STOP-on-fire unchanged.
+  r4b progress: REF 25 contract files `3002 passed, 19 skipped`, 0 failed — the SH1 prose now passes; 15 wrong builds remain.
