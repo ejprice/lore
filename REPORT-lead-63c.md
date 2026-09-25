@@ -609,3 +609,14 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   - **Carry-forward UPDATE:** C-2 now rides r4b (removed from the i-b list); C-5 withdrawn (removed from the i-b list).
     i-b keeps C-3 (served refusal + #467 battery row; covers R-6's metadata columns).
   - **Spawned `contract-63c-i-a-r4b`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4b.md`).
+
+- **2026-09-25 — FORK-R3 (from `contract-63c-i-a-r4b`) → SIDECAR TASK 12** (durable copy HERE). Full text:
+  `REPORT-contract-63c-i-a-r4b.md` §FORK-R3 (on disk, uncommitted; rows 1/2/4/5 proceed, commit held). Amendment 11
+  MP-A1 clause (2) "`Call` nodes whose func is the bare `Name`" is UNSATISFIABLE: the honest post-build fake (the
+  builder's granted edit, "unchanged" per §W row 3) leaves `FakeAgentRegistry._shared_identifier_predicate` as
+  `return is_legal_identifier` — a Load `Name`, not a `Call`; both independent references do this. Readings: **R-3a**
+  (reviser's rec., built provisionally) — shape (2) = any LOAD-context bare `Name`; DENY `Attribute` of that attr, any
+  string `Constant` equal to it (getattr/hasattr/vars/sys.modules/importlib), any other import/alias incl. `as`
+  rebinding, `Name` in Store/Del, a parameter of that name, `global`/`nonlocal` — with the module-top import mandatory a
+  Load Name can only reach THE object · **R-3b** (literal) — keep Call-only and change the builder's granted edit to
+  collapse the helper (contradicts "unchanged"; builder brief grows). Ask: rule R-3a/R-3b/other; amendment 12 + native.
