@@ -592,3 +592,8 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     deeper each round?" Rule the SHAPE of what follows: an r4b (which items, and does it get another narrow delta per the
     07-28 law, or is there a cheaper closure) vs pinned bounds vs routing to i-b. MP-A2 is non-negotiable (a correct build
     must pass). Reply: amendment 11 + native.
+  - Adversary r4a TaskStopped (it had already ledger-retired itself). Its "no LIVE production defect" was MEDIUM (it could
+    not read `:18500`); **lead corroboration by SOURCE, no store touched:** at `0f5f2dc` (the INDEX-recorded live image;
+    the container carries no revision label, so the identity is the INDEX's) `loremaster/loremaster/agents.py` has 0
+    occurrences of `owner_principal` / `session_keep_id` — the running code cannot stamp an agent owner, so the RS1/RS1srv
+    takeover door does not exist in production. HIGH at the code level.
