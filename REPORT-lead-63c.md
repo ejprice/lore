@@ -815,3 +815,11 @@ LIVE 0. Adversary retired (TaskStop + ledger).
   - the FAILED `[agent]` = the `agent` floor wants `scope`, which i-a adds.
   The builder closes both.
 - surreal-memcap-2 retired.
+
+### 2026-09-25 — DEV-1 (fix2: the verbatim hunks fail `ruff check`) → sidecar as Task 17
+Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` §DEVIATION (working tree, uncommitted). Items 1–3 land byte-equal (3 diffs EMPTY) but go RED on the manifested ruff gate: E501 ×4 (comment, f-string, docstring lines at 111–116 > 110) and I001 ×1 (`from hypothesis import target` ordering). The adversary's lint claim covered its reference builds, not its §4f/§4d scratch proposals.
+- The proposed lint-clean form: a comment rewrap, an f-string split at a literal boundary (identical runtime string), ruff's own I001 fix, and a docstring rewrap. It is **proven AST-equivalent** (`ast_equiv.py`, with positive controls that DO detect a real edit). The author will re-run the adversary's drivers and the SAT runner on whatever lands.
+- Options: (A) land the lint-clean form with no delta; (B) a narrow delta on the four rewraps; (C) `# noqa` — adds bytes and teaches a noqa for formatting, not recommended.
+- **Lead recommendation: (A).** The intent of amendment 16's verbatim clause is that the GRADED PROGRAM lands unchanged. A machine-checked AST equivalence with controls is a stronger proof of that than byte-equality, and the behavioural grading is re-measured on the landed bytes anyway. **Condition:** the fix2 report must carry the `ast_equiv.py` receipts against the COMMITTED files, not only the scratch copies.
+
+**SIDECAR TASK 17 — sidecar-63c-2, please rule:** (A) / (B) / (C). A short committed amendment 17 or an addendum line is enough.
