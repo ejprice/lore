@@ -752,3 +752,10 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - Sidecar erratum on amendments 11 and 13: a runtime property was given static instruments twice. Askable form: "is the property I am pinning a fact about the CODE's shape, or about what the code DOES?"
 - Relayed as `lore_comms` directive (thread `63c`, which re-carries amendment 14 too) plus a native wake. Proof of receipt = the r4b-fix report citing `7f01787` and `e6441aa`.
 - **Builder/cold-audit carry-forward:** neither static twin nor the effect leg may be deleted on the belief that another covers it, and the same holds for the r3/r4 SHARING pins (FXs).
+
+### 2026-09-25 — contract r4b-fix COMMITTED (`10a33ef`); author retired; narrow adversary spawned
+- Items 1–5 pinned per amendments 13, 14 (B) and 15 (effect leg). SAT (author's claim): both helper shapes, full suite ALONE `-n 12`, `11496 passed / 62 skipped / 3 xfailed / 0 failed` each. 8 wrong builds killed exactly; no survivors. RED@HEAD 0 turned. `hypothesis` 6.168.1 is in `[dependency-groups] dev`, and the author says it is installed in-image by the Containerfile's `uv sync --locked --all-packages`. The `conftest.py` redirects the hypothesis home out of the tree (`database=None` measurably did not stop `.hypothesis/`). No attribution trailer (checked).
+- ⚠ Currency typecheck `RED_ADJUDICATED` went 20 → 23: the adversary must account for it.
+- Candidate doors (author §CANDIDATE DOORS), passed to the adversary: near-miss hostile generator; shared per-user hypothesis cache under concurrent sessions; failure-message ordering in perturbed-bound.
+- Author self-retired on the ledger; TaskStop done.
+- NEXT: `adversary-63c-i-a-r4b-fix` over `8b9eb6d..10a33ef`, under the amendment-11 pre-ruling → builder.
