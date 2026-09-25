@@ -597,3 +597,15 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     the container carries no revision label, so the identity is the INDEX's) `loremaster/loremaster/agents.py` has 0
     occurrences of `owner_principal` / `session_keep_id` — the running code cannot stamp an agent owner, so the RS1/RS1srv
     takeover door does not exist in production. HIGH at the code level.
+
+- **2026-09-25 — amendment 11 (`71b669f`, sidecar Task 11) ADOPTED.** STOP-rule answered YES: two families recede
+  (fake-guard X3b→X3→FXg→FXf→FXh; ownership registry→tool) → r4b closes each at the OUTERMOST boundary: MP-A2 DELETE the
+  PX2 phrase leg (SAT fix) · MP-A3 end-to-end ownership-INVARIANCE pin through `AppContext.comms(action="register")`
+  (data only; refusal stays i-b) · MP-A1 fake-predicate ALLOWLIST (one module-top ImportFrom + bare-Name Calls only) +
+  obfuscation KNOWN BOUND · G3 witnesses `a-`/`a_`/`00` · C-2 registry-seam row. C-5 widening WITHDRAWN (erratum).
+  - **PRE-RULING (binds the lead):** r4b gets its narrow delta (07-28 law); any post-r4b survivor of the two families is
+    recorded by the LEAD as a pinned KNOWN BOUND — **no r4c**; only satisfiability defects are fixed, verified by the delta
+    author's own reference. §E flags this cap as operator-visible (told in the lead's summary).
+  - **Carry-forward UPDATE:** C-2 now rides r4b (removed from the i-b list); C-5 withdrawn (removed from the i-b list).
+    i-b keeps C-3 (served refusal + #467 battery row; covers R-6's metadata columns).
+  - **Spawned `contract-63c-i-a-r4b`** (opus55-worker; brief `scratchpad/brief-contract-63c-i-a-r4b.md`).
