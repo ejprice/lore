@@ -347,3 +347,52 @@ agent-side at that seam otherwise.
   `seed_agent_legacy` in REFACTOR. Finding #477 filed by the author (lore_impact covering-test noise). Process
   TaskStopped (ledger self-retired). **Spawned `adversary-63c-i-a-r3`** — delta pass over `88205a4..39935f6`,
   prior-7 kill table + new-instrument attacks + independent SAT, memory-guarded.
+
+---
+
+## RESUME ANCHOR v2 (2026-09-24 ~20:25 EDT — compaction-ready; supersedes the v1 anchor at the top)
+
+**I am `lead-63c-2`** (Opus 5.5), lore_comms session `63c-20260924`, branch `feat/surreal-unification`,
+COMMIT-ONLY (no deploy until pkt-65). Read `~/.claude/orchestration/lead-base.md` (v8) on resume.
+**Operator standing rulings (this session):** (1) the design sidecar is THE AUTHORITY on rulings + design forks —
+adopt its call, record it in a committed artifact, never re-escalate; only MAJOR scope / MAJOR architecture go to
+the operator (lore memory e4131fdc). (2) No AI-attribution trailers, ever.
+
+**Pipeline state (63c-i-a, agent DATA layer):**
+- Contract chain: r1 `0b8ce37` → r2 `88205a4` → **r3a `11cbfb2` + r3b `39935f6`** (current contract).
+- Ruling chain: base `699a6e9` + amendments 1 `c4728b1` · 2 `65ca279` · 3 `e6bedd1` · 4 `2c30150` (§W worklist) ·
+  5 `26511f0` (FORK-A/B/C). All in `docs/design/2026-09-*-packet63c-*.md`.
+- **RUNNING:** `adversary-63c-i-a-r3` (contract-adversary, Opus 5.5) — delta pass over `88205a4..39935f6`. Prior-7
+  kill table DONE (N2/N3/N4 confirmed killed; rest in its report); now running its new wrong builds (X1…R4).
+  Deliverable `REPORT-adversary-63c-i-a-r3.md` at root. It self-wakes on its lane watcher — do NOT double-drive.
+- **STANDING BY:** `sidecar-63c-2` (fable51-worker, long-running for the whole packet; idle is benign; never
+  wake-loop; STOP it + ledger-retire at 63c close). Queued for 63c-ii: F-briefs-import is pre-answered by A4
+  (`briefs.py` imports `lorerunes.is_legal_identifier`).
+- **NEXT on the adversary verdict:** SUFFICIENT → verify graded sha (`git merge-base --is-ancestor 39935f6 HEAD`),
+  TaskStop + ledger-retire it, commit its report, spawn ONE Opus 5.5 builder (`opus55-worker`) for 63c-i-a carrying
+  the **BUILDER-BRIEF ITEMS** in the 19:20 wave-log entry above (guard deletion in `_comms_fakes.py` = its ONE
+  granted test edit; delete both `pending_contracts.yaml` entries; module-docstring notes; the 2 production prose
+  lines from adversary-r2 §11; D3 `_create_agent` fold) + memory guard (≤1 full suite, ≥30 GB available, `-n 12`
+  ALONE) → cold audit (Opus REFUTE, full suite ALONE) → commit → INDEX Log "63c-i-a CLOSED".
+  INSUFFICIENT → route forks to the sidecar (ledger directive + wake), then a reviser r4 → adversary delta.
+- Then 63c-i-b (serving/security: read_filter, EXPLAIN-A, β + corpse, #467 dispatcher, flips, F5 write labels per
+  D1) → 63c-ii (brief; F14 wiring schema-applied proof) → ONE security-auditor (Fable 5.1) over both tables →
+  packet close (archive reports to `docs/plans/v2/receipts/2026-09-24-packet63c/` with git mv, INDEX Log,
+  lore_remember, STOP sidecar, verify `fleet` shows only me).
+
+**Retired agents (process stopped + ledger retired):** adversary-63c-i-a, investigate-472, contract-63c-i-a-r2,
+adversary-63c-i-a-r2, contract-63c-i-a-r3.
+
+**Landmines learned today:**
+- lore-lore does NOT reconnect after lore-surreal restarts (#478); the fix is `podman restart lore-lore` (~4 min
+  delta boot; keeps its hand-rolled mounts; never `lore-deploy start`). After any lore-lore restart, the operator
+  must `/mcp reconnect` this session.
+- Host OOM killed the prod store (#479). Memory guard in every brief: ≤1 full suite at a time, don't launch
+  under ~30 GB available. /tmp is tmpfs; `/tmp/claude-1000` was cleaned (operator-directed, files >7d).
+- TEI capacity ≈ 64 concurrent texts, and one indexer fills it; never full-rate-embed ad hoc (lore memory).
+- grep/rg are hook-blocked here AND in scratch copies (#473); even the WORD in a command string trips the hook.
+- lore_comms directives fail while lore is down → the durable fallback is a committed lead-report entry + a
+  native wake (used for sidecar Tasks 4–5).
+
+**Open non-63c items (operator-scheduled):** lore_tasks f4e3b63f… (log the re-embed fallback outcome; #474) ·
+#478/#479/#480 · #355 (→ packet 11c; trigger of the ~4h full rebuild still unknown) · #383 cost amplifier.
