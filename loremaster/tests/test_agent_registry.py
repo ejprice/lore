@@ -2001,6 +2001,8 @@ class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
 # =========================================================================== #
 
 _PARITY_KEEP = "sessionkeep7"
+#: r4b (amendment-11 C2): a SECOND keep, for the re-register keep axis (never equal to ``_PARITY_KEEP``).
+_PARITY_OTHER_KEEP = "sessionkeep8"
 
 
 def _parity_cases() -> list[Any]:
@@ -2128,6 +2130,17 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         "consistent-then-owner-only": (("alice_pid", _PARITY_KEEP), ("alice_pid", None)),
         "consistent-then-keep-only": (("alice_pid", _PARITY_KEEP), (None, _PARITY_KEEP)),
         "consistent-then-householded-joiner-pair": (("alice_pid", _PARITY_KEEP), ("bob_pid", _PARITY_KEEP)),
+        # r4b (amendment-11 C2 / amendment-10 C-2 — the registry-seam row): the KEEP axis. A writer (or fake)
+        # that re-stamps when the caller's keep differs from the stamped one (adversary-r4a C2) passed the
+        # full suite, because every sequence above re-registers with ``_PARITY_KEEP``. Unreachable through
+        # the tool today (the keep is ``session:{session}``, UNIQUE-keyed — amendment 10 C-2), so pinned at
+        # the registry seam. Both owners, so the second pairs span the 2×2 {same, different} owner × keep
+        # grid (same/same is the r2 mint-once pin). Additive — no sequence deleted, so no DUAL row.
+        "consistent-then-different-keep": (("alice_pid", _PARITY_KEEP), ("alice_pid", _PARITY_OTHER_KEEP)),
+        "consistent-then-different-owner-and-keep": (
+            ("alice_pid", _PARITY_KEEP),
+            ("bob_pid", _PARITY_OTHER_KEEP),
+        ),
     }
     # DUAL (r4a — RE-KEYED, values PRESERVED): r4's absolute leg was an ``if sequence == "alpha-…" / else``
     # pair; it is now this table, with the r4 values carried byte-for-byte for the three r4 sequences
@@ -2142,6 +2155,10 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         "consistent-then-owner-only": ("refused", "alice_pid", True, True),
         "consistent-then-keep-only": ("refused", "alice_pid", True, True),
         "consistent-then-householded-joiner-pair": ("re-registered", "alice_pid", True, True),
+        # r4b (amendment-11 C2): the FIRST keep survives — ``True`` is ``scope == keep_scope(_PARITY_KEEP)``,
+        # never the second call's ``_PARITY_OTHER_KEEP``.
+        "consistent-then-different-keep": ("re-registered", "alice_pid", True, True),
+        "consistent-then-different-owner-and-keep": ("re-registered", "alice_pid", True, True),
     }
 
     @staticmethod
@@ -2220,7 +2237,8 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         register is REFUSED (A3 XOR on the re-register path, MP-B) leaving the CREATE stamps intact.
         r4a (amendment-8 KB-5 / amendment-9 MP-R4-6): the fourth sequence — a DIFFERENT consistent pair —
         re-registers and leaves the FIRST caller's stamps intact, real AND fake (adversary-r4 FX2: the fake
-        re-stamping alone passed 2905/0)."""
+        re-stamping alone passed 2905/0). r4b (amendment-11 C2): two more — a DIFFERENT KEEP (same and
+        different owner) re-registers and leaves the FIRST keep's scope, real AND fake (adversary-r4a C2)."""
         from lorerunes.pdp import keep_scope
 
         first, second = self._RE_REGISTER_SEQUENCES[sequence]
@@ -2375,9 +2393,22 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
     """How ``tree`` departs from the ONE safe post-build shape of the fake's predicate import: (i) a
     MODULE-LEVEL ``from lorerunes… import is_legal_identifier`` (a direct child of the module body — never
     inside a function, an ``if`` or a ``try``), AND (ii) NO ``try`` node anywhere in the file wraps any
-    import from ``lorerunes*``. Empty list ⇒ safe. The ``try`` is the tell: it subsumes X3 (``except
-    Exception``), X3b (the ruled spelling), FXf (any fallback), FXg (the submodule import inside a ``try``)
-    and a bare ``except:``. Each entry names its line."""
+    import from ``lorerunes*``, AND (iii) — r4b, amendment-11 MP-A1, an ALLOWLIST — the NAME
+    ``is_legal_identifier`` occurs in exactly two shapes: that ONE module-top import alias, and bare
+    ``Name`` READS (``ast.Load`` — every one resolves to the module-top binding). Every OTHER occurrence is a
+    violation naming its line: an ``Attribute`` (``lorerunes.is_legal_identifier``), ANY string constant
+    equal to the name (which is how ``getattr`` / ``hasattr`` / ``vars(…).get`` / ``sys.modules[…]`` /
+    ``importlib`` lookups all spell it), any other import alias or ``as`` rebinding, a ``Name`` that
+    STORES or DELETES (a rebind to a private rule), a parameter, ``def``, ``global`` or ``except … as`` of
+    that name. Clause (iii) is receiver-blind: it inspects every string-valued field of every AST node, so
+    there is no list of forbidden node types to extend. Empty list ⇒ safe.
+
+    Scope, stated honestly (the r4a sentence "the ``try`` is the tell: it subsumes … FXf (any fallback)"
+    over-claimed — adversary-r4a FXh, a ``try``-free ``getattr`` with a NON-silent private fallback,
+    falsified it): (ii) catches X3 / X3b / FXf / FXg / a bare ``except:``; (iii) catches FXh, X3d and every
+    lookup that SPELLS the name. ⚠ KNOWN BOUND: a lookup that never spells the name in one token — an
+    OBFUSCATED name (``"is_legal_" + "identifier"``, ``"".join(…)``) — is adversarial-only and survives
+    (``test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named``)."""
     violations: list[str] = []
     top_level = [
         node
@@ -2392,6 +2423,7 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
             f"no MODULE-LEVEL `from lorerunes import {_PREDICATE_NAME}` (a call-time or conditional read "
             f"is a guard's premise waiting to outlive it)"
         )
+    violations.extend(_predicate_name_occurrence_violations(tree, top_level))
     try_types = tuple(kind for kind in (ast.Try, getattr(ast, "TryStar", None)) if kind is not None)
     for try_node in ast.walk(tree):
         if not isinstance(try_node, try_types):
@@ -2406,16 +2438,64 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
     return violations
 
 
+def _predicate_name_occurrence_violations(tree: ast.Module, top_level: list[ast.ImportFrom]) -> list[str]:
+    """Clause (iii) of ``_fake_predicate_import_violations`` (amendment-11 MP-A1): every occurrence of the
+    predicate's name OUTSIDE the two allowed shapes, one entry per occurrence, naming its line. An
+    occurrence is ANY string-valued field of ANY AST node equal to the name (``ast.iter_fields`` — a
+    ``Name.id``, an ``Attribute.attr``, a ``Constant.value``, an ``alias.name``/``asname``, an ``arg.arg``, a
+    ``FunctionDef.name``, a ``Global.names`` entry, an ``ExceptHandler.name`` …) — receiver-blind, so the
+    safe set is what is enumerated, never the forbidden one. Allowed: (1) the name in the FIRST module-top
+    import alias that names it WITHOUT an ``as`` rebinding (a second such alias is a second route); (2) a
+    ``Name`` in ``ast.Load`` context."""
+    allowed_alias: ast.alias | None = None
+    for import_node in top_level:
+        for alias in import_node.names:
+            if allowed_alias is None and alias.name == _PREDICATE_NAME and alias.asname is None:
+                allowed_alias = alias
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            continue  # shape (2): a bare read of the module-top binding
+        if node is allowed_alias:
+            continue  # shape (1): THE module-top import
+        for field_name, value in ast.iter_fields(node):
+            values = value if isinstance(value, list) else [value]
+            if any(isinstance(item, str) and item == _PREDICATE_NAME for item in values):
+                line = getattr(node, "lineno", 0)  # alias / arg / keyword carry their own lineno on 3.10+
+                violations.append(
+                    f"line {line}: `{_PREDICATE_NAME}` occurs as {type(node).__name__}.{field_name} — only "
+                    f"the ONE module-top import and bare Name READS may name the shared predicate "
+                    f"(a lookup, an attribute re-read, a rebind or a second import is a second route to the "
+                    f"identity decision): {_unparse_or_type(node)}"
+                )
+    return violations
+
+
+def _unparse_or_type(node: ast.AST) -> str:
+    """``ast.unparse`` for a node that has a source form, else its type name (an ``ExceptHandler`` or a
+    bare ``arg`` still renders; this is only for the violation text)."""
+    try:
+        return ast.unparse(node)
+    except (AttributeError, TypeError, ValueError):
+        return type(node).__name__
+
+
 def test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_exists() -> None:
     """⚠ RED on the build until the builder deletes the HEAD-RED guard AND imports the predicate at module
     top (its one granted test-tree edit — the builder brief names exactly this shape). amendment-9 MP-R4-5
     (restores the property amendment-6 MP-3's deletion lost — see the ERRATUM above the effect pin): once
     ``lorerunes.is_legal_identifier`` EXISTS, ``_comms_fakes.py`` has a module-level ``ImportFrom`` of it and
-    no ``try`` wraps any ``lorerunes*`` import — so the HEAD-RED guard cannot outlive its premise in ANY
-    spelling, silent or not (adversary-r4 FXf: a guard with a private-regex fallback; FXg: the submodule
-    import inside a ``try`` — both full-suite survivors of r4). The effect pin above stays for what this
-    shape pin cannot see: a guard built WITHOUT ``try`` (a ``getattr(…, None)`` read, X3d). Two pins, two
-    properties.
+    no ``try`` wraps any ``lorerunes*`` import (adversary-r4 FXf: a guard with a private-regex fallback; FXg:
+    the submodule import inside a ``try`` — both full-suite survivors of r4).
+    r4b (amendment-11 MP-A1 — ERRATUM: the r4a sentence here, "the HEAD-RED guard cannot outlive its premise
+    in ANY spelling, silent or not", over-claimed; adversary-r4a FXh, a ``try``-free call-time
+    ``getattr(lorerunes, "is_legal_identifier", None)`` with a NON-silent private fallback, survived the
+    full suite with this pin and the effect pin green): clause (iii) is an ALLOWLIST — the name occurs only
+    as that ONE module-top import and as bare ``Name`` reads; any other occurrence (an attribute re-read, a
+    string constant spelling it, a rebind, a second import) is a violation. What it covers, precisely:
+    every guard that SPELLS the predicate's name. ⚠ KNOWN BOUND: an OBFUSCATED name
+    (``test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named``). The effect pin above stays for the
+    SILENT-skip property (adversary-r4a FXhS proves it fires). Two pins, two properties.
 
     HEAD CONTROL (anti-vacuity): while the predicate is ABSENT the guard is legitimate (amendment-5 FORK-C),
     and this scanner must SEE it — at HEAD the file's guarded call-time import is reported as a violation.
@@ -2434,9 +2514,10 @@ def test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_pred
         return
     assert not violations, (
         "the fake's HEAD-RED guard outlived its premise (amendment-5 FORK-C removal trigger; amendment-9 "
-        "MP-R4-5): once lorerunes.is_legal_identifier exists, _comms_fakes.py must import it at MODULE TOP "
-        "with NO `try` around any lorerunes import — any guard, whatever it catches or falls back to, is a "
-        "second path to an identity decision:\n  " + "\n  ".join(violations)
+        "MP-R4-5; amendment-11 MP-A1): once lorerunes.is_legal_identifier exists, _comms_fakes.py must "
+        "import it at MODULE TOP with NO `try` around any lorerunes import, and name it NOWHERE else but "
+        "bare reads — any guard, whatever it catches, looks up or falls back to, is a second path to an "
+        "identity decision:\n  " + "\n  ".join(violations)
     )
 
 
@@ -2525,6 +2606,42 @@ def test_the_fake_import_shape_scanner_names_every_guard_POSITIVE_CONTROL(source
             "try:\n    import yaml\nexcept ImportError:\n    yaml = None\n",
             id="submodule-top-import-and-an-unrelated-try",
         ),
+        # r4b (amendment-11 MP-A1): THE HONEST POST-BUILD FAKE — the builder's granted edit applied to the
+        # real helper (guard deleted, module-top import) leaves a bare ``return is_legal_identifier`` and a
+        # call through the returned object, beside docstring PROSE that mentions the dotted name. None of
+        # it may be flagged (FORK-R3: this is why shape (2) is every Load-context Name, not only a Call).
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            "class FakeAgentRegistry:\n"
+            "    @staticmethod\n"
+            "    def _shared_identifier_predicate():\n"
+            '        """Reads ``lorerunes.is_legal_identifier`` — the ONE shared decision."""\n'
+            "        return is_legal_identifier\n"
+            "    @staticmethod\n"
+            "    def _refuse(name, session):\n"
+            "        identifier_decision = FakeAgentRegistry._shared_identifier_predicate()\n"
+            "        if identifier_decision is not None:\n"
+            "            for value in (name, session):\n"
+            "                if not identifier_decision(value):\n"
+            "                    raise ValueError('illegal')\n"
+            "        if not is_legal_identifier(name) or is_blank(session):\n"
+            "            raise ValueError('illegal')\n",
+            id="the-honest-post-build-fake",
+        ),
+        # r4b (amendment-12 — FORK-R3 ruled R-3a): the SECOND honest post-build shape — the builder MAY
+        # collapse the helper to a direct call in REFACTOR; both shapes must stay quiet.
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            "class FakeAgentRegistry:\n"
+            "    @staticmethod\n"
+            "    def _refuse(name, session, role):\n"
+            "        for value in (name, session):\n"
+            "            if not is_legal_identifier(value):\n"
+            "                raise ValueError('illegal')\n"
+            "        if is_blank(role):\n"
+            "            raise ValueError('blank role')\n",
+            id="the-collapsed-direct-call-post-build-fake",
+        ),
     ],
 )
 def test_the_fake_import_shape_scanner_stays_quiet_on_the_safe_shape_NEGATIVE_CONTROL(source: str) -> None:
@@ -2532,3 +2649,132 @@ def test_the_fake_import_shape_scanner_stays_quiet_on_the_safe_shape_NEGATIVE_CO
     the package or its defining submodule) and a ``try`` that guards something OTHER than ``lorerunes`` —
     is never flagged."""
     assert _fake_predicate_import_violations(ast.parse(source)) == [], source
+
+
+# r4b (amendment-11 MP-A1 — clause (iii), the fake predicate ALLOWLIST): every source below carries the
+# HONEST module-top import and NO ``try`` around a lorerunes import, so clauses (i) and (ii) are satisfied
+# and ONLY clause (iii) can report it — the assertion keys on clause (iii)'s own text, so a positive here
+# proves the NEW clause fired, not an old one. FXh is adversary-r4a's full-suite survivor, verbatim shape.
+_HONEST_TOP_IMPORT = "import lorerunes\nfrom lorerunes import is_blank, is_legal_identifier\n"
+_PRIVATE_RULE = "lambda value: re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', value) is not None"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    if getattr(lorerunes, 'is_legal_identifier', None) is not None:\n"
+            "        return is_legal_identifier\n"
+            f"    return {_PRIVATE_RULE}\n",
+            id="FXh-getattr-with-a-non-silent-fallback-no-try",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    return getattr(lorerunes, 'is_legal_identifier', None)\n",
+            id="X3d-getattr-beside-a-module-top-import",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    return vars(lorerunes).get('is_legal_identifier') or is_blank\n",
+            id="vars-read",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "import sys\ndef predicate():\n"
+            "    return sys.modules['lorerunes'].__dict__.get('is_legal_identifier')\n",
+            id="sys-modules-read",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "import importlib\ndef predicate():\n"
+            "    return importlib.import_module('lorerunes').is_legal_identifier\n",
+            id="importlib-attribute-read",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    return is_legal_identifier if hasattr(lorerunes, 'is_legal_identifier') else None\n",
+            id="hasattr-probe",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n    return lorerunes.is_legal_identifier\n",
+            id="attribute-re-read",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + f"is_legal_identifier = {_PRIVATE_RULE}\n",
+            id="module-global-REBOUND-to-a-private-rule",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + f"def predicate(is_legal_identifier={_PRIVATE_RULE}):\n"
+            "    return is_legal_identifier\n",
+            id="parameter-shadows-the-predicate",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    from lorerunes import is_legal_identifier as _fresh  # noqa: PLC0415\n"
+            "    return _fresh\n",
+            id="a-second-import-inside-a-function-no-try",
+        ),
+        pytest.param(
+            "from lorerunes import is_blank\n"
+            "from lorerunes import is_legal_identifier as shared_check\n"
+            f"is_legal_identifier = {_PRIVATE_RULE}\n",
+            id="module-top-import-REBOUND-by-as-then-the-name-reused",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n    global is_legal_identifier\n"
+            "    is_legal_identifier = None\n",
+            id="global-rebind",
+        ),
+        # amendment-12's named RED controls beyond the r4b-provisional set: a class-body shadow and a walrus.
+        pytest.param(
+            _HONEST_TOP_IMPORT + "class FakeAgentRegistry:\n"
+            f"    is_legal_identifier = staticmethod({_PRIVATE_RULE})\n",
+            id="class-body-shadow",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            f"    if (is_legal_identifier := {_PRIVATE_RULE}):\n"
+            "        return is_legal_identifier\n",
+            id="walrus-rebind",
+        ),
+    ],
+)
+def test_the_fake_predicate_ALLOWLIST_names_every_other_occurrence_POSITIVE_CONTROL(source: str) -> None:
+    """r4b (amendment-11 MP-A1) — clause (iii) of ``_fake_predicate_import_violations`` reports each shape
+    that is neither THE module-top import nor a bare ``Name`` read, and names it as an OCCURRENCE (its own
+    text, so clauses (i)/(ii) cannot answer for it). The amendment's named positives are FXh, X3d, FXf, FXg
+    and a ``vars(…)`` read — FXf and FXg are clause (ii)'s and live in
+    ``test_the_fake_import_shape_scanner_names_every_guard_POSITIVE_CONTROL``; the rest are here, with the
+    other lookups and rebinds the allowlist denies by construction (it enumerates the SAFE set)."""
+    violations = _fake_predicate_import_violations(ast.parse(source))
+    assert any(f"`{_PREDICATE_NAME}` occurs as" in violation for violation in violations), (
+        f"clause (iii) did not name an occurrence outside the allowlist: {violations!r}\n{source}"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    shared = getattr(lorerunes, 'is_legal_' + 'identifier', None)\n"
+            f"    return shared if shared is not None else {_PRIVATE_RULE}\n",
+            id="concatenated-name",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "def predicate():\n"
+            "    return vars(lorerunes).get(''.join(['is_legal', '_identifier']))\n",
+            id="joined-name",
+        ),
+    ],
+)
+def test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named(source: str) -> None:
+    """⚠ KNOWN BOUND (amendment-11 MP-A1): a lookup whose name is ASSEMBLED at runtime never spells
+    ``is_legal_identifier`` in one token, so the allowlist cannot see it — an adversarial-only door (anyone
+    who can commit here can already ship anything), not a defect of a gate built for the HONEST builder
+    who leaves a guard behind. This control asserts the hole EXISTS and REDS the day someone closes it.
+    RE-OPEN TRIGGER (verbatim from #138): the threat model changes — untrusted contributors or a hosted
+    deployment (packet 39 consults it)."""
+    assert _fake_predicate_import_violations(ast.parse(source)) == [], (
+        "KNOWN BOUND — threat model: the honest builder (amendment-11 MP-A1); if you closed it deliberately, "
+        f"delete this control and say so. The allowlist now names an obfuscated lookup:\n{source}"
+    )

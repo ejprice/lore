@@ -273,7 +273,10 @@ class FakeAgentRegistry:
         the import to MODULE TOP (``from lorerunes import is_blank, is_legal_identifier``) —
         ``test_agent_registry.py::test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_
         predicate_exists`` (a SHAPE pin: a module-level ``ImportFrom`` and no ``try`` around any
-        ``lorerunes*`` import) reds until it does."""
+        ``lorerunes*`` import) reds until it does. r4b (amendment-11 MP-A1): that pin is also an ALLOWLIST —
+        in this file the name occurs ONLY as that module-top import and as bare reads (this helper's
+        ``return``, a call); no ``getattr``/``hasattr``/attribute re-read, no string spelling it, no
+        rebind."""
         try:
             from lorerunes import is_legal_identifier  # noqa: PLC0415 - call-time read (mutation-visible)
         except ImportError:  # HEAD-RED accommodation — delete once the build lands the predicate

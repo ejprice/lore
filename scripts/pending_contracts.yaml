@@ -109,6 +109,9 @@ bounds:
         # test_the_fake_never_silently_skips_the_identity_decision_once_the_predicate_exists reds until it does)
         # AND imports the predicate at MODULE TOP (r4a, amendment-9 MP-R4-5: the SHAPE pin
         # test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_exists reds until it does).
+        # r4b (amendment-11 MP-A1): that shape pin is ALSO an allowlist — the name may occur only as the one
+        # module-top import and as bare reads (no getattr/attribute re-read/string/rebind). No count changes:
+        # the r4b pins add no mypy error (the scanner parses source text; it imports nothing new).
         missing_symbols: ["lorerunes.is_legal_identifier"]
         unsymboled_codes:
           - code: no-any-return

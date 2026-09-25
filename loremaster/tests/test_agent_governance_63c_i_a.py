@@ -108,6 +108,7 @@ from loremaster.governed import PROJECT_KEEP_KEY
 from loremaster.store import surreal_schema
 from loremaster.store._txn import SurrealStoreError, TxnDomainRejectionError
 from lorerunes.pdp import keep_scope
+from surrealdb import RecordID
 from test_comms_schema import _HOSTILE_IDENTIFIERS
 
 from loremaster import principals
@@ -258,6 +259,82 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             later = await self._register_and_read(world, agent="keeper-a2", session="shared")
             assert later.get("scope") == keep_scope(_bare(keep.id)), (
                 f"the keeper's own later agent must join the same session keep, got {later!r}"
+            )
+
+    async def test_a_householded_joiners_re_register_of_the_keepers_agent_leaves_its_ownership_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """r4b (amendment-11 MP-A3, GATING) — ruling §2.2 row 2 ("a re-register leaves owner_principal /
+        owner_agent / scope UNTOUCHED, from ANY caller") pinned at the OUTERMOST seam: the whole
+        ``AppContext.comms(action="register")`` tool call. alice (the keeper) registers ``keeper-a`` in
+        ``shared``; bob is householded into the session keep; bob re-registers ``keeper-a`` WITH THE SAME
+        ROLE (a different role is refused earlier by the identity-conflict rule, which would make this pin
+        blind — adversary-r4a's C-3 probe, first draft) → the row's three governed columns are
+        BYTE-IDENTICAL to before. The row is read back AFTER the call returns, so every inner seam —
+        registry, tool, render, any helper ``_comms_register`` calls — is covered by construction; this is
+        why the ownership family's recession ENDS here (adversary-r4a RS1srv: the tool re-stamping
+        ``owner_principal`` after a correct registry call survived the full suite). The registry-seam twin
+        (``test_agent_registry.py::…::test_the_REAL_writer_never_re_stamps_a_stamped_row_from_a_DIFFERENT_
+        householded_principal``) stays: it tells a builder WHICH seam broke.
+
+        DATA invariance ONLY — the joiner's call outcome is deliberately NOT asserted: amendment-10 C-3's
+        served REFUSAL of this re-register is i-b's (its own adversary + the #467 battery row), and this
+        pin must stay green across that change. GREEN at HEAD (owner_agent / scope are NONE before and
+        after — invariance holds) and on a correct build.
+
+        P0 controls (the pin can SEE both halves): a FOREIGN principal (carol, not householded) is DENIED
+        by SF-63-1 and leaves the row unchanged (the probe sees a refusal); the joiner's OWN fresh agent is
+        created owned by the joiner (the probe sees a joiner's stamp — so a takeover would read bob, not a
+        blind NONE); and the keeper's row is owned by alice beforehand (a takeover is distinguishable)."""
+        from loremaster.governed import GovernedDenied
+
+        projection = f"SELECT id, owner_principal, owner_agent, scope FROM {AGENT_TABLE} WHERE name = $n"
+        async with credentialed_app_context(
+            monkeypatch,
+            tmp_path,
+            principals={"alice": "member", "bob": "member", "carol": "member"},
+            dim=_DIM,
+        ) as world:
+            ctx, admin = world["ctx"], world["admin_conn"]
+            world["holder"]["email"] = world["emails"]["alice"]
+            await ctx.comms(action="register", agent="keeper-a", session="shared", role="builder")
+            keep = await ctx._keep_store.get_by_key("session:shared")  # noqa: SLF001
+            assert keep is not None, "the keeper's register did not mint the session keep"
+            await ctx._keep_store.add_household_member(  # noqa: SLF001
+                keep_id=_bare(keep.id), member_email=world["emails"]["bob"]
+            )
+            before = await run(admin, projection, {"n": "keeper-a"})
+            assert len(before) == 1, before
+            assert str(before[0]["owner_principal"]) == f"principal:{world['pids']['alice']}", (
+                f"CONTROL: the keeper's agent must be owned by the keeper before the joiner acts: {before!r}"
+            )
+            # CONTROL 1 — a FOREIGN principal is refused (SF-63-1) and writes nothing.
+            world["holder"]["email"] = world["emails"]["carol"]
+            with pytest.raises(GovernedDenied):
+                await ctx.comms(action="register", agent="keeper-a", session="shared", role="builder")
+            assert await run(admin, projection, {"n": "keeper-a"}) == before, (
+                "CONTROL: a REFUSED foreign register mutated the keeper's agent row"
+            )
+            # CONTROL 2 — the joiner's OWN fresh agent is stamped as the joiner's.
+            world["holder"]["email"] = world["emails"]["bob"]
+            await ctx.comms(action="register", agent="joiner-b", session="shared", role="builder")
+            own_rows = await run(admin, projection, {"n": "joiner-b"})
+            assert own_rows and str(own_rows[0]["owner_principal"]) == f"principal:{world['pids']['bob']}", (
+                f"CONTROL: the joiner's own fresh agent must be owned by the joiner: {own_rows!r}"
+            )
+            # THE PIN — the joiner re-registers the KEEPER's agent (same role); outcome not asserted (i-b's).
+            try:
+                outcome = str(
+                    await ctx.comms(action="register", agent="keeper-a", session="shared", role="builder")
+                )
+            except Exception as error:  # noqa: BLE001 - a served refusal is i-b's to rule; DATA is pinned here
+                outcome = f"raised {type(error).__name__}: {error}"
+            after = await run(admin, projection, {"n": "keeper-a"})
+            assert after == before, (
+                f"a householded JOINER's re-register through the comms TOOL changed the keeper's agent row "
+                f"— an ownership TAKEOVER through an ordinary tool call (ruling §2.2 row 2: owner_principal "
+                f"/ owner_agent / scope are UNTOUCHED by a re-register, from ANY caller; amendment-11 MP-A3 "
+                f"/ adversary-r4a RS1srv). before={before!r} after={after!r} joiner's call: {outcome[:300]!r}"
             )
 
     async def test_the_tool_passes_session_keep_id_UNCONDITIONALLY(
@@ -770,14 +847,18 @@ class TestAgentMigrateScopeKeyed63cIA:
         the id sample (its own assertion below), so the reader loses nothing at any bound.
 
         r4a (amendment-9 MP-R4-7 — PX2, the PROSE twin of the bound; the P8d rule inside the served refusal):
-        under ``perturbed-bound``, after stripping every trap id, the full-count phrase and section citations
-        (``§2.1``), the reason carries NO integer equal to the constant's BIRTH value (read BEFORE patching —
-        derived, never a literal in this test), and wherever it states a sample size (``first N`` / ``N ids
-        shown`` / ``showing N``) that number is the PATCHED one. A builder writing *"(first 10 ids shown)"*
+        under ``perturbed-bound``, after stripping every identifier the fixture seeded, the full count and
+        section citations (``§2.1``), the reason carries NO integer equal to the constant's BIRTH value (read
+        BEFORE patching — derived, never a literal in this test). A builder writing *"(first 10 ids shown)"*
         beside a constant-read slice serves a false number the day the constant changes — adversary-r4 PX2
         passed 2905/0 because this leg checked only ``len(named)``. Prose describing the bound is DERIVED
-        from the constant (``f"first {sample_size} ids shown"``) or absent, never restated. ⚠ BOUND of the
-        sample-size detector: it reads those three phrasings only — the birth-value leg is the ∀ half.
+        from the constant (``f"first {sample_size} of {count} ids shown"``) or absent, never restated.
+        r4b (amendment-11 MP-A2): r4a's sample-size PHRASE leg is DELETED (it refused the correct prose
+        *"(first 3 of 18 ids shown)"* — adversary-r4a SH1; DUAL comment at its old site), and every count
+        this fixture introduces is kept off the birth value (a correct refusal may state any of them).
+        ⚠ KNOWN BOUND (amendment-11 PX2w, accepted): the leg is ∀ over DIGIT spellings only — the birth value
+        restated IN WORDS (*"first ten ids shown"*) survives it (adversary-r4a PX2w, full-suite survivor).
+        RE-OPEN TRIGGER: a served refusal found restating a bound in words.
 
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
@@ -805,7 +886,23 @@ class TestAgentMigrateScopeKeyed63cIA:
             "above-cap": id_bound + 15,
             "perturbed-bound": id_bound + 15,
         }[trap_population]
-        await self._seed_clean_legacy(connection, count=3)
+        legacy_count = 3
+        if trap_population == "perturbed-bound":
+            # r4b (amendment-11 MP-A2 — SATISFIABILITY): every COUNT this fixture introduces is kept OFF the
+            # birth value, so a correct refusal that states one of them ("first 3 of 18 ids shown", "3 legacy
+            # rows") can never trip the birth-value leg below (arithmetic alignment — CLAUDE.md FIXTURES MUST
+            # DISCRIMINATE, axis 3). The builder picks the birth value (R-3: not normative), so the guard
+            # is derived from it, never assumed.
+            while trap_count in (birth_bound, birth_bound - legacy_count):
+                trap_count += 1
+            while legacy_count in (birth_bound, birth_bound - trap_count):
+                legacy_count += 1
+            fixture_counts = {id_bound, trap_count, legacy_count, trap_count + legacy_count}
+            assert birth_bound not in fixture_counts, (
+                f"fixture self-check: a fixture count {sorted(fixture_counts)} equals the birth value "
+                f"{birth_bound}"
+            )
+        await self._seed_clean_legacy(connection, count=legacy_count)
         trap_ids = [f"owned_trap_{trap_index:03d}" for trap_index in range(trap_count)]
         for trap_index, trap_id in enumerate(trap_ids):
             # NONE scope but a NON-NONE owner that is NOT the operator (E3: never pin the operator case).
@@ -854,28 +951,40 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"— an operator at cutover reads this first. got {reason!r}"
         )
         if trap_population == "perturbed-bound":  # r4a (amendment-9 MP-R4-7): the PROSE follows the constant
+            # r4b (amendment-11 MP-A2): strip every IDENTIFIER the fixture seeded — derived from ``before``
+            # snapshot (each row's string values and record ids, longest first so no seeded string is left
+            # half-stripped), never a hand-list of columns — so a correct refusal naming a row's id, name or
+            # owner (``other_principal_10`` at a birth value of 10) cannot false-RED. Purely-digit strings are
+            # NOT stripped (they would erase the very token this leg reads).
+            seeded_identifiers: set[str] = set()
+            for row in before:
+                for value in row.values():
+                    if isinstance(value, RecordID):
+                        seeded_identifiers.update((str(value), str(value.id)))
+                    elif isinstance(value, str):
+                        seeded_identifiers.add(value)
             residue = reason
-            for trap_id in trap_ids:
-                residue = residue.replace(trap_id, " ")
-            residue = re.sub(rf"\b{trap_count}\s+(?:agent\s+)?rows?\b", " ", residue)
+            for seeded in sorted(seeded_identifiers, key=len, reverse=True):
+                if seeded and not seeded.isdigit():
+                    residue = residue.replace(seeded, " ")
+            residue = re.sub(rf"\b{trap_count}\b", " ", residue)  # the FULL count, every occurrence
             residue = re.sub(r"§\d+(?:\.\d+)*", " ", residue)
             stated_integers = [int(token) for token in re.findall(r"\d+", residue)]
             assert birth_bound not in stated_integers, (
                 f"the refusal PROSE restates the BIRTH sample size {birth_bound} while the slice follows the "
                 f"PATCHED constant {id_bound} — two sources of one policy, in served text (amendment-9 "
                 f"MP-R4-7 / adversary-r4 PX2). Derive the number from _REFUSAL_ID_SAMPLE_SIZE at call time "
-                f"(f\"first {{sample_size}} ids shown\") or leave it out: {reason[:400]!r}"
+                f"(f\"first {{sample_size}} of {{count}} ids shown\") or leave it out: {reason[:400]!r}"
             )
-            stated_sample_sizes = [
-                int(next(group for group in match.groups() if group is not None))
-                for match in re.finditer(
-                    r"\bfirst\s+(\d+)\b|\b(\d+)\s+(?:\w+\s+)?(?:ids?\s+)?shown\b|\bshowing\s+(\d+)\b", residue
-                )
-            ]
-            assert all(size == id_bound for size in stated_sample_sizes), (
-                f"the refusal states a sample size {stated_sample_sizes} that is not the PATCHED bound "
-                f"{id_bound} (amendment-9 MP-R4-7): {reason[:400]!r}"
-            )
+            # DUAL (r4b, amendment-11 MP-A2 — DELETED, not re-keyed): r4a's SAMPLE-SIZE PHRASE leg (the
+            # ``first N`` / ``N … shown`` / ``showing N`` regex asserting each stated size == the PATCHED
+            # bound). Virtue it carried: a stated sample size that is neither the birth value NOR the patched
+            # bound (a THIRD number) was refused. Dropped DELIBERATELY: it read the TOTAL in the correct,
+            # derived prose "(first 3 of 18 ids shown)" as a sample size and REFUSED a correct build
+            # (adversary-r4a SH1 — a satisfiability defect; the builder may not edit tests), and every patch
+            # to a phrase regex is another phrase a correct build can trip. The birth-value leg above is what
+            # kills PX2 (measured, adversary-r4a §4.1); a third, unrelated wrong number is not a two-sources-
+            # of-one-policy defect and is not ruled.
 
     async def test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy(
         self, agent_migrate_world: Any

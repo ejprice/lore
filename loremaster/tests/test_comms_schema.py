@@ -228,12 +228,25 @@ _HOSTILE_IDENTIFIERS = (
 #: dies on the witness that carries its axis. Parameter-value monoculture on the legal side is the same
 #: defect as on the hostile side (two ≤7-char witnesses let G1 pass 2905/0), and it gets the same cure.
 #: The cap itself (``"a" * 64``) is the witness that kills G1; ``_HOSTILE_IDENTIFIERS`` holds cap+1.
+#: r4b (amendment-11 G3 — fixture growth): the TRAILING-separator axis (``"a-"``, ``"a_"`` — adversary-r4a
+#: G3, a private ``or attribution.endswith(("-", "_"))`` at the SKIP gate, passed the full suite because
+#: ``"a_b"``/``"a-b"`` put the separator in the MIDDLE) and the ALL-DIGIT axis (``"00"``). Appended LAST so
+#: every pre-existing param id is unchanged.
+#: ⚠ KNOWN BOUND — this corpus is a HAND-LIST of boundary witnesses, NOT derived from the identity language:
+#: a private narrowing conjunct keyed on an axis NO witness below carries survives every consumer of it
+#: (the consumers' header sentences say "any axis a legal witness carries", never "any legal identity").
+#: Deriving it (``AGENT_NAME_PATTERN``'s classes × positions) would close the axis class outright but
+#: multiplies every corpus-parametrised store leg — rigor-to-importance ruled no for a footer gate
+#: (amendment 11). RE-OPEN TRIGGER: a FOURTH witness axis found by an adversary → derive the corpus.
 _LEGAL_IDENTIFIER_WITNESSES = (
     "a",  # length 1 (the floor)
     "0z",  # digit-leading
     "a_b",  # underscore
     "a-b",  # hyphen
     "a" * 64,  # AT the 64-char cap (the ceiling — G1's axis)
+    "a-",  # TRAILING hyphen (r4b, amendment-11 G3)
+    "a_",  # TRAILING underscore (r4b, amendment-11 G3)
+    "00",  # ALL-DIGIT (r4b, amendment-11 G3)
 )
 
 
