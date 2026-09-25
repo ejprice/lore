@@ -570,3 +570,25 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   - **§E (operator-visible, told in the lead's summary):** C-3 adds a served DENIAL to `lore_comms register`; the base
     ruling §5 had reasoned only the non-householded case. Production at HEAD does not carry the door (no principals
     on agents in the running image); it opens with i-a's stamps and closes in i-b. Sidecar: not MAJOR.
+
+- **2026-09-25 ~07:35 EDT — narrow adversary r4a verdict: CONTRACT INSUFFICIENT** (graded `bf77fb9`; report
+  `REPORT-adversary-63c-i-a-r4a.md`; summary, §6, §8, VERDICT read in full). No LIVE production defect (MEDIUM). Held:
+  floor 7/7 killed exactly; RS1FX2 proves the absolute parity leg; the premise-pin deletion is covered by packet 07 over
+  the full suite; SAT reproduced independently `11459 passed`, 0 failed; RED@HEAD, currency and #461 CONFIRMED.
+  **Six builds survive the FULL suite** (COMBO 11459/0). Three demand action:
+  - **MP-A2 · SH1 — CONTRACT DEFECT (satisfiability):** row 5's phrase leg reds the CORRECT prose
+    `(first {N} of {M} ids shown)` (it reads the total). MUST be fixed before any builder (strip the full count from the
+    residue, or drop the `N … shown` alternative).
+  - **MP-A3 · RS1srv — NEW-CLASS (new seam):** the tool (`_comms_register`, which the i-a builder EDITS) re-stamps
+    ownership after a correct registry call; the rec. is an end-to-end DATA-INVARIANCE pin (green at HEAD and on a correct
+    build; no served denial, so it does not cross into i-b) riding r4b; the refusal stays i-b (am-10 C-3).
+  - **MP-A1 · FXh — SAME-CLASS:** a `try`-free guard with a non-silent private fallback falsifies the shape pin's "ANY
+    spelling" and amendment-9's "any fallback" claims; close with clause (iii) (no call-time re-read of the predicate off
+    a module object) or pin a KNOWN BOUND with both sentences narrowed.
+  - Bounds, no pin demanded: G3 (trailing-separator/all-digit witnesses → am-10 C-1 union) · PX2w (docstring: birth-value
+    leg is ∀ over DIGIT spellings only; also corrects am-10 C-4's sentence) · C2 RULED · TWR working.
+  - **SIDECAR TASK 11 (durable copy HERE):** rule MP-A1/A2/A3 + G3/PX2w. AND the explicit STOP-rule question, because the
+    lead sees the tell: RS1 moved registry → tool seam, FXf moved `try` → `try`-free — "is the reach receding one level
+    deeper each round?" Rule the SHAPE of what follows: an r4b (which items, and does it get another narrow delta per the
+    07-28 law, or is there a cheaper closure) vs pinned bounds vs routing to i-b. MP-A2 is non-negotiable (a correct build
+    must pass). Reply: amendment 11 + native.
