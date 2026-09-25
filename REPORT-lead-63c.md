@@ -634,3 +634,55 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   available (a 5th Odoo PG harness from another session appeared; lore-surreal grew 12.2 → 13.9 GB RSS). A full suite may
   launch at ≥20 GB with `-n 8` (counts are -n-independent) when <23 GB; watchdog, one-at-a-time and STOP-on-fire unchanged.
   r4b progress: REF 25 contract files `3002 passed, 19 skipped`, 0 failed — the SH1 prose now passes; 15 wrong builds remain.
+
+## RESUME ANCHOR v3 (2026-09-25 ~08:10 EDT — compaction-ready; SUPERSEDES v1 at the top and v2 above)
+
+**I am `lead-63c-2`** (Opus 5.5), lore_comms session `63c-20260924`, branch `feat/surreal-unification`, COMMIT-ONLY (no deploy
+until pkt-65). Read `~/.claude/orchestration/lead-base.md` (v8) on resume. **Operator standing rulings:** (1) the design
+sidecar is THE AUTHORITY on rulings/design forks — adopt, record in a committed artifact, never re-escalate; only MAJOR
+scope/architecture goes to the operator (lore memory e4131fdc). (2) No AI-attribution trailers, ever. (3) PROCESS LAW is the
+operator's, not the sidecar's (the lead kept a narrow adversary on r4a/r4b per CLAUDE.md 2026-07-28 — the sidecar agreed).
+
+**Contract chain (63c-i-a):** r1 `0b8ce37` → r2 `88205a4` → r3a `11cbfb2` + r3b `39935f6` → r4 `e80a854` → r4a `bf77fb9` →
+**r4b IN FLIGHT** (`contract-63c-i-a-r4b`, brief `scratchpad/brief-contract-63c-i-a-r4b.md`; worklist amendment-11 §W rows
+1–5 as amended by amendment 12 row 3). Adversary reports: r1 `b46d3f2`, r2 `539ffae`, r3 `c22419d`, r4 `86379a4`, r4a `94c31f8`.
+**Ruling chain:** base `699a6e9` · am-1 `c4728b1` · 2 `65ca279` · 3 `e6bedd1` · 4 `2c30150` · 5 `26511f0` · 6 `3327770` ·
+7 `3a2975c` · 8 `2f16ac9` · 9 `4640232` · 10 `5b94961` · 11 `71b669f` · 12 `f2a3bdd` (all `docs/design/2026-09-2*-packet63c-*.md`).
+
+**LIVE AGENTS (2):** `contract-63c-i-a-r4b` (running its 15 wrong builds, ~80 min from 07:53; REF 25 files `3002 passed`, 0
+failed; commit held until done — FORK-R3 already ruled). `sidecar-63c-2` (fable51-worker, standing by; **its lore client is
+DOWN** — every directive = a committed lead-report entry + native wake; it replies via committed amendment + native).
+**Lead watcher:** `b3s4yhxrj` (r4b commit, 3h cap).
+
+**NEXT, in order:**
+1. r4b commits → read summary/forks/candidates → TaskStop + ledger-retire → commit log entry.
+2. Spawn a NARROW adversary `adversary-63c-i-a-r4b` over `bf77fb9..<r4b sha>` (template: `scratchpad/brief-adversary-63c-i-a-r4a.md`),
+   under amendment 11's **PRE-RULING: any post-r4b survivor of the two receding families (fake-guard; ownership) is recorded
+   by the LEAD as a pinned KNOWN BOUND — NO r4c; only satisfiability defects are fixed** (verified by that adversary's own
+   reference). A NEW-class survivor still goes to the sidecar first; a LIVE production defect overrides.
+3. Spawn ONE Opus 5.5 builder (`opus55-worker`) for 63c-i-a with the **BUILDER-BRIEF ITEMS**: (1) delete the fake's guard AND
+   import `lorerunes.is_legal_identifier` at MODULE TOP in `loremaster/tests/_comms_fakes.py` — its ONE granted test edit ·
+   (2) delete BOTH `scripts/pending_contracts.yaml` 63c-i-a entries with the build (all 11 self-destruct) · (3) apply the
+   notes in `test_agent_governance_63c_i_a.py`'s module docstring (MP-F pair, MP-C constant, A4-bis home body) · (4) fix
+   the 2 production prose lines adversary-r2 §11 says the build falsifies · (5) D3: fold `_create_agent` onto
+   `seed_agent_legacy` in REFACTOR · (6) `surreal_schema._IDENTIFIER_CHARSET_PATTERN = AGENT_NAME_PATTERN.pattern` from
+   `lorerunes` · (7) `_REFUSAL_ID_SAMPLE_SIZE` docstring states WHY · (8) re-register docstring "does NOT re-stamp — from ANY
+   caller, including a different householded principal" · (9) MAY collapse `_shared_identifier_predicate` to a direct call.
+   + memory guard (below). Then COLD AUDIT (Opus REFUTE, full suite ALONE) → commit → INDEX Log "63c-i-a CLOSED".
+4. Then 63c-i-b → 63c-ii → ONE security-auditor (Fable 5.1) → packet close (git mv reports to
+   `docs/plans/v2/receipts/2026-09-24-packet63c/`, INDEX Log, lore_remember, STOP sidecar, `fleet` shows only me).
+
+**CARRY-FORWARD (must appear in later briefs):** → **63c-i-b contract:** C-3 re-register is a SELF-write (owned row, owner ≠
+caller → identity-conflict teaching, zero mutations, no capability; ownerless rows stay re-registerable until migrate) +
+#467 battery row (amendment 10 C-3; covers R-6 metadata); the builder may leave `_shared_identifier_predicate`'s dead `None`
+branch → i-b tidies. → **63c-ii contract:** C-1 fold legal lists into `_LEGAL_IDENTIFIER_WITNESSES` by union. **Every
+adversary brief:** "a survivor is a CONTRACT survivor until the full suite runs on it."
+
+**MEMORY / HOST (measured 2026-09-25):** idle available ~21 GB (other sessions' Odoo PG harnesses + lore-surreal 13.9 GB). Grant
+in force: full suite ≥23 GB at `-n 12`, or ≥20 GB at `-n 8`; one pytest at a time; 12 GB kill-by-PID watchdog; STOP on fire.
+Never a bare `pending_contract_gate.py --currency` (#466 `-n auto` default; annotated). Kill by PID, never `pkill -f`
+(#228); no `git stash` in scratch.
+
+**Other landmines:** lore-lore does not reconnect after a store restart (#478 → `podman restart lore-lore`, then operator
+`/mcp reconnect`); grep/rg + the WORD are hook-blocked (#473). **Open non-63c items (operator-scheduled):** lore_tasks
+f4e3b63f… (#474) · #478/#479/#480 · #355 (→ 11c) · #383 · #466 default fix (→ 09b) · #481 (retired names in a recalled memory).
