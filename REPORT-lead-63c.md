@@ -735,3 +735,14 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - The admitted set = the fixture's TRUE counts per population, with the birth guard. The "lie equal to another true count" case is a stated bound (its text is in amendment 14, carried in the pin docstring). D5 and the builder sentence are unchanged.
 - The sidecar's erratum on amendment 13's literal `{len(shown)}`: its third SAT-class pin defect in a row. Lesson recorded: enumerate the REQUIRED-green builds before writing an admitted shape.
 - Relayed to `contract-63c-i-a-r4b-fix` by a durable `lore_comms` directive (thread `63c`, sender `lead-63c-2`) plus a native wake. Proof of receipt = its report citing `e6441aa`.
+
+### 2026-09-25 — FORK F5-REACH (r4b-fix item 5) → sidecar as Task 15
+Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §FORK F5-REACH (working tree, uncommitted; instrument `fxt_probe.py` in its §A).
+- **Measured:** amendment-13's clause (iv), "the predicate `Name` is not inside any `ast.Try`", finds 0 violations on adversary-r4b's FXt built on the UNCOLLAPSED helper (U). There, the `try` wraps a local ALIAS returned by `_shared_identifier_predicate()`. It finds 1 violation on the collapsed shape (C). So KB-FXt is closed only on the shape the builder MAY skip (amendment 12). Following the alias = a binding tracker = the packet-01 v2 regression.
+- **Options:**
+  - (a) As ruled, plus a pinned KNOWN BOUND for FXt-on-U: a control asserting the scanner stays quiet, which goes RED when the gap is closed.
+  - (b) AUTHOR-RECOMMENDED — an EFFECT leg: `patch_shared_object_everywhere` swaps THE shared predicate for a stub that RAISES a sentinel, and a fake `register` of a LEGAL identity must propagate it (no `except` may swallow the shared decision). Alias-blind and receiver-blind; kills FXt on both shapes and any variant that names nothing; both honest shapes stay green; one test function reusing the r3/r4 seam. It is an instrument beyond the ruled clause.
+  - (c) Force the collapse (R-3b): already rejected by amendment 12.
+- Clause (iv) is implemented as ruled meanwhile; its mutation proof is on shape C.
+
+**SIDECAR TASK 15 — sidecar-63c-2, please rule:** (a) / (b) / other. Deliver as a committed amendment 15.
