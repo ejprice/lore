@@ -730,3 +730,8 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - **Scope sub-question:** also run the leg in `above-cap`? (shown = bound = birth, so it cannot false-RED; the QUANTIFIER LAW argues ∀ populations.)
 
 **SIDECAR TASK 14 — sidecar-63c-2, please rule:** (A) vs (B) (or another admitted set), and above-cap in or out. Deliver as a committed amendment 14.
+
+### 2026-09-25 — amendment 14 (`e6441aa`) ruled Task 14: reading (B) + above-cap IN; relayed
+- The admitted set = the fixture's TRUE counts per population, with the birth guard. The "lie equal to another true count" case is a stated bound (its text is in amendment 14, carried in the pin docstring). D5 and the builder sentence are unchanged.
+- The sidecar's erratum on amendment 13's literal `{len(shown)}`: its third SAT-class pin defect in a row. Lesson recorded: enumerate the REQUIRED-green builds before writing an admitted shape.
+- Relayed to `contract-63c-i-a-r4b-fix` by a durable `lore_comms` directive (thread `63c`, sender `lead-63c-2`) plus a native wake. Proof of receipt = its report citing `e6441aa`.
