@@ -310,7 +310,16 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         r4b-fix (amendment 13 §W-4): ∀ JOINER ARGUMENT SHAPES — ``required-only`` and ``every-optional``
         (all four optional register arguments set). Control 2 registers the joiner's OWN agent with the SAME
         extras, so the ``every-optional`` shape is proven ACCEPTED end to end (a shape the tool refused
-        outright would make the pin blind, since the re-register's outcome is not asserted)."""
+        outright would make the pin blind, since the re-register's outcome is not asserted).
+
+        ⚠ KNOWN BOUND (adversary-r4b-fix RS1combo; amendment 16, recorded): two points of the joiner's 2⁴
+        optional-argument lattice; a takeover conditioned on a MIXED argument shape (``… and task_id is not
+        None and model is None``) survives the full suite. RE-OPEN TRIGGER: a register path found branching
+        on an optional argument. CLOSURE-IF-REOPENED (the adversary's, UNMEASURED): four more params, each
+        setting exactly ONE optional argument (kills every single-argument and every ``X set ∧ Y unset``
+        condition with X's param). MOOT AT i-b: amendment-10 C-3's served refusal (a householded joiner may
+        not re-register another principal's agent) closes the whole 2⁴ lattice at once, because no joiner
+        re-register succeeds at all — i-b's author deletes this bound deliberately when C-3 lands."""
         from loremaster.governed import GovernedDenied
 
         projection = f"SELECT id, owner_principal, owner_agent, scope FROM {AGENT_TABLE} WHERE name = $n"
@@ -935,6 +944,13 @@ class TestAgentMigrateScopeKeyed63cIA:
         honest build derives N from the legacy count, and the only plausible wrong derivation (the constant)
         is guarded out. RE-OPEN TRIGGER: a served refusal found stating a sample size that equals another
         fixture count and not ``len(shown)``.
+        r4b-fix2 (amendment 16 §W-1; adversary-r4b-fix F-A1, its fix landed verbatim): ``admitted`` ALSO
+        carries the result's own TRUE counts — rows ALREADY migrated, rows STAMPED (``result.backfilled``)
+        and the scanned total (count + legacy + already) — so a correct refusal stating *"0 already
+        migrated"* or *"no row was stamped (0 rows)"* is not refused; none can be the birth value.
+        ⚠ KNOWN BOUND (adversary-r4b-fix F-A1): the admitted set is the agent-table counts and the result's
+        own counts; a true count of another table (principals, keeps) is refused. RE-OPEN TRIGGER: a correct
+        refusal stating a non-agent count.
 
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
@@ -1060,6 +1076,21 @@ class TestAgentMigrateScopeKeyed63cIA:
         # Purely-digit strings are NOT stripped (they would erase the very token these legs read).
         # r4b-fix (amendment 13 §F-1 / amendment 14): the residue is now computed in EVERY population (it fed
         # only ``perturbed-bound`` before — additive: no leg deleted, so no DUAL row for the move).
+        # adversary-r4b-fix F-A1 (SAT, F-2's class): the result's own counts are TRUE counts a correct refusal
+        # may state — rows ALREADY migrated (scope set; derived from ``before``, where ``SELECT *`` omits a
+        # NONE column), rows STAMPED (``result.backfilled``, asserted 0 above: the ruling's own "ZERO
+        # stamped"), and the scanned total. None can be the birth value (birth >= 1; the total is count +
+        # legacy + already).
+        already_migrated_count = sum(1 for row in before if row.get("scope") is not None)
+        admitted_counts |= {
+            already_migrated_count,
+            result.backfilled,
+            trap_count + legacy_count + already_migrated_count,
+        }
+        assert birth_bound == shown_count or birth_bound not in admitted_counts, (
+            f"fixture self-check: the birth value {birth_bound} is an admitted TRUE count "
+            f"{sorted(admitted_counts)}"
+        )
         stated_integers = self._integers_stated_beside_the_seeded_identifiers(
             reason, before=before, full_count=trap_count
         )

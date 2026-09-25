@@ -239,8 +239,12 @@ _HOSTILE_IDENTIFIERS = (
 #: (``test_agent_registry.py::TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA::
 #: test_the_SKIP_gate_agrees_with_the_SHARED_predicate_over_the_GENERATED_identity_language``): its witnesses
 #: come from ``hypothesis.strategies.from_regex(lorerunes.AGENT_NAME_PATTERN, fullmatch=True)`` — the ONE
-#: pattern object — so every axis of the language (cap, trailing / doubled separator, all-digit, and axes
-#: nobody has named) is in its sample space by construction; it checks 200 derandomized examples per run.
+#: pattern object — so the generator's sample space is the language; ``target`` steers the sample up the
+#: length axis; the other axes are covered probabilistically at 200 examples.
+#: r4b-fix2 (amendment 16 G5 — ERRATUM, DUAL: *"every axis … is in its sample space by construction"* is
+#: DELETED; space ≠ sample — 200 derandomized draws maxed at 27 characters and never reached the cap, so a
+#: SKIP gate narrowing on 28–63-char names survived the full suite, adversary-r4b-fix G5). A pin certifies
+#: only what it DID draw; the ``"a" * 64`` cap witness below stays the deterministic control.
 _LEGAL_IDENTIFIER_WITNESSES = (
     "a",  # length 1 (the floor)
     "0z",  # digit-leading

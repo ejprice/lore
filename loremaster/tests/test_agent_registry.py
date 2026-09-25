@@ -2038,7 +2038,53 @@ class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
         so a generated value the predicate rejects (should the generator ever emit one) is still judged
         correctly. Kills adversary-r4b G4 (a
         private ``or "--" in attribution or "__" in attribution`` at the gate) and every narrowing conjunct on
-        an axis of the language, named or not; the hand-listed baseline legs above stay as NAMED controls."""
+        an axis a draw REACHES; the hand-listed baseline legs above stay as NAMED controls.
+        r4b-fix2 (amendment 16 G5 — ERRATUM, DUAL: *"on an axis of the language, named or not"* is DELETED;
+        space ≠ sample — untargeted, the 200 derandomized draws maxed at 27 characters, so adversary-r4b-fix
+        Nmid, a narrowing on 28–63-char names, survived the full suite): ``hypothesis.target`` on the
+        attribution's LENGTH steers the sample up the length axis to the cap (adversary-r4b-fix §4f: kills
+        Nmid; Ncap48 / Ncap64 red exactly this leg + the cap witness + the hostile corpus); ``derandomize``
+        keeps it deterministic. Other axes are covered probabilistically at 200 examples."""
+        from hypothesis import target
+
+        import lorerunes
+
+        target(float(len(attribution)), label="length")
+        lookups = asyncio.run(_traffic_line_lookups(attribution))
+        assert lookups in ([], [attribution]), (
+            f"the SKIP gate read the registry {len(lookups)} time(s) for ONE attribution {attribution!r}: "
+            f"{lookups!r}"
+        )
+        looked_up_once = lookups == [attribution]
+        assert looked_up_once == lorerunes.is_legal_identifier(attribution), (
+            f"the SKIP gate {'LOOKED UP' if looked_up_once else 'SKIPPED'} {attribution!r}, which the SHARED "
+            f"decision {'rejects' if looked_up_once else 'accepts'} — a private decider at the gate's call "
+            f"site (amendment 13 §G4 / adversary-r4b G4: a narrowing conjunct on an axis no hand-listed "
+            f"witness carries)"
+        )
+
+    @settings(derandomize=True, max_examples=200, database=None, deadline=None)
+    @given(attribution=st.deferred(_the_identity_language))
+    def test_the_SKIP_gate_agrees_with_the_SHARED_predicate_over_the_UNTARGETED_GENERATED_identity_language(
+        self, attribution: str
+    ) -> None:
+        """⚠ RED before i-a (the pattern has not MOVED to ``lorerunes``). r4b-fix2 (amendment 18, FINDING N-1
+        ruled (b)): the UNTARGETED twin of the targeted leg above — the r4b-fix generated leg (``10a33ef``),
+        restored AST-equal under this second id. WHY TWO SAMPLES, so nobody folds them believing one covers
+        the other: ``target`` thins the untargeted axes; this leg is the untargeted sample whose kills the
+        targeted one measurably loses (adversary-r4b-fix builds re-run on the landed contract: Nmixed, a SKIP
+        gate skipping names carrying both ``-`` and ``_``, went from killed to ``638 passed`` under ``target``
+        alone). Two samples of one language, two budgets, one oracle: the targeted leg reaches the length axis
+        (the cap), this one keeps the untargeted spread. Same property as the leg above — ∀ GENERATED values,
+        the gate looks the value up EXACTLY when ``lorerunes.is_legal_identifier`` accepts it, never more
+        than once.
+        ⚠ KNOWN BOUND (hypothesis 6.168.1 ``derandomize``, read in ``hypothesis/core.py`` +
+        ``internal/reflection.py::function_digest``): the seed is derived from this function's cleaned
+        SOURCE — its name and this docstring included, comments and decorators excluded — so editing either
+        re-draws the 200 examples, and a kill measured on one draw is not guaranteed on the next. The kills
+        this leg carries are MEASURED on the bytes that landed (fix2 report, regression table), not implied by
+        construction. RE-OPEN TRIGGER: any edit to this function's name, docstring or body — re-run the
+        regression table (the adversary-r4b-fix narrowings, declared before the run) over BOTH legs."""
         import lorerunes
 
         lookups = asyncio.run(_traffic_line_lookups(attribution))
@@ -2499,10 +2545,12 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
     ``test_the_STATIC_allowlist_cannot_see_an_OBFUSCATED_predicate_name_the_effect_leg_does``)
     nor a ``try`` around a local ALIAS of the predicate (FXt on the uncollapsed helper —
     REPORT-contract-63c-i-a-r4b-fix §FORK F5-REACH). The runtime property — the shared decision is REACHED
-    and TRUSTED — is
+    and ITS exception propagates — is
     ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``,
-    which kills both. Neither this scanner nor the effect leg may be deleted on the belief that the other
-    covers it.
+    which kills both. (r4b-fix2, amendment 16 ERRATUM, DUAL: *"REACHED and TRUSTED"* is DELETED here — FXdisc,
+    which consults the predicate and discards its result, is reached but not trusted, and is killed by the
+    SHARING pins, not by the effect leg.) Neither this scanner nor the effect leg may be deleted on the
+    belief that the other covers it.
     ⚠ NOT COVERED HERE, and covered ELSEWHERE — do not delete those pins believing this allowlist covers it:
     a STAR-IMPORT SHADOW placed after the honest import (``from _private_rules import *`` rebinding the name
     without ever spelling it — adversary-r4b FXs) is invisible to every clause above. It is killed by the
@@ -2646,12 +2694,28 @@ async def test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_
     ``expect_in`` its ``lorerunes`` home), by a stub that RAISES a sentinel for ONE field's LEGAL value (and
     delegates for every other value). A fake ``register`` of that LEGAL identity must PROPAGATE the sentinel:
     no ``except`` may swallow the shared decision, whatever it wraps (a direct call, a local alias of the
-    helper's return, an obfuscated lookup) and whatever the handler spells. ∀ fields (name, session — a
+    helper's return, an obfuscated lookup). ∀ fields (name, session — a
     ``try`` around ONE field's check is caught on that field). Kills adversary-r4b FXt on BOTH helper shapes
     (the uncollapsed helper's alias and the collapsed direct call); both honest shapes stay GREEN (the
     exception propagates through an alias exactly as through a direct call). Wider than FXt by design: a fake
     that never CONSULTS the shared predicate for a legal-looking value does not raise either → RED. The
     static twins (the allowlist, clause (iv)) tell a builder WHICH line broke the shape; this leg is the ∀.
+    What it OBSERVES, precisely: the shared decision is REACHED and ITS exception propagates.
+    r4b-fix2 (amendment 16 — ERRATUM, DUAL): *"and whatever the handler spells"* is DELETED from the
+    sentence above — adversary-r4b-fix FXtVE (a handler narrower than the sentinel, ``except ValueError``)
+    falsified it.
+
+    ⚠ KNOWN BOUND (adversary-r4b-fix, fake-guard family: FXtVE / FXand / FXname; amendment 16, recorded):
+    this leg observes that the shared decision is REACHED and that ITS exception propagates; it does not
+    observe a handler for a type the stub does not raise (FXtVE: ``except ValueError``), a private conjunct
+    evaluated before a reached predicate (FXand: ``private(v) and shared(v)``), or a handler keyed on this
+    sentinel's name (FXname). The SHARING pins mutate the predicate in the NARROWING direction only. Each
+    survived the full suite (adversary-r4b-fix §4e). RE-OPEN TRIGGER: a fake found consulting any rule
+    besides ``is_legal_identifier``. CLOSURE-IF-REOPENED (the adversary's, UNMEASURED — reasoned from the
+    builds' code, never run): FXand — a WIDENING direction in the SHARING pin (patch the predicate to
+    ACCEPT one hostile value; the fake must admit it), on both helper shapes; FXtVE — a stub sentinel
+    subclassing ``ValueError, TypeError, LookupError`` (kills it and its common siblings); FXname is
+    adversarial-only (it keys on this test's sentinel name).
 
     HEAD CONTROL (anti-vacuity, the same early return as the silent-skip effect pin): while the predicate is
     ABSENT the fake's guard is legitimate (amendment-5 FORK-C), and the hostile ``"fixer-b\\n"`` DOES
@@ -3061,3 +3125,32 @@ def test_the_STATIC_allowlist_cannot_see_an_OBFUSCATED_predicate_name_the_effect
         "the STATIC allowlist now names an ASSEMBLED predicate name — its reach grew. If that was "
         f"deliberate, update this reach control (the effect leg is the ∀ either way):\n{source}"
     )
+
+
+# r4b-fix2 (amendment 16 §G6 — landed VERBATIM from adversary-r4b-fix §A.3 ``single_char_leg``, graded in its
+# §4f: kills Wat / Wplus / Wtab; Wspace / Wnl red exactly this leg + the hostile corpus; correct build GREEN).
+# Sized honestly: a one-character widening costs read budget only (R8) — the served traffic line cannot
+# change, since no such identity can be registered; the leg exists because the closure is one function and
+# ends the single-edit class by construction (exhaustion over a finite alphabet does not recede).
+# ⚠ KNOWN BOUND (amendment 16 G6): multi-character widenings (``@@``, a two-edit neighbour) are outside this
+# leg. RE-OPEN TRIGGER: a widening with a served consequence beyond one registry read — which, by
+# construction of ``register``'s refusal, cannot arise while the shared predicate is the registry's gate.
+async def test_ADV_single_char_neighbourhood_the_predicate_rejects_is_never_looked_up() -> None:
+    """adversary-r4b-fix proposal: ∀ ASCII character c, every one-edit neighbour of a legal witness the SHARED
+    predicate rejects (a{c}b, {c}a, a{c}) is never looked up — exhaustive over a STATED alphabet, derived from
+    the predicate, no hand-list. POSITIVE CONTROL: the legal neighbours ARE looked up once."""
+    import lorerunes
+
+    looked_up: dict[str, list[str]] = {}
+    legal_seen = 0
+    for code in range(128):
+        character = chr(code)
+        for value in (f"a{character}b", f"{character}a", f"a{character}"):
+            lookups = await _traffic_line_lookups(value)
+            if lorerunes.is_legal_identifier(value):
+                legal_seen += 1
+                assert lookups == [value], f"CONTROL: legal {value!r} not looked up once: {lookups!r}"
+            elif lookups:
+                looked_up[value] = lookups
+    assert legal_seen > 0, "CONTROL: no legal neighbour was generated"
+    assert not looked_up, f"the SKIP gate looked up one-edit neighbours the predicate rejects: {looked_up!r}"
