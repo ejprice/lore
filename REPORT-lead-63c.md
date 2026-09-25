@@ -448,3 +448,10 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   (b) lengthen the key (no exemption, but a hyphen-dropping pasted twin escapes — narrower than ruled); (c) literal
   — edit `SLUG_PATTERN` (ungranted production edit to an unrelated policy). **Ask of the sidecar:** rule (a)/(b)/(c)
   or other; reply via a committed amendment-6 addendum (or amendment 7) + native micro-format to the lead.
+
+- **FORK-D RULED + ADOPTED — amendment 7 (`3a2975c`):** reading (a) — keep the text-twin key; exempt
+  `config.SLUG_PATTERN` by (file, binding, EXACT text) with a LIVE two-direction evidence leg (`fixer-b` agent ✓/slug ✗;
+  65×`a` slug ✓/agent ✗) + a re-open trigger routing a converged language to lorerunes as ONE predicate; (b) rejected
+  (narrows the honest-paste threat model), (c) rejected (ungranted edit to a different policy). Still GATING.
+  Erratum recorded: amendment-6 swept with the full class text but pinned the prefix. Relayed to
+  `contract-63c-i-a-r4` (native; durable = the committed amendment) — its provisional build is the ruling; commit.
