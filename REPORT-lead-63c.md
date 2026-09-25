@@ -746,3 +746,9 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - Clause (iv) is implemented as ruled meanwhile; its mutation proof is on shape C.
 
 **SIDECAR TASK 15 — sidecar-63c-2, please rule:** (a) / (b) / other. Deliver as a committed amendment 15.
+
+### 2026-09-25 — amendment 15 (`7f01787`) ruled Task 15: (b) the EFFECT leg; relayed
+- Item 5 = a raising-stub effect leg through `patch_shared_object_everywhere`: a legal fake `register` must propagate the sentinel. It kills FXt on BOTH helper shapes and every nameless variant. The static allowlist and clause (iv) STAY as teaching twins ("static reach — the effect leg is the ∀"). **amendment-11's obfuscation KNOWN BOUND is CLOSED** (its control is re-labelled, and its bound message removed).
+- Sidecar erratum on amendments 11 and 13: a runtime property was given static instruments twice. Askable form: "is the property I am pinning a fact about the CODE's shape, or about what the code DOES?"
+- Relayed as `lore_comms` directive (thread `63c`, which re-carries amendment 14 too) plus a native wake. Proof of receipt = the r4b-fix report citing `7f01787` and `e6441aa`.
+- **Builder/cold-audit carry-forward:** neither static twin nor the effect leg may be deleted on the belief that another covers it, and the same holds for the r3/r4 SHARING pins (FXs).
