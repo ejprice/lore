@@ -532,3 +532,21 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   memory held by spike-surreal ~16 GB, lore-surreal ~12 GB, four Odoo PG harnesses from other sessions, ~40 GB shared.
   A single `-n 12` full suite costs ~6–7 GB (today: 28→22, 33→26), so the expected low is ~17 GB; the 2026-09-24 OOM
   (#479) was from CONCURRENT suites. r4a otherwise reports its rows done: 14/14 builds killed, RED clean.
+
+- **2026-09-25 ~05:00 EDT — contract r4a DELIVERED (`bf77fb9`)**; author TaskStopped + ledger-retired. Trailer-clean;
+  touches only its writable set. Claims (the narrow adversary re-derives them): SAT full suite ALONE `-n 12` `11459
+  passed, 62 skipped, 3 xfailed`, 0 failed, with all four builder edits (launched 24 GB, low 18 GB per the FORK-MEM
+  grant; lead watcher independently saw the low at 18 GB); TWR (KB-2 bound) survives the full suite 11459/0 as intended;
+  14/14 wrong builds killed (RS1 FX2 RS1FX2 G1 G2 FXg FXf FXf2 X3b X3d PX2 MP2DEF R5 R5b; RS1FX2 is the receipt that
+  row 1 needed the absolute real side); RED@HEAD 0 r4-greens turned red, 13 new right-reason reds. Lore finding #481
+  filed by it (a recalled memory teaches retired tool names).
+  - **SIDECAR TASK 10 (durable copy HERE):** rule (1) **R-A** — the restored presence pin accepts a module-top import from
+    `lorerunes` OR a submodule (reading ii, picked: reading i reds an honest submodule import); (2) **C-1…C-5**
+    (`REPORT-contract-63c-i-a-r4a.md` §CANDIDATES): C-1 fold the two pre-existing legal lists into
+    `_LEGAL_IDENTIFIER_WITNESSES` · **C-2 RS1's other axis — a re-register from a DIFFERENT KEEP re-stamping `scope`**
+    (unobserved; construction only) · **C-3 RS1 pinned at the registry seam only; the end-to-end `lore_comms register`
+    door for a householded joiner is undriven** (63c-i-b's serving/security scope?) · C-4 PX2 detector phrase-bound
+    (stated bound) · C-5 shape/effect pin reach = one fake file. For each: close (and in which artifact — r4a is
+    closed; the narrow delta is running), pinned bound, route to 63c-i-b, or accept. Reply: amendment 10 + native.
+  - **Spawned `adversary-63c-i-a-r4a`** (contract-adversary): NARROW delta over `e80a854..bf77fb9` only.
+  - **Builder-brief item 1 sharpened** (r4a): delete the fake's guard AND import `is_legal_identifier` at MODULE TOP.
