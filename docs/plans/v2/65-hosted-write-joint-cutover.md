@@ -2,7 +2,7 @@
 wave **D** · lead: **Opus + Fable design sidecar** · size **0.25 → PRE-SPLIT** (65-pre = the
 pre-deploy blocker wave [code] · 65-cut = the cutover itself [ops + smoke]; re-price at kickoff —
 see §SIZING) · **Depends on:** 39, 60, 61, 62, 63 (63c in progress at authoring), 64 (PLANNED at
-authoring), and — **RECOMMENDED** — 11c (index boot honesty, #355) so the recreate is not a 3–4 h
+authoring), and **11c — a HARD dependency, RULED 2026-09-24 (INDEX pool 29)** (index boot honesty, #355) so the recreate is not a 3–4 h
 outage · **DEPLOY: YES** — rebuild + recreate `lore-lore`: THE ONE cutover. It also lands every
 commit-only packet since the production image's git ref (48/49, 07 test-only, 39, 60–64, …).
 
@@ -122,7 +122,7 @@ enablement itself** (this packet's one code deliverable beyond cleanup). Authz m
   nothing else measures: **can `4312207128bb` serve a post-migration store?** (UNVERIFIED — it
   decides whether image rollback alone is sufficient.)
 
-## 65-cut — THE CUTOVER RUNBOOK (operator-attended unless F2 rules otherwise)
+## 65-cut — THE CUTOVER RUNBOOK (F2 RULED 2026-09-24: a lead may run it UNATTENDED under the preconditions below)
 1. **Fresh backup** of `:18500` → `/backups/lore/lore-prod-<UTC>.surql`; record size, table count,
    EXIT=0 (the 04b-2 receipt shape). 3.2.4 is forward-only — the restore engine must be ≥ it.
 2. **Capture** `podman inspect lore-lore --format '{{.Config.CreateCommand}}'` NOW (never a stale
@@ -212,10 +212,14 @@ exists — confirm which edge fronts lore before relying on that switch.
 
 ## FORKS for the operator (questions)
 - **F1.** Run the cutover **after 11c** (a delta boot, minutes) or **before it** (accept a ~4 h
-  no-bind window, possibly TWICE — steps 8 and 11)? Recommendation: after, unless 11c slips.
+  no-bind window, possibly TWICE — steps 8 and 11)? ~~Recommendation: after, unless 11c slips.~~
+  **RULED 2026-09-24 (operator, INDEX pool 29): AFTER 11c — 11c is a hard dependency.**
 - **F2.** May the production data migration (step 10) run **unattended**, or must the operator
   attend? The 04b-2 precedent asked exactly this (INDEX Log 2026-08-03) and it was never ruled.
-  Recommendation: attended — this one widens visibility for every row.
+  ~~Recommendation: attended — this one widens visibility for every row.~~ **RULED 2026-09-24
+  (operator, INDEX pool 28): UNATTENDED is permitted, under this runbook's preconditions (fresh
+  backup · rollback receipts in the Log before the recreate · single-principal precondition ·
+  byte-inert refusal). Standing for every future migration deploy.**
 - **F3.** Rename the MCP server to a fixed `lore` at this cutover (#299)?
 - **F4.** Is the P11 dress rehearsal required? Recommendation: yes — it is the only instrument
   for rollback-compat and for the migration against real row distributions.
