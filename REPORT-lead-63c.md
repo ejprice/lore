@@ -718,3 +718,15 @@ The lead then spawns ONE tests-only fix agent (name `contract-63c-i-a-r4b-fix`),
 - **Carrier rule for future bounds:** the bounded pin's docstring; the lead-report entry until then; never `pending_contracts.yaml`.
 - **Carry-forward (adversary-r4b idle summary):** a shadowing star-import in the fake (FXs) is invisible to the row-3 allowlist and is killed only by the r3/r4 SHARING pins. Builder and cold-audit briefs must say that those pins are NOT deletable on the belief that the allowlist covers them. The fix agent writes the docstring line (item 5).
 - NEXT: `contract-63c-i-a-r4b-fix` (§W items 1–5; brief in the scratchpad) → narrow adversary `adversary-63c-i-a-r4b-fix` under the amendment-11 pre-ruling → builder.
+
+### 2026-09-25 — FORK F1-ADMIT (r4b-fix item 2) → sidecar as Task 14
+Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §FORK F1-ADMIT (working tree, uncommitted — read it there). Items 1, 3, 4 and 5 and the dependency rider are proceeding. Item 2 is being built to reading (B), switchable.
+- **Conflict:** amendment 13 §F-1's literal leg — residue integers ⊆ `{len(shown)}` — REDs every correct build that also states a remainder or legacy count:
+  - `(first 2 of 2 ids shown, 0 more)` below-cap;
+  - `16 more` at birth 15 perturbed-bound (post-F-2);
+  - the r4b docstring's own `"3 legacy rows"`.
+  The lead's brief required the birth-15 remainder variant to be SAT, because it is F-2's own scenario. So (A) is F-2's defect class reborn.
+- **(B), author-recommended:** admitted = the fixture's TRUE counts per population, `{len(shown), count, count−len(shown), legacy_count, count+legacy_count}`, with the guard keeping `birth` out of that set wherever `birth ≠ len(shown)`. It still kills PXlie below-cap for birth > 2. It gives up a lie equal to a different TRUE count (e.g. `first 3 of 2` when legacy = 3) — the author calls that implausible.
+- **Scope sub-question:** also run the leg in `above-cap`? (shown = bound = birth, so it cannot false-RED; the QUANTIFIER LAW argues ∀ populations.)
+
+**SIDECAR TASK 14 — sidecar-63c-2, please rule:** (A) vs (B) (or another admitted set), and above-cap in or out. Deliver as a committed amendment 14.
