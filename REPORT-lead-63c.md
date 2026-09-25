@@ -844,3 +844,11 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
 - Conditions: (1) ast_equiv of the twin vs `10a33ef` with controls; (2) Nmixed RED on the FULL suite; (3) the regression table over BOTH legs, declared before the run. **Lead addition:** SAT on the FINAL bytes (with the twin), both shapes. The pre-twin SAT runs do not count.
 - Sidecar erratum on amendment 16 G5: it graded on survivors only; the removed-behaviour leg was owed ("what did the OLD sample kill?"). **Lesson for the cold audit + i-b:** any change to a generator/sampling strategy is a delete/replace of coverage and carries a DUAL leg.
 - Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
+
+### 2026-09-25 — contract r4b-fix2 COMMITTED (`9298183`) — the 63c-i-a CONTRACT IS FINAL; builder spawned
+- fix2 = amendment 16 §W 1–5, plus amendment 17 (a lint-clean AST-equivalent landing) and amendment 18 (the untargeted twin). SAT on the FINAL bytes, both shapes, full suite ALONE `-n 12`: `11498 passed / 62 skipped / 3 xfailed / 0 failed`. Nmixed is RED on the full suite (twin only). All 17 adversary drivers are reproduced on the landed bytes. RED@HEAD: 0 turned red. 11/11 SELF-DESTRUCT on the built world. No attribution trailer (checked). The author is retired (it self-retired on the ledger; TaskStop done).
+- **N-2 (carry-forward):** hypothesis seeds `derandomize` from the test function's SOURCE digest (name + docstring + body), so every derandomized leg's kill set is a property of its exact bytes. The twin's docstring carries the bound and a re-open trigger. The targeted leg and the hostile companion are candidates only (scope closed).
+  - **Suggested hardening for i-b (lead, MEDIUM on the API details):** an explicit `@hypothesis.seed(...)` on each derandomized leg, so draws stop depending on names and docstrings.
+  - The candidate door C-1 is in the fix2 report's §CAND.
+- **Carry-forward for the cold audit + i-b:** any change to a sampling/generator strategy is a delete/replace of coverage, and it carries a DUAL leg ("what did the OLD sample kill?").
+- NEXT: `builder-63c-i-a` (items 1–10 per anchor v3 as amended by amendments 13–18; brief in the scratchpad; NO commit and NO deploy — the cold audit comes first) → COLD AUDIT (Opus REFUTE, full suite ALONE) → lead commits → INDEX Log "63c-i-a CLOSED".
