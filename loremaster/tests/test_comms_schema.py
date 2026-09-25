@@ -232,12 +232,15 @@ _HOSTILE_IDENTIFIERS = (
 #: G3, a private ``or attribution.endswith(("-", "_"))`` at the SKIP gate, passed the full suite because
 #: ``"a_b"``/``"a-b"`` put the separator in the MIDDLE) and the ALL-DIGIT axis (``"00"``). Appended LAST so
 #: every pre-existing param id is unchanged.
-#: ⚠ KNOWN BOUND — this corpus is a HAND-LIST of boundary witnesses, NOT derived from the identity language:
-#: a private narrowing conjunct keyed on an axis NO witness below carries survives every consumer of it
-#: (the consumers' header sentences say "any axis a legal witness carries", never "any legal identity").
-#: Deriving it (``AGENT_NAME_PATTERN``'s classes × positions) would close the axis class outright but
-#: multiplies every corpus-parametrised store leg — rigor-to-importance ruled no for a footer gate
-#: (amendment 11). RE-OPEN TRIGGER: a FOURTH witness axis found by an adversary → derive the corpus.
+#: r4b-fix (amendment 13 §G4 — the derive trigger FIRED on adversary-r4b G4, a SKIP gate narrowing on
+#: DOUBLED separators ``--`` / ``__``): this tuple stays a HAND-LIST of NAMED boundary witnesses — read as
+#: documentation, and as the cheap store legs of the accept-control (a store leg per generated example is the
+#: wrong cost). It is NOT the ∀. The ∀ over the legal side is the GENERATED leg at the SKIP gate
+#: (``test_agent_registry.py::TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA::
+#: test_the_SKIP_gate_agrees_with_the_SHARED_predicate_over_the_GENERATED_identity_language``): its witnesses
+#: come from ``hypothesis.strategies.from_regex(lorerunes.AGENT_NAME_PATTERN, fullmatch=True)`` — the ONE
+#: pattern object — so every axis of the language (cap, trailing / doubled separator, all-digit, and axes
+#: nobody has named) is in its sample space by construction; it checks 200 derandomized examples per run.
 _LEGAL_IDENTIFIER_WITNESSES = (
     "a",  # length 1 (the floor)
     "0z",  # digit-leading

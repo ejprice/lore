@@ -96,12 +96,15 @@ bounds:
         missing_symbols: ["register.session_keep_id"]
         unsymboled_codes:
           - code: attr-defined
-            count: 4
+            count: 7
             reason: >-
-              mypy's "Module has no attribute" names lorerunes.is_legal_identifier (2 — the decision
-              mutation pin, and r4's amendment-6 MP-1 SKIP-gate mutation leg) and
-              lorerunes.AGENT_NAME_PATTERN (2) — the A4 MOVE the i-a build lands; the deriver cannot
-              parse a qualified symbol out of that message form.
+              mypy's "Module has no attribute" names lorerunes.is_legal_identifier (4 — the decision
+              mutation pin, r4's amendment-6 MP-1 SKIP-gate mutation leg, and r4b-fix's amendment-13 §G4
+              hostile-companion strategy filter + generated-leg oracle) and lorerunes.AGENT_NAME_PATTERN
+              (3 — the two A4 MOVE pins and r4b-fix's amendment-13 §G4 from_regex strategy) — the A4 MOVE
+              the i-a build lands; the deriver cannot parse a qualified symbol out of that message form.
+              r4b-fix (contract-63c-i-a-r4b-fix): 4 -> 7, each new site a DIRECT read of a not-yet-moved
+              symbol (a legible RED at HEAD), all resolving with the build.
       - path: loremaster/tests/_comms_fakes.py
         # r3 (contract-63c-i-a-r3, amendment-5 FORK-C): the fake's guarded CALL-time
         # `from lorerunes import is_legal_identifier` (a HEAD-RED accommodation). Both codes vanish when

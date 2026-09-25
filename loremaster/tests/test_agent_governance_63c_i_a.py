@@ -261,8 +261,28 @@ class TestRegisterStampsTheGovernedTriple63cIA:
                 f"the keeper's own later agent must join the same session keep, got {later!r}"
             )
 
+    # r4b-fix (amendment 13 §W-4, KB-RS1srvT CLOSED): the JOINER's argument SHAPE is parametrised. r4b drove
+    # ONE shape (agent/session/role — parameter monoculture on the optional arguments), so a takeover
+    # conditioned on an optional register argument survived the full suite (adversary-r4b RS1srvT:
+    # ``… and task_id is not None``, 11486/0). ``every-optional`` sets ALL FOUR optional register arguments
+    # the tool accepts (``model``, ``spawned_by``, ``task_id``, ``cadence``) — additive (no param deleted).
+    @pytest.mark.parametrize(
+        "joiner_register_extras",
+        [
+            pytest.param({}, id="required-only"),
+            pytest.param(
+                {
+                    "model": "claude-opus-5-5",
+                    "spawned_by": "lead-rs1",
+                    "task_id": "rs1-task-7",
+                    "cadence": "≤20m",
+                },
+                id="every-optional",
+            ),
+        ],
+    )
     async def test_a_householded_joiners_re_register_of_the_keepers_agent_leaves_its_ownership_untouched(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, joiner_register_extras: dict[str, Any]
     ) -> None:
         """r4b (amendment-11 MP-A3, GATING) — ruling §2.2 row 2 ("a re-register leaves owner_principal /
         owner_agent / scope UNTOUCHED, from ANY caller") pinned at the OUTERMOST seam: the whole
@@ -285,7 +305,12 @@ class TestRegisterStampsTheGovernedTriple63cIA:
         P0 controls (the pin can SEE both halves): a FOREIGN principal (carol, not householded) is DENIED
         by SF-63-1 and leaves the row unchanged (the probe sees a refusal); the joiner's OWN fresh agent is
         created owned by the joiner (the probe sees a joiner's stamp — so a takeover would read bob, not a
-        blind NONE); and the keeper's row is owned by alice beforehand (a takeover is distinguishable)."""
+        blind NONE); and the keeper's row is owned by alice beforehand (a takeover is distinguishable).
+
+        r4b-fix (amendment 13 §W-4): ∀ JOINER ARGUMENT SHAPES — ``required-only`` and ``every-optional``
+        (all four optional register arguments set). Control 2 registers the joiner's OWN agent with the SAME
+        extras, so the ``every-optional`` shape is proven ACCEPTED end to end (a shape the tool refused
+        outright would make the pin blind, since the re-register's outcome is not asserted)."""
         from loremaster.governed import GovernedDenied
 
         projection = f"SELECT id, owner_principal, owner_agent, scope FROM {AGENT_TABLE} WHERE name = $n"
@@ -317,7 +342,13 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             )
             # CONTROL 2 — the joiner's OWN fresh agent is stamped as the joiner's.
             world["holder"]["email"] = world["emails"]["bob"]
-            await ctx.comms(action="register", agent="joiner-b", session="shared", role="builder")
+            await ctx.comms(
+                action="register",
+                agent="joiner-b",
+                session="shared",
+                role="builder",
+                **joiner_register_extras,
+            )
             own_rows = await run(admin, projection, {"n": "joiner-b"})
             assert own_rows and str(own_rows[0]["owner_principal"]) == f"principal:{world['pids']['bob']}", (
                 f"CONTROL: the joiner's own fresh agent must be owned by the joiner: {own_rows!r}"
@@ -325,7 +356,13 @@ class TestRegisterStampsTheGovernedTriple63cIA:
             # THE PIN — the joiner re-registers the KEEPER's agent (same role); outcome not asserted (i-b's).
             try:
                 outcome = str(
-                    await ctx.comms(action="register", agent="keeper-a", session="shared", role="builder")
+                    await ctx.comms(
+                        action="register",
+                        agent="keeper-a",
+                        session="shared",
+                        role="builder",
+                        **joiner_register_extras,
+                    )
                 )
             except Exception as error:  # noqa: BLE001 - a served refusal is i-b's to rule; DATA is pinned here
                 outcome = f"raised {type(error).__name__}: {error}"
@@ -805,6 +842,33 @@ class TestAgentMigrateScopeKeyed63cIA:
             )
         return ids
 
+    @staticmethod
+    def _integers_stated_beside_the_seeded_identifiers(
+        reason: str, *, before: list[dict[str, Any]], full_count: int
+    ) -> list[int]:
+        """Every integer ``reason`` states once every IDENTIFIER the fixture seeded (each ``before`` row's
+        string values and record ids, longest first), the FULL count (every occurrence) and the section
+        citations (``§2.1``) are stripped. Purely-digit seeded strings are NOT stripped — they would erase
+        the very tokens the callers read. r4b-fix: extracted from ``test_R_Q5_1_…`` unchanged, so the F-1
+        leg and the birth-value leg read ONE residue."""
+        seeded_identifiers: set[str] = set()
+        for row in before:
+            for value in row.values():
+                if isinstance(value, RecordID):
+                    seeded_identifiers.update((str(value), str(value.id)))
+                elif isinstance(value, str):
+                    seeded_identifiers.add(value)
+        residue = reason
+        for seeded in sorted(seeded_identifiers, key=len, reverse=True):
+            if seeded and not seeded.isdigit():
+                residue = residue.replace(seeded, " ")
+        # Section citations FIRST: stripping the count first turns "§2.1" into "§ .1" when the count is 2 (the
+        # ``below-cap`` population) and leaves a phantom "1" — a correct refusal false-REDs (r4b-fix SAT leg,
+        # measured on both reference shapes before this order was fixed).
+        residue = re.sub(r"§\d+(?:\.\d+)*", " ", residue)
+        residue = re.sub(rf"\b{full_count}\b", " ", residue)
+        return [int(token) for token in re.findall(r"\d+", residue)]
+
     # DUAL (r3, amendment-4 MP-C): the r2 pin (ONE fixture, 2 traps, "EVERY trap id named") is RE-KEYED
     # to three populations. Virtue kept: at 2 traps every id is still named (below-cap leg); the r2
     # assertion "every id named" is INVERTED above the cap (bound + 15 → exactly ``bound`` named), because
@@ -852,13 +916,25 @@ class TestAgentMigrateScopeKeyed63cIA:
         BEFORE patching — derived, never a literal in this test). A builder writing *"(first 10 ids shown)"*
         beside a constant-read slice serves a false number the day the constant changes — adversary-r4 PX2
         passed 2905/0 because this leg checked only ``len(named)``. Prose describing the bound is DERIVED
-        from the constant (``f"first {sample_size} of {count} ids shown"``) or absent, never restated.
+        from the constant (``f"first {shown} of {count} ids shown"``, shown = the ids ACTUALLY named) or
+        absent, never restated.
         r4b (amendment-11 MP-A2): r4a's sample-size PHRASE leg is DELETED (it refused the correct prose
         *"(first 3 of 18 ids shown)"* — adversary-r4a SH1; DUAL comment at its old site), and every count
         this fixture introduces is kept off the birth value (a correct refusal may state any of them).
         ⚠ KNOWN BOUND (amendment-11 PX2w, accepted): the leg is ∀ over DIGIT spellings only — the birth value
         restated IN WORDS (*"first ten ids shown"*) survives it (adversary-r4a PX2w, full-suite survivor).
         RE-OPEN TRIGGER: a served refusal found restating a bound in words.
+        r4b-fix (amendment 13 §F-1, as amended by amendment 14 — reading B): a served count must describe the
+        set it names. In EVERY population, after stripping every seeded identifier and the section citations,
+        every integer the reason states is a TRUE count of one of the fixture's sets — ``admitted`` =
+        {len(shown), count, count − len(shown), legacy_count, count + legacy_count}, derived per population —
+        and the constant's birth value is kept OUT of that set wherever ``birth ≠ len(shown)`` (wherever
+        "N = the constant" would BE a lie). This kills adversary-r4b PXlie, ``(first 10 of 2 ids shown)``
+        below the cap, for every birth > 2. ⚠ KNOWN BOUND (amendment 14, accepted): a lie that coincides with
+        a DIFFERENT true count — ``(first 3 of 2 ids shown)`` when ``legacy_count == 3`` — is admitted; no
+        honest build derives N from the legacy count, and the only plausible wrong derivation (the constant)
+        is guarded out. RE-OPEN TRIGGER: a served refusal found stating a sample size that equals another
+        fixture count and not ``len(shown)``.
 
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
@@ -893,15 +969,42 @@ class TestAgentMigrateScopeKeyed63cIA:
             # rows") can never trip the birth-value leg below (arithmetic alignment — CLAUDE.md FIXTURES MUST
             # DISCRIMINATE, axis 3). The builder picks the birth value (R-3: not normative), so the guard
             # is derived from it, never assumed.
-            while trap_count in (birth_bound, birth_bound - legacy_count):
+            # r4b-fix (amendment 13 §W-1, adversary-r4b F-2 — SATISFIABILITY): the DERIVED remainder
+            # ``trap_count − id_bound`` ("…, 15 more") is a count a correct refusal may state too, so it is
+            # kept off the birth value as well (birth 15 + remainder prose was a correct build refused here).
+            while trap_count in (birth_bound, birth_bound - legacy_count, birth_bound + id_bound):
                 trap_count += 1
             while legacy_count in (birth_bound, birth_bound - trap_count):
                 legacy_count += 1
-            fixture_counts = {id_bound, trap_count, legacy_count, trap_count + legacy_count}
+            fixture_counts = {
+                id_bound, trap_count, legacy_count, trap_count + legacy_count, trap_count - id_bound
+            }
             assert birth_bound not in fixture_counts, (
                 f"fixture self-check: a fixture count {sorted(fixture_counts)} equals the birth value "
                 f"{birth_bound}"
             )
+        # r4b-fix (amendment 13 §F-1 / amendment 14 — reading B): the counts a CORRECT refusal may state, per
+        # population — every one a TRUE count of a set the fixture seeds. ``shown_count`` is the number of ids
+        # the refusal must name (the assertion below pins it), so a stated sample size must equal it.
+        shown_count = min(id_bound, trap_count)
+        if birth_bound != shown_count:
+            # Wherever "N = the constant" would be a LIE, keep the constant's birth value off every admitted
+            # count (``below-cap``: move legacy off ``birth`` and ``birth − count``; ``perturbed-bound``: the
+            # r4b / F-2 loops above already did it). ``at-cap`` / ``above-cap``: shown == birth, legitimately.
+            while legacy_count in (birth_bound, birth_bound - trap_count):
+                legacy_count += 1
+        admitted_counts = {
+            shown_count,
+            trap_count,
+            trap_count - shown_count,
+            legacy_count,
+            trap_count + legacy_count,
+        }
+        assert birth_bound == shown_count or birth_bound not in admitted_counts, (
+            f"fixture self-check: the birth value {birth_bound} is an admitted TRUE count "
+            f"{sorted(admitted_counts)} in a population where it is not len(shown)={shown_count} — the F-1 "
+            f"leg could not tell 'N = the constant' from a true count"
+        )
         await self._seed_clean_legacy(connection, count=legacy_count)
         trap_ids = [f"owned_trap_{trap_index:03d}" for trap_index in range(trap_count)]
         for trap_index, trap_id in enumerate(trap_ids):
@@ -950,32 +1053,37 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"the refusal must TEACH the remedy (§2.1/§6: adjudicate the rows BY HAND before migrating) "
             f"— an operator at cutover reads this first. got {reason!r}"
         )
+        # r4a (amendment-9 MP-R4-7) / r4b (amendment-11 MP-A2): strip every IDENTIFIER the fixture seeded —
+        # derived from ``before`` snapshot (each row's string values and record ids, longest first so no
+        # seeded string is left half-stripped), never a hand-list of columns — so a correct refusal naming a
+        # row's id, name or owner (``other_principal_10`` at a birth value of 10) cannot false-RED.
+        # Purely-digit strings are NOT stripped (they would erase the very token these legs read).
+        # r4b-fix (amendment 13 §F-1 / amendment 14): the residue is now computed in EVERY population (it fed
+        # only ``perturbed-bound`` before — additive: no leg deleted, so no DUAL row for the move).
+        stated_integers = self._integers_stated_beside_the_seeded_identifiers(
+            reason, before=before, full_count=trap_count
+        )
+        untrue_counts = sorted(set(stated_integers) - admitted_counts)
+        assert not untrue_counts, (
+            f"the refusal states {untrue_counts} — not a TRUE count of any set this fixture seeds "
+            f"(admitted {sorted(admitted_counts)}: the {shown_count} ids shown, the {trap_count} offending "
+            f"rows, the {trap_count - shown_count} not shown, the {legacy_count} clean legacy rows, their "
+            f"{trap_count + legacy_count} total). A served count must describe the set it names — the sample "
+            f"size is the number of ids ACTUALLY named, min(_REFUSAL_ID_SAMPLE_SIZE, count), never the "
+            f"constant itself (amendment 13 §F-1 / adversary-r4b PXlie: '(first 10 of 2 ids shown)'): "
+            f"{reason[:400]!r}"
+        )
         if trap_population == "perturbed-bound":  # r4a (amendment-9 MP-R4-7): the PROSE follows the constant
-            # r4b (amendment-11 MP-A2): strip every IDENTIFIER the fixture seeded — derived from ``before``
-            # snapshot (each row's string values and record ids, longest first so no seeded string is left
-            # half-stripped), never a hand-list of columns — so a correct refusal naming a row's id, name or
-            # owner (``other_principal_10`` at a birth value of 10) cannot false-RED. Purely-digit strings are
-            # NOT stripped (they would erase the very token this leg reads).
-            seeded_identifiers: set[str] = set()
-            for row in before:
-                for value in row.values():
-                    if isinstance(value, RecordID):
-                        seeded_identifiers.update((str(value), str(value.id)))
-                    elif isinstance(value, str):
-                        seeded_identifiers.add(value)
-            residue = reason
-            for seeded in sorted(seeded_identifiers, key=len, reverse=True):
-                if seeded and not seeded.isdigit():
-                    residue = residue.replace(seeded, " ")
-            residue = re.sub(rf"\b{trap_count}\b", " ", residue)  # the FULL count, every occurrence
-            residue = re.sub(r"§\d+(?:\.\d+)*", " ", residue)
-            stated_integers = [int(token) for token in re.findall(r"\d+", residue)]
             assert birth_bound not in stated_integers, (
                 f"the refusal PROSE restates the BIRTH sample size {birth_bound} while the slice follows the "
                 f"PATCHED constant {id_bound} — two sources of one policy, in served text (amendment-9 "
                 f"MP-R4-7 / adversary-r4 PX2). Derive the number from _REFUSAL_ID_SAMPLE_SIZE at call time "
-                f"(f\"first {{sample_size}} of {{count}} ids shown\") or leave it out: {reason[:400]!r}"
+                f"(f\"first {{shown}} of {{count}} ids shown\", shown = the ids ACTUALLY named) or leave it "
+                f"out: {reason[:400]!r}"
             )
+            # DUAL (r4b-fix, amendment 13 §F-1 (i) — RE-KEYED prose, D5): this message taught
+            # ``first {sample_size} of {count}`` — read as N = the CONSTANT, it is adversary-r4b PXlie's
+            # form. It now teaches ``first {shown} of {count}``. The assertion is unchanged.
             # DUAL (r4b, amendment-11 MP-A2 — DELETED, not re-keyed): r4a's SAMPLE-SIZE PHRASE leg (the
             # ``first N`` / ``N … shown`` / ``showing N`` regex asserting each stated size == the PATCHED
             # bound). Virtue it carried: a stated sample size that is neither the birth value NOR the patched

@@ -9,11 +9,14 @@ at P8a (the store tests now run against the real local SurrealDB dev server via
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from hypothesis.configuration import set_hypothesis_home_dir
 from loremaster.logging_setup import LORE_NAMESPACES
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
@@ -26,6 +29,15 @@ from loremaster.logging_setup import LORE_NAMESPACES
 _TESTS_DIR = str(Path(__file__).parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
+
+# r4b-fix (packet 63c, amendment 13 §G4 rider): ``hypothesis`` writes its CACHES (the unicode charmap, the
+# per-module constants scan) under ``<cwd>/.hypothesis`` even with ``database=None`` — measured 2026-09-25 on
+# hypothesis 6.168.1. Redirect its home OUTSIDE the tree, per-user, so no suite run writes into the repo
+# (the in-image conformance run mounts the repo ``:ro``; hypothesis already swallows a failed cache write
+# there — ``except Exception: pass`` in ``internal/charmap.py`` / ``internal/constants_ast.py`` — so this is
+# tree hygiene, not a correctness fix). ``set_hypothesis_home_dir`` is the package's own seam.
+_HYPOTHESIS_HOME = Path(tempfile.gettempdir()) / f"lore-hypothesis-{os.getuid()}"
+set_hypothesis_home_dir(_HYPOTHESIS_HOME)
 
 # The env-var NAME the suite's fixtures reference for the REQUIRED P8c
 # ``anthropic`` block. Mirrors the production ``lore.yaml`` (api_key_env:

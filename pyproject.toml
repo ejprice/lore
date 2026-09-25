@@ -68,6 +68,7 @@ dev = [
     # baked for conformance, never a production import (do not read "test-only" as "absent
     # from the image"). It ships `py.typed`, so no mypy override is needed.
     "coverage>=7",
+    "hypothesis>=6.168.1",
 ]
 
 # ---------------------------------------------------------------------------

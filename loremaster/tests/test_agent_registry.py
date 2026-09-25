@@ -98,6 +98,8 @@ from _surreal_harness import (
     run,
     unique_database,
 )
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from loremaster.agents import (
     AGENT_NAME_PATTERN,
     AGENT_STATUSES,
@@ -1900,7 +1902,10 @@ class TestTheIdentifierCharsetTextHasOneSpelling63cIA:
 # ``_LEGAL_IDENTIFIER_WITNESSES`` is not looked up). r4a (amendment-9 R-2): that is what the legs OBSERVE;
 # a ∀ over every spelling is not something fixture witnesses can deliver, and this header no longer
 # claims it (the r4 wording "whatever it spells" was falsified by adversary-r4 G1, a narrowing conjunct
-# that survived the full suite).
+# that survived the full suite). r4b-fix (amendment 13 §G4): the ∀ is now a separate GENERATED leg — witnesses
+# drawn from the identity language itself (``from_regex`` over ``lorerunes.AGENT_NAME_PATTERN``), 200
+# derandomized examples, oracle-equal to ``lorerunes.is_legal_identifier`` — so a narrowing conjunct on an
+# axis NO hand-listed witness carries (adversary-r4b G4: doubled separators) is in its sample space.
 # =========================================================================== #
 
 
@@ -1928,6 +1933,30 @@ async def _traffic_line_lookups(attribution: str) -> list[str]:
         cast(Any, context), agent=None, session=None, attributions=(attribution,)
     )
     return spy.lookups
+
+
+def _the_identity_language() -> st.SearchStrategy[str]:
+    """r4b-fix (amendment 13 §G4): the legal identity LANGUAGE as a generator — ``from_regex`` over THE
+    pattern object ``lorerunes.AGENT_NAME_PATTERN`` (resolved at draw time; it MOVES there in i-a),
+    ``fullmatch=True``.
+    Deriving from the pattern is not circular for the SKIP-gate leg: its property is "the gate agrees with the
+    predicate everywhere", and the pattern's own text is pinned elsewhere."""
+    import re
+
+    import lorerunes
+
+    identity_pattern: re.Pattern[str] = lorerunes.AGENT_NAME_PATTERN
+    return st.from_regex(identity_pattern, fullmatch=True)
+
+
+def _text_the_shared_predicate_rejects() -> st.SearchStrategy[str]:
+    """r4b-fix (amendment 13 §G4): arbitrary text the SHARED predicate rejects (resolved at draw time)."""
+    import lorerunes
+
+    def _rejected_by_the_shared_predicate(value: str) -> bool:
+        return not lorerunes.is_legal_identifier(value)
+
+    return st.text().filter(_rejected_by_the_shared_predicate)
 
 
 class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
@@ -1987,6 +2016,58 @@ class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
         assert not looked_up, (
             f"the SKIP gate looked up value(s) that cannot BE an identity (R8's read budget; amendment-6 "
             f"MP-1 §3): {looked_up!r}"
+        )
+
+    # r4b-fix (amendment 13 §G4): the ORACLE-EQUALITY legs — the ∀ the hand-listed corpus above is not.
+    # PURE and in-memory (the spy registry; no store, no network), so 200 examples cost milliseconds under
+    # ``-n 12``. ``derandomize=True`` fixes the example set per test (deterministic under xdist, the failing
+    # example printed by the framework); ``database=None`` writes no ``.hypothesis/`` into the tree (and the
+    # in-image conformance run mounts the repo ``:ro``); ``deadline=None`` because a loaded ``-n 12`` box is
+    # not a performance test. The strategies are DEFERRED: ``lorerunes.AGENT_NAME_PATTERN`` /
+    # ``is_legal_identifier`` do not exist before i-a, so resolving them at collection time would error the
+    # whole module; deferred, each leg is RED at HEAD for exactly that reason and nothing else.
+    @settings(derandomize=True, max_examples=200, database=None, deadline=None)
+    @given(attribution=st.deferred(_the_identity_language))
+    def test_the_SKIP_gate_agrees_with_the_SHARED_predicate_over_the_GENERATED_identity_language(
+        self, attribution: str
+    ) -> None:
+        """⚠ RED before i-a (the pattern has not MOVED to ``lorerunes``). ∀ values GENERATED from the ONE
+        pattern object (``from_regex(lorerunes.AGENT_NAME_PATTERN, fullmatch=True)``): the gate looks the
+        value up EXACTLY when the shared predicate accepts it — ``looked_up_once ==
+        is_legal_identifier(value)`` — and never more than once. The oracle is the predicate, not the pattern,
+        so a generated value the predicate rejects (should the generator ever emit one) is still judged
+        correctly. Kills adversary-r4b G4 (a
+        private ``or "--" in attribution or "__" in attribution`` at the gate) and every narrowing conjunct on
+        an axis of the language, named or not; the hand-listed baseline legs above stay as NAMED controls."""
+        import lorerunes
+
+        lookups = asyncio.run(_traffic_line_lookups(attribution))
+        assert lookups in ([], [attribution]), (
+            f"the SKIP gate read the registry {len(lookups)} time(s) for ONE attribution {attribution!r}: "
+            f"{lookups!r}"
+        )
+        looked_up_once = lookups == [attribution]
+        assert looked_up_once == lorerunes.is_legal_identifier(attribution), (
+            f"the SKIP gate {'LOOKED UP' if looked_up_once else 'SKIPPED'} {attribution!r}, which the SHARED "
+            f"decision {'rejects' if looked_up_once else 'accepts'} — a private decider at the gate's call "
+            f"site (amendment 13 §G4 / adversary-r4b G4: a narrowing conjunct on an axis no hand-listed "
+            f"witness carries)"
+        )
+
+    @settings(derandomize=True, max_examples=200, database=None, deadline=None)
+    @given(value=st.deferred(_text_the_shared_predicate_rejects))
+    def test_the_SKIP_gate_never_looks_up_GENERATED_text_the_SHARED_predicate_rejects(
+        self, value: str
+    ) -> None:
+        """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). The hostile companion of the
+        leg above: ∀ arbitrary text the shared predicate REJECTS (``st.text()`` filtered by ``not
+        is_legal_identifier``), the gate performs ZERO registry reads — ``looked_up_once is False`` — so a
+        gate that WIDENS past the shared charset reds on a generated shape, not only on the hand-listed
+        ``_HOSTILE_IDENTIFIERS``."""
+        lookups = asyncio.run(_traffic_line_lookups(value))
+        assert lookups == [], (
+            f"the SKIP gate looked up {value!r}, which the SHARED predicate rejects — it cannot BE an "
+            f"identity (R8's read budget; amendment 13 §G4 hostile companion): {lookups!r}"
         )
 
 
@@ -2401,14 +2482,33 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
     ``importlib`` lookups all spell it), any other import alias or ``as`` rebinding, a ``Name`` that
     STORES or DELETES (a rebind to a private rule), a parameter, ``def``, ``global`` or ``except … as`` of
     that name. Clause (iii) is receiver-blind: it inspects every string-valued field of every AST node, so
-    there is no list of forbidden node types to extend. Empty list ⇒ safe.
+    there is no list of forbidden node types to extend. AND (iv) — r4b-fix, amendment 13 §W-5 (a STATIC twin;
+    KB-FXt is CLOSED by the effect leg, amendment 15): no bare ``Name`` of the predicate occurs INSIDE any
+    ``try`` (its body, its handlers, its ``else`` / ``finally``; ``try`` and ``try*``) — a ``try`` around the
+    shared decision is where a SECOND decision hides, in an ``except`` handler that never names the predicate
+    (adversary-r4b FXt: ``try: legal = is_legal_identifier(value)`` / ``except Exception:`` → a PRIVATE regex
+    decides; full suite 11486/0 at r4b). Empty list ⇒ safe.
 
     Scope, stated honestly (the r4a sentence "the ``try`` is the tell: it subsumes … FXf (any fallback)"
     over-claimed — adversary-r4a FXh, a ``try``-free ``getattr`` with a NON-silent private fallback,
     falsified it): (ii) catches X3 / X3b / FXf / FXg / a bare ``except:``; (iii) catches FXh, X3d and every
-    lookup that SPELLS the name. ⚠ KNOWN BOUND: a lookup that never spells the name in one token — an
-    OBFUSCATED name (``"is_legal_" + "identifier"``, ``"".join(…)``) — is adversarial-only and survives
-    (``test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named``)."""
+    lookup that SPELLS the name; (iv) catches FXt wherever the guarded call NAMES the predicate.
+    STATIC REACH — THE EFFECT LEG IS THE ∀ (amendment 15): these clauses are the TEACHING TWINS that tell a
+    builder WHICH line broke the shape; they cannot see a lookup that never spells the name in one token
+    (an OBFUSCATED name —
+    ``test_the_STATIC_allowlist_cannot_see_an_OBFUSCATED_predicate_name_the_effect_leg_does``)
+    nor a ``try`` around a local ALIAS of the predicate (FXt on the uncollapsed helper —
+    REPORT-contract-63c-i-a-r4b-fix §FORK F5-REACH). The runtime property — the shared decision is REACHED
+    and TRUSTED — is
+    ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``,
+    which kills both. Neither this scanner nor the effect leg may be deleted on the belief that the other
+    covers it.
+    ⚠ NOT COVERED HERE, and covered ELSEWHERE — do not delete those pins believing this allowlist covers it:
+    a STAR-IMPORT SHADOW placed after the honest import (``from _private_rules import *`` rebinding the name
+    without ever spelling it — adversary-r4b FXs) is invisible to every clause above. It is killed by the
+    r3/r4 SHARING pins (``TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA::
+    test_the_identifier_decision_is_the_SHARED_is_legal_identifier`` ``[name-fake]`` / ``[session-fake]``,
+    measured by adversary-r4b §4), which patch THE shared object and watch the fake follow it."""
     violations: list[str] = []
     top_level = [
         node
@@ -2434,6 +2534,13 @@ def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
                     f"line {getattr(inner, 'lineno', 0)}: a `try` (line {getattr(try_node, 'lineno', 0)}) "
                     f"wraps a lorerunes "
                     f"import: {ast.unparse(inner)}"
+                )
+            # clause (iv) — r4b-fix (amendment 13 §W-5): the predicate's Name anywhere inside ANY `try`.
+            if isinstance(inner, ast.Name) and inner.id == _PREDICATE_NAME:
+                violations.append(
+                    f"line {getattr(inner, 'lineno', 0)}: `{_PREDICATE_NAME}` occurs INSIDE a `try` (line "
+                    f"{getattr(try_node, 'lineno', 0)}) — an `except` around the shared decision is where a "
+                    f"second, private decision hides (adversary-r4b FXt)"
                 )
     return violations
 
@@ -2493,9 +2600,12 @@ def test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_pred
     full suite with this pin and the effect pin green): clause (iii) is an ALLOWLIST — the name occurs only
     as that ONE module-top import and as bare ``Name`` reads; any other occurrence (an attribute re-read, a
     string constant spelling it, a rebind, a second import) is a violation. What it covers, precisely:
-    every guard that SPELLS the predicate's name. ⚠ KNOWN BOUND: an OBFUSCATED name
-    (``test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named``). The effect pin above stays for the
-    SILENT-skip property (adversary-r4a FXhS proves it fires). Two pins, two properties.
+    every guard that SPELLS the predicate's name. STATIC REACH — THE EFFECT LEG IS THE ∀ (amendment 15):
+    an OBFUSCATED name and a ``try`` around a local alias are outside this pin's reach and inside
+    ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``'s
+    (r4b-fix; the amendment-11 obfuscation KNOWN BOUND is CLOSED by that leg). The effect pin above stays
+    for the SILENT-skip property (adversary-r4a FXhS proves it fires). Three pins, three
+    properties; none may be deleted believing another covers it.
 
     HEAD CONTROL (anti-vacuity): while the predicate is ABSENT the guard is legitimate (amendment-5 FORK-C),
     and this scanner must SEE it — at HEAD the file's guarded call-time import is reported as a violation.
@@ -2519,6 +2629,70 @@ def test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_pred
         "bare reads — any guard, whatever it catches, looks up or falls back to, is a second path to an "
         "identity decision:\n  " + "\n  ".join(violations)
     )
+
+
+class _SharedDecisionReached(Exception):  # noqa: N818 - a sentinel, not an error condition
+    """r4b-fix (amendment 15): raised by the stub that replaces THE shared predicate — proof the shared
+    decision was REACHED. The fake must PROPAGATE it; swallowing it is a second decision."""
+
+
+@pytest.mark.parametrize("field", ["name", "session"])
+async def test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    """r4b-fix (amendment 15 — FORK F5-REACH ruled (b); KB-FXt CLOSED; amendment-11's obfuscation bound
+    CLOSED): the property is RUNTIME — the shared decision's outcome IS the fake's outcome. THE shared
+    predicate is replaced, at every module-level binding of THE object (``patch_shared_object_everywhere``,
+    ``expect_in`` its ``lorerunes`` home), by a stub that RAISES a sentinel for ONE field's LEGAL value (and
+    delegates for every other value). A fake ``register`` of that LEGAL identity must PROPAGATE the sentinel:
+    no ``except`` may swallow the shared decision, whatever it wraps (a direct call, a local alias of the
+    helper's return, an obfuscated lookup) and whatever the handler spells. ∀ fields (name, session — a
+    ``try`` around ONE field's check is caught on that field). Kills adversary-r4b FXt on BOTH helper shapes
+    (the uncollapsed helper's alias and the collapsed direct call); both honest shapes stay GREEN (the
+    exception propagates through an alias exactly as through a direct call). Wider than FXt by design: a fake
+    that never CONSULTS the shared predicate for a legal-looking value does not raise either → RED. The
+    static twins (the allowlist, clause (iv)) tell a builder WHICH line broke the shape; this leg is the ∀.
+
+    HEAD CONTROL (anti-vacuity, the same early return as the silent-skip effect pin): while the predicate is
+    ABSENT the fake's guard is legitimate (amendment-5 FORK-C), and the hostile ``"fixer-b\\n"`` DOES
+    register — the instrument can see a skipped decision."""
+    import lorerunes
+
+    shared_predicate = getattr(lorerunes, "is_legal_identifier", None)
+    if shared_predicate is None:
+        fake = FakeAgentRegistry()
+        await fake.register(_FAKE_SKIP_HEAD_CONTROL, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+        assert len(fake.db.agents) == 1, (
+            "CONTROL: at HEAD (predicate absent) the fake's guard must visibly SKIP the identity leg — "
+            "otherwise this instrument cannot observe a skipped shared decision"
+        )
+        return
+    target = _LEGAL_NAME if field == "name" else _LEGAL_SESSION
+    assert shared_predicate(target), f"CONTROL: the {field} witness {target!r} must be LEGAL"
+
+    def _raising_stub(value: str) -> bool:
+        if value == target:
+            raise _SharedDecisionReached(f"THE shared predicate was consulted for the {field} {value!r}")
+        return bool(shared_predicate(value))
+
+    patched = patch_shared_object_everywhere(
+        monkeypatch, "is_legal_identifier", shared_predicate, _raising_stub
+    )
+    fake = FakeAgentRegistry()
+    outcome: str | None = "returned normally — the fake REGISTERED the identity"
+    try:
+        await fake.register(_LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+    except _SharedDecisionReached:
+        outcome = None
+    except Exception as error:  # noqa: BLE001 - any OTHER outcome is the finding; name it
+        outcome = f"raised {type(error).__name__} instead: {error}"
+    assert outcome is None, (
+        f"the fake did not PROPAGATE the shared decision for the LEGAL {field} {target!r}: it {outcome}. "
+        f"An `except` around the shared decision (a direct call OR a local alias of it) is a SECOND, private "
+        f"decision (amendment 15 / adversary-r4b FXt), and a fake that never consults the shared predicate "
+        f"is routing without sharing. Patched: {patched}"
+    )
+    assert fake.db.agents == {}, f"a fake register that raised stored a row: {fake.db.agents!r}"
 
 
 _GUARDED_CALL_TIME_IMPORT = (
@@ -2642,6 +2816,40 @@ def test_the_fake_import_shape_scanner_names_every_guard_POSITIVE_CONTROL(source
             "            raise ValueError('blank role')\n",
             id="the-collapsed-direct-call-post-build-fake",
         ),
+        # r4b-fix (amendment 13 §W-5 — clause (iv)'s negatives): BOTH honest shapes beside an UNRELATED
+        # ``try`` that never names the predicate (a gate that refuses every ``try`` refuses honest code).
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            "class FakeAgentRegistry:\n"
+            "    @staticmethod\n"
+            "    def _shared_identifier_predicate():\n"
+            "        return is_legal_identifier\n"
+            "    @staticmethod\n"
+            "    def _refuse(name, session, limit):\n"
+            "        try:\n"
+            "            bound = int(limit)\n"
+            "        except ValueError:\n"
+            "            bound = 0\n"
+            "        identifier_decision = FakeAgentRegistry._shared_identifier_predicate()\n"
+            "        for value in (name, session):\n"
+            "            if not identifier_decision(value) or bound < 0:\n"
+            "                raise ValueError('illegal')\n",
+            id="the-honest-post-build-fake-beside-an-unrelated-try",
+        ),
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            "class FakeAgentRegistry:\n"
+            "    @staticmethod\n"
+            "    def _refuse(name, session, role):\n"
+            "        for value in (name, session):\n"
+            "            if not is_legal_identifier(value):\n"
+            "                raise ValueError('illegal')\n"
+            "        try:\n"
+            "            role.encode('ascii')\n"
+            "        except UnicodeEncodeError:\n"
+            "            raise ValueError('role') from None\n",
+            id="the-collapsed-post-build-fake-beside-an-unrelated-try",
+        ),
     ],
 )
 def test_the_fake_import_shape_scanner_stays_quiet_on_the_safe_shape_NEGATIVE_CONTROL(source: str) -> None:
@@ -2751,6 +2959,69 @@ def test_the_fake_predicate_ALLOWLIST_names_every_other_occurrence_POSITIVE_CONT
     )
 
 
+# r4b-fix (amendment 13 §W-5 — clause (iv), the STATIC twin of amendment 15's effect leg): every source below
+# carries the HONEST module-top import, names the predicate ONLY as bare Load ``Name`` reads (clause (iii)
+# satisfied) and wraps no lorerunes import (clause (ii)) — ONLY clause (iv) can report it, and the assertion
+# keys on clause (iv)'s own text. The first is adversary-r4b's full-suite survivor FXt in its direct-call
+# form.
+_FXT_PRIVATE_FALLBACK = f"({_PRIVATE_RULE})(value)"  # REUSES the file's one private-rule fixture
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            _HONEST_TOP_IMPORT + "import re\ndef refuse(value):\n"
+            "    try:\n"
+            "        legal = is_legal_identifier(value)\n"
+            "    except Exception:\n"
+            f"        legal = {_FXT_PRIVATE_FALLBACK}\n"
+            "    if not legal:\n"
+            "        raise ValueError('illegal')\n",
+            id="FXt-try-around-the-call-private-fallback-in-the-handler",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "import re\ndef refuse(value):\n"
+            "    try:\n"
+            f"        legal = {_FXT_PRIVATE_FALLBACK}\n"
+            "    except re.error:\n"
+            "        legal = is_legal_identifier(value)\n"
+            "    if not legal:\n"
+            "        raise ValueError('illegal')\n",
+            id="private-rule-first-the-shared-predicate-only-in-the-handler",
+        ),
+        pytest.param(
+            _HONEST_TOP_IMPORT + "import re\ndef refuse(value):\n"
+            "    try:\n"
+            "        legal = is_legal_identifier(value)\n"
+            "    except* Exception:\n"
+            f"        legal = {_FXT_PRIVATE_FALLBACK}\n"
+            "    if not legal:\n"
+            "        raise ValueError('illegal')\n",
+            id="FXt-except-star-form",
+        ),
+    ],
+)
+def test_the_fake_predicate_is_never_named_inside_a_TRY_POSITIVE_CONTROL(source: str) -> None:
+    """r4b-fix (amendment 13 §W-5) — clause (iv) of ``_fake_predicate_import_violations`` reports the
+    predicate's ``Name`` inside any ``try`` (body, handlers, ``else``, ``finally``; ``try`` and ``try*``),
+    naming its own text so clauses (i)–(iii) cannot answer for it. The negatives — both honest post-build
+    shapes beside an UNRELATED ``try``, and R-A (ii)'s submodule import beside one — live in
+    ``test_the_fake_import_shape_scanner_stays_quiet_on_the_safe_shape_NEGATIVE_CONTROL``. STATIC REACH —
+    THE EFFECT LEG IS THE ∀ (amendment 15): clause (iv) sees a ``try`` only where the guarded call NAMES the
+    predicate, so it is blind to FXt on the UNCOLLAPSED helper (the ``try`` wraps a local alias —
+    REPORT-contract-63c-i-a-r4b-fix §FORK F5-REACH, measured);
+    ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``
+    kills FXt on both shapes."""
+    violations = _fake_predicate_import_violations(ast.parse(source))
+    assert any("occurs INSIDE a `try`" in violation for violation in violations), (
+        f"clause (iv) did not name the predicate inside a `try`: {violations!r}\n{source}"
+    )
+    assert not any(f"`{_PREDICATE_NAME}` occurs as" in violation for violation in violations), (
+        f"CONTROL: clause (iii) fired too, so this source does not isolate clause (iv): {violations!r}"
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -2767,14 +3038,26 @@ def test_the_fake_predicate_ALLOWLIST_names_every_other_occurrence_POSITIVE_CONT
         ),
     ],
 )
-def test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named(source: str) -> None:
-    """⚠ KNOWN BOUND (amendment-11 MP-A1): a lookup whose name is ASSEMBLED at runtime never spells
-    ``is_legal_identifier`` in one token, so the allowlist cannot see it — an adversarial-only door (anyone
-    who can commit here can already ship anything), not a defect of a gate built for the HONEST builder
-    who leaves a guard behind. This control asserts the hole EXISTS and REDS the day someone closes it.
-    RE-OPEN TRIGGER (verbatim from #138): the threat model changes — untrusted contributors or a hosted
-    deployment (packet 39 consults it)."""
+# DUAL (r4b-fix, amendment 15 — RE-KEYED, renamed from
+# ``test_KNOWN_BOUND_an_OBFUSCATED_predicate_name_is_NOT_named``): this control asserted the amendment-11
+# obfuscation KNOWN BOUND (the hole EXISTS; RED the day someone closes it; re-open trigger #138's
+# threat-model change). The bound is CLOSED by
+# ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``
+# — an obfuscated lookup still reads THE patched object, meets the raising stub, and is caught if
+# swallowed. Virtue kept: the
+# control still documents the STATIC allowlist's reach (it stays quiet on an assembled name — a builder
+# learns what the shape scanner can and cannot tell them). Dropped deliberately: the KNOWN-BOUND message and
+# its re-open trigger (a closed bound carries no trigger).
+def test_the_STATIC_allowlist_cannot_see_an_OBFUSCATED_predicate_name_the_effect_leg_does(
+    source: str,
+) -> None:
+    """The STATIC allowlist's reach, documented (amendment 15): a lookup whose name is ASSEMBLED at runtime
+    never spells ``is_legal_identifier`` in one token, so the shape scanner stays quiet on it. That is not a
+    hole in the suite —
+    ``test_the_fake_PROPAGATES_the_shared_decision_on_a_LEGAL_identity_once_the_predicate_exists``
+    observes the runtime property and kills it. The allowlist cannot see this spelling; the effect leg
+    does."""
     assert _fake_predicate_import_violations(ast.parse(source)) == [], (
-        "KNOWN BOUND — threat model: the honest builder (amendment-11 MP-A1); if you closed it deliberately, "
-        f"delete this control and say so. The allowlist now names an obfuscated lookup:\n{source}"
+        "the STATIC allowlist now names an ASSEMBLED predicate name — its reach grew. If that was "
+        f"deliberate, update this reach control (the effect leg is the ∀ either way):\n{source}"
     )
