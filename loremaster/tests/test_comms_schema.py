@@ -217,6 +217,23 @@ _HOSTILE_IDENTIFIERS = (
     # corpus: the register MOVE pins parametrise over THIS tuple (test_agent_registry.py), never a
     # narrower local copy.
     "z" * 65,  # one over the 64-char cap
+    # r4a (amendment-8 KB-1): the DOTTED twin — a drift adversary-r2 N1c (at the home) and adversary-r4 G2
+    # (a reworded private disjunct at the SKIP gate) BOTH built; every corpus-parametrised pin now carries
+    # it. Appended LAST so every pre-existing index-derived param id (``hostile-NN-…``) is unchanged.
+    "fixer.b",
+)
+
+#: r4a (amendment-9 MP-R4-3): the LEGAL side of the ONE corpus — the identity language's boundary points,
+#: so a private NARROWING conjunct at any decision site (adversary-r4 G1: ``or len(attribution) > 32``)
+#: dies on the witness that carries its axis. Parameter-value monoculture on the legal side is the same
+#: defect as on the hostile side (two ≤7-char witnesses let G1 pass 2905/0), and it gets the same cure.
+#: The cap itself (``"a" * 64``) is the witness that kills G1; ``_HOSTILE_IDENTIFIERS`` holds cap+1.
+_LEGAL_IDENTIFIER_WITNESSES = (
+    "a",  # length 1 (the floor)
+    "0z",  # digit-leading
+    "a_b",  # underscore
+    "a-b",  # hyphen
+    "a" * 64,  # AT the 64-char cap (the ceiling — G1's axis)
 )
 
 

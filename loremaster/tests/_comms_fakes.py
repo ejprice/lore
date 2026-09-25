@@ -268,8 +268,12 @@ class FakeAgentRegistry:
         builder deletes the ``try``/``except ImportError`` in its REFACTOR step (the builder brief grants
         exactly that edit); ``test_agent_registry.py::test_the_fake_never_silently_skips_the_identity_
         decision_once_the_predicate_exists`` (amendment-6 MP-3 — an EFFECT pin: with the predicate made
-        unimportable a hostile register must not succeed, whatever the guard's except-clause spells) reds
-        until it does."""
+        unimportable at EVERY ``lorerunes*`` binding a hostile register must not succeed, whatever the
+        guard's except-clause spells) reds until it does. r4a (amendment-9 MP-R4-5): the builder ALSO moves
+        the import to MODULE TOP (``from lorerunes import is_blank, is_legal_identifier``) —
+        ``test_agent_registry.py::test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_
+        predicate_exists`` (a SHAPE pin: a module-level ``ImportFrom`` and no ``try`` around any
+        ``lorerunes*`` import) reds until it does."""
         try:
             from lorerunes import is_legal_identifier  # noqa: PLC0415 - call-time read (mutation-visible)
         except ImportError:  # HEAD-RED accommodation — delete once the build lands the predicate

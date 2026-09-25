@@ -79,6 +79,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
@@ -119,7 +120,7 @@ from loremaster.store.surreal_schema import AGENT_TABLE
 from pydantic import SecretStr
 from render_injection_scaffold import _ROW_FORGE_PAYLOAD
 from surrealdb.errors import ErrorKind, ServerError
-from test_comms_schema import _HOSTILE_IDENTIFIERS
+from test_comms_schema import _HOSTILE_IDENTIFIERS, _LEGAL_IDENTIFIER_WITNESSES
 
 # --- the domain's status vocabulary (the convention this contract decides) ---
 STATUS_ACTIVE = "active"
@@ -1163,11 +1164,17 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
             await registry.close()
             await drop_database(env)
 
-    @pytest.mark.parametrize("valid_value", ["fixer-b", "a", "wave7", "z" * 64])
+    # r4a (amendment-9 MP-R4-3): the r4 values are KEPT (additive — no param deleted, so no DUAL row) and the
+    # SHARED legal corpus ``_LEGAL_IDENTIFIER_WITNESSES`` is appended, so a MOVE guard that narrows on any
+    # axis a witness carries (length 1, digit-leading, ``_``, ``-``, the 64-char cap) refuses a legal caller.
+    @pytest.mark.parametrize(
+        "valid_value", list(dict.fromkeys(("fixer-b", "a", "wave7", "z" * 64, *_LEGAL_IDENTIFIER_WITNESSES)))
+    )
     async def test_register_accepts_a_valid_identifier_positive_control(self, valid_value: str) -> None:
         """POSITIVE CONTROL (fixtures-must-discriminate) — a build whose MOVE charset guard is too
         strict would refuse every real caller while passing the negative pins. A valid name/session
-        registers and writes exactly one row. GREEN at HEAD AND on the correct build."""
+        registers and writes exactly one row. GREEN at HEAD AND on the correct build. Parametrised over
+        the SHARED legal corpus too (r4a, amendment-9 MP-R4-3) — never a narrower local copy."""
         registry, admin_connection, env = await self._real_registry()
         try:
             result = await registry.register(valid_value, session=valid_value, role=ROLE_BUILDER)
@@ -1672,7 +1679,19 @@ class TestTheIdentifierCharsetTextHasOneSpelling63cIA:
         """⚠ RED before i-a, RIGHT reason: ``agents.py`` still DEFINES the pattern (the A4 MOVE is unbuilt)
         and ``surreal_schema._IDENTIFIER_CHARSET_PATTERN`` is a raw-string TWIN of its text (amendment-6:
         the builder rebinds it ``= AGENT_NAME_PATTERN.pattern``, imported from ``lorerunes``). GREEN on
-        the build: one definition, in ``lorerunes``; every other reader goes through the object."""
+        the build: one definition, in ``lorerunes``; every other reader goes through the object.
+
+        REACH PARAMETER, STATED (amendment-8 KB-3 — accepted, not a hole): ``include_scripts=False`` — the
+        same reach the attribute scan above and #124's coverage pin run at; ``scripts/`` holds gates, deploy
+        tooling and wrong-build fixtures, none of which decides identity legality. The bound is
+        self-revealing: flipping the flag without adjudicating ``scripts/c3_wrongbuild_driver.py`` reds
+        this scan on that fixture string. RE-OPEN TRIGGER: a ``scripts/`` module that imports
+        ``lorerunes.is_legal_identifier`` or ``AGENT_NAME_PATTERN`` to DECIDE — at which point this scan's
+        reach grows to ``scripts/``.
+
+        STALE-EXEMPTION KEY (amendment-9 R-3): the stale check below keys on the exemption's PATH only —
+        moot with one entry. RE-OPEN TRIGGER: the day a second exemption enters the SAME file, the key
+        becomes ``(path, binding)`` (else a live sibling masks a stale one)."""
         from _logging_fixtures import assert_scan_reached_every_member, parse_production_trees
 
         assert _IDENTIFIER_CHARSET_TEXT in AGENT_NAME_PATTERN.pattern, (
@@ -1690,7 +1709,11 @@ class TestTheIdentifierCharsetTextHasOneSpelling63cIA:
             "PRIVATE copy of the rule deciding (or able to decide) identity legality beside "
             "lorerunes.is_legal_identifier (amendment-6 MP-1; adversary-r2 N1c / adversary-r3 X1). Fix: "
             "call lorerunes.is_legal_identifier, or read AGENT_NAME_PATTERN.pattern where you need the "
-            "rule's TEXT for prose/DDL — never paste it (a docstring states the rule in words):\n  "
+            "rule's TEXT for prose/DDL — never paste it. A DOCSTRING or served prose QUOTING the rule is a "
+            "second spelling too (amendment-8 KB-4: the P8d natural-language-corpse class — the next rule "
+            "change leaves it false with every gate green): reference the constant "
+            "(`lorerunes.AGENT_NAME_PATTERN` / `.pattern` derived into served text), never quote its "
+            "text:\n  "
             + "\n  ".join(found["private"])
         )
         assert len(found["definition"]) == 1, (
@@ -1834,13 +1857,50 @@ class TestTheIdentifierCharsetTextHasOneSpelling63cIA:
         if kind is not None:
             assert len(classified[kind]) == 1, classified
 
+    # r4a (amendment-8 KB-2 — PINNED KNOWN BOUND, CLAUDE.md "WHEN YOU CANNOT CLOSE A HOLE, PIN IT"): the
+    # reworded / runtime-assembled class is OUTSIDE this gate's threat model (the header: the HONEST
+    # engineer who PASTES). r4's negative controls carried no reworded-class case, so this is the one
+    # control r4a adds. First param = adversary-r4 TWR's text VERBATIM (a full-suite survivor, 2905/0 +
+    # 11428/0 — the bound, measured).
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(
+                '_LEGACY_NAME_RE = re.compile(r"^[0-9a-z][0-9a-z_-]{0,63}$")\n', id="reworded-class-TWR"
+            ),
+            pytest.param(
+                '_NAME_RE = re.compile(r"^[a-z\\d][a-z\\d_-]{0,63}$")\n', id="reworded-digit-escape"
+            ),
+            pytest.param(
+                '_NAME_RE = re.compile("^[a-z0-9]" + "[a-z0-9_-]{0,63}$")\n', id="runtime-assembled"
+            ),
+        ],
+    )
+    def test_KNOWN_BOUND_a_REWORDED_or_ASSEMBLED_charset_is_NOT_named(self, source: str) -> None:
+        """⚠ KNOWN BOUND (amendment-8 KB-2): a charset twin that REWORDS the class (``[0-9a-z]``,
+        ``[a-z\\d]``) or ASSEMBLES the text at runtime evades this text-keyed scan BY DESIGN — it is an
+        adversarial-only door (anyone who can commit here can already ship anything), not a defect of a
+        gate built for the honest paste. This control asserts the hole EXISTS and REDS the day someone
+        closes it. RE-OPEN TRIGGER (verbatim from #138): the threat model changes — untrusted contributors
+        or a hosted deployment (packet 39 consults it)."""
+        classified = _classify_charset_constants(ast.parse(source), "loremaster/loremaster/agents.py")
+        assert classified["private"] == [], (
+            "KNOWN BOUND — threat model: honest paste (amendment-6 §1); if you closed it deliberately, "
+            f"delete this control and say so. The scan now names a reworded/assembled class: {classified}"
+        )
+
 
 # =========================================================================== #
 # 63c-i-a r4 — amendment-6 MP-1 (STOP-rule §3): the ``_comms_traffic_line`` SKIP gate's OWN call site moves
 # with the shared decision (adversary-r3 X1 / KP-X1's shape). A4-bis ruled the gate "reads the home and is
 # NOT rewired"; the decision-mutation pin probes the HOME, never the gate, so a gate deciding privately
-# survived 2807/0. These legs observe the gate's EFFECT — a registry READ — so any private decider at that
-# call site, whatever it spells, is visible.
+# survived 2807/0. These legs observe the gate's EFFECT — a registry READ — so a private decider at that
+# call site is visible when it WIDENS (the hostile corpus is looked up), REPLACES (the shared-decision
+# mutation leaves it looking up), or NARROWS on any axis a legal witness carries (a witness of
+# ``_LEGAL_IDENTIFIER_WITNESSES`` is not looked up). r4a (amendment-9 R-2): that is what the legs OBSERVE;
+# a ∀ over every spelling is not something fixture witnesses can deliver, and this header no longer
+# claims it (the r4 wording "whatever it spells" was falsified by adversary-r4 G1, a narrowing conjunct
+# that survived the full suite).
 # =========================================================================== #
 
 
@@ -1875,13 +1935,21 @@ class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
     mutation it is looked up ZERO times; and ∀ the shared hostile corpus, ZERO lookups (R8's read budget —
     "a value that cannot BE a name is never looked up" — as an EFFECT over the corpus, not one value)."""
 
-    @pytest.mark.parametrize("attribution", [_LEGAL_NAME, _LEGAL_SESSION])
+    # r4a (amendment-9 MP-R4-3): the r4 params (``_LEGAL_NAME``, ``_LEGAL_SESSION``) are KEPT and the SHARED
+    # legal corpus is appended (additive — no param deleted, so no DUAL row). The BASELINE ("looked up
+    # exactly once") now runs at every boundary point, so a narrowing conjunct dies on its witness.
+    @pytest.mark.parametrize(
+        "attribution", list(dict.fromkeys((_LEGAL_NAME, _LEGAL_SESSION, *_LEGAL_IDENTIFIER_WITNESSES)))
+    )
     async def test_the_SKIP_gate_moves_with_the_SHARED_is_legal_identifier(
         self, monkeypatch: pytest.MonkeyPatch, attribution: str
     ) -> None:
-        """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). Two DIFFERENT legal
-        attributions (no parameter monoculture). A gate that decides with a private regex keeps looking
-        the value up under the mutation — X1's door."""
+        """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). DIFFERENT legal
+        attributions (no parameter monoculture) — the two r4 values plus every witness of the shared
+        legal corpus, the 64-char cap included. A gate that decides with a private regex keeps looking
+        the value up under the mutation — X1's door; a gate that NARROWS with a private conjunct never
+        looks the witness up at all — adversary-r4 G1's door (``or len(attribution) > 32``), which the
+        ``"a" * 64`` baseline kills."""
         import lorerunes
 
         assert await _traffic_line_lookups(attribution) == [attribution], (
@@ -1903,9 +1971,15 @@ class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
 
     async def test_the_SKIP_gate_never_looks_up_any_value_of_the_hostile_corpus(self) -> None:
         """∀ ``_HOSTILE_IDENTIFIERS``: ZERO registry reads (GREEN at HEAD — the home rejects every shape
-        today; a gate that widens its private charset past the shared one reds on the shapes it admits).
-        POSITIVE CONTROL first: the spy DOES see a lookup for a legal value."""
-        assert await _traffic_line_lookups(_LEGAL_NAME) == [_LEGAL_NAME], "CONTROL: the spy observes reads"
+        today; a gate that widens its private charset past the shared one reds on the shapes it admits —
+        incl. r4a's dotted ``"fixer.b"``, which kills adversary-r4 G2). POSITIVE CONTROL first: the spy
+        DOES see exactly one lookup for EVERY legal witness (r4a, amendment-9 MP-R4-3 — the control runs
+        over the shared legal corpus, never one value)."""
+        for legal_value in (_LEGAL_NAME, *_LEGAL_IDENTIFIER_WITNESSES):
+            assert await _traffic_line_lookups(legal_value) == [legal_value], (
+                f"CONTROL: the legal witness {legal_value!r} was not looked up exactly once — the spy (or "
+                f"the gate) cannot observe a legal read"
+            )
         looked_up: dict[str, list[str]] = {}
         for value in _HOSTILE_IDENTIFIERS:
             if lookups := await _traffic_line_lookups(value):
@@ -2045,10 +2119,29 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
     # --- r4 (amendment-6 MP-5): the RE-register door (THE QUANTIFIER LAW on MP-E — the mirror above was
     # measured on the CREATE door only; adversary-r3 FX1, the fake healing an unstamped row on
     # re-register, passed 2807/0). Additive — no pin deleted, so no DUAL row.
+    # r4a (amendment-8 KB-5 as CORRECTED by amendment-9 MP-R4-1/-6): a FOURTH sequence — a STAMPED row
+    # re-registered with a DIFFERENT consistent pair (bob = a householded joiner: same session keep K,
+    # different owner — reachable through ``_comms_register``, which admits any principal householded in
+    # the session keep). Additive — no sequence deleted, so no DUAL row.
     _RE_REGISTER_SEQUENCES: dict[str, tuple[tuple[str | None, str | None], tuple[str | None, str | None]]] = {
         "alpha-then-credentialed": ((None, None), ("alice_pid", _PARITY_KEEP)),
         "consistent-then-owner-only": (("alice_pid", _PARITY_KEEP), ("alice_pid", None)),
         "consistent-then-keep-only": (("alice_pid", _PARITY_KEEP), (None, _PARITY_KEEP)),
+        "consistent-then-householded-joiner-pair": (("alice_pid", _PARITY_KEEP), ("bob_pid", _PARITY_KEEP)),
+    }
+    # DUAL (r4a — RE-KEYED, values PRESERVED): r4's absolute leg was an ``if sequence == "alpha-…" / else``
+    # pair; it is now this table, with the r4 values carried byte-for-byte for the three r4 sequences
+    # (alpha → ``("re-registered", None, True, None)``; each mixed pair → ``("refused", "alice_pid", True,
+    # keep:K)``), so a fourth sequence cannot silently fall into the ``else`` branch's REFUSED expectation.
+    #: The ABSOLUTE expected REAL outcome per sequence (never only ``fake == real`` — two builds that both
+    #: heal, or both re-stamp, would agree their way past a parity-only row: adversary-r4 RS1 + FX2 together).
+    #: Built at call time (``keep_scope`` is imported lazily, as every pin in this class does).
+    _RE_REGISTER_EXPECTED_REAL: dict[str, tuple[str, str | None, bool, bool]] = {
+        # (second-call outcome, owner_principal, owner_agent == self, scope == keep_scope(K) [False ⇒ NONE])
+        "alpha-then-credentialed": ("re-registered", None, True, False),
+        "consistent-then-owner-only": ("refused", "alice_pid", True, True),
+        "consistent-then-keep-only": ("refused", "alice_pid", True, True),
+        "consistent-then-householded-joiner-pair": ("re-registered", "alice_pid", True, True),
     }
 
     @staticmethod
@@ -2124,7 +2217,10 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         real vs fake (KP-FX1's shape). ⚠ RED before i-a on the real side (the ``session_keep_id`` kwarg).
         ABSOLUTE expectations too (two builds that both heal would agree): mint-once ∀ rows — the α row
         stays unstamped after the credentialed re-register (MP-F), and a mixed pair after a consistent
-        register is REFUSED (A3 XOR on the re-register path, MP-B) leaving the CREATE stamps intact."""
+        register is REFUSED (A3 XOR on the re-register path, MP-B) leaving the CREATE stamps intact.
+        r4a (amendment-8 KB-5 / amendment-9 MP-R4-6): the fourth sequence — a DIFFERENT consistent pair —
+        re-registers and leaves the FIRST caller's stamps intact, real AND fake (adversary-r4 FX2: the fake
+        re-stamping alone passed 2905/0)."""
         from lorerunes.pdp import keep_scope
 
         first, second = self._RE_REGISTER_SEQUENCES[sequence]
@@ -2135,10 +2231,34 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
             f"real={real!r} fake={fake!r} (amendment-6 MP-5 — a fake that heals or re-stamps on re-register "
             f"lets every fake-driven test observe a scope the production writer never stamps)"
         )
-        if sequence == "alpha-then-credentialed":
-            assert real == ("re-registered", None, True, None), real
-        else:
-            assert real == ("refused", "alice_pid", True, keep_scope(_PARITY_KEEP)), real
+        outcome, owner, owner_agent_is_self, scoped = self._RE_REGISTER_EXPECTED_REAL[sequence]
+        assert real == (outcome, owner, owner_agent_is_self, keep_scope(_PARITY_KEEP) if scoped else None), (
+            f"the REAL writer's RE-register outcome for {sequence!r} is not the ruled one: {real!r} "
+            f"(ruling §2.2 row 2 — a re-register leaves owner_principal / owner_agent / scope UNTOUCHED, "
+            f"from ANY caller; A3 XOR refuses a mixed pair)"
+        )
+
+    async def test_the_REAL_writer_never_re_stamps_a_stamped_row_from_a_DIFFERENT_householded_principal(
+        self,
+    ) -> None:
+        """⚠ RED before i-a (the ``session_keep_id`` kwarg). amendment-9 MP-R4-1 (GATING) — ruling §2.2
+        row 2 pinned ∀ CALLERS, not only ∀ rows: register ``(alice_pid, K)``, re-register ``(bob_pid, K)``
+        (a householded joiner — same session keep, different owner) → the second call re-registers and the
+        row keeps ``owner_principal = alice_pid``, ``owner_agent = self``, ``scope = keep:K``. The r2 pin
+        ``test_agent_governance_63c_i_a.py::…::test_re_register_does_not_restamp_the_governed_triple_mint_once``
+        re-registers with the SAME principal (re-stamping writes identical bytes), and MP-F's rows are
+        UNSTAMPED — so a writer that re-stamps an ALREADY-stamped row from the caller's pair (an ownership
+        TAKEOVER through an ordinary tool call) passed the full suite (adversary-r4 RS1, 11426/0 with the
+        other survivors). KP-RS1's shape, ABSOLUTE expectation (independent of the fake, so a fake that
+        re-stamps too cannot agree its way past it)."""
+        from lorerunes.pdp import keep_scope
+
+        real = await self._real_re_register_outcome(("alice_pid", _PARITY_KEEP), ("bob_pid", _PARITY_KEEP))
+        assert real == ("re-registered", "alice_pid", True, keep_scope(_PARITY_KEEP)), (
+            f"a re-register from a DIFFERENT householded principal changed the governed triple: {real!r} — "
+            f"mint-once is ∀ callers (ruling §2.2 row 2; amendment-9 MP-R4-1): a re-register never re-stamps "
+            f"owner_principal / owner_agent / scope, whoever calls it"
+        )
 
 
 # DUAL (r4, amendment-6 MP-3): the r3 FORK-C rider-2 SOURCE-TEXT pin
@@ -2149,6 +2269,12 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
 # EFFECT pin, which also reds every silent-skip spelling the text pin waved through (adversary-r3 X3
 # ``except Exception:``, a bare ``except:``, ``builtins.ImportError``, ``getattr(lorerunes, …, None)``)
 # AND the originally ruled spelling (X3b).
+# ⚠ ERRATUM (r4a, amendment-9 MP-R4-5 — against amendment-6 MP-3): the deletion above was a DUAL LOSS. The
+# two pins observed DIFFERENT properties — the effect pin observes *silent skip*, the deleted pin observed
+# *the guard outlives its premise* — and adversary-r4 FXf (a guard KEPT with a NON-silent private-regex
+# fallback) separates them: 11428/0 on the full suite with the effect pin green. The presence property is
+# RESTORED below, property-shaped rather than as the r3 spelling (``except ImportError``):
+# ``test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_exists``.
 _FAKE_SKIP_HEAD_CONTROL = "fixer-b\n"  # a hostile name the HEAD guard lets through (finding #210's shape)
 
 
@@ -2164,10 +2290,25 @@ async def test_the_fake_never_silently_skips_the_identity_decision_once_the_pred
     HEAD CONTROL (anti-vacuity, while the predicate is absent the guard is LEGITIMATE — amendment-5 FORK-C):
     the hostile ``"fixer-b\\n"`` DOES register on the fake at HEAD, proving this instrument can SEE a silent
     skip (a pin that could not observe one would pass the post-build leg vacuously). REDs on the build until
-    the builder deletes the guard in REFACTOR (its one granted test-tree edit)."""
+    the builder deletes the guard in REFACTOR (its one granted test-tree edit).
+
+    DUAL (r4a, amendment-9 MP-R4-4 — the simulation's REACH is re-keyed; virtues kept: the HEAD control, the
+    ∀ corpus × {name, session} leg, "any exception is non-silent"): r4 removed the predicate at ONE binding
+    (``monkeypatch.delattr(lorerunes, …)`` — the PACKAGE attribute), so a guard whose ``try`` imports from
+    the defining SUBMODULE never raised and outlived its premise with this pin green (adversary-r4 FXg,
+    full-suite survivor). "Predicate absent" is now simulated at EVERY ``lorerunes*`` module-level binding
+    of THE object (``module_level_bindings_of`` — the ONE by-identity finder; anti-vacuity: ≥ 1 home
+    found), layout-independent (adversary-r4 R-5). The fake's OWN binding (``_comms_fakes``) is not a
+    ``lorerunes*`` module and is deliberately left: a module-top import that still refuses is the honest
+    outcome. What this pin CANNOT see — a guard KEPT with a non-silent fallback (FXf) — is the presence
+    pin's property (``test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_
+    exists``); two pins, two properties."""
+    from _logging_fixtures import module_level_bindings_of
+
     import lorerunes
 
-    if getattr(lorerunes, "is_legal_identifier", None) is None:
+    shared_predicate = getattr(lorerunes, "is_legal_identifier", None)
+    if shared_predicate is None:
         fake = FakeAgentRegistry()
         await fake.register(_FAKE_SKIP_HEAD_CONTROL, session=_LEGAL_SESSION, role=ROLE_BUILDER)
         assert len(fake.db.agents) == 1, (
@@ -2175,7 +2316,17 @@ async def test_the_fake_never_silently_skips_the_identity_decision_once_the_pred
             "otherwise this instrument cannot observe the silent skip it exists to catch"
         )
         return
-    monkeypatch.delattr(lorerunes, "is_legal_identifier")
+    lorerunes_homes = [
+        (module_name, module, attribute)
+        for module_name, module, attribute in module_level_bindings_of(shared_predicate)
+        if _is_lorerunes_module(module_name)
+    ]
+    assert lorerunes_homes, (
+        "ANTI-VACUITY: no lorerunes* module-level binding of is_legal_identifier was found — the "
+        "'predicate absent' simulation would remove nothing, and every leg below would be vacuous"
+    )
+    for _module_name, module, attribute in lorerunes_homes:
+        monkeypatch.delattr(module, attribute)
     silently_registered: list[str] = []
     for hostile_value in _HOSTILE_IDENTIFIERS:
         for field in ("name", "session"):
@@ -2194,5 +2345,190 @@ async def test_the_fake_never_silently_skips_the_identity_decision_once_the_pred
         f"the fake REGISTERED hostile identities while the shared predicate was unavailable: "
         f"{silently_registered} — a surviving guard turns 'predicate absent' into 'skip the check', whatever "
         f"its except-clause spells (amendment-5 FORK-C / amendment-6 MP-3). Fix: delete the HEAD-RED guard; "
-        f"import the predicate at module top (``from lorerunes import is_legal_identifier``)"
+        f"import the predicate at module top (``from lorerunes import is_legal_identifier``). Removed at: "
+        f"{[f'{module_name}.{attribute}' for module_name, _module, attribute in lorerunes_homes]}"
     )
+
+
+# r4a (amendment-9 MP-R4-5, reading (b) — the presence property RESTORED, property-shaped): ALLOWLIST THE SAFE
+# post-build state instead of enumerating the forbidden spellings (the r3 pin keyed on ``except ImportError``
+# and so could never see ``except Exception``, a bare ``except:`` or a fallback — adversary-r3 X3).
+_PREDICATE_NAME = "is_legal_identifier"
+
+
+def _is_lorerunes_module(module_name: str | None) -> bool:
+    """``lorerunes`` itself or one of its submodules (never a sibling such as ``lorerunes_x``) — the ONE
+    home test shared by the effect pin's binding sweep and the shape pin's import scan."""
+    return module_name is not None and (
+        module_name == _PATTERN_HOME_MEMBER or module_name.startswith(f"{_PATTERN_HOME_MEMBER}.")
+    )
+
+
+def _is_lorerunes_import(node: ast.AST) -> bool:
+    """An ``import lorerunes…`` or a level-0 ``from lorerunes… import …`` statement."""
+    if isinstance(node, ast.Import):
+        return any(_is_lorerunes_module(alias.name) for alias in node.names)
+    return isinstance(node, ast.ImportFrom) and node.level == 0 and _is_lorerunes_module(node.module)
+
+
+def _fake_predicate_import_violations(tree: ast.Module) -> list[str]:
+    """How ``tree`` departs from the ONE safe post-build shape of the fake's predicate import: (i) a
+    MODULE-LEVEL ``from lorerunes… import is_legal_identifier`` (a direct child of the module body — never
+    inside a function, an ``if`` or a ``try``), AND (ii) NO ``try`` node anywhere in the file wraps any
+    import from ``lorerunes*``. Empty list ⇒ safe. The ``try`` is the tell: it subsumes X3 (``except
+    Exception``), X3b (the ruled spelling), FXf (any fallback), FXg (the submodule import inside a ``try``)
+    and a bare ``except:``. Each entry names its line."""
+    violations: list[str] = []
+    top_level = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and _is_lorerunes_module(node.module)
+        and any(alias.name == _PREDICATE_NAME for alias in node.names)
+    ]
+    if not top_level:
+        violations.append(
+            f"no MODULE-LEVEL `from lorerunes import {_PREDICATE_NAME}` (a call-time or conditional read "
+            f"is a guard's premise waiting to outlive it)"
+        )
+    try_types = tuple(kind for kind in (ast.Try, getattr(ast, "TryStar", None)) if kind is not None)
+    for try_node in ast.walk(tree):
+        if not isinstance(try_node, try_types):
+            continue
+        for inner in ast.walk(try_node):
+            if _is_lorerunes_import(inner):
+                violations.append(
+                    f"line {getattr(inner, 'lineno', 0)}: a `try` (line {getattr(try_node, 'lineno', 0)}) "
+                    f"wraps a lorerunes "
+                    f"import: {ast.unparse(inner)}"
+                )
+    return violations
+
+
+def test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_exists() -> None:
+    """⚠ RED on the build until the builder deletes the HEAD-RED guard AND imports the predicate at module
+    top (its one granted test-tree edit — the builder brief names exactly this shape). amendment-9 MP-R4-5
+    (restores the property amendment-6 MP-3's deletion lost — see the ERRATUM above the effect pin): once
+    ``lorerunes.is_legal_identifier`` EXISTS, ``_comms_fakes.py`` has a module-level ``ImportFrom`` of it and
+    no ``try`` wraps any ``lorerunes*`` import — so the HEAD-RED guard cannot outlive its premise in ANY
+    spelling, silent or not (adversary-r4 FXf: a guard with a private-regex fallback; FXg: the submodule
+    import inside a ``try`` — both full-suite survivors of r4). The effect pin above stays for what this
+    shape pin cannot see: a guard built WITHOUT ``try`` (a ``getattr(…, None)`` read, X3d). Two pins, two
+    properties.
+
+    HEAD CONTROL (anti-vacuity): while the predicate is ABSENT the guard is legitimate (amendment-5 FORK-C),
+    and this scanner must SEE it — at HEAD the file's guarded call-time import is reported as a violation.
+    Synthetic controls: ``test_the_fake_import_shape_scanner_*`` below."""
+    import _comms_fakes
+
+    import lorerunes
+
+    source = Path(_comms_fakes.__file__).read_text(encoding="utf-8")
+    violations = _fake_predicate_import_violations(ast.parse(source))
+    if getattr(lorerunes, _PREDICATE_NAME, None) is None:
+        assert any("wraps a lorerunes import" in violation for violation in violations), (
+            "CONTROL: at HEAD (predicate absent) the fake's HEAD-RED guard is a `try` around a lorerunes "
+            f"import, and the scanner must SEE it — it reported {violations!r}"
+        )
+        return
+    assert not violations, (
+        "the fake's HEAD-RED guard outlived its premise (amendment-5 FORK-C removal trigger; amendment-9 "
+        "MP-R4-5): once lorerunes.is_legal_identifier exists, _comms_fakes.py must import it at MODULE TOP "
+        "with NO `try` around any lorerunes import — any guard, whatever it catches or falls back to, is a "
+        "second path to an identity decision:\n  " + "\n  ".join(violations)
+    )
+
+
+_GUARDED_CALL_TIME_IMPORT = (
+    "from lorerunes import is_blank\n"
+    "def predicate():\n"
+    "    try:\n"
+    "        from lorerunes{module} import is_legal_identifier\n"
+    "    {handler}\n"
+    "        {fallback}\n"
+    "    return is_legal_identifier\n"
+)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            _GUARDED_CALL_TIME_IMPORT.format(
+                module="", handler="except ImportError:", fallback="return None"
+            ),
+            id="X3b-the-ruled-spelling",
+        ),
+        pytest.param(
+            _GUARDED_CALL_TIME_IMPORT.format(
+                module="", handler="except Exception:  # noqa: BLE001", fallback="return None"
+            ),
+            id="X3-except-Exception",
+        ),
+        pytest.param(
+            _GUARDED_CALL_TIME_IMPORT.format(
+                module="", handler="except:  # noqa: E722", fallback="return None"
+            ),
+            id="bare-except",
+        ),
+        pytest.param(
+            _GUARDED_CALL_TIME_IMPORT.format(
+                module=".identifiers", handler="except ImportError:", fallback="return None"
+            ),
+            id="FXg-submodule-import-inside-a-try",
+        ),
+        pytest.param(
+            _GUARDED_CALL_TIME_IMPORT.format(
+                module="",
+                handler="except ImportError:",
+                fallback='return lambda value: re.fullmatch(r"[a-z]+", value) is not None',
+            ),
+            id="FXf-non-silent-fallback",
+        ),
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            + _GUARDED_CALL_TIME_IMPORT.format(
+                module="", handler="except ImportError:", fallback="return None"
+            ),
+            id="module-top-import-AND-a-guarded-call-time-import",
+        ),
+        pytest.param(
+            "try:\n    from lorerunes import is_legal_identifier\nexcept ImportError:\n"
+            "    is_legal_identifier = None\n",
+            id="module-level-import-inside-a-try",
+        ),
+        pytest.param(
+            "import lorerunes\ndef predicate():\n"
+            "    return getattr(lorerunes, 'is_legal_identifier', None)\n",
+            id="X3d-getattr-no-module-level-import",
+        ),
+    ],
+)
+def test_the_fake_import_shape_scanner_names_every_guard_POSITIVE_CONTROL(source: str) -> None:
+    """Each departure from the safe shape an honest builder could plausibly leave behind is REPORTED — so
+    a green real-file scan is a statement about the file, not about a blind scanner (a probe needs a
+    control). X3d is caught here by clause (i) (no module-level import), and by the effect pin besides."""
+    assert _fake_predicate_import_violations(ast.parse(source)), source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "from lorerunes import is_blank, is_legal_identifier\n"
+            "def predicate():\n    return is_legal_identifier\n",
+            id="the-safe-shape-module-top-import",
+        ),
+        pytest.param(
+            "from lorerunes.identifiers import is_legal_identifier\n"
+            "try:\n    import yaml\nexcept ImportError:\n    yaml = None\n",
+            id="submodule-top-import-and-an-unrelated-try",
+        ),
+    ],
+)
+def test_the_fake_import_shape_scanner_stays_quiet_on_the_safe_shape_NEGATIVE_CONTROL(source: str) -> None:
+    """A gate that refuses honest code gets switched off: the ruled safe shape — a module-top import (from
+    the package or its defining submodule) and a ``try`` that guards something OTHER than ``lorerunes`` —
+    is never flagged."""
+    assert _fake_predicate_import_violations(ast.parse(source)) == [], source

@@ -415,10 +415,16 @@ class TestTheGovernedPopulationSetGrows:
         sweep only what it names. Measured 2026-09-24: of the 15 derived generators, the ones whose EMITTED
         statements are NOT all covered by the hand-list's union (``generate_ddl`` composes principal /
         principal_key / audit) are EXACTLY ``generate_lease_ddl`` + ``generate_floor_calibration_ddl`` —
-        neither emits a relation today, so the reach is a hidden constant, not a live hole. Fixing the
-        scaffold is OUTSIDE 63c (the lead files it). This pin is GREEN today and REDDENS the day the gap
-        GROWS (a third unswept emitter — possibly one that emits a relation) or CLOSES (the scaffold now
-        derives its set: delete this pin deliberately). RE-OPEN TRIGGER: either. DECISION POINT
+        neither emits a relation today, so the reach is a hidden constant, not a live hole. That PREMISE is
+        an OBSERVATION, not a sentence (amendment-9 R-1): ``test_floor_calibration_schema.py::
+        TestTheDdlDecisionRuleIsEnforcedMechanically::test_this_slice_contains_neither_a_relation_table_nor_a_
+        sequence`` (+ ``…::test_every_table_definition_is_IF_NOT_EXISTS``, packet 07) sweeps BOTH unswept
+        slices and reds the day either emits ANY relation statement — incl. a re-definition of a SWEPT edge
+        that drops ``ENFORCED`` (adversary-r4 R5b, whose live consequence on the test store is ``to`` losing
+        ENFORCED when the lease slice is applied after the schema, as ``LeaseStore.ensure_ready`` does).
+        Fixing the scaffold is OUTSIDE 63c (the lead files it). This pin is GREEN today and REDDENS the
+        day the gap GROWS (a third unswept emitter — possibly one that emits a relation) or CLOSES (the
+        scaffold now derives its set: delete this pin deliberately). RE-OPEN TRIGGER: either. DECISION POINT
         (amendment-5): owner = the scaffold-gap finding the lead files; the commit that makes
         ``ALL_DDL_GENERATORS`` derive from ``schema_ddl_generators()`` deletes this pin and says so."""
         swept = {
@@ -438,37 +444,23 @@ class TestTheGovernedPopulationSetGrows:
             f"the sweep (derive ALL_DDL_GENERATORS from schema_ddl_generators) — never to this set."
         )
 
-    def test_KNOWN_BOUND_premise_no_generator_emits_a_relation_the_ENFORCED_sweep_cannot_see(self) -> None:
-        """⚠ KNOWN BOUND's PREMISE, PINNED (amendment-6 MP-4 — "the bound's premise becomes an observation
-        instead of a docstring sentence"). The pin above calls its gap "a hidden constant, not a live hole"
-        BECAUSE neither unswept emitter emits a relation; that premise was unobserved — a relation added
-        INSIDE an already-unswept emitter leaves the unswept SET unchanged while the ∀-ENFORCED relation
-        pins (which sweep only ``ALL_DDL_GENERATORS``) never see it (adversary-r3 R5: an un-ENFORCED
-        ``holds(lease → task)`` inside ``_lease_statements`` → 2882 passed). "Unswept" is DEFINED here as
-        *emits a relation the sweep cannot see*, over EVERY derived generator (not only the two named),
-        and THAT set is pinned to ∅. Anti-vacuity: the sweep itself sees ≥ 1 relation. RED the exact day
-        the bound stops being "not a live hole". RE-OPEN TRIGGER + DECISION POINT: the pin above's (the
-        commit that derives ``ALL_DDL_GENERATORS`` from ``schema_ddl_generators()`` makes this vacuously
-        green and may delete both, saying so)."""
-        swept_relations = {
-            relation
-            for generator in ALL_DDL_GENERATORS.values()
-            for relation in relation_endpoints(generator()).items()
-        }
-        assert swept_relations, "the ∀-ENFORCED sweep sees NO relation (anti-vacuity: the reader is broken)"
-        unseen = {
-            name: sorted(map(str, unseen_relations))
-            for name, generator in schema_ddl_generators().items()
-            if (
-                unseen_relations := set(relation_endpoints(emit_schema_ddl(generator)).items())
-                - swept_relations
-            )
-        }
-        assert unseen == {}, (
-            f"KNOWN BOUND (the ALL_DDL_GENERATORS hand-list gap, amendment-5 FORK-A) is now a LIVE hole: "
-            f"generator(s) emit relation(s) no ∀-ENFORCED pin sweeps — {unseen}. Add the generator to the "
-            f"sweep (derive ALL_DDL_GENERATORS from schema_ddl_generators) — never widen this bound."
-        )
+    # DUAL (r4a, amendment-9 R-1 — DELETED, not re-keyed): r4's
+    # ``test_KNOWN_BOUND_premise_no_generator_emits_a_relation_the_ENFORCED_sweep_cannot_see`` (amendment-6
+    # MP-4: ``relations(derived) − relations(swept)``, keyed ``(edge, (IN, OUT))``, pinned ∅) is REDUNDANT and
+    # WEAKER than the packet-07 pins that already observed the same premise:
+    # ``test_floor_calibration_schema.py::TestTheDdlDecisionRuleIsEnforcedMechanically::
+    # test_this_slice_contains_neither_a_relation_table_nor_a_sequence`` (+ ``…::
+    # test_every_table_definition_is_IF_NOT_EXISTS``), which sweep BOTH unswept slices (lease +
+    # floor_calibration) and kill adversary-r3 R5 (an un-ENFORCED ``holds``) AND adversary-r4 R5b (the SWEPT
+    # ``to`` re-defined WITHOUT ``ENFORCED`` — which r4's ``(edge, endpoints)`` key let through: it dropped
+    # the ENFORCED clause from the key). Removed-behaviour inventory: (a) "an unswept emitter emits no
+    # relation" → PRESERVED by the packet-07 pins, strictly stronger (any relation statement, not only an
+    # unseen edge); (b) "a relation in a NEW third unswept generator" → PRESERVED by the FORK-A exact-set pin
+    # above (a new unswept generator grows its set); (c) its anti-vacuity (the sweep sees ≥ 1 relation)
+    # guarded only its OWN reader → DROPPED DELIBERATELY with it (moot); the emitted corpus's ≥ 1 relation
+    # stays pinned by ``test_the_generator_corpus_is_DERIVED_by_inspection_and_non_vacuous``. Amendment-6
+    # MP-4 was written against a SCOPED-FILE-SET artifact: a survivor is a CONTRACT survivor until the full
+    # suite is run on it (adversary-r4 §4.5 / §8 R-1).
 
     def test_the_relation_INVENTORY_and_the_POPULATION_agree(self) -> None:
         """amendment-4 MP-D point 4 (the adversary's cross-check) — every edge in

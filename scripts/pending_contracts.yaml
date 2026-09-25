@@ -106,7 +106,9 @@ bounds:
         # r3 (contract-63c-i-a-r3, amendment-5 FORK-C): the fake's guarded CALL-time
         # `from lorerunes import is_legal_identifier` (a HEAD-RED accommodation). Both codes vanish when
         # the predicate lands; the builder then also deletes the guard (r4, amendment-6 MP-3: the EFFECT pin
-        # test_the_fake_never_silently_skips_the_identity_decision_once_the_predicate_exists reds until it does).
+        # test_the_fake_never_silently_skips_the_identity_decision_once_the_predicate_exists reds until it does)
+        # AND imports the predicate at MODULE TOP (r4a, amendment-9 MP-R4-5: the SHAPE pin
+        # test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_predicate_exists reds until it does).
         missing_symbols: ["lorerunes.is_legal_identifier"]
         unsymboled_codes:
           - code: no-any-return

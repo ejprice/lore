@@ -769,6 +769,16 @@ class TestAgentMigrateScopeKeyed63cIA:
         magic number restating a design choice in the wrong home). The count is asserted INDEPENDENTLY of
         the id sample (its own assertion below), so the reader loses nothing at any bound.
 
+        r4a (amendment-9 MP-R4-7 — PX2, the PROSE twin of the bound; the P8d rule inside the served refusal):
+        under ``perturbed-bound``, after stripping every trap id, the full-count phrase and section citations
+        (``§2.1``), the reason carries NO integer equal to the constant's BIRTH value (read BEFORE patching —
+        derived, never a literal in this test), and wherever it states a sample size (``first N`` / ``N ids
+        shown`` / ``showing N``) that number is the PATCHED one. A builder writing *"(first 10 ids shown)"*
+        beside a constant-read slice serves a false number the day the constant changes — adversary-r4 PX2
+        passed 2905/0 because this leg checked only ``len(named)``. Prose describing the bound is DERIVED
+        from the constant (``f"first {sample_size} ids shown"``) or absent, never restated. ⚠ BOUND of the
+        sample-size detector: it reads those three phrasings only — the birth-value leg is the ∀ half.
+
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
         so such a store carries owner=operator / scope=NONE rows that this precondition REFUSES —
@@ -784,6 +794,7 @@ class TestAgentMigrateScopeKeyed63cIA:
         assert isinstance(id_bound, int) and not isinstance(id_bound, bool) and id_bound >= 1, (
             f"id bound must be a positive int: {id_bound!r}"
         )
+        birth_bound = id_bound  # r4a (MP-R4-7): the BIRTH value, read BEFORE any perturbation
         if trap_population == "perturbed-bound":  # amendment-6 MP-2: the slice must FOLLOW the constant
             # never the birth value: a no-op perturbation proves nothing
             id_bound = 3 if id_bound != 3 else 4
@@ -830,8 +841,9 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"= {expected_named} of the offending row ids (§6 'ids, bounded' — every id up to the bound, "
             f"never an unbounded list above it); it named {len(named)}"
             + (
-                " — the bound was PATCHED, so the slice does not READ _REFUSAL_ID_SAMPLE_SIZE (a restated "
-                "literal: two sources of one policy — amendment-6 MP-2 / X2)"
+                " — the bound was PATCHED, so the slice does not read _REFUSAL_ID_SAMPLE_SIZE at CALL time "
+                "(a restated literal, or a value captured at def time — amendment-6 MP-2 / X2; amendment-9 "
+                "R-4)"
                 if trap_population == "perturbed-bound"
                 else ""
             )
@@ -841,6 +853,29 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"the refusal must TEACH the remedy (§2.1/§6: adjudicate the rows BY HAND before migrating) "
             f"— an operator at cutover reads this first. got {reason!r}"
         )
+        if trap_population == "perturbed-bound":  # r4a (amendment-9 MP-R4-7): the PROSE follows the constant
+            residue = reason
+            for trap_id in trap_ids:
+                residue = residue.replace(trap_id, " ")
+            residue = re.sub(rf"\b{trap_count}\s+(?:agent\s+)?rows?\b", " ", residue)
+            residue = re.sub(r"§\d+(?:\.\d+)*", " ", residue)
+            stated_integers = [int(token) for token in re.findall(r"\d+", residue)]
+            assert birth_bound not in stated_integers, (
+                f"the refusal PROSE restates the BIRTH sample size {birth_bound} while the slice follows the "
+                f"PATCHED constant {id_bound} — two sources of one policy, in served text (amendment-9 "
+                f"MP-R4-7 / adversary-r4 PX2). Derive the number from _REFUSAL_ID_SAMPLE_SIZE at call time "
+                f"(f\"first {{sample_size}} ids shown\") or leave it out: {reason[:400]!r}"
+            )
+            stated_sample_sizes = [
+                int(next(group for group in match.groups() if group is not None))
+                for match in re.finditer(
+                    r"\bfirst\s+(\d+)\b|\b(\d+)\s+(?:\w+\s+)?(?:ids?\s+)?shown\b|\bshowing\s+(\d+)\b", residue
+                )
+            ]
+            assert all(size == id_bound for size in stated_sample_sizes), (
+                f"the refusal states a sample size {stated_sample_sizes} that is not the PATCHED bound "
+                f"{id_bound} (amendment-9 MP-R4-7): {reason[:400]!r}"
+            )
 
     async def test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy(
         self, agent_migrate_world: Any
