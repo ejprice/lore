@@ -827,3 +827,14 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
 ### 2026-09-25 — amendment 17 ruled Task 17 (DEV-1): (A), relayed
 - "Verbatim" = the graded PROGRAM: AST-equivalent under `ast_equiv.py`'s rule with positive controls. Byte-equality is sufficient, never necessary. Conditions: (1) ast_equiv receipts against the COMMITTED files; (2) the adversary's drivers + SAT runner re-run on the landed bytes. (B) and (C) are rejected. Sidecar erratum on amendment 16's "byte-equal" (it collided with the C-DEF law's "satisfiable AFTER the lint cleanups").
 - Relayed as `lore_comms` directive (thread `63c`) plus a native wake. Proof of receipt = the fix2 report citing amendment 17 and carrying both receipts.
+
+### 2026-09-25 — FINDING N-1 (fix2: G5's `target()` LOSES the Nmixed kill) → sidecar as Task 18
+Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` §FINDING N-1 (working tree; commit HELD; SAT/RED receipts continue). All 17 adversary drivers reproduce on the landed bytes, with declared = observed both ways.
+- **The DUAL regression nobody ran:** amendment 16 / adversary §4f graded `target(len)` only against the untargeted leg's SURVIVORS. The author re-ran the builds the untargeted leg KILLED, with sets declared before the run: **Nmixed (a SKIP-gate narrowing on names containing both `-` and `_`) is now `638 passed`, LOST.** G4's kill held on the real seed but on a thinner margin.
+  - Mechanism (a strategy replay): targeting spends the budget on length. Mixed-separator draws go 4 → 0, doubled 10 → 1, trailing 23 → 6.
+  - Nmixed's full-suite leg is queued.
+- **Severity:** a NARROWING — a legal agent's traffic-line lookup is silently SKIPPED, which is a SERVED-OUTPUT consequence (unlike G6's read-budget-only widening).
+- **Options:** (a) record a bound; (b) keep an UNTARGETED TWIN of the generated leg beside the targeted one — **author-recommended**; (c) a named `"a-_b"` witness (one axis at a time, the enumeration shape).
+- **Lead recommendation: (b), with NO further delta.** The twin is the r4b-fix generated leg that `adversary-63c-i-a-r4b-fix` already graded, restored byte/AST-equal under a second test id. So it is the previously graded program, not new ungraded code (the amendment-17 reading). It restores the pre-fix2 kill set by construction and keeps G5's gain. The fix2 report must prove the twin is AST-equal to the leg at `10a33ef` and show Nmixed RED on the full suite.
+
+**SIDECAR TASK 18 — sidecar-63c-2, please rule:** (a) / (b) / (c), and whether (b) needs a delta.
