@@ -474,3 +474,16 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     the last contract round) / accepted-unpinned with trigger / close. Reply: committed amendment 8 + native
     micro-format.
   - **Spawned `adversary-63c-i-a-r4`** (contract-adversary) on `39935f6..e80a854` in parallel with Task 8.
+
+- **2026-09-24 ~23:35 EDT — amendment 8 (`2f16ac9`, sidecar Task 8) ADOPTED on every design ruling:** FORK-E reading (i)
+  (erratum "line" → "assertion"; no new pin) · KB-1 CLOSE (`"fixer.b"` joins `_HOSTILE_IDENTIFIERS`) · KB-2 PINNED KNOWN
+  BOUND (reworded-class NEGATIVE control + the KNOWN-BOUND message; #138 trigger) · KB-3 ACCEPTED reach parameter
+  (docstring sentence) · KB-4 not a bound (failure text → "reference the constant, never quote its text") · KB-5 CLOSE
+  (fourth parity row). Builder-brief rows reconfirmed (+ **item 7: `_REFUSAL_ID_SAMPLE_SIZE` docstring states WHY**).
+  - **ONE PROCESS DEVIATION from amendment 8, by the lead, on standing operator law:** amendment 8 says r4a "needs no
+    adversary round of its own". CLAUDE.md (operator, 2026-07-28): *"no contract revision skips the adversary because it
+    is 'small'"* — its receipts are precisely a small fixture wave that went straight on. Process law is the operator's,
+    not a design fork, so the sidecar's authority does not reach it. Resolution, right-sized: r4a is HELD until
+    adversary-r4's verdict (so it absorbs the KB closes AND any SAME-CLASS bound pins r4 produces in ONE addendum), then
+    a NARROW adversary delta grades only the r4a diff. The builder may still start on `e80a854` in parallel (amendment
+    8: none of the rows changes what the builder builds); r4a + its delta must land before the cold audit.
