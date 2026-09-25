@@ -79,7 +79,6 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
@@ -1054,9 +1053,17 @@ class TestAgentRegistryConnectionLifecycle:
 _MOVE_BLANK_ROLES = ("", " ", "\t", "\n")
 _LEGAL_NAME = AGENT_FIXER_B  # "fixer-b"
 _LEGAL_SESSION = SESSION_WAVE7  # "wave7" — a DIFFERENT value from the name (per-field mutation legs)
-#: EVERY consumer of the ONE identifier decision (amendment-4 A4-bis — i-a's set): the registry writer,
-#: the server's REFUSE policy, and the server's decision HOME (``_is_comms_charset_legal``, which the
-#: refuse policy AND the ``_comms_traffic_line`` SKIP policy both read). ii adds ``BriefLedger.publish``.
+#: The consumer ENTRY POINTS of the ONE identifier decision (amendment-4 A4-bis — i-a's set): the registry
+#: writer, the server's REFUSE policy, the server's decision HOME (``_is_comms_charset_legal``, which the
+#: refuse policy AND the ``_comms_traffic_line`` SKIP policy both read) and the fake. ii adds
+#: ``BriefLedger.publish``.
+#: ⚠ REACH, STATED (amendment-6 STOP-rule §4): this is a HAND-LIST — the EFFECT twin, proving by
+#: mutation that each LISTED entry point moves with the shared predicate. It cannot see a call site it
+#: does not name (adversary-r3 X1: the SKIP gate deciding privately, one call site above the home). The
+#: ∀ over the workspace is the static TEXT pin
+#: ``TestTheIdentifierCharsetTextHasOneSpelling63cIA::
+#: test_the_charset_text_occurs_ONLY_in_the_lorerunes_definition``; the SKIP gate's own call site has its
+#: effect legs in ``TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA``.
 _IDENTIFIER_DECISION_CONSUMERS = ("register", "refuse-policy", "skip-policy", "fake")
 #: The consumers of the ONE blank-role decision (``lorerunes.is_blank``): the writer and — amendment-3
 #: F-2's third consumer leg — the fake that substitutes it in every fake-driven test.
@@ -1554,6 +1561,362 @@ class TestTheIdentifierPatternIsReadOnlyForProseOutsideLorerunes63cIA:
 
 
 # =========================================================================== #
+# 63c-i-a r4 — amendment-6 MP-1 (STOP-rule §2): the identity charset TEXT has ONE spelling in the workspace.
+#
+# THREAT MODEL (CLAUDE.md "A GATE NEEDS A THREAT MODEL" — stated IN the instrument, as ruled): this gate
+# catches the HONEST ENGINEER who PASTES the charset regex into a new call site — adversary-r2 N1c and
+# adversary-r3 X1 are exactly that: the same text with one extra ``.``, deciding identity legality
+# privately beside ``lorerunes.is_legal_identifier``. It is NOT a boundary against an author who REWORDS
+# the class (``[0-9a-z]``, ``[a-z\d]``) to evade it; anyone who can commit here can already ship anything.
+# Verdicts follow mechanically: a pasted twin caught is the gate WORKING; a reworded evasion surviving is
+# NOT a defect of this gate (amendment-6: any such door is a pinned KNOWN BOUND, never a contract round).
+#
+# The allowlist-attribute scan above is keyed on the NAME ``AGENT_NAME_PATTERN`` and the decision-mutation
+# pin on a HAND-LIST of entry points; both are blind to a regex LITERAL that never names the pattern,
+# wherever it sits. This scan is keyed on the TEXT, over every production member (reach checked).
+# =========================================================================== #
+
+#: The charset text every honest paste of the agent-identity rule carries — the leading class plus the
+#: OPEN second class, so a drifted twin (``[a-z0-9][a-z0-9_.-]``, N1c/X1) matches as well as a verbatim
+#: one (amendment-6 STOP-rule §2, the ruled key).
+_IDENTIFIER_CHARSET_TEXT = "[a-z0-9][a-z0-9_"
+#: The ONE binding that may carry the text: ``AGENT_NAME_PATTERN = re.compile(<text>)`` inside its home.
+_CHARSET_DEFINITION_BINDING = "AGENT_NAME_PATTERN"
+#: SAFE, EVIDENCE-BACKED exemptions (amendment-7, ruling r4 FORK-D reading (a)): a DIFFERENT policy whose
+#: regex happens to share the key's prefix. ``(repo-relative path, binding, EXACT text) → the policy``.
+#: Each entry is (i) matched only as ``<binding> = <constant>`` in that exact file WITH that exact text — any
+#: change to the text stops the exemption matching, so the constant turns PRIVATE and the pin reds
+#: (RE-OPEN TRIGGER: re-adjudicate); (ii) EVIDENCED live by the pin itself, in BOTH directions (the two
+#: languages differ each way: it rejects a legal agent name AND accepts a string the agent rule rejects);
+#: (iii) required to be OBSERVED in the real tree (a stale exemption reds). A new entry here is an
+#: operator-visible adjudication, never a builder's convenience.
+_UNRELATED_CHARSET_POLICIES: dict[tuple[str, str, str], str] = {
+    ("loremaster/loremaster/config.py", "SLUG_PATTERN", r"^[a-z0-9][a-z0-9_]*$"): (
+        "the PROJECT-SLUG rule (no hyphen, unbounded — operator directive 2026-07-03, task #32; consumed "
+        "by the pydantic SlugStr constraint), not an agent identity"
+    ),
+}
+#: The two-direction evidence witnesses (amendment-7): legal agent identity ✓ / slug ✗, and slug ✓ / agent ✗.
+_AGENT_ONLY_WITNESS = "fixer-b"
+_EXEMPT_ONLY_WITNESS = "a" * 65
+_SYNTHETIC = "loremaster/loremaster/synthetic.py"
+_CONFIG = "loremaster/loremaster/config.py"
+
+
+def _is_charset_carrying_constant(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and _IDENTIFIER_CHARSET_TEXT in node.value
+    )
+
+
+def _assigned_binding(value_node: ast.AST, parents: dict[int, ast.AST]) -> str | None:
+    """The single ``Name`` a plain/annotated assignment binds ``value_node`` to, else ``None``."""
+    parent = parents.get(id(value_node))
+    if isinstance(parent, ast.Assign) and parent.value is value_node and len(parent.targets) == 1:
+        target = parent.targets[0]
+        return target.id if isinstance(target, ast.Name) else None
+    if (
+        isinstance(parent, ast.AnnAssign)
+        and parent.value is value_node
+        and isinstance(parent.target, ast.Name)
+    ):
+        return parent.target.id
+    return None
+
+
+def _classify_charset_constants(tree: ast.Module, filename: str) -> dict[str, list[str]]:
+    """Every string constant in ``tree`` carrying :data:`_IDENTIFIER_CHARSET_TEXT`, classified as
+    ``definition`` (``AGENT_NAME_PATTERN = re.compile(<const>)`` inside a ``lorerunes`` module — the ONE
+    allowed spelling), ``exempt`` (a :data:`_UNRELATED_CHARSET_POLICIES` binding in its own file) or
+    ``private`` (EVERYTHING else: ``re.compile``/``re.fullmatch``/``re.match``/``re.search`` arguments, a
+    raw-literal constant, an f-string part, a docstring — any spelling of the text is a second copy of the
+    rule). Each entry is ``"<filename>:<line>: <source>"``."""
+    parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    in_home = filename.split("/", 1)[0] == _PATTERN_HOME_MEMBER
+    classified: dict[str, list[str]] = {"definition": [], "exempt": [], "private": []}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and _is_charset_carrying_constant(node)):
+            continue
+        site = f"{filename}:{getattr(node, 'lineno', 0)}: {ast.unparse(parents.get(id(node), node))}"
+        call = parents.get(id(node))
+        is_compile_argument = (
+            isinstance(call, ast.Call)
+            and bool(call.args)
+            and call.args[0] is node
+            and (
+                (isinstance(call.func, ast.Attribute) and call.func.attr == "compile")
+                or (isinstance(call.func, ast.Name) and call.func.id == "compile")
+            )
+        )
+        defines_the_pattern = (
+            call is not None and _assigned_binding(call, parents) == _CHARSET_DEFINITION_BINDING
+        )
+        if in_home and is_compile_argument and defines_the_pattern:
+            classified["definition"].append(site)
+        elif (filename, _assigned_binding(node, parents) or "", node.value) in _UNRELATED_CHARSET_POLICIES:
+            classified["exempt"].append(site)
+        else:
+            classified["private"].append(site)
+    return classified
+
+
+class TestTheIdentifierCharsetTextHasOneSpelling63cIA:
+    """amendment-6 MP-1 — the static ∀ (allowlist the SAFE, keyed on the TEXT, never on names or sites):
+    over every production member, the identity charset text occurs in exactly ONE string constant — the
+    ``lorerunes`` ``AGENT_NAME_PATTERN`` definition — plus the evidence-backed unrelated-policy
+    exemptions. Threat model: the section header above."""
+
+    def test_the_charset_text_occurs_ONLY_in_the_lorerunes_definition(self) -> None:
+        """⚠ RED before i-a, RIGHT reason: ``agents.py`` still DEFINES the pattern (the A4 MOVE is unbuilt)
+        and ``surreal_schema._IDENTIFIER_CHARSET_PATTERN`` is a raw-string TWIN of its text (amendment-6:
+        the builder rebinds it ``= AGENT_NAME_PATTERN.pattern``, imported from ``lorerunes``). GREEN on
+        the build: one definition, in ``lorerunes``; every other reader goes through the object."""
+        from _logging_fixtures import assert_scan_reached_every_member, parse_production_trees
+
+        assert _IDENTIFIER_CHARSET_TEXT in AGENT_NAME_PATTERN.pattern, (
+            f"the gate's KEY {_IDENTIFIER_CHARSET_TEXT!r} no longer occurs in the live rule "
+            f"{AGENT_NAME_PATTERN.pattern!r} — re-derive the key from the rule, or this scan watches nothing"
+        )
+        trees = parse_production_trees(include_scripts=False)
+        assert_scan_reached_every_member(trees, extra_roots=())
+        found: dict[str, list[str]] = {"definition": [], "exempt": [], "private": []}
+        for relpath, tree in trees.items():
+            for kind, sites in _classify_charset_constants(tree, relpath).items():
+                found[kind] += sites
+        assert not found["private"], (
+            "the agent-identity charset TEXT is spelled OUTSIDE its one definition — each site below is a "
+            "PRIVATE copy of the rule deciding (or able to decide) identity legality beside "
+            "lorerunes.is_legal_identifier (amendment-6 MP-1; adversary-r2 N1c / adversary-r3 X1). Fix: "
+            "call lorerunes.is_legal_identifier, or read AGENT_NAME_PATTERN.pattern where you need the "
+            "rule's TEXT for prose/DDL — never paste it (a docstring states the rule in words):\n  "
+            + "\n  ".join(found["private"])
+        )
+        assert len(found["definition"]) == 1, (
+            f"expected EXACTLY ONE `AGENT_NAME_PATTERN = re.compile(<text>)` definition inside lorerunes "
+            f"(amendment-2 A4: the pattern MOVES to its lorerunes home), found {found['definition']}"
+        )
+        observed_exemptions = {site.split(":", 1)[0] for site in found["exempt"]}
+        stale = sorted(
+            path for path, _binding, _text in _UNRELATED_CHARSET_POLICIES if path not in observed_exemptions
+        )
+        assert not stale, (
+            f"exemption(s) for {stale} matched NOTHING in the real tree — a stale allowlist entry is "
+            f"decay (or the exempt constant's TEXT changed and it now reds above as private); delete or "
+            f"re-adjudicate it (the SAFE set must describe the tree, never a memory of it)"
+        )
+        self._assert_every_exemption_is_a_DIFFERENT_language()
+
+    @staticmethod
+    def _assert_every_exemption_is_a_DIFFERENT_language() -> None:
+        """The exemption's EVIDENCE, computed live (amendment-7 rider — never a prose claim): each exempt
+        constant, read from its module, still carries the exact adjudicated text AND decides a language that
+        differs from the agent-identity rule in BOTH directions. Two languages that differ both ways are two
+        policies, allowed two patterns; if either direction fails the languages have CONVERGED."""
+        import importlib
+        import re
+
+        for (path, binding, exact_text), policy in _UNRELATED_CHARSET_POLICIES.items():
+            module = importlib.import_module(path.removesuffix(".py").split("/", 1)[1].replace("/", "."))
+            exempt_text = getattr(module, binding)
+            assert exempt_text == exact_text, (
+                f"{path}::{binding} no longer carries its adjudicated text {exact_text!r} (now "
+                f"{exempt_text!r}) — RE-OPEN TRIGGER: re-adjudicate the exemption (amendment-7)"
+            )
+            agent_accepts = {
+                witness: AGENT_NAME_PATTERN.fullmatch(witness) is not None
+                for witness in (_AGENT_ONLY_WITNESS, _EXEMPT_ONLY_WITNESS)
+            }
+            exempt_accepts = {
+                witness: re.fullmatch(exempt_text, witness) is not None
+                for witness in (_AGENT_ONLY_WITNESS, _EXEMPT_ONLY_WITNESS)
+            }
+            expected = (
+                {_AGENT_ONLY_WITNESS: True, _EXEMPT_ONLY_WITNESS: False},
+                {_AGENT_ONLY_WITNESS: False, _EXEMPT_ONLY_WITNESS: True},
+            )
+            assert (agent_accepts, exempt_accepts) == expected, (
+                f"{path}::{binding} ({policy}) and the agent-identity rule no longer differ in BOTH "
+                f"directions (agent={agent_accepts}, exempt={exempt_accepts}) — the two languages have "
+                f"CONVERGED. That is NOT a new exemption: it is a design fork — one language with two "
+                f"spellings goes to lorerunes as ONE predicate (the is_blank precedent; amendment-7)"
+            )
+
+    @pytest.mark.parametrize(
+        ("source", "filename"),
+        [
+            pytest.param(
+                'X = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n', _SYNTHETIC, id="pasted-twin-compile"
+            ),
+            pytest.param(
+                'ok = re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,63}", value)\n',
+                _SYNTHETIC,
+                id="drifted-dot-twin-N1c-X1"
+            ),
+            pytest.param('ok = re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", value)\n', _SYNTHETIC, id="match"),
+            pytest.param('ok = re.search(r"^[a-z0-9][a-z0-9_-]{0,63}$", value)\n', _SYNTHETIC, id="search"),
+            pytest.param(
+                '_IDENTIFIER_CHARSET_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"\n', _SYNTHETIC, id="raw-literal"
+            ),
+            pytest.param(
+                "DDL = f\"ASSERT string::matches($value, '^[a-z0-9][a-z0-9_-]{{0,63}}$') ON {table}\"\n",
+                _SYNTHETIC,
+                id="f-string-part",
+            ),
+            pytest.param(
+                'AGENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n',
+                _SYNTHETIC,
+                id="the-definition-OUTSIDE-lorerunes",
+            ),
+            pytest.param(
+                'SLUG_PATTERN = r"^[a-z0-9][a-z0-9_]*$"\n', _SYNTHETIC, id="exempt-binding-in-the-WRONG-file"
+            ),
+            pytest.param(
+                'SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_-]*$"\n',
+                _CONFIG,
+                id="exempt-binding-with-DRIFTED-text"
+            ),
+        ],
+    )
+    def test_POSITIVE_CONTROL_every_pasted_spelling_is_named(self, source: str, filename: str) -> None:
+        """Each spelling an honest engineer could paste is named ``file:line`` — including the drifted-
+        dot twin (N1c/X1), which the attribute scan above cannot see, and an exempt binding whose FILE or
+        exact TEXT no longer matches its adjudication (amendment-7) — so a green real-tree scan is a
+        statement about the tree, not about a blind scanner."""
+        classified = _classify_charset_constants(ast.parse(source), filename)
+        assert len(classified["private"]) == 1, classified
+        assert classified["private"][0].startswith(f"{filename}:1:"), classified
+
+    def test_POSITIVE_CONTROL_a_second_spelling_INSIDE_lorerunes_is_named_too(self) -> None:
+        """The home is not a free zone: ONE definition — a pasted twin beside it in ``lorerunes`` (or a
+        docstring quoting the text) is a second spelling."""
+        source = (
+            '"""Identity rule: ^[a-z0-9][a-z0-9_-]{0,63}$."""\n'
+            'AGENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n'
+        )
+        classified = _classify_charset_constants(ast.parse(source), "lorerunes/lorerunes/identifiers.py")
+        assert len(classified["definition"]) == 1 and len(classified["private"]) == 1, classified
+
+    @pytest.mark.parametrize(
+        ("source", "filename", "kind"),
+        [
+            pytest.param(
+                "_IDENTIFIER_CHARSET_PATTERN = AGENT_NAME_PATTERN.pattern\n",
+                "loremaster/loremaster/store/surreal_schema.py",
+                None,
+                id="dot-pattern-read-is-the-safe-shape",
+            ),
+            pytest.param(
+                'AGENT_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")\n',
+                "lorerunes/lorerunes/identifiers.py",
+                "definition",
+                id="the-one-definition-in-lorerunes",
+            ),
+            pytest.param(
+                'SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_]*$"\n',
+                _CONFIG,
+                "exempt",
+                id="evidence-backed-exemption",
+            ),
+            pytest.param(
+                'X = re.compile(r"^[a-z]+$")\n', "loremaster/loremaster/x.py", None, id="unrelated-regex"
+            ),
+        ],
+    )
+    def test_NEGATIVE_CONTROL_the_safe_shapes_are_not_private(
+        self, source: str, filename: str, kind: str | None
+    ) -> None:
+        """A gate that refuses honest code gets SWITCHED OFF: a ``.pattern`` read, the one definition, an
+        evidence-backed exemption and an unrelated regex are never flagged private."""
+        classified = _classify_charset_constants(ast.parse(source), filename)
+        assert classified["private"] == [], classified
+        if kind is not None:
+            assert len(classified[kind]) == 1, classified
+
+
+# =========================================================================== #
+# 63c-i-a r4 — amendment-6 MP-1 (STOP-rule §3): the ``_comms_traffic_line`` SKIP gate's OWN call site moves
+# with the shared decision (adversary-r3 X1 / KP-X1's shape). A4-bis ruled the gate "reads the home and is
+# NOT rewired"; the decision-mutation pin probes the HOME, never the gate, so a gate deciding privately
+# survived 2807/0. These legs observe the gate's EFFECT — a registry READ — so any private decider at that
+# call site, whatever it spells, is visible.
+# =========================================================================== #
+
+
+class _LookupCountingRegistry:
+    """A spy ``agent_registry``: counts ``get_agent`` reads and resolves nobody (R1: the traffic line is
+    then honest silence either way, so only the READ is observed)."""
+
+    def __init__(self) -> None:
+        self.lookups: list[str] = []
+
+    async def get_agent(self, name: str, *, session: str | None = None) -> Any:
+        self.lookups.append(name)
+        raise AgentRegistryError(f"no agent {name!r}")
+
+
+async def _traffic_line_lookups(attribution: str) -> list[str]:
+    """The registry reads ``AppContext._comms_traffic_line`` performs for ONE identity-less attribution."""
+    import types
+
+    from loremaster.server import AppContext
+
+    spy = _LookupCountingRegistry()
+    context = types.SimpleNamespace(agent_registry=spy, message_ledger=None)
+    await AppContext._comms_traffic_line(  # noqa: SLF001 - the SKIP gate under test
+        cast(Any, context), agent=None, session=None, attributions=(attribution,)
+    )
+    return spy.lookups
+
+
+class TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA:
+    """amendment-6 MP-1 §3 — BASELINE: a legal attribution is looked up ONCE; under the shared-decision
+    mutation it is looked up ZERO times; and ∀ the shared hostile corpus, ZERO lookups (R8's read budget —
+    "a value that cannot BE a name is never looked up" — as an EFFECT over the corpus, not one value)."""
+
+    @pytest.mark.parametrize("attribution", [_LEGAL_NAME, _LEGAL_SESSION])
+    async def test_the_SKIP_gate_moves_with_the_SHARED_is_legal_identifier(
+        self, monkeypatch: pytest.MonkeyPatch, attribution: str
+    ) -> None:
+        """⚠ RED before i-a (``lorerunes.is_legal_identifier`` does not exist). Two DIFFERENT legal
+        attributions (no parameter monoculture). A gate that decides with a private regex keeps looking
+        the value up under the mutation — X1's door."""
+        import lorerunes
+
+        assert await _traffic_line_lookups(attribution) == [attribution], (
+            f"BASELINE: the legal attribution {attribution!r} was not looked up exactly once"
+        )
+        shared_predicate = lorerunes.is_legal_identifier
+        patched = patch_shared_object_everywhere(
+            monkeypatch,
+            "is_legal_identifier",
+            shared_predicate,
+            lambda value: value != attribution and shared_predicate(value),
+        )
+        lookups = await _traffic_line_lookups(attribution)
+        assert lookups == [], identity_sweep_miss_message(
+            f"the _comms_traffic_line SKIP gate (it still looked up {attribution!r}, which the SHARED "
+            f"decision now rejects — a private decider at the gate's call site: amendment-6 MP-1 / X1)",
+            patched,
+        )
+
+    async def test_the_SKIP_gate_never_looks_up_any_value_of_the_hostile_corpus(self) -> None:
+        """∀ ``_HOSTILE_IDENTIFIERS``: ZERO registry reads (GREEN at HEAD — the home rejects every shape
+        today; a gate that widens its private charset past the shared one reds on the shapes it admits).
+        POSITIVE CONTROL first: the spy DOES see a lookup for a legal value."""
+        assert await _traffic_line_lookups(_LEGAL_NAME) == [_LEGAL_NAME], "CONTROL: the spy observes reads"
+        looked_up: dict[str, list[str]] = {}
+        for value in _HOSTILE_IDENTIFIERS:
+            if lookups := await _traffic_line_lookups(value):
+                looked_up[value] = lookups
+        assert not looked_up, (
+            f"the SKIP gate looked up value(s) that cannot BE an identity (R8's read budget; amendment-6 "
+            f"MP-1 §3): {looked_up!r}"
+        )
+
+
+# =========================================================================== #
 # 63c-i-a r3 — amendment-4 MP-E + amendment-3 F-2 rider 1, MERGED: ONE parity matrix driven through BOTH
 # the REAL ``AgentRegistry`` and ``FakeAgentRegistry``. "The fake mirrors the WRITER" (amendment-2 A2)
 # was pinned only by a signature-equality PROXY; the fake's stamps were read by NO test, so a fake
@@ -1679,35 +2042,157 @@ class TestTheFakeRegistryMirrorsTheWriter63cIA:
         else:
             assert real == ("refused",), real
 
+    # --- r4 (amendment-6 MP-5): the RE-register door (THE QUANTIFIER LAW on MP-E — the mirror above was
+    # measured on the CREATE door only; adversary-r3 FX1, the fake healing an unstamped row on
+    # re-register, passed 2807/0). Additive — no pin deleted, so no DUAL row.
+    _RE_REGISTER_SEQUENCES: dict[str, tuple[tuple[str | None, str | None], tuple[str | None, str | None]]] = {
+        "alpha-then-credentialed": ((None, None), ("alice_pid", _PARITY_KEEP)),
+        "consistent-then-owner-only": (("alice_pid", _PARITY_KEEP), ("alice_pid", None)),
+        "consistent-then-keep-only": (("alice_pid", _PARITY_KEEP), (None, _PARITY_KEEP)),
+    }
 
-def test_the_fakes_HEAD_RED_import_guard_is_deleted_once_the_predicate_exists() -> None:
-    """amendment-5 FORK-C rider 2 — the fake's ``except ImportError`` guard is a HEAD-RED ACCOMMODATION
-    that must not outlive its premise. GREEN at HEAD (``lorerunes.is_legal_identifier`` is absent — the
-    guard is legitimate); RED the moment the i-a build lands the predicate with the guard still present
-    in ``_comms_fakes.py`` (the builder brief grants the one-line deletion in REFACTOR). Read by AST: an
-    ``except`` handler naming ``ImportError`` anywhere in the fake module. CONTROL: the scan finds the
-    guard TODAY (anti-vacuity — a scan that cannot see the guard would pass the post-build leg vacuously)."""
-    import _comms_fakes
+    @staticmethod
+    async def _real_re_register_outcome(
+        first: tuple[str | None, str | None], second: tuple[str | None, str | None]
+    ) -> tuple[Any, ...]:
+        harness = TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA
+        registry, admin_connection, env = await harness._real_registry()  # noqa: SLF001
+        try:
+            created = await registry.register(
+                _LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER,
+                owner_principal_id=first[0], session_keep_id=first[1],
+            )
+            try:
+                await registry.register(
+                    _LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER,
+                    owner_principal_id=second[0], session_keep_id=second[1],
+                )
+                second_outcome = "re-registered"
+            except AgentRegistryError:
+                second_outcome = "refused"
+            assert await harness._agent_row_count(admin_connection) == 1, "REAL: a re-register minted a row"  # noqa: SLF001
+            bare_id = str(created.agent.id).split(":", 1)[-1]
+            row = (
+                await run(
+                    admin_connection,
+                    f"SELECT owner_principal, owner_agent, scope FROM type::record('{AGENT_TABLE}', $id)",
+                    {"id": bare_id},
+                )
+            )[0]
+            owner, owner_agent = row.get("owner_principal"), row.get("owner_agent")
+            return (
+                second_outcome,
+                str(owner).split(":", 1)[-1] if owner is not None else None,
+                owner_agent is not None and str(owner_agent) == f"{AGENT_TABLE}:{bare_id}",
+                row.get("scope"),
+            )
+        finally:
+            await admin_connection.close()
+            await registry.close()
+            await drop_database(env)
 
+    @staticmethod
+    async def _fake_re_register_outcome(
+        first: tuple[str | None, str | None], second: tuple[str | None, str | None]
+    ) -> tuple[Any, ...]:
+        fake = FakeAgentRegistry()
+        created = await fake.register(
+            _LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER,
+            owner_principal_id=first[0], session_keep_id=first[1],
+        )
+        try:
+            await fake.register(
+                _LEGAL_NAME, session=_LEGAL_SESSION, role=ROLE_BUILDER,
+                owner_principal_id=second[0], session_keep_id=second[1],
+            )
+            second_outcome = "re-registered"
+        except AgentRegistryError:
+            second_outcome = "refused"
+        assert len(fake.db.agents) == 1, "FAKE: a re-register minted a row"
+        agent_id = str(created.agent.id).split(":", 1)[-1]
+        return (
+            second_outcome,
+            fake.db.owners.get(agent_id),
+            fake.db.owner_agents.get(agent_id) == agent_id,
+            fake.db.scopes.get(agent_id),
+        )
+
+    @pytest.mark.parametrize("sequence", list(_RE_REGISTER_SEQUENCES))
+    async def test_the_fake_and_the_real_writer_agree_on_the_RE_REGISTER_door(self, sequence: str) -> None:
+        """amendment-6 MP-5 — (α register → credentialed consistent re-register) and (consistent register →
+        each mixed pair): same second-call outcome class and the same three stamps read back afterwards,
+        real vs fake (KP-FX1's shape). ⚠ RED before i-a on the real side (the ``session_keep_id`` kwarg).
+        ABSOLUTE expectations too (two builds that both heal would agree): mint-once ∀ rows — the α row
+        stays unstamped after the credentialed re-register (MP-F), and a mixed pair after a consistent
+        register is REFUSED (A3 XOR on the re-register path, MP-B) leaving the CREATE stamps intact."""
+        from lorerunes.pdp import keep_scope
+
+        first, second = self._RE_REGISTER_SEQUENCES[sequence]
+        real = await self._real_re_register_outcome(first, second)
+        fake = await self._fake_re_register_outcome(first, second)
+        assert fake == real, (
+            f"FakeAgentRegistry does NOT mirror the writer on the RE-register door ({sequence}): "
+            f"real={real!r} fake={fake!r} (amendment-6 MP-5 — a fake that heals or re-stamps on re-register "
+            f"lets every fake-driven test observe a scope the production writer never stamps)"
+        )
+        if sequence == "alpha-then-credentialed":
+            assert real == ("re-registered", None, True, None), real
+        else:
+            assert real == ("refused", "alice_pid", True, keep_scope(_PARITY_KEEP)), real
+
+
+# DUAL (r4, amendment-6 MP-3): the r3 FORK-C rider-2 SOURCE-TEXT pin
+# ``test_the_fakes_HEAD_RED_import_guard_is_deleted_once_the_predicate_exists`` (an AST scan for an
+# ``except`` handler NAMING ``ImportError`` in ``_comms_fakes.py``) is DELETED, not kept beside this one:
+# two pins for one property, one of them a proxy, is decoration that reads as coverage. Its virtue ("the
+# HEAD-RED guard must not outlive its premise", incl. its HEAD anti-vacuity control) now lives in this
+# EFFECT pin, which also reds every silent-skip spelling the text pin waved through (adversary-r3 X3
+# ``except Exception:``, a bare ``except:``, ``builtins.ImportError``, ``getattr(lorerunes, …, None)``)
+# AND the originally ruled spelling (X3b).
+_FAKE_SKIP_HEAD_CONTROL = "fixer-b\n"  # a hostile name the HEAD guard lets through (finding #210's shape)
+
+
+async def test_the_fake_never_silently_skips_the_identity_decision_once_the_predicate_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """amendment-6 MP-3 (replaces amendment-5 FORK-C rider 2's spelling pin) — the property is EFFECT, not
+    text: once ``lorerunes.is_legal_identifier`` EXISTS, the fake's identity leg has NO silent-skip path.
+    With the shared predicate made UNIMPORTABLE (``monkeypatch.delattr``), a hostile fake register must NOT
+    succeed — ∀ the shared hostile corpus × {name, session} — any exception is fine (an ``ImportError`` is
+    the honest outcome; a module-top import that still refuses is too), and ``fake.db.agents`` stays empty.
+
+    HEAD CONTROL (anti-vacuity, while the predicate is absent the guard is LEGITIMATE — amendment-5 FORK-C):
+    the hostile ``"fixer-b\\n"`` DOES register on the fake at HEAD, proving this instrument can SEE a silent
+    skip (a pin that could not observe one would pass the post-build leg vacuously). REDs on the build until
+    the builder deletes the guard in REFACTOR (its one granted test-tree edit)."""
     import lorerunes
 
-    source = Path(_comms_fakes.__file__).read_text(encoding="utf-8")
-    import_error_handlers = [
-        handler.lineno
-        for handler in ast.walk(ast.parse(source))
-        if isinstance(handler, ast.ExceptHandler)
-        and any(
-            isinstance(name, ast.Name) and name.id == "ImportError"
-            for name in ([handler.type] if not isinstance(handler.type, ast.Tuple) else handler.type.elts)
-        )
-    ]
     if getattr(lorerunes, "is_legal_identifier", None) is None:
-        assert import_error_handlers, (
-            "CONTROL: at HEAD the fake's HEAD-RED guard must be visible to this scan (anti-vacuity)"
+        fake = FakeAgentRegistry()
+        await fake.register(_FAKE_SKIP_HEAD_CONTROL, session=_LEGAL_SESSION, role=ROLE_BUILDER)
+        assert len(fake.db.agents) == 1, (
+            "CONTROL: at HEAD (predicate absent) the fake's guard must visibly SKIP the identity leg — "
+            "otherwise this instrument cannot observe the silent skip it exists to catch"
         )
         return
-    assert not import_error_handlers, (
-        f"lorerunes.is_legal_identifier now EXISTS, so _comms_fakes.py's HEAD-RED `except ImportError` "
-        f"guard (line(s) {import_error_handlers}) has outlived its premise — delete it (amendment-5 FORK-C: "
-        f"the builder's one granted test-tree edit, REFACTOR step)"
+    monkeypatch.delattr(lorerunes, "is_legal_identifier")
+    silently_registered: list[str] = []
+    for hostile_value in _HOSTILE_IDENTIFIERS:
+        for field in ("name", "session"):
+            kwargs = {"name": _LEGAL_NAME, "session": _LEGAL_SESSION}
+            kwargs[field] = hostile_value
+            fake = FakeAgentRegistry()
+            try:
+                await fake.register(kwargs["name"], session=kwargs["session"], role=ROLE_BUILDER)
+            except Exception:  # noqa: BLE001 - ANY refusal (incl. ImportError) is the non-silent outcome
+                assert fake.db.agents == {}, (
+                    f"a REFUSED fake register stored a row ({field}={hostile_value!r})"
+                )
+                continue
+            silently_registered.append(f"{field}={hostile_value!r}")
+    assert not silently_registered, (
+        f"the fake REGISTERED hostile identities while the shared predicate was unavailable: "
+        f"{silently_registered} — a surviving guard turns 'predicate absent' into 'skip the check', whatever "
+        f"its except-clause spells (amendment-5 FORK-C / amendment-6 MP-3). Fix: delete the HEAD-RED guard; "
+        f"import the predicate at module top (``from lorerunes import is_legal_identifier``)"
     )

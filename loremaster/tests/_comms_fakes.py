@@ -266,8 +266,10 @@ class FakeAgentRegistry:
         fake-driven tests RED (amendment-3's contrary claim, corrected by amendment-5 §E). The guard is
         inert ONLY on ``ImportError``. REMOVAL TRIGGER: the 63c-i-a build lands the predicate → the
         builder deletes the ``try``/``except ImportError`` in its REFACTOR step (the builder brief grants
-        exactly that edit); ``test_agent_registry.py::test_the_fakes_HEAD_RED_import_guard_is_deleted_
-        once_the_predicate_exists`` reds until it does."""
+        exactly that edit); ``test_agent_registry.py::test_the_fake_never_silently_skips_the_identity_
+        decision_once_the_predicate_exists`` (amendment-6 MP-3 — an EFFECT pin: with the predicate made
+        unimportable a hostile register must not succeed, whatever the guard's except-clause spells) reds
+        until it does."""
         try:
             from lorerunes import is_legal_identifier  # noqa: PLC0415 - call-time read (mutation-visible)
         except ImportError:  # HEAD-RED accommodation — delete once the build lands the predicate

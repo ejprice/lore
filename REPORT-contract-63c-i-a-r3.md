@@ -1,5 +1,7 @@
 # REPORT-contract-63c-i-a-r3 — the 63c-i-a contract, revision 3 (amendment-4 §W worklist)
 
+> **corrected by r4** (`contract-63c-i-a-r4`, 2026-09-24) — R-1 count, R-2 pasted run set, R-5 D7 addendum and the superseded FORK-C pin: see §CORRECTION NOTE at the end. The body is unchanged.
+
 brief-base v16 read · brief project v7 read
 
 ## SUMMARY BLOCK
@@ -927,3 +929,14 @@ print("builder's granted guard deletion applied")
 
 ## Progress log — close-out
 - 2026-09-24 18:58: amendment-5 (`26511f0`) landed; riders applied; GUARD + DIM mutations PROOF HELD; final HEAD RED `146 failed, 2406 passed, 3 errors` (unchanged red set); SAT full suite `11405 passed / 0 failed`; r3b committed.
+
+---
+
+## CORRECTION NOTE — corrected by r4 (`contract-63c-i-a-r4`, 2026-09-24; amendment-6 §W item 6). The body above is left as written.
+- **R-1 (count):** the real-vs-fake parity matrix (`TestTheFakeRegistryMirrorsTheWriter63cIA::test_the_fake_and_the_real_writer_agree_on_outcome_class_and_stamps`) collects **34** rows (4 provenance pairs + 13 hostile shapes × {name, session} = 26 + 4 blank roles), **not 36** as §ITEMS row 8 and the `39935f6` commit message say (§RED's own "parity matrix 34" was right). Measured by adversary-r3 (`collected3.txt`) and re-counted by r4 from `_parity_cases()`.
+- **R-2 (lost instrument — the §RED r3b run set, `r3b_files.txt`, pasted verbatim; recovered from the r3 author's scratchpad `3bff958a…/scratchpad/r3b_files.txt`, 22 files):**
+  ```
+  loremaster/tests/test_agent_governance_63c_i_a.py loremaster/tests/test_agent_registry.py loremaster/tests/test_ddl_write_target_coverage_124.py loremaster/tests/test_engine_rejection_seam.py loremaster/tests/test_memory_enforcement_63b_ia.py loremaster/tests/test_message_enforcement_63b_ii_a.py loremaster/tests/test_principal_keys_schema.py loremaster/tests/test_secret_typing.py loremaster/tests/test_agent_capability.py loremaster/tests/test_blocks_edge.py loremaster/tests/test_brief_ledger.py loremaster/tests/test_comms_fleet_grouping.py loremaster/tests/test_comms_footer.py loremaster/tests/test_comms_promise_registry.py loremaster/tests/test_comms_render_architecture.py loremaster/tests/test_comms_tool.py loremaster/tests/test_enforced_relations.py loremaster/tests/test_query_tasks_bounded.py loremaster/tests/test_derivation_source_unification.py loremaster/tests/test_keeps_schema.py loremaster/tests/test_store_seam_one_derivation.py loremaster/tests/test_ast_reach_helpers.py
+  ```
+- **R-5 (D7 addendum):** D7's virtue list omits the retired resolver's third virtue — (c) node membership keyed on the CALLERS of `_governed_field_specs` (emitter provenance). It survives outside the emitted-DDL derivation, in the per-table emitter-provenance pins (`test_governed_schema_63a.py`, `test_message_governed_ddl_63b_ii_a.py`) and W1-1's rewrite kill-pin (adversary-r3 §3.1). The same sentence now sits in the in-place DUAL comment in `loremaster/tests/_governed_contract.py` (above `_DEFINE_FIELD_ON_RE`).
+- **Superseded pin:** `test_the_fakes_HEAD_RED_import_guard_is_deleted_once_the_predicate_exists` (§FORKS FORK-C / §ITEMS item 8) is DELETED by r4 and replaced by the effect pin `test_the_fake_never_silently_skips_the_identity_decision_once_the_predicate_exists` (amendment-6 MP-3); every mention of it above describes r3, not the current tree.

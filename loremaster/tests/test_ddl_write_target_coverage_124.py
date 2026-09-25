@@ -73,7 +73,9 @@ def _ddl_generators() -> dict[str, Callable[..., str]]:
 
 
 def _emit(generator: Callable[..., str]) -> str:
-    """Call a generator, passing ``dim`` only if it requires one (some build HNSW indexes) — delegated
+    """Call a generator, passing ``dim`` whenever the generator has a ``dim`` parameter (required OR
+    defaulted — some build HNSW indexes; r4, amendment-6 MP-P1: this line said "only if it requires one",
+    false since amendment-5's FORK-B rider) — delegated
     to the ONE shared :func:`emit_schema_ddl` (63c-i-a r3, FORK-B), which also FAILS CLOSED on any other
     required parameter instead of a bare ``TypeError``."""
     return emit_schema_ddl(generator, dim=_MIGRATION_DIM)

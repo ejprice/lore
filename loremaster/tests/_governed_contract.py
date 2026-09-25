@@ -2248,6 +2248,10 @@ def exempt_frame_raw_memory_mutations(
 # FULL-TRIO node leg (one governed column of three does not join), pinned both ways on synthetic DDL.
 # Which EMITTER produced the trio is W1-1's rewrite kill-pin's job, never this resolver's (a hand-rolled
 # trio IS governed data: it joins here AND reds W1-1).
+# r4 (amendment-6 R-5): the retired resolver's third virtue — (c) node membership keyed on the CALLERS of
+# ``_governed_field_specs`` (emitter provenance) — survives OUTSIDE this derivation, in the per-table
+# emitter-provenance pins (``test_governed_schema_63a.py``, ``test_message_governed_ddl_63b_ii_a.py``) and
+# W1-1's rewrite kill-pin (adversary-r3 §3.1).
 
 #: ``DEFINE FIELD [OVERWRITE|IF NOT EXISTS] <column> ON [TABLE] <table>`` — the node leg's reader over
 #: EMITTED statements (the ``DEFINE`` keyword forms our generators emit; store-ref §1.1).

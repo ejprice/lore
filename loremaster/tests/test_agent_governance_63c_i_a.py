@@ -39,13 +39,21 @@ REVISION r3 (``contract-63c-i-a-r3``, 2026-09-24) — executes ``docs/design/202
 amendment-4.md`` §W (commit r3a = GATING items 1–6: A4-bis decision consumers, NF-2, MP-B, MP-F, MP-C,
 MP-G; commit r3b = NON-GATING items 7–11). Per-item receipts: ``REPORT-contract-63c-i-a-r3.md``.
 
+REVISION r4 (``contract-63c-i-a-r4``, 2026-09-24 — the LAST pre-build round, amendment-6 STOP-rule) —
+executes ``docs/design/2026-09-24-packet63c-amendment-6.md`` §W items 1–6 with amendment-7 (FORK-D). In
+THIS file: MP-2 (R-Q5-1's ``perturbed-bound`` population). Per-item receipts:
+``REPORT-contract-63c-i-a-r4.md``.
+
 BUILDER NOTES — docstring rows the contract cannot pin (amendment-1 N2 / amendment-2 §D items 14-15):
 * amendment-4 MP-F: extend ``AgentRegistry.register``'s ``owner_principal_id`` docstring sentence
   ("A re-register does NOT re-stamp it (mint-once-on-create …)") to the PAIR — ``session_keep_id`` /
   ``scope`` / ``owner_agent`` are likewise never stamped on a re-register, for EVERY row (an ownerless or
   legacy row included); ownerless rows are ``migrate-governed``'s to stamp.
 * amendment-4 MP-C: the refusal's id bound is the NAMED module constant
-  ``principals._REFUSAL_ID_SAMPLE_SIZE`` (the R-Q5-1 pin READS it) — never a literal slice.
+  ``principals._REFUSAL_ID_SAMPLE_SIZE`` (the R-Q5-1 pin READS it, and — r4, amendment-6 MP-2 — PERTURBS
+  it) — never a literal slice; the builder writes exactly one line reading it. amendment-6 R-3: its
+  DOCSTRING states WHY its value (a screenful; the full count is served beside the sample) — the value is
+  not normative, so no pin can hold that sentence.
 * amendment-4 A4-bis: ``AppContext._is_comms_charset_legal``'s body becomes ``return
   is_legal_identifier(value)`` (the server's ONE decision home; ``_validate_comms_charset`` and the
   ``_comms_traffic_line`` SKIP gate keep reading the home and are NOT rewired).
@@ -724,9 +732,11 @@ class TestAgentMigrateScopeKeyed63cIA:
     # to three populations. Virtue kept: at 2 traps every id is still named (below-cap leg); the r2
     # assertion "every id named" is INVERTED above the cap (bound + 15 → exactly ``bound`` named), because
     # at N > cap it contradicted the ruled bound (arithmetic alignment — adversary-r2 MP-C / N3).
-    @pytest.mark.parametrize("trap_population", ["below-cap", "at-cap", "above-cap"])
+    # r4 (amendment-6 MP-2): a FOURTH population, ``perturbed-bound`` — the mutation leg (additive; no pin
+    # deleted, so no DUAL row).
+    @pytest.mark.parametrize("trap_population", ["below-cap", "at-cap", "above-cap", "perturbed-bound"])
     async def test_R_Q5_1_the_row_precondition_refuses_an_owned_but_unscoped_agent(
-        self, agent_migrate_world: Any, trap_population: str
+        self, agent_migrate_world: Any, trap_population: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """⚠ RED at HEAD (finding #470 / F10) — §2.1's ROW precondition: an ``agent`` row with
         ``scope IS NONE`` but ``owner_principal IS NOT NONE`` means a multi-principal or half-applied
@@ -749,6 +759,16 @@ class TestAgentMigrateScopeKeyed63cIA:
         ``', '.join(every_id)`` that survived r2 at 2521/0, and kills a build that names NONE above the
         cap). Trap ids are fixed-width (``owned_trap_000``…) so no id is a substring of another.
 
+        r4 (amendment-6 MP-2 — "prove sharing by MUTATION" applied to a constant): ``perturbed-bound``
+        PATCHES ``principals._REFUSAL_ID_SAMPLE_SIZE`` to a value ≠ its birth value (3, or 4 if the build
+        chose 3) and seeds bound + 15 traps: the reason must name the FULL count and EXACTLY the PATCHED
+        number of ids. A build that defines the constant but slices with a restated literal (``[:10]``)
+        holds ONE policy in TWO sources that agree only at birth — invisible to a read, visible to this
+        perturbation (adversary-r3 X2 / KP-X2). R-3 (amendment-6): the VALUE is not normative — pinned
+        only as a positive ``int`` that is READ; no upper ceiling pin (a ``≤ N`` here would be a second
+        magic number restating a design choice in the wrong home). The count is asserted INDEPENDENTLY of
+        the id sample (its own assertion below), so the reader loses nothing at any bound.
+
         ⚠ KNOWN BOUND (amendment-1 E3 / operator D2): a credentialed ``register`` on ANY pkt-62-through-
         63b image stamps ``owner_principal`` (= the operator) on an agent table with no ``scope`` column,
         so such a store carries owner=operator / scope=NONE rows that this precondition REFUSES —
@@ -761,8 +781,19 @@ class TestAgentMigrateScopeKeyed63cIA:
         over an operator-owned row, or it would red the trigger's own remedy (amendment-2 §B conflict 2)."""
         principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
         id_bound = principals._REFUSAL_ID_SAMPLE_SIZE  # the NAMED bound (MP-C) — derived, never restated
-        assert isinstance(id_bound, int) and id_bound >= 1, f"id bound must be a positive int: {id_bound!r}"
-        trap_count = {"below-cap": 2, "at-cap": id_bound, "above-cap": id_bound + 15}[trap_population]
+        assert isinstance(id_bound, int) and not isinstance(id_bound, bool) and id_bound >= 1, (
+            f"id bound must be a positive int: {id_bound!r}"
+        )
+        if trap_population == "perturbed-bound":  # amendment-6 MP-2: the slice must FOLLOW the constant
+            # never the birth value: a no-op perturbation proves nothing
+            id_bound = 3 if id_bound != 3 else 4
+            monkeypatch.setattr(principals, "_REFUSAL_ID_SAMPLE_SIZE", id_bound)
+        trap_count = {
+            "below-cap": 2,
+            "at-cap": id_bound,
+            "above-cap": id_bound + 15,
+            "perturbed-bound": id_bound + 15,
+        }[trap_population]
         await self._seed_clean_legacy(connection, count=3)
         trap_ids = [f"owned_trap_{trap_index:03d}" for trap_index in range(trap_count)]
         for trap_index, trap_id in enumerate(trap_ids):
@@ -797,7 +828,14 @@ class TestAgentMigrateScopeKeyed63cIA:
         assert len(named) == expected_named, (
             f"the refusal must name EXACTLY min(_REFUSAL_ID_SAMPLE_SIZE={id_bound}, count={trap_count}) "
             f"= {expected_named} of the offending row ids (§6 'ids, bounded' — every id up to the bound, "
-            f"never an unbounded list above it); it named {len(named)}: {reason[:400]!r}"
+            f"never an unbounded list above it); it named {len(named)}"
+            + (
+                " — the bound was PATCHED, so the slice does not READ _REFUSAL_ID_SAMPLE_SIZE (a restated "
+                "literal: two sources of one policy — amendment-6 MP-2 / X2)"
+                if trap_population == "perturbed-bound"
+                else ""
+            )
+            + f": {reason[:400]!r}"
         )
         assert "by hand" in reason.lower(), (
             f"the refusal must TEACH the remedy (§2.1/§6: adjudicate the rows BY HAND before migrating) "

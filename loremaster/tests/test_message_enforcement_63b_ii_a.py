@@ -438,6 +438,38 @@ class TestTheGovernedPopulationSetGrows:
             f"the sweep (derive ALL_DDL_GENERATORS from schema_ddl_generators) — never to this set."
         )
 
+    def test_KNOWN_BOUND_premise_no_generator_emits_a_relation_the_ENFORCED_sweep_cannot_see(self) -> None:
+        """⚠ KNOWN BOUND's PREMISE, PINNED (amendment-6 MP-4 — "the bound's premise becomes an observation
+        instead of a docstring sentence"). The pin above calls its gap "a hidden constant, not a live hole"
+        BECAUSE neither unswept emitter emits a relation; that premise was unobserved — a relation added
+        INSIDE an already-unswept emitter leaves the unswept SET unchanged while the ∀-ENFORCED relation
+        pins (which sweep only ``ALL_DDL_GENERATORS``) never see it (adversary-r3 R5: an un-ENFORCED
+        ``holds(lease → task)`` inside ``_lease_statements`` → 2882 passed). "Unswept" is DEFINED here as
+        *emits a relation the sweep cannot see*, over EVERY derived generator (not only the two named),
+        and THAT set is pinned to ∅. Anti-vacuity: the sweep itself sees ≥ 1 relation. RED the exact day
+        the bound stops being "not a live hole". RE-OPEN TRIGGER + DECISION POINT: the pin above's (the
+        commit that derives ``ALL_DDL_GENERATORS`` from ``schema_ddl_generators()`` makes this vacuously
+        green and may delete both, saying so)."""
+        swept_relations = {
+            relation
+            for generator in ALL_DDL_GENERATORS.values()
+            for relation in relation_endpoints(generator()).items()
+        }
+        assert swept_relations, "the ∀-ENFORCED sweep sees NO relation (anti-vacuity: the reader is broken)"
+        unseen = {
+            name: sorted(map(str, unseen_relations))
+            for name, generator in schema_ddl_generators().items()
+            if (
+                unseen_relations := set(relation_endpoints(emit_schema_ddl(generator)).items())
+                - swept_relations
+            )
+        }
+        assert unseen == {}, (
+            f"KNOWN BOUND (the ALL_DDL_GENERATORS hand-list gap, amendment-5 FORK-A) is now a LIVE hole: "
+            f"generator(s) emit relation(s) no ∀-ENFORCED pin sweeps — {unseen}. Add the generator to the "
+            f"sweep (derive ALL_DDL_GENERATORS from schema_ddl_generators) — never widen this bound."
+        )
+
     def test_the_relation_INVENTORY_and_the_POPULATION_agree(self) -> None:
         """amendment-4 MP-D point 4 (the adversary's cross-check) — every edge in
         ``KNOWN_RELATION_EDGES`` whose declared IN or OUT is a governed NODE is in
