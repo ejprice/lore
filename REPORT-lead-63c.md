@@ -686,3 +686,10 @@ Never a bare `pending_contract_gate.py --currency` (#466 `-n auto` default; anno
 **Other landmines:** lore-lore does not reconnect after a store restart (#478 → `podman restart lore-lore`, then operator
 `/mcp reconnect`); grep/rg + the WORD are hook-blocked (#473). **Open non-63c items (operator-scheduled):** lore_tasks
 f4e3b63f… (#474) · #478/#479/#480 · #355 (→ 11c) · #383 · #466 default fix (→ 09b) · #481 (retired names in a recalled memory).
+
+### 2026-09-25 — contract r4b COMMITTED (`8b9eb6d`); author retired; narrow adversary spawned
+- r4b (amendment-11 §W rows 1–5 + amendment-12 R-3a): SAT full suite ALONE `-n 12` **11486 passed / 62 skipped / 3 xfailed / 0 failed** (author's claim — re-derived by the adversary, not by me); killed FXh FXhS FXr RS1srv RS1srvS C2 C2fake G3 G3d PX2; survivors FXo · PX2w · TWR = pinned bounds (COMBO full suite 11486/0); RED@HEAD 0 turned, 5 right-reason reds, 22 new greens; ruff GREEN; currency typecheck RED_ADJUDICATED 20 (unchanged). No attribution trailer (checked).
+- Author deviations read: idle-gate contract write DENIED by the auto-mode classifier (nil effect — hook default = report name); ~1.5 h lost waiting on a foreign pytest (`mobile-pricepaper-smoke`).
+- §8 candidates R-1…R-8: none needs a ruling (R-1 → amendment 12 / i-b; R-4 → amendment-11 pre-ruling; R-2 stated SAT hazard, adversary asked to check reachability). R-6 (`lore_search` >120 s) filed as **finding #482**.
+- contract-63c-i-a-r4b: TaskStop + ledger heartbeat `retired`.
+- NEXT: `adversary-63c-i-a-r4b` (opus55-worker) over `bf77fb9..8b9eb6d`, graded under the amendment-11 PRE-RULING (fake-guard / ownership survivors → lead-recorded KNOWN BOUND; SAT defects FIXED; NEW-CLASS → sidecar; LIVE → operator). Its reference must include both helper shapes (uncollapsed + collapsed). Then the builder (9 BUILDER-BRIEF ITEMS, anchor v3).
