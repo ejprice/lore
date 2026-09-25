@@ -620,3 +620,12 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
   rebinding, `Name` in Store/Del, a parameter of that name, `global`/`nonlocal` — with the module-top import mandatory a
   Load Name can only reach THE object · **R-3b** (literal) — keep Call-only and change the builder's granted edit to
   collapse the helper (contradicts "unchanged"; builder brief grows). Ask: rule R-3a/R-3b/other; amendment 12 + native.
+
+- **FORK-R3 RULED + ADOPTED — amendment 12 (`f2a3bdd`):** R-3a — clause (2) = a Load-context bare `Name`; the denied set is
+  the finite GRAMMAR COMPLEMENT (Attribute, string Constant, alias/`as`, Store/Del incl. class-shadow + walrus, parameter,
+  global/nonlocal) — still an allowlist. Both honest post-build shapes (bare-Name return; collapsed direct call) are GREEN
+  negative controls. R-3b rejected (a scope change disguised as a SAT fix). Erratum on amendment 11 recorded. Relayed to
+  `contract-63c-i-a-r4b` (native; durable = the committed amendment).
+  - **BUILDER-BRIEF ITEM 9 (permissive, not a requirement):** "you MAY collapse `_shared_identifier_predicate` to a direct
+    `is_legal_identifier(value)` call in REFACTOR". If left, the cold audit's residual table names the dead `None` branch
+    for a post-build tidy (owner: the i-b contract author).
