@@ -487,3 +487,25 @@ adversary-63c-i-a-r2, contract-63c-i-a-r3.
     adversary-r4's verdict (so it absorbs the KB closes AND any SAME-CLASS bound pins r4 produces in ONE addendum), then
     a NARROW adversary delta grades only the r4a diff. The builder may still start on `e80a854` in parallel (amendment
     8: none of the rows changes what the builder builds); r4a + its delta must land before the cold audit.
+
+- **2026-09-25 ~01:00 EDT — adversary r4 verdict: CONTRACT INSUFFICIENT — NEW-CLASS survivors, NO live production
+  defect** (graded `e80a854`; `REPORT-adversary-63c-i-a-r4.md`, committed with this entry; summary, §6, §8 read in full).
+  Adversary TaskStopped + ledger-retired (it survived one API-error turn via a single resume ping).
+  - **Held:** r3 floor 5/5 KILLED (+ X3b-e); SAT reproduced independently `11428 passed, 62 skipped, 3 xfailed`, 0
+    failed; RED@HEAD confirmed; built world 11 SELF-DESTRUCTs; author claims re-derived (R-8).
+  - **8 full-suite survivors → missing pins:** **MP-R4-1 RS1** (NEW-CLASS, security-adjacent, rec. GATING) — the REAL
+    writer re-stamps an already-stamped row from a DIFFERENT consistent pair (householded joiner takes ownership);
+    mint-once is pinned ∀ rows, not ∀ callers; **amendment-8 KB-5's premise ("the real writer is pinned mint-once on
+    it") is FALSE** · **MP-R4-4 FXg** (NEW-CLASS) — MP-3's effect pin removes the predicate at ONE binding; a guard
+    importing from the submodule outlives its premise · **MP-R4-5 FXf** (DUAL loss of the deleted spelling pin's
+    "presence reds" virtue; a guard with a private-regex fallback survives) · **MP-R4-3 G1** (SAME-CLASS, closable by a
+    legal-at-cap witness `"a"*64`) · **MP-R4-6 FX2** (fake side of KB-5, already ruled r4a — row must carry the ABSOLUTE
+    real-side expectation) · **MP-R4-7 PX2** (NEW-CLASS prose twin of the sample bound, rec. NON-GATING) · bounds TWR
+    (KB-2) and G2 (KB-1, r4a kills). MP-R4-2 WITHDRAWN after the full-suite leg.
+  - **Residuals needing a ruling:** R-1 (r3's MP-4 was a scoped-file-set artifact — packet 07's pin already observes the
+    premise; r4's premise pin is redundant and weaker: delete or re-key) · R-2 (skip-gate header over-claims) · R-4
+    (MP-2 failure text misdiagnoses a def-time capture).
+  - **Routed: SIDECAR TASK 9** (durable copy HERE; its lore client is down): per amendment-6 §5, NEW-CLASS survivors are
+    ruled before any round. Rule each MP-R4-* (close in the r4a addendum / pinned KNOWN BOUND / accept), R-1, R-2, R-4,
+    and correct amendment-8 KB-5. Reply: amendment 9 committed + native micro-format. Then: ONE r4a addendum carrying
+    amendment-8 + amendment-9 rows → NARROW adversary delta on r4a only → builder.
