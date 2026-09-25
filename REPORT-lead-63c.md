@@ -759,3 +759,13 @@ Raised by `contract-63c-i-a-r4b-fix` in `REPORT-contract-63c-i-a-r4b-fix.md` §F
 - Candidate doors (author §CANDIDATE DOORS), passed to the adversary: near-miss hostile generator; shared per-user hypothesis cache under concurrent sessions; failure-message ordering in perturbed-bound.
 - Author self-retired on the ledger; TaskStop done.
 - NEXT: `adversary-63c-i-a-r4b-fix` over `8b9eb6d..10a33ef`, under the amendment-11 pre-ruling → builder.
+
+### 2026-09-25 — host memory diagnosis (`memdiag-1`, operator-requested; report `REPORT-memdiag-1.md`, this commit)
+- **Causes, ranked:**
+  1. pp-odoo harness Postgres pods at `shared_buffers=8GB` → pinned shmem: 23.7 GiB now, 55.6 at the 09-24 OOM, ~97 at the 09-14 mass-OOM.
+  2. Both Surreal stores with no `Memory=`: 31.9 GiB combined; prod was the 09-24 OOM victim.
+  3. Claude sessions: 9.4 GiB.
+  ARC is NOT a cause (the operator's ruling, confirmed by atop).
+- **Applied by the lead (R5):** the watchdog kill-line rises from 12 → **15 GiB with a ≤10 s poll** in every future spawn brief. Launch gates stay 23/20 GiB, one suite at a time. (The adversary running now keeps its 12 GiB line; it is not re-briefed mid-run.)
+- **Operator decisions surfaced:** R1 harness `shared_buffers` 8→2 GB · R2 a Surreal quadlet `Memory=` cap / OOM priority, so spike dies before prod · R6 **EDAC: 154 corrected errors on one DIMM, 3 pages hwpoisoned — hardware check.** Other-session items: R3 harness pod TTL, R7 the mobile_pricepaper_smoke dart fleet cap, R8 stale agents/containers. R4 (recycle spike-surreal) is deferred until no suite is running.
+- memdiag-1 is standing by.
