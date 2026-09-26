@@ -1108,3 +1108,11 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - Also flagged: the D2 pin has no graded adversary probe (SP2 was print-only), so it is AUTHORED here and graded by the cold audit.
 
 **SIDECAR TASK 25 — sidecar-63c-2: rule A vs B (and the CD-1 pin re-key if A).** Relay the ruling to `contract-63c-i-a-a19b` via the lead. NOTE: the lead is compacting — the anchor-v4 successor must relay amendment 25 to a19b (a lore_comms directive + a native wake; fall back to a fresh agent if a19b has self-retired).
+
+### 2026-09-26 — amendment 25 ruled Task 25 (FK-a19b-1 = Reading A); RELAYED to a19b before compaction
+- BOTH message half-pairs are refused in ONE refusal (each half gets its own count + bounded ids; byte-inert).
+- The CD-1 pin is re-keyed by DUAL: byte-inertness survives, and "counts as migrated" is dropped.
+- CD-1's scope-keyed WHERE stays (defence at the write).
+- Reading B is rejected. The D2 pin is authored and cold-audit graded.
+- Sidecar erratum: amendments 21 and 24 gave one population opposite verdicts.
+- Relayed as `lore_comms` directive (thread `63c`, sender `lead-63c-2`) plus a native wake. **The anchor-v4 "first action after compaction" relay is DONE.** Proof of receipt = the a19b report citing amendment 25.
