@@ -1200,3 +1200,9 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **64 am-4 (`17b7101`, Task 7b):** D1 hand-list ratified as a checked variable (decay/growth pins); D2 required/ABSENT ratified with derived provenance; S2 floor = task 116 / finding 324. Erratum on am-3's symbol citation. → directive #17042 to contract-64b; the driver changes are BUILDER items.
 - **Store reference §6.7 (`aa1d3d6`, Task 8):** the `POST /import` vendor-vs-3.2.4 facts, with provenance from probe-64 (the sidecar's own re-probe was permission-denied at the secrets read).
 - In flight: the test-DB cleanup agent (operator-approved: stale `lore_test` DBs, dead-pid only). **Operator question pending: admin-chosen port for lore-deploy (#492).**
+
+### 2026-09-26 — blindreader-63c-i-a-2 DONE (`8e7aa2b`): 1 BLOCKER + 2 MAJOR → sidecar Task 28 (design escalation)
+- **F-1 BLOCKER:** the created-only race compensation deletes a keep the concurrent same-principal WINNER found and scoped to, stranding it permanently. Derived by reading; NOT yet executed.
+- **F-2 MAJOR:** preflight-before-SF-63-1 leaks agent existence, retirement, role and spawner to a foreign principal.
+- **F-3 MAJOR** = builder FORK-1 (already ruled, am-27).
+- This is the second fix wave on one gate → escalated the DESIGN to sidecar-63c-2 as **Task 28** (amendment 28: confirm/refute + a construction recipe + remedies + operator need). The cold audit continues independently; no fix is briefed until the audit verdict and am-28 both land.
