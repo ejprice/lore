@@ -1189,3 +1189,14 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **Directive #17038 → coldaudit-63c-i-a-2 + adversary-58:** HEAD carries contract-ahead reds from 58 (`5a43aeb`) and #466 (`37de0a7`), so grade as a diff vs a HEAD baseline.
 - **contract-64b D-SAT RULED (i)** (directive #17037): the author converts the 115 corpse tests (builders never edit tests), with DUAL verdicts. test_mcp_server/test_comms_footer edits land in its commit and are listed in §HELD re-verification.
 - sidecar-64 **Task 8**: add probe-64's measured `POST /import` facts to the store reference §6.
+
+### 2026-09-26 — sidecar rulings: 63c amendment 27; 58 amendment 2; 64 amendment 4; store-ref §6.7 (all attribution-clean)
+- **63c am-27 (`40c188d`, Task 27):**
+  - FORK-1 = Reading B: `backfilled` = rows stamped ∀ legs, pinned by a ∀-legs byte-diff over `_migrate_legs`.
+  - FORK-2: the message leg's ORDER → dangling → half-pairs serve ONE refusal in check order; the verb-level §2.1 refusal keeps precedence.
+  - DV-2 ACCEPTABLE (one policy at one site); i-b extracts `_release_the_minted_session_keep` + a `_RENDER_OUT` entry.
+  - Each lands in the cold audit's fix pass if one opens, else as 63c-i-b's first rows. The patch under audit is untouched.
+- **58 am-2 (`e0760fd`, Task 7a):** `owner=` serves a held superseded row, decorated; `status=`/`blocked=False` exclude it. The boot heal CHUNKS at the derived cap and never refuses. → directive #17041 to adversary-58: grade the contract against it; missing am-2 pins are expected MISSING-PIN findings.
+- **64 am-4 (`17b7101`, Task 7b):** D1 hand-list ratified as a checked variable (decay/growth pins); D2 required/ABSENT ratified with derived provenance; S2 floor = task 116 / finding 324. Erratum on am-3's symbol citation. → directive #17042 to contract-64b; the driver changes are BUILDER items.
+- **Store reference §6.7 (`aa1d3d6`, Task 8):** the `POST /import` vendor-vs-3.2.4 facts, with provenance from probe-64 (the sidecar's own re-probe was permission-denied at the secrets read).
+- In flight: the test-DB cleanup agent (operator-approved: stale `lore_test` DBs, dead-pid only). **Operator question pending: admin-chosen port for lore-deploy (#492).**
