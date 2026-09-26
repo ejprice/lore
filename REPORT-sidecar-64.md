@@ -246,3 +246,20 @@ brief project v7 read
   `_TYPED_CAS_CATCHES` entry), so a future re-parenting flips a typed catch into the door set by
   derivation; r2's item, not a 58 blocker; the helper-indirected re-read stays the filed bound.
 - **Graded:** contract-58-r2 (working tree) · HEAD-at-report: `fd6497d` · DIFFERENT (my own commit). Standing by.
+
+## Task 12 (2026-09-26) — packet 64 amendment 6 committed `c8147d9`
+
+- **state:** done. **(1) RATIFIED as an evidence-backed exemption:** no SurrealDB-HTTP auth seam exists in
+  `loremaster` (the six existing unwraps authenticate Anthropic, Voyage, the SDK signin and two auth.py
+  guards); the driver is the FIRST HTTP consumer, so its `httpx.BasicAuth` builder IS the seam; the
+  shared `loremaster/store` seam is a NAMED trigger ("the second SurrealDB-HTTP consumer" — 65's
+  production export driver is the candidate) and the entry moves with it; the bound now sits at its
+  `<= 7` ceiling — stated in the entry's comment so the next unwrap meets it deliberately. **Who adds
+  the line:** the fix agent (`fix-restore-seams`, or a fresh `fix-restore-seams-2` if retired) — one line +
+  the evidence comment; the lead commits. **(2) FORK A = A3 ratified:** the harness's
+  `surreal_user()/surreal_password()` is the repo's ONE answer to "what authenticates to :18000"; the
+  stores' env file carries PRODUCTION secrets (least privilege, #422-class blast radius) and R3 forbids a
+  new env-file reader; a wrong credential is a live 401 → exit 2. The 65 production-export driver is a
+  different tool under its own R3 grant. **(3) DROP** the `EnvironmentFile=` half (it certifies a file the
+  script no longer reads) and delete `STORES_ENV_FILE`; KEEP the ports cross-check, renamed.
+- **Graded:** `441f3b0` · HEAD-at-report: `c8147d9` · DIFFERENT (my own commit). Standing by.
