@@ -1222,3 +1222,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
   - Attribution-clean.
 - **Test-DB cleanup (operator-approved):** dropped 1873 dead-pid `test_<pid>_<hex>` DBs (3984 → ~2111), 0 failures, :18000 only. **FOUND a growing leak:** ~2077 `test_<uuid>` DBs with no pid → **operator: fold into the #486 tdd-light cycle** (trace the minting site, route it through `unique_database()`, add a guard, reap when no pytest runs). The probe DBs (probe07a_/probe_await_/pc_/probe_smoke/x1_) → operator: DROP (cleanup agent resumed).
 - **#492 addendum (operator):** add a `--port` CLI option as well; lore.yaml stays the source of truth MCP wiring reads (annotated).
+
+### 2026-09-26 — lane ruling (lore-scoped); cold-audit prod-dump restore permission-DENIED → operator
+- A foreign project (`mobile-pricepaper-smoke`) runs pytest continuously, so a box-wide lane never clears. coldaudit's waiter also self-matched its own wrapper (#228; adversary-58's catch). **Ruled (directive #17046):** the single-pytest rule is LORE-scoped (one lore pytest at a time; detect by executable + lore path, never args text). Order: coldaudit, then adversary-58, then contract-64b. The 15 GB watchdog stays; a full suite runs at -n 12 while a foreign pytest is live.
+- **The coldaudit FOCUS 5 prod-dump restore was DENIED by the auto-mode permission classifier ("Modify Shared Resources").** Not retried, not routed around; surfaced to the operator. The staged commands are in REPORT-coldaudit-63c-i-a-2.md §5.
+- Cleanup: 36 probe DBs dropped (2095 → 2059). The `test_<uuid>` leak (~2050) is left for the #486 cycle.
