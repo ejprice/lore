@@ -1307,3 +1307,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
   - (c) pytest-asyncio `unused_tcp_port*` ruled IN (a bind-close door; pin its absence in the test trees).
   - (d) the `serve_http` stuck-handler teardown is bounded + loud NOW (F2's class).
   - (e) F2 budget = measure-then-tune: the implementer measures 20 real wire-lifespan teardowns; budget = max(5 s, 3 × p99).
+
+### 2026-09-26 — #466 d1: contract `a9ed80e` + stubs `a124c5a` + GREEN `ef0fcda` (lead-verified); Phase 5 + pins c/d
+- Stubs: RED 9/80, all behavioural, == declared; collection verified by the lead (80 collected).
+- impl-466-d1 GREEN: lead-VERIFIED `94 passed`, no assertion edits, ruff clean. One `_loud_teardown` serves serve_asgi + serve_http (ruling d; mutation-proven by the implementer). **Ruling e measured: real wire teardown p99 0.197 s (n=24 serial + 24 concurrent) → the 5 s budget is kept.**
+- Gap: rulings (c) `unused_tcp_port` and (d) the serve_http bound post-dated the contract, so there are no pins. **refactor-466-d1** does Phase 5 AND authors both pins, each mutation-proven RED (a documented test-after deviation).
