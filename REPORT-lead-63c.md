@@ -1127,3 +1127,14 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **OF-4 = ACCEPT, pinned:** the global finding `number` count-leak bound carries into a hosted 65, with the served sentence and a re-open trigger (§10).
 - **OF-3 = OPERATOR DIRECTIVE (neither offered option), verbatim intent:** principal/owner deletion takes a REQUIRED choice of `--delete-obj` | `--archive-obj` | `--change-owner <target>`. **The designer decides how archive works.** Archived objects are RETAINED but HIDDEN unless specifically requested. This replaces the sidecar's §10.7-Z orphaning (64d). Relayed to sidecar-64 as **Task 2** (amendment doc): the verb shape, archive semantics (store representation, read-filter default, the "show archived" request surface, served counts/labels per the trust doctrine), per-table behaviour, the #404 and #488 interaction, 64d sizing, riders.
 - **OF-2 = operator asked for more info** — explained, answer pending. The 64b contract waits on OF-2, because F5 changes findings' `created_by`/`actor` args.
+
+### 2026-09-26 — a19b COMMITTED (`9353445`), VERIFIED, RETIRED; SIDECAR TASK 26 (R-3)
+- **Verified by the lead:**
+  - no attribution trailer;
+  - amendment 25 (`027a3a3`) cited: half (ii) refused, the CD-1 pin re-keyed by DUAL;
+  - **AST receipt RE-RUN by the lead on HEAD:** blob `9a93e8d5`, 14/14 AST-EQUAL, 7/7 positive controls DIFFERENT; instrument md5 `b471475c…` matches the report's §A.3;
+  - claimed: RED@`84af63f` 80 failed / 16 passed; SAT full suite alone `-n 12` 11625 passed / 62 skipped / 3 xfailed / 0 failed, lint-clean; mutation 33/33 HELD;
+  - §10 BUILDER CONSTRAINTS present (9 items).
+- **For the cold audit to grade:** D-1 (KP12 not landed; argued as the pinned #137 bound) and D-2 (KP5/KP6 red via AttributeError; verbatim wins). The process-table disclosure (a peer's pytest was live at the first RED run) is noted.
+- a19b TaskStopped; ledger heartbeat set to `retired`.
+- **SIDECAR TASK 26 — sidecar-63c-2, residual R-3:** a store holding BOTH a door-#2 message half-pair AND a dangling sender is unruled. a19b's reference names both in ONE refusal; nothing pins it. Rule: one refusal naming both (and in what order), or precedence? Is a pin required, or is it graded by the cold audit? The builder spawns after this ruling so the brief carries it. FYI, no action: sidecar-64 flagged #488 (amendment 25's half (ii) vs 64's owner-deletion wave). The operator re-shaped that wave (OF-3: `--delete-obj`/`--archive-obj`/`--change-owner`); sidecar-64 designs it and may ask you.
