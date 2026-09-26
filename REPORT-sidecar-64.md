@@ -83,3 +83,22 @@ brief project v7 read
   resurrect" pin is the invariant either way); agent hard-delete stays 57 F-B / #412.
 - **Graded:** `0ca5bdb` · HEAD-at-report: `6797d63` · DIFFERENT (1 ahead — my own commit; no production
   symbol moved). Standing by.
+
+## Task 3 (2026-09-26) — OF-2 = RETIRE AT 65 ruled: amendment 2 committed `2ea52fe`
+
+- **state:** done — `docs/design/2026-09-26-packet64-amendment-2.md`. The three args LEAVE the served
+  schemas with each tool's retrofit wave (64b: `lore_findings` created_by/actor; 64a: `lore_tasks` all
+  three + `lore_claim_task` owner); the MCP layer's extra-input refusal names the field; ONE shared
+  teaching sentence (field · derived-not-declared · remedy `capability=`) rides the three descriptions
+  and the refusal itself iff FastMCP exposes an input-validation hook (the builder reads the installed
+  source — `Packages considered` row; absent ⇒ accepted pinned bound). Provenance := the Subject's agent
+  row name (+ `actor_agent` id). Riders: F4 hostile set gains the three names (refused, 0 writes, positive
+  control); exact-set schema pin per tool; bare prose sweep (server.py, both CLAUDE.md, smoke_p8b, INDEX,
+  the comms brief). §14 rows 1–7 replaced. The 65 re-brief table lists every surface (descriptions,
+  instructions block, comms brief v7→v8, repo + global CLAUDE.md — the global one is the OPERATOR's,
+  smoke_p8b, a superseding memory note, the fleet's habit via the description sentence).
+- **§12 CONFIRMED as amended by am-1/am-2** for the 64b author (amendment §7): only the F5 row changes;
+  am-1's archive/delete scope is 64d-i/ii, not 64b; 64b builds `resource_from_row` on the 4-field
+  `Resource`.
+- **#488 annotated moot** (OF-3 final per the lead's entry).
+- **Graded:** `f4511ef` · HEAD-at-report: `2ea52fe` · DIFFERENT (1 ahead — my own commit). Standing by.
