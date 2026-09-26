@@ -41,9 +41,12 @@ WHAT IT GUARANTEES, BY CONSTRUCTION (§D-3 numbered requirements):
    that refuses any host:port other than the constant BEFORE the transport is reached. The production
    port appears in this file only as :data:`PRODUCTION_PORT`, the value the self-test proves is refused.
    Credentials are the suite harness's TEST-store credentials (:meth:`StoreCredentials.for_test_store`
-   — the source every ``[real]`` test and the S2 consumer authenticate with), held as ``SecretStr`` and
-   never printed; the ONE unwrap is :func:`build_auth_headers`, which builds every request's header map.
-   (The self-test still cross-checks each quadlet's port and ``EnvironmentFile=`` — a topology check.)
+   — ``_surreal_harness.surreal_user()`` / ``surreal_password()``, the source every ``[real]`` test and
+   the S2 consumer authenticate with: the spike defaults, overridable only by ``LORE_TEST_SURREAL_USER``
+   / ``LORE_TEST_SURREAL_PASS``), held as ``SecretStr`` and never printed; the ONE unwrap is
+   :func:`build_auth_headers`, which builds every request's header map. The stores' shared env file is
+   NEVER read — it carries the PRODUCTION store's secrets, which a tool bound to :18000 has no business
+   holding (packet 64 amendment 6 §2, FORK A = A3). (The self-test cross-checks each quadlet's bind port.)
 2. **The target DB is MINTED** ``test_dump_<UTC stamp>_<uuid4 hex>`` under the suite's test namespace,
    asserted ABSENT (``INFO FOR NS``) and then created with a plain ``DEFINE DATABASE`` (which itself
    errors on an existing name — a second, engine-side guard). ``--db`` does not exist. ``--reap`` refuses
@@ -167,12 +170,6 @@ PRODUCTION_PORT = 18500
 HTTP_ENDPOINT = f"http://{STORE_HOST}:{STORE_PORT}"
 RPC_ENDPOINT = f"ws://{STORE_HOST}:{STORE_PORT}/rpc"
 
-#: The env file both store quadlets name as ``EnvironmentFile=`` — a quadlet-TOPOLOGY cross-check only
-#: (``leg_stores_env_file_and_ports_match_the_quadlets``). It is NOT this driver's credential source:
-#: credentials come from the suite harness (:meth:`StoreCredentials.for_test_store`), because reading a
-#: credential from a file is reserved to ``loremaster.config.resolve_secret``'s ONE allowlisted
-#: ``env_file`` caller (ruling R3) and a second ``.env`` parser is refused workspace-wide (packet 42).
-STORES_ENV_FILE = Path.home() / "docker" / "mcp" / "lore-secrets" / "lore.env"
 TEST_STORE_QUADLET = Path.home() / ".config" / "containers" / "systemd" / "spike-surreal.container"
 PRODUCTION_STORE_QUADLET = Path.home() / ".config" / "containers" / "systemd" / "lore-surreal.container"
 #: The non-auth headers every request carries (the auth header is added by :func:`build_auth_headers`).
@@ -1097,7 +1094,7 @@ class SelfTest:
         "leg_row_count_skips_quoted_forgeries",
         "leg_format_alarms_refuse",
         "leg_endpoint_is_a_constant_and_guarded",
-        "leg_stores_env_file_and_ports_match_the_quadlets",
+        "leg_store_ports_match_the_quadlets",
         "leg_database_name_pattern_and_reap_refusal",
         "leg_derived_slice_covers_amendment_3",
         "leg_import_response_rule",
@@ -1249,8 +1246,12 @@ class SelfTest:
         finally:
             client.close()
 
-    def leg_stores_env_file_and_ports_match_the_quadlets(self) -> None:
-        """The TEST quadlet binds :18000 and names STORES_ENV_FILE; the PRODUCTION one binds :18500."""
+    def leg_store_ports_match_the_quadlets(self) -> None:
+        """The TEST quadlet binds :18000; the PRODUCTION one binds :18500 — the endpoint constants are true.
+
+        DUAL row (packet 64 amendment 6 §3): the env-file cross-check — DROPPED-DELIBERATELY with the
+        env-file read it certified (amendment 6 §2); this driver reads no env file.
+        """
         for quadlet, port in ((TEST_STORE_QUADLET, STORE_PORT), (PRODUCTION_STORE_QUADLET, PRODUCTION_PORT)):
             if not quadlet.is_file():
                 raise SelfTestFailure(f"{quadlet} is missing — cannot cross-check the endpoint constant")
@@ -1258,9 +1259,6 @@ class SelfTest:
             self._expect(
                 any(line.startswith("Exec=") and f"--bind {STORE_HOST}:{port}" in line for line in lines),
                 f"{quadlet.name} does not bind {STORE_HOST}:{port}",
-            )
-            self._expect(
-                f"EnvironmentFile={STORES_ENV_FILE}" in lines, f"{quadlet.name} names another env file"
             )
 
     def leg_database_name_pattern_and_reap_refusal(self) -> None:

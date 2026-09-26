@@ -545,6 +545,19 @@ UNWRAP_ALLOWLIST: dict[str, str] = {
     # This is a real second loresigil unwrap, not a leak — see
     # ``test_loresigil_has_exactly_the_two_unwraps_its_rulings_require``.
     "loresigil/factory.py::_reject_a_blank_credential": EMPTINESS_GUARD,
+    # NEW under packet 64 amendment 6 §1 — an EVIDENCE-BACKED exemption, not a lint fix.
+    # Evidence: no SurrealDB-over-HTTP auth seam exists in loremaster — the three other
+    # AUTH_HEADER/SDK_PAYLOAD entries authenticate Anthropic, Voyage and the SurrealDB SDK
+    # signin — so the restore driver, the FIRST SurrealDB-HTTP consumer, owns the seam
+    # (httpx.BasicAuth, the ONE unwrap, the full header map). LIFT TRIGGER: the SECOND
+    # SurrealDB-HTTP consumer (e.g. packet 65's production ``POST /export`` driver) —
+    # then ``build_auth_headers`` moves to ``loremaster/store/`` beside
+    # ``signin_credentials``, both drivers call it, this entry MOVES with it (the count
+    # returns to six), proven by mutation. CEILING: this is the SEVENTH entry, so the
+    # ``5 <= len <= 7`` bound below is now AT ITS CEILING — the next unwrap anywhere in
+    # the workspace needs either that lift (which frees a slot) or an operator re-ruling
+    # of the ceiling (the secret-typing design's §0.9 constant). Never silently raise it.
+    "scripts/restore_prod_dump.py::build_auth_headers": AUTH_HEADER,
     # ``scripts/token_survey.py::__init__`` is GONE, not moved: the sync counter
     # imports the shared seam instead of owning a copy. That is R22 working.
 }
