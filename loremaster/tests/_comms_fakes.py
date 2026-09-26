@@ -109,7 +109,7 @@ from loremaster.briefs import (
 )
 from lorerunes.pdp import keep_scope
 
-from lorerunes import is_blank
+from lorerunes import is_blank, is_legal_identifier
 
 # --- the domain's status vocabulary + legal-transition matrix ---------------
 # A DELIBERATE local copy of the same vocabulary/matrix the test modules pin
@@ -260,27 +260,8 @@ class FakeAgentRegistry:
 
     @staticmethod
     def _shared_identifier_predicate() -> Callable[[str], bool] | None:
-        """⚠ HEAD-RED ACCOMMODATION (amendment-5 FORK-C): ``lorerunes.is_legal_identifier`` — imported at
-        CALL time (so the identity-sweep mutation's patched ``lorerunes`` attribute is what is read) —
-        or ``None`` while it does not exist yet. An UNGUARDED import turned 232 HEAD-green tokenless
-        fake-driven tests RED (amendment-3's contrary claim, corrected by amendment-5 §E). The guard is
-        inert ONLY on ``ImportError``. REMOVAL TRIGGER: the 63c-i-a build lands the predicate → the
-        builder deletes the ``try``/``except ImportError`` in its REFACTOR step (the builder brief grants
-        exactly that edit); ``test_agent_registry.py::test_the_fake_never_silently_skips_the_identity_
-        decision_once_the_predicate_exists`` (amendment-6 MP-3 — an EFFECT pin: with the predicate made
-        unimportable at EVERY ``lorerunes*`` binding a hostile register must not succeed, whatever the
-        guard's except-clause spells) reds until it does. r4a (amendment-9 MP-R4-5): the builder ALSO moves
-        the import to MODULE TOP (``from lorerunes import is_blank, is_legal_identifier``) —
-        ``test_agent_registry.py::test_the_fakes_predicate_import_is_at_module_top_and_UNGUARDED_once_the_
-        predicate_exists`` (a SHAPE pin: a module-level ``ImportFrom`` and no ``try`` around any
-        ``lorerunes*`` import) reds until it does. r4b (amendment-11 MP-A1): that pin is also an ALLOWLIST —
-        in this file the name occurs ONLY as that module-top import and as bare reads (this helper's
-        ``return``, a call); no ``getattr``/``hasattr``/attribute re-read, no string spelling it, no
-        rebind."""
-        try:
-            from lorerunes import is_legal_identifier  # noqa: PLC0415 - call-time read (mutation-visible)
-        except ImportError:  # HEAD-RED accommodation — delete once the build lands the predicate
-            return None
+        """THE shared ``lorerunes.is_legal_identifier`` (module-top import). The ``| None`` return and the
+        caller's ``is not None`` branch are dead since 63c-i-a — collapse at i-b (amendment 12)."""
         return is_legal_identifier
 
     @staticmethod
@@ -305,12 +286,10 @@ class FakeAgentRegistry:
         # ROUTING to the SHARED predicates (never a private re-statement — ROUTING IS NOT SHARING), before
         # any "write", on EVERY path (NF-2: first register and re-register alike). Type + zero-write
         # parity only; message parity is deliberately NOT mirrored (a fake serves no consumer, and a
-        # cloned teaching message is #102 in a fake). HEAD-RED accommodation: ``is_legal_identifier`` does
-        # not exist until the i-a build (a module-top import would make
-        # every ``_comms_fakes`` consumer a COLLECTION error at HEAD), so it is read at CALL time.
-        # FORK-C (amendment-5, ratified): the identity leg reads the predicate through ONE guarded helper.
+        # cloned teaching message is #102 in a fake).
+        # FORK-C (amendment-5, ratified): the identity leg reads the predicate through ONE helper.
         identifier_decision = FakeAgentRegistry._shared_identifier_predicate()
-        if identifier_decision is not None:  # None at HEAD only — see the helper's removal trigger
+        if identifier_decision is not None:  # dead since 63c-i-a — see the helper's docstring (amendment 12)
             for field_name, value in (("name", name), ("session", session)):
                 if not identifier_decision(value):
                     raise AgentRegistryError(f"fake register: illegal {field_name}; nothing was written")

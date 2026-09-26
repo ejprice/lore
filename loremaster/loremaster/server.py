@@ -6605,9 +6605,17 @@ class AppContext:
         what keeps the second site from becoming a private copy of the first
         (#102 — routing is not sharing, and a second ``AGENT_NAME_PATTERN``
         call site deciding for itself is a clone wearing the shared constant).
-        Both now move with ONE edit, which is the property
-        ``test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal``
-        proves by mutation.
+        Since packet 63c-i-a (amendment-4 A4-bis) this home is itself a call of
+        THE cross-member decision, ``lorerunes.is_legal_identifier`` — the SAME
+        function ``AgentRegistry.register`` refuses with — so the refuse policy,
+        the skip policy and the writer all move with ONE edit. That is proven by
+        MUTATION of the decision itself, per consumer:
+        ``test_the_identifier_decision_is_the_SHARED_is_legal_identifier`` (the
+        writer, the refuse policy, this home, the fake) and
+        ``TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA`` (the skip
+        gate's own call site); perturbing the PATTERN object
+        (``test_perturbing_the_SHARED_predicate_moves_EVERY_members_refusal``)
+        proves only that no member holds a private pattern.
 
         Args:
             value: The candidate identity string.
@@ -6619,7 +6627,9 @@ class AppContext:
             ``"scout\\n"`` — a second identity rendering identically to
             ``"scout"`` wherever a trailing newline is invisible.
         """
-        return AGENT_NAME_PATTERN.fullmatch(value) is not None
+        from lorerunes import is_legal_identifier  # noqa: PLC0415 - house lazy-import idiom
+
+        return is_legal_identifier(value)
 
     @staticmethod
     def _comms_foreign_param_error(param_name: str, action: str) -> ValueError:
@@ -6702,6 +6712,11 @@ class AppContext:
         session_keep: Any = None
         kept_by_me = False
         principal_bare: str | None = None
+        # 63c-i-a (amendment-2 A2): THE session keep's bare id — the provenance pair's second
+        # half, handed to the registry on EVERY call (``None`` explicitly for a tokenless α
+        # register, never a conditional splat), so the registry stamps ``scope`` from the SAME
+        # keep the SF-63-1 gate below checks.
+        session_keep_bare: str | None = None
         if principal is not None:
             principal_bare = str(principal.id).split(":", 1)[-1]
             keep_store = self._keep_store
@@ -6739,6 +6754,7 @@ class AppContext:
             task_id=task_id,
             cadence=cadence,
             owner_principal_id=principal_bare,
+            session_keep_id=session_keep_bare,
         )
         now = datetime.now(UTC)
         registered_age_s = int((now - result.agent.registered_at).total_seconds())

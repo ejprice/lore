@@ -1092,7 +1092,7 @@ async def migrate_governed(
     if table == MEMORY_TABLE:
         return await _migrate_memory_scope(store, keep_store, principal_store)
     if table == AGENT_TABLE:
-        return await _migrate_agent_owner(store, principal_store)
+        return await _migrate_agent_owner(store, keep_store, principal_store)
     if table == MESSAGE_TABLE:
         return await _migrate_message_owner(store, keep_store, principal_store)
     return MigrateGovernedResult(
@@ -1261,23 +1261,44 @@ async def _owner_count(store: StoreHandle, table: str, *, none: bool) -> int:
     return 0
 
 
+#: The refusal of the agent migrate's §2.1 row precondition names AT MOST this many offending row
+#: ids (ruling §6: "naming the count and the rows (ids, bounded)"; amendment-4 MP-C). WHY a bound
+#: at all: the refusal is read by an operator at cutover, and on a store with thousands of
+#: owned-but-unscoped rows an unbounded id list buries the remedy; the FULL count is always stated
+#: beside the sample, so the reader loses no number. WHY this value: a screenful of ids is enough to
+#: start adjudicating by hand. The value is NOT normative (amendment-6 R-3) — the refusal reads it
+#: at CALL time, and its prose states the number of ids ACTUALLY shown, never this constant.
+_REFUSAL_ID_SAMPLE_SIZE = 10
+
+
 async def _migrate_agent_owner(
     store: StoreHandle,
+    keep_store: KeepStore,
     principal_store: PrincipalStore,
 ) -> MigrateGovernedResult:
-    """Backfill every NONE-owner ``agent`` row's ``owner_principal`` to THE operator (§4.C / §2.1).
+    """Backfill every NONE-scope ``agent`` row's governed triple in ONE scope-keyed statement
+    (packet 63c-i-a, ruling §6 / §2.2 grandfather; the leg is named for its pkt-63b origin).
 
     OWNED-BY-THE-OPERATOR: the pre-cutover local fleet IS the operator's principal (packet 62 Fork
-    2 — no sentinel), so a legacy ownerless agent is backfilled to the ONE operator principal
-    resolved by the shared :func:`resolve_operator_principal`; multi-principal ambiguity is a
-    REFUSAL, never a guess. Touches ONLY NONE-owner agents (an already-owned agent is left intact —
-    ∀ NONE-owner, never a re-stamp); idempotent (a re-run backfills 0). NOT member-reachable
-    (admin-CLI-only), so the write attributes at the F5 seam via the NAMED
-    ``governed_exempt("migrate-governed")`` frame; all store access is driver-routed (R4). The owner
-    link is set store-side via ``type::record`` (a bare id string does not coerce to a
-    ``record<principal>``, store-ref §2).
+    2 — no sentinel), so a legacy agent is stamped ``owner_principal`` = the ONE operator principal
+    resolved by the shared :func:`resolve_operator_principal` (ambiguity is a REFUSAL, never a
+    guess), ``owner_agent`` = its OWN id (SF-63-2), and ``scope`` = the canonical PROJECT keep's
+    scope (the same ``get_or_create_keyed(PROJECT_KEEP_KEY, …)`` the memory/message legs use).
+    ``scope IS NONE`` is THE unmigrated predicate ∀ governed tables, so an already-governed row
+    (owned AND scoped) is never touched and a re-run backfills 0.
+
+    §2.1's ROW-level precondition runs BEFORE any write: a row with ``scope IS NONE`` but
+    ``owner_principal IS NOT NONE`` means a multi-principal or half-applied store, so the migrate
+    REFUSES (``refused=True``, ZERO rows stamped) naming the FULL count and a bounded sample of the
+    ids (:data:`_REFUSAL_ID_SAMPLE_SIZE`) — every integer the refusal serves is a true count of the
+    set it names. NOT member-reachable (admin-CLI-only), so the write attributes at the F5 seam via
+    the NAMED ``governed_exempt("migrate-governed")`` frame whose golden IS the executed statement;
+    all store access is driver-routed (R4). The owner link is set store-side via ``type::record``
+    (a bare id string does not coerce to a ``record<principal>``, store-ref §2).
     """
-    from loremaster.governed import MigrateGovernedResult, governed_exempt
+    from lorerunes.pdp import keep_scope
+
+    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
 
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
@@ -1296,8 +1317,8 @@ async def _migrate_agent_owner(
             ),
         )
 
-    unmigrated = await _owner_count(store, AGENT_TABLE, none=True)
-    already = await _owner_count(store, AGENT_TABLE, none=False)
+    unmigrated = await _scope_count(store, AGENT_TABLE, none=True)
+    already = await _scope_count(store, AGENT_TABLE, none=False)
     if unmigrated == 0:
         return MigrateGovernedResult(
             table=AGENT_TABLE,
@@ -1306,20 +1327,59 @@ async def _migrate_agent_owner(
             already_migrated=already,
             refused=False,
         )
+    # §2.1 ROW precondition (#470 / F10), BEFORE any write — the refusal is byte-inert. ONE read
+    # yields both the count and the sample, so the two numbers the refusal states can never
+    # describe different sets.
+    owned_unscoped_rows = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed agent row precondition",
+        label="governed.agent_precondition.rejected",
+        statement=(
+            f"SELECT VALUE id FROM {AGENT_TABLE} "
+            "WHERE scope IS NONE AND owner_principal IS NOT NONE"
+        ),
+        params={},
+        logger=logger,
+    )
+    owned_unscoped_ids = sorted(str(row_id) for row_id in (owned_unscoped_rows or []))
+    if owned_unscoped_ids:
+        offending_count = len(owned_unscoped_ids)
+        shown_ids = owned_unscoped_ids[:_REFUSAL_ID_SAMPLE_SIZE]
+        return MigrateGovernedResult(
+            table=AGENT_TABLE,
+            scanned=unmigrated + already,
+            backfilled=0,
+            already_migrated=already,
+            refused=True,
+            reason=(
+                f"{offending_count} agent row(s) carry an owner but no scope — a multi-principal "
+                f"or half-applied store (§2.1). First {len(shown_ids)} of {offending_count} ids "
+                f"shown: {', '.join(shown_ids)}. Adjudicate these rows by hand before migrating; "
+                "no row was stamped"
+            ),
+        )
+    project_keep = await keep_store.get_or_create_keyed(
+        key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
+    )
+    project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
     operator_id = operator.id.partition(":")[2] or operator.id
+    # ONE statement, three columns, scope-keyed (ruling §6). §1.9 item 1: a FUNCTION-LOCAL literal
+    # (never a module constant) passed to BOTH the statement-scoped exemption and the execution.
     backfill_statement = (
-        f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner) "
-        "WHERE owner_principal IS NONE"
+        f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner), "
+        "owner_agent = id, scope = $scope WHERE scope IS NONE"
     )
     with governed_exempt("migrate-governed", statement=backfill_statement):
         await run_query(
             acquire=store.acquire,
             drop=store.drop,
             url=store.url,
-            noun="governed agent-owner backfill",
+            noun="governed agent backfill",
             label="governed.agent_backfill.rejected",
             statement=backfill_statement,
-            params={"owner": operator_id},
+            params={"owner": operator_id, "scope": project_scope},
             logger=logger,
         )
     return MigrateGovernedResult(

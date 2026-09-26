@@ -21,6 +21,7 @@ from lorerunes.blankness import is_blank
 from lorerunes.credentials import parse_credential
 from lorerunes.email_normalisation import normalize_email
 from lorerunes.engine_rejection import reclassify
+from lorerunes.identifiers import AGENT_NAME_PATTERN, is_legal_identifier
 from lorerunes.pdp import (
     AGENT_TABLE,
     AUDIT_TABLE,
@@ -63,6 +64,7 @@ from lorerunes.scopes import (
 )
 
 __all__ = [
+    "AGENT_NAME_PATTERN",
     "AGENT_TABLE",
     "AUDIT_TABLE",
     "KEEP_SCOPE_PREFIX",
@@ -96,6 +98,7 @@ __all__ = [
     "hosted_scopes_for_role",
     "host_is_loopback",
     "is_blank",
+    "is_legal_identifier",
     "keep_scope",
     "lan_scopes_for_role",
     "normalize_email",

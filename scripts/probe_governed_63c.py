@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# HISTORICAL INSTRUMENT — measured the PRE-63c-i-a world. Its C-agent control is EXPECTED to
+# fail on >= 63c-i-a (the build implements what it measured); do not treat that failure as a
+# regression. (Its prose below — incl. "agent has NO scope column" — describes that pre-63c-i-a
+# world.)
 """Probe: packet-63c store + code FACTS (govern the comms REMAINDER — the ``brief``
 + ``agent`` populations), settled BY CONSTRUCTION on the live 3.2.4 engine — never
 by reasoning (#107 came from reasoning about engine behaviour instead of measuring
@@ -230,8 +234,8 @@ async def _agent_dd3c(connection: Any, report: ProbeReport) -> dict[str, Any]:
     print("=" * 78)
 
     # NB: NO governed overlay on agent — agent already ships owner_principal + its plain
-    # index in generate_agent_ddl (pkt 62), and agent deliberately has NO scope column
-    # (PART D measures that fact). The owner backfill needs only owner_principal.
+    # index in generate_agent_ddl (pkt 62), and — BEFORE 63c-i-a — agent deliberately had NO scope
+    # column (PART D measured that fact; 63c-i-a adds one). The owner backfill needs only owner_principal.
     await _apply_ddl(connection, generate_agent_ddl())
 
     # C-CONTROL: the role non-empty ASSERT is REAL — a fresh role='' CREATE under the
@@ -518,7 +522,7 @@ async def _part_d(connection: Any, report: ProbeReport) -> dict[str, Any]:
              "'which agents does principal X own' must be index-served (store-ref §4).")
     findings["agent_owner_principal"] = a_op.classification
 
-    # Candidate fleet read-filters — REPORT-only (agent has NO scope column; the sidecar
+    # Candidate fleet read-filters — REPORT-only (agent had NO scope column before 63c-i-a; the sidecar
     # rules the mechanism on these MEASURED plans, not this probe).
     agent_fragment, agent_params = authorize_filter(_SUBJECT, Action.READ, AGENT_TABLE).to_surql()
     print("\n  authorize_filter(member, READ, agent) fragment (agent has NO scope column):")

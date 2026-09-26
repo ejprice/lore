@@ -29,6 +29,8 @@ domain constraint is a field-level ``ASSERT $value IN [...]``.
 
 from __future__ import annotations
 
+from lorerunes import AGENT_NAME_PATTERN, PRINCIPAL_ROLE_MEMBER, PRINCIPAL_ROLES
+
 # The shared authorization vocabulary is HOMED in stdlib-only ``lorerunes`` (D2/SEC-R4
 # re-home, packet 61b — one-column-one-vocabulary, shared with the PDP; ``lorerunes`` cannot
 # import ``loremaster``, so the shared home MUST be ``lorerunes``). The table names
@@ -39,7 +41,6 @@ from __future__ import annotations
 # derivation + ``principals.py`` already use, preserving object identity.
 from lorerunes import AGENT_TABLE as AGENT_TABLE  # noqa: PLC0414 - explicit re-export (SEC-R4)
 from lorerunes import AUDIT_TABLE as AUDIT_TABLE  # noqa: PLC0414 - explicit re-export (D2)
-from lorerunes import PRINCIPAL_ROLE_MEMBER, PRINCIPAL_ROLES
 from lorerunes import PRINCIPAL_TABLE as PRINCIPAL_TABLE  # noqa: PLC0414 - explicit re-export (SEC-R4)
 
 # ---------------------------------------------------------------------------
@@ -487,7 +488,12 @@ _FINDING_COUNTER_NEXT_FIELD = "next"
 # spike-surreal 3.1.5 (see ``REPORT-c1-contract-schema.md``): the SurrealQL
 # ``ASSERT`` must use the FUNCTION form ``string::matches($value, '<pattern>')``;
 # the operator form (``$value =~ /pattern/``) is a 3.1.5 PARSE ERROR.
-_IDENTIFIER_CHARSET_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+# packet 63c-i-a (ruling §4.2 Q3): ``agent.name``/``agent.session`` DROPPED this
+# ASSERT (the writer validates via ``lorerunes.is_legal_identifier``); only
+# ``brief.name`` still consumes it, until 63c-ii drops it too and this pair dies.
+# The pattern TEXT is a READ of THE ONE ``lorerunes.AGENT_NAME_PATTERN`` (amendment-6)
+# — never a second spelling of the charset.
+_IDENTIFIER_CHARSET_PATTERN = AGENT_NAME_PATTERN.pattern
 _IDENTIFIER_CHARSET_ASSERT = f"ASSERT string::matches($value, '{_IDENTIFIER_CHARSET_PATTERN}')"
 
 # The closed FOUR-status agent lifecycle vocabulary (design doc §0/§3) —
@@ -506,10 +512,16 @@ _AGENT_STATUSES = (
 _AGENT_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _AGENT_STATUSES)
 
 # The ``agent`` table's fields as ``(name, type_expr, constraint)`` triples —
-# mirrors :data:`_TASK_FIELD_SPECS`. ``name``/``session`` share the identifier
-# charset ASSERT; ``role`` carries the shared non-empty ASSERT
-# (:data:`_NON_EMPTY_STRING_ASSERT`); ``status`` carries the closed four-value
-# domain; ``model``/``spawned_by``/``task_id``/``last_note`` are ``option``
+# mirrors :data:`_TASK_FIELD_SPECS`. ``name``/``session``/``role`` carry NO
+# ASSERT since packet 63c-i-a (ruling §4.2, Q3 DROP + MOVE): the ONE writer
+# (``AgentRegistry.register``) refuses an illegal identity / blank role before
+# any store I/O, and a store ASSERT on a POPULATED table is a DD-3.c gun (a
+# narrowing edit write-poisons every legacy violator's next UPDATE, store
+# reference §1.4). The rows STAY in the tuple with an EMPTY constraint, so the
+# ``DEFINE FIELD OVERWRITE`` re-land (§1.2 — OVERWRITE is a FULL REPLACE) drops
+# the stored ASSERT on a long-lived store; a DELETED row would leave it in place
+# forever. ``status`` KEEPS the closed four-value domain (reader-aligned —
+# ``Agent.status`` is a validated Literal); ``model``/``spawned_by``/``task_id``/``last_note`` are ``option``
 # (a fresh/partial registration may omit them); ``checkpoint`` is
 # ``option<object> FLEXIBLE`` — the C1 build-time probe verified live that
 # FLEXIBLE must trail OUTSIDE the angle brackets on 3.1.5 (``option<object
@@ -521,9 +533,9 @@ _AGENT_STATUS_ALLOWED = ", ".join(f"'{status}'" for status in _AGENT_STATUSES)
 # explicitly, mirroring ``task.created_at``/``task.claimed_at``'s
 # ledger-stamped idiom rather than ``finding.created_at``'s engine-stamped one.
 _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("name", _CHUNK_STRING_TYPE, _IDENTIFIER_CHARSET_ASSERT),
-    ("session", _CHUNK_STRING_TYPE, _IDENTIFIER_CHARSET_ASSERT),
-    ("role", _CHUNK_STRING_TYPE, _NON_EMPTY_STRING_ASSERT),
+    ("name", _CHUNK_STRING_TYPE, ""),
+    ("session", _CHUNK_STRING_TYPE, ""),
+    ("role", _CHUNK_STRING_TYPE, ""),
     ("model", "option<string>", ""),
     ("status", _CHUNK_STRING_TYPE, f"ASSERT $value IN [{_AGENT_STATUS_ALLOWED}]"),
     ("spawned_by", "option<string>", ""),
@@ -550,23 +562,15 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     # EXACTLY. Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE``
     # (§1.1, the only clause that lands a changed definition).
     ("declared_cadence", "option<string>", ""),
-    # packet 62, Fork 3 / scope item 1 (R3.4): the ``owns`` back-link — the
-    # principal that owns this agent. FORK 3 RULED it a SCALAR field-link
-    # (``keep.keeper`` precedent, packet-60 Fork A), NOT a relation edge; store
-    # reference §4 seals that choice — a graph TRAVERSAL is never index-served,
-    # so a scalar owner stays an INDEXED FIELD (the index is appended in
-    # ``_agent_statements``). ``option<record<principal>>`` with NO ASSERT and NO
-    # DEFAULT: store reference §1.4 — a NEW field on the production-POPULATED
-    # ``agent`` table MUST be ``option<>`` (a required ``record<principal>``
-    # poisons every existing agent row's next UPDATE with ``Expected
-    # record<principal> but found NONE``, and a DEFAULT does not rescue a legacy
-    # row). An ownerless agent is ALSO legal by design (Fork 2 — the pre-cutover
-    # local fleet holds no credential to stamp from; the register-time owner
-    # STAMP is scope item 2, a LATER wave), so ``option<>`` is both the
-    # migration-safe AND the semantically-correct shape. On principal-delete this
-    # link is DANGLE-TOLERATED (R3.2 / I4) — see ``PrincipalStore.delete``.
-    # Emitted through ``_define_field`` ⇒ ``DEFINE FIELD OVERWRITE`` (§1.1).
-    ("owner_principal", "option<record<principal>>", ""),
+    # packet 62, Fork 3 (R3.4): the ``owns`` back-link ``owner_principal`` — a SCALAR
+    # field-link (store reference §4: a graph traversal is never index-served), NO
+    # ASSERT, NO DEFAULT, DANGLE-TOLERATED on principal-delete (R3.2 / I4). Since
+    # packet 63c-i-a (ruling §2.1) it is NOT a row here: ``_agent_statements`` emits
+    # it — with its siblings ``owner_agent`` / ``scope`` and their indexes — through
+    # the SHARED ``_governed_field_specs`` / ``_governed_index_statements`` emitter,
+    # exactly as ``memory``/``message`` do (ONE IMPLEMENTATION; a hand-rolled twin
+    # here would keep emitting the old line beside the emitter's). The re-landed
+    # definition is byte-identical (``option<record<principal>>``, ``OVERWRITE``).
     # packet 62, Fork 1 / wave 2 (W2.2, W2-R7): the per-agent CAPABILITY hash — the
     # anti-spoofing credential. ``register``'s create branch mints a
     # ``secrets.token_urlsafe`` secret and stores ``sha512_hex(f"{name}:{secret}")``
@@ -603,14 +607,6 @@ _AGENT_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
 # not an index).
 _AGENT_SESSION_STATUS_INDEX_FIELDS = ("session", "status")
 _AGENT_NAME_INDEX_FIELDS = ("name",)
-# packet 62, Fork 3 / scope item 1: the ``owns`` back-link is indexed so "which
-# agents does principal X own" is an index-served plain-table read (store
-# reference §4 — a scalar filtered through a graph hop is un-indexable, so the
-# owner stays a FIELD and it is indexed). NON-unique: a principal owns MANY
-# agents (a UNIQUE index would reject the principal's 2nd owned agent). Plain
-# ``IF NOT EXISTS`` index (store reference §1.1 — never ``OVERWRITE`` an index:
-# ``OVERWRITE`` rebuilds over every row on every ``ensure_ready`` boot).
-_AGENT_OWNER_PRINCIPAL_INDEX_FIELDS = ("owner_principal",)
 # packet 62, wave 2 (W2.2 / store reference §1.1/§1.8): the per-agent capability is
 # resolved by a UNIQUE-hash index probe (uniform timing, no name-existence oracle — the
 # pkt-49 ``principal_key.hash`` precedent). UNIQUE is the collision backstop (a duplicate
@@ -633,8 +629,9 @@ _BRIEFED_VIA_VALUES = (_BRIEFED_VIA_REGISTER, _BRIEFED_VIA_EXPLICIT, _BRIEFED_VI
 _BRIEFED_VIA_ALLOWED = ", ".join(f"'{via}'" for via in _BRIEFED_VIA_VALUES)
 
 # The ``brief`` table's fields as ``(name, type_expr, constraint)`` triples.
-# ``name`` shares the SAME identifier charset ASSERT as ``agent.name`` (design
-# doc §0: "same class as agent.name" — brief names are protocol vocabulary
+# ``name`` carries the identifier charset ASSERT (design doc §0: "same class as
+# agent.name" — ``agent.name`` itself DROPPED its store ASSERT at packet 63c-i-a,
+# ruling §4.2; ``brief.name`` keeps it until 63c-ii) — brief names are protocol vocabulary
 # ('project', 'base', wave names) rendered and queried by literal, same
 # injection posture); ``version`` is a plain ``int``; ``body``/``created_by``
 # carry the shared non-empty ASSERT (a blank standing instruction or a blank
@@ -1578,21 +1575,23 @@ def _principal_statements() -> list[str]:
 
 
 def _agent_statements() -> list[str]:
-    """The ``agent`` table: the field set + the ``(session, status)``, ``name``,
-    ``owner_principal`` and UNIQUE ``capability_hash`` indexes.
+    """The ``agent`` table: the field set + the governed triple + the ``(session,
+    status)``, ``name``, governed (``scope``, ``owner_principal``) and UNIQUE
+    ``capability_hash`` indexes.
 
     Emits, in order: the SCHEMAFULL table; one ``DEFINE FIELD`` per
-    :data:`_AGENT_FIELD_SPECS` entry (the shared identifier charset ASSERT on
-    ``name``/``session``, the shared non-empty ASSERT on ``role``, the closed
-    four-value ``status`` domain, the ``option`` optional columns — incl. the
-    ``option<record<principal>>`` ``owner_principal`` owns back-link and the packet-62
+    :data:`_AGENT_FIELD_SPECS` entry (``name``/``session``/``role`` WITHOUT an
+    ASSERT since packet 63c-i-a — the writer validates them; the closed four-value
+    ``status`` domain, KEPT; the ``option`` optional columns — incl. the packet-62
     ``option<string>`` ``capability_hash`` / ``option<datetime>``
     ``capability_expires_at`` anti-spoofing credential columns — and the
     ``option<object> FLEXIBLE`` ``checkpoint`` blob); the non-unique index on
     ``(session, status)``; the non-unique index on ``name`` alone (design
-    doc §0 D7 — backs the bare-name resolution SELECT); the non-unique index
-    on ``owner_principal`` (packet 62 Fork 3 — "which agents does principal X
-    own" as an index-served plain-table read; store reference §4); and the UNIQUE
+    doc §0 D7 — backs the bare-name resolution SELECT); the governed triple
+    ``owner_principal`` / ``owner_agent`` / ``scope`` and its ``scope`` +
+    ``owner_principal`` indexes through the SHARED governed emitter (packet 63c-i-a,
+    ruling §2.1 — "which agents does principal X own" stays an index-served
+    plain-table read, store reference §4); and the UNIQUE
     index on ``capability_hash`` (packet 62 wave 2 — the anti-spoof capability lookup +
     collision backstop; store reference §1.1/§1.8, UNIQUE over ``option<string>``
     permits many NONE and rejects a duplicate real hash). UNLIKE ``chunk`` / ``memory``
@@ -1612,13 +1611,16 @@ def _agent_statements() -> list[str]:
     statements.append(
         _plain_index(AGENT_TABLE, f"{AGENT_TABLE}_name", _AGENT_NAME_INDEX_FIELDS)
     )
-    statements.append(
-        _plain_index(
-            AGENT_TABLE,
-            f"{AGENT_TABLE}_owner_principal",
-            _AGENT_OWNER_PRINCIPAL_INDEX_FIELDS,
-        )
-    )
+    # packet 63c-i-a (ruling §2.1): the governed triple (``owner_principal`` /
+    # ``owner_agent`` / ``scope``, all ``option<>``, no ASSERT/DEFAULT — §1.4) and its
+    # two indexes (``agent_scope`` NEW; ``agent_owner_principal`` — the SAME name the
+    # packet-62 index carried, so on a long-lived store it is an ``IF NOT EXISTS``
+    # no-op, never a rebuild, §1.5) come ONLY from the shared governed emitter.
+    statements += [
+        _define_field(AGENT_TABLE, name, type_expr, constraint=constraint)
+        for name, type_expr, constraint in _governed_field_specs()
+    ]
+    statements += _governed_index_statements(AGENT_TABLE)
     # packet 62 wave 2: the UNIQUE capability-hash index (the anti-spoof lookup +
     # collision backstop; store reference §1.1/§1.8). UNIQUE over ``option<string>``
     # permits many NONE (legacy/ownerless rows) and rejects a duplicate real hash.

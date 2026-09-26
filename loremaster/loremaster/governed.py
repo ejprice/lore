@@ -112,8 +112,10 @@ class MigrateGovernedResult:
 class LegacyMapping:
     """A per-table backfill mapping for ``lore-adm migrate-governed`` (design §2.1). ONE verb,
     N table rows: the disposition names how a legacy row's ``(owner_principal, owner_agent,
-    scope)`` is derived — UNOWNED-LEGACY (memory/brief: NONE/NONE), OWNED-BY-LINK (message:
-    sender / sender.owner_principal), STRING-UNRESOLVABLE (64: a bare name is never promoted).
+    scope)`` is derived — UNOWNED-LEGACY (memory/brief: NONE/NONE), OWNED-BY-THE-OPERATOR (agent:
+    the ONE operator principal / the row's own id — packet 63c-i-a, ruling §6), OWNED-BY-LINK
+    (message: sender / sender.owner_principal), STRING-UNRESOLVABLE (64: a bare name is never
+    promoted).
     The scope is always the canonical project keep. The shapes are the contract; the builder
     fills the SurrealQL."""
 

@@ -56,11 +56,11 @@ NO skip marker — an unreachable store is a LOUD failure, not a skip.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 import pytest_asyncio
+from _governed_contract import seed_agent_legacy
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -77,7 +77,6 @@ from loremaster.principal_keys import PrincipalKeyStore
 from loremaster.principals import PrincipalStore
 from loremaster.store import surreal_schema
 from loremaster.store.surreal_schema import (
-    _AGENT_STATUS_ACTIVE,
     AGENT_TABLE,
     PRINCIPAL_TABLE,
 )
@@ -153,52 +152,6 @@ def _one(rows: Any) -> Any:
 
 async def _apply_agent_ddl(connection: SurrealConnection) -> None:
     await run(connection, surreal_schema.generate_agent_ddl())
-
-
-async def _create_agent(
-    connection: SurrealConnection,
-    *,
-    agent_id: str,
-    name: str,
-    session: str,
-    owner_bare_id: str | None = None,
-    role: str = "worker",
-) -> Any:
-    """CREATE a full ``agent`` row via a bound CONTENT object — the house
-    ``test_comms_schema._create_agent`` idiom (store law §2: ``session`` is a PROTECTED
-    variable name, so the whole payload rides ONE ``$content`` bind with ``session`` as an
-    inner KEY — a top-level ``$session`` param is rejected outright).
-
-    Supplies every REQUIRED (non-``option``, no-DEFAULT) column: ``name``/``session``/``role``,
-    ``status`` (the closed domain), and the two app-stamped datetimes. ``owner_principal`` is written
-    as a bound :class:`~surrealdb.RecordID` (the ``record<>``-value shape) ONLY when ``owner_bare_id``
-    is given — so an ownerless CREATE exercises the ``option<>`` unset path.
-
-    Re-dated at 63c-i-a r2 (amendment-2 §D item 14 / sidecar F4): ``name``/``session`` (identifier
-    charset) and ``role`` (non-empty) were STORE-ASSERTed until 63c-i-a (``699a6e9``); after Q3 only
-    ``status`` keeps a store ASSERT — the identifier charset and the non-blank role are validated by
-    ``AgentRegistry.register`` (the ONE implementation, via ``lorerunes.is_legal_identifier`` /
-    ``lorerunes.is_blank``), and a RAW CREATE here bypasses that ON PURPOSE. ⚠ This helper PREDATES
-    the F5 home's ``_governed_contract.seed_agent_legacy`` (a second raw-CREATE of an agent row);
-    operator ruling D3 folds it onto ``seed_agent_legacy`` in the 63c-i-a BUILD's refactor step — the
-    pkt-62 pins here keep their behaviour.
-    """
-    now = datetime.now(UTC)
-    content: dict[str, Any] = {
-        "name": name,
-        "session": session,
-        "role": role,
-        "status": _AGENT_STATUS_ACTIVE,
-        "registered_at": now,
-        "heartbeat_at": now,
-    }
-    if owner_bare_id is not None:
-        content[_OWNER_FIELD] = RecordID(PRINCIPAL_TABLE, owner_bare_id)
-    return await run(
-        connection,
-        f"CREATE type::record('{AGENT_TABLE}', $id) CONTENT $content",
-        {"id": agent_id, "content": content},
-    )
 
 
 def _bare(record_id: str) -> str:
@@ -347,8 +300,13 @@ class TestTheOwnerPrincipalFieldOnTheLiveEngine:
         back as the principal record id."""
         connection, _ = admin_db
         await _apply_agent_ddl(connection)
-        await _create_agent(
-            connection, agent_id="owned", name="owned_agent", session="fleet_one", owner_bare_id="p1"
+        await seed_agent_legacy(
+            connection,
+            row_id="owned",
+            name="owned_agent",
+            session="fleet_one",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, "p1"),
         )
         row = _one(
             await run(
@@ -368,7 +326,13 @@ class TestTheOwnerPrincipalFieldOnTheLiveEngine:
         required-not-option build REJECTS this ownerless CREATE and reddens here."""
         connection, _ = admin_db
         await _apply_agent_ddl(connection)
-        await _create_agent(connection, agent_id="free", name="free_agent", session="fleet_two")
+        await seed_agent_legacy(
+            connection,
+            row_id="free",
+            name="free_agent",
+            session="fleet_two",
+            role="worker",
+        )
         row = _one(
             await run(
                 connection,
@@ -386,12 +350,22 @@ class TestTheOwnerPrincipalFieldOnTheLiveEngine:
         clause pin only pins statically."""
         connection, _ = admin_db
         await _apply_agent_ddl(connection)
-        await _create_agent(
-            connection, agent_id="a1", name="agent_one", session="fleet_a", owner_bare_id="pshared"
+        await seed_agent_legacy(
+            connection,
+            row_id="a1",
+            name="agent_one",
+            session="fleet_a",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, "pshared"),
         )
         # SAME owner, DIFFERENT agent — must succeed under a NON-unique index.
-        await _create_agent(
-            connection, agent_id="a2", name="agent_two", session="fleet_b", owner_bare_id="pshared"
+        await seed_agent_legacy(
+            connection,
+            row_id="a2",
+            name="agent_two",
+            session="fleet_b",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, "pshared"),
         )
         rows = await run(
             connection,
@@ -440,7 +414,13 @@ class TestOwnerPrincipalMigratesOntoAPopulatedAgentTable:
         connection, _ = admin_db
         # OLD world: the agent slice WITHOUT owner_principal + a legacy agent row.
         await run(connection, _agent_ddl_without_owner_principal())
-        await _create_agent(connection, agent_id="legacy", name="legacy_agent", session="old_sess")
+        await seed_agent_legacy(
+            connection,
+            row_id="legacy",
+            name="legacy_agent",
+            session="old_sess",
+            role="worker",
+        )
         # NEW world: the real slice (adds owner_principal on a correct build) — the boot re-run.
         await _apply_agent_ddl(connection)
         survived = _one(
@@ -463,7 +443,13 @@ class TestOwnerPrincipalMigratesOntoAPopulatedAgentTable:
         virgin-db fixture can carry — the exact #107/#131 shape."""
         connection, _ = admin_db
         await run(connection, _agent_ddl_without_owner_principal())
-        await _create_agent(connection, agent_id="legacy", name="legacy_agent", session="old_sess")
+        await seed_agent_legacy(
+            connection,
+            row_id="legacy",
+            name="legacy_agent",
+            session="old_sess",
+            role="worker",
+        )
         await _apply_agent_ddl(connection)
         # UPDATE an unrelated option column — a wrongly-REQUIRED owner ASSERT would trip here.
         await run(
@@ -489,10 +475,21 @@ class TestOwnerPrincipalMigratesOntoAPopulatedAgentTable:
         owned agent reads its owner back."""
         connection, _ = admin_db
         await run(connection, _agent_ddl_without_owner_principal())
-        await _create_agent(connection, agent_id="legacy", name="legacy_agent", session="old_sess")
+        await seed_agent_legacy(
+            connection,
+            row_id="legacy",
+            name="legacy_agent",
+            session="old_sess",
+            role="worker",
+        )
         await _apply_agent_ddl(connection)
-        await _create_agent(
-            connection, agent_id="fresh", name="fresh_agent", session="new_sess", owner_bare_id="p9"
+        await seed_agent_legacy(
+            connection,
+            row_id="fresh",
+            name="fresh_agent",
+            session="new_sess",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, "p9"),
         )
         row = _one(
             await run(
@@ -579,8 +576,13 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
         alice = await principal_store.get_by_email(_EMAIL_ALICE)
         assert alice is not None
         alice_bare = _bare(alice.id)
-        await _create_agent(
-            admin, agent_id="owned", name="owned_agent", session="fleet_sess", owner_bare_id=alice_bare
+        await seed_agent_legacy(
+            admin,
+            row_id="owned",
+            name="owned_agent",
+            session="fleet_sess",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, alice_bare),
         )
         # control: the agent is owned by a LIVE principal pre-delete.
         pre = _one(
@@ -618,11 +620,21 @@ class TestPrincipalDeleteDanglesTheOwnedAgentBackLink:
         alice = await principal_store.get_by_email(_EMAIL_ALICE)
         assert alice is not None
         alice_bare = _bare(alice.id)
-        await _create_agent(
-            admin, agent_id="own_a", name="owned_a", session="fleet_a", owner_bare_id=alice_bare
+        await seed_agent_legacy(
+            admin,
+            row_id="own_a",
+            name="owned_a",
+            session="fleet_a",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, alice_bare),
         )
-        await _create_agent(
-            admin, agent_id="own_b", name="owned_b", session="fleet_b", owner_bare_id=alice_bare
+        await seed_agent_legacy(
+            admin,
+            row_id="own_b",
+            name="owned_b",
+            session="fleet_b",
+            role="worker",
+            owner_principal=RecordID(PRINCIPAL_TABLE, alice_bare),
         )
 
         await principal_store.delete(email=_EMAIL_ALICE)

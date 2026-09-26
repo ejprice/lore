@@ -50,7 +50,8 @@ implements it, never redefines it:
         async ensure_ready() -> None
         async close() -> None
         async register(name, *, session, role, model=None, spawned_by=None,
-                        task_id=None) -> AgentRegisterResult
+                        task_id=None, cadence=None, owner_principal_id=None,
+                        session_keep_id=None) -> AgentRegisterResult
         async get_agent(name, *, session=None) -> Agent
         async touch(name, *, session=None, status=None, note=None) -> Agent
         async fleet(*, session=None, limit) -> AgentFleetWindow
@@ -59,6 +60,7 @@ implements it, never redefines it:
     Exceptions: AgentRegistryError(RuntimeError);
                 UnknownAgentError(AgentRegistryError);
                 AmbiguousAgentError(AgentRegistryError);
+                InvalidAgentIdentityError(AgentRegistryError);
                 AgentIdentityConflictError(AgentRegistryError);
                 RetiredAgentError(AgentRegistryError);
                 IllegalAgentStatusError(AgentRegistryError).
@@ -74,7 +76,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import secrets
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -86,7 +87,7 @@ from surrealdb import AsyncSurreal, RecordID
 
 from loremaster.index.records import sha512_hex
 from loremaster.principals import _SECRET_ENTROPY_BYTES
-from loremaster.render import render_attributed
+from loremaster.render import render_attributed, render_fenced
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -104,7 +105,13 @@ from loremaster.store.surreal_schema import (
     PRINCIPAL_TABLE,
     generate_agent_ddl,
 )
-from lorerunes import parse_credential
+from lorerunes import AGENT_NAME_PATTERN as AGENT_NAME_PATTERN  # noqa: PLC0414 - re-export (63c-i-a A4)
+from lorerunes import (
+    is_blank,
+    is_legal_identifier,
+    keep_scope,
+    parse_credential,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,12 +160,16 @@ LEGAL_AGENT_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
 _AGENT_STATUS_ORPHANED = "orphaned"
 
 # The load-bearing injection guard (design doc §0/§4): every ``agent.name`` /
-# ``agent.session`` is inlined as a literal into C3's live WHERE clauses, so
-# the charset is enforced here (a Python-side pre-validation layer) AND by the
-# store's own ``ASSERT`` (defense-in-depth, :mod:`loremaster.store.surreal_schema`).
-# Configurability would make the inlining guarantee operator-breakable, so this
-# stays a MODULE CONSTANT, never a config knob.
-AGENT_NAME_PATTERN: re.Pattern[str] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# ``agent.session`` is inlined as a literal into C3's live WHERE clauses. Since
+# packet 63c-i-a (ruling §4.2, Q3 DROP + MOVE) the store carries NO charset
+# ``ASSERT`` on ``agent.name``/``agent.session`` any more: the ONE writer,
+# :meth:`AgentRegistry.register`, refuses an illegal identity BEFORE any store
+# I/O through the SHARED decision ``lorerunes.is_legal_identifier``. The pattern
+# itself MOVED to ``lorerunes`` (amendment-2 A4) — this module's
+# ``AGENT_NAME_PATTERN`` is a re-export of THE ONE pattern object (the explicit
+# ``as`` import at the top of the module), kept
+# so existing ``from loremaster.agents import AGENT_NAME_PATTERN`` readers bind
+# the same object, never a second spelling. A MODULE CONSTANT, never a config knob.
 
 # Fleet row ordering (design doc §6): input_required (parked questions, the
 # actionable signal) first, then active, then idle; most-recent heartbeat
@@ -205,6 +216,11 @@ _COL_DECLARED_CADENCE = "declared_cadence"
 _COL_OWNER_PRINCIPAL = "owner_principal"
 _COL_CAPABILITY_HASH = "capability_hash"
 _COL_CAPABILITY_EXPIRES_AT = "capability_expires_at"
+# packet 63c-i-a (ruling §2.1/§2.2): the two governed columns ``agent`` gains beside
+# ``owner_principal`` (the shared ``_governed_field_specs`` emitter defines all three).
+# Stamped on the register CREATE only (mint-once); never read back into ``Agent``.
+_COL_OWNER_AGENT = "owner_agent"
+_COL_SCOPE = "scope"
 
 # The record-id table separator. (The signin credential keys moved to the ONE
 # shared ``store._txn.signin_credentials`` seam — #211/#102.)
@@ -399,6 +415,14 @@ class UnknownAgentError(AgentRegistryError):
 
 class AmbiguousAgentError(AgentRegistryError):
     """Raised when a bare name (no ``session=``) matches >1 live agent row."""
+
+
+class InvalidAgentIdentityError(AgentRegistryError):
+    """Raised when a register argument breaks the agent identity rules — an illegal
+    ``name``/``session`` (``lorerunes.is_legal_identifier``) or a blank ``role``
+    (``lorerunes.is_blank``). Raised BEFORE any store I/O (packet 63c-i-a, ruling §4.2
+    Q3 MOVE: the ONE writer now validates what the dropped store ``ASSERT`` clauses
+    used to)."""
 
 
 class AgentIdentityConflictError(AgentRegistryError):
@@ -636,6 +660,56 @@ class AgentRegistry:
 
     # -- register -------------------------------------------------------------
 
+    @staticmethod
+    def _refuse_an_inconsistent_provenance_pair(
+        owner_principal_id: str | None, session_keep_id: str | None
+    ) -> None:
+        """Refuse a MIXED provenance pair (packet 63c-i-a, amendment-2 A3).
+
+        ``owner_principal_id`` and ``session_keep_id`` are both derived server-side from the
+        same admitted principal, so exactly one of them being set is a caller BUG, never a
+        user error — the wording is for the engineer. Refusing it here makes R-Q5-1's trap
+        population (an owned but unscoped row) unreachable through the writer.
+
+        Raises:
+            AgentRegistryError: Exactly one of the pair is ``None``.
+        """
+        if (owner_principal_id is None) != (session_keep_id is None):
+            raise AgentRegistryError(
+                "register was called with an owner but no session keep (or a session keep but "
+                "no owner) — the pair is derived server-side together, so this is a server-side "
+                "caller bug; nothing was written"
+            )
+
+    @staticmethod
+    def _refuse_an_invalid_identity(*, name: str, session: str, role: str) -> None:
+        """Refuse an illegal ``name``/``session`` or a blank ``role`` (ruling §4.2 Q3 MOVE).
+
+        The decisions are the SHARED ``lorerunes`` predicates — ``is_legal_identifier`` (the
+        same decision the server's charset gate reads) and ``is_blank`` — never a private
+        re-statement (ROUTING IS NOT SHARING). The rule text is DERIVED from
+        ``AGENT_NAME_PATTERN`` so a pattern change moves the message with it, and the offending
+        value rides :func:`~loremaster.render.render_fenced` (the helper
+        ``AppContext._validate_comms_charset`` uses) — never bare, never ``repr`` (Ruling 10
+        link 4: ``repr`` leaves a same-line forgery readable).
+
+        Raises:
+            InvalidAgentIdentityError: The first illegal field found.
+        """
+        for field_name, value in (("name", name), ("session", session)):
+            if not is_legal_identifier(value):
+                raise InvalidAgentIdentityError(
+                    f"agent {field_name} must match {AGENT_NAME_PATTERN.pattern} (lowercase "
+                    f"letters, digits, '_' or '-', starting with a letter or digit); nothing was "
+                    f"written — register again with a legal {field_name}. The rejected value "
+                    f"was:\n{render_fenced(value)}"
+                )
+        if is_blank(role):
+            raise InvalidAgentIdentityError(
+                "agent role must not be blank; nothing was written — register again with a "
+                "role (e.g. 'builder')"
+            )
+
     async def register(
         self,
         name: str,
@@ -647,6 +721,7 @@ class AgentRegistry:
         task_id: str | None = None,
         cadence: str | None = None,
         owner_principal_id: str | None = None,
+        session_keep_id: str | None = None,
     ) -> AgentRegisterResult:
         """Idempotently register an agent identity (design doc §1/§2).
 
@@ -681,17 +756,43 @@ class AgentRegistry:
                 Fork 3); ``None`` leaves the agent OWNERLESS (the pre-cutover local
                 fleet holds no credential — Fork 2), never a fabricated owner. A
                 re-register does NOT re-stamp it (mint-once-on-create; owner is set at
-                birth, and a running agent's owner is not rewritten mid-session).
+                birth, and a running agent's owner is not rewritten mid-session) — and
+                likewise ``owner_agent`` and ``scope`` (below) are NEVER stamped on a
+                re-register, for EVERY row: a row born ownerless/unscoped (an α register or
+                a pre-cutover legacy row) stays so, because ownerless rows are
+                ``lore-adm migrate-governed``'s to stamp, never a re-registering caller's
+                (packet 63c-i-a, amendment-4 MP-F). A re-register does NOT re-stamp — from
+                ANY caller, including a different householded principal (ruling §2.2 row 2).
+            session_keep_id: The bare record id of the SESSION KEEP this agent registers
+                into (packet 63c-i-a, amendment-2 A2) — the SF-63-1 keep the caller's
+                ``register`` path just minted/joined and gate-checked, DERIVED SERVER-SIDE,
+                never a caller-facing argument. On CREATE the row's ``scope`` is stamped
+                ``keep_scope(session_keep_id)`` (the ONE ``lorerunes`` formatter) and its
+                ``owner_agent`` is stamped to the row's OWN id (SF-63-2: owner =
+                ``(owner_principal, id)`` — on EVERY create, the tokenless one included);
+                ``None`` leaves ``scope`` unset, legal only together with
+                ``owner_principal_id=None`` (the tokenless α interim). The pair
+                ``(owner_principal_id, session_keep_id)`` must be both set or both ``None``
+                (A3): a mixed pair is a server-side caller bug, refused before any store I/O.
 
         Returns:
             The :class:`AgentRegisterResult` of this call — carrying the raw one-time
             ``capability`` credential on a FIRST register, ``None`` on a re-register.
 
         Raises:
+            AgentRegistryError: The provenance pair is inconsistent — exactly one of
+                ``owner_principal_id`` / ``session_keep_id`` is set (A3); nothing is written.
+            InvalidAgentIdentityError: ``name``/``session`` is not a legal identity, or
+                ``role`` is blank (ruling §4.2 MOVE); nothing is written.
             RetiredAgentError: The row already exists and is retired.
             AgentIdentityConflictError: ``role`` or ``spawned_by`` differs from
                 the existing row's concrete value.
         """
+        # Every refusal below runs BEFORE ``_select_row`` — on the CREATE and the
+        # RE-register path alike (amendment-4 MP-B / NF-2): a refused call performs no
+        # store I/O at all.
+        self._refuse_an_inconsistent_provenance_pair(owner_principal_id, session_keep_id)
+        self._refuse_an_invalid_identity(name=name, session=session, role=role)
         agent_id = self._agent_id(session, name)
         existing_row = await self._select_row(agent_id)
         now = datetime.now(UTC)
@@ -725,6 +826,15 @@ class AgentRegistry:
                     else None
                 ),
                 _COL_CAPABILITY_HASH: sha512_hex(capability),
+                # packet 63c-i-a (ruling §2.2 row 1): the governed pair beside
+                # ``owner_principal``, stamped on CREATE ONLY — ``owner_agent`` is the row's
+                # OWN id (SF-63-2), ``scope`` the session keep's scope through the ONE
+                # formatter. A re-register does NOT re-stamp owner_principal / owner_agent /
+                # scope — from ANY caller, including a different householded principal.
+                _COL_OWNER_AGENT: RecordID(AGENT_TABLE, agent_id),
+                _COL_SCOPE: (
+                    keep_scope(session_keep_id) if session_keep_id is not None else None
+                ),
                 # SF-2: no clock TTL by default — the lifetime bound is the binding +
                 # no-cache revocation. The OPTIONAL expiry seam starts unset (never).
                 _COL_CAPABILITY_EXPIRES_AT: None,
