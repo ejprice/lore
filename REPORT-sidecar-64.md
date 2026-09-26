@@ -295,3 +295,39 @@ brief project v7 read
   a row already being rewritten; the edge set is a SET); E11 CHANGED-DELIBERATELY, pinned with a
   control and the same fixture through the boot heal.
 - **Graded:** `c42eeaf` · HEAD-at-report: `dcf6b0f` · DIFFERENT (my own commit). Standing by.
+
+## Task 15 (2026-09-26) — #497 landed in the store reference (§3 bullet + §6.2 silence row + anchors)
+
+- **state:** done — commit named in the lead message. **Docs-first check changed the entry's class:** the
+  vendor DOCUMENTS the break (`return.mdx` §*Return breaks execution*: `BEGIN; RETURN 1; CREATE a; -- Is
+  not executed; COMMIT;`) — a §6.1 "lie" it is not; this repo had never read that section. The vendor is
+  SILENT on the two load-bearing halves, which the probe measured: the statements before the `RETURN`
+  COMMIT, and every skipped statement reports `status: OK` (so `execute_transaction`'s per-statement
+  verification cannot see the truncation); plus a `THROW` after a `RETURN` never fires. Filed **#501**:
+  `compose`'s envelope-integrity guard should refuse a top-level `RETURN` fragment statement (58's
+  builder is the natural owner — its §HELD already touches `_txn`). **Re-probed by me** this time
+  (harness defaults `root`/`spikeroot` — the sanctioned test-store source per am-6; no secrets file read;
+  throwaway DB `test_dump_probe497_eeb29295`, reaped). Verbatim instrument:
+  ```bash
+  H=http://127.0.0.1:18000; NS=lore_test; DB="test_dump_probe497_$(python3 -c 'import uuid;print(uuid.uuid4().hex[:8])')"
+  A="-u root:spikeroot"; hdr="-H Surreal-NS:$NS -H Surreal-DB:$DB -H Accept:application/json"
+  curl -s $A -H "Surreal-NS:$NS" -H "Accept:application/json" --data-binary "DEFINE DATABASE $DB;" $H/sql
+  # P1 RETURN mid-txn → only a; all four statements OK
+  curl -s $A $hdr --data-binary "BEGIN; CREATE probe_ret:a; RETURN NONE; CREATE probe_ret:b; COMMIT;" $H/sql
+  curl -s $A $hdr --data-binary 'SELECT VALUE id FROM probe_ret;' $H/sql        # ["probe_ret:a"]
+  # P2 CONTROL LET → a and b
+  curl -s $A $hdr --data-binary "BEGIN; CREATE probe_ctl:a; LET \$pad = NONE; CREATE probe_ctl:b; COMMIT;" $H/sql
+  curl -s $A $hdr --data-binary 'SELECT VALUE id FROM probe_ctl;' $H/sql        # ["probe_ctl:a","probe_ctl:b"]
+  # P3 RETURN then THROW → a committed, THROW never runs
+  curl -s $A $hdr --data-binary "BEGIN; CREATE probe_ret2:a; RETURN NONE; THROW 'should not run'; COMMIT;" $H/sql
+  curl -s $A $hdr --data-binary 'SELECT VALUE id FROM probe_ret2;' $H/sql       # ["probe_ret2:a"]
+  # P4 CONTROL THROW without RETURN → aborted (table never exists)
+  curl -s $A $hdr --data-binary "BEGIN; CREATE probe_ret3:a; THROW 'abort'; COMMIT;" $H/sql
+  curl -s $A $hdr --data-binary 'SELECT VALUE id FROM probe_ret3;' $H/sql       # ERR: table does not exist
+  curl -s $A -H "Surreal-NS:$NS" -H "Accept:application/json" --data-binary "REMOVE DATABASE $DB;" $H/sql
+  ```
+  Measured 2026-09-26, engine `surrealdb-3.2.4+20260803.93ab219`: P1 `["probe_ret:a"]` with statements
+  2–4 all `status: OK` (the skipped `CREATE b` → `result: null`); P2 both rows; P3 `["probe_ret2:a"]`, no
+  error; P4 `The table 'probe_ret3' does not exist`.
+- **deviation (lead-granted, as Task 8):** the store reference is outside my brief's writable set.
+- Standing by.
