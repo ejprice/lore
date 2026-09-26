@@ -1026,3 +1026,13 @@ Adversary retired.
 3. FK-a.
 4. The lead's STOP-rule proposal: a19b = the adversary's graded kill probes landed AST-equal, no further adversary unless it deviates.
 The operator has been told and may override the right-sizing.
+
+### 2026-09-26 — amendment 24 (`301f9b1`) ruled Task 24 — STOP-RULE CLOSE ACCEPTED; a19b (LAST contract round) spawned
+- **MP-A:** RUNTIME (KP13). The spy is armed around every driven `comms(register)`, and the covered-call count is a CHECKED variable. `_ClosureWalk` is DELETED. Fixtures stay as drivers. Bound: an undriven new refusal (#137's shape), with a trigger.
+- **Doors, all in i-a:**
+  - #1: one refusal names BOTH half-pairs.
+  - #2: message half-pairs are refused, and `backfilled` = the rows actually stamped.
+  - #4b: the teaching survives, plus an appended remedy line naming the left-behind keep (N8 rejected).
+- FK-a / FK-b: reading A. FK-c: moot. MP-B..G = the adversary's kill probes.
+- **Grading:** a19b lands the adversary's green-on-reference probes AST-equal (receipts against the committed files). The two NEW-behaviour rows (#2's refusal leg, #4b) are graded by the cold-audit re-run. NO further adversary unless a19b changes a probe's assertion. Then builder → cold audit.
+- **Operator-visible (§E), surfaced to the operator and NOT acted on by the lead:** the sidecar recommends adding a SEVENTH row to CLAUDE.md's instrument-lesson table — "runtime-refusal reach · keyed on the raise SHAPE in an AST walk · defeated by the package's own factory-raise idiom and by a new raise site of a covered class". CLAUDE.md is the operator's file; the lead does not edit it at a peer's request.
