@@ -1,0 +1,64 @@
+# REPORT-sidecar-64 — packet 64 kickoff rulings (design sidecar, Fable 5.1)
+
+brief-base v16 read
+brief project v7 read
+
+## Summary block (brief-base §1)
+
+- **state:** done — Task 1 delivered: F1–F9 + the #417 fork RULED (each a question → answer → reason →
+  rider in the same bullet), the 64b-first contract worklist (a), the contract-ahead boundary (b), the
+  removed-behaviour inventory seeds (c), and four operator forks (d). STANDING BY for follow-ups
+  (contract fidelity reads, forks from contract authors / adversaries) via `lore_comms` thread `64` +
+  a native wake; answers land as dated `docs/design/2026-09-*-packet64-amendment-N.md`.
+- **deviations:** none. Writable set honoured (this report, ONE new design doc, the idle-gate contract);
+  no production code, no tests, no INDEX, no 63c file, no store touched; no pytest run (#466). The idle-
+  gate contract is flipped to `{"artifact": null}` after this report (standing-by sidecar).
+- **Capability check (brief-base §4):** everything demanded was reachable — lore MCP served every symbol
+  (`lore_get_symbol` × 46, `lore_verify` × 4, `lore_recall` × 3, `lore_findings` get × 13 / report × 2,
+  `lore_comms` register/heartbeat), `Read`/`sed`/`awk`, read-only `git`. Text-search binaries are hook-
+  blocked (#473) — every textual sweep is `awk` over an explicit file list and is SAID so in the doc. No
+  live probe was needed (the store reference carried every engine fact used).
+- **Packages considered:** none — no NEW package mechanism is specified; every mechanism is an EXTENSION of
+  a shipped seam (`authorize_guarded`/`GuardedPlan`, `read_filter`, `resolve_write_scope`,
+  `migrate_governed`/`LegacyMapping`, the DDL emitter, `CommsActionSpec`, the F5 substrate,
+  `AuditStore.append_fragment`). The 61/62 bespoke-PDP verdict stands, cited.
+- **Odoo-20 portability:** n/a — no Odoo seam touched.
+- **Reuse ledger:** 0 production symbols ruled by final name; 9 candidate symbols, each with its DRY row
+  (doc §17 — all EXTEND or REUSE of a named existing symbol; none hand-rolled).
+- **Graded:** `ae54f20` · HEAD-at-report: `e5fa7f9` · DIFFERENT (1 ahead — my own doc commit; no
+  production symbol moved). ⚠ The 63c fix wave (`test_fixwave_a19a/a19b_63c_i_a.py`) is UNCOMMITTED in
+  the shared tree; nothing ruled rests on it.
+- **decisions-needed (operator, via the lead):** doc §15 — **OF-1** tasks' default scope (§10-N
+  amendment; recommend PROJECT keep — under the 3-way rule a `principal-private` task is claimable only
+  by its creator's agent, which breaks lead-creates/agent-claims); **OF-2** the 65 served-break shape for
+  the three tools (recommend: `capability=` required is the ONLY break; `created_by`/`actor`/`owner` stay
+  as optional self-consistency checks); **OF-3** §10.7-Z orphaning as a 64 wave (64d; recommend YES);
+  **OF-4** carrying the finding `number` count-leak bound into a HOSTED 65 (recommend ACCEPT, pinned).
+  OF-1 must be decided before 64a's contract; 64b is unaffected by all four.
+- **receipt pointers:** the doc `docs/design/2026-09-26-packet64-kickoff-rulings.md` (committed
+  `e5fa7f9`) — §0 one screen · §1 facts F-1…F-18 · §2–§10 F1–F9 · §11 #417 + the 13 owned findings
+  adjudicated · §12 (a) worklist · §13 (b) boundary + re-verification list · §14 (c) inventory seeds ·
+  §15 (d) forks · §16 riders · §17 flags/DRY/discipline. Findings filed: **#487** (stale 63b #420
+  adjudication — enforced verbs still pending, no markers; the pin is one-directional), **#488**
+  (amendment-25 half (ii) × §10.7-Z orphaning collision).
+
+## Headline (for the lead's triage, ≤10 lines)
+
+1. **64b (findings) contracts first** — unaffected by 58 and by every operator fork; NEW files only
+   (`_governed_contract_64.py` + five `test_findings_*_64b.py` + `test_governed_substrate_64b.py`);
+   the held patch is enumerated by file in doc §13 with the five re-verification steps on 63c's base.
+2. **Two things the lead should route NOW:** #487 to the 63c lead (the 63b legs never self-destructed
+   from `_GOVERNED_VERBS_PENDING_ROUTING`; 64's contract carries the reverse pin regardless) and #488 to
+   the 63c sidecar (amendment 25's message half (ii) refuses the exact state orphaning produces).
+3. **58's landed shape is a 64a entry check:** 64a is written against 58's RULED task-side shell; a
+   shape difference at 64a kickoff is a STOP.
+4. **Wave shape recommended:** 64b → 64a (post-58) → 64d (orphaning + #404, ≈0.10, OF-3) → 64c
+   security-auditor over all; 64b's split trigger (>0.30) = write side + substrate vs read side.
+
+## Discipline receipts
+
+- Registered `sidecar-64` (session `64-20260926`, role `sidecar`, cadence `≤30m`); heartbeat at the
+  read/draft milestone; ledger pointer posted on thread `64` after this report.
+- Commits: `e5fa7f9` (the doc), plus this report's own commit — my paths only, no attribution trailer
+  (the operator's standing `~/.claude/CLAUDE.md` rule + the brief override the session reminder).
+- No worktree used or created.
