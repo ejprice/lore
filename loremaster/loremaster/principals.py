@@ -84,6 +84,7 @@ import asyncio
 import logging
 import secrets
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -98,7 +99,7 @@ from loremaster.config import (
     resolve_secret,
 )
 from loremaster.index.records import sha512_hex
-from loremaster.sanitise import safe_str
+from loremaster.sanitise import safe_str, sanitise_line
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     StoreHandle,
@@ -119,6 +120,7 @@ from loremaster.store.surreal_schema import (
     _PRINCIPAL_STATUS_SUSPENDED,
     _PRINCIPAL_STATUSES,
     AGENT_TABLE,
+    BRIEF_TABLE,
     KEEP_TABLE,
     MEMORY_TABLE,
     MESSAGE_TABLE,
@@ -1082,29 +1084,76 @@ async def migrate_governed(
     borrows the target store's OWN retry/self-heal driver, so the verb and the tool path share one
     driver and one retry policy).
 
+    ORDER (packet 63c-i-a; amendments 19 D-1, 21 CD-2, 22 F-1/F-2, 23 FK-3):
+
+    1. **Validity first** — a ``table`` outside the governed set :data:`_MIGRATE_VALID_TABLES` is
+       answered "not supported" with ZERO store I/O (#97: an invalid request reads nothing, and a typo
+       is never answered with a store fact).
+    2. **The store facts, ONCE, at the verb** — THE shared :func:`_agent_migration_preconditions`,
+       and :func:`_verb_level_refusal` over its answer: an owned-but-unscoped agent (§2.1 — the
+       grandfather rule is wrong for the WHOLE store) or an ownerless-but-scoped agent (a half-applied
+       store) refuses EVERY valid ``--table`` with the SAME teaching, byte-inert.
+    3. The table's leg (``brief``'s backfill lands at 63c-ii).
+
     Returns:
         A :class:`~loremaster.governed.MigrateGovernedResult` with the receipts. Refuses (sets
-        ``refused=True`` + ``reason``) on the agent-first ORDER precondition or a multi-principal
-        ``agent`` table (§2.1) — never a silent partial widening of visibility.
+        ``refused=True`` + ``reason``, and ``scanned`` / ``already_migrated`` ``None`` — not
+        measured) on an unsupported table, the store facts above, a leg's own precondition (the
+        message leg's agent-first ORDER, dangling senders, message half-pairs) or an unresolvable
+        operator — never a silent partial widening of visibility.
     """
-    from loremaster.governed import MigrateGovernedResult
-
+    if table not in _MIGRATE_VALID_TABLES:
+        return _not_supported(table, store_was_read=False)
+    preconditions = await _agent_migration_preconditions(store, table=table)
+    refusal = await _verb_level_refusal(preconditions, principal_store)
+    if refusal is not None:
+        return _refused(table, refusal)
     if table == MEMORY_TABLE:
         return await _migrate_memory_scope(store, keep_store, principal_store)
     if table == AGENT_TABLE:
         return await _migrate_agent_owner(store, keep_store, principal_store)
     if table == MESSAGE_TABLE:
-        return await _migrate_message_owner(store, keep_store, principal_store)
+        return await _migrate_message_owner(store, keep_store, principal_store, preconditions)
+    return _not_supported(table, store_was_read=True)
+
+
+#: The ruled VALID ``--table`` set (amendment 22 F-1 / amendment 23 FK-3): the governed tables amendment
+#: 19 D-1 names. ``brief`` is valid — a multi-principal or half-applied store is refused on it like every
+#: other governed table — but its backfill leg lands at 63c-ii.
+_MIGRATE_VALID_TABLES = (AGENT_TABLE, MEMORY_TABLE, MESSAGE_TABLE, BRIEF_TABLE)
+
+
+def _refused(table: str, reason: str) -> MigrateGovernedResult:
+    """A refusal receipt. ``scanned`` / ``already_migrated`` are ``None`` — every refusal returns before
+    any scan of the target table, so those counts were NOT MEASURED (amendment 22 §4 / amendment 24
+    FK-a: a ``0`` would be a served count describing no set); ``backfilled`` is the measured ``0``.
+
+    A ``refused=True`` result writes NOTHING: every refusal returns before any keep mint or stamp. (A leg
+    whose backfill UPDATE RAISES after its idempotent project-keep mint is not a refusal — that keep may
+    remain, cold audit 63c-i-a CA-2 / R-4.)"""
+    from loremaster.governed import MigrateGovernedResult
+
     return MigrateGovernedResult(
-        table=table,
-        scanned=0,
-        backfilled=0,
-        already_migrated=0,
-        refused=True,
-        reason=(
-            f"migrate-governed does not support table {table!r} at packet 63b — only `memory`, "
-            "`agent` and `message` (brief lands 63c, task/finding land 64)"
-        ),
+        table=table, scanned=None, backfilled=0, already_migrated=None, refused=True, reason=reason
+    )
+
+
+def _not_supported(table: str, *, store_was_read: bool) -> MigrateGovernedResult:
+    """The "not supported" refusal. ``store_was_read`` says what the verb actually DID before answering:
+    an invalid name is answered with zero store I/O; ``brief`` is answered only after the store facts
+    were read (and passed) at the verb."""
+    if store_was_read:
+        return _refused(
+            table,
+            f"migrate-governed does not yet migrate `{BRIEF_TABLE}` — its backfill lands at packet "
+            f"63c-ii (today: `{MEMORY_TABLE}`, `{AGENT_TABLE}` and `{MESSAGE_TABLE}`); the store's "
+            "governed-table preconditions were read and passed, and nothing was written",
+        )
+    return _refused(
+        table,
+        f"migrate-governed does not support table {sanitise_line(table)!r} — the governed tables "
+        f"are `{MEMORY_TABLE}`, `{AGENT_TABLE}`, `{MESSAGE_TABLE}` and `{BRIEF_TABLE}` (`{BRIEF_TABLE}`"
+        "'s backfill lands at packet 63c-ii; task/finding land at 64); nothing was read or written",
     )
 
 
@@ -1126,6 +1175,20 @@ async def resolve_operator_principal(principal_store: PrincipalStore) -> Princip
     if len(principals) == 1:
         return principals[0]
     return None
+
+
+async def _operator_unresolved(principal_store: PrincipalStore, *, purpose: str) -> str:
+    """THE teaching for an unresolvable operator (packet 63c-i-a) — ONE home for the sentence the memory,
+    agent and message legs and the verb-level refusal each serve when :func:`resolve_operator_principal`
+    answers ``None``: the principal and admin counts it resolved against (measured, never restated) and
+    the remedy. ``purpose`` names what the operator is needed FOR at that call site."""
+    principals = await principal_store.list()
+    admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+    return (
+        f"cannot resolve THE operator principal {purpose} ({len(principals)} principals, "
+        f"{len(admins)} admins) — provision a single operator principal (or a single admin) before "
+        "migrating"
+    )
 
 
 async def _migrate_memory_scope(
@@ -1150,19 +1213,9 @@ async def _migrate_memory_scope(
     # the value-mutation route pin). Ambiguity is a REFUSAL, never a guess (§2.1 hard rule).
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
-        principals = await principal_store.list()
-        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
-        return MigrateGovernedResult(
-            table=MEMORY_TABLE,
-            scanned=0,
-            backfilled=0,
-            already_migrated=0,
-            refused=True,
-            reason=(
-                f"cannot resolve THE operator principal to keep the project keep "
-                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
-                "operator principal (or a single admin) before migrating"
-            ),
+        return _refused(
+            MEMORY_TABLE,
+            await _operator_unresolved(principal_store, purpose="to keep the project keep"),
         )
 
     # Mint / get the canonical project keep (idempotent CAS on the UNIQUE key, SF-63-4).
@@ -1236,39 +1289,280 @@ async def _scope_count(store: StoreHandle, table: str, *, none: bool) -> int:
     return 0
 
 
-async def _owner_count(store: StoreHandle, table: str, *, none: bool) -> int:
-    """Count the rows of ``table`` whose ``owner_principal`` IS (``none=True``) / IS NOT NONE,
-    driver-routed (packet 63b-ii-a §4.C). The owner twin of :func:`_scope_count`: the agent leg
-    counts NONE-owner agents to backfill, and the message leg reads it on the ``agent`` table for the
-    §2.6 agent-first precondition. A ``count() … GROUP ALL`` over an empty set returns no row, so an
-    absent count reads 0.
-    """
-    result = await run_query(
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-        noun="governed owner count",
-        label="governed.owner_count.rejected",
-        statement=(
-            f"SELECT count() FROM {table} WHERE owner_principal IS "
-            f"{'NONE' if none else 'NOT NONE'} GROUP ALL"
-        ),
-        params={},
-        logger=logger,
-    )
-    if isinstance(result, list) and result and isinstance(result[0], dict):
-        return int(result[0].get("count", 0) or 0)
-    return 0
-
-
-#: The refusal of the agent migrate's §2.1 row precondition names AT MOST this many offending row
-#: ids (ruling §6: "naming the count and the rows (ids, bounded)"; amendment-4 MP-C). WHY a bound
+#: THE one bound on every list a governed-migration refusal serves (packet 63c-i-a, amendment 20 §8.2 —
+#: one constant for "how much of a bounded list we serve", never a second literal): the offending agent
+#: ids of the §2.1 and half-applied refusals, the other principals named, the dangling-sender messages,
+#: and EACH message half-pair (per list). Originally the agent migrate's §2.1 row precondition's id
+#: bound (ruling §6: "naming the count and the rows (ids, bounded)"; amendment-4 MP-C). WHY a bound
 #: at all: the refusal is read by an operator at cutover, and on a store with thousands of
 #: owned-but-unscoped rows an unbounded id list buries the remedy; the FULL count is always stated
 #: beside the sample, so the reader loses no number. WHY this value: a screenful of ids is enough to
 #: start adjudicating by hand. The value is NOT normative (amendment-6 R-3) — the refusal reads it
 #: at CALL time, and its prose states the number of ids ACTUALLY shown, never this constant.
 _REFUSAL_ID_SAMPLE_SIZE = 10
+
+
+@dataclass(frozen=True)
+class AgentMigrationPreconditions:
+    """THE governed-migration store facts (packet 63c-i-a), read ONCE by :func:`migrate_governed` from
+    :func:`_agent_migration_preconditions` and handed to the leg that needs them — the verb-level refusal
+    and the message leg's guards DECIDE from this one answer, never from a private query of their own.
+
+    Attributes:
+        unscoped_count: Agents with ``scope IS NONE`` — THE unmigrated predicate ∀ governed tables. The
+            message leg's agent-first ORDER guard (§2.6) refuses while it is > 0.
+        owned_unscoped: ``(agent id, owner principal)`` for every agent with an owner but no scope — a
+            multi-principal store, or the pkt-62–63b image population (amendment-1 E3); sorted by id.
+        ownerless_scoped: Agent ids with a scope but no owner — a half-applied store (amendment 22 F-2).
+        dangling_senders: ``(message id, sender)`` for every legacy (``scope IS NONE``) message whose
+            ``sender`` link resolves to no row (amendment 23 FK-2). Read only for ``table='message'``.
+        messages_owned_unscoped: Message ids with an owner but no scope — the message table's half-pair
+            (i) (amendment 24 §2 door #2). Read only for ``table='message'``.
+        messages_scoped_ownerless: Message ids with a scope but no owner — half-pair (ii) (amendment 25).
+            Read only for ``table='message'``.
+    """
+
+    unscoped_count: int
+    owned_unscoped: tuple[tuple[Any, Any], ...]
+    ownerless_scoped: tuple[Any, ...]
+    dangling_senders: tuple[tuple[Any, Any], ...] = ()
+    messages_owned_unscoped: tuple[Any, ...] = ()
+    messages_scoped_ownerless: tuple[Any, ...] = ()
+
+
+async def _governed_select(store: StoreHandle, *, noun: str, label: str, statement: str) -> list[Any]:
+    """One parameterless governed-precondition SELECT, driver-routed (R4); a non-list answer reads as no
+    rows (the same tolerance :func:`_scope_count` applies to its ``GROUP ALL`` read)."""
+    rows = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun=noun,
+        label=label,
+        statement=statement,
+        params={},
+        logger=logger,
+    )
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def _by_id(values: list[Any]) -> tuple[Any, ...]:
+    """Deterministic order for a refusal's id sample: by the SDK's own rendering of the id."""
+    return tuple(sorted(values, key=lambda value: str(value[0] if isinstance(value, tuple) else value)))
+
+
+async def _agent_migration_preconditions(
+    store: StoreHandle, *, table: str | None = None
+) -> AgentMigrationPreconditions:
+    """THE ONE governed-migration precondition read (packet 63c-i-a; amendments 19 D-1, 21 CD-1, 22 F-2,
+    23 FK-2, 24 §2 door #2, 25, 26) — the verb-level refusal and the message leg's guards all decide from
+    what THIS returns (routing is not sharing: no consumer re-derives any of it with its own query).
+
+    A store with no ``agent`` table DEFINED (a memory-only store) has no agents: the agent reads are
+    gated on ``INFO FOR DB``'s table set — the store is never queried for an undefined table, and a
+    genuine store error propagates (never swallowed).
+
+    For ``table == 'message'`` it also reads the message leg's two row facts, in THIS order — the order
+    the message leg's refusal serves them in (amendment 26: deterministic, no precedence): (1) DANGLING
+    SENDERS — legacy messages whose ``sender`` link resolves to no row (``sender.id IS NONE``: the
+    dereference yields ``NONE`` for a missing record — store reference §6.4 — and, unlike
+    ``record::exists``, is total over a NONE link; probed 2026-09-26 on the test store, instrument in
+    ``REPORT-builder-63c-i-a-fix.md`` §P); (2) MESSAGE HALF-PAIRS — both halves.
+
+    Args:
+        store: The driver handle over the governed store.
+        table: The ``--table`` being migrated (``message`` adds the message-leg reads).
+
+    Returns:
+        The :class:`AgentMigrationPreconditions` store facts, every list sorted by id.
+    """
+    info = await run_query(
+        acquire=store.acquire,
+        drop=store.drop,
+        url=store.url,
+        noun="governed table probe",
+        label="governed.table_probe.rejected",
+        statement="INFO FOR DB",
+        params={},
+        logger=logger,
+    )
+    defined = info.get("tables", {}) if isinstance(info, dict) else {}
+    unscoped_count = 0
+    owned_unscoped: list[tuple[Any, Any]] = []
+    ownerless_scoped: list[Any] = []
+    if AGENT_TABLE in defined:
+        unscoped_count = await _scope_count(store, AGENT_TABLE, none=True)
+        for row in await _governed_select(
+            store,
+            noun="governed agent half-pair precondition",
+            label="governed.agent_precondition.rejected",
+            statement=(
+                f"SELECT id, owner_principal, scope FROM {AGENT_TABLE} "
+                "WHERE (scope IS NONE AND owner_principal IS NOT NONE) "
+                "OR (scope IS NOT NONE AND owner_principal IS NONE)"
+            ),
+        ):
+            if row.get("scope") is None:
+                owned_unscoped.append((row.get("id"), row.get("owner_principal")))
+            else:
+                ownerless_scoped.append(row.get("id"))
+    dangling: list[tuple[Any, Any]] = []
+    messages_owned_unscoped: list[Any] = []
+    messages_scoped_ownerless: list[Any] = []
+    if table == MESSAGE_TABLE and MESSAGE_TABLE in defined:
+        dangling = [
+            (row.get("id"), row.get("sender"))
+            for row in await _governed_select(
+                store,
+                noun="governed message dangling-sender precondition",
+                label="governed.message_dangling.rejected",
+                statement=(
+                    f"SELECT id, sender FROM {MESSAGE_TABLE} WHERE scope IS NONE AND sender.id IS NONE"
+                ),
+            )
+        ]
+        for row in await _governed_select(
+            store,
+            noun="governed message half-pair precondition",
+            label="governed.message_half_pair.rejected",
+            statement=(
+                f"SELECT id, owner_principal, scope FROM {MESSAGE_TABLE} "
+                "WHERE (scope IS NONE AND owner_principal IS NOT NONE) "
+                "OR (scope IS NOT NONE AND owner_principal IS NONE)"
+            ),
+        ):
+            if row.get("scope") is None:
+                messages_owned_unscoped.append(row.get("id"))
+            else:
+                messages_scoped_ownerless.append(row.get("id"))
+    return AgentMigrationPreconditions(
+        unscoped_count=unscoped_count,
+        owned_unscoped=_by_id(owned_unscoped),
+        ownerless_scoped=_by_id(ownerless_scoped),
+        dangling_senders=_by_id(dangling),
+        messages_owned_unscoped=_by_id(messages_owned_unscoped),
+        messages_scoped_ownerless=_by_id(messages_scoped_ownerless),
+    )
+
+
+def _id_sample(ids: tuple[Any, ...] | list[Any]) -> str:
+    """``First <shown> of <count> ids shown: <ids>.`` — the ONE bounded id render every governed-migration
+    refusal serves: at most :data:`_REFUSAL_ID_SAMPLE_SIZE` (read at CALL time, never restated), each
+    STORED id through THE shared :func:`~loremaster.sanitise.sanitise_line` (CA-1 / #484: a stored id is
+    free text — no newline or control character reaches the served line), and the number stated is the
+    number ACTUALLY shown."""
+    shown = [sanitise_line(str(value)) for value in ids[:_REFUSAL_ID_SAMPLE_SIZE]]
+    return f"First {len(shown)} of {len(ids)} ids shown: {', '.join(shown)}."
+
+
+def _owned_unscoped_part(owned_unscoped: tuple[tuple[Any, Any], ...], operator: Principal | None) -> str:
+    """The §2.1 owned-but-unscoped part, with the DERIVED diagnosis (amendment 19 D-3 F-1 / amendment 20
+    §8.4): who owns the rows — the operator (the E3 population), named other principals (bounded by the
+    same constant — amendment 20 §8.2), or, when the operator is unresolvable, NOBODY classified (any of
+    them may BE the operator)."""
+    count = len(owned_unscoped)
+    head = f"{count} agent row(s) carry an owner but no scope (§2.1)"
+    sample = _id_sample([row_id for row_id, _owner in owned_unscoped])
+    if operator is None:
+        return (
+            f"ALSO: {head}; their owners are UNCLASSIFIED — with the operator unresolved, any of them may "
+            f"BE the operator. {sample}"
+        )
+    # Owners compare and render by the SDK's own ``str(RecordID)`` — ``Principal.id`` is that same
+    # rendering (``_row_to_principal``) — so no id is hand-parsed (finding #248).
+    owners = [str(owner) for _row_id, owner in owned_unscoped]
+    operator_owned = sum(1 for owner in owners if owner == operator.id)
+    others = sorted({owner for owner in owners if owner != operator.id})
+    parts = [f"{head}."]
+    if operator_owned:
+        parts.append(
+            f"{operator_owned} of them are owned by the operator — registered by a pkt-62–63b image; "
+            "see amendment-1 E3."
+        )
+    if others:
+        named = [sanitise_line(owner) for owner in others[:_REFUSAL_ID_SAMPLE_SIZE]]
+        parts.append(
+            f"{count - operator_owned} are owned by {len(others)} other principal(s) "
+            f"(first {len(named)} named: {', '.join(named)})."
+        )
+    parts.append(sample)
+    return " ".join(parts)
+
+
+async def _verb_level_refusal(
+    preconditions: AgentMigrationPreconditions, principal_store: PrincipalStore
+) -> str | None:
+    """The verb-level store refusal (amendment 19 D-1 / 20 §8.4 / 22 F-2 / 24 door #1), or ``None``.
+
+    A STORE fact, so it answers every valid ``--table`` with the SAME text: owned-but-unscoped agents
+    (§2.1) and ownerless-but-scoped agents (half-applied) — ONE refusal naming EVERY problem present, each
+    with its true count and a bounded id sample (a refusal naming one of two problems buys the operator
+    two round trips). When owned-but-unscoped rows exist and the operator is unresolvable, the operator
+    remedy comes FIRST (nothing else can be diagnosed until it is resolved) and the owners are NOT
+    classified."""
+    parts: list[str] = []
+    if preconditions.owned_unscoped:
+        operator = await resolve_operator_principal(principal_store)
+        if operator is None:
+            parts.append(
+                await _operator_unresolved(principal_store, purpose="to classify the rows below") + "."
+            )
+        parts.append(_owned_unscoped_part(preconditions.owned_unscoped, operator))
+    if preconditions.ownerless_scoped:
+        count = len(preconditions.ownerless_scoped)
+        parts.append(
+            f"{count} agent row(s) carry a scope but no owner — a half-applied store (one column of the "
+            f"governed pair was stamped without the other). {_id_sample(preconditions.ownerless_scoped)}"
+        )
+    if not parts:
+        return None
+    parts.append("Adjudicate these rows by hand before migrating ANY governed table; no row was stamped")
+    return " ".join(parts)
+
+
+def _message_leg_refusal(preconditions: AgentMigrationPreconditions) -> str | None:
+    """The message leg's row-fact refusal (amendments 23 FK-2, 24 §2 door #2, 25, 26), or ``None``: ONE
+    refusal naming EVERY problem present, in :func:`_agent_migration_preconditions`' check order —
+    dangling senders, then each message half-pair — each with its true count and a bounded sample (THE
+    one :data:`_REFUSAL_ID_SAMPLE_SIZE`, per list). Byte-inert: nothing is stamped, the sound rows
+    included (one statement, one verdict). ORDER-class, not store-class: it refuses ``message`` only."""
+    parts: list[str] = []
+    if preconditions.dangling_senders:
+        dangling = preconditions.dangling_senders
+        shown = [
+            f"{sanitise_line(str(message_id))} (sender {sanitise_line(str(sender))})"
+            for message_id, sender in dangling[:_REFUSAL_ID_SAMPLE_SIZE]
+        ]
+        parts.append(
+            f"{len(dangling)} legacy message(s) name a dangling sender — their `sender` link resolves to "
+            f"no agent row, so no owner can be derived from it. First {len(shown)} of {len(dangling)} "
+            f"shown: {', '.join(shown)}."
+        )
+    for ids, fact in (
+        (preconditions.messages_owned_unscoped, "carry an owner but no scope"),
+        (preconditions.messages_scoped_ownerless, "carry a scope but no owner"),
+    ):
+        if ids:
+            parts.append(
+                f"{len(ids)} message row(s) {fact} — a half-applied store (one column of the governed "
+                f"pair was stamped without the other). {_id_sample(ids)}"
+            )
+    if not parts:
+        return None
+    parts.append("Adjudicate these messages by hand before migrating `message`; no row was stamped")
+    return " ".join(parts)
+
+
+def _rows_stamped(update_result: Any) -> int:
+    """The number of rows a backfill ``UPDATE`` actually stamped — its returned row list (amendment 24 §2
+    D2: a served ``backfilled`` is MEASURED, never the pre-count). An ``UPDATE`` returns the list of rows it
+    changed; anything else is an SDK contract break, surfaced loudly rather than guessed."""
+    if not isinstance(update_result, list):
+        raise TypeError(
+            "a governed backfill UPDATE returned "
+            f"{type(update_result).__name__}, not the list of rows it stamped"
+        )
+    return len(update_result)
 
 
 async def _migrate_agent_owner(
@@ -1287,11 +1581,11 @@ async def _migrate_agent_owner(
     ``scope IS NONE`` is THE unmigrated predicate ∀ governed tables, so an already-governed row
     (owned AND scoped) is never touched and a re-run backfills 0.
 
-    §2.1's ROW-level precondition runs BEFORE any write: a row with ``scope IS NONE`` but
-    ``owner_principal IS NOT NONE`` means a multi-principal or half-applied store, so the migrate
-    REFUSES (``refused=True``, ZERO rows stamped) naming the FULL count and a bounded sample of the
-    ids (:data:`_REFUSAL_ID_SAMPLE_SIZE`) — every integer the refusal serves is a true count of the
-    set it names. NOT member-reachable (admin-CLI-only), so the write attributes at the F5 seam via
+    §2.1's precondition (an owned-but-unscoped or ownerless-but-scoped agent) is a STORE fact, checked
+    ONCE at the verb by :func:`migrate_governed` before this leg runs (amendment 19 D-1). The UPDATE is
+    also SELF-GUARDING (amendment 19 F-3): ``WHERE scope IS NONE AND owner_principal IS NONE``, so a row
+    that became owned-but-unscoped between that read and this write is never re-owned to the operator.
+    NOT member-reachable (admin-CLI-only), so the write attributes at the F5 seam via
     the NAMED ``governed_exempt("migrate-governed")`` frame whose golden IS the executed statement;
     all store access is driver-routed (R4). The owner link is set store-side via ``type::record``
     (a bare id string does not coerce to a ``record<principal>``, store-ref §2).
@@ -1302,19 +1596,9 @@ async def _migrate_agent_owner(
 
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
-        principals = await principal_store.list()
-        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
-        return MigrateGovernedResult(
-            table=AGENT_TABLE,
-            scanned=0,
-            backfilled=0,
-            already_migrated=0,
-            refused=True,
-            reason=(
-                f"cannot resolve THE operator principal to own the fleet's agents "
-                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
-                "operator principal (or a single admin) before migrating"
-            ),
+        return _refused(
+            AGENT_TABLE,
+            await _operator_unresolved(principal_store, purpose="to own the fleet's agents"),
         )
 
     unmigrated = await _scope_count(store, AGENT_TABLE, none=True)
@@ -1327,39 +1611,6 @@ async def _migrate_agent_owner(
             already_migrated=already,
             refused=False,
         )
-    # §2.1 ROW precondition (#470 / F10), BEFORE any write — the refusal is byte-inert. ONE read
-    # yields both the count and the sample, so the two numbers the refusal states can never
-    # describe different sets.
-    owned_unscoped_rows = await run_query(
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-        noun="governed agent row precondition",
-        label="governed.agent_precondition.rejected",
-        statement=(
-            f"SELECT VALUE id FROM {AGENT_TABLE} "
-            "WHERE scope IS NONE AND owner_principal IS NOT NONE"
-        ),
-        params={},
-        logger=logger,
-    )
-    owned_unscoped_ids = sorted(str(row_id) for row_id in (owned_unscoped_rows or []))
-    if owned_unscoped_ids:
-        offending_count = len(owned_unscoped_ids)
-        shown_ids = owned_unscoped_ids[:_REFUSAL_ID_SAMPLE_SIZE]
-        return MigrateGovernedResult(
-            table=AGENT_TABLE,
-            scanned=unmigrated + already,
-            backfilled=0,
-            already_migrated=already,
-            refused=True,
-            reason=(
-                f"{offending_count} agent row(s) carry an owner but no scope — a multi-principal "
-                f"or half-applied store (§2.1). First {len(shown_ids)} of {offending_count} ids "
-                f"shown: {', '.join(shown_ids)}. Adjudicate these rows by hand before migrating; "
-                "no row was stamped"
-            ),
-        )
     project_keep = await keep_store.get_or_create_keyed(
         key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
     )
@@ -1369,7 +1620,7 @@ async def _migrate_agent_owner(
     # (never a module constant) passed to BOTH the statement-scoped exemption and the execution.
     backfill_statement = (
         f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner), "
-        "owner_agent = id, scope = $scope WHERE scope IS NONE"
+        "owner_agent = id, scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
     )
     with governed_exempt("migrate-governed", statement=backfill_statement):
         await run_query(
@@ -1395,57 +1646,50 @@ async def _migrate_message_owner(
     store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
+    preconditions: AgentMigrationPreconditions,
 ) -> MigrateGovernedResult:
-    """Backfill every legacy ``message`` row's owner from its SENDER + scope to the project keep
-    (§4.C / §2.6). OWNED-BY-LINK: ``owner_agent = sender``, ``owner_principal =
+    """Backfill every legacy (NONE-scope, NONE-owner) ``message`` row's owner from its SENDER + scope to
+    the project keep (§4.C / §2.6). OWNED-BY-LINK: ``owner_agent = sender``, ``owner_principal =
     sender.owner_principal``, ``scope = keep:<project>``.
 
-    §2.6 the checked agent-first ORDER, fail-closed: a message's owner_principal is read from
-    ``sender.owner_principal``, NONE for every un-migrated agent, so this REFUSES (naming the
-    precondition) while ANY ``agent.owner_principal IS NONE`` (count>0, never only count==1) — never
-    a silent half-widening. Once agents are migrated it resolves the project keep's keeper through
-    the shared :func:`resolve_operator_principal` (ambiguity is a REFUSAL, §2.1), mints/gets the
-    canonical project keep (idempotent CAS, SF-63-4), and backfills ONLY NONE-owner messages (∀
-    NONE-owner, never a re-stamp); idempotent. NOT member-reachable, so the write attributes at the
-    F5 seam via the NAMED ``governed_exempt("migrate-governed")`` frame; store access is
-    driver-routed (R4).
+    Every guard DECIDES from ``preconditions`` — THE shared :func:`_agent_migration_preconditions`
+    answer :func:`migrate_governed` read (routing is not sharing: no private query here), in order:
+
+    1. §2.6 agent-first ORDER, fail-closed: a message's owner is read from ``sender.owner_principal``,
+       so this REFUSES while ANY agent is un-migrated (``scope IS NONE`` — THE unmigrated predicate,
+       count > 0, never only count == 1).
+    2. The message table's own row facts (amendments 23 FK-2, 24 door #2, 25, 26): dangling senders and
+       both message half-pairs, in ONE refusal naming every problem present, in the check order.
+    3. An unresolvable operator (the project keep's keeper) — a REFUSAL, never a guess (§2.1).
+
+    Every refusal is byte-inert and measured nothing of the target table (``None`` receipts). Otherwise
+    it mints/gets the canonical project keep (idempotent CAS, SF-63-4) and runs ONE self-guarding UPDATE
+    — ``WHERE scope IS NONE AND owner_principal IS NONE`` (amendment 21 CD-1: scope-keyed, and never
+    re-stamps a row that is half of a governed pair even when the refusal in front of it cannot fire).
+    The counts are SCOPE-keyed; ``backfilled`` is the rows the UPDATE actually stamped (amendment 24 D2).
+    Idempotent. NOT member-reachable, so the write attributes at the F5 seam via the NAMED
+    ``governed_exempt("migrate-governed")`` frame; store access is driver-routed (R4).
     """
     from lorerunes.pdp import keep_scope
 
     from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
 
-    # §2.6 agent-first: refuse while ANY agent is still NONE-owner (count>0, never only count==1).
-    unmigrated_agents = await _owner_count(store, AGENT_TABLE, none=True)
-    if unmigrated_agents > 0:
-        return MigrateGovernedResult(
-            table=MESSAGE_TABLE,
-            scanned=0,
-            backfilled=0,
-            already_migrated=0,
-            refused=True,
-            reason=(
-                f"cannot migrate `message` rows before the `agent` table is migrated "
-                f"({unmigrated_agents} NONE-owner agent(s) remain) — a message's owner_principal is "
-                "read from sender.owner_principal, NONE for every un-migrated agent (§2.6 agent-first "
-                "ORDER); run migrate-governed for `agent` first"
-            ),
+    if preconditions.unscoped_count > 0:
+        return _refused(
+            MESSAGE_TABLE,
+            f"cannot migrate `message` rows before the `agent` table is migrated "
+            f"({preconditions.unscoped_count} un-migrated (NONE-scope) agent(s) remain) — a message's "
+            "owner_principal is read from sender.owner_principal, NONE for every un-migrated agent (§2.6 "
+            "agent-first ORDER); run migrate-governed for `agent` first",
         )
-
+    row_refusal = _message_leg_refusal(preconditions)
+    if row_refusal is not None:
+        return _refused(MESSAGE_TABLE, row_refusal)
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
-        principals = await principal_store.list()
-        admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
-        return MigrateGovernedResult(
-            table=MESSAGE_TABLE,
-            scanned=0,
-            backfilled=0,
-            already_migrated=0,
-            refused=True,
-            reason=(
-                f"cannot resolve THE operator principal to keep the project keep "
-                f"({len(principals)} principals, {len(admins)} admins) — provision a single "
-                "operator principal (or a single admin) before migrating"
-            ),
+        return _refused(
+            MESSAGE_TABLE,
+            await _operator_unresolved(principal_store, purpose="to keep the project keep"),
         )
 
     project_keep = await keep_store.get_or_create_keyed(
@@ -1453,8 +1697,8 @@ async def _migrate_message_owner(
     )
     project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
 
-    unmigrated = await _owner_count(store, MESSAGE_TABLE, none=True)
-    already = await _owner_count(store, MESSAGE_TABLE, none=False)
+    unmigrated = await _scope_count(store, MESSAGE_TABLE, none=True)
+    already = await _scope_count(store, MESSAGE_TABLE, none=False)
     if unmigrated == 0:
         return MigrateGovernedResult(
             table=MESSAGE_TABLE,
@@ -1465,10 +1709,11 @@ async def _migrate_message_owner(
         )
     backfill_statement = (
         f"UPDATE {MESSAGE_TABLE} SET owner_agent = sender, "
-        "owner_principal = sender.owner_principal, scope = $scope WHERE owner_principal IS NONE"
+        "owner_principal = sender.owner_principal, scope = $scope "
+        "WHERE scope IS NONE AND owner_principal IS NONE"
     )
     with governed_exempt("migrate-governed", statement=backfill_statement):
-        await run_query(
+        stamped = await run_query(
             acquire=store.acquire,
             drop=store.drop,
             url=store.url,
@@ -1481,7 +1726,7 @@ async def _migrate_message_owner(
     return MigrateGovernedResult(
         table=MESSAGE_TABLE,
         scanned=unmigrated + already,
-        backfilled=unmigrated,
+        backfilled=_rows_stamped(stamped),
         already_migrated=already,
         refused=False,
     )

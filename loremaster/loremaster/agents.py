@@ -115,6 +115,12 @@ from lorerunes import (
 
 logger = logging.getLogger(__name__)
 
+#: :meth:`AgentRegistry.preflight`'s "the session keep is not minted yet" marker (packet 63c-i-a,
+#: amendment 22 §1): the register handler preflights BEFORE its keep mint, when the provenance pair's
+#: second half does not exist yet, so the pair check is deferred to ``register`` (which always passes the
+#: keep id, ``None`` included). A marker distinct from ``None`` because ``None`` is a legal keep id there.
+_KEEP_NOT_YET_MINTED: object = object()
+
 # The domain's status vocabulary this contract decides — a ``Literal`` alias so
 # :class:`Agent.status` is typed against the closed set the state machine
 # enforces, without hardcoding the set a second time (mirrors
@@ -159,8 +165,14 @@ LEGAL_AGENT_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
 # hand-types the literal string twice.
 _AGENT_STATUS_ORPHANED = "orphaned"
 
-# The load-bearing injection guard (design doc §0/§4): every ``agent.name`` /
-# ``agent.session`` is inlined as a literal into C3's live WHERE clauses. Since
+# The identity charset guard. WHY, CORRECTED (finding #219; packet 63c-i-a amendment 19 F-8): it is
+# NOT an injection guard — every ``agent.name`` / ``agent.session`` reaches the store as a BOUND
+# PARAMETER, never an inlined literal (the one inlined identity-derived literal, the LIVE-on-edge
+# ``WHERE out = agent:`<id>``` in ``inbox_awaiter.live_select_statement``, is the uuid5 HASH of the
+# pair and carries no caller text). What it buys: ``fullmatch`` makes two distinct identities
+# impossible to render identically (finding #210's trailing-newline twin); a charset-clean name makes
+# every render of a resolved identity safe by construction; and it is the cheap gate in front of the
+# registry read (a value that cannot BE a name is never looked up). Since
 # packet 63c-i-a (ruling §4.2, Q3 DROP + MOVE) the store carries NO charset
 # ``ASSERT`` on ``agent.name``/``agent.session`` any more: the ONE writer,
 # :meth:`AgentRegistry.register`, refuses an illegal identity BEFORE any store
@@ -698,9 +710,11 @@ class AgentRegistry:
         """
         for field_name, value in (("name", name), ("session", session)):
             if not is_legal_identifier(value):
+                # amendment 19 D-3 F-9: the rule is stated ONCE, as the pattern itself (derived — it
+                # carries the 64-character cap an English gloss omitted); the consumer is an LLM that
+                # reads a regex as a rule. Byte-identical to the server refusal's rule clause.
                 raise InvalidAgentIdentityError(
-                    f"agent {field_name} must match {AGENT_NAME_PATTERN.pattern} (lowercase "
-                    f"letters, digits, '_' or '-', starting with a letter or digit); nothing was "
+                    f"agent {field_name} must match {AGENT_NAME_PATTERN.pattern}; nothing was "
                     f"written — register again with a legal {field_name}. The rejected value "
                     f"was:\n{render_fenced(value)}"
                 )
@@ -709,6 +723,83 @@ class AgentRegistry:
                 "agent role must not be blank; nothing was written — register again with a "
                 "role (e.g. 'builder')"
             )
+
+    async def preflight(
+        self,
+        name: str,
+        *,
+        session: str,
+        role: str,
+        spawned_by: str | None = None,
+        owner_principal_id: str | None = None,
+        session_keep_id: str | None | object = _KEEP_NOT_YET_MINTED,
+    ) -> Agent | None:
+        """Raise every refusal :meth:`register` can raise WITHOUT a write — THE one decision (packet
+        63c-i-a, amendment 22 §1 / #485).
+
+        ``register`` calls this as its own first step, and the ``lore_comms register`` handler calls it
+        BEFORE it mints the session keep, so a refused register never mints a keep (which would make the
+        caller keeper of a session it never joined and deny the next principal — SF-63-1). There is no
+        second copy of any of these decisions in either caller (#102 — routing is not sharing).
+
+        In order: the provenance pair (A3 — only when ``session_keep_id`` is passed; the handler's
+        pre-mint call omits it, because the keep does not exist yet), the identity
+        (:meth:`_refuse_an_invalid_identity` — illegal name/session, blank role), then ONE read of the
+        existing row by id and its conflicts: retired (terminal), a differing ``role``, a differing
+        concrete ``spawned_by``. Write-free.
+
+        Args:
+            name: The agent's short identifier.
+            session: The orchestration session.
+            role: The agent's role.
+            spawned_by: The identity that spawned this agent (write-once).
+            owner_principal_id: The server-derived owner (the pair's first half).
+            session_keep_id: The server-derived session keep id (the pair's second half); omit it to
+                defer the pair check (the pre-mint call).
+
+        Returns:
+            The existing row as an :class:`Agent` (a re-register), or ``None`` (a first register).
+
+        Raises:
+            AgentRegistryError: The provenance pair is inconsistent (only when ``session_keep_id`` is
+                passed).
+            InvalidAgentIdentityError: ``name``/``session`` is not a legal identity, or ``role`` is
+                blank.
+            RetiredAgentError: The row exists and is retired.
+            AgentIdentityConflictError: ``role`` or ``spawned_by`` differs from the existing row's
+                concrete value.
+        """
+        if session_keep_id is not _KEEP_NOT_YET_MINTED:
+            self._refuse_an_inconsistent_provenance_pair(
+                owner_principal_id, cast("str | None", session_keep_id)
+            )
+        self._refuse_an_invalid_identity(name=name, session=session, role=role)
+        existing_row = await self._select_row(self._agent_id(session, name))
+        if existing_row is None:
+            return None
+        existing = self._row_to_agent(existing_row)
+        if existing.status == STATUS_RETIRED:
+            raise RetiredAgentError(
+                f"agent {name!r} is retired (terminal) — respawns register a fresh name"
+            )
+        if existing.role != role:
+            raise AgentIdentityConflictError(
+                f"agent {name!r} is already registered with role {render_attributed(existing.role)} "
+                f"(you sent {render_attributed(role)}) — names are never reused; register a fresh name "
+                f"(e.g. {name + '2'!r})"
+            )
+        if (
+            spawned_by is not None
+            and existing.spawned_by is not None
+            and existing.spawned_by != spawned_by
+        ):
+            raise AgentIdentityConflictError(
+                f"agent {name!r} is already registered with spawned_by "
+                f"{render_attributed(existing.spawned_by)} (you sent "
+                f"{render_attributed(spawned_by)}) — names are never "
+                f"reused; register a fresh name (e.g. {name + '2'!r})"
+            )
+        return existing
 
     async def register(
         self,
@@ -779,7 +870,7 @@ class AgentRegistry:
             The :class:`AgentRegisterResult` of this call — carrying the raw one-time
             ``capability`` credential on a FIRST register, ``None`` on a re-register.
 
-        Raises:
+        Raises (every one by :meth:`preflight`, before any write):
             AgentRegistryError: The provenance pair is inconsistent — exactly one of
                 ``owner_principal_id`` / ``session_keep_id`` is set (A3); nothing is written.
             InvalidAgentIdentityError: ``name``/``session`` is not a legal identity, or
@@ -788,16 +879,22 @@ class AgentRegistry:
             AgentIdentityConflictError: ``role`` or ``spawned_by`` differs from
                 the existing row's concrete value.
         """
-        # Every refusal below runs BEFORE ``_select_row`` — on the CREATE and the
-        # RE-register path alike (amendment-4 MP-B / NF-2): a refused call performs no
-        # store I/O at all.
-        self._refuse_an_inconsistent_provenance_pair(owner_principal_id, session_keep_id)
-        self._refuse_an_invalid_identity(name=name, session=session, role=role)
+        # EVERY write-free refusal is THE shared :meth:`preflight` (packet 63c-i-a, amendment 22
+        # §1 / #485) — the same decision the register handler runs BEFORE its keep mint; no private
+        # copy here. Its pair + identity refusals still run BEFORE any store I/O (amendment-4 MP-B /
+        # NF-2); the existing-row refusals follow its ONE read of the row.
+        existing = await self.preflight(
+            name,
+            session=session,
+            role=role,
+            spawned_by=spawned_by,
+            owner_principal_id=owner_principal_id,
+            session_keep_id=session_keep_id,
+        )
         agent_id = self._agent_id(session, name)
-        existing_row = await self._select_row(agent_id)
         now = datetime.now(UTC)
 
-        if existing_row is None:
+        if existing is None:
             # packet 62 W2.3 — MINT-ONCE-ON-CREATE. Mint a high-entropy secret (the
             # SHARED pkt-49 entropy constant, never a re-declared width), form the
             # ``<name>:<secret>`` wire credential, and store only its digest
@@ -857,29 +954,6 @@ class AgentRegistry:
             # Return the raw credential ONCE — the caller's only chance to capture it.
             return AgentRegisterResult(
                 agent=self._row_to_agent(created), re_registered=False, capability=capability
-            )
-
-        existing = self._row_to_agent(existing_row)
-        if existing.status == STATUS_RETIRED:
-            raise RetiredAgentError(
-                f"agent {name!r} is retired (terminal) — respawns register a fresh name"
-            )
-        if existing.role != role:
-            raise AgentIdentityConflictError(
-                f"agent {name!r} is already registered with role {render_attributed(existing.role)} "
-                f"(you sent {render_attributed(role)}) — names are never reused; register a fresh name "
-                f"(e.g. {name + '2'!r})"
-            )
-        if (
-            spawned_by is not None
-            and existing.spawned_by is not None
-            and existing.spawned_by != spawned_by
-        ):
-            raise AgentIdentityConflictError(
-                f"agent {name!r} is already registered with spawned_by "
-                f"{render_attributed(existing.spawned_by)} (you sent "
-                f"{render_attributed(spawned_by)}) — names are never "
-                f"reused; register a fresh name (e.g. {name + '2'!r})"
             )
 
         new_model = model if model is not None else existing.model

@@ -98,12 +98,18 @@ class MigrateGovernedResult:
     ``refused`` (with ``reason``) on a precondition failure (the agent-first ORDER, or a
     multi-principal ``agent`` table). The migration is a one-shot cutover verb that always
     EXECUTES (the dry-run/--execute paradigm was struck 2026-08-20 — §10.7-W); the counts ARE
-    the receipt. The read-only PREVIEW is the separate ``report-unmigrated`` verb."""
+    the receipt. The read-only PREVIEW is the separate ``report-unmigrated`` verb.
+
+    ``scanned`` / ``already_migrated`` are ``None`` on EVERY refusal (packet 63c-i-a, amendment 22
+    §4 / amendment 24 FK-a): a refusal returns before any scan of the target table, so those counts
+    were NOT MEASURED — a ``0`` there would be a served count describing no set. ``backfilled`` stays
+    an ``int``: a refusal stamped nothing, which IS measured (``0``). On a proceeding run
+    ``backfilled`` is the number of rows the backfill actually stamped."""
 
     table: str
-    scanned: int
+    scanned: int | None
     backfilled: int
-    already_migrated: int
+    already_migrated: int | None
     refused: bool
     reason: str | None = None
 

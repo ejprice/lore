@@ -109,6 +109,27 @@ logger = logging.getLogger(__name__)
 _KEEP_READ_PROJECTION = "id, keeper, type, name, created_at"
 _MEMBER_OF_READ_PROJECTION = "in, out, rank, since"
 
+#: The non-field attribute :meth:`KeepStore.get_or_create_keyed` sets on the keep it returns when THAT
+#: call's own CREATE won (packet 63c-i-a, #485 / amendment 22 §1.2 + amendment 24 FK-b). Read ONLY through
+#: :func:`minted_by_this_call`.
+_MINTED_BY_THIS_CALL = "minted_by_this_call"
+
+
+def minted_by_this_call(keep: object) -> bool:
+    """Whether ``keep`` was CREATED by the :meth:`KeepStore.get_or_create_keyed` call that returned it.
+
+    ``True`` only when that call's own CREATE won the mint; a keep the call merely FOUND (read by key, or
+    re-read as a concurrent winner after a UNIQUE conflict) reads ``False``. Derived from the mint's OWN
+    return — never a pre-read, which a concurrent winner makes a TOCTOU (amendment 24 FK-b). The register
+    handler's created-only compensation reads this: it may delete a keep its call created, never one it
+    found (that keep belongs to another registration).
+
+    The flag rides the returned :class:`Keep` as a non-field ``__dict__`` attribute (``Keep`` is frozen).
+    Measured on the installed pydantic 2.13.4 (2026-09-26): ``==``, ``model_dump`` and ``model_dump_json``
+    ignore it, so no caller comparing or serialising keeps observes it; ``model_copy`` carries it.
+    """
+    return getattr(keep, _MINTED_BY_THIS_CALL, False) is True
+
 
 class Keep(BaseModel):
     """A single collaboration space in the durable ``keep`` store.
@@ -539,7 +560,9 @@ class KeepStore:
             name: An optional human label.
 
         Returns:
-            The existing or freshly-minted :class:`Keep` bearing ``key``.
+            The existing or freshly-minted :class:`Keep` bearing ``key``. :func:`minted_by_this_call`
+            reads ``True`` on it iff THIS call's CREATE won (never for a keep read by key or re-read as
+            a concurrent winner).
 
         Raises:
             KeepStoreError: No principal carries ``keeper_email``, OR the store rejected the create.
@@ -609,6 +632,9 @@ class KeepStore:
             created = await self.get_keep(keep_id)
             if created is None:  # pragma: no cover - a just-committed row must read back
                 raise KeepStoreError(f"created keyed keep {keep_id!r} did not read back")
+            # THIS call's CREATE won the mint — reported on the returned object, read through
+            # :func:`minted_by_this_call` (the register handler's created-only compensation, #485).
+            object.__setattr__(created, _MINTED_BY_THIS_CALL, True)
             return created
 
     async def get_by_key(self, key: str) -> Keep | None:
