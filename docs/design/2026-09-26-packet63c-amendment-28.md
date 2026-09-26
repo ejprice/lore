@@ -94,3 +94,60 @@ was read at HEAD `server.py::_comms_register` (lines 6681–6840), `keeps.py::de
   principal-bearing winner is the compensation's own victim, and an ORDER that solved one property by
   breaking its neighbour. Both are the quantifier law; both were catchable by the recipe above, which is
   five lines and which I did not write when I ruled the mechanism.
+
+## Addendum (2026-09-26, Task 28 addendum): the blind fixture, F-4…F-7
+
+### (1) The race pin's fixture is blind to F-1 — re-keyed NOW, in the audit's fix pass
+The existing race pin builds its concurrent winner as an OWNERLESS direct-registry row: the one winner the
+delete cannot harm (it holds no scope). The fixture guaranteed the condition under which the bug was
+invisible — THE TEST ENVIRONMENT IS A FICTION, in a pin I ruled. **Ruling:** the pin's winner is a
+SAME-PRINCIPAL HANDLER register that FOUND the keep (the §F-1 recipe above: the wrapped
+`get_or_create_keyed` runs the second `comms(register)` inline after the first mint); it asserts the keep
+resolves and the winner's `scope` is live. The ownerless direct-registry winner STAYS as the tokenless-race
+CONTROL (the β-closed bound), never as the only leg. Fixtures must discriminate: one leg per winner class.
+
+### (2) F-4 — fail CLOSED on an unexpected `INFO FOR DB` shape — NOW
+`defined = info.get("tables", {}) if isinstance(info, dict) else {}` turns a broken dependency into a
+clean-store verdict: every precondition reads empty and the message leg proceeds to stamp the half-pair
+the refusal exists to prevent. Under the trust doctrine that is the definition of a false clear (Leg 2:
+dependency × wrong-shape → identical bytes = STOP). **Ruling:** a non-dict answer, or a dict without
+`tables`, RAISES a typed store error naming the dependency and the shape received (as `_rows_stamped`
+already does); the verb refuses loudly, byte-inert. `_governed_select`'s non-list tolerance is the same
+class and gets the same treatment. **Pin:** the wrong-shape leg of the forgery set — inject a non-dict and
+a keyless-dict `INFO FOR DB` answer; assert the raise and `SELECT *` byte-identity on every governed
+table; control: the real answer proceeds. Audit fix pass.
+
+### (3) F-5 — MOOT under §F-1: the failed-delete line is deleted with the compensation
+Nothing serves "LEFT BEHIND" any more; the DUAL row for door #4b's deletion covers it. For the record, the
+reader's point stands as law: a served line must be DERIVED from the error class, never composed beside
+it — had the branch survived, `KeepNotFoundError` would have had to serve "already gone", not a remedy that
+fails.
+
+### (4) F-6 — docstring derived from behaviour — NOW; and the measured half is SERVED
+"Every refusal returns before any scan of the target table" is false for `agent` (the verb read `scope IS
+NONE` and the half-pair SELECT over `agent`) and for `message` (the dangling / half-pair SELECTs). **Ruling:**
+the docstring says what amendment 22 §4 ruled — *a refusal serves `None` for any count it did not
+measure and serves, as its own counts, the reads the precondition DID perform* — and the receipt carries
+those reads (the verb's unscoped and half-pair counts on an agent refusal; the dangling / half-pair counts
+on a message refusal). M5's "measures half and discards it" is the CONSUMER-LAW defect here: a count that
+was measured and not served is a served surface under-claiming. Prose + the receipt fields; audit fix pass.
+
+### (5) F-7 — the message write self-guards on the SENDER's state — NOW (one clause + golden)
+The F-3 principle, one link over: the message UPDATE's WHERE gains `AND sender.owner_principal IS NOT NONE
+AND sender.scope IS NOT NONE` (a dangling sender dereferences to NONE — store-ref §6.4 — so it is excluded
+by the same clause), making the write self-guarding against the tokenless-register-plus-send race and the
+deleted-sender race. β removes the first; packet 64's deletion wave owns the second; the clause is
+correct under both. Golden updated. **Pin:** the golden carries the sender guard (the ∀-tables WHERE rider
+grows by a leg), and the redirect idiom proves it: seed an ownerless-unscoped sender's message, redirect
+the shared preconditions to PASS, run the leg → `backfilled == 0` (F-1's measured-count pin), rows
+byte-identical. Audit fix pass; the race itself is not driven.
+
+### §W (addendum)
+| # | item | lands |
+|---|---|---|
+| A1 | race pin re-keyed to a same-principal handler winner that found the keep; ownerless winner as the tokenless control | audit fix pass (contract), with §F-1's two pins in the narrow delta |
+| A2 | F-4 fail-closed INFO shape (+ `_governed_select`); wrong-shape forgery leg | audit fix pass |
+| A3 | F-5 moot | — |
+| A4 | F-6 docstring derived; measured precondition counts served | audit fix pass |
+| A5 | F-7 sender-side WHERE guard + golden + redirect leg | audit fix pass |
+Nothing carried to i-b: each is one clause, one raise, one docstring, or the F-1 pin itself.
