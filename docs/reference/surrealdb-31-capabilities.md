@@ -485,6 +485,25 @@ The house rules for reading and writing rows. Each one was found the hard way.
   **engine-version-independent** and holds until the SDK version changes (receipt: lore memory
   `bef131a1`; finding #336).
 - **[PROBED]** One WS connection multiplexes concurrent `query()` safely (uuid-keyed futures).
+- **⚠ A `RETURN` inside `BEGIN … COMMIT` ENDS THE TRANSACTION EARLY AND COMMITS WHAT RAN BEFORE IT — and every
+  statement after it reports `status: OK`, so `execute_transaction`'s per-statement verification CANNOT
+  see the truncation.** **[VENDOR]** `return.mdx` §*Return breaks execution*: *"`RETURN` breaks execution
+  of statements, functions and transactions"*, with the exact example `BEGIN; RETURN 1; CREATE a; --
+  Is not executed; COMMIT;` — DOCUMENTED, and unread by this repo until finding [#497](#497) (the
+  docs-first law's own receipt, again). **[PROBED 2026-09-26, 3.2.4 — contract-58-r2
+  (`c42eeaf:REPORT-contract-58-r2.md` §INSTRUMENTS `return_in_txn.py`, through the production
+  `TaskLedger._apply`), re-probed the same day by sidecar-64 over `POST /sql` with two controls
+  (instrument pasted verbatim in `REPORT-sidecar-64.md` Task 15 — archived under
+  `docs/plans/v2/receipts/` at 64 close):** `BEGIN; CREATE a; RETURN NONE; CREATE b; COMMIT;` → only
+  `a` exists and **all four statements report `OK`** (the skipped `CREATE b` comes back `result: null,
+  status: OK`); the `LET $pad = NONE` control leaves `a` and `b`; **a `THROW` placed AFTER a `RETURN`
+  never fires** (`BEGIN; CREATE a; RETURN NONE; THROW 'x'; COMMIT;` → `a` committed, no error) while the
+  same `THROW` without the `RETURN` aborts (the table never exists). What the vendor does NOT say
+  (§6.2): that the earlier statements COMMIT, and that the skipped ones report success. **House rule:**
+  a composed fragment never contains a top-level `RETURN` — a THROW-guard after one is DEAD and a
+  truncated apply reads as green; `compose`'s envelope-integrity check should refuse it (finding
+  [#501](#501)). This is how packet 58's padding mutation (`RETURN NONE` appended to a shell output)
+  silently stranded stragglers instead of moving the cap: a measurement that reads as success.
 
 ---
 
@@ -715,6 +734,7 @@ Every one of these is **probe-only**. Do not mistake them for vendor guarantees.
 | Is `DEFINE TABLE OVERWRITE` safe on a populated table? | **Yes** — fields, indexes and rows all preserved | silent |
 | Does changing an ANALYZER re-tokenise an existing FULLTEXT index? | **NO** — stale until `REBUILD INDEX` | silent |
 | Must a NEW field on a populated table be `option<>`? | **Yes** — a required one poisons every existing row; a `DEFAULT` does **not** rescue it | silent |
+| Does a `RETURN` inside `BEGIN … COMMIT` COMMIT the statements before it, and how do the skipped ones report? | **Commits them**; every skipped statement reports `status: OK` (invisible to per-statement verification); a later `THROW` never fires | the BREAK is documented (`return.mdx`); the commit + the OK-status of the skipped statements are **silent** |
 
 ### 6.3 A doc *we* wrote was also wrong
 
@@ -1060,6 +1080,12 @@ a "read this first" block.*
 rows; `query()`'s statement[0]-only validation hid retryable conflicts). Carries an OPEN
 reconciliation against the original `scratchpad/102-recovery/` harness.*
 
+<a id="497"></a>*#497 — a `RETURN` inside `BEGIN … COMMIT` ends the transaction early and commits the
+statements before it; the skipped ones report OK (§3, §6.2). Docs gap closed 2026-09-26.*
+
+<a id="501"></a>*#501 — `compose` should refuse a top-level `RETURN` fragment statement (the envelope-integrity
+guard's missing case; the #497 hazard's in-repo door). Open.*
+
 <a id="146"></a>*#146 — `DEFINE SEQUENCE IF NOT EXISTS` inherits the silent-no-op migration hazard for
 `BATCH`/`START`. Named re-open trigger: the day anyone changes either.*
 
@@ -1112,3 +1138,9 @@ spike-surreal 3.2.4, throwaway DBs reaped): §6.7 added — the import is NOT at
 stripped, and an absent target DB silently downgrades the schema. Docs-first check: the vendor's
 `http-protocol.mdx` names the endpoint and headers correctly and its example is wrong; the
 tutorial's `--data-binary` form is the working one.
+
+**Addition pass 2026-09-26 (b)** (finding #497, contract-58-r2 → sidecar-64): §3 gained the `RETURN`-
+inside-a-transaction bullet and §6.2 its silence row. Docs-first check: the vendor DOCUMENTS the break
+(`return.mdx`) — this repo had never read that section; the probe added what the page omits (the
+earlier statements commit; the skipped ones report OK; a later THROW is dead).
+
