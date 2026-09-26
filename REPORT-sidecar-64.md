@@ -62,3 +62,24 @@ brief project v7 read
 - Commits: `e5fa7f9` (the doc), plus this report's own commit — my paths only, no attribution trailer
   (the operator's standing `~/.claude/CLAUDE.md` rule + the brief override the session reminder).
 - No worktree used or created.
+
+## Task 2 (2026-09-26) — OF-3 directive ruled: amendment 1 committed `6797d63`
+
+- **state:** done — `docs/design/2026-09-26-packet64-amendment-1.md`. §10.7-Z orphaning WITHDRAWN (operator
+  directive); `lore-adm delete` takes a REQUIRED `--delete-obj | --archive-obj | --change-owner
+  <agent-name>@<session>`; no option ⇒ a byte-inert refusal that IS the preview (per-table counts +
+  consequences). ARCHIVE = a 4th governed column `archived_at` via the ONE emitter + a `NotArchived` PDP
+  node ANDed by `authorize_filter` (hidden by default for everyone, admin included; FROZEN for every
+  mutating action; `lore-adm unarchive` the one door); `include_archived` on the DERIVED read-verb set with
+  a derived bound-line token; pending counts exclude archived deliveries. Per-table dispositions (§4);
+  agents retired+archived under all three, NEVER transferred (a credential transfer wearing a data
+  transfer's name); `--change-owner` target = an admitted agent, both owner columns from one link.
+- **#404 closes; #488 MOOT** under OF-3 (no orphan state is produced; am-25 stands) — I annotate #488
+  once the lead confirms the directive is final. 64d re-sized ≈0.20–0.25 → split **64d-i archive
+  substrate** / **64d-ii delete verb**, both after 64a/64b; 64c extends over both.
+- **Two readings chosen, written down (amendment §0):** hidden-by-default for ADMIN too; the target is an
+  AGENT not an email (the email form is given as the CLI resolution rule if the operator prefers it).
+- **Flags:** `MemoryLedger.tombstone` is a new verb on a ledger packet 18 retires (the "rebuild does not
+  resurrect" pin is the invariant either way); agent hard-delete stays 57 F-B / #412.
+- **Graded:** `0ca5bdb` · HEAD-at-report: `6797d63` · DIFFERENT (1 ahead — my own commit; no production
+  symbol moved). Standing by.
