@@ -82,3 +82,34 @@ bounds:
     - TaskLedger.max_reanchor_dependents
     - loremaster.tasks.SupersedeResult
     - type[TaskLedger]._guarded_append_fragment
+# Packet 63c-i-a a28 fix-pass contract (contract-63c-i-a-a28, 2026-09-26, checkpoint 169925f — lead directive
+# #17055, the #461 shape). Amendments 26–29 rule ORDER changes, a deletion and behavioural fixes (no new symbol);
+# amendment 30 rules the ONE new symbol pair — `MigratePreconditionCounts` + `MigrateGovernedResult.preconditions`.
+# Each file below names that pair STATICALLY in a runtime-inert `if TYPE_CHECKING:` block, so this bound OWNS both
+# the typecheck lines and every RED-at-169925f pytest leg in those files (REPORT-contract-63c-i-a-a28.md §RED).
+# The pair is a PROXY for "the a28 fix pass landed": the same builder lands every pinned behaviour in one pass.
+# SELF-DESTRUCTS: the day the build lands the pair, every file stops erroring — delete this entry WITH the build.
+- id: packet-63c-i-a-a28-contract
+  owner: packet 63c-i-a fix pass (amendments 26-30) — the a28 fix builder
+  reopen_trigger: the fix build lands loremaster.governed.MigratePreconditionCounts and
+    MigrateGovernedResult.preconditions — then every file below stops erroring, this entry self-destructs and must
+    be deleted with the build
+  ruling: docs/design/2026-09-26-packet63c-amendment-26.md + amendment-27 (40c188d) + amendment-28 (eb75f57,
+    17c52b7) + amendment-29 (a92d33e) + amendment-30; contract receipts REPORT-contract-63c-i-a-a28.md §RED
+    (archived with the wave)
+  rationale: contract-ahead — the a28 pins are written against the checkpoint 169925f (cold audit NO-GO) before the
+    fix builder runs; a pytest-only behavioural RED is unregistrable (#461, routed to packet 09b), so the files
+    carrying one name amendment 30's ruled pair statically (never a manufactured error)
+  files:
+  - path: loremaster/tests/test_fixwave_a28_63c_i_a.py
+    missing_symbols:
+    - loremaster.governed.MigratePreconditionCounts
+    - MigrateGovernedResult.preconditions
+  - path: loremaster/tests/test_fixwave_a19a_63c_i_a.py
+    missing_symbols:
+    - loremaster.governed.MigratePreconditionCounts
+    - MigrateGovernedResult.preconditions
+  - path: loremaster/tests/test_fixwave_a19b_63c_i_a.py
+    missing_symbols:
+    - loremaster.governed.MigratePreconditionCounts
+    - MigrateGovernedResult.preconditions

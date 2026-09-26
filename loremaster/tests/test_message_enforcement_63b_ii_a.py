@@ -199,9 +199,16 @@ def _effect_migrate_message(effect: ObservedEffect) -> bool:
 # self-guarding — ``scope IS NONE AND owner_principal IS NONE``, in that order, the ruling's one line — so a
 # scoped-but-ownerless message is never re-stamped and "unmigrated" means THE predicate ∀ governed tables.
 # Virtue kept: one UPDATE, the same three SET columns, NONE-owner rows only.
+#
+# DUAL (63c-i-a a28, amendment 28 Addendum A5 — the golden CHANGED deliberately): the WHERE gains the SENDER
+# guard ``AND sender.owner_principal IS NOT NONE AND sender.scope IS NOT NONE`` (appended, in that order — the
+# ruling's one clause), so the write self-guards against the tokenless-register-plus-send race and the
+# deleted-sender race (a dangling sender dereferences to NONE, store-ref §6.4, and is excluded by the same
+# clause). Virtue kept: CD-1's scope-keyed, self-guarding target conjuncts, unchanged and first.
 _MIGRATE_MESSAGE_GOLDEN = (
     f"UPDATE {_MESSAGE_TABLE} SET owner_agent = sender, owner_principal = sender.owner_principal, "
-    f"scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
+    f"scope = $scope WHERE scope IS NONE AND owner_principal IS NONE "
+    "AND sender.owner_principal IS NOT NONE AND sender.scope IS NOT NONE"
 )
 
 

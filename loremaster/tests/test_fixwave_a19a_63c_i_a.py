@@ -38,7 +38,7 @@ import inspect
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import test_agent_registry  # module-qualified: its Test* classes must not be re-collected here
@@ -73,6 +73,17 @@ from test_fixwave_a19_63c_i_a import (
 )
 
 from loremaster import principals
+
+if TYPE_CHECKING:
+    # a28 (amendment 30 / #461's shape, lead directive #17055): the STATIC reference that owns this file's
+    # RED-until-the-a28-build pins in scripts/pending_contracts.yaml — runtime-inert; it self-destructs (a
+    # mypy
+    # error that vanishes) the day the fix pass lands the ruled model.
+    from loremaster.governed import MigrateGovernedResult, MigratePreconditionCounts
+
+    def _a28_pending_build(result: MigrateGovernedResult) -> object:
+        return (MigratePreconditionCounts, result.preconditions)
+
 
 #: Re-exported BY ASSIGNMENT for the a19b addendum (``test_fixwave_a19b_63c_i_a.py``), whose graded probes
 #: read them as ``a19a.<name>`` (AST-equal to the adversary's pasted form, amendment 24 §5): mypy's
@@ -305,8 +316,11 @@ async def _registry_refusal_for_session(session: str) -> str:
 # =========================================================================== #
 # §W 2 — #485: EVERY registry refusal a credentialed register can meet happens BEFORE the session-keep
 # mint. ``AgentRegistry.preflight`` is the ONE write-free refusal method; ``register`` calls it FIRST; the
-# ``lore_comms register`` handler calls it BEFORE ``get_or_create_keyed``; the concurrent race is compensated
-# by deleting ONLY a keep this call CREATED.
+# ``lore_comms register`` handler calls it BEFORE ``get_or_create_keyed``. DUAL (a28, amendment 28 §F-1): the
+# concurrent race is NO LONGER compensated (the created-only delete stranded the race's same-principal
+# winner);
+# the race serves the registry's refusal and leaves the minted keep — pinned in
+# ``test_fixwave_a28_63c_i_a.py``.
 # =========================================================================== #
 
 _KEEP_TABLES = ("keep", "member_of")
@@ -437,8 +451,12 @@ class _RegisterObservation:
 class _RegisterPropertySpy:
     """MP-A (amendment 24 §1) — THE RUNTIME PROPERTY, armed AROUND every driven
     ``comms(action="register")``: *refused ⇒ ZERO ``get_or_create_keyed`` calls, or — on the race path only (a
-    concurrent register INJECTED after the real mint) — keep + household byte-identical after the
-    compensation.* It observes what ``register`` DOES, never the code's shape, so no raise idiom and no raise
+    concurrent register INJECTED after the real mint) — the refusal after the ONE mint, with the minted keep
+    LEFT IN PLACE (amendment 28 §F-1: no compensation).* DUAL (a28, amendment 28 §F-1): the race branch was
+    "keep + household byte-identical after the compensation" — the compensation is DELETED (it stranded the
+    concurrent winner), so the race now leaves the keep it minted; virtue kept: "only the race may refuse
+    after
+    a mint". It observes what ``register`` DOES, never the code's shape, so no raise idiom and no raise
     site can hide from it (N3b / N17, the static walker's defeats). A violation raises ``AssertionError``
     INSIDE the armed call, chained from the refusal — LOUD.
 
@@ -480,12 +498,12 @@ class _RegisterPropertySpy:
             except Exception as refusal:
                 identical = await _keep_snapshot(self.admin_conn) == before
                 self._observe(refused=True, keep_identical=identical)
-                if self.mints and not (self.injected and identical):
+                if self.mints and not self.injected:
                     raise AssertionError(
                         f"RUNTIME PROPERTY (amendment 24 §1) — driver {self.driver!r}: a REFUSED register "
                         f"({type(refusal).__name__}) reached get_or_create_keyed {self.mints}x "
                         f"(race injected: {self.injected}; keep byte-identical after: {identical}) — every "
-                        "refusal must precede the session-keep mint (#485); only a compensated RACE may mint"
+                        "refusal must precede the session-keep mint (#485); only an injected RACE may mint"
                     ) from refusal
                 raise
             self._observe(refused=False, keep_identical=await _keep_snapshot(self.admin_conn) == before)
@@ -565,8 +583,12 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
         (one observed register per driver — a driver that bypasses the armed comms reds by name), and three
         non-vacuity legs hold: every ``_REFUSAL_FIXTURES`` driver WAS refused (the property ran on refusals,
         not only on successes), the CONTROL minted exactly once (the spy SEES a mint), and the RACE was
-        injected, refused, minted once and left the keep byte-identical (both branches of the disjunction
-        exercised). ⚠ RED at ``84af63f``: the handler mints before the registry refuses (#485), so the first
+        injected, refused, minted once and LEFT the keep it minted (both branches of the disjunction
+        exercised;
+        DUAL a28 — amendment 28 §F-1: "left the keep byte-identical", i.e. compensated, became "left the
+        minted
+        keep in place": the compensation is deleted). ⚠ RED at ``84af63f``: the handler mints before the
+        registry refuses (#485), so the first
         refusal fixture trips the property. Replaces the AST-derived ∀-refusal-classes pin (DUAL above);
         BOUND + RE-OPEN TRIGGER in the spy's docstring."""
         observations: list[_RegisterObservation] = []
@@ -608,12 +630,18 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
             f"CONTROL: the spy must SEE a valid register's one mint: {by_driver['control-valid']}"
         )
         race_observation = by_driver["race-created"]
+        # DUAL (a28, amendment 28 §F-1): ``and race_observation.keep_identical`` (the compensation deleted the
+        # keep) is now ``not keep_identical`` — the minted keep STAYS (the compensation is deleted; a keep the
+        # race leaves behind is kept by the SAME principal, amendment 28 §F-1 "nothing to compensate").
         assert (
             race_observation.injected
             and race_observation.refused
             and race_observation.mints == 1
-            and race_observation.keep_identical
-        ), f"CONTROL: the race branch of the property must be exercised: {race_observation}"
+            and not race_observation.keep_identical
+        ), (
+            "CONTROL: the race branch of the property must be exercised (the minted keep left in place): "
+            f"{race_observation}"
+        )
 
     # DUAL (a19b, amendment 24 §1): ``test_every_derived_refusal_class_has_a_driven_fixture`` (the AST-derived
     # ∀-refusal-classes pin, amendment 23 FK-1) is DELETED — see the module-level DUAL on ``_ClosureWalk``.
@@ -798,57 +826,20 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
                 f"handler order must be preflight → mint → register (amendment 22 §1): {events}"
             )
 
-    @pytest.mark.parametrize("keep_state", ["created-by-this-call", "found-pre-existing"])
-    async def test_the_RACE_compensation_deletes_only_a_keep_this_call_created(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, keep_state: str
-    ) -> None:
-        """The residual (amendment 22 §1.2): a CONFLICTING register lands between the handler's preflight
-        and ``register`` — constructed deterministically: the spy runs the real mint, THEN writes the
-        conflicting ownerless row. ``register`` refuses AFTER the mint, and the handler compensates:
-        * ``created-by-this-call`` — ⚠ RED at ``84af63f`` (no compensation): the keep this call minted is
-          deleted (keep + household byte-identical to before the call) and the next principal registers
-          into the session and keeps it.
-        * ``found-pre-existing`` — CONTROL, GREEN at ``84af63f``: the session keep alice ALREADY kept is
-          NOT deleted (created-only — a compensation that deletes a keep it merely FOUND destroys another
-          registration's session). A FAILED compensation (a keep left behind) is constructed and pinned by
-          amendment 24 #4b in ``test_fixwave_a19b_63c_i_a.py`` (the teaching survives + ONE appended remedy
-          line) — a19b DUAL: this docstring's former "not constructible here" BOUND is retired by that pin."""
-        async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member", "bob": "member"}, dim=_DIM
-        ) as world:
-            ctx, admin_conn = world["ctx"], world["admin_conn"]
-            world["holder"]["email"] = world["emails"]["alice"]
-            session = "wave-race"
-            if keep_state == "found-pre-existing":
-                await ctx.comms(action="register", agent="alice-one", session=session, role="builder")
-            before = await _keep_snapshot(admin_conn)
-
-            async def conflicting_register() -> None:
-                await ctx.agent_registry.register("raced-agent", session=session, role="scout")
-
-            calls = _spy_the_mint(monkeypatch, ctx, after_real=conflicting_register)
-            with pytest.raises(AgentRegistryError):
-                await ctx.comms(action="register", agent="raced-agent", session=session, role="builder")
-            assert calls["count"] == 1, f"fixture: the race path must mint exactly once: {calls}"
-            after = await _keep_snapshot(admin_conn)
-            if keep_state == "created-by-this-call":
-                assert after == before, (
-                    "the race: register refused AFTER the handler minted the session keep, and the keep this "
-                    "call CREATED was left behind — the handler must delete it (created-only compensation, "
-                    f"amendment 22 §1.2): {after!r}"
-                )
-                world["holder"]["email"] = world["emails"]["bob"]
-                await ctx.comms(action="register", agent="bobs-agent", session=session, role="builder")
-                keeper = await run(
-                    admin_conn, f"SELECT VALUE keeper FROM keep WHERE key = 'session:{session}'"
-                )
-                assert [_bare(value) for value in keeper] == [world["pids"]["bob"]], keeper
-            else:
-                assert after == before, (
-                    "the compensation DELETED a session keep this call merely FOUND (alice's pre-existing "
-                    f"session) — compensation is created-only (amendment 22 §1.2): before={before!r} "
-                    f"after={after!r}"
-                )
+    # DUAL (a28, amendment 28 §F-1 — DELETED):
+    # ``test_the_RACE_compensation_deletes_only_a_keep_this_call_created``
+    # [created-by-this-call | found-pre-existing]. Virtues it carried: (a) "the race's keep this call CREATED
+    # is
+    # deleted, so the next principal keeps the session" — DROPPED deliberately: the mechanism is removed
+    # (amendment 28 §F-1: the only principal-bearing winner of the race is the SAME principal, scoped to that
+    # keep, so the delete stranded it — cold audit F-2 / P5); the tokenless-winner case it served is the named
+    # β
+    # bound, re-pinned as the CONTROL leg of
+    # ``test_fixwave_a28_63c_i_a.py::TestTheRaceNeverStrandsAScope63cIAa28::
+    # test_the_sequential_race_keeps_the_keep_and_serves_the_teaching[tokenless-winner-control]``; (b) "a keep
+    # this call merely FOUND is never deleted" — PRESERVED-with-pin, widened to ∀ keeps: nothing on the
+    # register
+    # path calls ``delete_keep`` (the a28 RS-2 pin's ``delete_keep`` spy + the sequential race pin).
 
 
 # =========================================================================== #

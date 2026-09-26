@@ -19,8 +19,10 @@ TWO KINDS OF PIN LIVE HERE, and the difference is their GRADING:
 * **Authored pins (NEW production behaviour — graded by the cold audit, amendment 24 §5):** door #2 (a message
   half-pair refuses the MESSAGE leg, through THE shared preconditions function) + its D2 leg (``backfilled`` =
   the rows the UPDATE STAMPED), and door #4b (a FAILED compensation serves the registry's teaching + ONE
-  appended line naming the left-behind keep and its remedy). The D2 leg has no graded probe in the adversary's
-  §A.3 either.
+  appended line naming the left-behind keep and its remedy — DUAL-DELETED at a28, amendment 28 §F-1: the
+  compensation is removed). The D2 leg has no graded probe in the adversary's §A.3 either. KP1 is RE-KEYED at
+  a28
+  (DUAL beside it) and is no longer AST-equal to the graded probe.
 
 STORE LAW (``docs/reference/surrealdb-31-capabilities.md`` — cited, never re-transcribed): §1.4 (legacy /
 half-pair rows are SEEDED under the DDL, never constructed through a writer — no writer produces a message
@@ -30,10 +32,11 @@ half-pair), §2 (``SELECT *`` omits a NONE column, so byte-identity compares who
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import test_fixwave_a19a_63c_i_a as a19a  # module-qualified: its Test* classes must not be re-collected
+import test_fixwave_a28_63c_i_a as a28  # module-qualified (the per-clause count reader, audit F-8)
 from _governed_contract import (
     AGENT_TABLE,
     MEMORY_TABLE,
@@ -52,16 +55,35 @@ from test_fixwave_a19_63c_i_a import _bare, _redirect_the_shared_preconditions, 
 
 from loremaster import principals
 
+if TYPE_CHECKING:
+    # a28 (amendment 30 / #461's shape, lead directive #17055): the STATIC reference that owns this file's
+    # RED-until-the-a28-build pins in scripts/pending_contracts.yaml — runtime-inert; it self-destructs (a
+    # mypy
+    # error that vanishes) the day the fix pass lands the ruled model.
+    from loremaster.governed import MigrateGovernedResult, MigratePreconditionCounts
+
+    def _a28_pending_build(result: MigrateGovernedResult) -> object:
+        return (MigratePreconditionCounts, result.preconditions)
+
+
 _DIM = a19a._DIM
 
 
 # --------------------------------------------------------------------------- KP1 — created-vs-found
+# DUAL (a28, amendment 28 §F-1 — RE-KEYED, no longer AST-equal to the adversary's graded probe): KP1's VIRTUE
+# ("the concurrent winner's keep survives") is now the design's property and STAYS, re-keyed to assert the
+# winner's ``scope`` resolves to a LIVE keep. Its old winner registered OWNERLESS at the registry (it held no
+# scope, so the assertion could not see a stranded winner — Addendum A1: the fixture guaranteed the condition
+# under which the bug was invisible); the winner is now a same-principal HANDLER register that MINTS the keep,
+# and THIS call finds it. The ownerless-winner shape lives on as the tokenless CONTROL in
+# ``test_fixwave_a28_63c_i_a.py::TestTheRaceNeverStrandsAScope63cIAa28``.
 async def test_KP1_a_keep_won_by_a_concurrent_mint_is_never_compensated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    """A concurrent register of ANOTHER of alice's agents wins the session-keep mint between the handler's
-    preflight and its own mint (so this call FINDS the keep), then the race refusal fires. The keep this call
-    merely found must survive (amendment 22 §1.2: created-only, derived from the mint's RETURN)."""
+    """A concurrent HANDLER register of the same name by the SAME principal (another role) mints the session
+    keep between this call's preflight and its own mint (so this call FINDS the keep) and CREATEs its row
+    scoped to it; then this call's ``register`` meets the conflict. The keep survives AND the winner's
+    ``scope`` resolves to it (amendment 28 §F-1: nothing on the register path deletes a keep)."""
     async with credentialed_app_context(
         monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
     ) as world:
@@ -71,33 +93,53 @@ async def test_KP1_a_keep_won_by_a_concurrent_mint_is_never_compensated(
         keep_store = ctx._keep_store
         real = keep_store.get_or_create_keyed
         calls = {"n": 0}
+        winner: dict[str, Any] = {}
 
         async def spy(*args: Any, **kwargs: Any) -> Any:
             calls["n"] += 1
             if calls["n"] == 1:
-                await real(*args, **kwargs)  # the concurrent winner's mint
-                found = await real(*args, **kwargs)  # THIS call finds it
-                await ctx.agent_registry.register("raced-agent", session=session, role="scout")
-                return found
+                # the concurrent winner: a COMPLETE handler register (its own mint is call n=2, which creates)
+                winner["rendered"] = await ctx.comms(
+                    action="register", agent="raced-agent", session=session, role="scout"
+                )
+                return await real(*args, **kwargs)  # THIS call finds it
             return await real(*args, **kwargs)
 
         monkeypatch.setattr(keep_store, "get_or_create_keyed", spy)
         with pytest.raises(AgentRegistryError):
             await ctx.comms(action="register", agent="raced-agent", session=session, role="builder")
-        assert calls["n"] == 1, calls
-        keys = await run(admin_conn, f"SELECT VALUE key FROM keep WHERE key = 'session:{session}'")
-        assert keys == [f"session:{session}"], (
-            "the compensation deleted a session keep this call merely FOUND (a concurrent winner's): "
-            f"{keys!r}"
+        assert calls["n"] == 2 and "rendered" in winner, (calls, winner)
+        keeps = await run(admin_conn, f"SELECT VALUE id FROM keep WHERE key = 'session:{session}'")
+        assert len(keeps) == 1, f"the session keep a concurrent winner minted must survive: {keeps!r}"
+        scopes = await run(
+            admin_conn, f"SELECT VALUE scope FROM agent WHERE session = '{session}' AND name = 'raced-agent'"
+        )
+        assert scopes == [keep_scope(_bare(keeps[0]))], (
+            f"the winner's scope must resolve to the LIVE session keep: scopes={scopes!r} keeps={keeps!r}"
         )
 
 
 # ------------------------------------------------------------------------- KP2 / KP3 — ONE bound, perturbed
+# DUAL (a28, amendment 30 pin (3) — "the MP-E perturbation legs read the fields"): each probe gains ONE leg
+# asserting the TRUE count on its typed ``preconditions`` field (read dynamically — the static reference is
+# the
+# module's ``TYPE_CHECKING`` block), beside the prose legs it already carried (kept: the bounded sample is
+# prose
+# by ruling). No longer AST-equal to the graded probes.
+def _a28_count(result: Any, field: str) -> Any:
+    counts = getattr(result, "preconditions", None)
+    if counts is None:
+        pytest.fail(f"amendment 30: the refusal must serve preconditions.{field} (MigratePreconditionCounts)")
+    return getattr(counts, field)
+
+
 async def test_KP2_the_dangling_sender_sample_reads_THE_constant(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(principals, "_REFUSAL_ID_SAMPLE_SIZE", 3)
     async with a19a._governed_world() as world:
         pairs = await a19a._seed_ghost_store(world, ghosts=5)
-        reason = str((await world.migrate(MESSAGE_TABLE)).reason or "")
+        result = await world.migrate(MESSAGE_TABLE)
+        reason = str(result.reason or "")
+        assert _a28_count(result, "dangling_sender_messages") == 5, result
         by_message = sum(1 for message_id, _s in pairs if a19a._names(reason, MESSAGE_TABLE, message_id))
         by_sender = sum(1 for _m, sender_id in pairs if a19a._names(reason, AGENT_TABLE, sender_id))
         assert "dangling" in reason.lower(), reason
@@ -122,7 +164,9 @@ async def test_KP3_the_half_applied_id_sample_is_bounded_by_THE_constant(
                 owner_agent=None,
                 scope=keep_scope("sessionkeephp"),
             )
-        reason = str((await world.migrate(AGENT_TABLE)).reason or "")
+        result = await world.migrate(AGENT_TABLE)
+        reason = str(result.reason or "")
+        assert _a28_count(result, "scoped_but_ownerless_agents") == 5, result
         named = sum(1 for row_id in ids if a19a._names(reason, AGENT_TABLE, row_id))
         assert "half-applied" in reason.lower() and named == 3, f"named {named} of 5 (bound 3): {reason!r}"
         assert 5 in a19a._stated_integers(reason, identifiers=[*ids, "sessionkeephp"]), reason
@@ -399,11 +443,20 @@ class TestAMessageHalfPairRefusesTheMessageLeg63cIAa19b:
             assert "multi-principal" not in lowered and "dangling" not in lowered, reason
             stated = a19a._stated_integers(reason, identifiers=_message_identifiers(owned_ids, scoped_ids))
             bound = principals._REFUSAL_ID_SAMPLE_SIZE
-            for label, ids in (("owned-but-unscoped", owned_ids), ("scoped-but-ownerless", scoped_ids)):
+            # DUAL (a28, audit F-8 / amendment 29): ``len(ids) in stated`` (the count anywhere in the reason)
+            # is
+            # RE-KEYED to the count INSIDE its own clause — a build that SWAPS the two halves' counts passed
+            # the old
+            # assertion (measured: a28 wrong build M10). Virtue kept: the TRUE count of each half is stated.
+            for label, ids, marker in (
+                ("owned-but-unscoped", owned_ids, "carry an owner but no scope"),
+                ("scoped-but-ownerless", scoped_ids, "carry a scope but no owner"),
+            ):
                 if not ids:
                     continue
-                assert len(ids) in stated, (
-                    f"{halves}: the TRUE count of {label} messages ({len(ids)}) must be stated: {reason!r}"
+                assert len(ids) in stated and a28._clause_count(reason, marker) == len(ids), (
+                    f"{halves}: the TRUE count of {label} messages ({len(ids)}) must be stated INSIDE its "
+                    f"own clause ({marker!r}) — audit F-8: {reason!r}"
                 )
                 assert _named(reason, ids) == min(bound, len(ids)), (
                     f"{halves}: EXACTLY min({bound}, {len(ids)}) {label} rows must be named, got "
@@ -546,66 +599,16 @@ class TestBackfilledIsTheRowsStamped63cIAa19b:
 
 
 # =========================================================================== #
-# AUTHORED — door #4b (amendment 24 §2): the race's created-only compensation FAILS (its delete raises). The
-# registry's teaching SURVIVES verbatim (same class, same text — N8, the delete error replacing it, is
-# rejected) and ONE appended line names the left-behind keep and its remedy (``lore-adm delete-keep``), so the
-# ruled re-open trigger — "a failed compensation observed" — is observable by the one reader who can act.
+# DUAL (a28, amendment 28 §F-1 + Addendum (3) — DELETED):
+# ``TestAFailedCompensationIsNamedToTheCaller63cIAa19b::
+# test_a_FAILED_compensation_serves_the_teaching_plus_ONE_remedy_line`` (door #4b: a FAILED created-only
+# compensation serves the registry's teaching + ONE appended "LEFT BEHIND … `lore-adm delete-keep`" line).
+# Virtues, adjudicated: (a) "the registry's teaching survives verbatim, same class" — PRESERVED-with-pin, now
+# by
+# construction (KP4 above + the a28 sequential race pin's served==registry assertion); (b) "the appended
+# remedy
+# line names the left-behind keep" — DROPPED deliberately: the mechanism is removed (nothing deletes, so
+# nothing
+# is left behind by a FAILED delete — amendment 28 §F-1; the cold audit's F-5 / F-7 on this line are MOOT);
+# (c) "the delete was attempted" — INVERTED: the register path never calls ``delete_keep`` (a28 RS-2 spy).
 # =========================================================================== #
-
-
-class TestAFailedCompensationIsNamedToTheCaller63cIAa19b:
-    async def test_a_FAILED_compensation_serves_the_teaching_plus_ONE_remedy_line(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-    ) -> None:
-        """⚠ RED at ``84af63f`` (no compensation at all: the teaching is served bare, the keep silently left).
-        SP4's construction (adversary a19a §A.3): a conflicting register injected after the real mint, and the
-        compensation's ``delete_keep`` patched to raise. The served error: the registry's own class; its text
-        STARTS WITH the registry's teaching byte-for-byte; what follows is exactly ONE newline-separated line
-        naming the left-behind keep's id and ``lore-adm delete-keep``. The keep IS left behind (the stated
-        bound), and the delete WAS attempted (the compensation path ran)."""
-        from loremaster.keeps import KeepStoreError  # noqa: PLC0415 - scaffold-local
-
-        async with credentialed_app_context(
-            monkeypatch, tmp_path, principals={"alice": "member"}, dim=_DIM
-        ) as world:
-            ctx, admin_conn = world["ctx"], world["admin_conn"]
-            world["holder"]["email"] = world["emails"]["alice"]
-            session = "wave-comp-fail"
-            deletes = {"count": 0}
-
-            async def conflicting_register() -> None:
-                await ctx.agent_registry.register("raced-agent", session=session, role="scout")
-
-            async def failing_delete(*_args: Any, **_kwargs: Any) -> None:
-                deletes["count"] += 1
-                raise KeepStoreError("injected: the compensation's delete failed")
-
-            a19a._spy_the_mint(monkeypatch, ctx, after_real=conflicting_register)
-            monkeypatch.setattr(ctx._keep_store, "delete_keep", failing_delete)
-            with pytest.raises(AgentRegistryError) as caught:
-                await ctx.comms(action="register", agent="raced-agent", session=session, role="builder")
-            with pytest.raises(AgentRegistryError) as direct:
-                await ctx.agent_registry.register("raced-agent", session=session, role="builder")
-            left = await run(admin_conn, f"SELECT VALUE id FROM keep WHERE key = 'session:{session}'")
-            assert deletes["count"] >= 1, (
-                "the compensation never ATTEMPTED the delete — the failure was not reached"
-            )
-            assert len(left) == 1, f"the failed compensation must leave the keep behind (the bound): {left!r}"
-            served, teaching = str(caught.value), str(direct.value)
-            assert type(caught.value) is type(direct.value), (
-                "the served refusal must be the registry's own class (N8 — the delete error replacing the "
-                f"teaching — is rejected): served={caught.value!r} registry={direct.value!r}"
-            )
-            assert served.startswith(teaching), (
-                f"the registry's teaching must SURVIVE verbatim at the head:\n  served={served!r}\n  "
-                f"teaching={teaching!r}"
-            )
-            appended = served[len(teaching) :]
-            assert appended.startswith("\n") and appended.count("\n") == 1 and appended.strip(), (
-                f"exactly ONE appended line must follow the teaching: {appended!r}"
-            )
-            keep_bare = _bare(left[0])
-            assert keep_bare in appended and "lore-adm delete-keep" in appended, (
-                f"the appended line must name the left-behind keep ({keep_bare}) and its remedy "
-                f"(`lore-adm delete-keep`): {appended!r}"
-            )
