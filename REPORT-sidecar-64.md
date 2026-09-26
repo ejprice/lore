@@ -126,3 +126,22 @@ brief project v7 read
 - **Filed #489** (P58 entry check 4): the cross-module guarded-append DRY item, home `loremaster.store`,
   trigger "the third ledger that needs a guarded append".
 - **Graded:** `f4511ef` · HEAD-at-report: `c8d3241` · DIFFERENT (1 ahead — my own commit). Standing by.
+
+## Task 5 (2026-09-26) — 64b split rulings: amendment 3 committed `aea2a9d`
+
+- **state:** done — `docs/design/2026-09-26-packet64-amendment-3.md`. **D-1b = Reading A:** 64b-i flips
+  the 7 write verbs + `set_scope`; `query`/`get`/`chain_head` flip in 64b-ii WITH their filter (ii-a §4's
+  letter; B would have `query` deny without a capability and serve unfiltered with one). Interim (the
+  ii-a shape, reused): the tool gains `capability=` in 64b-i; on a read verb it is a FOREIGN param with the
+  strict-param teaching, never accepted-and-ignored nor resolved-and-unused; 64b-ii inverts that pin. The
+  F5 retirement is wholly write-side in 64b-i (reads never carried the args); read handlers do nothing
+  for F5 until 64b-ii. **D-3:** build the instrument — a one-shot `probe-64` writes
+  `scripts/restore_prod_dump.py` NOW (endpoint `:18000` by construction, a minted `test_dump_` DB,
+  governed-slice extraction of the `surreal export` by its `-- TABLE:` sections, `POST /import` per the
+  vendor doc, read-back receipts, a self-test with precision/recall/missing-section controls); the S2 leg
+  is marker-gated on `LORE_PROD_DUMP_DB` and RUNS at 64b-i's and 64a's close-outs and 65's dress
+  rehearsal — a close-out without its receipt is `done-with-deviations`.
+- **Facts:** `/backups/lore/` holds two pre-63 full dumps (2.7 GB / 3.6 GB); no host `surreal` binary;
+  the store image ships `/surreal` 3.2.4; the vendor documents `POST /import`; 63a's migration module
+  promised the script and no wave wrote it.
+- **Graded:** `6a09954` (the contract report) · HEAD-at-report: `aea2a9d` · DIFFERENT (my own commits). Standing by.
