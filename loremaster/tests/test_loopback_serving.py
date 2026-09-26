@@ -40,6 +40,22 @@ HOW EACH CAUSE IS CONSTRUCTED (every one probed on this box 2026-09-26, Linux 6.
 
 ⚠ Present-tense dating: "the helper does not exist" / "RED" is dated to HEAD ``1206233``. A reader
 retrieving this after the build must re-derive.
+
+DELTA d1 (author ``contract-466-d1``; the Phase-5 audit's findings, REPORT-refactor-466.md §1/§2)
+------------------------------------------------------------------------------------------------
+* **F1** — an UNEXPECTED ``BaseException`` in the startup wait (KeyboardInterrupt, a pytest-timeout
+  signal-method exception) propagates UNCHANGED, and the abandoned start leaves nothing behind: no
+  logging handler attached anywhere, and no server thread left serving the held socket. Injected
+  receiver-blind — a ``SIGALRM`` handler raising in the main thread mid-wait, the exact door
+  pytest-timeout's signal method uses — so the pin does not depend on HOW the helper waits.
+* **F2** — a lifespan SHUTDOWN that overruns its budget is LOUD (trust doctrine): a clean ``with`` exit
+  raises ``ServerShutdownTimeout`` naming ``host:port`` (budget: ``serve_asgi(shutdown_timeout_s=…)``,
+  default ``DEFAULT_SHUTDOWN_TIMEOUT_S``); a body ALREADY raising keeps its own exception (never masked)
+  and carries the overrun as a PEP 678 note naming ``host:port``.
+* **C2** — the bind spy's premise (asyncio binds through the Python ``socket.socket.bind``) is PINNED,
+  not assumed: uvloop is absent and the served app runs on a stdlib asyncio loop.
+RED dating for d1: every d1 pin is dated to ``43b8d16`` (== ``e6e17d8`` for the helper); see
+REPORT-contract-466-d1.md for the declared RED set and its reasons.
 """
 
 from __future__ import annotations
@@ -49,6 +65,9 @@ import asyncio
 import contextlib
 import errno
 import http.server
+import importlib.util
+import logging
+import signal
 import socket
 import threading
 import time
@@ -60,10 +79,12 @@ from typing import Any
 import httpx
 import pytest
 from loremaster.testing.loopback import (
+    DEFAULT_SHUTDOWN_TIMEOUT_S,
     DEFAULT_STARTUP_TIMEOUT_S,
     LOOPBACK_HOST,
     LoopbackPort,
     ServerBindError,
+    ServerShutdownTimeout,
     ServerStartError,
     ServerStartupTimeout,
     ServerThreadCrashed,
@@ -96,6 +117,20 @@ CONCURRENT_PORTS = 16
 RELEASE_BOUND_S = 2.0
 HTTP_TIMEOUT_S = 5.0
 HTTP_OK = 200
+# d1/F1: when the injected interrupt lands — well after the server thread started (startup takes ms) and
+# well inside the startup budget (CRASH_TEST_STARTUP_BUDGET_S), so it can only land IN the wait.
+INTERRUPT_AFTER_S = 0.3
+# d1/F1: how long an abandoned server thread may take to END once its blocked lifespan is released.
+THREAD_END_BOUND_S = 5.0
+# d1/F2: a deliberately short shutdown budget, and how long beyond it the helper may take to give up.
+# SHORT + GRACE must stay BELOW DEFAULT_SHUTDOWN_TIMEOUT_S, or a build that ignores the passed budget and
+# joins for the default passes the elapsed bound (pinned in the test, not left to arithmetic luck).
+SHORT_SHUTDOWN_BUDGET_S = 0.5
+SHUTDOWN_GIVE_UP_GRACE_S = 2.0
+# d1/F2 positive control: a slow-but-within-budget shutdown must NOT raise.
+SLOW_SHUTDOWN_S = 0.3
+# d1/F2: the sentinel a failing ``with`` body raises — it must survive the overrun unmasked.
+BODY_FAILURE_SENTINEL = "the test's own assertion failed — d1-body-sentinel-466"
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -185,6 +220,10 @@ class _RecordingApp:
     ``startup_gate`` (optional) blocks lifespan startup until set — the never-completes fixture.
     ``startup_delay_s`` delays startup completion — the slow-but-in-budget fixture.
     ``events`` records ``startup`` / ``shutdown`` so a test can prove teardown ran.
+    (d1) ``shutdown_gate`` / ``shutdown_delay_s`` are the same two shapes for lifespan SHUTDOWN — the
+    hanging-teardown fixture (a store/watcher close that never returns) and its in-budget control.
+    (d1) ``loop_classes`` records the event-loop class every HTTP request was served on (C2's premise).
+    Every d1 addition defaults to "absent", so the fixtures the original pins build are unchanged.
     """
 
     def __init__(
@@ -193,11 +232,16 @@ class _RecordingApp:
         *,
         startup_delay_s: float = 0.0,
         startup_gate: threading.Event | None = None,
+        shutdown_delay_s: float = 0.0,
+        shutdown_gate: threading.Event | None = None,
     ) -> None:
         self.identity = identity
         self.startup_delay_s = startup_delay_s
         self.startup_gate = startup_gate
+        self.shutdown_delay_s = shutdown_delay_s
+        self.shutdown_gate = shutdown_gate
         self.events: list[str] = []
+        self.loop_classes: list[type] = []
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] == "lifespan":
@@ -212,10 +256,16 @@ class _RecordingApp:
                     self.events.append("startup")
                     await send({"type": "lifespan.startup.complete"})
                 elif message["type"] == "lifespan.shutdown":
+                    if self.shutdown_gate is not None:
+                        while not self.shutdown_gate.is_set():
+                            await asyncio.sleep(0.05)
+                    if self.shutdown_delay_s:
+                        await asyncio.sleep(self.shutdown_delay_s)
                     self.events.append("shutdown")
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         elif scope["type"] == "http":
+            self.loop_classes.append(type(asyncio.get_running_loop()))
             body = self.identity.encode("utf-8")
             await send(
                 {
@@ -590,3 +640,290 @@ class TestServeHttp:
             assert _get(served.base_url).status_code == HTTP_OK
         assert addresses, "no bind observed during serve_http — the spy certifies nothing"
         assert [address for address in addresses if address[1] != 0] == [], addresses
+
+
+# ============================================================================================= #
+# DELTA d1 — probes. Each is receiver-blind: it observes an OUTCOME over the whole process, never
+# a named attribute of the helper, so the pins survive any correct restructuring of the helper.
+# ============================================================================================= #
+class _InjectedInterrupt(BaseException):
+    """An exception that is NOT an ``Exception`` — the shape of pytest-timeout's signal-method failure
+    (``pytest.fail`` → ``Failed``, a ``BaseException``) and of ``KeyboardInterrupt``. A cleanup written
+    as ``except Exception`` does not see it; that is the wrong build this type exists to catch."""
+
+
+class _BodyFailure(Exception):
+    """A test body's own failure raised inside ``serve_asgi`` — F2's must-not-be-masked exception."""
+
+
+@contextlib.contextmanager
+def _interrupt_main_thread_after(
+    delay_s: float, make_error: type[BaseException]
+) -> Iterator[list[BaseException]]:
+    """Raise ``make_error()`` in the MAIN thread ``delay_s`` from now, from a ``SIGALRM`` handler.
+
+    This is the real door F1 names: pytest-timeout's signal method and Ctrl-C both raise from a signal
+    handler at whatever bytecode the main thread is executing — here, the helper's startup wait,
+    whatever primitive that wait uses (a join, an ``Event.wait``, a ``sleep``: all are interruptible on
+    POSIX). Yields the list the raised instance is recorded in, so the caller can prove it FIRED and
+    that the propagated exception is that very object. The timer and the previous handler are restored
+    however the block ends.
+    """
+    assert threading.current_thread() is threading.main_thread(), (
+        "signal injection needs the MAIN thread (signal.signal raises elsewhere) — the probe cannot run "
+        "here, so the pin would certify nothing"
+    )
+    raised: list[BaseException] = []
+
+    def _raise(_signum: int, _frame: object) -> None:
+        error = make_error()
+        raised.append(error)
+        raise error
+
+    previous = signal.signal(signal.SIGALRM, _raise)
+    signal.setitimer(signal.ITIMER_REAL, delay_s)
+    try:
+        yield raised
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def _attached_logging_handlers() -> dict[str, tuple[logging.Handler, ...]]:
+    """Every logger in the process that has handlers → those handlers (root included).
+
+    Receiver-blind: a helper that leaks a handler onto ANY logger (``uvicorn.error`` today, whatever it
+    uses tomorrow) changes this snapshot.
+    """
+    loggers: dict[str, logging.Logger] = {"<root>": logging.getLogger()}
+    for name, candidate in list(logging.Logger.manager.loggerDict.items()):
+        if isinstance(candidate, logging.Logger):
+            loggers[name] = candidate
+    return {name: tuple(logger.handlers) for name, logger in loggers.items() if logger.handlers}
+
+
+def _threads_still_alive_after(started_before: set[threading.Thread], bound_s: float) -> list[str]:
+    """Poll up to ``bound_s`` for every thread NOT in ``started_before`` to end; return the survivors'
+    names (empty = every thread the block started has ended). Receiver-blind: it needs no handle on the
+    helper's thread."""
+    deadline = time.monotonic() + bound_s
+    while True:
+        survivors = [
+            thread.name
+            for thread in threading.enumerate()
+            if thread not in started_before and thread.is_alive()
+        ]
+        if not survivors or time.monotonic() >= deadline:
+            return survivors
+        time.sleep(0.05)
+
+
+# ============================================================================================= #
+# d1/F1 — an unexpected BaseException in the startup wait: propagated unchanged, nothing left behind.
+# ============================================================================================= #
+_UNEXPECTED_INTERRUPTS = [
+    pytest.param(_InjectedInterrupt, id="pytest-timeout-shaped-BaseException"),
+    pytest.param(KeyboardInterrupt, id="KeyboardInterrupt"),
+]
+
+
+class TestAnInterruptedStartupLeavesNothingBehind:
+    """F1 (REPORT-refactor-466.md §1): the helper cleans up on its two NAMED start failures; this pins
+    the same outcome for ANY exception that interrupts the startup wait. The lifespan is held blocked
+    (never completes) so the interrupt can only land IN the wait; it is released afterwards so an
+    abandoned thread CAN end."""
+
+    @pytest.mark.parametrize("interrupt", _UNEXPECTED_INTERRUPTS)
+    def test_the_interrupt_propagates_unchanged_and_no_logging_handler_is_left_attached(
+        self, interrupt: type[BaseException]
+    ) -> None:
+        gate = threading.Event()
+        app = _RecordingApp("interrupted-466", startup_gate=gate)
+        handlers_before = _attached_logging_handlers()
+        threads_before = set(threading.enumerate())
+        try:
+            with _interrupt_main_thread_after(INTERRUPT_AFTER_S, interrupt) as raised:
+                with pytest.raises(interrupt) as excinfo:
+                    with serve_asgi(app, startup_timeout_s=CRASH_TEST_STARTUP_BUDGET_S):
+                        pytest.fail("a server whose lifespan never completed was reported started")
+            # Non-vacuity: the injection FIRED exactly once, and what came out is THAT object — not a
+            # ServerStartError wrapping it, not a re-raised copy, not a later cleanup error.
+            assert len(raised) == 1, f"the interrupt fired {len(raised)} times — the probe is broken"
+            assert excinfo.value is raised[0], (
+                f"the helper replaced the interrupt with {excinfo.value!r} — it must propagate UNCHANGED"
+            )
+            # The process-global logging state is exactly what it was: an abandoned start that leaves a
+            # handler attached captures (and holds) every later uvicorn error in the process.
+            assert _attached_logging_handlers() == handlers_before, (
+                "the interrupted start left a logging handler attached — cleanup ran only on the named "
+                f"failures: before={handlers_before} after={_attached_logging_handlers()}"
+            )
+        finally:
+            gate.set()
+        survivors = _threads_still_alive_after(threads_before, THREAD_END_BOUND_S)
+        assert survivors == [], f"the abandoned server thread(s) never ended: {survivors}"
+
+    @pytest.mark.parametrize("interrupt", _UNEXPECTED_INTERRUPTS)
+    def test_a_passed_port_is_not_served_after_the_interrupted_start(
+        self, interrupt: type[BaseException]
+    ) -> None:
+        # The sharp form of F1: the CALLER still holds the port, so nothing else closes the socket. A
+        # build that does not abandon the start leaves uvicorn running on it — once the lifespan is
+        # released it SERVES the caller's socket forever from a thread nobody can stop.
+        gate = threading.Event()
+        app = _RecordingApp("interrupted-passed-466", startup_gate=gate)
+        handlers_before = _attached_logging_handlers()
+        threads_before = set(threading.enumerate())
+        with LoopbackPort() as held:
+            try:
+                with _interrupt_main_thread_after(INTERRUPT_AFTER_S, interrupt) as raised:
+                    with pytest.raises(interrupt) as excinfo:
+                        with serve_asgi(app, port=held, startup_timeout_s=CRASH_TEST_STARTUP_BUDGET_S):
+                            pytest.fail("a server whose lifespan never completed was reported started")
+                assert len(raised) == 1 and excinfo.value is raised[0]
+            finally:
+                gate.set()
+            survivors = _threads_still_alive_after(threads_before, THREAD_END_BOUND_S)
+            assert survivors == [], (
+                f"the interrupted start left server thread(s) running on the caller's held port: {survivors}"
+            )
+            assert _connect_is_refused(held.host, held.port), (
+                f"{held.host}:{held.port} ACCEPTS connections after the interrupted start — a server came "
+                "up on the caller's socket that nobody started"
+            )
+        assert _attached_logging_handlers() == handlers_before
+
+
+# ============================================================================================= #
+# d1/F2 — a lifespan shutdown that overruns its budget is LOUD, never silent, never masking.
+# ============================================================================================= #
+class TestAShutdownOverrunIsLoud:
+    """F2 (REPORT-refactor-466.md §1, trust doctrine "failures are LOUD"): exit used to join the server
+    thread for a fixed budget and return whether or not it finished — a lifespan teardown that hangs
+    (the store / watcher close in the wire harness) passed as a GREEN test. The decision (d1 report §F2):
+    a clean exit RAISES ``ServerShutdownTimeout``; an exit already carrying the body's exception keeps
+    that exception (the test's own failure is the headline) and adds the overrun as a note."""
+
+    def test_the_shutdown_error_is_its_own_runtime_error_not_a_start_failure(self) -> None:
+        # An ``except ServerStartError`` (a start-retry) must never swallow a teardown overrun.
+        assert issubclass(ServerShutdownTimeout, RuntimeError)
+        assert not issubclass(ServerShutdownTimeout, ServerStartError)
+        # Existence + sanity only; the VALUE is measure-then-tune, like the startup budget.
+        assert isinstance(DEFAULT_SHUTDOWN_TIMEOUT_S, float | int)
+        assert 0 < DEFAULT_SHUTDOWN_TIMEOUT_S < float("inf")
+
+    def test_a_clean_exit_whose_shutdown_hangs_raises_naming_the_address(self) -> None:
+        # Fixture discrimination (arithmetic alignment, CLAUDE.md FIXTURES MUST DISCRIMINATE): the upper
+        # elapsed bound must exclude a build that joins for the DEFAULT instead of the passed budget.
+        assert SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S < DEFAULT_SHUTDOWN_TIMEOUT_S, (
+            "lower SHORT_SHUTDOWN_BUDGET_S / SHUTDOWN_GIVE_UP_GRACE_S: with the default this low, a build "
+            "that ignores shutdown_timeout_s is indistinguishable by elapsed time"
+        )
+        gate = threading.Event()
+        app = _RecordingApp("hanging-teardown-466", shutdown_gate=gate)
+        handlers_before = _attached_logging_handlers()
+        try:
+            with pytest.raises(ServerShutdownTimeout) as excinfo:
+                with serve_asgi(app, shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S) as served:
+                    assert _get(served.base_url).status_code == HTTP_OK
+                    exit_started = time.monotonic()
+            elapsed = time.monotonic() - exit_started
+            error = excinfo.value
+            assert type(error) is ServerShutdownTimeout
+            assert (error.host, error.port) == (served.host, served.port)
+            message = str(error)
+            assert f"{served.host}:{served.port}" in message, (
+                f"the overrun does not name the address: {message}"
+            )
+            assert "shutdown" in message.lower(), f"the overrun does not say it was the shutdown: {message}"
+            # The budget that expired travels as data (like ServerStartupTimeout.startup_timeout_s).
+            assert error.shutdown_timeout_s == SHORT_SHUTDOWN_BUDGET_S
+            # Not early (it gave the teardown its budget) and not stuck (it did not wait for the hang).
+            assert (
+                SHORT_SHUTDOWN_BUDGET_S * 0.9 <= elapsed <= SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S
+            ), f"exit took {elapsed:.2f}s against a {SHORT_SHUTDOWN_BUDGET_S}s budget"
+            # Lifecycle still completes around the raise: nothing left attached, the port released.
+            assert _attached_logging_handlers() == handlers_before
+            assert _becomes_refused(served.host, served.port), "the port still accepts after the overrun"
+        finally:
+            gate.set()
+        # The hang WAS the teardown: once released it completes (asynchronously — the lifespan polls the
+        # gate every 50 ms, so wait for it rather than read the list at the instant of release).
+        deadline = time.monotonic() + THREAD_END_BOUND_S
+        while app.events != ["startup", "shutdown"] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert app.events == ["startup", "shutdown"], app.events
+
+    def test_a_failing_body_keeps_its_own_exception_and_carries_the_overrun_as_a_note(self) -> None:
+        # Never mask: the test's own failure is what the reader must see first. The overrun still travels
+        # WITH it (PEP 678 ``add_note`` — rendered by pytest under the traceback), naming the address.
+        gate = threading.Event()
+        app = _RecordingApp("hanging-teardown-failing-body-466", shutdown_gate=gate)
+        body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        try:
+            with pytest.raises(_BodyFailure) as excinfo:
+                with serve_asgi(app, shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S) as served:
+                    exit_started = time.monotonic()
+                    raise body_failure
+            elapsed = time.monotonic() - exit_started
+            assert excinfo.value is body_failure, (
+                f"the body's own exception was replaced by {excinfo.value!r} — the overrun MASKED it"
+            )
+            notes = "\n".join(getattr(body_failure, "__notes__", []))
+            assert f"{served.host}:{served.port}" in notes and "shutdown" in notes.lower(), (
+                f"the overrun is SILENT on the failing path — no note naming the address: {notes!r}"
+            )
+            assert elapsed <= SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S, elapsed
+        finally:
+            gate.set()
+
+    def test_positive_control_a_slow_in_budget_shutdown_does_not_raise(self) -> None:
+        # Without this, "raises on overrun" could be a helper that raises on EVERY exit.
+        app = _RecordingApp("slow-teardown-466", shutdown_delay_s=SLOW_SHUTDOWN_S)
+        with serve_asgi(app, shutdown_timeout_s=GENEROUS_STARTUP_BUDGET_S) as served:
+            assert _get(served.base_url).status_code == HTTP_OK
+        assert app.events == ["startup", "shutdown"], app.events
+
+    def test_positive_control_a_failing_body_with_a_prompt_shutdown_gets_no_note(self) -> None:
+        # The note is evidence of an overrun, not decoration on every failure.
+        body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        with pytest.raises(_BodyFailure):
+            with serve_asgi(_RecordingApp("prompt-teardown-466")):
+                raise body_failure
+        assert getattr(body_failure, "__notes__", []) == []
+
+
+# ============================================================================================= #
+# d1/C2 — the bind spy's premise, PINNED (it used to be a docstring sentence).
+# ============================================================================================= #
+class TestTheBindSpyPremiseHolds:
+    """C2 (REPORT-refactor-466.md §2): ``_spy_on_every_bind`` sees a bind only if it goes through the
+    Python ``socket.socket.bind`` — true for asyncio's ``create_server``, UNVERIFIED for uvloop (which
+    binds in libuv). uvicorn's default ``loop="auto"`` would switch to uvloop the day it is installed
+    (``uvicorn[standard]`` pulls it in), silently blinding every no-specific-port pin.
+
+    Decision (d1 report §C2): PIN THE PREMISE rather than force ``loop="asyncio"`` in the helper —
+    production ``LoreServer`` runs uvicorn on the default ``"auto"`` loop, so forcing asyncio in the test
+    helper would make the wire harness test a loop production would no longer run (THE TEST ENVIRONMENT
+    IS A FICTION, #131). The day this reddens, decide deliberately: verify the spy under uvloop, or force
+    the loop in BOTH places."""
+
+    _REOPEN = (
+        "RE-OPEN (#466 C2): uvloop is now importable. uvicorn's loop='auto' will serve on it, and "
+        "`_spy_on_every_bind` may no longer see uvicorn's binds (libuv binds in C), so the "
+        "no-specific-port pins can pass BLIND. Verify the spy under uvloop, or force loop='asyncio' in "
+        "BOTH loremaster.testing.loopback and LoreServer — then update this pin and say so."
+    )
+
+    def test_uvloop_is_not_installed(self) -> None:
+        assert importlib.util.find_spec("uvloop") is None, self._REOPEN
+
+    def test_the_served_app_runs_on_a_stdlib_asyncio_loop(self) -> None:
+        # The premise stated behaviourally, so any door to a non-stdlib loop (an extra, a policy, a
+        # plugin) reddens it — not only the one ``find_spec`` can see.
+        app = _RecordingApp("loop-premise-466")
+        with serve_asgi(app) as served:
+            assert _get(served.base_url).status_code == HTTP_OK
+        assert app.loop_classes, "no request was recorded — the premise probe saw nothing"
+        foreign = [cls for cls in app.loop_classes if cls.__module__.split(".")[0] != "asyncio"]
+        assert foreign == [], f"{self._REOPEN}\nserved on: {foreign}"

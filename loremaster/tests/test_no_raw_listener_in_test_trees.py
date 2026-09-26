@@ -50,16 +50,34 @@ longer name list.
 ⚠ Present-tense dating: the RED set named in each docstring is dated to HEAD ``1206233``. After the
 helper lands and the three test files + the spike are migrated, the offender set is EMPTY — the pin
 doing its job.
+
+DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §2 C1/C3)
+----------------------------------------------------------------------
+* **C1** — ``_CONTRACT_FILES`` gets the dead-entry pin ``_EXEMPT_SITES`` already had: every entry must be a
+  file the scan actually reads, or a rename silently lets the renamed contract file vouch for its tree.
+* **C3** — aiohttp is INSTALLED and its listeners (``web.run_app`` / ``web.TCPSite`` / ``UnixSite`` /
+  ``test_utils.TestServer``, and ``test_utils.unused_port`` — #466's own bind→close→number race, shipped
+  inside a dependency) are honest-developer doors the namespace deny-list cannot see. Pinned by planted
+  spellings with honest aiohttp CLIENT/handler look-alikes as the over-breadth control.
+* **C3 reach** — the deny-list's blind spot is a hidden constant ("which server libraries exist"), so it
+  is DERIVED: every installed distribution that a test tree IMPORTS and whose own source calls a
+  listener verb is server-capable, and must carry a planted spelling the detector flags. The day a test
+  first imports a new server library, this reddens and names it. Bound: see
+  :class:`TestTheServerCapableDependenciesAreDerived`.
 """
 
 from __future__ import annotations
 
 import ast
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
+import pytest
 from _logging_fixtures import _workspace_root, assert_scan_reached_every_member, parse_production_trees
+from packaging.utils import canonicalize_name  # PEP 503 names; packaging is a hard dependency of pytest
 
 # Every callable reached through these modules opens (or configures) a listener.
 _LISTENER_NAMESPACES = ("socketserver", "http.server", "uvicorn", "wsgiref.simple_server")
@@ -80,6 +98,32 @@ _CONTRACT_FILES = frozenset(
 _ADOPTING_TREES = ("loremaster/tests", "skills/lore-deploy/tests")
 # A conservative floor far below the real count (314 *.py under testpaths at 1206233).
 _TEST_TREE_FILE_FLOOR = 150
+
+# d1/C3 reach — the INDEPENDENT oracle for "this dependency can open a listener": a call, anywhere in its
+# own source, to one of these verbs (asyncio's four + anyio's two). Deliberately NOT the detector's
+# ``_LISTENER_METHODS`` — deriving reach from the thing whose reach it checks would be derived == derived.
+_DEPENDENCY_LISTENER_VERBS = frozenset(
+    {
+        "create_server",
+        "create_unix_server",
+        "start_server",
+        "start_unix_server",
+        "create_tcp_listener",
+        "create_unix_listener",
+    }
+)
+# d1/C3 reach — every server-capable distribution a test tree imports → an honest listener spelling of
+# it that the detector MUST flag. Keys are canonical distribution names (PEP 503). The derived set must
+# EQUAL these keys: a missing key is a server library the guard has never been shown; an extra key is a
+# dead entry. Derived at 43b8d16: {anyio, uvicorn} (d1 report §C3, measured).
+_PLANTED_BY_SERVER_DISTRIBUTION: dict[str, str] = {
+    "uvicorn": "import uvicorn\ndef serve(app, port):\n    uvicorn.run(app, host='127.0.0.1', port=port)\n",
+    "anyio": (
+        "import anyio\n"
+        "async def serve(port):\n"
+        "    await anyio.create_tcp_listener(local_host='127.0.0.1', local_port=port)\n"
+    ),
+}
 
 # (repo-relative file, enclosing function qualname) → evidence-backed reason + re-open trigger.
 _EXEMPT_SITES: dict[tuple[str, str], str] = {
@@ -438,3 +482,205 @@ class TestKnownBoundLibraryInternalListeners:
             "this is a KNOWN BOUND (#466 contract): the detector now flags a production entry point that "
             "binds internally. If that was deliberate, delete this pin and record it."
         )
+
+
+# ============================================================================================= #
+# DELTA d1 — C1: _CONTRACT_FILES is held live, like _EXEMPT_SITES.
+# ============================================================================================= #
+def _stale_entries(entries: Iterable[str], scanned_paths: Iterable[str]) -> list[str]:
+    """The entries that name NO file the scan read — each one excludes nothing, silently."""
+    scanned = set(scanned_paths)
+    return sorted(entry for entry in entries if entry not in scanned)
+
+
+class TestTheContractFileExclusionIsLive:
+    """C1 (REPORT-refactor-466.md §2): ``test_both_trees_adopt_the_helper`` excludes ``_CONTRACT_FILES`` so
+    the contract cannot vouch for a tree. Rename a contract file and its stale entry excludes nothing —
+    the renamed file then counts as its tree's adopter, and the adoption pin stays GREEN even if every
+    real adopter regressed. Green at birth by design (no entry is stale at 43b8d16); it is proven by
+    mutation (d1 report §C1) and by the planted control below."""
+
+    def test_every_contract_file_entry_is_a_scanned_test_tree_file(self) -> None:
+        stale = _stale_entries(_CONTRACT_FILES, _test_tree_scan())
+        assert stale == [], (
+            f"these _CONTRACT_FILES entries name no scanned test-tree file — renamed or moved? A stale "
+            f"entry lets the contract's own file vouch for its tree. Update them: {stale}"
+        )
+
+    def test_positive_control_a_planted_stale_entry_is_reported(self) -> None:
+        # The SAME function the live pin uses, fed a known-stale entry: without this, a checker that
+        # returns [] for everything would make the live pin green forever.
+        scanned = {
+            "loremaster/tests/test_loopback_serving.py",
+            "skills/lore-deploy/tests/test_loopback_home.py",
+        }
+        renamed = "loremaster/tests/test_loopback_serving_renamed.py"
+        assert _stale_entries(set(scanned) | {renamed}, scanned) == [renamed]
+        assert _stale_entries(scanned, scanned) == []
+
+
+# ============================================================================================= #
+# DELTA d1 — C3: aiohttp's listeners are seen; its clients and handlers are not.
+# ============================================================================================= #
+class TestTheDetectorSeesAiohttpListeners:
+    """C3 (REPORT-refactor-466.md §2): aiohttp is installed (measured 2026-09-26) and absent from the
+    listener namespaces. An honest ``web.run_app(app, port=…)`` or ``TCPSite`` in a test opens a listener
+    with no ``.bind`` and no asyncio verb in OUR source, so the guard is blind to it — in-model by the
+    guard's own threat model. ``unused_port()`` is #466's race itself (bind → read → CLOSE → hand back a
+    number), shipped by aiohttp. RED at 43b8d16: no line below is flagged."""
+
+    _PLANTED = (
+        "import aiohttp\n"  # 1
+        "from aiohttp import web\n"  # 2
+        "from aiohttp.test_utils import TestServer, unused_port\n"  # 3
+        "async def servers(app, runner, port, path):\n"  # 4
+        "    web.run_app(app, host='127.0.0.1', port=port)\n"  # 5 ← the one-call server
+        "    web.TCPSite(runner, '127.0.0.1', port)\n"  # 6 ← the runner/site server
+        "    aiohttp.web.UnixSite(runner, path)\n"  # 7 ← fully-qualified spelling
+        "    TestServer(app, port=port)\n"  # 8 ← aiohttp's own test server
+        "    unused_port()\n"  # 9 ← the close→rebind race, from a dependency
+    )
+    _FLAGGED_LINES = [5, 6, 7, 8, 9]
+
+    # aiohttp is mostly a CLIENT library; flagging its client or its handler vocabulary would refuse
+    # honest code, and a gate that refuses honest code gets switched off. (``AppRunner`` / ``SockSite``
+    # are deliberately in NEITHER list: a runner opens nothing until a site starts, and a SockSite needs
+    # a socket whose bind is already flagged — the contract does not rule on them.)
+    _HONEST = (
+        "import aiohttp\n"
+        "from aiohttp import web\n"
+        "async def clients_and_handlers(url, payload):\n"
+        "    async with aiohttp.ClientSession() as session:\n"
+        "        await session.get(url)\n"
+        "    web.Application()\n"
+        "    web.Response(text='ok')\n"
+        "    web.json_response(payload)\n"
+    )
+
+    def test_every_planted_aiohttp_listener_is_flagged_on_its_line(self) -> None:
+        flagged = sorted({site.lineno for site in listener_sites(ast.parse(self._PLANTED), "PLANTED.py")})
+        assert flagged == self._FLAGGED_LINES, (
+            f"flagged lines {flagged} != expected {self._FLAGGED_LINES} — aiohttp listeners get back into "
+            "the test trees through the unflagged lines"
+        )
+
+    def test_honest_aiohttp_clients_and_handlers_are_not_flagged(self) -> None:
+        sites = listener_sites(ast.parse(self._HONEST), "HONEST.py")
+        assert sites == [], (
+            "the detector flagged an aiohttp CLIENT or HANDLER call — over-broad (a whole-namespace "
+            f"`aiohttp` entry?): {[site.render() for site in sites]}"
+        )
+
+
+# ============================================================================================= #
+# DELTA d1 — C3 reach: which server libraries exist is DERIVED, not remembered.
+# ============================================================================================= #
+def _imported_top_level_modules(trees: dict[str, ast.Module]) -> set[str]:
+    """Every absolute top-level module any of ``trees`` imports — read off :func:`_import_aliases`, the
+    SAME import resolution the detector uses, so the two cannot disagree about what a file imports."""
+    return {dotted.split(".", 1)[0] for tree in trees.values() for dotted in _import_aliases(tree).values()}
+
+
+def _calls_a_listener_verb(source: bytes) -> bool:
+    """True iff ``source`` calls one of :data:`_DEPENDENCY_LISTENER_VERBS` (on any receiver).
+
+    A bytes pre-filter first (measured: 9488 installed ``*.py``, 19 contain a verb token), so only the
+    candidates are parsed; then an AST check, so a verb in a comment or a string does not count.
+    """
+    if not any(verb.encode("ascii") in source for verb in _DEPENDENCY_LISTENER_VERBS):
+        return False
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _DEPENDENCY_LISTENER_VERBS
+        for node in ast.walk(tree)
+    )
+
+
+def _server_capable_imported_distributions(trees: dict[str, ast.Module]) -> set[str]:
+    """Canonical names of the installed distributions that (a) provide a module some test tree imports
+    and (b) call a listener verb somewhere in their own source."""
+    providers = metadata.packages_distributions()
+    names = {
+        distribution
+        for module in _imported_top_level_modules(trees)
+        for distribution in providers.get(module, [])
+    }
+    capable: set[str] = set()
+    for name in names:
+        distribution = metadata.distribution(name)
+        for file in distribution.files or []:
+            if file.suffix != ".py":
+                continue
+            try:
+                source = Path(str(distribution.locate_file(file))).read_bytes()
+            except OSError:
+                continue
+            if _calls_a_listener_verb(source):
+                capable.add(canonicalize_name(name))
+                break
+    return capable
+
+
+class TestTheServerCapableDependenciesAreDerived:
+    """C3 reach, made a CHECKED variable (CLAUDE.md INSTRUMENT 0: "is the set DERIVED from production
+    truth, and does a test go RED when the derived set GROWS?"). The deny-list names a few namespaces; the
+    set of server libraries the tests can reach is derived here from what the test trees IMPORT and what
+    those distributions' own source DOES. Each must carry a planted spelling the detector flags.
+
+    KNOWN BOUNDS (named, so they are met deliberately): (1) a dependency whose server is built from a raw
+    ``.bind`` + ``.listen`` (socketserver-style — werkzeug's ``run_simple`` shape) is not derived: the verb
+    oracle keys on the asyncio/anyio verbs, and a ``.bind`` oracle is drowned in ``Signature.bind`` noise
+    (measured: sklearn, scipy, mypy …). Re-open trigger: the first such library imported by a test. (2) a
+    library a test does not import yet is not derived until it is — aiohttp is covered proactively by
+    :class:`TestTheDetectorSeesAiohttpListeners` because the audit named it; websockets (installed,
+    verb-capable, not imported at 43b8d16) is left to this pin. (3) a PYTEST FIXTURE that picks a port
+    (pytest-asyncio's ``unused_tcp_port``) is a parameter name, not a call — no call-keyed scan sees it
+    (d1 report, surfaced for a ruling)."""
+
+    def test_the_derived_server_capable_set_equals_the_planted_map(self) -> None:
+        derived = _server_capable_imported_distributions(_test_tree_scan())
+        assert derived, (
+            "no server-capable distribution derived — uvicorn is imported by the test trees and calls "
+            "create_server, so the derivation is broken, not the world empty"
+        )
+        planted = set(_PLANTED_BY_SERVER_DISTRIBUTION)
+        unshown = sorted(derived - planted)
+        dead = sorted(planted - derived)
+        assert unshown == [] and dead == [], (
+            f"server-capable distributions imported by a test tree with NO planted spelling: {unshown} — "
+            "add one to _PLANTED_BY_SERVER_DISTRIBUTION and make the detector flag it; dead entries "
+            f"(no longer derived — delete them): {dead}"
+        )
+
+    @pytest.mark.parametrize("distribution", sorted(_PLANTED_BY_SERVER_DISTRIBUTION))
+    def test_the_planted_spelling_of_each_server_capable_dependency_is_flagged(
+        self, distribution: str
+    ) -> None:
+        source = _PLANTED_BY_SERVER_DISTRIBUTION[distribution]
+        sites = listener_sites(ast.parse(source), f"PLANTED_{distribution}.py")
+        assert sites, (
+            f"the detector does not see {distribution}'s listener — a test using it opens a port the "
+            f"#466 guard cannot see:\n{source}"
+        )
+
+    def test_honest_anyio_clients_are_not_flagged(self) -> None:
+        # anyio is imported by the test trees for task groups and clients; only its LISTENERS are doors.
+        source = (
+            "import anyio\n"
+            "async def client(host, port):\n"
+            "    await anyio.connect_tcp(host, port)\n"
+            "    async with anyio.create_task_group() as group:\n"
+            "        group.start_soon(anyio.sleep, 0)\n"
+        )
+        sites = listener_sites(ast.parse(source), "HONEST_anyio.py")
+        assert sites == [], f"anyio client/task-group calls were flagged: {[site.render() for site in sites]}"
+
+    def test_positive_control_the_verb_oracle_sees_a_verb_and_ignores_prose(self) -> None:
+        assert _calls_a_listener_verb(b"async def f(loop):\n    await loop.create_server(p, sock=s)\n")
+        assert not _calls_a_listener_verb(b"# we never call create_server here\nX = 'start_server'\n")
+        assert not _calls_a_listener_verb(b"import socket\nsocket.create_connection(('h', 1))\n")

@@ -16,12 +16,23 @@ pinned here:
   and a missing / unparseable junit document is RED (never a silent zero);
 * **the "another pytest session is live" preflight** — the box law (one full session at a time), #466's
   own origin — read from an injectable ``/proc``.
+
+DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §1 F12): a session that TIMES OUT takes its
+whole process tree with it. ``subprocess.run(timeout=)`` kills only the direct ``python -m pytest`` child,
+so its ``-n`` xdist workers outlive a timed-out round — orphans that keep ports, memory and store
+connections, and that the NEXT round's "no other pytest session" preflight then trips over. Pinned with a
+fake 3-deep tree (session → worker → worker's child) standing in for pytest + xdist.
 """
 
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
 import sys
+import time
+import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -214,3 +225,144 @@ def test_nonsense_arguments_are_refused(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         concurrent_wire_acceptance.parse_arguments(argv)
     assert excinfo.value.code != 0
+
+
+# ============================================================================================= #
+# DELTA d1 — F12: a timed-out session leaves no descendant alive.
+# ============================================================================================= #
+# How deep the fake session tree goes: the session (pytest), its worker (xdist), the worker's own
+# child. Three, not two, so a build that kills only one level below the session is still caught.
+TREE_DEPTH = 3
+# A session timeout far below the tree's natural lifetime, far above the time to build it (~0.1 s).
+TREE_SESSION_TIMEOUT_S = 3.0
+TREE_MEMBER_LIFETIME_S = 120.0
+# How long after the round returns the killed tree may take to disappear from /proc.
+TREE_DEATH_BOUND_S = 5.0
+# How long past the session timeout the round may take to return (it must not wait for the tree).
+ROUND_RETURN_GRACE_S = 15.0
+
+# One tree member: record its own pid, spawn the next level (inheriting everything, as xdist's workers
+# do — no new session, no new group), then live far longer than the session timeout. The marker is in
+# every member's argv so /proc can tell a tree member from a recycled pid.
+_TREE_MEMBER_SCRIPT = """\
+import os, pathlib, subprocess, sys, time
+pid_prefix, depth, marker, lifetime = sys.argv[1], int(sys.argv[2]), sys.argv[3], float(sys.argv[4])
+if depth > 1:
+    subprocess.Popen([sys.executable, sys.argv[0], pid_prefix, str(depth - 1), marker, str(lifetime)])
+staging = pathlib.Path(f"{pid_prefix}.depth{depth}.staging")
+staging.write_text(str(os.getpid()))
+os.replace(staging, f"{pid_prefix}.depth{depth}.pid")  # atomic: a reader never sees a half-written pid
+time.sleep(lifetime)
+"""
+
+
+def _is_live_tree_member(pid: int, marker: str) -> bool:
+    """True iff ``pid`` is a running (non-zombie) process whose argv carries ``marker``.
+
+    A zombie has an empty ``cmdline``; a recycled pid lacks the marker — both read as NOT alive.
+    """
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    return marker.encode("utf-8") in cmdline
+
+
+def _tree_pids(pid_dir: Path) -> list[int]:
+    return sorted(int(path.read_text(encoding="utf-8")) for path in pid_dir.glob("*.pid"))
+
+
+def _survivors_after(pids: list[int], marker: str, bound_s: float) -> list[int]:
+    """Poll up to ``bound_s`` for every pid to stop being a live tree member; return the survivors."""
+    deadline = time.monotonic() + bound_s
+    while True:
+        alive = [pid for pid in pids if _is_live_tree_member(pid, marker)]
+        if not alive or time.monotonic() >= deadline:
+            return alive
+        time.sleep(0.05)
+
+
+def _reap_by_pid(pids: list[int], marker: str) -> None:
+    """Test cleanup: SIGKILL any tree member still alive (marker-checked, so a recycled pid is spared)."""
+    for pid in pids:
+        if _is_live_tree_member(pid, marker):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _tree_session_argv(script: Path, pid_dir: Path, marker: str) -> Callable[[Path], list[str]]:
+    """A stand-in for ``ConcurrentPairDriver.session_argv``: the same signature, a fake session tree."""
+
+    def _argv(junit_path: Path) -> list[str]:
+        return [
+            sys.executable,
+            str(script),
+            str(pid_dir / junit_path.stem),
+            str(TREE_DEPTH),
+            marker,
+            str(TREE_MEMBER_LIFETIME_S),
+        ]
+
+    return _argv
+
+
+class TestATimedOutSessionTakesItsWholeTreeWithIt:
+    """F12: on a session timeout the driver must leave NO descendant of that session alive — the xdist
+    workers included — and must return promptly rather than wait for them."""
+
+    def test_no_member_of_a_timed_out_session_tree_survives_the_round(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        script = tmp_path / "tree_member.py"
+        script.write_text(_TREE_MEMBER_SCRIPT, encoding="utf-8")
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        marker = f"tree466-{uuid.uuid4().hex}"
+        driver = concurrent_wire_acceptance.ConcurrentPairDriver(
+            target=_WIRE_FILE, workers=4, timeout_s=TREE_SESSION_TIMEOUT_S
+        )
+        monkeypatch.setattr(driver, "session_argv", _tree_session_argv(script, pid_dir, marker))
+        pids: list[int] = []
+        try:
+            started = time.monotonic()
+            round_outcome = driver.run_round(1)
+            elapsed = time.monotonic() - started
+            pids = _tree_pids(pid_dir)
+            # Non-vacuity: BOTH sessions built their WHOLE tree before the timeout fired.
+            assert len(pids) == concurrent_wire_acceptance.CONCURRENT_SESSIONS * TREE_DEPTH, (
+                f"only {len(pids)} tree members recorded a pid — the fake tree was not fully built, so "
+                "the pin would certify nothing"
+            )
+            assert all(outcome.timed_out for outcome in round_outcome.outcomes)
+            assert not round_outcome.is_green(EXPECTED_WIRE_TESTS)
+            assert elapsed <= TREE_SESSION_TIMEOUT_S + ROUND_RETURN_GRACE_S, (
+                f"the round took {elapsed:.1f}s — it waited on the tree instead of killing it"
+            )
+            survivors = _survivors_after(pids, marker, TREE_DEATH_BOUND_S)
+            assert survivors == [], (
+                f"{len(survivors)} of {len(pids)} members of the timed-out session trees are still alive "
+                f"{TREE_DEATH_BOUND_S}s after the round: {survivors} — orphaned xdist workers (F12)"
+            )
+        finally:
+            _reap_by_pid(pids or _tree_pids(pid_dir), marker)
+
+    def test_positive_control_the_liveness_probe_sees_a_live_tree_and_its_death(self, tmp_path: Path) -> None:
+        # Without this, a probe that always answered "dead" would make the pin above green forever.
+        script = tmp_path / "tree_member.py"
+        script.write_text(_TREE_MEMBER_SCRIPT, encoding="utf-8")
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        marker = f"tree466-{uuid.uuid4().hex}"
+        argv = _tree_session_argv(script, pid_dir, marker)(tmp_path / "control.xml")
+        root = subprocess.Popen(argv)  # noqa: S603 — argv is ours, no shell
+        pids: list[int] = []
+        try:
+            deadline = time.monotonic() + TREE_SESSION_TIMEOUT_S
+            while len(_tree_pids(pid_dir)) < TREE_DEPTH and time.monotonic() < deadline:
+                time.sleep(0.05)
+            pids = _tree_pids(pid_dir)
+            assert len(pids) == TREE_DEPTH
+            assert all(_is_live_tree_member(pid, marker) for pid in pids), "the probe cannot see a live tree"
+        finally:
+            _reap_by_pid(pids or _tree_pids(pid_dir), marker)
+            root.wait(timeout=TREE_DEATH_BOUND_S)
+        assert _survivors_after(pids, marker, TREE_DEATH_BOUND_S) == [], "the probe cannot see a death"
