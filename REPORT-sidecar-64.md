@@ -145,3 +145,19 @@ brief project v7 read
   the store image ships `/surreal` 3.2.4; the vendor documents `POST /import`; 63a's migration module
   promised the script and no wave wrote it.
 - **Graded:** `6a09954` (the contract report) · HEAD-at-report: `aea2a9d` · DIFFERENT (my own commits). Standing by.
+
+## Task 6 (2026-09-26) — packet 58 amendment 1 committed `f4e96b4`
+
+- **state:** done — `docs/design/2026-09-26-packet58-amendment-1.md`. **FORK-A = A1:** a terminal X
+  re-anchors ∀ dependents (one class; the only reopen path today); the render SERVES the re-blocked
+  subset K (derived from the pre-write read; absent when 0). **FORK-C:** R1 CLOSED in-transaction (a
+  closing guard — any row still naming X → THROW → whole supersede rolls back, typed teaching refusal,
+  never an auto-retry); R2 write-skew = a NAMED bound (**#491**) healed at boot by `_reanchor_stragglers`
+  (the backfill's sibling: idempotent, recorded, to the chain head, ONE txn through the ONE shell — it
+  also heals the fleet's legacy #356 strands at the 65 boot) and taught in-window by the existing
+  R10(iii) claim-loss render; the blocker-touch close (a guarded write on every blocker of every
+  create — the hot-row shape) is costed and rejected for now, named as the trigger's close. Index rider:
+  `blocked_by.*` element-path index (held patch, EXPLAIN pin) — not blocking. Neither fork is MAJOR
+  (FYI to the operator; no fork).
+- **Graded:** `1206233` (the contract report) · HEAD-at-report: `f4e96b4` · DIFFERENT (my own commits).
+  Standing by.
