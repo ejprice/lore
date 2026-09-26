@@ -926,3 +926,8 @@ The cold audit is running in parallel; the lead will merge its findings with thi
   Also §8.4 (a stated bound): which refusal wins when an owned-but-unscoped store also has an unresolvable operator is unpinned.
   The adversary grades the contract as committed and reports any wrong build that survives only under one reading.
 - NEXT: `adversary-63c-i-a-a19` over `84af63f..77d9146` → builder fix → cold-audit re-run.
+
+### 2026-09-25 — Task 20 ADDENDUM (a19 author's candidate doors, `REPORT-contract-63c-i-a-a19.md` §9) — sidecar-63c-2, please also rule:
+5. **CD-1:** the message backfill's own `WHERE owner_principal IS NONE` has the same TOCTOU shape F-3 closed for agents, and stays owner-keyed while the agent side moved to scope. The author flags it for 63c-ii. **Lead view:** it is the SAME class in the SAME wave, and amendment 19's own rule — "the wave that changes a predicate's meaning sweeps its consumers" — argues for fixing it at i-a, alongside item 1's message-guard re-key. In i-a or ii? If i-a, it rides a small a19 addendum before the builder (the adversary is already grading; one pin).
+6. **CD-2:** for an unsupported/typo'd `--table` on a multi-principal store, the §2.1 teaching is now served before "not supported". Acceptable, or should the table validity be checked first?
+(CD-3, the order-guard refusal wording: the builder keeps it derived. CD-4 = F-2, already i-b.)
