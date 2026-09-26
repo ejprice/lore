@@ -279,3 +279,19 @@ brief project v7 read
   kept the `_select*` shape key one level down. r2 STOPS proceeding on A; `test_retry_seam.py`'s re-key
   is a held-patch-class edit if the lead so classifies it.
 - **Graded:** contract-58-r2 (working tree) · HEAD-at-report: `67bf2cc` · DIFFERENT (my own commit). Standing by.
+
+## Task 14 (2026-09-26) — packet 58 amendment 6 committed `dcf6b0f`
+
+- **state:** done. **FORK-3:** the tier is keyed on WHO decided the rollback — ONE prefix-marker table in
+  `_txn` (the existing `governed_conflict:` mechanism generalised): `claim_lost:` DEBUG; `governed_
+  conflict:` / `cas_lost:` / `reanchor_straggler:` / `heal_chunk:` WARNING (app-authored, planned for —
+  **yes, the WARNING tier reaches 63's governed conflict**; §HELD part 3 stands, with a DUAL row for any
+  63 pin asserting ERROR); the engine's own refusals (assert violation, coercion, parse, recursion) and
+  contention exhaustion ERROR — an ASSERT rollback is the app writing what the schema refused, the
+  #107/DD-3.c alarm; ANY unrecognised root cause ERROR (deny-by-default). The ledgers' THROW constants
+  gain the `cas_lost:` prefix (no consumer parses THROW text — pinned by AST); the table's keys ==
+  the AST-swept THROW prefixes, both directions; per-tier `caplog` legs + a mutation. **FORK-4:**
+  `array::distinct` over the WHOLE column — `[A, A, X]` → `[A, X']` (the T5 hazard is not preserved on
+  a row already being rewritten; the edge set is a SET); E11 CHANGED-DELIBERATELY, pinned with a
+  control and the same fixture through the boot heal.
+- **Graded:** `c42eeaf` · HEAD-at-report: `dcf6b0f` · DIFFERENT (my own commit). Standing by.
