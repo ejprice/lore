@@ -212,3 +212,23 @@ brief project v7 read
   populated guard so a non-CLI caller cannot orphan; the docstring's forward boundary is discharged.
   64d-ii grows ≈0.03; not MAJOR. #488 annotated.
 - **Graded:** `eb75f57` · HEAD-at-report: `9fd34d3` · DIFFERENT (my own commit). Standing by.
+
+## Task 10 (2026-09-26) — packet 58 amendment 3 committed `7266c1b`
+
+- **state:** done — adversary-58's five decisions ruled; **none MAJOR** (each a HOW inside 58's scope; (2)
+  re-affirms a standing invariant; (3) a log level). **(1) ERRATUM, mine:** am-2 sized heal chunks by the
+  SUPERSEDE's accessor (one shared DELETE) — a heal chunk spans many blockers (PR19 never converges;
+  PR18's one-blocker pin was arithmetic-aligned). Ruled: a greedy packer sized by the heal's OWN composed
+  count via ONE counting function both consumers share; the one-blocker pin re-keyed to the packer's
+  prediction; a ≥6-blocker fixture; the supersede accessor counts the REAL fixed part per K (WB2/PR16).
+  **(2)** a heal STORE fault RAISES (the FAILS_LOUD sweep stays unedited and green); only a chunk's DOMAIN
+  rejection is isolated + WARNING + continue; a compose cap refusal is a packer bug and RAISES; order
+  RULED backfill → heal (K17's world; D12 keeps its edit for the ruled reason). **(3)** a claim loss is a
+  typed `claim_lost:` THROW marker → `TxnClaimLostError` at DEBUG in the driver (the `governed_conflict:`
+  mechanism by call set); other THROW rollbacks WARNING; ERROR for engine faults; 8-way race → 0
+  ERROR/WARNING for losers. **(4)** refuse only a cycle THROUGH X' (`minted = {new_id}`; rewired rows in
+  the graph, legacy loops stepped over). **(5)** a phantom chain head is SKIPPED + RECORDED every boot
+  (the backfill's phantom posture), never a chunk/boot failure. **SAT for r2:** SD1 `≥ N+1` via a compose
+  spy; SD2 pins the ruled order; SD3 `_GUARDED_CAS_DOORS` gains `tasks.py::claim_task` (DUAL row); the
+  enumerator's two reach bounds → the reviser files them.
+- **Graded:** `ee4b80d` (the adversary report) · HEAD-at-report: `7266c1b` · DIFFERENT (my own commit). Standing by.
