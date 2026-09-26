@@ -1211,3 +1211,14 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - The lore server port is picked by the admin (or by an agent via the lore-deploy skill) and defined in lore.yaml `server.port`. It is never auto-picked (MCP connections would break). Fix queued as a **tdd-light cycle after #466 → #486**: `setup` requires an explicit port when scaffolding (teaching refusal otherwise); `_free_port` is deleted; a pre-flight free-check runs on the PUBLISH address; SKILL.md teaches it; the #466 guard exemption is removed. Annotated on #492.
 - Blindreader addendum (the race fixture blind to F-1; F-4 silent-proceed; F-5..F-7 MINORs) sent to sidecar-63c-2 for amendment 28.
 - **tdd-light queue (serial, operator):** #466 (at stub) → #486 (harness `run()` via the retry seam) → #492 (admin-picked port).
+
+### 2026-09-26 — amendment 28 (`eb75f57` + addendum `17c52b7`): F-1/F-2 CONFIRMED, design changed; test-DB cleanup; #492 CLI option
+- **Am-28 (Task 28, second-fix-wave trigger):**
+  - F-1 → NO race compensation: delete the branch + `minted_by_this_call`; KP1 re-keyed to the winner's live scope; door-#4b pins DUAL-deleted.
+  - F-2 → a read-only gate BEFORE preflight, mint after, the post-mint re-check kept.
+  - Addendum A1–A5: the race pin re-keyed to a same-principal winner; F-4 fails CLOSED on a wrong-shape INFO FOR DB; F-5 moot; F-6 docstring derived + measured counts served; F-7 sender-side WHERE guard.
+  - **Process:** a contract delta (the 2 recipe pins + DUAL deletions + A1–A5; the lead also folds am-27's FORK-1/2 pins and am-26's pin, which are cheap and in the same area) → a NARROW adversary delta → the builder fix pass → the cold-audit re-run. Briefed AFTER coldaudit-63c-i-a-2's verdict so its findings join the same pass.
+  - §E: `delete_keep`'s orphaning → packet 64 (sidecar-64 Task 9: confirm 64 am-1 covers `lore-adm delete-keep`).
+  - Attribution-clean.
+- **Test-DB cleanup (operator-approved):** dropped 1873 dead-pid `test_<pid>_<hex>` DBs (3984 → ~2111), 0 failures, :18000 only. **FOUND a growing leak:** ~2077 `test_<uuid>` DBs with no pid → **operator: fold into the #486 tdd-light cycle** (trace the minting site, route it through `unique_database()`, add a guard, reap when no pytest runs). The probe DBs (probe07a_/probe_await_/pc_/probe_smoke/x1_) → operator: DROP (cleanup agent resumed).
+- **#492 addendum (operator):** add a `--port` CLI option as well; lore.yaml stays the source of truth MCP wiring reads (annotated).
