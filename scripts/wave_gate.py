@@ -61,6 +61,7 @@ from pending_contract_gate import (
     REPO_ROOT,
     VERDICT_GREEN,
     BrokenInstrumentError,
+    ForwardedWorkerCountError,
     GateCurrency,
     GateManifest,
     GateRunner,
@@ -162,7 +163,8 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SELECTOR",
         help=(
             "pytest node-ids/paths to scope the pytest leg to (verbatim, no -k). The core still "
-            "runs full. Omit --wave entirely to run the full suite."
+            "runs full. Omit --wave entirely to run the full suite. A worker count (-n / "
+            "--numprocesses) is refused (exit 2): the fleet policy decides it."
         ),
     )
     return parser
@@ -170,7 +172,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """The CLI entrypoint AND the enforcement point. Exit 0 = every gate GREEN/OWNED (pytest SCOPED
-    in wave mode); 1 = a gate is RED_ORPHANED or NOT_RUN; 2 = a BROKEN INSTRUMENT / bad config."""
+    in wave mode); 1 = a gate is RED_ORPHANED or NOT_RUN; 2 = a BROKEN INSTRUMENT / bad config / a
+    REFUSED ARGUMENT (a ``--wave`` selector carrying a worker count; no gate spawns)."""
     arguments = _build_parser().parse_args(argv)
     wave = arguments.wave is not None
     selector: tuple[str, ...] = tuple(arguments.wave) if wave else ()
@@ -187,9 +190,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # The non-omittable core always runs FULL — the runner is handed the manifest's FULL derived id
     # set as legs; ONLY pytest is scopable, and it is scoped by forwarding the selector as
-    # ``pytest_args`` (the leg-runner appends them to the junit-reader gate's command alone).
+    # ``pytest_args`` (the leg-runner appends them to the junit-reader gate's command alone, then
+    # renders the fleet policy's ``-n <count>`` AFTER them, so the policy is the last worker flag).
+    # A selector carrying a worker count (e.g. ``--wave=-n12``) is REFUSED before any gate spawns.
     try:
         results = pcg._run_selected_gates(runner, manifest, manifest.ids, selector)
+    except ForwardedWorkerCountError as error:
+        print(f"REFUSED ARGUMENT: {error}", file=sys.stderr)
+        return 2
     except BrokenInstrumentError as error:
         # Zero-collection scoped run (#290 anti-vacuity), or any transcript that is not a
         # measurement. NEVER swallowed into a scoped pass just because pytest was scoped.

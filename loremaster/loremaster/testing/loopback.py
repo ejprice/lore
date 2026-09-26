@@ -37,8 +37,10 @@ LOOPBACK_HOST: str = "127.0.0.1"
 
 DEFAULT_STARTUP_TIMEOUT_S: float = 15.0
 """How long :func:`serve_asgi` waits for the server to report started before raising
-:class:`ServerStartupTimeout`. The value is measure-then-tune (#466 contract report §E); callers
-pass ``startup_timeout_s`` to override it without editing this module."""
+:class:`ServerStartupTimeout`. The value is operator-ruled (2026-09-26, lore #503), sized for the
+LIGHT callers (measured in commit 388c604); a caller whose start is heavier passes its own
+``startup_timeout_s`` (e.g. ``test_migration_wire.MIGRATION_WIRE_STARTUP_TIMEOUT_S``) rather than
+moving this default."""
 
 KERNEL_ASSIGNED_PORT: int = 0
 """The port number that asks the kernel for an ephemeral port — the ONLY port ever bound here."""
@@ -138,7 +140,8 @@ class ServerShutdownTimeout(RuntimeError):
 
     Deliberately NOT a :class:`ServerStartError`: a start-retry ``except`` must never swallow a
     teardown overrun. When the served body is already raising, this is never raised (it would
-    mask the body's own failure); the overrun rides that exception as a PEP 678 note instead.
+    mask the body's own failure); the overrun rides that exception as a PEP 678 note instead —
+    as does a teardown that RAISES (lore R4): no teardown failure ever replaces the body's own.
 
     Attributes:
         host: The host the server was served on.
@@ -421,16 +424,21 @@ class _UvicornServerThread:
 def _loud_teardown(
     endpoint: ServedEndpoint, shutdown_timeout_s: float, stop: Callable[[float], bool]
 ) -> Iterator[ServedEndpoint]:
-    """The ONE shutdown-overrun policy both helpers exit through: bounded, and never silent.
+    """The ONE shutdown-failure policy both helpers exit through: bounded, and never silent.
 
     Yields ``endpoint`` for the served body, then calls ``stop(shutdown_timeout_s)`` — which must
-    return whether the server finished within the budget. On an overrun after a CLEAN body this
-    raises :class:`ServerShutdownTimeout`; when the body is already raising, that exception
-    propagates unchanged (the test's own failure stays the headline) carrying the overrun as a
-    PEP 678 note.
+    return whether the server finished within the budget. After a CLEAN body, an overrun raises
+    :class:`ServerShutdownTimeout` and a ``stop`` that raises propagates its own error unchanged.
+    When the body is already raising, that exception propagates unchanged (the test's own failure
+    stays the headline) whatever the teardown did: an overrun, or a ``stop`` that raised an
+    :class:`Exception` (lore R4 — e.g. ``RuntimeError: can't start new thread``), rides it as a
+    PEP 678 note naming ``host:port`` (and, for a raise, the error's type and text). An interrupt
+    (a :class:`BaseException` that is not an :class:`Exception` — Ctrl-C, a pytest-timeout) landing
+    in the teardown is not a teardown failure: it propagates unchanged, with the body's failure on
+    its ``__context__``.
 
     Args:
-        endpoint: The served endpoint, named in any overrun report.
+        endpoint: The served endpoint, named in any teardown-failure report or note.
         shutdown_timeout_s: The shutdown budget handed to ``stop``.
         stop: Stops the server within the budget; returns ``True`` iff it finished in time.
 
@@ -439,15 +447,24 @@ def _loud_teardown(
 
     Raises:
         ServerShutdownTimeout: The shutdown overran after a clean body exit.
+        Exception: Whatever ``stop`` raised, after a clean body exit only.
     """
-    overrun = (
-        f"server at {endpoint.host}:{endpoint.port} did not finish its shutdown within {shutdown_timeout_s}s"
-    )
+    address = f"{endpoint.host}:{endpoint.port}"
+    overrun = f"server at {address} did not finish its shutdown within {shutdown_timeout_s}s"
     try:
         yield endpoint
     except BaseException as body_error:
-        if not stop(shutdown_timeout_s):
-            body_error.add_note(overrun)
+        # ``except Exception``, never BaseException: an interrupt in the teardown is the user's
+        # control flow, not a teardown failure to note (R1's contract), so it must escape here.
+        try:
+            finished = stop(shutdown_timeout_s)
+        except Exception as teardown_error:
+            body_error.add_note(
+                f"server at {address} teardown raised {type(teardown_error).__name__}: {teardown_error}"
+            )
+        else:
+            if not finished:
+                body_error.add_note(overrun)
         raise
     if not stop(shutdown_timeout_s):
         raise ServerShutdownTimeout(
@@ -491,7 +508,9 @@ def serve_asgi(
             carrying the app's own error text, with the held port released.
         ServerShutdownTimeout: If, on a clean exit, the lifespan shutdown overruns
             ``shutdown_timeout_s``. A body exception in flight is never masked: it propagates
-            unchanged, carrying the overrun as a PEP 678 note naming ``host:port``.
+            unchanged, carrying the overrun — or a teardown that raised, with the error's type
+            and text — as a PEP 678 note naming ``host:port``. After a clean exit, a teardown
+            that raises propagates its own error.
     """
     with _held_port(port) as held:
         server_thread = _UvicornServerThread(app, held)
@@ -573,8 +592,10 @@ def serve_http(
         ServerBindError: If binding a fresh port fails.
         ServerShutdownTimeout: If, on a clean exit, the serving thread does not end within
             ``shutdown_timeout_s`` (a stuck handler). A body exception in flight is
-            never masked: it carries the overrun as a PEP 678 note — the same policy as
-            :func:`serve_asgi`.
+            never masked: it carries the overrun — or a teardown that raised (e.g. the
+            shutdown thread failing to start), with the error's type and text — as a PEP 678
+            note naming ``host:port``; after a clean exit a teardown that raises propagates its
+            own error — the same policy as :func:`serve_asgi`.
     """
     with _held_port(port) as held:
         server = _http_server_on(held, handler_class)

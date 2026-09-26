@@ -72,18 +72,22 @@ import signal
 import socket
 import threading
 import time
+import typing
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+import loremaster.testing.loopback as loopback_module
 import pytest
 from loremaster.testing.loopback import (
     DEFAULT_SHUTDOWN_TIMEOUT_S,
     DEFAULT_STARTUP_TIMEOUT_S,
     LOOPBACK_HOST,
     LoopbackPort,
+    ServedEndpoint,
     ServerBindError,
     ServerShutdownTimeout,
     ServerStartError,
@@ -547,7 +551,8 @@ class TestStartupFailureNamesItsCause:
                 f"the timeout does not name the address: {message}"
             )
             assert "timed out" in message.lower() or "timeout" in message.lower(), message
-            # The budget that expired travels as data (the value is measure-then-tune — §E).
+            # The budget that expired travels as data (here the test's own short budget; the DEFAULT's value
+            # is operator-ruled since 2026-09-26, lore #503 — no longer measure-then-tune).
             assert error.startup_timeout_s == SHORT_STARTUP_BUDGET_S
             # Lifecycle: the held socket is released at the raise, not whenever the stuck thread ends.
             assert _is_released(error.host, error.port), (
@@ -593,7 +598,9 @@ class TestStartupFailureNamesItsCause:
         assert time.monotonic() - started < CRASH_DETECTION_BOUND_S
 
     def test_the_default_budget_is_a_positive_finite_number(self) -> None:
-        # Existence + sanity only; the VALUE is measure-then-tune (#466 contract report, §E).
+        # Existence + sanity only here. The VALUE is operator-ruled (2026-09-26, lore #503) and pinned exactly
+        # by test_migration_wire_budget_503 (…the_default_startup_budget_stays_at_the_ruled_value); it was
+        # measure-then-tune (#466 contract report, §E) before that ruling.
         assert isinstance(DEFAULT_STARTUP_TIMEOUT_S, float | int)
         assert 0 < DEFAULT_STARTUP_TIMEOUT_S < float("inf")
 
@@ -842,7 +849,8 @@ class TestAShutdownOverrunIsLoud:
         # An ``except ServerStartError`` (a start-retry) must never swallow a teardown overrun.
         assert issubclass(ServerShutdownTimeout, RuntimeError)
         assert not issubclass(ServerShutdownTimeout, ServerStartError)
-        # Existence + sanity only; the VALUE is measure-then-tune, like the startup budget.
+        # Existence + sanity only; the shutdown VALUE is still measure-then-tune (the startup DEFAULT, by
+        # contrast, is operator-ruled since 2026-09-26, lore #503).
         assert isinstance(DEFAULT_SHUTDOWN_TIMEOUT_S, float | int)
         assert 0 < DEFAULT_SHUTDOWN_TIMEOUT_S < float("inf")
 
@@ -1169,3 +1177,274 @@ class TestTheBindSpyPremiseHolds:
         assert app.loop_classes, "no request was recorded — the premise probe saw nothing"
         foreign = [cls for cls in app.loop_classes if cls.__module__.split(".")[0] != "asyncio"]
         assert foreign == [], f"{self._REOPEN}\nserved on: {foreign}"
+
+
+# ============================================================================================= #
+# #503 R4 (refactor-466-d1 R4, operator: "fix now") — author ``contract-503``, session ``297217bd``.
+#
+# CLASS (the lifted property): a failing ``with`` body's exception is NEVER REPLACED by ANY teardown
+# failure of ANY serving helper. The teardown problem rides that exception as a PEP 678 note naming
+# ``host:port``. The domain is the product of three sets, each GENERATED, never hand-listed:
+#   * the helpers — every public context manager in ``loopback.__all__`` that yields a
+#     ``ServedEndpoint`` (derived from the type hints; ``test_every_serving_helper_has_a_teardown_rig``
+#     reddens when a new one appears without a rig);
+#   * the body failures — an ``Exception`` and a non-``Exception`` ``BaseException`` (pytest's own
+#     ``Failed`` / pytest-timeout's signal failure are the latter, so "a failing test" spans both);
+#   * the teardown failures — the COMPLETE outcome set of ``stop(budget) -> bool`` other than success:
+#     it returns ``False`` (an OVERRUN, already loud since d1) or it RAISES (R4's hole: the measured
+#     door is ``_stop_http_server``'s ``Thread.start()`` → ``RuntimeError: can't start new thread``).
+# The raise is injected receiver-blind — a ``SIGALRM`` handler raising an ``Exception`` inside the
+# teardown wait — so the pin never depends on WHICH call inside ``stop`` fails.
+#
+# RED dating: the ``raise`` rows are RED at HEAD ``884ca63`` (the stop error REPLACES the body's, which
+# survives only as ``__context__``); the ``overrun`` rows and both controls are GREEN at ``884ca63``.
+# ============================================================================================= #
+# The text a raising teardown carries — distinctive, so the note must carry the teardown's OWN words.
+TEARDOWN_FAILURE_SENTINEL = "can't start new thread — r4-teardown-sentinel-503"
+
+
+class _TeardownFailure(RuntimeError):
+    """What a helper's ``stop`` raises in R4's world (``RuntimeError``, like thread exhaustion)."""
+
+    def __init__(self) -> None:
+        super().__init__(TEARDOWN_FAILURE_SENTINEL)
+
+
+@dataclass
+class _TeardownRig:
+    """One serving helper, set up so that its exit's teardown wait BLOCKS until :meth:`release`.
+
+    ``serving`` is the helper's context manager, already given the budget the row needs; ``engage``
+    runs INSIDE the body and makes the teardown block (it proves the server is serving first);
+    ``release`` un-blocks it so every thread can end; ``still_blocked`` is read right after the exit
+    and must be ``True`` — proof the injected failure landed IN the teardown, not after it.
+    """
+
+    serving: contextlib.AbstractContextManager[ServedEndpoint]
+    engage: Callable[[ServedEndpoint], None]
+    release: Callable[[], None]
+    still_blocked: Callable[[], bool]
+
+
+def _serve_asgi_rig(shutdown_timeout_s: float) -> _TeardownRig:
+    """serve_asgi, whose lifespan SHUTDOWN is held on a gate (a store close that never returns)."""
+    gate = threading.Event()
+    app = _RecordingApp(f"r4-teardown-asgi-{shutdown_timeout_s}-503", shutdown_gate=gate)
+
+    def _engage(served: ServedEndpoint) -> None:
+        assert _get(served.base_url).status_code == HTTP_OK
+
+    return _TeardownRig(
+        serving=serve_asgi(app, shutdown_timeout_s=shutdown_timeout_s),
+        engage=_engage,
+        release=gate.set,
+        still_blocked=lambda: app.events == ["startup"],
+    )
+
+
+def _serve_http_rig(shutdown_timeout_s: float) -> _TeardownRig:
+    """serve_http, with one request STUCK inside its handler (so ``serve_forever`` cannot return)."""
+    handler_class, entered, released = _stuck_handler_class()
+    clients: list[socket.socket] = []
+
+    def _engage(served: ServedEndpoint) -> None:
+        clients.append(_stick_a_request(served.host, served.port, entered))
+
+    def _release() -> None:
+        released.set()
+        for client in clients:
+            client.close()
+
+    return _TeardownRig(
+        serving=serve_http(handler_class, shutdown_timeout_s=shutdown_timeout_s),
+        engage=_engage,
+        release=_release,
+        still_blocked=lambda: entered.is_set() and not released.is_set(),
+    )
+
+
+# Keyed by the helper's __name__; completeness is asserted against the module, not trusted.
+_TEARDOWN_RIGS: dict[str, Callable[[float], _TeardownRig]] = {
+    "serve_asgi": _serve_asgi_rig,
+    "serve_http": _serve_http_rig,
+}
+
+
+def _serving_helpers_of_the_module() -> set[str]:
+    """Every public helper in ``loopback.__all__`` that is a context manager yielding a ServedEndpoint.
+
+    DERIVED from the type hints, not from a name prefix: whatever the next helper is called, if it
+    yields a served endpoint it exits through a teardown, and R4's class covers it.
+    """
+    helpers: set[str] = set()
+    for name in loopback_module.__all__:
+        candidate = getattr(loopback_module, name)
+        if not inspect.isfunction(candidate):
+            continue
+        return_hint = typing.get_type_hints(candidate).get("return")
+        if ServedEndpoint in typing.get_args(return_hint):
+            helpers.add(name)
+    return helpers
+
+
+@dataclass(frozen=True)
+class _TeardownFailureKind:
+    """One non-success outcome of ``stop``: the budget the rig runs with, whether a raise is injected
+    into the teardown wait, the exit window, and the words the note must carry."""
+
+    shutdown_timeout_s: float
+    injects_a_raise: bool
+    exit_window_s: tuple[float, float]
+    note_must_name: tuple[str, ...]
+
+
+_TEARDOWN_FAILURE_KINDS: dict[str, _TeardownFailureKind] = {
+    # stop RAISES: the injection lands INTERRUPT_AFTER_S into a GENEROUS wait, so exit ends near
+    # INTERRUPT_AFTER_S — long before the budget (a build that waits out the budget is caught above).
+    "raise": _TeardownFailureKind(
+        shutdown_timeout_s=GENEROUS_SHUTDOWN_BUDGET_S,
+        injects_a_raise=True,
+        exit_window_s=(INTERRUPT_AFTER_S * 0.9, GENEROUS_SHUTDOWN_BUDGET_S / 2),
+        note_must_name=(_TeardownFailure.__name__, TEARDOWN_FAILURE_SENTINEL),
+    ),
+    # stop returns False: the short budget expires with the teardown still blocked.
+    "overrun": _TeardownFailureKind(
+        shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S,
+        injects_a_raise=False,
+        exit_window_s=(SHORT_SHUTDOWN_BUDGET_S * 0.9, SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S),
+        note_must_name=("shutdown",),
+    ),
+}
+
+_BODY_FAILURE_TYPES = [
+    pytest.param(_BodyFailure, id="body-raises-Exception"),
+    pytest.param(_InjectedInterrupt, id="body-raises-BaseException"),
+]
+
+
+class TestAFailingBodyIsNeverReplacedByItsTeardown:
+    """R4 (REPORT-refactor-466-d1.md R4): ``_loud_teardown`` calls ``stop`` bare in its failing-body
+    branch, so a ``stop`` that RAISES replaces the test's own failure — the headline becomes a teardown
+    error and the real failure survives only as ``__context__``. The d1 overrun policy already said
+    "never mask"; this generalises it from one teardown failure (an overrun) to every one."""
+
+    def test_every_serving_helper_has_a_teardown_rig(self) -> None:
+        # Completeness: the generated sweep below is only a sweep if its domain is the module's.
+        derived = _serving_helpers_of_the_module()
+        assert derived, "the derivation found no serving helper — the probe is broken"
+        assert derived == set(_TEARDOWN_RIGS), (
+            f"loopback exports serving helper(s) {sorted(derived - set(_TEARDOWN_RIGS))} with no teardown "
+            f"rig (or rigs {sorted(set(_TEARDOWN_RIGS) - derived)} for helpers that no longer exist) — R4's "
+            "class covers EVERY helper that exits through a teardown; add a rig, do not narrow the domain"
+        )
+
+    @pytest.mark.parametrize("teardown_failure", sorted(_TEARDOWN_FAILURE_KINDS))
+    @pytest.mark.parametrize("body_failure_type", _BODY_FAILURE_TYPES)
+    @pytest.mark.parametrize("helper_name", sorted(_TEARDOWN_RIGS))
+    def test_the_body_exception_survives_and_the_teardown_failure_rides_as_a_note(
+        self, helper_name: str, body_failure_type: type[BaseException], teardown_failure: str
+    ) -> None:
+        kind = _TEARDOWN_FAILURE_KINDS[teardown_failure]
+        rig = _TEARDOWN_RIGS[helper_name](kind.shutdown_timeout_s)
+        body_failure = body_failure_type(BODY_FAILURE_SENTINEL)
+        handlers_before = _attached_logging_handlers()
+        threads_before = set(threading.enumerate())
+        try:
+            # The timer is armed only on the "raise" rows; an unarmed timer never fires.
+            with _main_thread_interrupt(_TeardownFailure) as (raised, arm):
+                # BaseException, not body_failure_type: a REPLACED exception must fail this test with an
+                # assertion naming the replacement, not escape pytest.raises as a stray error.
+                with pytest.raises(BaseException) as excinfo:
+                    with rig.serving as served:
+                        rig.engage(served)
+                        if kind.injects_a_raise:
+                            # The LAST act of the body: it can only land once exit is under way.
+                            arm(INTERRUPT_AFTER_S)
+                        exit_started = time.monotonic()
+                        raise body_failure
+                elapsed = time.monotonic() - exit_started
+                teardown_was_blocked = rig.still_blocked()
+            # Non-vacuity: the injection fired exactly when it should, IN the teardown wait.
+            assert len(raised) == (1 if kind.injects_a_raise else 0), (
+                f"the teardown injection fired {len(raised)} times — the probe is broken"
+            )
+            assert teardown_was_blocked, (
+                "the teardown was not blocked at exit — the failure did not land IN it"
+            )
+            low_s, high_s = kind.exit_window_s
+            assert low_s <= elapsed <= high_s, f"exit took {elapsed:.2f}s; expected [{low_s}, {high_s}]"
+            # THE CLASS: the test's own failure is the headline, whatever the teardown did.
+            assert excinfo.value is body_failure, (
+                f"{helper_name}'s teardown REPLACED the body's own {body_failure_type.__name__} with "
+                f"{excinfo.value!r} — a failing test must report ITS failure; the teardown's rides as a note"
+            )
+            notes = "\n".join(getattr(body_failure, "__notes__", []))
+            address = f"{served.host}:{served.port}"
+            assert address in notes, f"the teardown failure is SILENT — no note naming {address}: {notes!r}"
+            for fragment in kind.note_must_name:
+                assert fragment.lower() in notes.lower(), (
+                    f"the note does not carry the teardown failure's own evidence {fragment!r}: {notes!r}"
+                )
+            # Nothing process-global leaks on this path either (R1's outcome, on R4's path).
+            assert _attached_logging_handlers() == handlers_before, (
+                f"a logging handler was left attached: before={handlers_before} "
+                f"after={_attached_logging_handlers()}"
+            )
+            assert _becomes_refused(served.host, served.port), f"{address} still accepts after the exit"
+        finally:
+            rig.release()
+        survivors = _threads_still_alive_after(threads_before, THREAD_END_BOUND_S)
+        assert survivors == [], f"{helper_name} left thread(s) running once released: {survivors}"
+
+    @pytest.mark.parametrize("helper_name", sorted(_TEARDOWN_RIGS))
+    def test_control_a_clean_body_whose_teardown_raises_propagates_that_error(self, helper_name: str) -> None:
+        # Ruling (Phase 0 item 2): with NO body error to preserve, the stop error IS the failure, and it
+        # must surface unchanged — the R4 fix must not swallow or re-wrap it. Without this, "notes the
+        # teardown failure" could be a build that notes it and then drops it on a clean exit.
+        rig = _TEARDOWN_RIGS[helper_name](GENEROUS_SHUTDOWN_BUDGET_S)
+        try:
+            with _main_thread_interrupt(_TeardownFailure) as (raised, arm):
+                with pytest.raises(BaseException) as excinfo:
+                    with rig.serving as served:
+                        rig.engage(served)
+                        arm(INTERRUPT_AFTER_S)
+            assert len(raised) == 1, f"the teardown injection fired {len(raised)} times — the probe is broken"
+            assert excinfo.value is raised[0], (
+                f"a clean exit whose teardown raised surfaced {excinfo.value!r} instead of the "
+                f"teardown's own {raised[0]!r} — with no body failure, the teardown failure IS the headline"
+            )
+        finally:
+            rig.release()
+
+    @pytest.mark.parametrize("interrupt", _UNEXPECTED_INTERRUPTS)
+    @pytest.mark.parametrize("helper_name", sorted(_TEARDOWN_RIGS))
+    def test_an_interrupt_in_the_teardown_of_a_failing_body_still_propagates(
+        self, helper_name: str, interrupt: type[BaseException]
+    ) -> None:
+        # R1's contract must not regress (Phase 0 item 2): Ctrl-C / pytest-timeout landing in the teardown
+        # wait propagate UNCHANGED — also when the body is already failing. The wrong build this catches
+        # wraps ``stop`` in ``except BaseException`` and notes EVERYTHING, swallowing the interrupt.
+        # ⚠ SPEC-SILENT, author's reading (READING A) — see REPORT-contract-503.md §Forks F1: the ruling
+        # names "an overrun OR a raise" as teardown FAILURES, and an interrupt as the user's control flow.
+        # The body's failure stays reachable on the interrupt's ``__context__`` (pytest prints the chain).
+        rig = _TEARDOWN_RIGS[helper_name](GENEROUS_SHUTDOWN_BUDGET_S)
+        body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        handlers_before = _attached_logging_handlers()
+        try:
+            with _main_thread_interrupt(interrupt) as (raised, arm):
+                with pytest.raises(BaseException) as excinfo:
+                    with rig.serving as served:
+                        rig.engage(served)
+                        arm(INTERRUPT_AFTER_S)
+                        raise body_failure
+            assert len(raised) == 1, f"the interrupt fired {len(raised)} times — the probe is broken"
+            assert excinfo.value is raised[0], (
+                f"{helper_name}'s teardown swallowed the {interrupt.__name__} (surfaced {excinfo.value!r}) — "
+                "an interrupt is not a teardown failure to note; it must propagate unchanged"
+            )
+            assert excinfo.value.__context__ is body_failure, (
+                "the body's own failure is no longer reachable from the interrupt's traceback chain"
+            )
+            assert _attached_logging_handlers() == handlers_before
+        finally:
+            rig.release()

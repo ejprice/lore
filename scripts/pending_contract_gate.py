@@ -135,6 +135,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import re
 import subprocess
 import sys
@@ -143,8 +144,12 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 from xml.etree import ElementTree
 
+# scripts/ is not a package: this resolves because a script's own directory is sys.path[0], and
+# every importer (the test files, ``wave_gate``, ``concurrent_wire_acceptance``) puts it there.
+import _pytest_sessions
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
@@ -172,6 +177,17 @@ DEFAULT_MANIFEST_PATH = REPO_ROOT / "scripts" / "gates.yaml"
 # The JUNIT placeholder a pytest-shaped command must carry so the reader has a
 # document to read.
 JUNIT_PLACEHOLDER = "{junit_xml}"
+
+# The placeholder a pytest gate's ``-n`` value carries so the fleet worker policy
+# (``_pytest_sessions.pytest_worker_count``) decides the count when the gate RUNS — not when
+# the manifest loads: a currency run spends minutes in typecheck before its pytest leg starts,
+# and a session that starts or ends meanwhile must be seen (lore #503, operator 2026-09-26).
+WORKERS_PLACEHOLDER = "{workers}"
+
+# pytest-xdist's worker-count flag, short and long spellings. A junit gate that hardcodes a
+# value behind either one bypasses the fleet policy, so the manifest loader refuses it.
+XDIST_WORKERS_SHORT_FLAG = "-n"
+XDIST_WORKERS_LONG_FLAG = "--numprocesses"
 
 # The registries permitted to OWN a red. A red class with no registry able to own
 # it is a NEW adjudication citizen and a DESIGN question (falsifier 7.3), so an
@@ -251,6 +267,15 @@ class ManifestError(RuntimeError):
     Raised at PARSE time rather than at run time: a manifest naming a reader that
     does not exist must stop the runner starting, because the alternative is a
     gate that is claimed and silently never executed — #312 exactly.
+    """
+
+
+class ForwardedWorkerCountError(ValueError):
+    """A forwarded pytest argument carries an xdist worker count (lore #503, lead ruling 2).
+
+    The fleet policy (``_pytest_sessions.pytest_worker_count``) owns the pytest gate's worker
+    count, so a CLI argument that tries to set it is a refused ARGUMENT — not a malformed
+    manifest. Its own type lets both CLIs say so honestly instead of printing "MANIFEST ERROR".
     """
 
 
@@ -771,12 +796,113 @@ class GateSpec(BaseModel):
         """
         return tuple(getattr(READERS[self.reader], "ANTI_VACUITY_GUARDS", ()))
 
-    def resolved_command(self, junit_xml: Path | None) -> list[str]:
-        """The argv with ``{junit_xml}`` substituted."""
-        return [
-            part.replace(JUNIT_PLACEHOLDER, str(junit_xml)) if junit_xml else part
-            for part in self.command
-        ]
+    @property
+    def wants_worker_count(self) -> bool:
+        """Whether the command carries ``{workers}`` for the fleet policy to resolve."""
+        return any(WORKERS_PLACEHOLDER in part for part in self.command)
+
+    def resolved_command(self, junit_xml: Path | None, workers: str | None = None) -> list[str]:
+        """The argv with ``{junit_xml}`` and ``{workers}`` substituted.
+
+        When ``workers`` is given, the manifest's ``{workers}`` flag is first MOVED to the end of
+        the argv (:func:`_with_policy_workers_last`), so the fleet policy's ``-n <count>`` is the
+        LAST worker flag — after the manifest's own tokens and after any forwarded ``pytest_args``
+        — and xdist's last-wins parsing makes every other spelling lose (lore #503, lead ruling 1).
+
+        Args:
+            junit_xml: The junit document path, or ``None`` to leave the placeholder.
+            workers: The resolved xdist worker count, or ``None`` to leave the placeholder (and
+                the flag) where the manifest put it.
+        """
+        substitutions: dict[str, str] = {}
+        if junit_xml:
+            substitutions[JUNIT_PLACEHOLDER] = str(junit_xml)
+        command = list(self.command)
+        if workers is not None:
+            substitutions[WORKERS_PLACEHOLDER] = workers
+            command = _with_policy_workers_last(command)
+        return [self._substitute(part, substitutions) for part in command]
+
+    @staticmethod
+    def _substitute(part: str, substitutions: dict[str, str]) -> str:
+        """``part`` with every placeholder in ``substitutions`` replaced by its value."""
+        for placeholder, value in substitutions.items():
+            part = part.replace(placeholder, value)
+        return part
+
+
+class _WorkerFlag(NamedTuple):
+    """One xdist worker-count flag found in an argv: its token span and the value it carries."""
+
+    start: int
+    stop: int
+    value: str
+
+
+def _worker_flags(command: Sequence[str]) -> list[_WorkerFlag]:
+    """Every xdist worker-count flag in ``command``, placeholder or not, in argv order.
+
+    The ONE recogniser of the spellings: :func:`_hardcoded_worker_counts` (the loader's check and
+    the forwarded-argument refusal) and :func:`_with_policy_workers_last` (the render) both read
+    it, so they can never disagree about what a worker flag looks like.
+    """
+    flags: list[_WorkerFlag] = []
+    long_joined_prefix = f"{XDIST_WORKERS_LONG_FLAG}="
+    for index, part in enumerate(command):
+        if part in (XDIST_WORKERS_SHORT_FLAG, XDIST_WORKERS_LONG_FLAG):
+            # A flag with no following value spans itself alone and carries "".
+            stop = min(index + 2, len(command))
+            following = command[index + 1] if index + 1 < len(command) else ""
+            flags.append(_WorkerFlag(index, stop, following))
+        elif part.startswith(long_joined_prefix):
+            flags.append(_WorkerFlag(index, index + 1, part.removeprefix(long_joined_prefix)))
+        elif part.startswith(XDIST_WORKERS_SHORT_FLAG) and not part.startswith("--"):
+            # the joined short form, e.g. ``-n12``
+            flags.append(_WorkerFlag(index, index + 1, part.removeprefix(XDIST_WORKERS_SHORT_FLAG)))
+    return flags
+
+
+def _hardcoded_worker_counts(command: Sequence[str]) -> list[str]:
+    """Every xdist worker-count value in ``command`` that is not the fleet placeholder.
+
+    Covers ``-n <x>``, ``-n<x>``, ``--numprocesses <x>`` and ``--numprocesses=<x>``. A flag
+    with no following value counts as hardcoded too (pytest would refuse it anyway). Two callers:
+    the manifest loader (a junit gate must spell ``-n {workers}``) and
+    :func:`_refuse_forwarded_worker_counts`, which ``_run_selected_gates`` runs first (forwarded
+    ``pytest_args`` carrying a count are refused).
+
+    ⚠ KNOWN BOUND (#503 F8): a CLUSTERED short flag such as ``-qn3`` is NOT recognised. It is
+    harmless while the render puts the policy's ``-n <count>`` LAST (:func:`_with_policy_workers_last`),
+    because xdist's last-wins parsing makes it lose; pinned by ``TestKnownBoundClusteredWorkerFlag``.
+
+    Packages considered — ``keep_with_trigger`` (lead ruling 3, 2026-09-26). pytest's own parser
+    with ``xdist.plugin`` registered IS the full option table and resolves every spelling,
+    clusters included (probed: ``-qn3`` → 3, ``-n 2 -n 3`` → 3, ``--numproc 5`` → None, since
+    pytest sets ``allow_abbrev=False``). An earlier rationale here ("argparse would need xdist's
+    full option table") was wrong: the table exists, it is just PRIVATE — ``pytest.Parser`` is
+    exported as a type only (its constructor warns ``PytestDeprecationWarning("A private pytest
+    class or function was used.")`` unless passed ``_ispytest=True``) and the xdist-registered
+    parser is reachable only as ``config._parser``. Re-open triggers: pytest exposes its parser
+    publicly, OR a real gate invocation carries a worker spelling this helper does not refuse.
+    """
+    return [flag.value for flag in _worker_flags(command) if flag.value != WORKERS_PLACEHOLDER]
+
+
+def _with_policy_workers_last(command: Sequence[str]) -> list[str]:
+    """``command`` with its ``{workers}`` flag(s) removed and ``-n {workers}`` appended LAST.
+
+    xdist resolves the last ``-n`` it sees, so rendering the fleet policy's flag after every
+    manifest token and every forwarded argument means no other worker-flag spelling — including the
+    clustered ``-qn3`` the refusal cannot see (#503 F8) — can override the policy (lead ruling 1,
+    reading B of fork D1-F1: the property holds for manifest tokens too, not only forwarded ones).
+    A command with no placeholder flag is returned unchanged.
+    """
+    placeholder_flags = [flag for flag in _worker_flags(command) if flag.value == WORKERS_PLACEHOLDER]
+    if not placeholder_flags:
+        return list(command)
+    moved = {index for flag in placeholder_flags for index in range(flag.start, flag.stop)}
+    kept = [part for index, part in enumerate(command) if index not in moved]
+    return [*kept, XDIST_WORKERS_SHORT_FLAG, WORKERS_PLACEHOLDER]
 
 
 class GateManifest(BaseModel):
@@ -814,6 +940,14 @@ class GateManifest(BaseModel):
                     f"gate {spec.id!r} uses the junit reader but its command never "
                     f"asks for a document ({JUNIT_PLACEHOLDER} absent) — the reader "
                     "would have nothing to read"
+                )
+            hardcoded = _hardcoded_worker_counts(spec.command) if wants_junit else []
+            if hardcoded:
+                raise ValueError(
+                    f"gate {spec.id!r} hardcodes an xdist worker count {hardcoded} — "
+                    f"spell it {XDIST_WORKERS_SHORT_FLAG} {WORKERS_PLACEHOLDER} so the "
+                    "fleet policy (_pytest_sessions.pytest_worker_count) decides it when "
+                    "the gate runs (lore #503)"
                 )
         return value
 
@@ -1288,12 +1422,23 @@ class GateRunner:
         ``typecheck: <leg> FAILED`` lines to fd 2 while mypy writes to fd 1, and
         the leg accounting depends on their ORDER. Capturing them separately
         destroys it.
+
+        A ``{workers}`` placeholder in the command is resolved HERE, once per run, by the fleet
+        policy (``_pytest_sessions.pytest_worker_count``) — never at manifest load — and rendered
+        as the argv's LAST worker flag (``GateSpec.resolved_command``).
         """
         needs_junit = READERS[spec.reader] is JUnitReportReader
+        # Resolved per RUN, never at load (see WORKERS_PLACEHOLDER); the gate's own process and
+        # its parent never count as "another" pytest session.
+        workers = (
+            _pytest_sessions.pytest_worker_count(own_pids={os.getpid(), os.getppid()})
+            if spec.wants_worker_count
+            else None
+        )
         with tempfile.TemporaryDirectory() as work_dir:
             junit_xml = Path(work_dir) / "junit.xml" if needs_junit else None
             completed = subprocess.run(
-                spec.resolved_command(junit_xml),
+                spec.resolved_command(junit_xml, workers),
                 cwd=self.repo_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -1462,7 +1607,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "pytest_args",
         nargs="*",
-        help="extra arguments forwarded to the pytest gate",
+        help=(
+            "extra arguments forwarded to the pytest gate (after --). A worker count is not "
+            "forwardable: the fleet policy (_pytest_sessions.pytest_worker_count) renders its -n "
+            "as the LAST worker flag, and a forwarded -n / --numprocesses is refused (exit 2). "
+            "Other xdist options pass through unchecked (--maxprocesses can only lower the count)"
+        ),
     )
     return parser
 
@@ -1494,7 +1644,16 @@ def _typecheck_gate(manifest: GateManifest) -> GateSpec:
 def _run_selected_gates(
     runner: GateRunner, manifest: GateManifest, legs: Sequence[str], pytest_args: Sequence[str]
 ) -> dict[str, MypyRun | RuffRun | PytestRun]:
-    """Execute each selected manifested gate and read it. Keyed by gate id."""
+    """Execute each selected manifested gate and read it. Keyed by gate id.
+
+    ``pytest_args`` are appended to the junit-reader (pytest) gate's command alone; the fleet
+    policy's ``-n <count>`` is then rendered AFTER them (``GateSpec.resolved_command``), so the
+    policy is always the last worker flag. Forwarded args carrying a worker count that
+    :func:`_hardcoded_worker_counts` recognises are REFUSED with
+    :class:`ForwardedWorkerCountError` before ANY gate spawns — a usage error found after
+    minutes of typecheck would read like a half-run (lore #503, lead ruling 2).
+    """
+    _refuse_forwarded_worker_counts(pytest_args)
     results: dict[str, MypyRun | RuffRun | PytestRun] = {}
     for gate_id in legs:
         spec = manifest.gate(gate_id)
@@ -1504,6 +1663,22 @@ def _run_selected_gates(
             )
         results[gate_id] = read_gate(runner.run(spec))
     return results
+
+
+def _refuse_forwarded_worker_counts(pytest_args: Sequence[str]) -> None:
+    """Raise :class:`ForwardedWorkerCountError` if ``pytest_args`` carry an xdist worker count.
+
+    Routes through the ONE recogniser, :func:`_hardcoded_worker_counts`, looked up at call time.
+    """
+    hardcoded = _hardcoded_worker_counts(pytest_args)
+    if hardcoded:
+        policy = _pytest_sessions.pytest_worker_count
+        raise ForwardedWorkerCountError(
+            f"the forwarded pytest args {list(pytest_args)} carry an xdist worker count "
+            f"{hardcoded} — the gate's worker count is decided by the fleet policy "
+            f"({policy.__module__}.{policy.__name__}), rendered as the LAST worker flag. "
+            f"Drop the {XDIST_WORKERS_SHORT_FLAG} / {XDIST_WORKERS_LONG_FLAG} argument (lore #503)."
+        )
 
 
 def _currencies_for(
@@ -1689,14 +1864,20 @@ def _dispatch(arguments: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Exit 0 = accounted for · 1 = a failing verdict · 2 = a BROKEN INSTRUMENT.
+    """Exit 0 = accounted for · 1 = a failing verdict · 2 = no measurement happened.
+
+    Exit 2 covers a BROKEN INSTRUMENT, a MANIFEST or REGISTRY error, and a REFUSED ARGUMENT.
 
     The three are distinguished because they demand different actions: 1 means
-    read the residuals, 2 means the measurement itself did not happen.
+    read the residuals, 2 means the measurement itself did not happen (a refused
+    forwarded worker count included — no gate was spawned).
     """
     arguments = _build_parser().parse_args(argv)
     try:
         return _dispatch(arguments)
+    except ForwardedWorkerCountError as error:
+        print(f"REFUSED ARGUMENT: {error}", file=sys.stderr)
+        return 2
     except ManifestError as error:
         print(f"MANIFEST ERROR: {error}", file=sys.stderr)
         return 2

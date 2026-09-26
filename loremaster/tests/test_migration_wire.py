@@ -71,6 +71,14 @@ pytestmark = pytest.mark.wire
 
 _DIM = PRODUCTION_DIM  # the voyage-4-nano production curve dim the probe gate matches.
 _SURREAL_TEST_NAMESPACE = "lore_test"
+# The startup budget for the heavy migration-wire server (lore #503, operator ruling 2026-09-26):
+# the full lifespan against the test store (99.4% of it in ``build_app_context``, store-bound) is
+# far slower than the light callers ``loopback.DEFAULT_STARTUP_TIMEOUT_S`` (15 s, unchanged) is
+# sized for. DERIVATION: 60 s is ~6 x (5.98 x) the measured heavy max 10.04 s (n=551 starts,
+# p99 9.85 s; REPORT-measure-503.md, commit 388c604), and exactly 4 x the 15 s censoring bound of
+# the failing regime. RE-OPEN TRIGGER: the first ServerStartupTimeout at 60 s, or the first
+# recorded heavy start >= 30 s.
+MIGRATION_WIRE_STARTUP_TIMEOUT_S: float = 60.0
 # The Bearer credential the wire authenticates with. ⚠ RE-CUT (packet 39 wave 3,
 # builder-39-w23): the recut moved LAN api-key auth OFF ``config.keys`` (the retired
 # BearerAuthMiddleware/ApiKeyVerifier path) and ONTO the ``principal_key`` table via
@@ -378,7 +386,7 @@ async def _serve_migration_wire(
         # session can take the port between a probe-close and uvicorn's rebind, and a failed start
         # names its cause (bind / startup timeout / thread crash). ``lifespan="on"`` stays forced
         # inside the helper (the FG1 guard).
-        with serve_asgi(app) as served:
+        with serve_asgi(app, startup_timeout_s=MIGRATION_WIRE_STARTUP_TIMEOUT_S) as served:
             yield _MigrationWire(
                 base_url=served.base_url,
                 path=config.server.path,

@@ -43,6 +43,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pending_contract_gate  # noqa: E402  (scripts/ is not a package — the shared junit reader)
 
+# The ONE fleet detector (lore #503): re-exported, never copied — `other_pytest_sessions` here IS
+# `_pytest_sessions.other_pytest_sessions`, shared with the currency gate's worker policy. The
+# redundant alias is PEP 484's explicit re-export (mypy strict: no implicit re-export).
+from _pytest_sessions import other_pytest_sessions as other_pytest_sessions  # noqa: E402, PLC0414
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TARGET = "loremaster/tests/test_migration_wire.py"
 DEFAULT_ROUNDS = (
@@ -52,7 +57,6 @@ DEFAULT_WORKERS = 4
 DEFAULT_PROCESS_TIMEOUT_S = 900.0
 CONCURRENT_SESSIONS = 2
 TAIL_LINES = 40
-PROC_ROOT = Path("/proc")
 # The junit family whose failing testcases carry ``file`` — the shared reader refuses anything else.
 JUNIT_FAMILY_OPTION = "junit_family=xunit1"
 
@@ -222,22 +226,6 @@ def run_as_process_group(argv: Sequence[str], *, timeout_s: float) -> subprocess
             _kill_process_group(session)
             raise
     return subprocess.CompletedProcess(argv, session.returncode, stdout, stderr)
-
-
-def other_pytest_sessions(*, proc_root: Path = PROC_ROOT, own_pids: set[int]) -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` of every live process whose argv mentions pytest, excluding ``own_pids``."""
-    sessions: list[tuple[int, str]] = []
-    for entry in sorted(proc_root.iterdir(), key=lambda path: path.name):
-        if not entry.name.isdigit() or int(entry.name) in own_pids:
-            continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:  # the process exited between the listing and the read
-            continue
-        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
-        if any("pytest" in part for part in argv):
-            sessions.append((int(entry.name), " ".join(argv)))
-    return sessions
 
 
 class ConcurrentPairDriver:
