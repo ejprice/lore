@@ -1245,3 +1245,9 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
   - `scripts/concurrent_wire_acceptance.py` (#466, `37de0a7`) breaks the anchored-pattern seam → folded into the #466 GREEN phase.
   - Lesson: a committed script needs the repo-wide invariant tests, not just its own.
 - **Pre-existing, surfaced:** `scripts/esc1_write_path_cycle_closure.py` exits 1 at HEAD since #174 (`[boundary-5] successor is born with NO dependencies`) and breaks post-58 typecheck. Owner: 58's build (the exact edit is in contract-58 §FLAGS 1).
+
+### 2026-09-26 — 58 am-3 (`7266c1b`) ruled adversary-58's items; contract-58-r2 spawned; #466 at GREEN
+- **58 am-3 (sidecar-64 Task 10, none MAJOR):** (1) erratum: heal chunks sized by their own composed count via ONE shared counter; (2) store faults LOUD (FAILS_LOUD sweep unedited), only domain rejections isolated, order backfill → heal; (3) claim loss = typed `claim_lost` at DEBUG; (4) refuse only cycles through X'; (5) phantom head skipped + recorded; SD1–SD3 (`claim_task` joins `_GUARDED_CAS_DOORS`). Attribution-clean.
+- **contract-58-r2 spawned:** MP1–MP18, SD1–SD3, am-2/am-3, AST-equal probes, SAT with every red adjudicated, §HELD re-derived over the 63c patch.
+- **#466:** Phase 3 RED verified by the lead (32/32 NotImplementedError; 0 structural). Stubs committed `fe45d1a`. **impl-466 (Phase 4 GREEN)** spawned: helper via uvicorn `sockets=` + HTTPServer, `include_testpaths`, the 4 copies switched + deleted, and the `concurrent_wire_acceptance.py` seam red.
+- **fix-restore-seams** (the 5+1 seam reds from `restore_prod_dump.py`) running.
