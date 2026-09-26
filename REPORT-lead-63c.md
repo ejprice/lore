@@ -911,3 +911,18 @@ The cold audit is running in parallel; the lead will merge its findings with thi
 - **Build CHECKPOINT-COMMITTED at `84af63f`** — lead decision, flagged to the operator. The audited tree = patch md5 `5ed71294…` (re-verified before commit). The commit message states NO-GO and names the defects. **Why:** the fix-wave contract edits test files that carried uncommitted builder hunks. A path-scoped commit would have swept them in unaudited, and the commit-at-boundaries law says the tree must never be the only copy. **The wave is NOT closed:** the INDEX "63c-i-a CLOSED" line waits for a re-audit GO.
 - Cold auditor retired.
 - NEXT: `contract-63c-i-a-a19` (§W 1–5 + CA-1; RED at `84af63f` for the right reason; SAT reference) → NARROW adversary (warranted per amendment 19) → builder fix (+ builder-only items F-8, F-5, F-7, R-4) → cold-audit re-run → lead commit → INDEX.
+
+### 2026-09-25 — contract a19 COMMITTED (`77d9146`); narrow adversary spawned; Task 20 (three readings) → sidecar
+- a19 pins amendment 19 §W 1–5 plus CA-1. The author's claims, which the adversary re-derives:
+  - 29 RED at `84af63f`, each on its defect;
+  - SAT full suite ALONE `-n 12` on a lint-clean reference: `11529 passed / 62 skipped / 3 xfailed / 0 failed`;
+  - 13 mutation proofs HELD;
+  - no yaml entry needed.
+  No attribution trailer (checked). Author retired.
+- **SIDECAR TASK 20 — sidecar-63c-2, please confirm or overrule the author's three readings (`REPORT-contract-63c-i-a-a19.md` §8):**
+  1. An operator-only owned-but-unscoped store is still REFUSED at i-a; its diagnosis names the operator and E3, never "multi-principal"; the pin carries a bound note for E3's trigger.
+  2. The principal-naming bound = `_REFUSAL_ID_SAMPLE_SIZE`.
+  3. The shared function is `_agent_migration_preconditions(store)`; only its name and the StoreHandle argument are pinned.
+  Also §8.4 (a stated bound): which refusal wins when an owned-but-unscoped store also has an unresolvable operator is unpinned.
+  The adversary grades the contract as committed and reports any wrong build that survives only under one reading.
+- NEXT: `adversary-63c-i-a-a19` over `84af63f..77d9146` → builder fix → cold-audit re-run.
