@@ -197,3 +197,18 @@ brief project v7 read
   control on a throwaway `:18000` DB) was permission-denied at the secrets-env read; the entry carries
   probe-64's `[PROBED 2026-09-26, 3.2.4]` provenance, not mine.
 - **Graded:** `80409f4` · HEAD-at-report: `aa1d3d6` · DIFFERENT (my own commit). Standing by.
+
+## Task 9 (2026-09-26) — packet 64 amendment 5 committed `9fd34d3`
+
+- **state:** done — **REFUTED:** amendment 1 §4's keep row governs keeps kept by the principal being
+  deleted only; the standalone `lore-adm delete-keep` (`KeepStore.delete_keep`) cascades `member_of` and
+  leaves every keep-scoped governed row carrying `scope = keep:<dead id>` — invisible to every member,
+  admin-only, silently (the class 63c am-28 §E names is LIVE at HEAD for memory/message rows). **Ruled
+  into 64d-ii:** `delete-keep` takes the same required choice (`--delete-obj | --archive-obj |
+  --change-scope <keep:id>`), required iff scoped rows exist (a zero-row keep deletes as today); ONE
+  disposition engine `dispose_population(RowPredicate ∈ {OwnedBy(principal), ScopedTo(keep)})` drives
+  BOTH verbs (per-table pre-checks, statements, audit rows, receipts, preview written once —
+  mutation-proven: drop one refusal → both verbs red); `KeepStore.delete_keep` gains a refuse-when-
+  populated guard so a non-CLI caller cannot orphan; the docstring's forward boundary is discharged.
+  64d-ii grows ≈0.03; not MAJOR. #488 annotated.
+- **Graded:** `eb75f57` · HEAD-at-report: `9fd34d3` · DIFFERENT (my own commit). Standing by.
