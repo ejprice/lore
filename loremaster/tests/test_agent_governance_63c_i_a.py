@@ -875,6 +875,15 @@ class TestAgentMigrateScopeKeyed63cIA:
         # ``below-cap`` population) and leaves a phantom "1" — a correct refusal false-REDs (r4b-fix SAT leg,
         # measured on both reference shapes before this order was fixed).
         residue = re.sub(r"§\d+(?:\.\d+)*", " ", residue)
+        # a19 (amendment 19 D-3 F-1): the derived diagnosis QUOTES citations — "registered by a pkt-62–63b
+        # image; see amendment-1 E3" is the ruling's own wording — and a citation is a handle, never a count.
+        # Stripped by SHAPE (each named, none a bare number): a finding ``#484``, a hyphenated document handle
+        # ``pkt-62–63b`` / ``amendment-1`` / ``F-1``, a lettered item ``E3``. A standalone integer still
+        # counts. ⚠ BOUND: a count glued into such a shape ("10-ids") would escape — no honest render
+        # writes one.
+        residue = re.sub(r"#\d+", " ", residue)
+        residue = re.sub(r"\b[A-Za-z]+-\d+[a-z]?(?:[–-]\d+[a-z]?)*", " ", residue)
+        residue = re.sub(r"\b[A-Z]\d+\b", " ", residue)
         residue = re.sub(rf"\b{full_count}\b", " ", residue)
         return [int(token) for token in re.findall(r"\d+", residue)]
 
@@ -884,7 +893,13 @@ class TestAgentMigrateScopeKeyed63cIA:
     # at N > cap it contradicted the ruled bound (arithmetic alignment — adversary-r2 MP-C / N3).
     # r4 (amendment-6 MP-2): a FOURTH population, ``perturbed-bound`` — the mutation leg (additive; no pin
     # deleted, so no DUAL row).
-    @pytest.mark.parametrize("trap_population", ["below-cap", "at-cap", "above-cap", "perturbed-bound"])
+    # a19 (amendment 19 D-3 F-1): two OWNER populations join — ``operator-owned`` (the E3 / pkt-62→63b image
+    # population: owner = the operator, scope NONE) and ``mixed-owners`` (above the cap, owners cycling the
+    # operator and TWO foreign principals). Additive (no population deleted, so no DUAL row for the list).
+    @pytest.mark.parametrize(
+        "trap_population",
+        ["below-cap", "at-cap", "above-cap", "perturbed-bound", "operator-owned", "mixed-owners"],
+    )
     async def test_R_Q5_1_the_row_precondition_refuses_an_owned_but_unscoped_agent(
         self, agent_migrate_world: Any, trap_population: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -959,9 +974,20 @@ class TestAgentMigrateScopeKeyed63cIA:
         pkt 62; pkt-65 ships 62+63 in one image, and under 63c code every register stamps all three
         columns). RE-OPEN TRIGGER: *"a pkt-62-through-63b image deployed before the 63c cutover."* If it
         fires, the precondition narrows to ``… AND owner_principal != <the resolved operator>`` and
-        operator-owned NONE-scope rows are stamped scope + owner_agent only. THEREFORE every trap row
-        here is owned by a principal that is NOT the operator — this pin must never assert a refusal
-        over an operator-owned row, or it would red the trigger's own remedy (amendment-2 §B conflict 2)."""
+        operator-owned NONE-scope rows are stamped scope + owner_agent only.
+        DUAL (a19, amendment 19 D-3 F-1 — RE-KEYED, deliberately): the r2-r4 rule "every trap row is owned by
+        a principal that is NOT the operator — never assert a refusal over an operator-owned row" is
+        RETIRED. Amendment 19 D-3: "the R-Q5-1 fixture gains an operator-owned trap population and the served
+        text is asserted per population" — E3's narrowing stays DEFERRED as ruled (measure-then-tune), so
+        at i-a an operator-owned NONE-scope row IS refused; what must not lie is the DIAGNOSIS. The
+        ``operator-owned`` population therefore pins (a) the refusal and (b) the operator diagnosis. ⚠ PINNED
+        BOUND: the day E3's trigger fires and the precondition is narrowed DELIBERATELY, the
+        ``operator-owned`` refusal assertion is the one to change (and ``mixed-owners`` keeps refusing on its
+        foreign rows) — say so in that wave's DUAL.
+        a19 (amendment 19 D-3 F-1 — the DERIVED diagnosis, every population): the fixed phrase
+        "multi-principal or half-applied" is never served; an operator-owned offender is diagnosed as owned
+        by the operator (the ruling's wording: "owned by the operator — … see amendment-1 E3"); foreign
+        offenders are diagnosed by NAMING their principals, bounded by ``_REFUSAL_ID_SAMPLE_SIZE``."""
         principal_store, keep_store, connection, env, operator_bare = agent_migrate_world
         id_bound = principals._REFUSAL_ID_SAMPLE_SIZE  # the NAMED bound (MP-C) — derived, never restated
         assert isinstance(id_bound, int) and not isinstance(id_bound, bool) and id_bound >= 1, (
@@ -977,6 +1003,8 @@ class TestAgentMigrateScopeKeyed63cIA:
             "at-cap": id_bound,
             "above-cap": id_bound + 15,
             "perturbed-bound": id_bound + 15,
+            "operator-owned": 2,
+            "mixed-owners": id_bound + 3,
         }[trap_population]
         legacy_count = 3
         if trap_population == "perturbed-bound":
@@ -1023,12 +1051,15 @@ class TestAgentMigrateScopeKeyed63cIA:
         )
         await self._seed_clean_legacy(connection, count=legacy_count)
         trap_ids = [f"owned_trap_{trap_index:03d}" for trap_index in range(trap_count)]
-        for trap_index, trap_id in enumerate(trap_ids):
-            # NONE scope but a NON-NONE owner that is NOT the operator (E3: never pin the operator case).
+        trap_owners = self._trap_owners(trap_population, operator_bare=operator_bare, trap_count=trap_count)
+        for trap_index, (trap_id, owner) in enumerate(zip(trap_ids, trap_owners, strict=True)):
+            # NONE scope but a NON-NONE owner (a19: the owner is population-derived — see ``_trap_owners``).
             await seed_agent_governed(
                 connection, row_id=trap_id, name=f"owned-legacy-{trap_index}", session="dead-session",
-                owner_principal=f"other_principal_{trap_index}", owner_agent=None, scope=None,
+                owner_principal=owner, owner_agent=None, scope=None,
             )
+        foreign_owners = sorted({owner for owner in trap_owners if owner != operator_bare})
+        operator_owned_count = sum(1 for owner in trap_owners if owner == operator_bare)
         before = await run(connection, f"SELECT * FROM {AGENT_TABLE} ORDER BY id")
         result = await _migrate_agent(
             connection, env, keep_store=keep_store, principal_store=principal_store
@@ -1086,6 +1117,13 @@ class TestAgentMigrateScopeKeyed63cIA:
             already_migrated_count,
             result.backfilled,
             trap_count + legacy_count + already_migrated_count,
+            # a19 (F-1): the derived diagnosis may state the TRUE per-owner-class counts — offenders owned by
+            # the operator, offenders owned by others, the distinct foreign principals and how many of them
+            # are named (bounded by the same constant).
+            operator_owned_count,
+            trap_count - operator_owned_count,
+            len(foreign_owners),
+            min(id_bound, len(foreign_owners)),
         }
         assert birth_bound == shown_count or birth_bound not in admitted_counts, (
             f"fixture self-check: the birth value {birth_bound} is an admitted TRUE count "
@@ -1103,6 +1141,13 @@ class TestAgentMigrateScopeKeyed63cIA:
             f"size is the number of ids ACTUALLY named, min(_REFUSAL_ID_SAMPLE_SIZE, count), never the "
             f"constant itself (amendment 13 §F-1 / adversary-r4b PXlie: '(first 10 of 2 ids shown)'): "
             f"{reason[:400]!r}"
+        )
+        # a19 (amendment 19 D-3 F-1): the DIAGNOSIS is DERIVED from the rows, per population.
+        self._assert_the_derived_diagnosis(
+            reason,
+            foreign_owners=foreign_owners,
+            operator_owned_count=operator_owned_count,
+            id_bound=id_bound,
         )
         if trap_population == "perturbed-bound":  # r4a (amendment-9 MP-R4-7): the PROSE follows the constant
             assert birth_bound not in stated_integers, (
@@ -1124,6 +1169,60 @@ class TestAgentMigrateScopeKeyed63cIA:
             # to a phrase regex is another phrase a correct build can trip. The birth-value leg above is what
             # kills PX2 (measured, adversary-r4a §4.1); a third, unrelated wrong number is not a two-sources-
             # of-one-policy defect and is not ruled.
+
+    @staticmethod
+    def _trap_owners(trap_population: str, *, operator_bare: str, trap_count: int) -> list[str]:
+        """The owner of each trap row. Foreign populations: a DISTINCT non-operator principal per row.
+        a19 (amendment 19 D-3 F-1): ``operator-owned`` — every trap is the OPERATOR's (the E3 population);
+        ``mixed-owners`` — cycling the operator and TWO foreign principals (≥2 foreign, no monoculture)."""
+        if trap_population == "operator-owned":
+            return [operator_bare] * trap_count
+        if trap_population == "mixed-owners":
+            cycle = (operator_bare, "foreign_principal_a", "foreign_principal_b")
+            return [cycle[trap_index % len(cycle)] for trap_index in range(trap_count)]
+        return [f"other_principal_{trap_index}" for trap_index in range(trap_count)]
+
+    @staticmethod
+    def _assert_the_derived_diagnosis(
+        reason: str, *, foreign_owners: list[str], operator_owned_count: int, id_bound: int
+    ) -> None:
+        """a19 (amendment 19 D-3 F-1): the refusal's diagnosis is DERIVED from the offending rows' owners —
+        never the fixed phrase; the operator's rows are named as the operator's (the E3 wording), other
+        principals are NAMED, bounded by ``_REFUSAL_ID_SAMPLE_SIZE``."""
+        assert "multi-principal or half-applied" not in reason, (
+            "F-1: the refusal serves the FIXED diagnosis 'multi-principal or half-applied' — it must say WHO "
+            f"owns the offending rows (the operator, or named other principals): {reason!r}"
+        )
+        named_foreign = [
+            owner for owner in foreign_owners if re.search(rf"(?<![\w]){re.escape(owner)}(?![\w])", reason)
+        ]
+        if operator_owned_count:
+            assert "owned by the operator" in reason and "E3" in reason, (
+                f"F-1: {operator_owned_count} offender(s) are owned by THE operator (the pkt-62→63b image "
+                "population) — the refusal must say so (amendment 19 D-3: 'owned by the operator — "
+                f"registered by a pkt-62–63b image; see amendment-1 E3'): {reason!r}"
+            )
+        else:
+            assert "owned by the operator" not in reason, (
+                f"F-1: no offender is owned by the operator, yet the refusal says one is: {reason!r}"
+            )
+        if not foreign_owners:
+            assert "multi-principal" not in reason.lower(), (
+                "F-1: every offender is the OPERATOR's — the store is NOT multi-principal, and a refusal "
+                f"saying it is sends the operator hunting for a principal that does not exist: {reason!r}"
+            )
+        elif len(foreign_owners) <= id_bound:
+            assert sorted(named_foreign) == foreign_owners, (
+                f"F-1: the refusal must NAME every one of the {len(foreign_owners)} other principals "
+                f"owning the offenders (≤ _REFUSAL_ID_SAMPLE_SIZE={id_bound}); it named {named_foreign}: "
+                f"{reason[:500]!r}"
+            )
+        else:
+            assert 1 <= len(named_foreign) <= id_bound, (
+                f"F-1: above the bound the refusal names a SAMPLE of the {len(foreign_owners)} other "
+                f"principals — at least one, at most _REFUSAL_ID_SAMPLE_SIZE={id_bound}; it named "
+                f"{len(named_foreign)}: {reason[:500]!r}"
+            )
 
     async def test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy(
         self, agent_migrate_world: Any
@@ -1336,13 +1435,26 @@ def _statement_shape(statement: str) -> str:
     return re.sub(r"\s*=\s*", " = ", shaped)
 
 
+#: amendment 19 D-1 (F-3, TOCTOU): the backfill is SELF-GUARDING — it stamps only a row that is BOTH
+#: unscoped AND ownerless, so a row that became owned-but-unscoped between the verb-level precondition
+#: read and this write is never re-owned to the operator. Either conjunct order is the same statement.
+_BACKFILL_WHERE_CLAUSES = (
+    "WHERE SCOPE IS NONE AND OWNER_PRINCIPAL IS NONE",
+    "WHERE OWNER_PRINCIPAL IS NONE AND SCOPE IS NONE",
+)
+
+
 def _assert_the_backfill_statement_shape(statement: str) -> None:
     """§6: the agent backfill is ONE scope-keyed UPDATE that SETs all three governed columns — asserted
-    on the R-6-normalised shape."""
+    on the R-6-normalised shape. DUAL (a19, amendment 19 D-1 F-3 — the golden CHANGED deliberately, the
+    contract author owns it): the r3 shape ended ``WHERE scope IS NONE``; it now ends with the
+    self-guarding ``WHERE scope IS NONE AND owner_principal IS NONE`` (either order). Virtue kept: it is
+    still ONE UPDATE, scope-keyed (the owner-only WHERE is still refused), all three columns SET."""
     shaped = _statement_shape(statement)
-    upper = shaped.upper()
-    assert upper.startswith(f"UPDATE {AGENT_TABLE.upper()} ") and upper.endswith("WHERE SCOPE IS NONE"), (
-        f"the agent backfill must be ONE scope-keyed UPDATE (§6), got {statement!r}"
+    upper = re.sub(r"\s+", " ", shaped.upper())
+    assert upper.startswith(f"UPDATE {AGENT_TABLE.upper()} ") and upper.endswith(_BACKFILL_WHERE_CLAUSES), (
+        f"the agent backfill must be ONE scope-keyed, SELF-GUARDING UPDATE (§6 + amendment 19 F-3: "
+        f"'WHERE scope IS NONE AND owner_principal IS NONE'), got {statement!r}"
     )
     for column in ("owner_principal", "owner_agent", "scope"):
         assert f"{column} = " in shaped, (
@@ -1356,9 +1468,10 @@ class TestTheBackfillShapeAssertNormalisesSpellingNeverWidens63cIA:
     of the CORRECT statement pass (trailing ``;``, ``col=$v`` without spaces, extra whitespace); the WRONG
     statements still fail (owner-keyed WHERE, a missing column, a missing WHERE — WB2's shape)."""
 
+    # DUAL (a19, amendment 19 F-3): the canonical statement gains the self-guarding owner conjunct.
     _CORRECT = (
         "UPDATE agent SET owner_principal = type::record('principal', $owner), owner_agent = id, "
-        "scope = $scope WHERE scope IS NONE"
+        "scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
     )
 
     @pytest.mark.parametrize(
@@ -1366,6 +1479,13 @@ class TestTheBackfillShapeAssertNormalisesSpellingNeverWidens63cIA:
         [
             pytest.param(_CORRECT, id="canonical"),
             pytest.param(_CORRECT + ";", id="trailing-semicolon"),
+            pytest.param(
+                _CORRECT.replace(
+                    "WHERE scope IS NONE AND owner_principal IS NONE",
+                    "WHERE owner_principal IS NONE AND scope IS NONE",
+                ),
+                id="conjuncts-in-either-order",
+            ),
             pytest.param(_CORRECT.replace(" = ", "="), id="no-spaces-around-equals"),
             pytest.param(_CORRECT.replace(" ", "  ") + " ;", id="doubled-whitespace-and-spaced-semicolon"),
         ],
@@ -1377,10 +1497,19 @@ class TestTheBackfillShapeAssertNormalisesSpellingNeverWidens63cIA:
         "wrong",
         [
             pytest.param(
-                _CORRECT.replace("WHERE scope IS NONE", "WHERE owner_principal IS NONE"), id="owner-keyed"
+                _CORRECT.replace(
+                    "WHERE scope IS NONE AND owner_principal IS NONE", "WHERE owner_principal IS NONE"
+                ),
+                id="owner-keyed",
             ),
             pytest.param(_CORRECT.replace("owner_agent = id, ", ""), id="two-of-three-columns"),
-            pytest.param(_CORRECT.replace(" WHERE scope IS NONE", ""), id="no-where-WB2"),
+            pytest.param(
+                _CORRECT.replace(" WHERE scope IS NONE AND owner_principal IS NONE", ""), id="no-where-WB2"
+            ),
+            # a19 (amendment 19 F-3): the 84af63f statement — scope-keyed but NOT self-guarding (TOCTOU).
+            pytest.param(
+                _CORRECT.replace(" AND owner_principal IS NONE", ""), id="scope-only-not-self-guarding-F3"
+            ),
         ],
     )
     def test_a_wrong_statement_still_fails(self, wrong: str) -> None:

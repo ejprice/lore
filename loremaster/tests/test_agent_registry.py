@@ -86,7 +86,11 @@ from uuid import NAMESPACE_URL, uuid5
 import pytest
 import pytest_asyncio
 from _comms_fakes import FakeAgentDatabase, FakeAgentRegistry
-from _governed_contract import identity_sweep_miss_message, patch_shared_object_everywhere
+from _governed_contract import (
+    credentialed_app_context,
+    identity_sweep_miss_message,
+    patch_shared_object_everywhere,
+)
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealConnection,
@@ -1069,8 +1073,11 @@ _LEGAL_SESSION = SESSION_WAVE7  # "wave7" — a DIFFERENT value from the name (p
 #: effect legs in ``TestTheTrafficLineSkipGateMovesWithTheSharedDecision63cIA``.
 _IDENTIFIER_DECISION_CONSUMERS = ("register", "refuse-policy", "skip-policy", "fake")
 #: The consumers of the ONE blank-role decision (``lorerunes.is_blank``): the writer and — amendment-3
-#: F-2's third consumer leg — the fake that substitutes it in every fake-driven test.
-_BLANK_ROLE_DECISION_CONSUMERS = ("register", "fake")
+#: F-2's third consumer leg — the fake that substitutes it in every fake-driven test. a19 (amendment 19
+#: D-2): the credentialed register HANDLER (``AppContext.comms(action="register")``), which must refuse a
+#: blank role BEFORE the session-keep mint — "two consumers, one predicate, proven by the existing
+#: shared-decision mutation pin gaining the handler leg".
+_BLANK_ROLE_DECISION_CONSUMERS = ("register", "fake", "handler")
 
 
 class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
@@ -1344,7 +1351,7 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
     # axis; its register leg is unchanged, the FAKE leg is new (GREEN at HEAD — ``is_blank`` exists).
     @pytest.mark.parametrize("consumer", _BLANK_ROLE_DECISION_CONSUMERS)
     async def test_the_blank_role_rule_is_the_SHARED_is_blank(
-        self, monkeypatch: pytest.MonkeyPatch, consumer: str
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, consumer: str
     ) -> None:
         """⚠ RED before i-a (register leg) — ROUTING IS NOT SHARING (A4 / MP-9c, WB13: a private
         ``role.strip()`` passed every r1 pin). Perturb the SHARED ``lorerunes.is_blank`` — every
@@ -1354,6 +1361,45 @@ class TestQ3RegisterValidatesIdentityBeforeStoreIO63cIA:
         import lorerunes
 
         shared_is_blank = lorerunes.is_blank
+        if consumer == "handler":
+            # a19 (amendment 19 D-2) — ⚠ RED at 84af63f: the handler mints the session keep BEFORE any
+            # blank-role decision, so a register refused by the MUTATED is_blank (the registry refuses it)
+            # still leaves a ``session:<s>`` keep behind. The EFFECT that proves the HANDLER decided
+            # (rather than only the registry below it): no keep minted for the refused session.
+            async with credentialed_app_context(
+                monkeypatch, tmp_path, principals={"alice": "member"}, dim=8
+            ) as world:
+                ctx, admin_conn = world["ctx"], world["admin_conn"]
+                world["holder"]["email"] = world["emails"]["alice"]
+                await ctx.comms(
+                    action="register", agent="baseline-agent", session="wave-base", role=ROLE_BUILDER
+                )
+                baseline_keeps = await run(
+                    admin_conn, "SELECT VALUE key FROM keep WHERE key = 'session:wave-base'"
+                )
+                assert baseline_keeps == ["session:wave-base"], (
+                    f"BASELINE: a valid credentialed register must mint its session keep: {baseline_keeps!r}"
+                )
+                patched = patch_shared_object_everywhere(
+                    monkeypatch,
+                    "is_blank",
+                    shared_is_blank,
+                    lambda value: value == ROLE_BUILDER or shared_is_blank(value),
+                )
+                with pytest.raises(AgentRegistryError):
+                    await ctx.comms(
+                        action="register", agent=_LEGAL_NAME, session="wave-mut", role=ROLE_BUILDER
+                    )
+                minted = await run(admin_conn, "SELECT VALUE key FROM keep WHERE key = 'session:wave-mut'")
+                if minted:
+                    pytest.fail(
+                        identity_sweep_miss_message(
+                            "the register HANDLER's blank-role refusal (it minted the session keep first)",
+                            patched,
+                        )
+                        + f" — keeps: {minted!r}"
+                    )
+            return
         if consumer == "fake":
             fake = FakeAgentRegistry()
             await fake.register("baseline-agent", session=_LEGAL_SESSION, role=ROLE_BUILDER)
