@@ -1121,3 +1121,9 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **F0 = design + contract AHEAD of 63c.** `sidecar-64` (a new Fable, separate from `sidecar-63c-2` so 63c queries never queue behind 64) rules 64's kickoff forks F1–F9 (+ #417). Then the 64b (findings) contract → adversary, NEW test files only. Edits to 63c-shared files are held as a written integration patch; SAT re-runs on the final 63c base. Every 64 build stays serial after 63c. Pytest stays single-lane — 63c's runs have priority.
 - **Pool 30 = 58 FIRST.** 64a (tasks) waits on 58. **58 has no lead yet** — surfaced to the operator.
 - Brief: scratchpad `brief-sidecar-64.md`.
+
+### 2026-09-26 — 64 kickoff rulings committed (`e5fa7f9`, sidecar-64); OPERATOR RULINGS on OF-1/3/4, OF-2 pending
+- **OF-1 = (A):** tasks default to the PROJECT keep. `scope=principal-private` is an explicit, PDP-validated request. 64a is unblocked on this axis; it still waits on 58.
+- **OF-4 = ACCEPT, pinned:** the global finding `number` count-leak bound carries into a hosted 65, with the served sentence and a re-open trigger (§10).
+- **OF-3 = OPERATOR DIRECTIVE (neither offered option), verbatim intent:** principal/owner deletion takes a REQUIRED choice of `--delete-obj` | `--archive-obj` | `--change-owner <target>`. **The designer decides how archive works.** Archived objects are RETAINED but HIDDEN unless specifically requested. This replaces the sidecar's §10.7-Z orphaning (64d). Relayed to sidecar-64 as **Task 2** (amendment doc): the verb shape, archive semantics (store representation, read-filter default, the "show archived" request surface, served counts/labels per the trust doctrine), per-table behaviour, the #404 and #488 interaction, 64d sizing, riders.
+- **OF-2 = operator asked for more info** — explained, answer pending. The 64b contract waits on OF-2, because F5 changes findings' `created_by`/`actor` args.
