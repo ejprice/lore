@@ -533,7 +533,7 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
   derived one, as those two scanners were: a site that reads
   `[tool.uv.workspace] members` stops being a registration site at all.
 
-### The instrument lesson (six defeats, one shape — the most expensive thing we learned)
+### The instrument lesson (seven defeats, one shape — the most expensive thing we learned)
 | instrument | keyed on | defeated by |
 |---|---|---|
 | retry gate | a label's **literal** | a substring of it |
@@ -542,6 +542,7 @@ A rune is the atomic mark a sigil is composed from, so the name states the depen
 | SDK gate | **3 method names** | the other 30 (`upsert`: 31 conflicts / 64 live attempts) |
 | SDK gate | **2 receiver names** | six other doors |
 | runtime gate | **the 4 tests that armed it** (its REACH) | a path no test executed |
+| runtime-refusal reach | the raise **SHAPE** in an AST walk | the package's own factory-raise idiom, and a new raise site of a covered class (63c amendment 24 — the property was runtime all along: *a refused register mints nothing*) |
 
 **When you catch yourself enumerating what is FORBIDDEN, you have already lost.** The forbidden
 set is unbounded; the SAFE set is small and enumerable. **Allowlist the safe.** When even that
@@ -556,13 +557,13 @@ runs, 16-way; a range, not a point — audit-fix-1 A4 / blindreader-dry-2 F4 cau
 own earlier "13%" as a fourth, unreproducible value alongside two production comments' "16.2%").
 
 **THE ASKABLE FORM, so this lesson installs itself instead of being re-learned a seventh time
-(INSTRUMENT 0, lore #344/#345, 2026-08-09).** All six defeats are ONE class — *a guard certifies
+(INSTRUMENT 0, lore #344/#345, 2026-08-09).** All seven defeats are ONE class — *a guard certifies
 only the sites it EXECUTES over, and its reach is written as a hidden constant instead of a
 checked variable.* Before shipping ANY guard / gate / scan / sweep, ask it of your own instrument:
 ***"What is the SET of sites this guard covers, is that set DERIVED from production truth or a
 name/prefix/hand-list, and does a test go RED when the derived set GROWS but the observed set does
 not? — and would this pin still read as success if the guard ran AFTER the thing it guards, or
-against a baseline that measured nothing?"*** A reach that is a hidden constant is the seventh
+against a baseline that measured nothing?"*** A reach that is a hidden constant is the eighth
 defeat waiting to happen. This is a QUESTION, not a property to remember (per THE LEVER), and it
 has a MECHANICAL home so it is not only a hope: the **`contract-adversary` now forces it
 per-instrument (its REACH ATTACK, P1c)** — a contract that stands up a guard whose reach is a

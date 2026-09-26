@@ -1155,3 +1155,12 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - The operator asked for agents on 58 in parallel. Applied as for 64: DESIGN + CONTRACT + ADVERSARY now. The BUILD is serial in the shared tree, slotted after the 63c-i-a commit and before the 63c-i-b build: 58 is ~0.20 and `tasks.py`-centred, disjoint from 63c. Any 63c-shared edit (e.g. #130's claim-loss render, if it lives in `server.py`) is held as a written integration patch.
 - 58's forks: F-1 hub cap, F-2 terminal dependents, F-4 extraction owner vs 57. F-3 is moot, because 58 lands before 64. Routed to **sidecar-64 as Task 4**, queued after Task 3; sidecar-64 already holds the `tasks.py` context from its pool-30 read.
 - **Pytest lane priority** (lead call; single lane per #466): 63c, then 58, then 64b. The 58/64b agents wait up to 90 min, not 30, before reporting `blocked`.
+
+### 2026-09-26 — OPERATOR DECISIONS (a)–(e) + 64 amendment 2 landed
+- **(a) The amendment-24 STOP-rule close is ACCEPTED:** a19b is the last contract round, and the cold audit grades the new behaviour.
+- **(b) CLAUDE.md gains the 7th instrument-lesson row** (this commit): runtime-refusal reach · keyed on the raise SHAPE in an AST walk · defeated by the factory-raise idiom and by a new raise site of a covered class. Counts updated (seven defeats; a hidden constant is now the "eighth" waiting). The global `~/.claude/CLAUDE.md` "six instruments" wording is NOT touched (not asked).
+- **(c) #486 → investigate, read-only now.** Agent `investigate-486`: trace the un-retried "Resource busy"; no fixes, no full suite.
+- **(d) FYI given:** the NO-GO checkpoint `84af63f` sits on the branch under the fix wave. No objection raised.
+- **(e) Harness Postgres = operator handles it separately.** Memory pressure is relaxed. **BACK TO FAST PYTEST:** every NEW brief uses `-n auto`, one pytest session at a time (#466 ports). The 15 GB PID watchdog stays; the 23/20 GB launch floors are dropped. The in-flight builder keeps `-n 12` (not steered mid-run). MEMORY.md landmine line updated.
+- **64 amendment 2** (`2ea52fe`, report `a761b71`): OF-2 retire-at-65 designed; §12 confirmed for the 64b author. **64b contract author spawning.** The lane order stays 63c, then 58, then 64b.
+- The memory stick (EDAC DIMM) is dropped per operator.
