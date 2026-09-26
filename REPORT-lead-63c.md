@@ -954,3 +954,12 @@ Report `REPORT-adversary-63c-i-a-a19.md` (this commit). SAT CONFIRMED on an INDE
   2. **F-1:** amendment 21 CD-2 ("validity first") vs a19's four `∀[brief]` pins. Adversary recommends Reading A: "valid" = the GOVERNED set {agent, memory, message, brief}; only non-governed names get the zero-read "not supported".
   3. **F-2:** a message from an ownerless-but-scoped sender is stamped owner NONE. Is that intended, or must the order guard / message leg require the sender to be OWNED?
   4. **F-3:** the verb-level refusal zeroes `scanned` / `already_migrated` in its receipt. Rule it.
+
+### 2026-09-25 — amendment 22 (`ecc3f57`) ruled Task 22; a19a addendum contract spawned
+- **#485 in i-a:** ONE registry `preflight` (which `register` calls first); handler order preflight → mint → register; created-only compensation for the race (a named bound); the ∀-refusal-classes pin DERIVED from `AgentRegistryError` subclasses, with coverage as a CHECKED variable.
+- **F-1:** Reading A (valid = the GOVERNED set; amendment 21 CD-2 corrected; the `∀[brief]` pins stand).
+- **F-2:** both half-pairs are refused at verb level; post-migrate there is no NONE-owner message; the D-1 control is re-keyed (sidecar erratum).
+- **F-3:** refusal receipts serve `None` plus the precondition's own counts.
+- MP-1..5 = the adversary's kills. #486 stays the operator's.
+- `contract-63c-i-a-a19a` spawned with amendments 20 (R1/R2), 21 (CD-1/CD-2) and 22 (§W 1–6). The #486 instruction: an intermittent red is never counted as green — re-run and report both runs.
+- NEXT: a19a → narrow adversary → builder fix (+ the builder-only items F-8, F-5, F-7, R-4, and the memory-without-agent-table note) → cold-audit re-run.
