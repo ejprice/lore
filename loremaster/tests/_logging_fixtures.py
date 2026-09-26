@@ -249,6 +249,7 @@ def parse_production_trees(
     include_scripts: bool = True,
     include_skills: bool = False,
     include_tests: bool = False,
+    include_testpaths: bool = False,
 ) -> dict[str, ast.Module]:
     """THE ONE tree parser for the ∀-scan family (F4 / design §3 A-SUB).
 
@@ -263,7 +264,14 @@ def parse_production_trees(
     ``test_anchored_pattern_seam._parse_production_trees``). Consolidating it makes the parse
     ONE implementation (CLAUDE.md, lore #102), so the runtime chokepoint
     (:func:`install_parse_guard`) can certify that no adopter parses the tree privately.
+
+    ``include_testpaths=True`` (finding #466) additionally parses every root declared in the
+    root ``pyproject.toml`` ``[tool.pytest.ini_options] testpaths`` — so a testpaths root outside
+    the member/scripts/skills trees (``docs/eval``) is reached. Default ``False`` leaves every
+    existing caller's key set unchanged.
     """
+    if include_testpaths:
+        raise NotImplementedError("Not yet implemented")
     repo_root = _workspace_root()
     trees: dict[str, ast.Module] = {}
     for _label, root in workspace_roots(include_scripts=include_scripts, include_skills=include_skills):
