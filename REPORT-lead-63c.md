@@ -980,3 +980,17 @@ The author continues on unaffected items.
 - **FK-2:** RULED in i-a. A ghost/dangling sender = the message half-pair → the message leg's shared precondition REFUSES (count + bounded ids, byte-inert, "dangling sender"). Skip-and-report and stamp-to-operator are rejected. The population is expected empty in prod (agents are never deleted). The invariant then holds ∀, ghost included.
 - **FK-3** confirmed (valid = the four governed tables incl. brief); **FK-4** confirmed.
 - Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
+
+### 2026-09-26 — contract a19a COMMITTED (`16d2d82`); narrow adversary spawned
+- The author's claims (re-derived by the adversary):
+  - 63 new pins; RED at `84af63f` = 80 (52 new on-defect + a19's 28);
+  - SAT full suite ALONE `-n 12`, lint-clean reference: `11592 passed / 62 skipped / 3 xfailed / 0 failed`;
+  - 23 mutation proofs HELD; P1c 4 held + 1 under-declared.
+  No attribution trailer (checked). The author is retired.
+- The author's own contract defect was caught by its SAT run #1: `FakeAgentRegistry` lacked `preflight` (86 reds), so it gained `preflight` plus a mirror pin, in the test tree.
+- **Builder contract (D-2):**
+  - the handler calls `preflight` BY NAME on the wired registry, with keywords `session`, `role`, `spawned_by`, `owner_principal_id` (no `session_keep_id` before the mint);
+  - `get_or_create_keyed` is called by name;
+  - the dangling-sender check lives in `principals._agent_migration_preconditions`.
+- **§10 candidate doors (9):** the adversary is asked to PROBE and classify #2 (owned-but-unscoped MESSAGE rows — never stamped, yet counted forever; MEDIUM, reasoned only), #4 (compensation masking), #1 (the both-half-pairs diagnosis) and #3 (leg-level refusals still serving zeros). #6/#7 (test-hygiene invariants) → candidates for later.
+- NEXT: `adversary-63c-i-a-a19a` over `77d9146..16d2d82` → builder fix → cold-audit re-run.
