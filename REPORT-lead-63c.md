@@ -1251,3 +1251,16 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **contract-58-r2 spawned:** MP1–MP18, SD1–SD3, am-2/am-3, AST-equal probes, SAT with every red adjudicated, §HELD re-derived over the 63c patch.
 - **#466:** Phase 3 RED verified by the lead (32/32 NotImplementedError; 0 structural). Stubs committed `fe45d1a`. **impl-466 (Phase 4 GREEN)** spawned: helper via uvicorn `sockets=` + HTTPServer, `include_testpaths`, the 4 copies switched + deleted, and the `concurrent_wire_acceptance.py` seam red.
 - **fix-restore-seams** (the 5+1 seam reds from `restore_prod_dump.py`) running.
+
+### 2026-09-26 — coldaudit-63c-i-a-2 NO-GO (`8ae642f`); checkpoint `169925f`; fix pass started
+- **NO-GO, and it converges with blindreader-2 + am-28 by EXECUTION:**
+  - F-2 BLOCKER: the created-only compensation strands concurrent same-session agents (8-way: 2/20, 8/20, 11/20 rounds; HEAD 0/20).
+  - F-1 MAJOR: preflight-before-SF-63-1 leaks role/spawned_by/retired to a foreign principal.
+  - F-3/F-4 = am-27. F-8 pin gap (door-#2 count swap). F-5/F-7/F-9 moot under am-28.
+  - Confirmed: 108 fixed / 0 regressions; ruff GREEN; mutations A–D HELD (preflight and preconditions each ONE decision).
+  - FOCUS 5 (the real prod-dump restore) permission-DENIED → operator-pending.
+- **F-6 (HEAD, not this patch):** the close-out currency gate is RED_ORPHANED, with 31 unowned reds: 7 from `restore_prod_dump.py` (fix-restore-seams running) + 24 of packet 58's committed contract reds not in `pending_contracts.yaml`. **Process gap: a contract-ahead commit must own every pytest red it introduces.** Directive #17055 → contract-58-r2 + contract-64b.
+- **Checkpoint:** the audited build committed as `169925f` (md5 == `b23f3e43`; NO-GO labelled, as `84af63f` was).
+- **Fix pass:** contract-63c-i-a-a28 spawned (am-27 FORK-1/2; am-28 §F-1 no compensation with the RS-2 8-way pin, §F-2 read-only gate first with the RS-3 pin, addendum A1/A2/A4/A5; the am-26 RS-1 pin; F-8; currency ownership). Next: the NARROW adversary delta on the F-1/F-2/race pins → the builder fix → the cold-audit re-run.
+- sidecar-63c-2 **Task 29**: RS-5 (a raw TxnDomainRejectionError for a same-role concurrent loser, pre-existing) + an F-8 fold FYI.
+- **Lane order:** contract-63c-i-a-a28, then contract-58-r2, then contract-64b (impl-466 small scoped runs allowed).
