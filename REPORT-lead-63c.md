@@ -1150,3 +1150,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **#487 → 63c-i-b carry list.** The enforced 63b message-family verbs (send/drain/ack/await/story) leave `_GOVERNED_VERBS_PENDING_ROUTING` with `@observes_routing` markers. The #420 pin gains the REVERSE direction: an enforced verb, or a marked one, that is still pending goes RED. 64's contract carries the reverse pin regardless. Annotated on the finding.
 - **#488 → moot under 64 amendment 1** (OF-3 produces no orphan state; amendment 25 stands). Kept open until 64d-ii closes. Annotated.
 - `lore_comms` inbox drained: 30 historical pointers, no new action.
+
+### 2026-09-26 — OPERATOR: packet 58 runs AHEAD in parallel (same shape as 64's F0)
+- The operator asked for agents on 58 in parallel. Applied as for 64: DESIGN + CONTRACT + ADVERSARY now. The BUILD is serial in the shared tree, slotted after the 63c-i-a commit and before the 63c-i-b build: 58 is ~0.20 and `tasks.py`-centred, disjoint from 63c. Any 63c-shared edit (e.g. #130's claim-loss render, if it lives in `server.py`) is held as a written integration patch.
+- 58's forks: F-1 hub cap, F-2 terminal dependents, F-4 extraction owner vs 57. F-3 is moot, because 58 lands before 64. Routed to **sidecar-64 as Task 4**, queued after Task 3; sidecar-64 already holds the `tasks.py` context from its pool-30 read.
+- **Pytest lane priority** (lead call; single lane per #466): 63c, then 58, then 64b. The 58/64b agents wait up to 90 min, not 30, before reporting `blocked`.
