@@ -1227,3 +1227,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - A foreign project (`mobile-pricepaper-smoke`) runs pytest continuously, so a box-wide lane never clears. coldaudit's waiter also self-matched its own wrapper (#228; adversary-58's catch). **Ruled (directive #17046):** the single-pytest rule is LORE-scoped (one lore pytest at a time; detect by executable + lore path, never args text). Order: coldaudit, then adversary-58, then contract-64b. The 15 GB watchdog stays; a full suite runs at -n 12 while a foreign pytest is live.
 - **The coldaudit FOCUS 5 prod-dump restore was DENIED by the auto-mode permission classifier ("Modify Shared Resources").** Not retried, not routed around; surfaced to the operator. The staged commands are in REPORT-coldaudit-63c-i-a-2.md §5.
 - Cleanup: 36 probe DBs dropped (2095 → 2059). The `test_<uuid>` leak (~2050) is left for the #486 cycle.
+
+### 2026-09-26 — 64 amendment 5 (`9fd34d3`, sidecar-64 Task 9): standalone delete-keep orphaning REFUTED as covered → ruled into 64d-ii
+- 64 am-1 covered only principal deletion. `lore-adm delete-keep` orphans keep-scoped rows at HEAD (no production exposure: the keep substrate is commit-only until the 65 cutover). Ruled into 64d-ii: the same REQUIRED choice `--delete-obj | --archive-obj | --change-scope` (the keep analogue of the operator's OF-3 `--change-owner`); ONE `dispose_population` engine for both verbs; a refuse-when-populated guard on `KeepStore.delete_keep`. #488 annotated. Attribution-clean.
+- contract-64b directive #17047: the `_governed_contract.py` fold is §HELD-only; no §13 shared file in its commit.
+- Operator pending: the coldaudit prod-dump restore permission (allow rule / operator-run / skip).
