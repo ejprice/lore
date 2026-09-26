@@ -244,6 +244,13 @@ def _declared_workspace_members() -> list[str]:
     return list(manifest["tool"]["uv"]["workspace"]["members"])
 
 
+def _declared_testpaths() -> list[str]:
+    """``[tool.pytest.ini_options] testpaths`` read straight from the root ``pyproject.toml`` —
+    the test trees pytest itself runs (finding #466), never a hand-list."""
+    manifest = tomllib.loads((_workspace_root() / "pyproject.toml").read_text(encoding="utf-8"))
+    return list(manifest["tool"]["pytest"]["ini_options"]["testpaths"])
+
+
 def parse_production_trees(
     *,
     include_scripts: bool = True,
@@ -270,20 +277,24 @@ def parse_production_trees(
     the member/scripts/skills trees (``docs/eval``) is reached. Default ``False`` leaves every
     existing caller's key set unchanged.
     """
-    if include_testpaths:
-        raise NotImplementedError("Not yet implemented")
     repo_root = _workspace_root()
     trees: dict[str, ast.Module] = {}
     for _label, root in workspace_roots(include_scripts=include_scripts, include_skills=include_skills):
         for path in sorted(root.rglob("*.py")):
             trees[path.relative_to(repo_root).as_posix()] = ast.parse(path.read_text(encoding="utf-8"))
+    # Extra roots re-added on request: each member's ``tests`` tree, then every testpaths root.
+    extra_roots: list[Path] = []
     if include_tests:
-        for member in _declared_workspace_members():
-            tests_dir = repo_root / member / "tests"
-            if not tests_dir.is_dir():
-                continue
-            for path in sorted(tests_dir.rglob("*.py")):
-                trees[path.relative_to(repo_root).as_posix()] = ast.parse(path.read_text(encoding="utf-8"))
+        extra_roots += [repo_root / member / "tests" for member in _declared_workspace_members()]
+    if include_testpaths:
+        extra_roots += [repo_root / testpath for testpath in _declared_testpaths()]
+    for extra_root in extra_roots:
+        if not extra_root.is_dir():
+            continue
+        for path in sorted(extra_root.rglob("*.py")):
+            key = path.relative_to(repo_root).as_posix()
+            if key not in trees:  # a testpaths root overlapping an already-parsed tree parses once
+                trees[key] = ast.parse(path.read_text(encoding="utf-8"))
     return trees
 
 

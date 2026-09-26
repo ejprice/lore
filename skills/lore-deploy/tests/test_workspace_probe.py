@@ -55,20 +55,20 @@ Run:
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
-import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from loremaster.testing.loopback import LoopbackPort, serve_http
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -130,17 +130,17 @@ def _hits(text: str, tokens: tuple[str, ...]) -> list[str]:
     return [token for token in tokens if token in lowered]
 
 
-def _dead_port() -> int:
+@pytest.fixture
+def dead_port() -> Iterator[int]:
     """A port nothing is listening on — a mid-boot MCP endpoint, exactly.
 
-    Bind, read the kernel-assigned port, close. The port is then free and UNSERVED, so a
-    connect against it is refused — which is precisely what ``_served_workspace_roots``
-    meets on a fresh launch the deploy declined to wait for (``--no-wait``).
+    A HELD, un-listened :class:`LoopbackPort` (finding #466): a connect against it is refused
+    — which is precisely what ``_served_workspace_roots`` meets on a fresh launch the deploy
+    declined to wait for (``--no-wait``) — and, because the socket stays bound for the whole
+    test, no other process can start serving that port mid-test.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((_HOST, 0))
-        port = int(probe.getsockname()[1])
-    return port
+    with LoopbackPort(_HOST) as unserved:
+        yield unserved.port
 
 
 def _break_the_worktree_gitdir(worktree: Path) -> str:
@@ -248,6 +248,8 @@ def _root(path: str = _CONTAINER_WORKSPACE, *, branch: str | None, tier: str = "
 class _StubMCPServer:
     """Serves one canned ``lore_index()`` payload over streamable HTTP."""
 
+    port: int  # the served port — assigned on ``__enter__``, once the helper is serving
+
     def __init__(self, structured: dict[str, Any] | None) -> None:
         self.structured = structured
         self.tool_calls: list[str] = []
@@ -288,20 +290,17 @@ class _StubMCPServer:
             def log_message(self, *args: Any) -> None:  # silence the stdlib access log
                 return
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind((_HOST, 0))
-            self.port = probe.getsockname()[1]
-        self._server = http.server.HTTPServer((_HOST, self.port), _Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._handler_class = _Handler
+        self._serving = contextlib.ExitStack()
 
     def __enter__(self) -> _StubMCPServer:
-        self._thread.start()
+        # Served FROM a held loopback socket (finding #466) — never a port read, closed, rebound.
+        served = self._serving.enter_context(serve_http(self._handler_class))
+        self.port = served.port
         return self
 
     def __exit__(self, *args: object) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=5)
+        self._serving.close()
 
 
 def _index_payload(roots: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -910,6 +909,7 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         current_image: bool,
         bound: bool | None,
         path_name: str,
+        dead_port: int,
     ) -> None:
         """THE REGRESSION PIN (DEFECT-1). ``--no-wait`` is documented, wired into argparse
         (``lore_deploy.py:1371``), described in ``SKILL.md:82`` — and DEAD.
@@ -932,7 +932,7 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         tree = _make_git_repo(tmp_path / "checkout")
         project, env_file = self._arrange_real_gates(
             monkeypatch, tmp_path, state=state, current_image=current_image,
-            bound=bound, port=_dead_port(), container_tree=tree,
+            bound=bound, port=dead_port, container_tree=tree,
         )
 
         result = lore_deploy.verb_start(project, env_file, no_wait=True)
@@ -1158,7 +1158,7 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         )
 
     def test_an_unreachable_endpoint_STILL_fails_when_no_wait_is_NOT_set(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dead_port: int
     ) -> None:
         """THE POSITIVE CONTROL for every F1 pin above — and the one that kills the lazy fix.
 
@@ -1169,7 +1169,7 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         """
         tree = _make_git_repo(tmp_path / "checkout")
         project, env_file = self._arrange_real_gates(
-            monkeypatch, tmp_path, state=None, port=_dead_port(), container_tree=tree,
+            monkeypatch, tmp_path, state=None, port=dead_port, container_tree=tree,
         )
         monkeypatch.setattr(lore_deploy, "_await_bind", lambda *a, **k: lore_deploy._EXIT_OK)
 
@@ -1219,6 +1219,7 @@ class TestTheDiagnosisNamesTheRealCause:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
+        dead_port: int,
     ) -> None:
         # CAUSE 1. Nothing is listening: the server is mid-boot (or --no-wait declined to
         # wait for it). The image is FINE. Telling the operator to rebuild and recreate it
@@ -1226,7 +1227,7 @@ class TestTheDiagnosisNamesTheRealCause:
         # (wait, or raise --bind-timeout) is never named.
         tree = _make_git_repo(tmp_path / "checkout")
 
-        result = self._probe(monkeypatch, _dead_port(), tree)
+        result = self._probe(monkeypatch, dead_port, tree)
 
         assert result == lore_deploy._EXIT_ERROR, "an unreadable endpoint is still a failure"
         err = capsys.readouterr().err

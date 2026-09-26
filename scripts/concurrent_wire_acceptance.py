@@ -59,12 +59,13 @@ EXIT_REJECTED = 1
 EXIT_REFUSED = 2
 
 # A ``--collect-only -q`` node id: ``path/to/test_x.py::Name[::name...]`` — one per collected test.
+# Matched with ``fullmatch`` (finding #210's seam): ``$`` alone would also accept a trailing newline.
 _NODE_ID_LINE = re.compile(r"^\S+\.py::\S+$")
 
 
 def count_collected_node_ids(collect_only_output: str) -> int:
     """How many node ids pytest listed — counted from the LISTING, never from the prose summary line."""
-    return sum(1 for line in collect_only_output.splitlines() if _NODE_ID_LINE.match(line.strip()))
+    return sum(1 for line in collect_only_output.splitlines() if _NODE_ID_LINE.fullmatch(line.strip()))
 
 
 @dataclass(frozen=True)

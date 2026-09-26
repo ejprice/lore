@@ -35,10 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import socket
-import threading
-import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +44,6 @@ import loremaster.embedding as embedding_module
 import loremaster.server as server_module
 import pytest
 import pytest_asyncio
-import uvicorn
 from _extension_helpers import CounterExtension
 from _surreal_harness import (
     PRODUCTION_DIM,
@@ -67,6 +63,7 @@ from loremaster.server import (
     build_mcp_server,
 )
 from loremaster.store.surreal import SurrealStore
+from loremaster.testing.loopback import serve_asgi
 from loresigil.testing import FakeEmbedder
 
 # Every test here spins a REAL uvicorn — it is the deploy/gate lane, not the unit lane.
@@ -99,41 +96,6 @@ _BUILTIN_TOOLS = frozenset(
         "lore_read", "lore_dead_code", "lore_diff", "lore_index", "lore_findings",
     }
 )
-
-
-def _free_port() -> int:
-    """Grab an ephemeral loopback TCP port for a throwaway uvicorn."""
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = int(sock.getsockname()[1])
-    sock.close()
-    return port
-
-
-@contextlib.contextmanager
-def _serve(app: Any, port: int) -> Iterator[str]:
-    """Run ``app`` under uvicorn on ``127.0.0.1:port`` in a daemon thread.
-
-    ``lifespan="on"`` FORCES the ASGI lifespan protocol — a server that cannot enter it
-    fails loudly (the heavy build never completes → ``server.started`` never flips → a loud
-    timeout) rather than silently skipping it (the FG1 guard). Yields the base URL; on exit
-    drives a real shutdown so lifespan teardown runs.
-    """
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", lifespan="on")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(600):  # up to 15s for the heavy build (probe gate + store + watcher)
-            if server.started:
-                break
-            time.sleep(0.025)
-        else:
-            raise RuntimeError("uvicorn did not report started within 15s (heavy build failed?)")
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        thread.join(timeout=20)
 
 
 def _wire_config(database: str, live_path: Path) -> LoreConfig:
@@ -411,11 +373,14 @@ async def _serve_migration_wire(
     server = LoreServer(config).register_extension(CounterExtension())
     mcp = build_mcp_server(server)
     app = build_asgi_app(mcp, config)
-    port = _free_port()
     try:
-        with _serve(app, port):
+        # The ONE loopback helper (finding #466): served FROM a held socket, so no second pytest
+        # session can take the port between a probe-close and uvicorn's rebind, and a failed start
+        # names its cause (bind / startup timeout / thread crash). ``lifespan="on"`` stays forced
+        # inside the helper (the FG1 guard).
+        with serve_asgi(app) as served:
             yield _MigrationWire(
-                base_url=f"http://127.0.0.1:{port}",
+                base_url=served.base_url,
                 path=config.server.path,
                 env=env,
                 build_calls=build_calls,

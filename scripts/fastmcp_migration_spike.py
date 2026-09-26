@@ -28,26 +28,25 @@ Re-run (fastmcp is NOT a lore dependency yet — this is measurement only):
     uv run --with 'fastmcp>=3.4,<4' --with uvicorn --with httpx \
         python scripts/fastmcp_migration_spike.py
 
-Measured 2026-08-15 against fastmcp 3.4.7 / mcp 1.29.0 (isolated venv). Nothing under
-loremaster/ or the lore package tree is imported or touched.
+Measured 2026-08-15 against fastmcp 3.4.7 / mcp 1.29.0 (isolated venv). Since finding #466
+the harness serves through the ONE loopback helper, ``loremaster.testing.loopback`` (a held
+socket, never a port read-closed-rebound), so the re-run needs the workspace venv — the command
+above provides it. Nothing else under loremaster/ is imported.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import socket
-import threading
-import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, MutableMapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
 from typing import Any, TypedDict
 from urllib.parse import urlsplit
 
 import httpx
-import uvicorn
 from fastmcp import Client, FastMCP
 from fastmcp.client.auth import BearerAuth
 from fastmcp.exceptions import ToolError  # noqa: F401  (kept for parity w/ prod trace seam)
 from fastmcp.server.auth.auth import AccessToken, TokenVerifier
+from loremaster.testing.loopback import LoopbackPort, serve_asgi
 
 # --------------------------------------------------------------------------- #
 # ASGI wrappers — FAITHFUL reproductions of lore's bespoke middleware.
@@ -169,36 +168,9 @@ class NaiveLifespanEatingMiddleware:
 # --------------------------------------------------------------------------- #
 # uvicorn-on-a-TCP-port harness (REAL transport, never in-memory).
 # --------------------------------------------------------------------------- #
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = int(s.getsockname()[1])
-    s.close()
-    return port
-
-
-@contextlib.contextmanager
-def serve(app: _ASGIApp, port: int) -> Iterator[str]:
-    """Run `app` under uvicorn on 127.0.0.1:port in a daemon thread. `lifespan="on"`
-    FORCES the ASGI lifespan protocol (a server that cannot run it fails loudly rather
-    than silently skipping it — the FG1 guard). Yields the base URL; on exit drives a
-    real shutdown so lifespan teardown runs."""
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error",
-                            lifespan="on")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(400):
-            if server.started:
-                break
-            time.sleep(0.025)
-        else:
-            raise RuntimeError("uvicorn did not report started within 10s")
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.should_exit = True
-        thread.join(timeout=15)
+# The spike's own startup budget (its pre-#466 harness waited 10s); a failed start is NAMED by the
+# helper — bind error / startup timeout / thread crash — instead of one generic RuntimeError.
+_STARTUP_TIMEOUT_S = 10.0
 
 
 async def _wire_session(url: str, tool: str, token: str | None = None) -> Any:
@@ -271,11 +243,11 @@ def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecyc
     out: dict[str, Any] = {}
 
     # --- Lifecycle 1: faithful wrappers, N wire sessions, ONE process ---------
-    port = _free_port()
     app, _ = build_app("faithful")
     n_sessions = 4
     boot_ids: list[str] = []
-    with serve(app, port) as url:
+    with serve_asgi(app, startup_timeout_s=_STARTUP_TIMEOUT_S) as served:
+        url = served.base_url
         eager_enter = counters["enter"]      # measured BEFORE any request
         for _ in range(n_sessions):          # sequential wire sessions
             boot_ids.append(asyncio.run(_wire_session(url, "boot_probe", token="tok-1")))
@@ -297,9 +269,9 @@ def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecyc
     out["exit_after_shutdown"] = exit_after_shutdown
 
     # --- Lifecycle 2 (POSITIVE CONTROL: the counter WOULD move on re-fire) ----
-    port2 = _free_port()
     app2, _ = build_app("faithful")
-    with serve(app2, port2) as url:
+    with serve_asgi(app2, startup_timeout_s=_STARTUP_TIMEOUT_S) as served:
+        url = served.base_url
         boot2 = asyncio.run(_wire_session(url, "boot_probe", token="tok-1"))
     print(f"[faithful/lifecycle-2] enter after a 2nd process lifecycle : {counters['enter']}"
           f"  boot_id={boot2}  (control: instrument is LIVE, not stuck)")
@@ -308,10 +280,10 @@ def item1() -> dict[str, Any]:  # noqa: PLR0915 - measurement harness: 3 lifecyc
 
     # --- NEGATIVE CONTROL: naive wrapper drops the lifespan scope -------------
     enter_before_naive = counters["enter"]
-    port3 = _free_port()
     app3, _ = build_app("naive")
     naive_boot = None
-    with serve(app3, port3) as url:
+    with serve_asgi(app3, startup_timeout_s=_STARTUP_TIMEOUT_S) as served:
+        url = served.base_url
         with contextlib.suppress(Exception):
             naive_boot = asyncio.run(_wire_session(url, "boot_probe", token="tok-1"))
     print(f"[naive/neg-control] enter before={enter_before_naive} after={counters['enter']} "
@@ -356,7 +328,10 @@ def item2() -> dict[str, Any]:
                 return AccessToken(token=token, client_id=self._client_id, scopes=self._scopes)
             return None
 
-    port = _free_port()
+    # The port must be known BEFORE the app is built (it goes into the Host allowlist), so it is
+    # HELD from here until the server serves FROM that same socket.
+    held_port = LoopbackPort()
+    port = held_port.port
     mcp = FastMCP(name="spike59-item2", version="59.0.0",
                   auth=CountingVerifier("good-token", "principal-xyz", ["read"]))
 
@@ -386,7 +361,7 @@ def item2() -> dict[str, Any]:
                           headers={**base_headers, **extra_headers}, timeout=10)
 
     out: dict[str, Any] = {}
-    with serve(app, port):
+    with held_port, serve_asgi(app, port=held_port, startup_timeout_s=_STARTUP_TIMEOUT_S):
         # PROBE: bad Origin + VALID token. If the guard is outermost, the request is
         # rejected (403) BEFORE the verifier is ever consulted (verify_calls stays 0).
         verify_calls["n"] = 0
@@ -468,8 +443,8 @@ def item3() -> dict[str, Any]:
     out: dict[str, Any] = {}
 
     # --- Protection ON (the migration BENEFIT) --------------------------------
-    port_on = _free_port()
-    with serve(build(True), port_on):
+    with serve_asgi(build(True), startup_timeout_s=_STARTUP_TIMEOUT_S) as served_on:
+        port_on = served_on.port
         r_spoof_on = post(port_on, "evil.example")                     # PROBE
         spoof_on, spoof_on_body = r_spoof_on.status_code, r_spoof_on.text.strip()[:40]
         legit_on = post(port_on, f"127.0.0.1:{port_on}").status_code   # POS CONTROL
@@ -479,8 +454,8 @@ def item3() -> dict[str, Any]:
           f"(not 421 => guard lets legit through)")
 
     # --- Protection OFF (today's pre-migration state — the NEGATIVE CONTROL) ---
-    port_off = _free_port()
-    with serve(build(False), port_off):
+    with serve_asgi(build(False), startup_timeout_s=_STARTUP_TIMEOUT_S) as served_off:
+        port_off = served_off.port
         spoof_off = post(port_off, "evil.example").status_code
     print(f"[protection=OFF] spoofed Host 'evil.example' -> status={spoof_off}  "
           f"(not 421 => ACCEPTED, the gap that exists today)")
