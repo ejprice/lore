@@ -974,3 +974,9 @@ The author continues on unaffected items.
 - **FK-3 (non-blocking; author picked):** F-1's pointer to "the production constant the five-set resolver pin cross-checks" does not exist, and the derived node set EXCLUDES `brief`. The author's pick is behaviour-wins: valid = {agent, memory, message, brief}. CD-2's invalid probes are derived as the schema tables minus those four, plus a typo. Please confirm.
 
 **SIDECAR TASK 23 — sidecar-63c-2, please rule FK-1, FK-2 (including the ghost sender's behaviour + wave) and FK-3.**
+
+### 2026-09-26 — amendment 23 ruled Task 23 (FK-1..FK-4); relayed to a19a
+- **FK-1:** Reading A — the classes raised in `register`'s AST call closure BEFORE the first write, ∪ base; coverage both ways. Exclusions: the post-write "vanished" guards, and the A3 pair (covered at registry level by the amendment-4 MP-B pins; bound + trigger). Sidecar erratum: it had derived reach from the MODULE's class list instead of the FUNCTION's raise set.
+- **FK-2:** RULED in i-a. A ghost/dangling sender = the message half-pair → the message leg's shared precondition REFUSES (count + bounded ids, byte-inert, "dangling sender"). Skip-and-report and stamp-to-operator are rejected. The population is expected empty in prod (agents are never deleted). The invariant then holds ∀, ghost included.
+- **FK-3** confirmed (valid = the four governed tables incl. brief); **FK-4** confirmed.
+- Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
