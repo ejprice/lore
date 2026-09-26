@@ -1164,3 +1164,9 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **(e) Harness Postgres = operator handles it separately.** Memory pressure is relaxed. **BACK TO FAST PYTEST:** every NEW brief uses `-n auto`, one pytest session at a time (#466 ports). The 15 GB PID watchdog stays; the 23/20 GB launch floors are dropped. The in-flight builder keeps `-n 12` (not steered mid-run). MEMORY.md landmine line updated.
 - **64 amendment 2** (`2ea52fe`, report `a761b71`): OF-2 retire-at-65 designed; §12 confirmed for the 64b author. **64b contract author spawning.** The lane order stays 63c, then 58, then 64b.
 - The memory stick (EDAC DIMM) is dropped per operator.
+
+### 2026-09-26 — 58 kickoff rulings landed (`c8d3241`, sidecar-64 Task 4); contract-58 spawned
+- F-1: refuse-and-teach at a DERIVED cap (cap−1/cap/cap+1 pinned). F-2: rewire ∀ dependents, incl. terminal. F-4: 58 extracts, 57 consumes (AST one-producer pin). The shell shape = the seam 64a governs. #130 (a) the claimable partition; (c) already present. Held patch = the `server.py` supersede render + `SupersedeResult`. Commit is attribution-clean.
+- #489 (cross-ledger guarded-append unification) is ledgered with a trigger ("the third ledger"), pinned per module. It is NOT built.
+- `contract-58` spawned (brief `brief-contract-58.md`; new test files + DUAL-commented task-ledger test edits; lane priority 63c, then 58, then 64b).
+- **Operator question pending:** fix #466 (fixed wire-test ports) now to unlock parallel pytest, or leave it in 09b.
