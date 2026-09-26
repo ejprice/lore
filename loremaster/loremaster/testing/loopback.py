@@ -17,6 +17,7 @@ Contract: ``loremaster/tests/test_loopback_serving.py`` and
 from __future__ import annotations
 
 import contextlib
+import functools
 import http.server
 import logging
 import socketserver
@@ -51,9 +52,6 @@ exception already in flight). Measure-then-tune (#466 d1 §Surfaced-3); callers 
 _STARTUP_POLL_S: float = 0.02
 """How often the startup wait re-checks ``started`` / thread death. Small, so a crash is named
 promptly rather than when the budget expires."""
-
-_SHUTDOWN_JOIN_TIMEOUT_S: float = 5.0
-"""How long exit waits for a STARTED server thread to finish its lifespan shutdown."""
 
 _UVICORN_ERROR_LOGGER: str = "uvicorn.error"
 """The logger uvicorn reports lifespan failures on — the only place a lifespan crash's own text
@@ -326,13 +324,33 @@ class _UvicornServerThread:
             ServerThreadCrashed: The thread ended first (the held socket is closed).
             ServerStartupTimeout: The budget expired with the thread alive (the held socket is
                 closed).
+            BaseException: ANY other exception interrupting the wait (KeyboardInterrupt, a
+                pytest-timeout signal exception) propagates UNCHANGED, after the same abandon.
         """
         logging.getLogger(_UVICORN_ERROR_LOGGER).addHandler(self._capture)
-        self._thread.start()
+        try:
+            self._thread.start()
+            self._await_started(startup_timeout_s)
+        except BaseException:
+            # Not only the two named failures: a signal handler can raise at any bytecode of the
+            # wait, and an abandon skipped there leaks the capture handler and leaves uvicorn free
+            # to serve the caller's held socket from a thread nobody can stop (#466 d1 F1).
+            self._abandon()
+            raise
+
+    def _await_started(self, startup_timeout_s: float) -> None:
+        """Poll until uvicorn reports started, naming a crash or an expired budget.
+
+        Args:
+            startup_timeout_s: How long to wait for ``started``.
+
+        Raises:
+            ServerThreadCrashed: The thread ended first.
+            ServerStartupTimeout: The budget expired with the thread alive.
+        """
         deadline = time.monotonic() + startup_timeout_s
         while not self._server.started:
             if not self._thread.is_alive():
-                self._abandon()
                 raise ServerThreadCrashed(
                     f"server thread for {self._address} ended before it reported started:\n"
                     f"{self._crash_detail()}",
@@ -341,7 +359,6 @@ class _UvicornServerThread:
                 )
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0:
-                self._abandon()
                 raise ServerStartupTimeout(
                     f"server at {self._address} timed out: not started within {startup_timeout_s}s "
                     "(server thread still alive)",
@@ -352,15 +369,19 @@ class _UvicornServerThread:
             # A join returns the moment the thread dies, so a crash is named within one poll.
             self._thread.join(timeout=min(_STARTUP_POLL_S, remaining_s))
 
-    def stop(self, shutdown_timeout_s: float = DEFAULT_SHUTDOWN_TIMEOUT_S) -> None:
+    def stop(self, shutdown_timeout_s: float = DEFAULT_SHUTDOWN_TIMEOUT_S) -> bool:
         """Drive a real lifespan shutdown and wait (bounded) for the thread to finish.
 
         Args:
             shutdown_timeout_s: How long to wait for the thread to finish its shutdown.
+
+        Returns:
+            ``True`` if the thread finished within the budget, ``False`` on an overrun.
         """
         self._server.should_exit = True
         self._thread.join(timeout=shutdown_timeout_s)
         self._detach_capture()
+        return not self._thread.is_alive()
 
     def _abandon(self) -> None:
         """Give up on a failed start: ask the thread to exit and release the held port NOW.
@@ -381,6 +402,47 @@ class _UvicornServerThread:
         if self._crash is not None:
             parts.append(repr(self._crash))
         return "\n".join(parts) or _NO_ERROR_LOGGED
+
+
+@contextlib.contextmanager
+def _loud_teardown(
+    endpoint: ServedEndpoint, shutdown_timeout_s: float, stop: Callable[[float], bool]
+) -> Iterator[ServedEndpoint]:
+    """The ONE shutdown-overrun policy both helpers exit through: bounded, and never silent.
+
+    Yields ``endpoint`` for the served body, then calls ``stop(shutdown_timeout_s)`` — which must
+    return whether the server finished within the budget. On an overrun after a CLEAN body this
+    raises :class:`ServerShutdownTimeout`; when the body is already raising, that exception
+    propagates unchanged (the test's own failure stays the headline) carrying the overrun as a
+    PEP 678 note.
+
+    Args:
+        endpoint: The served endpoint, named in any overrun report.
+        shutdown_timeout_s: The shutdown budget handed to ``stop``.
+        stop: Stops the server within the budget; returns ``True`` iff it finished in time.
+
+    Yields:
+        ``endpoint``.
+
+    Raises:
+        ServerShutdownTimeout: The shutdown overran after a clean body exit.
+    """
+    overrun = (
+        f"server at {endpoint.host}:{endpoint.port} did not finish its shutdown within {shutdown_timeout_s}s"
+    )
+    try:
+        yield endpoint
+    except BaseException as body_error:
+        if not stop(shutdown_timeout_s):
+            body_error.add_note(overrun)
+        raise
+    if not stop(shutdown_timeout_s):
+        raise ServerShutdownTimeout(
+            overrun,
+            host=endpoint.host,
+            port=endpoint.port,
+            shutdown_timeout_s=shutdown_timeout_s,
+        )
 
 
 @contextlib.contextmanager
@@ -421,10 +483,8 @@ def serve_asgi(
     with _held_port(port) as held:
         server_thread = _UvicornServerThread(app, held)
         server_thread.start(startup_timeout_s)
-        try:
-            yield held.served_endpoint()
-        finally:
-            server_thread.stop(shutdown_timeout_s)
+        with _loud_teardown(held.served_endpoint(), shutdown_timeout_s, server_thread.stop) as served:
+            yield served
 
 
 def _http_server_on(
@@ -452,6 +512,28 @@ def _http_server_on(
     return server
 
 
+def _stop_http_server(
+    server: http.server.HTTPServer, thread: threading.Thread, shutdown_timeout_s: float
+) -> bool:
+    """Ask ``server`` to stop and wait (bounded) for its ``serve_forever`` thread to end.
+
+    ``HTTPServer.shutdown()`` blocks, with no timeout, until ``serve_forever`` returns — and a stuck
+    request handler runs inside that loop — so the request is made from its own daemon thread and
+    only the serving thread's join is bounded.
+
+    Args:
+        server: The server to stop.
+        thread: The thread running ``server.serve_forever``.
+        shutdown_timeout_s: How long to wait for ``thread`` to end.
+
+    Returns:
+        ``True`` if the serving thread ended within the budget, ``False`` on an overrun.
+    """
+    threading.Thread(target=server.shutdown, name=f"{thread.name} shutdown", daemon=True).start()
+    thread.join(timeout=shutdown_timeout_s)
+    return not thread.is_alive()
+
+
 @contextlib.contextmanager
 def serve_http(
     handler_class: type[socketserver.BaseRequestHandler],
@@ -472,6 +554,10 @@ def serve_http(
 
     Raises:
         ServerBindError: If binding a fresh port fails.
+        ServerShutdownTimeout: If, on a clean exit, the serving thread does not end within
+            :data:`DEFAULT_SHUTDOWN_TIMEOUT_S` (a stuck handler). A body exception in flight is
+            never masked: it carries the overrun as a PEP 678 note — the same policy as
+            :func:`serve_asgi`.
     """
     with _held_port(port) as held:
         server = _http_server_on(held, handler_class)
@@ -479,11 +565,9 @@ def serve_http(
             target=server.serve_forever, name=f"serve_http {held.base_url}", daemon=True
         )
         thread.start()
-        try:
-            yield held.served_endpoint()
-        finally:
-            server.shutdown()
-            thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
+        stop = functools.partial(_stop_http_server, server, thread)
+        with _loud_teardown(held.served_endpoint(), DEFAULT_SHUTDOWN_TIMEOUT_S, stop) as served:
+            yield served
 
 
 __all__ = [

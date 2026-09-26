@@ -27,8 +27,10 @@ Exit status: 0 accepted · 1 a round was red (or the run stopped short) · 2 ref
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -156,6 +158,22 @@ class AcceptanceReport:
         )
 
 
+def _output_tail(stdout: str, stderr: str) -> str:
+    """The last :data:`TAIL_LINES` lines of a session's combined output — the round log's evidence."""
+    return "\n".join(f"{stdout}\n{stderr}".splitlines()[-TAIL_LINES:])
+
+
+def _kill_process_group(session: subprocess.Popen[str]) -> None:
+    """SIGKILL every process in ``session``'s group — the session leader and all its descendants.
+
+    The leader has not been reaped yet (at worst it is a zombie), so its group id is still valid; a group
+    already fully gone is not an error. Bound: a descendant that left the group (``setsid``) survives —
+    xdist does not, so the tree it builds is covered.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(session.pid, signal.SIGKILL)
+
+
 def other_pytest_sessions(*, proc_root: Path = PROC_ROOT, own_pids: set[int]) -> list[tuple[int, str]]:
     """``(pid, cmdline)`` of every live process whose argv mentions pytest, excluding ``own_pids``."""
     sessions: list[tuple[int, str]] = []
@@ -209,24 +227,36 @@ class ConcurrentPairDriver:
         return collected
 
     def _run_session(self, junit_path: Path) -> ProcessOutcome:
-        """Run one pytest session to completion (or timeout) and read its junit with the shared reader."""
-        try:
-            completed = subprocess.run(  # noqa: S603 — argv is ours, no shell
-                self.session_argv(junit_path),
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as expired:
-            partial = expired.stdout if isinstance(expired.stdout, str) else ""
-            return ProcessOutcome.from_junit(None, returncode=-1, timed_out=True, tail=partial)
-        output = f"{completed.stdout}\n{completed.stderr}"
-        tail = "\n".join(output.splitlines()[-TAIL_LINES:])
+        """Run one pytest session to completion (or timeout) and read its junit with the shared reader.
+
+        The session leads its OWN process group (``start_new_session``), so a timeout kills the whole
+        tree — its xdist workers and their children included — not just the direct child (#466 d1 F12).
+        """
+        with subprocess.Popen(  # noqa: S603 — argv is ours, no shell
+            self.session_argv(junit_path),
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        ) as session:
+            try:
+                stdout, stderr = session.communicate(timeout=self.timeout_s)
+            except subprocess.TimeoutExpired:
+                # communicate() keeps what it read across a timeout; once the tree is dead every pipe
+                # writer is gone, so the drain below returns the partial output instead of hanging.
+                _kill_process_group(session)
+                stdout, stderr = session.communicate()
+                return ProcessOutcome.from_junit(
+                    None, returncode=-1, timed_out=True, tail=_output_tail(stdout, stderr)
+                )
+            except BaseException:
+                # Ctrl-C (or any error) mid-session: subprocess.run killed the child here; kill the TREE.
+                _kill_process_group(session)
+                raise
         junit_text = junit_path.read_text(encoding="utf-8") if junit_path.exists() else None
         return ProcessOutcome.from_junit(
-            junit_text, returncode=completed.returncode, timed_out=False, tail=tail
+            junit_text, returncode=session.returncode, timed_out=False, tail=_output_tail(stdout, stderr)
         )
 
     def run_round(self, index: int) -> RoundOutcome:

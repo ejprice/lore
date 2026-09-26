@@ -83,8 +83,24 @@ from packaging.utils import canonicalize_name  # PEP 503 names; packaging is a h
 _LISTENER_NAMESPACES = ("socketserver", "http.server", "uvicorn", "wsgiref.simple_server")
 # The one ``socket`` module function that binds (``socket.socket`` itself binds nothing until ``.bind``).
 _LISTENER_FUNCTIONS = ("socket.create_server",)
-# asyncio's listener verbs — matched on ANY receiver (a loop, the asyncio module, an alias).
-_LISTENER_METHODS = frozenset({"create_server", "create_unix_server", "start_server", "start_unix_server"})
+# asyncio's and anyio's listener verbs — matched on ANY receiver (a loop, the module, an alias).
+_LISTENER_METHODS = frozenset(
+    {
+        "create_server",
+        "create_unix_server",
+        "start_server",
+        "start_unix_server",
+        "create_tcp_listener",
+        "create_unix_listener",
+    }
+)
+# Libraries that are mostly CLIENTS, so a whole-namespace entry would refuse honest code: only these
+# leaf names open a listener. Matched at ANY depth under the library, because aiohttp re-exports them
+# (``aiohttp.web.TCPSite`` is defined as ``aiohttp.web_runner.TCPSite``) and either spelling is honest.
+# ``unused_port`` is #466's own bind→read→close race, shipped inside aiohttp.
+_LISTENER_NAMES_BY_LIBRARY: dict[str, frozenset[str]] = {
+    "aiohttp": frozenset({"run_app", "TCPSite", "UnixSite", "TestServer", "unused_port"}),
+}
 # The helper's public names — an adoption is a CALL to one of these.
 _HELPER_ENTRY_POINTS = frozenset({"LoopbackPort", "serve_asgi", "serve_http"})
 # Files this contract itself adds; adoption must be observed OUTSIDE them (they cannot vouch for a tree).
@@ -211,15 +227,27 @@ def _listener_primitive(call: ast.Call, aliases: dict[str, str]) -> str | None:
     ):
         return f"{ast.unparse(func)}(<address>) — a raw socket bind"
     if isinstance(func, ast.Attribute) and func.attr in _LISTENER_METHODS:
-        return f"{ast.unparse(func)}(…) — an asyncio listener"
+        return f"{ast.unparse(func)}(…) — an asyncio/anyio listener"
     qualified = _resolved_callee(call, aliases)
     if qualified is None:
         return None
-    if qualified in _LISTENER_FUNCTIONS or any(
-        _is_in_namespace(qualified, ns) for ns in _LISTENER_NAMESPACES
+    if (
+        qualified in _LISTENER_FUNCTIONS
+        or any(_is_in_namespace(qualified, ns) for ns in _LISTENER_NAMESPACES)
+        or _is_library_listener(qualified)
     ):
         return f"{qualified}(…) — a listener outside loremaster.testing.loopback"
     return None
+
+
+def _is_library_listener(qualified: str) -> bool:
+    """True iff ``qualified`` is one of :data:`_LISTENER_NAMES_BY_LIBRARY`'s listener leaves, reached
+    through any submodule of its library."""
+    leaf = qualified.rsplit(".", 1)[-1]
+    return any(
+        _is_in_namespace(qualified, library) and leaf in names
+        for library, names in _LISTENER_NAMES_BY_LIBRARY.items()
+    )
 
 
 class _SiteCollector(ast.NodeVisitor):
