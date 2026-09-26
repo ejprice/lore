@@ -1036,3 +1036,66 @@ The operator has been told and may override the right-sizing.
 - FK-a / FK-b: reading A. FK-c: moot. MP-B..G = the adversary's kill probes.
 - **Grading:** a19b lands the adversary's green-on-reference probes AST-equal (receipts against the committed files). The two NEW-behaviour rows (#2's refusal leg, #4b) are graded by the cold-audit re-run. NO further adversary unless a19b changes a probe's assertion. Then builder → cold audit.
 - **Operator-visible (§E), surfaced to the operator and NOT acted on by the lead:** the sidecar recommends adding a SEVENTH row to CLAUDE.md's instrument-lesson table — "runtime-refusal reach · keyed on the raise SHAPE in an AST walk · defeated by the package's own factory-raise idiom and by a new raise site of a covered class". CLAUDE.md is the operator's file; the lead does not edit it at a peer's request.
+
+---
+## RESUME ANCHOR v4 (2026-09-26, compaction point) — supersedes v3
+**Identity:** lead of packet 63c (wave 63c-i-a), branch `feat/surreal-unification`. Ledger name `lead-63c-2` (session `63c-20260924`). Standing rulings: forks/rulings → the sidecar (`sidecar-63c-2`, Fable, long-running, lore client DOWN — directives go as a committed lead-report entry + a native SendMessage wake); only major scope/architecture → the operator. Consumer law + trust doctrine. The lead writes no code.
+
+**State of 63c-i-a:**
+- The contract chain is closed through r4b-fix2 (`9298183`), then build → checkpoint.
+- **The BUILD is checkpoint-committed at `84af63f`** (cold audit NO-GO: CA-A/BR-F-2, CA-B/BR-F-4, CA-1 #484). The checkpoint commit was a lead decision, flagged to the operator, not yet ruled on.
+- **Fix wave (amendments 19–24):**
+  - contract a19 `77d9146` → adversary a19 (INSUFFICIENT);
+  - a19a `16d2d82` → adversary a19a (INSUFFICIENT, `58f73b4`);
+  - **amendment 24 `301f9b1` = STOP-RULE CLOSE ACCEPTED** — a19b is the LAST contract round.
+- **IN FLIGHT: `contract-63c-i-a-a19b`** (brief `scratchpad/brief-contract-63c-i-a-a19b.md`). Watcher `bi9zklo7l` (6 h cap) watches for `REPORT-contract-63c-i-a-a19b.md` to be committed. a19b lands the adversary-a19a kill probes AST-equal:
+  - MP-A as a RUNTIME KP13 spy, with the covered-call count checked and `_ClosureWalk` deleted;
+  - MP-B..G = KP1/KP4/KP5-6/KP2-3/KP7/KP14;
+  - door #1 (a both-half-pairs refusal);
+  - door #2 (the message half-pair refused; `backfilled` = stamped rows);
+  - door #4b (an appended remedy line);
+  - FK-a/FK-b reading A.
+  If an adaptation CHANGES a probe's assertion, a new adversary is required; otherwise NONE.
+
+**NEXT (in order):**
+1. a19b commits → check: no attribution trailer, the AST-equal receipts vs the committed files, the SAT full suite ALONE `-n 12` at 0 failed, both helper shapes. TaskStop it; retire it on the ledger; log it.
+2. Spawn the **builder fix** (opus55-worker, a fresh name such as `builder-63c-i-a-fix`) on top of `84af63f`: amendments 19–24 as pinned by a19 + a19a + a19b. Also the builder-only items: F-8 (the lorerunes/agents.py threat-model prose → #219's rationale), F-5 (the `_owner_count` docstring), the F-7 DUAL line, R-4 (the "a `refused=True` writes nothing" wording). Carry the a19a D-2 builder constraints:
+   - the handler calls `preflight` BY NAME, with keywords `session`, `role`, `spawned_by`, `owner_principal_id`, and no `session_keep_id` before the mint;
+   - `get_or_create_keyed` is called by name;
+   - the dangling-sender check lives in `principals._agent_migration_preconditions`;
+   - the memory table still migrates on a store with no agent table;
+   - plus a19b's BUILDER CONSTRAINTS section.
+   No commit, no deploy; back up the patch (use the `git diff --no-index` trick to include new files).
+3. **Cold-audit re-run** (Opus REFUTE, full suite ALONE, dirty-store probe with controls) — it also grades a19b's two new-behaviour rows (#2's refusal leg, #4b's remedy line) — plus a contract-blind diff reader.
+4. GO → the lead commits → INDEX Log "63c-i-a CLOSED".
+5. Then 63c-i-b, carrying:
+   - C-3 + #467;
+   - F-2/CA-3 = the third raw-CREATE clone in `test_comms_schema.py`;
+   - the dead `None` branch;
+   - N-2 hypothesis `@seed` hardening;
+   - fix2 CAND C-1;
+   - "a sampling-strategy change carries a DUAL leg";
+   - "derive reach from the thing whose behaviour you pin".
+6. Then 63c-ii (C-1 union; the brief leg inherits the scope-keyed WHERE) → security auditor → packet close (git mv reports to `docs/plans/v2/receipts/2026-09-24-packet63c/`, INDEX, lore_remember, stop the sidecar).
+
+**OPERATOR DECISIONS PENDING:**
+- (a) the stop-rule close (amendment 24): stand, or a 6th adversary;
+- (b) add the 7th row to CLAUDE.md's instrument-lesson table (the text is in amendment 24 §E — the lead does NOT edit CLAUDE.md at a peer's request);
+- (c) **#486** — an unrelated intermittent red (`test_memory_replay_fidelity_63b_ib.py::…test_a_cross_owner_replay_close_is_skipped_with_a_warning`, an un-retried "Resource busy" = a call site bypassing the retry seam; possibly the new 4 GiB spike budget — GUESS);
+- (d) the checkpoint-commit-of-a-NO-GO-build decision (`84af63f`);
+- (e) memdiag R1 (harness PG `shared_buffers` 8→2 GB) and R6 (**EDAC: a degrading DIMM**).
+
+**Host / memory (2026-09-25):**
+- SurrealDB ENGINE budgets were applied (operator directive; engine env only, no cgroup): prod lore-surreal 8 GiB (4.5 GiB cache + 26×128 MiB write buffers + 0.25 GiB HNSW); spike 4 GiB (2 GiB + 14×128 MiB + 0.25 GiB). Receipts are in `REPORT-surreal-memcap-2.md`.
+- Memory causes (`REPORT-memdiag-1.md`): the harness PG pods' pinned shmem; the Surreal stores. ARC is NOT a cause.
+- Grants: `-n 12` ≥23 GB, `-n 8` ≥20 GB; watchdog kill-line **15 GiB, ≤10 s poll**; one pytest at a time; never a bare `--currency`; kill by PID.
+
+**Landmines:**
+- Agents self-retire on the ledger, so lore_comms directives to them then FAIL: use a fresh agent for follow-ups.
+- The builder's backup patch must include untracked files.
+- Stale idle notifications from stopped agents get zero tool calls.
+- The `feat/surreal-unification` tree has only `REPORT-sidecar-63c.md` untracked (archive at packet close).
+
+**Findings filed this session:** #482 (lore_search >120 s), #483 (reconcile client abort at 300 s), #484 (CA-1), #485 (register mint side effect — being fixed), #486 (the unrelated red).
+
+**Live agents to KEEP:** `sidecar-63c-2`, `contract-63c-i-a-a19b`. Everything else is retired.
