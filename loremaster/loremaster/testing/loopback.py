@@ -44,9 +44,10 @@ KERNEL_ASSIGNED_PORT: int = 0
 """The port number that asks the kernel for an ephemeral port — the ONLY port ever bound here."""
 
 DEFAULT_SHUTDOWN_TIMEOUT_S: float = 5.0
-"""How long :func:`serve_asgi`'s exit waits for a STARTED server's lifespan shutdown before the
-overrun is reported LOUDLY (:class:`ServerShutdownTimeout` on a clean exit; a PEP 678 note on an
-exception already in flight). Measure-then-tune (#466 d1 §Surfaced-3); callers pass
+"""How long a helper's exit waits for a STARTED server to finish shutting down (:func:`serve_asgi`:
+the lifespan shutdown; :func:`serve_http`: the ``serve_forever`` thread) before the overrun is
+reported LOUDLY (:class:`ServerShutdownTimeout` on a clean exit; a PEP 678 note on an exception
+already in flight). Measure-then-tune (#466 d1 §Surfaced-3); callers of either helper pass
 ``shutdown_timeout_s`` to override it."""
 
 _STARTUP_POLL_S: float = 0.02
@@ -130,7 +131,10 @@ class ServerThreadCrashed(ServerStartError):
 
 
 class ServerShutdownTimeout(RuntimeError):
-    """A STARTED server's lifespan shutdown overran its budget on a clean exit.
+    """A STARTED server's shutdown overran its budget on a clean exit.
+
+    For :func:`serve_asgi` the overrun is the lifespan shutdown; for :func:`serve_http` it is the
+    ``serve_forever`` thread (a request handler that never returns).
 
     Deliberately NOT a :class:`ServerStartError`: a start-retry ``except`` must never swallow a
     teardown overrun. When the served body is already raising, this is never raised (it would
@@ -539,6 +543,7 @@ def serve_http(
     handler_class: type[socketserver.BaseRequestHandler],
     *,
     port: LoopbackPort | None = None,
+    shutdown_timeout_s: float = DEFAULT_SHUTDOWN_TIMEOUT_S,
 ) -> Iterator[ServedEndpoint]:
     """Serve a stdlib ``http.server`` handler in a thread, FROM a pre-bound socket.
 
@@ -548,6 +553,9 @@ def serve_http(
             closed by this helper. A PASSED port stays bound AND listening after exit (connects
             queue rather than being refused) until its owner closes it — unlike
             :func:`serve_asgi`, whose server closes a passed socket.
+        shutdown_timeout_s: How long exit waits for the serving thread to end (a stuck request handler
+            keeps it alive) before the overrun is reported (raised on a clean exit; noted on an exception
+            already in flight) — the same budget and policy as :func:`serve_asgi`'s.
 
     Yields:
         The served endpoint.
@@ -555,7 +563,7 @@ def serve_http(
     Raises:
         ServerBindError: If binding a fresh port fails.
         ServerShutdownTimeout: If, on a clean exit, the serving thread does not end within
-            :data:`DEFAULT_SHUTDOWN_TIMEOUT_S` (a stuck handler). A body exception in flight is
+            ``shutdown_timeout_s`` (a stuck handler). A body exception in flight is
             never masked: it carries the overrun as a PEP 678 note — the same policy as
             :func:`serve_asgi`.
     """
@@ -566,7 +574,7 @@ def serve_http(
         )
         thread.start()
         stop = functools.partial(_stop_http_server, server, thread)
-        with _loud_teardown(held.served_endpoint(), DEFAULT_SHUTDOWN_TIMEOUT_S, stop) as served:
+        with _loud_teardown(held.served_endpoint(), shutdown_timeout_s, stop) as served:
             yield served
 
 

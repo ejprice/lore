@@ -66,6 +66,7 @@ import contextlib
 import errno
 import http.server
 import importlib.util
+import inspect
 import logging
 import signal
 import socket
@@ -131,6 +132,18 @@ SHUTDOWN_GIVE_UP_GRACE_S = 2.0
 SLOW_SHUTDOWN_S = 0.3
 # d1/F2: the sentinel a failing ``with`` body raises — it must survive the overrun unmasked.
 BODY_FAILURE_SENTINEL = "the test's own assertion failed — d1-body-sentinel-466"
+# d1/ruling (d): how long a STUCK serve_http request handler blocks before giving up on its own. Far above
+# DEFAULT_SHUTDOWN_TIMEOUT_S + SHUTDOWN_GIVE_UP_GRACE_S (asserted in the test), so a build whose exit waits
+# for the handler instead of the budget is caught by elapsed time — and bounded, so that wrong build makes
+# the test RED rather than hanging the session.
+STUCK_HANDLER_BOUND_S = 30.0
+# d1/ruling (d): a complete request, so BaseHTTPRequestHandler reaches do_GET (where the handler sticks).
+STUCK_HANDLER_REQUEST = b"GET / HTTP/1.0\r\n\r\n"
+# d1/ruling (d): serve_http's exit window with a stuck handler under the PASSED short budget — not early
+# (the budget was given), not stuck (the handler was not waited for). SHORT + GRACE stays below the default
+# (asserted in the test), so a build that ignores serve_http's ``shutdown_timeout_s`` is caught.
+_STUCK_EXIT_WINDOW_LOW_S = SHORT_SHUTDOWN_BUDGET_S * 0.9
+_STUCK_EXIT_WINDOW_HIGH_S = SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -889,6 +902,142 @@ class TestAShutdownOverrunIsLoud:
         body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
         with pytest.raises(_BodyFailure):
             with serve_asgi(_RecordingApp("prompt-teardown-466")):
+                raise body_failure
+        assert getattr(body_failure, "__notes__", []) == []
+
+
+# ============================================================================================= #
+# d1/ruling (d) — serve_http's teardown with a STUCK handler is bounded and LOUD, exactly like serve_asgi's.
+# Lead-directed pin, authored in Phase 5 AFTER the build (documented deviation from test-first: the ruling
+# post-dated the contract). Proven able to fail by mutation — REPORT-refactor-466-d1.md §Pins-d.
+# ============================================================================================= #
+def _stuck_handler_class() -> tuple[
+    type[http.server.BaseHTTPRequestHandler], threading.Event, threading.Event
+]:
+    """A fresh handler class whose ``do_GET`` announces it ENTERED, then blocks until RELEASED.
+
+    Returns ``(handler_class, entered, released)``. The block is bounded by ``STUCK_HANDLER_BOUND_S`` so a
+    wrong build that waits for the handler finishes (RED) instead of hanging. It writes no response: the
+    client is closed in teardown, and a write racing that close would only add a broken-pipe traceback.
+    """
+    entered = threading.Event()
+    released = threading.Event()
+
+    class _StuckHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 — stdlib override name
+            entered.set()
+            released.wait(STUCK_HANDLER_BOUND_S)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — stdlib signature
+            return
+
+    return _StuckHandler, entered, released
+
+
+def _stick_a_request(served_host: str, served_port: int, entered: threading.Event) -> socket.socket:
+    """Send one complete request and wait until the handler is INSIDE it; return the open client."""
+    client = socket.create_connection((served_host, served_port), timeout=HTTP_TIMEOUT_S)
+    client.sendall(STUCK_HANDLER_REQUEST)
+    assert entered.wait(HTTP_TIMEOUT_S), (
+        "the stuck handler was never entered — the teardown below would not be stuck, so the pin would "
+        "certify nothing"
+    )
+    return client
+
+
+class TestServeHttpShutdownOverrunIsLoud:
+    """Ruling (d): ``HTTPServer.shutdown()`` waits, with NO timeout, for ``serve_forever`` — and a stuck
+    request handler runs inside that loop, so the old exit HUNG. Now the exit is bounded by
+    ``serve_http(shutdown_timeout_s=…)`` (default ``DEFAULT_SHUTDOWN_TIMEOUT_S`` — parity with serve_asgi)
+    and the overrun is LOUD by the SAME policy as serve_asgi's (``TestAShutdownOverrunIsLoud``): a clean
+    exit raises ``ServerShutdownTimeout`` naming ``host:port``; a body already raising keeps its own
+    exception and carries the overrun as a note."""
+
+    def test_a_clean_exit_with_a_stuck_handler_raises_naming_the_address(self) -> None:
+        # Fixture discrimination: the handler must outlive the window, or a build that simply waits for the
+        # handler would ALSO finish inside it; and the window must end before the DEFAULT, or a build that
+        # ignores the passed budget would too.
+        assert _STUCK_EXIT_WINDOW_HIGH_S < DEFAULT_SHUTDOWN_TIMEOUT_S < STUCK_HANDLER_BOUND_S
+        handler_class, entered, released = _stuck_handler_class()
+        threads_before = set(threading.enumerate())
+        client: socket.socket | None = None
+        try:
+            with pytest.raises(ServerShutdownTimeout) as excinfo:
+                with serve_http(handler_class, shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S) as served:
+                    client = _stick_a_request(served.host, served.port, entered)
+                    exit_started = time.monotonic()
+            elapsed = time.monotonic() - exit_started
+            error = excinfo.value
+            assert type(error) is ServerShutdownTimeout
+            assert (error.host, error.port) == (served.host, served.port)
+            message = str(error)
+            assert f"{served.host}:{served.port}" in message, (
+                f"the overrun does not name the address: {message}"
+            )
+            assert "shutdown" in message.lower(), f"the overrun does not say it was the shutdown: {message}"
+            assert error.shutdown_timeout_s == SHORT_SHUTDOWN_BUDGET_S
+            # Not early (the handler was given the budget) and not stuck (exit did not wait for the handler).
+            assert _STUCK_EXIT_WINDOW_LOW_S <= elapsed <= _STUCK_EXIT_WINDOW_HIGH_S, (
+                f"exit took {elapsed:.2f}s against a {SHORT_SHUTDOWN_BUDGET_S}s budget"
+            )
+            assert _becomes_refused(served.host, served.port), (
+                "the owned port still accepts after the overrun"
+            )
+        finally:
+            released.set()
+            if client is not None:
+                client.close()
+        # Once the handler returns, the serving thread (and the shutdown request's thread) must end.
+        survivors = _threads_still_alive_after(threads_before, THREAD_END_BOUND_S)
+        assert survivors == [], f"serve_http left thread(s) running after the released handler: {survivors}"
+
+    def test_a_failing_body_keeps_its_own_exception_and_carries_the_overrun_as_a_note(self) -> None:
+        handler_class, entered, released = _stuck_handler_class()
+        body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        client: socket.socket | None = None
+        try:
+            with pytest.raises(_BodyFailure) as excinfo:
+                with serve_http(handler_class, shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S) as served:
+                    client = _stick_a_request(served.host, served.port, entered)
+                    exit_started = time.monotonic()
+                    raise body_failure
+            elapsed = time.monotonic() - exit_started
+            assert excinfo.value is body_failure, (
+                f"the body's own exception was replaced by {excinfo.value!r} — the overrun MASKED it"
+            )
+            notes = "\n".join(getattr(body_failure, "__notes__", []))
+            assert f"{served.host}:{served.port}" in notes and "shutdown" in notes.lower(), (
+                f"the overrun is SILENT on the failing path — no note naming the address: {notes!r}"
+            )
+            # Both bounds, on THIS path too: a build that skips the wait when the body failed is not bounded
+            # below, and one that waits for the handler is not bounded above.
+            assert _STUCK_EXIT_WINDOW_LOW_S <= elapsed <= _STUCK_EXIT_WINDOW_HIGH_S, (
+                f"exit took {elapsed:.2f}s against a {SHORT_SHUTDOWN_BUDGET_S}s budget"
+            )
+        finally:
+            released.set()
+            if client is not None:
+                client.close()
+
+    def test_both_helpers_default_to_the_same_shutdown_budget(self) -> None:
+        # Parity: serve_http's budget is a parameter with the SAME default as serve_asgi's, so the two helpers
+        # cannot drift apart on the default the overrun policy runs with.
+        defaults = {
+            helper.__name__: inspect.signature(helper).parameters["shutdown_timeout_s"].default
+            for helper in (serve_asgi, serve_http)
+        }
+        assert defaults == {
+            "serve_asgi": DEFAULT_SHUTDOWN_TIMEOUT_S,
+            "serve_http": DEFAULT_SHUTDOWN_TIMEOUT_S,
+        }
+
+    def test_positive_control_a_failing_body_with_a_prompt_handler_gets_no_note(self) -> None:
+        # The note is evidence of an overrun, not decoration on every failure (and a clean prompt exit not
+        # raising is already every TestServeHttp pin).
+        body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        with pytest.raises(_BodyFailure):
+            with serve_http(_StubHandler) as served:
+                assert _get(served.base_url).status_code == HTTP_OK
                 raise body_failure
         assert getattr(body_failure, "__notes__", []) == []
 

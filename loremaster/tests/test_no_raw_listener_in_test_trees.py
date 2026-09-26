@@ -64,11 +64,25 @@ DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §2 C1/C3)
   listener verb is server-capable, and must carry a planted spelling the detector flags. The day a test
   first imports a new server library, this reddens and names it. Bound: see
   :class:`TestTheServerCapableDependenciesAreDerived`.
+
+LEAD PIN (c) (author ``refactor-466-d1``, Phase 5 — a documented deviation from test-first: the ruling
+post-dated the contract; proven able to fail by mutation, REPORT-refactor-466-d1.md §Pins-c)
+------------------------------------------------------------------------------------------------------
+* **A pytest-plugin port fixture is a listener door no call-keyed scan sees.** pytest-asyncio's
+  ``unused_tcp_port`` / ``unused_udp_port`` (+ ``_factory``) and anyio's ``free_tcp_port`` /
+  ``free_udp_port`` (+ ``_factory``) are #466's bind→close→number race, requested by NAME — a function
+  parameter, ``request.getfixturevalue("…")`` or ``pytest.mark.usefixtures("…")``. The detector flags
+  such a request. **Allowlist the safe:** the forbidden set is every fixture an installed ``pytest11``
+  plugin DEFINES (derived by importing each entry point) MINUS :data:`_SAFE_PLUGIN_FIXTURES`, so a new
+  plugin's fixture is refused until someone classifies it — never silently allowed.
 """
 
 from __future__ import annotations
 
 import ast
+import functools
+import inspect
+import sysconfig
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -77,6 +91,10 @@ from pathlib import Path
 
 import pytest
 from _logging_fixtures import _workspace_root, assert_scan_reached_every_member, parse_production_trees
+
+# pytest exposes no public "is this object a fixture definition" predicate; this private one is what its own
+# collector uses. Bound: a pytest release that moves it is an ImportError at collection — loud, not silent.
+from _pytest.fixtures import getfixturemarker
 from packaging.utils import canonicalize_name  # PEP 503 names; packaging is a hard dependency of pytest
 
 # Every callable reached through these modules opens (or configures) a listener.
@@ -140,6 +158,30 @@ _PLANTED_BY_SERVER_DISTRIBUTION: dict[str, str] = {
         "    await anyio.create_tcp_listener(local_host='127.0.0.1', local_port=port)\n"
     ),
 }
+
+# Lead pin (c): the pytest-plugin fixtures that are SAFE to request (they open nothing and hand out no port),
+# each with its reason. EVERY OTHER fixture an installed pytest11 plugin defines is forbidden in the test
+# trees — the forbidden set is derived (:func:`_forbidden_plugin_fixtures`), never listed. Classified by
+# reading the installed sources (pytest-asyncio 1.4.0, anyio 4.13.0, pytest-xdist 3.8.0), 2026-09-26.
+_SAFE_PLUGIN_FIXTURES: dict[str, str] = {
+    "anyio_backend": "anyio: names the async backend to run on — opens nothing",
+    "anyio_backend_name": "anyio: the backend's name — opens nothing",
+    "anyio_backend_options": "anyio: the backend's options — opens nothing",
+    "event_loop_policy": "pytest-asyncio: the event-loop policy — opens nothing",
+    "_asyncio_loop_factory": "pytest-asyncio: private loop factory — opens nothing",
+    "_function_scoped_runner": "pytest-asyncio: private per-scope asyncio runner — opens nothing",
+    "_class_scoped_runner": "pytest-asyncio: private per-scope asyncio runner — opens nothing",
+    "_module_scoped_runner": "pytest-asyncio: private per-scope asyncio runner — opens nothing",
+    "_package_scoped_runner": "pytest-asyncio: private per-scope asyncio runner — opens nothing",
+    "_session_scoped_runner": "pytest-asyncio: private per-scope asyncio runner — opens nothing",
+    "worker_id": "pytest-xdist: this worker's id string — opens nothing",
+    "testrun_uid": "pytest-xdist: the run's uid string — opens nothing",
+}
+# Lead pin (c): the fixtures the ruling NAMED — the derivation must reach them (non-vacuity). Not the
+# forbidden set (that is derived); only proof the derivation sees the plugin the ruling was about.
+_RULED_PORT_FIXTURES = frozenset(
+    {"unused_tcp_port", "unused_tcp_port_factory", "unused_udp_port", "unused_udp_port_factory"}
+)
 
 # (repo-relative file, enclosing function qualname) → evidence-backed reason + re-open trigger.
 _EXEMPT_SITES: dict[tuple[str, str], str] = {
@@ -250,17 +292,66 @@ def _is_library_listener(qualified: str) -> bool:
     )
 
 
-class _SiteCollector(ast.NodeVisitor):
-    """Walk a module keeping the enclosing ``Class.function`` qualname for every listener call."""
+@functools.cache
+def _installed_plugin_fixtures() -> dict[str, str]:
+    """Fixture name → ``"<distribution>:<plugin module>"`` for every fixture an installed plugin defines.
 
-    def __init__(self, path: str, aliases: dict[str, str]) -> None:
+    DERIVED from the ``pytest11`` entry points (how pytest itself discovers plugins), by loading each plugin
+    and reading the fixture definitions in its namespace — independent of which plugins THIS invocation
+    enabled (``-p no:xdist`` must not shrink the set). Bound: a plugin that registers fixtures on an object
+    at ``pytest_configure`` time is not in a module namespace — the live-session leg
+    (:meth:`TestPluginPortFixturesAreForbidden.test_the_running_session_registers_no_plugin_fixture_the_derivation_missed`)
+    covers that door.
+    """
+    fixtures: dict[str, str] = {}
+    for entry_point in metadata.entry_points(group="pytest11"):
+        plugin = entry_point.load()
+        distribution = entry_point.dist.name if entry_point.dist is not None else "?"
+        for attribute, candidate in vars(plugin).items():
+            marker = getfixturemarker(candidate)
+            if marker is not None:
+                fixtures[marker.name or attribute] = f"{distribution}:{entry_point.value}"
+    return fixtures
+
+
+def _forbidden_plugin_fixtures() -> frozenset[str]:
+    """Every installed plugin fixture NOT on the safe allowlist — requesting one is flagged."""
+    return frozenset(set(_installed_plugin_fixtures()) - set(_SAFE_PLUGIN_FIXTURES))
+
+
+# How a test tree REQUESTS a fixture by name without calling anything that opens a listener.
+_FIXTURE_LOOKUP_VERBS = frozenset({"getfixturevalue", "usefixtures"})
+
+
+def _plugin_fixture_primitive(name: str, how: str) -> str:
+    """The site description for a request of the forbidden plugin fixture ``name``."""
+    return (
+        f"requests pytest-plugin fixture {name!r} ({how}) — not on _SAFE_PLUGIN_FIXTURES; the plugin port "
+        "fixtures (unused_tcp_port*, free_tcp_port*, …) hand back a NUMBER from #466's bind→close race"
+    )
+
+
+class _SiteCollector(ast.NodeVisitor):
+    """Walk a module keeping the enclosing ``Class.function`` qualname for every listener call, and for every
+    request of a forbidden pytest-plugin fixture (a parameter, ``getfixturevalue`` or ``usefixtures``)."""
+
+    def __init__(self, path: str, aliases: dict[str, str], forbidden_fixtures: frozenset[str]) -> None:
         self.path = path
         self.aliases = aliases
+        self.forbidden_fixtures = forbidden_fixtures
         self.scope: list[str] = []
         self.sites: list[ListenerSite] = []
 
+    def _add(self, lineno: int, primitive: str) -> None:
+        self.sites.append(ListenerSite(self.path, lineno, ".".join(self.scope) or "<module>", primitive))
+
     def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.scope.append(node.name)
+        if not isinstance(node, ast.ClassDef):
+            arguments = node.args
+            for parameter in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+                if parameter.arg in self.forbidden_fixtures:
+                    self._add(parameter.lineno, _plugin_fixture_primitive(parameter.arg, "a parameter"))
         self.generic_visit(node)
         self.scope.pop()
 
@@ -271,14 +362,18 @@ class _SiteCollector(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802 — ast.NodeVisitor dispatch name
         primitive = _listener_primitive(node, self.aliases)
         if primitive is not None:
-            function = ".".join(self.scope) or "<module>"
-            self.sites.append(ListenerSite(self.path, node.lineno, function, primitive))
+            self._add(node.lineno, primitive)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _FIXTURE_LOOKUP_VERBS:
+            for argument in node.args:
+                if isinstance(argument, ast.Constant) and argument.value in self.forbidden_fixtures:
+                    self._add(node.lineno, _plugin_fixture_primitive(argument.value, f"{node.func.attr}()"))
         self.generic_visit(node)
 
 
 def listener_sites(tree: ast.Module, path: str) -> list[ListenerSite]:
-    """Every raw listener-opening call in ``tree`` (exemptions NOT applied)."""
-    collector = _SiteCollector(path, _import_aliases(tree))
+    """Every raw listener-opening call and forbidden plugin-fixture request in ``tree`` (exemptions NOT
+    applied)."""
+    collector = _SiteCollector(path, _import_aliases(tree), _forbidden_plugin_fixtures())
     collector.visit(tree)
     return collector.sites
 
@@ -712,3 +807,127 @@ class TestTheServerCapableDependenciesAreDerived:
         assert _calls_a_listener_verb(b"async def f(loop):\n    await loop.create_server(p, sock=s)\n")
         assert not _calls_a_listener_verb(b"# we never call create_server here\nX = 'start_server'\n")
         assert not _calls_a_listener_verb(b"import socket\nsocket.create_connection(('h', 1))\n")
+
+
+# ============================================================================================= #
+# LEAD PIN (c) — a pytest-plugin PORT FIXTURE is #466's race requested by name. Forbidden by derivation.
+# ============================================================================================= #
+def _is_installed_third_party(source_file: str | None) -> bool:
+    """True iff ``source_file`` lives in an installed-packages dir and is not pytest's own core."""
+    if source_file is None:
+        return False
+    resolved = Path(source_file).resolve()
+    installed_roots = {Path(sysconfig.get_paths()[key]).resolve() for key in ("purelib", "platlib")}
+    inside = next((root for root in installed_roots if resolved.is_relative_to(root)), None)
+    return inside is not None and resolved.relative_to(inside).parts[0] not in {"_pytest", "pytest"}
+
+
+class TestPluginPortFixturesAreForbidden:
+    """Lead pin (c): pytest-asyncio's ``unused_tcp_port`` / ``unused_tcp_port_factory`` / ``unused_udp_port*``
+    (and, found by the derivation rather than named by anyone, anyio's ``free_tcp_port*`` /
+    ``free_udp_port*``) bind ``:0``, read the port and CLOSE the socket — #466's race — and a test reaches
+    them by NAME, which no call-keyed scan sees. The detector flags a request (parameter · ``getfixturevalue``
+    · ``usefixtures``) of any installed plugin fixture NOT on :data:`_SAFE_PLUGIN_FIXTURES`.
+
+    REACH IS A CHECKED VARIABLE: the forbidden set is derived from the ``pytest11`` entry points; every
+    member of it is shown flagged (parametrised below, so the set GROWING grows the pin); the ruled names
+    must be reached (non-vacuity); every safe entry must still exist (dead-entry); and the RUNNING session's
+    fixture registry is cross-checked against the static derivation (the register-at-configure door).
+
+    KNOWN BOUNDS (named, so they are met deliberately): (1) pytest core's fixtures (``_pytest``) are trusted
+    wholesale — none opens a port. Re-open trigger: a pytest release adding one. (2) A plugin loaded only by
+    ``pytest_plugins = [...]`` / ``-p`` (no entry point) — e.g. ``aiohttp.pytest_plugin``'s
+    ``aiohttp_unused_port`` — is seen only by the live leg, and only in a session that loaded it; measured
+    2026-09-26: no conftest here declares ``pytest_plugins`` and ``addopts`` carries no ``-p``. Re-open
+    trigger: the first such declaration. (3) Indirect parametrisation (``parametrize("x", …,
+    indirect=True)``) names a fixture in a string no leg reads. Re-open trigger: the first indirect use of a
+    plugin fixture. (4) A non-fixture helper whose parameter happens to be spelled like a forbidden fixture
+    is flagged too (a false positive an honest author fixes by renaming)."""
+
+    _PLANTED = (
+        "import pytest\n"  # 1
+        "def test_parameter(unused_tcp_port):\n"  # 2 ← a test parameter
+        "    pass\n"  # 3
+        "async def test_keyword_only(tmp_path, *, free_tcp_port_factory):\n"  # 4 ← keyword-only
+        "    pass\n"  # 5
+        "@pytest.fixture\n"  # 6
+        "def server(unused_udp_port_factory):\n"  # 7 ← a fixture's own parameter
+        "    pass\n"  # 8
+        "def test_dynamic(request):\n"  # 9
+        "    request.getfixturevalue('unused_udp_port')\n"  # 10 ← getfixturevalue
+        "@pytest.mark.usefixtures('anyio_backend', 'free_udp_port')\n"  # 11 ← usefixtures (one of two)
+        "def test_marked():\n"  # 12
+        "    pass\n"  # 13
+        "class TestInAClass:\n"  # 14
+        "    def test_method(self, unused_tcp_port_factory):\n"  # 15 ← a method parameter
+        "        pass\n"  # 16
+    )
+    _FLAGGED_LINES = [2, 4, 7, 10, 11, 15]
+
+    # Safe plugin fixtures, core fixtures, and forbidden NAMES used as something other than a fixture request.
+    _HONEST = (
+        "import pytest\n"
+        "def test_safe(tmp_path, monkeypatch, anyio_backend, worker_id, testrun_uid, event_loop_policy):\n"
+        "    unused_tcp_port = 5\n"  # a local variable, not a request
+        "    request.getfixturevalue('tmp_path')\n"
+        "    print('unused_tcp_port')\n"  # a string outside a fixture lookup
+        "@pytest.mark.usefixtures('anyio_backend')\n"
+        "def test_marked_safe():\n"
+        "    pass\n"
+    )
+
+    def test_every_planted_plugin_fixture_request_is_flagged_on_its_line(self) -> None:
+        sites = listener_sites(ast.parse(self._PLANTED), "PLANTED_fixtures.py")
+        flagged = sorted({site.lineno for site in sites})
+        assert flagged == self._FLAGGED_LINES, (
+            f"flagged lines {flagged} != expected {self._FLAGGED_LINES} — a plugin port fixture gets back "
+            f"into the test trees through the unflagged lines: {[site.render() for site in sites]}"
+        )
+        # The exemption key is the ENCLOSING function, as for every other site.
+        assert {site.function for site in sites if site.lineno == 15} == {"TestInAClass.test_method"}
+
+    def test_honest_fixture_requests_are_not_flagged(self) -> None:
+        sites = listener_sites(ast.parse(self._HONEST), "HONEST_fixtures.py")
+        assert sites == [], f"a SAFE fixture request was flagged: {[site.render() for site in sites]}"
+
+    @pytest.mark.parametrize("fixture_name", sorted(_forbidden_plugin_fixtures()))
+    def test_each_derived_forbidden_fixture_is_flagged_when_requested(self, fixture_name: str) -> None:
+        source = f"def test_uses_it({fixture_name}):\n    pass\n"
+        sites = listener_sites(ast.parse(source), f"PLANTED_{fixture_name}.py")
+        assert [site.lineno for site in sites] == [1], (
+            f"requesting the installed plugin fixture {fixture_name!r} "
+            f"({_installed_plugin_fixtures()[fixture_name]}) is not flagged"
+        )
+
+    def test_the_derivation_reaches_the_ruled_port_fixtures(self) -> None:
+        unreached = sorted(_RULED_PORT_FIXTURES - _forbidden_plugin_fixtures())
+        assert unreached == [], (
+            f"the ruled port fixtures {unreached} are not in the derived forbidden set — the derivation no "
+            f"longer sees pytest-asyncio (derived: {sorted(_installed_plugin_fixtures())}), or they were "
+            "classified SAFE"
+        )
+
+    def test_every_safe_entry_is_still_a_defined_plugin_fixture(self) -> None:
+        # Dead-entry pin: a safe entry naming nothing would silently allow a FUTURE fixture of that name.
+        dead = sorted(set(_SAFE_PLUGIN_FIXTURES) - set(_installed_plugin_fixtures()))
+        assert dead == [], f"these _SAFE_PLUGIN_FIXTURES entries name no installed plugin fixture: {dead}"
+
+    def test_the_running_session_registers_no_plugin_fixture_the_derivation_missed(
+        self, request: pytest.FixtureRequest
+    ) -> None:
+        # The live leg: every fixture THIS session registered from installed third-party code must be in the
+        # static derivation — a plugin that registers fixtures at configure time, or one loaded by ``-p`` /
+        # ``pytest_plugins``, reddens here by name. ``_arg2fixturedefs`` is private (no public registry).
+        registry = request._fixturemanager._arg2fixturedefs
+        live = {
+            name
+            for name, definitions in registry.items()
+            for definition in definitions
+            if _is_installed_third_party(inspect.getsourcefile(definition.func))
+        }
+        assert live, "no installed third-party fixture registered in this session — the live leg sees nothing"
+        missed = sorted(live - set(_installed_plugin_fixtures()))
+        assert missed == [], (
+            "this session registered installed plugin fixtures the pytest11 derivation does not see: "
+            f"{missed} — classify each (safe, or leave it forbidden) and extend the derivation"
+        )
