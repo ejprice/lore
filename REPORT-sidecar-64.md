@@ -263,3 +263,19 @@ brief project v7 read
   different tool under its own R3 grant. **(3) DROP** the `EnvironmentFile=` half (it certifies a file the
   script no longer reads) and delete `STORES_ENV_FILE`; KEEP the ports cross-check, renamed.
 - **Graded:** `441f3b0` · HEAD-at-report: `c8147d9` · DIFFERENT (my own commit). Standing by.
+
+## Task 13 (2026-09-26) — packet 58 amendment 5 committed `67bf2cc`
+
+- **state:** done — **(A) REJECTED** (a builder constraint that installs the very door shape the
+  invariant polices, to satisfy a scanner keyed on a code shape — the lead's flag is right, CLAUDE.md
+  instrument-lesson row 7 applied to its sibling). **(C) is the ∀:** inject `TxnContentionExhaustedError`
+  at the ONE apply seam ∀ CAS verbs — derived as the production callers of the two shells (+ the briefs
+  relate door) — and assert it propagates UNREAD (zero reads observed, one apply, no reinterpretation);
+  control per verb: the verb's own domain THROW → its ruled verdict; coverage checked both ways
+  (driven ⊇ derived; driven ⊆ derived). **(B) stays as the static index re-keyed to the caught CLASS:**
+  door iff the closure contains exhausted contention (bare/tuple excepts now seen), safe-by-type
+  otherwise, two exact sets, re-read presence irrelevant; hierarchy pins kept; cross-checked with (C) in
+  both directions; mutations agree across the two instruments. **Erratum (mine, am-4):** its widening
+  kept the `_select*` shape key one level down. r2 STOPS proceeding on A; `test_retry_seam.py`'s re-key
+  is a held-patch-class edit if the lead so classifies it.
+- **Graded:** contract-58-r2 (working tree) · HEAD-at-report: `67bf2cc` · DIFFERENT (my own commit). Standing by.
