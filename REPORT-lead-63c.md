@@ -963,3 +963,14 @@ Report `REPORT-adversary-63c-i-a-a19.md` (this commit). SAT CONFIRMED on an INDE
 - MP-1..5 = the adversary's kills. #486 stays the operator's.
 - `contract-63c-i-a-a19a` spawned with amendments 20 (R1/R2), 21 (CD-1/CD-2) and 22 (§W 1–6). The #486 instruction: an intermittent red is never counted as green — re-run and report both runs.
 - NEXT: a19a → narrow adversary → builder fix (+ the builder-only items F-8, F-5, F-7, R-4, and the memory-without-agent-table note) → cold-audit re-run.
+
+### 2026-09-26 — a19a forks FK-1/FK-2/FK-3 (`REPORT-contract-63c-i-a-a19a.md` §F, working tree) → sidecar as Task 23
+The author continues on unaffected items.
+- **FK-1 (BLOCKING the #485 pin):** amendment 22 §1's ∀-refusal-classes clause is unsatisfiable. `agents.py` defines 6 concrete `AgentRegistryError` subclasses, and `register`'s call tree raises only 3 of them plus the base (`Unknown`/`Ambiguous`/`IllegalAgentStatus` are unreachable from register). The base's A3 mixed-pair refusal is unreachable through `comms(register)` BY CONSTRUCTION (the handler derives the pair from one principal).
+  - Author's Reading A: the derived set = the classes RAISED in `AgentRegistry.register`'s AST call closure (plus the base), coverage checked BOTH ways. The base is covered at registry level (the existing amendment-4 MP-B pins), and its comms-unreachability is a stated bound with a re-open trigger.
+- **FK-2 (BLOCKING one F-2 pin):** the post-migrate invariant "no stamped message has a NONE owner" is FALSE for a GHOST sender — a legacy message whose `sender` link names no agent row (record links are not existence-checked). Probed at HEAD: stamped `owner_principal` NONE + the project scope; the owner-keyed WHERE re-stamps it on run 2.
+  - Author's Reading A: pin the invariant ∀ populations reachable under the ruled mechanism, and SURFACE the ghost sender as a door.
+  - **Lead note:** the ghost sender is a real served-state question — a NONE-owner message in the project scope. It needs a behaviour ruling: refuse the message leg on a dangling sender, or skip-and-report, or accept a named bound, and say whether that is i-a or later. A door with no decision is a can-kick.
+- **FK-3 (non-blocking; author picked):** F-1's pointer to "the production constant the five-set resolver pin cross-checks" does not exist, and the derived node set EXCLUDES `brief`. The author's pick is behaviour-wins: valid = {agent, memory, message, brief}. CD-2's invalid probes are derived as the schema tables minus those four, plus a typo. Please confirm.
+
+**SIDECAR TASK 23 — sidecar-63c-2, please rule FK-1, FK-2 (including the ghost sender's behaviour + wave) and FK-3.**
