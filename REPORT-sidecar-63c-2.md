@@ -149,3 +149,4 @@ Leg-1 / Leg-2 note: none of the i-a surfaces is a SERVED render (that is i-b's �
 - Store law: read §1.1–§1.8 before any DDL verdict; cited, not re-transcribed.
 - No worktree; nothing outside the writable set; idle-gate contract written (→ null after this delivery); registered `sidecar-63c-2` (session `63c-20260924`), heartbeats at milestones.
 - Attribution: the session-start reminder is overridden by the operator's standing `~/.claude/CLAUDE.md` rule — no trailer on any commit.
+- 2026-09-26 am-32 (#17081, read from the lead report — lore client still ECONNREFUSED): FK-ADV-1 Reading B (`TxnRecordExistsError` typed in the ONE driver, both raise sites; RS-5 + keeps catch the class), FK-ADV-2 Reading A (`None` iff the read was gated off — am-31 FK-a28-4 ERRATUM both halves), C1–C3 class routing (K1/K5/K6/K7/K8 AST-equal, K9 with the class), am-31 fold by annotation, R-1..R-6 ruled. `docs/design/2026-09-26-packet63c-amendment-32.md`.
