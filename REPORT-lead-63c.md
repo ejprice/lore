@@ -1332,3 +1332,4 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **Sequencing (F-r2-2), lead-ruled:** 58's §HELD `test_retry_seam` re-key lands FIRST (58 builds before 64, pool 30); 64b re-derives G2 on top via a patch script → directive #17072 (the wake quoted the correct seq).
 - FORK-3 (ERROR vs WARNING for an ASSERT rollback; does am-3 §3's WARNING reach 63's governed-conflict THROW) + FORK-4 (`[A,A,X]` dedupe) → **sidecar-64 Task 14** (58 am-6).
 - **adversary-58-r2** (delta) spawned: prior-survivor kills, new wrong builds vs (C)/(B)/the packer, the AST receipt re-run, SAT on plain HEAD + §HELD + its own reference.
+- r2 detail: when 64b merges its two findings functions, 58's runtime-injection test's two findings entries go stale → they fail LOUDLY by name at 64b's integration (the builder re-keys them). Logged, not directive-stacked. #497 (a RETURN inside a txn ends it early + commits) → sidecar-64 **Task 15** (store-ref entry).
