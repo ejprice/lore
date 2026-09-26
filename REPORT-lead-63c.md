@@ -1297,3 +1297,13 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **#466 delta** (tdd-light routes contract/behaviour findings back to Phase 1): **contract-466-d1** pins F1 (BaseException cleanup), F2 (a silent shutdown-join overrun → loud), C1 (a `_CONTRACT_FILES` dead-entry pin), C2 (the uvloop premise), C3 (aiohttp listener namespace; consider deriving it), F12 (driver process-tree kill on timeout).
 - contract-58-r2 told: its `test_reanchor_58_r2_rulings.py` trips the whole-tree-clone invariant.
 - Next in the tdd-light queue after #466 closes: #486 (harness `run()` via the retry seam + the `test_<uuid>` DB leak), then #492 (admin-picked port + `--port`).
+
+### 2026-09-26 — #466 delta contract d1 reviewed; lead rulings (a)–(e); stub urgent
+- contract-466-d1: pins F1/F2/C1/C2/C3/F12 (insertions only; declared RED == observed; reference passes; 17/17 wrong builds caught). C1/C2 are mutation-proven (they cannot be RED today by nature).
+- ⚠ The uncommitted delta makes test_loopback_serving.py a COLLECTION error (`ImportError: DEFAULT_SHUTDOWN_TIMEOUT_S`) in the shared tree until the F2 stub lands → stub spawned immediately; contract + stub commit back to back.
+- **Lead rulings (right-sized, test-infra):**
+  - (a) F2 = raise on a clean exit + a note on a failing exit (loud; never masks the test's own failure).
+  - (b) KEEP the derived-reach C3b (allowlist-the-safe; +4.5–8 s accepted).
+  - (c) pytest-asyncio `unused_tcp_port*` ruled IN (a bind-close door; pin its absence in the test trees).
+  - (d) the `serve_http` stuck-handler teardown is bounded + loud NOW (F2's class).
+  - (e) F2 budget = measure-then-tune: the implementer measures 20 real wire-lifespan teardowns; budget = max(5 s, 3 × p99).
