@@ -994,3 +994,35 @@ The author continues on unaffected items.
   - the dangling-sender check lives in `principals._agent_migration_preconditions`.
 - **§10 candidate doors (9):** the adversary is asked to PROBE and classify #2 (owned-but-unscoped MESSAGE rows — never stamped, yet counted forever; MEDIUM, reasoned only), #4 (compensation masking), #1 (the both-half-pairs diagnosis) and #3 (leg-level refusals still serving zeros). #6/#7 (test-hygiene invariants) → candidates for later.
 - NEXT: `adversary-63c-i-a-a19a` over `77d9146..16d2d82` → builder fix → cold-audit re-run.
+
+### 2026-09-26 — adversary a19a: INSUFFICIENT (7 MISSING PINS, 3 NEW DOORS, FK-a); Task 24 → sidecar WITH the STOP-rule question
+Report `REPORT-adversary-63c-i-a-a19a.md` (this commit). Verified:
+- SAT CONFIRMED on an independent build (`11592/62/3/0`); RED@`84af63f` 80 honest.
+- ALL 5 a19 survivors plus #485's PQ1 KILLED.
+- 12 wrong builds survive the FULL suite (two composites). #486 did not recur in 3 runs.
+Adversary retired.
+
+**Missing pins:**
+- **MP-A (REACH, headline):** the ∀-refusal-classes pin (amendment 23's AST raise-closure derivation) fails OPEN on this package's own factory-raise idiom (`raise self._x_refusal(...)`), and counts CLASSES, not raise SITES, so a new post-mint refusal arrives unpinned (N3b, N17). The adversary's cure: fail closed plus per-site coverage, OR the RUNTIME property (KP13) armed around every driven `comms(register)`. **This is the instrument lesson's seventh defeat** — a reach keyed on code SHAPE — and the runtime form is the one CLAUDE.md prescribes as the end of the recession.
+- MP-B: created-vs-found is never raced against a concurrent winner (N5).
+- MP-C: the race path's refusal text is unpinned (N7).
+- MP-D: ONE-IMPLEMENTATION is proven for the blank role only; existing-row decisions can be privately copied in the registry or the handler (N13, N14).
+- MP-E: the two new id samples are never perturbed (N11, N12).
+- MP-F (under FK-a reading A): leg-level refusals serve an unmeasured `0` (L3).
+- MP-G: a failed keep mint degrades to an ownerless register — an old virtue with no pin (N6).
+
+**New doors:**
+- #1: which diagnoses a both-half-pairs refusal carries.
+- #2 (PROBED, a real non-convergence): an owned-but-unscoped MESSAGE row is never stamped, `report_unmigrated` = 1 forever, `refused=False`.
+- #4b: a failed compensation leaves a keep behind with only a log line.
+
+**FK-a:** do the F-3 None receipts cover leg-level refusals? The adversary picks A (yes). FK-b and FK-c are picked, in its §7.
+
+**STOP-RULE (lead, per CLAUDE.md's reach attack):** this fix wave is now on its 3rd contract round (a19 → a19a → next), after ~10 rounds on 63c-i-a overall. MP-A is a receding reach. **Lead recommendation:** close MP-A with the RUNTIME property only (KP13 — observes what `register` actually raises, which ends the recession by construction) rather than another static derivation. Land MP-B…MP-G + the door rulings as ONE final addendum (a19b), ALREADY graded by this adversary's green-on-reference kill probes (§A.3), in the verbatim/AST-equal manner of amendments 16–17. Then the builder. **No further adversary round unless a19b deviates from the graded probes.**
+
+**SIDECAR TASK 24 — sidecar-63c-2, please rule:**
+1. MP-A's form: runtime KP13 vs fail-closed static.
+2. The three doors #1, #2, #4b — behaviour and wave.
+3. FK-a.
+4. The lead's STOP-rule proposal: a19b = the adversary's graded kill probes landed AST-equal, no further adversary unless it deviates.
+The operator has been told and may override the right-sizing.
