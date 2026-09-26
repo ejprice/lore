@@ -1232,3 +1232,16 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - 64 am-1 covered only principal deletion. `lore-adm delete-keep` orphans keep-scoped rows at HEAD (no production exposure: the keep substrate is commit-only until the 65 cutover). Ruled into 64d-ii: the same REQUIRED choice `--delete-obj | --archive-obj | --change-scope` (the keep analogue of the operator's OF-3 `--change-owner`); ONE `dispose_population` engine for both verbs; a refuse-when-populated guard on `KeepStore.delete_keep`. #488 annotated. Attribution-clean.
 - contract-64b directive #17047: the `_governed_contract.py` fold is §HELD-only; no §13 shared file in its commit.
 - Operator pending: the coldaudit prod-dump restore permission (allow rule / operator-run / skip).
+
+### 2026-09-26 — adversary-58: CONTRACT INSUFFICIENT; 7 HEAD reds from OUR scripts
+- **adversary-58 (report at root, uncommitted per its brief):**
+  - 13 wrong builds survive (14 MISSING PIN · 3 SAT DEFECT · 6 NEW DOOR). Worst: WB1 (a real store fault served as the R1 "retry" teaching), WB2 (a K-ignoring cap → a bare compose error), WB6/PR17 (the heal FAILS THE BOOT), WB7 (#130 under LIMIT).
+  - **58 am-2's chunk sizing is itself defective** (rows vs statements → never converges; its own pin passes the defective build).
+  - SAT on the right base (HEAD + 63c patch + §HELD + its build): 22F/11743P. 3 reds are 58-attributable (incl. the missing `_GUARDED_CAS_DOORS` row `tasks.py::claim_task`). §HELD applies clean over 63c (hunks disjoint; re-check after 64b edits test_mcp_server.py).
+  - Disclosed: its SAT runs used `-n auto` before draining #17046.
+  - → **sidecar-64 Task 10** (58 am-3: am-2 defect, fail-open vs FAILS_LOUD sweep, D12 order, MP14/MP8/MP5), then a **contract-58-r2** revision. adversary-58 TaskStopped.
+- **7 unrelated HEAD reds are OURS, missed by scoped-only runs:**
+  - `scripts/restore_prod_dump.py` (probe-64, `80409f4`) breaks 5 secret-seam invariants + the anchored-pattern seam → **fix-restore-seams** spawned (fix the script, not the invariants).
+  - `scripts/concurrent_wire_acceptance.py` (#466, `37de0a7`) breaks the anchored-pattern seam → folded into the #466 GREEN phase.
+  - Lesson: a committed script needs the repo-wide invariant tests, not just its own.
+- **Pre-existing, surfaced:** `scripts/esc1_write_path_cycle_closure.py` exits 1 at HEAD since #174 (`[boundary-5] successor is born with NO dependencies`) and breaks post-58 typecheck. Owner: 58's build (the exact edit is in contract-58 §FLAGS 1).
