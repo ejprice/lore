@@ -1170,3 +1170,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - #489 (cross-ledger guarded-append unification) is ledgered with a trigger ("the third ledger"), pinned per module. It is NOT built.
 - `contract-58` spawned (brief `brief-contract-58.md`; new test files + DUAL-commented task-ledger test edits; lane priority 63c, then 58, then 64b).
 - **Operator question pending:** fix #466 (fixed wire-test ports) now to unlock parallel pytest, or leave it in 09b.
+
+### 2026-09-26 — 64b split ruled; amendment 3 (`aea2a9d`); probe-64 spawned; #466 under /tdd-light
+- contract-64b priced 64b at ≈0.33–0.40. The lead ruled the §12 split TRIGGERED (64b-i = substrate + writes + migrate first; 64b-ii = reads later) and that the author owns SAT (directive #17027).
+- Amendment 3 (sidecar-64 Task 5): D-1b = Reading A (64b-i flips 7 writes + `set_scope`; reads stay False with a foreign-param teaching on `capability=` until 64b-ii). D-3 = a committed `scripts/restore_prod_dump.py`, built now by one-shot **probe-64**; the S2 leg is marker-gated on its receipt. Relayed as directive #17029 + wake. Attribution-clean.
+- **#466 (operator: "Fix #466 now using /tdd-light"):** Phase-0 discovery CORRECTED the premise. No fixed port; the defects are a bind-0→close→rebind race (4 hand-rolled `_free_port` copies) plus startup timeout and EADDRINUSE being indistinguishable. Annotated on #466. Phase 1: `contract-466` (tdd-light-contract). Deviation from the skill: RED/GREEN are scoped runs plus a concurrent-pair acceptance driver, not the full suite, because the shared tree carries 63c's in-flight reds.
