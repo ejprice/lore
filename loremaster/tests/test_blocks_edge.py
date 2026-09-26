@@ -306,6 +306,7 @@ from _enforced_relations_scaffold import (
     statements,
     unenforced_ddl,
 )
+from _reanchor_58_support import successor_of
 from _surreal_harness import (
     PRODUCTION_DIM,
     StoreTraffic,
@@ -1596,9 +1597,11 @@ class TestTheMirrorHoldsAtEveryWritePath:
         original = await ledger.create_task(
             SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
         )
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
-        )
+        ))
         # INHERIT: the successor carries the predecessor's dependency + its mirror edge.
         assert await _column_blockers_of(ledger, successor) == [blocker_id]
         assert await _edge_blockers_of(ledger, successor) == {blocker_id}, (
@@ -2689,12 +2692,14 @@ class TestASupersededBlockerIsNotASilentBlackHole:
         blocker = await ledger.create_task(
             "a blocker that will be reframed", DESCRIPTION, created_by=CREATOR
         )
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             blocker,
             subject="the reframed work item",
             description=DESCRIPTION,
             created_by=CREATOR,
-        )
+        ))
         assert successor != blocker, (
             "supersede_task returned the predecessor's own id, so this fixture has no "
             "successor to name and every leg below would assert against one id twice"
@@ -2867,12 +2872,14 @@ class TestASupersededBlockerIsNotASilentBlackHole:
         dependent = await ledger.create_task(
             SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
         )
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             blocker,
             subject="the reframed work item",
             description=DESCRIPTION,
             created_by=CREATOR,
-        )
+        ))
 
         unblocked = {task.id for task in await ledger.query_tasks(blocked=False)}
         assert dependent not in unblocked, (
@@ -7005,12 +7012,14 @@ class TestTheBackfillMirrorsADependencyOnASUPERSEDEDTask:
             blocker = await ledger.create_task(
                 "work that got reframed", DESCRIPTION, created_by=CREATOR
             )
-            successor = await ledger.supersede_task(
+            # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+            # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+            successor = successor_of(await ledger.supersede_task(
                 blocker,
                 subject="the reframed item",
                 description=DESCRIPTION,
                 created_by=CREATOR,
-            )
+            ))
         finally:
             await ledger.close()
         waiter = f"waiter_{uuid.uuid4().hex}"
@@ -7046,6 +7055,22 @@ class TestTheBackfillMirrorsADependencyOnASUPERSEDEDTask:
         finally:
             await ledger.close()
         landed = await _blocks_edge_pairs(connection)
+        # ⚠ DUAL (packet 58 amendment 1 R2, contract-58, 2026-09-26): this USED to expect
+        # ``{(blocker, waiter)}`` — the backfill mirrors the legacy dependency on the SUPERSEDED row.
+        # It still does (R11's point: the migration filter must never DROP it), but amendment 1 adds
+        # the boot-time STRAGGLER HEAL beside the backfill, which then re-anchors that exact legacy
+        # strand to the chain head. The dependency is NOT dropped — it is MOVED, and the waiter's
+        # column moves with it (edge ≡ column). REPORT-contract-58.md §DUAL D10.
+        waiter_column = await run(
+            connection,
+            f"SELECT VALUE blocked_by FROM type::record('{TASK_TABLE}', $id)",
+            {"id": waiter},
+        )
+        assert waiter_column == [[successor]], (
+            f"the boot heal did not re-anchor the legacy strand {waiter!r} to {successor!r}: "
+            f"{waiter_column!r}"
+        )
+        blocker = successor
         assert landed == {(blocker, waiter)}, (
             f"the backfill did not mirror a legacy dependency whose blocker had been "
             f"SUPERSEDED (by {successor!r}). R10(ii) refuses such a blocker at WRITE time; "
@@ -9183,10 +9208,12 @@ class TestSupersedeCarriesBlockedBy174:
         original = await ledger.create_task(
             SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
         )
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             original, subject="Reframed", description=DESCRIPTION,
             created_by=CREATOR, blocked_by=[],
-        )
+        ))
         assert await _column_blockers_of(ledger, successor) == []
         assert await _edge_blockers_of(ledger, successor) == set()
 
@@ -9205,10 +9232,12 @@ class TestSupersedeCarriesBlockedBy174:
         original = await ledger.create_task(
             SUBJECT, DESCRIPTION, blocked_by=[blocker_id], created_by=CREATOR
         )
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             original, subject="Reframed", description=DESCRIPTION,
             created_by=CREATOR, blocked_by=[replacement],
-        )
+        ))
         assert await _column_blockers_of(ledger, successor) == [replacement]
         assert await _edge_blockers_of(ledger, successor) == {replacement}
         assert blocker_id not in await _column_blockers_of(ledger, successor), (
@@ -9232,11 +9261,19 @@ class TestSupersedeCarriesBlockedBy174:
         original = await ledger.create_task(
             SUBJECT, DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
         )
-        # Supersede the BLOCKER — it is now superseded (still non-terminal status).
-        await ledger.supersede_task(
-            blocker, subject="the reframed blocker", description=DESCRIPTION,
-            created_by=CREATOR,
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): this USED to supersede the blocker through
+        # the verb, leaving ``original`` naming a superseded row. Packet 58 RE-ANCHORS ``original`` to
+        # the blocker's successor inside that supersede (#356), so the verbs can no longer produce an
+        # inherited SUPERSEDED blocker — only LEGACY data can (rows stranded before 58 deployed;
+        # amendment 1 R2's write-skew window). Re-keyed to a RAW stamp of the blocker (the only door);
+        # the property pinned — INHERITED deps are validated, not trusted — is unchanged.
+        # REPORT-contract-58.md §DUAL D8.
+        from _reanchor_58_support import raw_force
+
+        reframed = await ledger.create_task(
+            "the reframed blocker", DESCRIPTION, created_by=CREATOR
         )
+        await raw_force(ledger, blocker, superseded_by=reframed)
         before = await _task_row_count(ledger)
 
         with pytest.raises(TaskLedgerError) as caught:
@@ -9357,9 +9394,11 @@ class TestSupersedeCarriesBlockedBy174:
         )
 
         # With the SHARED check neutralised, the inherited-superseded blocker sails through.
-        successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+        successor = successor_of(await ledger.supersede_task(
             original, subject="Reframed", description=DESCRIPTION, created_by=CREATOR
-        )
+        ))
         assert successor, "neutralising the shared check should let supersede mint"
         assert (await ledger.get_task(original)).superseded_by == successor
 
@@ -9376,13 +9415,30 @@ class TestSupersedeCarriesBlockedBy174:
 
         from loremaster.tasks import TaskLedger
 
-        source = textwrap.dedent(inspect.getsource(TaskLedger.supersede_task))
-        tree = ast.parse(source)
-        called_attrs = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        }
+        def _called(method: object) -> set[str]:
+            tree = ast.parse(textwrap.dedent(inspect.getsource(method)))  # type: ignore[arg-type]
+            return {
+                node.func.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            }
+
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): this USED to read ``supersede_task``'s OWN
+        # body only. Packet 58's F-1 ruling DERIVES the hub cap from the builder's own statement
+        # counts, which puts the supersede transaction's fragment assembly in a helper the send and
+        # the cap accessor BOTH call — so the shared ``_relate_fragment`` legitimately moves one hop
+        # down. Widened to ONE HOP over TaskLedger's own private methods (the property — the SAME
+        # shared symbols, never a hand-rolled RELATE — is unchanged: a hand-rolled RELATE in a helper
+        # still reds). REPORT-contract-58.md §DUAL D9.
+        direct = _called(TaskLedger.supersede_task)
+        called_attrs = set(direct)
+        for name in direct:
+            helper = getattr(TaskLedger, name, None)
+            if callable(helper) and name.startswith("_"):
+                try:
+                    called_attrs |= _called(helper)
+                except (OSError, TypeError):
+                    continue
         assert "_reject_unusable_blockers" in called_attrs, (
             "supersede must run the SHARED blocker-existence pre-check over its resolved deps"
         )
@@ -9440,7 +9496,11 @@ class TestSupersedeCarriesBlockedBy174:
                     ),
                     return_exceptions=True,
                 )
-                successors = [r for r in results if isinstance(r, str)]
+                # ⚠ DUAL (packet 58): a winner is a ``SupersedeResult`` now — normalised to its id
+                # through the both-worlds accessor. REPORT-contract-58.md §DUAL D5.
+                successors = [
+                    successor_of(r) for r in results if not isinstance(r, BaseException)
+                ]
                 losers = [r for r in results if isinstance(r, IllegalTransitionError)]
                 assert len(successors) == 1, f"exactly one successor, got {results!r}"
                 assert len(losers) == 1, f"exactly one typed loser, got {results!r}"

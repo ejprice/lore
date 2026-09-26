@@ -63,4 +63,22 @@ version: 1
 # confirmed GREEN (1358 passed, 0 failed) and the entry was deleted with the fix, per the file's own
 # self-destruct rule. `bounds:` is EMPTY again. Re-derive (`--derive`) before any NEW bound.
 #
-bounds: []
+bounds:
+# Packet 58 contract (contract-58, 2026-09-26, at 5d549a1). The contract pins three symbols packet 58's BUILD
+# introduces (kickoff rulings docs/design/2026-09-26-packet58-kickoff-rulings.md §1/§4/§7.7): until the
+# build lands they are attr-defined at typecheck (and RED at pytest for the same reason — REPORT-contract-58.md
+# §RED). SELF-DESTRUCTS: the day the build lands the symbols, this entry fails the gate until deleted.
+- id: packet-58-contract
+  owner: packet 58 (supersede re-anchor + task guarded-append shell) — the 58 builder, serial after 63c-i-a
+  reopen_trigger: the packet-58 build lands TaskLedger.max_reanchor_dependents, loremaster.tasks.SupersedeResult
+    and TaskLedger._guarded_append_fragment — then this entry self-destructs and must be deleted with the build
+  ruling: docs/design/2026-09-26-packet58-kickoff-rulings.md (c8d3241) + docs/design/2026-09-26-packet58-amendment-1.md
+    (f4e96b4); contract receipts REPORT-contract-58.md §RED (archived with the wave)
+  rationale: contract-ahead — 58's contract is written before 63c-i-a commits and 58 builds serially after it
+    (lead-63c brief); the pins must name the ruled symbols now so the builder meets them, not invent them
+  files:
+  - path: loremaster/tests/test_supersede_reanchor_58.py
+    missing_symbols:
+    - TaskLedger.max_reanchor_dependents
+    - loremaster.tasks.SupersedeResult
+    - type[TaskLedger]._guarded_append_fragment

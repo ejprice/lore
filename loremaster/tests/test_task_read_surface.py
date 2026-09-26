@@ -187,6 +187,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from _reanchor_58_support import successor_of
 from _surreal_harness import (
     SurrealEnv,
     connect_admin,
@@ -1502,11 +1503,18 @@ class TestSupersedeWARNSWhenThePredecessorHasDEPENDENTS:
                 f"caller's next move is to re-point these at the successor — it cannot do "
                 f"that from a number, and nobody else will ever be told"
             )
-        successor = await ledger.get_task(dependents[0])
-        assert successor.blocked_by == [predecessor], (
-            "the render must WARN, never rewrite: dependency transfer is R10(iv) and it is "
-            "DEFERRED — it breaks blocked_by's post-creation immutability that the claim "
-            "path rides"
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): this leg USED to assert
+        # ``dependents[0].blocked_by == [predecessor]`` — *"the render must WARN, never rewrite:
+        # dependency transfer is R10(iv) and it is DEFERRED"*. Packet 58 DISCHARGES R10(iv): the
+        # supersede RE-ANCHORS every dependent to the successor in the same transaction (#356;
+        # kickoff §7.1, removed-behaviour row "WARNS, never rewrites" → REWRITTEN). Re-keyed to
+        # the ruled world: the dependent now names the SUCCESSOR, and no longer the predecessor.
+        # Adjudication: REPORT-contract-58.md §DUAL row D1.
+        successor_id = (await ledger.get_task(predecessor)).superseded_by
+        waiting = await ledger.get_task(dependents[0])
+        assert successor_id is not None and waiting.blocked_by == [successor_id], (
+            f"packet 58: a dependent of a superseded task must be RE-ANCHORED to the successor "
+            f"{successor_id!r}; it holds blocked_by={waiting.blocked_by!r}"
         )
 
     async def test_superseding_a_task_with_NO_dependents_warns_about_NOTHING(
@@ -1573,16 +1581,21 @@ class TestTheCLAIMRenderNamesTheSUPERSEDEDBlockerCase:
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
     ) -> None:
         ledger, _env, _seed = task_ledger
-        blocker = await ledger.create_task("the blocker that moved", DESCRIPTION, created_by=CREATOR)
-        dependent = await ledger.create_task(
-            "work waiting on a blocker that got superseded",
-            DESCRIPTION,
-            blocked_by=[blocker],
-            created_by=CREATOR,
-        )
-        successor = await ledger.supersede_task(
-            blocker, subject="where the work went", description=DESCRIPTION, created_by=CREATOR
-        )
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): this fixture USED to build the strand through
+        # the verbs (create the dependent, THEN supersede its blocker). Packet 58 RE-ANCHORS the
+        # dependent inside the supersede (#356), so the verbs can no longer produce a dependent
+        # whose blocker is superseded — the strand survives only as LEGACY data (rows superseded
+        # before 58 deployed; real on :18500) and the in-window write-skew bound (amendment 1 R2).
+        # Re-keyed to a RAW legacy seed, the only door; the render property pinned is unchanged.
+        # Adjudication: REPORT-contract-58.md §DUAL row D2.
+        from _reanchor_58_support import raw_relate, raw_seed_row
+
+        successor = await ledger.create_task("where the work went", DESCRIPTION, created_by=CREATOR)
+        blocker = "legacy58rs0blocker0000000000000"
+        await raw_seed_row(ledger, blocker, blocked_by=[], superseded_by=successor)
+        dependent = "legacy58rs0dependent00000000000"
+        await raw_seed_row(ledger, dependent, blocked_by=[blocker])
+        await raw_relate(ledger, blocker, dependent)
         rendered = str(await _tool_seam(ledger).claim_task(dependent, ACTOR))
         assert blocker in rendered and successor in rendered, (
             f"a claim that failed because its blocker {blocker!r} was SUPERSEDED by "
@@ -1609,9 +1622,11 @@ class TestTheCLAIMRenderNamesTheSUPERSEDEDBlockerCase:
             "work waiting on ordinary progress", DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
         )
         superseded_case = await ledger.create_task("a decoy that moved", DESCRIPTION, created_by=CREATOR)
-        decoy_successor = await ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58): ``supersede_task`` returns ``SupersedeResult`` now —
+        # read through the both-worlds accessor. REPORT-contract-58.md §DUAL D6.
+        decoy_successor = successor_of(await ledger.supersede_task(
             superseded_case, subject="decoy successor", description=DESCRIPTION, created_by=CREATOR
-        )
+        ))
         rendered = str(await _tool_seam(ledger).claim_task(dependent, ACTOR))
         assert decoy_successor not in rendered, (
             f"the claim render names {decoy_successor!r} — a successor belonging to a task "
@@ -2544,13 +2559,17 @@ class TestTheSupersededBlockerFactIsTYPEDStateNotARenderSideRead:
         self, task_ledger: tuple[TaskLedger, SurrealEnv, str],  # noqa: F811 - imported fixture
     ) -> None:
         ledger, _env, _seed = task_ledger
-        blocker = await ledger.create_task("the blocker that moved", DESCRIPTION, created_by=CREATOR)
-        dependent = await ledger.create_task(
-            "work waiting on it", DESCRIPTION, blocked_by=[blocker], created_by=CREATOR
-        )
-        successor = await ledger.supersede_task(
-            blocker, subject="where it went", description=DESCRIPTION, created_by=CREATOR
-        )
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): same re-key as §DUAL row D2 — after 58 the
+        # verbs RE-ANCHOR the dependent, so a claim can only lose to a SUPERSEDED blocker on LEGACY
+        # data; the typed-state property pinned here is unchanged. Adjudication: §DUAL row D3.
+        from _reanchor_58_support import raw_relate, raw_seed_row
+
+        successor = await ledger.create_task("where it went", DESCRIPTION, created_by=CREATOR)
+        blocker = "legacy58rs1blocker0000000000000"
+        await raw_seed_row(ledger, blocker, blocked_by=[], superseded_by=successor)
+        dependent = "legacy58rs1dependent00000000000"
+        await raw_seed_row(ledger, dependent, blocked_by=[blocker])
+        await raw_relate(ledger, blocker, dependent)
         result = await ledger.claim_task(dependent, ACTOR)
         assert not result.claimed, "the fixture's claim unexpectedly WON"
         assert result.superseded_blockers == {blocker: successor}, (

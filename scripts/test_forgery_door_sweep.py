@@ -437,9 +437,15 @@ class TestTheDoorSweepOverTheRealLedger:
             world="a legacy store",
             observable="edges",
         )
-        assert report.control_calls == 4, (
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): this pin USED to expect 4. The finding it
+        # demands IS filed and ruled: packet 58 amendment 1 R2
+        # (docs/design/2026-09-26-packet58-amendment-1.md) adds the boot-time STRAGGLER HEAL beside
+        # the backfill, whose first store call (the superseded-rows read) is a FIFTH door on this
+        # path. It is swept below like the other four and must be LOUD. REPORT-contract-58.md §DUAL D12.
+        assert report.control_calls == 5, (
             f"the derived door set for ensure_ready over a legacy store is "
-            f"{report.control_calls}, not the 4 the 04b-1 cold audit measured "
+            f"{report.control_calls}, not the 5 (04b-1 cold audit's 4 + packet 58 amendment 1's "
+            f"straggler-heal read) "
             f"(docs/plans/v2/receipts/2026-07-28-packet04b1/REPORT-coldaudit-04b1.md §2.3). "
             f"A CHANGE IN THIS NUMBER IS A FINDING, not a number to update: either a store "
             f"call was added to the boot path or one was removed. Doors seen: "
@@ -450,7 +456,7 @@ class TestTheDoorSweepOverTheRealLedger:
             "door the sweep faults is not on the path and door k=4 is vacuous"
         )
         assert report.all_doors_loud, report.render()
-        assert [door.calls_observed for door in report.doors] == [1, 2, 3, 4]
+        assert [door.calls_observed for door in report.doors] == [1, 2, 3, 4, 5]
 
     async def test_a_ledger_that_SWALLOWS_its_backfill_failure_is_CAUGHT(
         self, monkeypatch: pytest.MonkeyPatch
@@ -505,7 +511,14 @@ class TestTheDoorSweepOverTheRealLedger:
             "the DDL door is outside the swallowed region and must still fail loud; a sweep "
             "that calls it silent is broken, not discriminating.\n" + report.render()
         )
-        assert len(silent) == report.control_calls - 1, (
+        # ⚠ DUAL (packet 58, contract-58): the doors OUTSIDE the swallowed backfill are now TWO —
+        # the DDL (first) and packet 58 amendment 1's straggler-heal read (LAST, after the backfill).
+        # Both must stay loud; every door between them must be silent. REPORT-contract-58.md §DUAL D12.
+        assert report.control_calls not in silent, (
+            "the straggler-heal door runs AFTER the swallowed backfill and must still fail loud.\n"
+            + report.render()
+        )
+        assert len(silent) == report.control_calls - 2, (
             f"every door INSIDE the swallowed backfill must be reported silent. "
             f"silent={silent} of {report.control_calls} doors.\n" + report.render()
         )

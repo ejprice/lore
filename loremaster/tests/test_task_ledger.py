@@ -40,7 +40,7 @@ exist yet, so these names ARE the contract a later STUB/GREEN phase must match):
         async query_tasks(*, status=None, owner=None, blocked=None) -> list[Task]
         async claim_task(task_id, owner) -> ClaimResult
         async transition(task_id, status, *, actor) -> Task
-        async supersede_task(task_id, *, subject, description, created_by) -> str
+        async supersede_task(task_id, *, subject, description, created_by) -> SupersedeResult  # packet 58
 
     Exceptions: TaskLedgerError(RuntimeError);
                 TaskNotFoundError(TaskLedgerError);
@@ -62,6 +62,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from _reanchor_58_support import successor_of
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -1046,17 +1047,23 @@ class TestSupersession:
 
     async def test_supersede_returns_a_new_distinct_task_id(self, task_ledger: TaskLedger) -> None:
         old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
-        new_id = await task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): ``supersede_task`` now returns
+        # ``SupersedeResult`` (kickoff §7.7), not the bare successor id — read through the shared
+        # both-worlds accessor; the property pinned below is unchanged. REPORT-contract-58.md §DUAL D4.
+        new_id = successor_of(await task_ledger.supersede_task(
             old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
-        )
+        ))
         assert isinstance(new_id, str)
         assert new_id != old_id
 
     async def test_old_row_is_kept_and_stamped_superseded_by(self, task_ledger: TaskLedger) -> None:
         old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
-        new_id = await task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): ``supersede_task`` now returns
+        # ``SupersedeResult`` (kickoff §7.7), not the bare successor id — read through the shared
+        # both-worlds accessor; the property pinned below is unchanged. REPORT-contract-58.md §DUAL D4.
+        new_id = successor_of(await task_ledger.supersede_task(
             old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
-        )
+        ))
         # History is kept — get_task on the OLD id still resolves, now stamped.
         old_task = await task_ledger.get_task(old_id)
         assert old_task.superseded_by == new_id
@@ -1065,9 +1072,12 @@ class TestSupersession:
         self, task_ledger: TaskLedger
     ) -> None:
         old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
-        new_id = await task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): ``supersede_task`` now returns
+        # ``SupersedeResult`` (kickoff §7.7), not the bare successor id — read through the shared
+        # both-worlds accessor; the property pinned below is unchanged. REPORT-contract-58.md §DUAL D4.
+        new_id = successor_of(await task_ledger.supersede_task(
             old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
-        )
+        ))
         successor = await task_ledger.get_task(new_id)
         assert successor.status == STATUS_OPEN
         assert successor.owner is None
@@ -1297,9 +1307,12 @@ class TestConcurrentSupersession:
         self, task_ledger: TaskLedger
     ) -> None:
         old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
-        first_successor = await task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): ``supersede_task`` now returns
+        # ``SupersedeResult`` (kickoff §7.7), not the bare successor id — read through the shared
+        # both-worlds accessor; the property pinned below is unchanged. REPORT-contract-58.md §DUAL D4.
+        first_successor = successor_of(await task_ledger.supersede_task(
             old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
-        )
+        ))
         # A second supersede of the SAME (now-superseded) row is refused — a
         # superseded task is terminal-like, exactly as it refuses transitions.
         with pytest.raises(IllegalTransitionError):
@@ -1331,7 +1344,13 @@ class TestConcurrentSupersession:
                 ),
                 return_exceptions=True,
             )
-            successor_ids, losers, other = _partition_gather(results, str)
+            # ⚠ DUAL (packet 58): a winner is now a ``SupersedeResult`` — normalised to its id through
+            # the shared both-worlds accessor before partitioning. REPORT-contract-58.md §DUAL D4.
+            normalised = [
+                result if isinstance(result, BaseException) else successor_of(result)
+                for result in results
+            ]
+            successor_ids, losers, other = _partition_gather(normalised, str)
 
             assert not other, f"iteration {iteration}: unexpected exception(s): {other!r}"
             # EXACTLY one successor id returned (never two — the audit-#2 orphan),
@@ -1560,7 +1579,14 @@ class TestProvenanceAppendOnly:
             )
 
             transition_won = isinstance(transition_result, Task)
-            supersede_won = isinstance(supersede_result, str)
+            # ⚠ DUAL (packet 58): a supersede win is a ``SupersedeResult`` now — normalised to its id
+            # (the persisted-stamp comparison below needs the id). REPORT-contract-58.md §DUAL D4.
+            supersede_outcome: str | BaseException = (
+                supersede_result
+                if isinstance(supersede_result, BaseException)
+                else successor_of(supersede_result)
+            )
+            supersede_won = isinstance(supersede_outcome, str)
 
             # Neither mutator may fail with anything OTHER than a typed
             # IllegalTransitionError (a raw store/connection error leaking from
@@ -1600,7 +1626,7 @@ class TestProvenanceAppendOnly:
             if supersede_won:
                 # At most one successor: superseded_by names EXACTLY the id this
                 # call returned, never a different (phantom) successor.
-                assert persisted.superseded_by == supersede_result, (
+                assert persisted.superseded_by == supersede_outcome, (
                     f"iteration {iteration}: superseded_by must name the WINNING successor"
                 )
             else:
@@ -2098,9 +2124,12 @@ class TestUpdatedAtStamping:
     ) -> None:
         old_id = await _create(task_ledger, SUBJECT_XML, DESCRIPTION_XML)
         before = datetime.now(UTC)
-        new_id = await task_ledger.supersede_task(
+        # ⚠ DUAL (packet 58, contract-58, 2026-09-26): ``supersede_task`` now returns
+        # ``SupersedeResult`` (kickoff §7.7), not the bare successor id — read through the shared
+        # both-worlds accessor; the property pinned below is unchanged. REPORT-contract-58.md §DUAL D4.
+        new_id = successor_of(await task_ledger.supersede_task(
             old_id, subject=SUBJECT_LEDGER, description=DESCRIPTION_LEDGER, created_by=CREATOR
-        )
+        ))
         after = datetime.now(UTC)
         old_task = await task_ledger.get_task(old_id)
         assert old_task.updated_at is not None
