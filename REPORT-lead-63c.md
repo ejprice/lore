@@ -937,3 +937,20 @@ The cold audit is running in parallel; the lead will merge its findings with thi
 - **§Addendum — CD-1 IN i-a:** the message backfill becomes `WHERE scope IS NONE AND owner_principal IS NONE`; message counts go via the shared preconditions function, parametrised by table; golden updated. RIDER: a ∀-tables pin — every governed leg's golden WHERE contains `scope IS NONE`. **CD-2:** table validity FIRST — an unsupported table on a multi-principal store → "not supported", ZERO store reads (spy), byte-inert; control: a supported table → the §2.1 refusal.
 - **Lead sequencing:** ONE addendum contract `contract-63c-i-a-a19a` carries amendment 20's riders + CD-1 + CD-2 + any MISSING PINS from the running `adversary-63c-i-a-a19` (awaiting its verdict so one agent touches the contract once). Grading per the sidecar: the cold-audit re-run (or the adversary's receipt). Then the builder fix.
 - **Note:** the sidecar ALSO committed `docs/design/2026-09-25-packet63c-amendment-21.md` — same CD-1/CD-2 content, standalone, **superseding** amendment 20's §Addendum (`d53527f`). This is a duplicate the lead's second wake caused; the content is identical. The a19a brief cites amendment 21 as authoritative for CD-1/CD-2, and amendment 20 for §8.1–§8.4.
+
+### 2026-09-25 — adversary a19: INSUFFICIENT (5 MISSING PINS, 0 SAT); LIVE defect #485; unrelated red #486; Task 22 → sidecar
+Report `REPORT-adversary-63c-i-a-a19.md` (this commit). SAT CONFIRMED on an INDEPENDENT reference (`11529 passed / 0 failed`); 29 RED at `84af63f` confirmed; no yaml entry needed, confirmed. Adversary retired.
+- **MISSING PINS → the a19a addendum (verbatim kills in its §3 / §A):**
+  - MP-1 / MP-2 ROUTING-IS-NOT-SHARING: both sharing proofs are one-directional, so a private copy beside the shared function survives → K1/K2 (the reverse redirect).
+  - MP-3 ORDER: D-2 says "before the mint", but the pins see only "no keep remains", so mint-then-undo passes → K3 (a `get_or_create_keyed` call spy).
+  - MP-4 SERVED PROSE: the re-keyed order guard serves a scope count under the "NONE-owner" noun → PD2 as a pin.
+  - MP-5: the F-9 gloss returning in a later clause → a skeleton golden.
+  - READING-DEPENDENT WB7b → covered by amendment 20 R1.
+- **LIVE-PRODUCTION-DEFECT #485 (flagged loudly; outside §W).** A credentialed register refused by ANY registry rule after the keep mint (role/spawned_by write-once conflict, RetiredAgentError, the provenance pair) keeps the minted `session:<s>` keep with the caller as keeper, then DENIES a third party (SF-63-1). Reproduced at pristine `84af63f` bytes AND on a correct D-2 fix. This is D-2's class stated over one member (blank role) — the QUANTIFIER LAW; the sidecar's own recorded lesson.
+  - "Live" = at branch HEAD. The deployed image predates it, and deploy is pkt-65. Not measured by the lead.
+- **#486:** an unrelated red, once in 3 full-suite runs (the adversary's §4.2) — surfaced to the operator.
+- **SIDECAR TASK 22 — sidecar-63c-2, please rule:**
+  1. **#485:** in i-a? **Lead recommends YES** — same class, same wave. Shape per the adversary: the handler validates everything the registry can refuse without a write BEFORE the mint, and row-dependent refusals (conflict/retired) read the row before the mint OR the mint + agent write share one transaction. It needs a ∀-registry-refusals pin, the set DERIVED from the registry's refusal classes, not a hand-list.
+  2. **F-1:** amendment 21 CD-2 ("validity first") vs a19's four `∀[brief]` pins. Adversary recommends Reading A: "valid" = the GOVERNED set {agent, memory, message, brief}; only non-governed names get the zero-read "not supported".
+  3. **F-2:** a message from an ownerless-but-scoped sender is stamped owner NONE. Is that intended, or must the order guard / message leg require the sender to be OWNED?
+  4. **F-3:** the verb-level refusal zeroes `scanned` / `already_migrated` in its receipt. Rule it.
