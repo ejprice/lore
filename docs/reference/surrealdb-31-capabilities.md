@@ -826,6 +826,38 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
     is useless for containment, nor that the one predicate it accelerates answers a different
     question. [PROBED 2026-08-01, 3.2.1]
 
+### 6.7 `POST /import` and `surreal export` files — NOT atomic, errors ride an HTTP 200, and the reference example is broken
+
+**[PROBED 2026-09-26, surrealdb-3.2.4 — probe-64, eleven curl legs into throwaway `test_dump_probe_*`
+DBs on `:18000`, each with a control; instrument pasted VERBATIM in `80409f4:REPORT-probe-64.md`
+Appendix A (§3 is the claim table — a SHA-qualified path, so it resolves after the report is archived
+under `docs/plans/v2/receipts/`); the driver-side consequences are PINNED by
+`scripts/test_restore_prod_dump.py` over the committed `scripts/restore_prod_dump.py`.]** Packet 64's
+S2 leg is the first thing in this repo to restore a production dump; nothing below was written down
+before it, and three of the facts are the vendor saying the opposite.
+
+| # | the vendor says | 3.2.4 does |
+|---|---|---|
+| **1** | **[VENDOR]** `reference/rest-api/http-protocol.mdx` §`POST /import` shows `curl … -d file.surql` as THE example | **BROKEN.** `-d file.surql` sends the literal string → **HTTP 400**; `-d @file` strips newlines, so the export's leading `-- …` comment swallows the whole file → **HTTP 400**. Only `--data-binary @file` (the shape the surreal-deal tutorial happens to use) imports. |
+| **2** | **silent** on the response | Success statements return NOTHING under `OPTION IMPORT`; the body is `[]` **iff every statement succeeded**; each failure is one `{"status":"ERR",…}` entry. **A consumer must check the body, never the status code.** |
+| **3** | **silent** on atomicity | **NOT ATOMIC.** A runtime error mid-file (a duplicate `CREATE` → `AlreadyExists`) is an `ERR` entry inside an **HTTP 200** and the import **CONTINUES** — the statements after it land. |
+| **4** | **silent** | A **parse error** mid-file is also **HTTP 200** + one `ERR` (`Parse error …`); statements BEFORE it are applied and everything AFTER it is **silently NOT** — a partial restore that reads as success to anything keyed on the status code. |
+| **5** | **silent** on whether the target DB must exist | An **absent** DB is HTTP 200 + ONE `ERR` (`database … does not exist`) — **yet later statements ran**: the table came back `TYPE ANY SCHEMALESS` (its `SCHEMAFULL` define failed) while fields, events and rows landed. A silent SCHEMA DOWNGRADE with one error line — the §1.7 schemaless-auto-create hazard through the import door. **Always `DEFINE DATABASE` first.** |
+| **6** | ✅ `OPTION IMPORT;` must be the first statement (≥ 3.0.4) | **HTTP 400** *Import requires `OPTION IMPORT;` as the first statement* — the one loud refusal in the set. |
+| **7** | ✅ "field processing" is disabled | `ASSERT` bypassed (`$value < 10` stored 99), `VALUE` bypassed, `EVENT` not fired. Restored rows are **byte-faithful and never re-validated** — so a restored legacy row may violate the CURRENT DDL's asserts, which is exactly the §1.4 dirty-store condition a migration leg exists to reach (and exactly what makes the S2 restore a real fixture rather than a fresh-DB fiction). |
+| **8** | ✅ `Accept` "required" | Not enforced (omitted → 200 `[]`). |
+| **9** | `Authorization` optional | A wrong password is **HTTP 401** `The password did not verify` (the auth IS checked). |
+| **10** | — | **The raw `surreal export` file is REFUSED as written.** Both `/backups/lore/lore-prod-*.surql` open with a tracing line (`…Z  INFO surrealdb::method::export: Exporting bytes`) and close with one — the export was captured with its log stream — and line 1 yields **HTTP 400** `Invalid statement: Parse error …`. Strip exactly the log lines (the driver counts them: 2 per dump) and require `OPTION IMPORT;` as the first STATEMENT after them. |
+
+**And the probe's own lesson, kept (a probe needs a control):** `THIS IS NOT SURREALQL;` is NOT a parse
+error — it parses as the expression `THIS != SURREALQL`. The first parse-error probe was invalid for
+that reason; row 4 was re-run with `SELECT FROM WHERE };`.
+
+**House rules that follow, each pinned in the driver:** accept an import only on HTTP 200 **and** a
+body of exactly `[]`; `DEFINE DATABASE` before every import; strip the export log lines; treat any
+`ERR` entry as a partial restore (STOP, never "mostly worked"). Restored rows are legacy rows in the
+§1.4 sense — migrate them, do not trust them to satisfy today's asserts.
+
 ---
 
 ## 7. SYNTAX GOTCHAS
@@ -1073,3 +1105,10 @@ face *"not written down anywhere I can find"* — FALSE; `record-ids.mdx` docume
 face and the `t:'4'` parse error are ours. The archived report carries a correction header. Same
 lesson as 2026-07-19, running in both directions: probe to find what the docs omit, and read the
 docs to find what your probe wrongly claims to have discovered.
+
+**Addition pass 2026-09-26** (packet 64's S2 restore instrument, probe-64 — eleven `POST /import` legs on
+spike-surreal 3.2.4, throwaway DBs reaped): §6.7 added — the import is NOT atomic, errors ride an HTTP
+200, the reference example is broken, `surreal export` files are refused until their log lines are
+stripped, and an absent target DB silently downgrades the schema. Docs-first check: the vendor's
+`http-protocol.mdx` names the endpoint and headers correctly and its example is wrong; the
+tutorial's `--data-binary` form is the working one.
