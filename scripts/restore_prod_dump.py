@@ -4,7 +4,6 @@
 # dependencies = [
 #     "loremaster",
 #     "httpx>=0.28",
-#     "python-dotenv>=1.2",
 #     "pydantic>=2.13",
 #     "pytest-asyncio",
 # ]
@@ -41,8 +40,10 @@ WHAT IT GUARANTEES, BY CONSTRUCTION (§D-3 numbered requirements):
    connection topology is built HERE from the constant); and every HTTP request passes an event hook
    that refuses any host:port other than the constant BEFORE the transport is reached. The production
    port appears in this file only as :data:`PRODUCTION_PORT`, the value the self-test proves is refused.
-   Credentials come from the env file both store quadlets name (:data:`STORES_ENV_FILE`; the self-test
-   cross-checks the quadlet's ``EnvironmentFile=``). Secrets are held as ``SecretStr`` and never printed.
+   Credentials are the suite harness's TEST-store credentials (:meth:`StoreCredentials.for_test_store`
+   — the source every ``[real]`` test and the S2 consumer authenticate with), held as ``SecretStr`` and
+   never printed; the ONE unwrap is :func:`build_auth_headers`, which builds every request's header map.
+   (The self-test still cross-checks each quadlet's port and ``EnvironmentFile=`` — a topology check.)
 2. **The target DB is MINTED** ``test_dump_<UTC stamp>_<uuid4 hex>`` under the suite's test namespace,
    asserted ABSENT (``INFO FOR NS``) and then created with a plain ``DEFINE DATABASE`` (which itself
    errors on an existing name — a second, engine-side guard). ``--db`` does not exist. ``--reap`` refuses
@@ -139,7 +140,6 @@ import functools
 import io
 import json
 import logging
-import os
 import re
 import sys
 import tempfile
@@ -150,9 +150,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO
+from unittest import mock
 
 import httpx
-from dotenv import dotenv_values
 from pydantic import SecretStr
 
 # --------------------------------------------------------------------------- #
@@ -167,12 +167,16 @@ PRODUCTION_PORT = 18500
 HTTP_ENDPOINT = f"http://{STORE_HOST}:{STORE_PORT}"
 RPC_ENDPOINT = f"ws://{STORE_HOST}:{STORE_PORT}/rpc"
 
-#: The env file both store quadlets name as ``EnvironmentFile=`` (self-test cross-checks the TEST quadlet).
+#: The env file both store quadlets name as ``EnvironmentFile=`` — a quadlet-TOPOLOGY cross-check only
+#: (``leg_stores_env_file_and_ports_match_the_quadlets``). It is NOT this driver's credential source:
+#: credentials come from the suite harness (:meth:`StoreCredentials.for_test_store`), because reading a
+#: credential from a file is reserved to ``loremaster.config.resolve_secret``'s ONE allowlisted
+#: ``env_file`` caller (ruling R3) and a second ``.env`` parser is refused workspace-wide (packet 42).
 STORES_ENV_FILE = Path.home() / "docker" / "mcp" / "lore-secrets" / "lore.env"
 TEST_STORE_QUADLET = Path.home() / ".config" / "containers" / "systemd" / "spike-surreal.container"
 PRODUCTION_STORE_QUADLET = Path.home() / ".config" / "containers" / "systemd" / "lore-surreal.container"
-ENV_USER_KEY = "SURREAL_USER"
-ENV_PASS_KEY = "SURREAL_PASS"
+#: The non-auth headers every request carries (the auth header is added by :func:`build_auth_headers`).
+ACCEPT_HEADER_VALUE = "application/json"
 
 DUMP_DIRECTORY = Path("/backups/lore")
 DUMP_GLOB = "lore-prod-*.surql"
@@ -426,7 +430,7 @@ def explicit_slice(names: Iterable[str]) -> SliceRequest:
 
 def _validate_table_name(name: str) -> str:
     """Refuse a table name that is not a plain identifier (it is interpolated into SurrealQL)."""
-    if not TABLE_NAME_PATTERN.match(name):
+    if not TABLE_NAME_PATTERN.fullmatch(name):
         raise RestoreRefusedError(
             f"table name {name!r} is not a plain identifier ({TABLE_NAME_PATTERN.pattern})"
         )
@@ -524,7 +528,7 @@ class ExportScanner:
                 result.log_lines_stripped += 1
                 continue
             if pending_rule is not None:
-                name_match = SECTION_NAME_PATTERN.match(stripped)
+                name_match = SECTION_NAME_PATTERN.fullmatch(stripped)
                 if name_match is not None:
                     kind = name_match.group("kind")
                     table = name_match.group("table")
@@ -550,7 +554,7 @@ class ExportScanner:
                     continue
                 emit(pending_rule)
                 pending_rule = None
-            if SECTION_RULE_PATTERN.match(stripped):
+            if SECTION_RULE_PATTERN.fullmatch(stripped):
                 pending_rule = line
                 continue
             self._content_line(line, stripped, kind, table, include, result, emit)
@@ -614,22 +618,49 @@ class ExportScanner:
 
 @dataclass(frozen=True)
 class StoreCredentials:
-    """Root credentials for the TEST store, read from the stores' env file. The password never prints."""
+    """Root credentials for the TEST store. The password is a ``SecretStr`` and never prints."""
 
     user: str
     password: SecretStr
 
     @classmethod
-    def from_env_file(cls, env_file: Path = STORES_ENV_FILE) -> StoreCredentials:
-        """Parse ``env_file`` (python-dotenv); refuse naming a missing KEY, never echoing a value."""
-        if not env_file.is_file():
-            raise RestoreRefusedError(f"the stores' env file {env_file} does not exist")
-        values = dotenv_values(env_file)
-        user, password = values.get(ENV_USER_KEY), values.get(ENV_PASS_KEY)
-        missing = [key for key, value in ((ENV_USER_KEY, user), (ENV_PASS_KEY, password)) if not value]
-        if missing or user is None or password is None:
-            raise RestoreRefusedError(f"{env_file} carries no value for: {', '.join(missing)}")
-        return cls(user=user, password=SecretStr(password))
+    def for_test_store(cls) -> StoreCredentials:
+        """The TEST store's root credentials from the suite harness — the source every ``[real]`` test uses.
+
+        ONE IMPLEMENTATION: ``_surreal_harness.surreal_user`` / ``surreal_password`` are the repo's one
+        answer to *"what authenticates to :18000"* (spike defaults, overridable by the harness's
+        ``LORE_TEST_SURREAL_USER`` / ``LORE_TEST_SURREAL_PASS``), and the S2 consumer reads the restored
+        DB back through that same harness. Only the URL override is bypassed (see :func:`_harness_env`) —
+        credentials cannot retarget a connection, they can only fail to authenticate (HTTP 401 → exit 2).
+        """
+        harness, _, _ = _test_helpers()
+        user: str = harness.surreal_user()
+        password: SecretStr = harness.surreal_password()
+        return cls(user=user, password=password)
+
+
+def build_auth_headers(
+    credential: SecretStr, *, user: str, namespace: str, database: str | None = None
+) -> dict[str, str]:
+    """The FULL header map of one request to the TEST store — the driver's typed auth seam (ruling R26).
+
+    The ``credential`` parameter is typed ``SecretStr`` so a bare ``str`` is a mypy error at every call
+    site and an ``AttributeError`` at runtime; this is the ONE place the driver unwraps it. The Basic
+    encoding is httpx's own (:class:`httpx.BasicAuth`), not a hand-rolled base64. The routing headers
+    (``Accept``, ``Surreal-NS``, ``Surreal-DB``) ride the same map because every ``headers=`` a request
+    carries must be sourced from this seam (``test_secret_typing.py``'s construction gate), so each
+    request passes ``headers=build_auth_headers(...)`` and the map is held nowhere else.
+    """
+    basic_auth = httpx.BasicAuth(user, credential.get_secret_value())
+    authorised = next(basic_auth.sync_auth_flow(httpx.Request("POST", HTTP_ENDPOINT)))
+    headers = {
+        "Accept": ACCEPT_HEADER_VALUE,
+        "Surreal-NS": namespace,
+        "Authorization": authorised.headers["Authorization"],
+    }
+    if database is not None:
+        headers["Surreal-DB"] = database
+    return headers
 
 
 def _refuse_foreign_endpoint(request: httpx.Request) -> None:
@@ -655,8 +686,6 @@ class StoreClient:
         self._credentials = credentials
         self._http = httpx.Client(
             base_url=HTTP_ENDPOINT,
-            auth=(credentials.user, credentials.password.get_secret_value()),
-            headers={"Accept": "application/json", "Surreal-NS": namespace},
             event_hooks={"request": [_refuse_foreign_endpoint]},
             timeout=httpx.Timeout(
                 connect=HTTP_CONNECT_TIMEOUT_SECONDS, read=None, write=None, pool=HTTP_POOL_TIMEOUT_SECONDS
@@ -670,8 +699,16 @@ class StoreClient:
 
     def sql(self, statement: str, *, database: str | None = None) -> list[Any]:
         """Run ``statement`` on ``/sql``; raise on a non-200 or any ``ERR`` statement result."""
-        headers = {"Surreal-DB": database} if database is not None else {}
-        response = self._http.post("/sql", content=statement.encode("utf-8"), headers=headers)
+        response = self._http.post(
+            "/sql",
+            content=statement.encode("utf-8"),
+            headers=build_auth_headers(
+                self._credentials.password,
+                user=self._credentials.user,
+                namespace=self.namespace,
+                database=database,
+            ),
+        )
         if response.status_code != httpx.codes.OK:
             raise RestoreRefusedError(f"/sql answered HTTP {response.status_code}: {response.text[:300]!r}")
         results: list[dict[str, Any]] = response.json()
@@ -686,12 +723,22 @@ class StoreClient:
         return set(info.get("databases", {}))
 
     def import_file(self, database: str, slice_path: Path) -> None:
-        """``POST /import`` the file, streamed. Clean iff HTTP 200 + a body of exactly ``[]`` (module doc)."""
+        """``POST /import`` the file, streamed. Clean iff HTTP 200 + a body of exactly ``[]`` (module doc).
+
+        ``Content-Length`` is set by httpx itself: a real file passed as ``content`` is sized with
+        ``os.fstat`` (``httpx._content.encode_content`` → ``peek_filelike_length``, read at httpx 0.28.1),
+        so the body streams with its exact length, never chunked.
+        """
         with slice_path.open("rb") as body:
             response = self._http.post(
                 "/import",
                 content=body,
-                headers={"Surreal-DB": database, "Content-Length": str(slice_path.stat().st_size)},
+                headers=build_auth_headers(
+                    self._credentials.password,
+                    user=self._credentials.user,
+                    namespace=self.namespace,
+                    database=database,
+                ),
             )
         self.check_import_response(response.status_code, response.text)
 
@@ -732,7 +779,7 @@ def mint_database_name(now: datetime | None = None) -> str:
 
 def validate_reapable(name: str) -> str:
     """Refuse any name outside :data:`DATABASE_NAME_PATTERN` (``--reap`` never touches a foreign DB)."""
-    if not DATABASE_NAME_PATTERN.match(name):
+    if not DATABASE_NAME_PATTERN.fullmatch(name):
         raise RestoreRefusedError(
             f"refusing to reap {name!r}: only databases this driver mints ({DATABASE_NAME_PATTERN.pattern}) "
             "may be reaped"
@@ -1163,16 +1210,21 @@ class SelfTest:
             except SystemExit:
                 continue
             raise SelfTestFailure(f"the parser ACCEPTED {flags} — the endpoint/DB must be unrepresentable")
-        saved = os.environ.get(HARNESS_URL_OVERRIDE_VAR)
-        os.environ[HARNESS_URL_OVERRIDE_VAR] = f"ws://{STORE_HOST}:{PRODUCTION_PORT}/rpc"
-        try:
-            env = _harness_env(StoreCredentials(user="u", password=SecretStr("p")), "test_dump_x")
-            self._expect(env.url == RPC_ENDPOINT, f"the harness override retargeted the driver to {env.url}")
-        finally:
-            if saved is None:
-                os.environ.pop(HARNESS_URL_OVERRIDE_VAR, None)
-            else:
-                os.environ[HARNESS_URL_OVERRIDE_VAR] = saved
+        # The harness's HARNESS_URL_OVERRIDE_VAR reaches a connection ONLY through its one reader,
+        # ``_surreal_harness.surreal_url``; aim that reader at the PRODUCTION port and prove the driver
+        # neither calls it nor lands there. (A direct env read in THIS file is refused by the
+        # workspace's env-read gate, so the reader is the whole reach.)
+        harness, _, _ = _test_helpers()
+        credentials = StoreCredentials.for_test_store()
+        with mock.patch.object(
+            harness, "surreal_url", return_value=f"ws://{STORE_HOST}:{PRODUCTION_PORT}/rpc"
+        ) as override_reader:
+            env = _harness_env(credentials, "test_dump_x")
+        self._expect(env.url == RPC_ENDPOINT, f"the harness override retargeted the driver to {env.url}")
+        self._expect(
+            not override_reader.called,
+            f"the driver consulted the harness URL override ({HARNESS_URL_OVERRIDE_VAR})",
+        )
         sent: list[str] = []
 
         def record(request: httpx.Request) -> httpx.Response:
@@ -1180,7 +1232,7 @@ class SelfTest:
             return httpx.Response(httpx.codes.OK, json=[])
 
         client = StoreClient(
-            StoreCredentials(user="u", password=SecretStr("p")),
+            credentials,
             "lore_test",
             transport=httpx.MockTransport(record),
         )
@@ -1215,7 +1267,9 @@ class SelfTest:
         """Minted names match the pattern; the reap refuses every foreign name."""
         for _ in range(3):
             name = mint_database_name()
-            self._expect(DATABASE_NAME_PATTERN.match(name) is not None, f"minted {name!r} misses the pattern")
+            self._expect(
+                DATABASE_NAME_PATTERN.fullmatch(name) is not None, f"minted {name!r} misses the pattern"
+            )
             validate_reapable(name)
         for foreign in (
             "lore",
@@ -1270,7 +1324,7 @@ class SelfTest:
         return restore(
             self._write(name, text),
             self._request("alpha", "beta"),
-            credentials=StoreCredentials.from_env_file(),
+            credentials=StoreCredentials.for_test_store(),
             stream=io.StringIO(),
             enforce_memory_floor=False,
             scanner_type=scanner_type,
@@ -1278,14 +1332,14 @@ class SelfTest:
         )
 
     def _databases(self) -> set[str]:
-        client = StoreClient(StoreCredentials.from_env_file(), _test_namespace())
+        client = StoreClient(StoreCredentials.for_test_store(), _test_namespace())
         try:
             return client.databases()
         finally:
             client.close()
 
     def _reap(self, name: str) -> None:
-        credentials = StoreCredentials.from_env_file()
+        credentials = StoreCredentials.for_test_store()
         client = StoreClient(credentials, _test_namespace())
         try:
             reap_database(credentials, client, name)
@@ -1359,7 +1413,7 @@ class SelfTest:
 
     def leg_live_define_database_refuses_an_existing_name(self) -> None:
         """The engine-side second guard: a plain ``DEFINE DATABASE`` on an existing name errors."""
-        credentials = StoreCredentials.from_env_file()
+        credentials = StoreCredentials.for_test_store()
         client = StoreClient(credentials, _test_namespace())
         name = mint_database(client)
         try:
@@ -1428,7 +1482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK if held else EXIT_SELF_TEST_FAILED
         if arguments.reap:
             validate_reapable(arguments.reap)  # refuse a foreign name before reading any credential
-        credentials = StoreCredentials.from_env_file()
+        credentials = StoreCredentials.for_test_store()
         if arguments.reap:
             client = StoreClient(credentials, _test_namespace())
             try:
