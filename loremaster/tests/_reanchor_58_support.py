@@ -344,13 +344,15 @@ async def bulk_seed_dependents(ledger: TaskLedger, blocker: str, count: int, tag
 class ApplyHook:
     """Run ``before`` exactly ONCE, immediately before the ledger's FIRST ``_apply`` of a verb.
 
+    (r2: typed ``Any`` — amendment 5's runtime family drives the FINDING ledger's ``_apply`` too.)
+
     The constructed-interleaving instrument: it models *"a concurrent writer committed between this
     verb's pre-reads and its transaction"* at the ONE seam every task write composes through
     (``TaskLedger._apply``).  It FAILS CLOSED: :attr:`fired` is asserted by every pin that uses it,
     so a build that stops routing the verb through ``_apply`` reddens rather than passing vacuously.
     """
 
-    def __init__(self, ledger: TaskLedger, before: Callable[[], Awaitable[None]]) -> None:
+    def __init__(self, ledger: Any, before: Callable[[], Awaitable[Any]]) -> None:
         self._ledger = ledger
         self._before = before
         self._original = ledger._apply  # noqa: SLF001
@@ -364,8 +366,181 @@ class ApplyHook:
 
     @contextlib.contextmanager
     def installed(self) -> Any:
-        self._ledger._apply = self  # type: ignore[method-assign]  # noqa: SLF001
+        self._ledger._apply = self  # noqa: SLF001
         try:
             yield self
         finally:
-            self._ledger._apply = self._original  # type: ignore[method-assign]  # noqa: SLF001
+            self._ledger._apply = self._original  # noqa: SLF001
+
+
+# =========================================================================== #
+# contract-58-r2 additions (adversary-58 MP1–MP18; amendments 2 + 3 — docs/design/
+# 2026-09-26-packet58-amendment-{2,3}.md @ e0760fd / 7266c1b).  Same rule as above: nothing
+# here imports a name packet 58 introduces.
+# =========================================================================== #
+
+#: The heal's INFO receipt (amendment 1 R2) and the three WARNING records amendment 3 rules
+#: (§2 a chunk's domain rejection; §5 a phantom chain head / a superseded_by cycle).
+HEAL_EVENT = "task.backfill.stragglers_reanchored"
+HEAL_CHUNK_REJECTED_EVENT = "task.backfill.straggler_chunk_rejected"
+HEAL_PHANTOM_HEAD_EVENT = "task.backfill.straggler_phantom_head"
+HEAL_CHAIN_CYCLE_EVENT = "task.backfill.straggler_chain_cycle"
+HEAL_ACTOR = "boot-heal"
+#: The driver's rollback record (``loremaster.store._txn._log_rollback``).
+ROLLBACK_EVENT = "store.transaction.rolled_back"
+
+
+async def boot(env: SurrealEnv) -> None:
+    """ONE boot (``ensure_ready``) on a fresh ledger connection — the heal's only trigger."""
+    booted = new_ledger(env)
+    try:
+        await booted.ensure_ready()
+    finally:
+        await booted.close()
+
+
+class ComposeSpy:
+    """Record every transaction ``loremaster.tasks`` composes: ``(statements, params)`` per call.
+
+    The spy sits on ``compose`` — the ONE builder every task write goes through, the count its hard
+    cap checks — so what it sees is what reached the store, never what a builder merely built.
+    """
+
+    def __init__(self) -> None:
+        import importlib
+
+        self._module = importlib.import_module("loremaster.tasks")
+        self._real = self._module.compose
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def __call__(self, *fragments: Any) -> Any:
+        statements = [statement for fragment in fragments for statement in fragment.statements]
+        params: dict[str, Any] = {}
+        for fragment in fragments:
+            params.update(fragment.params)
+        self.calls.append((statements, params))
+        return self._real(*fragments)
+
+    @contextlib.contextmanager
+    def installed(self) -> Any:
+        setattr(self._module, "compose", self)  # noqa: B010 - the module attribute IS the seam
+        try:
+            yield self
+        finally:
+            setattr(self._module, "compose", self._real)  # noqa: B010
+
+    def heal_calls(self) -> list[tuple[list[str], dict[str, Any]]]:
+        """The composed transactions that carry a boot-heal re-anchor note (a heal CHUNK each)."""
+        return [
+            call for call in self.calls
+            if any(
+                isinstance(value, dict)
+                and value.get("action") == ACTION_REANCHORED
+                and value.get("actor") == HEAL_ACTOR
+                for value in call[1].values()
+            )
+        ]
+
+
+async def seed_stragglers(ledger: TaskLedger, total: int, blockers: int, tag: str) -> tuple[str, list[str]]:
+    """``total`` raw stragglers spread over ``blockers`` DISTINCT legacy blockers, each superseded by
+    ONE open head (adversary-58 batch 3's ``_stragglers`` shape).  Returns ``(head, straggler ids)``."""
+    head = await create(ledger, f"{tag} head")
+    ids: list[str] = []
+    per = -(-total // blockers)
+    for index in range(blockers):
+        legacy = f"{tag}legacy{index:03d}0000000000000000"
+        await raw_seed_row(ledger, legacy, blocked_by=[], superseded_by=head)
+        count = min(per, total - len(ids))
+        if count <= 0:
+            break
+        ids += await bulk_seed_dependents(ledger, legacy, count, tag=f"{tag}{index:03d}x")
+    return head, ids
+
+
+async def measure_heal_shape(ledger: TaskLedger, env: SurrealEnv, tag: str) -> tuple[int, int]:
+    """``(fixed, per)`` of ONE heal chunk over stragglers of ONE superseded blocker, MEASURED.
+
+    Seeds 1, 2 and 3 stragglers of a fresh blocker (one boot each; every boot heals only the new
+    ones), reads the heal chunk's composed statement count off :class:`ComposeSpy`, and checks
+    linearity at n=3.  This is amendment 3 §1's "the packer's own count, read from the same counting
+    function in the test — never a literal" (``compose`` spied — the ruling's second admitted form).
+    """
+    counts: list[int] = []
+    for n in (1, 2, 3):
+        await seed_stragglers(ledger, n, 1, f"{tag}{n}m")
+        spy = ComposeSpy()
+        with spy.installed():
+            await boot(env)
+        chunks = spy.heal_calls()
+        assert len(chunks) == 1, f"measuring the heal shape: {len(chunks)} heal chunks for n={n}"
+        counts.append(len(chunks[0][0]))
+    per = counts[1] - counts[0]
+    fixed = counts[0] - per
+    assert per > 0 and counts[2] == fixed + 3 * per, (
+        f"the heal chunk's composed count is not linear in its rows (c1..c3 = {counts})"
+    )
+    return fixed, per
+
+
+def predicted_chunks(rows: int, fixed: int, per: int, cap: int) -> int:
+    """A GREEDY packer's chunk count for ``rows`` one-blocker stragglers: ``(cap − fixed) // per`` rows
+    fit a chunk (amendment 3 §1: close the chunk when the next row would exceed the cap)."""
+    fit = (cap - fixed) // per
+    assert fit > 0
+    return -(-rows // fit)
+
+
+# --------------------------------------------------------------------------- #
+# Packet 58 amendment 5 (docs/design/2026-09-26-packet58-amendment-5.md @ 67bf2cc) — the DERIVED set of
+# guarded-CAS VERBS.  ONE derivation, consumed by the runtime ∀ family (C,
+# ``test_reanchor_58_r2_cas_runtime.py``) and by the class-keyed static index (B, the §HELD re-key of
+# ``test_retry_seam.py``), so the two layers range over the SAME set by construction.
+# --------------------------------------------------------------------------- #
+
+#: The shell each guarded-append ledger routes its CAS writes through (kickoff §4 / findings #489).
+CAS_SHELL = "_guarded_append_fragment"
+#: The ledger modules that own such a shell (the one-producer pin's derived class, named by file).
+SHELL_LEDGER_MODULES = ("tasks.py", "findings.py")
+#: Amendment 5 §1 names ONE guarded CAS that is a single-statement ``_query`` (no shell, no ``_apply``):
+#: the brief ack's idempotent RELATE.  Listed by NAME — a stated bound: a new single-statement CAS door
+#: is invisible to the derivation below until it is added here.
+SINGLE_STATEMENT_CAS_DOORS = ("briefs.py::_relate_briefed",)
+#: The transaction seam every shell-ledger CAS verb commits through.
+APPLY_SEAM = "_apply"
+
+
+def derive_cas_verbs(package_root: Any) -> set[str]:
+    """``{"<module>::<method>"}`` — every method of a shell-ledger class that CALLS ``_apply`` and REACHES
+    the shell (directly, or through methods of the same module that do), ∪ the single-statement doors.
+
+    Derived from the AST of the SHIPPED package (``package_root`` = the imported ``loremaster`` dir), so a
+    new CAS verb (57's ``assign`` / release) joins the set the day it is written.
+    """
+    import ast
+    from pathlib import Path
+
+    verbs: set[str] = set(SINGLE_STATEMENT_CAS_DOORS)
+    for module in SHELL_LEDGER_MODULES:
+        tree = ast.parse((Path(package_root) / module).read_text(encoding="utf-8"))
+        calls: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for method in node.body:
+                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        calls[method.name] = {
+                            call.func.attr
+                            for call in ast.walk(method)
+                            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        }
+        reaches = {name for name, called in calls.items() if CAS_SHELL in called}
+        changed = True
+        while changed:
+            grown = {name for name, called in calls.items() if called & reaches} - reaches
+            reaches |= grown
+            changed = bool(grown)
+        verbs |= {
+            f"{module}::{name}" for name, called in calls.items()
+            if APPLY_SEAM in called and name in reaches and name != CAS_SHELL
+        }
+    return verbs

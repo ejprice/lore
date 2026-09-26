@@ -69,19 +69,55 @@ bounds:
 # build lands they are attr-defined at typecheck (and RED at pytest for the same reason — REPORT-contract-58.md
 # §RED). SELF-DESTRUCTS: the day the build lands the symbols, this entry fails the gate until deleted.
 - id: packet-58-contract
-  owner: packet 58 (supersede re-anchor + task guarded-append shell) — the 58 builder, serial after 63c-i-a
+  owner: packet 58 (supersede re-anchor + task guarded-append shell + finding 130 + amendments 1-5) — the 58 builder,
+    serial after 63c-i-a
   reopen_trigger: the packet-58 build lands TaskLedger.max_reanchor_dependents, loremaster.tasks.SupersedeResult
-    and TaskLedger._guarded_append_fragment — then this entry self-destructs and must be deleted with the build
-  ruling: docs/design/2026-09-26-packet58-kickoff-rulings.md (c8d3241) + docs/design/2026-09-26-packet58-amendment-1.md
-    (f4e96b4); contract receipts REPORT-contract-58.md §RED (archived with the wave)
-  rationale: contract-ahead — 58's contract is written before 63c-i-a commits and 58 builds serially after it
-    (lead-63c brief); the pins must name the ruled symbols now so the builder meets them, not invent them
+    and TaskLedger._guarded_append_fragment — then every file below stops erroring, this entry self-destructs and
+    must be deleted with the build
+  ruling: docs/design/2026-09-26-packet58-kickoff-rulings.md (c8d3241) + packet58 amendments 1-5 (f4e96b4,
+    e0760fd, 7266c1b, fd6497d, 67bf2cc); contract receipts REPORT-contract-58.md §RED + REPORT-contract-58-r2.md §RED@HEAD
+    (archived with the wave)
+  rationale: contract-ahead — 58's contract (r1 5a43aeb + r2) is written before 58 builds serially after 63c-i-a;
+    the pins name the ruled symbols now so the builder meets them, not invent them. Lead directive 17055
+    (coldaudit-63c-i-a-2 F-6, the finding-461 shape) — this bound OWNS every packet-58 pytest RED, r1 and r2; each file
+    below that carries one names a ruled symbol STATICALLY (a runtime-inert `if TYPE_CHECKING:` block where the
+    pins reach the symbol dynamically), so the typecheck line and the pytest legs share ONE self-destructing owner
   files:
   - path: loremaster/tests/test_supersede_reanchor_58.py
     missing_symbols:
     - TaskLedger.max_reanchor_dependents
     - loremaster.tasks.SupersedeResult
     - type[TaskLedger]._guarded_append_fragment
+  - path: loremaster/tests/test_task_guarded_shell_58.py
+    missing_symbols:
+    - type[TaskLedger]._guarded_append_fragment
+  - path: loremaster/tests/test_task_claimable_partition_58.py
+    missing_symbols:
+    - loremaster.tasks.SupersedeResult
+  - path: loremaster/tests/test_reanchor_58_r2_probes.py
+    missing_symbols:
+    - TaskLedger.max_reanchor_dependents
+  - path: loremaster/tests/test_reanchor_58_r2_scale.py
+    missing_symbols:
+    - TaskLedger.max_reanchor_dependents
+  - path: loremaster/tests/test_reanchor_58_r2_am2.py
+    missing_symbols:
+    - TaskLedger.max_reanchor_dependents
+  - path: loremaster/tests/test_reanchor_58_r2_rulings.py
+    missing_symbols:
+    - TaskLedger.max_reanchor_dependents
+  - path: loremaster/tests/test_reanchor_58_r2_cas_runtime.py
+    missing_symbols:
+    - type[TaskLedger]._guarded_append_fragment
+  - path: loremaster/tests/test_blocks_edge.py
+    missing_symbols:
+    - loremaster.tasks.SupersedeResult
+  - path: loremaster/tests/test_task_read_surface.py
+    missing_symbols:
+    - loremaster.tasks.SupersedeResult
+  - path: scripts/test_forgery_door_sweep.py
+    missing_symbols:
+    - loremaster.tasks.SupersedeResult
 # Packet 63c-i-a a28 fix-pass contract (contract-63c-i-a-a28, 2026-09-26, checkpoint 169925f — lead directive
 # #17055, the #461 shape). Amendments 26–29 rule ORDER changes, a deletion and behavioural fixes (no new symbol);
 # amendment 30 rules the ONE new symbol pair — `MigratePreconditionCounts` + `MigrateGovernedResult.preconditions`.

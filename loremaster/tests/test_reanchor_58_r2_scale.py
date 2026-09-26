@@ -1,0 +1,62 @@
+"""Packet 58 contract r2 — adversary-58's graded probes PR16–PR17, landed AST-EQUAL.
+
+Source: batch 2 (md5 ``1328e035``), contract-58-r2.
+
+*Scoped to the tree at ``ccdad34``, 2026-09-26.*  PR16 = MP2's harm (the accessor at K=3 must never
+serve ``compose``'s bare cap error); PR17 = §DECISIONS 2 constructed (1300 legacy stragglers must not
+fail the boot — amendment 3 §1's packer).  Provenance + AST receipt: ``REPORT-contract-58-r2.md``.
+"""
+
+from __future__ import annotations
+
+from _reanchor_58_support import (
+    bulk_seed_dependents,
+    column,
+    create,
+    ledger58,
+    new_ledger,
+    raw_seed_row,
+)
+from _surreal_harness import SurrealEnv
+from loremaster.store._txn import SurrealStoreError
+from loremaster.tasks import TaskLedger
+
+__all__ = ["ledger58"]
+
+
+# PR16 — WB2's HARM: with the accessor over-stating the cap at K=3, a supersede of exactly `cap`
+# dependents must still be a TEACHING refusal or a success — never compose's bare count error.
+async def test_PR16_a_hub_at_the_accessors_cap_with_K3_is_never_the_bare_compose_error(
+    ledger58: tuple[TaskLedger, SurrealEnv],
+) -> None:
+    ledger, _env = ledger58
+    k = 3
+    cap = ledger.max_reanchor_dependents(k)
+    old = await create(ledger, "the hub")
+    blockers = [await create(ledger, f"successor blocker {i}") for i in range(k)]
+    await bulk_seed_dependents(ledger, old, cap, tag="adv58k3cap")
+    try:
+        await ledger.supersede_task(
+            old, subject="s", description="d", created_by="adv58", blocked_by=blockers
+        )
+    except SurrealStoreError as error:
+        assert "exceeding the hard cap" not in str(error), (
+            f"the derived cap ({cap} at K={k}) over-states the bound: compose's bare error served: {error}"
+        )
+
+
+# PR17 — DECISIONS 2 CONSTRUCTED: a large legacy straggler population vs the heal's ONE transaction.
+async def test_PR17_the_boot_heal_at_scale_does_not_fail_the_boot(
+    ledger58: tuple[TaskLedger, SurrealEnv],
+) -> None:
+    ledger, env = ledger58
+    head = await create(ledger, "the successor")
+    legacy = "adv58scalelegacyblocker00000000"
+    await raw_seed_row(ledger, legacy, blocked_by=[], superseded_by=head)
+    stragglers = await bulk_seed_dependents(ledger, legacy, 1300, tag="adv58scale")
+    booted = new_ledger(env)
+    try:
+        await booted.ensure_ready()  # the probe's claim: a boot survives 1300 legacy stragglers
+    finally:
+        await booted.close()
+    assert await column(ledger, stragglers[0]) == [head]

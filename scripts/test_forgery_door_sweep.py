@@ -27,7 +27,7 @@ import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -37,6 +37,14 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import forgery_door_sweep as fds  # noqa: E402  (path insert must precede the import)
+
+if TYPE_CHECKING:
+    from loremaster.tasks import SupersedeResult
+    # ⚠ DUAL (packet 58 contract r2, contract-58-r2 — lead directive #17055, the #461 shape): packet 58's
+    # RULED, not-yet-built symbol, named STATICALLY for the typecheck gate.  Until the build lands it this
+    # is a mypy error OWNED by `scripts/pending_contracts.yaml` bound `packet-58-contract`, which owns this
+    # file's packet-58 pytest REDs too and self-destructs with the build.  Runtime-inert: no pin changed.
+    _RULED_58: tuple[object, ...] = (SupersedeResult,)
 
 _FAKE_PACKAGE = "forgery_door_sweep_fake_seam_package"
 
@@ -442,6 +450,14 @@ class TestTheDoorSweepOverTheRealLedger:
         # (docs/design/2026-09-26-packet58-amendment-1.md) adds the boot-time STRAGGLER HEAL beside
         # the backfill, whose first store call (the superseded-rows read) is a FIFTH door on this
         # path. It is swept below like the other four and must be LOUD. REPORT-contract-58.md §DUAL D12.
+        # ⚠ r2 (contract-58-r2, adversary-58 SD2): amendment 3 §2
+        # (docs/design/2026-09-26-packet58-amendment-3.md @ 7266c1b) RULES this pin's two premises —
+        # (a) a heal STORE fault RAISES (amendment 2's "the boot never fails on a heal fault" is
+        # NARROWED to a chunk's DOMAIN rejection), so every heal door stays LOUD here, UNEDITED in
+        # its loudness assertion; (b) the ORDER is backfill → heal, because the backfill establishes
+        # edge ≡ blocked_by (the heal's per-row DELETE then always finds the edge it retires). The
+        # heal's APPLY door is not on this legacy world's path (no superseded rows); it is swept by
+        # test_reanchor_58_r2_rulings.py::TestAHealStoreFaultIsLOUD. REPORT-contract-58-r2.md §DUAL D12.
         assert report.control_calls == 5, (
             f"the derived door set for ensure_ready over a legacy store is "
             f"{report.control_calls}, not the 5 (04b-1 cold audit's 4 + packet 58 amendment 1's "
@@ -514,6 +530,8 @@ class TestTheDoorSweepOverTheRealLedger:
         # ⚠ DUAL (packet 58, contract-58): the doors OUTSIDE the swallowed backfill are now TWO —
         # the DDL (first) and packet 58 amendment 1's straggler-heal read (LAST, after the backfill).
         # Both must stay loud; every door between them must be silent. REPORT-contract-58.md §DUAL D12.
+        # r2: "LAST" is now RULED, not assumed — amendment 3 §2 orders backfill → heal (adversary-58
+        # SD2: r1 had silently settled it; the K17 control showed this pin keys on exactly that order).
         assert report.control_calls not in silent, (
             "the straggler-heal door runs AFTER the swallowed backfill and must still fail loud.\n"
             + report.render()

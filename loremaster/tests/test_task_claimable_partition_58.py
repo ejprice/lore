@@ -26,6 +26,7 @@ kills the over-excluding build.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pytest_asyncio
 from _reanchor_58_support import (
@@ -48,6 +49,14 @@ from loremaster.tasks import (
     TaskLedger,
 )
 from test_blocks_edge import _tool_seam
+
+if TYPE_CHECKING:
+    from loremaster.tasks import SupersedeResult
+    # ⚠ DUAL (packet 58 contract r2, contract-58-r2 — lead directive #17055, the #461 shape): packet 58's
+    # RULED, not-yet-built symbol, named STATICALLY for the typecheck gate.  Until the build lands it this
+    # is a mypy error OWNED by `scripts/pending_contracts.yaml` bound `packet-58-contract`, which owns this
+    # file's packet-58 pytest REDs too and self-destructs with the build.  Runtime-inert: no pin changed.
+    _RULED_58: tuple[object, ...] = (SupersedeResult,)
 
 __all__ = ["ledger58"]
 

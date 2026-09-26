@@ -28,7 +28,7 @@ import importlib
 import inspect
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from _reanchor_58_support import (
@@ -50,6 +50,13 @@ from _reanchor_58_support import (
 from _surreal_harness import SurrealEnv
 from loremaster.store.surreal_schema import TASK_TABLE
 from loremaster.tasks import STATUS_BLOCKED, STATUS_WONTFIX, TaskLedger
+
+if TYPE_CHECKING:
+    # ⚠ DUAL (packet 58 contract r2, contract-58-r2 — lead directive #17055, the #461 shape): packet 58's
+    # RULED, not-yet-built symbol, named STATICALLY for the typecheck gate.  Until the build lands it this
+    # is a mypy error OWNED by `scripts/pending_contracts.yaml` bound `packet-58-contract`, which owns this
+    # file's packet-58 pytest REDs too and self-destructs with the build.  Runtime-inert: no pin changed.
+    _RULED_58: tuple[object, ...] = (TaskLedger._guarded_append_fragment,)
 
 __all__ = ["ledger58"]
 
@@ -99,9 +106,30 @@ def guarded_shell_producers(source: str) -> dict[str, dict[str, bool]]:
     producer).  ``appends`` records whether the SAME producer also emits the server-side append clause
     — the guarded-APPEND policy #489 names.  Reach: every function and every module-level statement
     of the source — derived, not listed.
+
+    ⚠ DUAL (packet 58 contract r2, contract-58-r2, 2026-09-26): a function's strings now INCLUDE the
+    strings of every module-level constant it references BY NAME.  Adversary-58 WB12/PR9 (MP9): a 4th
+    hand-rolled guarded append whose THROW template lives in a module constant
+    (``_ASSIGN_GUARD.format(...)``) escaped the per-function scan — the template's THROW was pooled
+    into ``"<module>"`` (which carries no UPDATE), so neither scope was a producer.  The runtime twin of
+    this pin is ``test_reanchor_58_r2_rulings.py::TestEveryComposedGuardedWriteCameFromTheShell``.
+    ``REPORT-contract-58-r2.md`` §DUAL D13.
     """
     tree = ast.parse(source)
     docstrings = _docstring_nodes(tree)
+    #: module-level NAME → the strings its assigned value carries (a THROW template, an UPDATE text …)
+    constants: dict[str, list[str]] = {}
+    for statement in tree.body:
+        targets = (
+            statement.targets if isinstance(statement, ast.Assign)
+            else [statement.target] if isinstance(statement, ast.AnnAssign) and statement.value else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                constants[target.id] = [
+                    c.value for c in ast.walk(statement)
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                ]
     producers: dict[str, dict[str, bool]] = {}
     #: strings emitted OUTSIDE any function, pooled per scope ("<module>" / "Class.<class-body>"),
     #: so a constant pair split across two module-level assignments is still ONE producer.
@@ -114,6 +142,15 @@ def guarded_shell_producers(source: str) -> dict[str, dict[str, bool]]:
             if isinstance(c, ast.Constant) and isinstance(c.value, str) and id(c) not in docstrings
         ]
 
+    def _function_strings(node: ast.AST) -> list[str]:
+        referenced = [
+            text
+            for name in ast.walk(node)
+            if isinstance(name, ast.Name) and name.id in constants
+            for text in constants[name.id]
+        ]
+        return _strings(node) + referenced
+
     def _record(name: str, strings: list[str]) -> None:
         if any(_THROW_TOKEN.search(s) for s in strings) and any(_UPDATE_TOKEN.search(s) for s in strings):
             producers[name] = {"appends": any(_APPEND_TOKEN in s for s in strings)}
@@ -123,7 +160,9 @@ def guarded_shell_producers(source: str) -> dict[str, dict[str, bool]]:
             if isinstance(child, ast.ClassDef):
                 _visit(child, f"{child.name}." if scope == "<module>" else f"{scope}{child.name}.")
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _record(child.name if scope == "<module>" else f"{scope}{child.name}", _strings(child))
+                _record(
+                    child.name if scope == "<module>" else f"{scope}{child.name}", _function_strings(child)
+                )
             else:
                 key = "<module>" if scope == "<module>" else f"{scope}<class-body>"
                 loose.setdefault(key, []).extend(_strings(child))
@@ -601,7 +640,15 @@ class TestParamNamesDoNotCollideAcrossComposedShells:
     stamp + the CREATE + the successor RELATEs compose into ONE transaction — ``compose`` refuses a
     param collision loudly, so a green supersede of N≥3 with K≥2 IS the proof.  The spy asserts the
     composition really contained ≥ N+1 shell outputs (so the pin is not green because the shell was
-    bypassed)."""
+    bypassed).
+
+    ⚠ DUAL (packet 58 contract r2, contract-58-r2, 2026-09-26 — adversary-58 SD1, amendment 3 §6): this
+    pin USED to assert ``calls.count(dependency_reanchored) == 3`` on a spy of the SHELL — which reds a
+    CORRECT build that derives the F-1 cap by BUILDING real fragments (kickoff F-1's own mechanism: the
+    derivation's shell calls are counted too).  Ruled: count the shell outputs that REACHED ``compose``.
+    The spy now MARKS every event the shell appends and counts the marked events in the params of the
+    transaction ``compose`` actually received — exactly the docstring's "≥ N+1 shell outputs".
+    ``REPORT-contract-58-r2.md`` §DUAL D14."""
 
     async def test_three_reanchors_the_stamp_and_two_successor_edges_compose(
         self, ledger58: tuple[TaskLedger, SurrealEnv], monkeypatch: pytest.MonkeyPatch
@@ -610,17 +657,34 @@ class TestParamNamesDoNotCollideAcrossComposedShells:
         old = await create(ledger, "X")
         dependents = [await create(ledger, f"Y{i}", [old]) for i in range(3)]
         blockers = [await create(ledger, f"B{i}") for i in range(2)]
-        calls: list[str | None] = []
         original = getattr(TaskLedger, SHELL)
 
-        def _count(*args: Any, **kwargs: Any) -> Any:
+        def _mark(*args: Any, **kwargs: Any) -> Any:
             event = kwargs.get("event")
-            calls.append(event.get("action") if isinstance(event, dict) else None)
+            if isinstance(event, dict):
+                kwargs["event"] = {**cast(dict[str, Any], event), "shell58r2": True}
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(TaskLedger, SHELL, staticmethod(_count), raising=True)
+        monkeypatch.setattr(TaskLedger, SHELL, staticmethod(_mark), raising=True)
+        tasks_module = importlib.import_module("loremaster.tasks")
+        real_compose = tasks_module.compose
+        composed: list[dict[str, Any]] = []
+
+        def _compose(*fragments: Any) -> Any:
+            merged: dict[str, Any] = {}
+            for fragment in fragments:
+                merged.update(fragment.params)
+            composed.append(merged)
+            return real_compose(*fragments)
+
+        monkeypatch.setattr(tasks_module, "compose", _compose, raising=True)
         successor = successor_of(await supersede(ledger, old, blocked_by=blockers))
-        assert calls.count(ACTION_REANCHORED) == 3 and calls.count("supersede") == 1, calls
+        reached = [
+            value.get("action")
+            for value in composed[-1].values()
+            if isinstance(value, dict) and value.get("shell58r2") is True
+        ]
+        assert reached.count(ACTION_REANCHORED) == 3 and reached.count("supersede") == 1, reached
         for task_id in dependents:
             assert await column(ledger, task_id) == [successor]
 

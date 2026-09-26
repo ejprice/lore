@@ -285,7 +285,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -342,6 +342,14 @@ from loremaster.tasks import (
     TaskNotFoundError,
 )
 from surrealdb import RecordID
+
+if TYPE_CHECKING:
+    from loremaster.tasks import SupersedeResult
+    # ⚠ DUAL (packet 58 contract r2, contract-58-r2 — lead directive #17055, the #461 shape): packet 58's
+    # RULED, not-yet-built symbol, named STATICALLY for the typecheck gate.  Until the build lands it this
+    # is a mypy error OWNED by `scripts/pending_contracts.yaml` bound `packet-58-contract`, which owns this
+    # file's packet-58 pytest REDs too and self-destructs with the build.  Runtime-inert: no pin changed.
+    _RULED_58: tuple[object, ...] = (SupersedeResult,)
 
 # --------------------------------------------------------------------------- #
 # THE NAME-KEYED SURFACE — kept as small as the instruments allow, and every entry

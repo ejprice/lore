@@ -184,7 +184,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from _reanchor_58_support import successor_of
@@ -228,6 +228,14 @@ from test_query_tasks_bounded import (  # noqa: I001 - local test module, siblin
     _fresh_ledger,
     _tool_seam,
 )
+
+if TYPE_CHECKING:
+    from loremaster.tasks import SupersedeResult
+    # ⚠ DUAL (packet 58 contract r2, contract-58-r2 — lead directive #17055, the #461 shape): packet 58's
+    # RULED, not-yet-built symbol, named STATICALLY for the typecheck gate.  Until the build lands it this
+    # is a mypy error OWNED by `scripts/pending_contracts.yaml` bound `packet-58-contract`, which owns this
+    # file's packet-58 pytest REDs too and self-destructs with the build.  Runtime-inert: no pin changed.
+    _RULED_58: tuple[object, ...] = (SupersedeResult,)
 
 #: The caller-supplied cap most ESC-5 pins ask for.  Deliberately EQUAL to
 #: :data:`~test_query_tasks_bounded._ANSWER_CAP` so the blocked-path leg can reuse the
