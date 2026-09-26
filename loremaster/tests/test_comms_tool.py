@@ -478,8 +478,11 @@ class _RecordingAgentRegistry(FakeAgentRegistry):
     """
 
     #: Every public method on the registry surface, each overridden below.
+    #: 63c-i-a a19a (amendment 22 §1): ``preflight`` joins the fake's public surface — the register
+    #: handler now calls it BEFORE the keep mint — so it is recorded like every other store touch
+    #: (additive: no method removed, so no DUAL row).
     RECORDED_METHODS = frozenset(
-        {"close", "ensure_ready", "fleet", "get_agent", "register", "roster", "touch"}
+        {"close", "ensure_ready", "fleet", "get_agent", "preflight", "register", "roster", "touch"}
     )
 
     def __init__(self, *, db: FakeAgentDatabase | None = None) -> None:
@@ -501,6 +504,10 @@ class _RecordingAgentRegistry(FakeAgentRegistry):
     async def get_agent(self, *args: Any, **kwargs: Any) -> Any:
         self.calls.append("get_agent")
         return await super().get_agent(*args, **kwargs)
+
+    async def preflight(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append("preflight")
+        return await super().preflight(*args, **kwargs)
 
     async def register(self, *args: Any, **kwargs: Any) -> Any:
         self.calls.append("register")

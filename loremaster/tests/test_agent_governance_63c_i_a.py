@@ -1218,10 +1218,20 @@ class TestAgentMigrateScopeKeyed63cIA:
                 f"{reason[:500]!r}"
             )
         else:
-            assert 1 <= len(named_foreign) <= id_bound, (
-                f"F-1: above the bound the refusal names a SAMPLE of the {len(foreign_owners)} other "
-                f"principals — at least one, at most _REFUSAL_ID_SAMPLE_SIZE={id_bound}; it named "
-                f"{len(named_foreign)}: {reason[:500]!r}"
+            # DUAL (a19a, amendment 20 R1 — RE-KEYED, deliberately): this leg asserted
+            # ``1 <= named <= id_bound`` above the bound ("at least one, at most the bound" — a19 §8.2 as
+            # committed). That reading admitted adversary-a19 WB7b (names ONE principal above the bound, a
+            # shape-dependent private sample). R1: the principal count served is EXACTLY
+            # ``min(_REFUSAL_ID_SAMPLE_SIZE, distinct owners)`` — one constant, one policy — and it is read
+            # under the SAME perturbation leg that patches the constant for the id sample
+            # (``perturbed-bound``: patched to 3 with > 3 distinct foreign owners ⇒ exactly 3 named). Virtue
+            # kept: never more than the bound, never none.
+            assert len(named_foreign) == min(id_bound, len(foreign_owners)), (
+                f"F-1 / amendment 20 R1: above the bound the refusal names EXACTLY "
+                f"min(_REFUSAL_ID_SAMPLE_SIZE={id_bound}, {len(foreign_owners)} other principals) = "
+                f"{min(id_bound, len(foreign_owners))} of them — the constant READ at call time (a private "
+                f"smaller sample is a second source of one policy); it named {len(named_foreign)}: "
+                f"{reason[:500]!r}"
             )
 
     async def test_a_store_with_governed_and_legacy_agents_migrates_only_the_legacy(

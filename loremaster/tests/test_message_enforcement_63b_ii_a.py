@@ -193,9 +193,15 @@ def _effect_migrate_message(effect: ObservedEffect) -> bool:
 
 # The PROVISIONAL golden the builder must match (FLAG F-MIGRATE-GOLDEN). Function-local in
 # ``_migrate_message_owner`` (§1.9 item 1 — never a module constant, which L1 orphans to <module>).
+#
+# DUAL (63c-i-a a19a, amendment 21 CD-1 — the golden CHANGED deliberately; the wave that changes a golden
+# owns it): the WHERE was ``owner_principal IS NONE`` (owner-keyed). CD-1 makes it scope-keyed AND
+# self-guarding — ``scope IS NONE AND owner_principal IS NONE``, in that order, the ruling's one line — so a
+# scoped-but-ownerless message is never re-stamped and "unmigrated" means THE predicate ∀ governed tables.
+# Virtue kept: one UPDATE, the same three SET columns, NONE-owner rows only.
 _MIGRATE_MESSAGE_GOLDEN = (
     f"UPDATE {_MESSAGE_TABLE} SET owner_agent = sender, owner_principal = sender.owner_principal, "
-    f"scope = $scope WHERE owner_principal IS NONE"
+    f"scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
 )
 
 

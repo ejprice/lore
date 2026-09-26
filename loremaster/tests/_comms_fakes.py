@@ -139,6 +139,11 @@ LEGAL_AGENT_TRANSITIONS: frozenset[tuple[AgentStatus, AgentStatus]] = frozenset(
 )
 
 # Fleet row ordering (spec §6): parked questions first, then active, then idle.
+#: ``preflight``'s "the session keep is not minted yet" marker (packet 63c-i-a a19a, amendment 22 §1): the
+#: register handler preflights BEFORE the keep mint, so the provenance-pair check runs only once the keep id
+#: is known — mirroring ``AgentRegistry.preflight``.
+_KEEP_NOT_YET_MINTED: object = object()
+
 _STATUS_SORT_ORDER: dict[AgentStatus, int] = {
     STATUS_INPUT_REQUIRED: 0,
     STATUS_ACTIVE: 1,
@@ -296,6 +301,57 @@ class FakeAgentRegistry:
         if is_blank(role):
             raise AgentRegistryError("fake register: blank role; nothing was written")
 
+    @staticmethod
+    def _refuse_an_existing_row_conflict(
+        existing: Agent, *, name: str, role: str, spawned_by: str | None
+    ) -> None:
+        """The writer's refusals over an EXISTING row (retired · role / spawned_by write-once conflict) —
+        ONE home, called by :meth:`preflight` and inside :meth:`register`'s compare-and-set (sync, so the CAS
+        stays ``await``-free). packet 63c-i-a a19a: extracted so the fake's two paths share one decision."""
+        if existing.status == STATUS_RETIRED:
+            raise RetiredAgentError(f"agent {name!r} is retired (terminal) — respawns register a fresh name")
+        if existing.role != role:
+            raise AgentIdentityConflictError(
+                f"agent {name!r} is already registered with role {existing.role!r} "
+                f"(you sent {role!r}) — names are never reused; register a fresh name "
+                f"(e.g. {name + '2'!r})"
+            )
+        if spawned_by is not None and existing.spawned_by is not None and existing.spawned_by != spawned_by:
+            raise AgentIdentityConflictError(
+                f"agent {name!r} is already registered with spawned_by "
+                f"{existing.spawned_by!r} (you sent {spawned_by!r}) — names are never "
+                f"reused; register a fresh name (e.g. {name + '2'!r})"
+            )
+
+    async def preflight(
+        self,
+        name: str,
+        *,
+        session: str,
+        role: str,
+        spawned_by: str | None = None,
+        owner_principal_id: str | None = None,
+        session_keep_id: str | None | object = _KEEP_NOT_YET_MINTED,
+    ) -> Agent | None:
+        """Mirrors ``AgentRegistry.preflight`` (packet 63c-i-a a19a, amendment 22 §1 / #485): every refusal
+        ``register`` can raise WITHOUT a write, reading the existing row; returns it (or ``None``). The
+        provenance-pair check runs only once the keep id is known (the handler preflights BEFORE the mint).
+        Mirror-pinned against the real writer by ``test_fixwave_a19a_63c_i_a.py::
+        TestTheFakePreflightMirrorsTheWriter63cIAa19a``."""
+        minted = session_keep_id is not _KEEP_NOT_YET_MINTED
+        self._refuse_what_the_writer_refuses(
+            name,
+            session=session,
+            role=role,
+            owner_principal_id=owner_principal_id if minted else None,
+            session_keep_id=cast("str | None", session_keep_id) if minted else None,
+        )
+        existing = self.db.agents.get(self._agent_id(session, name))
+        if existing is None:
+            return None
+        self._refuse_an_existing_row_conflict(existing, name=name, role=role, spawned_by=spawned_by)
+        return existing.model_copy(deep=True)
+
     async def register(
         self,
         name: str,
@@ -351,20 +407,7 @@ class FakeAgentRegistry:
             return AgentRegisterResult(
                 agent=agent.model_copy(deep=True), re_registered=False, capability=capability
             )
-        if existing.status == STATUS_RETIRED:
-            raise RetiredAgentError(f"agent {name!r} is retired (terminal) — respawns register a fresh name")
-        if existing.role != role:
-            raise AgentIdentityConflictError(
-                f"agent {name!r} is already registered with role {existing.role!r} "
-                f"(you sent {role!r}) — names are never reused; register a fresh name "
-                f"(e.g. {name + '2'!r})"
-            )
-        if spawned_by is not None and existing.spawned_by is not None and existing.spawned_by != spawned_by:
-            raise AgentIdentityConflictError(
-                f"agent {name!r} is already registered with spawned_by "
-                f"{existing.spawned_by!r} (you sent {spawned_by!r}) — names are never "
-                f"reused; register a fresh name (e.g. {name + '2'!r})"
-            )
+        self._refuse_an_existing_row_conflict(existing, name=name, role=role, spawned_by=spawned_by)
         # write-once fields, resolved: compared only when BOTH sides carry a
         # concrete value (a first-time incoming value fills a previously-unset
         # field without conflict — see the contract-decision note in the report).

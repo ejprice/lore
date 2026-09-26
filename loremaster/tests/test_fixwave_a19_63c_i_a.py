@@ -76,6 +76,10 @@ _BRIEF_TABLE = "brief"
 #: refuse with the SAME teaching"). ⚠ REACH, STATED: a hand-list of the RULING's four — ``migrate-governed``
 #: declares no ``choices`` to derive from (``principals.build_parser``). An unsupported fifth value is not
 #: ruled here. RE-OPEN TRIGGER: ``--table`` gains ``choices`` (derive from them) or a fifth governed leg.
+#: a19a (amendment 21 CD-2 + amendment 22 F-1 + amendment 23 FK-3): table VALIDITY is now checked first and
+#: THESE four are the ruled valid set (no production constant carries it at i-a); every OTHER name — derived
+#: from the emitted schema in ``test_fixwave_a19a_63c_i_a.py::_invalid_table_names`` — gets the zero-I/O
+#: "not supported". The trigger above still stands for this tuple.
 _MIGRATE_TABLES = (AGENT_TABLE, MEMORY_TABLE, MESSAGE_TABLE, _BRIEF_TABLE)
 #: Every table a refused migrate must leave byte-identical: the four governed tables, plus the tables a
 #: leg would MINT into before refusing (the project keep, its keeper's household edge) and the principal
@@ -305,43 +309,47 @@ class TestTheMessageOrderGuardIsScopeKeyed63cIAa19:
                 f"project keep): before={before[MESSAGE_TABLE]!r} after={after[MESSAGE_TABLE]!r}"
             )
 
-    async def test_CONTROL_an_ownerless_SCOPED_agent_does_not_trip_the_order_guard(self) -> None:
-        """⚠ RED at ``84af63f`` — the discriminating CONTROL in the other direction (D-1 pin 2: "an
-        ownerless-scoped agent as the control that the order guard does NOT fire once migrated"). An agent
-        with ``scope`` SET is migrated under THE unmigrated predicate (``scope IS NONE`` ∀ governed tables)
-        even though its owner is NONE; the owner-keyed 84af63f guard counts it as un-migrated and REFUSES.
-        The message sent by a fully governed agent must be backfilled."""
+    async def test_CONTROL_a_FULLY_migrated_store_does_not_trip_the_order_guard(self) -> None:
+        """The CONTROL that the order guard does NOT fire once every agent is migrated (D-1 pin 2).
+
+        DUAL (a19a, amendment 22 §3 erratum — RE-KEYED, deliberately): this was
+        ``test_CONTROL_an_ownerless_SCOPED_agent_does_not_trip_the_order_guard``, whose population held an
+        OWNERLESS-SCOPED agent. Amendment 22 F-2 rules that state a HALF-PAIR — a half-applied store, refused
+        at the VERB before any leg (pinned in ``test_fixwave_a19a_63c_i_a.py::
+        TestHalfPairsAreRefusedAtTheVerb63cIAa19a``) — so on a correct build that population never reaches the
+        order guard, and "a fixture built on a forbidden state discriminates nothing" (the sidecar, on its own
+        pin). The control is now a FULLY migrated store: every agent owned AND scoped, under TWO principals
+        (the operator and a foreign member — no owner monoculture), each with a legacy message. Virtue kept:
+        the guard does not fire once migrated, and the governed senders' messages are backfilled. Virtue
+        NOT kept, by construction: the owner-keyed vs scope-keyed discrimination in THIS direction — after
+        F-2 no reachable store makes the two predicates disagree at the order guard (amendment 23 FK-4); the
+        other direction stays pinned by the CA-A test above. GREEN at ``84af63f`` and on the fix."""
         async with _governed_world() as world:
-            project_like_scope = keep_scope("sessionkeepctl")
-            await seed_agent_governed(
-                world.connection,
-                row_id="ownerless_scoped",
-                name="ownerless-scoped",
-                session="s1",
-                owner_principal=None,
-                owner_agent=None,
-                scope=project_like_scope,
-            )
-            await seed_agent_governed(
-                world.connection,
-                row_id="governed_sender",
-                name="governed-sender",
-                session="s1",
-                owner_principal=world.operator_bare,
-                owner_agent="governed_sender",
-                scope=project_like_scope,
-            )
-            await seed_message_legacy(
-                world.connection, sender_id="governed_sender", session="s1", seq=1, row_id="m1"
-            )
+            foreign = await _seed_foreign_principals(world)
+            for index, owner in enumerate((world.operator_bare, foreign[0])):
+                await seed_agent_governed(
+                    world.connection,
+                    row_id=f"governed_sender_{index}",
+                    name=f"governed-sender-{index}",
+                    session="s1",
+                    owner_principal=owner,
+                    owner_agent=f"governed_sender_{index}",
+                    scope=keep_scope("sessionkeepctl"),
+                )
+                await seed_message_legacy(
+                    world.connection,
+                    sender_id=f"governed_sender_{index}",
+                    session="s1",
+                    seq=index + 1,
+                    row_id=f"m{index}",
+                )
             result = await world.migrate(MESSAGE_TABLE)
             assert result.refused is False, (
-                "the message order guard FIRED on a store whose every agent is migrated (scope set) — it is "
-                "keyed on owner_principal IS NONE, not on THE shared scope IS NONE predicate (amendment 19 "
-                f"D-1): {result!r}"
+                "the message order guard FIRED on a store whose every agent is migrated (owner AND scope "
+                f"set) (amendment 19 D-1): {result!r}"
             )
-            assert result.backfilled == 1, (
-                f"the governed sender's legacy message must be backfilled: {result!r}"
+            assert result.backfilled == 2, (
+                f"both governed senders' legacy messages must be backfilled: {result!r}"
             )
 
     async def test_PRESERVED_a_legacy_unscoped_agent_refuses_the_message_leg_until_the_agent_leg_runs(
