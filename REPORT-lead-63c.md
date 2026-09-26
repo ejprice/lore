@@ -1145,3 +1145,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **OF-2 = RETIRE AT 65 (operator, overriding the sidecar's recommendation):** `created_by`/`actor`/`owner` on `lore_tasks`/`lore_findings`/`lore_claim_task` become foreign-param refusals at the 65 cutover, together with `capability=` required. Relayed to sidecar-64 as **Task 3**: revise F5/§6 + riders + the §14 inventory, and say which 64 wave lands the refusal (nothing deploys before 65).
 - All four sidecar commits checked: no attribution.
 - Builder fix spawning: `builder-63c-i-a-fix`, brief in scratchpad `brief-builder-63c-i-a-fix.md`.
+
+### 2026-09-26 — findings routed; inbox drained
+- **#487 → 63c-i-b carry list.** The enforced 63b message-family verbs (send/drain/ack/await/story) leave `_GOVERNED_VERBS_PENDING_ROUTING` with `@observes_routing` markers. The #420 pin gains the REVERSE direction: an enforced verb, or a marked one, that is still pending goes RED. 64's contract carries the reverse pin regardless. Annotated on the finding.
+- **#488 → moot under 64 amendment 1** (OF-3 produces no orphan state; amendment 25 stands). Kept open until 64d-ii closes. Annotated.
+- `lore_comms` inbox drained: 30 historical pointers, no new action.
