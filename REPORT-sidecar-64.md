@@ -161,3 +161,23 @@ brief project v7 read
   (FYI to the operator; no fork).
 - **Graded:** `1206233` (the contract report) · HEAD-at-report: `f4e96b4` · DIFFERENT (my own commits).
   Standing by.
+
+## Task 7 (2026-09-26) — packet 58 amendment 2 `e0760fd` + packet 64 amendment 4 `17b7101`
+
+- **58 am-2 (contract DECISIONS):** (a) `query owner=<me>` SERVES a held superseded row, decorated
+  `[superseded → X']` (`owner=` asks "what do I hold" — a claimant-column fact supersession never
+  touches); `status=` still EXCLUDES it (a live-state label supersession falsifies) and so does
+  `blocked=False`; the holder's way to let go is 57's release verb (named). (b) the boot heal CHUNKS at
+  the derived F-1 cap (same accessor — one constant, two consumers, mutation-proven), NEVER refuses,
+  each chunk one txn, a chunk fault is isolated + WARNING + continue (the next boot is the retry); the
+  65 boot's worst case is the legacy population (task 116 → one chunk); receipt against probe-64's
+  restored DB at 58 close.
+- **64 am-4 (probe-64 D1/D2):** D1 — Reading B ratified (the test-tree derivation is the home until 64d
+  promotes `governed_node_tables` to `surreal_schema`); `PENDING_GOVERNED_TABLES` kept as a 3-entry
+  hand-list made a CHECKED VARIABLE (decay pin `pending ∩ derived == ∅`; growth pin derived ⊆ slice;
+  floor; open-packet non-vacuity; delete-when-empty as a builder constraint per wave). D2 — the
+  required/ABSENT split ratified; the ABSENT reason DERIVED from a `TABLE_PROVENANCE` constant that
+  must cover the slice; the S2 leg asserts required populations ≥ the pasted floor. D3 ratified.
+  **Erratum (mine):** amendment 3 cited `surreal_schema.governed_node_tables` as existing — it is 64d's
+  promise; the probe's `lore_verify` caught it.
+- **Graded:** `5a43aeb` / `80409f4` · HEAD-at-report: `17b7101` · DIFFERENT (my own commits). Standing by.
