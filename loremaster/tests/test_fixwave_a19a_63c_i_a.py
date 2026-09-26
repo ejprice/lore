@@ -62,21 +62,26 @@ from loremaster.agents import AGENT_NAME_PATTERN, AgentRegistry, AgentRegistryEr
 from loremaster.sanitise import CONTROL_CHAR_PATTERN
 from lorerunes.pdp import keep_scope
 from test_fixwave_a19_63c_i_a import (
-    _DIM,
     _MIGRATE_TABLES,
     _bare,
-    _governed_world,
     _redirect_the_shared_preconditions,
     _registry_refusal,
-    _seed_clean_single_principal_store,
-    _seed_foreign_principals,
     _seed_multi_principal_store,
     _server_refusal,
     _snapshot,
     _World,
 )
 
-from loremaster import agents, principals
+from loremaster import principals
+
+#: Re-exported BY ASSIGNMENT for the a19b addendum (``test_fixwave_a19b_63c_i_a.py``), whose graded probes
+#: read them as ``a19a.<name>`` (AST-equal to the adversary's pasted form, amendment 24 §5): mypy's
+#: no-implicit-reexport rejects an imported name read through this module, and ruff PLC0414 rejects the
+#: ``X as X`` spelling.
+_DIM = a19._DIM
+_governed_world = a19._governed_world
+_seed_clean_single_principal_store = a19._seed_clean_single_principal_store
+_seed_foreign_principals = a19._seed_foreign_principals
 
 #: A hostile STORED id (repo law for any render of stored free text): a newline, a row-shaped forgery
 #: line (the lore_comms ``#<seq> [grade]`` delivery shape) and a backtick run.
@@ -305,181 +310,16 @@ async def _registry_refusal_for_session(session: str) -> str:
 # =========================================================================== #
 
 _KEEP_TABLES = ("keep", "member_of")
-_WRITE_VERB = re.compile(r"^\s*(?:CREATE|UPDATE|UPSERT|DELETE|INSERT|RELATE)\b", re.IGNORECASE)
-_PAIR_PARAMETERS = ("owner_principal_id", "session_keep_id")
 
-
-@dataclass(frozen=True)
-class _RaiseSite:
-    """One ``raise <AgentRegistryError-family>(…)`` reachable from ``AgentRegistry.register``."""
-
-    class_name: str
-    host: str
-    pre_write: bool
-    a3_pair: bool
-
-
-@dataclass
-class _ClosureWalk:
-    """The AST walk over ``register``'s call closure (FK-1, amendment 23). A WRITE is a direct
-    ``self._query(<stmt>)`` whose statement text LEADS with a write verb, or any ``execute_transaction``
-    call. ⚠ BOUND (stated): a write routed through a helper that neither shape names is not seen as a write,
-    so a raise AFTER it counts as pre-write — the pin then demands MORE coverage (fails LOUD, never silent).
-    Raises of a caught VARIABLE (``raise error``) are not classified. RE-OPEN TRIGGER: the first registry
-    write through another seam."""
-
-    family: set[str]
-    methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
-    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
-    sites: list[_RaiseSite] = field(default_factory=list)
-    visiting: set[tuple[str, bool]] = field(default_factory=set)
-
-    def callee(self, call: ast.Call) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        func = call.func
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-            if func.value.id in ("self", "cls", "AgentRegistry"):
-                return self.methods.get(func.attr)
-        if isinstance(func, ast.Name):
-            return self.functions.get(func.id)
-        return None
-
-    @staticmethod
-    def is_write(call: ast.Call) -> bool:
-        func = call.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name == "execute_transaction":
-            return True
-        if name != "_query" or not call.args:
-            return False
-        first = call.args[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            return bool(_WRITE_VERB.match(first.value))
-        if isinstance(first, ast.JoinedStr) and first.values:
-            lead = first.values[0]
-            return isinstance(lead, ast.Constant) and bool(_WRITE_VERB.match(str(lead.value)))
-        return False
-
-    def expression(self, node: ast.AST, written: bool, host: str) -> bool:
-        """Walk the calls inside one expression in source order; return ``written`` after it."""
-        calls = sorted(
-            (child for child in ast.walk(node) if isinstance(child, ast.Call)),
-            key=lambda child: (child.lineno, child.col_offset),
-        )
-        for call in calls:
-            if self.is_write(call):
-                written = True
-                continue
-            target = self.callee(call)
-            if target is not None:
-                written = self.function(target, written) or written
-        return written
-
-    def function(self, node: ast.FunctionDef | ast.AsyncFunctionDef, written: bool) -> bool:
-        key = (node.name, written)
-        if key in self.visiting:
-            return written
-        self.visiting.add(key)
-        after, _terminated = self.block(node.body, written, node.name, tests=())
-        return after
-
-    def record(self, raise_node: ast.Raise, written: bool, host: str, tests: tuple[str, ...]) -> None:
-        exc = raise_node.exc
-        if isinstance(exc, ast.Call) and isinstance(exc.func, ast.Name) and exc.func.id in self.family:
-            enclosing = " ".join(tests)
-            self.sites.append(
-                _RaiseSite(
-                    class_name=exc.func.id,
-                    host=host,
-                    pre_write=not written,
-                    a3_pair=all(parameter in enclosing for parameter in _PAIR_PARAMETERS),
-                )
-            )
-
-    def block(
-        self, statements: list[ast.stmt], written: bool, host: str, tests: tuple[str, ...]
-    ) -> tuple[bool, bool]:
-        """Walk a statement list; return ``(written after it, whether every path through it terminated)``."""
-        for statement in statements:
-            written, terminated = self.statement(statement, written, host, tests)
-            if terminated:
-                return written, True
-        return written, False
-
-    def statement(
-        self, node: ast.stmt, written: bool, host: str, tests: tuple[str, ...]
-    ) -> tuple[bool, bool]:
-        """One statement: ``(written after it, whether it terminates every path)``."""
-        if isinstance(node, ast.If):
-            return self.branch(node, written, host, tests)
-        if isinstance(node, (ast.Raise, ast.Return)):
-            value = node.exc if isinstance(node, ast.Raise) else node.value
-            if value is not None:
-                written = self.expression(value, written, host)
-            if isinstance(node, ast.Raise):
-                self.record(node, written, host, tests)
-            return written, True
-        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-            head = node.test if isinstance(node, ast.While) else node.iter
-            written = self.expression(head, written, host)
-            return self.block(node.body, written, host, tests)[0] or written, False
-        if isinstance(node, (ast.With, ast.AsyncWith)):
-            for item in node.items:
-                written = self.expression(item.context_expr, written, host)
-            return self.block(node.body, written, host, tests)
-        if isinstance(node, ast.Try):
-            body_written = self.block(node.body, written, host, tests)[0]
-            for handler in node.handlers:
-                body_written = self.block(handler.body, written, host, tests)[0] or body_written
-            return self.block(node.finalbody, body_written, host, tests)[0], False
-        nested = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))  # not on this path
-        return (written if nested else self.expression(node, written, host)), False
-
-    def branch(self, node: ast.If, written: bool, host: str, tests: tuple[str, ...]) -> tuple[bool, bool]:
-        """An ``if``: each branch walked from the same state; the continuation is the OR of the open paths."""
-        written = self.expression(node.test, written, host)
-        inner = (*tests, ast.unparse(node.test))
-        outcomes = (
-            self.block(node.body, written, host, inner),
-            self.block(node.orelse, written, host, inner),
-        )
-        open_paths = [branch_written for branch_written, done in outcomes if not done]
-        if not open_paths:
-            return written, True
-        return any(open_paths), False
-
-
-def _register_raise_sites() -> list[_RaiseSite]:
-    """DERIVED at test time from ``agents.py`` (FK-1, amendment 23): every ``raise`` of an
-    ``AgentRegistryError``-family class (the subclasses DEFINED in ``agents.py`` ∪ the base) in the AST call
-    closure of ``AgentRegistry.register``, each classified pre-/post-write and A3-pair / not."""
-    tree = ast.parse(inspect.getsource(agents))
-    family = {
-        name
-        for name, value in vars(agents).items()
-        if isinstance(value, type)
-        and issubclass(value, AgentRegistryError)
-        and value.__module__ == agents.__name__
-    }
-    registry_class = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == AgentRegistry.__name__
-    )
-    methods = {
-        node.name: node
-        for node in registry_class.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    functions = {
-        node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    walk = _ClosureWalk(family=family, methods=methods, functions=functions)
-    walk.function(methods["register"], written=False)
-    return walk.sites
-
-
-def _comms_required_classes(sites: list[_RaiseSite]) -> set[str]:
-    """The classes a credentialed ``comms(register)`` must be DRIVEN to raise with no side effect: every
-    PRE-write class, less the A3 mixed-pair base raise (exclusion 2 — comms-unreachable by construction)."""
-    return {site.class_name for site in sites if site.pre_write and not site.a3_pair}
+# DUAL (a19b, amendment 24 §1 — the instrument lesson's SEVENTH defeat): the AST raise-closure derivation
+# (``_RaiseSite`` / ``_ClosureWalk`` / ``_register_raise_sites`` / ``_comms_required_classes``, with
+# ``_WRITE_VERB`` and ``_PAIR_PARAMETERS``) is DELETED. Virtue it carried: "a refusal class ``register`` newly
+# raises before its first write arrives with a driven fixture, by NAME". Why dropped deliberately: it failed
+# OPEN on this package's own factory-raise idiom (``raise self._x_refusal(...)``, adversary a19a N3b) and
+# counted CLASSES not SITES (N17 — a new raise site of a covered class after the mint, #485's exact shape) — a
+# guard that fails open reads as coverage, which is worse than none. Replaced by the RUNTIME property
+# (``_RegisterPropertySpy`` + ``test_EVERY_driven_register_meets_the_runtime_property``), whose stated
+# bound (a refusal no driver reaches is unobserved — #137's shape) is met deliberately.
 
 
 @dataclass(frozen=True)
@@ -521,10 +361,12 @@ def _blank(role: str) -> Callable[[Any], Awaitable[dict[str, Any]]]:
     return setup
 
 
-#: One entry per class the derivation says comms(register) must be DRIVEN to raise. The key set is checked
-#: against the DERIVED set BOTH ways (``test_every_derived_refusal_class_has_a_driven_fixture``): a class
-#: ``register`` newly raises before its first write reds BY NAME; a key for a class it no longer raises
-#: reds as stale. Variants: every raise SITE of a class gets its own (role AND spawned_by conflicts).
+#: The DRIVERS of the runtime property (amendment 24 §1): one entry per refusal class a credentialed
+#: ``comms(register)`` is known to meet, every raise SITE its own variant (role AND spawned_by conflicts). No
+#: longer checked against an AST derivation (DUAL above) — the runtime pin observes what each driver's
+#: register actually DOES, and its covered-driver set is a CHECKED variable. BOUND: a refusal no driver
+#: reaches is unobserved (#137's shape) — the honest builder who adds a refusal adds its driver here. RE-OPEN
+#: TRIGGER: a refusal found in production that no driver reaches.
 _REFUSAL_FIXTURES: dict[str, tuple[_RefusalCase, ...]] = {
     "InvalidAgentIdentityError": (
         _RefusalCase("blank-empty", _blank("")),
@@ -580,6 +422,131 @@ def _require_preflight() -> Any:
     return preflight
 
 
+@dataclass(frozen=True)
+class _RegisterObservation:
+    """What the runtime spy SAW one driven ``comms(action="register")`` do."""
+
+    driver: str
+    refused: bool
+    mints: int
+    injected: bool
+    keep_identical: bool
+
+
+@dataclass
+class _RegisterPropertySpy:
+    """MP-A (amendment 24 §1) — THE RUNTIME PROPERTY, armed AROUND every driven
+    ``comms(action="register")``: *refused ⇒ ZERO ``get_or_create_keyed`` calls, or — on the race path only (a
+    concurrent register INJECTED after the real mint) — keep + household byte-identical after the
+    compensation.* It observes what ``register`` DOES, never the code's shape, so no raise idiom and no raise
+    site can hide from it (N3b / N17, the static walker's defeats). A violation raises ``AssertionError``
+    INSIDE the armed call, chained from the refusal — LOUD.
+
+    Reach is a CHECKED variable: every observation is recorded under the driver label the loop set, and the
+    pin asserts the observed labels equal the driver list — a driver whose register bypasses the armed
+    ``comms`` (or never reaches it) reds by name. BOUND (stated, #137's shape): the property holds over what
+    is DRIVEN; a refusal no driver reaches is unobserved. RE-OPEN TRIGGER: a refusal found in production that
+    no driver reaches."""
+
+    admin_conn: Any
+    observations: list[_RegisterObservation] = field(default_factory=list)
+    driver: str | None = None
+    inject_after_mint: Callable[[], Awaitable[None]] | None = None
+    mints: int = 0
+    injected: bool = False
+
+    def arm(self, monkeypatch: pytest.MonkeyPatch, ctx: Any) -> None:
+        """Wrap THIS world's ``ctx.comms`` and its wired keep store's ``get_or_create_keyed``."""
+        real_comms = ctx.comms
+        keep_store = ctx._keep_store
+        real_mint = keep_store.get_or_create_keyed
+
+        async def counting_mint(*args: Any, **kwargs: Any) -> Any:
+            self.mints += 1
+            result = await real_mint(*args, **kwargs)
+            if self.inject_after_mint is not None and not self.injected:
+                self.injected = True
+                await self.inject_after_mint()
+            return result
+
+        async def armed_comms(*args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("action") != "register":
+                return await real_comms(*args, **kwargs)
+            assert self.driver is not None, "a register reached the armed comms with no driver label set"
+            before = await _keep_snapshot(self.admin_conn)
+            self.mints, self.injected = 0, False
+            try:
+                result = await real_comms(*args, **kwargs)
+            except Exception as refusal:
+                identical = await _keep_snapshot(self.admin_conn) == before
+                self._observe(refused=True, keep_identical=identical)
+                if self.mints and not (self.injected and identical):
+                    raise AssertionError(
+                        f"RUNTIME PROPERTY (amendment 24 §1) — driver {self.driver!r}: a REFUSED register "
+                        f"({type(refusal).__name__}) reached get_or_create_keyed {self.mints}x "
+                        f"(race injected: {self.injected}; keep byte-identical after: {identical}) — every "
+                        "refusal must precede the session-keep mint (#485); only a compensated RACE may mint"
+                    ) from refusal
+                raise
+            self._observe(refused=False, keep_identical=await _keep_snapshot(self.admin_conn) == before)
+            return result
+
+        monkeypatch.setattr(keep_store, "get_or_create_keyed", counting_mint)
+        monkeypatch.setattr(ctx, "comms", armed_comms)
+
+    def _observe(self, *, refused: bool, keep_identical: bool) -> None:
+        assert self.driver is not None
+        self.observations.append(
+            _RegisterObservation(
+                driver=self.driver,
+                refused=refused,
+                mints=self.mints,
+                injected=self.injected,
+                keep_identical=keep_identical,
+            )
+        )
+
+
+def _a_conflicting_register(ctx: Any, call: dict[str, Any]) -> Callable[[], Awaitable[None]]:
+    """The race injection: an OWNERLESS register of the same name with a DIFFERENT role, landed after the real
+    mint (the a19a race pin's construction) — ``register`` then refuses AFTER the mint."""
+
+    async def conflicting_register() -> None:
+        await ctx.agent_registry.register(call["agent"], session=call["session"], role="scout")
+
+    return conflicting_register
+
+
+async def _kp13_cadence_change(ctx: Any) -> dict[str, Any]:
+    """KP13's input (adversary a19a §A.3): a re-register with a DIFFERENT cadence — a correct build ACCEPTS
+    it."""
+    await ctx.agent_registry.register("shared-name", session="wave-cad", role="builder", cadence="≤5m")
+    return {"agent": "shared-name", "session": "wave-cad", "role": "builder", "cadence": "≤9m"}
+
+
+async def _valid_register(_ctx: Any) -> dict[str, Any]:
+    return {"agent": "valid-agent", "session": "wave-ok", "role": "builder"}
+
+
+async def _race_register(_ctx: Any) -> dict[str, Any]:
+    return {"agent": "raced-agent", "session": "wave-race", "role": "builder"}
+
+
+#: The runtime pin's DRIVERS — every ``_REFUSAL_FIXTURES`` variant, KP13's cadence-change input, the CONTROL
+#: (a valid register) and the RACE (a conflicting register injected after the real mint). Labels are the
+#: checked set.
+_RUNTIME_DRIVERS: list[tuple[str, Callable[[Any], Awaitable[dict[str, Any]]], bool]] = [
+    *[
+        (f"{class_name}-{case.variant}", case.setup, False)
+        for class_name, cases in _REFUSAL_FIXTURES.items()
+        for case in cases
+    ],
+    ("kp13-cadence-change", _kp13_cadence_change, False),
+    ("control-valid", _valid_register, False),
+    ("race-created", _race_register, True),
+]
+
+
 class _PerturbedPreflight(AgentRegistryError):
     """Raised by the perturbed ``preflight`` — a registry-family class (so no dispatch layer re-wraps it)
     defined HERE, so it is distinct from every production class and outside the derived family."""
@@ -588,48 +555,72 @@ class _PerturbedPreflight(AgentRegistryError):
 class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
     """amendment 22 §1 (#485) + amendment 23 FK-1."""
 
-    def test_every_derived_refusal_class_has_a_driven_fixture(self) -> None:
-        """REACH IS A CHECKED VARIABLE (P1c; amendment 23 FK-1 Reading A). The class set is DERIVED from
-        ``agents.py``'s AST: every ``AgentRegistryError``-family class RAISED in ``AgentRegistry.register``'s
-        call closure BEFORE the registry's first write. Coverage is checked BOTH ways against
-        ``_REFUSAL_FIXTURES``. GREEN at ``84af63f`` (the classes are the same; ``preflight`` moves them, it
-        does not change them) — this is the instrument; the driven pin below is what goes RED.
+    async def test_EVERY_driven_register_meets_the_runtime_property(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """MP-A (amendment 24 §1 — KP13's property, the ∀ form): ``_RegisterPropertySpy`` is ARMED
+        AROUND the ``comms(action="register")`` of EVERY driver in ``_RUNTIME_DRIVERS`` (each in a fresh
+        credentialed world) and asserts, inside the call, *refused ⇒ zero mints, or a compensated injected
+        race*. Then REACH IS A CHECKED VARIABLE: the spy's observed driver labels must EQUAL the driver list
+        (one observed register per driver — a driver that bypasses the armed comms reds by name), and three
+        non-vacuity legs hold: every ``_REFUSAL_FIXTURES`` driver WAS refused (the property ran on refusals,
+        not only on successes), the CONTROL minted exactly once (the spy SEES a mint), and the RACE was
+        injected, refused, minted once and left the keep byte-identical (both branches of the disjunction
+        exercised). ⚠ RED at ``84af63f``: the handler mints before the registry refuses (#485), so the first
+        refusal fixture trips the property. Replaces the AST-derived ∀-refusal-classes pin (DUAL above);
+        BOUND + RE-OPEN TRIGGER in the spy's docstring."""
+        observations: list[_RegisterObservation] = []
+        for index, (label, setup, race) in enumerate(_RUNTIME_DRIVERS):
+            with monkeypatch.context() as patch:
+                async with credentialed_app_context(
+                    patch, tmp_path / f"driver_{index}", principals={"alice": "member"}, dim=_DIM
+                ) as world:
+                    ctx = world["ctx"]
+                    kwargs = await setup(ctx)
+                    world["holder"]["email"] = world["emails"]["alice"]
+                    spy = _RegisterPropertySpy(admin_conn=world["admin_conn"])
+                    spy.arm(patch, ctx)
+                    if race:
+                        spy.inject_after_mint = _a_conflicting_register(ctx, kwargs)
+                    spy.driver = label
+                    try:
+                        await ctx.comms(action="register", **kwargs)
+                    except AgentRegistryError:
+                        pass  # a refusal is a legitimate outcome — the spy already checked the property on it
+                    observations.extend(spy.observations)
+        observed = [observation.driver for observation in observations]
+        expected = [label for label, _setup, _race in _RUNTIME_DRIVERS]
+        assert observed == expected, (
+            "REACH (amendment 24 §1): the spy must observe EXACTLY one register per driver — a driver whose "
+            f"register bypassed the armed comms (or never reached it) is unobserved:\n  observed={observed}"
+            f"\n  expected={expected}"
+        )
+        by_driver = {observation.driver: observation for observation in observations}
+        fixture_labels = [
+            f"{class_name}-{case.variant}"
+            for class_name, cases in _REFUSAL_FIXTURES.items()
+            for case in cases
+        ]
+        assert all(by_driver[label].refused for label in fixture_labels), (
+            f"non-vacuity: every refusal fixture must be REFUSED: {observations}"
+        )
+        assert by_driver["control-valid"].mints == 1 and not by_driver["control-valid"].refused, (
+            f"CONTROL: the spy must SEE a valid register's one mint: {by_driver['control-valid']}"
+        )
+        race_observation = by_driver["race-created"]
+        assert (
+            race_observation.injected
+            and race_observation.refused
+            and race_observation.mints == 1
+            and race_observation.keep_identical
+        ), f"CONTROL: the race branch of the property must be exercised: {race_observation}"
 
-        Two STATED exclusions (amendment 23), met deliberately:
-        (1) POST-write raises (the "vanished immediately after" guards) are impossible-state guards, not
-            refusals — excluded by the pre-write criterion. ⚠ BOUND: see ``_ClosureWalk``.
-        (2) The base's A3 MIXED-PAIR refusal (a raise under a test naming BOTH ``owner_principal_id`` and
-            ``session_keep_id``) is unreachable through ``comms(register)`` BY CONSTRUCTION — the handler
-            derives both halves from ONE principal. Covered at REGISTRY level by the amendment-4 MP-B pins
-            (``test_agent_governance_63c_i_a.py::TestTheRegistryProvenanceSeam63cIA::
-            test_an_inconsistent_provenance_pair_is_refused_before_any_store_io`` and its re-register twin).
-            RE-OPEN TRIGGER: *the handler derives the pair from anything other than one principal.* The
-            exclusion is itself checked: if no A3 site remains, this pin reds (a stale exclusion).
-        A class ``agents.py`` DEFINES but ``register`` never raises (``UnknownAgentError``,
-        ``AmbiguousAgentError``, ``IllegalAgentStatusError`` at ``84af63f``) is not in the set — amendment
-        23's
-        erratum: derive reach from the function's raise closure, never the module's class list."""
-        sites = _register_raise_sites()
-        assert any(site.class_name == "InvalidAgentIdentityError" for site in sites), (
-            "non-vacuity: the derivation found no InvalidAgentIdentityError raise in register's closure: "
-            f"{sites}"
-        )
-        required = _comms_required_classes(sites)
-        missing = sorted(required - set(_REFUSAL_FIXTURES))
-        stale = sorted(set(_REFUSAL_FIXTURES) - required)
-        assert not missing, (
-            f"register can now raise {missing} BEFORE its first write, and no comms(register) fixture drives "
-            "it — add one to _REFUSAL_FIXTURES (every such refusal must happen before the session-keep mint, "
-            f"amendment 22 §1 / #485). Derived sites: {sites}"
-        )
-        assert not stale, (
-            f"_REFUSAL_FIXTURES drives {stale}, which register no longer raises before its first write — "
-            f"delete the stale fixture and say so in the DUAL. Derived sites: {sites}"
-        )
-        assert any(site.a3_pair for site in sites), (
-            "exclusion (2) is STALE: no A3 mixed-pair raise remains in register's closure — delete the "
-            f"exclusion deliberately and re-derive (amendment 23 FK-1). Derived sites: {sites}"
-        )
+    # DUAL (a19b, amendment 24 §1): ``test_every_derived_refusal_class_has_a_driven_fixture`` (the AST-derived
+    # ∀-refusal-classes pin, amendment 23 FK-1) is DELETED — see the module-level DUAL on ``_ClosureWalk``.
+    # Its exclusion (2) (the A3 mixed-pair refusal is comms-unreachable; covered at REGISTRY level by
+    # ``test_agent_governance_63c_i_a.py::TestTheRegistryProvenanceSeam63cIA::
+    # test_an_inconsistent_provenance_pair_is_refused_before_any_store_io``) stands unchanged: the runtime
+    # property observes only what a driver reaches, and no comms driver can reach the mixed pair.
 
     @pytest.mark.parametrize(("class_name", "case"), _REFUSAL_CASES)
     async def test_a_refused_credentialed_register_mints_no_keep_and_denies_no_third_party(
@@ -819,8 +810,9 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
           into the session and keeps it.
         * ``found-pre-existing`` — CONTROL, GREEN at ``84af63f``: the session keep alice ALREADY kept is
           NOT deleted (created-only — a compensation that deletes a keep it merely FOUND destroys another
-          registration's session). ⚠ BOUND (named by the ruling): a FAILED compensation (a keep left behind)
-          is not constructible here. RE-OPEN TRIGGER: a keep observed left behind after a refused register."""
+          registration's session). A FAILED compensation (a keep left behind) is constructed and pinned by
+          amendment 24 #4b in ``test_fixwave_a19b_63c_i_a.py`` (the teaching survives + ONE appended remedy
+          line) — a19b DUAL: this docstring's former "not constructible here" BOUND is retired by that pin."""
         async with credentialed_app_context(
             monkeypatch, tmp_path, principals={"alice": "member", "bob": "member"}, dim=_DIM
         ) as world:
@@ -1305,11 +1297,21 @@ def _migrate_legs() -> set[str]:
 
 
 class TestTheMessageBackfillIsScopeKeyed63cIAa19a:
-    async def test_a_scoped_but_ownerless_message_is_never_restamped_and_counts_as_migrated(self) -> None:
-        """⚠ RED at ``84af63f`` (owner-keyed: it re-stamps the scoped row's scope with the project keep and
-        counts it un-migrated). amendment 21 CD-1: ``WHERE scope IS NONE AND owner_principal IS NONE``; the
-        counts are scope-keyed. Byte-identity leg on the seeded scoped-but-ownerless row; the second run
-        backfills 0."""
+    # DUAL (a19b, amendment 25 — FK-a19b-1 Reading A): RE-KEYED from
+    # ``test_a_scoped_but_ownerless_message_is_never_restamped_and_counts_as_migrated`` (amendment 21 CD-1).
+    # Its population (``m_scoped``: scope set, owner NONE) is now a message HALF-PAIR, refused at the message
+    # leg (amendment 24 §2 door #2, both halves). Virtues, adjudicated: "never re-stamped" PRESERVED — as
+    # byte-inertness under the refusal (nothing is stamped, not because the WHERE skipped it; that the WHERE
+    # still skips it is pinned by the redirect leg in ``test_fixwave_a19b_63c_i_a.py::
+    # TestBackfilledIsTheRowsStamped63cIAa19b``); "counts as migrated" (refused=False, 1/1/2) DROPPED
+    # deliberately — the population is forbidden by the half-pair rule (amendment 22 §3 / 24 §2 / 25); the
+    # SCOPE-keyed counts it also carried are re-pinned on the redirect leg (already_migrated == rows with a
+    # scope). CD-1's self-guarding WHERE STAYS (amendment 25).
+    async def test_a_scoped_but_ownerless_message_is_never_restamped(self) -> None:
+        """⚠ RED at ``84af63f`` (owner-keyed: it re-stamps the scoped row's scope with the project keep).
+        amendment 21 CD-1 as re-keyed by amendment 25: a scoped-but-ownerless message is a half-pair — the
+        message leg REFUSES, and the whole store (the scoped row included) is byte-identical after the first
+        run AND after the second."""
         async with _governed_world() as world:
             await _seed_migrated_senders(world)
             await seed_message_legacy(
@@ -1323,28 +1325,16 @@ class TestTheMessageBackfillIsScopeKeyed63cIAa19a:
                 row_id="m_scoped",
                 scope=keep_scope("sessionkeepother"),
             )
-            scoped_before = await run(world.connection, "SELECT * FROM message WHERE id = message:m_scoped")
-            first = await world.migrate(MESSAGE_TABLE)
-            scoped_after = await run(world.connection, "SELECT * FROM message WHERE id = message:m_scoped")
-            assert scoped_after == scoped_before, (
-                "CD-1: the backfill overwrote a SCOPED message (owner NONE) — its WHERE is not scope-keyed "
-                "and "
-                f"self-guarding: before={scoped_before!r} after={scoped_after!r}"
-            )
-            assert (first.refused, first.backfilled, first.already_migrated, first.scanned) == (
-                False,
-                1,
-                1,
-                2,
-            ), (
-                "CD-1: the message counts must be SCOPE-keyed — 1 un-migrated (m_legacy), 1 already "
-                "migrated "
-                f"(m_scoped, scope set), 2 scanned: {first!r}"
-            )
-            second = await world.migrate(MESSAGE_TABLE)
-            assert second.refused is False and second.backfilled == 0, (
-                f"the second run must backfill 0: {second!r}"
-            )
+            before = await _snapshot(world.connection)
+            for run_label in ("first", "second"):
+                result = await world.migrate(MESSAGE_TABLE)
+                assert result.refused is True and "half-applied" in str(result.reason or "").lower(), (
+                    f"{run_label}: a scoped-but-ownerless message is a message HALF-PAIR — refuse the "
+                    f"message leg (amendment 25): {result!r}"
+                )
+                assert await _snapshot(world.connection) == before, (
+                    f"{run_label}: the refused message leg WROTE — the scoped row must never be re-stamped"
+                )
 
     async def test_the_message_backfill_EXECUTES_the_golden(self) -> None:
         """⚠ RED at ``84af63f`` (it executes ``… WHERE owner_principal IS NONE``). amendment 21 CD-1: "the
