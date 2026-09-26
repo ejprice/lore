@@ -1116,3 +1116,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - Reading B is rejected. The D2 pin is authored and cold-audit graded.
 - Sidecar erratum: amendments 21 and 24 gave one population opposite verdicts.
 - Relayed as `lore_comms` directive (thread `63c`, sender `lead-63c-2`) plus a native wake. **The anchor-v4 "first action after compaction" relay is DONE.** Proof of receipt = the a19b report citing amendment 25.
+
+### 2026-09-26 — OPERATOR RULINGS: 64 fork F0 + INDEX pool 30 (recorded in INDEX)
+- **F0 = design + contract AHEAD of 63c.** `sidecar-64` (a new Fable, separate from `sidecar-63c-2` so 63c queries never queue behind 64) rules 64's kickoff forks F1–F9 (+ #417). Then the 64b (findings) contract → adversary, NEW test files only. Edits to 63c-shared files are held as a written integration patch; SAT re-runs on the final 63c base. Every 64 build stays serial after 63c. Pytest stays single-lane — 63c's runs have priority.
+- **Pool 30 = 58 FIRST.** 64a (tasks) waits on 58. **58 has no lead yet** — surfaced to the operator.
+- Brief: scratchpad `brief-sidecar-64.md`.

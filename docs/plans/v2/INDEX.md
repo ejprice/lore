@@ -518,6 +518,12 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
 30. **58 before or after 64** (both edit `tasks.py`; they cannot overlap in one tree). Author's
     recommendation: 58 FIRST (its extracted guarded-append shell is one write path for 64 to
     govern instead of three); the 64 file scopes 58 OUT and assumes the reverse. Filed 2026-09-24.
+    **RULED 58 FIRST (operator, 2026-09-26)** — 64a (tasks) contract/build waits on 58; 64b (findings)
+    is unaffected. **F0 (64's scheduling fork) RULED the same day: DESIGN + CONTRACT may run AHEAD of
+    63c** (sidecar-64 rules F1–F9; the 64b contract lands NEW test files only, holding its edits to
+    63c-shared files — `_governed_contract.py`, `server.py`, the governed exact-set pins — as a
+    written integration patch applied after 63c commits; its SAT receipt re-runs on the final 63c
+    base); **every 64 BUILD stays serial after 63c**. Pytest remains single-lane (#466).
 31. **65-pre P1 — hosted-write enablement is UNDESIGNED** (the `ReadOnlyGuardMiddleware`
     scope-gate → row-scoped PDP handoff). Not a fork to rule but a design packet to SCHEDULE —
     the Fable sidecar, before 65 kicks off; it is on the critical path and nothing else owns it.
