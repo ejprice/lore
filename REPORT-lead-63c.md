@@ -1099,3 +1099,12 @@ The operator has been told and may override the right-sizing.
 **Findings filed this session:** #482 (lore_search >120 s), #483 (reconcile client abort at 300 s), #484 (CA-1), #485 (register mint side effect — being fixed), #486 (the unrelated red).
 
 **Live agents to KEEP:** `sidecar-63c-2`, `contract-63c-i-a-a19b`. Everything else is retired.
+
+### 2026-09-26 — FORK FK-a19b-1 (a19b door #2 "both halves" vs the standing CD-1 pin) → sidecar as Task 25
+Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author continues on all other items, landing half (i) + the D2 leg now.
+- **Reading A** (literal, "symmetric with agents"): refuse BOTH (i) owned-but-unscoped and (ii) scoped-but-ownerless message rows. This CONTRADICTS amendment 21 CD-1's pin `test_fixwave_a19a_63c_i_a.py::…::test_a_scoped_but_ownerless_message_is_never_restamped_and_counts_as_migrated`, which requires (ii) to proceed (`refused=False`), so that pin must be re-keyed (DUAL; its "never restamped" virtue survives as byte-inertness). No writer produces (ii) (measured from `_comms_send`), so the population is expected empty.
+- **Reading B:** only (i) is a message half-pair.
+- The author picks A.
+- Also flagged: the D2 pin has no graded adversary probe (SP2 was print-only), so it is AUTHORED here and graded by the cold audit.
+
+**SIDECAR TASK 25 — sidecar-63c-2: rule A vs B (and the CD-1 pin re-key if A).** Relay the ruling to `contract-63c-i-a-a19b` via the lead. NOTE: the lead is compacting — the anchor-v4 successor must relay amendment 25 to a19b (a lore_comms directive + a native wake; fall back to a fresh agent if a19b has self-retired).
