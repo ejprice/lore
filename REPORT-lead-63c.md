@@ -897,3 +897,17 @@ Report `REPORT-blindreader-63c-i-a.md` (this commit; the withheld set was honour
 2. **D-2:** the BR-F-4 fix locus — refuse a blank role / invalid identity in the handler BEFORE the keep mint (behaviour), or narrow the prose (text)?
 3. Do the prose MINORs (F-1, F-5, F-8, F-9) ride a same-wave fix (a builder fix pass + contract pins where a pin is owed, e.g. the gloss deriving the cap) or a named later wave?
 The cold audit is running in parallel; the lead will merge its findings with this ruling into ONE fix wave.
+
+### 2026-09-25 — COLD AUDIT: NO-GO (`REPORT-coldaudit-63c-i-a.md`, in `84af63f`); build CHECKPOINT-committed; amendment-19 fix wave spawned
+- **Blocking (both MAJOR, confirmed BY CONSTRUCTION with controls, and matching the blind reader independently):**
+  - CA-A = BR-F-2: the message leg proceeds over a store the agent leg refuses.
+  - CA-B = BR-F-4: a blank-role credentialed register mints and claims the keep, then serves "nothing was written".
+- **Added:** CA-1 (#484), the raw stored-record-id render in the refusal → §W item 4.
+- **HELD** (no rework): full suite 11498/0; ruff/typecheck/currency GREEN; production-IMAGE dirty-store cutover 34/34 with C0/C1 controls; the ONE-IMPLEMENTATION identifier decision (3 mutation proofs); refusal-count honesty; 8-way×20 concurrency + control; the D3 fold; the DDL verbs.
+- **Residuals read:**
+  - R-3 → §W 4. R-4 (the "`refused=True` writes nothing" wording) → builder-only item.
+  - R-5 = F-2 → i-b (already carried). R-6 → 63c-ii deletes the pair.
+  - R-7: a driver label, unreachable in prod. R-8: operator-owned population empty in prod — holds. R-9: auditor misprediction, recorded.
+- **Build CHECKPOINT-COMMITTED at `84af63f`** — lead decision, flagged to the operator. The audited tree = patch md5 `5ed71294…` (re-verified before commit). The commit message states NO-GO and names the defects. **Why:** the fix-wave contract edits test files that carried uncommitted builder hunks. A path-scoped commit would have swept them in unaudited, and the commit-at-boundaries law says the tree must never be the only copy. **The wave is NOT closed:** the INDEX "63c-i-a CLOSED" line waits for a re-audit GO.
+- Cold auditor retired.
+- NEXT: `contract-63c-i-a-a19` (§W 1–5 + CA-1; RED at `84af63f` for the right reason; SAT reference) → NARROW adversary (warranted per amendment 19) → builder fix (+ builder-only items F-8, F-5, F-7, R-4) → cold-audit re-run → lead commit → INDEX.
