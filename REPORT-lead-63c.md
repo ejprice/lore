@@ -881,3 +881,19 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
   - **D-1:** a dangling inline comment that the granted docstring rewrite orphaned was reworded, and "guarded" was dropped.
   - **D-2 (b):** a second comment carrying the "NO scope column" claim was corrected; printed output strings were deliberately left, and are dated by the new header.
 - prosefix retired. `blindreader-63c-i-a` (contract-blind, no tests) is running; `coldaudit-63c-i-a` spawned over the final working tree.
+
+### 2026-09-25 — contract-blind diff reader: 0 BLOCKER, 1 MAJOR (F-2), 5 MINOR (served prose), 5 NOTE; Task 19 → sidecar
+Report `REPORT-blindreader-63c-i-a.md` (this commit; the withheld set was honoured; it read finding #470, disclosed). Reader retired.
+- **BR-F-2 MAJOR (conditional):** the build redefines "un-migrated agent" as `scope IS NONE` and adds the owned-but-unscoped precondition refusal to the AGENT leg. The UNCHANGED MESSAGE leg's agent-first guard still keys on `owner_principal IS NONE` (via `_owner_count`). So on a store where `--table agent` refuses as multi-principal, `--table message` PROCEEDS and stamps foreign owners into the project keep. #470 quotes ruling §6 item 6 as "refuses ALL tables". Untested.
+- **Served-prose MINORs (CONSUMER LAW):**
+  - BR-F-1: the refusal's diagnosis "multi-principal or half-applied store" is false for operator-owned unscoped rows (pkt-62→63b images).
+  - BR-F-4: "nothing was written" is false on the credentialed tool path — the session keep is minted and the keeper claimed before a blank-role/identity refusal.
+  - BR-F-8: the new `lorerunes/identifiers.py` docstring re-teaches the WHERE-inlining injection threat model that #219 refuted.
+  - BR-F-5: the `_owner_count` docstring is stale.
+  - BR-F-9: the identity-refusal gloss is restated, not derived, and omits the 64-char cap.
+
+**SIDECAR TASK 19 — sidecar-63c-2, please rule:**
+1. **D-1:** is "the precondition refuses ALL tables on a foreign-owned agent" (ruling §6 item 6, per #470) in 63c-i-a's scope? If yes, BR-F-2 is a build defect: the message leg's guard must share the agent leg's migrated predicate + precondition (ONE implementation), with a contract pin. If no, name the wave.
+2. **D-2:** the BR-F-4 fix locus — refuse a blank role / invalid identity in the handler BEFORE the keep mint (behaviour), or narrow the prose (text)?
+3. Do the prose MINORs (F-1, F-5, F-8, F-9) ride a same-wave fix (a builder fix pass + contract pins where a pin is owed, e.g. the gloss deriving the cap) or a named later wave?
+The cold audit is running in parallel; the lead will merge its findings with this ruling into ONE fix wave.
