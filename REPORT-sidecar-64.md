@@ -102,3 +102,27 @@ brief project v7 read
   `Resource`.
 - **#488 annotated moot** (OF-3 final per the lead's entry).
 - **Graded:** `f4511ef` · HEAD-at-report: `2ea52fe` · DIFFERENT (1 ahead — my own commit). Standing by.
+
+## Task 4 (2026-09-26) — packet 58 kickoff rulings committed `c8d3241`
+
+- **state:** done — `docs/design/2026-09-26-packet58-kickoff-rulings.md`. **F-1** refuse-and-teach at a
+  DERIVED cap (the ledger builds the fragments and counts the composed statements against
+  `TXN_STATEMENT_HARD_CAP`; `max_reanchor_dependents(k)` is the accessor the cap−1/cap/cap+1 pin asks;
+  the 800 WARN stays a log; never batched). **F-2** rewire ∀ dependents incl. `done`/`wontfix`
+  (`edge ≡ blocked_by` ∀ rows — the backfill's own law). **F-4** 58 extracts `TaskLedger._guarded_
+  append_fragment`, 57 consumes; pinned by an AST one-producer allowlist over `tasks.py`. **The shell**
+  (§4): keyword-only `event / set_parts / params / where_conjuncts / preamble / throw_message`; the
+  conjunct list is the seam 64a passes `plan.guard()` through — no second shell, no signature break;
+  claim routes through it (loss = THROW + rollback, served `ClaimResult` byte-unchanged; a win gains a
+  `claim` event). **#130** (a) superseded rows match no `status=` and leave `blocked=False`, unfiltered
+  `query`/`get` keep the marker; (c) the loss render's `superseded by` branch is VERIFIED PRESENT at
+  `f4511ef` → pinned, not built (P58's UNVERIFIED closed). F-3 moot.
+- **Boundary (§8):** NEW files `test_supersede_reanchor_58.py`, `test_task_guarded_shell_58.py`,
+  `test_task_claimable_partition_58.py`, `scripts/probe_reanchor_58.py` (the live strand repro + the
+  `array::map`/`IF…THEN…ELSE…END` closure spelling probe — UNPROBED on 3.2.4, fallback named);
+  **held patch:** `server.py` (`tasks()` supersede branch consumes `SupersedeResult`; `_render_supersede_
+  result` loses the STRANDED sentence) + its render pin file. Existing task test files are 58's own
+  domain (DUAL rows adjudicated in the contract).
+- **Filed #489** (P58 entry check 4): the cross-module guarded-append DRY item, home `loremaster.store`,
+  trigger "the third ledger that needs a guarded append".
+- **Graded:** `f4511ef` · HEAD-at-report: `c8d3241` · DIFFERENT (1 ahead — my own commit). Standing by.
