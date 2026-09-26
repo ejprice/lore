@@ -1277,3 +1277,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 
 ### 2026-09-26 — am-30 (`c622254`): FK-a28-1 = Reading B (typed counts)
 - The measured precondition counts become TYPED fields: `MigrateGovernedResult.preconditions: MigratePreconditionCounts | None` (six `int | None` fields; None = not measured). The reason text is DERIVED by ONE describe function from the fields; pins are parametrised over `model_fields`. Relayed as directive #17062 (my wake message misquoted it as #17061; the agent drains the thread, and proof = its ack of #17062). Attribution-clean: c622254 / a92d33e / fd6497d.
+
+### 2026-09-26 — 64 am-6 (`c8147d9`) applied; the restore-script seam reds are CLEARED
+- Am-6: (1) the `build_auth_headers` UNWRAP_ALLOWLIST entry is ratified as evidence-backed (lift trigger = the 2nd SurrealDB-HTTP consumer, e.g. 65's export driver; the 5..7 bound is at its ceiling, stated in the comment); (2) FORK A3 ratified (harness creds; the prod env file is never read); (3) the `EnvironmentFile=` half dropped, ports check kept + renamed.
+- Applied by a one-shot agent; **the lead VERIFIED in full** (non-audited): diff read, the seam set + script tests `177 passed`, self-test 13/13 (agent receipt), ruff clean. Committed. All 7 restore/driver seam reds from `80409f4`/`37de0a7` are now green.
+- Surfaced: `ruff format --check` flags pre-existing wrapping in test_secret_typing.py L206–230 (not new).
