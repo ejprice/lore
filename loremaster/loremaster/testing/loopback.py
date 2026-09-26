@@ -339,7 +339,9 @@ class _UvicornServerThread:
 
     def _crash_detail(self) -> str:
         """The app's own error text: logged records first, then any exception that escaped."""
-        parts = [part for part in (self._capture.text, repr(self._crash) if self._crash else "") if part]
+        parts = [self._capture.text] if self._capture.text else []
+        if self._crash is not None:
+            parts.append(repr(self._crash))
         return "\n".join(parts) or _NO_ERROR_LOGGED
 
 
@@ -358,7 +360,8 @@ def serve_asgi(
     Args:
         app: The ASGI application to serve.
         port: A held port to serve from; if ``None`` a fresh :class:`LoopbackPort` is owned and
-            closed by this helper.
+            closed by this helper. A PASSED port's socket is closed on exit too — uvicorn's own
+            shutdown closes the sockets it was handed — so it cannot be served again.
         startup_timeout_s: How long to wait for the server to report started.
 
     Yields:
@@ -380,6 +383,31 @@ def serve_asgi(
             server_thread.stop()
 
 
+def _http_server_on(
+    held: LoopbackPort, handler_class: type[socketserver.BaseRequestHandler]
+) -> http.server.HTTPServer:
+    """A stdlib ``HTTPServer`` activated (listening) on ``held``'s socket — never binding a number.
+
+    ``bind_and_activate=False`` makes the server construct an UNBOUND socket of its own, which is
+    closed and swapped for the held one before activation.
+
+    Args:
+        held: The held port whose socket the server listens on.
+        handler_class: The request handler class to serve.
+
+    Returns:
+        The activated server, not yet serving (the caller runs ``serve_forever``).
+    """
+    server = http.server.HTTPServer((held.host, held.port), handler_class, bind_and_activate=False)
+    server.socket.close()
+    server.socket = held.socket
+    # What HTTPServer.server_bind would have recorded, had it bound.
+    server.server_name = held.host
+    server.server_port = held.port
+    server.server_activate()
+    return server
+
+
 @contextlib.contextmanager
 def serve_http(
     handler_class: type[socketserver.BaseRequestHandler],
@@ -391,7 +419,9 @@ def serve_http(
     Args:
         handler_class: The request handler class to serve.
         port: A held port to serve from; if ``None`` a fresh :class:`LoopbackPort` is owned and
-            closed by this helper.
+            closed by this helper. A PASSED port stays bound AND listening after exit (connects
+            queue rather than being refused) until its owner closes it — unlike
+            :func:`serve_asgi`, whose server closes a passed socket.
 
     Yields:
         The served endpoint.
@@ -400,15 +430,7 @@ def serve_http(
         ServerBindError: If binding a fresh port fails.
     """
     with _held_port(port) as held:
-        # bind_and_activate=False: the server constructs an UNBOUND socket of its own, which is
-        # swapped for the held one before activation — the stdlib never binds a port number.
-        server = http.server.HTTPServer((held.host, held.port), handler_class, bind_and_activate=False)
-        server.socket.close()
-        server.socket = held.socket
-        # What HTTPServer.server_bind would have recorded, had it bound.
-        server.server_name = held.host
-        server.server_port = held.port
-        server.server_activate()
+        server = _http_server_on(held, handler_class)
         thread = threading.Thread(
             target=server.serve_forever, name=f"serve_http {held.base_url}", daemon=True
         )

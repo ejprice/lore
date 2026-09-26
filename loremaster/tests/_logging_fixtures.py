@@ -237,18 +237,21 @@ def _workspace_root() -> Path:
     return Path(package_file).resolve().parent.parent.parent
 
 
+def _root_manifest() -> dict[str, Any]:
+    """The root ``pyproject.toml``, parsed — the ONE read behind every ``_declared_*`` oracle."""
+    return tomllib.loads((_workspace_root() / "pyproject.toml").read_text(encoding="utf-8"))
+
+
 def _declared_workspace_members() -> list[str]:
     """``[tool.uv.workspace] members`` read straight from ``pyproject.toml`` — the INDEPENDENT
     oracle every reach assertion reads (never a hand-list, lore #251)."""
-    manifest = tomllib.loads((_workspace_root() / "pyproject.toml").read_text(encoding="utf-8"))
-    return list(manifest["tool"]["uv"]["workspace"]["members"])
+    return list(_root_manifest()["tool"]["uv"]["workspace"]["members"])
 
 
 def _declared_testpaths() -> list[str]:
     """``[tool.pytest.ini_options] testpaths`` read straight from the root ``pyproject.toml`` —
     the test trees pytest itself runs (finding #466), never a hand-list."""
-    manifest = tomllib.loads((_workspace_root() / "pyproject.toml").read_text(encoding="utf-8"))
-    return list(manifest["tool"]["pytest"]["ini_options"]["testpaths"])
+    return list(_root_manifest()["tool"]["pytest"]["ini_options"]["testpaths"])
 
 
 def parse_production_trees(
@@ -278,22 +281,23 @@ def parse_production_trees(
     existing caller's key set unchanged.
     """
     repo_root = _workspace_root()
-    trees: dict[str, ast.Module] = {}
-    for _label, root in workspace_roots(include_scripts=include_scripts, include_skills=include_skills):
-        for path in sorted(root.rglob("*.py")):
-            trees[path.relative_to(repo_root).as_posix()] = ast.parse(path.read_text(encoding="utf-8"))
-    # Extra roots re-added on request: each member's ``tests`` tree, then every testpaths root.
-    extra_roots: list[Path] = []
+    # The package roots first (``workspace_roots`` already drops missing ones), then the roots
+    # re-added on request: each member's ``tests`` tree, then every testpaths root.
+    roots = [
+        root
+        for _label, root in workspace_roots(include_scripts=include_scripts, include_skills=include_skills)
+    ]
     if include_tests:
-        extra_roots += [repo_root / member / "tests" for member in _declared_workspace_members()]
+        roots += [repo_root / member / "tests" for member in _declared_workspace_members()]
     if include_testpaths:
-        extra_roots += [repo_root / testpath for testpath in _declared_testpaths()]
-    for extra_root in extra_roots:
-        if not extra_root.is_dir():
+        roots += [repo_root / testpath for testpath in _declared_testpaths()]
+    trees: dict[str, ast.Module] = {}
+    for root in roots:
+        if not root.is_dir():
             continue
-        for path in sorted(extra_root.rglob("*.py")):
+        for path in sorted(root.rglob("*.py")):
             key = path.relative_to(repo_root).as_posix()
-            if key not in trees:  # a testpaths root overlapping an already-parsed tree parses once
+            if key not in trees:  # a root overlapping an already-parsed tree parses each file once
                 trees[key] = ast.parse(path.read_text(encoding="utf-8"))
     return trees
 

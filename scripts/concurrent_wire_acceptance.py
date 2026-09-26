@@ -92,6 +92,7 @@ class ProcessOutcome:
         return cls(returncode, run, None, timed_out, tail)
 
     def is_green(self, expected_passed: int) -> bool:
+        """Green iff it finished in time, exited 0, and ran exactly ``expected_passed`` tests, all passing."""
         return (
             not self.timed_out
             and self.returncode == 0
@@ -102,6 +103,7 @@ class ProcessOutcome:
         )
 
     def describe(self) -> str:
+        """One line for the round log: the pass tally, why there is none, or that it timed out."""
         if self.timed_out:
             return "TIMED OUT"
         if self.run is None:
@@ -120,6 +122,7 @@ class RoundOutcome:
     outcomes: tuple[ProcessOutcome, ...]
 
     def is_green(self, expected_passed: int) -> bool:
+        """Green iff BOTH concurrent sessions ran and each is green at ``expected_passed``."""
         return len(self.outcomes) == CONCURRENT_SESSIONS and all(
             outcome.is_green(expected_passed) for outcome in self.outcomes
         )
@@ -135,13 +138,16 @@ class AcceptanceReport:
 
     @property
     def green_rounds(self) -> int:
+        """How many of the rounds run so far were green in both sessions."""
         return sum(1 for round_outcome in self.rounds if round_outcome.is_green(self.expected_passed))
 
     @property
     def accepted(self) -> bool:
+        """True iff every requested round ran AND every one was green (a short run is not accepted)."""
         return len(self.rounds) == self.rounds_requested and self.green_rounds == self.rounds_requested
 
     def summary(self) -> str:
+        """The one-line acceptance verdict with its green/requested/run counts."""
         verdict = "ACCEPTED" if self.accepted else "NOT ACCEPTED"
         return (
             f"#466 concurrent-pair acceptance: {verdict} — "
@@ -203,6 +209,7 @@ class ConcurrentPairDriver:
         return collected
 
     def _run_session(self, junit_path: Path) -> ProcessOutcome:
+        """Run one pytest session to completion (or timeout) and read its junit with the shared reader."""
         try:
             completed = subprocess.run(  # noqa: S603 — argv is ours, no shell
                 self.session_argv(junit_path),
@@ -223,6 +230,7 @@ class ConcurrentPairDriver:
         )
 
     def run_round(self, index: int) -> RoundOutcome:
+        """Run the two sessions CONCURRENTLY, each writing its own junit document in a scratch dir."""
         with tempfile.TemporaryDirectory(prefix="acceptance-466-") as scratch:
             paths = [Path(scratch) / f"round{index}-session{side}.xml" for side in range(CONCURRENT_SESSIONS)]
             with ThreadPoolExecutor(max_workers=CONCURRENT_SESSIONS) as pool:
@@ -231,6 +239,7 @@ class ConcurrentPairDriver:
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse and validate the command line (``--rounds`` and ``--workers`` must be at least 1)."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0] if __doc__ else None)
     parser.add_argument("--rounds", type=int, default=DEFAULT_ROUNDS)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="xdist -n per session")
@@ -249,6 +258,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Refuse if another pytest session is live, then run the rounds; return the exit status."""
     arguments = parse_arguments(argv)
     if not arguments.allow_other_sessions:
         live = other_pytest_sessions(own_pids={os.getpid(), os.getppid()})
