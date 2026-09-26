@@ -724,9 +724,22 @@ def _calls_a_listener_verb(source: bytes) -> bool:
     )
 
 
-def _server_capable_imported_distributions(trees: dict[str, ast.Module]) -> set[str]:
-    """Canonical names of the installed distributions that (a) provide a module some test tree imports
-    and (b) call a listener verb somewhere in their own source."""
+@dataclass(frozen=True)
+class _ServerReach:
+    """The derived reach, WITH what the derivation could not read (close-466 T3).
+
+    ``capable``: canonical names of the installed distributions that (a) provide a module some test tree
+    imports and (b) call a listener verb somewhere in their own source. ``unexamined``: one line per
+    distribution (or source file) the derivation could NOT read — a RECORD-less install, an unreadable
+    file. Those used to be skipped silently, so the reach could shrink exactly where nobody could see it.
+    """
+
+    capable: frozenset[str]
+    unexamined: tuple[str, ...]
+
+
+def _server_capable_imported_distributions(trees: dict[str, ast.Module]) -> _ServerReach:
+    """Derive :class:`_ServerReach` from what ``trees`` import and what those distributions' source does."""
     providers = metadata.packages_distributions()
     names = {
         distribution
@@ -734,19 +747,24 @@ def _server_capable_imported_distributions(trees: dict[str, ast.Module]) -> set[
         for distribution in providers.get(module, [])
     }
     capable: set[str] = set()
-    for name in names:
+    unexamined: list[str] = []
+    for name in sorted(names):
         distribution = metadata.distribution(name)
-        for file in distribution.files or []:
+        if distribution.files is None:
+            unexamined.append(f"{name}: no RECORD — its files cannot be listed")
+            continue
+        for file in distribution.files:
             if file.suffix != ".py":
                 continue
             try:
                 source = Path(str(distribution.locate_file(file))).read_bytes()
-            except OSError:
+            except OSError as error:
+                unexamined.append(f"{name}: {file} unreadable ({type(error).__name__})")
                 continue
             if _calls_a_listener_verb(source):
                 capable.add(canonicalize_name(name))
                 break
-    return capable
+    return _ServerReach(capable=frozenset(capable), unexamined=tuple(unexamined))
 
 
 class TestTheServerCapableDependenciesAreDerived:
@@ -766,7 +784,12 @@ class TestTheServerCapableDependenciesAreDerived:
     (d1 report, surfaced for a ruling)."""
 
     def test_the_derived_server_capable_set_equals_the_planted_map(self) -> None:
-        derived = _server_capable_imported_distributions(_test_tree_scan())
+        reach = _server_capable_imported_distributions(_test_tree_scan())
+        assert reach.unexamined == (), (
+            "the reach derivation could not read these, so any listener they hold is exempt from the guard "
+            f"with nothing said: {list(reach.unexamined)}"
+        )
+        derived = set(reach.capable)
         assert derived, (
             "no server-capable distribution derived — uvicorn is imported by the test trees and calls "
             "create_server, so the derivation is broken, not the world empty"
@@ -778,6 +801,39 @@ class TestTheServerCapableDependenciesAreDerived:
             f"server-capable distributions imported by a test tree with NO planted spelling: {unshown} — "
             "add one to _PLANTED_BY_SERVER_DISTRIBUTION and make the detector flag it; dead entries "
             f"(no longer derived — delete them): {dead}"
+        )
+
+    def test_positive_control_an_unlistable_distribution_is_reported_not_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # close-466 T3: without this, an ``unexamined`` that is always empty would make the pin above green
+        # forever. uvicorn is derived today (asserted above), so making it RECORD-less must MOVE it from
+        # ``capable`` to ``unexamined`` — never drop it on the floor.
+        real_distribution = metadata.distribution
+
+        class _RecordlessDistribution:
+            files = None
+
+        def _distribution(name: str) -> object:
+            if canonicalize_name(name) == "uvicorn":
+                return _RecordlessDistribution()
+            return real_distribution(name)
+
+        monkeypatch.setattr(metadata, "distribution", _distribution)
+        reach = _server_capable_imported_distributions(_test_tree_scan())
+        assert "uvicorn" not in reach.capable
+        assert [line for line in reach.unexamined if line.startswith("uvicorn:")], (
+            f"a RECORD-less uvicorn vanished from the reach with nothing said: unexamined={reach.unexamined}"
+        )
+
+    def test_the_reach_oracle_covers_every_verb_the_detector_flags(self) -> None:
+        # close-466 T4: the oracle stays INDEPENDENT (its own literal set — the detector never reads it),
+        # but it may not be NARROWER: a verb added to the detector only would derive no dependency that
+        # uses it, and the reach would shrink silently.
+        missing = sorted(_LISTENER_METHODS - _DEPENDENCY_LISTENER_VERBS)
+        assert missing == [], (
+            f"the detector flags {missing} but the reach oracle does not look for them — add them to "
+            "_DEPENDENCY_LISTENER_VERBS"
         )
 
     @pytest.mark.parametrize("distribution", sorted(_PLANTED_BY_SERVER_DISTRIBUTION))

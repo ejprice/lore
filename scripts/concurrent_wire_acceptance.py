@@ -163,6 +163,13 @@ def _output_tail(stdout: str, stderr: str) -> str:
     return "\n".join(f"{stdout}\n{stderr}".splitlines()[-TAIL_LINES:])
 
 
+def _captured_text(captured: str | bytes | None) -> str:
+    """A ``TimeoutExpired`` capture as text (typed ``str | bytes | None``; text mode yields ``str``)."""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", "replace")
+    return captured or ""
+
+
 def _kill_process_group(session: subprocess.Popen[str]) -> None:
     """SIGKILL every process in ``session``'s group — the session leader and all its descendants.
 
@@ -172,6 +179,49 @@ def _kill_process_group(session: subprocess.Popen[str]) -> None:
     """
     with contextlib.suppress(ProcessLookupError):
         os.killpg(session.pid, signal.SIGKILL)
+
+
+def run_as_process_group(argv: Sequence[str], *, timeout_s: float) -> subprocess.CompletedProcess[str]:
+    """Run ``argv`` from the repo root as the leader of its OWN process group, capturing its output.
+
+    The ONE subprocess runner every pytest child of this driver goes through (#466 d1 F12 + close-466):
+    ``subprocess.run(timeout=)`` kills only the direct child, orphaning every descendant, so on a timeout
+    — or ANY exception interrupting the wait (Ctrl-C) — this kills the WHOLE group instead.
+
+    Args:
+        argv: The command; never run through a shell.
+        timeout_s: How long to wait for the command to finish.
+
+    Returns:
+        The finished command's return code and captured stdout/stderr.
+
+    Raises:
+        subprocess.TimeoutExpired: The budget expired; the group is already dead and the exception
+            carries the output read before the kill (``.stdout`` / ``.stderr``), like ``subprocess.run``.
+        BaseException: Anything interrupting the wait propagates unchanged, after the group kill.
+    """
+    with subprocess.Popen(  # noqa: S603 — argv is ours, no shell
+        argv,
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as session:
+        try:
+            stdout, stderr = session.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as expired:
+            # communicate() keeps what it read across a timeout; once the tree is dead every pipe writer is
+            # gone, so this drain returns the partial output instead of hanging.
+            _kill_process_group(session)
+            stdout, stderr = session.communicate()
+            raise subprocess.TimeoutExpired(
+                expired.cmd, expired.timeout, output=stdout, stderr=stderr
+            ) from expired
+        except BaseException:
+            _kill_process_group(session)
+            raise
+    return subprocess.CompletedProcess(argv, session.returncode, stdout, stderr)
 
 
 def other_pytest_sessions(*, proc_root: Path = PROC_ROOT, own_pids: set[int]) -> list[tuple[int, str]]:
@@ -215,12 +265,17 @@ class ConcurrentPairDriver:
             self.target,
         ]
 
+    def collect_argv(self) -> list[str]:
+        """The command that lists the target's node ids without running them (``--collect-only``)."""
+        return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--collect-only", self.target]
+
     def expected_passed(self) -> int:
-        """How many tests the target collects — derived, never assumed. Fails loud on zero."""
-        argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--collect-only", self.target]
-        completed = subprocess.run(  # noqa: S603 — argv is ours, no shell
-            argv, cwd=REPO_ROOT, capture_output=True, text=True, timeout=self.timeout_s, check=False
-        )
+        """How many tests the target collects — derived, never assumed. Fails loud on zero.
+
+        Runs through :func:`run_as_process_group`, so a timed-out collect takes its whole tree with it
+        (``subprocess.TimeoutExpired`` propagates after the kill).
+        """
+        completed = run_as_process_group(self.collect_argv(), timeout_s=self.timeout_s)
         collected = count_collected_node_ids(completed.stdout)
         if collected <= 0:
             raise SystemExit(f"--collect-only listed no tests in {self.target} — refusing an empty run")
@@ -229,34 +284,24 @@ class ConcurrentPairDriver:
     def _run_session(self, junit_path: Path) -> ProcessOutcome:
         """Run one pytest session to completion (or timeout) and read its junit with the shared reader.
 
-        The session leads its OWN process group (``start_new_session``), so a timeout kills the whole
-        tree — its xdist workers and their children included — not just the direct child (#466 d1 F12).
+        Runs through :func:`run_as_process_group`, so a timeout kills the whole tree — its xdist workers
+        and their children included — not just the direct child (#466 d1 F12).
         """
-        with subprocess.Popen(  # noqa: S603 — argv is ours, no shell
-            self.session_argv(junit_path),
-            cwd=REPO_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as session:
-            try:
-                stdout, stderr = session.communicate(timeout=self.timeout_s)
-            except subprocess.TimeoutExpired:
-                # communicate() keeps what it read across a timeout; once the tree is dead every pipe
-                # writer is gone, so the drain below returns the partial output instead of hanging.
-                _kill_process_group(session)
-                stdout, stderr = session.communicate()
-                return ProcessOutcome.from_junit(
-                    None, returncode=-1, timed_out=True, tail=_output_tail(stdout, stderr)
-                )
-            except BaseException:
-                # Ctrl-C (or any error) mid-session: subprocess.run killed the child here; kill the TREE.
-                _kill_process_group(session)
-                raise
+        try:
+            completed = run_as_process_group(self.session_argv(junit_path), timeout_s=self.timeout_s)
+        except subprocess.TimeoutExpired as expired:
+            return ProcessOutcome.from_junit(
+                None,
+                returncode=-1,
+                timed_out=True,
+                tail=_output_tail(_captured_text(expired.stdout), _captured_text(expired.stderr)),
+            )
         junit_text = junit_path.read_text(encoding="utf-8") if junit_path.exists() else None
         return ProcessOutcome.from_junit(
-            junit_text, returncode=session.returncode, timed_out=False, tail=_output_tail(stdout, stderr)
+            junit_text,
+            returncode=completed.returncode,
+            timed_out=False,
+            tail=_output_tail(completed.stdout, completed.stderr),
         )
 
     def run_round(self, index: int) -> RoundOutcome:

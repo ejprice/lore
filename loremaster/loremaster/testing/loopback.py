@@ -381,10 +381,19 @@ class _UvicornServerThread:
 
         Returns:
             ``True`` if the thread finished within the budget, ``False`` on an overrun.
+
+        Raises:
+            BaseException: ANY exception interrupting the join (KeyboardInterrupt, a pytest-timeout
+                signal exception) propagates UNCHANGED, after the capture handler is detached.
         """
         self._server.should_exit = True
-        self._thread.join(timeout=shutdown_timeout_s)
-        self._detach_capture()
+        try:
+            self._thread.join(timeout=shutdown_timeout_s)
+        finally:
+            # F1's class on the teardown side: a signal handler can raise inside the join, and a detach
+            # skipped there leaves this capture on ``uvicorn.error`` for the life of the process
+            # (close-466 R1).
+            self._detach_capture()
         return not self._thread.is_alive()
 
     def _abandon(self) -> None:

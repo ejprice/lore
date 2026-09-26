@@ -26,6 +26,7 @@ fake 3-deep tree (session → worker → worker's child) standing in for pytest 
 
 from __future__ import annotations
 
+import ast
 import os
 import signal
 import subprocess
@@ -345,6 +346,45 @@ class TestATimedOutSessionTakesItsWholeTreeWithIt:
         finally:
             _reap_by_pid(pids or _tree_pids(pid_dir), marker)
 
+    def test_a_timed_out_collect_takes_its_whole_tree_with_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Lead addition (Phase 5): ``expected_passed`` runs its own ``--collect-only`` subprocess before any
+        # round, with the same timeout — the SAME orphan class as a session, so it must go through the SAME
+        # process-group runner (``run_as_process_group``). Proven shared by mutation:
+        # REPORT-close-466.md §Item 3.
+        script = tmp_path / "tree_member.py"
+        script.write_text(_TREE_MEMBER_SCRIPT, encoding="utf-8")
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        marker = f"tree466-{uuid.uuid4().hex}"
+        driver = concurrent_wire_acceptance.ConcurrentPairDriver(
+            target=_WIRE_FILE, workers=4, timeout_s=TREE_SESSION_TIMEOUT_S
+        )
+        tree_argv = _tree_session_argv(script, pid_dir, marker)(tmp_path / "collect.xml")
+        monkeypatch.setattr(driver, "collect_argv", lambda: tree_argv)
+        pids: list[int] = []
+        try:
+            started = time.monotonic()
+            with pytest.raises(subprocess.TimeoutExpired):
+                driver.expected_passed()
+            elapsed = time.monotonic() - started
+            pids = _tree_pids(pid_dir)
+            assert len(pids) == TREE_DEPTH, (
+                f"only {len(pids)} tree members recorded a pid — the fake tree was not fully built, so the "
+                "pin would certify nothing"
+            )
+            assert elapsed <= TREE_SESSION_TIMEOUT_S + ROUND_RETURN_GRACE_S, (
+                f"expected_passed took {elapsed:.1f}s — it waited on the tree instead of killing it"
+            )
+            survivors = _survivors_after(pids, marker, TREE_DEATH_BOUND_S)
+            assert survivors == [], (
+                f"{len(survivors)} of {len(pids)} members of the timed-out --collect-only tree are still "
+                f"alive {TREE_DEATH_BOUND_S}s later: {survivors} — orphaned by expected_passed"
+            )
+        finally:
+            _reap_by_pid(pids or _tree_pids(pid_dir), marker)
+
     def test_positive_control_the_liveness_probe_sees_a_live_tree_and_its_death(self, tmp_path: Path) -> None:
         # Without this, a probe that always answered "dead" would make the pin above green forever.
         script = tmp_path / "tree_member.py"
@@ -366,3 +406,94 @@ class TestATimedOutSessionTakesItsWholeTreeWithIt:
             _reap_by_pid(pids or _tree_pids(pid_dir), marker)
             root.wait(timeout=TREE_DEATH_BOUND_S)
         assert _survivors_after(pids, marker, TREE_DEATH_BOUND_S) == [], "the probe cannot see a death"
+
+
+# ============================================================================================= #
+# close-466 — the CLASS behind item 3, not the instance: EVERY child the driver spawns dies with its tree.
+# The collect subprocess was the second door into F12's orphan class; a third (a new ``subprocess.run``
+# anywhere in the driver) must redden here rather than wait for someone to notice an orphan.
+# ============================================================================================= #
+_DRIVER_SOURCE = Path(concurrent_wire_acceptance.__file__)
+# The ONE function allowed to spawn (it leads a process group and kills it on any exit).
+_SPAWNING_FUNCTION = "run_as_process_group"
+# ALLOWLIST (the safe set is small; the spawning set is not): ``subprocess`` names that construct VALUES
+# and never start a process. Any other ``subprocess.<name>(…)`` call outside the spawning function fails.
+_NON_SPAWNING_SUBPROCESS_CALLS = frozenset({"TimeoutExpired", "CompletedProcess"})
+
+
+def _subprocess_calls_outside_the_runner(source: str) -> list[str]:
+    """``line: subprocess.<name>`` for every ``subprocess`` call outside :data:`_SPAWNING_FUNCTION` that is
+    not allowlisted, plus every ``from subprocess import …`` (an alias would hide a call from this scan).
+
+    Bound (threat model: the HONEST developer adding a ``subprocess.run`` to the driver, #466 F12 — not a
+    hostile author): ``os.system`` / ``os.spawn*`` / ``os.exec*`` / ``asyncio`` subprocesses are not read.
+    Re-open trigger: the driver first imports ``asyncio`` or calls an ``os`` process API other than
+    ``killpg``.
+    """
+    tree = ast.parse(source)
+    inside_runner: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == _SPAWNING_FUNCTION:
+            inside_runner.update(id(child) for child in ast.walk(node))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            offenders.append(f"{node.lineno}: from subprocess import …")
+        if (
+            isinstance(node, ast.Call)
+            and id(node) not in inside_runner
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "subprocess"
+            and node.func.attr not in _NON_SPAWNING_SUBPROCESS_CALLS
+        ):
+            offenders.append(f"{node.lineno}: subprocess.{node.func.attr}")
+    return offenders
+
+
+class TestEveryDriverChildGoesThroughTheProcessGroupRunner:
+    def test_the_driver_spawns_only_inside_the_process_group_runner(self) -> None:
+        offenders = _subprocess_calls_outside_the_runner(_DRIVER_SOURCE.read_text(encoding="utf-8"))
+        assert offenders == [], (
+            f"the driver spawns outside {_SPAWNING_FUNCTION} — a timeout there orphans the child's tree "
+            f"(#466 F12's class): {offenders}. Route it through {_SPAWNING_FUNCTION}."
+        )
+
+    def test_non_vacuity_the_runner_exists_and_spawns(self) -> None:
+        tree = ast.parse(_DRIVER_SOURCE.read_text(encoding="utf-8"))
+        runners = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == _SPAWNING_FUNCTION
+        ]
+        assert len(runners) == 1, f"expected exactly one {_SPAWNING_FUNCTION}, found {len(runners)}"
+        spawned = {
+            node.func.attr
+            for node in ast.walk(runners[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "subprocess"
+        }
+        assert "Popen" in spawned, f"{_SPAWNING_FUNCTION} no longer spawns — the scan above guards nothing"
+
+    @pytest.mark.parametrize(
+        "planted",
+        [
+            pytest.param("import subprocess\ndef f():\n    subprocess.run(['x'], timeout=1)\n", id="run"),
+            pytest.param(
+                "import subprocess\ndef f():\n    subprocess.check_output(['x'])\n", id="check_output"
+            ),
+            pytest.param("from subprocess import run\ndef f():\n    run(['x'])\n", id="from-import-alias"),
+        ],
+    )
+    def test_positive_control_a_spawn_outside_the_runner_is_flagged(self, planted: str) -> None:
+        assert _subprocess_calls_outside_the_runner(planted), f"the scan missed a spawn:\n{planted}"
+
+    def test_positive_control_the_allowlisted_values_are_not_flagged(self) -> None:
+        honest = (
+            "import subprocess\n"
+            "def run_as_process_group(argv):\n    return subprocess.Popen(argv)\n"
+            "def g(e):\n    raise subprocess.TimeoutExpired('x', 1.0)\n"
+        )
+        assert _subprocess_calls_outside_the_runner(honest) == []

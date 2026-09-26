@@ -72,7 +72,7 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -130,6 +130,10 @@ SHORT_SHUTDOWN_BUDGET_S = 0.5
 SHUTDOWN_GIVE_UP_GRACE_S = 2.0
 # d1/F2 positive control: a slow-but-within-budget shutdown must NOT raise.
 SLOW_SHUTDOWN_S = 0.3
+# A shutdown budget far above any in-budget teardown (and above INTERRUPT_AFTER_S, asserted where it
+# matters) — its OWN constant, so retuning a startup budget never silently retunes a shutdown control
+# (close-466 T2; this control used GENEROUS_STARTUP_BUDGET_S before).
+GENEROUS_SHUTDOWN_BUDGET_S = 10.0
 # d1/F2: the sentinel a failing ``with`` body raises — it must survive the overrun unmasked.
 BODY_FAILURE_SENTINEL = "the test's own assertion failed — d1-body-sentinel-466"
 # d1/ruling (d): how long a STUCK serve_http request handler blocks before giving up on its own. Far above
@@ -682,6 +686,21 @@ def _interrupt_main_thread_after(
     that the propagated exception is that very object. The timer and the previous handler are restored
     however the block ends.
     """
+    with _main_thread_interrupt(make_error) as (raised, arm):
+        arm(delay_s)
+        yield raised
+
+
+@contextlib.contextmanager
+def _main_thread_interrupt(
+    make_error: type[BaseException],
+) -> Iterator[tuple[list[BaseException], Callable[[float], None]]]:
+    """Install a ``SIGALRM`` handler raising ``make_error()`` in the MAIN thread, NOT yet scheduled.
+
+    Yields ``(raised, arm)``: ``arm(delay_s)`` schedules the one interrupt ``delay_s`` from THAT call, so a
+    caller can aim it at a later phase of the helper (the teardown join, close-466 R1) rather than at the
+    moment the block opens. The timer and the previous handler are restored however the block ends.
+    """
     assert threading.current_thread() is threading.main_thread(), (
         "signal injection needs the MAIN thread (signal.signal raises elsewhere) — the probe cannot run "
         "here, so the pin would certify nothing"
@@ -693,10 +712,12 @@ def _interrupt_main_thread_after(
         raised.append(error)
         raise error
 
+    def _arm(delay_s: float) -> None:
+        signal.setitimer(signal.ITIMER_REAL, delay_s)
+
     previous = signal.signal(signal.SIGALRM, _raise)
-    signal.setitimer(signal.ITIMER_REAL, delay_s)
     try:
-        yield raised
+        yield raised, _arm
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
@@ -873,6 +894,7 @@ class TestAShutdownOverrunIsLoud:
         gate = threading.Event()
         app = _RecordingApp("hanging-teardown-failing-body-466", shutdown_gate=gate)
         body_failure = _BodyFailure(BODY_FAILURE_SENTINEL)
+        handlers_before = _attached_logging_handlers()
         try:
             with pytest.raises(_BodyFailure) as excinfo:
                 with serve_asgi(app, shutdown_timeout_s=SHORT_SHUTDOWN_BUDGET_S) as served:
@@ -886,14 +908,21 @@ class TestAShutdownOverrunIsLoud:
             assert f"{served.host}:{served.port}" in notes and "shutdown" in notes.lower(), (
                 f"the overrun is SILENT on the failing path — no note naming the address: {notes!r}"
             )
-            assert elapsed <= SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S, elapsed
+            # Both bounds (close-466 T1): a build that skips the wait on the FAILING path only (checks
+            # ``is_alive()`` at once, notes, returns) was bounded only above; and the lifecycle completes on
+            # this path too, not just on the clean one.
+            assert (
+                SHORT_SHUTDOWN_BUDGET_S * 0.9 <= elapsed <= SHORT_SHUTDOWN_BUDGET_S + SHUTDOWN_GIVE_UP_GRACE_S
+            ), f"exit took {elapsed:.2f}s against a {SHORT_SHUTDOWN_BUDGET_S}s budget"
+            assert _attached_logging_handlers() == handlers_before
+            assert _becomes_refused(served.host, served.port), "the port still accepts after the overrun"
         finally:
             gate.set()
 
     def test_positive_control_a_slow_in_budget_shutdown_does_not_raise(self) -> None:
         # Without this, "raises on overrun" could be a helper that raises on EVERY exit.
         app = _RecordingApp("slow-teardown-466", shutdown_delay_s=SLOW_SHUTDOWN_S)
-        with serve_asgi(app, shutdown_timeout_s=GENEROUS_STARTUP_BUDGET_S) as served:
+        with serve_asgi(app, shutdown_timeout_s=GENEROUS_SHUTDOWN_BUDGET_S) as served:
             assert _get(served.base_url).status_code == HTTP_OK
         assert app.events == ["startup", "shutdown"], app.events
 
@@ -907,9 +936,73 @@ class TestAShutdownOverrunIsLoud:
 
 
 # ============================================================================================= #
+# close-466 R1 — F1's class on the TEARDOWN side: an unexpected BaseException in the shutdown join.
+# ============================================================================================= #
+class TestAnInterruptedTeardownLeavesNothingBehind:
+    """R1 (REPORT-refactor-466-d1.md §Step 1): F1 made an interrupted START clean up; an interrupt landing in
+    the teardown JOIN (Ctrl-C, pytest-timeout's signal method — the same door) propagated out of the exit
+    with the ``uvicorn.error`` capture handler still attached for the life of the process. The lifespan
+    shutdown is held blocked so the interrupt can only land IN the join; it is released afterwards so the
+    server thread CAN end."""
+
+    @pytest.mark.parametrize("interrupt", _UNEXPECTED_INTERRUPTS)
+    @pytest.mark.parametrize("port_ownership", ["owned", "passed"])
+    def test_the_interrupt_propagates_unchanged_and_nothing_is_left_behind(
+        self, interrupt: type[BaseException], port_ownership: str
+    ) -> None:
+        # Discrimination: the interrupt must fire well INSIDE the budget, or it would land after an overrun
+        # (a different path) and the pin would test that instead.
+        assert INTERRUPT_AFTER_S < GENEROUS_SHUTDOWN_BUDGET_S / 2
+        gate = threading.Event()
+        app = _RecordingApp(f"interrupted-teardown-{port_ownership}-466", shutdown_gate=gate)
+        handlers_before = _attached_logging_handlers()
+        threads_before = set(threading.enumerate())
+        with contextlib.ExitStack() as stack:
+            held = stack.enter_context(LoopbackPort()) if port_ownership == "passed" else None
+            try:
+                with _main_thread_interrupt(interrupt) as (raised, arm):
+                    with pytest.raises(interrupt) as excinfo:
+                        with serve_asgi(
+                            app, port=held, shutdown_timeout_s=GENEROUS_SHUTDOWN_BUDGET_S
+                        ) as served:
+                            assert _get(served.base_url).status_code == HTTP_OK
+                            # Armed as the LAST act of the body: it can only land once exit is under way.
+                            arm(INTERRUPT_AFTER_S)
+                            exit_started = time.monotonic()
+                    elapsed = time.monotonic() - exit_started
+                    # Non-vacuity: it fired once, what came out is THAT object, and it landed IN the teardown
+                    # wait — the exit waited for it, and the (blocked) lifespan shutdown had not completed.
+                    assert len(raised) == 1, f"the interrupt fired {len(raised)} times — the probe is broken"
+                    assert excinfo.value is raised[0], (
+                        f"the exit replaced the interrupt with {excinfo.value!r} — it must propagate "
+                        "UNCHANGED"
+                    )
+                    assert INTERRUPT_AFTER_S * 0.9 <= elapsed < GENEROUS_SHUTDOWN_BUDGET_S, elapsed
+                    assert app.events == ["startup"], app.events
+                # The process-global logging state is exactly what it was.
+                assert _attached_logging_handlers() == handlers_before, (
+                    "the interrupted teardown left a logging handler attached — the capture was detached "
+                    "only after an UNINTERRUPTED join: "
+                    f"before={handlers_before} after={_attached_logging_handlers()}"
+                )
+            finally:
+                gate.set()
+            survivors = _threads_still_alive_after(threads_before, THREAD_END_BOUND_S)
+            assert survivors == [], f"the interrupted teardown left server thread(s) running: {survivors}"
+            assert _becomes_refused(served.host, served.port), (
+                f"{served.host}:{served.port} ({port_ownership} port) still accepts after the interrupted "
+                "teardown"
+            )
+
+
+# ============================================================================================= #
 # d1/ruling (d) — serve_http's teardown with a STUCK handler is bounded and LOUD, exactly like serve_asgi's.
 # Lead-directed pin, authored in Phase 5 AFTER the build (documented deviation from test-first: the ruling
 # post-dated the contract). Proven able to fail by mutation — REPORT-refactor-466-d1.md §Pins-d.
+# DUAL (budget): first authored against serve_http's ONLY budget, the real 5 s default (spent twice per run);
+# since serve_http gained ``shutdown_timeout_s`` (8d42c27) the two overrun pins pass SHORT_SHUTDOWN_BUDGET_S.
+# Assertions unchanged — only the budget argument moved, and the window/discrimination constants with it.
+# That the budget is THREADED (not the default) is proven by mutation: REPORT-close-466.md §Item 2.
 # ============================================================================================= #
 def _stuck_handler_class() -> tuple[
     type[http.server.BaseHTTPRequestHandler], threading.Event, threading.Event
