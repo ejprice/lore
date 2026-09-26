@@ -1326,3 +1326,9 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - FK-a28-3/-4 (non-blocking; pins agnostic) → sidecar-63c-2 **Task 31**.
 - Stale refactor-466-d1 idle (its decisions were already handled: close-466 covers R1 + the serve_http param; c confirmed).
 - **Am-31 (FK-a28-3/-4):** two typed fields (`distinct_owner_principals`, `owner_classification` enum); a verb-level `--table message` refusal OMITS the unmeasured message counts. Relayed to adversary-63c-i-a-a28 as directive #17070 (the wake misquoted it as #17071; lead habit fix: send the wake only AFTER reading the directive's returned seq, never in the same batch). The contract's "exactly six fields" pin now conflicts → the post-adversary contract fold.
+
+### 2026-09-26 — contract-58-r2 COMMITTED (`c42eeaf`); adversary-58-r2 spawned; sequencing ruled
+- r2: MP1–MP18 + SD1–SD3 + am-2..5 landed; 24/25 adversary probes AST-EQUAL (PR18 re-keyed per the am-3 erratum); 49 wrong builds, 0 survive; SAT on plain HEAD + §HELD + reference `2 failed, 11859 passed` (both a ruling-vs-pin conflict, resolved by §HELD part 3); `--currency` PASS. Reading A fully undone before the commit. The lead checked its `pending_contracts.yaml` hunk: ONLY the packet-58 entry changed. Attribution-clean. #494 and #497 (RETURN inside a txn → store ref) filed.
+- **Sequencing (F-r2-2), lead-ruled:** 58's §HELD `test_retry_seam` re-key lands FIRST (58 builds before 64, pool 30); 64b re-derives G2 on top via a patch script → directive #17072 (the wake quoted the correct seq).
+- FORK-3 (ERROR vs WARNING for an ASSERT rollback; does am-3 §3's WARNING reach 63's governed-conflict THROW) + FORK-4 (`[A,A,X]` dedupe) → **sidecar-64 Task 14** (58 am-6).
+- **adversary-58-r2** (delta) spawned: prior-survivor kills, new wrong builds vs (C)/(B)/the packer, the AST receipt re-run, SAT on plain HEAD + §HELD + its own reference.
