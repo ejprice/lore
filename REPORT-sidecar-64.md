@@ -232,3 +232,17 @@ brief project v7 read
   spy; SD2 pins the ruled order; SD3 `_GUARDED_CAS_DOORS` gains `tasks.py::claim_task` (DUAL row); the
   enumerator's two reach bounds → the reviser files them.
 - **Graded:** `ee4b80d` (the adversary report) · HEAD-at-report: `7266c1b` · DIFFERENT (my own commit). Standing by.
+
+## Task 11 (2026-09-26) — packet 58 amendment 4 committed `fd6497d`
+
+- **state:** done — **Reading A, and SD3 is my erratum** (the third this packet, same class: a clause
+  written before the mechanism moved under it). Decision 3's typed catch (`TxnClaimLostError`, a
+  `TxnDomainRejectionError` subtree — a SIBLING of `TxnContentionExhaustedError`) is not the enumerator's
+  door and cannot reinterpret exhausted contention by hierarchy; `_GUARDED_CAS_DOORS` stays at five;
+  Reading B would install the very door the invariant polices. Pins: exhausted contention propagates
+  unread from claim; a lost race → `ClaimResult(False)`; a hierarchy pin. **Reach question — YES, widen,
+  but to SEE typed and tuple catches and partition them by hierarchy** (a caught class whose subclass
+  closure contains `TxnContentionExhaustedError` → a door needing the guard; otherwise → a listed
+  `_TYPED_CAS_CATCHES` entry), so a future re-parenting flips a typed catch into the door set by
+  derivation; r2's item, not a 58 blocker; the helper-indirected re-read stays the filed bound.
+- **Graded:** contract-58-r2 (working tree) · HEAD-at-report: `fd6497d` · DIFFERENT (my own commit). Standing by.
