@@ -1206,3 +1206,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **F-2 MAJOR:** preflight-before-SF-63-1 leaks agent existence, retirement, role and spawner to a foreign principal.
 - **F-3 MAJOR** = builder FORK-1 (already ruled, am-27).
 - This is the second fix wave on one gate → escalated the DESIGN to sidecar-63c-2 as **Task 28** (amendment 28: confirm/refute + a construction recipe + remedies + operator need). The cold audit continues independently; no fix is briefed until the audit verdict and am-28 both land.
+
+### 2026-09-26 — OPERATOR RULING #492: the port is admin/agent-picked and defined in config
+- The lore server port is picked by the admin (or by an agent via the lore-deploy skill) and defined in lore.yaml `server.port`. It is never auto-picked (MCP connections would break). Fix queued as a **tdd-light cycle after #466 → #486**: `setup` requires an explicit port when scaffolding (teaching refusal otherwise); `_free_port` is deleted; a pre-flight free-check runs on the PUBLISH address; SKILL.md teaches it; the #466 guard exemption is removed. Annotated on #492.
+- Blindreader addendum (the race fixture blind to F-1; F-4 silent-proceed; F-5..F-7 MINORs) sent to sidecar-63c-2 for amendment 28.
+- **tdd-light queue (serial, operator):** #466 (at stub) → #486 (harness `run()` via the retry seam) → #492 (admin-picked port).
