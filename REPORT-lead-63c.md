@@ -874,3 +874,10 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
   - **F-4** (a scoped-but-ownerless raw row makes the message migrate refuse forever, loudly; MP-F-named) → no action. Noted for i-b.
   - **F-5** (the `agents.py` module docstring API block refreshed) → accepted.
 - NEXT: prosefix → COLD AUDIT (Opus REFUTE: re-run gates, full suite ALONE, probes; the FORK-B1 test edit checked specifically) ∥ a CONTRACT-BLIND diff reader (report-only; D3 is a delete/replace) → lead commits → INDEX Log.
+
+### 2026-09-25 — prose fixes F-1/F-3 applied (`REPORT-prosefix-63c-i-a.md`); cold audit spawned
+- Prose-only, AST-proven. Scoped pins (allowlist, effect leg, sharing, generated legs) at `-n 8`: `639 passed / 0 failed`. The final-bytes backup patch md5 is `5ed71294a7c72627e7398218b74cc11c`.
+- Deviations ACCEPTED by the lead:
+  - **D-1:** a dangling inline comment that the granted docstring rewrite orphaned was reworded, and "guarded" was dropped.
+  - **D-2 (b):** a second comment carrying the "NO scope column" claim was corrected; printed output strings were deliberately left, and are dated by the new header.
+- prosefix retired. `blindreader-63c-i-a` (contract-blind, no tests) is running; `coldaudit-63c-i-a` spawned over the final working tree.
