@@ -1264,3 +1264,8 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **Fix pass:** contract-63c-i-a-a28 spawned (am-27 FORK-1/2; am-28 §F-1 no compensation with the RS-2 8-way pin, §F-2 read-only gate first with the RS-3 pin, addendum A1/A2/A4/A5; the am-26 RS-1 pin; F-8; currency ownership). Next: the NARROW adversary delta on the F-1/F-2/race pins → the builder fix → the cold-audit re-run.
 - sidecar-63c-2 **Task 29**: RS-5 (a raw TxnDomainRejectionError for a same-role concurrent loser, pre-existing) + an F-8 fold FYI.
 - **Lane order:** contract-63c-i-a-a28, then contract-58-r2, then contract-64b (impl-466 small scoped runs allowed).
+
+### 2026-09-26 — #466 GREEN committed (`6566ba6`); Phase 5 spawned; forks routed
+- **impl-466 GREEN, lead-VERIFIED:** #466 contract + test_migration_wire `72 passed`; skill suite `120 passed`. No assertion lines changed in the switched test files (the D4 `dead_port` params are signature-only). ruff clean. Committed `6566ba6` (7 files + report). Remaining reds NOT #466's: restore_prod_dump anchored seam (fix-restore-seams running) + the 64b untracked whole-tree clones → directive #17057 to contract-64b. **refactor-466 (tdd-refactorer, model opus)** spawned for review → refactor → the 20× concurrent-pair acceptance.
+- **contract-58-r2 FORK-1:** am-3 SD3 (`claim_task` into `_GUARDED_CAS_DOORS`) contradicts am-3 decision 3 (a typed catch = not a door) → **sidecar-64 Task 11**; the author proceeds on reading A.
+- contract-64b disclosed a lane breach (an orphaned pytest child after it killed only the wrapper), recorded in its report §0 D-e. Lesson: kill the process TREE.
