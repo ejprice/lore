@@ -181,3 +181,19 @@ brief project v7 read
   **Erratum (mine):** amendment 3 cited `surreal_schema.governed_node_tables` as existing — it is 64d's
   promise; the probe's `lore_verify` caught it.
 - **Graded:** `5a43aeb` / `80409f4` · HEAD-at-report: `17b7101` · DIFFERENT (my own commits). Standing by.
+
+## Task 8 (2026-09-26) — store reference §6.7 (import/export) committed `aa1d3d6`
+
+- **state:** done — `docs/reference/surrealdb-31-capabilities.md` §6.7 + an addition-pass note: the ten
+  measured import facts (not atomic; ERR entries inside HTTP 200 and the import continues; a mid-file
+  parse error stops silently under 200; the vendor's `-d file.surql` example is broken, `--data-binary
+  @file` works; export files carry log lines → 400 until stripped; an absent DB silently downgrades the
+  schema; field processing disabled → restored rows are §1.4 legacy rows; Accept unenforced; auth
+  checked; `OPTION IMPORT;` the one loud refusal) + the probe's own control lesson + the driver's house
+  rules. Cited by the SHA-qualified path `80409f4:REPORT-probe-64.md` (§3 + Appendix A, verbatim
+  instrument) and the committed `scripts/restore_prod_dump.py` / `test_restore_prod_dump.py`.
+- **deviation (lead-granted):** the store reference is outside my brief's writable set; the lead's Task 8
+  directive extended it for this one file. **Not re-probed:** my live re-verification (three legs + a
+  control on a throwaway `:18000` DB) was permission-denied at the secrets-env read; the entry carries
+  probe-64's `[PROBED 2026-09-26, 3.2.4]` provenance, not mine.
+- **Graded:** `80409f4` · HEAD-at-report: `aa1d3d6` · DIFFERENT (my own commit). Standing by.
