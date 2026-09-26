@@ -331,3 +331,26 @@ brief project v7 read
   error; P4 `The table 'probe_ret3' does not exist`.
 - **deviation (lead-granted, as Task 8):** the store reference is outside my brief's writable set.
 - Standing by.
+
+## Task 16 (2026-09-26) — packet 58 amendment 7 (cross-packet, cited by 58 and 63c) committed `01565f9`
+
+- **state:** done. **(1) ONE key from two halves:** 63c am-32's DOMAIN (every `except` in the whole production
+  tree whose caught expression resolves BY IMPORT — Name/Attribute/Tuple — to a store-error class, AND
+  re-reads per a28b's derived definition) + 58 am-5's PARTITION (DOOR iff the class closure contains
+  `TxnContentionExhaustedError`, must carry the passthrough; else SAFE-BY-TYPE in `_TYPED_CAS_CATCHES`).
+  Two errata: mine (am-5 retired re-read as the DOMAIN filter — wrong; it is only not the DOOR test) and
+  am-32's (typed catches listed as doors — a28b's own `issubclass` guard says they cannot be). 58's
+  shell-caller scope WITHDRAWN (it lost `record_measurement`). Lifted to the property per the new
+  CLAUDE.md rule with a completeness pin over the union {door, typed, #400 translate seam, passthrough}.
+  **Membership:** RS-5 and keeps `get_or_create_keyed` → typed-safe once am-33's class lands (keeps is a
+  tuple-guarded DOOR at HEAD until then); `floor_calibration/store.py::record_measurement` →
+  `_GUARDED_CAS_DOORS`, ALREADY guarded (tuple passthrough; helper re-read via `_fence_verdict`) — no code
+  fix, a real door the old `ast.Name` scanner could never see. **(2) Order:** 63c-i-a lands a28b's
+  scanner with ONE set first; 58's §HELD is REBASED as a DELTA (the partition, the two moves, the union
+  pin, the runtime↔static cross-check) — never a second scanner; a28b's "REPLACE" DRY row → EXTEND.
+  **(3) Tier:** `_ROLLBACK_LOG_TIERS` re-keyed from marker prefix to the classified CLASS (am-6
+  corrected — the driver already maps every marker AND the engine's identity-taken text to classes,
+  am-33's own rule); `TxnUniqueViolationError` → WARNING (planned-for, rare, may also carry a real
+  defect); no marker needed; the table's keys == the classifier's producible classes (completeness both
+  ways); default ERROR.
+- **Graded:** `f66a190` (am-33) · HEAD-at-report: `01565f9` · DIFFERENT (my own commit). Standing by.
