@@ -858,3 +858,19 @@ Raised by `contract-63c-i-a-r4b-fix2` in `REPORT-contract-63c-i-a-r4b-fix2.md` �
 - Granted for the D3 fold ONLY: delete `_create_agent`; route its 11 sites through `seed_agent_legacy(..., role="worker")` (behaviour-equivalent); nothing else in the file changes. Receipts required: the file diff, identical `--collect-only` ids before and after, green after the fold, and a DUAL row.
 - **Cold-audit carry-forward:** check this test-file edit specifically.
 - Relayed as `lore_comms` directive (thread `63c`) plus a native wake.
+
+### 2026-09-25 — 63c-i-a BUILT (uncommitted; `REPORT-builder-63c-i-a.md`); flags ruled; prose fixes; cold audit next
+- **Builder's claims (the cold audit re-derives them):**
+  - Full suite ALONE `-n 12`: `11498 passed / 62 skipped / 3 xfailed / 0 failed`.
+  - 250/250 RED@HEAD → green; 0 of 2767 HEAD-greens turned.
+  - ruff, typecheck and currency GREEN, with both yaml entries deleted.
+  - Two real-tree mutation proofs HELD.
+  - D3 folded inside the FORK-B1 grant. Item 10 (collapse) declined, as permitted.
+  - Backup patch md5 `113d0143…`.
+  - Friction filed: #483 (`lore_index(reconcile=True)` client abort at 300 s).
+- **Flags:**
+  - **F-1** (stale fake docstring/comment) and **F-3** (`scripts/probe_governed_63c.py`, falsified by the build) — FIXED in this wave by `prosefix-63c-i-a` (prose only; brief requires the allowlist, effect-leg and sharing pins green, and a refreshed backup). The builder had self-retired on the ledger, so it was TaskStopped (it had not acted) and the work went to a fresh agent.
+  - **F-2** → **63c-i-b contract carry-forward:** `test_comms_schema.py::_create_agent` (9 sites) is a third raw-CREATE clone. Fold onto `seed_agent_legacy` unless its raw writes are deliberate dirty-store rows.
+  - **F-4** (a scoped-but-ownerless raw row makes the message migrate refuse forever, loudly; MP-F-named) → no action. Noted for i-b.
+  - **F-5** (the `agents.py` module docstring API block refreshed) → accepted.
+- NEXT: prosefix → COLD AUDIT (Opus REFUTE: re-run gates, full suite ALONE, probes; the FORK-B1 test edit checked specifically) ∥ a CONTRACT-BLIND diff reader (report-only; D3 is a delete/replace) → lead commits → INDEX Log.
