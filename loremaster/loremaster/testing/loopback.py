@@ -42,6 +42,12 @@ pass ``startup_timeout_s`` to override it without editing this module."""
 KERNEL_ASSIGNED_PORT: int = 0
 """The port number that asks the kernel for an ephemeral port — the ONLY port ever bound here."""
 
+DEFAULT_SHUTDOWN_TIMEOUT_S: float = 5.0
+"""How long :func:`serve_asgi`'s exit waits for a STARTED server's lifespan shutdown before the
+overrun is reported LOUDLY (:class:`ServerShutdownTimeout` on a clean exit; a PEP 678 note on an
+exception already in flight). Measure-then-tune (#466 d1 §Surfaced-3); callers pass
+``shutdown_timeout_s`` to override it."""
+
 _STARTUP_POLL_S: float = 0.02
 """How often the startup wait re-checks ``started`` / thread death. Small, so a crash is named
 promptly rather than when the budget expires."""
@@ -123,6 +129,34 @@ class ServerThreadCrashed(ServerStartError):
     app's own error text (a raising lifespan, a ``lifespan.startup.failed``, or an app that
     cannot speak lifespan at all).
     """
+
+
+class ServerShutdownTimeout(RuntimeError):
+    """A STARTED server's lifespan shutdown overran its budget on a clean exit.
+
+    Deliberately NOT a :class:`ServerStartError`: a start-retry ``except`` must never swallow a
+    teardown overrun. When the served body is already raising, this is never raised (it would
+    mask the body's own failure); the overrun rides that exception as a PEP 678 note instead.
+
+    Attributes:
+        host: The host the server was served on.
+        port: The port the server was served on.
+        shutdown_timeout_s: The shutdown budget that expired, in seconds.
+    """
+
+    def __init__(self, message: str, *, host: str, port: int, shutdown_timeout_s: float) -> None:
+        """Record the overrun address and the expired budget.
+
+        Args:
+            message: Human-readable cause; must name ``host:port`` and say "shutdown".
+            host: The host the server was served on.
+            port: The port the server was served on.
+            shutdown_timeout_s: The shutdown budget that expired, in seconds.
+        """
+        super().__init__(message)
+        self.host = host
+        self.port = port
+        self.shutdown_timeout_s = shutdown_timeout_s
 
 
 @dataclass(frozen=True)
@@ -318,10 +352,14 @@ class _UvicornServerThread:
             # A join returns the moment the thread dies, so a crash is named within one poll.
             self._thread.join(timeout=min(_STARTUP_POLL_S, remaining_s))
 
-    def stop(self) -> None:
-        """Drive a real lifespan shutdown and wait (bounded) for the thread to finish."""
+    def stop(self, shutdown_timeout_s: float = DEFAULT_SHUTDOWN_TIMEOUT_S) -> None:
+        """Drive a real lifespan shutdown and wait (bounded) for the thread to finish.
+
+        Args:
+            shutdown_timeout_s: How long to wait for the thread to finish its shutdown.
+        """
         self._server.should_exit = True
-        self._thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT_S)
+        self._thread.join(timeout=shutdown_timeout_s)
         self._detach_capture()
 
     def _abandon(self) -> None:
@@ -351,6 +389,7 @@ def serve_asgi(
     *,
     port: LoopbackPort | None = None,
     startup_timeout_s: float = DEFAULT_STARTUP_TIMEOUT_S,
+    shutdown_timeout_s: float = DEFAULT_SHUTDOWN_TIMEOUT_S,
 ) -> Iterator[ServedEndpoint]:
     """Serve ``app`` under a real uvicorn in a thread, FROM a pre-bound socket.
 
@@ -363,6 +402,8 @@ def serve_asgi(
             closed by this helper. A PASSED port's socket is closed on exit too — uvicorn's own
             shutdown closes the sockets it was handed — so it cannot be served again.
         startup_timeout_s: How long to wait for the server to report started.
+        shutdown_timeout_s: How long exit waits for the lifespan shutdown before the overrun is
+            reported (raised on a clean exit; noted on an exception already in flight).
 
     Yields:
         The served endpoint.
@@ -373,6 +414,9 @@ def serve_asgi(
             port is released at the raise.
         ServerThreadCrashed: If the server thread ends before reporting started; raised promptly,
             carrying the app's own error text, with the held port released.
+        ServerShutdownTimeout: If, on a clean exit, the lifespan shutdown overruns
+            ``shutdown_timeout_s``. A body exception in flight is never masked: it propagates
+            unchanged, carrying the overrun as a PEP 678 note naming ``host:port``.
     """
     with _held_port(port) as held:
         server_thread = _UvicornServerThread(app, held)
@@ -380,7 +424,7 @@ def serve_asgi(
         try:
             yield held.served_endpoint()
         finally:
-            server_thread.stop()
+            server_thread.stop(shutdown_timeout_s)
 
 
 def _http_server_on(
@@ -443,6 +487,7 @@ def serve_http(
 
 
 __all__ = [
+    "DEFAULT_SHUTDOWN_TIMEOUT_S",
     "DEFAULT_STARTUP_TIMEOUT_S",
     "KERNEL_ASSIGNED_PORT",
     "LOOPBACK_HOST",
@@ -450,6 +495,7 @@ __all__ = [
     "LoopbackPort",
     "ServedEndpoint",
     "ServerBindError",
+    "ServerShutdownTimeout",
     "ServerStartError",
     "ServerStartupTimeout",
     "ServerThreadCrashed",
