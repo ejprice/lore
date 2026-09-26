@@ -1325,3 +1325,4 @@ Raised in `REPORT-contract-63c-i-a-a19b.md` §F (working tree). The author conti
 - **adversary-63c-i-a-a28 (NARROW, per am-28 §Process)** spawned on the F-1/F-2/RS-5 pins + DUAL deletions, starting from the author's §13 list.
 - FK-a28-3/-4 (non-blocking; pins agnostic) → sidecar-63c-2 **Task 31**.
 - Stale refactor-466-d1 idle (its decisions were already handled: close-466 covers R1 + the serve_http param; c confirmed).
+- **Am-31 (FK-a28-3/-4):** two typed fields (`distinct_owner_principals`, `owner_classification` enum); a verb-level `--table message` refusal OMITS the unmeasured message counts. Relayed to adversary-63c-i-a-a28 as directive #17070 (the wake misquoted it as #17071; lead habit fix: send the wake only AFTER reading the directive's returned seq, never in the same batch). The contract's "exactly six fields" pin now conflicts → the post-adversary contract fold.
