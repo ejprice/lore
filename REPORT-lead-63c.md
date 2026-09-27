@@ -1444,3 +1444,11 @@ Lead `lead-63c-2`, session `63c-20260924`, branch `feat/surreal-unification`. Si
 4. **64b-i contract loop:** contract-64b-r2 (+ sidecar-64 Task 23: FK-r2-10/11) → adversary delta → until SUFFICIENT. STOP before the 64b-i build.
 At the stop: archive the root REPORT-*.md, write RESUME ANCHOR v7, INDEX Log line, stand the sidecars down.
 - **63c am-35** (d463dba, sidecar-63c-2): the third strikes re-ruled. STOP-rule applied: neither property is receding (C2's domain is finite: the relation-set powerset × mint orders; RS-5 was under-specified and is now fully specified, typed on both paths via `parse_query_error`). **a28c is the LAST contract round for both, by rule; a 4th strike → a pinned bound.** Scanner keyed per handler, the F-4 scope restored (D6). → **contract-63c-i-a-a28c** SPAWNED (brief `scratchpad/brief-contract-63c-i-a-a28c.md`; carries am-34 incl. F-5, am-35 §W, MP-1/2/4/5, and FK-r3-4's 3 CAS_SEAM_DRIVERS; collisions: 58 §HELD part 2, 64b-r2, the #486 WIP). Owed by sidecar-63c-2: the FK-r2-2 F5 universal-leg concurrence (pinged).
+
+### OPERATOR DIRECTIVE — CORRECTED (2026-09-27; SUPERSEDES the wind-down table above)
+"No, I mean finish out completely #486, 63c-i-a, 58 and 64b-i. Don't start anything past those." Each finishes FULLY, then STOP:
+1. **#486:** implement → refactor+audit (opus) → lead verify + commit → the D4 age-guarded wipe.
+2. **63c-i-a:** a28c (last round) → adversary delta → builder fix over 169925f → cold audit + contract-blind reader → commit on GO → INDEX "63c-i-a CLOSED". Do NOT start 63c-i-b.
+3. **58:** r3 adversary → r4 fold → adversary delta → build (§HELD incl. the scanner delta, esc1, the more-itertools + pytest-timeout deps, BC-r3-8's timeout value) → cold audit → commit.
+4. **64b-i:** r2 → adversary delta → build → cold audit → commit. Do NOT start 64b-ii / 64a / 64c.
+Build order stays serial: 63c-i-a → 58 → 64b-i. NOT started: #492, #512, the holes, the test smells, 63c-i-b, 64a, 64b-ii, 64c, 65. At the stop: archive reports, RESUME ANCHOR v7, INDEX Log line, sidecars stood down.
