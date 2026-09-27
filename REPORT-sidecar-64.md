@@ -521,3 +521,23 @@ brief project v7 read
 - **Graded:** `REPORT-contract-64b-r2.md` (uncommitted at read time) · HEAD-at-report: `743373e` ·
   DIFFERENT (my own commit).
 - No code/tests/store touched. Standing by.
+
+## Task 23 (2026-09-27) — packet 64 amendment 10 (am-9 errata: FK-r2-10 / FK-r2-11) committed `46340ef`
+
+- **state:** done. Read `scripts/pending_contract_gate.py` (schema + legs) and `pending_contracts.yaml`;
+  `lore_verify`'d `governed.LegacyMapping` (exists; ZERO instances by awk over the tree). **FK-r2-10 —
+  ERRATUM on am-9 FK-r2-6:** no `packet-64b-i-closeout` bound; the registry adjudicates MYPY claims per
+  file (a file with no claim is refused; a discharged file self-destructs), so a post-build pytest-only red
+  in a mypy-clean file is #461's ledgered class (→ 09b). Ruled: the alias pin isolated in its own file
+  (author's pick confirmed); the close-out (typed-call rewrite + delete `packet-64b-i-contract`) is a
+  SEQUENCED STEP of the build wave by a contract-author-class agent, between the builder's commit and the
+  wave's currency run — the pin is red only intra-wave and never meets a gate; the registry extension is
+  09b's, removed from §HELD Part B; #461 annotated with this instance. **FK-r2-11 — ERRATUM on am-9
+  FK-r2-4:** no `LegacyMapping` rows exist to cross-check; ruled the author's ALTERNATIVE — disposition
+  derived from the migrate leg's SET clause alone, complete over `_migrate_legs()` both ways; intent stays
+  in the per-table golden pins; the author's RED-until-built `LEGACY_MAPPINGS` REJECTED for r2 (a new
+  source of truth in a 63c-owned module against 63c am-1 N2) — filed for sidecar-63c-2. Self-rule
+  sharpened: verify the seam AND its data (consumers/instances via `lore_impact`) before ruling on it.
+- **Graded:** `REPORT-contract-64b-r2.md` FK-r2-10/11 (uncommitted at read time) · HEAD-at-report:
+  `46340ef` · DIFFERENT (my own commit). No pin graded by the adversary is inverted.
+- No code/tests/store touched. Standing by.
