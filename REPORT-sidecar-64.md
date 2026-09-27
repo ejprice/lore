@@ -387,3 +387,32 @@ brief project v7 read
   either re-opens the RULING, not the contract.
 - **Graded:** `821be62` (adversary-58-r2) · HEAD-at-report: `03cb6d0` · DIFFERENT (my own commit).
 - No code/tests/store touched. Standing by.
+
+## Task 18 (2026-09-26) — packet 64 amendment 7 (64b-i contract forks, `REPORT-contract-64b.md` §5 @ d8ea4ba) committed `6e42ed1`
+
+- **state:** done. **FK-7 (spec-silent, RULED):** the calibration drift writer is a SYSTEM writer =
+  `FindingLedger.report_system(...)` writing the UNOWNED shape (owner NONE/NONE, scope = project keep via the
+  same `get_or_create_keyed(PROJECT_KEEP_KEY)`), the SAME `_report_fragment` (governed triple parametrised —
+  one builder, two entry points), under `governed_exempt("calibration-drift", statement=fragment.statements[1])`
+  entered in `report_system`'s frame; test-side exempt entry with golden + effect predicate (`owner NONE ∧
+  scope == project keep ∧ area == CALIBRATION_AREA ∧ created_by == DRIFT_CREATED_BY`), `l1_site=False` (the
+  63b-i-a §5.1 Q1 shape), runtime-observed; ONE production caller pinned by call graph; no served verb; a
+  missing project keep ⇒ adapter logs ERROR, boot continues (pinned). The dedupe READ is 64b-ii's: ruled shape
+  = a typed `SystemReader` sentinel under a one-entry construction allowlist (never `None`-means-all).
+  **FK-1:** `subject=` is the ONE identity kwarg ∀ ledgers (`caller=` rejected); the title parameter becomes
+  `title` at the Python seam of `report`/`create_task`/`supersede_task` only; served params/columns/models
+  keep `subject`; pin: `LEDGER_IDENTITY_KWARG == "subject"` == memory's seam name by `inspect.signature`;
+  64a inherits. **FK-2:** the half-pair sweep runs over the DERIVED UNOWNED-LEGACY set (tables whose migrate
+  golden WHERE contains `owner_principal IS NONE`, cross-checked against `LegacyMapping` STRING-UNRESOLVABLE
+  rows) — memory RED@HEAD is the property working; fix owner = lead's call (recommend 64b's builder).
+  **FK-6:** CONFIRMED with the ONE-read mechanism: after a write-class deny, `authorize_guarded` asks
+  `authorize(subject, READ, resource)` on the SAME row → READ denied ⇒ `GovernedInvisible(GovernedDenied)`
+  (additive; 63b-ib memory pin stays green) → the ledger maps to `FindingNotFoundError` byte-identical to
+  nonexistent; READ allowed ⇒ `GovernedDenied`. `authorize_guarded` takes `row_id=` OR `number=` so
+  by-number writes stay ONE read (rider (v) generated over verbs × address kinds). **Sibling filed, not
+  ruled:** memory serves `GovernedDenied` on invisible rows with CONTENT-DERIVED ids — an existence oracle
+  by text hash. **FK-8:** confirmed, no exemption; verb axis derived from the F7 spec dicts. **FK-3:**
+  confirmed; the `row is None` leg is a required generated case. **FK-4:** confirmed; `SET_SCOPE` with
+  `target_scope=None` is a loud typed refusal, never `NoRows`. **FK-5:** confirmed.
+- **Graded:** `d8ea4ba` (contract-64b) · HEAD-at-report: `6e42ed1` · DIFFERENT (my own commit).
+- No code/tests/store touched. Standing by.
