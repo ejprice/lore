@@ -1418,3 +1418,8 @@ Lead `lead-63c-2`, session `63c-20260924`, branch `feat/surreal-unification`. Si
 **Build order (pool 30):** 63c-i-a build → 58 build (§HELD incl. the scanner delta, #501, esc1, the more-itertools dependency) → 64b-i build. Every build serial.
 **Loop costs to report at every INSUFFICIENT:** 63c-i-a contract round 2 (a28→a28b→a28c next); 58 round 3; 64b-i round 1 → r2.
 **Standing:** the lead writes no code; verify in full any commit made without a cold audit; no attribution trailers; directives = lore_comms + a native wake after the seq returns (sidecar-64 and sidecar-63c-2 = native only); concurrent pytest OK (`-n 12` when another is live; the 15 GB host-MemAvailable watchdog stands, operator); never forward `-n` to the gates; end turns with the #486 line until #486 is fixed.
+
+### post-anchor (v6) — sidecar-64 Task 19 delivered; contract-64b-r2 spawned
+- **64 am-8** (53563e7): R8 = one agent read at the seam (am-7 erratum); admin set_scope = any ROW via a scope domain ∀ writers; authorize-before-edge; the r2 SAT base ruled; FK-9 → the typed-call form; survivor classes named. → **contract-64b-r2** SPAWNED (brief `scratchpad/brief-contract-64b-r2.md`). NEXT: its commit → a narrow adversary delta.
+- **58 am-9** (4cb8ce9): all six r3 picks confirmed (claim_task unlisted — am-4/am-7 erratum; whole-tree swallow rule; F-r3-1 → r4; F-r3-3 → pytest-timeout); aligned with 63c am-34. → relayed to contract-58-r3 (#17098 + native).
+- sidecar-64: standing by (Task 19 done).
