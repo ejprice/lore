@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from _engine_shapes import typed_err_entry
 from _reanchor_58_support import (
     ACTION_REANCHORED,
     CLAIMANT,
@@ -422,14 +423,13 @@ class TestTheEngineAndTheDriverStayAtERROR:
         ledger = tier_world.ledger
 
         async def _always_conflicting(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            return {
-                "result": [
-                    {
-                        "status": "ERR",
-                        "result": "Transaction conflict: tier58r3. This transaction can be retried",
-                    }
-                ]
-            }
+            # ⚠ DUAL (packet 63c-i-a a28c, amendment 36 §1.1 — REPORT-contract-63c-i-a-a28c.md §5 U-26):
+            # the forged conflict carries the engine's TYPED kind (``Query`` / ``TransactionConflict``,
+            # measured on 3.2.4) beside the same text, built by the ONE shape builder. It was text-only, and
+            # a text-only ERR is a shape the engine never sends: the driver's retry decision now reads the
+            # kind, so the text-only forgery stopped being a conflict at all. The tier property is unchanged.
+            conflict_text = "Transaction conflict: tier58r3. This transaction can be retried"
+            return {"result": [typed_err_entry(conflict_text)]}
 
         tier_world.monkeypatch.setattr(_txn, "_txn_query_raw", _always_conflicting)
 

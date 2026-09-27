@@ -147,9 +147,14 @@ def _driver_handles(connection: SurrealConnection, env: SurrealEnv) -> dict[str,
 
 
 async def _raise_through(
-    path: str, statement: str, connection: SurrealConnection, env: SurrealEnv
+    path: str,
+    statement: str,
+    connection: SurrealConnection,
+    env: SurrealEnv,
+    params: dict[str, Any] | None = None,
 ) -> BaseException:
-    """Run ``statement`` through ONE driver raise site and return what it raised (fails if nothing did)."""
+    """Run ``statement`` (with bound ``params``, default none — EXTENDED by a28c for its KB-widened class pin)
+    through ONE driver raise site and return what it raised (fails if nothing did)."""
     handles = _driver_handles(connection, env)
     try:
         if path == "run_query":
@@ -158,11 +163,11 @@ async def _raise_through(
                 noun="a28b probe",
                 label="a28b.probe.rejected",
                 statement=statement,
-                params={},
+                params=params or {},
                 logger=logging.getLogger(__name__),
             )
         else:
-            await execute_transaction(f"BEGIN;\n{statement};\nCOMMIT;", {}, **handles)
+            await execute_transaction(f"BEGIN;\n{statement};\nCOMMIT;", params or {}, **handles)
     except BaseException as error:  # noqa: BLE001 - the pin classifies whatever the driver raised
         return error
     pytest.fail(

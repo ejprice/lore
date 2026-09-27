@@ -101,7 +101,14 @@ REGISTERED_FATES: dict[str, tuple[Fate, ...]] = {
     "scout.py::run": (Fate(_LIFECYCLE, "scout", ()), Fate(_LIFECYCLE, "scout", ())),
     "scout.py::start": (Fate(_LIFECYCLE, "scout", ()),),
     "search.py::_enrichment_lines": (Fate(_SERVED, "search", ("returns-named-outcome",)),),
-    "server.py::_comms_register": (Fate(_COMPENSATION, "comms (server)", ("logs>=warning",)),),
+    # ⚠ DUAL (packet 63c-i-a a28c — REPORT-contract-63c-i-a-a28c.md §5 U-27): the row
+    # ``"server.py::_comms_register": (Fate(_COMPENSATION, "comms (server)", ("logs>=warning",)),)`` is
+    # DELETED. The ruled 63c build has NO register compensation (amendment 32 — a28b K5 "no refusal class
+    # compensates", K6 "no register path removes or writes keep state"), so the site this row registered — the
+    # ``except Exception`` around the compensating ``delete_keep`` — does not exist in any correct build, and
+    # the both-ways pin reds a stale row by name. RED at ``169925f`` (the site is still there, now
+    # unregistered) for exactly that reason, owned by ``packet-63c-i-a-a28-contract`` in
+    # ``scripts/pending_contracts.yaml``.
     "server.py::_eager_build_or_operator_safe_error": (
         Fate(_LIFECYCLE, "server startup", ("logs>=warning", "logs-exc_info")),
     ),

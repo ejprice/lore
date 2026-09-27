@@ -48,10 +48,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
+from _engine_shapes import CONFLICT_WORDS, typed_err_entry
 from _surreal_fakes import FakeSurrealStore, fake_surreal_trio
 from _surreal_harness import (
     PRODUCTION_DIM,
@@ -81,7 +82,6 @@ from loremaster.store._txn import (
     _ERROR_CLASS_RETRYABLE_CONFLICT,
     _ERROR_CLASS_UNSPECIFIED,
     _MAX_TXN_CONFLICT_ATTEMPTS,
-    _RETRYABLE_CONFLICT_MARKER,
     TxnFragment,
     _classify_engine_error,
     _FailedStatement,
@@ -126,7 +126,15 @@ from lorescribe.models import Chunk
 from pydantic import SecretStr, ValidationError
 from surrealdb import AsyncSurreal as _RealAsyncSurreal
 from surrealdb import RecordID
-from surrealdb.errors import ErrorKind, ServerError, SurrealError
+from surrealdb.errors import ErrorKind, ServerError, SurrealError, parse_query_error
+
+if TYPE_CHECKING:
+    # 63c-i-a contract a28c (amendment 36): the STATIC reference owning this file's pending pins
+    # (scripts/pending_contracts.yaml, #461's shape) — the typed conflict kind the build lands. Runtime-inert.
+    from loremaster.store._txn import _RETRYABLE_CONFLICT_KIND
+
+    def _ruled_a28c_store() -> object:
+        return _RETRYABLE_CONFLICT_KIND
 
 # A factory (yielded by the ``two_stores`` fixture) that builds one more ready
 # store on the SAME database — a second live connection for the isolation test.
@@ -947,11 +955,17 @@ class TestDomainRejectionErrorType:
     def test_a_governed_conflict_rollback_is_a_domain_rejection_never_retried(self) -> None:
         """§2.5 point 2 / rider iii — ``_rollback_verdict`` is UNCHANGED: a governed-conflict THROW is
         a DOMAIN rejection (``is_conflict=False``), so it is NEVER retried (retrying re-runs the same
-        stale guard and THROWs again). POSITIVE CONTROL: a ``can be retried`` rollback IS a conflict.
-        GREEN at HEAD (the verdict already routes a non-``can be retried`` THROW to the domain branch)
-        — a guard that reds if a wrong build ever flips a governed conflict to retryable."""
-        governed_stmt = _FailedStatement(
-            index=0, raw_result="An error occurred: governed_conflict:memory:r1"
+        stale guard and THROWs again). POSITIVE CONTROL: a genuine retryable-conflict rollback IS a
+        conflict (DUAL a28c, amendment 36: the verdict reads its TYPED kind, ``TransactionConflict``, which
+        the engine sends beside the ``can be retried`` words; it once read the words). RED at ``169925f``
+        (the ruled ``typed`` carrier is unbuilt; registry-owned), GREEN on a correct build — a guard that
+        reds if a wrong build ever flips a governed conflict to retryable."""
+        # a28c DUAL (amendment 36): the verdict reads the TYPED statement, so each carries the engine's parse.
+        governed_text = "An error occurred: governed_conflict:memory:r1"
+        # (an ``Any`` alias: the ruled ``typed`` carrier is owned by the ONE TYPE_CHECKING reference)
+        failed_statement: Any = _FailedStatement
+        governed_stmt = failed_statement(
+            index=0, raw_result=governed_text, typed=parse_query_error(typed_err_entry(governed_text))
         )
         is_conflict, root_cause = _rollback_verdict([governed_stmt])
         assert is_conflict is False, (
@@ -959,8 +973,9 @@ class TestDomainRejectionErrorType:
             "against the same stale guard forever (§2.5 point 2 / rider iii)"
         )
         assert root_cause is governed_stmt  # the domain root cause is the THROW entry itself
-        retry_stmt = _FailedStatement(
-            index=0, raw_result=f"Cannot COMMIT: Transaction conflict; {_RETRYABLE_CONFLICT_MARKER}"
+        retry_text = f"Cannot COMMIT: Transaction conflict; {CONFLICT_WORDS}"
+        retry_stmt = failed_statement(
+            index=0, raw_result=retry_text, typed=parse_query_error(typed_err_entry(retry_text))
         )
         assert _rollback_verdict([retry_stmt])[0] is True, (
             "positive control: a genuine retryable conflict must still classify as is_conflict=True"
@@ -2402,8 +2417,9 @@ class TestTxnSdkKeyErrorClassification:
 #      CLASS if extractable (e.g. "assert violation", "field coercion"), and
 #      a "see the server log" correlation hint — but NEVER the raw engine
 #      text or any value it could carry.
-#   3. The retryable-conflict detection (:data:`_RETRYABLE_CONFLICT_MARKER`)
-#      still reads the RAW text internally — only the RAISED message changed.
+#   3. The retryable-conflict detection reads the engine's TYPED kind (a28c DUAL, amendment 36: it
+#      used to read the RAW text via the deleted ``_RETRYABLE_CONFLICT_MARKER``) — only the RAISED
+#      message is this block's subject.
 #
 # Every case here is fully DI'd against a scripted fake connection (the same
 # pattern as ``TestTxnSdkKeyErrorClassification`` above) — no live server, no
@@ -2458,9 +2474,9 @@ _COERCION_ENGINE_TEXT = (
 )
 
 # LIVE retryable-conflict text (the COMMIT entry of a write-write race).
+# ⚠ DUAL (a28c, amendment 36): was built from `_txn._RETRYABLE_CONFLICT_MARKER` (deleted).
 _CONFLICT_ENGINE_TEXT = (
-    f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction "
-    f"{_RETRYABLE_CONFLICT_MARKER}"
+    f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction {CONFLICT_WORDS}"
 )
 
 # LIVE COMMIT-abort notice: what the COMMIT entry says once any earlier
@@ -2488,8 +2504,10 @@ def _rolled_back_response(*results: str | None) -> dict[str, Any]:
     ERRs, then the COMMIT-aborted ERR) that a single-ERR-only builder could
     never model, which is exactly how finding #93 stayed green.
     """
+    # a28c DUAL (amendment 36): each ERR carries the engine's typed ``kind`` / ``details`` (was text-only — a
+    # shape the engine never sends), built in ONE place (``_engine_shapes.typed_err_entry``).
     entries: list[dict[str, Any]] = [
-        dict(_OK_STATEMENT) if result_text is None else {"status": "ERR", "result": result_text}
+        dict(_OK_STATEMENT) if result_text is None else typed_err_entry(result_text)
         for result_text in results
     ]
     return {"result": entries}

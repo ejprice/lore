@@ -1254,37 +1254,59 @@ class TestAWrongShapedDependencyFailsClosed63cIAa28:
 # =========================================================================== #
 
 #: The RULED field SPEC — amendment 30's six + amendment 31's two, name → annotation, VERBATIM from the
-#: rulings.
-#: Read ONLY by the SHAPE pin (a spec check: deriving a shape from the model it checks is a tautology). Every
-#: BEHAVIOUR pin below iterates the model's OWN ``model_fields`` (amendment 32 §3), and every population dict
-#: is
-#: completeness-checked against ``model_fields`` — a new field reds each population by name.
-_OWNER_CLASSIFICATIONS = Literal["operator", "foreign", "mixed", "unclassified"]
-_RULED_FIELD_SPEC: dict[str, object] = {
-    "unscoped_agents": int | None,
-    "owned_but_unscoped_agents": int | None,
-    "scoped_but_ownerless_agents": int | None,
-    "dangling_sender_messages": int | None,
-    "owned_but_unscoped_messages": int | None,
-    "scoped_but_ownerless_messages": int | None,
-    "distinct_owner_principals": int | None,
-    "owner_classification": _OWNER_CLASSIFICATIONS | None,
+#: rulings. Read ONLY by the SHAPE pin (a spec check: deriving a shape from the model it checks is a
+#: tautology). Every BEHAVIOUR pin below iterates the model's OWN ``model_fields`` (amendment 32 §3), and
+#: every population dict is completeness-checked against ``model_fields`` — a new field reds each population
+#: by name. a28c (amendment 34 §2 + §3, amendment 35 §4 R-4): the classification gains ``"empty"`` (the agent
+#: read RAN and found nothing to classify — ``None`` keeps ONE meaning, "not read"); the unresolved-operator
+#: counts are FIELDS (``None`` iff operator resolution was not attempted); every field carries its READ TAG
+#: (``json_schema_extra={"read": ...}``) — the gating pin's partition is DERIVED from the tags (the
+#: name-suffix rule and its vacuous ``_read_of`` are gone). DUAL: was eight fields, four members, no tags.
+_OWNER_CLASSIFICATIONS = Literal["operator", "foreign", "mixed", "unclassified", "empty"]
+_RULED_FIELD_SPEC: dict[str, tuple[object, str]] = {
+    "unscoped_agents": (int | None, "agent"),
+    "owned_but_unscoped_agents": (int | None, "agent"),
+    "scoped_but_ownerless_agents": (int | None, "agent"),
+    "dangling_sender_messages": (int | None, "message"),
+    "owned_but_unscoped_messages": (int | None, "message"),
+    "scoped_but_ownerless_messages": (int | None, "message"),
+    "distinct_owner_principals": (int | None, "agent"),
+    "owner_classification": (_OWNER_CLASSIFICATIONS | None, "agent"),
+    "total_principals": (int | None, "operator"),
+    "admin_principals": (int | None, "operator"),
 }
 #: THE perturbation of an ``int | None`` field (pin (1)): large enough that ``base + _PERTURBATION`` collides
 #: with
 #: no fixture count, no id sample and no citation.
 _PERTURBATION = 1000
-#: FK-a28b-2 (report §F): amendment 31's owner sentences — "owned by the operator …" names NO count; "owned by
-#: N
-#: other principal(s) …" names ``distinct_owner_principals``; "owners not classified …" names none. ``mixed``
-#: is
-#: unruled (my pick: it names N). GENERATED over the enum — completeness-checked against ``typing.get_args``.
-_OWNER_SENTENCE_STATES_N: dict[str, bool] = {
-    "operator": False,
-    "foreign": True,
-    "mixed": True,
-    "unclassified": False,
+#: amendment 31's owner sentences — "owned by the operator …" names NO count; "owned by N other principal(s)
+#: …" names ``distinct_owner_principals``. GENERATED over the enum — completeness-checked against
+#: ``typing.get_args``. a28c (amendment 34 §2/§3): which COUNT FIELDS each classification's sentence states —
+#: ``mixed`` states ``distinct_owner_principals`` as the TOTAL (its only integer); ``unclassified`` states the
+#: two resolution counts (``(N principals, M admins)`` — now fields, no pin-(2) carve-out); ``empty``
+#: contributes NO sentence. DUAL: was ``_OWNER_SENTENCE_STATES_N`` (a bool for ``distinct_owner_principals``
+#: alone).
+_OWNER_SENTENCE_STATES: dict[str, frozenset[str]] = {
+    "operator": frozenset(),
+    "foreign": frozenset({"distinct_owner_principals"}),
+    "mixed": frozenset({"distinct_owner_principals"}),
+    "unclassified": frozenset(),
+    "empty": frozenset(),
 }
+#: The count fields whose statement depends on the classification (every OTHER measured non-zero int is
+#: stated).
+_CLASSIFICATION_KEYED_COUNTS = frozenset().union(*_OWNER_SENTENCE_STATES.values())
+#: a28c (amendment 36 FK-8): the two operator-resolution counts are stated iff they describe an UNRESOLVED
+#: operator — THE ruled resolution rule (packet 63b-ii-a ruling §4.C,
+#: ``principals.resolve_operator_principal``): the one admin, else the one principal, else unresolved. Derived
+#: from the two FIELDS (whatever refusal renders them — the verb's unclassified sentence or a leg's), never
+#: keyed on the classification.
+_OPERATOR_COUNTS = ("total_principals", "admin_principals")
+
+
+def _operator_counts_describe_an_unresolved_operator(expected: dict[str, Any]) -> bool:
+    total, admins = expected.get("total_principals"), expected.get("admin_principals")
+    return isinstance(total, int) and isinstance(admins, int) and admins != 1 and total != 1
 
 
 def _counts_model() -> Any:
@@ -1337,27 +1359,40 @@ def _perturbation_kind(annotation: object) -> str | None:
     return None
 
 
-def _perturbed_value(annotation: object, value: Any) -> Any:
-    """The value pin (1) moves ``value`` to, chosen BY ANNOTATION: an int moves by ``_PERTURBATION``; a
-    Literal
-    member swaps to the next member (derived); anything else is returned unchanged."""
+def _perturbed_value(model: type[BaseModel], field: str, data: dict[str, Any]) -> Any:
+    """The value pin (1) moves ``data[field]`` to, chosen BY ANNOTATION: an int moves by ``_PERTURBATION``; a
+    Literal member swaps to the next member (derived) that THE model ACCEPTS beside ``data``'s other values —
+    a28c (FK-a28c-2): amendment 34 §2's invariant validator refuses a swap across the empty / non-empty line,
+    so the swap target is the next LEGAL member (``"empty"`` has none: its "no sentence" rule is pinned
+    directly in ``test_fixwave_a28c_63c_i_a.py``). Anything else is returned unchanged."""
+    from pydantic import ValidationError  # noqa: PLC0415 - scaffold-local
+
+    value = data[field]
     if isinstance(value, int) and not isinstance(value, bool):
         return value + _PERTURBATION
-    members = _literal_members(annotation)
+    members = _literal_members(model.model_fields[field].annotation)
     if value in members:
-        return members[(members.index(value) + 1) % len(members)]
+        for step in range(1, len(members)):
+            candidate = members[(members.index(value) + step) % len(members)]
+            try:
+                model(**{**data, field: candidate})
+            except ValidationError:
+                continue
+            return candidate
     return value
 
 
 def _states_its_count(field: str, expected: dict[str, Any]) -> bool:
     """Whether the ruled prose names ``field``'s value (pin (1) movement / pin (2) ⊇): every measured non-zero
     int does, except ``distinct_owner_principals`` under a classification whose ruled sentence names no count
-    (FK-a28b-2, ``_OWNER_SENTENCE_STATES_N``)."""
+    (FK-a28b-2 / amendment 34, ``_OWNER_SENTENCE_STATES``)."""
     value = expected.get(field)
     if not isinstance(value, int) or isinstance(value, bool) or value == 0:
         return False
-    if field == "distinct_owner_principals":
-        return _OWNER_SENTENCE_STATES_N.get(str(expected.get("owner_classification")), False)
+    if field in _OPERATOR_COUNTS:
+        return _operator_counts_describe_an_unresolved_operator(expected)
+    if field in _CLASSIFICATION_KEYED_COUNTS:
+        return field in _OWNER_SENTENCE_STATES.get(str(expected.get("owner_classification")), frozenset())
     return True
 
 
@@ -1368,7 +1403,7 @@ def _collection_time_fields() -> dict[str, object]:
     every case then reds by name on ``_counts_model``)."""
     model = getattr(governed_module, "MigratePreconditionCounts", None)
     if model is None:
-        return dict(_RULED_FIELD_SPEC)
+        return {name: annotation for name, (annotation, _read) in _RULED_FIELD_SPEC.items()}
     return {name: info.annotation for name, info in model.model_fields.items()}
 
 
@@ -1466,6 +1501,14 @@ async def _seed_unclassified_owner_population(world: Any) -> None:
         )
 
 
+async def _seed_leg_unresolved_operator_population(world: Any) -> None:
+    """P_leg_unresolved (a28c, amendment 36 FK-8) — a SECOND admin (the operator is unresolvable: two admins,
+    two principals) and ONE legacy memory row; no agent rows at all ⇒ the verb passes, the memory leg's
+    resolution fails."""
+    await world.principal_store.create(email="second-admin-leg@example.com", role="admin")
+    await seed_memory_legacy(world.connection, row_id="leg_unresolved_memory", dim=_DIM)
+
+
 #: population → (seeder, table, expected fields — COMPLETE over ``model_fields``, checked by every pin).
 #: P_message is FORK-2's discriminating population.
 _POPULATIONS: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, Any]]] = {
@@ -1481,6 +1524,8 @@ _POPULATIONS: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, An
             "scoped_but_ownerless_messages": None,
             "distinct_owner_principals": 1,
             "owner_classification": "operator",
+            "total_principals": 1,
+            "admin_principals": 1,
         },
     ),
     "P_foreign": (
@@ -1495,6 +1540,8 @@ _POPULATIONS: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, An
             "scoped_but_ownerless_messages": None,
             "distinct_owner_principals": 2,
             "owner_classification": "foreign",
+            "total_principals": 3,
+            "admin_principals": 1,
         },
     ),
     "P_mixed": (
@@ -1509,6 +1556,8 @@ _POPULATIONS: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, An
             "scoped_but_ownerless_messages": None,
             "distinct_owner_principals": 3,
             "owner_classification": "mixed",
+            "total_principals": 3,
+            "admin_principals": 1,
         },
     ),
     "P_message": (
@@ -1522,32 +1571,34 @@ _POPULATIONS: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, An
             "owned_but_unscoped_messages": _FORK2_COUNTS["half_i"],
             "scoped_but_ownerless_messages": _FORK2_COUNTS["half_ii"],
             "distinct_owner_principals": 0,
-            "owner_classification": None,
+            "owner_classification": "empty",
+            "total_principals": None,
+            "admin_principals": None,
         },
     ),
-}
-
-#: RS-1's measured counts (the audit's fixture: one ghost-sender legacy message, one owned-but-unscoped
-#: message, one sound legacy message; every agent migrated — so the agent facts were MEASURED as ``0``,
-#: amendment 32 §2 Reading A; no owned-but-unscoped agent, so no owner to classify — FK-a28b-2).
-_RS1_COUNTS: dict[str, Any] = {
-    "unscoped_agents": 0,
-    "owned_but_unscoped_agents": 0,
-    "scoped_but_ownerless_agents": 0,
-    "dangling_sender_messages": 1,
-    "owned_but_unscoped_messages": 1,
-    "scoped_but_ownerless_messages": 0,
-    "distinct_owner_principals": 0,
-    "owner_classification": None,
-}
-
-#: FK-a28b-3 (report §F): the UNCLASSIFIED population serves the unresolved-operator teaching, whose principal
-#: /
-#: admin counts ("(N principals, M admins)") are no field — so it is EXCLUDED from pin (2)'s ⊆ leg (amendment
-#: 31
-#: is silent; surfaced) and exercised by the served-fields pin and pin (1) (the classification swap must move
-#: the owner sentence even with no operator resolved: "no prose branch keys on anything but the enum").
-_UNCLASSIFIED_POPULATION: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, dict[str, Any]]] = {
+    # a28c (amendment 36 FK-8): a LEG-level unresolved operator — no verb-level problem, a legacy memory row,
+    # a SECOND admin: the memory leg's resolution fails, and its refusal's "(N principals, M admins)" are the
+    # two FIELDS (the ONE resolver, the ONE model). Pin (2) holds for it; there is no carve-out anywhere.
+    "P_leg_unresolved": (
+        _seed_leg_unresolved_operator_population,
+        MEMORY_TABLE,
+        {
+            "unscoped_agents": 0,
+            "owned_but_unscoped_agents": 0,
+            "scoped_but_ownerless_agents": 0,
+            "dangling_sender_messages": None,
+            "owned_but_unscoped_messages": None,
+            "scoped_but_ownerless_messages": None,
+            "distinct_owner_principals": 0,
+            "owner_classification": "empty",
+            "total_principals": 2,
+            "admin_principals": 2,
+        },
+    ),
+    # a28c (amendment 34 §3): the UNCLASSIFIED population joins the populations — its "(N principals, M
+    # admins)" are FIELDS now, so pin (2) holds for it with NO carve-out. DUAL: was
+    # ``_UNCLASSIFIED_POPULATION``, excluded from pin (2) (FK-a28b-3 Reading A, superseded by amendment 34
+    # Reading B).
     "P_unclassified": (
         _seed_unclassified_owner_population,
         AGENT_TABLE,
@@ -1560,10 +1611,31 @@ _UNCLASSIFIED_POPULATION: dict[str, tuple[Callable[[Any], Awaitable[Any]], str, 
             "scoped_but_ownerless_messages": None,
             "distinct_owner_principals": 2,
             "owner_classification": "unclassified",
+            "total_principals": 4,
+            "admin_principals": 2,
         },
     ),
 }
-_ALL_POPULATIONS = {**_POPULATIONS, **_UNCLASSIFIED_POPULATION}
+
+#: RS-1's measured counts (the audit's fixture: one ghost-sender legacy message, one owned-but-unscoped
+#: message, one sound legacy message; every agent migrated — so the agent facts were MEASURED as ``0``,
+#: amendment 32 §2 Reading A; no owned-but-unscoped agent — the read RAN and found nothing to classify:
+#: ``"empty"``, and operator resolution was not attempted — amendment 34 §2/§3).
+_RS1_COUNTS: dict[str, Any] = {
+    "unscoped_agents": 0,
+    "owned_but_unscoped_agents": 0,
+    "scoped_but_ownerless_agents": 0,
+    "dangling_sender_messages": 1,
+    "owned_but_unscoped_messages": 1,
+    "scoped_but_ownerless_messages": 0,
+    "distinct_owner_principals": 0,
+    "owner_classification": "empty",
+    "total_principals": None,
+    "admin_principals": None,
+}
+
+#: a28c: every population, one table (the unclassified carve-out is gone — amendment 34 §3).
+_ALL_POPULATIONS = _POPULATIONS
 
 #: Integers the served text may carry that are NOT counts (amendment 30: "the bounded id samples … are the
 #: ONLY
@@ -1607,14 +1679,12 @@ def _perturbed_counts_class(real: type[BaseModel], field: str) -> type[BaseModel
     served model moves with it; a reason composed from private values does not."""
     from pydantic import model_validator  # noqa: PLC0415 - scaffold-local
 
-    annotation = real.model_fields[field].annotation
-
     class PerturbedCounts(real):  # type: ignore[misc, valid-type]
         @model_validator(mode="before")
         @classmethod
         def _perturb(cls, data: Any) -> Any:
             if isinstance(data, dict) and field in data:
-                return {**data, field: _perturbed_value(annotation, data[field])}
+                return {**data, field: _perturbed_value(real, field, data)}
             return data
 
     return PerturbedCounts
@@ -1631,14 +1701,12 @@ def _assert_complete(label: str, expected: dict[str, Any]) -> None:
 
 class TestTheMeasuredCountsAreTypedFields63cIAa28:
     def test_am30_the_counts_model_has_exactly_the_ruled_fields(self) -> None:
-        """⚠ RED at ``169925f`` (no model). amendments 30 + 31: ``MigratePreconditionCounts`` carries EXACTLY
-        the
-        eight ruled fields, in the ruled order, each with its ruled annotation (``int | None`` ×7 and the
-        owner-classification ``Literal[...] | None``); every field defaults to ``None`` (not measured); it is
+        """⚠ RED at ``169925f`` (no model). amendments 30 + 31 + 34: ``MigratePreconditionCounts`` carries
+        EXACTLY the ruled fields (``_RULED_FIELD_SPEC``), in the ruled order, each with its ruled annotation
+        and its ruled READ TAG (amendment 35 §4 R-4); every field defaults to ``None`` (not measured); it is
         ``extra="forbid"`` (an unknown count is REFUSED, never carried); ``MigrateGovernedResult`` carries it
-        as
-        ``preconditions``, defaulting to ``None``. DUAL (amendment 32 §3 F-1): was six names; the values below
-        are DERIVED from the spec's annotations, never a hand-typed six-element list."""
+        as ``preconditions``, defaulting to ``None``. DUAL (amendment 32 §3 F-1): was six names; the values
+        below are DERIVED from the spec's annotations, never a hand-typed six-element list."""
         from pydantic import ValidationError  # noqa: PLC0415 - scaffold-local
 
         model = _counts_model()
@@ -1646,15 +1714,19 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
             f"amendments 30/31 name exactly these fields, in this order: {tuple(_RULED_FIELD_SPEC)}; got "
             f"{tuple(model.model_fields)}"
         )
-        for name, annotation in _RULED_FIELD_SPEC.items():
+        for name, (annotation, read) in _RULED_FIELD_SPEC.items():
             assert model.model_fields[name].annotation == annotation, (
                 f"{name}: ruled annotation {annotation!r}, got {model.model_fields[name].annotation!r}"
+            )
+            assert _read_tag(model, name) == read, (
+                f"{name}: amendment 35 §4 (R-4) — the field's read tag must be {read!r} "
+                f"(`json_schema_extra={{'read': {read!r}}}`), got {_read_tag(model, name)!r}"
             )
         all_none = model()
         assert all(getattr(all_none, name) is None for name in _RULED_FIELD_SPEC), all_none
         measured = {
             name: (index if _perturbation_kind(annotation) == "int" else _literal_members(annotation)[0])
-            for index, (name, annotation) in enumerate(_RULED_FIELD_SPEC.items())
+            for index, (name, (annotation, _read)) in enumerate(_RULED_FIELD_SPEC.items())
         }
         assert {name: getattr(model(**measured), name) for name in _RULED_FIELD_SPEC} == measured
         with pytest.raises(ValidationError):
@@ -1683,9 +1755,12 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
         members = {
             member for info in model.model_fields.values() for member in _literal_members(info.annotation)
         }
-        assert members == set(_OWNER_SENTENCE_STATES_N), (
+        assert members == set(_OWNER_SENTENCE_STATES), (
             "the owner-sentence table must cover exactly the classification members: "
-            f"enum {sorted(members)}, table {sorted(_OWNER_SENTENCE_STATES_N)}"
+            f"enum {sorted(members)}, table {sorted(_OWNER_SENTENCE_STATES)}"
+        )
+        assert _CLASSIFICATION_KEYED_COUNTS <= set(model.model_fields), (
+            f"the owner-sentence table names counts the model lacks: {sorted(_CLASSIFICATION_KEYED_COUNTS)}"
         )
 
     @pytest.mark.parametrize("population", sorted(_ALL_POPULATIONS))
@@ -1720,7 +1795,10 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
                     "owned_but_unscoped_messages": None,
                     "scoped_but_ownerless_messages": None,
                     "distinct_owner_principals": 0,
-                    "owner_classification": None,
+                    "owner_classification": "empty",
+                    # a28c (amendment 36 FK-8): the memory LEG resolved the operator — measured.
+                    "total_principals": 1,
+                    "admin_principals": 1,
                 },
                 id="clean-memory-proceeds",
             ),
@@ -1748,7 +1826,10 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
             for name, info in model.model_fields.items()
             if not any(
                 _states_its_count(name, expected)
-                or (_perturbation_kind(info.annotation) == "literal" and expected.get(name) is not None)
+                or (
+                    _perturbation_kind(info.annotation) == "literal"
+                    and expected.get(name) not in (None, "empty")
+                )
                 for _seed, _table, expected in _ALL_POPULATIONS.values()
             )
         ]
@@ -1761,7 +1842,7 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
             for population, (_seed, _table, expected) in sorted(_ALL_POPULATIONS.items())
             for field, annotation in _collection_time_fields().items()
             if _states_its_count(field, expected)
-            or (_literal_members(annotation) and expected.get(field) is not None)
+            or (_literal_members(annotation) and expected.get(field) not in (None, "empty"))
         ],
     )
     async def test_am30_pin1_perturbing_a_field_moves_the_reason(
@@ -1793,7 +1874,7 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
                 )
                 result = await world.migrate(table)
             served = _counts(result)
-            moved = _perturbed_value(model.model_fields[field].annotation, expected[field])
+            moved = _perturbed_value(model, field, expected)
             assert served is not None and served[field] == moved, (
                 f"{population}: the perturbation never LANDED on the served field (patched {patched}) — the "
                 f"counts must be constructed through THE model's constructor: {served!r}"
@@ -1877,13 +1958,17 @@ class TestTheMeasuredCountsAreTypedFields63cIAa28:
 # half-pairs it measured. (Amendment 31 FK-a28-4 is an ERRATUM, both halves — amendment 32 §2.)
 # =========================================================================== #
 
-#: The two gated READS (amendment 32 §2: "gated by exactly two facts"): the table each read needs DEFINED, and
-#: the ``--table`` it additionally needs (``None`` = every table). A field belongs to the message read iff its
-#: name ends ``_messages`` — every other field is an agent fact (distinct owners and the classification are
-#: read from the agent rows); the partition is completeness-checked against ``model_fields`` below.
+#: The gated READS (amendment 32 §2 + amendment 34 §3): the table each read needs DEFINED, and the ``--table``
+#: it additionally needs (``None`` = every table). ``operator`` = the precondition's operator resolution,
+#: which runs only when the AGENT read ran and found owned-but-unscoped rows (amendment 34 §3). A field's read
+#: is its OWN TAG (``json_schema_extra={"read": ...}`` — amendment 35 §4 R-4), never its name; the partition
+#: is completeness-checked below. DUAL: was two reads keyed by a ``*_messages`` NAME-SUFFIX rule
+#: (``_read_of``), whose completeness pin was vacuous (a total function always partitions — adversary-a28b
+#: R-4).
 _GATED_READS: dict[str, tuple[str, str | None]] = {
     "agent": (AGENT_TABLE, None),
     "message": (MESSAGE_TABLE, MESSAGE_TABLE),
+    "operator": (AGENT_TABLE, None),
 }
 #: The four store shapes (amendment 32 §2.2): which of the two gated tables are REMOVED from the store.
 _STORE_SHAPES: dict[str, tuple[str, ...]] = {
@@ -1899,14 +1984,34 @@ _AGENT_HALF_I_MARKER = f"agent row(s) {_HALF_I_MARKER}"
 _MESSAGE_HALF_I_MARKER = f"message row(s) {_HALF_I_MARKER}"
 
 
-def _read_of(field: str) -> str:
-    """Which gated read measures ``field`` (see ``_GATED_READS``)."""
-    return "message" if field.endswith("_messages") else "agent"
+def _read_tag(model: type[BaseModel], field: str) -> str | None:
+    """THE read that measures ``field`` — its own ``json_schema_extra`` ``read`` tag (amendment 35 §4 R-4)."""
+    extra = model.model_fields[field].json_schema_extra
+    return extra.get("read") if isinstance(extra, dict) else None  # type: ignore[return-value]
 
 
-def _read_ran(read: str, table: str, removed: tuple[str, ...]) -> bool:
+def _read_ran(read: str, table: str, removed: tuple[str, ...], *, resolved: bool) -> bool:
+    """Whether ``read`` ran on this call. The agent / message reads are gated by the store shape and the
+    table; the OPERATOR read is whatever resolution the call performed (amendment 36 FK-8: precondition OR
+    leg) — OBSERVED by the caller (``resolved``: the principal listing the ONE resolver performs), never
+    re-derived."""
+    if read == "operator":
+        return resolved
     needs_defined, needs_table = _GATED_READS[read]
     return needs_defined not in removed and (needs_table is None or table == needs_table)
+
+
+def _count_principal_listings(monkeypatch: pytest.MonkeyPatch, principal_store: Any) -> dict[str, int]:
+    """Count THE principal listing operator resolution performs (``PrincipalStore.list``)."""
+    real = principal_store.list
+    calls = {"list": 0}
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        calls["list"] += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(principal_store, "list", counting)
+    return calls
 
 
 async def _seed_both_half_pairs(world: Any, *, agent_rows: int, message_rows: int) -> None:
@@ -1953,51 +2058,61 @@ async def _seed_message_half_pair_behind_a_migratable_agent(world: Any, *, messa
 
 class TestAFieldIsNoneIffItsReadWasGatedOff63cIAa28b:
     def test_am32_the_read_partition_covers_every_field(self) -> None:
-        """⚠ RED at ``169925f`` (no model). COMPLETENESS of the gating pin's domain: every ``model_fields``
-        member belongs to exactly one of the two gated reads, and both reads own ≥1 field."""
-        fields = tuple(_counts_model().model_fields)
-        owners = {read: [field for field in fields if _read_of(field) == read] for read in _GATED_READS}
+        """⚠ RED at ``169925f`` (no model). COMPLETENESS of the gating pin's domain, DERIVED from the tags
+        (amendment 35 §4 R-4): every ``model_fields`` member carries a read tag naming one of the gated reads
+        (a field without a tag, or with an unknown one, reds by name), and every gated read owns ≥1 field.
+        DUAL: was a name-suffix rule, total by construction — so its completeness leg could never fail
+        (adversary-a28b R-4)."""
+        model = _counts_model()
+        tags = {field: _read_tag(model, field) for field in model.model_fields}
+        untagged = {field: tag for field, tag in tags.items() if tag not in _GATED_READS}
+        assert not untagged, (
+            f"fields with no (or an unknown) read tag: {untagged} — reads: {sorted(_GATED_READS)}"
+        )
+        owners = {read: sorted(field for field, tag in tags.items() if tag == read) for read in _GATED_READS}
         assert all(owners.values()), f"a gated read owns no field: {owners}"
-        assert sorted(field for group in owners.values() for field in group) == sorted(fields), owners
 
     @pytest.mark.parametrize("shape", sorted(_STORE_SHAPES))
     @pytest.mark.parametrize("table", _LEG_TABLES)
-    async def test_am32_a_field_is_None_iff_its_read_was_gated_off(self, table: str, shape: str) -> None:
+    async def test_am32_a_field_is_None_iff_its_read_was_gated_off(
+        self, monkeypatch: pytest.MonkeyPatch, table: str, shape: str
+    ) -> None:
         """⚠ RED at ``169925f`` (no field). amendment 32 §2.2, GENERATED over ``{agent, memory, message}`` ×
         the four store shapes (the two gated tables REMOVED or not; a memory-only store is ``INFO FOR DB``
         without ``agent``): ∀ ``model_fields``, the served field is ``None`` iff its read was gated off — a
         clean single-principal store (the VALUE of a measured count is not this pin's clause — removing
-        ``agent`` makes the legacy message's sender dangle, and that IS measured); ``owner_classification`` is
-        ``None``
-        throughout (no owner to classify — FK-a28b-2). Where the verb RAISES, the pin requires the raise to
-        come only when the ``--table`` target itself is undefined (the leg reads its own table — report
-        residual R-a28b-3), never a raise from the precondition read."""
+        ``agent`` makes the legacy message's sender dangle, and that IS measured). a28c: the read of each
+        field is its TAG (R-4); ``owner_classification`` is NO exception (amendment 34 §2: ``"empty"`` when
+        the agent read ran, ``None`` only when it was gated off — the a28b name exemption is DELETED,
+        adversary-a28b §AM34 row 2); the operator-resolution counts are ``None`` here (nothing
+        owned-but-unscoped → resolution not attempted). F-5 (amendment 34 §4): the verb NEVER raises — an
+        undefined ``--table`` target is the typed ``table_defined=False`` answer (DUAL: the a28b clause
+        TOLERATED exactly that raise — a pin-the-miss with no trigger, amendment 34's own words)."""
         removed = _STORE_SHAPES[shape]
         async with a19a._governed_world() as world:
             await a19a._seed_clean_single_principal_store(world)
             for gone in removed:
                 await run(world.connection, f"REMOVE TABLE {gone}")
-            try:
-                result = await world.migrate(table)
-            except SurrealStoreError as error:
-                assert table in removed, (
-                    f"--table {table} on a {shape} store RAISED {type(error).__name__}: {error} — only a leg "
-                    "whose OWN target table is undefined may raise; the precondition read is gated"
-                )
-                return
+            listings = _count_principal_listings(monkeypatch, world.principal_store)
+            result = await world.migrate(table)
+            assert getattr(result, "table_defined", None) is (table not in removed), (
+                f"--table {table} on a {shape} store: amendment 34 §4 — `table_defined` is the measured "
+                "answer "
+                f"(the target is {'UNDEFINED' if table in removed else 'defined'}): {result!r}"
+            )
+            model = _counts_model()
             served = _counts(result)
             assert served is not None, f"{table}/{shape}: a valid table must serve preconditions: {result!r}"
             wrong = {
                 field: value
                 for field, value in served.items()
-                if field != "owner_classification"
-                and (value is None) == _read_ran(_read_of(field), table, removed)
+                if (value is None)
+                == _read_ran(str(_read_tag(model, field)), table, removed, resolved=listings["list"] > 0)
             }
             assert not wrong, (
                 f"--table {table} on a {shape} store: fields {wrong} break 'None iff the read was gated off' "
-                f"(amendment 32 §2.1) — served {served!r}"
+                f"(amendment 32 §2.1; the read = the field's tag, amendment 35 §4) — served {served!r}"
             )
-            assert served["owner_classification"] is None, served
 
     async def test_am32_a_verb_level_refusal_on_message_names_every_measured_problem(self) -> None:
         """⚠ RED at ``169925f``. amendment 32 §2.2 (i): an agent half-pair (2) AND a message half-pair (3) on
@@ -2091,7 +2206,9 @@ class TestAFieldIsNoneIffItsReadWasGatedOff63cIAa28b:
                 "owned_but_unscoped_messages": 3,
                 "scoped_but_ownerless_messages": 0,
                 "distinct_owner_principals": 0,
-                "owner_classification": None,
+                "owner_classification": "empty",
+                "total_principals": None,
+                "admin_principals": None,
             }
             _assert_complete("message-leg refusal", expected)
             assert served == expected, f"served {served!r}, measured {expected!r}"
@@ -2114,6 +2231,7 @@ class TestAFieldIsNoneIffItsReadWasGatedOff63cIAa28b:
             )
             if table == MESSAGE_TABLE:
                 assert (await world.migrate(AGENT_TABLE)).refused is False
+            principals_now = await world.principal_store.list()
             result = await world.migrate(table)
             assert result.refused is False, result
             served = _counts(result)
@@ -2126,7 +2244,11 @@ class TestAFieldIsNoneIffItsReadWasGatedOff63cIAa28b:
                 "owned_but_unscoped_messages": 0 if table == MESSAGE_TABLE else None,
                 "scoped_but_ownerless_messages": 0 if table == MESSAGE_TABLE else None,
                 "distinct_owner_principals": 0,
-                "owner_classification": None,
+                "owner_classification": "empty",
+                # a28c (amendment 36 FK-8): the proceeding leg resolved the operator — the counts it resolved
+                # over, DERIVED from the store's own principal rows (the fixture seeds sender principals too).
+                "total_principals": len(principals_now),
+                "admin_principals": sum(1 for principal in principals_now if principal.role == "admin"),
             }
             _assert_complete(f"success --table {table}", expected)
             assert served == expected, f"--table {table}: served {served!r}, measured {expected!r}"

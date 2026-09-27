@@ -39,6 +39,7 @@ from _governed_contract import (
     member,
     read_filter_ids,
     seed_memory_legacy,
+    seed_message_legacy,
     store_handle,
 )
 from _surreal_harness import connect_admin, drop_database, make_env, run, unique_database
@@ -253,6 +254,16 @@ class TestTheAgentFirstOrderIsChecked:
         # ignores agents, so this ADD does not change the RED/GREEN-at-HEAD verdict; it only makes the
         # refuse REAL on the built path.
         await registry.register("ag_legacy_none_owner", session="s1", role="builder")
+        # ⚠ DUAL (packet 63c-i-a a28c, amendment 34 §4 — REPORT-contract-63c-i-a-a28c.md §5 U-25): the
+        # ``message`` table is now DEFINED (the production DDL) and holds ONE legacy message from the
+        # NONE-owner agent — the row that would read a NONE ``sender.owner_principal``. Before this, the
+        # table was ABSENT, and the pin passed on a fixture reason: am-34 §4 rules an UNDEFINED target a
+        # typed answer (``table_defined=False``, ``refused=False``, exactly ONE store read), checked
+        # BEFORE any other read — so on an undefined ``message`` table a correct build never reaches the
+        # agent-first check this pin exists for. The §2.6 ORDER property is unchanged; only its world is
+        # now one where the order can matter.
+        await apply_ddl(connection, surreal_schema.generate_message_ddl(), url=env.url)
+        await seed_message_legacy(connection, sender_id="ag_legacy_none_owner", session="s1", seq=1)
         try:
             # ⚠ NO bare-except: at HEAD ``migrate_governed`` raises NotImplementedError, which must
             # RED here (unbuilt) — NOT be swallowed as a "refusal" (the fixtures-must-discriminate

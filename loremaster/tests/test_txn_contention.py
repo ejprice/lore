@@ -66,6 +66,7 @@ from typing import Any, cast
 
 import pytest
 import pytest_asyncio
+from _engine_shapes import CONFLICT_WORDS, typed_err_entry
 from _surreal_harness import (
     PRODUCTION_DIM,
     SurrealEnv,
@@ -76,7 +77,6 @@ from _surreal_harness import (
 )
 from loremaster.findings import FindingLedger
 from loremaster.store._txn import (
-    _RETRYABLE_CONFLICT_MARKER,
     SurrealStoreError,
     TxnContentionExhaustedError,
     _SurrealConnection,
@@ -98,9 +98,11 @@ from loremaster import tasks as tasks_module
 
 # --- the live engine texts (mirrors test_surreal_store.py's, deliberately) ----
 # The exact live retryable-conflict text. The marker rides the COMMIT entry.
+# ⚠ DUAL (63c-i-a contract a28c, amendment 36): the text used to interpolate `_txn._RETRYABLE_CONFLICT_MARKER`
+# (deleted — detection reads the typed kind now); the words are the engine's own
+# (`_engine_shapes.CONFLICT_WORDS`).
 _CONFLICT_ENGINE_TEXT = (
-    f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction "
-    f"{_RETRYABLE_CONFLICT_MARKER}"
+    f"Cannot COMMIT: Transaction conflict: Resource busy. This transaction {CONFLICT_WORDS}"
 )
 # What the engine writes for statements that never ran because an earlier one
 # (or the COMMIT) failed. Marker-less: this is the text a ``[0]``-classifier
@@ -140,12 +142,9 @@ def _rolled_back_response(*results: str | None) -> dict[str, Any]:
     """A ``query_raw``-shaped response: ``None`` → an OK statement, a string →
     an ERR statement carrying that text.
     """
-    return {
-        "result": [
-            dict(_OK_STATEMENT) if text is None else {"status": "ERR", "result": text}
-            for text in results
-        ]
-    }
+    # a28c DUAL (amendment 36): each ERR carries the engine's typed ``kind`` / ``details`` (was text-only — a
+    # shape the engine never sends), built in ONE place (``_engine_shapes.typed_err_entry``).
+    return {"result": [dict(_OK_STATEMENT) if text is None else typed_err_entry(text) for text in results]}
 
 
 def _live_conflict_response() -> dict[str, Any]:

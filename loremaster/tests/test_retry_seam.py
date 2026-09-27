@@ -131,6 +131,15 @@ the message text ("...can be retried") — the same marker the transactional pat
 already keys on. Keeping ONE signal for both paths is the point; two signals is the
 divergence finding #102 was made of. That marker is consumed INSIDE ``_txn`` and is
 never read by a caller (:class:`TestNoCallerEverReadsAnEngineMessage`).
+
+⚠ DUAL (packet 63c-i-a a28c, amendment 36 §1.1 — REPORT-contract-63c-i-a-a28c.md §5 U-28): the table and
+the NOTE above are the 3.1.5 capture, kept as history, and they are FALSE on the engine these pins run
+against. Measured on 3.2.4 (the same report, §A.2): the retryable conflict is ``kind: Query``,
+``details.kind: TransactionConflict`` on BOTH paths, and every cascade notice is ``details.kind:
+NotExecuted``, so ``NotExecuted`` now means only "this statement did not run". The ONE signal both paths
+read is therefore the TYPED kind (``_txn._RETRYABLE_CONFLICT_KIND``), never the text. The text marker is
+deleted, and an echoed caller value carrying the engine's retry words no longer makes a rejection
+retryable (the a28c echo pins). "One signal for both paths" still holds; the signal is the kind.
 """
 
 from __future__ import annotations
@@ -153,6 +162,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
+
+# 63c-i-a a28c (amendment 35 §3; packet 58 amendments 9 §3 + 10 §2): the guarded-CAS index rides THE ONE
+# catch-site walker and THE ONE caught-class resolver in ``_catch_sites`` (every catch form: ``except``,
+# ``except*``, ``contextlib.suppress``) — never a private copy (DUAL: a28b carried its own
+# ``_caught_classes``; folded from ``REPORT-contract-58-r3.md`` §HELD part 2 D-AM10).
+from _catch_sites import _parents_of, catch_sites_in
+from _catch_sites import caught_classes as _caught_classes
+from _engine_shapes import CASCADE_KIND, RETRYABLE_CONFLICT_KIND
 from _sdk_guard import GuardCannotSubstantiate, GuardReport, _witness_file, artifact_root
 from _sdk_guard import install as _install_shared_guard
 from _surreal_harness import (
@@ -271,14 +288,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # prose match is UNCHANGED by the mutation — it keeps retrying the old text and
 # ignores the new one — and that is mechanically visible, in both directions.
 #
-# HONEST LIMIT (stated here because a gate that overstates its reach is the thing we
-# police): this does NOT make detection robust to a real engine rewording. SurrealDB
-# 3.1.5 exposes no structured conflict signal (probed: the conflict arrives as
-# QueryError/kind=Query/details={'kind':'NotExecuted'} — a "did not run" fact, equally
-# true of a cancelled statement), so a text marker is FORCED. What this buys is that a
-# rewording becomes a ONE-LINE fix in ONE place instead of eleven silent ones — and
-# that the gate SAYS SO, loudly, instead of a suite going green while every retry in
-# the tree is dead.
+# ⚠ DUAL (63c-i-a contract a28c, amendment 36 §1.2 pin 2): this paragraph USED to say "SurrealDB 3.1.5 exposes
+# no structured conflict signal … so a text marker is FORCED". FALSE on the pinned engine: on 3.2.4 the
+# retryable conflict is TYPED on both paths (`kind: Query`, `details.kind: TransactionConflict` — measured,
+# REPORT-contract-63c-i-a-a28c.md §A.2), and amendment 36 makes detection read that KIND. The property these
+# pins guard is unchanged — ONE detection authority, proven by MOVING it — only the thing moved changed: the
+# pins now mutate `_txn._RETRYABLE_CONFLICT_KIND` (was the text `_RETRYABLE_CONFLICT_MARKER`, deleted).
 # ===========================================================================
 
 # A conflict message that shares NOT ONE discriminating token with the live one: no
@@ -286,19 +301,27 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # ANY substring of the real message privately cannot recognise this — which is the point.
 _MUTATED_MARKER = "the writer may take another turn"
 _MUTATED_CONFLICT_TEXT = f"Row is presently occupied; {_MUTATED_MARKER}"
+#: a28c (amendment 36): the MOVED detection authority is the typed conflict KIND; the mutated conflict carries
+#: it.
+_MUTATED_CONFLICT_KIND = "WriterMayTakeAnotherTurn"
 
 
 def _mutate_shared_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Move the ONE conflict-detection authority. Every seam must follow it."""
-    assert hasattr(txn_module, "_RETRYABLE_CONFLICT_MARKER"), (
-        "the shared conflict marker is gone — detection has no single authority left, "
+    """Move the ONE conflict-detection authority — the typed conflict KIND (amendment 36; DUAL: was the text
+    marker). Every seam must follow it."""
+    assert hasattr(txn_module, "_RETRYABLE_CONFLICT_KIND"), (
+        "the shared conflict kind is gone — detection has no single authority left, "
         "and nothing can pin that every caller agrees on what a conflict IS"
     )
-    monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_MARKER", _MUTATED_MARKER)
+    monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", _MUTATED_CONFLICT_KIND)
 
 # --- LIVE-CAPTURED engine shapes (see the module docstring's table) ----------
 _LIVE_CONFLICT_TEXT = "Transaction conflict: Resource busy. This transaction can be retried"
-_LIVE_CONFLICT_DETAILS = {"kind": "NotExecuted"}
+# ⚠ DUAL (a28c, amendment 36): was `{"kind": "NotExecuted"}` (a 3.1.5-era capture); 3.2.4 types the retryable
+# conflict `TransactionConflict` on both paths (measured, REPORT-contract-63c-i-a-a28c.md §A.2).
+_LIVE_CONFLICT_DETAILS = {"kind": RETRYABLE_CONFLICT_KIND}
+#: The engine's typed cascade notice (every never-executed statement + the refused COMMIT; measured 3.2.4).
+_CASCADE_DETAILS = {"kind": CASCADE_KIND}
 
 # A bound value the engine echoes back verbatim in a domain rejection — the ledger-#31
 # hygiene leak surface. It must never reach a raised message.
@@ -323,7 +346,7 @@ def _conflict_error() -> QueryError:
 def _mutated_conflict_error() -> QueryError:
     """A conflict the engine reports in words the SHARED marker has been moved to."""
     return QueryError(
-        ErrorKind.QUERY, _MUTATED_CONFLICT_TEXT, details=dict(_LIVE_CONFLICT_DETAILS)
+        ErrorKind.QUERY, _MUTATED_CONFLICT_TEXT, details={"kind": _MUTATED_CONFLICT_KIND}
     )
 
 
@@ -368,12 +391,22 @@ _CASCADE_TEXT = "The query was not executed due to a failed transaction"
 _OK_STATEMENT: dict[str, Any] = {"status": "OK", "result": None}
 
 
-def _conflict_rollback_response(conflict_text: str = _LIVE_CONFLICT_TEXT) -> dict[str, Any]:
+def _conflict_rollback_response(
+    conflict_text: str = _LIVE_CONFLICT_TEXT, conflict_kind: str = _LIVE_CONFLICT_DETAILS["kind"]
+) -> dict[str, Any]:
+    """The engine's TYPED conflict rollback (a28c DUAL, amendment 36: every entry carries its `kind` /
+    `details` — the cascade notices `NotExecuted`, the refused COMMIT the conflict kind; was text-only)."""
+    cascade = {"status": "ERR", "kind": "Query", "details": dict(_CASCADE_DETAILS), "result": _CASCADE_TEXT}
     return {
         "result": [
-            {"status": "ERR", "result": _CASCADE_TEXT},
-            {"status": "ERR", "result": _CASCADE_TEXT},
-            {"status": "ERR", "result": f"Cannot COMMIT: {conflict_text}"},
+            dict(cascade),
+            dict(cascade),
+            {
+                "status": "ERR",
+                "kind": "Query",
+                "details": {"kind": conflict_kind},
+                "result": f"Cannot COMMIT: {conflict_text}",
+            },
         ]
     }
 
@@ -452,6 +485,8 @@ class _ConflictingConnection:
     # detection pins move the shared marker and must then hand a caller a conflict
     # spelled the NEW way — and one spelled the OLD way, which must stop counting.
     conflict_text: str = _LIVE_CONFLICT_TEXT
+    # a28c (amendment 36): the typed conflict KIND the engine reports (the moved authority, beside its words).
+    conflict_kind: str = _LIVE_CONFLICT_DETAILS["kind"]
 
     def _still_conflicting(self) -> bool:
         self.calls += 1
@@ -465,13 +500,13 @@ class _ConflictingConnection:
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         if self._still_conflicting():
             raise QueryError(
-                ErrorKind.QUERY, self.conflict_text, details=dict(_LIVE_CONFLICT_DETAILS)
+                ErrorKind.QUERY, self.conflict_text, details={"kind": self.conflict_kind}
             )
         return self.rows
 
     async def query_raw(self, statement: str, params: dict[str, Any]) -> dict[str, Any]:
         if self._still_conflicting():
-            return _conflict_rollback_response(self.conflict_text)
+            return _conflict_rollback_response(self.conflict_text, self.conflict_kind)
         return _ok_response()
 
     def check_response_for_error(self, response: Any, method: str) -> None:
@@ -1276,6 +1311,7 @@ class TestDetectionFollowsTheOneSharedMarker:
         # The NEW marker is now a conflict: retried, then succeeds.
         mutated = _ConflictingConnection(conflicts=2)
         mutated.conflict_text = _MUTATED_CONFLICT_TEXT
+        mutated.conflict_kind = _MUTATED_CONFLICT_KIND
         await _run_execute_transaction(mutated)
         assert mutated.calls == 3, "the transactional seam did not follow the moved marker"
 
@@ -3629,12 +3665,13 @@ class TestBriefPublishLandsExactlyOnceUnderContention:
 _LABEL_HOME = "store/_txn.py"
 
 _LABEL_PREFIX = "_ERROR_CLASS_"
-# The engine's own raw marker. After this wave it is consumed strictly INSIDE the seam:
-# both conflict detectors (the response scan and the exception scan) live in _txn.py, so
-# no caller has any business naming it — and a caller that names it is one refactor away
-# from branching on it.
-_MARKER_NAME = "_RETRYABLE_CONFLICT_MARKER"
-_MARKER_TEXT = "can be retried"
+# The engine's own raw marker. After this wave it is consumed strictly INSIDE the seam: both conflict
+# detectors (the response scan and the exception scan) live in _txn.py, so no caller has any business naming
+# it — and a caller that names it is one refactor away from branching on it. ⚠ DUAL (a28c, amendment 36): the
+# detection authority is the typed KIND now — the tripwire keys on its constant and its value (was
+# `_RETRYABLE_CONFLICT_MARKER` / "can be retried", both retired).
+_MARKER_NAME = "_RETRYABLE_CONFLICT_KIND"
+_MARKER_TEXT = "TransactionConflict"
 
 
 def _production_modules() -> list[Path]:
@@ -6783,9 +6820,28 @@ class TestEveryConnectionOwnerOpensExactlyOneSocket:
 #
 #     ∀ guarded-CAS handlers: exhausted contention propagates UNREAD.
 #
-# And the population is DISCOVERED, by the property that MAKES a handler a guarded CAS —
-# `except SurrealStoreError` whose body RE-READS state (`await self._select…`). A fifth door
-# is pinned the day it is written, by nobody's memory.
+# And the population is DISCOVERED, by the property that MAKES a handler a guarded CAS. ⚠ DUAL (63c-i-a a28c;
+# amendments 32 §1.3 f, 35 §3; packet 58 amendment 7 §1): this paragraph USED to say *"`except
+# SurrealStoreError`
+# whose body RE-READS state (`await self._select…`)"* — both halves retired:
+#
+#   * the DOMAIN — every catch HANDLER in the WHOLE production tree (THE ONE walker, ``_catch_sites``) whose
+# caught classes resolve BY IMPORT (THE ONE resolver) to a `SurrealStoreError` SUBCLASS, and whose body
+# RE-READS: it awaits a same-class method carrying a `SELECT` literal, or carries a `SELECT` literal itself
+# (amendment 35 §3 R-2) — derived from the code, never a `_select` name prefix;
+#   * the KEY — one entry per HANDLER (``<file>::<function>::<n>``, the n-th domain handler of that function
+# in source order), never per function (amendment 35 §3: a28b keyed by function, so a second domain handler in
+# a listed function collapsed onto the listed key and hid itself — adversary-a28b S7/S8);
+#   * the PARTITION (packet 58 amendment 7 §0 row 1a) — a DOOR iff exhausted contention can reach the handler,
+# else SAFE-BY-TYPE.
+#
+# BOUNDS (stated, not hidden): a re-read through a helper OUTSIDE the class, or a `SELECT` built without a
+# literal, is invisible to this STATIC domain (packet 58 amendment 7's named bound — the driver-seam
+# injection, ``test_reanchor_58_r3_cas_seam.py``, does not care how a re-read is spelled). And the domain is
+# SUBCLASS-only: a SUPERclass catch (`except Exception`), a tuple-VALUED name or a bare `except:` is outside
+# it — those shapes are packet 58's FATE classifier's (58 amendment 10 Reading (i),
+# ``test_exhaustion_fates.py``: closure ∋ exhaustion, whatever the spelling), never this index's (63c
+# amendment 35 §3; adversary-a28b S1–S3).
 # ---------------------------------------------------------------------------
 
 _GUARDED_CAS_GUARD = "TxnContentionExhaustedError"
@@ -6798,25 +6854,8 @@ def _module_of(key: str) -> Any:
     return importlib.import_module(f"loremaster.{dotted}" if dotted != "__init__" else "loremaster")
 
 
-def _caught_classes(handler: ast.ExceptHandler, module: Any) -> list[type]:
-    """Every class an ``except`` clause catches, RESOLVED BY IMPORT in its module's namespace — each element
-    of
-    a Tuple handler included, a ``Name`` or a dotted ``Attribute`` alike (amendment 32 §1.3 f: the old key
-    read
-    only a bare ``ast.Name`` spelled ``SurrealStoreError``, so a Tuple, a subclass name or an alias was
-    invisible)."""
-    if handler.type is None:
-        return []
-    elements = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-    resolved: list[type] = []
-    for element in elements:
-        try:
-            value = eval(compile(ast.Expression(element), "<except>", "eval"), vars(module))  # noqa: S307
-        except Exception:  # noqa: BLE001 - an unresolvable name is simply not a store class
-            continue
-        if inspect.isclass(value):
-            resolved.append(value)
-    return resolved
+# (``_caught_classes`` is imported from ``_catch_sites`` above — THE ONE resolver; a bare ``except:`` resolves
+# to ``BaseException``, outside the store domain, as a28b's ``[]`` was.)
 
 
 def _issues_a_read(method: ast.AST) -> bool:
@@ -6830,66 +6869,85 @@ def _issues_a_read(method: ast.AST) -> bool:
     return False
 
 
-def _discover_cas_handlers() -> dict[str, tuple[str, int, bool, bool]]:
-    """The DERIVED domain: ``{"<module>::<function>": (file, lineno, reachable, guarded_above)}``.
-
-    The PROPERTY, from the AST + the imported module (amendment 32 §1.3 f — the DERIVED key): an ``except``
-    handler whose caught expression (each element of a Tuple included) resolves by import to a subclass of
-    :class:`~loremaster.store._txn.SurrealStoreError`, and whose body awaits a method of the same class that
-    RE-READS state (``_issues_a_read``). ``has_guard`` is whether exhausted contention can NOT reach the
-    handler: either none of its caught classes is a superclass of :class:`TxnContentionExhaustedError` (e.g.
-    ``except TxnUniqueViolationError``, a disjoint domain class), or an EARLIER clause of the same ``try``
-    catches
-    it (``except`` clauses are tried in order and the typed error SUBCLASSES ``SurrealStoreError``).
-    """
-    doors: dict[str, tuple[str, int, bool, bool]] = {}
+def _production_module_trees() -> list[tuple[str, ast.Module, Any]]:
+    """``(package-relative path, parsed tree, imported module)`` for every production module — the tree walk
+    the whole index ranges over (the file set is an OUTPUT of the walk, never an input)."""
+    modules: list[tuple[str, ast.Module, Any]] = []
     for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         key = path.relative_to(_PACKAGE_ROOT).as_posix()
-        module = _module_of(key)
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        parents: dict[int, ast.AST] = {}
-        for parent in ast.walk(tree):
-            for child in ast.iter_child_nodes(parent):
-                parents[id(child)] = parent
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Try):
-                continue
-            for index, handler in enumerate(node.handlers):
-                caught = _caught_classes(handler, module)
-                if not any(issubclass(cls, SurrealStoreError) for cls in caught):
-                    continue
-                scope = _enclosing_callable(handler, parents)
-                owner = scope
-                while owner is not None and not isinstance(owner, ast.ClassDef):
-                    owner = parents.get(id(owner))
-                methods = {
-                    item.name: item
-                    for item in (owner.body if isinstance(owner, ast.ClassDef) else [])
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                }
-                re_reads = any(
-                    isinstance(awaited, ast.Await)
-                    and isinstance(awaited.value, ast.Call)
-                    and isinstance(awaited.value.func, ast.Attribute)
-                    and isinstance(awaited.value.func.value, ast.Name)
-                    and awaited.value.func.value.id == "self"
-                    and awaited.value.func.attr in methods
-                    and _issues_a_read(methods[awaited.value.func.attr])
-                    for awaited in ast.walk(handler)
-                )
-                if not re_reads:
-                    continue
-                reachable = any(issubclass(TxnContentionExhaustedError, cls) for cls in caught)
-                guarded_above = any(
-                    issubclass(TxnContentionExhaustedError, cls)
-                    for earlier in node.handlers[:index]
-                    for cls in _caught_classes(earlier, module)
-                )
-                where = getattr(scope, "name", "<lambda>") if scope else "<module>"
-                doors[f"{key}::{where}"] = (key, handler.lineno, reachable, guarded_above)
-    return doors
+        modules.append((key, ast.parse(path.read_text(encoding="utf-8")), _module_of(key)))
+    return modules
+
+
+def _is_domain_handler(handler: ast.ExceptHandler, module: Any, parents: dict[int, ast.AST]) -> bool:
+    """THE domain predicate (ONE copy — the index, its completeness pin KD and every consumer call THIS): the
+    handler catches a :class:`~loremaster.store._txn.SurrealStoreError` SUBCLASS (resolved by import) AND
+    re-reads store state — it awaits a same-class method whose body carries a ``SELECT`` literal, or it
+    carries a ``SELECT`` literal in its OWN body (amendment 35 §3 R-2: an inline re-read is a re-read)."""
+    if not any(issubclass(cls, SurrealStoreError) for cls in _caught_classes(handler, module)):
+        return False
+    if _issues_a_read(handler):
+        return True
+    owner = _enclosing_callable(handler, parents)
+    while owner is not None and not isinstance(owner, ast.ClassDef):
+        owner = parents.get(id(owner))
+    methods = {
+        item.name: item
+        for item in (owner.body if isinstance(owner, ast.ClassDef) else [])
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    return any(
+        isinstance(awaited, ast.Await)
+        and isinstance(awaited.value, ast.Call)
+        and isinstance(awaited.value.func, ast.Attribute)
+        and isinstance(awaited.value.func.value, ast.Name)
+        and awaited.value.func.value.id == "self"
+        and awaited.value.func.attr in methods
+        and _issues_a_read(methods[awaited.value.func.attr])
+        for awaited in ast.walk(handler)
+    )
+
+
+def _cas_handlers_in(key: str, tree: ast.AST, module: Any) -> dict[str, tuple[str, int, bool, bool]]:
+    """ONE module's slice of the derived domain, keyed PER HANDLER: ``{"<file>::<function>::<n>": (file,
+    lineno, reachable, guarded_above)}`` — ``n`` is the handler's 1-based position among its function's DOMAIN
+    handlers, in source order (amendment 35 §3: never ``<file>::<function>`` — two domain handlers in one
+    function are two entries). Walks THE ONE catch-site walker (``try`` and ``try*`` handlers alike);
+    ``reachable`` = some caught class's subclass closure contains :class:`TxnContentionExhaustedError`;
+    ``guarded_above`` = an EARLIER clause of the same ``try`` catches it (a Tuple guard counts)."""
+    parents = _parents_of(tree)
+    handlers: dict[str, tuple[str, int, bool, bool]] = {}
+    ordinals: dict[str, int] = {}
+    for site in catch_sites_in(key, tree, module):
+        if site.handler is None or not _is_domain_handler(site.handler, module, parents):
+            continue
+        ordinals[site.key] = ordinals.get(site.key, 0) + 1
+        handlers[f"{site.key}::{ordinals[site.key]}"] = (
+            site.file,
+            site.lineno,
+            any(issubclass(TxnContentionExhaustedError, cls) for cls in site.caught),
+            any(issubclass(TxnContentionExhaustedError, cls) for cls in site.earlier),
+        )
+    return handlers
+
+
+def _handler_function(handler_key: str) -> str:
+    """``"<file>::<function>"`` of a per-handler key — THE one place the key FORMAT is read back (packet 58's
+    frame-keyed CAS population maps the exact sets through THIS, never a private split)."""
+    return handler_key.rsplit("::", 1)[0]
+
+
+def _discover_cas_handlers() -> dict[str, tuple[str, int, bool, bool]]:
+    """The DERIVED domain over the whole production tree, keyed PER HANDLER (see :func:`_cas_handlers_in`).
+    BOUNDS:
+    the §8c header above (a helper outside the class / a literal-less ``SELECT`` / a superclass, tuple-valued
+    or bare catch — the last three are packet 58's fate classifier's)."""
+    handlers: dict[str, tuple[str, int, bool, bool]] = {}
+    for key, tree, module in _production_module_trees():
+        handlers.update(_cas_handlers_in(key, tree, module))
+    return handlers
 
 
 def _discover_guarded_cas_handlers() -> dict[str, tuple[str, int, bool]]:
@@ -6919,21 +6977,21 @@ def _discover_typed_cas_catches() -> dict[str, tuple[str, int]]:
 # place). The value is what each door REPORTS when it reinterprets a failure, i.e. the lie it
 # tells if exhausted contention reaches it.
 _GUARDED_CAS_DOORS = {
-    "briefs.py::_relate_briefed": "already_acked=True with a racer's `via`",
-    "findings.py::_transition": "IllegalTransitionError — a lost transition race",
+    "briefs.py::_relate_briefed::1": "already_acked=True with a racer's `via`",
+    "findings.py::_transition::1": "IllegalTransitionError — a lost transition race",
     # #256: `annotate` re-reads after a `SurrealStoreError` to distinguish a vanished
     # row (findings are never hard-deleted, so this is a defensive belt-and-braces
     # guard). It carries the `except TxnContentionExhaustedError: raise` clause ABOVE
     # the rollback handler, so exhausted contention propagates unread — never re-read
     # as a not-found. A DELIBERATE, reviewer-visible fifth door.
-    "findings.py::annotate": "FindingNotFoundError — a row that vanished (defensive)",
-    "tasks.py::transition": "IllegalTransitionError — a lost transition race",
-    "tasks.py::supersede_task": "IllegalTransitionError — 'already superseded by someone else'",
+    "findings.py::annotate::1": "FindingNotFoundError — a row that vanished (defensive)",
+    "tasks.py::transition::1": "IllegalTransitionError — a lost transition race",
+    "tasks.py::supersede_task::1": "IllegalTransitionError — 'already superseded by someone else'",
     # Found by the DERIVED key on its first run (amendment 32 §1.3 f), unlisted before it: the calibration
     # store re-reads its lease fence after a rejection (``_fence_verdict`` SELECTs) and may report it lost.
     # Guarded by the ``(SurrealConnectionError, TxnContentionExhaustedError)`` Tuple clause above it — a Tuple
     # the old ``ast.Name``-keyed guard check could not see either.
-    "floor_calibration/store.py::record_measurement": (
+    "floor_calibration/store.py::record_measurement::1": (
         "FenceLostError — the lease fence moved (confirming re-read via _fence_verdict)"
     ),
 }
@@ -6944,8 +7002,8 @@ _GUARDED_CAS_DOORS = {
 # decide from ONE class (amendment 32 §1.2, R-6; the class named by amendment 33). 58's §HELD delta adds
 # ``tasks.py::claim_task`` (TxnClaimLostError, 58 amendment 4). EXACT, both ways.
 _TYPED_CAS_CATCHES = {
-    "agents.py::register": "TxnUniqueViolationError — the identity is taken; the winner is re-read",
-    "keeps.py::get_or_create_keyed": (
+    "agents.py::register::1": "TxnUniqueViolationError — the identity is taken; the winner is re-read",
+    "keeps.py::get_or_create_keyed::1": (
         "TxnUniqueViolationError — the UNIQUE key is taken; the winner is re-read"
     ),
 }
@@ -6990,8 +7048,8 @@ class TestNoGuardedCasHandlerReinterpretsExhaustedContention:
             f"  entries naming a catch that is not found (or is now a DOOR): "
             f"{sorted(_TYPED_CAS_CATCHES.keys() - typed.keys())}"
         )
-        assert _TYPED_CAS_CATCHES.keys().isdisjoint(_GUARDED_CAS_DOORS.keys()), (
-            sorted(_TYPED_CAS_CATCHES.keys() & _GUARDED_CAS_DOORS.keys())
+        assert _TYPED_CAS_CATCHES.keys().isdisjoint(_GUARDED_CAS_DOORS.keys()), sorted(
+            _TYPED_CAS_CATCHES.keys() & _GUARDED_CAS_DOORS.keys()
         )
         assert typed.keys() | doors.keys() == domain.keys() and typed.keys().isdisjoint(doors.keys()), (
             f"the partition is not total over the derived domain: "
@@ -7037,9 +7095,7 @@ class TestEveryGuardedCasDoorPropagatesExhaustionUNREAD:
         """Door 1 — the one item B fixes. RED before 9d29111 (it returned ``already_acked=True``)."""
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
-        connection = _AckConnection(
-            relate_error=_conflict_error(), existing_edge_via=_ACK_RACERS_VIA
-        )
+        connection = _AckConnection(relate_error=_conflict_error(), existing_edge_via=_ACK_RACERS_VIA)
         ledger = _ledger_on(connection)
         re_reads: list[str] = []
         real_select = ledger._select_briefed_edge
@@ -7062,65 +7118,336 @@ class TestEveryGuardedCasDoorPropagatesExhaustionUNREAD:
 
     @pytest.mark.parametrize("door", sorted(_GUARDED_CAS_DOORS))
     def test_the_transactional_doors_never_re_read_after_exhaustion(self, door: str) -> None:
-        """Every canonical door, structurally: the guard must RE-RAISE, not re-read.
+        """Every canonical door, structurally: in the door's WHOLE FUNCTION, every clause exhausted contention
+        REACHES must RE-RAISE, never re-read.
 
-        DUAL (packet 58 amendment 7 §3 item 1, landed by 63c-i-a a28b): this was a HAND list of four
-        doors whose guard was found by ``ast.Name == TxnContentionExhaustedError`` — blind to a TUPLE
-        guard (keeps' and ``record_measurement``'s are tuples) and to every door added since. It is now
-        parametrised over the canonical set and reads guards through the SAME import-resolving
-        ``_caught_classes`` as the discovery (one derivation, never a second key). A canonical DOOR is a
-        handler exhaustion CAN reach (the partition); every EARLIER clause of the same ``try`` that catches
-        exhaustion (named, or inside a Tuple) must contain nothing but a bare ``raise``.
+        DUAL, twice. (1) packet 58 amendment 7 §3 item 1 (a28b): this was a HAND list of four doors whose
+        guard was found by ``ast.Name == TxnContentionExhaustedError`` — blind to a TUPLE guard and to every
+        door added since; it is parametrised over the canonical set and reads clauses through THE ONE walker +
+        resolver. (2) 63c-i-a a28c, amendment 35 §3 / DUAL D6 — the SCOPE restored: a28b narrowed the
+        quantifier to "the earlier clauses of the door's OWN ``try``", so a SECOND ``try`` in a listed door's
+        function whose exhaustion clause re-reads and RETURNS a row (adversary-a28b S8 — a #102 false clear
+        the OLD pin caught) passed. The quantifier is every clause, in ANY ``try`` of the door's function,
+        that exhaustion REACHES — the first clause of its ``try`` whose caught classes admit
+        :class:`TxnContentionExhaustedError` (a name, a Tuple element, a superclass or a bare ``except:``
+        alike — ``REPORT-contract-63c-i-a-a28c.md`` FK-a28c-5) — and each must contain nothing but a bare
+        ``raise``. The door handler itself must NOT be reached (the guard above it catches exhaustion first).
 
-        Driven from the AST rather than through a live ledger because the property is about the SHAPE
-        of the handler chain. A guard whose body re-reads (``W4-ACKSWALLOW``'s shape) is a guard that
-        guards nothing, and it is exactly what a builder writes when it "handles" the new type by
-        copying the handler below it. ``tasks.supersede_task`` is the one the adversary stripped:
-        342/342, full suite byte-identical, and an exhausted supersede reported as *"already
-        superseded by someone else"*.
-        """
+        Driven from the AST rather than through a live ledger because the property is about the SHAPE of the
+        handler chain. A guard whose body re-reads (``W4-ACKSWALLOW``'s shape) is a guard that guards nothing,
+        and it is exactly what a builder writes when it "handles" the new type by copying the handler below
+        it. ``tasks.supersede_task`` is the one the adversary stripped: 342/342, full suite byte-identical,
+        and an exhausted supersede reported as *"already superseded by someone else"*. """
         found = _discover_guarded_cas_handlers()
         assert door in found, f"the canonical door {door!r} was not found by the scan"
         module_file, lineno, _has_guard = found[door]
         module = _module_of(module_file)
         tree = ast.parse((_PACKAGE_ROOT / module_file).read_text(encoding="utf-8"))
-        located = [
-            (node, index)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Try)
-            for index, handler in enumerate(node.handlers)
-            if handler.lineno == lineno
+        door_site = [
+            site
+            for site in catch_sites_in(module_file, tree, module)
+            if site.handler is not None and site.lineno == lineno
         ]
-        assert len(located) == 1, f"{door}: the door handler at line {lineno} was not located exactly once"
-        node, index = located[0]
-        door_classes = _caught_classes(node.handlers[index], module)
-        assert any(issubclass(TxnContentionExhaustedError, cls) for cls in door_classes), (
+        assert len(door_site) == 1, f"{door}: the door handler at line {lineno} was not located exactly once"
+        assert _admits_exhaustion(door_site[0].caught), (
             f"{door}: exhausted contention cannot reach this handler — it is SAFE BY TYPE and belongs in "
             f"_TYPED_CAS_CATCHES, not _GUARDED_CAS_DOORS"
         )
-        guards = [
-            handler
-            for handler in node.handlers[:index]
-            if any(issubclass(TxnContentionExhaustedError, cls) for cls in _caught_classes(handler, module))
-        ]
-        assert guards, (
+        reached = _exhaustion_reached_clauses(module_file, tree, module, _handler_function(door))
+        assert lineno not in {site.lineno for site in reached}, (
             f"{door} has no clause catching {_GUARDED_CAS_GUARD} ABOVE its rollback handler — exhausted "
             f"contention falls into it and is reinterpreted as a lost race"
         )
-        for guard in guards:
-            body = [statement for statement in guard.body if not isinstance(statement, ast.Pass)]
+        for site in reached:
+            body = [
+                statement
+                for statement in cast("ast.ExceptHandler", site.handler).body
+                if not isinstance(statement, ast.Pass)
+            ]
             assert all(isinstance(statement, ast.Raise) for statement in body), (
-                f"{door}'s guard (line {guard.lineno}) does something OTHER than re-raise. A guard that "
-                f"re-reads the row is a guard that guards nothing: exhausted contention means our write "
-                f"never committed and whatever is in the store belongs to somebody else. Re-raise, untouched."
+                f"{door}: the clause at line {site.lineno} — reached by exhausted contention — does "
+                "something "
+                "OTHER than re-raise. A guard that re-reads the row is a guard that guards nothing: "
+                "exhausted "
+                "contention means our write never committed and whatever is in the store belongs to "
+                "somebody "
+                f"else. Re-raise, untouched (and a second `try` in the same function is the same door)."
             )
-            assert all(
-                cast("ast.Raise", statement).exc is None for statement in body
-            ), (
-                f"{door}'s guard re-raises a DIFFERENT exception (line {guard.lineno}) — the "
-                f"caller must see the typed contention error, which is the only thing that "
-                f"tells it 'nobody knows who holds this row'"
+            assert all(cast("ast.Raise", statement).exc is None for statement in body), (
+                f"{door}'s clause at line {site.lineno} re-raises a DIFFERENT exception — the caller must "
+                "see "
+                f"the typed contention error, which is the only thing that tells it 'nobody knows who holds "
+                f"this row'"
             )
+
+
+def _admits_exhaustion(caught: tuple[type, ...] | list[type]) -> bool:
+    """Whether a clause catching ``caught`` catches exhausted contention (a superclass or the class)."""
+    return any(issubclass(TxnContentionExhaustedError, cls) for cls in caught)
+
+
+def _exhaustion_reached_clauses(module_file: str, tree: ast.AST, module: Any, function: str) -> list[Any]:
+    """Every ``try`` / ``try*`` clause in ``function`` (``"<file>::<function>"``) that exhausted contention
+    REACHES — the first clause of its ``try`` admitting it (THE ONE walker:
+    ``_catch_sites.catch_sites_in``)."""
+    return [
+        site
+        for site in catch_sites_in(module_file, tree, module)
+        if site.key == function
+        and site.handler is not None
+        and _admits_exhaustion(site.caught)
+        and not _admits_exhaustion(site.earlier)
+    ]
+
+
+def _domain_handler_count() -> int:
+    """KD's COUNT (adversary-a28b §A.5, adapted — ``REPORT-contract-63c-i-a-a28c.md`` §DEVIATIONS): every
+    domain handler in production, counted with THE index's own walker and THE ONE predicate into a LIST (never
+    a keyed dict) — so a key that collapses two handlers is seen as a count mismatch."""
+    count = 0
+    for key, tree, module in _production_module_trees():
+        parents = _parents_of(tree)
+        count += sum(
+            1
+            for site in catch_sites_in(key, tree, module)
+            if site.handler is not None and _is_domain_handler(site.handler, module, parents)
+        )
+    return count
+
+
+#: Synthetic handler SHAPES for the per-handler key and the restored F-4 scope (adversary-a28b S7 / S8 / S4):
+#: run through THE index's own ``_cas_handlers_in`` / ``_exhaustion_reached_clauses`` over a real module
+#: namespace.
+_SYNTHETIC_HANDLER_SHAPES = """
+from loremaster.store._txn import SurrealStoreError, TxnContentionExhaustedError, TxnDomainRejectionError
+
+
+class Ledger:
+    async def _reread(self):
+        return await self._query("SELECT * FROM t")
+
+    async def s7_two_clauses(self):
+        try:
+            await self._apply()
+        except TxnContentionExhaustedError:
+            await self._reread()
+            raise
+        except TxnDomainRejectionError:
+            await self._reread()
+
+    async def s8_two_tries(self):
+        try:
+            await self._apply()
+        except TxnContentionExhaustedError:
+            raise
+        except SurrealStoreError:
+            await self._reread()
+        try:
+            await self._apply()
+        except TxnContentionExhaustedError:
+            return await self._reread()
+
+    async def s4_inline_select(self):
+        try:
+            await self._apply()
+        except TxnContentionExhaustedError:
+            raise
+        except SurrealStoreError:
+            return await self._query("SELECT * FROM t WHERE id = $id")
+
+    async def a_guarded_door(self):
+        try:
+            await self._apply()
+        except TxnContentionExhaustedError:
+            raise
+        except SurrealStoreError:
+            await self._reread()
+
+    async def not_a_reread(self):
+        try:
+            await self._apply()
+        except SurrealStoreError:
+            raise
+"""
+
+
+def _synthetic_handler_module() -> tuple[ast.Module, Any]:
+    import types  # noqa: PLC0415 - scaffold-local
+
+    module = types.ModuleType("synthetic_handler_shapes_63c_a28c")
+    exec(compile(_SYNTHETIC_HANDLER_SHAPES, "<synthetic>", "exec"), vars(module))  # noqa: S102
+    return ast.parse(_SYNTHETIC_HANDLER_SHAPES), module
+
+
+class TestTheIndexIsKeyedPerHandler63cIAa28c:
+    """63c-i-a a28c — amendment 35 §3: the index's domain is keyed per HANDLER (MP-4 / KD), its re-read
+    definition counts an inline ``SELECT`` (R-2), and the F-4 quantifier ranges over the door's whole FUNCTION
+    (DUAL D6). The scanner-reach property's STRIKE 2 (adversary-a28b §STRIKES)."""
+
+    def test_KD_every_domain_handler_is_its_own_entry(self) -> None:
+        """⚠ RED at ``169925f`` on the non-vacuity floor only (the domain holds 7: RS-5's typed catch is
+        unbuilt); GREEN on a correct build; RED on any index whose key collapses two handlers (adversary-a28b
+        S7/S8: the later-walked handler overwrote the listed one). KD, adapted: the count is taken with THE
+        index's own walker and predicate into a LIST."""
+        found = _discover_cas_handlers()
+        assert len(found) >= 8, found
+        assert _domain_handler_count() == len(found), (
+            f"{_domain_handler_count()} handlers are in the derived domain but the scan reports "
+            f"{len(found)} — two "
+            "handlers in one function collapsed onto one key, and the later one hid the other"
+        )
+
+    def test_a28c_two_domain_handlers_in_one_function_are_two_entries(self) -> None:
+        """⚠ RED on a function-keyed index. The S7 / S8 / S4 shapes through ``_cas_handlers_in``: every domain
+        handler is its own ``::<n>`` entry with its own partition verdict — S7's re-reading exhaustion clause
+        is a DOOR (reachable, unguarded) beside a SAFE-BY-TYPE catch; S8's second ``try`` is a second DOOR;
+        S4's inline ``SELECT`` re-read joins the domain (R-2); a clause that only re-raises is no domain
+        member."""
+        tree, module = _synthetic_handler_module()
+        found = _cas_handlers_in("synthetic.py", tree, module)
+        verdicts = {key: (reachable, guarded) for key, (_file, _line, reachable, guarded) in found.items()}
+        assert verdicts == {
+            "synthetic.py::s7_two_clauses::1": (True, False),
+            "synthetic.py::s7_two_clauses::2": (False, True),
+            "synthetic.py::s8_two_tries::1": (True, True),
+            "synthetic.py::s8_two_tries::2": (True, False),
+            "synthetic.py::s4_inline_select::1": (True, True),
+            "synthetic.py::a_guarded_door::1": (True, True),
+        }, verdicts
+        assert {_handler_function(key) for key in found} == {
+            "synthetic.py::s7_two_clauses",
+            "synthetic.py::s8_two_tries",
+            "synthetic.py::s4_inline_select",
+            "synthetic.py::a_guarded_door",
+        }
+
+    def test_a28c_the_F4_quantifier_sees_every_try_of_the_function(self) -> None:
+        """⚠ RED on a28b's per-``try`` F-4 scope (DUAL D6). The restored quantifier over the synthetic shapes:
+        S8's SECOND ``try`` holds a reached exhaustion clause that RETURNS a re-read (not a bare ``raise``) —
+        it is reported; a correctly guarded door's only reached clause is its bare-``raise`` guard (the
+        CONTROL: the helper does not flag a correct door)."""
+        tree, module = _synthetic_handler_module()
+        s8 = _exhaustion_reached_clauses("synthetic.py", tree, module, "synthetic.py::s8_two_tries")
+        doing_more = [
+            site.lineno
+            for site in s8
+            if not all(
+                isinstance(statement, ast.Raise) and statement.exc is None
+                for statement in cast("ast.ExceptHandler", site.handler).body
+            )
+        ]
+        assert len(s8) == 2 and len(doing_more) == 1, [(site.lineno, site.caught) for site in s8]
+        guarded = _exhaustion_reached_clauses("synthetic.py", tree, module, "synthetic.py::a_guarded_door")
+        assert len(guarded) == 1 and all(
+            isinstance(statement, ast.Raise)
+            for statement in cast("ast.ExceptHandler", guarded[0].handler).body
+        ), guarded
+
+
+#: 63c amendment 34 §5 (owner: 63c-i-a) + packet 58 amendment 7 §3 item 4 — "no second scanner, ever". The
+#: SAFE set, allowlisted (never a list of forbidden shapes): THE ONE catch-site walker and THE ONE
+#: caught-class resolver.
+_THE_ONE_CATCH_WALKER = "loremaster/tests/_catch_sites.py::catch_sites_in"
+_THE_ONE_CATCH_RESOLVER = "loremaster/tests/_catch_sites.py::resolved_by_import"
+#: The names a function calls to resolve caught classes (the resolver's public faces).
+_RESOLVER_NAMES = frozenset({"caught_classes", "_caught_classes", "resolved_by_import"})
+_CATCH_NODE_NAMES = frozenset({"Try", "TryStar", "ExceptHandler"})
+
+
+def _scanner_candidates(trees: dict[str, ast.Module]) -> tuple[set[str], set[str]]:
+    """``(walkers, resolvers)`` over ``trees`` — DERIVED properties, never names (FK-a28c-7):
+
+    * a WALKER finds catch handlers ITSELF (an ``ast.Try`` / ``ast.TryStar`` / ``ast.ExceptHandler``
+    reference or a
+      ``.handlers`` read in its body) AND reasons about store errors — it names a class of ``_txn``'s
+      ``SurrealStoreError`` tree, or calls a caught-class resolver;
+    * a RESOLVER evaluates an ``except`` expression in a module namespace (``eval`` of an ``ast.Expression``).
+    """
+    store_classes = {
+        name
+        for name, value in vars(txn_module).items()
+        if inspect.isclass(value) and issubclass(value, SurrealStoreError)
+    }
+    walkers: set[str] = set()
+    resolvers: set[str] = set()
+    for relative, tree in trees.items():
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = [node for statement in function.body for node in ast.walk(statement)]
+            finds = any(
+                isinstance(node, ast.Attribute)
+                and (
+                    (
+                        isinstance(node.value, ast.Name)
+                        and node.value.id == "ast"
+                        and node.attr in _CATCH_NODE_NAMES
+                    )
+                    or node.attr == "handlers"
+                )
+                for node in body
+            )
+            names = {node.id for node in body if isinstance(node, ast.Name)} | {
+                node.attr for node in body if isinstance(node, ast.Attribute)
+            }
+            if finds and (names & store_classes or names & _RESOLVER_NAMES):
+                walkers.add(f"{relative}::{function.name}")
+            if "eval" in names and "Expression" in names:
+                resolvers.add(f"{relative}::{function.name}")
+    return walkers, resolvers
+
+
+_SYNTHETIC_SECOND_SCANNER = """
+import ast
+from loremaster.store._txn import SurrealStoreError
+
+
+def second_walker(tree, module):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                yield handler, SurrealStoreError
+
+
+def second_resolver(expression, module):
+    return eval(compile(ast.Expression(expression), "<x>", "eval"), vars(module))
+
+
+def a_logging_helper(logger):
+    return list(logger.handlers)
+"""
+
+
+class TestThereIsExactlyOneCatchScanner63cIAa28c:
+    """63c amendment 34 §5 — the guard belongs with the scanner it guards (born in 63c-i-a).
+    Allowlist-the-safe over EVERY tree THE ONE parser reaches (production, scripts, every member's tests,
+    every ``testpaths`` root). BOUND (stated): a scanner that spells the class tree without naming it or a
+    resolver, or resolves without ``eval``, is invisible here — the runtime cross-check (packet 58 amendment 8
+    §3) is the layer that does not care."""
+
+    def test_am34_5_exactly_one_walker_and_one_resolver_in_the_tree(self) -> None:
+        """GREEN on this commit (a28b's private resolver is folded into ``_catch_sites``). A second
+        catch-handler walker or caught-class resolver anywhere in the tree reds BY NAME."""
+        from _logging_fixtures import parse_production_trees  # noqa: PLC0415
+
+        walkers, resolvers = _scanner_candidates(
+            parse_production_trees(include_scripts=True, include_tests=True, include_testpaths=True)
+        )
+        assert walkers == {_THE_ONE_CATCH_WALKER}, (
+            f"catch-handler walkers {sorted(walkers)} — exactly ONE may exist ({_THE_ONE_CATCH_WALKER}); "
+            "route a new "
+            "scan through it (packet 58 amendment 9 §3: ONE walker, ONE resolver)"
+        )
+        assert resolvers == {_THE_ONE_CATCH_RESOLVER}, (
+            f"caught-class resolvers {sorted(resolvers)} — exactly ONE may exist ({_THE_ONE_CATCH_RESOLVER})"
+        )
+
+    def test_am34_5_the_derivation_SEES_a_second_scanner(self) -> None:
+        """The POSITIVE CONTROL: a synthetic second walker and a second resolver are both derived; a helper
+        that merely reads ``logger.handlers`` is not."""
+        walkers, resolvers = _scanner_candidates({"synthetic.py": ast.parse(_SYNTHETIC_SECOND_SCANNER)})
+        assert walkers == {"synthetic.py::second_walker"}, walkers
+        assert resolvers == {"synthetic.py::second_resolver"}, resolvers
 
 
 # ---------------------------------------------------------------------------
@@ -7248,9 +7575,7 @@ class TestTheExhaustionRecordIsATTRIBUTABLE:
             f"exactly-once rule is unchanged; this pin only requires the ONE record to say more"
         )
         record = exhausted[0]
-        missing = [
-            key for key in _EXHAUSTION_ATTRIBUTION_KEYS if getattr(record, key, None) is None
-        ]
+        missing = [key for key in _EXHAUSTION_ATTRIBUTION_KEYS if getattr(record, key, None) is None]
         assert not missing, (
             f"{seam.__name__}._query ({module_path}) exhausted its retry budget and its ONE "
             f"log record is missing {missing}.\n\n"
@@ -7487,10 +7812,7 @@ class TestTheBootstrapSharesOneDeadline:
             f"amount. Handing each of the three the default IS the defect: three independent "
             f"budgets, 3 x {default}s of wall-clock held under `_connect_lock`."
         )
-        assert all(
-            earlier > later
-            for earlier, later in zip(budgets[:-1], budgets[1:], strict=True)
-        ), (
+        assert all(earlier > later for earlier, later in zip(budgets[:-1], budgets[1:], strict=True)), (
             f"the bootstrap's three deadlines are {budgets} — they must be STRICTLY "
             f"DECREASING. A shared wall-clock budget only ever shrinks: each statement gets "
             f"what is LEFT of it, and time passes between them. Three EQUAL values is three "
@@ -7659,9 +7981,7 @@ def _all_retry_driver_call_sites() -> list[tuple[str, int, str, bool]]:
         if "__pycache__" in path.parts:
             continue
         key = path.relative_to(_PACKAGE_ROOT).as_posix()
-        for lineno, enclosing, has_label in _retry_driver_call_sites_in(
-            path.read_text(encoding="utf-8")
-        ):
+        for lineno, enclosing, has_label in _retry_driver_call_sites_in(path.read_text(encoding="utf-8")):
             found.append((key, lineno, enclosing, has_label))
     return found
 
@@ -8052,9 +8372,7 @@ def _all_bootstrap_call_sites() -> list[tuple[str, int, str, bool]]:
         if "__pycache__" in path.parts:
             continue
         key = path.relative_to(_PACKAGE_ROOT).as_posix()
-        for lineno, enclosing, has_url in _bootstrap_call_sites_in(
-            path.read_text(encoding="utf-8")
-        ):
+        for lineno, enclosing, has_url in _bootstrap_call_sites_in(path.read_text(encoding="utf-8")):
             # The DEFINITION site is not a call site: `_txn.py` declares the helper, it does
             # not invoke it. The scanner is call-shaped (`ast.Call`), so this never fires
             # today — it is stated so a reader does not go looking for a twelfth owner.
@@ -8148,17 +8466,13 @@ class TestEveryBootstrapCallThreadsItsOwnUrl:
 
         without_url: list[tuple[str, int, str]] = []
         for (module, enclosing), linenos in sorted(by_body.items()):
-            _evidence, allowed = _BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM.get(
-                (module, enclosing), ("", 0)
-            )
+            _evidence, allowed = _BOOTSTRAP_ATTRIBUTED_BY_ANOTHER_MECHANISM.get((module, enclosing), ("", 0))
             if len(linenos) > allowed:
                 without_url.extend((module, lineno, enclosing) for lineno in sorted(linenos))
 
         assert not without_url, (
             "these calls to the shared session bootstrap pass no `url=`:\n  "
-            + "\n  ".join(
-                f"{module}:{lineno}  in {enclosing}()" for module, lineno, enclosing in without_url
-            )
+            + "\n  ".join(f"{module}:{lineno}  in {enclosing}()" for module, lineno, enclosing in without_url)
             + "\n\nR1: the exhaustion record carries the full triple — WHICH statement "
             "(`label`), WHICH server (`url`), and WHAT THE ENGINE SAID (`engine_error`). "
             "A bootstrap that is labelled but not addressed tells an operator that "
@@ -8348,9 +8662,7 @@ def _exhaustion_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
     would otherwise let this class read a url that belongs to a different call.
     """
     records = _records(caplog, _EXHAUSTION_EVENT)
-    assert len(records) == 1, (
-        f"expected exactly one `{_EXHAUSTION_EVENT}` record, got {len(records)}"
-    )
+    assert len(records) == 1, f"expected exactly one `{_EXHAUSTION_EVENT}` record, got {len(records)}"
     return records[0]
 
 
@@ -8445,9 +8757,7 @@ class TestEveryProductionOwnerThreadsITSOWNUrl:
         """
         _silence_sleep(monkeypatch)
         _set_default_deadline(monkeypatch, 0.0)
-        monkeypatch.setattr(
-            scout_module, "AsyncSurreal", lambda url: _forever_conflicting_bootstrap()
-        )
+        monkeypatch.setattr(scout_module, "AsyncSurreal", lambda url: _forever_conflicting_bootstrap())
         url = _owner_url(_SCOUT_BOOTSTRAP_FUNCTION)
 
         with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
@@ -9177,8 +9487,7 @@ async def _transactional():
         unnameable = [
             site
             for site in _conflict_signal_raise_sites(source)
-            if site.handler_name is None
-            and not any(function in prose for function in site.enclosing)
+            if site.handler_name is None and not any(function in prose for function in site.enclosing)
         ]
 
         assert not unnameable, (
@@ -9187,14 +9496,13 @@ async def _transactional():
             f"in scope — un-chainable by construction — while the comment names neither them "
             f"nor any function enclosing them:\n  "
             + "\n  ".join(
-                f"{_SEAM_MODULE}:{site.lineno} in {'.'.join(site.enclosing)}()"
-                for site in unnameable
+                f"{_SEAM_MODULE}:{site.lineno} in {'.'.join(site.enclosing)}()" for site in unnameable
             )
             + "\n\nThe comment currently reads:\n  "
             + "\n  ".join(explanation)
             + "\n\nThat ∀ is FALSE, and the `engine_error` extra is built on it: the day "
             "anyone passes a `label=` at one of the sites above, the record silently gets the "
-            "driver's `\"\"` fallback while this comment says that cannot happen.\n\n"
+            'driver\'s `""` fallback while this comment says that cannot happen.\n\n'
             "The code cannot conform (LEAD RULING): the transactional caller reads a RETURNED "
             "response's failed statements rather than catching a raise, exactly as this "
             "driver's own docstring describes — so there is nothing to chain `from`. Qualify "
@@ -9539,9 +9847,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
             f"the whole of what a label is for: an operator lands on WHICH of the three "
             f"died, not merely that one did."
         )
-        borrowed = sorted(
-            (seam, label) for seam, label in observed.items() if label in _bootstrap_labels()
-        )
+        borrowed = sorted((seam, label) for seam, label in observed.items() if label in _bootstrap_labels())
         assert not borrowed, (
             f"these scout seams labelled their exhaustion with a SESSION BOOTSTRAP label: "
             f"{borrowed}. Distinct-from-each-other is not enough — three scout labels that "
@@ -9643,9 +9949,7 @@ class TestScoutsBestEffortSeamsAreAttributedByLabelOnly:
 
         with caplog.at_level(logging.WARNING, logger=_TXN_LOGGER):
             with pytest.raises(TxnContentionExhaustedError):
-                await txn_module.retry_on_conflict(
-                    _labelled_but_unchained, label=_UNCHAINED_CONTROL_LABEL
-                )
+                await txn_module.retry_on_conflict(_labelled_but_unchained, label=_UNCHAINED_CONTROL_LABEL)
 
         record = _exhaustion_record(caplog)
 
@@ -9961,8 +10265,7 @@ class TestBareQueryMustCarryExactlyOneStatement:
         bootstrap_sites = [
             site
             for site in report.observed
-            if "_txn.py" in site
-            and ("_define_namespace" in site or "_define_database" in site)
+            if "_txn.py" in site and ("_define_namespace" in site or "_define_database" in site)
         ]
         assert bootstrap_sites, (
             "the runtime guard did not observe bootstrap_session's bare .query() DEFINE "

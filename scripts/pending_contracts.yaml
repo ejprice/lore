@@ -218,17 +218,20 @@ bounds:
 # a28b pins there are the guarded-CAS scanner legs only); the bound self-destructs with the build.
 # SELF-DESTRUCTS: the day the build lands the symbols, every file stops erroring — delete this entry WITH the build.
 - id: packet-63c-i-a-a28-contract
-  owner: packet 63c-i-a fix pass (amendments 26-33) — the a28/a28b fix builder
+  owner: packet 63c-i-a fix pass (amendments 26-36) — the a28/a28b/a28c fix builder
   reopen_trigger: the fix build lands loremaster.governed.MigratePreconditionCounts,
-    MigrateGovernedResult.preconditions and loremaster.store._txn.TxnUniqueViolationError — then every file below
-    stops erroring, this entry self-destructs and must be deleted with the build
+    MigrateGovernedResult.preconditions, MigrateGovernedResult.table_defined,
+    loremaster.store._txn.TxnUniqueViolationError and loremaster.store._txn._RETRYABLE_CONFLICT_KIND — then every
+    file below stops erroring, this entry self-destructs and must be deleted with the build
   ruling: docs/design/2026-09-26-packet63c-amendment-26.md + amendment-27 (40c188d) + amendment-28 (eb75f57,
     17c52b7) + amendment-29 (a92d33e) + amendment-30 + amendment-31 (4a8ea02) + amendment-32 (51fd508) + amendment-33
-    (f66a190) + packet 58 amendment-7 (01565f9, the scanner); contract
-    receipts REPORT-contract-63c-i-a-a28.md §RED + REPORT-contract-63c-i-a-a28b.md §RED (archived with the wave)
-  rationale: contract-ahead — the a28/a28b pins are written against the checkpoint 169925f (cold audit NO-GO) before
-    the fix builder runs; a pytest-only behavioural RED is unregistrable (#461, routed to packet 09b), so the files
-    carrying one name the ruled symbols statically (never a manufactured error)
+    (f66a190) + amendment-34 (178d236) + amendment-35 (d463dba) + amendment-36 (547f63d) + packet 58 amendment-7
+    (01565f9, the scanner);
+    contract receipts REPORT-contract-63c-i-a-a28.md §RED + REPORT-contract-63c-i-a-a28b.md §RED +
+    REPORT-contract-63c-i-a-a28c.md §RED (archived with the wave)
+  rationale: contract-ahead — the a28/a28b/a28c pins are written against the checkpoint 169925f (cold audit NO-GO)
+    before the fix builder runs; a pytest-only behavioural RED is unregistrable (#461, routed to packet 09b), so the
+    files carrying one name the ruled symbols statically (never a manufactured error)
   files:
   - path: loremaster/tests/test_fixwave_a28_63c_i_a.py
     missing_symbols:
@@ -245,6 +248,16 @@ bounds:
   - path: loremaster/tests/test_fixwave_a28b_63c_i_a.py
     missing_symbols:
     - loremaster.store._txn.TxnUniqueViolationError
+  - path: loremaster/tests/test_fixwave_a28c_63c_i_a.py
+    missing_symbols:
+    - loremaster.store._txn.TxnUniqueViolationError
+    - MigrateGovernedResult.table_defined
   - path: loremaster/tests/test_retry_seam.py
+    missing_symbols:
+    - loremaster.store._txn.TxnUniqueViolationError
+  - path: loremaster/tests/test_surreal_store.py
+    missing_symbols:
+    - loremaster.store._txn._RETRYABLE_CONFLICT_KIND
+  - path: loremaster/tests/test_exhaustion_fates.py
     missing_symbols:
     - loremaster.store._txn.TxnUniqueViolationError

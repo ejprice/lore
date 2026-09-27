@@ -34,7 +34,7 @@ import ast
 import importlib
 import types
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from _catch_sites import CatchSite, catch_sites_in, production_catch_sites, resolved_by_import
@@ -46,6 +46,18 @@ from _exhaustion_fates import (
     Fate,
 )
 from loremaster.store._txn import TxnContentionExhaustedError
+
+if TYPE_CHECKING:
+    # packet 63c-i-a a28c: the STATIC reference that owns this file's pending red in
+    # scripts/pending_contracts.yaml (#461's shape). ``_exhaustion_fates.REGISTERED_FATES`` no longer
+    # registers ``server.py::_comms_register``: the ruled build (amendment 32 K5/K6, deciding from this
+    # not-yet-built class) removes the register compensation, so at ``169925f`` that site reds here as
+    # unregistered. Runtime-inert.
+    from loremaster.store._txn import TxnUniqueViolationError
+
+    def _a28c_register_has_no_compensation() -> object:
+        return TxnUniqueViolationError
+
 
 EXHAUSTION = TxnContentionExhaustedError
 #: The log methods at or above WARNING (a ``logger.log(level, …)`` call is not counted — stated bound).

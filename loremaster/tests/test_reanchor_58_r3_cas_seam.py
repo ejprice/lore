@@ -503,7 +503,14 @@ def discovered_drivers() -> dict[str, Driver]:
 def listed_handlers() -> set[str]:
     """The static index's reviewer-visible lists (58 am-7 §3 item 2: every door AND every typed catch)."""
     index = importlib.import_module("test_retry_seam")
-    return set(index._GUARDED_CAS_DOORS) | set(index._TYPED_CAS_CATCHES)  # noqa: SLF001
+    # ⚠ DUAL (63c-i-a contract a28c, deviation D-5 — REPORT-contract-63c-i-a-a28c.md FK-a28c-6): the index is
+    # keyed PER HANDLER now (``<file>::<function>::<n>``, 63c amendment 35 §3); this frame-keyed population
+    # maps each entry to its FUNCTION through the index's OWN accessor (the key format is read back in ONE
+    # place).
+    return {
+        index._handler_function(key)  # noqa: SLF001
+        for key in (*index._GUARDED_CAS_DOORS, *index._TYPED_CAS_CATCHES)  # noqa: SLF001
+    }
 
 
 def _collection_population() -> list[str]:
