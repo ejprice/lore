@@ -493,3 +493,31 @@ brief project v7 read
   one-line fixes; none is 58's file — the lead routes.
 - **Graded:** `7130508` (contract-58-r3) · HEAD-at-report: `0ed6705` · DIFFERENT (my own commit).
 - No code/tests/store touched. Standing by.
+
+## Task 22 (2026-09-27) — packet 64 amendment 9 (64b-i r2 forks FK-r2-1..8) committed `743373e`
+
+- **state:** done. Every cited name `lore_verify`'d/read at HEAD first. **FK-r2-1** CONFIRMED as the class
+  ruling: `IDENTITY_READ_BUDGET = {agent: 1, principal: 1, member_of: 1}` keyed by the TABLE the statement
+  reads (ERRATUM am-8 §1: `keep` → `member_of`; `principal` measured 2 via `list_keeps_for_member`'s email
+  re-resolution); the proven principal id passes down (one keyword on the 61b seam, `member_email=` kept,
+  exactly one of the two); the "never [] for a typo" guarantee moves upstream to `resolve_principal`.
+  **FK-r2-2** ASSERT WITHDRAWN (ERRATUM am-8 §2): 63a §4.1 + `_governed_field_specs`'s docstring + the P2
+  law + the DD-3.c write-poison class; state enforcement = the write seam ∀ writers + a UNIVERSAL F5
+  classifier leg (landed scope ∈ DOMAIN ∀ observed writes — touches 63c's shared classifier; sidecar-63c-2's
+  concurrence requested via the lead; fallback = a 64-side wrapper) + the S2 dump leg; the author's pin-the-
+  ASSERT pick REJECTED; P2 specs untouched. **FK-r2-3** `$rep_*` confirmed; golden renamed
+  `REPORT_SYSTEM_TXN_GOLDEN`. **FK-r2-4** CONFIRMED (ERRATUM am-7 §3): UNOWNED-LEGACY ⟺ the migrate's SET
+  stamps no owner column; completeness vs `_migrate_legs()` AND `LegacyMapping`. **FK-r2-5** neither reading
+  — the exempt token's statement = `compose(fragment)[0]` (the ONE composer), golden = the full composed
+  text incl. the LET; leg 2 stays EXACT; A5 REJECTED (admits a smuggled ungoverned statement; edits a
+  63c-shared classifier for a weaker property); ERRATUM am-7 §1. **FK-r2-6** author's pick with the
+  adjudication fixed: a NEW bound `packet-64b-i-closeout` (owner = the lead's contract-author-class close-out
+  agent; trigger = the build commit) — never RED_ORPHANED. **FK-r2-7** CONFIRMED: A2[finding-*] is a28's
+  adjudicated red until 63c-i-a's build; then zero 64b change expected. **FK-r2-8** recommendation to the
+  operator: DELETE `scripts/c3_harness_repair.py` (zero consumers; verbatim copy archived in
+  `receipts/2026-08-01-packet04b2-wavec/REPORT-refbuild-c3-1.md §6.1`); if kept, rename + an
+  imported-by-nothing pin. Four errata, one class (a mechanism specified from memory of a seam) — self-rule
+  widened to mechanisms.
+- **Graded:** `REPORT-contract-64b-r2.md` (uncommitted at read time) · HEAD-at-report: `743373e` ·
+  DIFFERENT (my own commit).
+- No code/tests/store touched. Standing by.
