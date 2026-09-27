@@ -492,55 +492,103 @@ def predicted_chunks(rows: int, fixed: int, per: int, cap: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Packet 58 amendment 5 (docs/design/2026-09-26-packet58-amendment-5.md @ 67bf2cc) — the DERIVED set of
-# guarded-CAS VERBS.  ONE derivation, consumed by the runtime ∀ family (C,
-# ``test_reanchor_58_r2_cas_runtime.py``) and by the class-keyed static index (B, the §HELD re-key of
-# ``test_retry_seam.py``), so the two layers range over the SAME set by construction.
+# ⚠ DUAL (packet 58 contract r3 — REPORT-contract-58-r3.md §DUAL R3-D1; amendment 8 §3 @ 03cb6d0): the
+# guarded-CAS VERB population.  r2 derived it per METHOD BODY (a shell-ledger method that literally calls
+# ``self._apply`` and reaches the shell) inside a HAND-LISTED module set (``SHELL_LEDGER_MODULES``) plus a
+# named single-statement door (``SINGLE_STATEMENT_CAS_DOORS``).  Amendment 8 §3 retired all three keys: the
+# ``_apply``-call SHAPE made a correct extract-method refactor RED (adversary-58-r2 F8) while a helper-applied
+# NEW verb escaped (N20), and the module hand-list shrank the reach (F6).  The population is now DERIVED from
+# the CALL GRAPH over the WHOLE production tree; the single-statement door comes from the static index's own
+# derived door set (``test_retry_seam._GUARDED_CAS_DOORS``), never a list here.
 # --------------------------------------------------------------------------- #
 
-#: The shell each guarded-append ledger routes its CAS writes through (kickoff §4 / findings #489).
+#: The shell every guarded-append ledger routes its CAS writes through — a RULED name (kickoff §4 / findings
+#: #489), the one name key this derivation keeps.  Bound (stated): a CAS verb whose guard is NOT built by the
+#: shell is invisible here; the one-producer pin (``test_task_guarded_shell_58``) is what forbids that shape.
 CAS_SHELL = "_guarded_append_fragment"
-#: The ledger modules that own such a shell (the one-producer pin's derived class, named by file).
-SHELL_LEDGER_MODULES = ("tasks.py", "findings.py")
-#: Amendment 5 §1 names ONE guarded CAS that is a single-statement ``_query`` (no shell, no ``_apply``):
-#: the brief ack's idempotent RELATE.  Listed by NAME — a stated bound: a new single-statement CAS door
-#: is invisible to the derivation below until it is added here.
-SINGLE_STATEMENT_CAS_DOORS = ("briefs.py::_relate_briefed",)
-#: The transaction seam every shell-ledger CAS verb commits through.
-APPLY_SEAM = "_apply"
+#: The DRIVER seams amendment 8 §3 names — every store write reaches one of them.  Resolved BY IDENTITY
+#: against ``loremaster.store._txn`` (an alias, a re-export or ``_txn_module.execute_transaction`` all count).
+DRIVER_SEAM_NAMES = ("execute_transaction", "run_query")
 
 
 def derive_cas_verbs(package_root: Any) -> set[str]:
-    """``{"<module>::<method>"}`` — every method of a shell-ledger class that CALLS ``_apply`` and REACHES
-    the shell (directly, or through methods of the same module that do), ∪ the single-statement doors.
+    """``{"<module path>::<function>"}`` — every MINIMAL guarded-CAS verb of the production tree, from its
+    call graph.
 
-    Derived from the AST of the SHIPPED package (``package_root`` = the imported ``loremaster`` dir), so a
-    new CAS verb (57's ``assign`` / release) joins the set the day it is written.
+    Amendment 8 §3 (F8's proposal): a function is a CAS verb iff some same-module transitive call path from
+    it reaches BOTH the shell (:data:`CAS_SHELL`) and a function that calls a driver seam
+    (:data:`DRIVER_SEAM_NAMES`, resolved by identity).  MINIMAL (REPORT-contract-58-r3.md FK-r3-5, my pick):
+    it is a verb only if no DIRECT callee of it already reaches both — so a public wrapper (``acknowledge`` →
+    ``_transition``) or the boot (``ensure_ready`` → the heal) is not a second verb, while a verb that builds
+    through the shell and applies through a driver-only helper (the extract-method refactor; 57's
+    helper-applied ``assign``) IS one.
+
+    Nodes are functions keyed by NAME per module (bound, stated: two classes in one module with a same-named
+    method merge — RS-6 of adversary-58-r2; no production module holds two shell ledgers today).  Calls
+    counted: ``self.f(…)`` / ``cls.f(…)`` / ``Klass.f(…)`` / ``f(…)``.  Dynamic dispatch (``getattr``) is
+    invisible here — the driver-seam RUNTIME leg (``test_reanchor_58_r3_cas_seam.py``) is what observes it,
+    and the two are cross-checked both ways.
     """
-    import ast
+    import importlib
     from pathlib import Path
 
-    verbs: set[str] = set(SINGLE_STATEMENT_CAS_DOORS)
-    for module in SHELL_LEDGER_MODULES:
-        tree = ast.parse((Path(package_root) / module).read_text(encoding="utf-8"))
-        calls: dict[str, set[str]] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                for method in node.body:
-                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        calls[method.name] = {
-                            call.func.attr
-                            for call in ast.walk(method)
-                            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-                        }
-        reaches = {name for name, called in calls.items() if CAS_SHELL in called}
-        changed = True
-        while changed:
-            grown = {name for name, called in calls.items() if called & reaches} - reaches
-            reaches |= grown
-            changed = bool(grown)
-        verbs |= {
-            f"{module}::{name}" for name, called in calls.items()
-            if APPLY_SEAM in called and name in reaches and name != CAS_SHELL
-        }
+    from _logging_fixtures import _workspace_root, parse_production_trees
+
+    # THE ONE tree parser (finding #279 / F4 — `test_ast_reach_helpers` forbids a hand-rolled whole-tree
+    # parse); the package's slice is selected by its repo-relative prefix.
+    prefix = Path(package_root).resolve().relative_to(_workspace_root().resolve()).as_posix() + "/"
+    verbs: set[str] = set()
+    for relative, tree in sorted(parse_production_trees(include_scripts=False).items()):
+        if not relative.startswith(prefix):
+            continue
+        key = relative[len(prefix):]
+        dotted = key[: -len(".py")].replace("/", ".")
+        dotted = dotted[: -len(".__init__")] if dotted.endswith(".__init__") else dotted
+        module = importlib.import_module(f"loremaster.{dotted}" if dotted != "__init__" else "loremaster")
+        verbs |= {f"{key}::{name}" for name in cas_verbs_in(tree, vars(module))}
     return verbs
+
+
+def cas_verbs_in(tree: Any, namespace: dict[str, Any], shell: str = CAS_SHELL) -> set[str]:
+    """ONE module's minimal verbs that reach BOTH ``shell`` and a driver seam (see :func:`derive_cas_verbs`),
+    by function NAME — split out so the derivation's discriminators run the SAME walk over a synthetic
+    source (``namespace`` = the module's globals, which is what resolves a driver seam BY IDENTITY).
+    ``shell`` is the CAS shell by default; amendment 8 §4 F11 derives the RELATE-composing verbs with
+    the SAME walk over ``_relate_fragment`` (one derivation, two seeds — never a second walker)."""
+    import ast
+
+    from loremaster.store import _txn
+
+    seams = {id(getattr(_txn, name)) for name in DRIVER_SEAM_NAMES}
+    calls: dict[str, set[str]] = {}
+    direct_seam: set[str] = set()
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        called = calls.setdefault(function.name, set())
+        for call in ast.walk(function):
+            if not isinstance(call, ast.Call):
+                continue
+            target = call.func
+            if isinstance(target, ast.Name):
+                called.add(target.id)
+                if id(namespace.get(target.id)) in seams:
+                    direct_seam.add(function.name)
+            elif isinstance(target, ast.Attribute):
+                called.add(target.attr)
+                owner = namespace.get(target.value.id) if isinstance(target.value, ast.Name) else None
+                if owner is not None and id(getattr(owner, target.attr, None)) in seams:
+                    direct_seam.add(function.name)
+
+    def _closure(seed: set[str]) -> set[str]:
+        reached = set(seed)
+        while True:
+            grown = {name for name, called in calls.items() if called & reached} - reached
+            if not grown:
+                return reached
+            reached |= grown
+
+    reaches_shell = _closure({name for name, called in calls.items() if shell in called})
+    reaches_seam = _closure(direct_seam)
+    both = (reaches_shell & reaches_seam) - {shell}
+    return {name for name in both if not any(callee in both for callee in calls[name] - {name})}

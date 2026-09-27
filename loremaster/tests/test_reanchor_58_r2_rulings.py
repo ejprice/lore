@@ -504,7 +504,11 @@ class TestAClaimLossIsDEBUGNeverAnAlarm:
         loud = [
             (r.name, r.levelname, r.getMessage())
             for r in caplog.records
-            if r.name.startswith("loremaster.store") and r.levelno >= logging.WARNING
+            # ⚠ DUAL (packet 58 contract r3 — REPORT-contract-58-r3.md §DUAL R3-D3; amendment 8 §0 row
+            # (2), F3): this filter USED to be `loremaster.store` — the DRIVER's loggers only.  Amendment 8
+            # rules reading (b): *"a routine loss is not an alarm"* from ANY lore logger (an alarm from
+            # `loremaster.tasks` is the same switched-off scanner), so the filter is every lore logger.
+            if r.name.startswith("loremaster") and r.levelno >= logging.WARNING
         ]
         assert not loud, f"a ROUTINE claim loss logged at WARNING/ERROR (amendment 3 §3): {loud}"
         debug = [r for r in _records(caplog, ROLLBACK_EVENT) if r.levelno == logging.DEBUG]
