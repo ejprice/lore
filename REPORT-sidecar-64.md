@@ -471,3 +471,25 @@ brief project v7 read
 - **Graded:** `REPORT-contract-58-r3.md` §FK-r3-7 (uncommitted at read time) · HEAD-at-report: `5b72471` ·
   DIFFERENT (my own commit).
 - No code/tests/store touched. Standing by.
+
+## Task 21 (2026-09-26) — packet 58 amendment 11 (am-10 §2 vs §4 on a non-fault translation) committed `0ed6705`
+
+- **state:** done. **Lifted first:** a TRANSLATE's honesty is a property of the TARGET CLASS's meaning to its
+  catchers (FAULT = "did not complete" vs VERDICT = "a fact about data"); a site-level evidence predicate
+  (`raises-chained`) sees identical bytes for an honest fault target and `raise IllegalTransitionError(...)
+  from error`, so it cannot adjudicate. **Ruling: §2 governs** — a chained translation to a class ∉
+  `FAULT_CLASSES` is RED by name; the remedy is ADMISSION of the class (an adjudicated allowlist row), never
+  a site row. ERRATUM on am-10 §4's "the rest get a row". **The condition:** a non-admitted chained
+  translate may NEVER register; the one raise shape that registers is the UNCHAINED raise (`from None` /
+  no `from`) → classification `re-raise-unchained`, evidence logs≥warning ∧ exc_info, REQUIRED `reason`
+  (today's only known reason: the security-59 F4 redaction boundary). **Admitted now:**
+  `_ProbeUnavailableError`, `ProbeGateError`; bare `RuntimeError` NOT admitted. **Pins inverted for
+  adversary-58-r3:** every row with `raises-chained` evidence DELETED (row 7 at 7130508 → derived
+  TRANSLATE; regenerated, not hand-edited); the predicate RETIRED; `FAULT_CLASS_NAMES` +2 exact both ways;
+  row 47 → `re-raise-unchained` with reason; a positive control `raise IllegalTransitionError(...) from
+  error` → RED. ERRATUM on am-10 §2's `MemoryBackendError` (does not exist — a name asserted without
+  `lore_verify`; standing self-rule adopted). Surfaced: `watcher.read_events` `[]`-at-DEBUG is a DEFECT by
+  the property (one-line WARNING fix, owner watcher); the seven close-suppress sites are pinned holes with
+  one-line fixes; none is 58's file — the lead routes.
+- **Graded:** `7130508` (contract-58-r3) · HEAD-at-report: `0ed6705` · DIFFERENT (my own commit).
+- No code/tests/store touched. Standing by.
