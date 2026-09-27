@@ -149,7 +149,7 @@ import tokenize
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
@@ -192,6 +192,16 @@ from surrealdb.errors import ErrorKind, InternalError, NotAllowedError, QueryErr
 
 from loremaster import briefs as briefs_module
 from loremaster import scout as scout_module
+
+if TYPE_CHECKING:
+    # packet 63c-i-a a28b (amendment 32 §1.3 f): the STATIC reference that owns this file's pending pins in
+    # scripts/pending_contracts.yaml (#461's shape) — the canonical guarded-CAS set names the RS-5 door, which
+    # decides from this ruled, not-yet-built class. Runtime-inert.
+    from loremaster.store._txn import TxnUniqueViolationError
+
+    def _a28b_typed_unique_violation() -> object:
+        return TxnUniqueViolationError
+
 
 # ---------------------------------------------------------------------------
 # The two NEW names are resolved at CALL time, by attribute, not imported at module
@@ -6779,23 +6789,65 @@ class TestEveryConnectionOwnerOpensExactlyOneSocket:
 # ---------------------------------------------------------------------------
 
 _GUARDED_CAS_GUARD = "TxnContentionExhaustedError"
-_GUARDED_CAS_RE_READ = "_select"
 
 
-def _discover_guarded_cas_handlers() -> dict[str, tuple[str, int, bool]]:
-    """Every guarded-CAS door: ``{"<module>::<function>": (file, lineno, has_guard)}``.
+def _module_of(key: str) -> Any:
+    """The imported production module for a package-relative path (``keeps.py`` → ``loremaster.keeps``)."""
+    dotted = key[: -len(".py")].replace("/", ".")
+    dotted = dotted[: -len(".__init__")] if dotted.endswith(".__init__") else dotted
+    return importlib.import_module(f"loremaster.{dotted}" if dotted != "__init__" else "loremaster")
 
-    The PROPERTY, from the AST: an ``except SurrealStoreError`` handler whose body re-reads
-    state. ``has_guard`` is whether the SAME ``try`` also catches
-    :class:`TxnContentionExhaustedError` — which, because ``except`` clauses are tried in
-    order and the typed error SUBCLASSES ``SurrealStoreError``, is the only thing standing
-    between "exhausted" and "re-read and reinterpreted".
+
+def _caught_classes(handler: ast.ExceptHandler, module: Any) -> list[type]:
+    """Every class an ``except`` clause catches, RESOLVED BY IMPORT in its module's namespace — each element
+    of
+    a Tuple handler included, a ``Name`` or a dotted ``Attribute`` alike (amendment 32 §1.3 f: the old key
+    read
+    only a bare ``ast.Name`` spelled ``SurrealStoreError``, so a Tuple, a subclass name or an alias was
+    invisible)."""
+    if handler.type is None:
+        return []
+    elements = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    resolved: list[type] = []
+    for element in elements:
+        try:
+            value = eval(compile(ast.Expression(element), "<except>", "eval"), vars(module))  # noqa: S307
+        except Exception:  # noqa: BLE001 - an unresolvable name is simply not a store class
+            continue
+        if inspect.isclass(value):
+            resolved.append(value)
+    return resolved
+
+
+def _issues_a_read(method: ast.AST) -> bool:
+    """Whether a method's body carries a SurrealQL ``SELECT`` statement literal — what makes a call to it a
+    RE-READ of store state (derived from the method, never from its name: keeps' ``get_by_key`` re-read is
+    not ``_select*``-prefixed)."""
+    for node in ast.walk(method):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.lstrip().upper().startswith("SELECT"):
+                return True
+    return False
+
+
+def _discover_cas_handlers() -> dict[str, tuple[str, int, bool, bool]]:
+    """The DERIVED domain: ``{"<module>::<function>": (file, lineno, reachable, guarded_above)}``.
+
+    The PROPERTY, from the AST + the imported module (amendment 32 §1.3 f — the DERIVED key): an ``except``
+    handler whose caught expression (each element of a Tuple included) resolves by import to a subclass of
+    :class:`~loremaster.store._txn.SurrealStoreError`, and whose body awaits a method of the same class that
+    RE-READS state (``_issues_a_read``). ``has_guard`` is whether exhausted contention can NOT reach the
+    handler: either none of its caught classes is a superclass of :class:`TxnContentionExhaustedError` (e.g.
+    ``except TxnUniqueViolationError``, a disjoint domain class), or an EARLIER clause of the same ``try``
+    catches
+    it (``except`` clauses are tried in order and the typed error SUBCLASSES ``SurrealStoreError``).
     """
-    doors: dict[str, tuple[str, int, bool]] = {}
+    doors: dict[str, tuple[str, int, bool, bool]] = {}
     for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         key = path.relative_to(_PACKAGE_ROOT).as_posix()
+        module = _module_of(key)
         tree = ast.parse(path.read_text(encoding="utf-8"))
         parents: dict[int, ast.AST] = {}
         for parent in ast.walk(tree):
@@ -6804,29 +6856,63 @@ def _discover_guarded_cas_handlers() -> dict[str, tuple[str, int, bool]]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Try):
                 continue
-            caught = {
-                handler.type.id
-                for handler in node.handlers
-                if isinstance(handler.type, ast.Name)
-            }
-            for handler in node.handlers:
-                if not (
-                    isinstance(handler.type, ast.Name)
-                    and handler.type.id == "SurrealStoreError"
-                ):
+            for index, handler in enumerate(node.handlers):
+                caught = _caught_classes(handler, module)
+                if not any(issubclass(cls, SurrealStoreError) for cls in caught):
                     continue
+                scope = _enclosing_callable(handler, parents)
+                owner = scope
+                while owner is not None and not isinstance(owner, ast.ClassDef):
+                    owner = parents.get(id(owner))
+                methods = {
+                    item.name: item
+                    for item in (owner.body if isinstance(owner, ast.ClassDef) else [])
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
                 re_reads = any(
-                    isinstance(call, ast.Call)
-                    and isinstance(call.func, ast.Attribute)
-                    and call.func.attr.startswith(_GUARDED_CAS_RE_READ)
-                    for call in ast.walk(handler)
+                    isinstance(awaited, ast.Await)
+                    and isinstance(awaited.value, ast.Call)
+                    and isinstance(awaited.value.func, ast.Attribute)
+                    and isinstance(awaited.value.func.value, ast.Name)
+                    and awaited.value.func.value.id == "self"
+                    and awaited.value.func.attr in methods
+                    and _issues_a_read(methods[awaited.value.func.attr])
+                    for awaited in ast.walk(handler)
                 )
                 if not re_reads:
                     continue
-                scope = _enclosing_callable(handler, parents)
+                reachable = any(issubclass(TxnContentionExhaustedError, cls) for cls in caught)
+                guarded_above = any(
+                    issubclass(TxnContentionExhaustedError, cls)
+                    for earlier in node.handlers[:index]
+                    for cls in _caught_classes(earlier, module)
+                )
                 where = getattr(scope, "name", "<lambda>") if scope else "<module>"
-                doors[f"{key}::{where}"] = (key, handler.lineno, _GUARDED_CAS_GUARD in caught)
+                doors[f"{key}::{where}"] = (key, handler.lineno, reachable, guarded_above)
     return doors
+
+
+def _discover_guarded_cas_handlers() -> dict[str, tuple[str, int, bool]]:
+    """The DOOR half of the partition (packet 58 amendment 7 §0 row 1a): every handler in the derived domain
+    that exhausted contention CAN reach — some caught class's subclass closure contains
+    :class:`TxnContentionExhaustedError` — as ``{"<module>::<function>": (file, lineno, has_guard)}``, where
+    ``has_guard`` is whether an EARLIER clause of the same ``try`` catches exhaustion (a Tuple guard
+    counts)."""
+    return {
+        door: (module_file, lineno, guarded_above)
+        for door, (module_file, lineno, reachable, guarded_above) in _discover_cas_handlers().items()
+        if reachable
+    }
+
+
+def _discover_typed_cas_catches() -> dict[str, tuple[str, int]]:
+    """The SAFE-BY-TYPE half: every handler in the derived domain whose caught classes are ALL disjoint from
+    exhausted contention — it cannot be reached by it, so it needs no guard (58 am-7 §0 row 1a)."""
+    return {
+        catch: (module_file, lineno)
+        for catch, (module_file, lineno, reachable, _guarded) in _discover_cas_handlers().items()
+        if not reachable
+    }
 
 
 # The canonical set of guarded-CAS doors, as an EXACT SET (the house idiom — one list, one
@@ -6843,6 +6929,25 @@ _GUARDED_CAS_DOORS = {
     "findings.py::annotate": "FindingNotFoundError — a row that vanished (defensive)",
     "tasks.py::transition": "IllegalTransitionError — a lost transition race",
     "tasks.py::supersede_task": "IllegalTransitionError — 'already superseded by someone else'",
+    # Found by the DERIVED key on its first run (amendment 32 §1.3 f), unlisted before it: the calibration
+    # store re-reads its lease fence after a rejection (``_fence_verdict`` SELECTs) and may report it lost.
+    # Guarded by the ``(SurrealConnectionError, TxnContentionExhaustedError)`` Tuple clause above it — a Tuple
+    # the old ``ast.Name``-keyed guard check could not see either.
+    "floor_calibration/store.py::record_measurement": (
+        "FenceLostError — the lease fence moved (confirming re-read via _fence_verdict)"
+    ),
+}
+
+# The SAFE-BY-TYPE half (packet 58 amendment 7 §0 row 1b + §2, landed by 63c-i-a a28b per lead #17087):
+# handlers
+# in the derived domain whose caught classes exhausted contention can NOT reach. Both identity-taken CAS doors
+# decide from ONE class (amendment 32 §1.2, R-6; the class named by amendment 33). 58's §HELD delta adds
+# ``tasks.py::claim_task`` (TxnClaimLostError, 58 amendment 4). EXACT, both ways.
+_TYPED_CAS_CATCHES = {
+    "agents.py::register": "TxnUniqueViolationError — the identity is taken; the winner is re-read",
+    "keeps.py::get_or_create_keyed": (
+        "TxnUniqueViolationError — the UNIQUE key is taken; the winner is re-read"
+    ),
 }
 
 
@@ -6866,6 +6971,31 @@ class TestNoGuardedCasHandlerReinterpretsExhaustedContention:
             f"rejection and a LIE for exhausted contention. Every one of them needs the "
             f"`except {_GUARDED_CAS_GUARD}: raise` guard ABOVE it — so every one of them has "
             f"to be known about."
+        )
+
+    def test_the_typed_catch_enumeration_matches_the_canonical_set_and_the_partition_is_complete(
+        self,
+    ) -> None:
+        """EXACT SET for the SAFE-BY-TYPE half + COMPLETENESS (packet 58 amendment 7 §0 rows 1a/1b, landed by
+        63c-i-a a28b): the typed catches found == ``_TYPED_CAS_CATCHES`` both ways; the two halves are
+        DISJOINT
+        and their union IS the derived domain (a handler in neither reds by name — the partition is total by
+        construction, and this pin makes it a checked variable)."""
+        domain = _discover_cas_handlers()
+        typed = _discover_typed_cas_catches()
+        doors = _discover_guarded_cas_handlers()
+        assert typed.keys() == _TYPED_CAS_CATCHES.keys(), (
+            f"the set of SAFE-BY-TYPE CAS catches has changed.\n"
+            f"  catches with NO entry: {sorted(typed.keys() - _TYPED_CAS_CATCHES.keys())}\n"
+            f"  entries naming a catch that is not found (or is now a DOOR): "
+            f"{sorted(_TYPED_CAS_CATCHES.keys() - typed.keys())}"
+        )
+        assert _TYPED_CAS_CATCHES.keys().isdisjoint(_GUARDED_CAS_DOORS.keys()), (
+            sorted(_TYPED_CAS_CATCHES.keys() & _GUARDED_CAS_DOORS.keys())
+        )
+        assert typed.keys() | doors.keys() == domain.keys() and typed.keys().isdisjoint(doors.keys()), (
+            f"the partition is not total over the derived domain: "
+            f"{sorted(domain.keys() - typed.keys() - doors.keys())}"
         )
 
     @pytest.mark.parametrize("door", sorted(_GUARDED_CAS_DOORS))
@@ -6930,59 +7060,59 @@ class TestEveryGuardedCasDoorPropagatesExhaustionUNREAD:
             "anyway, return the racer's `via`) passes every structural scan ever written."
         )
 
-    @pytest.mark.parametrize(
-        ("module_name", "door"),
-        [
-            pytest.param("findings", "findings.py::_transition", id="findings-transition"),
-            pytest.param("findings", "findings.py::annotate", id="findings-annotate"),
-            pytest.param("tasks", "tasks.py::transition", id="tasks-transition"),
-            pytest.param("tasks", "tasks.py::supersede_task", id="TASKS-SUPERSEDE-unpinned"),
-        ],
-    )
-    def test_the_transactional_doors_never_re_read_after_exhaustion(
-        self, module_name: str, door: str
-    ) -> None:
-        """Doors 2-4, structurally: the guard must RE-RAISE, not re-read.
+    @pytest.mark.parametrize("door", sorted(_GUARDED_CAS_DOORS))
+    def test_the_transactional_doors_never_re_read_after_exhaustion(self, door: str) -> None:
+        """Every canonical door, structurally: the guard must RE-RAISE, not re-read.
 
-        Driven from the AST rather than through a live ledger because the property is about
-        the SHAPE of the handler chain — `except TxnContentionExhaustedError` must contain
-        nothing but a bare `raise`. A guard whose body re-reads (`W4-ACKSWALLOW`'s shape,
-        transplanted to these doors) is a guard that guards nothing, and it is exactly what a
-        builder writes when it "handles" the new type by copying the handler below it.
+        DUAL (packet 58 amendment 7 §3 item 1, landed by 63c-i-a a28b): this was a HAND list of four
+        doors whose guard was found by ``ast.Name == TxnContentionExhaustedError`` — blind to a TUPLE
+        guard (keeps' and ``record_measurement``'s are tuples) and to every door added since. It is now
+        parametrised over the canonical set and reads guards through the SAME import-resolving
+        ``_caught_classes`` as the discovery (one derivation, never a second key). A canonical DOOR is a
+        handler exhaustion CAN reach (the partition); every EARLIER clause of the same ``try`` that catches
+        exhaustion (named, or inside a Tuple) must contain nothing but a bare ``raise``.
 
-        ``tasks.supersede_task`` is the one the adversary stripped: 342/342, full suite
-        byte-identical, and an exhausted supersede reported as *"already superseded by
-        someone else"*.
+        Driven from the AST rather than through a live ledger because the property is about the SHAPE
+        of the handler chain. A guard whose body re-reads (``W4-ACKSWALLOW``'s shape) is a guard that
+        guards nothing, and it is exactly what a builder writes when it "handles" the new type by
+        copying the handler below it. ``tasks.supersede_task`` is the one the adversary stripped:
+        342/342, full suite byte-identical, and an exhausted supersede reported as *"already
+        superseded by someone else"*.
         """
-        source = (_PACKAGE_ROOT / f"{module_name}.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        function_name = door.split("::")[1]
-
-        guards: list[ast.ExceptHandler] = []
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.AsyncFunctionDef) and node.name == function_name):
-                continue
-            for inner in ast.walk(node):
-                if not isinstance(inner, ast.Try):
-                    continue
-                guards.extend(
-                    handler
-                    for handler in inner.handlers
-                    if isinstance(handler.type, ast.Name)
-                    and handler.type.id == _GUARDED_CAS_GUARD
-                )
-
+        found = _discover_guarded_cas_handlers()
+        assert door in found, f"the canonical door {door!r} was not found by the scan"
+        module_file, lineno, _has_guard = found[door]
+        module = _module_of(module_file)
+        tree = ast.parse((_PACKAGE_ROOT / module_file).read_text(encoding="utf-8"))
+        located = [
+            (node, index)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Try)
+            for index, handler in enumerate(node.handlers)
+            if handler.lineno == lineno
+        ]
+        assert len(located) == 1, f"{door}: the door handler at line {lineno} was not located exactly once"
+        node, index = located[0]
+        door_classes = _caught_classes(node.handlers[index], module)
+        assert any(issubclass(TxnContentionExhaustedError, cls) for cls in door_classes), (
+            f"{door}: exhausted contention cannot reach this handler — it is SAFE BY TYPE and belongs in "
+            f"_TYPED_CAS_CATCHES, not _GUARDED_CAS_DOORS"
+        )
+        guards = [
+            handler
+            for handler in node.handlers[:index]
+            if any(issubclass(TxnContentionExhaustedError, cls) for cls in _caught_classes(handler, module))
+        ]
         assert guards, (
-            f"{door} has no `except {_GUARDED_CAS_GUARD}` clause at all — exhausted "
-            f"contention falls into its rollback handler and is reinterpreted as a lost race"
+            f"{door} has no clause catching {_GUARDED_CAS_GUARD} ABOVE its rollback handler — exhausted "
+            f"contention falls into it and is reinterpreted as a lost race"
         )
         for guard in guards:
             body = [statement for statement in guard.body if not isinstance(statement, ast.Pass)]
             assert all(isinstance(statement, ast.Raise) for statement in body), (
-                f"{door}'s `except {_GUARDED_CAS_GUARD}` does something OTHER than re-raise "
-                f"(line {guard.lineno}). A guard that re-reads the row is a guard that guards "
-                f"nothing: exhausted contention means our write never committed and whatever "
-                f"is in the store belongs to somebody else. Re-raise, untouched."
+                f"{door}'s guard (line {guard.lineno}) does something OTHER than re-raise. A guard that "
+                f"re-reads the row is a guard that guards nothing: exhausted contention means our write "
+                f"never committed and whatever is in the store belongs to somebody else. Re-raise, untouched."
             )
             assert all(
                 cast("ast.Raise", statement).exc is None for statement in body

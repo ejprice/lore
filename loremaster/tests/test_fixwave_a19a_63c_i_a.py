@@ -11,8 +11,9 @@ THE SPEC IS THE RULINGS (later wins):
   validity FIRST — as corrected by amendment 22 F-1).
 * ``docs/design/2026-09-25-packet63c-amendment-22.md`` (``ecc3f57``) §W 1–6 — MP-1..MP-5 (the adversary's
   kills K1/K2/K3, PD2 as a pin, a prose-skeleton golden), #485 (``AgentRegistry.preflight``: ONE write-free
-  refusal method ``register`` itself calls first; the handler calls it BEFORE the keep mint; created-only
-  compensation for the race; the DERIVED ∀-refusal-classes pin), F-1 (valid = the governed set), F-2 (both
+  refusal method ``register`` itself calls first; the handler calls it BEFORE the keep mint; the race's
+  created-only compensation was later DELETED — amendment 28 §F-1, a28 / a28b R-4; the DERIVED
+  ∀-refusal-classes pin), F-1 (valid = the governed set), F-2 (both
   half-pairs refused at the verb; no stamped message carries a NONE owner), F-3 (refusal receipts serve
   ``None``, never an unmeasured zero).
 * ``docs/design/2026-09-25-packet63c-amendment-23.md`` (``e3abc7c``) — the a19a forks: FK-1 (the refusal-class
@@ -578,8 +579,9 @@ class TestEveryRegisterRefusalPrecedesTheKeepMint63cIAa19a:
     ) -> None:
         """MP-A (amendment 24 §1 — KP13's property, the ∀ form): ``_RegisterPropertySpy`` is ARMED
         AROUND the ``comms(action="register")`` of EVERY driver in ``_RUNTIME_DRIVERS`` (each in a fresh
-        credentialed world) and asserts, inside the call, *refused ⇒ zero mints, or a compensated injected
-        race*. Then REACH IS A CHECKED VARIABLE: the spy's observed driver labels must EQUAL the driver list
+        credentialed world) and asserts, inside the call, *refused ⇒ zero mints, or the injected race (its
+        minted keep LEFT in place — amendment 28 §F-1; a28b R-4 corpse sweep)*. Then REACH IS A CHECKED
+        VARIABLE: the spy's observed driver labels must EQUAL the driver list
         (one observed register per driver — a driver that bypasses the armed comms reds by name), and three
         non-vacuity legs hold: every ``_REFUSAL_FIXTURES`` driver WAS refused (the property ran on refusals,
         not only on successes), the CONTROL minted exactly once (the spy SEES a mint), and the RACE was
