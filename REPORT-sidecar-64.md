@@ -354,3 +354,36 @@ brief project v7 read
   defect); no marker needed; the table's keys == the classifier's producible classes (completeness both
   ways); default ERROR.
 - **Graded:** `f66a190` (am-33) · HEAD-at-report: `01565f9` · DIFFERENT (my own commit). Standing by.
+
+## Task 17 (2026-09-26) — packet 58 amendment 8 (r2 adversary INSUFFICIENT @ 821be62) committed `03cb6d0`
+
+- **state:** done. Rules `REPORT-adversary-58-r2.md` per the lead's list. **PKG:** the lead's ruling
+  ratified — heal packer = `more_itertools.constrained_batches(items, max_size=TXN_STATEMENT_HARD_CAP,
+  get_len=<the ONE counter>, strict=True)`; `more-itertools` a DECLARED direct dependency; items are
+  `(row, fragments, weight)` built ONCE (fragments carried, never re-priced); the `strict` ValueError is
+  re-raised at the one call site as a typed loud boot fault (F10 pinned). **ERRATUM, mine:** am-3 §1's
+  "no library does this" / `Packages considered: none` — a limitation asserted without reading an
+  installed API (brief-base §1's named failure). **CLASS (third strike):** the lead's property CONFIRMED
+  and sharpened to CONVERGENCE — ∀ straggler populations with resolvable heads, ONE boot heals ALL
+  (`count == |population|`, every sent txn ≤ cap), weight = each row's OWN composed count from the ONE
+  shared counter; pinned by a GENERATED sweep over the straggler SHAPE space (entries 1/2/k × distinct/
+  shared heads × head absent/present × healable/phantom/cyclic × pure/mixed) at cap−1/cap/cap+1 per
+  class, F10 single-over-cap refusal as the edge; ingredients DERIVED from the heal's fragment builder.
+  **(1) F5/F8/N20:** no builder shape constraint (am-5 (A), rejected twice). The ∀ MOVES to the STATE:
+  fault injection at the DRIVER seam (`execute_transaction`/`run_query`), identity assertion (`is` the
+  injected instance), coverage a runtime-derived checked variable (observed store-writing entry points ⊆
+  ⊇ the static call-graph CAS set, both directions RED). The static index stays reviewer-visible: learns
+  `ast.TryStar` + `with contextlib.suppress(...)` as catch forms; `derive_cas_verbs` re-derived from the
+  CALL GRAPH (verb reaches the shell AND the driver transitively), whole production tree, no module list.
+  Not a receding reach — the sequence ends at the chokepoint every write passes. BC-r2-3/BC-r2-9 deleted.
+  **(2) F3:** reading (b) — ANY `loremaster` logger, nothing ≥ WARNING for a routine loss. **(3) F2:**
+  missing pin under am-6/am-7, generated over the tier table's classes + completeness. **F4:** the ROW is
+  the unit — skip WHOLE, uncounted, one WARNING per unresolvable ENTRY; generated over row shapes.
+  **F11:** missing pin under am-1's rider — generated over every RELATE-composing verb (`create_task`,
+  `create_many`, `supersede_task`, `_reanchor_stragglers`), spy-derived. **(4) esc1:** owner = 58's
+  builder (r1 §FLAGS 1 confirmed): re-key to the current contract or ARCHIVE with a DUAL header; never
+  left red. **am-7 folded into r3:** §HELD = DELTA over 63c-i-a's a28b scanner + this amendment's §3.
+  **Loop cost for the operator:** round 3; two properties each routed as a class — a 4th instance of
+  either re-opens the RULING, not the contract.
+- **Graded:** `821be62` (adversary-58-r2) · HEAD-at-report: `03cb6d0` · DIFFERENT (my own commit).
+- No code/tests/store touched. Standing by.
