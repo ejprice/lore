@@ -416,3 +416,35 @@ brief project v7 read
   `target_scope=None` is a loud typed refusal, never `NoRows`. **FK-5:** confirmed.
 - **Graded:** `d8ea4ba` (contract-64b) · HEAD-at-report: `6e42ed1` · DIFFERENT (my own commit).
 - No code/tests/store touched. Standing by.
+
+## Task 19 (2026-09-26) — 64 am-8 (`53563e7`, adversary-64b @ 0f69efa) + 58 am-9 (`4cb8ce9`, contract-58-r3 forks)
+
+- **state:** done. **PART A (64 am-8):** (1) R8 — the capability-verify SELECT IS the agent-row read; budget
+  ≤1 `agent` statement per governed call, counted at the STORE seam ∀ spec-dict write verbs × {agent
+  supplied, omitted}; mechanism = the verify SELECT projects the identity columns into a frozen
+  `VerifiedAgent` that Subject construction, the compare and the footer all consume; per-table budget
+  (agent/principal/keep ≤1) with MP-5's lifecycle sweep as its ≥1 dual. ERRATUM on am-7 FK-8's "ONCE"
+  (described the design, not the measured reference). (2) admin `set_scope` = any ROW never any STRING: a
+  scope DOMAIN (fixed ∪ `keep:<existing>`) ∀ writers via ONE `lorerunes.pdp` shape predicate + one keep
+  existence read; admin bypasses only the household clause; column ASSERT backstop via the ONE emitter with a
+  builder-verified populated-table leg (MEDIUM on engine re-validation — the leg decides). (3) authorize
+  BEFORE the edge check (an invisible row's status in `IllegalTransitionError` is an oracle); DUAL row
+  changed-deliberately. Routing: r2's SAT base = HEAD + 58-r3 contract + 58 §HELD + 64b §HELD; S-1 fold
+  repoints the import; S-2/S-3 the finding leg satisfies a28's ∀-legs properties (measured `backfilled`,
+  fail-closed); S-4 64b owns the driver re-key for the doors it merges via 58-r3's discovered
+  `CAS_SEAM_DRIVERS`. FK-9: typed-CALL declarations (permanent signature pins) + a self-destruct pin over
+  the `Any` reach-arounds (alias set ⊆ unbuilt symbols). Survivor classes tabulated (§6). Loop: 64b-i → r2,
+  no second strike. **PART B (58 am-9):** FK-r3-1 Reading A — `claim_task` NOT listed (ERRATUM on am-4 +
+  am-7 §2; the re-read domain excludes it; certified by the driver-seam ∀ + catches-the-TYPE + the swallow
+  rule); aligned with sidecar-63c-2's FK-a28b-4 (partition landed at e039c64 per #17087 — am-7 §0 row 2's
+  order SUPERSEDED, 58's delta shrinks to catch forms + swallow rule + cross-check + DUAL note). FK-r3-2
+  Reading A (ERRATUM on am-7 §4: RS-5 rides `run_query`, no rollback — tier ROW + keeps producibility;
+  `run_query` logging consistency flagged to 63c). FK-r3-3 Reading A generalised: ONE walker over
+  Try/TryStar/suppress, ONE resolver; exact sets = re-read domain; SWALLOW RULE whole-tree, form-blind
+  (closure ∋ exhaustion without passthrough → RED by name). FK-r3-4 Reading A (discovered registry; un-driven
+  reds by name; lead routes the three). FK-r3-5 MINIMAL (+ the wrapper-swallow rider → whole-tree rule).
+  FK-r3-6 confirmed. F-r3-1 → build in r4 (generated marker allowlist). F-r3-3 → `pytest-timeout` (dev
+  dep, signal method, tight marks on the cyclic legs; value = lead's).
+- **Graded:** `0f69efa` (adversary-64b) · `REPORT-contract-58-r3.md` at HEAD · HEAD-at-report: `4cb8ce9`
+  · DIFFERENT (my own commits).
+- No code/tests/store touched. Standing by.
