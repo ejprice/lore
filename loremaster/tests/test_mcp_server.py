@@ -2287,24 +2287,37 @@ class TestToolBehaviourEndToEnd:
 
     # -- lore_findings (FindingLedger) ------------------------------------- #
 
+    @pytest_asyncio.fixture()
+    async def finding_context(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> AsyncIterator[Any]:
+        """64b-i: a REAL credentialed AppContext acting as ONE registered agent (``me``) whose capability
+        rides every governed finding write — identity is DERIVED (amendment 2), so these end-to-end legs
+        carry no ``created_by``/``actor``. The index is not needed here (only the finding ledger is)."""
+        from _governed_contract_64 import acting_finding_context  # noqa: PLC0415
+
+        async with acting_finding_context(monkeypatch, tmp_path) as acting:
+            yield acting
+
     async def test_findings_report_then_query_roundtrips(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="lore_tests_for misses XML edges",
             body="the graph heuristic drops framework-mediated calls",
             area="lore_tests_for",
             category="capability_gap",
-            created_by="builder-wireup-1",
         )
         assert "reported finding #" in reported
-        listed = await indexed_context.findings(action="query", status="open")
+        listed = await finding_context.findings(action="query", status="open")
         assert "lore_tests_for misses XML edges" in listed
 
-    @pytest.mark.parametrize("field_name", ["subject", "area", "category", "created_by"])
+    # 64b-i DUAL (M-2): ``created_by`` is DROPPED from this sweep — the caller no longer supplies an author
+    # (identity is DERIVED from the capability: the registered agent's charset-gated name).
+    @pytest.mark.parametrize("field_name", ["subject", "area", "category"])
     async def test_findings_report_requires_nonempty_fields(
-        self, indexed_context: AppContext, field_name: str
+        self, finding_context: Any, field_name: str
     ) -> None:
         # An empty (not merely absent) required field is a caller error naming it.
         # Parametrised over the FOUR required fields — ``subject`` / ``area`` /
@@ -2319,21 +2332,19 @@ class TestToolBehaviourEndToEnd:
             "subject": "s",
             "area": "a",
             "category": "c",
-            "created_by": "me",
         }
         values[field_name] = ""
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await indexed_context.findings(
+            await finding_context.findings(
                 action="report",
                 subject=values["subject"],
                 area=values["area"],
                 category=values["category"],
-                created_by=values["created_by"],
             )
         assert field_name in str(exc_info.value).lower()
 
     async def test_findings_report_without_body_defaults_to_empty_string(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # Fix (audit-waveb-1 finding #1): the schema + FindingLedger deliberately
         # allow an empty body (store/surreal_schema.py's ``body`` field carries no
@@ -2341,89 +2352,85 @@ class TestToolBehaviourEndToEnd:
         # can name it"). The MCP boundary previously contradicted that domain by
         # requiring a non-empty body; omitting it entirely must now succeed, and
         # the stored finding must round-trip with an empty body.
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="subject alone should be enough to file this",
             area="lore_findings",
             category="friction",
-            created_by="me",
         )
         assert "reported finding #" in reported
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
-        listed = await indexed_context.findings(action="query", status="open")
+        listed = await finding_context.findings(action="query", status="open")
         assert "subject alone should be enough to file this" in listed
-        finding = await indexed_context.finding_ledger.get(number)
+        finding = await finding_context.finding_ledger.get(number)
         assert finding.body == ""
 
     async def test_findings_lifecycle_acknowledge_then_resolve(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="stale flag not rendered",
             body="body",
             area="lore_read",
             category="bug",
-            created_by="me",
         )
         number = reported.split("#", 1)[1].split(" ", 1)[0]
-        acked = await indexed_context.findings(
-            action="acknowledge", id_or_number=int(number), actor="me"
+        acked = await finding_context.findings(
+            action="acknowledge", id_or_number=int(number)
         )
         assert "acknowledged" in acked
-        resolved = await indexed_context.findings(
-            action="resolve", id_or_number=int(number), actor="me", note="fixed"
+        resolved = await finding_context.findings(
+            action="resolve", id_or_number=int(number), note="fixed"
         )
         assert "resolved" in resolved
 
     async def test_findings_get_and_chain_head_by_number(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="diff engine could leak a connection",
             body="body",
             area="lore_diff",
             category="bug",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
-        got = await indexed_context.findings(action="get", id_or_number=number)
+        got = await finding_context.findings(action="get", id_or_number=number)
         assert "diff engine could leak a connection" in got
         # A lone finding is its OWN chain head — rendered, and NOT flagged forked.
-        head = await indexed_context.findings(action="chain_head", id_or_number=number)
+        head = await finding_context.findings(action="chain_head", id_or_number=number)
         assert "diff engine could leak a connection" in head
         assert "FORKED" not in head
 
     async def test_findings_get_and_chain_head_render_the_body_query_stays_summarised(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # P8d Wave 4a (finding #38): get/chain_head render the FULL BODY +
         # provenance, not just the summary row; query stays summarised.
         distinctive_body = "reproduces only under concurrent connection drops during a rebuild"
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="diff engine connection leak",
             body=distinctive_body,
             area="lore_diff",
             category="bug",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
 
-        got = await indexed_context.findings(action="get", id_or_number=number)
+        got = await finding_context.findings(action="get", id_or_number=number)
         assert distinctive_body in got
 
-        head = await indexed_context.findings(action="chain_head", id_or_number=number)
+        head = await finding_context.findings(action="chain_head", id_or_number=number)
         assert distinctive_body in head
 
-        queried = await indexed_context.findings(action="query", status="open")
+        queried = await finding_context.findings(action="query", status="open")
         assert distinctive_body not in queried, (
             "query must stay summarised — the body belongs to get/chain_head only"
         )
 
     async def test_findings_get_and_chain_head_fence_a_multiline_body_and_never_forge_a_row(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # audit-w4a finding #1 (CONFIRMED blocker, fixed): a multi-line body
         # must render UNAMBIGUOUSLY -- a body-embedded line byte-identical to
@@ -2435,16 +2442,15 @@ class TestToolBehaviourEndToEnd:
         # produce for a genuine OTHER finding -- the strongest possible
         # forgery (byte-identical to a real row, not a hand-typed lookalike),
         # exactly reproducing the audit's live receipt.
-        other_reported = await indexed_context.findings(
+        other_reported = await finding_context.findings(
             action="report",
             subject="the OTHER real finding",
             body="unrelated",
             area="lore_findings",
             category="bug",
-            created_by="attacker",
         )
         other_number = int(other_reported.split("#", 1)[1].split(" ", 1)[0])
-        other_finding = await indexed_context.finding_ledger.get(other_number)
+        other_finding = await finding_context.finding_ledger.get(other_number)
         forged_row = AppContext._render_finding_rows([other_finding])
         forged_provenance = 'provenance: {"forged": true}'
 
@@ -2454,19 +2460,18 @@ class TestToolBehaviourEndToEnd:
             f"{forged_provenance}\n"
             "and a run of four backticks right here: ````"
         )
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="hostile multi-line body finding",
             body=hostile_body,
             area="lore_findings",
             category="bug",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
-        real_row = AppContext._render_finding_rows([await indexed_context.finding_ledger.get(number)])
+        real_row = AppContext._render_finding_rows([await finding_context.finding_ledger.get(number)])
 
-        get_text = await indexed_context.findings(action="get", id_or_number=number)
-        head_text = await indexed_context.findings(action="chain_head", id_or_number=number)
+        get_text = await finding_context.findings(action="get", id_or_number=number)
+        head_text = await finding_context.findings(action="chain_head", id_or_number=number)
 
         for rendered in (get_text, head_text):
             lines = rendered.splitlines()
@@ -2502,31 +2507,31 @@ class TestToolBehaviourEndToEnd:
             assert lines[0] == real_row
 
     async def test_findings_chain_head_surfaces_a_fork(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # Two findings superseding the SAME original fork the chain; chain_head must
         # SURFACE the sibling branch it did not walk (the hardening builder's model),
         # and the wiring must render that fork marker rather than hide it.
-        original = await indexed_context.findings(
+        original = await finding_context.findings(
             action="report", subject="the original framing", body="b",
-            area="lore_findings", category="friction", created_by="me",
+            area="lore_findings", category="friction",
         )
         original_number = int(original.split("#", 1)[1].split(" ", 1)[0])
         for reframe in ("first reframe", "second reframe"):
-            await indexed_context.findings(
+            await finding_context.findings(
                 action="report", subject=reframe, body="b", area="lore_findings",
-                category="friction", created_by="me", supersedes=original_number,
+                category="friction", supersedes=original_number,
             )
-        head = await indexed_context.findings(
+        head = await finding_context.findings(
             action="chain_head", id_or_number=original_number
         )
         assert "FORKED" in head
 
     async def test_findings_unknown_action_is_a_clean_error(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await indexed_context.findings(action="obliterate")
+            await finding_context.findings(action="obliterate")
         assert "obliterate" in str(exc_info.value)
 
     # -- #256 annotate: the SERVED surface (dispatch + render) ------------- #
@@ -2536,33 +2541,31 @@ class TestToolBehaviourEndToEnd:
     # "unknown findings action").
 
     async def test_findings_annotate_action_routes_to_the_ledger_and_returns_detail(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # Pin S1 (dispatch exists + routes): action=annotate reaches
         # FindingLedger.annotate and returns the finding DETAIL (like get), so the
         # agent sees the correction landed. RED at HEAD: unknown action.
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="stale body needs a footnote",
             body="the original, now-stale framing",
             area="lore_findings",
             category="friction",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
         note = "the tests_for gap also strands transitive coverage via a helper - grep-confirmed"
 
-        served = await indexed_context.findings(
+        served = await finding_context.findings(
             action="annotate",
             id_or_number=number,
-            actor="drift-sweep-agent-7",
             note=note,
         )
         # Returns the finding DETAIL: the subject (a get-render trait) + the note.
         assert "stale body needs a footnote" in served
         assert note in served
         # Routed to the ledger: the finding is annotated AND status is UNCHANGED.
-        persisted = await indexed_context.finding_ledger.get(number)
+        persisted = await finding_context.finding_ledger.get(number)
         assert persisted.status == "open"
         assert any(
             isinstance(event, dict)
@@ -2572,7 +2575,7 @@ class TestToolBehaviourEndToEnd:
         )
 
     async def test_findings_annotate_response_and_get_never_fabricate_a_transition(
-        self, indexed_context: AppContext
+        self, finding_context: Any
     ) -> None:
         # Pin S2 (the #104 server-level twin — the load-bearing one): an annotate
         # changed NO status, so neither its response NOR a later get/chain_head may
@@ -2580,20 +2583,18 @@ class TestToolBehaviourEndToEnd:
         # build: wiring action=annotate through `_render_finding_transition` (or
         # otherwise treating annotate as a transition) renders
         # "finding #N transitioned to open by ..." => this reddens.
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="only-ever-annotated finding",
             body="b",
             area="lore_findings",
             category="bug",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
 
-        served = await indexed_context.findings(
+        served = await finding_context.findings(
             action="annotate",
             id_or_number=number,
-            actor="me",
             note="a footnote, never a transition",
         )
         assert "transitioned to" not in served, (
@@ -2602,34 +2603,33 @@ class TestToolBehaviourEndToEnd:
         # ...and get of a finding that was ONLY annotated carries no fabricated
         # transition line either (the provenance renders the annotate event, which
         # has no status/`to` field for a render to build an arrow from).
-        got = await indexed_context.findings(action="get", id_or_number=number)
+        got = await finding_context.findings(action="get", id_or_number=number)
         assert "transitioned to" not in got, (
             f"get fabricated a status transition for an annotate-only finding: {got!r}"
         )
         # Belt: the finding is genuinely still open (the row's own status word is
         # legitimate; what must be absent is the fabricated *transition* verb).
-        assert (await indexed_context.finding_ledger.get(number)).status == "open"
+        assert (await finding_context.finding_ledger.get(number)).status == "open"
 
     @pytest.mark.parametrize("blank_note", ["", " ", "\t", None])
     async def test_findings_annotate_requires_a_nonblank_note_at_the_served_boundary(
-        self, indexed_context: AppContext, blank_note: str | None
+        self, finding_context: Any, blank_note: str | None
     ) -> None:
         # Pin S3 (served argument surface): `note` is REQUIRED and non-blank at the
         # served boundary too (reuse `_require_finding_arg`, don't hand-roll). RED at
         # HEAD: the unknown-action error names the ACTION, never "note", so the
         # `"note" in message` assert fails until the branch exists and validates.
-        reported = await indexed_context.findings(
+        reported = await finding_context.findings(
             action="report",
             subject="needs a real note to annotate",
             body="b",
             area="lore_findings",
             category="friction",
-            created_by="me",
         )
         number = int(reported.split("#", 1)[1].split(" ", 1)[0])
         with pytest.raises(Exception) as exc_info:  # noqa: PT011 - message asserted below
-            await indexed_context.findings(
-                action="annotate", id_or_number=number, actor="me", note=blank_note
+            await finding_context.findings(
+                action="annotate", id_or_number=number, note=blank_note
             )
         assert "note" in str(exc_info.value).lower(), (
             f"a blank/None annotate note must be refused with an error naming 'note', got "
@@ -7768,23 +7768,32 @@ class _LedgerRaisingOnSecondCall:
         self._acknowledge_calls = 0
 
     async def resolve(
-        self, id_or_number: int | str, actor: str, note: str | None = None
+        self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
     ) -> Any:
         self._resolve_calls += 1
         if self._resolve_calls == 2:
             raise self._error
-        return await self._inner.resolve(id_or_number, actor, note)
+        return await self._inner.resolve(id_or_number, actor, note, caller=caller)
 
     async def acknowledge(
-        self, id_or_number: int | str, actor: str, note: str | None = None
+        self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
     ) -> Any:
         self._acknowledge_calls += 1
         if self._acknowledge_calls == 2:
             raise self._error
-        return await self._inner.acknowledge(id_or_number, actor, note)
+        return await self._inner.acknowledge(id_or_number, actor, note, caller=caller)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+def _act_as(ctx: Any, name: str) -> str:
+    """64b-i: arm ``ctx`` so the batch dispatcher's identity step resolves the agent ``name`` (THE shared
+    arm, ``_finding_fakes.arm_finding_identity``), and return the capability to present. The rendered
+    ``resolved by <name>`` rows are the derived actor — the registered name, never a caller declaration."""
+    from _finding_fakes import arm_finding_identity, armed_agent_row  # noqa: PLC0415
+
+    return arm_finding_identity(ctx, armed_agent_row(name))
 
 
 class TestResolveManyAcknowledgeManyDispatch:
@@ -7804,7 +7813,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": first.number},
                     {"id_or_number": second.number, "note": "fixed in 9171021"},
@@ -7828,7 +7837,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="acknowledge_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[{"id_or_number": result.number}],
             )
         )
@@ -7852,7 +7861,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": already_resolved.number},
                     {"id_or_number": good.number},
@@ -7873,7 +7882,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[{"id_or_number": result.number}, {"id_or_number": result.number}],
             )
         )
@@ -7904,12 +7913,12 @@ class TestResolveManyAcknowledgeManyDispatch:
                 self._calls = 0
 
             async def resolve(
-                self, id_or_number: int | str, actor: str, note: str | None = None
+                self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
             ) -> Any:
                 self._calls += 1
                 if self._calls == 2:
                     raise SurrealConnectionError("connection lost mid-batch")
-                return await self._inner.resolve(id_or_number, actor, note)
+                return await self._inner.resolve(id_or_number, actor, note, caller=caller)
 
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._inner, name)
@@ -7922,7 +7931,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": first.number},
                     {"id_or_number": second.number},
@@ -7979,7 +7988,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": first.number},
                     {"id_or_number": contended.number},
@@ -8026,7 +8035,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": first.number},
                     {"id_or_number": rejected.number},
@@ -8081,7 +8090,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="acknowledge_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[
                     {"id_or_number": first.number},
                     {"id_or_number": contended.number},
@@ -8108,7 +8117,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         rendered = _render_text(
             await getattr(rollup_ctx, "findings")(
                 action="resolve_many",
-                actor="slate-lead",
+                capability=_act_as(rollup_ctx, "slate-lead"),
                 items=[{"id_or_number": hostile_ref}],
             )
         )
@@ -8123,7 +8132,7 @@ class TestResolveManyAcknowledgeManyDispatch:
     ) -> None:
         with pytest.raises(ValueError) as exc_info:
             await getattr(rollup_ctx, "findings")(
-                action="resolve_many", actor="slate-lead", items=[]
+                action="resolve_many", capability=_act_as(rollup_ctx, "slate-lead"), items=[]
             )
         # 04b5 all-or-nothing: the `{action}` self-echo routes through render_attributed.
         assert str(exc_info.value) == (
@@ -8136,7 +8145,7 @@ class TestResolveManyAcknowledgeManyDispatch:
     ) -> None:
         with pytest.raises(ValueError) as exc_info:
             await getattr(rollup_ctx, "findings")(
-                action="acknowledge_many", actor="slate-lead", items=[]
+                action="acknowledge_many", capability=_act_as(rollup_ctx, "slate-lead"), items=[]
             )
         assert str(exc_info.value) == (
             f"{render_attributed('acknowledge_many')} requires a non-empty 'items' list of "
@@ -8149,7 +8158,7 @@ class TestResolveManyAcknowledgeManyDispatch:
         items = [{"id_or_number": i} for i in range(1, 52)]
         with pytest.raises(ValueError) as exc_info:
             await getattr(rollup_ctx, "findings")(
-                action="resolve_many", actor="slate-lead", items=items
+                action="resolve_many", capability=_act_as(rollup_ctx, "slate-lead"), items=items
             )
         assert str(exc_info.value) == (
             f"{render_attributed('resolve_many')} accepts at most 50 items per call, "
@@ -8280,14 +8289,19 @@ async def _render_rollup_summary(value: str, _ctx: AppContext) -> str:
 
 
 async def _render_batch_actor(value: str, ctx: AppContext) -> str:
-    """A fresh finding, resolved with a hostile ``actor`` — mirrors the real
-    ``lore_findings action=resolve_many`` dispatch path exactly (every call
-    mints a NEW finding so successive calls against the same ``ctx`` never
-    collide on an already-resolved row)."""
+    """A fresh finding, resolved with a hostile ``actor`` at the batch render SITE (every call mints a NEW
+    finding so successive calls against the same ``ctx`` never collide on an already-resolved row).
+
+    64b-i DUAL (RESHAPED, REPORT §9 M-4): the served ``lore_findings`` no longer takes a caller ``actor`` —
+    the actor is the capability's registered, charset-gated name, so a hostile value cannot reach this
+    render through the dispatcher (a door closed by construction). The render site (``resolved by
+    {actor}``) still serves it, so the case drives ``_resolve_or_acknowledge_many`` directly — the link5
+    driver's idiom."""
     result = await ctx.finding_ledger.report(
         "s", "b", area="a", category="c", created_by="me"
     )
-    rendered = await getattr(ctx, "findings")(
+    rendered, _writes = await AppContext._resolve_or_acknowledge_many(
+        ctx,
         action="resolve_many",
         actor=value,
         items=[{"id_or_number": result.number}],

@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import os
 import pathlib
 import re
 import tempfile
@@ -190,6 +191,12 @@ PENDING_TRAFFIC_BACKENDS = ("real", "fake")
 #: of every path, and it was pinned on one.
 DISPATCHERS = ("lore_tasks", "lore_findings", "lore_claim_task")
 
+#: The dispatchers that still serve R8(2)'s attribution FALLBACK. ⚠ 64b-i (amendment 2 §1 item 6):
+#: ``lore_findings`` is NOT one — its identity is DERIVED from the capability, so no caller attribution
+#: exists to match. Its replacement leg: ``test_a_findings_write_with_NO_agent_serves_the_capabilitys_
+#: RESOLVED_footer``.
+_R8_FALLBACK_DISPATCHERS = tuple(dispatcher for dispatcher in DISPATCHERS if dispatcher != "lore_findings")
+
 #: L2's batch fixture: 5 items of which some subset writes. The three FATES are
 #: forced separately below — 0-of-5, 1-of-5 and 5-of-5 — because a write-count
 #: trigger evaluated only where the count is 0 or 5 cannot see an off-by-one.
@@ -289,6 +296,8 @@ FINDING_WRITE_ACTIONS = (
     # pending-traffic line like every other write. Its kwargs (a real id + actor +
     # a non-blank note) are supplied by :func:`_finding_action_kwargs`.
     "annotate",
+    # 64b-i (kickoff §4.4): the governed re-scope verb MUTATES (the row's scope), so it footers too.
+    "set_scope",
     "resolve_many",
     "acknowledge_many",
 )
@@ -679,7 +688,7 @@ class TestTheFooterServesTheLEDGERSTwoCounts:
         _assert_footer_carries(footer, unread=traffic[0], unacked=traffic[1])
 
     @pytest.mark.parametrize("traffic", TRAFFIC_WORLDS_THAT_FOOTER)
-    @pytest.mark.parametrize("dispatcher", DISPATCHERS)
+    @pytest.mark.parametrize("dispatcher", _R8_FALLBACK_DISPATCHERS)
     async def test_the_FALLBACK_footer_carries_both_counts_in_their_own_roles(
         self, dispatcher: str, traffic: tuple[int, int]
     ) -> None:
@@ -1343,7 +1352,26 @@ class TestTheFallbackIsThirdPersonWithNoDrainImperative:
     #: absence does not prove safety. The STRUCTURAL leg below is the real pin.
     SECOND_PERSON_MARKERS = ("you", "your", "yours")
 
-    @pytest.mark.parametrize("dispatcher", DISPATCHERS)
+    async def test_a_findings_write_with_NO_agent_serves_the_capabilitys_RESOLVED_footer(self) -> None:
+        """⛔ 64b-i DUAL replacement for the dropped lore_findings FALLBACK legs (amendment 2 §1 item 6).
+
+        With identity DERIVED from the capability there is no unauthenticated match to hedge: an omitted
+        ``agent=`` serves the RESOLVED footer of the capability's OWN agent — second person, naming the
+        drain call, carrying THAT agent's two counts (the non-default traffic world, so a constant fails).
+        """
+        harness = _footer_harness(traffic=TRAFFIC_ALT, registered=CALLER_A)
+        capability = _arm_finding_identity(harness, CALLER_A)
+        served = await _findings_call_on(harness, action="report", agent=None, capability=capability)
+        footer = _footer_line(served)
+        assert footer is not None, f"a capability-bearing findings write served no footer: {served!r}"
+        assert "action=drain" in footer, (
+            f"the capability-derived identity is AUTHENTICATED — its footer is the resolved render, "
+            f"which names the drain call; the third-person fallback is for unauthenticated matches "
+            f"only.\nfooter={footer!r}"
+        )
+        _assert_footer_carries(footer, unread=TRAFFIC_ALT[0], unacked=TRAFFIC_ALT[1])
+
+    @pytest.mark.parametrize("dispatcher", _R8_FALLBACK_DISPATCHERS)
     async def test_the_FALLBACK_footer_carries_no_second_person_imperative(
         self, dispatcher: str
     ) -> None:
@@ -1363,7 +1391,7 @@ class TestTheFallbackIsThirdPersonWithNoDrainImperative:
             f"owner, who never sees it.\nfooter={footer!r}"
         )
 
-    @pytest.mark.parametrize("dispatcher", DISPATCHERS)
+    @pytest.mark.parametrize("dispatcher", _R8_FALLBACK_DISPATCHERS)
     async def test_the_FALLBACK_footer_names_no_drain_CALL(self, dispatcher: str) -> None:
         """⛔ The structural half — an imperative can be phrased without ``you``.
 
@@ -2287,29 +2315,33 @@ class TestTheREADBudgetHoldsOnALLTHREEDispatchers:
     The worlds are the same ones Ruling 5.2 tabulates; only the dispatcher changes.
     """
 
-    @pytest.mark.parametrize(
-        ("label", "attribution", "expected_reads", "may_footer"),
-        TestAnOmittedIdentityIsHonestSILENCEAndASuppliedOneIsNOT.READ_BUDGET_WORLDS,
-    )
-    async def test_findings_spends_ONE_registry_read_AT_MOST(
-        self, label: str, attribution: str, expected_reads: int, may_footer: bool
+    # DUAL (64b-i, amendment 2 §1 item 6): the findings R8(2) budget legs — the charset-gated attribution
+    # worlds and the second-attribution scan — are DROPPED DELIBERATELY: a findings write no longer carries
+    # a free-text attribution to gate or scan (identity is DERIVED from the capability). The property they
+    # guarded, R8's one-read ceiling on EVERY findings path, is re-pinned on the path that replaced them:
+    @pytest.mark.parametrize("agent", [None, CALLER_A], ids=["agent-omitted", "agent-supplied"])
+    @pytest.mark.parametrize("action", FINDING_WRITE_ACTIONS)
+    async def test_a_governed_findings_write_spends_NO_footer_registry_read(
+        self, action: str, agent: tuple[str, str] | None
     ) -> None:
-        served, reads = await _findings_call_counting_registry(
-            action="report", agent=None, traffic=TRAFFIC_PENDING, created_by=attribution
+        """⛔ FK-8 — R8's ceiling on the capability path. The identity step already READ the agent's row
+        (it IS this call's one registry read — stood in for by the harness, which reads the store
+        directly); the footer must REUSE that row. **MEASURED:** the reference build's first shape
+        re-resolved the same agent BY NAME for the footer — two reads on every governed write in the
+        fleet — and this pin was RED on it, both with and without ``agent=``.
+        """
+        harness = _footer_harness(traffic=TRAFFIC_PENDING, registered=CALLER_A)
+        capability = _arm_finding_identity(harness, CALLER_A)
+        served = await _findings_call_on(harness, action=action, agent=agent, capability=capability)
+        assert _has_footer(served), (
+            f"lore_findings action={action!r} WROTE with traffic pending and a verified identity, yet "
+            f"served no footer — this leg cannot speak about the footer's cost.\nserved={served!r}"
         )
-        assert reads <= _MAX_REGISTRY_READS_PER_CALL, (
-            f"lore_findings world {label!r} cost {reads} registry reads; the ceiling is "
-            f"{_MAX_REGISTRY_READS_PER_CALL} on EVERY path of EVERY dispatcher (R8's cost "
-            f"line). A ceiling held on one dispatcher is not a ceiling"
-        )
-        assert reads == expected_reads, (
-            f"lore_findings world {label!r} cost {reads} registry read(s), expected "
-            f"{expected_reads} — the charset gate is missing on this dispatcher"
-        )
-        assert _has_footer(served) is may_footer, (
-            f"lore_findings world {label!r} "
-            f"{'served' if _has_footer(served) else 'served NO'} footer; the fallback "
-            f"resolves the same way on every dispatcher.\nserved={served!r}"
+        reads = _registry_reads(harness)
+        assert reads == 0, (
+            f"lore_findings action={action!r}'s footer spent {reads} registry read(s) ON TOP of the "
+            f"identity step's own. R8's cost line is at most {_MAX_REGISTRY_READS_PER_CALL} per call on "
+            f"every path: the capability's row was already read — the footer reuses it."
         )
 
     @pytest.mark.parametrize(
@@ -2333,27 +2365,6 @@ class TestTheREADBudgetHoldsOnALLTHREEDispatchers:
         assert _has_footer(served) is may_footer, (
             f"lore_claim_task world {label!r} "
             f"{'served' if _has_footer(served) else 'served NO'} footer.\nserved={served!r}"
-        )
-
-    async def test_findings_never_consults_a_SECOND_attribution(self) -> None:
-        """⛔ The ceiling's discriminating fixture, on the dispatcher that has two
-        attribution columns to scan — where the SCAN build R1 rejects is most natural.
-        """
-        served, reads = await _findings_call_counting_registry(
-            action="resolve",
-            agent=None,
-            traffic=TRAFFIC_PENDING,
-            actor="buidler-04b2-wavec-3",  # charset-legal, NOT registered
-            created_by=OWNER_VALUE,  # registered — reachable only by a SCAN
-        )
-        assert reads <= _MAX_REGISTRY_READS_PER_CALL, (
-            f"two attributions on lore_findings cost {reads} registry reads — the build is "
-            f"SCANNING attributions until one resolves, which is R1's rejected guess "
-            f"wearing a budget"
-        )
-        assert not _has_footer(served), (
-            f"a footer was served for an agent named by the SECOND attribution, which a "
-            f"one-read build never reaches.\nserved={served!r}"
         )
 
 
@@ -3338,12 +3349,25 @@ class TestTheAgentParameterDescriptionIsSHAREDAndStatesThePayoff:
     TOOLS = ("lore_tasks", "lore_claim_task", "lore_findings")
 
     async def test_all_three_tools_share_ONE_agent_description(self) -> None:
+        """64b-i DUAL (RESHAPED, REPORT §9 F-5): the POLICY stays one — ``lore_tasks`` ≡ ``lore_claim_task``
+        byte-exact, and all three carry the SAME load-bearing payoff clause byte-exact — while
+        ``lore_findings`` ALONE ends in the derived-identity clause (its R8(2) exact-match sentence is false
+        after amendment 2; ``test_findings_identity_64b.py``'s prose sweep forbids it there)."""
         descriptions = {tool: await _tool_param_description(tool, "agent") for tool in self.TOOLS}
         missing = sorted(t for t, d in descriptions.items() if not d)
         assert not missing, (
             f"{missing} expose no optional 'agent' parameter. R1 rules it onto all three "
             f"ledger tools — without it the footer has no YOU and is not buildable"
         )
+        shared_payoff = os.path.commonprefix([text or "" for text in descriptions.values()])
+        assert "pending-traffic line" in shared_payoff and len(shared_payoff) > 80, (
+            f"the three tools no longer share the payoff clause byte-exact — the load-bearing half of "
+            f"R8's rider has forked.\n  shared prefix: {shared_payoff!r}"
+        )
+        assert descriptions["lore_findings"] != descriptions["lore_tasks"], (
+            "lore_findings serves the R8(2) exact-match description, which is FALSE after 64b-i"
+        )
+        descriptions = {tool: descriptions[tool] for tool in ("lore_tasks", "lore_claim_task")}
         distinct = set(descriptions.values())
         assert len(distinct) == 1, (
             f"the three tools carry {len(distinct)} DIFFERENT 'agent' descriptions. This "
@@ -3994,13 +4018,11 @@ async def _finding_action_kwargs(
     """
     if action in ("resolve_many", "acknowledge_many"):
         writes = BATCH_SIZE if batch_writes is None else batch_writes
-        return {
-            "items": await _batch_items(harness, writes=writes),
-            "actor": _UNREGISTERED_ATTRIBUTION,
-        }
-    if action in ("acknowledge", "resolve", "wontfix"):
+        return {"items": await _batch_items(harness, writes=writes)}
+    if action in ("acknowledge", "resolve", "wontfix", "set_scope"):
         seeded = await _seed_open_finding(harness)
-        return {"id_or_number": seeded.id, "actor": _UNREGISTERED_ATTRIBUTION}
+        # 64b-i ``set_scope``: a real row and a real target (``server`` is always grantable — no keep store).
+        return {"id_or_number": seeded.id, **({"scope": "server"} if action == "set_scope" else {})}
     if action == "annotate":
         # #256: annotate REQUIRES a non-blank note (the served boundary refuses a
         # missing/blank one via ``_require_finding_arg``). Without a note here the
@@ -4008,11 +4030,7 @@ async def _finding_action_kwargs(
         # on ``_require_finding_ref``/note-required BEFORE any footer decision — the
         # exact C-DEF-2 shape repaired for the ref-needing reads below.
         seeded = await _seed_open_finding(harness)
-        return {
-            "id_or_number": seeded.id,
-            "actor": _UNREGISTERED_ATTRIBUTION,
-            "note": "a real note",
-        }
+        return {"id_or_number": seeded.id, "note": "a real note"}
     if action in _FINDING_ACTIONS_NEEDING_A_REF:
         # ⚠ REPAIRED 2026-08-01 (C-DEF 2, REPORT-refbuild-c3-1.md §3.2). These two
         # actions were driven with NO ``id_or_number``, and every correct build
@@ -4027,7 +4045,6 @@ async def _finding_action_kwargs(
             "subject": "a real subject",
             "area": "test_comms_footer",
             "category": "contract_gap",
-            "created_by": _UNREGISTERED_ATTRIBUTION,
         }
     return {}
 
@@ -4082,13 +4099,12 @@ async def _fallback_write_call(dispatcher: str, *, traffic: tuple[int, int]) -> 
         return await _tasks_call_on(
             harness, action="create", agent=None, owner=OWNER_VALUE, created_by=OWNER_VALUE
         )
-    if dispatcher == "lore_findings":
-        return await _findings_call_on(
-            harness, action="report", agent=None, created_by=OWNER_VALUE
-        )
     if dispatcher == "lore_claim_task":
         return await _claim_call_on(harness, agent=None, wins=True, owner=OWNER_VALUE)
-    raise AssertionError(f"unknown dispatcher {dispatcher!r}; the sweep is {DISPATCHERS}")
+    raise AssertionError(
+        f"{dispatcher!r} serves no R8(2) fallback; the sweep is {_R8_FALLBACK_DISPATCHERS} "
+        f"(64b-i amendment 2 §1 item 6 deleted lore_findings' fallback)"
+    )
 
 
 async def _tasks_call_on(
@@ -4189,8 +4205,35 @@ async def _findings_call_on(
     }
     if agent is not None:
         kwargs["agent"], kwargs["session"] = agent
+        if action in FINDING_WRITE_ACTIONS and "capability" not in overrides:
+            # 64b-i: a governed write's identity is DERIVED from its capability; the named identity presents
+            # its own. An agent-OMITTED governed write must pass ``capability=`` explicitly (or be refused).
+            kwargs["capability"] = _arm_finding_identity(harness, agent)
     kwargs.update({key: value for key, value in overrides.items() if value is not None})
     return str(await AppContext.findings(harness, **kwargs))
+
+
+def _arm_finding_identity(harness: Any, identity: tuple[str, str | None]) -> str:
+    """Arm ``harness`` so ONE capability proves the REGISTERED ``identity``, and return it (64b-i).
+
+    Finds the identity's row in the double's registry STORE (never through ``get_agent`` — that spy must
+    count only what the FOOTER spends, FK-8) and hands it to THE shared arm,
+    :func:`_finding_fakes.arm_finding_identity` — one seam for every suite, never a per-file copy.
+
+    An identity with no registered row (Link-0's HOSTILE fixture) arms NOTHING: link 1b refuses it before
+    any identity step, and a build that consulted identity first would meet an UNARMED harness and fail
+    loudly (``AttributeError``) — never pass by accident.
+    """
+    from _finding_fakes import arm_finding_identity  # noqa: PLC0415 - house lazy-import idiom
+
+    name, session = identity
+    rows = [
+        row
+        for row in harness.agent_registry.db.agents.values()
+        if row.name == name and (session is None or row.session == session)
+    ]
+    assert len(rows) <= 1, f"the armed identity {identity!r} matches {len(rows)} registry rows"
+    return arm_finding_identity(harness, rows[0]) if rows else f"{name}:unarmed"
 
 
 async def _findings_call(
@@ -4206,31 +4249,6 @@ async def _findings_call(
     return await _findings_call_on(
         harness, action=action, agent=agent, batch_writes=batch_writes
     )
-
-
-async def _findings_call_counting_registry(
-    *,
-    action: str,
-    agent: tuple[str, str | None] | None,
-    traffic: tuple[int, int],
-    actor: str | None = None,
-    created_by: str | None = None,
-) -> tuple[str, int]:
-    """``lore_findings``' registry-read budget — the SECOND dispatcher's copy of it.
-
-    ⚠ **WHY THIS EXISTS (wrong build W15).** The whole budget/ceiling apparatus
-    in SECTION C ran through ``AppContext.tasks`` alone, so a build that kept the
-    one-read ceiling on ``tasks`` and broke it on ``findings`` — scanning every
-    attribution, ungated — passed all 48 pins. ``findings`` carries TWO
-    attribution columns (``actor``, ``created_by``) and the most return points of
-    the three dispatchers; it is the likeliest place a per-attribution scan
-    survives, not the least.
-    """
-    harness = _footer_harness(traffic=traffic, owner_identity=OWNER_VALUE)
-    served = await _findings_call_on(
-        harness, action=action, agent=agent, actor=actor, created_by=created_by
-    )
-    return served, _registry_reads(harness)
 
 
 async def _claim_call_counting_registry(

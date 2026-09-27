@@ -118,6 +118,67 @@ bounds:
   - path: scripts/test_forgery_door_sweep.py
     missing_symbols:
     - loremaster.tasks.SupersedeResult
+# Packet 64b-i contract (contract-64b, 2026-09-26, at 6417e8f — lead directive #17055, the #461 shape). EIGHT files:
+# the six NEW 64b-i files name 64b-i's RULED, not-yet-built symbols STATICALLY in a runtime-inert
+# `if TYPE_CHECKING:` block, and the two CONVERTED suites (test_mcp_server / test_comms_footer — lead #17037) import
+# THE shared finding-double identity arm that REPORT-contract-64b.md §HELD part B lands. So this bound OWNS both the
+# typecheck lines and every RED@HEAD pytest leg in those files (REPORT §4). SELF-DESTRUCTS per symbol as the build +
+# §HELD land it — delete the entry with the build. Symbol lists DERIVED by `--derive`, never hand-listed.
+- id: packet-64b-i-contract
+  owner: packet 64b-i (the governed retrofit of lore_findings — substrate + write side + migrate) — the 64b-i builder
+  reopen_trigger: the 64b-i build + its §HELD land every symbol below (resource_from_row, classify_zero_row_cas,
+    GuardedPlan.guard/compose, FindingLedger.handle/audit_store/set_scope + report(caller=), server.GovernedVerbSpec /
+    _requires_capability / _RETIRED_IDENTITY_ARGS_TEACHING, AppContext._resolve_identity,
+    principals._migrate_finding_scope, _finding_fakes.arm_finding_identity / armed_agent_row + the fake's caller=)
+    and the eight files go GREEN — then this entry self-destructs and is deleted with the build
+  ruling: docs/design/2026-09-26-packet64-kickoff-rulings.md (e5fa7f9) + packet64 amendments 1-4 (am-3 aea2a9d, am-4
+    17b7101); lead #17037 (the converted suites) / #17055 (ownership); contract receipts REPORT-contract-64b.md §3/§4
+  rationale: contract-ahead — 64b-i's contract lands before its build (the 63c base keeps moving); the pins name the
+    ruled symbols now so the builder meets them, not invents them. FK-1 (`caller=`) and the helper names
+    classify_zero_row_cas / _requires_capability / arm_finding_identity are the contract's own choices (REPORT §5)
+  files:
+  - path: loremaster/tests/test_comms_footer.py
+    missing_symbols:
+    - _finding_fakes.arm_finding_identity
+  - path: loremaster/tests/test_findings_enforcement_64b.py
+    missing_symbols:
+    - type[FindingLedger].set_scope
+  - path: loremaster/tests/test_findings_governance_64b.py
+    missing_symbols:
+    - loremaster.governed.classify_zero_row_cas
+    - type[FindingLedger].set_scope
+  - path: loremaster/tests/test_findings_identity_64b.py
+    missing_symbols:
+    - loremaster.server.GovernedVerbSpec
+    - loremaster.server._RETIRED_IDENTITY_ARGS_TEACHING
+    - loremaster.server._requires_capability
+    - type[AppContext]._resolve_identity
+  - path: loremaster/tests/test_findings_migrate_64b.py
+    missing_symbols:
+    - loremaster.principals._migrate_finding_scope
+  - path: loremaster/tests/test_findings_schema_64b.py
+    missing_symbols:
+    - report.caller
+  - path: loremaster/tests/test_governed_substrate_64b.py
+    missing_symbols:
+    - loremaster.governed.classify_zero_row_cas
+    - loremaster.governed.resource_from_row
+    - type[FindingLedger].audit_store
+    - type[FindingLedger].handle
+    - type[GuardedPlan].compose
+    - type[GuardedPlan].guard
+  - path: loremaster/tests/test_mcp_server.py
+    missing_symbols:
+    - _finding_fakes.arm_finding_identity
+    - _finding_fakes.armed_agent_row
+    - acknowledge.caller
+    - resolve.caller
+    unsymboled_codes:
+    - code: no-any-return
+      count: 1
+      reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm
+        lands with §HELD part B) — the same missing symbol, surfacing as a return-type line
+
 # Packet 63c-i-a a28 fix-pass contract (contract-63c-i-a-a28, 2026-09-26, checkpoint 169925f — lead directive
 # #17055, the #461 shape). Amendments 26–29 rule ORDER changes, a deletion and behavioural fixes (no new symbol);
 # amendment 30 rules the ONE new symbol pair — `MigratePreconditionCounts` + `MigrateGovernedResult.preconditions`.
