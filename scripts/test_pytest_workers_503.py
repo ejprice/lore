@@ -4,7 +4,8 @@ Session ``297217bd``, tdd-light. Author: ``contract-503`` (TESTS ONLY). Operator
 recs"), item 3: the currency gate's pytest leg runs ``-n 12`` when another lore pytest session is live, and
 ``-n auto`` otherwise. Item 4: no fleet session cap — so "live" is a yes/no, never a count to divide by.
 
-WHY (``REPORT-measure-503.md``, 388c604, §Side answer): every ``pending_contract_gate.py --currency``
+WHY (``docs/plans/v2/receipts/2026-09-26-466-503/REPORT-measure-503.md``, 388c604, §Side answer): every
+``pending_contract_gate.py --currency``
 close-out spawned a full suite at ``-n auto`` = 64 workers on this box, outside the measured envelope and
 against the MEMORY.md fleet rule (cap a FULL suite at ``-n 12`` when another lore suite is live).
 
@@ -16,7 +17,8 @@ moment the gate runs, and that policy's "is another session live?" answer comes 
   * render paths — ``GateRunner.run`` directly and via ``_run_selected_gates`` (forwarded pytest args);
   * detector definitions — every non-test ``scripts/*.py`` (AST): exactly one ``other_pytest_sessions``.
 
-INTERFACE this contract DEFINES (absent at HEAD ``884ca63`` — REPORT-contract-503.md §Stub expectations):
+INTERFACE this contract DEFINES (absent at HEAD ``884ca63`` —
+docs/plans/v2/receipts/2026-09-26-466-503/REPORT-contract-503.md §Stub expectations):
   * ``scripts/_pytest_sessions.py`` — the shared home both scripts import (``concurrent_wire_acceptance``
     imports ``pending_contract_gate``, so the gate cannot import the driver without a cycle):
     ``PROC_ROOT``, ``other_pytest_sessions(*, proc_root=PROC_ROOT, own_pids)`` (MOVED, not copied —
@@ -35,7 +37,8 @@ DELTA d1 (author ``contract-503-d1``, lead rulings 2026-09-26 after the Phase 5 
 ``f66a190`` + the Phase 4 build in the working tree) — section 5 below:
   1. ENFORCE AT THE STATE: on EVERY render path the rendered argv's LAST worker flag is the policy's
      ``-n <count>``, after any forwarded args / ``--wave`` selector — so the policy wins under any spelling
-     (xdist honours the LAST ``-n``: measured, REPORT-refactor-503.md §6, and re-read here through xdist's
+     (xdist honours the LAST ``-n``: measured,
+     docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503.md §6, and re-read here through xdist's
      own option parser);
   2. LOUD, NOT SILENT: forwarded args carrying a worker flag the shared ``_hardcoded_worker_counts``
      recognises are REFUSED before any gate spawns, by that ONE helper (mutation-by-stub proves the routing);
@@ -458,7 +461,8 @@ class TestTheManifestExpressesThePolicy:
 FORWARDED_SELECTOR = "loremaster/tests/test_migration_wire.py"
 SECOND_FORWARDED_SELECTOR = "loremaster/tests/test_migration_wire_budget_503.py"
 # #503 F8: pytest's short-option clustering — ``-q`` then ``-n 3``. xdist honours it
-# (REPORT-refactor-503.md §6 measured 3 workers; the in-process parser leg below agrees), and the shared
+# (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503.md §6 measured 3 workers; the in-process
+# parser leg below agrees), and the shared
 # helper does not see it.
 CLUSTERED_WORKER_FLAG = "-qn3"
 CLUSTERED_WORKER_COUNT = "3"
@@ -506,7 +510,8 @@ _RENDER_ENTRY_NAMES = {"_run_selected_gates", "GateRunner"}
 def _xdist_option_parser() -> Any:
     """pytest's OWN argument parser with pytest-xdist's options registered — the oracle for which worker
     count xdist would run. Read: ``_pytest/config/argparsing.py`` (``allow_abbrev=False``) and a live
-    probe that agrees with REPORT-refactor-503.md §6's spawned-worker measurements (``-n 2 -n 3`` → 3,
+    probe that agrees with docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503.md §6's
+    spawned-worker measurements (``-n 2 -n 3`` → 3,
     ``-qn3`` → 3)."""
     from _pytest.config import get_config  # noqa: PLC0415 — private pytest API, test-only oracle
 
@@ -654,7 +659,8 @@ class TestThePolicyFlagIsTheLastWorkerFlag:
     ) -> None:
         # F8 at the LOADER door: the helper cannot see ``-qn3`` (pinned as a KNOWN BOUND below), so a manifest
         # may carry it AFTER the placeholder. Ruling 1 is a property of the RENDERED argv, so the policy must
-        # still be the last worker flag (reading B of fork D1-F1 in REPORT-contract-503-d1.md).
+        # still be the last worker flag (reading B of fork D1-F1 in
+        # docs/plans/v2/receipts/2026-09-26-466-503/REPORT-contract-503-d1.md).
         _stub_detector(monkeypatch, live_sessions)
         spawned = _record_popen(monkeypatch)
         manifest_path = _manifest_with(
@@ -842,7 +848,8 @@ _OWN_PID_CASES = [
 
 
 class TestTheGateNeverCountsItself:
-    """Lead ruling 4 (REPORT-refactor-503.md §1b): every resolution of the worker count excludes the gate's
+    """Lead ruling 4 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503.md §1b): every resolution
+    of the worker count excludes the gate's
     OWN process — on every render path, not only ``GateRunner.run`` direct. Declared wrong build: the
     refactor's survivor, a ``_run_selected_gates`` that pre-resolves ``{workers}`` with ``own_pids=set()``."""
 
@@ -877,7 +884,8 @@ class TestTheGateNeverCountsItself:
 
 
 # =========================================================================================================
-# 6. DELTA d2 (author ``contract-503-d2``, lead brief 2026-09-26 after REPORT-refactor-503-d1.md §1a/§2b;
+# 6. DELTA d2 (author ``contract-503-d2``, lead brief 2026-09-26 after
+# docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503-d1.md §1a/§2b;
 #    GREEN-dated to HEAD ``f66a190`` + the d1 build in the working tree) — the dropped D1-F3 rider, and two
 #    pinned KNOWN BOUNDS (D-1: the non-running CLI modes; ``--maxprocesses``).
 # =========================================================================================================
@@ -932,7 +940,8 @@ def _other_exit_two_families() -> tuple[set[str], tuple[type[BaseException], ...
 class TestTheRefusalIsLabelledAsARefusedArgument:
     """Lead ruling D1-F3 (2026-09-26): a refused forwarded worker count is "a typed error of its own, never
     MANIFEST ERROR for a CLI arg". CLASS: a refused CLI argument is never labelled as a manifest / config /
-    registry / instrument fault, on every CLI that surfaces it. Survivor this kills: REPORT-refactor-503-d1.md
+    registry / instrument fault, on every CLI that surfaces it. Survivor this kills:
+    docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503-d1.md
     §2b build B (``_refuse_forwarded_worker_counts`` raising ``ManifestError``), which passed 76/76."""
 
     def test_the_other_exit_two_families_are_derived_non_vacuously(self) -> None:
@@ -1000,7 +1009,8 @@ class TestTheRefusalIsLabelledAsARefusedArgument:
         )
 
 
-# KNOWN BOUND #503 D-1 (REPORT-refactor-503-d1.md §1a, measured 2026-09-26): the gate CLI's non-running modes
+# KNOWN BOUND #503 D-1 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503-d1.md §1a, measured
+# 2026-09-26): the gate CLI's non-running modes
 # accept ``pytest_args`` and neither refuse nor apply them — ``--derive`` spawns the typecheck gate with the
 # forwarded args dropped; ``--verify-registry`` spawns nothing and exits 0. Harmless to the worker count (the
 # args never reach a pytest gate), but a forwarded argument vanishes without a word.
@@ -1081,7 +1091,8 @@ class TestKnownBoundNonRunningModesIgnoreForwardedArgs:
         assert spawned == [], f"--verify-registry spawned {spawned} — {KNOWN_BOUND_D1_MESSAGE}"
 
 
-# KNOWN BOUND #503 maxprocesses (REPORT-refactor-503-d1.md §1d P1 + §2d, measured 2026-09-26): a forwarded
+# KNOWN BOUND #503 maxprocesses (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-503-d1.md §1d P1 +
+# §2d, measured 2026-09-26): a forwarded
 # ``--maxprocesses`` is not a spelling the shared helper refuses, and xdist applies it as a CAP
 # (``numprocesses = min(numprocesses, maxprocesses)`` in ``xdist.plugin.pytest_cmdline_main``, xdist 3.8.0),
 # so it can only LOWER the policy's count — it errs in the safe direction.

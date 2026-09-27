@@ -17,7 +17,8 @@ pinned here:
 * **the "another pytest session is live" preflight** — the box law (one full session at a time), #466's
   own origin — read from an injectable ``/proc``.
 
-DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §1 F12): a session that TIMES OUT takes its
+DELTA d1 (author ``contract-466-d1``; docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §1
+F12): a session that TIMES OUT takes its
 whole process tree with it. ``subprocess.run(timeout=)`` kills only the direct ``python -m pytest`` child,
 so its ``-n`` xdist workers outlive a timed-out round — orphans that keep ports, memory and store
 connections, and that the NEXT round's "no other pytest session" preflight then trips over. Pinned with a
@@ -352,7 +353,7 @@ class TestATimedOutSessionTakesItsWholeTreeWithIt:
         # Lead addition (Phase 5): ``expected_passed`` runs its own ``--collect-only`` subprocess before any
         # round, with the same timeout — the SAME orphan class as a session, so it must go through the SAME
         # process-group runner (``run_as_process_group``). Proven shared by mutation:
-        # REPORT-close-466.md §Item 3.
+        # docs/plans/v2/receipts/2026-09-26-466-503/REPORT-close-466.md §Item 3.
         script = tmp_path / "tree_member.py"
         script.write_text(_TREE_MEMBER_SCRIPT, encoding="utf-8")
         pid_dir = tmp_path / "pids"

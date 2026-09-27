@@ -1,3 +1,5 @@
+⚠ PREMISE FALSE IN PART: the Phase-0 premise that the session detector keys on "executable plus lore path" was FALSE (it matches argv text; finding #506, still open 2026-09-26); corrected in the build (scripts/_pytest_sessions.py::other_pytest_sessions docstring states the argv-text rule) and in this report's own §Forks F2.
+
 # REPORT-contract-503 — tdd-light CONTRACT: #503 heavy wire start budget · R4 teardown never masks the body · currency gate pytest workers
 
 ## SUMMARY BLOCK

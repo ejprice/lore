@@ -4,7 +4,8 @@ Session ``297217bd``, tdd-light. Author: ``contract-503`` (TESTS ONLY). Operator
 recs"), item 1: a per-caller startup budget of 60 s goes in ``test_migration_wire._serve_migration_wire``
 ONLY; ``loopback.DEFAULT_STARTUP_TIMEOUT_S`` stays 15 s.
 
-EVIDENCE (``REPORT-measure-503.md``, committed ``388c604``, measured 2026-09-26 at code ``4ddb913``): n=551
+EVIDENCE (``docs/plans/v2/receipts/2026-09-26-466-503/REPORT-measure-503.md``, committed ``388c604``, measured
+2026-09-26 at code ``4ddb913``): n=551
 heavy ``_serve_migration_wire`` starts under fleet load — p99 9.85 s, max 10.04 s, 99.4 % inside
 ``build_app_context`` and store-bound; light ``serve_asgi`` callers p50 0.02 s, max 0.50 s. The #503 failure
 (a heavy start > 15 s under CPU oversubscription) was OUTSIDE that envelope, so the ruled budget is ~6x the
@@ -14,7 +15,8 @@ CLASS: every server start of the heavy composition in the wire-fixture home is g
 NAME. Domain: every ``serve_asgi`` call in ``test_migration_wire.py`` (AST-derived — a second call site
 added later is covered or reddens). A LIGHT caller keeps the default (the control: the default pin).
 
-INTERFACE this contract DEFINES (does not exist at HEAD ``884ca63`` — see REPORT-contract-503.md §Stub):
+INTERFACE this contract DEFINES (does not exist at HEAD ``884ca63`` — see
+docs/plans/v2/receipts/2026-09-26-466-503/REPORT-contract-503.md §Stub):
 ``test_migration_wire.MIGRATION_WIRE_STARTUP_TIMEOUT_S`` — a module-level named constant (its derivation and
 re-open trigger in a comment beside it), passed as ``serve_asgi(..., startup_timeout_s=<that name>)``.
 
@@ -40,7 +42,8 @@ from loremaster.testing.loopback import DEFAULT_STARTUP_TIMEOUT_S, ServerStartup
 # the module under test, or the pin would certify whatever value the builder typed.
 OPERATOR_RULED_HEAVY_STARTUP_BUDGET_S = 60.0
 OPERATOR_RULED_DEFAULT_STARTUP_BUDGET_S = 15.0
-# REPORT-measure-503.md (388c604) §Legs / §Light callers: the measured maxima the budgets are judged against.
+# docs/plans/v2/receipts/2026-09-26-466-503/REPORT-measure-503.md (388c604) §Legs / §Light callers: the
+# measured maxima the budgets are judged against.
 MEASURED_HEAVY_START_MAX_S = 10.04
 MEASURED_LIGHT_START_MAX_S = 0.50
 # The derived-output sanity band (realism clause 4): a budget below 3x the measured max leaves the heavy

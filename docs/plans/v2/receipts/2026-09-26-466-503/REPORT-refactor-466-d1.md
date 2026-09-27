@@ -1,3 +1,5 @@
+⚠ SUPERSEDED IN PART: §Pins-d says reading (A) "applied … no API change"; the committed 8d42c27 carries reading (B) (serve_http(shutdown_timeout_s=)), per REPORT-close-466.md §Item 2.
+
 brief-base v16 read · brief project v7 read
 
 # REPORT-refactor-466-d1 — #466 delta d1, tdd-light Phase 5 (REFACTOR + AUDIT) + lead pins (c) and (d)

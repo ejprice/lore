@@ -75,7 +75,8 @@ _SURREAL_TEST_NAMESPACE = "lore_test"
 # the full lifespan against the test store (99.4% of it in ``build_app_context``, store-bound) is
 # far slower than the light callers ``loopback.DEFAULT_STARTUP_TIMEOUT_S`` (15 s, unchanged) is
 # sized for. DERIVATION: 60 s is ~6 x (5.98 x) the measured heavy max 10.04 s (n=551 starts,
-# p99 9.85 s; REPORT-measure-503.md, commit 388c604), and exactly 4 x the 15 s censoring bound of
+# p99 9.85 s; docs/plans/v2/receipts/2026-09-26-466-503/REPORT-measure-503.md, commit 388c604), and exactly 4
+# x the 15 s censoring bound of
 # the failing regime. RE-OPEN TRIGGER: the first ServerStartupTimeout at 60 s, or the first
 # recorded heavy start >= 30 s.
 MIGRATION_WIRE_STARTUP_TIMEOUT_S: float = 60.0

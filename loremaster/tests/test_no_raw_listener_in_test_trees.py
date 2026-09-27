@@ -51,7 +51,8 @@ longer name list.
 helper lands and the three test files + the spike are migrated, the offender set is EMPTY — the pin
 doing its job.
 
-DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §2 C1/C3)
+DELTA d1 (author ``contract-466-d1``; docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §2
+C1/C3)
 ----------------------------------------------------------------------
 * **C1** — ``_CONTRACT_FILES`` gets the dead-entry pin ``_EXEMPT_SITES`` already had: every entry must be a
   file the scan actually reads, or a rename silently lets the renamed contract file vouch for its tree.
@@ -66,7 +67,8 @@ DELTA d1 (author ``contract-466-d1``; REPORT-refactor-466.md §2 C1/C3)
   :class:`TestTheServerCapableDependenciesAreDerived`.
 
 LEAD PIN (c) (author ``refactor-466-d1``, Phase 5 — a documented deviation from test-first: the ruling
-post-dated the contract; proven able to fail by mutation, REPORT-refactor-466-d1.md §Pins-c)
+post-dated the contract; proven able to fail by mutation,
+docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md §Pins-c)
 ------------------------------------------------------------------------------------------------------
 * **A pytest-plugin port fixture is a listener door no call-keyed scan sees.** pytest-asyncio's
   ``unused_tcp_port`` / ``unused_udp_port`` (+ ``_factory``) and anyio's ``free_tcp_port`` /
@@ -617,7 +619,8 @@ def _stale_entries(entries: Iterable[str], scanned_paths: Iterable[str]) -> list
 
 
 class TestTheContractFileExclusionIsLive:
-    """C1 (REPORT-refactor-466.md §2): ``test_both_trees_adopt_the_helper`` excludes ``_CONTRACT_FILES`` so
+    """C1 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §2):
+    ``test_both_trees_adopt_the_helper`` excludes ``_CONTRACT_FILES`` so
     the contract cannot vouch for a tree. Rename a contract file and its stale entry excludes nothing —
     the renamed file then counts as its tree's adopter, and the adoption pin stays GREEN even if every
     real adopter regressed. Green at birth by design (no entry is stale at 43b8d16); it is proven by
@@ -646,7 +649,8 @@ class TestTheContractFileExclusionIsLive:
 # DELTA d1 — C3: aiohttp's listeners are seen; its clients and handlers are not.
 # ============================================================================================= #
 class TestTheDetectorSeesAiohttpListeners:
-    """C3 (REPORT-refactor-466.md §2): aiohttp is installed (measured 2026-09-26) and absent from the
+    """C3 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §2): aiohttp is installed
+    (measured 2026-09-26) and absent from the
     listener namespaces. An honest ``web.run_app(app, port=…)`` or ``TCPSite`` in a test opens a listener
     with no ``.bind`` and no asyncio verb in OUR source, so the guard is blind to it — in-model by the
     guard's own threat model. ``unused_port()`` is #466's race itself (bind → read → CLOSE → hand back a

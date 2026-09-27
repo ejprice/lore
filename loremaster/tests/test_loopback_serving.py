@@ -41,7 +41,8 @@ HOW EACH CAUSE IS CONSTRUCTED (every one probed on this box 2026-09-26, Linux 6.
 ⚠ Present-tense dating: "the helper does not exist" / "RED" is dated to HEAD ``1206233``. A reader
 retrieving this after the build must re-derive.
 
-DELTA d1 (author ``contract-466-d1``; the Phase-5 audit's findings, REPORT-refactor-466.md §1/§2)
+DELTA d1 (author ``contract-466-d1``; the Phase-5 audit's findings,
+docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §1/§2)
 ------------------------------------------------------------------------------------------------
 * **F1** — an UNEXPECTED ``BaseException`` in the startup wait (KeyboardInterrupt, a pytest-timeout
   signal-method exception) propagates UNCHANGED, and the abandoned start leaves nothing behind: no
@@ -55,7 +56,7 @@ DELTA d1 (author ``contract-466-d1``; the Phase-5 audit's findings, REPORT-refac
 * **C2** — the bind spy's premise (asyncio binds through the Python ``socket.socket.bind``) is PINNED,
   not assumed: uvloop is absent and the served app runs on a stdlib asyncio loop.
 RED dating for d1: every d1 pin is dated to ``43b8d16`` (== ``e6e17d8`` for the helper); see
-REPORT-contract-466-d1.md for the declared RED set and its reasons.
+docs/plans/v2/receipts/2026-09-26-466-503/REPORT-contract-466-d1.md for the declared RED set and its reasons.
 """
 
 from __future__ import annotations
@@ -769,7 +770,8 @@ _UNEXPECTED_INTERRUPTS = [
 
 
 class TestAnInterruptedStartupLeavesNothingBehind:
-    """F1 (REPORT-refactor-466.md §1): the helper cleans up on its two NAMED start failures; this pins
+    """F1 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §1): the helper cleans up on its
+    two NAMED start failures; this pins
     the same outcome for ANY exception that interrupts the startup wait. The lifespan is held blocked
     (never completes) so the interrupt can only land IN the wait; it is released afterwards so an
     abandoned thread CAN end."""
@@ -839,7 +841,8 @@ class TestAnInterruptedStartupLeavesNothingBehind:
 # d1/F2 — a lifespan shutdown that overruns its budget is LOUD, never silent, never masking.
 # ============================================================================================= #
 class TestAShutdownOverrunIsLoud:
-    """F2 (REPORT-refactor-466.md §1, trust doctrine "failures are LOUD"): exit used to join the server
+    """F2 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §1, trust doctrine "failures are
+    LOUD"): exit used to join the server
     thread for a fixed budget and return whether or not it finished — a lifespan teardown that hangs
     (the store / watcher close in the wire harness) passed as a GREEN test. The decision (d1 report §F2):
     a clean exit RAISES ``ServerShutdownTimeout``; an exit already carrying the body's exception keeps
@@ -947,7 +950,8 @@ class TestAShutdownOverrunIsLoud:
 # close-466 R1 — F1's class on the TEARDOWN side: an unexpected BaseException in the shutdown join.
 # ============================================================================================= #
 class TestAnInterruptedTeardownLeavesNothingBehind:
-    """R1 (REPORT-refactor-466-d1.md §Step 1): F1 made an interrupted START clean up; an interrupt landing in
+    """R1 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md §Step 1): F1 made an
+    interrupted START clean up; an interrupt landing in
     the teardown JOIN (Ctrl-C, pytest-timeout's signal method — the same door) propagated out of the exit
     with the ``uvicorn.error`` capture handler still attached for the life of the process. The lifespan
     shutdown is held blocked so the interrupt can only land IN the join; it is released afterwards so the
@@ -1006,11 +1010,13 @@ class TestAnInterruptedTeardownLeavesNothingBehind:
 # ============================================================================================= #
 # d1/ruling (d) — serve_http's teardown with a STUCK handler is bounded and LOUD, exactly like serve_asgi's.
 # Lead-directed pin, authored in Phase 5 AFTER the build (documented deviation from test-first: the ruling
-# post-dated the contract). Proven able to fail by mutation — REPORT-refactor-466-d1.md §Pins-d.
+# post-dated the contract). Proven able to fail by mutation —
+# docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md §Pins-d.
 # DUAL (budget): first authored against serve_http's ONLY budget, the real 5 s default (spent twice per run);
 # since serve_http gained ``shutdown_timeout_s`` (8d42c27) the two overrun pins pass SHORT_SHUTDOWN_BUDGET_S.
 # Assertions unchanged — only the budget argument moved, and the window/discrimination constants with it.
-# That the budget is THREADED (not the default) is proven by mutation: REPORT-close-466.md §Item 2.
+# That the budget is THREADED (not the default) is proven by mutation:
+# docs/plans/v2/receipts/2026-09-26-466-503/REPORT-close-466.md §Item 2.
 # ============================================================================================= #
 def _stuck_handler_class() -> tuple[
     type[http.server.BaseHTTPRequestHandler], threading.Event, threading.Event
@@ -1147,7 +1153,8 @@ class TestServeHttpShutdownOverrunIsLoud:
 # d1/C2 — the bind spy's premise, PINNED (it used to be a docstring sentence).
 # ============================================================================================= #
 class TestTheBindSpyPremiseHolds:
-    """C2 (REPORT-refactor-466.md §2): ``_spy_on_every_bind`` sees a bind only if it goes through the
+    """C2 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466.md §2): ``_spy_on_every_bind`` sees a
+    bind only if it goes through the
     Python ``socket.socket.bind`` — true for asyncio's ``create_server``, UNVERIFIED for uvloop (which
     binds in libuv). uvicorn's default ``loop="auto"`` would switch to uvloop the day it is installed
     (``uvicorn[standard]`` pulls it in), silently blinding every no-specific-port pin.
@@ -1323,7 +1330,8 @@ _BODY_FAILURE_TYPES = [
 
 
 class TestAFailingBodyIsNeverReplacedByItsTeardown:
-    """R4 (REPORT-refactor-466-d1.md R4): ``_loud_teardown`` calls ``stop`` bare in its failing-body
+    """R4 (docs/plans/v2/receipts/2026-09-26-466-503/REPORT-refactor-466-d1.md R4): ``_loud_teardown`` calls
+    ``stop`` bare in its failing-body
     branch, so a ``stop`` that RAISES replaces the test's own failure — the headline becomes a teardown
     error and the real failure survives only as ``__context__``. The d1 overrun policy already said
     "never mask"; this generalises it from one teardown failure (an overrun) to every one."""
@@ -1424,7 +1432,8 @@ class TestAFailingBodyIsNeverReplacedByItsTeardown:
         # R1's contract must not regress (Phase 0 item 2): Ctrl-C / pytest-timeout landing in the teardown
         # wait propagate UNCHANGED — also when the body is already failing. The wrong build this catches
         # wraps ``stop`` in ``except BaseException`` and notes EVERYTHING, swallowing the interrupt.
-        # ⚠ SPEC-SILENT, author's reading (READING A) — see REPORT-contract-503.md §Forks F1: the ruling
+        # ⚠ SPEC-SILENT, author's reading (READING A) — see
+        # docs/plans/v2/receipts/2026-09-26-466-503/REPORT-contract-503.md §Forks F1: the ruling
         # names "an overrun OR a raise" as teardown FAILURES, and an interrupt as the user's control flow.
         # The body's failure stays reachable on the interrupt's ``__context__`` (pytest prints the chain).
         rig = _TEARDOWN_RIGS[helper_name](GENEROUS_SHUTDOWN_BUDGET_S)
