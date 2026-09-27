@@ -184,3 +184,4 @@ for name in sys.argv[1:]:
 ```
 
 ## Commit
+Archive commit: `15b844b` (`docs(466/503): archive the #466/#503 cycle reports …`): 17 renames, this report, 6 cite-repointed test files; no attribution trailer. This SHA line was appended by a follow-up commit.
