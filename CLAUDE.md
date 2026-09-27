@@ -122,6 +122,11 @@ than read and the store reference is cited rather than re-transcribed.
   `_surreal_harness.unique_database()` mints `test_<pid>_<uuid4>` per test precisely so
   "a concurrent pytest process on the SAME server never collides on, or reaps, this
   database". Only the runner was missing.
+  **Fleet cap (#503, operator 2026-09-26):** `-n auto` is for a suite running ALONE; with another
+  lore pytest session live, cap a full suite at `-n 12`. The currency gate applies this itself —
+  its pytest leg spells `-n {workers}`, resolved at run time by
+  `scripts/_pytest_sessions.py::pytest_worker_count` and rendered LAST — so **never forward `-n`
+  to `pending_contract_gate.py` / `wave_gate.py`**; they refuse it (exit 2). Known bounds: #508.
 - Full suite is lead-run **at phase checkpoints only** — before the deploy that ships the
   work, NOT after every fix wave. Between waves: the changed suites + the structural/AST
   pins. The cold audit already re-runs the gates as its own independent instrument; the lead
