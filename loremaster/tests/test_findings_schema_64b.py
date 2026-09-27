@@ -36,6 +36,7 @@ from _governed_contract_64 import (
     FINDING_DROPPED_ASSERT_COLUMNS,
     FINDING_KEPT_ASSERT_COLUMN,
     LEDGER_IDENTITY_KWARG,
+    LEDGER_TITLE_KWARG,
     frozen_asserted_finding_ddl,
 )
 from loremaster.findings import FINDING_STATUSES, FindingLedger, FindingStatus
@@ -51,13 +52,25 @@ from test_comms_schema import (
 import lorerunes
 
 if TYPE_CHECKING:
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    async def _ruled_64b_i_report_takes_the_caller(ledger: FindingLedger, caller: lorerunes.Subject) -> None:
-        """FK-1: the ONE writer (where DD-3.c's blank rule MOVES) takes the verified identity."""
-        await ledger.report("s", "b", area="a", category="c", created_by="c", caller=caller)
+    # 64b-i's RULED, not-yet-built signature this file pins — a TYPED CALL (amendment 8 §5, MP-9: mypy's
+    # ``[call-arg]`` sees a renamed or missing kwarg, so the bound discharges only on the ruled SHAPE; a
+    # permanent
+    # signature pin — mypy checks TYPE_CHECKING bodies after the build too). Until the build lands it, a
+    # mypy error
+    # OWNED by `scripts/pending_contracts.yaml` bound `packet-64b-i-contract` (lead #17055, #461).
+    # Runtime-inert.
+    # DUAL (r2): r1's ``_ruled_64b_i_report_takes_the_caller`` (``caller=``) is RE-KEYED by amendment 7 §2
+    # (FK-1):
+    # the identity kwarg is ``subject=`` and the title is ``title``.
+    async def _ruled_64b_i_report_takes_the_subject(
+        ledger: FindingLedger, subject: lorerunes.Subject
+    ) -> None:
+        """FK-1: the ONE writer (where DD-3.c's blank rule MOVES) takes the verified identity as "
+        "``subject=``."""
+        await ledger.report(
+            title="t", body="b", area="a", category="c", created_by="c", subject=subject, scope=None
+        )
+
 
 #: The ``[finding]`` P2 row (kickoff §12 DD-3.c row). ``hazard`` names THIS table's writer, its
 #: UPDATE-able mechanism and its dirty-store pins (the r2 sidecar-F1 rule: never another table's prose).
@@ -90,6 +103,9 @@ FINDING_CONSTRAINT_SPEC = _ConstraintSpec(
     ),
     birth_defaults=frozenset({"status", "created_at"}),  # both present at d5cbeaf.
     exemptions=frozenset({FINDING_KEPT_ASSERT_COLUMN}),  # status: reader-aligned (FindingStatus) — KEPT.
+    # (DUAL r2 → am-9: the r2 draft exempted `scope` for amendment 8 §2's store ASSERT; amendment 9 §2
+    # WITHDREW that ASSERT (63a §4.1 stands), so `scope` carries NO constraint and needs no exemption —
+    # r1's spec, restored.)
     floor=frozenset({"number", "status", "created_by", "owner_principal", "scope"}),  # a derivation that
     # loses a birth identity column, the KEPT status, or the governed overlay must RED (non-vacuity).
 )
@@ -215,17 +231,33 @@ class TestTheDroppedAssertsMoveIntoTheWriter:
     ) -> None:
         """⚠ RED at HEAD for ``kind``/``subject``/``created_by`` (F-4: no ledger-side blankness check —
         the blank reaches the store) and for every column via the identity keyword (``report`` takes no
-        ``caller=`` at HEAD). Kills: a guard on area/category only; a guard AFTER the counter bump; a
+        ``subject=`` Subject at HEAD — FK-1). Kills: a guard on area/category only; a guard AFTER the
+        counter bump; a
         hand-rolled ``strip`` that misses ``\\t\\n``… (the shared predicate is pinned below)."""
-        from inspect import signature  # noqa: PLC0415
+        from inspect import Parameter, signature  # noqa: PLC0415
 
-        assert LEDGER_IDENTITY_KWARG in signature(FindingLedger.report).parameters, (
-            f"UNBUILT (kickoff §4.3/§5): FindingLedger.report takes no `{LEDGER_IDENTITY_KWARG}=` Subject"
+        # DUAL (r2, amendment 7 §2): r1 checked the kwarg's NAME only — with FK-1's ``subject`` that name is
+        # ALSO
+        # HEAD's positional TITLE, so the name check passes at HEAD and the call dies on a TypeError (the
+        # wrong
+        # reason). The guard now checks the ruled SHAPE: a keyword-only ``subject`` and a ``title`` parameter.
+        parameters = signature(FindingLedger.report).parameters
+        identity = parameters.get(LEDGER_IDENTITY_KWARG)
+        assert (
+            identity is not None
+            and identity.kind is Parameter.KEYWORD_ONLY
+            and LEDGER_TITLE_KWARG in parameters
+        ), (
+            "UNBUILT (amendment 7 §2 FK-1): FindingLedger.report takes no keyword-only "
+            f"`{LEDGER_IDENTITY_KWARG}=` "
+            f"Subject and no `{LEDGER_TITLE_KWARG}` title: {signature(FindingLedger.report)}"
         )
         ledger = _offline_ledger(monkeypatch)
         title = blank if column == "subject" else "a real title"
         overrides = {} if column == "subject" else {column: blank}
-        with pytest.raises(ValueError, match=column):
+        # FK-1 renames only the Python parameter (``title``); the column/served name stays ``subject``. Either
+        # name teaches a caller which argument was blank, so the title leg admits both (never a third).
+        with pytest.raises(ValueError, match=column if column != "subject" else "subject|title"):
             await ledger.report(title, "body", **_report_kwargs(**overrides))
 
     def test_report_uses_the_shared_blankness_predicate(self) -> None:

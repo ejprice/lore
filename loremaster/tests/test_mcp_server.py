@@ -371,7 +371,9 @@ _pending_surreal_slugs: list[str] = []
 
 def _slug() -> str:
     """A unique per-test project slug, ALSO the default SurrealDB database name."""
-    slug = f"test_{uuid.uuid4().hex}"
+    # DUAL (64b-i r2, lead #17112 — #486's naming recipe routed to ``unique_database()``): the per-test DB
+    # name is minted by THE harness recipe (behaviour-neutral at HEAD — still unique per test, still reaped).
+    slug = unique_database()
     _pending_surreal_slugs.append(slug)
     return slug
 
@@ -7768,20 +7770,20 @@ class _LedgerRaisingOnSecondCall:
         self._acknowledge_calls = 0
 
     async def resolve(
-        self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
+        self, id_or_number: int | str, actor: str, note: str | None = None, *, subject: Any = None
     ) -> Any:
         self._resolve_calls += 1
         if self._resolve_calls == 2:
             raise self._error
-        return await self._inner.resolve(id_or_number, actor, note, caller=caller)
+        return await self._inner.resolve(id_or_number, actor, note, subject=subject)
 
     async def acknowledge(
-        self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
+        self, id_or_number: int | str, actor: str, note: str | None = None, *, subject: Any = None
     ) -> Any:
         self._acknowledge_calls += 1
         if self._acknowledge_calls == 2:
             raise self._error
-        return await self._inner.acknowledge(id_or_number, actor, note, caller=caller)
+        return await self._inner.acknowledge(id_or_number, actor, note, subject=subject)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -7913,12 +7915,12 @@ class TestResolveManyAcknowledgeManyDispatch:
                 self._calls = 0
 
             async def resolve(
-                self, id_or_number: int | str, actor: str, note: str | None = None, *, caller: Any = None
+                self, id_or_number: int | str, actor: str, note: str | None = None, *, subject: Any = None
             ) -> Any:
                 self._calls += 1
                 if self._calls == 2:
                     raise SurrealConnectionError("connection lost mid-batch")
-                return await self._inner.resolve(id_or_number, actor, note, caller=caller)
+                return await self._inner.resolve(id_or_number, actor, note, subject=subject)
 
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._inner, name)

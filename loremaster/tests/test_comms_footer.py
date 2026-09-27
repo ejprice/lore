@@ -76,6 +76,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from _governed_contract_64 import FINDING_READ_VERBS, FINDING_WRITE_VERBS
 from _logging_fixtures import _declared_workspace_members, parse_production_trees
 
 pytestmark = pytest.mark.anyio
@@ -285,25 +286,17 @@ TASK_WRITE_ACTIONS = ("create", "create_many", "transition", "supersede")
 #: rediscovering it from a red.
 TASK_READ_ACTIONS = ("query", "rollup", "get", "blockers")
 
-#: ``lore_findings`` actions that MUTATE — including both best-effort batches,
-#: whose footer additionally rides L2's write-COUNT (SECTION B).
-FINDING_WRITE_ACTIONS = (
-    "report",
-    "acknowledge",
-    "resolve",
-    "wontfix",
-    # #256: ``annotate`` MUTATES (appends a provenance event), so it footers the
-    # pending-traffic line like every other write. Its kwargs (a real id + actor +
-    # a non-blank note) are supplied by :func:`_finding_action_kwargs`.
-    "annotate",
-    # 64b-i (kickoff §4.4): the governed re-scope verb MUTATES (the row's scope), so it footers too.
-    "set_scope",
-    "resolve_many",
-    "acknowledge_many",
-)
-
-#: ``lore_findings`` actions that only READ.
-FINDING_READ_ACTIONS = ("query", "get", "chain_head")
+#: ``lore_findings`` actions that MUTATE — including both best-effort batches, whose footer additionally
+#: rides L2's write-COUNT (SECTION B) — and the actions that only READ.
+#: DUAL (64b-i r2, REPORT-adversary-64b §P1c R4 — "TWO hand-lists for ONE partition"): r1 kept a SECOND
+#: literal tuple here beside ``_governed_contract_64.FINDING_WRITE_VERBS``, checked on membership only and
+#: tied to no flag. It is now THE contract partition itself (ONE source): its equality with
+#: ``server._FINDING_ACTIONS`` is pinned below, and its equality with the spec dict's
+#: ``requires_capability`` True set (amendment 7 §5 FK-8 rider) by
+#: ``TestTheREADBudgetHoldsOnALLTHREEDispatchers::test_the_FK8_axis_IS_the_spec_dicts_capability_set`` and
+#: by ``test_findings_identity_64b.py``.
+FINDING_WRITE_ACTIONS = FINDING_WRITE_VERBS
+FINDING_READ_ACTIONS = FINDING_READ_VERBS
 
 
 # --------------------------------------------------------------------------- #
@@ -2319,6 +2312,19 @@ class TestTheREADBudgetHoldsOnALLTHREEDispatchers:
     # worlds and the second-attribution scan — are DROPPED DELIBERATELY: a findings write no longer carries
     # a free-text attribution to gate or scan (identity is DERIVED from the capability). The property they
     # guarded, R8's one-read ceiling on EVERY findings path, is re-pinned on the path that replaced them:
+    def test_the_FK8_axis_IS_the_spec_dicts_capability_set(self) -> None:
+        """⚠ RED at HEAD (no spec dict). amendment 7 §5 FK-8 rider: the 16-leg verb axis below is DERIVED
+        from the spec dict, never a hand-list — so the axis (``FINDING_WRITE_ACTIONS``) must EQUAL
+        ``_FINDING_ACTIONS``'s ``requires_capability`` True set; a verb flipped True with no leg (or a
+        leg for a verb that is not governed) reds by name."""
+        from test_findings_classes_64b import capability_write_verbs  # noqa: PLC0415 - THE derivation
+
+        derived = capability_write_verbs()
+        assert derived, "the spec dict's capability set is empty — FK-8's axis would be vacuous (F7 unbuilt)"
+        assert set(FINDING_WRITE_ACTIONS) == derived, (
+            f"FK-8 axis {sorted(FINDING_WRITE_ACTIONS)} != the spec dict's capability set {sorted(derived)}"
+        )
+
     @pytest.mark.parametrize("agent", [None, CALLER_A], ids=["agent-omitted", "agent-supplied"])
     @pytest.mark.parametrize("action", FINDING_WRITE_ACTIONS)
     async def test_a_governed_findings_write_spends_NO_footer_registry_read(
@@ -3934,7 +3940,7 @@ async def _seed_open_finding(harness: Any, *, index: int = 0) -> Any:
     trigger reads is a write the ledger actually performed.
     """
     return await harness.finding_ledger.report(
-        subject=f"a real subject {index}",
+        title=f"a real subject {index}",  # DUAL (r2, am-7 §2 FK-1): the TITLE kwarg is `title`
         body="",
         area="test_comms_footer",
         category="contract_gap",
@@ -4277,7 +4283,7 @@ async def _batch_items(harness: Any, *, writes: int) -> list[dict[str, Any]]:
     real: list[dict[str, Any]] = []
     for index in range(writes):
         finding = await harness.finding_ledger.report(
-            subject=f"real subject {index}",
+            title=f"real subject {index}",  # DUAL (r2, am-7 §2 FK-1): the TITLE kwarg is `title`
             body="",
             area="test_comms_footer",
             category="contract_gap",

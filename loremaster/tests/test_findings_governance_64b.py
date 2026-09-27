@@ -23,8 +23,10 @@ THE RULES (authz §4 3-way write rule, via the ONE PDP brain — nothing new in 
   between the gate and the CAS ⇒ ``GovernedConflict``; a concurrent status winner ⇒ the ledger's own
   ``IllegalTransitionError`` naming the FRESH state.
 
-FK-6 (REPORT §FORKS — a reading, chosen and flagged): a WRITE verb addressing a finding the caller cannot
-READ fails with the SAME ``FindingNotFoundError`` bytes as a nonexistent address (no existence oracle —
+FK-6 (r1's reading — RULED by packet-64 amendment 7 §4, with the ONE-pre-read mechanism: invisibility is
+DERIVED from the gate's own pre-read, ``GovernedInvisible(GovernedDenied)``): a WRITE verb addressing a
+finding the caller cannot READ fails with the SAME ``FindingNotFoundError`` bytes as a nonexistent address
+(no existence oracle —
 63-rulings §4.3; the kickoff states it for ``report(supersedes=X)`` §5 and for reads §10, and a write
 verb's number→row resolution IS a read). A row the caller CAN read but not write is a
 ``GovernedDenied`` (the sibling-agent case) — visible, so no oracle.
@@ -59,15 +61,36 @@ from loremaster import governed
 if TYPE_CHECKING:
     from loremaster.findings import FindingLedger
     from loremaster.governed import classify_zero_row_cas
+    from loremaster.store._txn import StoreHandle
 
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    _RULED_64B_I: tuple[object, ...] = (
-        FindingLedger.set_scope,  # kickoff §4.4 (the NEW served verb)
-        classify_zero_row_cas,  # #407 (spied by identity)
-    )
+    import lorerunes
+
+    # 64b-i's RULED, not-yet-built signatures this file pins — TYPED CALLS (amendment 8 §5, MP-9: mypy's
+    # ``[call-arg]`` checks the SHAPE, never just the name; permanent signature pins). Until the build lands
+    # them,
+    # mypy errors OWNED by `scripts/pending_contracts.yaml` bound `packet-64b-i-contract` (#461).
+    # Runtime-inert.
+    # DUAL (r2): r1's name-only ``_RULED_64B_I`` tuple (``FindingLedger.set_scope``,
+    # ``classify_zero_row_cas``) is
+    # replaced — a coherent wrong-SHAPE build was mypy-identical to the reference under it
+    # (REPORT-adversary-64b §FK9).
+    async def _ruled_64b_i_governance_shapes(
+        ledger: FindingLedger, subject: lorerunes.Subject, handle: StoreHandle
+    ) -> None:
+        """kickoff §4.4 (set_scope) + am-7 §2 (``subject=``) + #407 / am-7 §5 FK-3 (the classifier's "
+        "shape)."""
+        await ledger.set_scope(7, "server", subject=subject)
+        await ledger.acknowledge(7, "ag", None, subject=subject)
+        await ledger.annotate(7, "ag", "n", subject=subject)
+        await classify_zero_row_cas(
+            handle,
+            table="finding",
+            row_id="x",
+            subject=subject,
+            action=lorerunes.Action.WRITE,
+            ledger_verdict=lambda row: row,
+        )
+
 
 #: (actor agent, owner agent, scope key, allowed?, audit delta) — the 3-way rule's discriminating cases.
 #: ≥2 principals, ≥2 agents each, disjoint households, the admin control (kickoff §12 fixture floor).

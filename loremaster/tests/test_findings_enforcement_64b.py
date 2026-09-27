@@ -55,12 +55,15 @@ from loremaster import principals
 if TYPE_CHECKING:
     from loremaster.findings import FindingLedger
 
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    # kickoff §4.4 — a verb the F5 case observes
-    _RULED_64B_I: tuple[object, ...] = (FindingLedger.set_scope,)
+    import lorerunes
+
+    # 64b-i's RULED, not-yet-built signature this file pins — a TYPED CALL (amendment 8 §5, MP-9; a permanent
+    # signature pin). Until the build lands it, a mypy error OWNED by bound `packet-64b-i-contract` (#461).
+    # DUAL (r2): r1's name-only ``(FindingLedger.set_scope,)`` tuple is replaced.
+    async def _ruled_64b_i_set_scope_shape(ledger: FindingLedger, subject: lorerunes.Subject) -> None:
+        """kickoff §4.4 — the verb the F5 case observes, with am-7 §2's ``subject=``."""
+        await ledger.set_scope(7, "server", subject=subject)
+
 
 _EMPTY_SCHEMA = SchemaDelta(added=frozenset(), removed=frozenset(), changed=frozenset())
 _OWNED = {"owner_principal": "principal:alice", "owner_agent": "agent:ag_a1", "scope": "keep:keepalphabravo"}
@@ -236,44 +239,47 @@ class TestTheLiveFindingWritesClassifyUnderF5:
     async def test_every_driven_write_verb_is_observed_and_classifies(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """⚠ RED at HEAD (no ``capability=`` — the verbs cannot run governed)."""
+        """⚠ RED at HEAD (no ``capability=`` — the verbs cannot run governed).
+
+        DUAL (r2, REPORT-adversary-64b §P1c R2): r1 drove a HAND-LIST of 7 calls (``acknowledge_many`` never
+        driven) and checked coverage against its own list. The drive is now ∀ verb in the spec dict's DERIVED
+        ``requires_capability`` True set (``test_findings_classes_64b.VERB_DRIVERS``, completeness-checked by
+        ``_required_drivers``), and the expected labels are DERIVED from that set — a verb flipped True with
+        no
+        driver, or a driven verb whose writes F5 never saw, reds by name."""
+        from test_findings_classes_64b import _required_drivers  # noqa: PLC0415 - ONE driver table
+
+        drivers = _required_drivers()
         async with finding_world(monkeypatch, tmp_path) as world:
-            await world.seed(
-                row_id=new_row_id("f5"), number=9001, owner="ag-a1", scope_key="AB", status="open"
-            )
-            await world.seed(
-                row_id=new_row_id("f5"), number=9002, owner="ag-a1", scope_key="AB", status="open"
-            )
-            await world.seed(
-                row_id=new_row_id("f5"),
-                number=9003,
-                owner="ag-b1",
-                scope_key="principal-private",
-                status="open",
-            )
-            await world.seed(
-                row_id=new_row_id("f5"), number=9004, owner="ag-a1", scope_key="AB", status="open"
-            )
-            with observe_governed_table_writes(FINDING_TABLE) as writes:
-                await world.findings(
-                    "ag-a1", action="report", subject="observed", body="", area="a", category="c"
+            numbers: dict[str, int] = {}
+            for index, verb in enumerate(sorted(drivers)):
+                owner, scope_key = ("ag-a1", "principal-private") if verb == "set_scope" else ("ag-a1", "AB")
+                numbers[verb] = 9001 + index
+                await world.seed(
+                    row_id=new_row_id("f5"),
+                    number=numbers[verb],
+                    owner=owner,
+                    scope_key=scope_key,
+                    status="open",
                 )
-                await world.findings("ag-b1", action="acknowledge", id_or_number=9001)
-                await world.findings("ag-b2", action="resolve", id_or_number=9001)
-                await world.findings("ag-a2", action="wontfix", id_or_number=9002)
-                await world.findings("ag-b1", action="annotate", id_or_number=9002, note="noted")
-                await world.findings("ag-b1", action="set_scope", id_or_number=9003, scope=world.scopes["B"])
-                await world.findings("ag-a1", action="resolve_many", items=[{"id_or_number": 9004}])
+            with observe_governed_table_writes(FINDING_TABLE) as writes:
+                for verb, driver in sorted(drivers.items()):
+                    kwargs = driver.kwargs(world, numbers[verb])
+                    if verb == "report":
+                        kwargs = {key: value for key, value in kwargs.items() if key != "supersedes"}
+                    if verb == "set_scope":
+                        kwargs["scope"] = world.scopes["A"]
+                    await world.findings("ag-a1" if verb == "set_scope" else "ag-b1", **kwargs)
             unclassified = [
                 write for write in writes if not classify_tree_observed_write(write, FINDING_TREE_ALLOWLIST)
             ]
             assert not unclassified, f"UNCLASSIFIED finding writes (deny-by-default): {unclassified}"
             observed_labels = {write.label for write in writes}
-            expected = {
-                FINDING_WRITE_GUARD_LABELS[verb]
-                for verb in ("report", "acknowledge", "resolve", "wontfix", "annotate", "resolve_many")
-            }
-            missing = sorted(expected - observed_labels)
+            missing = sorted(
+                verb
+                for verb in drivers
+                if verb != "set_scope" and FINDING_WRITE_GUARD_LABELS[verb] not in observed_labels
+            )
             assert not missing, (
                 f"driven verbs whose writes F5 never observed: {missing}; "
                 f"saw {sorted(map(str, observed_labels))}"

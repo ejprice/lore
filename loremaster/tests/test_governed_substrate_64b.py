@@ -68,20 +68,63 @@ from loremaster import governed
 
 if TYPE_CHECKING:
     from loremaster.findings import FindingLedger
-    from loremaster.governed import classify_zero_row_cas, resource_from_row
-
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    _RULED_64B_I: tuple[object, ...] = (
-        resource_from_row,  # #414/#415
-        classify_zero_row_cas,  # #407
-        governed.GuardedPlan.guard,  # kickoff §4.3
-        governed.GuardedPlan.compose,  # kickoff §4.3
-        FindingLedger.handle,  # F-9
-        FindingLedger.audit_store,  # F-9
+    from loremaster.governed import (
+        GovernedInvisible,
+        GuardedPlan,
+        classify_zero_row_cas,
+        resource_from_row,
     )
+
+    # 64b-i's RULED, not-yet-built signatures this file pins — TYPED CALLS (amendment 8 §5, MP-9: mypy's
+    # ``[call-arg]`` checks the SHAPE, never just the name; permanent signature pins). Until the build lands
+    # them,
+    # mypy errors OWNED by `scripts/pending_contracts.yaml` bound `packet-64b-i-contract` (#461).
+    # Runtime-inert.
+    # DUAL (r2): r1's name-only ``_RULED_64B_I`` tuple is replaced (REPORT-adversary-64b §FK9: a coherent
+    # ``classify_zero_row_cas(verdict=)`` / ``authorize_guarded(columns=)`` wrong build was mypy-IDENTICAL).
+    async def _ruled_64b_i_substrate_shapes(
+        ledger: FindingLedger, plan: GuardedPlan, subject: pdp.Subject, handle: StoreHandle
+    ) -> None:
+        """#414/#415 · #407 + am-7 §5 FK-3 · §4.3 guard/compose · F-9 · am-7 §4 FK-6 (the ADDRESS + the
+        invisibility subclass) · am-7 §5 FK-4 (``target_scope=`` / ``params=``)."""
+        assert resource_from_row({"id": "finding:x"}).table == "finding"
+        await classify_zero_row_cas(
+            handle,
+            table="finding",
+            row_id="x",
+            subject=subject,
+            action=pdp.Action.WRITE,
+            ledger_verdict=lambda row: row,
+        )
+        fragment, params = plan.guard()
+        assert plan.compose(*plan.fragments(fragment, params))
+        assert ledger.handle.url and ledger.audit_store is not None
+        assert issubclass(GovernedInvisible, governed.GovernedDenied)
+        await governed.authorize_guarded(
+            subject,
+            pdp.Action.WRITE,
+            table="finding",
+            number=7,
+            audit=None,
+            store=handle,
+            projection=("status",),
+            target_scope=None,
+        )
+        await governed.authorize_guarded(
+            subject, pdp.Action.WRITE, table="finding", row_id="x", audit=None, store=handle
+        )
+        await governed.guarded_write(
+            subject,
+            pdp.Action.SET_SCOPE,
+            table="finding",
+            row_id="x",
+            set_fragment="scope = $s",
+            audit=None,
+            store=handle,
+            params={"s": "server"},
+            target_scope="server",
+        )
+
 
 _DIM = 8
 _GOVERNED_PY = Path(governed.__file__)
@@ -131,6 +174,16 @@ async def substrate_world() -> AsyncIterator[dict[str, Any]]:
         await apply_ddl(connection, current_finding_ddl(), url=env.url)
         await apply_ddl(connection, governed_overlay_ddl(FINDING_TABLE), url=env.url)
         await apply_ddl(connection, surreal_schema.generate_audit_ddl(), url=env.url)
+        # DUAL (r2, amendment 8 §2): the synthetic keep scopes become REAL keep rows — an admin SET_SCOPE
+        # target must
+        # name a keep that EXISTS (the scope domain's existence half); r1 targeted ids with no row.
+        await apply_ddl(connection, surreal_schema.generate_keep_ddl(), url=env.url)
+        for keep_scope_value in (_KEEP_A, _KEEP_B, _KEEP_AB):
+            await run(
+                connection,
+                "CREATE type::record('keep', $id) CONTENT { keeper: $keeper, type: 'team', name: $id }",
+                {"id": keep_scope_value.partition(":")[2], "keeper": RecordID("principal", "alice")},
+            )
         await audit_store.ensure_ready()
         yield {"env": env, "connection": connection, "audit": audit_store}
     finally:
@@ -959,3 +1012,206 @@ class TestTheFindingLedgerExposesItsDriverAndAuditSink:
         sink = self._ledger().audit_store
         assert isinstance(sink, AuditStore)
         assert sink._database == "accessor_probe"  # noqa: SLF001
+
+
+# =========================================================================== #
+# r2 — amendment 7 §4 (FK-6): invisibility is DERIVED from the ONE pre-read; the pre-read takes an ADDRESS.
+# =========================================================================== #
+
+
+def _require_invisible() -> Any:
+    invisible = vars(governed).get("GovernedInvisible")
+    assert isinstance(invisible, type) and issubclass(invisible, governed.GovernedDenied), (
+        "UNBUILT (amendment 7 §4): governed.GovernedInvisible(GovernedDenied) does not exist"
+    )
+    return invisible
+
+
+#: action → (the row's columns, a subject that can READ it but may NOT perform the action, the SET_SCOPE
+#: target)
+#: — the VISIBLE-denied construction per mutating action (READ and the action DISAGREE, MP-4's fixture law).
+_VISIBLE_DENIED: dict[str, tuple[dict[str, Any], Any, str | None]] = {
+    "WRITE": (
+        {"owner_principal": "alice", "owner_agent": "ag_a1", "scope": pdp.SCOPE_PRINCIPAL_PRIVATE},
+        member("alice", "ag_a2", frozenset()),
+        None,
+    ),
+    "DELETE": (
+        {"owner_principal": "alice", "owner_agent": "ag_a1", "scope": _KEEP_AB},
+        member("bob", "ag_b1", frozenset({_KEEP_AB})),
+        None,
+    ),
+    "SET_SCOPE": (
+        {"owner_principal": "alice", "owner_agent": "ag_a1", "scope": _KEEP_AB},
+        member("bob", "ag_b1", frozenset({_KEEP_AB})),
+        _KEEP_AB,
+    ),
+}
+
+
+class TestInvisibilityIsDerivedFromTheOnePreRead:
+    """amendment 7 §4 (FK-6 RULED): after a deny for ``action ∈ {WRITE, DELETE, SET_SCOPE}``,
+    ``authorize_guarded``
+    evaluates ``pdp.authorize(subject, READ, resource)`` on the SAME pre-read row: READ denied ⇒
+    ``GovernedInvisible`` (a SUBCLASS of ``GovernedDenied`` — every existing ``except GovernedDenied`` and the
+    63b-ib memory pin stay green, additive); READ allowed ⇒ plain ``GovernedDenied``. ZERO extra reads (ONE
+    acquire). Admin (``AllRows``) reaches neither branch. ∀ mutating action — each with a construction where
+    READ and the action disagree."""
+
+    @pytest.mark.parametrize("action_name", sorted(_VISIBLE_DENIED))
+    async def test_invisible_vs_visible_denied_in_one_read(
+        self, substrate_world: dict[str, Any], action_name: str
+    ) -> None:
+        """⚠ RED at HEAD (``GovernedInvisible`` absent)."""
+        invisible = _require_invisible()
+        connection, env = substrate_world["connection"], substrate_world["env"]
+        columns, reader_only, target = _VISIBLE_DENIED[action_name]
+        action = pdp.Action[action_name]
+        await seed_finding_governed(
+            connection,
+            row_id="visrow",
+            number=950,
+            owner_principal=columns["owner_principal"],
+            owner_agent=columns["owner_agent"],
+            scope=columns["scope"],
+        )
+        await seed_finding_governed(
+            connection,
+            row_id="hidrow",
+            number=951,
+            owner_principal="alice",
+            owner_agent="ag_a1",
+            scope=_KEEP_A,
+        )
+        authorize_guarded: Any = governed.authorize_guarded  # the unbuilt keywords — typecheck-safe at HEAD
+        stranger = member("bob", "ag_b1", frozenset({_KEEP_B}))
+        handle, calls = store_handle(connection, url=env.url)
+        with pytest.raises(invisible):
+            await authorize_guarded(
+                stranger,
+                action,
+                table=FINDING_TABLE,
+                row_id="hidrow",
+                audit=None,
+                store=handle,
+                target_scope=target or _KEEP_B,
+            )
+        assert calls["acquire"] == 1, (
+            f"{action_name}: the invisibility derivation took {calls['acquire']} reads"
+        )
+        handle, calls = store_handle(connection, url=env.url)
+        with pytest.raises(governed.GovernedDenied) as denied:
+            await authorize_guarded(
+                reader_only,
+                action,
+                table=FINDING_TABLE,
+                row_id="visrow",
+                audit=None,
+                store=handle,
+                target_scope=target,
+            )
+        assert not isinstance(denied.value, invisible), (
+            f"{action_name}: a VISIBLE row was served as invisible (a false not-found a get contradicts)"
+        )
+        assert calls["acquire"] == 1, calls
+        plan = await authorize_guarded(
+            admin("carol", "ag_c1"),
+            action,
+            table=FINDING_TABLE,
+            row_id="hidrow",
+            audit=substrate_world["audit"],
+            store=store_handle(connection, url=env.url)[0],
+            target_scope=target or _KEEP_B,
+        )
+        assert plan.requires_audit is True, f"{action_name}: CONTROL — admin passes, audited"
+
+
+class TestThePreReadTakesAnAddress:
+    """amendment 7 §4 "The address": ``authorize_guarded(..., row_id=…)`` OR ``number=…`` — mutually
+    exclusive,
+    one required; a by-number write is ONE read too (``SELECT … WHERE number = $n LIMIT 1``), and the plan
+    names
+    the resolved row id (the CAS targets it). Both or neither ⇒ a typed ``ValueError`` BEFORE any read."""
+
+    async def test_a_number_address_is_one_read_and_resolves_the_row_id(
+        self, substrate_world: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD (no ``number=``)."""
+        _require_keyword(governed.authorize_guarded, "number", "amendment 7 §4 — the ADDRESS")
+        connection, env = substrate_world["connection"], substrate_world["env"]
+        await seed_finding_governed(
+            connection,
+            row_id="bynumber",
+            number=960,
+            owner_principal="alice",
+            owner_agent="ag_a1",
+            scope=_KEEP_AB,
+            status="open",
+        )
+        handle, calls = store_handle(connection, url=env.url)
+        authorize_guarded: Any = governed.authorize_guarded  # the unbuilt keyword — typecheck-safe at HEAD
+        plan = await authorize_guarded(
+            member("bob", "ag_b1", frozenset({_KEEP_AB})),
+            pdp.Action.WRITE,
+            table=FINDING_TABLE,
+            number=960,
+            audit=None,
+            store=handle,
+            projection=("status",),
+        )
+        assert plan.row_id == "bynumber", f"the plan must name the RESOLVED row id: {plan.row_id!r}"
+        assert (plan.pre_read_row or {}).get("status") == "open", plan.pre_read_row
+        assert calls["acquire"] == 1, f"a by-number gate took {calls['acquire']} reads — ONE is the rule"
+
+    @pytest.mark.parametrize("address", [{"row_id": "x", "number": 1}, {}])
+    async def test_both_or_neither_is_refused_before_any_read(
+        self, substrate_world: dict[str, Any], address: dict[str, Any]
+    ) -> None:
+        """⚠ RED at HEAD (``row_id`` is required, ``number`` unknown — a TypeError, not the ruled refusal)."""
+        _require_keyword(governed.authorize_guarded, "number", "amendment 7 §4 — the ADDRESS")
+        handle, calls = store_handle(substrate_world["connection"], url=substrate_world["env"].url)
+        authorize_guarded: Any = governed.authorize_guarded
+        with pytest.raises(ValueError, match="row_id|number"):
+            await authorize_guarded(
+                admin("carol", "ag_c1"),
+                pdp.Action.WRITE,
+                table=FINDING_TABLE,
+                audit=None,
+                store=handle,
+                **address,
+            )
+        assert calls["acquire"] == 0, "the address refusal touched the store"
+
+
+class TestASetScopeWithoutATargetIsALoudRefusal:
+    """amendment 7 §5 FK-4 rider: ``SET_SCOPE`` with ``target_scope=None`` is a typed ``ValueError`` NAMING
+    the
+    missing target BEFORE any read — never the silent ``NoRows`` that hid #429's dead branch. Both entry
+    points."""
+
+    @pytest.mark.parametrize("entry", ["authorize_guarded", "guarded_write"])
+    async def test_no_target_no_read(self, substrate_world: dict[str, Any], entry: str) -> None:
+        """⚠ RED at HEAD (no ``target_scope`` — the call reads the row and denies)."""
+        function: Any = getattr(governed, entry)
+        _require_keyword(function, "target_scope", "amendment 7 §5 FK-4")
+        await seed_finding_governed(
+            substrate_world["connection"],
+            row_id="notarget",
+            number=970,
+            owner_principal="alice",
+            owner_agent="ag_a1",
+            scope=pdp.SCOPE_PRINCIPAL_PRIVATE,
+        )
+        handle, calls = store_handle(substrate_world["connection"], url=substrate_world["env"].url)
+        kwargs: dict[str, Any] = {
+            "table": FINDING_TABLE,
+            "row_id": "notarget",
+            "audit": None,
+            "store": handle,
+            "target_scope": None,
+        }
+        if entry == "guarded_write":
+            kwargs |= {"set_fragment": "scope = $s", "params": {"s": "server"}}
+        with pytest.raises(ValueError, match="target"):
+            await function(member("alice", "ag_a1", frozenset()), pdp.Action.SET_SCOPE, **kwargs)
+        assert calls["acquire"] == 0, f"{entry}: the missing-target refusal read the store first"

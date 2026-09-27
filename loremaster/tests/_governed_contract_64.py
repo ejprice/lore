@@ -103,14 +103,16 @@ FINDING_WRITE_GUARD_LABELS: dict[str, str] = {
 #: ``lore_findings``' served schema in 64b.
 RETIRED_FINDING_IDENTITY_ARGS: tuple[str, ...] = ("created_by", "actor")
 
-#: FK-1 (REPORT §FORKS — a naming fork, ruled by the contract author, flagged): the keyword EVERY governed
-#: ``FindingLedger`` write method takes the resolved :class:`lorerunes.pdp.Subject` on. ``subject=`` (the
-#: memory/messages spelling) is UNAVAILABLE on this ledger: ``FindingLedger.report``'s first parameter is
-#: already ``subject`` — the finding's TITLE (the column, the ``Finding`` field and the served
-#: ``lore_findings subject=`` all name the title), and three callers pass it BY KEYWORD
-#: (``test_comms_footer.py`` ×2, ``scripts/c3_harness_repair.py``). Renaming the title would split one
-#: concept's name across the column and the ledger. ONE constant so a ruling flip is ONE edit here.
-LEDGER_IDENTITY_KWARG = "caller"
+#: FK-1 — RULED by packet-64 amendment 7 §2 (``6e42ed1``): ``subject=`` is THE one identity kwarg ∀ ledgers
+#: (memory 63a, findings 64b, tasks 64a); the colliding finding TITLE parameter is renamed ``title`` at the
+#: Python seam only (served params, columns and models keep ``subject``; the dispatcher maps served
+#: ``subject=`` → ``title=`` at ONE site per verb). DUAL (r2): r1 chose ``"caller"`` (REPORT-contract-64b
+#: §5 FK-1) — REJECTED by the ruling; every r1 pin reads THIS constant, so the flip is this one edit. The
+#: value is ALSO derived from the memory seam's own signature by
+#: ``test_findings_signatures_64b.py::TestTheIdentityKwargIsSubjectOnEveryLedger`` (never two literals).
+LEDGER_IDENTITY_KWARG = "subject"
+#: FK-1: the finding TITLE's Python parameter name on ``FindingLedger.report`` / ``report_system``.
+LEDGER_TITLE_KWARG = "title"
 
 # --------------------------------------------------------------------------- #
 # The FROZEN old world (store-ref §1.4) — HAND-CAPTURED at 6a09954, NOT re-derived from the emitter.
@@ -566,6 +568,32 @@ def effect_finding_migrate(effect: ObservedEffect) -> bool:
     return True
 
 
+def effect_finding_report_system(effect: ObservedEffect) -> bool:
+    """FK-7 (amendment 7 §1 "the leg that stops laundering"): the calibration-drift system writer CREATEs
+    exactly ONE row that is UNOWNED (owner pair NONE/NONE — never a fabricated owner), in a KEEP scope (the
+    project keep — its exact id is the behavioural pin's, a classifier sees rows), ``open``, in the
+    calibration area, authored by the engine's display string. Schema unchanged. A second system writer
+    tomorrow (a different area / author) REDS this entry and must get its OWN name + entry."""
+    from loremaster.calibration.engine import CALIBRATION_AREA, DRIFT_CREATED_BY  # noqa: PLC0415
+
+    if not effect.schema_delta.is_empty or len(effect.row_deltas) != 1:
+        return False
+    delta = effect.row_deltas[0]
+    after = delta.after or {}
+    scope = after.get("scope")
+    return (
+        delta.kind == "created"
+        and after.get("owner_principal") is None
+        and after.get("owner_agent") is None
+        and isinstance(scope, str)
+        and scope.startswith("keep:")
+        and len(scope) > len("keep:")
+        and after.get("status") == "open"
+        and after.get("area") == CALIBRATION_AREA
+        and after.get("created_by") == DRIFT_CREATED_BY
+    )
+
+
 #: THE golden the finding migrate leg must execute (kickoff §2: scope-keyed AND self-guarding — the
 #: am-21 CD-1 WHERE, both conjuncts). Function-local in production (§1.9 item 1 — never a module
 #: constant there); the golden lives HERE, in the test that adjudicates it.
@@ -580,6 +608,35 @@ HOSTILE_FORGED_LINE_START = "\n#998"
 MIGRATE_FINDING_GOLDEN = (
     f"UPDATE {FINDING_TABLE} SET scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
 )
+
+#: FK-7 (packet-64 amendment 7 §1 ``6e42ed1``, corrected by amendment 9 §4 ``743373e`` — FK-r2-5): THE
+#: golden the calibration-drift SYSTEM writer enters ``governed_exempt("calibration-drift", statement=…)``
+#: with — the COMPOSED TRANSACTION TEXT ``store._txn.compose(fragment)[0]``, because the F5 observer records
+#: what ``execute_transaction`` receives (``BEGIN; LET …; CREATE …; COMMIT;``), never one statement of it.
+#: Leg 2 stays EXACT and the golden pins HEAD's counter ``LET`` too (a stronger oracle). ONE IMPLEMENTATION:
+#: a member ``report`` composes the SAME fragment (the governed triple BOUND — ``$rep_owner_principal`` /
+#: ``$rep_owner_agent`` / ``$rep_scope``: a principal/agent RecordID for a member, NONE/NONE for the system
+#: writer), so both writers execute THIS text and a padded CREATE moves both
+#: (``test_findings_system_writer_64b.py`` pins both). The column names/order, every ``$rep_*`` name except
+#: the triple's, and the LET are HEAD's (``findings.py`` at ``4beb79e``); the triple's names are THIS
+#: contract's (FK-r2-3, CONFIRMED by amendment 9). Derived on the r2 reference by ``compose`` (REPORT
+#: §INSTRUMENTS ``derive_txn_golden.py``). DUAL (r2 → am-9): the r2 draft's golden was the CREATE alone
+#: (``REPORT_CREATE_GOLDEN``) with a widened leg 2 (A5) — both WITHDRAWN (A5 admits a smuggled ungoverned
+#: statement beside the golden; amendment 9 §4).
+REPORT_SYSTEM_TXN_GOLDEN = (
+    "BEGIN;\n"
+    "LET $finding_seq = (UPSERT type::record('finding_counter', 'singleton') SET next += 1 "
+    "RETURN AFTER)[0].next;\n"
+    f"CREATE type::record('{FINDING_TABLE}', $rep_id) CONTENT {{ number: $finding_seq, kind: $rep_kind, "
+    "status: $rep_status, subject: $rep_subject, body: $rep_body, area: $rep_area, "
+    "category: $rep_category, created_by: $rep_created_by, created_at: $rep_created_at, "
+    "provenance: $rep_provenance, supersedes: NONE, owner_principal: $rep_owner_principal, "
+    "owner_agent: $rep_owner_agent, scope: $rep_scope };\n"
+    "COMMIT;"
+)
+#: the calibration engine's constants (``loremaster.calibration.engine`` at ``4beb79e``) — READ by the effect
+#: predicate below lazily, so this module never imports the engine at load time.
+CALIBRATION_DRIFT_EXEMPT = "calibration-drift"
 
 _REPORT_ENTRY = TreeWriteAllowlistEntry(
     site=TreeMutationSite(_FINDINGS_PY, "_report_fragment", "CREATE"),
@@ -640,15 +697,45 @@ _MIGRATE_ENTRY = TreeWriteAllowlistEntry(
     effect=effect_finding_migrate,
 )
 
+_REPORT_SYSTEM_ENTRY = TreeWriteAllowlistEntry(
+    site=TreeMutationSite(_FINDINGS_PY, "report_system", "CREATE"),
+    justification=(
+        "FK-7 (amendment 7 §1): the calibration engine's drift finding — a governed-table write that is NOT "
+        "member-reachable (no served verb; ONE production caller, the calibration adapter), written UNOWNED "
+        "(owner NONE/NONE) in the project keep via the SAME _report_fragment a member report runs, "
+        "attributed by the named exempt 'calibration-drift' entered in report_system's own frame"
+    ),
+    pin="test_findings_system_writer_64b.py::TestTheSystemWriterClassifiesUnderItsOwnExempt",
+    frames=("report_system",),
+    exempt_name=CALIBRATION_DRIFT_EXEMPT,
+    statement=REPORT_SYSTEM_TXN_GOLDEN,
+    effect=effect_finding_report_system,
+    # the CREATE literal lives in ``_report_fragment`` (already the L1 site of the report LABEL entry), so
+    # report_system's frame has no raw literal for L1 to derive — the 63b-i-a §5.1 Q1 call-result shape.
+    l1_site=False,
+)
+
 #: The WHOLE-TREE deny-by-default allowlist for the ``finding`` population (design §10.9-A CORRECTION;
 #: the shape 63b's MESSAGE/TO allowlists established). Folded into the ONE substrate at integration.
+#: r2 (amendment 7 §1): ``_REPORT_SYSTEM_ENTRY`` joins — the calibration-drift system writer's own entry.
 FINDING_TREE_ALLOWLIST: tuple[TreeWriteAllowlistEntry, ...] = (
     _REPORT_ENTRY,
     _STATUS_EDGE_ENTRY,
     _ANNOTATE_ENTRY,
     _SET_SCOPE_ENTRY,
     _MIGRATE_ENTRY,
+    _REPORT_SYSTEM_ENTRY,
 )
+
+#: MP-12 (packet-64 amendment 8 §2): values that are NOT in the scope DOMAIN, one per failure class — a
+#: nonexistent keep (SHAPE-legal, EXISTENCE-illegal), a non-scope string, the shared hostile free text,
+#: and a keep-prefixed hostile id (SHAPE-illegal only through the keep-id CHARSET, not the prefix).
+OUT_OF_DOMAIN_SCOPES: dict[str, str] = {
+    "nonexistent-keep": "keep:01JZZZZZZZZZZZZZZZZZZZZZZZ",
+    "not-a-scope": "banana",
+    "hostile": HOSTILE_FREE_TEXT,
+    "hostile-keep-id": f"keep:{HOSTILE_FREE_TEXT}",
+}
 
 
 def new_row_id(prefix: str) -> str:

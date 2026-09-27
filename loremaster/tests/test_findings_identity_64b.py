@@ -51,20 +51,27 @@ from loremaster import governed, server
 if TYPE_CHECKING:
     from loremaster.server import (
         _RETIRED_IDENTITY_ARGS_TEACHING,
+        AppContext,
         GovernedVerbSpec,
         _requires_capability,
     )
 
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    _RULED_64B_I: tuple[object, ...] = (
-        GovernedVerbSpec,  # F7 (kickoff §13)
-        _requires_capability,  # the ONE reader of a spec's flag
-        _RETIRED_IDENTITY_ARGS_TEACHING,  # am-2 §2 (the ONE retirement sentence)
-        server.AppContext._resolve_identity,  # Q4a (kickoff §13)
-    )
+    # 64b-i's RULED, not-yet-built signatures this file pins — TYPED CALLS (amendment 8 §5, MP-9: mypy's
+    # ``[call-arg]`` checks the SHAPE, never just the name; permanent signature pins). Until the build lands
+    # them,
+    # mypy errors OWNED by `scripts/pending_contracts.yaml` bound `packet-64b-i-contract` (#461).
+    # Runtime-inert.
+    # DUAL (r2): r1's name-only ``_RULED_64B_I`` tuple is replaced (REPORT-adversary-64b §FK9).
+    async def _ruled_64b_i_identity_shapes(context: AppContext) -> None:
+        """F7 (kickoff §13) · the ONE flag reader · am-2 §2 · Q4a/am-8 §1 (``_resolve_identity``) · the
+        governed
+        dispatcher's ``capability=``/``scope=``."""
+        spec: GovernedVerbSpec = GovernedVerbSpec(requires_capability=True, limit_cap=None)
+        assert _requires_capability({"report": spec}, "report") is spec.requires_capability
+        assert _RETIRED_IDENTITY_ARGS_TEACHING.endswith(".")
+        await context._resolve_identity("cap", agent=None, session=None)  # noqa: SLF001
+        await context.findings(action="report", capability="cap", scope="server", subject="t")
+
 
 #: The EXACT post-retirement served parameter set of ``lore_findings`` (amendment 2 §4 "the schema pin —
 #: allowlist the safe"): HEAD's set − {created_by, actor} + {capability, scope}. ``scope`` is the explicit
@@ -226,8 +233,18 @@ class TestTheRetiredIdentityArgsLeaveTheServedSchema:
         monkeypatch.setattr(server, "_app_context", reached.append)
         tool = await _findings_tool()
         base = {"action": "resolve", "id_or_number": 7, "note": "closing"}
-        with pytest.raises((ValidationError, FastMcpValidationError)) as refusal:
-            await tool.run({**base, retired: "someone-else"})
+        # DUAL (r2, REPORT-adversary-64b §P4/P7 minor): at HEAD the retired arg is still ACCEPTED, so the
+        # call died on dependency resolution (a RuntimeError) — RED for the right underlying reason with a
+        # message that said nothing. The accepted-arg outcome now fails with the teaching message; the pin
+        # itself is unchanged.
+        try:
+            with pytest.raises((ValidationError, FastMcpValidationError)) as refusal:
+                await tool.run({**base, retired: "someone-else"})
+        except RuntimeError as accepted:
+            pytest.fail(
+                f"UNBUILT (amendment 2 §0): `{retired}` is still ACCEPTED by lore_findings' served schema — "
+                f"the call passed validation and died on {type(accepted).__name__} instead of being refused"
+            )
         assert retired in str(refusal.value), f"the refusal must NAME `{retired}`: {refusal.value}"
         assert reached == [], (
             "the handler was reached — the retired argument was not refused at the MCP layer"
@@ -489,14 +506,14 @@ class TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands:
         """⚠ RED at HEAD (``capability=`` is not a parameter — the guard asserts the signature first)."""
         async with finding_world(monkeypatch, tmp_path) as world:
             await world.seed(row_id=new_row_id("rd"), number=1101, owner="ag-a1", scope_key="AB")
-            resolved: list[Any] = []
-            real = server.AppContext._resolve_subject  # noqa: SLF001
+            # DUAL (r2, REPORT-adversary-64b §P1c — MP-7's reach lesson): r1 spied
+            # ``AppContext._resolve_subject`` BY NAME, so a build resolving the capability through any OTHER
+            # method (the am-8 §1 record-yielding twin) read as "never resolved". "Resolved" is now observed
+            # at the STORE SEAM: any statement reading ``agent`` (the capability verify). Virtue preserved:
+            # a read verb that resolves-and-discards still reds.
+            from test_findings_classes_64b import _read_tables, _record_store_statements  # noqa: PLC0415
 
-            async def _spy(self: Any, capability: Any) -> Any:
-                resolved.append(capability)
-                return await real(self, capability)
-
-            monkeypatch.setattr(server.AppContext, "_resolve_subject", _spy)
+            seen = _record_store_statements(monkeypatch)
             kwargs: dict[str, Any] = {"action": verb}
             if verb != "query":
                 kwargs["id_or_number"] = 1101
@@ -509,7 +526,9 @@ class TestTheReadVerbsRefuseACapabilityUntilTheirFilterLands:
                 f"{verb!r}): {text!r}"
             )
             assert any(write in text for write in FINDING_WRITE_VERBS), text
-            assert resolved == [], "a read verb RESOLVED the capability it then refused (resolved-and-unused)"
+            assert not any("agent" in _read_tables(statement) for statement in seen), (
+                "a read verb RESOLVED the capability it then refused (resolved-and-unused)"
+            )
 
     @pytest.mark.parametrize("verb", FINDING_READ_VERBS)
     async def test_CONTROL_a_read_verb_without_a_capability_still_serves(

@@ -67,6 +67,7 @@ from _governed_contract_64 import (
     FINDING_TREE_ALLOWLIST,
     HOSTILE_FREE_TEXT,
     MIGRATE_FINDING_GOLDEN,
+    bare,
     current_finding_ddl,
     finding_row,
     frozen_asserted_finding_ddl,
@@ -85,14 +86,20 @@ from test_fixwave_a19a_63c_i_a import _names, _stated_integers
 from loremaster import principals
 
 if TYPE_CHECKING:
-    from loremaster.principals import _migrate_finding_scope
+    from loremaster.keeps import KeepStore
+    from loremaster.principals import PrincipalStore, _migrate_finding_scope
+    from loremaster.store._txn import StoreHandle
 
-    # 64b-i's RULED, not-yet-built symbols this file pins — named STATICALLY for the typecheck gate. Until the
-    # build lands them each is a mypy error OWNED by `scripts/pending_contracts.yaml` bound
-    # `packet-64b-i-contract`, which self-destructs (delete the entry) once they exist (lead #17055, #461).
-    # Runtime-inert: never executed, so every pin still REDs at HEAD on its own teaching message.
-    # kickoff §13 — the finding leg
-    _RULED_64B_I: tuple[object, ...] = (_migrate_finding_scope,)
+    # 64b-i's RULED, not-yet-built signature this file pins — a TYPED CALL (amendment 8 §5, MP-9; a permanent
+    # signature pin). Until the build lands it, a mypy error OWNED by bound `packet-64b-i-contract` (#461).
+    # DUAL (r2): r1's name-only ``(_migrate_finding_scope,)`` tuple is replaced.
+    async def _ruled_64b_i_finding_leg_shape(
+        store: StoreHandle, keep_store: KeepStore, principal_store: PrincipalStore
+    ) -> None:
+        """kickoff §13 — the finding leg (the memory leg's shape; the ONE UNOWNED-LEGACY policy)."""
+        result = await _migrate_finding_scope(store, keep_store, principal_store)
+        assert result.backfilled >= 0
+
 
 _DIM = 8
 _MEMORY_TABLE = "memory"
@@ -100,8 +107,45 @@ _PRINCIPALS_PY = "loremaster/loremaster/principals.py"
 #: every table a refused migrate must leave byte-identical (the governed tables it could touch + the
 #: tables a leg would MINT into before refusing — the project keep and its household edge).
 _BYTE_INERT_TABLES = (FINDING_TABLE, _MEMORY_TABLE, "agent", "keep", "member_of", "principal")
-#: the two UNOWNED-LEGACY tables the half-pair rule quantifies over (kickoff §2 — the disposition).
-_UNOWNED_LEGACY_TABLES = (_MEMORY_TABLE, FINDING_TABLE)
+
+
+def migrate_goldens() -> dict[str, tuple[str, str]]:
+    """leg function → (table, its adjudicated backfill GOLDEN) — the goldens are READ from their home oracles
+    (each governed table's F5 allowlist / shape pin), never re-typed here (CLAUDE.md "one oracle")."""
+    from test_agent_governance_63c_i_a import (  # noqa: PLC0415
+        TestTheBackfillShapeAssertNormalisesSpellingNeverWidens63cIA as _AgentShape,
+    )
+    from test_memory_enforcement_63b_ia import _MIGRATE_GOLDEN as _MEMORY_GOLDEN  # noqa: PLC0415
+    from test_message_enforcement_63b_ii_a import _MIGRATE_MESSAGE_GOLDEN  # noqa: PLC0415
+
+    return {
+        "_migrate_agent_owner": ("agent", _AgentShape._CORRECT),  # noqa: SLF001 - the agent shape oracle
+        "_migrate_memory_scope": (_MEMORY_TABLE, _MEMORY_GOLDEN),
+        "_migrate_message_owner": ("message", _MIGRATE_MESSAGE_GOLDEN),
+        "_migrate_finding_scope": (FINDING_TABLE, MIGRATE_FINDING_GOLDEN),
+    }
+
+
+def unowned_legacy_tables() -> tuple[str, ...]:
+    """FK-2 (packet-64 amendment 7 §3) — the UNOWNED-LEGACY disposition, DERIVED from the migrate goldens: a
+    leg whose golden ``SET`` clause stamps NO owner column is UNOWNED-LEGACY (its migrated state is ``owner
+    NONE, scope set``). ⚠ REPORT §FORKS FK-r2-4: am-7 §3 keys the rule on the WHERE containing
+    ``owner_principal
+    IS NONE``; MEASURED at ``4beb79e`` that rule yields ``{message, finding}`` (memory's WHERE has no owner
+    conjunct; message's does, yet message is OWNED-legacy) — the opposite of the ruling's own stated output
+    ``{memory, finding}``. The SET-clause rule yields exactly ``{memory, finding}``."""
+    tables = []
+    for _leg, (table, golden) in sorted(migrate_goldens().items()):
+        set_clause = re.split(r"\bWHERE\b", golden, maxsplit=1, flags=re.IGNORECASE)[0]
+        if not re.search(r"\bowner_(principal|agent)\s*=", set_clause):
+            tables.append(table)
+    return tuple(sorted(tables))
+
+
+#: the UNOWNED-LEGACY tables the half-pair rule quantifies over — DERIVED (DUAL r2: r1's hand pair
+#: ``(_MEMORY_TABLE, FINDING_TABLE)`` is RE-KEYED to the derivation; its value is unchanged today, which the
+#: completeness pin below makes a checked fact rather than a hope).
+_UNOWNED_LEGACY_TABLES = unowned_legacy_tables()
 #: a count ≠ every other fixture count here, so a stated count discriminates.
 _TRAP_COUNT = 2
 _LEGACY_COUNT = 3
@@ -713,6 +757,82 @@ class TestAJunkStatusLegacyFindingRefusesTheBackfill:
             assert result.backfilled == 2, result
 
 
+class TestTheUnownedLegacySetIsDerivedFromTheGoldens:
+    """FK-2 (amendment 7 §3): the half-pair rule's domain is DERIVED — and the derivation is COMPLETE both
+    ways:
+    every production governed backfill leg (``test_fixwave_a19a_63c_i_a._migrate_legs`` — the functions that
+    open ``governed_exempt("migrate-governed", …)``) has a golden here, and every golden names a live leg."""
+
+    def test_the_golden_map_covers_every_derived_leg(self) -> None:
+        """⚠ RED at HEAD (``_migrate_finding_scope`` is not a production leg yet — a golden with no leg)."""
+        from test_fixwave_a19a_63c_i_a import _migrate_legs  # noqa: PLC0415
+
+        legs = _migrate_legs()
+        goldens = set(migrate_goldens())
+        assert legs == goldens, (
+            f"legs with no golden: {sorted(legs - goldens)}; goldens with no leg: {sorted(goldens - legs)}"
+        )
+
+    def test_the_derivation_yields_the_ruled_disposition(self) -> None:
+        """GREEN at HEAD AND after: the SET-clause rule yields {memory, finding} (kickoff §2 + am-7 §3's
+        stated
+        output) — a golden edited to stamp an owner on an unowned leg, or the reverse, moves it."""
+        assert set(_UNOWNED_LEGACY_TABLES) == {_MEMORY_TABLE, FINDING_TABLE}, _UNOWNED_LEGACY_TABLES
+
+
+class TestTheFindingBackfillCountIsMeasured:
+    """MP-10 / S-2 (packet-64 amendment 8 §4; 63c amendment 27 FORK-1 ∀ legs): ``backfilled`` is the rows the
+    UPDATE STAMPED, MEASURED — never a pre-UPDATE count. The 64b-local twin of a28's ∀-legs pin (whose finding
+    population rides §HELD): a concurrent stamp lands BETWEEN the leg's count and its UPDATE (injected on the
+    executed golden, through every store seam by identity), so the pre-count (3) ≠ the rows stamped (2)."""
+
+    async def test_backfilled_equals_the_rows_the_update_changed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """⚠ RED at HEAD (the finding leg is unsupported — the injection never lands, asserted)."""
+        from _governed_contract import patch_shared_object_everywhere  # noqa: PLC0415
+        from loremaster.store import _txn  # noqa: PLC0415
+
+        async with _migrate_world(frozen_asserted_finding_ddl()) as world:
+            await _seed_legacy(world, _LEGACY_COUNT)
+            await _upgrade_finding_schema(world)
+            landed = {"count": 0}
+            golden = _normalise_statement(MIGRATE_FINDING_GOLDEN)
+            for name in ("run_query", "execute_transaction", "execute_read_transaction"):
+                real = getattr(_txn, name)
+
+                def _wrap(real: Any = real) -> Any:
+                    async def _racing(*args: Any, **kwargs: Any) -> Any:
+                        statement = str(kwargs.get("statement", args[0] if args else ""))
+                        if golden in _normalise_statement(statement) and not landed["count"]:
+                            landed["count"] += 1
+                            await run(
+                                world.connection,
+                                f"UPDATE type::record('{FINDING_TABLE}', 'legacy_1') SET scope = 'server'",
+                            )
+                        return await real(*args, **kwargs)
+
+                    return _racing
+
+                patch_shared_object_everywhere(
+                    monkeypatch, name, real, _wrap(), expect_in=("loremaster.store._txn",)
+                )
+            before = await run(world.connection, f"SELECT * FROM {FINDING_TABLE} ORDER BY id")
+            result = await world.migrate()
+            after = await run(world.connection, f"SELECT * FROM {FINDING_TABLE} ORDER BY id")
+            assert landed["count"] == 1, "the concurrent stamp never landed on the finding backfill (#194)"
+            by_id = {str(row["id"]): row for row in before}
+            changed = (
+                sum(1 for row in after if by_id[str(row["id"])] != row) - 1
+            )  # minus the racer's own stamp
+            assert changed == _LEGACY_COUNT - 1, f"fixture: {changed} rows stamped by the leg"
+            assert result.backfilled == changed, (
+                f"backfilled={result.backfilled} but the UPDATE stamped {changed} row(s) — a served count "
+                "must be "
+                "the rows the statement CHANGED, measured (amendment 8 §4 / 63c amendment 27 FORK-1)"
+            )
+
+
 # =========================================================================== #
 # F1 S2 — the REAL production dump (amendment 3 §D-3). Marker-gated on the COMMITTED driver's receipt.
 # =========================================================================== #
@@ -763,6 +883,33 @@ class TestTheRestoreDriverSliceDecaysForFinding:
             "finding is DERIVED governed yet still listed in PENDING_GOVERNED_TABLES — a decayed entry "
             "(amendment 4 §D1 item 1): delete it in the wave that lands the trio"
         )
+
+
+async def _assert_no_restored_scope_is_out_of_domain(connection: Any) -> None:
+    """packet-64 amendment 9 §2 (c) — the S2 dump leg of the scope DOMAIN (the store ASSERT is WITHDRAWN; this
+    leg no longer guards a write-poison, it certifies the real store against the domain every writer now
+    enforces): ∀ governed population (DERIVED from the emitted schema), every non-NONE ``scope`` on the REAL
+    restored dump is IN THE DOMAIN — the SHAPE (``lorerunes.pdp.scope_shape_ok``) AND, for a ``keep:`` scope,
+    a keep row that EXISTS. DUAL (r2 → am-9): r2's shape-only "would be poisoned" leg gains the existence half
+    and loses its ASSERT premise."""
+    from _enforced_relations_scaffold import emitted_schema_ddl  # noqa: PLC0415
+    from _governed_contract import governed_populations  # noqa: PLC0415
+
+    from lorerunes import pdp as pdp_module  # noqa: PLC0415
+
+    scope_shape_ok = vars(pdp_module)["scope_shape_ok"]
+    keep_ids = await run(connection, "SELECT VALUE id FROM keep")
+    existing_keeps = {keep_scope(bare(row_id)) for row_id in keep_ids}
+    out_of_domain = []
+    for table in sorted(governed_populations(emitted_ddl=emitted_schema_ddl())):
+        values = await run(connection, f"SELECT VALUE scope FROM {table} WHERE scope IS NOT NONE")
+        out_of_domain += [
+            (table, value)
+            for value in values
+            if not scope_shape_ok(value)
+            or (value.startswith(pdp_module.KEEP_SCOPE_PREFIX) and value not in existing_keeps)
+        ]
+    assert not out_of_domain, f"production rows whose scope is out of the domain: {out_of_domain[:10]}"
 
 
 @pytest.mark.skipif(not os.environ.get(_PROD_DUMP_ENV), reason=_S2_SKIP_REASON)
@@ -874,6 +1021,7 @@ class TestTheRealProductionDumpMigrates:
             )
             assert not again.refused and again.backfilled == 0, again
             assert await report_unmigrated_governed_rows(handle, FINDING_TABLE) == 0
+            await _assert_no_restored_scope_is_out_of_domain(connection)
         finally:
             await connection.close()
             await keep_store.close()
