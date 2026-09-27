@@ -448,3 +448,26 @@ brief project v7 read
 - **Graded:** `0f69efa` (adversary-64b) · `REPORT-contract-58-r3.md` at HEAD · HEAD-at-report: `4cb8ce9`
   · DIFFERENT (my own commits).
 - No code/tests/store touched. Standing by.
+
+## Task 20 (2026-09-26) — packet 58 amendment 10 (FK-r3-7, the swallow rule's premise) committed `5b72471`
+
+- **state:** done. **Lifted first:** am-9 §3's rule ("closure ∋ exhaustion without passthrough → RED") was
+  derived on guarded-CAS handlers and quantified over every catch site — ERRATUM (quantifier law; the third
+  unmeasured premise today, class named in §5). The PROPERTY: *exhausted contention is never served as a
+  FALSE CLEAR* (success, domain verdict, empty answer, silent skip). Three honest fates: PASSTHROUGH,
+  TRANSLATE to a FAULT class chained `from` (never a domain-verdict class), NAMED-ISOLATION (recorded/served
+  failed-retryable, excluded from success counts, ≥WARNING or a served line). **(1)** Reading (i) — the
+  domain is closure ∋ exhaustion whatever the spelling (`except Exception` swallows it identically).
+  **(2)** Translation is a legitimate typed re-raise iff target ∈ an EXACT `FAULT_CLASSES` allowlist and
+  `from` is present; all 19 pass. **(3)** None of the 7 swallows is a defect (per-row table, owners named:
+  served per-item line / `_mark_file_failed` + WARNING / `scopes_failed` / best-effort compensation /
+  declined classification with the original error / CLI exit 1). One SIBLING bound: the indexer's single
+  `_FAILED_STORE_REASON` conflates retryable exhaustion with a permanent cap overflow — trigger: the day the
+  retry policy reads `reason`. **(4)** Cross-packet home (`test_exhaustion_fates.py` + rows, under
+  `testpaths`), landed by 58's build, owned per row. Instrument: a FATE classifier — PASSTHROUGH/TRANSLATE
+  derived automatically; OTHER sites need a registry row `(site, classification, owner, evidence-predicate)`,
+  exact both ways, with positive controls. Filed: the 17 `_ensure_connection` translation copies (#102 clone
+  class) and the indexer reason bound.
+- **Graded:** `REPORT-contract-58-r3.md` §FK-r3-7 (uncommitted at read time) · HEAD-at-report: `5b72471` ·
+  DIFFERENT (my own commit).
+- No code/tests/store touched. Standing by.
