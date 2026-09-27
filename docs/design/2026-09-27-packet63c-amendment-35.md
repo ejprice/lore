@@ -163,3 +163,42 @@ read it.*
 - §2 item 1 changes `_failed_statements`' record shape (a driver internal every transactional caller rides —
   the shape is consumed only inside `_txn`, by my reading). Pre-authorized under the pre-production law; here for
   you to pull.
+
+---
+
+## §6 (appended 2026-09-27, lead addendum) — 64 am-9 FK-r2-2 leg (b): CONCUR, as an F5 L2b leg, with four riders
+
+**Concur.** Names verified by reading `loremaster/tests/_governed_contract.py` (lore client still down):
+F5 is THREE layers, and L2b is a RUNTIME effect observer — `observe_governed_table_writes(table)` registers a
+population, `_f5_observed_call` diffs it before/after every observed `query_raw` under one lock, and each
+`ObservedWrite.effect.row_deltas[*].after` IS the landed row. The classifier reads the EFFECT, never the
+statement (design §1.2). So *"∀ observed governed writes, the landed `scope` ∈ DOMAIN, regardless of entry"* is
+not a new instrument — it is one more predicate over a value the observer already holds, parametrised per
+governed table exactly as the rest of F5 is. Two reasons it belongs HERE and not in a 64-side wrapper:
+1. **The property is ∀ governed populations, not 64's.** A scope domain is a fact about every governed table;
+   a leg added in the shared substrate runs for agent / message / brief (63c's) as it does for task / finding
+   (64's) — the quantifier-law-correct form. A 64-side wrapper would state it over one member.
+2. **The fallback is copy #2.** *"A wrapper that calls the shared classifier and adds the leg"* is a second
+   classification policy wearing the shared name (ROUTING IS NOT SHARING; design §3.2 RIDER: F5 is reused per
+   table, NEVER cloned). Refusing the leg would create the fork the rule exists to stop.
+
+**Riders (the ruling is the leg AND these):**
+- **(i) Effect only.** The leg reads `effect.row_deltas[*].after["scope"]`; it never consults `statement`.
+  DOMAIN = the shared `lorerunes.pdp` keep-scope SHAPE predicate (the one spelling, `keep_scope` /
+  `KEEP_SCOPE_PREFIX`) AND EXISTENCE (a keep row resolves), the existence read made INSIDE the observer's lock
+  on the observed connection, like `_f5_read_state`. Bound, stated in the leg's docstring: a keep deleted
+  between the write and the after-read is a FALSE UNCLASSIFIED — loud, not silent; acceptable.
+- **(ii) `None` is not the leg's business.** The universal check is `scope is not None ⇒ scope ∈ DOMAIN`. A
+  landed `None` (a legacy row the migrate verb has not reached; the ruled OWNERLESS register path an
+  empty-subject token takes — am-35 §4 / the a28b author's R-3 note) is adjudicated by the frame's existing
+  per-entry `effect` predicate (design §1.4 leg 3), never by an exemption list inside the universal leg. The
+  leg therefore carries NO allowlist.
+- **(iii) Controls, both directions:** a synthetic observed write landing `scope='banana'` under a valid label
+  → UNCLASSIFIED (am-9's positive control); a well-formed scope naming a NON-EXISTENT keep → UNCLASSIFIED (the
+  existence half has its own control); a valid scope → classified. Mutation: drop the existence read → the
+  second control stays green → RED receipt.
+- **(iv) 63c's populations run under it on the reference BEFORE it lands.** If any 63c governed write lands an
+  out-of-domain scope today, that is a REAL finding surfaced to me — never a per-table exemption. The 64
+  author edits the shared substrate as a 64b §HELD delta; F5's existing pins must stay green on the same run.
+
+The 64-side wrapper fallback is REFUSED for the reason in item 2, not accepted as a fallback.
