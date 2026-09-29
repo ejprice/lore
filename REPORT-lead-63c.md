@@ -1574,3 +1574,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - **FK-B1 → Reading A ACCEPTED** (am-37 §3 refuses copy #2). Pin 1 (`test_surreal_store` source-text) is now PROSE-satisfied, a known false gate. The cold audit proves the ONE mapping by mutation, and its AST re-key → am-37 §W row 4. Pin 2 is a prose-currency pin by design, so the audit checks the prose is TRUE.
   - D-4/D-5 → sidecar-63c-2 (am-37 §5).
 - **coldaudit-63c-i-a-3 + blindreader-63c-i-a-3 SPAWNED** (2 h / 90 min). The audit's ONE full suite = `pending_contract_gate.py --currency -- --maxprocesses=12` under the 16G cap: the packet's single full suite, with per-red adjudication; `--maxprocesses` works around #508's `auto`. The audit also does a real dirty-store restore.
+- **63c am-37 §5** (`ac60acd`, sidecar-63c-2).
+  - D-4 is ACCEPTED (am-36: text is evidence, not a selector input; the empty-text shape is unmeasured, and the bound is stated).
+  - **D-5 = a BUILDER REQUIREMENT BEFORE COMMIT:** `_CASCADE_KINDS = frozenset({QueryDetailKind.NOT_EXECUTED, QueryDetailKind.CANCELLED})` (`TIMED_OUT` adjudicated substantive). NotExecuted-only serves a FALSE root cause in the degenerate all-cascade list. The rename is free (no pin names it); the `QueryDetailKind` completeness pin → row 4.
+  - FK-B1 A: concurred.
+  - → **The post-audit FIX ROUND carries D-5** + any cold-audit / blind-reader findings, then a 30-min re-check. The builder and the two adversaries are STOPPED (done).
