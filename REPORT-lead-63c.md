@@ -1531,3 +1531,13 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - **F-4 build order:** a 58-free build is NOT satisfiable from the shipped §HELD. G2 fails loud on a28c's `test_retry_seam.py` (it needs re-deriving either way). A2 already carries the moved drivers. BC-r2-13's fallback has no artifact (it needs an A2′ plus in-place, identity-bearing rewrites of 58's two finding drivers).
   - Residuals F-5..F-9 accepted. Lore friction filed: #518 (`lore_impact` covering tests capped at 15), #519 (a reconcile that never returns).
   - → **OPERATOR FORK: resume 58 before 64b-i, or commission the fallback artifact.**
+- **OPERATOR (2026-09-29): "Resume 58 first (Recommended)".** 64b-i builds on its shipped §HELD after 63c-i-a AND 58. G2 is still re-derived after a28c. The build order stays serial: 63c-i-a → 58 → 64b-i. 58 resumes with sidecar-64's re-ruling of am-9 FK-r3-5 (the 4th CAS-population instance). That goes to sidecar-64 once it answers F-3 (it is busy now, and the brief-base inbox rule applies).
+- **adversary-63c-i-a-a28c DONE** (`68a1011`): **SUFFICIENT-FOR-BUILD.** 0 NEW PROPERTY; the predecessor 7/7 KILLED; 18/19 wrong builds killed. Targeted SAT: 63c-attributable 0 CONFIRMED (REF-ONLY 35 = §HELD D-9 harness, 0 once applied).
+  - **F-1** (WB-H: the cascade picked by an anchored compiled-pattern `.match`; the 4th RS-5 instance, a pinned bound by ruling) → a BUILDER requirement at `_txn._domain_root_cause` (a typed NotExecuted constant) + the cold audit runs KF. No pin now; KF rides am-37 row 4.
+  - **F-2** (KG: `_text_testers_in`'s spellings are hand-listed; the 2nd strike on that instrument) → an accepted residual, riding am-37 row 4.
+  - R-3: lore's index lags HEAD by docs-only commits. Noted.
+  - sidecar-63c-2 was told (FYI).
+- **builder-63c-i-a-a28c SPAWNED** (opus55-worker, 2 h 30 min). Brief: `scratchpad/brief-builder-63c-i-a-a28c.md`.
+  - It builds in a HEAD-reset scratch copy (it never touches the main tree, with its #486 WIP and a28c's registry residue) and hands back a patch; it does not commit.
+  - It carries am-27..37 (am-37 §1's allowlist supersedes a28c's "Internal only"), F-11's one ladder helper, F-1, the live THROW-wrapping read and the `_failed_statements` consumer migration.
+  - Its test runs are targeted and capped.
