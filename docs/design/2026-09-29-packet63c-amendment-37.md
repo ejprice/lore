@@ -170,3 +170,32 @@ Mechanics, exactly:
   safe, as folded); the garbage-text cell is the gate for the mechanism. Row 4 = the derived-domain ladder pin (§3
   item 5) + the garbage-text cells, both on the next `_txn`-touching contract; no widening of `_SEARCH_METHODS`.
 - No objection to the build spawn; builder-63c-i-a-a28c carries am-27..37 as stated.
+
+## 5. Appended 2026-09-29 (lead, over `REPORT-builder-63c-i-a-a28c.md@3e0553f` §DEV D-4 / D-5; contract closed): D-4 ACCEPTED as required by am-36, D-5 → a BUILDER requirement — the cascade kinds are the SDK's own measured SET
+
+- **D-4 (`_domain_root_cause` no longer skips an EMPTY-TEXT entry) — ACCEPT; not spec-silent.** The old clause
+  (`text and not cascade`) made the engine TEXT a selector input; am-36 §1.1 retires exactly that (*"text = EVIDENCE for
+  the server-side log only, never a decision input"*). The typed selection is the rule; an ERR entry with empty text
+  and a substantive `details.kind` is still classified by its kind — the record shape by `AlreadyExistsError.record_id`,
+  the governed THROW by `Thrown`, anything else `unspecified rejection`, loud. **Bound, stated:** no 3.2.4 shape emits
+  an ERR entry with empty text (unmeasured, not claimed); if one appears with a NON-cascade kind it is selected and
+  served by its kind. No pin now (test hygiene; a `("", substantive kind) → selected` cell may join §W row 4). Cost 0.
+- **D-5 (`details.kind: Cancelled` measured after the offender) — BUILDER REQUIREMENT, patch delta before commit:**
+  `_CASCADE_KIND` becomes **`_CASCADE_KINDS = frozenset({QueryDetailKind.NOT_EXECUTED, QueryDetailKind.CANCELLED})`**
+  — the SDK's OWN constants (packages over hand-rolling; `QueryError`'s docstring names the family *"timeout, cancelled,
+  not executed"*), and `_is_domain_cascade_notice(failed)` is `_detail_kind(failed.typed) in _CASCADE_KINDS`, nothing
+  else. Why a requirement and not a bound: with `NotExecuted` alone the DEGENERATE all-cascade list
+  `[Cancelled…, NotExecuted-COMMIT]` selects the first `Cancelled` entry as the "substantive" root cause — a FALSE root
+  cause served into the rollback log, and a contradiction of `_domain_root_cause`'s own docstring (*"degrades to the
+  LAST entry: the engine's own final word"*). The builder's "selection unchanged in every measured shape" is true of
+  the non-degenerate shapes only; the widening restores the documented fallback. **Adjudicated, all three members of
+  the SDK's `QueryDetailKind` (the domain's source of truth):** `NOT_EXECUTED` → cascade (measured: before the offender
+  AND the COMMIT notice, builder §REQ-3) · `CANCELLED` → cascade (measured: after the offender, §REQ-3 first run) ·
+  `TIMED_OUT` → SUBSTANTIVE, deliberately excluded (a statement that RAN and timed out is the cause, never noise).
+  The set's docstring carries those three lines. am-36 §1.1's *"`_is_domain_cascade_notice` decides `details.kind ==
+  "NotExecuted"`"* is amended to *"∈ `_CASCADE_KINDS`"* — erratum mine: derived on the a28b/a28c probes' pre-offender
+  shape, stated over every cascade entry (quantifier law; the builder's table-less run caught it). No pin mutates
+  `_CASCADE_KIND` by name (awk over the test tree: zero hits), so the rename is free; the audit's KF probe is
+  kind-decided and stays valid. **Completeness leg → §W row 4:** a generated pin over `QueryDetailKind`'s members
+  (derived from the SDK) asserting each is adjudicated — cascade or substantive — so a fourth member reds by name.
+- FK-B1 Reading A (prose-satisfied text pin, AST re-key on row 4): CONCUR, as the lead routed.
