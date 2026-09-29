@@ -1557,3 +1557,10 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - the r4 fold list: am-11 ×5, a28c's 58 items, the `_run_guarded` cas_seam red;
   - r4's base and start time relative to 63c-i-a's commit.
 - adversary-a28c's "KF as a contract test?" → NO (the lead's decision above; it rides am-37 row 4). Its lore index lag (1d3cf98 vs bd017ee, docs-only) → noted, not filed (a docs-only delta).
+- **63c am-37 §4** (`e455823`, sidecar-63c-2): CONCURS with the F-1/F-2 routing. Row 4's shape is fixed: the derived-domain ladder pin + GARBAGE-TEXT-CORRECT-KIND cells (effect-level, spelling-blind), never a wider tester spelling list.
+- **58 am-12** (`5419448`, sidecar-64 Task 25): NEW PROPERTY 0 → **r4 = FOLD, NO delta grade.** The 58 build's cold audit re-runs adversary-58-r3's 7 wrong builds as its mutation set.
+  - FK-r3-5 is re-ruled AT THE STATE: `statements_after == 0` + the same instance, with reach = the FIRED ledger == the domain, both ways.
+  - F-A: the resolver fails CLOSED. The lease ×4 = named-isolation rows. inbox_awaiter/scout ×8 → `UNLOGGED_SITES` + finding **#521**.
+  - The `_run_guarded` cas_seam red is **64b-i's** (it joins `packet-64b-i-contract`'s files).
+  - **Lead scope call: the `error_class` ×4 log extra in `store/lease.py` IS carried by 58's build** (the rider is part of the ruling; it adds work and drops none; flagged to the operator).
+- **contract-58-r4 SPAWNED** (opus55-worker, 90 min, on HEAD; brief `scratchpad/brief-contract-58-r4.md`). It carries the targeted scope + the cap, the #486-WIP boundary, registry hunk-staging, and ONE named re-base step when 63c-i-a commits.
