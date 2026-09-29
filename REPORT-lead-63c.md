@@ -1502,3 +1502,15 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - never forward `-n` to the gates;
 - end turns with the #486 line until #486 is committed;
 - kill by PID only; no worktrees, no git stash; assign shell variables before any `&`.
+
+### POST-ANCHOR v7 — resume (2026-09-29, operator: "Resume 63c-i-a and 64b-i"; 58 + #486 stay PAUSED)
+- **adversary-63c-i-a-a28c** SPAWNED on `7017b54`: the FINAL delta. It is past the round cap, so its output is a triage-bucket ROUTING table (`SUFFICIENT-FOR-BUILD` | `REOPEN(<new properties>)`); a 4th C2 or RS-5 instance = a pinned bound. Brief: `scratchpad/brief-adversary-63c-i-a-a28c.md`.
+- **adversary-64b-r2** SPAWNED on `cb220ee`: the ONE re-grade, with the same routing output plus a BUILD-ORDER feasibility section (which pins and §HELD parts need 58's build; is a 58-free 64b-i build satisfiable under BC-r2-13). Brief: `scratchpad/brief-adversary-64b-r2.md`.
+- Both briefs carry:
+  - the NEW TEST SCOPE (targeted SAT only; no full suite; no currency run);
+  - the MemoryMax=16G cap + `uv run --with pytest-timeout --timeout=300` (not yet a dependency; 58's §HELD adds it);
+  - an admission gate (MemAvailable ≥ 20 GiB; the host shows ~30 GiB available);
+  - the #486-WIP copy reset (`git reset --hard HEAD && git clean -fd`);
+  - a 90-min deadline.
+- **sidecar-63c-2** (native): asked to rule FK-a28c-9 / F-15 / F-11 as am-37, each as a builder requirement, a pinned bound or a residual (a28c is the last round). The 58-r4 items are parked with 58.
+- **⚠ OPERATOR FORK OPEN:** 64 am-8 ruled 64b-i's SAT base as post-63c-i-a AND post-58, and 58 is paused. adversary-64b-r2's BUILD-ORDER section will give receipts for whether a 58-free 64b-i build (BC-r2-13 in-place) is satisfiable.
