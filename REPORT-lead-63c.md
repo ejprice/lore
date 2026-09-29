@@ -1457,3 +1457,48 @@ Build order stays serial: 63c-i-a → 58 → 64b-i. NOT started: #492, #512, the
 - **#486 GREEN** (implement-486, report uncommitted): green outside HELD, 0 new reds. Rulings: D-a (store unreachable at session end → loud INTERNALERROR) ACCEPTED as built; D-b bounds ACCEPTED (stated in docstring); HELD hunks 1+3 (a consumer-side drain of test_comms_wiring's list) REJECTED → a PRODUCER-side fix in `test_comms_wiring._open_context` (fix-the-class); HELD hunk 2 (the one-line `_slug` → `unique_database()`, behaviour-neutral at HEAD) RE-ROUTED into contract-64b-r2's commit (#17112 + wake). implement-486 at rest until 64b-r2 commits → final full suite → Phase 5 refactor (opus).
 - **HAZARD:** #486's WIP in the main tree poisons scratch copies (~628 provenance errors in test_mcp_server). Directive #17113 to adversary-58-r3 + contract-63c-i-a-a28c (and #17112 to 64b-r2): reset copies to HEAD content, re-adjudicate. Annotated on **#514** (the class: scratch_copy asserts the tree's identity, not that it equals HEAD).
 - **63c am-36** (547f63d, sidecar-63c-2): FK-a28c-1 (an echoed "can be retried" / cascade phrase steers the retry decision; 2 s retries then TxnContentionExhaustedError) = the SAME class as MP-3 on the two upstream text readers → ruled INTO a28c as am-35 §2's completion (typed TransactionConflict/NotExecuted, one parse, text markers deleted, an exact-set pin over `_txn`'s text readers). **Overrides the letter of am-35 §0**, flagged §E (bound alternative = pin-the-miss; the 2 s misclassification ships). Lead: agree (honest-agent surface, typed fix measured, finite domain, no added round). Operator may pull before a28c commits. FK-2..8 ruled. → a28c (#17117 + wake). FK-6 → a one-line 58-r3 change for 58-r4.
+
+## RESUME ANCHOR v7 (2026-09-29, lead-63c-2, session 63c-20260924) — AUTHORITATIVE; supersedes v6 and every post-anchor entry
+**OPERATOR, latest:** "add the cap rule. Then we compact. Then you may resume the ONE packet that the contract was in flight for and finish it." The other segments stay PAUSED until the operator says. (The operator's earlier "finish #486, 63c-i-a, 58, 64b-i completely" is NARROWED by this to one packet.)
+**NEW TEST POLICY (CLAUDE.md §Quality gates "TEST SCOPE", 402ec29 + 122778d) — binding on every brief:**
+- targeted scope per run (changed tests + `lore_impact` covering tests + the AST pin files), `-n 8` max;
+- the FULL suite once per packet (the cold audit, `-n 12`), one fleet-wide at a time; never `-n auto`;
+- the currency gate at packet close-out only;
+- a pytest tree >16 GiB is a defect;
+- every agent pytest run under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`, and mutation/reference runs add `pytest-timeout`;
+- the test store is not a landfill.
+Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. Operator correction in lore memory (4ff30183): memory pressure is OURS, never ZFS ARC.
+**MEASURED (2026-09-29):**
+- **The 69.5 GB process:** OOM-killed at 2026-09-27 05:37Z, ONE python process, from an agent shell, unreported.
+- **The profile:** a MemoryMax-capped memray profile of all 31 new contract files at HEAD peaked at 0.61 GiB each (`scratchpad/memprof/summary.tsv`), so the runaway was a looping wrong or reference build.
+- **The collection floor:** 674 MiB per process (13,062 tests).
+- **The stores:** spike-surreal RESTARTED by the lead (it was stopped and wiped by the operator; 31 MB on disk), now 1.28 GiB. Prod lore-surreal is 5.86 GiB flat (block cache 4.5 GB + write buffers up to 26×128 MB).
+- **The sampler:** a 24 h prod RSS sampler runs in the background → `scratchpad/prod_surreal_rss.tsv`. The operator saw >20 GiB; not reproduced yet.
+- **Orphaned containers:** 13 `github-mcp-server` stdio containers, one per Claude session. Not a memory cause.
+**SEGMENT STATE:**
+- **#486 (tdd-light):**
+  - contract / stub / RED / GREEN done, UNCOMMITTED in the main tree (_surreal_harness.py, conftest.py, ~25 test files incl. `test_comms_wiring._open_context`, now self-reaping). The `_slug` line landed via 64b-r2's cb220ee.
+  - NEXT: Phase 5 refactor+audit (opus, targeted scope) → lead verify (targeted) + commit → the D4 age-guarded wipe.
+  - ⚠ Until it is committed, its WIP poisons scratch copies (#514; `git reset --hard HEAD && git clean -fd` in copies).
+- **63c-i-a:**
+  - contract **a28c COMMITTED 7017b54** (the LAST round by am-35/am-36 rule; a further instance = a pinned bound).
+  - 4 open decisions in its SUMMARY: FK-a28c-9 (Validation-kind text), F-15, F-11 (a pre-existing txn parse error → connection error), and the 58-r4 items.
+  - NEXT: a narrow adversary delta → builder over 169925f (rider: a live read of the engine THROW wrapping; the `_failed_statements` shape change) → cold audit (the one full suite) + contract-blind reader → commit → INDEX "63c-i-a CLOSED".
+- **58:**
+  - contract r3 7130508, adversary-58-r3 **INSUFFICIENT** (706a1bf): 7 wrong builds.
+  - F-B = the 4th CAS-population instance → RE-OPEN am-9 FK-r3-5 (sidecar-64). F-A: the tuple-catch blind spot hides 12 sites (3 in `store/lease.py`: exhaustion → "did not win"; the lease owner rules).
+  - NEXT: sidecar-64 re-ruling → r4 fold (am-11's 5 items + findings + a28c's 58 items + FK-6) → adversary delta → build → cold audit → commit.
+- **64b-i:**
+  - contract r2 **COMMITTED cb220ee** (SAT 0 attributable, 32/32 mutations, currency PASS on 7017b54).
+  - Routing items (ledger #17120): BC-r2-13 (G12 waits on 58's Q-DRIVEN pin); BC-r2-9 = am-10's close-out step in the build brief; G2 must be regenerated after a28c (test_retry_seam rewritten).
+  - NEXT: a narrow adversary delta → build → close-out step → cold audit → commit.
+**WHICH PACKET TO RESUME:** the operator's "the one packet that the contract was in flight for" is AMBIGUOUS. At the pause, a28c (63c-i-a) and 64b-r2 (64b-i) both had contracts in flight; both have since committed. ASK the operator before spawning anything. Recommendation: **63c-i-a** (first in the serial build order; a28c is the last round by rule; 58 and 64b-i build after it).
+**AGENTS:** alive, idle, standing by: **sidecar-63c-2** (native only; its lore_comms is ECONNREFUSED) and **sidecar-64** (native only). All one-shot agents were STOPPED 2026-09-29.
+**LOOP COSTS:** 63c-i-a contract = 14 revisions (a28c last); 58 = r3, INSUFFICIENT; 64b-i = r2.
+**Standing:**
+- the lead writes no code; verify in full any commit made without a cold audit (targeted scope);
+- no attribution trailers;
+- directives = lore_comms + a native wake; the sidecars are native-only;
+- never forward `-n` to the gates;
+- end turns with the #486 line until #486 is committed;
+- kill by PID only; no worktrees, no git stash; assign shell variables before any `&`.
