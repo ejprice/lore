@@ -1600,3 +1600,17 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - (2) F-F is a BOUND; its owner = the 64b pin pass (the by-import rewrite, once for all eight). 58's cold audit records `evidence_probe.py` as an ACCEPTED RESIDUAL.
   - (3) The F-8 rider = a **58 BUILD requirement**: the txn path passes label/url to `retry_on_conflict` and raises its signal `from` a typed cause carrier (not a SurrealStoreError subclass). The §10 exemption is deleted (STOP check: a28c's allowlist pin). Verified by a generated per-call-site check (5 sites, reach checked). It composes with 63c am-37 §6 F-8's reset.
   - → **64b pin pass scope now:** F-2 pin + F-3 generated pin + G2 re-derivation + the #319 spec-dict leg + F-F by-import rewrite.
+- **coldaudit-63c-i-a-3 DONE** (`535677a`; stopped): **NO-GO for patch 956e4136 as-is.**
+  - The CORE HOLDS, with controls:
+    - currency (the packet's ONE full suite, capped, `--maxprocesses=12`) PASS, 0 RED_ORPHANED;
+    - 20/20 concurrency;
+    - F-11 live both ways (connection kept; transport control drops);
+    - KF + 19 garbage-text-correct-kind cells;
+    - FK-B1: the mapping is behaviourally guarded (bypass → 52 reds) and pin 1 is prose-only (→ row 4);
+    - the prior NO-GO's defects are fixed for the right reason.
+  - 4 MAJOR:
+    - F-C1/F-C2/F-C3 = am-37 §5 D-5, §6 M-2, F-9 (independent);
+    - **F-C11 (NEW): §5's `in _CASCADE_KINDS` spelling reddens a28c's text-reader exact-set pin; `==` passes** → sidecar-63c-2 am-37 §7 BEFORE the fix round.
+  - 7 MINOR: the new F-C4/F-C7/F-C8/F-C9/F-C10 → §7.
+  - Commit mechanics: the patch conflicts with #486's WIP in the registry yaml; it applies clean with `--cached` (lead, at commit).
+  - **R-1: FOCUS 7 (the real prod-dump restore, the #107 class) was DENIED by the permission layer ("Modify Shared Resources"), the 2nd audit in a row** → OPERATOR decision: grant it or run it. The auditor also had a plain source read in its own scratch copy denied.
