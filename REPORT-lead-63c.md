@@ -1524,3 +1524,10 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - F-11: IN the i-a build. ONE ladder helper, shared by `_attempt` and `_txn_query_raw`, keeps the connection on domain kinds with a hygienic message → a **63c-i-a BUILDER CONSTRAINT**, with an audit receipt both ways plus the sharing mutation. The derived-domain ladder pin goes to the next `_txn` contract.
   - §E is operator-visible: F-11 could take ONE targeted pin now with no re-grade. The sidecar declined it: not security-relevant, and the cold audit's receipt covers it.
 - Drained 5 ledger signals (#17115–#17120). All are pre-compaction and already handled.
+- **adversary-64b-r2 DONE** (`bd017ee`): **SUFFICIENT-FOR-BUILD.** All 10 predecessor survivors and the r1 reference are KILLED; 0 NEW PROPERTY. Targeted SAT: 59 files / 5177 collected.
+  - **F-1** (the identity-budget counter's reach: `FROM ONLY` / `$rid`) → a BUILDER requirement at `_resolve_identity` / `resolve_subject_and_agent`.
+  - **F-2** (a registry re-read on the deny path, by a caller-supplied name; security-relevant) → **ONE targeted pin, no re-grade (lead decision).**
+  - **F-3** (MP-13's param domain is hand-listed = a 2nd WB23 instance; am-8 §6 re-opens the ruling) → sidecar-64 (native), as 64 am-11.
+  - **F-4 build order:** a 58-free build is NOT satisfiable from the shipped §HELD. G2 fails loud on a28c's `test_retry_seam.py` (it needs re-deriving either way). A2 already carries the moved drivers. BC-r2-13's fallback has no artifact (it needs an A2′ plus in-place, identity-bearing rewrites of 58's two finding drivers).
+  - Residuals F-5..F-9 accepted. Lore friction filed: #518 (`lore_impact` covering tests capped at 15), #519 (a reconcile that never returns).
+  - → **OPERATOR FORK: resume 58 before 64b-i, or commission the fallback artifact.**
