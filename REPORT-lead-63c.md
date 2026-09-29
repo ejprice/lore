@@ -1595,3 +1595,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - `test_task_ledger.py` ×10: red only on HEAD+§HELD part 1, green on the reference.
   - Finding #522 (lore_impact renders `store.lease` dead).
   - **Open → sidecar-64 (58 am-13):** FK-r4-1 (6 admissions removed, exact-both-ways) · F-F NOT DONE (evidence by import) · the 63c am-37 F-8 label rider, NOT folded despite #17128. Each lands as a 58 build requirement, a bound or a residual; the contract is closed.
+- **58 am-13** (`9e5d9b3`, sidecar-64 Task 26):
+  - (1) FK-r4-1 (A) CONFIRMED: the admissions are exact BOTH ways, and the six stay deleted (erratum: am-11's "8+2" was un-derived). The 58 cold audit re-derives `translate_targets() == FAULT_CLASS_NAMES`.
+  - (2) F-F is a BOUND; its owner = the 64b pin pass (the by-import rewrite, once for all eight). 58's cold audit records `evidence_probe.py` as an ACCEPTED RESIDUAL.
+  - (3) The F-8 rider = a **58 BUILD requirement**: the txn path passes label/url to `retry_on_conflict` and raises its signal `from` a typed cause carrier (not a SurrealStoreError subclass). The §10 exemption is deleted (STOP check: a28c's allowlist pin). Verified by a generated per-call-site check (5 sites, reach checked). It composes with 63c am-37 §6 F-8's reset.
+  - → **64b pin pass scope now:** F-2 pin + F-3 generated pin + G2 re-derivation + the #319 spec-dict leg + F-F by-import rewrite.
