@@ -115,22 +115,59 @@ than read and the store reference is cited rather than re-transcribed.
   upstream-blocked (astroid<4.1 pin) — do not install it.
 - pydantic at every validated boundary; models stay `extra="forbid"` on the wire with
   resilient *construction seams* (`from_engine_status` pattern) — never loosen the model.
-- **Run pytest with `-n auto` (pytest-xdist).** Measured 2026-07-12 on this box (64 cores):
+- **TEST SCOPE IS TARGETED BY DEFAULT; THE FULL SUITE IS A ONCE-PER-PACKET EVENT (operator,
+  2026-09-29 — this OVERRIDES every older sentence here, and in any skill, agent file or brief,
+  that says "run / re-run the full suite").** WHY, measured on this box: in one session
+  1. one pytest run reached **~69 GiB**;
+  2. the TEST store held **hundreds of abandoned databases at >10 GiB**;
+  3. four packets' agents ran the whole suite (12k+ tests) **concurrently, every contract round**:
+     author SAT on two trees, adversary SAT on two trees, the currency gate, the implementer.
+
+  The host ran out of memory, every watchdog killed runs, and each round took hours. *"How do
+  you expect to do anything productive if you stop and run them all all the time?"* (operator).
+  - **Default scope for EVERY agent run** covers the contract author (RED, SAT, mutations), the
+    adversary (wrong builds, SAT), the implementer, the refactorer, audits between checkpoints,
+    and the lead. It is **the changed/new test files + the COVERING TESTS of every production
+    symbol the change touches** (`lore_impact` — its covering-tests view is built for exactly
+    this; reconcile first per the dogfood protocol) **+ the structural/AST pin files that scan
+    the tree**.
+    - The receipt NAMES the derivation (which symbols, which tool) and the passed-COUNT.
+    - A satisfiability receipt is "0 attributable reds over THAT set". A full suite is not a
+      satisfiability receipt requirement.
+    - Where `lore_impact` cannot see a seam (scripts/ #507, non-symbol textual seams), add
+      that seam's test files by hand and SAY SO.
+  - **The FULL suite runs ONCE per packet: on the BUILD, before its commit.** The cold audit runs
+    it; it re-runs the gates anyway. The builder, the lead and the contract loop do NOT also run
+    it. A contract round never runs it.
+  - **Fleet-wide, ONE full suite at a time.** Before starting one, check the process table for
+    another lore pytest session. If one is live, WAIT; do not cap-and-race.
+  - **The currency gate (`pending_contract_gate.py --currency`) is a full-suite run.** It runs at
+    packet close-out only, not per contract round. Per round, keep `scripts/pending_contracts.yaml`
+    current and prove your own files' reds are owned with the targeted run.
+  - **A pytest process TREE above 16 GiB RSS is a DEFECT to report** (`lore_findings`, with the
+    test ids), never a cost to absorb or a reason to raise a watchdog. Find the test with
+    `pytest-memray` (a package; do not hand-roll).
+  - **The TEST store is not a landfill.** Every test database is minted by `unique_database()` and
+    reaped (#486). An agent that observes the `lore_test` namespace growing reports it. Strays
+    left by killed sessions are wiped periodically (operator ruling, #486 D2).
+- **pytest-xdist parallelism (`-n`).** Measured 2026-07-12 on this box (64 cores):
   mcp_server+render_seam_pins went **846s → 88s (9.6×)** with an IDENTICAL pass count (666);
   live-store suites are stable across repeated parallel runs (178/178 × 3). Parallel is safe
   BY CONSTRUCTION, not by luck — the harness was already built for it:
   `_surreal_harness.unique_database()` mints `test_<pid>_<uuid4>` per test precisely so
   "a concurrent pytest process on the SAME server never collides on, or reaps, this
   database". Only the runner was missing.
-  **Fleet cap (#503, operator 2026-09-26):** `-n auto` is for a suite running ALONE; with another
-  lore pytest session live, cap a full suite at `-n 12`. The currency gate applies this itself —
-  its pytest leg spells `-n {workers}`, resolved at run time by
-  `scripts/_pytest_sessions.py::pytest_worker_count` and rendered LAST — so **never forward `-n`
-  to `pending_contract_gate.py` / `wave_gate.py`**; they refuse it (exit 2). Known bounds: #508.
-- Full suite is lead-run **at phase checkpoints only** — before the deploy that ships the
-  work, NOT after every fix wave. Between waves: the changed suites + the structural/AST
-  pins. The cold audit already re-runs the gates as its own independent instrument; the lead
-  re-running the same suite behind it is duplicated wall-clock, not verification.
+  **Worker cap (operator 2026-09-29, supersedes the #503 "`-n auto` when alone" line):** a
+  targeted run uses **`-n 8` or fewer**. The once-per-packet full suite uses **`-n 12`**. Never
+  run `-n auto`: it means 64 workers on this box, each with its own imports, caches and store
+  connections. The currency gate resolves its own count
+  (`scripts/_pytest_sessions.py::pytest_worker_count`, rendered LAST) — so **never forward `-n`
+  to `pending_contract_gate.py` / `wave_gate.py`**; they refuse it (exit 2). ⚠ KNOWN BOUND
+  until a builder changes it: that resolver still answers `auto` when no other lore session
+  is live (#508). Run the gate only as the one full suite, at packet close-out.
+- The cold audit's full-suite run IS the packet's full suite. The lead does not re-run it behind
+  the audit (duplicated wall-clock, not verification); the lead's own verification of an
+  UN-audited commit uses the targeted scope above.
   ⚠ A piped pytest with a bad filename exits "no tests ran" silently — a green claim
   requires a passed-COUNT in the tail.
 - Skill tests have their own idiom: `cd skills/lore-deploy/scripts && uv run python -m
@@ -721,7 +758,8 @@ them. Therefore:
 - **A CONTRACT SHIPS WITH A SATISFIABILITY RECEIPT (the C-DEF class, 2026-07-14):** before
   any builder sees it, prove the contract goes 0-failed against a known-correct build — the
   adversary's own reference build (it must BUILD the fix to grade the contract anyway) is
-  the natural instrument. Receipts: 20 pins RED on a correct build shipped inside an
+  the natural instrument. **Scope: the targeted set (§Quality gates, TEST SCOPE), never the
+  full suite (operator, 2026-09-29).** Receipts: 20 pins RED on a correct build shipped inside an
   otherwise-strong fix-wave contract — one a `TypeError` hiding behind a pin that was red
   today *for the right reason* (so its author could never see it), one a pre-existing pin
   the reshape structurally contradicted, trapping the builder between ruff and a test it
