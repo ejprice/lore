@@ -1541,3 +1541,19 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - It builds in a HEAD-reset scratch copy (it never touches the main tree, with its #486 WIP and a28c's registry residue) and hands back a patch; it does not commit.
   - It carries am-27..37 (am-37 §1's allowlist supersedes a28c's "Internal only"), F-11's one ladder helper, F-1, the live THROW-wrapping read and the `_failed_statements` consumer migration.
   - Its test runs are targeted and capped.
+- **Correction #17124 → builder-63c-i-a-a28c** (directive + native ping): apply a28c §A.8 `held_harness.patch` (D-9) in its copy before the baseline. Without it, 35 unexplained reds in test_surreal_harness.py (adversary-a28c §SAT). ⚠ COMMIT HAZARD: #486's WIP owns that file in the main tree, so the lead must stage the D-9 hunk with `git apply --cached` at the 63c-i-a commit, never `git add` the file.
+- **64 am-11** (`994c454`, sidecar-64): F-3 is NOT a new property; the ruling itself was the defect. Errata:
+  - kickoff §8 F7: params/required move into `GovernedVerbSpec`'s base;
+  - am-8 §6: the domain = `inspect.signature(AppContext.findings)` × `_FINDING_ACTIONS`.
+
+  Consequences:
+  - `_refuse_foreign_params` = a 64b-i BUILD requirement.
+  - ONE generated pin, no re-grade, in the same commit as F-2's.
+  - **An inverted pin:** `test_mcp_server.py::_derived_strict_to_action_matrix` (#319) reds on a correct build and needs a spec-dict leg → assigned to the **64b pin pass** (F-2 + F-3 + G2 + the #319 leg), which runs after 58 lands (G2 needs 58's §HELD).
+  - Finding **#520** (comms' `values` hand-list; `_comms_foreign_param_error` owner derivation) is the OPERATOR's scope.
+- **58 RESUMED → sidecar-64 Task 25 (58 am-12):**
+  - re-open FK-r3-5 (F-B) and rule F-A (incl. the 3 lease sites);
+  - bucket the r3 findings under the cap (default: no r4 re-grade unless a NEW property);
+  - the r4 fold list: am-11 ×5, a28c's 58 items, the `_run_guarded` cas_seam red;
+  - r4's base and start time relative to 63c-i-a's commit.
+- adversary-a28c's "KF as a contract test?" → NO (the lead's decision above; it rides am-37 row 4). Its lore index lag (1d3cf98 vs bd017ee, docs-only) → noted, not filed (a docs-only delta).
