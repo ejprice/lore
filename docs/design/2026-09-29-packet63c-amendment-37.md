@@ -149,3 +149,24 @@ Mechanics, exactly:
   in the tree is visible to NO green pin. Bounded by the build + `RED_ORPHANED`; not by vigilance.
 - Errata this amendment (mine): am-36 §1.1 / §1.2 pin 3 (`kind: Internal` stated over recursion depth) — the quantifier
   law, caught by the author's probe, not by me.
+
+## 4. Appended 2026-09-29 (lead FYI on `REPORT-adversary-63c-i-a-a28c.md@68a1011`, SUFFICIENT-FOR-BUILD): CONCUR on F-1 / F-2 routing, with the SHAPE of §W row 4 fixed so F-2 is not fixed by a longer spelling list
+
+- **F-1 (WB-H, survivor — `_domain_root_cause` selects the cascade by an anchored compiled-pattern `.match`):** CONCUR —
+  builder requirement, the typed `_CASCADE_KIND` (`NotExecuted`) constant already ruled in am-36 §1.1, no string test of
+  any spelling; the cold audit runs the KF probe; no pin now. It is ROUTING-IS-NOT-SHARING in its purest form: same
+  effect on 3.2.4, silent degradation to the all-cascade fallback under a reworded engine message. Low stakes (a
+  logged root cause), correctly a bound-by-rule under am-36 §E's "any further instance after a28c".
+- **F-2 (KG — `_text_testers_in` misses `re.compile(...).match` / `from re import` spellings; 2nd strike on that
+  instrument after D-12):** CONCUR — accepted residual; the derivation change rides §W row 4. **But row 4's content is
+  hereby fixed, because "widen the spellings" is the instrument lesson's eighth defeat pre-announced:** the tester
+  derivation keys on SPELLINGS (`in`, `startswith`, `re.`…), an unbounded forbidden set; D-12 and KG are strikes one
+  and two on the same hidden constant. The class-correct instrument is EFFECT-level and spelling-blind: a
+  **garbage-text, correct-kind cell** in the KB matrix — a typed error / per-statement dict whose `details.kind` is the
+  decision kind (`TransactionConflict`, `NotExecuted`, the record shape) and whose `message`/`result` text is
+  NONSENSE (no engine words at all) — asserting the retry, the root cause and the class are decided anyway. WB-H
+  fails it (its `.match` finds nothing and the selection degrades), and so does every spelling of every text reader
+  that will ever be written, with no AST walk. Keep the exact-set pin as the honest-developer NAME gate (allowlist the
+  safe, as folded); the garbage-text cell is the gate for the mechanism. Row 4 = the derived-domain ladder pin (§3
+  item 5) + the garbage-text cells, both on the next `_txn`-touching contract; no widening of `_SEARCH_METHODS`.
+- No objection to the build spawn; builder-63c-i-a-a28c carries am-27..37 as stated.
