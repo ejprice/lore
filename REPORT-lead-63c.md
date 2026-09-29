@@ -1585,3 +1585,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - MINORs: F-4/F-5 stale docstrings · F-8 an RPC conflict doesn't update `last_conflict` · F-9 the mixed-owner count includes the operator (a label/set mismatch) · F-10 silent un-migrated message rows · F-12 bare SurrealStoreError → a traceback instead of exit 1 · F-13 register's unbounded recursion + raw re-raise.
   - F-6 == D-5 (derived independently).
   - → **sidecar-63c-2 triage (am-37 §6)**. The default is ONE post-audit fix round carrying D-5 + all of these (M-1 edits docs/reference in this wave).
+- **63c am-37 §6** (`ea87b3c`, sidecar-63c-2): the blind-reader-3 triage, each item pin-checked with a STOP condition.
+  - **FIX-IN-ROUND:** M-1 (the store reference corrected per the enumerated facts), M-2 (`table_defined` has no default; it is derived once and is None iff INFO was not read), F-4/F-5, F-8 (reset `last_conflict` per attempt), F-9 (am-34 §2 form: one integer, as the total), F-10 (a measured `unsound_sender_messages` field + a derived sentence), F-12 (a base-class catch + one fail-closed `_scope_count`), + §5 D-5.
+  - **RESIDUAL:** F-13 (as ruled am-32; wrapping REFUSED, since it reddens a28b's `_CAUSE_CLASS` exact set), F-14, F-16, and the fixture drift → row 4.
+  - The F-8 label rider → contract-58-r4 (#17128-ish directive; durable).
+  - The blind reader's untested `store.transaction.rejected` / connection-kept path: covered live by the audit's F-11 receipt, and its pin is in row 4 (the next `_txn` contract).
