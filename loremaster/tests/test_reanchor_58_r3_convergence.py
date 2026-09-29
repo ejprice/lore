@@ -24,14 +24,16 @@ things one straggler row can carry that change what the heal composes for it:
 Every combination is a cost CLASS (``SHAPES``; the ingredients are asserted realized by every fixture, and
 each value of each ingredient occurs — ``TestTheShapeSpaceIsNotVacuous``).  For each class the packer's own
 per-chunk capacity is MEASURED off ``compose`` (never a literal: 1, 2 and 3 rows of the class, linearity
-checked), and the population is swept at ``fit − 1``, ``fit`` and ``fit + 1`` rows → one boot, exactly 1, 1
-and 2 composed heal transactions (a greedy packer — am-8 §1 rules ``more_itertools.constrained_batches``,
+checked), and the population is swept at ``fit − 1``, ``fit``, ``fit + 1`` and ``2·fit + 1`` rows (the last
+added by contract r4, amendment 12 §3 F-E) → one boot, exactly 1, 1, 2 and 3 composed heal transactions (a
+greedy packer — am-8 §1 rules ``more_itertools.constrained_batches``,
 which IS greedy), each ≤ the cap, every row healed and counted, edges mirroring columns, a second boot silent.
 Two MIXED populations put a chunk boundary between cost classes; there the greedy closure is checked
 order-free (every chunk but the smallest is within one max-weight of the cap).
 
 The unresolvable side (am-8 §4 F4 — RULED: the ROW is the unit) is generated over
-``{one bad, bad + healable, two bad, healable + healable}`` × ``{phantom, cyclic}``: a row with any
+``{one bad, bad + healable, two bad, healable + healable, bad among two healable}`` × the bad entry's
+POSITION ``{first, middle, last}`` (contract r4, am-12 §3 F-G) × ``{phantom, cyclic}``: a row with any
 unresolvable entry is skipped WHOLE (byte-identical), UNCOUNTED, and recorded with ONE WARNING PER
 UNRESOLVABLE ENTRY carrying that entry's ``blocker_id`` (FK-r3-6), every boot.
 
@@ -47,6 +49,7 @@ from __future__ import annotations
 import itertools
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -117,7 +120,19 @@ SHAPES = sorted(
     },
     key=lambda shape: shape.label,
 )
-SCALES = {"fit-1": -1, "fit": 0, "fit+1": +1}
+# ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-E): SCALES USED to be offsets ``{fit−1, fit, fit+1}``, so
+# no
+# generated population ever FILLED a chunk opened by a carried row (W-PACK-OBO died only on PC's hand count,
+# by
+# 49 rows).  It gains ``2·fit + 1`` — three chunks, the second FULL — and every scale is a function of the
+# MEASURED
+# fit; ``expected_chunks = ceil(rows / fit)`` stays the generated oracle.
+SCALES: dict[str, Callable[[int], int]] = {
+    "fit-1": lambda fit: fit - 1,
+    "fit": lambda fit: fit,
+    "fit+1": lambda fit: fit + 1,
+    "2fit+1": lambda fit: 2 * fit + 1,
+}
 CAP = _txn.TXN_STATEMENT_HARD_CAP
 
 
@@ -258,7 +273,8 @@ class TestTheShapeSpaceIsNotVacuous:
 
 
 class TestOneBootHealsEveryShapeAtTheCapBoundary:
-    """am-8 §2: per cost class, ``fit − 1`` / ``fit`` / ``fit + 1`` rows → 1 / 1 / 2 heal transactions."""
+    """am-8 §2: per cost class, ``fit − 1`` / ``fit`` / ``fit + 1`` / ``2·fit + 1`` rows → 1 / 1 / 2 / 3 heal
+    transactions (the last scale: contract r4, am-12 §3 F-E)."""
 
     @pytest.mark.parametrize("scale", sorted(SCALES))
     @pytest.mark.parametrize("shape", SHAPES, ids=[shape.label for shape in SHAPES])
@@ -274,7 +290,7 @@ class TestOneBootHealsEveryShapeAtTheCapBoundary:
         fixed, weight = await measure_weight(ledger, env, shape, tag, caplog)
         fit = (CAP - fixed) // weight
         assert fit > 1, f"{shape.label}: a chunk fits {fit} rows — the sweep needs ≥ 2"
-        rows = fit + SCALES[scale]
+        rows = SCALES[scale](fit)
         population = await seed_population(ledger, shape, rows, f"{tag}p")
         spy = await _boot_spied(env, caplog)
         sent = _heal_chunks(spy)
@@ -338,7 +354,45 @@ ROW_COMPOSITIONS = {
     "bad_plus_healable": (1, 1),
     "two_bad": (2, 0),
     "healable_plus_healable": (0, 2),
+    # packet 58 contract r4 — amendment 12 §3 F-G: the composition that makes "bad in the MIDDLE" a distinct
+    # row.
+    "bad_among_two_healable": (1, 2),
 }
+# ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-G, adversary-58-r3 W-F4-PREFIX): every mixed fixture USED
+# to
+# name the unresolvable entry FIRST, so a heal that re-anchored the healable PREFIX before the first bad entry
+# passed.  POSITION is now an ingredient: ROW_COMPOSITIONS × {bad first, bad middle, bad last}, generated
+# where the
+# position yields a distinct ``blocked_by`` order.
+POSITIONS = ("bad-first", "bad-middle", "bad-last")
+
+
+def ordered_entries(bad: list[str], healable: list[str], position: str) -> list[str]:
+    """The row's ``blocked_by`` with the unresolvable entries at ``position`` among the healable ones."""
+    if position == "bad-first":
+        return bad + healable
+    if position == "bad-last":
+        return healable + bad
+    return healable[:1] + bad + healable[1:]
+
+
+def _f4_legs() -> list[tuple[str, str]]:
+    """(composition, position) — every position whose order is DISTINCT from the ones before it."""
+    legs: list[tuple[str, str]] = []
+    for composition in sorted(ROW_COMPOSITIONS):
+        bad_count, healable_count = ROW_COMPOSITIONS[composition]
+        bad = [f"b{index}" for index in range(bad_count)]
+        healable = [f"h{index}" for index in range(healable_count)]
+        seen: list[list[str]] = []
+        for position in POSITIONS:
+            order = ordered_entries(bad, healable, position)
+            if order not in seen:
+                seen.append(order)
+                legs.append((composition, position))
+    return legs
+
+
+F4_LEGS = _f4_legs()
 BAD_KINDS = ("phantom", "cyclic")
 BAD_EVENT = {"phantom": HEAL_PHANTOM_HEAD_EVENT, "cyclic": HEAL_CHAIN_CYCLE_EVENT}
 
@@ -359,25 +413,27 @@ class TestAnUnresolvableRowIsSkippedWHOLE:
     """am-8 §4 F4 × am-3 §5: skipped whole (byte-identical), uncounted, ONE WARNING per bad ENTRY, per boot"""
 
     @pytest.mark.parametrize("kind", BAD_KINDS)
-    @pytest.mark.parametrize("composition", sorted(ROW_COMPOSITIONS))
+    @pytest.mark.parametrize(("composition", "position"), F4_LEGS, ids=[f"{c}-{p}" for c, p in F4_LEGS])
     async def test_the_row_is_the_unit(
         self,
         ledger58: tuple[TaskLedger, SurrealEnv],
         caplog: pytest.LogCaptureFixture,
         composition: str,
+        position: str,
         kind: str,
     ) -> None:
         ledger, env = ledger58
         bad_count, healable_count = ROW_COMPOSITIONS[composition]
-        tag = f"f4{composition[:6]}{kind[:3]}"
+        tag = f"f4{composition[:6]}{position[4:7]}{kind[:3]}"
         bad = [await _seed_bad_entry(ledger, kind, f"{tag}{index}") for index in range(bad_count)]
         head = await create(ledger, "a real head")
         healable = [_pad(f"{tag}h{index}") for index in range(healable_count)]
         for legacy in healable:
             await raw_seed_row(ledger, legacy, blocked_by=[], superseded_by=head)
         row = _pad(f"{tag}row")
-        await raw_seed_row(ledger, row, blocked_by=bad + healable)
-        for blocker in bad + healable:
+        entries = ordered_entries(bad, healable, position)
+        await raw_seed_row(ledger, row, blocked_by=entries)
+        for blocker in entries:
             await raw_relate(ledger, blocker, row)
         companion = await seed_population(ledger, Shape(1, "distinct", False), 1, f"{tag}c")
         row_before = [entry for entry in (await snapshot(ledger))[0] if row in entry]

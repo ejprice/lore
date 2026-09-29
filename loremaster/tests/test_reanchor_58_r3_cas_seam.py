@@ -21,7 +21,7 @@ every store write passes through:
    FRESH :class:`TxnContentionExhaustedError` INSTANCE instead of running the write.
 2. **Identity.**  The exception that reaches the test's call boundary must BE that instance.  A passthrough
    re-raise preserves identity; a re-read-and-report, a ``ClaimResult``, a domain error ``from`` it, a ledger
-   retry that then succeeds, a swallow (``try`` / ``except*`` / ``suppress`` / a helper) — each breaks it. 
+   retry that then succeeds, a swallow (``try`` / ``except*`` / ``suppress`` / a helper) — each breaks it.
    The
    property does not care how the catch is spelled (am-8 §3: *"no instrument may dictate the shape"*).
 3. **Coverage is a CHECKED VARIABLE, both ways.**  STATIC = the call-graph CAS verbs
@@ -86,6 +86,11 @@ if TYPE_CHECKING:
     # ⚠ packet 58's RULED, not-yet-built symbol, named STATICALLY for the typecheck gate (the #461 shape): a
     # mypy error at HEAD owned by `scripts/pending_contracts.yaml` bound `packet-58-contract`.  Runtime-inert.
     _RULED_58: tuple[object, ...] = (TaskLedger._guarded_append_fragment,)
+    # packet 58 amendment 12 §4 item 3: the discovered 64b driver's population row reds until 64b-i's build —
+    # owned by bound ``packet-64b-i-contract`` through this ruled symbol.  Runtime-inert.
+    from loremaster.findings import FindingLedger
+
+    _RULED_64B: tuple[object, ...] = (FindingLedger._run_guarded,)
 
 __all__ = ["ledger58"]
 
@@ -116,6 +121,17 @@ def _stack() -> list[types.FrameType]:
     return frames
 
 
+def _root_of(stack: list[types.FrameType], verb: str | None) -> str:
+    """The RUNTIME root of a write (packet 58 amendment 12 §1): the OUTERMOST production frame, in the armed
+    verb's own module, on the stack that sent it — the entry the caller actually called, observed rather than
+    declared.  Derived twin: ``_reanchor_58_support.derive_cas_roots`` (same-module reverse call graph)."""
+    if verb is None:
+        return "<unarmed>"
+    module = verb.split("::", 1)[0]
+    keys = [key for key in map(_frame_key, stack) if key is not None and key.split("::", 1)[0] == module]
+    return keys[-1] if keys else "<no production frame>"
+
+
 class DriverSeamInjection:
     """The am-8 §3 instrument: wrap the driver seams (and observe the shell) for ONE driver's run."""
 
@@ -126,10 +142,36 @@ class DriverSeamInjection:
         self.observed_writers: set[str] = set()
         self.seam_bindings: list[str] = []
         self._shell_stacks: dict[int, list[list[types.FrameType]]] = {}
+        # ⚠ DUAL (packet 58 contract r4 — amendment 12 §1, REPORT-contract-58-r4.md §ITEMS 1): r3 fired on the
+        # FIRST armed write only (F-D's hidden constant k = 1), stopped observing the seam once it fired (F-C:
+        # a retry-then-reraise kept identity), and recorded no FIRED fact (F-NOOP: a declared driver counted
+        # as
+        # coverage).  r4 adds the STATE: the write index ``k`` the injection fires at, a MEASURE mode that
+        # counts
+        # the armed-seam writes of an unarmed run (WRITES(R, v) is measured, never assumed), every statement
+        # the
+        # seam receives AFTER the injection (E2 ∪ E3 — erratum am-8 §3 item 2), and the FIRED triples
+        # ``(root, verb, k)`` the seam itself records (the reach ledger).
+        self.write_index = 1
+        self.measuring = False
+        self.matched_writes = 0
+        self.statements_after: list[str] = []
+        self.fired: list[tuple[str, str, int]] = []
+        self.snapshot: Callable[[], Awaitable[Any]] | None = None
+        self.snapshot_at_injection: Any = None
+        self._after_open = False
+        self._quiet = False
 
     # -- installation ---------------------------------------------------------------------------------------
-    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Wrap every binding of each driver seam BY IDENTITY, and every shell holder's shell (observed)."""
+    def install(self, monkeypatch: pytest.MonkeyPatch, *, observe_shell: bool = True) -> None:
+        """Wrap every binding of each driver seam BY IDENTITY, and every shell holder's shell (observed).
+
+        ``observe_shell=False`` (packet 58 amendment 12 §4 item 2 — 63c-i-a a28c decision (4) / F-3): a driver
+        for a handler that does not ride the shell installs the identity half ONLY (no shell holder is
+        required
+        and no writer is attributed) — the ONE install, so a28c's ``_arm_the_driver_seams`` need not reach
+        into
+        :meth:`_seam_wrapper`."""
         for seam_name in DRIVER_SEAM_NAMES:
             original = getattr(_txn, seam_name)
             wrapper = self._seam_wrapper(seam_name, original)
@@ -143,6 +185,8 @@ class DriverSeamInjection:
         assert any(binding.endswith("_txn.execute_transaction") for binding in self.seam_bindings), (
             f"the injection wrapped no `_txn.execute_transaction` binding: {self.seam_bindings}"
         )
+        if not observe_shell:
+            return
         holders = 0
         for module_name, module in list(sys.modules.items()):
             if module is None or not module_name.startswith("loremaster"):
@@ -183,7 +227,15 @@ class DriverSeamInjection:
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
             # A plain `def`: the stack is walked at CALL time, while the caller's frames are live (the
             # `_sdk_guard` lesson — an `async def` wrapper walks at await time, after they are gone).
+            if recorder._quiet:  # the instrument's OWN snapshot reads — never part of the verb's call
+                return original(*args, **kwargs)
             stack = _stack()
+            if recorder._after_open:
+                # am-12 §1 (1): E2 ∪ E3 at the STATE — every statement the seam receives after the injection,
+                # from anywhere, until the call returns to the test's boundary (a re-read, a retry, a
+                # compensation alike).  Recorded, then allowed to run (the lie must be observable, not
+                # masked).
+                recorder.statements_after.append(f"{seam_name}: {str(args[0] if args else kwargs)[:160]}")
             recorder._attribute_write(stack)
             if recorder._should_fire(seam_name, stack, args, kwargs):
                 injected = TxnContentionExhaustedError(
@@ -191,8 +243,17 @@ class DriverSeamInjection:
                 )
                 recorder.injected = injected
                 recorder.flagged_stack = [key for key in map(_frame_key, stack) if key is not None]
+                verb = recorder.armed[0] if recorder.armed is not None else None
+                recorder.fired.append((_root_of(stack, verb), verb or "<unarmed>", recorder.write_index))
 
                 async def _raise() -> Any:
+                    if recorder.snapshot is not None:
+                        recorder._quiet = True
+                        try:
+                            recorder.snapshot_at_injection = await recorder.snapshot()
+                        finally:
+                            recorder._quiet = False
+                    recorder._after_open = True
                     raise injected
 
                 return _raise()
@@ -223,6 +284,10 @@ class DriverSeamInjection:
         self.armed = (verb, seam, matches)
         self.injected = None
         self.flagged_stack = []
+        self.matched_writes = 0
+        self.statements_after = []
+        self.snapshot_at_injection = None
+        self._after_open = False
 
     def _should_fire(
         self, seam_name: str, stack: list[types.FrameType], args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -237,20 +302,37 @@ class DriverSeamInjection:
         call = dict(kwargs)
         if args:
             call.setdefault("statement", args[0])
-        return matches(call)
+        if not matches(call):
+            return False
+        # am-12 §1 (F-D): the armed write is the k-th MATCHING write of the call, never "the first" — and in
+        # MEASURE mode nothing fires; the matching writes are only counted (WRITES(R, v), measured).
+        self.matched_writes += 1
+        return not self.measuring and self.matched_writes == self.write_index
 
     def disarm(self) -> None:
         self.armed = None
+        self._after_open = False
 
     async def expect_the_SAME_instance(self, verb: str, call: Callable[[], Awaitable[Any]]) -> None:
-        """Run ``call``; the injected instance itself must reach this boundary (am-8 §3 item 2)."""
+        """Run ``call``; the injected instance itself must reach this boundary (am-8 §3 item 2), the seam must
+        receive NO further statement after the injection, and nothing may commit after it (am-12 §1 (1)).
+
+        In MEASURE mode (:attr:`measuring`) nothing is injected: the call runs unarmed and
+        :attr:`matched_writes` is its WRITES(R, v) — the count every armed leg ``k ∈ 1..n`` is generated
+        from."""
+        if self.measuring:
+            try:
+                await call()
+            finally:
+                self.armed = None
+            return
         outcome: object = None
         try:
             outcome = await call()
         except BaseException as reached:  # noqa: BLE001 - the identity check IS the assertion
             assert self.injected is not None, (
-                f"{verb}: the injection never fired — the verb raised {reached!r} before reaching its armed "
-                f"driver seam (or never reached it)"
+                f"{verb}: the injection never fired at write k={self.write_index} — the verb raised "
+                f"{reached!r} before reaching its armed driver seam (or never reached it)"
             )
             assert reached is self.injected, (
                 f"{verb}: exhausted contention was REINTERPRETED — the caller received "
@@ -258,10 +340,30 @@ class DriverSeamInjection:
                 f"instance.  Our write never committed and the driver gave up; a re-read, a translation or a "
                 f"verdict built from it is a story about a race that never happened (#102)."
             )
+            self._after_open = False
+            assert not self.statements_after, (
+                f"{verb} (k={self.write_index}): the seam received {len(self.statements_after)} statement(s) "
+                "AFTER the injected exhaustion — a re-read, a retry or a compensation (packet 58 amendment "
+                "12 "
+                f"§1 (1): statements_after == 0; the driver owns retries, #102): {self.statements_after}"
+            )
+            if self.snapshot is not None:
+                self._quiet = True
+                try:
+                    after = await self.snapshot()
+                finally:
+                    self._quiet = False
+                assert after == self.snapshot_at_injection, (
+                    f"{verb} (k={self.write_index}): the store CHANGED after the injected exhaustion — "
+                    f"something committed that the caller is being told did not (am-12 §1, F-C's redundant "
+                    f"half: catches a compensation the seam did not see, e.g. a second connection)"
+                )
             return
         finally:
             self.disarm()
-        assert self.injected is not None, f"{verb}: the injection never fired (armed seam not reached)"
+        assert self.injected is not None, (
+            f"{verb}: the injection never fired at write k={self.write_index} (armed seam not reached)"
+        )
         raise AssertionError(
             f"{verb}: exhausted contention was SWALLOWED — the call returned {outcome!r} instead of raising "
             f"the injected TxnContentionExhaustedError (a swallow, a local retry that then succeeded, or a "

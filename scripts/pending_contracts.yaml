@@ -81,8 +81,13 @@ bounds:
     need a CAS_SEAM_DRIVERS entry in their OWNERS' test modules — the lead's routing (am-7 §3 item 2;
     REPORT-contract-58-r3.md FK-r3-4)
   ruling: docs/design/2026-09-26-packet58-kickoff-rulings.md (c8d3241) + packet58 amendments 1-8 (f4e96b4,
-    e0760fd, 7266c1b, fd6497d, 67bf2cc, dcf6b0f, 01565f9, 03cb6d0); contract receipts REPORT-contract-58.md §RED +
-    REPORT-contract-58-r2.md §RED@HEAD + REPORT-contract-58-r3.md §RED@HEAD (archived with the wave)
+    e0760fd, 7266c1b, fd6497d, 67bf2cc, dcf6b0f, 01565f9, 03cb6d0) + amendments 9-12 (4cb8ce9, 5b72471, 0ed6705,
+    5419448); contract receipts REPORT-contract-58.md §RED + REPORT-contract-58-r2.md §RED@HEAD +
+    REPORT-contract-58-r3.md §RED@HEAD + REPORT-contract-58-r4.md §RED@HEAD (archived with the wave). r4 (am-12) —
+    the lease `error_class` rider (store/lease.py, four lines) is carried by 58's BUILD (lead scope call) — its reds
+    in test_reanchor_58_r4_lease_fates.py / test_exhaustion_fates.py are this bound's; test_reanchor_58_r4_state.py's
+    agents.register leg (RS-5 control) and test_exhaustion_fates.py's server.py::_comms_register row are 63c-i-a's
+    (discharged by its build, BEFORE 58), and its findings.py::_run_guarded leg is 64b-i's (packet-64b-i-contract)
   rationale: contract-ahead — 58's contract (r1 5a43aeb + r2) is written before 58 builds serially after 63c-i-a;
     the pins name the ruled symbols now so the builder meets them, not invent them. Lead directive 17055
     (coldaudit-63c-i-a-2 F-6, the finding-461 shape) — this bound OWNS every packet-58 pytest RED, r1 and r2; each file
@@ -136,6 +141,15 @@ bounds:
   - path: loremaster/tests/test_reanchor_58_r3_tiers.py
     missing_symbols:
     - loremaster.store._txn._ROLLBACK_LOG_TIERS
+  - path: loremaster/tests/test_reanchor_58_r4_state.py
+    missing_symbols:
+    - type[TaskLedger]._reanchor_stragglers
+  - path: loremaster/tests/test_reanchor_58_r4_lease_fates.py
+    missing_symbols:
+    - type[TaskLedger]._guarded_append_fragment
+  - path: loremaster/tests/test_exhaustion_fates.py
+    missing_symbols:
+    - type[TaskLedger]._guarded_append_fragment
   - path: loremaster/tests/test_blocks_edge.py
     missing_symbols:
     - loremaster.tasks.SupersedeResult
@@ -176,6 +190,15 @@ bounds:
   - path: loremaster/tests/test_comms_footer.py
     missing_symbols:
     - _finding_fakes.arm_finding_identity
+  # packet 58 amendment 12 §4 item 3 (contract-58-r4): 58's files RED on 64b's discovered driver
+  # `findings.py::_run_guarded` until 64b-i's build lands `FindingLedger._run_guarded` (lore_verify not_found at
+  # a77dc00). ONE path may sit in two bounds (the gate refuses duplicate IDS only); spelled as mypy names it.
+  - path: loremaster/tests/test_reanchor_58_r3_cas_seam.py
+    missing_symbols:
+    - type[FindingLedger]._run_guarded
+  - path: loremaster/tests/test_reanchor_58_r4_state.py
+    missing_symbols:
+    - type[FindingLedger]._run_guarded
   - path: loremaster/tests/test_findings_adversary_pins_64b.py
     missing_symbols:
     - findings.capability

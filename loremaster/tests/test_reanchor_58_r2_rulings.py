@@ -203,8 +203,10 @@ class TestTheHealPacksByItsOwnComposedCount:
         sizes = [len(statements) for statements, _params in chunks]
         assert all(size <= _txn.TXN_STATEMENT_HARD_CAP for size in sizes), sizes
         noisy = [
+            # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-H, the same class): USED to also require
+            # `r.name.startswith("loremaster")`; a clean heal emits no alarm from ANY logger.
             r.getMessage() for r in records
-            if r.levelno >= logging.WARNING and r.name.startswith("loremaster")
+            if r.levelno >= logging.WARNING
             and not hasattr(r, "statement_count")  # the size WARN is the WARN doing its job (am-2 (b))
         ]
         assert not noisy, f"a clean heal logged a warning/error: {noisy}"
@@ -508,7 +510,13 @@ class TestAClaimLossIsDEBUGNeverAnAlarm:
             # (2), F3): this filter USED to be `loremaster.store` — the DRIVER's loggers only.  Amendment 8
             # rules reading (b): *"a routine loss is not an alarm"* from ANY lore logger (an alarm from
             # `loremaster.tasks` is the same switched-off scanner), so the filter is every lore logger.
-            if r.name.startswith("loremaster") and r.levelno >= logging.WARNING
+            # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-H, adversary-58-r3 W-F3-ROOT): the filter USED
+            # to be `r.name.startswith("loremaster")` — a hand-set reach: seven WARNINGs per race on the ROOT
+            # logger
+            # (`logging.warning(...)`) passed it.  "A routine loss is not an alarm" is about what the run
+            # EMITS, so
+            # every record captured at the root, ANY logger name, is in scope.
+            if r.levelno >= logging.WARNING
         ]
         assert not loud, f"a ROUTINE claim loss logged at WARNING/ERROR (amendment 3 §3): {loud}"
         debug = [r for r in _records(caplog, ROLLBACK_EVENT) if r.levelno == logging.DEBUG]
@@ -586,8 +594,11 @@ class TestTheClaimLostHierarchy:
     """RED at HEAD (no ``TxnClaimLostError``).  Amendment 4's hierarchy pin, KEPT by amendment 5 §2: the
     typed claim catch is safe BY TYPE only while ``TxnClaimLostError`` sits in a subtree that cannot hold
     exhausted contention; a re-parenting flips it into the §HELD index's door set by derivation.  (The
-    typed EXACT SET and the discriminators are the §HELD re-key of ``test_retry_seam.py``; the runtime ∀
-    is ``test_reanchor_58_r2_cas_runtime.py``.)"""
+    typed EXACT SET is 63c-i-a a28b's ``test_retry_seam._TYPED_CAS_CATCHES``; the runtime ∀ is the driver
+    SEAM, ``test_reanchor_58_r3_cas_seam.py`` + ``test_reanchor_58_r4_state.py`` — ⚠ DUAL (packet 58 contract
+    r4, amendment 12 §3 R-2): this sentence USED to point at the DELETED
+    ``test_reanchor_58_r2_cas_runtime.py``
+    and the withdrawn r2 §HELD re-key.)"""
 
     def test_the_claim_lost_class_cannot_hold_exhausted_contention(self) -> None:
         from loremaster.store._txn import TxnContentionExhaustedError, TxnDomainRejectionError

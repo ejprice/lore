@@ -555,6 +555,37 @@ def cas_verbs_in(tree: Any, namespace: dict[str, Any], shell: str = CAS_SHELL) -
     source (``namespace`` = the module's globals, which is what resolves a driver seam BY IDENTITY).
     ``shell`` is the CAS shell by default; amendment 8 §4 F11 derives the RELATE-composing verbs with
     the SAME walk over ``_relate_fragment`` (one derivation, two seeds — never a second walker)."""
+    # ⚠ DUAL (packet 58 contract r4 — amendment 12 §1; REPORT-contract-58-r4.md §ITEMS 1): the edge
+    # extraction that used to be inlined here is now :func:`module_call_graph`, so the CAS verbs and their
+    # ROOTS (:func:`derive_cas_roots`) are read off ONE graph — one derivation, two seeds, never a second
+    # walker.
+    calls, direct_seam = module_call_graph(tree, namespace)
+
+    def _closure(seed: set[str]) -> set[str]:
+        reached = set(seed)
+        while True:
+            grown = {name for name, called in calls.items() if called & reached} - reached
+            if not grown:
+                return reached
+            reached |= grown
+
+    reaches_shell = _closure({name for name, called in calls.items() if shell in called})
+    reaches_seam = _closure(direct_seam)
+    both = (reaches_shell & reaches_seam) - {shell}
+    return {name for name in both if not any(callee in both for callee in calls[name] - {name})}
+
+
+# =========================================================================== #
+# contract-58-r4 additions (packet 58 amendment 12 §1, ``docs/design/2026-09-29-packet58-amendment-12.md`` @
+# ``5419448``).  Scoped to the tree at ``a77dc00`` (branch ``feat/surreal-unification``), 2026-09-29.
+# =========================================================================== #
+
+
+def module_call_graph(tree: Any, namespace: dict[str, Any]) -> tuple[dict[str, set[str]], set[str]]:
+    """ONE module's call graph by function NAME — ``({function: {called names}}, {functions that call a driver
+    seam, resolved BY IDENTITY in ``namespace``})``.  Calls counted: ``self.f(…)`` / ``cls.f(…)`` /
+    ``Klass.f(…)`` / ``f(…)`` (the bound :func:`derive_cas_verbs` states).  THE edge extraction both the verb
+    derivation and the root derivation read."""
     import ast
 
     from loremaster.store import _txn
@@ -579,16 +610,58 @@ def cas_verbs_in(tree: Any, namespace: dict[str, Any], shell: str = CAS_SHELL) -
                 owner = namespace.get(target.value.id) if isinstance(target.value, ast.Name) else None
                 if owner is not None and id(getattr(owner, target.attr, None)) in seams:
                     direct_seam.add(function.name)
+    return calls, direct_seam
 
-    def _closure(seed: set[str]) -> set[str]:
-        reached = set(seed)
-        while True:
-            grown = {name for name, called in calls.items() if called & reached} - reached
-            if not grown:
-                return reached
-            reached |= grown
 
-    reaches_shell = _closure({name for name, called in calls.items() if shell in called})
-    reaches_seam = _closure(direct_seam)
-    both = (reaches_shell & reaches_seam) - {shell}
-    return {name for name in both if not any(callee in both for callee in calls[name] - {name})}
+def roots_in(calls: dict[str, set[str]], name: str) -> set[str]:
+    """The ROOTS above ``name`` in one module's call graph: every function in its reverse closure that no
+    OTHER function of the module calls (``name`` itself when nothing calls it).  Bound (stated): a caller in
+    ANOTHER module (the served dispatcher) is not walked — the root is the module's own entry point, which is
+    where every #102 wrapper so far has lived (``resolve`` / ``wontfix`` over ``_transition``)."""
+    reached = {name}
+    while True:
+        grown = {caller for caller, called in calls.items() if called & reached} - reached
+        if not grown:
+            break
+        reached |= grown
+    return {
+        member
+        for member in reached
+        if not any(member in called for caller, called in calls.items() if caller != member)
+    }
+
+
+def derive_cas_roots(package_root: Any, verbs: set[str]) -> set[tuple[str, str]]:
+    """``{(root key, verb key)}`` — packet 58 amendment 12 §1's ROOTS × verbs, derived from the SAME call
+    graph as the verbs (:func:`module_call_graph`) for every ``verb`` key ``"<module path>::<function>"``
+    given (the
+    call-graph verbs ∪ the listed handlers ∪ the discovered drivers — the population the seam pin derives).  A
+    verb whose module or function is not in the tree yields ``(verb, verb)`` so it still reds BY NAME
+    downstream, never vanishes."""
+    import importlib
+    from pathlib import Path
+
+    from _logging_fixtures import _workspace_root, parse_production_trees
+
+    prefix = Path(package_root).resolve().relative_to(_workspace_root().resolve()).as_posix() + "/"
+    trees = {
+        relative[len(prefix):]: tree
+        for relative, tree in parse_production_trees(include_scripts=False).items()
+        if relative.startswith(prefix)
+    }
+    pairs: set[tuple[str, str]] = set()
+    for verb in sorted(verbs):
+        path, _, function = verb.partition("::")
+        tree = trees.get(path)
+        if tree is None:
+            pairs.add((verb, verb))
+            continue
+        dotted = path[: -len(".py")].replace("/", ".")
+        dotted = dotted[: -len(".__init__")] if dotted.endswith(".__init__") else dotted
+        module = importlib.import_module(f"loremaster.{dotted}" if dotted != "__init__" else "loremaster")
+        calls, _seam = module_call_graph(tree, vars(module))
+        if function not in calls:
+            pairs.add((verb, verb))
+            continue
+        pairs |= {(f"{path}::{root}", verb) for root in roots_in(calls, function)}
+    return pairs

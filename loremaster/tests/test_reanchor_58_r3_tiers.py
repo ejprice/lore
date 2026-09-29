@@ -297,6 +297,16 @@ async def _keeps_unique_race(world: TierWorld) -> list[int]:
                 assert not raised, raised
 
             levels = await _captured(world, _race)
+            # packet 58 contract r4 — amendment 12 §3 R-6 (F-H's class): the leg USED to read only the
+            # rollback
+            # event's records; any OTHER record ≥ WARNING during the race, from ANY logger, is an unexplained
+            # alarm.
+            stray = [
+                (record.name, record.levelname, record.getMessage())
+                for record in world.caplog.records
+                if record.levelno >= logging.WARNING and record.getMessage() != ROLLBACK_EVENT
+            ]
+            assert not stray, f"a keyed-mint UNIQUE race emitted non-rollback alarms: {stray}"
             if levels:
                 return levels
     raise AssertionError("20 rounds of an 8-way keyed mint produced no UNIQUE conflict — the leg is vacuous")

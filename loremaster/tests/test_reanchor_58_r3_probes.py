@@ -130,7 +130,10 @@ async def test_PB_an_8_way_claim_race_raises_no_alarm_from_ANY_lore_logger(
     loud = [
         (r.name, r.levelname, r.getMessage())
         for r in caplog.records
-        if r.name.startswith("loremaster") and r.levelno >= logging.WARNING
+        # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 F-H): USED to filter
+        # `r.name.startswith("loremaster")`;
+        # every captured record, ANY logger name, is in scope (a root-logger alarm is the same alarm).
+        if r.levelno >= logging.WARNING
     ]
     assert not loud, loud
 

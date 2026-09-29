@@ -58,8 +58,17 @@ if TYPE_CHECKING:
     def _a28c_register_has_no_compensation() -> object:
         return TxnUniqueViolationError
 
+    # packet 58 contract r4 (amendment 12 §2): the lease rows' ``logs-error-class`` evidence is RED until 58's
+    # BUILD adds the rider — owned by bound ``packet-58-contract`` through this ruled symbol (#461 shape).
+    from loremaster.tasks import TaskLedger
+
+    _RULED_58: tuple[object, ...] = (TaskLedger._guarded_append_fragment,)
+
 
 EXHAUSTION = TxnContentionExhaustedError
+#: packet 58 amendment 11 §2: a chained translate to a class NOT in ``FAULT_CLASS_NAMES`` — derived, never
+#: registrable, RED by name.
+FORBIDDEN_TRANSLATE = "forbidden-translate"
 #: The log methods at or above WARNING (a ``logger.log(level, …)`` call is not counted — stated bound).
 _LOUD_LOG_METHODS = frozenset({"warning", "error", "exception", "critical"})
 
@@ -133,6 +142,7 @@ def derived_fate(site: CatchSite) -> str | None:
         return None  # the handler can fall through: something other than a re-raise is served
     faults = fault_classes()
     translated = False
+    forbidden = False
     for exit_node in _exits(handler, site.module):
         if not isinstance(exit_node, ast.Raise):
             return None
@@ -143,9 +153,18 @@ def derived_fate(site: CatchSite) -> str | None:
         target = exit_node.exc.func if isinstance(exit_node.exc, ast.Call) else exit_node.exc
         cls = resolved_by_import(target, site.module)
         chained = isinstance(exit_node.cause, ast.Name) and exit_node.cause.id == handler.name
+        if chained and not (isinstance(cls, type) and cls in faults):
+            # ⚠ DUAL (packet 58 contract r4 — amendment 11 §0/§2, folded by amendment 12 §4 item 1 (e)): a
+            # CHAINED translate to an UN-ADMITTED class USED to be row-DUE (``None``) and a row citing
+            # ``raises-chained`` adjudicated it — the exact door §2 closes.  It is now a DERIVED failure:
+            # never registrable, RED by name; the remedy is ADMISSION of the class, never a site row.
+            forbidden = True
+            continue
         if not (isinstance(cls, type) and cls in faults and chained):
             return None
         translated = True
+    if forbidden:
+        return FORBIDDEN_TRANSLATE
     return "translate" if translated else "passthrough"
 
 
@@ -248,22 +267,35 @@ def _records_on_self(handler: ast.ExceptHandler) -> bool:
     )
 
 
-def _raises_chained(handler: ast.ExceptHandler) -> bool:
-    """A ``raise <C>(…) from <the caught error>`` — a LOUD translation to a class outside the fault
-    allowlist (the
-    row, not the classifier, adjudicates whether ``C`` is honest for this caller)."""
+# ⚠ DUAL (packet 58 contract r4 — amendment 11 §0 (b)): the ``raises-chained`` predicate is RETIRED.  It
+# saw the same bytes for ``raise _ProbeUnavailableError(...) from exc`` and ``raise
+# IllegalTransitionError(...)
+# from error`` — a translation's honesty is a property of the TARGET CLASS (admission), never of a site row.
+
+
+def _logs_error_class(handler: ast.ExceptHandler) -> bool:
+    """A log call ≥ WARNING whose ``extra`` dict literal carries the key ``error_class`` (packet 58
+    amendment 12 §2's rider: the record is distinguishable from a genuine lost race IN THE LOG).  The static
+    half; the
+    by-EFFECT half is ``test_reanchor_58_r4_lease_fates.py``."""
     return any(
-        isinstance(node, ast.Raise)
-        and node.exc is not None
-        and isinstance(node.cause, ast.Name)
-        and node.cause.id == handler.name
-        for node in ast.walk(ast.Module(body=handler.body, type_ignores=[]))
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr in _LOUD_LOG_METHODS
+        and any(
+            keyword.arg == "extra"
+            and isinstance(keyword.value, ast.Dict)
+            and any(
+                isinstance(key, ast.Constant) and key.value == "error_class" for key in keyword.value.keys
+            )
+            for keyword in call.keywords
+        )
+        for call in _calls(handler)
     )
 
 
 EVIDENCE: dict[str, Any] = {
-    "raises-chained": _raises_chained,
     "logs>=warning": _logs_loud,
+    "logs-error-class": _logs_error_class,
     "logs-exc_info": _logs_exc_info,
     "stderr": _stderr,
     "marks-failed": _marks_failed,
@@ -290,10 +322,21 @@ def classify(sites: list[CatchSite]) -> tuple[list[Verdict], dict[str, list[Catc
             continue
         fate = derived_fate(site)
         ordinal = len(undecided.get(site.key, [])) if fate is None else -1
+        # a FORBIDDEN translate is a derived verdict (RED by name below), never row-due: it joins no count.
         verdicts.append(Verdict(site, fate, ordinal))
         if fate is None:
             undecided.setdefault(site.key, []).append(site)
     return verdicts, undecided
+
+
+def site_signature(site: CatchSite) -> str:
+    """What a registered row is matched on, besides its ordinal (packet 58 amendment 12 §3 R-7): the handler's
+    caught EXPRESSION as written (``<bare>`` for ``except:``; ``suppress(<classes>)`` for a suppress item) —
+    so a
+    NEW silent site added to a registered function under a different spelling can never inherit an old row."""
+    if site.handler is None:
+        return f"suppress({', '.join(cls.__name__ for cls in site.caught)})"
+    return "<bare>" if site.handler.type is None else ast.unparse(site.handler.type)
 
 
 def evidence_holds(site: CatchSite, evidence: tuple[str, ...]) -> list[str]:
@@ -322,13 +365,38 @@ class TestTheRegistryIsTheAdjudicationBothWays:
             f"whose sites became PASSTHROUGH/TRANSLATE or vanished — DELETE them: {stale}"
         )
 
-    def test_every_row_names_a_ruled_classification_an_owner_and_evidence_that_HOLDS(self) -> None:
+    def test_every_row_is_matched_to_ITS_site_by_the_caught_expression(self) -> None:
+        """packet 58 amendment 12 §3 R-7 — per SITE, not by count: each registered key's rows, in order,
+        name the caught expressions of its row-due sites, in source order."""
+        _verdicts, undecided = classify(production_catch_sites())
+        # ⚠ DUAL (packet 58 contract r4 — amendment 12 §3 R-7): rows USED to be matched by (function, ordinal)
+        # alone, so a new silent site added beside a site that became PASSTHROUGH kept the COUNT and inherited
+        # the old row.  Each row now names the caught expression of ITS site, in source order.
+        row_catches = {key: [fate.catches for fate in fates] for key, fates in REGISTERED_FATES.items()}
+        site_catches = {key: [site_signature(site) for site in sites] for key, sites in undecided.items()}
+        drifted = {
+            key: (row_catches[key], site_catches[key])
+            for key in site_catches
+            if key in row_catches and row_catches[key] != site_catches[key]
+        }
+        assert not drifted, f"rows whose SITE changed under them (row catches vs site catches): {drifted}"
+
+    def test_every_row_names_a_ruled_classification_an_owner_and_evidence_that_HOLDS(self) -> None:  # noqa: PLR0912 - one row walk, one problem list
         _verdicts, undecided = classify(production_catch_sites())
         problems: list[str] = []
         for key, fates in REGISTERED_FATES.items():
             for index, fate in enumerate(fates):
                 if fate.classification not in CLASSIFICATIONS:
                     problems.append(f"{key}#{index}: classification {fate.classification!r} is not ruled")
+                # packet 58 amendment 11 §0 (d): ``re-raise-unchained`` REQUIRES a reason and the log pair;
+                # every other classification carries none (a reason is not a free-text escape hatch).
+                if fate.classification == "re-raise-unchained":
+                    if not fate.reason.strip():
+                        problems.append(f"{key}#{index}: re-raise-unchained without its REQUIRED reason")
+                    if not {"logs>=warning", "logs-exc_info"} <= set(fate.evidence):
+                        problems.append(f"{key}#{index}: re-raise-unchained must log ≥ WARNING with exc_info")
+                elif fate.reason:
+                    problems.append(f"{key}#{index}: a reason on a {fate.classification!r} row")
                 if not fate.owner:
                     problems.append(f"{key}#{index}: no owner")
                 unknown = [name for name in fate.evidence if name not in EVIDENCE]
@@ -355,6 +423,8 @@ class TestTheRegistryIsTheAdjudicationBothWays:
         reported by
         name, only-shrinking.  A NEW evidence-less row reds; a FIXED one reds until removed from both sets."""
         empty = {key for key, fates in REGISTERED_FATES.items() if any(not fate.evidence for fate in fates)}
+        unowned = sorted(key for key, owner_trigger in UNLOGGED_SITES.items() if " · " not in owner_trigger)
+        assert not unowned, f"pinned holes without 'owner · re-open trigger' (am-12 §2): {unowned}"
         assert empty == set(UNLOGGED_SITES), (
             f"evidence-less rows not in the pinned hole set: {sorted(empty - set(UNLOGGED_SITES))}; pinned "
             f"holes "
@@ -468,7 +538,10 @@ class TestTheClassifierDiscriminates:
         [
             ("swallows", None),
             ("suppresses", None),
-            ("translates_to_a_verdict", None),
+            # ⚠ DUAL (packet 58 contract r4 — amendment 11 §0 (e)): USED to expect ``None`` (row-DUE, so a row
+            # could adjudicate it).  The positive control INVERTED: an un-admitted chained translate is a
+            # derived FAILURE, never registrable.
+            ("translates_to_a_verdict", FORBIDDEN_TRANSLATE),
             ("translates_unchained", None),
             ("conditional_reraise", None),
             ("passes_through", "passthrough"),
@@ -545,6 +618,197 @@ class TestTheIndexerStoreFailureReasonIsOneReasonForTwoCauses:
             )
         )
         assert [path.rsplit("/", 1)[-1] for path in holders] == ["indexer.py"], holders
+
+
+# --------------------------------------------------------------------------- #
+# packet 58 contract r4 — amendment 12 §2 (F-A) + amendment 11 §2 (the admission registry, both ways)
+# --------------------------------------------------------------------------- #
+
+
+def translate_targets() -> dict[type, list[str]]:
+    """Every class some production catch site raises ``from`` the caught error — ``{class: [site keys]}``,
+    derived over EVERY catch site (not only the exhaustion domain: admission is a property of the class)."""
+    targets: dict[type, list[str]] = {}
+    for site in production_catch_sites():
+        handler = site.handler
+        if handler is None or handler.name is None:
+            continue
+        for node in ast.walk(ast.Module(body=handler.body, type_ignores=[])):
+            if not (
+                isinstance(node, ast.Raise)
+                and node.exc is not None
+                and isinstance(node.cause, ast.Name)
+                and node.cause.id == handler.name
+            ):
+                continue
+            target = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            cls = resolved_by_import(target, site.module)
+            if isinstance(cls, type):
+                targets.setdefault(cls, []).append(f"{site.key}:{site.lineno}")
+    return targets
+
+
+class TestTheAdmissionRegistryIsExactBothWays:
+    """packet 58 amendment 11 §2: ``FAULT_CLASS_NAMES`` is the registry of translation targets — an admitted
+    class that NO site translates to reds ("delete the admission"); a domain site translating to an
+    UN-admitted class reds BY NAME (the remedy is admission, never a row)."""
+
+    def test_the_two_am11_admissions_are_present(self) -> None:
+        names = set(FAULT_CLASS_NAMES)
+        assert {
+            "loremaster.calibration.engine._ProbeUnavailableError",
+            "loremaster.server.ProbeGateError",
+        } <= names, sorted(names)
+        assert "raises-chained" not in EVIDENCE, "amendment 11 §0 (b): the predicate is RETIRED"
+
+    def test_every_admitted_class_is_some_sites_translation_target(self) -> None:
+        targets = translate_targets()
+        orphans = [
+            name for name, cls in zip(FAULT_CLASS_NAMES, fault_classes(), strict=True) if cls not in targets
+        ]
+        assert not orphans, (
+            f"admitted fault classes that NO catch site translates to — delete them: {orphans}"
+        )
+
+    def test_no_domain_site_translates_exhaustion_into_an_UNADMITTED_class(self) -> None:
+        forbidden = [
+            f"{verdict.site.key}:{verdict.site.lineno}"
+            for verdict in classify(production_catch_sites())[0]
+            if verdict.fate == FORBIDDEN_TRANSLATE
+        ]
+        assert not forbidden, (
+            "exhausted contention TRANSLATED into an un-admitted class (a verdict wearing a cause): "
+            f"{forbidden} "
+            f"— admit the class in FAULT_CLASS_NAMES (with its catchers and why they treat it as a fault) or "
+            f"propagate; a site row can never adjudicate this (amendment 11 §2)"
+        )
+
+
+_FAIL_CLOSED_SYNTHETIC = """
+from loremaster.store._txn import SurrealConnectionError, SurrealStoreError, TxnContentionExhaustedError
+
+_ERRORS = (SurrealConnectionError, TimeoutError)
+_NESTED = ((SurrealStoreError,), (KeyError,))
+
+
+async def a_tuple_constant():
+    try:
+        await work()
+    except _ERRORS:
+        pass
+
+
+async def a_nested_tuple_constant():
+    try:
+        await work()
+    except _NESTED:
+        pass
+
+
+async def a_starred_element():
+    try:
+        await work()
+    except (*_ERRORS, ValueError):
+        pass
+
+
+async def an_unbound_name():
+    try:
+        await work()
+    except _T:
+        pass
+
+
+async def a_function_local_import():
+    from loremaster.store._txn import TxnContentionExhaustedError as Local
+    try:
+        await work()
+    except Local:
+        pass
+"""
+
+
+def _fail_closed_sites() -> dict[str, CatchSite]:
+    module = types.ModuleType("synthetic_fail_closed")
+    exec(compile(_FAIL_CLOSED_SYNTHETIC, "<synthetic>", "exec"), vars(module))  # noqa: S102
+    return {
+        site.key.rpartition("::")[2]: site
+        for site in catch_sites_in("synthetic.py", ast.parse(_FAIL_CLOSED_SYNTHETIC), module)
+    }
+
+
+class TestTheResolverFailsClosed:
+    """packet 58 amendment 12 §2 (F-A): the caught set is what PYTHON catches — a Name bound to a tuple, a
+    nested tuple and a ``*starred`` element are FLATTENED; an element that does not resolve is RED by name
+    (``file::function::<expr>``), never dropped."""
+
+    def test_no_production_handler_element_is_unresolved(self) -> None:
+        unresolved = [
+            f"{site.key}::{expression} (line {site.lineno})"
+            for site in production_catch_sites()
+            for expression in site.unresolved
+        ]
+        assert not unresolved, (
+            f"catch-site elements that resolve to no class — the domain is BLIND there: {unresolved}"
+        )
+
+    @pytest.mark.parametrize(
+        ("function", "expected"),
+        [
+            ("a_tuple_constant", {"SurrealConnectionError", "TimeoutError"}),
+            ("a_nested_tuple_constant", {"SurrealStoreError", "KeyError"}),
+            ("a_starred_element", {"SurrealConnectionError", "TimeoutError", "ValueError"}),
+            ("a_function_local_import", {"TxnContentionExhaustedError"}),
+        ],
+    )
+    def test_each_spelling_flattens_to_the_classes_python_catches(
+        self, function: str, expected: set[str]
+    ) -> None:
+        site = _fail_closed_sites()[function]
+        assert {cls.__name__ for cls in site.caught} == expected and not site.unresolved, (
+            site.caught,
+            site.unresolved,
+        )
+
+    def test_POSITIVE_CONTROL_an_unbound_name_is_unresolved_by_name(self) -> None:
+        site = _fail_closed_sites()["an_unbound_name"]
+        assert site.unresolved == ("_T",) and site.caught == (), (site.caught, site.unresolved)
+
+    def test_the_tuple_spelled_exhaustion_catchers_are_IN_the_domain(self) -> None:
+        """The 12 sites F-A found invisible are in the domain now, by derivation — every one either derived
+        or registered (the both-ways registry pin above), never absent."""
+        keys = {site.key for site in production_catch_sites() if in_domain(site)}
+        assert {
+            "store/lease.py::get",
+            "store/lease.py::create",
+            "store/lease.py::update",
+            "store/lease.py::release_if_held",
+            "inbox_awaiter.py::await_inbox",
+            "inbox_awaiter.py::_establish_live",
+            "inbox_awaiter.py::_consume_live",
+            "inbox_awaiter.py::_safe_kill",
+            "scout.py::run",
+            "scout.py::_consume_live",
+            "scout.py::_safe_kill",
+        } <= keys
+
+    def test_NON_VACUITY_the_flattened_spellings_reach_at_least_the_adversarys_51_sites(self) -> None:
+        """am-12 §2: the derived count of sites whose handler names a tuple-valued constant or a starred
+        element is ≥ adversary-58-r3's measured 51 — a floor, so a resolver that stops flattening reds
+        here."""
+        flattened = 0
+        for site in production_catch_sites():
+            handler = site.handler
+            if handler is None or handler.type is None:
+                continue
+            elements = list(handler.type.elts) if isinstance(handler.type, ast.Tuple) else [handler.type]
+            if any(
+                isinstance(element, ast.Starred)
+                or isinstance(resolved_by_import(element, site.module), tuple)
+                for element in elements
+            ):
+                flattened += 1
+        assert flattened >= 51, flattened
 
 
 _UNUSED: tuple[object, ...] = (Fate,)

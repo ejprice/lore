@@ -27,31 +27,90 @@ from pathlib import Path
 from typing import Any
 
 
-def resolved_by_import(expression: ast.expr, module: Any) -> Any:
-    """Evaluate a name / dotted-attribute expression in ``module``'s namespace; ``None`` if it does not "
-    "resolve."""
+def resolved_by_import(expression: ast.expr, module: Any, local: dict[str, Any] | None = None) -> Any:
+    """Evaluate a name / dotted-attribute expression in ``module``'s namespace (plus ``local``: the names the
+    enclosing function binds by its own ``import`` statements); ``None`` if it does not resolve."""
+    namespace = {**vars(module), **(local or {})}
     try:
-        return eval(compile(ast.Expression(expression), "<catch-site>", "eval"), vars(module))  # noqa: S307
+        return eval(compile(ast.Expression(expression), "<catch-site>", "eval"), namespace)  # noqa: S307
     except Exception:  # noqa: BLE001 - an unresolvable name is simply not a class we can reason about
         return None
 
 
-def caught_classes(site: ast.ExceptHandler | ast.Call, module: Any) -> list[type]:
-    """Every class a catch SITE catches, resolved BY IMPORT: each element of a Tuple handler, a ``Name`` or a
-    dotted ``Attribute`` alike; a ``contextlib.suppress(...)`` call's arguments; a BARE ``except:`` is
-    ``BaseException``."""
+def local_import_bindings(function: ast.AST | None, module: Any) -> dict[str, Any]:
+    """The names a function binds by ``import`` / ``from … import`` statements in its OWN body (packet 58
+    amendment 12 §2: a handler naming a function-local import is resolved where Python resolves it, not
+    dropped) — imported through :mod:`importlib`, never executed."""
+    bindings: dict[str, Any] = {}
+    if function is None:
+        return bindings
+    for node in ast.walk(function):
+        if isinstance(node, ast.ImportFrom):
+            try:
+                source = (
+                    importlib.import_module("." * node.level + (node.module or ""), module.__package__)
+                    if node.level
+                    else importlib.import_module(node.module or "")
+                )
+            except Exception:  # noqa: BLE001 - an import that fails here is simply not a binding
+                continue
+            for alias in node.names:
+                with contextlib.suppress(AttributeError):
+                    bindings[alias.asname or alias.name] = getattr(source, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                with contextlib.suppress(Exception):
+                    target = alias.name if alias.asname else alias.name.split(".", 1)[0]
+                    importlib.import_module(alias.name)
+                    bindings[alias.asname or target] = importlib.import_module(target)
+    return bindings
+
+
+def _flatten(value: Any, label: str, classes: list[type], unresolved: list[str]) -> None:
+    """What Python catches: a class, or a (nested) tuple of classes.  Anything else is UNRESOLVED, by name."""
+    if inspect.isclass(value):
+        classes.append(value)
+    elif isinstance(value, tuple) and value:
+        for member in value:
+            _flatten(member, f"{label}[…]", classes, unresolved)
+    else:
+        unresolved.append(label)
+
+
+def resolve_caught(
+    site: ast.ExceptHandler | ast.Call, module: Any, local: dict[str, Any] | None = None
+) -> tuple[list[type], list[str]]:
+    """``(classes, unresolved)`` for a catch SITE, FAIL-CLOSED (packet 58 amendment 12 §2, F-A): each handler
+    element is evaluated in its module (plus the function's local imports), a Name bound to a TUPLE constant,
+    a nested Tuple and a ``*starred`` element are FLATTENED to their classes, and an element that does not
+    resolve to classes is returned in ``unresolved`` as its source text — never silently dropped.  A BARE
+    ``except:`` is ``BaseException``."""
     if isinstance(site, ast.Call):
         elements: list[ast.expr] = list(site.args)
     elif site.type is None:
-        return [BaseException]
+        return [BaseException], []
     else:
         elements = list(site.type.elts) if isinstance(site.type, ast.Tuple) else [site.type]
-    resolved: list[type] = []
+    classes: list[type] = []
+    unresolved: list[str] = []
     for element in elements:
-        value = resolved_by_import(element, module)
-        if inspect.isclass(value):
-            resolved.append(value)
-    return resolved
+        target = element.value if isinstance(element, ast.Starred) else element
+        value = resolved_by_import(target, module, local)
+        _flatten(value, ast.unparse(element), classes, unresolved)
+    return classes, unresolved
+
+
+def caught_classes(
+    site: ast.ExceptHandler | ast.Call, module: Any, local: dict[str, Any] | None = None
+) -> list[type]:
+    """Every class a catch SITE catches, resolved BY IMPORT (the classes half of :func:`resolve_caught`).
+
+    ⚠ DUAL (packet 58 contract r4 — amendment 12 §2; REPORT-contract-58-r4.md §ITEMS 2): this function USED
+    to keep an element only ``if inspect.isclass(value)`` — a Name bound to a tuple constant
+    (``except _CONNECTION_ERRORS:``) resolved to a tuple and was DISCARDED, so 12 exhaustion-catching sites
+    fell out of every domain with no signal (adversary-58-r3 F-A).  It now flattens; the unresolvable
+    remainder is :func:`resolve_caught`'s second half, which the fate census reds BY NAME."""
+    return resolve_caught(site, module, local)[0]
 
 
 def suppress_calls(node: ast.With | ast.AsyncWith, module: Any) -> list[ast.Call]:
@@ -79,6 +138,9 @@ class CatchSite:
     earlier: tuple[type, ...]
     handler: ast.ExceptHandler | None
     module: Any
+    #: packet 58 amendment 12 §2: the handler elements that did NOT resolve to classes (source text) — the
+    #: fail-closed half; ``test_exhaustion_fates`` reds every one BY NAME.
+    unresolved: tuple[str, ...] = ()
 
 
 def _parents_of(tree: ast.AST) -> dict[int, ast.AST]:
@@ -100,6 +162,13 @@ def _enclosing_function_name(node: ast.AST, parents: dict[int, ast.AST]) -> str:
     return "<module>"
 
 
+def _enclosing_function(node: ast.AST, parents: dict[int, ast.AST]) -> ast.AST | None:
+    current = parents.get(id(node))
+    while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        current = parents.get(id(current))
+    return current
+
+
 def catch_sites_in(key: str, tree: ast.AST, module: Any) -> list[CatchSite]:
     """ONE module's catch sites, in source order — every ``try`` / ``try*`` handler and every ``suppress`` "
     "item."""
@@ -110,7 +179,8 @@ def catch_sites_in(key: str, tree: ast.AST, module: Any) -> list[CatchSite]:
             form = "try*" if isinstance(node, ast.TryStar) else "try"
             earlier: list[type] = []
             for handler in node.handlers:
-                caught = caught_classes(handler, module)
+                local = local_import_bindings(_enclosing_function(handler, parents), module)
+                caught, unresolved = resolve_caught(handler, module, local)
                 sites.append(
                     CatchSite(
                         key=f"{key}::{_enclosing_function_name(handler, parents)}",
@@ -121,21 +191,25 @@ def catch_sites_in(key: str, tree: ast.AST, module: Any) -> list[CatchSite]:
                         earlier=tuple(earlier),
                         handler=handler,
                         module=module,
+                        unresolved=tuple(unresolved),
                     )
                 )
                 earlier.extend(caught)
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for call in suppress_calls(node, module):
+                local = local_import_bindings(_enclosing_function(node, parents), module)
+                suppressed, unresolved = resolve_caught(call, module, local)
                 sites.append(
                     CatchSite(
                         key=f"{key}::{_enclosing_function_name(node, parents)}",
                         file=key,
                         lineno=node.lineno,
                         form="suppress",
-                        caught=tuple(caught_classes(call, module)),
+                        caught=tuple(suppressed),
                         earlier=(),
                         handler=None,
                         module=module,
+                        unresolved=tuple(unresolved),
                     )
                 )
     return sorted(sites, key=lambda site: (site.lineno, site.form))
