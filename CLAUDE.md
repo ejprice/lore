@@ -147,6 +147,21 @@ than read and the store reference is cited rather than re-transcribed.
   - **A pytest process TREE above 16 GiB RSS is a DEFECT to report** (`lore_findings`, with the
     test ids), never a cost to absorb or a reason to raise a watchdog. Find the test with
     `pytest-memray` (a package; do not hand-roll).
+  - **EVERY agent pytest run is HARD-CAPPED by its own cgroup, and every mutation / reference /
+    wrong-build run also carries a per-test timeout** (operator, 2026-09-29):
+    `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 <the pytest command>`, plus
+    `--timeout=<N>` via `pytest-timeout` (packet 58 am-9 F-r3-3) on mutation and reference runs.
+    WHY, measured:
+    - on 2026-09-27 at 05:37Z the kernel OOM-killed ONE python process holding **69.5 GB** of
+      anonymous memory, spawned from an agent's shell and reported by no agent;
+    - a MemoryMax-capped profile of every new contract file at HEAD peaked at **0.61 GiB**
+      single-process (31 files, 0 cap kills);
+    - so the runaway was a looping wrong or reference build, not a test.
+
+    The cap kills THAT run at its own ceiling (exit 137) instead of taking the host down. The
+    polling MemAvailable watchdog is not a substitute: it cannot stop one process's growth
+    between polls. The cap is verified, both legs: a 2 GiB allocation under `MemoryMax=1G` → 137;
+    256 MiB → 0. A cap kill is a finding to report with the test id, never a silent retry.
   - **The TEST store is not a landfill.** Every test database is minted by `unique_database()` and
     reaped (#486). An agent that observes the `lore_test` namespace growing reports it. Strays
     left by killed sessions are wiped periodically (operator ruling, #486 D2).
