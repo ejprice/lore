@@ -249,3 +249,49 @@ condition the round's cold audit re-checks. Lore still `ECONNREFUSED`.
 (F-13, F-14, F-16, fixture drift), no BOUND that is not already ruled, no contract round, no new pin except F-10's
 additive field (verified by the post-fix cold audit, which re-runs the pins named above). Not triaged here: the cold
 audit's findings (next), and the lead's F-15 note (register ordering — a read, not a finding).
+
+## 7. Appended 2026-09-29 (lead, over `REPORT-coldaudit-63c-i-a-3.md@535677a` §3 NO-GO; before the fix round spawns): F-C11 — the cascade predicate is the SDK's OWN typed predicates (no compare, no membership: the pin is met, not dodged); the five new MINORs triaged
+
+### F-C11 — erratum mine (§5), and the ruling
+§5's spelling `_detail_kind(failed.typed) in _CASCADE_KINDS` is an `ast.In` compare, so a28c's text-reader exact-set
+pin reports `_is_domain_cascade_notice` as an unlisted tester. I checked §5 against pins that NAME the constant, not
+against the pin that derives testers by SHAPE — the reach question (INSTRUMENT 0) asked of the wrong instrument.
+
+**Ruling — neither the lead's `==` default nor an allowlist row: the SDK already ships the decision.** `parse_query_error`
+returns a `QueryError` for every `kind: Query` entry, and `QueryError` carries `is_not_executed` / `is_cancelled` /
+`is_timed_out` (measured on the installed 2.0.0: all three true exactly for their kind). So:
+```
+_is_domain_cascade_notice(failed) := isinstance(failed.typed, QueryError) and (failed.typed.is_not_executed or failed.typed.is_cancelled)
+```
+- **No `_CASCADE_KINDS` set, no `_CASCADE_KIND` constant, no `_detail_kind` call in this decision** (packages over
+  hand-rolling: the SDK owns the kind strings; a constant nobody's decision reads would claim a sharing that does not
+  exist). §5's "`_CASCADE_KINDS` constant" and §6 M-1 item 3's citation of it are superseded: the reference cites the
+  SYMBOL `_txn._is_domain_cascade_notice` and states the adjudication (`NotExecuted`, `Cancelled` → cascade;
+  `TimedOut` → substantive) in that function's docstring, which is the ONE place it lives.
+- **Why not `==` twice:** two `==` compares over two literals is the a28c-sanctioned spelling for a typed decision, and
+  it would pass — but it re-implements a predicate the dependency exports, which is the exact defect class the
+  packages rule names, and it is the shape that silently forks when the SDK's own notion of "not run" changes.
+- **Why not an allowlist row:** the contract's escalation path exists, but a row for a tester the SDK makes
+  unnecessary would be a row that teaches the wrong mechanism.
+- **Pin check:** the tester derivation keys on `ast.Compare(In/NotIn)`, `_SEARCH_METHODS` calls and `re` — attribute
+  access and `or` are none of these → `_is_domain_cascade_notice` is not a tester; the exact set stays
+  `{_classify_engine_error, _assert_envelope_integrity, compose, is_connection_error}` ✓. The KF probe is kind-decided
+  (constructs dicts) ✓ and its degenerate cell now reads `(False, 1)` → the LAST entry ✓. `_RETRYABLE_CONFLICT_KIND`
+  is unchanged (the SDK ships no conflict predicate; `==` stays there, as a28c constrains). §W row 4's completeness
+  pin over `QueryDetailKind` is re-worded: ∀ members, the predicate answers per the docstring's adjudication; a fourth
+  member (no predicate, no adjudication) reds by name.
+- Builder receipt for the round: the one-liner above, run in the build tree — `parse_query_error({"kind":"Query",
+  "details":{"kind":k},…})` for the three kinds → `QueryError`, the three predicates; plus the KF probe both ways.
+
+### The new MINORs
+| # | verdict | chokepoint / bound | pin check |
+|---|---|---|---|
+| **F-C4** a triple-backtick run survives `sanitise_line` into refusal reasons (owner list + `_id_sample`); pre-existing at HEAD | **BOUND — routed to the sanitiser's owner (finding #34's promotion), not this round.** The property (the auditor's own lift): *a stored id rendered into served prose passes ONE sanitiser that neutralises newlines AND fence runs.* The fix belongs INSIDE `loremaster.search._sanitise_line` (every render rides it; a 63c-local escape would be copy #2 of a sanitiser), and changing its output touches every render's pinned bytes — a blast radius this round does not own. Trigger: #34's promotion, or an MCP-served (not stderr) render of a principal id | a 63c fix would redden byte-exact render pins elsewhere — STOP by construction |
+| **F-C7** keeps `get_or_create_keyed` `Raises:` docstring stale after the narrowed CAS (K1) | **FIX-IN-ROUND** (prose) | the docstring states the narrowed door: `TxnUniqueViolationError` re-read; every other `SurrealStoreError` propagates | no `__doc__` pin on keeps (awk); none |
+| **F-C8** a malformed `cause` makes `parse_query_error` raise (`AttributeError`, measured) out of the verdict path; engine-shaped, unobserved | **FIX-IN-ROUND, paired with F-14 as the auditor suggests — ONE policy at ONE chokepoint:** `_failed_statements` never lets an SDK parse failure escape: an ERR entry the SDK cannot type is carried with `typed=None` (the bare-text ladder, loud `unspecified` at worst) and logged at WARNING naming the entry index — the builder reads `parse_rpc_error`/`parse_query_error`'s source for the exact exception classes it can raise and catches THOSE, never a bare `except`. F-14's residual narrows to "a kindless entry on the two paths classifies alike" (trigger unchanged) | a28c pins construct `_FailedStatement(typed=None)` and expect the text ladder — the same fate ✓; no pin asserts `_failed_statements` raises on a malformed dict. STOP condition: none |
+| **F-C9** the `last_conflict_cause` comment over-generalises "the single-statement seams" | **FIX-IN-ROUND** (prose; with F-4/F-5) | say exactly which caller raises unchained and why | prose only |
+| **F-C10** transport-branch `SurrealConnectionError` messages interpolate `{error}` (pre-existing); is a transport-kind `ServerError`'s text hygienic? | **BOUND, stated with its reason** — #31's hygiene is about engine text that ECHOES A BOUND VALUE of the rejected statement. The transport branch is reached only for `OSError` / `WebSocketException` / `KeyError` (socket and SDK-routing text) and the two transport KINDS `NotAllowed` / `Connection` — an auth or connection refusal, which the engine authors BEFORE evaluating the statement and which carries no statement value by construction. The interpolation is the operator's only address/auth clue and stays. Trigger: a transport-kind message observed carrying a bound value → then the transport branch logs the text server-side and raises the label, like the domain branch | no pin names the transport message's bytes beyond its prefix (`TestTxnSdkKeyErrorClassification` pins the drop leg); nothing changes |
+
+**Round accounting:** + FIX-IN-ROUND 3 (F-C7, F-C8+F-14, F-C9) · BOUND 2 (F-C4 routed to #34; F-C10) · F-C11 settled
+without a contract edit. The fix round carries: §5 D-5 in the §7 form, §6's eight, §7's three. No contract round.
+Errata this appendix (mine): §5's set spelling and §6 M-1 item 3's citation of it.
