@@ -1569,3 +1569,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - The **cold audit brief will carry an explicit check:** for each of the two pins, does it pass by CODE or by PROSE? Mutation: delete the prose and keep the code, and the pin must stay green if the code is right. Also: is the prose true?
   - The pins' AST re-key → am-37 §W row 4 (the next `_txn` contract) either way.
   - Also pending from the builder: D-4 (the empty-text root-cause skip dropped; spec-silent) and D-5 (the `Cancelled` cascade kind is outside `_CASCADE_KIND`). → sidecar-63c-2 once the report is final.
+- **builder-63c-i-a-a28c DONE** (`3e0553f`). Patch `956e4136` on `bbf6a0c` (8 files: 6 production + the §HELD harness hunk + the registry block deletion; verified: md5, and no loremaster/lorerunes/scripts delta `bbf6a0c`→`3e0553f`).
+  - Declared set 67 files: 398 RED→GREEN, 0 GREEN→RED; the remaining reds are 58/64b-owned. 20/20 concurrency. F-11 live both ways. KF 2/2.
+  - **FK-B1 → Reading A ACCEPTED** (am-37 §3 refuses copy #2). Pin 1 (`test_surreal_store` source-text) is now PROSE-satisfied, a known false gate. The cold audit proves the ONE mapping by mutation, and its AST re-key → am-37 §W row 4. Pin 2 is a prose-currency pin by design, so the audit checks the prose is TRUE.
+  - D-4/D-5 → sidecar-63c-2 (am-37 §5).
+- **coldaudit-63c-i-a-3 + blindreader-63c-i-a-3 SPAWNED** (2 h / 90 min). The audit's ONE full suite = `pending_contract_gate.py --currency -- --maxprocesses=12` under the 16G cap: the packet's single full suite, with per-red adjudication; `--maxprocesses` works around #508's `auto`. The audit also does a real dirty-store restore.
