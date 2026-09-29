@@ -1579,3 +1579,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - **D-5 = a BUILDER REQUIREMENT BEFORE COMMIT:** `_CASCADE_KINDS = frozenset({QueryDetailKind.NOT_EXECUTED, QueryDetailKind.CANCELLED})` (`TIMED_OUT` adjudicated substantive). NotExecuted-only serves a FALSE root cause in the degenerate all-cascade list. The rename is free (no pin names it); the `QueryDetailKind` completeness pin → row 4.
   - FK-B1 A: concurred.
   - → **The post-audit FIX ROUND carries D-5** + any cold-audit / blind-reader findings, then a 30-min re-check. The builder and the two adversaries are STOPPED (done).
+- **blindreader-63c-i-a-3 DONE** (`cdf840d`; stopped): 0 BLOCKER · 2 MAJOR · 7 MINOR · 7 NOTE. The typed `_txn` holds LIVE on 3.2.4 and FIXES two old echo misclassifications (F-A governed-by-substring, F-B "can be retried" echo).
+  - **M-1:** the store reference §3/§6 item 3/#111 still teach the text marker, "no typed alternative" (the required-first-read is now false).
+  - **M-2:** `table_defined` defaults True, so refusals over-claim.
+  - MINORs: F-4/F-5 stale docstrings · F-8 an RPC conflict doesn't update `last_conflict` · F-9 the mixed-owner count includes the operator (a label/set mismatch) · F-10 silent un-migrated message rows · F-12 bare SurrealStoreError → a traceback instead of exit 1 · F-13 register's unbounded recursion + raw re-raise.
+  - F-6 == D-5 (derived independently).
+  - → **sidecar-63c-2 triage (am-37 §6)**. The default is ONE post-audit fix round carrying D-5 + all of these (M-1 edits docs/reference in this wave).
