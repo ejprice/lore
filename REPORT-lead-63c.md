@@ -1514,3 +1514,13 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - a 90-min deadline.
 - **sidecar-63c-2** (native): asked to rule FK-a28c-9 / F-15 / F-11 as am-37, each as a builder requirement, a pinned bound or a residual (a28c is the last round). The 58-r4 items are parked with 58.
 - **⚠ OPERATOR FORK OPEN:** 64 am-8 ruled 64b-i's SAT base as post-63c-i-a AND post-58, and 58 is paused. adversary-64b-r2's BUILD-ORDER section will give receipts for whether a 58-free 64b-i build (BC-r2-13 in-place) is satisfiable.
+- **63c am-37** (`7a40aaa`, sidecar-63c-2) — a28c's three decisions. NOTHING reopens the contract.
+  - FK-a28c-9: Reading A confirmed. `_TEXT_DECIDED_KINDS` = a measured allowlist over `KIND_TO_CLASS`; this is an am-36 erratum. The adversary confirms the live Validation cell.
+  - F-15: an ACCEPTED RESIDUAL, closed by registry retirement → RED_ORPHANED at close-out. Riders:
+    1. the cold audit reads the exact-set pins' MEMBER diff, not their colour;
+    2. **the LEAD reads every 58 / 64b-i / #486 commit in this window for a new `except` over `_txn` classes (binding on me);**
+    3. the re-open trigger is a second 63c-i-a fix wave.
+    The class is filed as **#517**; the gate owner decides at the 63c close-out.
+  - F-11: IN the i-a build. ONE ladder helper, shared by `_attempt` and `_txn_query_raw`, keeps the connection on domain kinds with a hygienic message → a **63c-i-a BUILDER CONSTRAINT**, with an audit receipt both ways plus the sharing mutation. The derived-domain ladder pin goes to the next `_txn` contract.
+  - §E is operator-visible: F-11 could take ONE targeted pin now with no re-grade. The sidecar declined it: not security-relevant, and the cold audit's receipt covers it.
+- Drained 5 ledger signals (#17115–#17120). All are pre-compaction and already handled.
