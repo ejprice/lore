@@ -1590,3 +1590,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - **RESIDUAL:** F-13 (as ruled am-32; wrapping REFUSED, since it reddens a28b's `_CAUSE_CLASS` exact set), F-14, F-16, and the fixture drift → row 4.
   - The F-8 label rider → contract-58-r4 (#17128-ish directive; durable).
   - The blind reader's untested `store.transaction.rejected` / connection-kept path: covered live by the audit's F-11 receipt, and its pin is in row 4 (the next `_txn` contract).
+- **contract-58-r4 DONE** (`4d864c9`; stopped). The am-12 fold landed, tests only. SAT 0 r4-attributable (REF 661F/6176P vs BASE 850F/5933P). 10/10 mutations held. `--verify-registry` OK.
+  - **Collision flag:** REF-ONLY 36 = 63c's generated sweeps over 58's reference `_txn` classes. They must go GREEN once 63c-i-a lands, a STOP check at r4 §RE-BASE.
+  - `test_task_ledger.py` ×10: red only on HEAD+§HELD part 1, green on the reference.
+  - Finding #522 (lore_impact renders `store.lease` dead).
+  - **Open → sidecar-64 (58 am-13):** FK-r4-1 (6 admissions removed, exact-both-ways) · F-F NOT DONE (evidence by import) · the 63c am-37 F-8 label rider, NOT folded despite #17128. Each lands as a 58 build requirement, a bound or a residual; the contract is closed.
