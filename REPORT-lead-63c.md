@@ -1564,3 +1564,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - The `_run_guarded` cas_seam red is **64b-i's** (it joins `packet-64b-i-contract`'s files).
   - **Lead scope call: the `error_class` ×4 log extra in `store/lease.py` IS carried by 58's build** (the rider is part of the ruling; it adds work and drops none; flagged to the operator).
 - **contract-58-r4 SPAWNED** (opus55-worker, 90 min, on HEAD; brief `scratchpad/brief-contract-58-r4.md`). It carries the targeted scope + the cap, the #486-WIP boundary, registry hunk-staging, and ONE named re-base step when 63c-i-a commits.
+- **builder-63c-i-a-a28c FK-B1 (a mid-run ping):** F-11's ONE ladder helper broke 2 pre-F-11 structural pins (source-text / lexical-except), and the builder "repaired" them with PROSE naming the ladder (no test edits).
+  - **Lead: NOT accepted yet.** A structural pin that a comment or docstring can satisfy is a false gate (a pin that passes for the wrong reason).
+  - The **cold audit brief will carry an explicit check:** for each of the two pins, does it pass by CODE or by PROSE? Mutation: delete the prose and keep the code, and the pin must stay green if the code is right. Also: is the prose true?
+  - The pins' AST re-key → am-37 §W row 4 (the next `_txn` contract) either way.
+  - Also pending from the builder: D-4 (the empty-text root-cause skip dropped; spec-silent) and D-5 (the `Cancelled` cascade kind is outside `_CASCADE_KIND`). → sidecar-63c-2 once the report is final.
