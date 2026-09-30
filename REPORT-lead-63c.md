@@ -1784,3 +1784,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - (i) `fixup-tests-63c-i-a-2` ROUND 2, resumed natively. F-1 is a verification first: derive KeepStore's write boundaries and name each one's wrap pin, with a mutation on `add_household`. If a boundary has no pin, that is a guard §11 removed: STOP, and it goes to the sidecar. Then the F-1..F-3 docstrings as a docstrings-only delta.
   - (ii) `builder-63c-i-a-fix4` spawned: the §11 production edit in `principals.py` only, on 85a4d2e1.
   - Composition for the audit: fix4 full + the docstrings delta (disjoint files).
+- **fixup2 ROUND 2 DONE (`b2affe3`).**
+  - No STOP: all 7 derived KeepStore write boundaries are wrap-pinned, and the `add_household_member` mutation held (5/5 declared).
+  - 9 stale D1 docstrings were fixed; AST-equal modulo docstrings; failed set unchanged.
+  - Docstrings delta `afa519cf7c4eca5241a060ca80cbc367`, full2 `e915b90f7f58712e164608a7fc8d2002`, both lead-verified; full2 apply-check OK.
+  - ⚠ One run was admitted at 18 GiB (<20 gate): self-reported, cgroup-capped, no kill. Surfaced to the operator.
+  - R2-F1: the coverage population is "references the wrap", not "writes", so a new unwrapped write is invisible, and §11 removed the incidental CLI traceback signal. Lead lift: ∀ store a lore-adm verb reaches. Sent to sidecar-63c-2 for am-37 §12 (~02:40Z, 20 min).
