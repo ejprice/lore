@@ -353,7 +353,7 @@ Round 2 SUPERSEDES the round-1 patches.
 | `backup_changed_r2/pending_contract_gate.py` | `1dcdfadfbf22a4a44c41d647032e3061` | `cp -a` (unchanged since round 1) |
 
 ### §10 INSTRUMENT
-`probe_group_all_r2.py` lives in the scratchpad and is pasted here verbatim:
+`probe_group_all_r2.py` lives in the scratchpad and is pasted here verbatim, except that its module docstring is omitted. The docstring describes Parts A and B, which are the same as the §10 MUTATION and ITEMS receipts above.
 ```python
 import argparse
 import asyncio
