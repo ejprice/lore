@@ -1770,3 +1770,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - **R2-1: operator ruled FOLD into 63c-i-a before the re-check (~02:15Z).**
   - Sequence: sidecar-63c-2 am-37 §11 ruling (requested natively; deadline ~02:45Z) → a test-side agent (`fixup-tests-63c-i-a-2`: fates row + any generated pin) → `builder-63c-i-a-fix4` (the one chokepoint, on the r2 patch `f5897681…`) → `coldaudit-63c-i-a-4`.
   - Unused names reserved: fixup-tests-63c-i-a-2, builder-63c-i-a-fix4, coldaudit-63c-i-a-4.
+- **am-37 §11 ruled (`1708a4c`).**
+  - One handler at `_dispatch` with the 5-class tuple; the 3 verb dispatchers lose their excepts; FR-2 D1 re-ruled.
+  - fates: 2 rows → 1 (`principals.py::_dispatch`).
+  - A generated pin ∀ `build_parser()` verb × an `ensure_ready` injection.
+  - It is a new CASE of a pinned property, so there is no contract round (rule 5).
+- `fixup-tests-63c-i-a-2` spawned about 02:30Z (45 min; base r2 `f5897681…`). Next: `builder-63c-i-a-fix4`.
