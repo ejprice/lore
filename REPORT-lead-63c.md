@@ -1981,3 +1981,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - FLAG-2 (currency `--legs` FAIL line) → the existing residual "gate --legs UX".
   - FLAG-4 (raw newlines in stderr cause lines) → residual; trigger: any MCP-served render of these lines.
 - Sent: §13.2 to sidecar-63c-2; ROUND 5 to fixup-tests-63c-i-a-2 (base 3132f699). NEXT: resume builder-63c-i-a-fix6 (FLAG-3 + remove the default) → coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
+- Close-out residual added: the six foreign tolerant `_as_rows` clones (agents, briefs, diff, findings, messages, tasks) → 64b §DRY, with the GROUP ALL sweep (trigger: the 64b §DRY step). Noted: §13 C closed a statement-interpolation path in `report-unmigrated --table` (it is now validated before I/O).
