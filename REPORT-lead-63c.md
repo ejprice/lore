@@ -1982,3 +1982,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - FLAG-4 (raw newlines in stderr cause lines) → residual; trigger: any MCP-served render of these lines.
 - Sent: §13.2 to sidecar-63c-2; ROUND 5 to fixup-tests-63c-i-a-2 (base 3132f699). NEXT: resume builder-63c-i-a-fix6 (FLAG-3 + remove the default) → coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
 - Close-out residual added: the six foreign tolerant `_as_rows` clones (agents, briefs, diff, findings, messages, tasks) → 64b §DRY, with the GROUP ALL sweep (trigger: the 64b §DRY step). Noted: §13 C closed a statement-interpolation path in `report-unmigrated --table` (it is now validated before I/O).
+- **am-37 §13.2 RULED (`5f39564`): FORK-1 reading B ACCEPTED.**
+  - "Verb-level" means no leg read/write runs before the gate. Serving the verb-level refusal first is harmless by construction, and the §7.3 acceptance holds.
+  - Riders:
+    - (a) the fix6 resume states the ordering bound in the leg docstring;
+    - (b) coldaudit-63c-i-a-5 also runs `--table message` on the PRE-BOOT dump and records both teachings' order (receipts, not defects).
+  - The fix6 resume list is now: FLAG-3 (the `governed.py` module docstring), remove the `_rows_stamped` default `noun` (after round 5), and the §13.2 leg-docstring bound.
