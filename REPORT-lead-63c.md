@@ -1655,3 +1655,10 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - Full patch `5a1d411c` (fix2 + tests + fix3) on `fb95d1f`, delta `abbb0edd`.
   - **Flag F-1:** am-37 §8.3's "five readers" is an UNDERCOUNT. There are ≥6 more tolerant GROUP ALL readers; **2 are FAIL-OPEN**: the principal-delete `owned_count` (the SF-63-5 guard bypassed on a malformed answer) and the unmigrated-rows boot alarm (silent). → sidecar-63c-2 am-37 §10 (lead default: fix (a) now; rule boot fail-vs-log for (b); the rest → the 64b §DRY step).
   - F-2 (None-render) and the D-1 pin → a residual for the next gate contract.
+- **63c am-37 §10** (`cfaf793`):
+  - (a) `owned_count` is FIXED NOW, fail-closed via `group_all_count` (a malformed count refuses the delete).
+  - (b) The boot alarm: a malformed count takes the SAME fate as a rejected count query, never a boot fail. If that fate is silent today, it becomes a logged ERROR with exc_info.
+  - F-2: render `unsound_sender_messages=None` explicitly (the #131 unrendered-field shape).
+  - D-1 pin: the fix-up OR a residual. **Lead: RESIDUAL**, owner = the next gate-touching contract (latent, fails loud; a test-author round is not worth it).
+  - Sidecar erratum: §8.3's "FIVE" was un-derived (≥11); the rest of the sweep → the 64b §DRY step.
+- The §10 delta was sent to builder-63c-i-a-fix3 NATIVELY; it resumes from its transcript, with a 40-min deadline. (lore_comms refused: the agent had retired its registration. Retirement is terminal.) Proof of receipt = its report's §10. If none appears → respawn `builder-63c-i-a-fix4`.
