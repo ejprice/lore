@@ -1630,3 +1630,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - (2) 63c's one-scanner pin finds ZERO walkers after r4's `_catch_sites.py` edit.
   → sidecar-64 (58 am-14). The exact test-side edits land via a small contract-author-class fix-up BEFORE the 63c commit, together with F-12(a)'s row.
 - **LEAD LESSON (mine):** the r4 brief forbade ALL currency runs. `--currency --legs typecheck,ruff` runs NO pytest and is exactly what would have caught (1) per round. The TEST SCOPE policy forbids the pytest leg only; future briefs allow the non-pytest legs. → Proposed to the operator as a CLAUDE.md clarification.
+- **63c am-37 §8** (`bcb7bc2`, sidecar-63c-2):
+  - F-12(a) → **OPTION A** (the base-class catch + a REGISTERED_FATES `cli-exit` row; the site's owner owns the row, per the U-27 precedent; the passthrough is REFUSED as a door).
+  - F-a: stderr + exit 0 CONFIRMED, with a rider: the stdout receipt line carries `unsound_sender_messages` as a typed count.
+  - §DRY: the GROUP ALL count reader = FIVE copies (findings, messages, diff, `governed._scope_count`, `principals._group_all_count`). ONE policy (empty → 0; wrong shape → SurrealStoreError) as `governed.group_all_count`. **63c's two copies collapse NOW**; findings/messages/diff → 64b, decided at the 63c close-out.
+  - Walker-pin re-keys route through sidecar-63c-2.
+- **The next wave (after sidecar-64's 58 am-14):** fix-round-3 = a production builder (the F-12(a) catch, the stdout typed count, the `group_all_count` consolidation) + a test-side fix-up (the fates row, r4's two orphan defects per am-14). Both are built on patch 01fd0471, then the re-check audit (targeted + the restored prod slice `test_dump_20260930T001125Z_…`).
