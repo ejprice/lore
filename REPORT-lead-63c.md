@@ -2000,3 +2000,7 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - `_BACKFILL_UPDATE_NOUN` deleted; FLAG-3 + the `GovernedAuditUnavailable` class docstring fixed (a disclosed extra); §13.2 ordering bound in all 3 legs.
 - The operator was ASKED to run a fresh `restore_prod_dump.py` (the audit needs the pre-boot dump for D's acceptance; agent restores were permission-denied before). Handoff: the lead writes the DB name to `…/scratchpad/lead/audit5-dump.txt`.
 - Spawning `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5` on bec29190.
+- **The operator restored a fresh dump (~18:05Z):** `test_dump_20260930T180530Z_afabf225d81f4ad5a423601085c26bbd` (ns `lore_test`, `:18000`).
+  - Same readback as the first restore: agent 95, brief 26, briefed 123, finding 324, finding_counter 1, memory 177, message 316, task 116, to 337.
+  - blocks / audit / keep / member_of / principal / principal_key ABSENT.
+  - The name was written atomically to `scratchpad/lead/audit5-dump.txt` for coldaudit-63c-i-a-5, which must reap it after its §6.
