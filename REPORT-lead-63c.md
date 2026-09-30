@@ -1636,3 +1636,11 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - §DRY: the GROUP ALL count reader = FIVE copies (findings, messages, diff, `governed._scope_count`, `principals._group_all_count`). ONE policy (empty → 0; wrong shape → SurrealStoreError) as `governed.group_all_count`. **63c's two copies collapse NOW**; findings/messages/diff → 64b, decided at the 63c close-out.
   - Walker-pin re-keys route through sidecar-63c-2.
 - **The next wave (after sidecar-64's 58 am-14):** fix-round-3 = a production builder (the F-12(a) catch, the stdout typed count, the `group_all_count` consolidation) + a test-side fix-up (the fates row, r4's two orphan defects per am-14). Both are built on patch 01fd0471, then the re-check audit (targeted + the restored prod slice `test_dump_20260930T001125Z_…`).
+- **58 am-14** (`a9be2c4`, sidecar-64 Task 27): r4 wrote NO second walker.
+  - (1) The typecheck orphans' ONE place = the gate's matcher (`Registry.entry_for` is first-match on the typecheck leg, while pytest unions): `entries_for(path)`, admitted iff ANY entry admits it, with a 2-test TDD in `scripts/test_pending_contract_gate.py`. The registry is unchanged; am-12 §4.3 has an erratum.
+  - (2) The one-scanner pin's `_RESOLVER_NAMES` hand-list lost the ONE walker. Its derivation becomes transitive through calls (63c-owned → sidecar-63c-2 concurrence requested).
+  - (3) The F-12(a) `cli-exit` row is ACCEPTED (riders: `catches=` == `ast.unparse` of the production tuple; one commit).
+  - Sequencing: am-14 §4.
+- **Plan (lead):**
+  - fixup-tests-63c-i-a (tests only: am-14 §1 tests RED, §2 re-key, §3 row) → builder-63c-i-a-fix3 (production: the gate matcher, the F-12(a) catch, am-37 §8's typed stdout count + the `group_all_count` consolidation) → a re-check audit (targeted + the restored prod slice) → the 63c-i-a commit.
+  - The gate-matcher fix rides the 63c commit set as its own commit (one concern each).
