@@ -1959,3 +1959,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - The one-derivation pin is REQUIRED.
 - The test-side edits (round 4b) were sent to fixup-tests-63c-i-a-2 (~15:35Z): allowlist → 3, xfails → plain pins, a delete non-dict-INFO pin, F5 DUAL re-key, the span form, the one-derivation pin; re-cut the patches; the final ROUND 4 replaces the partial.
 - NEXT: builder-63c-i-a-fix6 on the final full4 (§13 + §13.1 production + the reference-doc facts).
+- **fixup2 ROUND 4 FINAL (`bf1236a`).**
+  - §13 A–D + §13.1 test side. 209 declared RED = observed on fix5 (+34 pre-owned 64b-i); GREEN on the combined reference; 5/5 mutations held (M-A2 v2 caught its own blind spot, re-keyed, v3 held); every run serialized through one flock gate.
+  - r4 delta `ab711142bf1204cfe7395e4038bc9b88`, full4 `7ab76f3611bedf69eddc4df943cbbc67` (lead-verified; full4 apply-check OK at bf1236a). The delta touches 4 test files only; `_surreal_harness.py` is NOT touched.
+- `builder-63c-i-a-fix6` spawned (~16:35Z; 100 min excluding memory-gate waits) on full4: §13 A–D + §13.1 production + the store-reference facts. It is NOT given the throwaway reference patches.
+- Then `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5`. The audit re-runs the dirty-store acceptance for D and A (a NEW restore; #525 loader-swap).
