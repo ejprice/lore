@@ -472,3 +472,63 @@ the honest-developer gate; the tuple is the allowlist of faults the CLI knows ho
   the observable exit/stderr) → STOP and report; the observable fate is unchanged either way.
 - The production edit touches ONLY `principals.py`; the fates file and the CLI test file are the test side's; one
   commit each, in that order (test side first — the pin must red on fix3-as-is before it greens).
+
+## 12. Appended 2026-09-30 (lead, operator fold, over `REPORT-fixup-tests-63c-i-a-2.md` §ROUND 2 R2-F1 / R2-5): the wrap-coverage class — the lead's lift is RIGHT and it is FALSE on production today: four unwrapped write boundaries in two 63c-owned stores. It rides this fold as a DERIVED pin + four one-line wraps, not as a residual
+
+**1. CLASS and DOMAIN.** PROPERTY: *for every store a lore-adm verb reaches, every derived WRITE boundary sits inside
+`wrap_store_rejection(<that store's domain error>, …)`* — so a store rejection reaches the operator as the store's
+own teaching, never as a raw driver label; after §11 the raw label is laundered to a clean exit 1, which is honest
+but teaches nothing about WHICH domain operation failed. DOMAIN, two levels, both derived:
+- the STORE set = the `build_*_store` calls in `principals._dispatch`'s AST (today `PrincipalStore`,
+  `PrincipalKeyStore`, `KeepStore`) — never a list;
+- per store, the WRITE set = R2-5's derivation generalised over the class: sink (a) `self._query(<stmt>)` /
+  `run_query(<stmt>)` whose literal text starts with a write verb (CREATE / RELATE / UPDATE / DELETE / UPSERT /
+  INSERT / BEGIN) or is dynamic (`<dyn>` is a write until proven otherwise — allowlist the safe), and sink (b) any
+  `execute_transaction(...)`. That derivation is the right domain; "methods referencing `wrap_store_rejection`" and
+  the hand-listed `expected_wrappers` are exactly the reach-as-hidden-constant defect R2-F1 names.
+- **Exemptions, each with a reason (an allowlist, not a hole):** `ensure_ready` — DDL readiness, raw by design in
+  every store, and its fate is pinned by §11's generated CLI pin whose injection point IS `ensure_ready` (right,
+  keep it). The governed migration (`governed.py` / the `_migrate_*` legs) — NOT in this domain: its writes are
+  governed-guard transactions whose fault contract is the typed `MigrateGovernedResult` refusal + §6 F-12's catch,
+  ruled am-30..36; a wrap there would be a second policy for one surface.
+
+**2. Measured on the fix3 tree (the R2-5 derivation run over the three classes, 2026-09-30):**
+| store | wrapped | **UNWRAPPED write boundary** |
+|---|---|---|
+| `KeepStore` | 7 / 7 (R2-1) | — |
+| `PrincipalStore` | `create`, `set_subject` | **`set_status` (UPDATE), `set_expires` (2× UPDATE), `delete` (TXN)** |
+| `PrincipalKeyStore` | `mint` | **`revoke` (UPDATE)** |
+So the lead's premise ("GREEN on current production") fails: FR-2 Q2b established parity with `PrincipalStore.create`
+only, and nobody derived the rest. Not a residual — a live gap in 63c's own files, found by the derivation the moment
+it was run over the whole domain. **It rides THIS fold**, both halves:
+- PRODUCTION (four one-line edits): wrap `set_status`, `set_expires`, `delete` in
+  `wrap_store_rejection(PrincipalStoreError, "could not <verb> principal …")` and `revoke` in
+  `wrap_store_rejection(PrincipalKeyStoreError, "could not revoke key …")` — the message shape of the existing
+  wraps in each file. `delete`'s domain refusals (`PrincipalHasKeepsError`, `PrincipalOwnsGovernedRowsError`) are
+  `PrincipalStoreError` subclasses, not `SurrealStoreError`, so the seam passes them untouched (STOP check below);
+  §10.1(a)'s malformed-count `SurrealStoreError` becomes `PrincipalStoreError("could not delete …")` — still refused,
+  still exit 1, now with the domain teaching.
+- TEST (63c-owned, the fixup agent's files): ONE generated pin per store, `∀ store ∈ derived store set, ∀ boundary ∈
+  derived write set ∖ {ensure_ready}: boundary is lexically inside a `wrap_store_rejection(<store error>)`` — the
+  R2-5 instrument promoted from a scratch script to the pin's derivation (home: beside
+  `TestTheRoutedSetIsDerivedAndComplete` in `test_engine_rejection_seam.py`). Two-way: RED on fix3-as-is naming
+  exactly the four boundaries above (that receipt is the declared-RED set for the mutation proof), GREEN after the
+  wraps; a fifth unwrapped write reds BY NAME. The existing routed-set pin's expectation
+  (`expected_wrappers` / the invocation map) is RE-KEYED from a hand-list to *derived write set ∪ the declared
+  read-wrappers* (reads that are wrapped by choice, e.g. `list_keeps_for_member`, listed WITH a reason — the only
+  hand-written part, and it is the safe set); the fault-injection invocation map grows the four new boundaries the
+  same way (`_inject_store_error` already covers both sinks).
+
+**3. STOP conditions.**
+- `wrap_store_rejection` must re-raise a non-`SurrealStoreError` untouched (the a19b delete pins assert
+  `PrincipalHasKeepsError` / `PrincipalOwnsGovernedRowsError` by class). If the seam converts everything, STOP:
+  the `delete` wrap moves to the TXN call alone (inside the method, after the domain checks), never around the checks.
+- The routed-set exact pin (`…test_the_routed_set_equals_the_invocation_map[principal]` / `[principal_key]`) reds on
+  the four new wraps until its expectation is derived — the test-side commit lands FIRST with the derived expectation
+  (RED on the four at fix3-as-is, by name), then the production wraps; never the reverse.
+- The 58 catch-site scanner / fates: a `with wrap_store_rejection(...)` adds no `except` in the method (the seam owns
+  the handler; translate-seam population, 58 am-7 §1) — no new row. If the scanner nevertheless reports a new
+  handler keyed to `delete`, STOP and report; do not register a row for a site that is the seam's.
+- If `principal_keys.py` is outside the builder's writable set for this fold, `revoke` goes into the pin as a
+  DECLARED pending member (the §2 declared-pending-delta form: green with the declaration, red on a fifth, red when
+  the wrap lands without clearing it), owner the next `principal_keys`-touching contract — named in the close-out.
