@@ -393,3 +393,82 @@ the package*, derived by sweep at the 64b step, never counted by hand again.
    case is one generated row in those tests, so the pin rides WITH them now (the same commit, 58's file, the site's
    owner writes the row — §8.1's precedent). If the lead judges the gate tests are not that commit, then residual to
    the next gate-touching contract, named in the close-out.
+
+## 11. Appended 2026-09-30 (lead, operator-directed fold before the re-check audit): R2-1 — lore-adm store faults surface as a traceback. ONE fault handler at the lore-adm entry; FR-2 D1 re-ruled; one fates row replaces two; one generated pin over the verb set
+
+Read from the fix3 scratch tree (`…/5e3e72cf…/scratchpad/fix3`, patch md5 `f5897681` verified), not the main tree.
+
+**1. The CLASS, and the domain.** PROPERTY: *every lore-adm verb translates every store or domain fault into
+`f"{_CLI_PROG}: {error}"` on stderr + exit 1 — never a traceback, never a success.* It is already written in
+`_dispatch`'s own docstring (*"Domain failures are laundered to a stderr line + non-zero exit; a transport fault
+surfaces the same way"*) and violated by the code beneath it. DOMAIN source of truth: the verb set is
+`build_parser()`'s subparsers, routed by `_dispatch` through the two named branches + `_KEEP_VERB_HANDLERS` +
+`_VERB_HANDLERS`. **Sweep, every dispatcher today (fix3 left these NOT TRIED):**
+| dispatcher | catch tuple | store faults it lets through as a traceback |
+|---|---|---|
+| `_dispatch` (principal / key verbs incl. `delete`) | `(PrincipalStoreError, PrincipalKeyStoreError, SurrealConnectionError, ValueError)` | every non-transport `SurrealStoreError` — the R2-1 delete read, any rejected `ensure_ready` DDL |
+| `_dispatch_keep` | `(KeepStoreError, SurrealConnectionError, ValueError)` — FR-2 D1 | the same class on keep READS and on `ensure_ready` |
+| `_dispatch_migrate_governed` | `(PrincipalStoreError, KeepStoreError, SurrealStoreError, ValueError)` | none (fixed §6 F-12) |
+| `_dispatch_report_unmigrated` | `(PrincipalStoreError, SurrealStoreError, ValueError)` | none |
+Four hand-written copies of one policy, two of them wrong — the #102 shape, again, in a CLI.
+**FR-2 D1 re-ruled.** D1 kept the raw `SurrealStoreError` OUT of `_dispatch_keep`'s catch so that an engine rejection
+escaping `KeepStore` un-wrapped would be a loud BUG signal (a missed wrap). Its premise is false for READS (wrapping
+is a WRITE-boundary property; `delete`'s `owned_count` read and every `ensure_ready` are un-wrapped by design) — and
+a traceback is never an honest operator surface for a store fault, whatever the cause. The missed-wrap property stays
+enforced where it belongs: by the FR-2 wrap pins over KeepStore's write boundaries, never by leaking tracebacks to
+operators. D1's INTENT (a missed wrap must be visible) is preserved by the handler's message: an un-wrapped
+`SurrealStoreError` prints its driver class name in the stderr line (the label + `_SERVER_LOG_HINT`), which is
+distinguishable from a `KeepStoreError` teaching — the wrap pins catch the class; the operator still sees the fault.
+
+**2. Pinned property or new?** PINNED, over a hand-list domain of ONE verb
+(`test_principals_cli.py::…test_report_unmigrated_on_an_absent_table_fails_loud_not_a_traceback`). R2-1 is a new
+CASE — the same property over the other verbs. Under rule 5: an IMPLEMENTATION requirement at ONE chokepoint,
+verified by the re-check audit — plus the completeness assertion rule 2 demands for a derived domain (item 4), which is
+ONE generated pin, not a contract round.
+
+**3. The ONE chokepoint — the lore-adm ENTRY.** The fault→exit translation lives ONCE, in `_dispatch`, wrapping the
+whole verb routing; the three verb dispatchers keep their `try/finally` resource closes and LOSE their `except`
+blocks. Exact fate: `print(f"{_CLI_PROG}: {error}", file=sys.stderr); return 1` — the existing shape, byte-identical
+to what the four copies print today. It can never swallow a fault into success: the handler's only return is `1`;
+`0` is returned only by a verb handler's own path. `_require_config` stays OUTSIDE (a missing `--config` is a
+`SystemExit` by design, for every verb). The exception set (all lore-adm faults; the lazy imports move to the top of
+`_dispatch`):
+```
+except (PrincipalStoreError, PrincipalKeyStoreError, KeepStoreError, SurrealStoreError, ValueError) as error:
+```
+Anything outside it (a `TypeError`, an `OSError` from the filesystem) is a programming defect and DOES traceback —
+the honest-developer gate; the tuple is the allowlist of faults the CLI knows how to name.
+
+**4. Exact edits.**
+- PRODUCTION (`principals.py`): (i) `_dispatch` = `_require_config` → `load_surreal_only_config` → `try:` the
+  existing routing (the two named branches, the keep branch, the principal/key branch with its own `try/finally`
+  closes) `except <the tuple above>` → stderr + `return 1`; (ii) delete the `except` blocks of `_dispatch_keep`,
+  `_dispatch_migrate_governed`, `_dispatch_report_unmigrated` (their `try/finally` closes stay); (iii) rewrite
+  `_dispatch_keep`'s D1 docstring paragraph to this ruling (a docstring teaching a retired policy is the P8d class).
+- TEST SIDE (`loremaster/tests/_exhaustion_fates.py`): DELETE the rows `principals.py::_dispatch_migrate_governed`
+  and `principals.py::_dispatch_report_unmigrated` (their sites no longer catch — a row without a site reds the
+  both-ways pin); ADD ONE row `"principals.py::_dispatch": (Fate("cli-exit", "principals", ("stderr",
+  "returns-named-outcome"), catches="(PrincipalStoreError, PrincipalKeyStoreError, KeepStoreError, SurrealStoreError,
+  ValueError)"),)` — `catches=` equal to `ast.unparse` of the production tuple (58's rider), same evidence as the
+  rows it replaces. The §8.1 fates row for `_dispatch_migrate_governed` is thereby superseded before it lands.
+- GENERATED completeness pin (`test_principals_cli.py`, 63c-owned): ∀ verb ∈ `build_parser()`'s subparser choices
+  (DERIVED — never a list), with ONE injection point every verb reaches — a store whose `ensure_ready` raises
+  `TxnDomainRejectionError("(assert violation); see the server log")` (monkeypatch `build_principal_store` /
+  `build_keep_store`) — assert: exit `1`, stderr's first line starts with `f"{_CLI_PROG}: "`, stdout empty, and
+  `capsys` shows no `Traceback`. Controls: the same store raising `SurrealConnectionError` (already-laundered class →
+  same fate) and a verb succeeding (exit 0, stderr empty). Two-way: the pin reds at fix3-as-is on `delete` and every
+  keep verb, green after the edit; a verb added to the parser without reaching `_dispatch`'s handler reds by name.
+
+**5. STOP conditions for the builder / test-side agent.**
+- The 58 runtime cross-check ("every listed handler has a runtime injection", am-5 §3 / am-7 §3 item 2): if a driver
+  is keyed to the two DELETED sites, it is re-keyed to `principals.py::_dispatch` in the same test-side commit (the
+  injection now lands one frame up). If that re-key is not possible in this fold, the FALLBACK is the per-verb form —
+  widen the two wrong tuples to `SurrealStoreError` and register THREE rows — with the #102 cost named in the
+  close-out (four copies of one policy) and a re-open at the next CLI-touching contract. The fallback is not the
+  ruling; it is the escape hatch.
+- Any pin asserting a specific dispatcher's `except` tuple by AST or by `__doc__` text (none found: the only tuple
+  readers are the fates rows, re-keyed here; `test_principals_cli` pins fates, not tuples) → STOP and report.
+- Any pin driving a fault into `_dispatch_migrate_governed` and asserting the catch happens IN that frame (rather than
+  the observable exit/stderr) → STOP and report; the observable fate is unchanged either way.
+- The production edit touches ONLY `principals.py`; the fates file and the CLI test file are the test side's; one
+  commit each, in that order (test side first — the pin must red on fix3-as-is before it greens).
