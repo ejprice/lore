@@ -1614,3 +1614,10 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - 7 MINOR: the new F-C4/F-C7/F-C8/F-C9/F-C10 → §7.
   - Commit mechanics: the patch conflicts with #486's WIP in the registry yaml; it applies clean with `--cached` (lead, at commit).
   - **R-1: FOCUS 7 (the real prod-dump restore, the #107 class) was DENIED by the permission layer ("Modify Shared Resources"), the 2nd audit in a row** → OPERATOR decision: grant it or run it. The auditor also had a plain source read in its own scratch copy denied.
+- **63c am-37 §7** (`6ade684`, sidecar-63c-2):
+  - F-C11: §5's `in` spelling was the erratum. The ruling is the SDK's own `QueryError.is_not_executed or is_cancelled` (no compare, no set; the tester pin is met, not dodged).
+  - F-C7, F-C8(+F-14), F-C9: FIX-IN-ROUND.
+  - F-C4: BOUND → #34's sanitiser owner. F-C10: BOUND.
+  - No contract edit.
+- **OPERATOR:** "You run the restore (Recommended)". The operator runs `restore_prod_dump.py` and hands over `LORE_PROD_DUMP_DB=<name>`. The fix-round re-check runs `migrate_governed` against it and reaps it.
+- **builder-63c-i-a-fix2 SPAWNED** (opus55-worker, 90 min; brief `scratchpad/brief-builder-63c-i-a-fix2.md`). It works on patch 956e4136 in a scratch copy and carries am-37 §5-as-§7 + §6's 8 + §7's 3, M-1 included (it edits the store reference). Targeted scope: the packet's ONE full suite already ran in coldaudit-3.
