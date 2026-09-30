@@ -358,3 +358,38 @@ alias → the attribute name) BEFORE closing over calls, and add the control: a 
 resolver through an alias → derived. The docstring's bound then honestly reads *"dynamic dispatch, or a class tree
 spelled without naming it"* — nothing else. Lands per am-14 §4 with §1 and the F-12(a) row (58's two riders on that
 row — `catches=` equals `ast.unparse` of the production tuple; one commit — are accepted).
+
+## 10. Appended 2026-09-30 (lead, over `REPORT-builder-63c-i-a-fix3.md@63c5c71` §FLAGS F-1 / §FORKS F-2): the two fail-OPEN readers — (a) FIX NOW, (b) same fate as a rejected read, never boot-FAIL; the receipt renders `None` explicitly; D-1's pin rides am-14 §1's gate tests if they land now
+
+**Erratum (mine, §8.3):** "FIVE readers" was an un-derived count — awk finds at least eleven — inside a ruling about a
+duplicated reader. The CLAUDE.md receipt shape exactly (#102/#120's "eleven copies" that was itself un-derived). The
+§8 ruling (ONE policy, ONE home) stands; the DOMAIN is re-stated as *every `SELECT count() … GROUP ALL` consumer in
+the package*, derived by sweep at the 64b step, never counted by hand again.
+
+1. **(a) `PrincipalStore` delete path `owned_count` — FIX NOW, via `governed.group_all_count`.** A fail-OPEN guard
+   (malformed answer → `0` → SF-63-5's refuse-while-owning gate bypassed → a delete that dangles owned governed rows)
+   in 63c's own file is the one shape "known defects get fixed in the session that finds them" is written for.
+   Fail-closed: a malformed count raises `SurrealStoreError` and the delete does NOT proceed (the store fault reaches
+   the operator through §6 F-12's base-class catch). STOP check for the builder: any pin feeding the delete path a
+   malformed count and expecting the delete to proceed (none expected — the 12 governance hits are the owning-refusal
+   legs) — a wrong-shaped-dependency pin expecting a refusal is the a28 property and stays green.
+   **(b) `governed.report_unmigrated_governed_rows` — same reader, same policy; the boot FATE is the one a REJECTED
+   count query already has, never boot-FAIL.** The function is an ALARM (#131's lesson is SILENCE; its cure is
+   loudness, not refusing to serve). `group_all_count` raises the same `SurrealStoreError` class `run_query` raises
+   when the engine REJECTS that count (`governed.unmigrated_count.rejected`), so a malformed shape takes the path a
+   rejected count already takes — ONE fate, no new policy. Rider: the builder READS that caller's fate and reports it;
+   if a rejected count is today swallowed silently at boot, that is a finding of the same class (a silent alarm) and
+   the fate becomes a logged ERROR with `exc_info` naming the remedy — still not a boot failure. The rest of the
+   sweep (the `cascaded` audit count, `tasks`, `store/surreal.py`, `index/surreal_manifest.py`, findings, messages,
+   diff) → the 64b §DRY step, decision point the 63c close-out (§8.3 unchanged).
+2. **F-2 — render `unsound_sender_messages=None` EXPLICITLY on the agent / memory receipts; omit-when-None is
+   REFUSED.** An omitted field is indistinguishable from a binary that never measured it (the #131 "a field nobody
+   renders" shape) and gives a script a variable-shape line; `None` is the typed "not measured for this table"
+   (am-32 §2.1), served as itself. ONE convention for the whole line: every `None`-bearing field of the result the
+   receipt renders is rendered the same way — if the line already renders another `None` field by omission, that
+   field moves to explicit `None` in the same delta (one convention, never two).
+3. **D-1 (gate unsymboled, judged per path-union; fixed at `entries_for`, no pin) — residual ONLY if am-14 §1's
+   gate-matcher tests do not land in the same test-side fix-up.** They do land there per am-14 §4; a path-union
+   case is one generated row in those tests, so the pin rides WITH them now (the same commit, 58's file, the site's
+   owner writes the row — §8.1's precedent). If the lead judges the gate tests are not that commit, then residual to
+   the next gate-touching contract, named in the close-out.
