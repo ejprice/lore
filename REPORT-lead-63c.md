@@ -1852,3 +1852,7 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - am-37 §13 requested from sidecar-63c-2 (30 min).
   - Sequence: §13 → test side (fixup-tests-63c-i-a-2 round 4, or a fresh agent) → `builder-63c-i-a-fix6` → the delta re-check `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5`.
   - Base: the final patch 5f2d7c43.
+- **Correction (lead):** the operator rulings and the am-37 §13 request are timestamped "~03:35Z" above; the true time is **~14:35Z on 2026-09-30** (the operator's answer arrived later; the lead did not re-read the clock). The same wrong stamp is in the annotations on #523/#524/#525.
+- Findings: coldaudit-4 had already filed D-3/D-2/D-1 as **#523 / #524 / #525**; the lead's #526 duplicated #525 and is closed as wontfix.
+  - #525 carries the packet-64 routing.
+  - #523 (class A) and #524 (class D) are annotated FOLDED, to be resolved at the 63c-i-a commit.
