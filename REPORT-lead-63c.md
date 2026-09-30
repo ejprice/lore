@@ -1844,3 +1844,11 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - D. D-2 teaching precondition (or a 65 runbook line).
   - Residuals: R-1, F-8, F-9 (exit codes; recommend defer), F-11 (gate false RED, fails loud), F-12, F-13, F-16, §W row 4, the GROUP ALL sweep → 64b.
 - **Lead receipt re-run (random pick):** `test_principals_cli.py` + `test_engine_rejection_seam.py` on 5f2d7c43, in background task bn87g2ha2 (held at the 20 GiB gate: an odoo pg restore in another session had 15.7 GiB free).
+- **Lead receipt re-run: `test_principals_cli.py` + `test_engine_rejection_seam.py` on 5f2d7c43 → 192 passed, 0 failed** (= the audit's 85 + 107). Admitted at 20.8 GiB, cgroup-capped.
+- **OPERATOR RULINGS (2026-09-30 ~03:35Z):**
+  - FOLD classes A–D into 63c-i-a BEFORE the commit.
+  - F-9 (exit codes): DEFERRED; trigger: the first script or agent flow that needs to retry lore-adm.
+  - D-1: routed to packet 64 as finding **#526**; trigger: the next S2 / 65 dress rehearsal through lore-adm.
+- am-37 §13 requested from sidecar-63c-2 (30 min).
+  - Sequence: §13 → test side (fixup-tests-63c-i-a-2 round 4, or a fresh agent) → `builder-63c-i-a-fix6` → the delta re-check `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5`.
+  - Base: the final patch 5f2d7c43.
