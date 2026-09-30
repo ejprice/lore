@@ -2004,3 +2004,14 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - Same readback as the first restore: agent 95, brief 26, briefed 123, finding 324, finding_counter 1, memory 177, message 316, task 116, to 337.
   - blocks / audit / keep / member_of / principal / principal_key ABSENT.
   - The name was written atomically to `scratchpad/lead/audit5-dump.txt` for coldaudit-63c-i-a-5, which must reap it after its §6.
+- **blindreader-63c-i-a-5 DONE (`585388f`).** 0 BLOCKER / 2 MAJOR / 6 MINOR / 4 NIT. The verify path is fail-closed: a wrong shape → 500, never ALLOW (it was a 401 deny).
+  - F-1 MAJOR (latent): `_set_columns` silently NARROWS the column set on a subquery/keyword inside SET, so the schema gate PASSES. The 3 shipped statements parse right; it goes live with 63c-ii's brief leg.
+  - F-2 MAJOR (class) / MINOR (exposure): the new CLI stderr sink bypasses `logging_setup.RedactingFilter` (ROUTING-IS-NOT-SHARING); `engine_error` + the raw cause print twice, and can echo the bound credential hash on key mint.
+  - MINORs:
+    - F-3: post-commit shape faults say "nothing was decided" (F-5's siblings);
+    - F-4: no cycle guard in the `_fault_line` cause walk (it hangs);
+    - F-5: `report-unmigrated --table brief` names a remedy verb that refuses brief;
+    - F-6: `PrincipalStore._as_rows` keeps a default noun, so keep faults say "principal-substrate query";
+    - F-7: the `_dispatch` docstring says ValueError defects traceback, but ValueError is in the tuple.
+  - **F-8, a LEAD BRIEF DEFECT:** my `cp -a old new` recipe (blind-4 and blind-5) poisons `$S/new` with the old tree's editable `.pth` (#140 mode 1). blind-5 caught it via its provenance print and re-ran pinned; blind-4 only diffed text (unaffected). From now on: `scratch_copy.sh` for EVERY scratch tree, never `cp -a` of a synced tree.
+  - Final triage waits for coldaudit-63c-i-a-5.
