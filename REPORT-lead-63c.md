@@ -1994,3 +1994,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - r5 delta `5ef35641295e40cc8e143f647fe2784e` (2 test files), lead-verified; it composes over the fix6 full at 7a1dac4.
 - `builder-63c-i-a-fix6` RESUMED (~18:05Z, 40 min): apply r5; remove the `_rows_stamped` default; the FLAG-3 module docstring; the §13.2 leg-docstring bound; a targeted run (0 unowned reds); re-cut the FINAL patch. Then coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
 - Audit item for coldaudit-63c-i-a-5: after fix6 removes the `_rows_stamped` default, the `_BACKFILL_UPDATE_NOUN` constant and its comment ("the default only labels the raised message") must be gone too, not left dead or stale. (From fixup2 round 5; not sent to the busy builder mid-run.)
+- **builder-63c-i-a-fix6 RESUME DONE (`6cd4eb1`).**
+  - FINAL 63c-i-a patch `…/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r5.full.patch`, md5 **`bec291900a49c2e5df0704ef912fd5b9`** (20 files); delta over 3132f699 `2bb39a7b…`. Lead-verified; `--cached` apply OK at 6cd4eb1; the working tree conflicts only on `scripts/pending_contracts.yaml` (the known stale hunk).
+  - Runs: 0 GREEN→RED; am34_5 GREEN; 268 reds all owned (58 ×33, 64b-i ×235), ZERO unowned; typecheck 83.
+  - `_BACKFILL_UPDATE_NOUN` deleted; FLAG-3 + the `GovernedAuditUnavailable` class docstring fixed (a disclosed extra); §13.2 ordering bound in all 3 legs.
+- The operator was ASKED to run a fresh `restore_prod_dump.py` (the audit needs the pre-boot dump for D's acceptance; agent restores were permission-denied before). Handoff: the lead writes the DB name to `…/scratchpad/lead/audit5-dump.txt`.
+- Spawning `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5` on bec29190.
