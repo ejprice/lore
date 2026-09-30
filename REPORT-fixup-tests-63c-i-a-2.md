@@ -448,3 +448,31 @@ The r4 delta touches no production file, so it composes with the §13 / §13.1 p
 ### Instruments (surviving)
 - The pins themselves are the instruments: the AST derivations of the §11 tuple, the seam `extra` keys, the wrap sites, the `--table` verbs, the allowlist walker, the leg statements and the SET columns. All are committed in the test files.
 - `…/scratchpad/red_diff.py` (the declared-vs-observed differ, pasted in §8) and `…/scratchpad/declare_all.py` (the combined declaration predicate) are scratch; the predicate is summarised in the table above.
+
+## ROUND 5: FLAG-1 resolver + the arity probe (lead ~17:25Z; source `REPORT-builder-63c-i-a-fix6.md` §3, `c8c3435`)
+*Measured 2026-09-30 17:41–17:47Z in scratch `fixup5` = HEAD `a7e0707` + fix6 full patch (md5 `3132f699…` verified). `loremaster.__file__` resolves inside `fixup5`. Tests only.*
+
+**SUMMARY:**
+- **State:** done.
+- **FLAG-1 closed:** D's file no longer holds a second resolver. `am34_5` is GREEN, every D pin is GREEN, and D's mutation proof holds on fix6.
+- **Arity probe rewritten:** with the `_rows_stamped` `noun=` default REMOVED in a throwaway, typecheck stays at 83, ruff stays GREEN, and B's pins pass 85/85. The builder can drop the default.
+- **Deviations:** none.
+- **Graded:** n/a (author). Base `a7e0707` + fix6.
+
+| item | edit (test file) | receipt |
+|---|---|---|
+| FLAG-1 | `test_preboot_schema_precondition_63c_13d.py::_leg_statements` no longer calls `eval(compile(ast.Expression(...)))`. New `_render_statement` reads the statement from its OWN literal parts: str `Constant`, f-string parts, `+` concatenation, and bare module-global `str` Names, looked up in `vars(principals)` and never evaluated. Any other part fails LOUD. | (a) Byte-identical to the old eval for all 3 legs (agent/memory/message): scratch comparer `…/scratchpad/compare_render.py`, whose eval lives outside the tree. (b) `_scanner_candidates` over the whole tree: walkers `{_catch_sites.py::catch_sites_in}`, resolvers `{_catch_sites.py::resolved_by_import}`, i.e. exactly one each. (c) **RED with the fix6-as-is D file swapped back in:** `am34_5` fails naming `test_preboot_schema_precondition_63c_13d.py::_leg_statements` as a second resolver (`r5.am34_5.asis.log`); the r5 file was restored and `cmp`-checked. (d) Targeted run over the D file + `test_retry_seam.py` + the B file + `test_principals_cli.py`: **1004 passed, 0 failed** (`r5.run.log`, admitted 17:43:58Z at 53 GiB, 0 other pytest). (e) **D mutation:** the fix6 anchor is `_schema_predates_refusal`'s `if not missing: return None`, changed to `if True:`. It declared 10 (7 dirty + 3 one-derivation) and **PROOF HELD** (`r5.mutD.log`); production `cmp`-equal to fix6 afterwards. |
+| ARITY | `test_fail_closed_shapes_63c_13b.py::_call_rows_stamped` now calls through an `Any`-typed binding (`function: Any = principals._rows_stamped`), so both arity branches type-check against every signature the probe tolerates. The `# type: ignore[call-arg,unused-ignore]` is gone. | `cp -a` throwaway: `def _rows_stamped(update_result: Any, *, noun: str) -> int:` with the default removed. All 3 production callers already pass `noun=` (lines at `fix6`: the memory, agent and message legs). Result: `--currency --legs typecheck,ruff` gives typecheck **RED_ADJUDICATED 83** (unchanged from the 83 with the default), ruff GREEN, and the B file **85 passed** (`r5.nodefault.B.log`). Production restored and `cmp`-equal to fix6. |
+
+- **The lesson, as a question:** *"does the helper I am adding to the test tree walk ASTs, and did I put `test_retry_seam.py` in my targeted set?"*
+  - `test_retry_seam.py` owns the tree-wide one-walker/one-resolver property.
+  - Its scanner derives candidates by SHAPE across `tests` too (a function naming both `eval` and `Expression` is a resolver).
+  - So any AST-walking helper added to the test tree must be run against it. Round 4's targeted set omitted it, so the red went unowned through two rounds.
+  - (Receipt for that omission: FLAG-1, found by builder-fix6, not by me.)
+- **Also for the builder** (fix6's production comment): `_BACKFILL_UPDATE_NOUN`'s comment says *"the default only labels the raised message"*. When the default is removed, that comment and the constant go with it.
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r5.delta.patch` (tests only: `test_preboot_schema_precondition_63c_13d.py`, `test_fail_closed_shapes_63c_13b.py`) | HEAD `a7e0707` + fix6 `3132f699` | `5ef35641295e40cc8e143f647fe2784e` | OK |
+
+**Gates:** `uv run ruff check .` All checks passed. Currency (typecheck, ruff) is 83 / GREEN, RED_ORPHANED 0. Every run was serialized through `gate.sh::gated_run`.
