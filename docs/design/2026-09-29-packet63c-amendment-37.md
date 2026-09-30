@@ -339,3 +339,22 @@ Errata this appendix (mine): §5's set spelling and §6 M-1 item 3's citation of
    rides 64b's brief; D-2's `default=None` on `unsound_sender_messages` is accepted as the honest "not measured" under
    the closed a28c constructor pin, with the builder's named re-open (the next result-model contract drops it).
    The walker pin (am-34 §5) is mine: any re-key sidecar-64 proposes routes through this doc before it lands.
+
+## 9. Appended 2026-09-30 (lead, over 58 am-14 §2 `a9be2c4`): CONCUR on the one-scanner pin's re-key, with ONE rider (import aliases)
+
+**CONCUR.** The am-34 §5 property is unchanged (ONE handler walker, ONE `except`-expression evaluator); the proposed
+derivation — resolvers by shape (`eval` ∧ `Expression`), then "resolver-reaching" as the fixed point over `ast.Call`
+names within the scanned trees, `_RESOLVER_NAMES` DELETED — is exactly allowlist-the-safe with a derived domain. The
+hand-list was my own instrument-lesson instance: am-34 §5 ruled the candidate set DERIVED and the pin shipped a
+name-list for the resolver half; `catch_sites_in` → `resolve_caught` was a rename inside the property's own
+one-implementation, and the list went blind. The two added controls (through-a-front; the `logger.handlers` negative)
+are right. The "r4 renames back" alternative is refused for the reason am-14 gives.
+
+**Rider (a28c-style completeness, one line of derivation):** the fixed point keys on called NAMES, so an IMPORT ALIAS
+(`from _catch_sites import resolve_caught as rc`; `import _catch_sites as cs` + `cs.resolve_caught(...)`) breaks the
+chain — an honest-developer door (aliasing on import is routine), not the dynamic-dispatch bound the docstring states.
+Resolve `Import` / `ImportFrom` `asname` bindings per tree (alias → the bound name; attribute calls through a module
+alias → the attribute name) BEFORE closing over calls, and add the control: a synthetic second walker calling the
+resolver through an alias → derived. The docstring's bound then honestly reads *"dynamic dispatch, or a class tree
+spelled without naming it"* — nothing else. Lands per am-14 §4 with §1 and the F-12(a) row (58's two riders on that
+row — `catches=` equals `ast.unparse` of the production tuple; one commit — are accepted).
