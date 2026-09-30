@@ -1808,3 +1808,10 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - Ruling on its builder note: the `delete` wrap is whole-body from `get_by_email` (reading B).
 - `builder-63c-i-a-fix5` spawned about 02:45Z (40 min): the 4 wraps in principals.py + principal_keys.py, on full3 + fix4 delta. Its full patch is the FINAL 63c-i-a patch.
 - The re-check audit `coldaudit-63c-i-a-4` follows. Audit items so far: R-1, R-2 (fix4 §5).
+- **builder-63c-i-a-fix5 DONE (`5089146`).**
+  - FINAL 63c-i-a patch `…/e1f81771-6cf2-4679-b6f7-c87b1afe1196/scratchpad/builder-63c-i-a-fix5.full.patch`, md5 `5f2d7c4366d469e5c2a34d53aa235d6e` (18 files; lead-verified; `apply --check --cached` OK at 5089146). Delta `4e3024e7…`.
+  - Runs: 0 GREEN→RED; exactly the 20 declared RED→GREEN; 36 owned reds (58 ×9, 64b-i ×27, the latter in `test_findings_classes_64b.py`).
+- **COMMIT HAZARD (lead-checked).** The final patch conflicts with the main tree's working copy ONLY on `scripts/pending_contracts.yaml`; `test_surreal_harness.py` applies over the WIP cleanly.
+  - The yaml WIP is ONE hunk, entirely inside the `packet-63c-i-a-a28-contract` entry: a stale, uncommitted a28c edit to 63c's own entry, with no #486 content. The final patch DELETES that entry (it self-destructs with the build).
+  - At commit: `cp -a` the working yaml to the scratchpad, then `git apply --cached` the final patch, apply the patch to the working tree excluding the yaml, and set the working yaml to the new HEAD blob. #486's other WIP files are untouched.
+- **Spawned about 02:55Z, in parallel:** `coldaudit-63c-i-a-4` (90 min; checks 1–8, incl. mutations (a)–(d), R-1/R-2, the real dirty store + reap — if the reap is denied, it goes to the operator) and `blindreader-63c-i-a-4` (45 min; contract-blind, production diff a28c→final).
