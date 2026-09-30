@@ -1649,3 +1649,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - **fixup-tests-63c-i-a DONE** (`755e3a4`; stopped). The 3 ruled test edits landed in scratch (§1 RED on first-match for the right reason; §2 re-key GREEN 4/4 + the §9 alias rider; §3 row RED until the catch lands). Mutation proofs held. Full patch `2c88b1a9` (fix2 + tests), tests-only delta `88c52be2`.
   - D-1: a sibling of am-14 §1 in the per-entry unsymboled self-destruct leg (latent; fails loud). **Lead: FIX-THE-CLASS now** — every per-path lookup goes through the ONE `entries_for`, and the re-check audit constructs the case.
 - **builder-63c-i-a-fix3 SPAWNED** (60 min): the gate matcher (+D-1), the F-12(a) catch, the am-37 §8 typed stdout count, and the `governed.group_all_count` consolidation (sharing proven by mutation). REQUIRED: currency `--legs typecheck,ruff` RED_ORPHANED 0.
+- **builder-63c-i-a-fix3 DONE** (`63c5c71`; kept AT REST for a possible delta).
+  - Results: 4 items; 0 GREEN→RED; 2 RED→GREEN (the fix-up's intended reds); **currency typecheck/ruff RED_ORPHANED 0** (83 residuals, all owned); ruff clean.
+  - Delivered: `entries_for` is the ONE per-path lookup (`entry_for` deleted; the D-1 sibling fixed, probe-proven, NO pin). The F-12(a) tuple is exact. The stdout receipt carries `unsound_sender_messages` when measured. `governed.group_all_count` has its sharing proven by mutation.
+  - Full patch `5a1d411c` (fix2 + tests + fix3) on `fb95d1f`, delta `abbb0edd`.
+  - **Flag F-1:** am-37 §8.3's "five readers" is an UNDERCOUNT. There are ≥6 more tolerant GROUP ALL readers; **2 are FAIL-OPEN**: the principal-delete `owned_count` (the SF-63-5 guard bypassed on a malformed answer) and the unmigrated-rows boot alarm (silent). → sidecar-63c-2 am-37 §10 (lead default: fix (a) now; rule boot fail-vs-log for (b); the rest → the 64b §DRY step).
+  - F-2 (None-render) and the D-1 pin → a residual for the next gate contract.
