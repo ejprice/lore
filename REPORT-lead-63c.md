@@ -1644,3 +1644,5 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - **Plan (lead):**
   - fixup-tests-63c-i-a (tests only: am-14 §1 tests RED, §2 re-key, §3 row) → builder-63c-i-a-fix3 (production: the gate matcher, the F-12(a) catch, am-37 §8's typed stdout count + the `group_all_count` consolidation) → a re-check audit (targeted + the restored prod slice) → the 63c-i-a commit.
   - The gate-matcher fix rides the 63c commit set as its own commit (one concern each).
+- **63c am-37 §9** (`731a84f`): CONCURS with 58 am-14 §2, plus ONE rider: resolve Import/ImportFrom aliases before the call closure, +1 control. It accepts 58's two F-12(a) row riders.
+- **fixup-tests-63c-i-a SPAWNED** (opus55-worker, 60 min; brief `scratchpad/brief-fixup-tests-63c-i-a.md`): tests only, on the fix2 patch in scratch; the patches are handed back, not committed.
