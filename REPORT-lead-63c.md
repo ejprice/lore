@@ -1856,3 +1856,76 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - Findings: coldaudit-4 had already filed D-3/D-2/D-1 as **#523 / #524 / #525**; the lead's #526 duplicated #525 and is closed as wontfix.
   - #525 carries the packet-64 routing.
   - #523 (class A) and #524 (class D) are annotated FOLDED, to be resolved at the 63c-i-a commit.
+
+## RESUME ANCHOR v9 (2026-09-30 ~14:45Z) — AUTHORITATIVE; supersedes v8
+**Operator scope (unchanged):** serial order 63c-i-a → 58 → 64b-i. #486 is PAUSED; its WIP is in the main tree. Not started: #492, #512, holes, test smells, 63c-i-b, 64a, 64b-ii, 64c, 65.
+
+**63c-i-a state: the audited patch is GO; the operator ordered classes A–D FOLDED IN BEFORE the commit.**
+- AUDITED FINAL PATCH (GO, coldaudit-63c-i-a-4 `8026854`): `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/e1f81771-6cf2-4679-b6f7-c87b1afe1196/scratchpad/builder-63c-i-a-fix5.full.patch`, md5 `5f2d7c4366d469e5c2a34d53aa235d6e`, 18 files. Lead receipt re-run: 192/0. `apply --check --cached` OK.
+- Chain inside it:
+  - fix2;
+  - the fix-up tests;
+  - fix3 r2 (am-37 §8–§10, am-14 entries_for);
+  - fixup2 R1 (§11 tests, `85a4d2e1`), R2 (D1 docstrings, `afa519cf`) and R3 (§12 pin, full3 `299467ba`);
+  - fix4 (§11 handler, delta `fd70c6e9`);
+  - fix5 (§12 four wraps, delta `4e3024e7`).
+- **NOW:** sidecar-63c-2 is writing **am-37 §13** (A–D; requested ~14:35Z; watcher `b51y9v4j9`, 50 min). The four classes:
+  - A: the lore-adm error line teaches the cause (#523 + blind F-3);
+  - B: fail-closed counts/shapes (blind F-1 delete `cascaded`, F-6 `_rows_stamped`, F-7 `_governed_select`);
+  - C: honest labels/prose (F-4 relabel, F-5, N-1/N-2/N-3, F-2, F-14, F-15);
+  - D: pre-boot schema teaching precondition (#524).
+- **NEXT, in order:**
+  1. Verify §13 is committed and read it IN FULL.
+  2. Test side: resume `fixup-tests-63c-i-a-2` as ROUND 4 (native SendMessage; it is at rest, its context holds the whole test chain). Base = `5f2d7c43`. It delivers an r4 delta + a full4 patch, RED receipts declared-then-diffed, a reference GREEN, and mutation proofs; memory wait-loop ≥20 GiB before EVERY run.
+  3. `builder-63c-i-a-fix6` (a fresh spawn; brief shaped like fix4/fix5): the production for A–D on full4. The final patch = its full.
+  4. In parallel: `coldaudit-63c-i-a-5` (a delta re-check: §13 by construction + mutations + targeted run + the dirty-store probe for D/A using a NEW `restore_prod_dump.py` restore, since the old dump is reaped; D-1/#525 means loader-swap as in audit-4 §A.2; if the restore or reap is permission-denied → the operator runs it) and `blindreader-63c-i-a-5` (contract-blind, diff 5f2d7c43 → final).
+  5. On GO: the lead verifies md5 + one random receipt re-run, then COMMITS.
+- **COMMIT MECHANICS (lead-checked):**
+  - `cp -a scripts/pending_contracts.yaml` to the scratchpad first. Its working-tree hunk is a stale uncommitted a28c edit inside the `packet-63c-i-a-a28-contract` entry (NOT #486 content), which the patch deletes.
+  - `git apply --cached --include=scripts/pending_contract_gate.py --include=scripts/test_pending_contract_gate.py` → commit (i) "gate matcher entries_for"; then `git apply --cached` the rest → commit (ii) "63c-i-a build".
+  - Working tree: `git apply --exclude=scripts/pending_contracts.yaml <final>` (every other file applies over the WIP, incl. `test_surreal_harness.py`), then write `git show HEAD:scripts/pending_contracts.yaml` over the working yaml.
+  - NEVER `git add` #486's WIP files. No attribution trailers.
+  - Then: resolve #523/#524 and #520? (no — #520 resolves at 64b-i); an INDEX Log "63c-i-a CLOSED"; `git mv` every 63c REPORT-*.md to `docs/plans/v2/receipts/2026-09-30-63c-i-a/`; the close-out lists the residuals (below) + F-9 + #525.
+- **Residuals to list at close-out:**
+  - R-1 (a teardown fault masks the outcome);
+  - F-8, F-9 (exit codes, operator-DEFERRED; trigger: the first retrying caller), F-11 (gate unsymboled-count false RED, fails loud), F-12, F-13, F-16;
+  - §W row 4;
+  - the GROUP ALL sweep → 64b;
+  - (c) suite bound; gate `--legs` UX;
+  - D-4 → 63c-ii; F-C4 → #34.
+
+**Operator rulings this session (all recorded above):**
+- CLAUDE.md TEST SCOPE clarified (`baa313c`).
+- #520 part 1 folded into the 64b-i build.
+- R2-1 folded (§11), and §12 (4 wraps) rode the fold.
+- A–D folded before commit; F-9 deferred; D-1 → packet 64 (#525).
+
+**Findings:**
+- #523 (A) and #524 (D) are annotated FOLDED → resolve at the commit.
+- #525 → packet 64. #526 is a dup (wontfix). #520 → the 64b-i build.
+
+**Queue after 63c-i-a:**
+- **58:** the §RE-BASE step first (the 36 REF-ONLY reds must go GREEN, else STOP); r4 BUILDER CONSTRAINTS; am-13 (3); a cold audit incl. the 7 adversary-58-r3 wrong builds + `translate_targets() == FAULT_CLASS_NAMES` (see anchor v8).
+- **64b-i:** the pin pass (F-2, F-3, G2, the #319 leg, F-F, the registry re-key), then the build (F-1, `_refuse_foreign_params` with THREE callers incl. comms per #520, BC-r2-9, `table_defined=`, §DRY incl. the GROUP ALL sweep), then a cold audit + commit.
+
+**Live agents:**
+- sidecar-63c-2 (fable, busy on §13);
+- sidecar-64 (fable, idle; keep for 58/64b-i);
+- fixup-tests-63c-i-a-2 (opus, at rest; reuse for round 4).
+
+All others are stopped.
+
+**Used names (never reuse):**
+- adversary-63c-i-a-a28c, adversary-64b-r2, builder-63c-i-a-a28c;
+- builder-63c-i-a-fix2, -fix3, -fix4, -fix5;
+- fixup-tests-63c-i-a, fixup-tests-63c-i-a-2;
+- coldaudit-63c-i-a-3, -4; blindreader-63c-i-a-3, -4;
+- contract-58-r4.
+
+Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
+
+**Background:**
+- `b51y9v4j9`: the §13 watcher.
+- `b0nin9fbc`: the prod lore-surreal RSS sampler (24h, `scratchpad/prod_surreal_rss.tsv`).
+
+**Memory note:** host MemAvailable swings 15–30 GiB (odoo pg restores in other sessions). The ≥20 GiB admission gate is a wait-loop, never a bypass.
