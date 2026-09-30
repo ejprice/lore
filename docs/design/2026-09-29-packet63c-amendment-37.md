@@ -673,3 +673,28 @@ F-13 is NOT a residual: folded via class A (neutral contexts + printed cause). D
    column set EQUALS it, ∀ legs (generated over `_MIGRATE_VALID_TABLES`' legs). It reds the day a leg's `SET` gains a
    column the precondition does not require, permanently; the audit's scratch mutation (add a column to one `SET`)
    is run ONCE to prove this pin fires. The worker's reference stays a SAT host, never a spec.
+
+### 13.2 Addendum 2026-09-30 (lead, over builder-63c-i-a-fix6 FORK-1 `c8c3435`): reading B ACCEPTED — the schema gate is the leg's first act; `_verb_level_refusal` may precede it, and every refusal it can serve on a schema-behind store is TRUE
+
+**Accept B.** §13 D's "verb-level (no leg runs)" meant *no leg READ or WRITE runs*; it did not require the gate to sit
+lexically above `_verb_level_refusal`. Under §13.1 item 5 (columns derived from the leg's own statement) and
+`test_memory_enforcement_63b_ia.py` §1.9 (the statement is a FUNCTION-LOCAL literal, no module constant, no helper),
+the only place that can derive the columns is the leg — so the leg building its literal first and refusing before
+any read, mint or operator resolution IS the ruled chokepoint. Hoisting the literal to satisfy a lexical ordering
+would break §1.9 for an ordering that changes nothing false into something true.
+
+**Why the ordering is harmless, by construction:** every `_verb_level_refusal` teaching is schema-INDEPENDENT truth —
+a dangling sender (a `sender` pointing at no agent) and the agent-first order (agents still unscoped) exist whether or
+not the governed columns are defined, and a half-pair (`scope` set, `owner_principal` NONE) CANNOT exist on a
+pre-boot store (the columns are absent, every read is NONE). So a schema-behind store with a verb-level problem is
+told a true prerequisite first and "boot the new image" on the next run; never a false teaching, never a write.
+The precondition READS on a pre-boot store do not raise (measured: coldaudit-4 §7.3's first run passed every
+precondition read and failed only at the UPDATE).
+
+**§7.3 acceptance HOLDS under B:** on the dump as restored, after the operator bootstrap, `--table agent` has no
+verb-level refusal to serve (agent-first is moot for agent; no half-pairs possible), so the FIRST run's first refusal
+is the schema teaching, exit 1 — the acceptance receipt as written. Rider for the re-check audit: run `--table
+message` on the same pre-boot dump too and record which teaching arrives first (expected: agent-first order) and that
+the schema teaching arrives on the run after `--table agent`; both lines are receipts, neither is a defect.
+Bound, stated in the leg docstring: *"a verb-level refusal may precede this gate; each such refusal is true
+independently of the schema, and this gate runs before any leg read or write."*
