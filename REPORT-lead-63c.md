@@ -1951,3 +1951,11 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
     - D store facts → docs/reference?
     - D flag: a mutated-SET pin?
   - Process note: sub-b killed flock PID 3797612, believing it was its own waiter. Serialization held (process-table check + a single holder), but it is recorded.
+- **am-37 §13.1 RULED (`d6cdd0b`).**
+  - B-D1 (a): `governed.map_of` is the THIRD allowlisted shape helper; `_table_exists` (FAIL-OPEN guard) is fixed, the `_agent_migration_preconditions` clone is deleted, and D's INFO FOR TABLE read goes through it.
+  - B-D2: `authorize_guarded` routes through `rows_of`.
+  - D-fork: one backtick span per column.
+  - D store facts go INTO `docs/reference/surrealdb-31-capabilities.md` in this commit, with the probe in the builder report.
+  - The one-derivation pin is REQUIRED.
+- The test-side edits (round 4b) were sent to fixup-tests-63c-i-a-2 (~15:35Z): allowlist → 3, xfails → plain pins, a delete non-dict-INFO pin, F5 DUAL re-key, the span form, the one-derivation pin; re-cut the patches; the final ROUND 4 replaces the partial.
+- NEXT: builder-63c-i-a-fix6 on the final full4 (§13 + §13.1 production + the reference-doc facts).
