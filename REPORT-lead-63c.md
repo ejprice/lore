@@ -1662,3 +1662,93 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - D-1 pin: the fix-up OR a residual. **Lead: RESIDUAL**, owner = the next gate-touching contract (latent, fails loud; a test-author round is not worth it).
   - Sidecar erratum: §8.3's "FIVE" was un-derived (≥11); the rest of the sweep → the 64b §DRY step.
 - The §10 delta was sent to builder-63c-i-a-fix3 NATIVELY; it resumes from its transcript, with a 40-min deadline. (lore_comms refused: the agent had retired its registration. Retirement is terminal.) Proof of receipt = its report's §10. If none appears → respawn `builder-63c-i-a-fix4`.
+
+## RESUME ANCHOR v8 (2026-09-30 ~01:55Z, lead-63c-2, session 63c-20260924) — AUTHORITATIVE; supersedes v7
+**OPERATOR scope:** "Resume 63c-i-a and 64b-i", then "Resume 58 first (Recommended)".
+- **Build order:** 63c-i-a → 58 → 64b-i, serial.
+- **#486 stays PAUSED:** its WIP is uncommitted in the main tree.
+- **Not started:** #492, #512, the holes, the test smells, 63c-i-b, 64a, 64b-ii, 64c, 65.
+
+**TEST POLICY (CLAUDE.md TEST SCOPE):**
+- targeted runs only; `-n 8`; every run under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 uv run --with pytest-timeout … --timeout=300`;
+- admission gate: MemAvailable ≥ 20 GiB;
+- scratch copies via `scratch_copy.sh`, then `git reset --hard HEAD && git clean -fd`;
+- ONE full suite per packet = the cold audit, run as `pending_contract_gate.py --currency -- --maxprocesses=12`, capped;
+- ⚠ briefs ALLOW `--currency --legs typecheck,ruff` (no pytest); forbidding it let r4 ship orphans (lore memory 8c7a11fb).
+
+**63c-i-a (IN FLIGHT, near commit):**
+- **Patch chain** (all in scratch; nothing production is committed):
+  - builder `956e4136`;
+  - fix2 `01fd0471` (`…/f503eb3c…/scratchpad/builder-63c-i-a-fix2.patch`);
+  - test fix-up full `2c88b1a9` (`…/c4f63f4e…/scratchpad/fixup-tests-63c-i-a.full.patch`; tests-only delta `88c52be2`);
+  - fix3 full `5a1d411c` (`…/5e3e72cf…/scratchpad/builder-63c-i-a-fix3.full.patch`, on `fb95d1f`).
+- **NOW:** builder-63c-i-a-fix3 is applying the **am-37 §10 delta** (`cfaf793`), deadline ~02:25Z; it was sent natively, and its lore_comms registration is retired:
+  - (a) `owned_count` fail-closed via `governed.group_all_count`;
+  - (b) the boot alarm: a malformed count = a rejected-count fate, never a boot fail; a logged ERROR if silent today;
+  - (c) the receipt renders `unsound_sender_messages=None` explicitly.
+  - Proof of receipt = a §10 section in `REPORT-builder-63c-i-a-fix3.md` + a NEW full-patch md5. If none appears, respawn `builder-63c-i-a-fix4` with that delta.
+- **NEXT: a re-check audit** (`coldaudit-63c-i-a-4`, ~45 min) on HEAD + fix3's NEW full patch:
+  - the targeted set (fix3's 74 files) + currency `--legs typecheck,ruff` RED_ORPHANED 0;
+  - verify every am-37 §5–§10 item, the am-14 edits, and D-1 by construction;
+  - **the REAL DIRTY STORE:** the operator restored `LORE_PROD_DUMP_DB=test_dump_20260930T001125Z_a072e4789558446bb05abce309b4a4fb` (ns `lore_test`, :18000; agent 95 / message 316 / memory 177 / brief 26 / finding 324 / task 116, all pre-63 scope NONE; principal/keep/member_of ABSENT). The audit bootstraps an operator principal + project keep as a fresh deploy would, runs `migrate_governed` for every `--table`, compares each served count to a direct SELECT, checks `unsound_sender_messages`, then `restore_prod_dump.py --reap <name>` and proves it gone.
+  - No full suite unless a production delta outside the targeted derivation appears (the packet's ONE full suite ran in coldaudit-3, `535677a`: PASS, 0 orphaned).
+- **COMMIT MECHANICS (lead), on GO:**
+  - the main tree has #486 WIP (incl. `test_surreal_harness.py`, the registry yaml). Use `git apply --cached <final full patch>` on HEAD (NEVER `git add` those files), then also apply the production + scripts + docs files to the working tree;
+  - one concern per commit is preferred: (i) the gate matcher (`scripts/pending_contract_gate.py` + `scripts/test_pending_contract_gate.py`); (ii) the 63c-i-a build (production + tests + the §HELD harness hunk + the registry block deletion + the store reference) — or one commit if they are entangled;
+  - no attribution trailers;
+  - then the INDEX Log line "63c-i-a CLOSED", and archive the REPORT-*.md files for 63c-i-a into `docs/plans/v2/receipts/2026-09-30-63c-i-a/` via git mv.
+- **Residuals to list at close-out:**
+  - the D-1 gate pin → the next gate contract;
+  - am-37 §W row 4 (the derived ladder pin, KF, the garbage-text cells, the FK-B1 pin-1 AST re-key, the QueryDetailKind completeness, the fixture drift);
+  - F-C4 → #34;
+  - F-C10, F-13, F-14, F-16;
+  - the ≥6 tolerant GROUP ALL readers + findings/messages/diff → the 64b §DRY step;
+  - #517;
+  - F-B1 pin 1 is decoration until row 4.
+
+**58 (NEXT after the 63c commit):**
+- contract r4 is COMMITTED `4d864c9` (the am-12 fold; NO re-grade by rule).
+- Rulings: am-12 `5419448`, am-13 `9e5d9b3` (FK-r4-1 confirmed; F-F = a bound → the 64b pin pass; the F-8 label rider = a 58 BUILD requirement), am-14 `a9be2c4`.
+- **Build brief must carry:**
+  - the r4 §RE-BASE step first (`git apply --check` §HELD parts 1/3 on the new HEAD; re-run the targeted set; ⚠ **the 36 REF-ONLY reds (63c sweeps over 58's `_txn` classes) must go GREEN, else STOP**);
+  - r4 §BUILDER CONSTRAINTS (incl. `more-itertools` + `pytest-timeout` deps, the lease `error_class` ×4 = lead scope call, esc1, the §1 FIRED-ledger instrument);
+  - am-13 (3) (txn-path label/url + a typed cause carrier, generated over the 5 `retry_on_conflict(` sites);
+  - the cold audit re-runs adversary-58-r3's 7 wrong builds as its mutation set + re-derives `translate_targets() == FAULT_CLASS_NAMES`;
+  - F-F → an accepted residual.
+
+**64b-i (after 58):**
+- contract r2 `cb220ee`; adversary-64b-r2 `bd017ee` SUFFICIENT-FOR-BUILD.
+- **The 64b pin pass (tests, before the build):**
+  - F-2's targeted pin;
+  - F-3's generated pin (am-11 `994c454`);
+  - G2 re-derivation over a28c's `test_retry_seam.py`;
+  - the #319 `_derived_strict_to_action_matrix` spec-dict leg;
+  - F-F's by-import `_exhaustion_fates` rewrite;
+  - the registry re-key `lore_findings::<verbs>` (am-12 §4.3).
+- **Build requirements:**
+  - F-1 (`_resolve_identity` budget);
+  - `_refuse_foreign_params`;
+  - BC-r2-9 close-out step (am-10);
+  - fix2 F-b: any 64b leg constructing `MigrateGovernedResult` passes `table_defined=` and `unsound_sender_messages=`;
+  - the 64b §DRY GROUP ALL sweep (findings/messages/diff + the ≥6).
+- Finding #520 (comms `values` hand-list) = the OPERATOR's scope, unanswered.
+
+**AGENTS alive:**
+- sidecar-63c-2 (native only; its lore is ECONNREFUSED) and sidecar-64 (native), both idle;
+- builder-63c-i-a-fix3 (working on §10).
+- All others are STOPPED. Never reuse names: used names include adversary-63c-i-a-a28c, adversary-64b-r2, builder-63c-i-a-a28c, builder-63c-i-a-fix2, builder-63c-i-a-fix3, fixup-tests-63c-i-a, coldaudit-63c-i-a-3, blindreader-63c-i-a-3, contract-58-r4.
+
+**OPEN OPERATOR ITEMS:**
+- (1) May the lead add the CLAUDE.md TEST SCOPE clarification ("only the currency gate's pytest leg is close-out-only; `--legs typecheck,ruff` is allowed per round")?
+- (2) Finding #520 scheduling.
+
+**Live background:** the prod RSS sampler (b0nin9fbc, → `scratchpad/prod_surreal_rss.tsv`); prod lore-surreal holds ~6.2 GiB, and the >20 GiB is not reproduced. The prod dump DB above lives on :18000 until reaped.
+
+**Standing:**
+- the lead writes no code;
+- no attribution trailers;
+- kill by PID only; no worktrees, no stash; assign variables before `&`;
+- never forward `-n`;
+- never :18500; never the production TEI;
+- never attribute host memory to ZFS ARC;
+- end turns with the #486 line.
