@@ -1827,3 +1827,20 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
     - **Pre-existing, surface:** F-13 ("already exists" on any store error).
     - **Residuals:** F-8 (= R-1), F-16.
     - **Operator decisions:** F-3 (print the wrapped fault's cause), F-9 (distinct exit codes for retryable vs refused).
+- **coldaudit-63c-i-a-4: GO (`8026854`)** for the final patch `5f2d7c43`.
+  - Prior NO-GO items: all closed or named residuals. Rulings verified by construction. Mutations (a)–(d) fire.
+  - Targeted run: 101 files, 340 failed / 7205 passed, owners 64b-i 272 / 58 61 / both 7 / ORPHAN 0; the 63c pin files have 0 reds.
+  - REAL DIRTY STORE: after the boot DDL, every served count = a direct SELECT (agent 95, memory 177, message 316, `unsound_sender_messages=0`), idempotent on re-run; the dump was REAPED and proven absent.
+  - R-1 acceptable, with a MINOR residual; R-2 acceptable.
+- **New findings, not introduced by the patch:**
+  - D-1 MAJOR: the dump name is refused by `SurrealConfig.database` → packet 64.
+  - D-2 MAJOR: migrate on a pre-boot schema is an opaque "unspecified rejection".
+  - D-3 MAJOR: "see the server log" points at nothing in lore-adm; `engine_error` is dropped.
+  - N-1/N-2/N-3 prose.
+- **Combined triage with blindreader-4 (lifted to classes):**
+  - A. The lore-adm error line teaches the cause (D-3 + F-3; this also makes D-2's engine detail visible). ONE chokepoint: the §11 handler.
+  - B. Fail-closed counts/shapes: F-1 (delete `cascaded`), F-6 (`_rows_stamped` `TypeError` post-commit), F-7 (`_governed_select` drops non-dict rows feeding a refusal).
+  - C. Honest prose/labels: F-4 relabel, F-5, N-1/N-2(=F-10)/N-3, F-2, F-14, F-15 help.
+  - D. D-2 teaching precondition (or a 65 runbook line).
+  - Residuals: R-1, F-8, F-9 (exit codes; recommend defer), F-11 (gate false RED, fails loud), F-12, F-13, F-16, §W row 4, the GROUP ALL sweep → 64b.
+- **Lead receipt re-run (random pick):** `test_principals_cli.py` + `test_engine_rejection_seam.py` on 5f2d7c43, in background task bn87g2ha2 (held at the 20 GiB gate: an odoo pg restore in another session had 15.7 GiB free).
