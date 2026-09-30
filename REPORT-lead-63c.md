@@ -1940,3 +1940,14 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - Class A pins are written (206 collected); B and D are delegated to 2 sub-workers, C is being authored.
   - The lead did NOT relax the gate. It told the agent to SERIALIZE all worker pytest runs behind one queue, and escalated to the operator (free memory, e.g. stop the idle harness, or wait).
 - **~15:15Z: memory is at 14 GiB. The lead EXTENDED fixup2 round 4's deadline** (the blocker is external). It must commit a PARTIAL ROUND 4 (patches + md5s + currency) as soon as B merges, keep the gated serialized queue armed, and fill in the receipts when memory admits. The gate is not relaxed; the operator has been asked (stop the idle harness / wait / lower the floor).
+- **fixup2 ROUND 4 PARTIAL (`04a4149`).**
+  - All A–D pins are authored; patches: r4 delta `346e746d6fbb3bdd1ca105a47036d59e`, full4 `ff70ecb2e9ef38fb934f22a310bfb11d` (lead-verified; full4 apply-check OK at 04a4149).
+  - Currency typecheck 83 unchanged, ruff GREEN, RED_ORPHANED 0.
+  - The A+C base run was exact (119/119 declared). The reference and mutation runs are queued, serialized behind one flock, and memory is back at 13.8 GiB.
+  - The worker decisions were sent to sidecar-63c-2 as am-37 §13.1:
+    - B-D1: FAIL-OPEN — `_table_exists` reads a non-dict INFO as "table absent", so delete skips the SF-63-5 owned-row guard. A third INFO-map helper is proposed.
+    - B-D2: `authorize_guarded` coerces a wrong-shaped pre-read → `rows_of`.
+    - D-fork: backtick spans.
+    - D store facts → docs/reference?
+    - D flag: a mutated-SET pin?
+  - Process note: sub-b killed flock PID 3797612, believing it was its own waiter. Serialization held (process-table check + a single holder), but it is recorded.
