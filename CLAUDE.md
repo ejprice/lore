@@ -141,9 +141,16 @@ than read and the store reference is cited rather than re-transcribed.
     it. A contract round never runs it.
   - **Fleet-wide, ONE full suite at a time.** Before starting one, check the process table for
     another lore pytest session. If one is live, WAIT; do not cap-and-race.
-  - **The currency gate (`pending_contract_gate.py --currency`) is a full-suite run.** It runs at
-    packet close-out only, not per contract round. Per round, keep `scripts/pending_contracts.yaml`
-    current and prove your own files' reds are owned with the targeted run.
+  - **The currency gate's PYTEST leg is a full-suite run; its other legs are not (operator,
+    2026-09-30).** A bare `pending_contract_gate.py --currency` runs every manifested leg, pytest
+    included, so it runs at packet close-out only, never per contract round.
+    **`--currency --legs typecheck,ruff` runs NO pytest** (`scripts/gates.yaml`: `typecheck.sh` +
+    `ruff check .`), so **every agent may run it every round, and briefs must ALLOW it.** Per round,
+    keep `scripts/pending_contracts.yaml` current, prove your own files' reds are owned with the
+    targeted run, and show the typecheck/ruff currency at RED_ORPHANED 0.
+    WHY, measured (63c-i-a r4): a brief that forbade ALL currency runs let a round ship two
+    unadjudicated typecheck reds and a broken walker pin, which surfaced only a fix wave later.
+    Ask yourself: *"does the command I am about to forbid actually start pytest?"*
   - **A pytest process TREE above 16 GiB RSS is a DEFECT to report** (`lore_findings`, with the
     test ids), never a cost to absorb or a reason to raise a watchdog. Find the test with
     `pytest-memray` (a package; do not hand-roll).
