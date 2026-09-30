@@ -1815,3 +1815,15 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - The yaml WIP is ONE hunk, entirely inside the `packet-63c-i-a-a28-contract` entry: a stale, uncommitted a28c edit to 63c's own entry, with no #486 content. The final patch DELETES that entry (it self-destructs with the build).
   - At commit: `cp -a` the working yaml to the scratchpad, then `git apply --cached` the final patch, apply the patch to the working tree excluding the yaml, and set the working yaml to the new HEAD blob. #486's other WIP files are untouched.
 - **Spawned about 02:55Z, in parallel:** `coldaudit-63c-i-a-4` (90 min; checks 1–8, incl. mutations (a)–(d), R-1/R-2, the real dirty store + reap — if the reap is denied, it goes to the operator) and `blindreader-63c-i-a-4` (45 min; contract-blind, production diff a28c→final).
+- **blindreader-63c-i-a-4 DONE (`da24013`).** 0 BLOCKER / 0 MAJOR / 9 MINOR / 7 NIT; no fault prints success. Independence is slightly weakened: a sweep printed ~20 withheld amendment lines, which it says it did not use.
+  - Preliminary lead triage (final triage waits for coldaudit-63c-i-a-4):
+    - **Fix-now candidates (pinned classes, 63c's own files):**
+      - F-1: delete's key-cascade count is fail-open; same class as §10.1(a) → `group_all_count`.
+      - F-6/F-7: one fail-closed wrong-shape policy. `_rows_stamped` raises `TypeError` post-commit, which tracebacks; `_governed_select` drops non-dict rows that feed a refusal guard.
+      - F-5: a post-commit fault reads "nothing was decided".
+      - F-4: relabel `unsound_sender_messages` (Leg-1 scope diff).
+      - Prose: F-2, F-10, F-14, F-15 (stale STUB/help).
+    - **Audit cross-checks:** F-11 (the gate's unsymboled-count leg is per-entry — is D-1 incomplete?), F-12 (the text-ladder unique label).
+    - **Pre-existing, surface:** F-13 ("already exists" on any store error).
+    - **Residuals:** F-8 (= R-1), F-16.
+    - **Operator decisions:** F-3 (print the wrapped fault's cause), F-9 (distinct exit codes for retryable vs refused).
