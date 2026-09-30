@@ -1988,3 +1988,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
     - (a) the fix6 resume states the ordering bound in the leg docstring;
     - (b) coldaudit-63c-i-a-5 also runs `--table message` on the PRE-BOOT dump and records both teachings' order (receipts, not defects).
   - The fix6 resume list is now: FLAG-3 (the `governed.py` module docstring), remove the `_rows_stamped` default `noun` (after round 5), and the §13.2 leg-docstring bound.
+- **fixup2 ROUND 5 DONE (`7a1dac4`).**
+  - The D file's eval resolver is replaced by an ast literal reader; am34_5 is GREEN; targeted 1004/0; the D mutation held.
+  - The arity probe goes through `Any` (default removable: typecheck 83 unchanged).
+  - r5 delta `5ef35641295e40cc8e143f647fe2784e` (2 test files), lead-verified; it composes over the fix6 full at 7a1dac4.
+- `builder-63c-i-a-fix6` RESUMED (~18:05Z, 40 min): apply r5; remove the `_rows_stamped` default; the FLAG-3 module docstring; the §13.2 leg-docstring bound; a targeted run (0 unowned reds); re-cut the FINAL patch. Then coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
