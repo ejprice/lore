@@ -1646,3 +1646,6 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - The gate-matcher fix rides the 63c commit set as its own commit (one concern each).
 - **63c am-37 §9** (`731a84f`): CONCURS with 58 am-14 §2, plus ONE rider: resolve Import/ImportFrom aliases before the call closure, +1 control. It accepts 58's two F-12(a) row riders.
 - **fixup-tests-63c-i-a SPAWNED** (opus55-worker, 60 min; brief `scratchpad/brief-fixup-tests-63c-i-a.md`): tests only, on the fix2 patch in scratch; the patches are handed back, not committed.
+- **fixup-tests-63c-i-a DONE** (`755e3a4`; stopped). The 3 ruled test edits landed in scratch (§1 RED on first-match for the right reason; §2 re-key GREEN 4/4 + the §9 alias rider; §3 row RED until the catch lands). Mutation proofs held. Full patch `2c88b1a9` (fix2 + tests), tests-only delta `88c52be2`.
+  - D-1: a sibling of am-14 §1 in the per-entry unsymboled self-destruct leg (latent; fails loud). **Lead: FIX-THE-CLASS now** — every per-path lookup goes through the ONE `entries_for`, and the re-check audit constructs the case.
+- **builder-63c-i-a-fix3 SPAWNED** (60 min): the gate matcher (+D-1), the F-12(a) catch, the am-37 §8 typed stdout count, and the `governed.group_all_count` consolidation (sharing proven by mutation). REQUIRED: currency `--legs typecheck,ruff` RED_ORPHANED 0.
