@@ -1767,3 +1767,6 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - **OPEN, waiting on the operator:** FLAG R2-1. `lore-adm delete`'s `_dispatch` does not catch `SurrealStoreError`, so a store fault prints a traceback (the delete is still refused). CLASS: every lore-adm verb's store fault → stderr + exit 1.
     - Options put to the operator: (1) fold it into 63c-i-a before the re-check audit, via a sidecar ruling + a fates row + a generated pin + a builder (recommended); (2) its own commit right after 63c-i-a.
     - The re-check audit is held until the operator picks.
+- **R2-1: operator ruled FOLD into 63c-i-a before the re-check (~02:15Z).**
+  - Sequence: sidecar-63c-2 am-37 §11 ruling (requested natively; deadline ~02:45Z) → a test-side agent (`fixup-tests-63c-i-a-2`: fates row + any generated pin) → `builder-63c-i-a-fix4` (the one chokepoint, on the r2 patch `f5897681…`) → `coldaudit-63c-i-a-4`.
+  - Unused names reserved: fixup-tests-63c-i-a-2, builder-63c-i-a-fix4, coldaudit-63c-i-a-4.
