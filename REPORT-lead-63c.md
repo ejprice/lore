@@ -1752,3 +1752,12 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
 - never :18500; never the production TEI;
 - never attribute host memory to ZFS ARC;
 - end turns with the #486 line.
+
+## POST-ANCHOR v8 — operator rulings (2026-09-30)
+- **CLAUDE.md TEST SCOPE clarification: GRANTED and landed (`baa313c`).** `--currency --legs typecheck,ruff` runs no pytest and is allowed every round; only a bare `--currency` (its pytest leg) is close-out-only.
+- **#520: fold part 1 into the 64b-i BUILD (operator).** 64b-i build brief requirement:
+  - `AppContext.comms` derives its supplied-param set from `inspect.signature` (computed once at import); the hand-written `values` list is DELETED;
+  - comms routes through the ONE `_refuse_foreign_params`, which then has three callers;
+  - sharing is proved by MUTATION, and every caller's pins must go red;
+  - part 2 (`actions=` plus the owner-assert rider) is already am-11 §3.3.
+  - Resolve #520 at the 64b-i commit. Finding annotated.
