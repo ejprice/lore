@@ -295,3 +295,47 @@ _is_domain_cascade_notice(failed) := isinstance(failed.typed, QueryError) and (f
 **Round accounting:** + FIX-IN-ROUND 3 (F-C7, F-C8+F-14, F-C9) · BOUND 2 (F-C4 routed to #34; F-C10) · F-C11 settled
 without a contract edit. The fix round carries: §5 D-5 in the §7 form, §6's eight, §7's three. No contract round.
 Errata this appendix (mine): §5's set spelling and §6 M-1 item 3's citation of it.
+
+## 8. Appended 2026-09-29 (lead, over `REPORT-builder-63c-i-a-fix2.md@1b219f9` §FORKS / §DRY): F-12(a) → option A (the registry row is the completeness pin working); F-a → stderr + exit 0 with a receipt-line rider; the GROUP ALL reader → ONE function, 63c's two copies collapse NOW, the three foreign copies are routed
+
+1. **F-12(a) STOP — Option A: the base-class catch + the `REGISTERED_FATES` row.** `REGISTERED_FATES` is the DOMAIN's
+   source of truth for exhaustion catch sites (58 am-10 §2, a closed classification set that already holds `cli-exit`
+   with evidence `("stderr", "returns-named-outcome")`); its completeness pin went RED because a new site appeared —
+   that is the pin doing its job, and the answer to a completeness red is the row, never a door around it. The row
+   mirrors `principals.py::_dispatch_report_unmigrated`'s exactly (same classification, same evidence, the catch
+   tuple as ruled in §6 F-12). **Ownership precedent (a28c F-13 / U-27): the row's owner is the SITE's owner** — 63c
+   deleted `server.py::_comms_register`'s row when it deleted the site, and adds this one when it adds the site; the
+   file is 58's, the row is 63c's. Option B is REFUSED: a `except TxnContentionExhaustedError: raise` above the base
+   catch is a derived PASSTHROUGH that keeps a traceback for exhausted contention, contradicting §6 F-12(a)'s own
+   property (*every store fault → stderr + exit 1*) and minting the very door shape 58's registry exists to classify.
+   sidecar-64 is informed as a courtesy; if 58's law wants a different EVIDENCE tuple for the row, that is 58's to
+   say and does not change the ruling.
+2. **F-a (F-10's channel / exit) — CONFIRM stderr + exit 0, with ONE rider.** The run succeeded for every sound row; a
+   named leftover is a diagnostic, not a refusal (a refusal means *no row was stamped* and exits non-zero — the two
+   outcomes must stay distinguishable to a script). **Rider: the stdout RECEIPT LINE carries `unsound_sender_messages`
+   as a typed count beside `scanned` / `backfilled` / `already_migrated`** (derived from the result like its siblings),
+   so a script that never reads stderr still sees the leftover; the stderr sentence is the teaching, the receipt is the
+   measurement. Pin check: the a28 CLI render pins assert the `table_defined is False` sentence; STOP condition: a pin
+   asserting the receipt line's exact bytes (none found by awk) — if one exists, the count rides the sentence only and
+   the line is routed to the next CLI-touching contract.
+3. **§DRY — the GROUP ALL count reader is ONE function; 63c's OWN two copies collapse in fix2, the foreign three are
+   routed.** Measured (awk over the package): the store-ref §5.1 idiom `SELECT count() … GROUP ALL` is read in FIVE
+   places — `findings.FindingLedger._extract_group_count` (tolerant), `messages._extract_group_count` (tolerant),
+   `diff.py` (inline), `governed._scope_count` (fail-closed since §6 F-12(b)) and `principals._group_all_count`
+   (fail-closed, new). Two of the five were minted by THIS build — copy #2 born in the same wave the ONE-IMPLEMENTATION
+   law was being applied to `_txn`. **The ONE policy:** an EMPTY result → `0` (a measured empty group — the engine's
+   documented shape); a non-list, a non-dict first row, or a missing / non-int `count` → raise `SurrealStoreError`
+   (fail closed — a `0` there is a served count describing no set, the shape `governed.py`'s own docstring forbids).
+   **Home: `loremaster.governed.group_all_count(result) -> int`** — NOT `lorerunes` (no second workspace member reads
+   store results; a capability there is a design decision, not a tidying) and **NOT `_txn`** (its body needs a
+   `_COUNT_KEY in row` membership test, which would make it a new tester and redden a28c's exact-set pin — checked).
+   **Fix now (fix2, before commit):** `_scope_count` and `_group_all_count` become calls to that one function (the
+   builder's own DRY row named the duplication; this is its resolution). **Routed (out of 63c-i-a's granted files):**
+   `findings` / `messages` / `diff` re-point to it — owner 64b (its build already edits `findings.py`), decision
+   point the 63c close-out; STOP condition for that later step: any pin feeding those readers a malformed count and
+   expecting `0` becomes a DUAL re-key, not a reason to keep the tolerant copy. Sharing is proven by MUTATION there:
+   change the fail-closed predicate and all five call sites must move.
+4. **FYI acknowledged:** F-b's consequence for 64b (`table_defined=` required, `unsound_sender_messages=None` passed)
+   rides 64b's brief; D-2's `default=None` on `unsound_sender_messages` is accepted as the honest "not measured" under
+   the closed a28c constructor pin, with the builder's named re-open (the next result-model contract drops it).
+   The walker pin (am-34 §5) is mine: any re-key sidecar-64 proposes routes through this doc before it lands.
