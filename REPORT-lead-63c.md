@@ -1929,3 +1929,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - `b0nin9fbc`: the prod lore-surreal RSS sampler (24h, `scratchpad/prod_surreal_rss.tsv`).
 
 **Memory note:** host MemAvailable swings 15–30 GiB (odoo pg restores in other sessions). The ≥20 GiB admission gate is a wait-loop, never a bypass.
+- **am-37 §13 RULED (`ce2b4bd`, read in full by the lead).**
+  - A: `main()` installs a stderr WARNING handler rendering `engine_error`/`error_class` (the hint becomes true), and the §11 line appends the `__cause__` chain. F-13 is FOLDED via A (neutral contexts).
+  - B: ONE wrong-shape policy, `governed.rows_of` + `group_all_count`, with an AST allowlist; F-1/F-6/F-7/`_as_rows`/F-5 routed.
+  - C: the field and receipt KEY rename to `messages_left_unmigrated`; the derived `--table` help; `report-unmigrated` validated via the one validator before I/O; prose.
+  - D: one `INFO FOR TABLE` after the DB gate; columns derived from each leg's UPDATE text; a verb-level teaching refusal; generated REMOVE-FIELD dirty-store pins; coldaudit-4 §7.3 is the acceptance receipt.
+- ROUND 4 (the test side of A–D) was sent to fixup-tests-63c-i-a-2 at ~14:50Z (60 min), base 5f2d7c43, new scratch `fixup4`. NEXT: builder-63c-i-a-fix6 on full4.
