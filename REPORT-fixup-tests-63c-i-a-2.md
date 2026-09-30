@@ -368,67 +368,83 @@ Empirical confirmation: with the reference wraps, `test_fixwave_a19b_63c_i_a.py`
 - **Ordering (§12 STOP 2):** the test side lands FIRST; it reds by name on the four at fix3-as-is, as R3-3 shows. The four production wraps follow.
 - **Composition:** the r3 delta is disjoint from `principals.py` / `principal_keys.py`, so it composes with builder-fix4's delta and with the later wrap builder's.
 
-## ROUND 4: am-37 §13 A–D test side (commit `ce2b4bd`). ⚠ PARTIAL, state: waiting:memory-admission
-*Written 2026-09-30 ~15:15Z. Scratch `fixup4` = HEAD `564983b` + fix5 patch (md5 `5f2d7c43…` verified); `loremaster.__file__` resolves inside `fixup4`. Receipts are PENDING on the host memory gate. The lead extended the deadline (~15:15Z) and asked for this partial commit so the authored work is durable.*
+## ROUND 4: am-37 §13 A–D + §13.1 test side (commits `ce2b4bd` + `d6cdd0b`). FINAL
+*Measured 2026-09-30 15:13–16:48Z in scratch `fixup4` = HEAD `564983b` + fix5 patch (md5 `5f2d7c43…` verified). `loremaster.__file__` resolves inside `fixup4`. This replaces the PARTIAL section of `04a4149`.*
 
 **SUMMARY:**
-- **State:** waiting:memory-admission. All four classes' pins are written. ruff and mypy are clean on every touched file. The patches are cut. RED/GREEN/mutation receipts are PENDING.
+- **State:** done.
+- **All four classes plus §13.1 are pinned:**
+  - **RED on the fix5 base, exactly as declared:** 209 declared from `--collect-only` before the run, all observed red, 0 missed. The only undeclared reds were 34 that are adjudicated to packet 64b-i (below).
+  - **GREEN on one combined throwaway reference:** 0 attributable reds.
+  - **Mutation proofs:** all 5 held, at least 1 per class.
+  - **Gates:** ruff clean; typecheck 83 → 83 (all adjudicated); RED_ORPHANED 0.
 - **Deviations:**
-  - (1) Classes B and D were delegated to two Opus sub-agents, each in its own scratch copy (`sub-b`, `sub-d`) on the same base. I merged their new test files. Their hand-back reports are transcribed at `…/scratchpad/REPORT-sub-63c13-d-1.md`, and B's is summarised below; their Write tool refused report files.
-  - (2) I changed D's test to read `defined_fields` through an `Any` alias (the #461 typed reach-around). This avoids 4 unadjudicated mypy errors; the production RED stays a test failure.
-- **Serialization (lead requirement ~15:10Z):**
-  - One shared admission helper, `…/scratchpad/gate.sh::gated_run`: an exclusive `flock` on ONE lock file, held for the whole run. Inside the lock it waits until MemAvailable ≥ 20 GiB AND no other pytest process is alive (a process-table check that holds even for a runner that never took the lock).
-  - Every pytest and mutation run goes through it: mine, and both workers' (they were told at ~15:10Z and both confirmed adopting it).
-  - Observed: my base run was admitted at 15:13:13Z (avail 20 GiB, others 0) and held the lock, while sub-d's runner waited on `flock` (`lsof` shows one holder).
-  - ⚠ Sub-b's hand-back says it killed a flock PID (3797612) it believed was its own waiter. Serialization held regardless (the process-table check plus the single live holder above). Named for the record.
-- **Decisions needed** (from the workers; details below): **B-D1** (operator), **B-D2** (implementation requirement), **D-fork** (a backtick reading).
+  1. **B and D were delegated** to two Opus sub-agents, each in its own scratch copy on the same base. Both hand-backs are transcribed at `…/scratchpad/REPORT-sub-63c13-{b,d}-1.md`, because their Write tool refused report files. I merged their test files, made the §13.1 edits myself, and re-ran every receipt in `fixup4`. None of their scratch-copy runs is the receipt of record.
+  2. **Three defects in my own ROUND-4 pins, found by my own receipts and fixed before the final runs:**
+     - (a) Round 1's generated sweep gave `--table` a placeholder value. Under C's validator that is refused before the injected fault, so the argv derivation now takes a member of the production-validated domain (`_VALIDATED_OPTION_DOMAINS`).
+     - (b) The lifecycle pin counted the engine text, which legitimately appears twice. It now counts the log RECORD.
+     - (c) **M-A2 v2 PROOF FAILED:** the pointer pin stayed GREEN with the stderr handler removed, because A(ii)'s `caused by` line alone carried the engine text. It is re-keyed to the log-record line carrying `engine_error` + `error_class`; M-A2 v3 held.
+  3. **D's `defined_fields` reads go through an `Any` alias** (the #461 typed reach-around), so the production RED is a test failure rather than an unadjudicated mypy error.
+  4. **Two reference defects** (a mis-merged `stamped_count`, and a `map_of` noun that did not name `INFO FOR DB`) surfaced in the v1 reference run and were fixed in the throwaway reference. The v2/v3 receipts are over the fixed reference.
+- **Serialization (lead ~15:10Z):**
+  - Every pytest and mutation run went through `…/scratchpad/gate.sh::gated_run`: an exclusive `flock` on ONE lock file, held for the whole run.
+  - Inside the lock it waits until MemAvailable ≥ 20 GiB AND no other pytest process is alive.
+  - Every final run's `ADMITTED` line is in its log (e.g. base 16:11:09 at 28 GiB, reference 16:13:39 at 25 GiB, both with 0 other pytest processes).
+  - I stopped the workers' stale queued runners by PID once §13.1 invalidated their test files, and restored `sub-d`'s production with a `cmp` check.
+- **Graded:** n/a (author). Base `564983b` + `5f2d7c43`. Full4 also `apply --check`s at main HEAD `51d6acf`.
+- **Decisions needed:** none new. Two flags follow.
 
-### Per-class pins (all RED/GREEN columns are DECLARED; runs pending)
-| class | pin (file::class) | §13 clause | declared RED at fix5, and why | reference | mutation (prepared) |
+### Per-class table (receipts: base = `…/scratchpad/baseALL.log` v2 + `baseCLI.log`; reference = `refALL.log` v2 + `refCLI.log`; mutations = `mutB.log`, `mutD.log`, `mA1.log`, `mA2.log` v3, `mC1.log`)
+| class | pin | clause | RED at fix5 (declared = observed) | reference | mutation |
 |---|---|---|---|---|---|
-| A | `test_principals_cli.py::TestTheLoreAdmFaultLineTeachesItsCause::test_the_cause_of_every_laundered_fault_is_printed[verb × fault]`: 17 derived verbs × the §11 tuple (5, derived from `_dispatch`'s one tuple-`except` by AST), each fault with a typed `__cause__` injected at `ensure_ready` | A (ii) | ×85: the handler prints `{error}` only, with no `caused by` line | expected GREEN (ref-AC) | — |
-| A | `…::test_the_server_log_pointer_resolves_to_stderr[verb]`: the seam's rejection record, whose `extra` keys are derived by AST from `_txn._raise_attempt_failure`, plus the seam's own `_domain_rejection_error` | A (i) | ×17: no handler renders `engine_error` onto stderr | expected GREEN | M-A2: drop `addHandler` → the 17 + the lifecycle pin |
-| A | `…::test_repeated_invocations_do_not_duplicate_the_log_line` (LIFECYCLE: two `main()` calls, the engine line exactly once each, no "Logging error") | A (i) | ×1 | expected GREEN | M-A2 |
-| A | `test_principals_cli.py::TestNoWrapContextOverClaimsItsCause::test_the_wrap_context_names_the_operation_not_a_guessed_cause[<file>::<fn>::<line>]`, over every `wrap_store_rejection` call in the package (16 sites) | A / F-13 | ×3: `principals.py::create`, `::set_subject`, `principal_keys.py::mint` | expected GREEN | M-A1: re-add "already" to `create` → exactly that id |
-| C | `test_principals_cli.py::TestHonestLabels`: field renamed (dataclass fields); the retired name in NO package source (bare scan); receipt key + stderr sentence `[0,3]`; `--table` help derived from `_MIGRATE_VALID_TABLES` ∀ `--table` verb (derived from the parser); invalid `--table` refused with ZERO store I/O ∀ `--table` verb (spy); non-vacuity | C (F-4, N-3/F-15) | ×8 | expected GREEN | M-C1: `report-unmigrated` skips the validator → exactly `[report-unmigrated]` |
-| C | `test_engine_rejection_seam.py::TestEveryWrappedBoundaryDocumentsItsWrapError[<store>::<boundary>]`, over round 3's derived domain | C (N-2/F-10) | ×4: `principal::{set_status,set_expires,delete}`, `principal_key::revoke` | expected GREEN | — |
-| B | `test_fail_closed_shapes_63c_13b.py` (66 collected; by sub-b): the allowlist walker over `principals.py`/`governed.py` shape-testers; the `rows_of` contract; F-6 `_rows_stamped`; F-7 `_governed_select`; F-1 `delete.cascaded`; `_as_rows` non-list → fault ×3 setters + delete; F-5 leftover-read wrap (the one live-store pin) | B | 48 declared (`…/scratchpad/subb.declared_red.txt`) | expected GREEN on `sub-b.reference.patch` | 12-id mutation (`subb.mut.declared.txt`) |
-| D | `test_preboot_schema_precondition_63c_13d.py` (22 collected; by sub-d): the leg domain derived via `governed_exempt(statement=…)`; columns parsed from each leg's own SET clause and diffed against a bare-pattern read; ∀ leg × column `REMOVE FIELD` on a minted `:18000` DB → the refusal names exactly that column with zero writes (3 instruments); positive control; `defined_fields` rides the preconditions | D | 14 declared (`…/scratchpad/subd-declared-red.txt`) | expected GREEN on `sub-d.reference.patch` | 7-id mutation (`if missing:` → `if False:`) |
+| A | `test_principals_cli.py::TestTheLoreAdmFaultLineTeachesItsCause::test_the_cause_of_every_laundered_fault_is_printed[verb × fault]`: 17 verbs derived from the parser × the §11 tuple derived by AST from `_dispatch`'s one tuple-`except`, each fault carrying a typed `__cause__`, injected at `ensure_ready` | §13 A (ii) | 85: no `caused by` line | GREEN | — |
+| A | `…::test_the_server_log_pointer_resolves_to_stderr[verb]`: the seam's rejection RECORD, with its `extra` keys derived by AST from `_txn._raise_attempt_failure`, and the seam's own `_domain_rejection_error` | §13 A (i) | 17: no record on stderr | GREEN | **M-A2** (drop `addHandler`): 18 declared, fired EXACTLY (v3) |
+| A | `…::test_repeated_invocations_do_not_duplicate_the_log_line` (LIFECYCLE) | §13 A (i) | 1 | GREEN | M-A2 |
+| A | `…::TestNoWrapContextOverClaimsItsCause::…[<file>::<fn>::<line>]` ∀ `wrap_store_rejection` call in the package (derived; 16 sites on base, 17 on the reference with the F-5 wrap) | §13 A / F-13 | 3: `principals.py::create`, `::set_subject`, `principal_keys.py::mint` | GREEN | **M-A1** (re-add "already" to `create`): exactly that id |
+| C | `test_principals_cli.py::TestHonestLabels`: field renamed; the retired name in NO package source (bare scan); receipt key + stderr sentence `[0,3]`; `--table` help derived ∀ `--table` verb (derived from the parser); invalid `--table` refused with zero store I/O ∀ `--table` verb | §13 C F-4, N-3/F-15 | 8 | GREEN | **M-C1** (`report-unmigrated` skips the validator): exactly `[report-unmigrated]` |
+| C | `test_engine_rejection_seam.py::TestEveryWrappedBoundaryDocumentsItsWrapError[<store>::<boundary>]`, over round 3's derived domain | §13 C N-2/F-10 | 4: the §12 four | GREEN | — |
+| B | `test_fail_closed_shapes_63c_13b.py` (89 collected):<br>• allowlist walker, now **exactly THREE**: `group_all_count`, `rows_of`, `map_of` (§13.1);<br>• the two INFO readers are PLAIN pins now, not xfail;<br>• every allowlisted helper must itself be derived;<br>• `rows_of` contract;<br>• **`map_of` contract** (non-dict / bad `tables`/`fields` sub-map → raise);<br>• F-6, F-7, F-1, `_as_rows` → fault;<br>• **`delete` on a malformed `INFO FOR DB` answer raises and never runs the cascade** (the fail-OPEN guard, 5 shapes + control);<br>• **B-D2** `authorize_guarded` wrong-shaped pre-read raises (7 shapes);<br>• F-5 (live store) | §13 B + §13.1 items 1–2 | 73 | GREEN | **B mutation** (`rows_of` member-raise → the old silent filter): 14 declared (12 from sub-b + the 2 `authorize_guarded` row shapes), fired EXACTLY |
+| D | `test_preboot_schema_precondition_63c_13d.py` (25 collected):<br>• derived legs and SET columns + bare-pattern equality;<br>• ∀ leg × column `REMOVE FIELD` on a minted `:18000` DB → the refusal names exactly that column, in the ruled **one-backtick-span-per-column** form (§13.1 item 3, enforced by `_ONE_SPAN_PER_COLUMN`), with zero writes (3 instruments);<br>• positive control;<br>• `defined_fields`;<br>• **the ONE-DERIVATION pin** (§13.1 item 5): all fields removed → the refused set EQUALS the leg's own SET clause | §13 D + §13.1 items 3/5 | 17 | GREEN | **D mutation** (`if missing:` → `if False:`): 10 declared (7 dirty + 3 one-derivation), fired EXACTLY |
 
-### STOP-DUAL re-keys (each checked)
+**Base-run diff (v2):**
+- 1287 collected (the 20 targeted files below); 243 failed.
+- DECLARED_BUT_GREEN = 0.
+- UNEXPECTED = 34, all in `test_governed_substrate_64b.py` (packet 64b-i's contract: "UNBUILT: …resource_from_row / classify_zero_row_cas / GovernedInvisible", adjudicated to `packet-64b-i-contract` in the currency).
+- The packet-58 lease evidence pin is owned and declared.
+
+**Reference run (v2):** 35 failed, 1249 passed.
+- The 35 are the IDENTICAL 34 substrate ids (`cmp` of the sorted id lists) plus the packet-58 lease pin.
+- 0 reds are attributable to §13 / §13.1.
+- `refCLI.log` after the pointer-pin re-key: 216 passed, 0 failed.
+
+**Targeted set** (awk over the CLI-driving files, the §13 surfaces, and the B/D neighbours; no full suite):
+`test_principals_cli`, `test_engine_rejection_seam`, `test_keeps_cli`, `test_keep_remediation_cli_61`, `test_exhaustion_fates`, `test_fixwave_a28c`, `a28`, `a28b`, `a19`, `a19a`, `a19b`, `test_governed_migration_63a`, `test_principal_keys_store`, `test_principal_delete_governed_63a`, `test_principal_delete_cascade_61`, `test_principals_store`, `test_governed_routing_63a`, `test_governed_substrate_64b`, and the two new files.
+
+### STOP-DUAL re-keys (checked; none needed in other files)
 - **A:**
-  - The bare awk over the four CLI-driving test files (`test_principals_cli`, `test_keeps_cli`, `test_keep_remediation_cli_61`, `test_comms_cli`) finds NO exactly-one-line pin.
-  - Four `err.startswith("lore-adm:")` pins in `test_keeps_cli.py` (`test_remove_household_refuses_to_remove_the_keeper`, `test_create_keep_without_name_is_rejected_for_name_requiring_types`, `test_create_keep_dm_with_a_name_is_rejected`, `test_create_keep_with_an_unknown_keeper_is_loud_and_nonzero`) are domain refusals with no seam log line, so they are predicted to survive. The reference run (pending) decides; any that reddens is re-keyed to `in` in this commit.
-- **B:** none found (sub-b's awk over `_rows_stamped`/`_as_rows`/`_governed_select`/`TypeError`).
-- **C:** a bare-pattern sweep of the retired name `unsound_sender_messages` over `loremaster/tests/**` (and scripts, skills) found ZERO hits. Nothing re-keyed; instead the new positive pin (`test_the_retired_name_survives_in_no_served_source`) guards the package. The remaining hits at `ce2b4bd` are production-only (`principals.py` ×14, `governed.py` ×2) plus am-37's own history (×6, which §13 C keeps).
-- **D:** none needed. The a28c `test_am34_4_the_preconditions_carry_the_defined_table_set` asserts membership, not the exact field set. `_RULED_FIELD_SPEC` is untouched.
+  - No exactly-one-line pin exists in the CLI-driving test files.
+  - The four `test_keeps_cli.py` `err.startswith("lore-adm:")` pins stayed GREEN on the reference, because they are domain refusals with no seam log line. Not re-keyed.
+- **B / §13.1-2:** no test feeds `_as_rows` / `_table_exists` a non-list/non-dict expecting absent/NotFound. The only `governed.run_query` forgery (`test_governed_substrate_64b.py::…test_authorize_guarded_refuses_a_pre_read_row_from_another_table`) forges a well-shaped list, so it is unaffected.
+- **C:** the retired name has 0 test-tree hits. It is guarded by the new positive pin instead.
+- **D:** the a28c `defined_tables` pin asserts membership; `_RULED_FIELD_SPEC` is untouched and was GREEN on the reference.
+- **Own pins re-keyed this round** (my files): round 1's sweep argv (`_VALIDATED_OPTION_DOMAINS`), and the lifecycle and pointer pins (deviation 2).
 
-### Decisions surfaced by the workers (verbatim in substance)
-- **B-D1, operator ruling:**
-  - `PrincipalStore._table_exists` does `info.get("tables", {}) if isinstance(info, dict) else {}`, so a non-dict `INFO FOR DB` answer reads as "table absent". `delete` then SKIPS the SF-63-5 owned-row guard, which fails OPEN.
-  - `_agent_migration_preconditions` is a third, correct but cloned, shape policy.
-  - Both sit outside the ruled two-helper allowlist. Sub-b holds them as `xfail(strict=True)` pending a ruling.
-  - Options: (a) a third ruled helper for INFO maps, widening the allowlist to three (sub-b recommends this), or (b) re-scope the pin and ledger `_table_exists` as a defect.
-- **B-D2, implementation requirement:** `governed.authorize_guarded` coerces a wrong-shaped pre-read to "row absent" (`[]` / `{}`), so the allowlist pin reds it by name. The reference routes it through `rows_of`. §13 B does not list it.
-- **D-fork:** the refusal text `<c1>, <c2>` can mean one backtick span around the list or one span per column. The pins accept both, and sub-d would pick one span per column.
-- **D store facts (probed on `:18000`, not yet in `docs/reference/`):**
-  - `INFO FOR TABLE` on an UNDEFINED table returns empty maps, not an error. The field read must stay behind the `INFO FOR DB` gate.
-  - An UPDATE of a removed field on a SCHEMAFULL table is silent over 0 rows and raises over ≥1 row.
-- **D flag:** its reference uses a hand column map (satisfiability only). The builder must derive the columns from the statement. A "refusal follows a mutated SET clause" pin was NOT TRIED.
+### Flags
+- **F-A (for the builder):** in the reference, the §11 handler prints ` ← caused by:` lines. Under the pointer pin the seam's record line and the cause line both carry the engine text, which is by design. The `≥1 record line` assertion is what isolates §13 A (i).
+- **F-D (store law, §13.1 item 4):** the two facts sub-d probed live are recorded in `…/scratchpad/REPORT-sub-63c13-d-1.md` (instrument `…/scratchpad/subd_probe_remove_field.py`). Per §13.1 item 4 the BUILDER lands them in `docs/reference/surrealdb-31-capabilities.md`; outside my writable set.
+- The throwaway combined reference (`…/scratchpad/ref-ALL.r4.patch`, md5 `dc1b705aedf86e80073daf675f4dbc85`) is a satisfiability host, never a spec. Its D column set is a hand map, which the one-derivation pin cannot distinguish while the map is correct (that is §13.1 item 5's point). The audit's add-a-column mutation is the receipt that the pin fires.
 
-### Gates and patches (cut 15:14Z, production at base, `cmp`-verified)
+### Gates and patches (cut 16:48Z, production at base, `cmp`-verified)
 - `uv run ruff check .`: All checks passed!
-- `--currency --legs typecheck,ruff` (15:14:49–15:15:08Z, production at base throughout): typecheck RED_ADJUDICATED **83** (unchanged, so the new tests add 0 mypy errors), ruff GREEN, pytest NOT_RUN by design of `--legs`, RED_ORPHANED 0.
+- `--currency --legs typecheck,ruff` (16:48Z): typecheck RED_ADJUDICATED **83** (unchanged), ruff GREEN, pytest NOT_RUN by design of `--legs`, RED_ORPHANED 0.
 
 | patch | base | md5 | `git apply --check` |
 |---|---|---|---|
-| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r4.delta.patch` (tests only: `test_principals_cli.py`, `test_engine_rejection_seam.py`, new `test_fail_closed_shapes_63c_13b.py`, new `test_preboot_schema_precondition_63c_13d.py`) | HEAD `564983b` + fix5 `5f2d7c43` | `346e746d6fbb3bdd1ca105a47036d59e` | OK |
-| `…/scratchpad/fixup-tests-63c-i-a-2.full4.patch` (fix5 + r4) | HEAD `564983b` | `ff70ecb2e9ef38fb934f22a310bfb11d` | OK |
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r4.delta.patch` (tests only: `test_principals_cli.py`, `test_engine_rejection_seam.py`, new `test_fail_closed_shapes_63c_13b.py`, new `test_preboot_schema_precondition_63c_13d.py`) | HEAD `564983b` + fix5 `5f2d7c43` | `ab711142bf1204cfe7395e4038bc9b88` | OK |
+| `…/scratchpad/fixup-tests-63c-i-a-2.full4.patch` (fix5 + r4) | HEAD `564983b` (also main `51d6acf`) | `7ab76f3611bedf69eddc4df943cbbc67` | OK at both |
 
-The reference patches (throwaway, never shipped) are `…/scratchpad/ref-AC.patch` (`b22ef5cb…`), `sub-b.reference.patch` (`ff5b5258…`) and `sub-d.reference.patch` (`d418c9a5…`).
+The r4 delta touches no production file, so it composes with the §13 / §13.1 production builder's delta.
 
-### PENDING (armed behind the gate, serialized)
-1. A+C: the base run over 14 targeted files (admitted 15:13:13Z), then the ref-AC run over the same 14, then the mutations M-A1, M-A2, M-C1.
-2. B: the RED run on `sub-b`, then its chain (reference GREEN, 12-id mutation, restore + `cmp`).
-3. D: `subd_runner.sh` (base run, reference run, 7-id mutation, restore + `cmp`).
-The receipts land in this section when they complete; any change to a test re-cuts the patches.
+### Instruments (surviving)
+- The pins themselves are the instruments: the AST derivations of the §11 tuple, the seam `extra` keys, the wrap sites, the `--table` verbs, the allowlist walker, the leg statements and the SET columns. All are committed in the test files.
+- `…/scratchpad/red_diff.py` (the declared-vs-observed differ, pasted in §8) and `…/scratchpad/declare_all.py` (the combined declaration predicate) are scratch; the predicate is summarised in the table above.
