@@ -1993,3 +1993,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - The arity probe goes through `Any` (default removable: typecheck 83 unchanged).
   - r5 delta `5ef35641295e40cc8e143f647fe2784e` (2 test files), lead-verified; it composes over the fix6 full at 7a1dac4.
 - `builder-63c-i-a-fix6` RESUMED (~18:05Z, 40 min): apply r5; remove the `_rows_stamped` default; the FLAG-3 module docstring; the §13.2 leg-docstring bound; a targeted run (0 unowned reds); re-cut the FINAL patch. Then coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
+- Audit item for coldaudit-63c-i-a-5: after fix6 removes the `_rows_stamped` default, the `_BACKFILL_UPDATE_NOUN` constant and its comment ("the default only labels the raised message") must be gone too, not left dead or stale. (From fixup2 round 5; not sent to the busy builder mid-run.)
