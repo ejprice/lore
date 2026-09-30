@@ -274,3 +274,96 @@ for method in cls.body:
         print(f"{method.name}: " + ", ".join(f"L{l} {verb} wrapped={w}" for l, verb, w in found))
 ```
 Output at `0b0011b`+r2: `ensure_ready: L286 TXN wrapped=False · create_keep: L508 TXN wrapped=True · get_or_create_keyed: L594 TXN wrapped=True · add_household_member: L679 RELATE wrapped=True · remove_household_member: L748 DELETE wrapped=True · set_rank: L782 UPDATE wrapped=True · set_keeper: L856 UPDATE wrapped=True · delete_keep: L922 DELETE wrapped=True`.
+
+## ROUND 3: am-37 §12 (commit `4e3a96c`) test side, the derived wrap-coverage pin
+*Measured 2026-09-30 in scratch `fixup2`, on HEAD `0b0011b` + full2 (`e915b90f…`). Full3 also `apply --check`s at main HEAD `e1d36d5`, which adds no loremaster/scripts changes over `0b0011b`.*
+
+**SUMMARY:**
+- **State:** done, no STOP fired (STOP 1, 3 and 4 are all checked below).
+- **Deviations:** none. Everything lives in `test_engine_rejection_seam.py`, so no helper module was created.
+- **Decision for the builder, a two-reading trigger:** the new `delete` fault-injection invocation lands on the FIRST principals-seam call, the `get_by_email` READ that opens `delete`. The pin therefore requires `delete`'s wrap to enclose its store calls FROM THAT READ ON, not the TXN alone. The reference did exactly that, and every a19b/63a delete pin stayed green (see STOP 1).
+  - Reading A (TXN-only wrap) leaves `test_a_raw_store_error_surfaces_as_the_domain_error[principal-delete]` red.
+  - §12's TXN-only placement is the STOP-1 fallback only, and STOP 1 did not fire. So I picked reading B, the whole-body wrap, as KeepStore's verbs do.
+- **Admission gate:** a wait-loop before EVERY run. The three pytest runs and the mutation run started at MemAvailable 22 GiB each. No slip.
+
+### R3-1. STOP 1: `wrap_store_rejection` passes non-`SurrealStoreError` through UNTOUCHED (it does not fire)
+`loremaster/loremaster/store/_txn.py::wrap_store_rejection`:
+```python
+    return reclassify(
+        passthrough=(SurrealConnectionError, TxnContentionExhaustedError),
+        catch=(SurrealStoreError,),
+        make_error=lambda: domain_error(context),
+    )
+```
+`lorerunes/lorerunes/engine_rejection.py::reclassify` (docstring: "every other exception propagates unchanged — this manager never uses a bare `except Exception`"):
+```python
+    try:
+        yield
+    except passthrough:
+        raise
+    except catch as error:
+        raise make_error() from error
+```
+Live MRO checks:
+- `PrincipalHasKeepsError` → `PrincipalStoreError → RuntimeError`, `issubclass(…, SurrealStoreError) = False`.
+- `PrincipalOwnsGovernedRowsError` → the same, `False`.
+- So a whole-body `delete` wrap passes both refusals through by class.
+
+Empirical confirmation: with the reference wraps, `test_fixwave_a19b_63c_i_a.py`, `test_principal_delete_governed_63a.py` and `test_principal_delete_cascade_61.py` all passed (R3-4).
+
+### R3-2. The edits (`loremaster/tests/test_engine_rejection_seam.py` only)
+- **Derivation (the R2-5 instrument promoted into the file, beside `TestTheRoutedSetIsDerivedAndComplete`):**
+  - `_dispatch_store_classes()` finds the `build_*_store` calls in `principals._dispatch`'s AST. It resolves each factory's module through the `from … import` that binds it in `principals.py` (default: `principals`), then the class through the factory's own return annotation. Result at base: {`PrincipalStore`, `PrincipalKeyStore`, `KeepStore`}.
+  - `derived_write_boundaries(case)` covers two sinks:
+    - (a) `_query(<stmt>)` / `run_query(statement=<stmt>)`, a write unless its literal text opens with a READ verb (`SELECT`/`RETURN`/`INFO`). **Allowlist the safe:** a dynamic or placeholder-led statement is a write.
+    - (b) any `execute_transaction(...)`.
+  - Each sink records whether it sits lexically inside `wrap_store_rejection(<that store's error>, …)`.
+  - `_EXEMPT_WRITE_METHODS` has exactly two entries, each with a reason: `ensure_ready` (DDL; its fate is pinned by round 1's CLI pin) and `_query` (the seam, whose statement is its caller's; every caller is itself a sink).
+  - The governed-migration legs are module functions, not store methods, so they are outside the domain by construction (§12 item 1).
+- **`TestEveryDerivedWriteBoundaryIsWrapped`** (new):
+  - `test_the_write_boundary_sits_inside_its_stores_wrap[<label>::<method>]` is parametrized at COLLECTION over ∀ reached store ∀ derived boundary. A new boundary, or a store with no `_StoreCase`, therefore reds BY NAME.
+  - `test_the_store_set_is_derived_from_dispatch_and_every_store_has_a_case` (non-vacuity plus completeness).
+  - `test_POSITIVE_CONTROL_the_walker_sees_wraps_and_the_exemptions_are_live[<label>]` checks that the walker sees ≥1 wrapped sink per store. It also checks that each exemption names a method that really writes unwrapped, so there are no dead or stale exemptions.
+- **Re-keyed expectation:** `_StoreCase.expected_wrappers` is now a PROPERTY: the derived write set ∪ `_DECLARED_READ_WRAPPERS[label]`. The old constructor hand-list `frozenset(<invocation map>)` was removed from all three cases. The declared read-wrappers are only `keep: list_keeps_for_member`, with its 61b-w2 D1 reason.
+  - New `TestTheRoutedSetIsDerivedAndComplete::test_the_invocation_map_equals_the_derived_expectation[<label>]`: the fault-injection map must equal the derived expectation.
+- **Invocation map grew by 4:**
+  - `principal`: `set_status(email=KEEPER, status="suspended")`, `set_expires(email=KEEPER, expires_at=None)`, `delete(email=MEMBER)`.
+  - `principal_key`: `revoke(email=KEEPER, name="laptop")`.
+  - Each flows through the existing ∀ pins (`test_a_raw_store_error…`, `test_transport_faults_propagate_untouched`, LAYER1, LAYER2).
+- `ruff check` is clean. Collection: 107 tests.
+
+### R3-3. RED on the full2 base (no production wraps)
+- **Declared** before the run, as a predicate over `--collect-only` ids:
+  - 20 seam nodes:
+    - the boundary pin for `principal::{delete,set_expires,set_status}` and `principal_key::revoke`;
+    - `test_the_routed_set_equals_the_{invocation_map,known_wrapping_verbs}[principal|principal_key]`;
+    - `test_a_raw_store_error…`, LAYER1 and LAYER2 for `principal-{delete,set_expires,set_status}` / `principal_key-revoke`.
+  - Plus round 1's 17 known reds (`test_principals_cli` ×15 and the fates both-ways pin, which await the §11 production edit; the lease evidence pin is owned by packet 58).
+- **Observed** (8 files, see R3-4): **37 failed, 293 passed. UNEXPECTED_RED 0, DECLARED_BUT_GREEN 0.**
+- The boundary pin reds on EXACTLY the four §12 boundaries. `principal::create`, `principal::set_subject`, `principal_key::mint` and all 7 keep boundaries are green.
+
+### R3-4. GREEN on the throwaway reference + STOP 3 + mutation
+- **Reference build:** `cp -a` of `principals.py` / `principal_keys.py`, then the 4 wraps in the existing message shape:
+  - `set_status`: the UPDATE.
+  - `set_expires`: both branches.
+  - `delete`: from `get_by_email` through the TXN.
+  - `revoke`: the UPDATE.
+- **Reference run** (the same 8 targeted files, found by filename awk for `a19b|principal_delete|principal_keys`: `test_engine_rejection_seam.py test_exhaustion_fates.py test_principals_cli.py test_fixwave_a19b_63c_i_a.py test_principal_delete_governed_63a.py test_principal_delete_cascade_61.py test_principal_keys_store.py test_principal_keys_schema.py`): **17 failed, 313 passed.** The failed set EQUALS round 1's 17 exactly (diffed both ways: 0 / 0), so all 20 round-3 reds went green and nothing else moved.
+- **STOP 3 (58 catch-site scanner / fates) does not fire.** In the reference run the fates both-ways failure message names only `principals.py::_dispatch_migrate_governed`, `…::_dispatch_report_unmigrated` and the `…::_dispatch` row, which are round 1's §11-pending reds. No row or site is keyed to `set_status` / `set_expires` / `delete` / `revoke`, and the `with` adds no `except`.
+- **STOP 4 (a `principal_keys.py` writable-set gap):** I did not take the declared-pending form. `revoke` is pinned as an ordinary member, because §12 item 2 assigns the `revoke` wrap to this fold's production side. If the builder cannot touch `principal_keys.py`, only `[principal_key::revoke]` and its three ∀ siblings stay red, by name. That is the lead's call.
+- **Fifth-wrap mutation** (`scripts/mutation_proof.py` on the reference): `PrincipalStore.create`'s `with wrap_store_rejection(PrincipalStoreError, "could not create principal …"):` was replaced by `if True:`.
+  - Declared: `[principal::create]` boundary pin, `routed_set_equals_the_invocation_map[principal]`, `…known_wrapping_verbs[principal]`, `raw_store_error[principal-create]`, and LAYER1/LAYER2 `[principal-create]`.
+  - Result: **6 failed, 101 passed, "PROOF HELD — the declared RED set fired EXACTLY"**. The tool restored the file byte-exact, and `cmp` against the `cp -a` backup was clean.
+- **Restore:** both production files were copied back from the full2 backups, and `cmp` was clean for both. The r3 delta touches exactly one file, the test file.
+
+### R3-5. Gates and patches
+- `uv run ruff check .`: All checks passed!
+- `--currency --legs typecheck,ruff`: typecheck RED_ADJUDICATED **83** (unchanged, owned), ruff GREEN, pytest NOT_RUN (by design of `--legs`), RED_ORPHANED 0.
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r3.delta.patch` (ONLY `loremaster/tests/test_engine_rejection_seam.py`) | HEAD + full2 (`e915b90f…`) | `c377c11ecf04697f6098da1780ca8ade` | OK |
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.full3.patch` (full2 + round 3) | HEAD `0b0011b` (also main `e1d36d5`) | `299467bad167496a1e3bbc3c96b8a034` | OK at both |
+
+- **Ordering (§12 STOP 2):** the test side lands FIRST; it reds by name on the four at fix3-as-is, as R3-3 shows. The four production wraps follow.
+- **Composition:** the r3 delta is disjoint from `principals.py` / `principal_keys.py`, so it composes with builder-fix4's delta and with the later wrap builder's.
