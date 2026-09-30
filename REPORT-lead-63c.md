@@ -1800,3 +1800,11 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - Runs: 0 GREEN→RED, 16 RED→GREEN (15 verbs + fates both-ways), 9 owned pkt-58 reds; no STOP; composition with docstrings `afa519cf` = 64 passed.
   - Audit items: R-1 (close-before-print ordering) and R-2 (factory faults are now laundered); neither is pinned.
   - NEXT: when fixup2 ROUND 3 lands, `builder-63c-i-a-fix5` builds the §12 wraps on full2 `e915b90f` + fix4 delta `fd70c6e9` + the r3 delta.
+- **fixup2 ROUND 3 DONE (`def8d51`).**
+  - The §12 pin is RED on exactly the 4 boundaries (37 declared = 37 observed) and GREEN on the reference wraps.
+  - The create-wrap mutation held 6/6; STOP 1 and STOP 3 are clear.
+  - r3 delta `c377c11ecf04697f6098da1780ca8ade` (the test file only) and full3 `299467bad167496a1e3bbc3c96b8a034`, both lead-verified.
+  - Lead check: full3 + fix4 delta `fd70c6e9` compose at def8d51.
+  - Ruling on its builder note: the `delete` wrap is whole-body from `get_by_email` (reading B).
+- `builder-63c-i-a-fix5` spawned about 02:45Z (40 min): the 4 wraps in principals.py + principal_keys.py, on full3 + fix4 delta. Its full patch is the FINAL 63c-i-a patch.
+- The re-check audit `coldaudit-63c-i-a-4` follows. Audit items so far: R-1, R-2 (fix4 §5).
