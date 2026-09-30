@@ -640,3 +640,36 @@ class (RED on fix5-as-is by name, GREEN after), production second, one commit ea
 | GROUP ALL sweep (findings / tasks / messages / diff / store / manifest readers) | → 64b §DRY step, ONE `group_all_count` | 63c close-out decision point (§8.3, §10 erratum) |
 | §W row 4 | derived-domain ladder pin · garbage-text cells · `QueryDetailKind` adjudication pin · exact-set AST re-key (FK-B1) · fixture capture | the next `_txn`-touching contract (58-r4 / close-out) |
 F-13 is NOT a residual: folded via class A (neutral contexts + printed cause). D-1 → packet 64 (filed by the lead).
+
+### 13.1 Addendum 2026-09-30 (lead, over fixup-tests-63c-i-a-2 ROUND 4 `04a4149`): B-D1 → a third allowlisted helper `map_of`; B-D2 confirmed; D-fork one span per column; the two store facts go into the reference now; the "derived, not hand-mapped" pin is required
+
+1. **B-D1 — (a), and it is a FAIL-OPEN guard, so it is a fix, not a hygiene item.** `_table_exists` reads a non-dict
+   `INFO FOR DB` as "no tables" → `delete` SKIPS SF-63-5's owned-row guard on a garbage answer — the same shape as
+   §10.1(a). The §13 B allowlist grows to THREE helpers in `governed`, all fail-closed, all raising the ONE class:
+   `group_all_count(result, noun)` · `rows_of(result, noun) -> list[dict]` · **`map_of(result, noun) -> dict`** (an
+   `INFO FOR …` answer: non-dict → raise; the `tables` / `fields` sub-map non-dict → raise). Callers routed:
+   `PrincipalStore._table_exists`, `_agent_migration_preconditions`' `INFO FOR DB` read (the cloned third policy is
+   DELETED), and class D's `INFO FOR TABLE` read (born routed). The `xfail(strict=True)` pins become plain pins in the
+   same test-side commit; the allowlist pin's expected set is the three names. STOP: none new — a test feeding
+   `_table_exists` a non-dict and expecting "absent" is the fail-open behaviour itself and is re-keyed to the raise.
+2. **B-D2 — CONFIRMED: `governed.authorize_guarded` routes its pre-read through `rows_of` in this fold.** A guarded
+   write that decides "row absent" from a wrong-shaped pre-read is the fail-open shape on the governed write path
+   itself; it raises instead. STOP: an F5 `_governed_contract` pin that constructs a non-list pre-read and expects
+   the guard's ABSENT verdict → DUAL re-key to the raise (test side first); no other pin reads that branch by shape.
+3. **D-fork — one backtick span PER column** (`` `owner_principal`, `scope` ``). Each column is an identifier; one span
+   around a comma list would teach a single false identifier. The worker's pick stands.
+4. **D store facts — YES, into `docs/reference/surrealdb-31-capabilities.md` in this commit, with the probe pasted
+   verbatim in the builder report and the commit cited** (the reference exists so the next agent reads instead of
+   probing; a probed fact left in a report is the #107 gap re-opened). Two entries beside the governed facts:
+   (i) `INFO FOR TABLE <undefined>` returns EMPTY maps, not an error — so a table gate must read `INFO FOR DB`'s
+   `tables` (the existing gate), never infer definedness from `INFO FOR TABLE`; (ii) an `UPDATE` assigning a REMOVED
+   field on a SCHEMAFULL table is SILENT over 0 rows and raises over ≥ 1 row — which is exactly why class D's
+   precondition is derived from the SCHEMA, never from the write's outcome: a pre-boot store with zero legacy rows
+   would otherwise "succeed" silently and the next legacy row would fail later, out of context.
+5. **D flag — the pin IS required; the audit's mutation proof is the receipt that the pin discriminates, not a
+   substitute for it.** A hand column map and a derivation are indistinguishable by any positive test; they diverge
+   only when the statement changes. So: a ONE-DERIVATION pin — the test parses the SAME statement constant each leg
+   executes (bare pattern over `SET <col> = …` in the production string) and asserts the precondition's required
+   column set EQUALS it, ∀ legs (generated over `_MIGRATE_VALID_TABLES`' legs). It reds the day a leg's `SET` gains a
+   column the precondition does not require, permanently; the audit's scratch mutation (add a column to one `SET`)
+   is run ONCE to prove this pin fires. The worker's reference stays a SAT host, never a spec.
