@@ -1964,3 +1964,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - r4 delta `ab711142bf1204cfe7395e4038bc9b88`, full4 `7ab76f3611bedf69eddc4df943cbbc67` (lead-verified; full4 apply-check OK at bf1236a). The delta touches 4 test files only; `_surreal_harness.py` is NOT touched.
 - `builder-63c-i-a-fix6` spawned (~16:35Z; 100 min excluding memory-gate waits) on full4: §13 A–D + §13.1 production + the store-reference facts. It is NOT given the throwaway reference patches.
 - Then `coldaudit-63c-i-a-5` + `blindreader-63c-i-a-5`. The audit re-runs the dirty-store acceptance for D and A (a NEW restore; #525 loader-swap).
+- **The prod lore-surreal RSS sampler finished** (b0nin9fbc: 288 samples, 2026-09-29 17:08Z → 09-30 17:03Z, one PID 87802, no restart).
+  - RSS went 5.84 → a plateau of ~8.9–9.6 GiB from ~21:00Z, peaked at 10.84 GiB at 02:53Z, and ended at 4.64 GiB (a 4.50 low at 16:48Z).
+  - No monotonic growth; memory is released.
+  - Host MemAvailable low: 11.8 GiB at 16:08Z. That pressure is from other sessions' workloads (odoo harness postgres, both surreal stores, qdrant), not from lore pytest.
+  - Raw data: `scratchpad/prod_surreal_rss.tsv`.
