@@ -1776,3 +1776,11 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - A generated pin ∀ `build_parser()` verb × an `ensure_ready` injection.
   - It is a new CASE of a pinned property, so there is no contract round (rule 5).
 - `fixup-tests-63c-i-a-2` spawned about 02:30Z (45 min; base r2 `f5897681…`). Next: `builder-63c-i-a-fix4`.
+- **fixup-tests-63c-i-a-2 DONE (`774a0f7`).** Full patch `85a4d2e175a974633d60a81e8020d060` and delta `c216df30…`, both lead-verified on disk; apply-check OK.
+  - The generated pin fails 15/17 on fix3 r2 for the right reason and passes 17/17 on the reference build.
+  - The mutation proof held; no STOP fired.
+  - R2 (its own mutation proof): accepted.
+- **Two agents running in parallel (~02:30Z), on disjoint files:**
+  - (i) `fixup-tests-63c-i-a-2` ROUND 2, resumed natively. F-1 is a verification first: derive KeepStore's write boundaries and name each one's wrap pin, with a mutation on `add_household`. If a boundary has no pin, that is a guard §11 removed: STOP, and it goes to the sidecar. Then the F-1..F-3 docstrings as a docstrings-only delta.
+  - (ii) `builder-63c-i-a-fix4` spawned: the §11 production edit in `principals.py` only, on 85a4d2e1.
+  - Composition for the audit: fix4 full + the docstrings delta (disjoint files).
