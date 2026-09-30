@@ -1795,3 +1795,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - Order: the test side first (RED on exactly the 4), then the wraps.
   - The fixup2 ROUND 3 test side was sent natively (~02:35Z, 40 min). fix4 (busy, §11) is NOT steered; the wraps go to a new builder `builder-63c-i-a-fix5` on top of fix4 full + docstrings + r3 tests.
   - The operator was told the fold grew by §12.
+- **builder-63c-i-a-fix4 DONE (`413775d`).**
+  - Delta `fd70c6e9d4fff15e605660666a60a737` (principals.py only) and full `b10c6d7e2590a08a6b79273c27d86a3d`, both lead-verified on disk.
+  - Runs: 0 GREEN→RED, 16 RED→GREEN (15 verbs + fates both-ways), 9 owned pkt-58 reds; no STOP; composition with docstrings `afa519cf` = 64 passed.
+  - Audit items: R-1 (close-before-print ordering) and R-2 (factory faults are now laundered); neither is pinned.
+  - NEXT: when fixup2 ROUND 3 lands, `builder-63c-i-a-fix5` builds the §12 wraps on full2 `e915b90f` + fix4 delta `fd70c6e9` + the r3 delta.
