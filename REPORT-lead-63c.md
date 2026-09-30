@@ -1969,3 +1969,15 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - No monotonic growth; memory is released.
   - Host MemAvailable low: 11.8 GiB at 16:08Z. That pressure is from other sessions' workloads (odoo harness postgres, both surreal stores, qdrant), not from lore pytest.
   - Raw data: `scratchpad/prod_surreal_rss.tsv`.
+- **builder-63c-i-a-fix6 DONE-with-deviations (`c8c3435`).**
+  - Full `3132f699d5e0330c09efbbc58c0c3d0f` (20 file diffs) and delta `bfd73d83a9f073892c795f73df140f51`, both lead-verified; full apply-check OK at c8c3435.
+  - Runs: 0 GREEN→RED; the 209 declared are accounted for (200 R→G, 8 param churn, 1 owned by 58); 268 owned reds + 1 UNOWNED red at base (FLAG-1).
+- **Lead triage:**
+  - FORK-1 (D gate is leg-first, B) → sidecar §13.2.
+  - FORK-2 (`PrincipalKeyStore._as_rows` → `rows_of`, so `verify` raises on a wrong shape) → ACCEPT; the audit checks the served MCP auth result (denied, no leak).
+  - FLAG-1 (am34_5 resolver pin red: round 4's D file uses eval+Expression) → round 5 test side.
+  - The `_rows_stamped` default `noun` (a production default for a test's arity probe, the F-16 smell) → round 5 rewrites the probe, then the builder removes the default.
+  - FLAG-3 (`governed.py` module docstring STUB) → the builder fixes it with the default removal.
+  - FLAG-2 (currency `--legs` FAIL line) → the existing residual "gate --legs UX".
+  - FLAG-4 (raw newlines in stderr cause lines) → residual; trigger: any MCP-served render of these lines.
+- Sent: §13.2 to sidecar-63c-2; ROUND 5 to fixup-tests-63c-i-a-2 (base 3132f699). NEXT: resume builder-63c-i-a-fix6 (FLAG-3 + remove the default) → coldaudit-63c-i-a-5 + blindreader-63c-i-a-5.
