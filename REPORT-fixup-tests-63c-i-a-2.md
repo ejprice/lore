@@ -143,3 +143,134 @@ The mutation leg used the committed `scripts/mutation_proof.py` (anchor/replacem
 - Every pytest run was targeted, `-n 8`, `--timeout=300`, under `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0`. MemAvailable was 28–29 GiB at admission, and no other lore pytest was live.
 - The new pins are hermetic: fake stores, no socket, no `:18500`, no embedder. The keeps-CLI covering tests used the `:18000` TEST store via their own fixtures.
 - No worktree, no stash, no deploy, no `checkout --`.
+
+## ROUND 2 (lead brief ~02:30Z; measured 2026-09-30 on HEAD `0b0011b` + fix3 r2 + round-1 full patch `85a4d2e1…`)
+
+**SUMMARY:**
+- **State:** done, no STOP. Every derived KeepStore data-write boundary has a KeepStore-level wrap pin. `add_household_member`'s wrap was mutation-proven, and 9 stale docstring sites were fixed (F-1..F-3 plus 6 more found by sweep).
+- **Deviations:**
+  - (1) ⚠ **Memory admission gate violated once.** The `keeps.py` mutation run started at MemAvailable **18 GiB** (< 20). I noticed only after it finished (5 failed / 61 passed, cgroup-capped at 16G, no kill). The next run was admission-gated with a wait loop and started at 28 GiB.
+  - (2) The docstring sweep went beyond the three flagged sites. Each extra site carried the same false "laundered by `_dispatch_keep`" claim.
+- **Decisions needed:** R2-F1 below, a residual bound for the sidecar. Not a STOP.
+
+### R2-1. Derived boundary table (instrument: `derive_keep_writes.py`, pasted in R2-5)
+The boundaries are derived by AST over `KeepStore`'s methods in `loremaster/loremaster/keeps.py`. A write sink is either (a) `self._query(<stmt>)` whose literal text begins with CREATE/RELATE/UPDATE/DELETE/UPSERT/INSERT/BEGIN, or (b) any `execute_transaction(...)` call.
+- **Instrument gap, found and fixed during the run:** the first pass keyed only on sink (a) and MISSED `create_keep` and `get_or_create_keyed`, whose writes are composed transactions. Sink (b) closed that gap.
+
+| boundary (method) | write | inside `wrap_store_rejection(KeepStoreError, …)` | pin that fails if it leaks a raw `SurrealStoreError` |
+|---|---|---|---|
+| `create_keep` | TXN (CREATE + RELATE) | yes | `test_engine_rejection_seam.py::TestEngineRejectionWrappingBehaviourIsPreserved::test_a_raw_store_error_surfaces_as_the_domain_error[keep-create_keep]` |
+| `get_or_create_keyed` | TXN (CREATE + RELATE) | yes | `…[keep-get_or_create_keyed]` |
+| `add_household_member` | RELATE | yes | `…[keep-add_household_member]` (**mutation-proven**, R2-2) |
+| `remove_household_member` | DELETE | yes | `…[keep-remove_household_member]` |
+| `set_rank` | UPDATE | yes | `…[keep-set_rank]` |
+| `set_keeper` | UPDATE | yes | `…[keep-set_keeper]` |
+| `delete_keep` | DELETE | yes | `…[keep-delete_keep]` |
+| `ensure_ready` | TXN (DDL) | **no, by design** (§11 item 1: every `ensure_ready` is un-wrapped) | not a FR-2 boundary. Its fault fate is now pinned by round 1's generated CLI pin, whose injection point IS `ensure_ready`. |
+
+- **Coverage is a checked variable:** `TestTheRoutedSetIsDerivedAndComplete::test_the_routed_set_equals_the_invocation_map[keep]` asserts that the AST-derived set of methods referencing `wrap_store_rejection` EQUALS the fault-injection invocation map. That map also carries `list_keeps_for_member`, a born-wrapped READ.
+- **Injection:** `_inject_store_error` patches `keeps.run_query` / `keeps.execute_transaction` with a raw `SurrealStoreError`. A leaked wrap therefore surfaces as a non-`KeepStoreError`.
+
+### R2-2. Mutation receipt (`scripts/mutation_proof.py`, KeepStore-level file only)
+- **Setup:** `cp -a keeps.py → keeps.py.bak`. The mutation replaced `add_household_member`'s `with wrap_store_rejection(KeepStoreError, "could not add member …"):` with `if True:` (body unchanged).
+- **Declared RED (5, from `--collect-only` ids, before the run):** `test_a_raw_store_error_surfaces_as_the_domain_error[keep-add_household_member]`; `test_dropping_LAYER1_reclassify_moves_every_routed_path[keep-add_household_member]`; `test_dropping_LAYER2_wrap_store_rejection_moves_every_routed_path[keep-add_household_member]`; `test_the_routed_set_equals_the_invocation_map[keep]`; `test_the_routed_set_equals_the_known_wrapping_verbs[keep]`.
+- **Result:** **5 failed, 61 passed. "PROOF HELD — the declared RED set fired EXACTLY."** The tool restored the tree byte-exact (md5 `6945cb55…`), and `cmp keeps.py keeps.py.bak` was clean.
+- The CLI test was not in this run, so the RED comes from the KeepStore-level pins, as the brief required.
+
+### R2-3. Docstring edits (writable set: docstrings of the two files ONLY)
+- **Proof they are docstring-only:** each file's AST, with every docstring blanked, is equal before and after (`AST-EQUAL-MODULO-DOCSTRINGS` for both). `ruff check` on both files is clean.
+- **Residual sweep:** a bare awk pattern over both files for `laundered by ``_dispatch_keep``` / `_dispatch_keep`` catches` / `_dispatch_keep`` does NOT` / `except KeepStoreError` returned **0 hits**.
+
+Verdict on every `_dispatch_keep` mention in the two files:
+
+| file · test / site | verdict | edit |
+|---|---|---|
+| `test_keeps_cli.py` module docstring (`_dispatch_keep` wiring are REAL; readies the principal table) | true, kept | — |
+| `test_keeps_cli.py` `# routing pin passes at stub…` | a comment, not a docstring (outside the writable set), true | — |
+| `test_keeps_cli.py` the rank-ASSERT test ("laundered by `_dispatch_keep`") | FALSE after §11 | → "laundered by the one lore-adm fault handler at `_dispatch` (63c am-37 §11)" |
+| `test_keeps_cli.py` "(`_dispatch_keep` readied the empty…)" | true, kept | — |
+| `test_keeps_cli.py::…test_add_household_to_a_nonexistent_keep_is_loud_and_nonzero` (**F-1**) | FALSE: "Doubles as a CLI-level guard" | catching frame → `_dispatch` (§11). States the missed-wrap property is NOT pinned here and names the R2-1 pin `…[keep-add_household_member]` plus `TestTheRoutedSetIsDerivedAndComplete`. |
+| `test_keeps_cli.py::…test_a_nonexistent_keep_is_a_loud_exit_1` (**F-2**) | catching frame stale | → "which the one handler at `_dispatch` (63c am-37 §11) does NOT catch" |
+| `test_keep_remediation_cli_61.py` module docstring (**F-3**) | FALSE: "whose `except KeepStoreError` launders" | → laundered by the one handler at `_dispatch` (am-37 §11) |
+| `…test_the_new_verbs_are_registered_in_the_keep_handler_table` | FALSE: "(and its `KeepStoreError` launder)" / "would mis-launder" | → "(the KeepStore route)" / "would mis-route them", plus a one-line note that faults on every route go to `_dispatch`. **Reading flag:** the old "mis-launder" rationale no longer holds after §11, so I restated the pin's purpose as ROUTING. Its assertion (membership of `_KEEP_VERB_HANDLERS`) is unchanged. |
+| `…` unknown new-keeper test ("guard laundered by `_dispatch_keep`") | FALSE | → "by the one handler at `_dispatch` (63c am-37 §11)" |
+| `…` set-keeper ghost-keep test ("`KeepNotFoundError` laundered by `_dispatch_keep`") | FALSE | → same |
+| `…` delete-keep ghost-keep test (same claim) | FALSE | → same |
+| `test_keep_remediation_cli_61.py` `# delete-keep's own _dispatch_keep readies the keep slice` | a comment, true | — |
+
+The full text is in the delta patch (46 changed lines; `diff --git` touches exactly those two files).
+
+### R2-4. Runs, gates, patches
+- **Targeted six files on the fix3 r2 base** (full patch + docstrings; admission-gated at MemAvailable 28 GiB; `-n 8`, `--timeout=300`, 16G cgroup): **25 failed, 180 passed.** The FAILED set is **IDENTICAL** to round 1's two runs (17 from `red.log` + 8 from `base58.log`, diffed by node id), so the docstring edits moved no node.
+- `uv run ruff check .`: All checks passed!
+- `--currency --legs typecheck,ruff`, verbatim:
+  ```
+  typecheck    RED_ADJUDICATED — 83 residual(s), owned by: packet-58-contract (…) · packet-64b-i-contract (…)
+  ruff         GREEN
+  pytest       NOT_RUN — claimed by the manifest, never executed
+  CURRENCY   : FAIL — claimed but never run: pytest
+  exit=1
+  ```
+  83 → 83, RED_ORPHANED 0. The FAIL is the `--legs` mode's unrun pytest leg (see §6).
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.docstrings.delta.patch` (ONLY `test_keeps_cli.py` + `test_keep_remediation_cli_61.py`) | HEAD `0b0011b` + full (`85a4d2e1…`) | `afa519cf7c4eca5241a060ca80cbc367` | OK (temp index = HEAD + full `--cached`) |
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.full2.patch` (full + docstrings) | HEAD `0b0011b` | `e915b90f7f58712e164608a7fc8d2002` | OK (temp index = HEAD) |
+
+The docstring delta is disjoint from the builder's `principals.py`-only delta, so the two compose.
+
+### R2-F1. Residual bound for the sidecar (a flag, not a STOP)
+- **What is covered:** today's boundaries are all covered, but the coverage population is "methods that REFERENCE `wrap_store_rejection`" (`_methods_routing_through_seam`), not "methods that WRITE". A NEW KeepStore write method written with NO wrap would join neither the routed set nor the invocation map, so no pin reds. The `expected_wrappers` set is a hand-list.
+- **Why §11 matters here:** before §11, such a leak on a CLI path at least tracebacked through `_dispatch_keep`, incidentally and only where a CLI test drove a rejection. After §11 it exits 1 with a `lore-adm:` line. So §11 removes that incidental CLI-side signal for FUTURE unwrapped write methods, not for any existing one.
+- **Proposed class pin (not written; the brief scopes me to docstrings):** assert that the AST-derived KeepStore write set (R2-5's instrument, minus `ensure_ready`) ⊆ `_methods_routing_through_seam(keeps_module, "KeepStore")`.
+- **Re-open trigger:** the next KeepStore write method.
+
+### R2-5. Instrument (pasted verbatim; the scratch copy is disposable)
+```python
+"""Derive KeepStore's WRITE boundaries from production by AST (fixup-tests-63c-i-a-2 round 2).
+A write boundary = a KeepStore method containing a ``self._query(<stmt>, ...)`` whose statement text
+(str / f-string / concatenation, literal parts joined) begins with a write verb, OR any
+``execute_transaction(...)`` call (a transaction is a write by construction). For each, report
+whether every such call sits lexically inside ``with wrap_store_rejection(KeepStoreError, ...)``."""
+import ast, sys
+from pathlib import Path
+
+WRITE_VERBS = ("CREATE", "RELATE", "UPDATE", "DELETE", "UPSERT", "INSERT", "BEGIN")
+
+def literal_text(node: ast.AST) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(literal_text(v) if isinstance(v, ast.Constant) else "{}" for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return literal_text(node.left) + literal_text(node.right)
+    return "<dynamic>"
+
+def is_wrap(item: ast.withitem) -> bool:
+    call = item.context_expr
+    return (isinstance(call, ast.Call) and getattr(call.func, "id", getattr(call.func, "attr", "")) == "wrap_store_rejection"
+            and call.args and getattr(call.args[0], "id", "") == "KeepStoreError")
+
+tree = ast.parse(Path(sys.argv[1]).read_text())
+cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "KeepStore")
+for method in cls.body:
+    if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        continue
+    found = []
+    def walk(node, wrapped):
+        for child in ast.iter_child_nodes(node):
+            w = wrapped or (isinstance(child, (ast.With, ast.AsyncWith)) and any(is_wrap(i) for i in child.items))
+            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and child.func.attr == "_query"
+                    and child.args):
+                text = literal_text(child.args[0]).lstrip()
+                if text.upper().startswith(WRITE_VERBS) or text == "<dynamic>":
+                    found.append((child.lineno, text.split()[0] if text.split() else text, w))
+            if isinstance(child, ast.Call) and getattr(child.func, "id", getattr(child.func, "attr", "")) == "execute_transaction":
+                found.append((child.lineno, "TXN(execute_transaction)", w))
+            walk(child, w)
+    walk(method, False)
+    if found:
+        print(f"{method.name}: " + ", ".join(f"L{l} {verb} wrapped={w}" for l, verb, w in found))
+```
+Output at `0b0011b`+r2: `ensure_ready: L286 TXN wrapped=False · create_keep: L508 TXN wrapped=True · get_or_create_keyed: L594 TXN wrapped=True · add_household_member: L679 RELATE wrapped=True · remove_household_member: L748 DELETE wrapped=True · set_rank: L782 UPDATE wrapped=True · set_keeper: L856 UPDATE wrapped=True · delete_keep: L922 DELETE wrapped=True`.
