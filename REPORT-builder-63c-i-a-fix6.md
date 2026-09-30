@@ -408,3 +408,62 @@ SITES=12 HITS=0
 - Scratch base HEAD `365f7695065720412b2f7b46028a85cc47ca7824`. Main HEAD at report time is `88625436c6c3299a08776efe6f4e61c6634e726a` (moved by docs only: `REPORT-lead-63c.md` +5 lines).
 - `git apply --check --cached <full.patch>` at main HEAD `8862543`: **OK**.
 - The delta over the full4 originals reproduces all 4 build files byte-exact (`patch -p1` + `cmp`, in `scratchpad/deltacheck2`).
+
+## RESUME (lead, ~17:45Z 2026-09-30 — FORK-1 accepted via am-37 §13.2 `5f39564`; FORK-2 accepted; FLAG-1 + arity probe fixed test-side in round 5 `7a1dac4`; FLAG-2/FLAG-4 residuals)
+Work happened in the same `fix6` scratch tree. `cp -a` backups were taken first: `scratchpad/pre-r5/` for principals, governed and the two round-4 test files.
+
+**Summary:**
+- **State:** done.
+- **Tests:** 0 GREEN→RED vs the `c8c3435` build. `test_am34_5` is GREEN. **0 unowned reds.**
+- **Gates:** ruff clean; typecheck RED_ADJUDICATED 83 (unchanged).
+- **Deviation (1, disclosed):** besides the module docstring (FLAG-3), I also rewrote the `GovernedAuditUnavailable` CLASS docstring in `governed.py`. It carried the same stale "CONTRACT STUB … `guarded_write` SILENTLY SKIPS the audit" prose. It now states the fact: `authorize_guarded` raises it before any durable effect. There is no `__doc__` pin on governed, and this is prose only.
+- **Harness (disclosed):** the first run was started before a `ruff` E501 in the new module docstring was fixed. It was stopped by PID (97350/97359/97371) after ~1 min with no result used; its log is kept as `r5-declared.ABORTED.log`. The line was fixed and the run restarted on the final bytes.
+
+| step | edit | receipt |
+|---|---|---|
+| 1 | r5 test delta `…39327f47…/scratchpad/fixup-tests-63c-i-a-2.r5.delta.patch` (md5 `5ef35641295e40cc8e143f647fe2784e` verified); `git apply --check` + apply clean. It touches `test_fail_closed_shapes_63c_13b.py` and `test_preboot_schema_precondition_63c_13d.py` only. | applied |
+| 2 | `_rows_stamped(update_result, *, noun: str)` — no default. `_BACKFILL_UPDATE_NOUN` DELETED (awk: 0 occurrences). All three legs pass their own noun. | typecheck 83, 0 orphans on the run legs |
+| 3 (FLAG-3) | `governed.py` MODULE docstring rewritten to what the module does: the built substrate, the listed entry points, the THREE fail-closed shape readers, R4 routing. No "STUB / runnable-RED / NotImplementedError" remains (awk over `governed.py`: 0 hits for `STUB\|runnable-RED\|NotImplementedError`). | ruff clean |
+| 4 (§13.2 rider) | Each of `_migrate_memory_scope`, `_migrate_agent_owner` and `_migrate_message_owner` gains an `ORDERING BOUND (am-37 §13.2)` docstring paragraph. The schema gate is the leg's FIRST action, before any leg read or write; *"a verb-level refusal may precede this gate; each such refusal is true independently of the schema, and this gate runs before any leg read or write."* | AST-read of the three docstrings, checked |
+
+**Targeted run:** the same 62-file declared set (md5 `2a6a8c93…`), which already contains both round-5 files. It went through `gated_run.sh`: process table clear, MemAvailable ≥ 20 GiB, `MemoryMax=16G`, `-n 8`, `--timeout=300`.
+- Admitted: `ADMITTED 17:48:30 avail=47GiB others=0 waited=0s`.
+- Result: `268 failed, 4762 passed, 1 skipped, 7 warnings in 596.88s (0:09:56)` (5031 nodes = the `c8c3435` build).
+- **GREEN→RED vs the `c8c3435` build (`build2-declared.log`): 0.**
+- **RED→GREEN: exactly 1** — `test_retry_seam.py::TestThereIsExactlyOneCatchScanner63cIAa28c::test_am34_5_exactly_one_walker_and_one_resolver_in_the_tree` (FLAG-1 closed).
+- **Remaining 268 reds, all owned, ZERO unowned:**
+  - `packet-58-contract` 33: `r3_tiers` 16, `r3_am6` 8, `r3_cas_seam` 4, `r4_lease_fates` 4, `test_exhaustion_fates` 1.
+  - `packet-64b-i-contract` 235: `test_comms_footer` 81, `governed_substrate_64b` 34, `findings_migrate_64b` 28, `test_mcp_server` 28, `findings_classes_64b` 27, `findings_governance_64b` 24, `findings_system_writer_64b` 9, `findings_enforcement_64b` 4.
+- The id sets are the same files and counts as §5; no other file reddens.
+
+**Currency, verbatim** (`--currency --legs typecheck,ruff`, ~17:50Z; owner prose cut at 200 chars; full log `scratchpad/currency-r5.log`):
+```
+========================================================================
+GATE CURRENCY — is every CLAIMED gate green, or owned?
+  manifest   : ('typecheck', 'ruff', 'pytest') (3 gates)
+  typecheck    RED_ADJUDICATED — 83 residual(s), owned by: packet-58-contract (owner: packet 58 (supersede re-anchor + task guarded-append shell + finding 130 + amendments 1-8) — the 58 builder, seria
+  ruff         GREEN
+  pytest       NOT_RUN — claimed by the manifest, never executed
+      ORPHAN: gate 'pytest' is CLAIMED by the manifest and was NOT RUN — a claimed-but-unrun gate is finding #312 exactly. This says NOTHING about whether it would pass.
+CURRENCY   : FAIL — claimed but never run: pytest
+  (this is NOT the deploy receipt: it answers 'is every gate owned', never 'may this ship')
+```
+- typecheck RED_ADJUDICATED **83**; ruff GREEN; RED_ORPHANED on the run legs **0**.
+- Exit 1 is the known FLAG-2 residual (the excluded pytest leg rendered as unrun).
+- `uv run ruff check .` → `All checks passed!`
+
+**Re-cut patches:**
+
+| artifact | md5 |
+|---|---|
+| **FINAL 63c-i-a patch** `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r5.full.patch` (`git diff --binary HEAD` + `--no-index` for the 2 untracked test files) | `bec291900a49c2e5df0704ef912fd5b9` |
+| delta over `3132f699` `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r5.delta.patch` (principals.py, governed.py, the 2 round-5 test files; `principal_keys.py` + the reference are unchanged, `cmp`-verified) | `2bb39a7b56613ee4dfceb605ca709bf7` |
+| `loremaster/loremaster/principals.py` | `06f367c7d3782b4e373f6151e1f2c604` |
+| `loremaster/loremaster/governed.py` | `388a94890eebed779d3015e7d72f0895` |
+| `loremaster/loremaster/principal_keys.py` (unchanged) | `756584370a79cba67361d1cc3076238a` |
+| `docs/reference/surrealdb-31-capabilities.md` (unchanged) | `73487207fdf0aefe0a070c24f5160754` |
+
+- `cp -a` of the changed files: `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/changed-files-r5/`.
+- Scratch base HEAD `365f769`. Main HEAD at re-cut is `4ed61f8`, which moved by docs only (no `loremaster/`, `scripts/` or `docs/reference/` change since `365f769`).
+- `git apply --check --cached <r5.full.patch>` at main HEAD `4ed61f8`: **OK**.
+- The delta, applied over the `3132f699` state (the `pre-r5/` copies), reproduces all 4 files byte-exact (`patch -p1` + `cmp`, `scratchpad/deltacheck3`).
