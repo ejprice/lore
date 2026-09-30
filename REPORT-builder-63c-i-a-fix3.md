@@ -275,3 +275,226 @@ print("TOTAL", sum(tally.values()), "UNOWNED", sum(n for (p, o), n in tally.item
 ```
 
 There are 339 failing tests in the declared set outside this wave's scope (measured 2026-09-30 at `fb95d1f`+fixup+this build): 272 packet-64b-i, 60 packet-58, 7 owned by both. All are registered bounds, and the base run has every one of them red too. This report does not examine them further.
+
+---
+
+## §10 — round 2: am-37 §10 delta (`cfaf793`), same scratch `fix3`, 2026-09-30 01:45–02:10Z
+
+**SUMMARY (round 2):**
+- **State:** done-with-deviations.
+- **(a)** `owned_count` is fail-CLOSED through `governed.group_all_count`.
+- **(b)** Today a rejected count is LOUD, not silent (stderr + exit 1). A malformed count now takes that same fate, so no ERROR-log change was needed. Receipts below.
+- **(c)** The receipt line always renders `unsound_sender_messages=`, and `None` is rendered explicitly.
+- Declared set: see §10 RUNS. Currency RED_ORPHANED 0; ruff clean. The sharing mutation covers all 4 callers.
+- **Deviation:** my lore identity was retired at round-1 exit, so it cannot re-register (terminal). No lore_comms traffic this round; the report and the native message carry it.
+- **Decision needed:** **§10 FLAG R2-1**. `lore-adm delete`'s `_dispatch` does not catch `SurrealStoreError`, so the "store fault reaches the operator through the base-class catch" premise in §10.1(a) is false for that verb.
+
+### §10 ITEMS
+| item | chokepoint | receipt |
+|---|---|---|
+| (a) `PrincipalStore.delete` `owned_count` | `owned_count = group_all_count(await self._query(…), noun="governed owned-row count")`. The raw answer is read directly; the old `_as_rows` step, which turned a non-list into `[]` and so into 0, is gone from this read. | Probe part B, base → build: `delete MALFORMED: PROCEEDED cascaded=0 executed=True` → `SurrealStoreError executed=False`; `delete NON-LIST: PROCEEDED … executed=True` → `SurrealStoreError executed=False`. Unchanged: `delete REJECTED: SurrealStoreError executed=False` and `delete OWNS 2: PrincipalOwnsGovernedRowsError executed=False`. **STOP check:** no pin feeds delete a wrong shape and expects it to proceed. The awk hits are `test_agent_governance_63c_i_a.py`, `test_fixwave_a19b_63c_i_a.py` and `test_principal_delete_governed_63a.py`, which the AST covering scan added (the 75th file): 6/6 GREEN on base and on build. |
+| (b) `governed.report_unmigrated_governed_rows` | `count = group_all_count(result, noun="governed unmigrated-scope count")`. | **Today's fate, read first.** The only production caller is `principals._dispatch_report_unmigrated` (the `report-unmigrated` verb; awk finds no boot caller — the other hits are a comment and a `_txn` docstring). Its catch includes `SurrealStoreError`. `run_query` logs a rejection under `governed.unmigrated_count.rejected` and raises `SurrealStoreError`. So a REJECTED count gives stderr + exit 1, which is loud. Probe (base): `report-unmigrated REJECTED: exit=1 stderr='lore-adm: governed unmigrated-scope count rejected…'`; `MALFORMED: exit=0 stdout='report-unmigrated --table memory: unmigrated=0'`, the silent alarm. Probe (build): `MALFORMED: exit=1 stderr='lore-adm: the governed unmigrated-scope count read answered a list without an integer \`count\` — nothing was decided from it'`, the same fate as REJECTED. Today's fate is not silent, so the §10.1(b) rider (log ERROR with `exc_info`) does not trigger. Residual: a malformed answer has no engine detail to log, so it produces no `…rejected` log record; the stderr line carries it. |
+| (c) F-2 receipt | The receipt f-string renders every field unconditionally: `scanned={…} backfilled={…} already_migrated={…} unsound_sender_messages={…}`. A `None` prints as `None`. This is one convention for the whole line. The line had no other omission-rendered field; `table_defined=False` has its own separate sentence, as before. | No byte pin (awk, round 1). The declared-set run covers the a28c CLI render pins. |
+| shared message | `group_all_count`'s raised tail changed from "nothing was migrated" to **"nothing was decided from it"**, because the reader now also serves a delete guard and an alarm, where "migrated" would be false prose. | awk over the test tree for `nothing was migrated` / `without an integer`: 0 pins. |
+
+### §10 RUNS (declared set unchanged, 74 files md5 `00b6f268…`, re-run on the fix-up base vs build r2; +1 file run separately)
+| run (2026-09-30Z) | tree | passed | failed | skipped | collected | wall |
+|---|---|---|---|---|---|---|
+| base2 01:45 | fix-up patch (`base_content.md5` verified before the swap) | 5926 | 341 | 18 | 6285 | 11m07s |
+| **build2 01:56** | **+ round 1 + §10** (`build_content_r2.md5`) | **5928** | **339** | 18 | 6285 | 11m18s |
+| extra, base / build | `test_principal_delete_governed_63a.py` (AST scan: new covering file for the delete path) | 6 / 6 | 0 / 0 | — | 6 | ~4s |
+
+Transitions (`junit_transitions.py`, `runs/transitions2.txt`):
+```
+collected base 6285 build 6285 only-base 0 only-build 0
+{'passed->passed': 5926, 'failed->failed': 339, 'skipped->skipped': 18, 'failed->passed': 2}
+RED->GREEN loremaster.tests.test_exhaustion_fates.TestTheRegistryIsTheAdjudicationBothWays::test_every_non_derived_site_has_a_row_and_every_row_a_site
+RED->GREEN scripts.test_pending_contract_gate::test_shared_path_error_is_expected_when_ANY_entry_admits_it[named-by-second-entry]
+```
+- **GREEN→RED 0.** The extra delete-path file is `passed->passed 6`.
+- The remaining 339 reds are the same set as round 1, with the same owners (64b-i 272 / 58 60 / both 7). `red_owners.py` printed "UNOWNED 8" again, the classname-parse artifact. Listed, they are `test_reanchor_58_r3_am6` ×8, registered under packet-58. **UNOWNED 0.**
+
+### §10 CURRENCY (build r2, verbatim, owner prose truncated at 160 columns)
+```
+  manifest   : ('typecheck', 'ruff', 'pytest') (3 gates)
+  typecheck    RED_ADJUDICATED — 83 residual(s), owned by: packet-58-contract (owner: packet 58 (supersede re-anchor + task guarded-append shell + finding 130 +
+  ruff         GREEN
+  pytest       NOT_RUN — claimed by the manifest, never executed
+      ORPHAN: gate 'pytest' is CLAIMED by the manifest and was NOT RUN — a claimed-but-unrun gate is finding #312 exactly. This says NOTHING about whether it wo
+CURRENCY   : FAIL — claimed but never run: pytest
+EXIT 1
+```
+**RED_ORPHANED 0.** The `pytest NOT_RUN` line and the exit 1 come only from `--legs`, as in round 1. `uv run ruff check .` gives `All checks passed!`.
+
+### §10 MUTATION (sharing across all FOUR callers, including the new `owned_count` caller)
+The mutation is the same as round 1: `governed.group_all_count`'s empty branch `return 0` → `return 7`.
+- It landed (`diff`: `707c707`).
+- Content backup `cp -a`, then restore, then `cmp` against `build_content/governed.py`: **RESTORED byte-exact**. The mutation was run twice (the second time to capture caller (4)'s printed line), and each run was restored byte-exact.
+- Probe `probe_group_all_r2.py`: each caller is given an EMPTY GROUP ALL answer.
+
+| caller | unmutated (build r2) | **mutated** | restored |
+|---|---|---|---|
+| (1) `principals._scope_count` | 0 | **7** | 0 |
+| (2) `_migrate_message_owner.unsound_sender_messages` | 0 | **7** | 0 |
+| (3) `PrincipalStore.delete` `owned_count` (NEW) | `PROCEEDED cascaded=0 executed=True` | **`PrincipalOwnsGovernedRowsError executed=False: … they own 7 governed memory row(s)`** | `PROCEEDED …` |
+| (4) `governed.report_unmigrated_governed_rows` (NEW) | 0 | **7** (plus the WARNING `governed.unmigrated_rows: 7 memory row(s) carry a NONE scope …`) | 0 |
+
+**Sharing is proven for all four 63c callers.** Receipts: `runs/probe_r2_{base,build,mutated}.txt` in the scratchpad.
+
+### §10 BACKUP (HEAD `fb95d1f9b5e836d343af0658aec2815e02e33e3c`; scratchpad as round 1)
+Round 2 SUPERSEDES the round-1 patches.
+
+| file | md5 | content |
+|---|---|---|
+| `builder-63c-i-a-fix3.r2.full.patch` | `f5897681430ad5e7c5d719dab12815bd` | `git diff --binary HEAD` = fix2 + tests + round 1 + §10. `--check` on HEAD: OK. |
+| `builder-63c-i-a-fix3.r2.delta.patch` | `4516d9b1919826eb6b21658c96e79a7a` | Mine (round 1 + §10) over the fix-up patch `2c88b1a9`, 3 files, +101/−51. `--check` on HEAD + fix-up: OK. |
+| `backup_changed_r2/governed.py` | `e3b4531fb8f36482ed8d5bed9069a5a3` | `cp -a` |
+| `backup_changed_r2/principals.py` | `938f7a246938a79ec609d3263871583d` | `cp -a` |
+| `backup_changed_r2/pending_contract_gate.py` | `1dcdfadfbf22a4a44c41d647032e3061` | `cp -a` (unchanged since round 1) |
+
+### §10 INSTRUMENT
+`probe_group_all_r2.py` lives in the scratchpad and is pasted here verbatim:
+```python
+import argparse
+import asyncio
+import contextlib
+import io
+from types import SimpleNamespace
+
+import loremaster
+import loremaster.governed as governed
+import loremaster.principals as principals
+from loremaster.store._txn import SurrealStoreError
+
+print("loremaster.__file__ =", loremaster.__file__)
+calls = []
+
+
+async def fake_run_query(*, noun, statement, **_):
+    calls.append(noun)
+    if noun == "governed scope count":
+        return [{"count": 1}] if "IS NONE" in statement else []
+    return []
+
+
+async def fake_operator(_store):
+    return SimpleNamespace(email="op@example.invalid")
+
+
+class FakeKeepStore:
+    async def get_or_create_keyed(self, **_):
+        return SimpleNamespace(id="keep:probe")
+
+
+principals.run_query = fake_run_query
+principals._message_leg_refusal = lambda *_a, **_k: None
+principals.resolve_operator_principal = fake_operator
+handle = SimpleNamespace(acquire=None, drop=None, url="ws://probe.invalid")
+executed = []
+
+
+async def fake_execute_transaction(*_a, **_k):
+    executed.append(1)
+
+
+principals.execute_transaction = fake_execute_transaction
+
+
+def principal_store(owned_answer):
+    store = object.__new__(principals.PrincipalStore)
+
+    async def get_by_email(_email):
+        return SimpleNamespace(id="principal:p1")
+
+    async def table_exists(_table):
+        return True
+
+    async def query(statement, _params=None):
+        if "FROM keep" in statement:
+            return []
+        if "FROM memory" in statement:
+            if isinstance(owned_answer, Exception):
+                raise owned_answer
+            return owned_answer
+        return []  # the principal_key cascade count
+
+    store.get_by_email, store._table_exists, store._query = get_by_email, table_exists, query
+    store._ensure_connection, store._drop_connection, store._url = None, None, "ws://probe.invalid"
+    return store
+
+
+async def delete_outcome(owned_answer):
+    executed.clear()
+    try:
+        cascaded = await principal_store(owned_answer).delete(email="p@example.invalid")
+        return f"PROCEEDED cascaded={cascaded} executed={bool(executed)}"
+    except Exception as error:  # noqa: BLE001 - the probe reports the class
+        return f"{type(error).__name__} executed={bool(executed)}: {str(error)[:90]}"
+
+
+async def report_verb(answer):
+    async def governed_run_query(**_):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    governed.run_query = governed_run_query
+    fake_store = SimpleNamespace(_ensure_connection=None, _drop_connection=None, _url="ws://probe.invalid")
+
+    async def noop():
+        return None
+
+    fake_store.ensure_ready, fake_store.close = noop, noop
+    principals.build_principal_store = lambda _config: fake_store
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = await principals._dispatch_report_unmigrated(argparse.Namespace(table="memory"), None)
+    return f"exit={code} stdout={stdout.getvalue().strip()!r} stderr={stderr.getvalue().strip()[:110]!r}"
+
+
+async def main():
+    print("== A: sharing (EMPTY GROUP ALL answer to every caller)")
+    print("  (1) _scope_count =", await principals._scope_count(handle, "memory", none=False))
+    result = await principals._migrate_message_owner(
+        handle, FakeKeepStore(), object(), object(), object(), table_defined=True
+    )
+    print(f"  (2) message leg unsound_sender_messages = {result.unsound_sender_messages}")
+    print("  (3) delete owned_count:", await delete_outcome([]))
+    saved = governed.run_query
+
+    async def empty(**_):
+        return []
+
+    governed.run_query = empty
+    print("  (4) report_unmigrated_governed_rows =", await governed.report_unmigrated_governed_rows(handle, "memory"))
+    governed.run_query = saved
+    rejected = SurrealStoreError("governed unmigrated-scope count rejected by the engine (probe)")
+    print("== B: fate, REJECTED vs MALFORMED")
+    print("  report-unmigrated REJECTED :", await report_verb(rejected))
+    print("  report-unmigrated MALFORMED:", await report_verb([{"cnt": 1}]))
+    print("  delete REJECTED :", await delete_outcome(SurrealStoreError("principal query rejected (probe)")))
+    print("  delete MALFORMED:", await delete_outcome([{"cnt": 1}]))
+    print("  delete NON-LIST :", await delete_outcome("oops"))
+    print("  delete OWNS 2   :", await delete_outcome([{"count": 2}]))
+
+
+asyncio.run(main())
+```
+
+### §10 DUAL
+| removed / replaced | adjudication |
+|---|---|
+| delete: `_as_rows(...)` then `int(rows[0].get("count", 0)) if rows else 0` (malformed or non-list → 0 → delete proceeds) | **old-bug, not re-pinned** (am-37 §10.1(a): fail-OPEN on SF-63-5). Preserved: an empty group → 0 → proceeds, and `{"count": N>0}` → refuses. |
+| `report_unmigrated_governed_rows`: malformed → `0` → exit 0 `unmigrated=0` | **old-bug** (the silent-alarm class). Preserved: an empty group → 0, and a well-formed count, including the WARNING when > 0. |
+| receipt: omit `unsound_sender_messages` when `None` (my round-1 pick) | **dropped-deliberately**: am-37 §10.2 refuses omit-when-None. |
+| raised tail "nothing was migrated" | **dropped-deliberately**: false prose on the new delete and alarm callers. No pin. |
+
+### §10 FLAGS
+- **R2-1 (decision needed): `lore-adm delete` renders a store fault as a TRACEBACK.**
+  - `principals._dispatch` catches `(PrincipalStoreError, PrincipalKeyStoreError, SurrealConnectionError, ValueError)`, not `SurrealStoreError`.
+  - `PrincipalStore._query` raises raw `SurrealStoreError` on an engine rejection. The new malformed-count raise is the same class.
+  - Both therefore reach the operator as a traceback. The delete IS refused (fail-closed, probe `executed=False`), so §10.1(a)'s property holds. But §10.1(a)'s "reaches the operator through §6 F-12's base-class catch" is true only for `migrate-governed`, not for this verb.
+  - This is pre-existing for REJECTED counts and not new to this delta.
+  - Widening `_dispatch` to `SurrealStoreError` would make it a new exhaustion catch site: its caught closure includes `TxnContentionExhaustedError`. That reddens `test_exhaustion_fates` until a `REGISTERED_FATES` row lands. That is a test-side edit, and the same shape as F-12(a), so I did NOT do it. Route: one `principals.py` edit plus one fates row, in one commit.
+  - **CLASS:** "every `lore-adm` verb's store fault → stderr + exit 1". **SIBLINGS TRIED:** `migrate-governed` (base catch) and `report-unmigrated` (base catch). **NOT TRIED:** every other `_dispatch_*` verb's tuple (`_dispatch_keep` documents that it catches `KeepStoreError` + `SurrealConnectionError` deliberately, FR-2 D1).
+- The rest of the GROUP ALL sweep stays with 64b §DRY, per am-37 §10.1: the `cascaded` count, `tasks`, `store/surreal.py`, `surreal_manifest`, findings, messages and diff. I did not touch them.
