@@ -1761,3 +1761,9 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - sharing is proved by MUTATION, and every caller's pins must go red;
   - part 2 (`actions=` plus the owner-assert rider) is already am-11 §3.3.
   - Resolve #520 at the 64b-i commit. Finding annotated.
+- **fix3 §10 DONE (8abf1e2, 5005371).** New full patch `builder-63c-i-a-fix3.r2.full.patch` md5 `f5897681430ad5e7c5d719dab12815bd` (lead-verified on disk; `git apply --check --cached` OK at 5005371); delta r2 `4516d9b1…`. Scratch `…/5e3e72cf-a647-4837-966a-5e40d72da932/scratchpad/`.
+  - Runs: 74+1 files, base 5926/341 → build 5928/339; RED→GREEN 2; GREEN→RED 0; remaining reds owned (64b-i 272 / 58 60 / both 7).
+  - The 4-caller sharing mutation held; RED_ORPHANED 0.
+  - **OPEN, waiting on the operator:** FLAG R2-1. `lore-adm delete`'s `_dispatch` does not catch `SurrealStoreError`, so a store fault prints a traceback (the delete is still refused). CLASS: every lore-adm verb's store fault → stderr + exit 1.
+    - Options put to the operator: (1) fold it into 63c-i-a before the re-check audit, via a sidecar ruling + a fates row + a generated pin + a builder (recommended); (2) its own commit right after 63c-i-a.
+    - The re-check audit is held until the operator picks.
