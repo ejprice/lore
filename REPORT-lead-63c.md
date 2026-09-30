@@ -1790,3 +1790,8 @@ Global tdd / tdd-light / tdd-implementer now defer to the project's test scope. 
   - Docstrings delta `afa519cf7c4eca5241a060ca80cbc367`, full2 `e915b90f7f58712e164608a7fc8d2002`, both lead-verified; full2 apply-check OK.
   - ⚠ One run was admitted at 18 GiB (<20 gate): self-reported, cgroup-capped, no kill. Surfaced to the operator.
   - R2-F1: the coverage population is "references the wrap", not "writes", so a new unwrapped write is invisible, and §11 removed the incidental CLI traceback signal. Lead lift: ∀ store a lore-adm verb reaches. Sent to sidecar-63c-2 for am-37 §12 (~02:40Z, 20 min).
+- **am-37 §12 ruled (`4e3a96c`).** The lift is right, and the class is FALSE today: 4 unwrapped write boundaries (`PrincipalStore.set_status`/`set_expires`/`delete`, `PrincipalKeyStore.revoke`).
+  - It rides this fold: 4 one-line wraps + a derived per-store pin; the routed-set expectation is re-keyed to derived writes ∪ declared read-wrappers.
+  - Order: the test side first (RED on exactly the 4), then the wraps.
+  - The fixup2 ROUND 3 test side was sent natively (~02:35Z, 40 min). fix4 (busy, §11) is NOT steered; the wraps go to a new builder `builder-63c-i-a-fix5` on top of fix4 full + docstrings + r3 tests.
+  - The operator was told the fold grew by §12.
