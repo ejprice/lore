@@ -1939,3 +1939,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - Held by: another session's odoo harness postgres `ppt-apps15-test-px2g` (idle connections, 2+ GiB each), prod surreal :18500 9.1G, test surreal :18000 5.4G, qdrant 2.8G.
   - Class A pins are written (206 collected); B and D are delegated to 2 sub-workers, C is being authored.
   - The lead did NOT relax the gate. It told the agent to SERIALIZE all worker pytest runs behind one queue, and escalated to the operator (free memory, e.g. stop the idle harness, or wait).
+- **~15:15Z: memory is at 14 GiB. The lead EXTENDED fixup2 round 4's deadline** (the blocker is external). It must commit a PARTIAL ROUND 4 (patches + md5s + currency) as soon as B merges, keep the gated serialized queue armed, and fill in the receipts when memory admits. The gate is not relaxed; the operator has been asked (stop the idle harness / wait / lower the floor).
