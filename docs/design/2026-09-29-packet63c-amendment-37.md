@@ -532,3 +532,111 @@ it was run over the whole domain. **It rides THIS fold**, both halves:
 - If `principal_keys.py` is outside the builder's writable set for this fold, `revoke` goes into the pin as a
   DECLARED pending member (the §2 declared-pending-delta form: green with the declaration, red on a fifth, red when
   the wrap lands without clearing it), owner the next `principal_keys`-touching contract — named in the close-out.
+
+## 13. Appended 2026-09-30 (operator: FOLD classes A–D into 63c-i-a before the commit; over coldaudit-4 `8026854` GO on `5f2d7c43`, blindreader-4 `da24013`, lead triage): four classes, each with property / domain / routing / chokepoint / pins / edits / STOP
+
+Read from the fix5 tree (`…/e1f81771…/scratchpad/fix5`, patch md5 `5f2d7c43` verified). Test side lands FIRST in every
+class (RED on fix5-as-is by name, GREEN after), production second, one commit each.
+
+### A. The lore-adm error line teaches the cause (D-3 + F-3 + F-13)
+- **PROPERTY:** *every served pointer resolves to a surface the consumer can open, and a fault line names its cause.*
+  Today `lore-adm: could not delete principal 'x'` hides the reason in `__cause__`, and *"see the server log"* points
+  at nothing: lore-adm configures no logging handler, so Python's lastResort prints the bare event name and DROPS the
+  `extra` carrying `engine_error` (§7.3 receipt, line "governed.agent_backfill.rejected"). **DOMAIN:** the fault
+  classes are the §11 tuple (derived from `_dispatch`'s `except`); the pointer set is the `_SERVER_LOG_HINT` uses.
+- **Routing:** NEW property (nothing pins served pointers) → folded by operator grant as a builder requirement + ONE
+  generated pin; no contract round.
+- **ONE chokepoint, two halves, no text surgery:** (i) `main()` installs a stderr `logging.StreamHandler` at WARNING on
+  the `loremaster` logger with a CLI-local stdlib formatter rendering `%(message)s` plus the `error_class` /
+  `engine_error` extras when present — so in lore-adm *"the server log"* IS stderr and the hint becomes TRUE (the
+  driver's message is built ONCE for MCP and CLI alike; the CLI does not rewrite it). (ii) the §11 handler renders the
+  cause chain: `lore-adm: {error}` then one ` ← caused by: {cause}` per `__cause__` link (messages only, consecutive
+  duplicates collapsed). F-3's six collapsed faults are thereby distinguished by their causes; F-13's three
+  over-claiming wrap contexts ("already exists") are REWORDED neutral ("could not create principal …") because the
+  typed cause (`unique violation — …`) now prints itself — no per-class message map in the seam.
+- **Secret guard (checked):** the handler prints exception MESSAGES only; the driver's rejection message already
+  carries the creds-free RPC `url` (printed today, §7.3), and the seam's `extra` keys are `url` / `error_class` /
+  `engine_error` — no credential. `engine_error` may echo the operator's OWN bound values to the operator's own
+  terminal: allowed (#31 protects MCP consumers, not the operator's stderr). Builder receipt: awk over every
+  `logger.*(..., extra={...})` in `_txn`/`principals`/`keeps` for `password|token|secret` → zero hits.
+- **Pin (generated over the §11 tuple):** inject each fault class with a chained cause at `ensure_ready` → stderr
+  contains the cause message and, for a raw domain rejection, the `engine_error` text; `Traceback` absent; exit 1.
+- **STOP:** the CLI tests that assert an exact stderr line (`test_principals_cli`, `test_keeps_cli`) → DUAL: the
+  first line is unchanged, the cause line is appended; any pin asserting stderr has EXACTLY one line reds and is
+  re-keyed in the same test-side commit.
+
+### B. Fail-closed shapes — ONE policy (F-1, F-6, F-7, F-5)
+- **PROPERTY:** *a driver answer in the wrong shape never decides a served value or a write; it raises the ONE class
+  the CLI launders (`SurrealStoreError`), never a `TypeError`, never `0`, never `[]`.* **DOMAIN (derived):** every
+  function in `principals.py` / `governed.py` whose body tests `isinstance(<result>, list|dict)` on a store result —
+  an AST-derived set; the allowlist is exactly TWO helpers in `governed`: `group_all_count(result, noun)` (exists)
+  and **`rows_of(result, noun) -> list[dict]`** (new): non-list → raise; a non-dict MEMBER → raise (F-7, no silent
+  drop). A third shape-tester reds by name.
+- **Routing:** the property is pinned for `group_all_count`'s callers (§10) → new cases: implementation requirement +
+  the allowlist pin as the completeness assertion.
+- **Production:** `_rows_stamped` = `len(rows_of(update_result, noun))` (F-6: `SurrealStoreError`, not `TypeError`);
+  `_governed_select` = `rows_of(...)` (F-7); `delete`'s `cascaded` = `group_all_count(count_rows, noun=…)` (F-1);
+  `_as_rows` (tolerant `[]` behind `revoke` / `set_*` / `delete`'s NotFound) = `rows_of` (a non-list after an UPDATE
+  is a fault, not "not found"). **F-5:** the message leg's post-commit leftover read runs under
+  `wrap_store_rejection(PrincipalStoreError, f"the backfill landed ({stamped} message row(s) stamped) but the
+  leftover count read failed")` — a failure after a committed write names the write; class A prints the cause.
+- **STOP:** any pin feeding `_as_rows` a non-list and expecting `NotFound` → DUAL re-key to the raise; any pin
+  asserting `_rows_stamped` raises `TypeError` → re-key (its docstring already calls it a contract break, i.e. a
+  store fault).
+
+### C. Honest labels and prose (F-4, N-1, N-2/F-10, N-3, F-2, F-14, F-15)
+- **F-4 — the field is RENAMED to what it measures; the receipt KEY changes.** It counts rows still
+  `scope IS NONE AND owner_principal IS NONE` AFTER the UPDATE (a separate statement), a superset of "unsound
+  sender". Field + receipt key: **`messages_left_unmigrated: int | None`**. stderr sentence: *"N message row(s)
+  remain un-migrated after the backfill — commonly their sender has no owner or scope (re-run after `--table agent`
+  for those); a row inserted during the run is counted here too."* `MigrateGovernedResult` docstring: the same fact.
+  Retired-name sweep: BARE pattern `unsound_sender_messages` over tests, docs and the reference → zero hits (the
+  fixup's CLI pins and §6/§8/§10 of this doc are the known sites; this doc keeps its history and gains this line).
+- **N-3 / F-15:** `--table` help for BOTH verbs is DERIVED from `_MIGRATE_VALID_TABLES` (`", ".join(...)`), and
+  `report-unmigrated` validates `--table` against it BEFORE any I/O through the SAME validator `migrate-governed`
+  uses (one function; the interpolated statement never sees an unvalidated name). The "STUB / runnable-RED" docstring
+  on `report_unmigrated_governed_rows` and its boot-"alarm" prose (N-1: it has no boot caller — its ONLY caller is
+  the verb) are rewritten to what the code does. Pin: ∀ verb with `--table` (derived from the parser), an invalid
+  table → refusal with zero store calls (spy) — generated, two rows today.
+- **N-2 / F-10:** the four §12-wrapped methods' `Raises:` name their wrap error. **F-2:** `group_all_count`'s false
+  universal reworded to its measured scope. **F-14:** `_dispatch_keep`'s docstring states the policy the code has:
+  *write boundaries are the PINNED minimum; a verb path may wrap its reads too (delete, get_or_create_keyed do)*.
+- **STOP:** a pin asserting the receipt line's bytes with the old key → DUAL re-key in the same test-side commit.
+
+### D. The pre-boot schema teaching precondition (D-2)
+- **PROPERTY:** *every precondition a leg's write needs is measured and TAUGHT before the first write.* On the dump as
+  restored (no server boot) `INFO FOR DB` passes (the table exists) and the UPDATE is an opaque `unspecified
+  rejection` (§7.3) — the #107 fixture law: every test mints a full-DDL virgin DB, so no pin could see it.
+  **DOMAIN (derived, drift-proof):** the columns each leg's own `UPDATE … SET` statement assigns (parsed from the
+  statement text the leg already declares — the same source as the write, never a parallel column list) ×
+  `INFO FOR TABLE <table>`'s `fields` map.
+- **Routing:** NEW property → folded by grant; builder requirement + generated pins; no counts-model field (STOP
+  below).
+- **Chokepoint:** ONE `INFO FOR TABLE <table>` read in `_agent_migration_preconditions`, immediately after the
+  `INFO FOR DB` gate and before ANY leg read/write; the result rides `AgentMigrationPreconditions` as
+  `defined_fields: frozenset[str]` beside `defined_tables`. The verb-level refusal (no leg runs), text: *"the
+  `<table>` table has no `<c1>, <c2>` column(s) — this store's schema predates the governed columns; boot the new
+  image once (its DDL defines them), then re-run migrate-governed"* (`table_defined=True`, counts `None` as ruled).
+- **Pins (generated, ∀ leg × its derived columns), the dirty-store leg #107 demands:** on the minted DB run `REMOVE
+  FIELD <col> ON TABLE <table>` for ONE column → the refusal names exactly that column and a store spy shows zero
+  writes; positive control: all columns present → the leg proceeds. Plus a completeness leg: the derived column set
+  per leg is non-empty and equals what a bare-pattern read of the statement finds.
+- **Acceptance receipt:** YES — coldaudit-4 §7.3's dirty-store probe (dump as restored, no boot) is the acceptance
+  receipt for D: the FIRST run must print the teaching refusal and exit 1; then §7.4's boot-then-migrate receipt is
+  byte-identical to today's. The re-check audit re-runs both.
+- **STOP:** `MigratePreconditionCounts` gains NO field (`_RULED_FIELD_SPEC` exact pin); the `defined_tables` shape pin
+  (a28c) must accept a sibling field on the preconditions dataclass — if it asserts the dataclass's exact field set,
+  DUAL re-key first; the one-read pin (undefined table → exactly one `INFO FOR DB`) is unchanged because the table
+  read short-circuits BEFORE the field read.
+
+### Residuals confirmed, each with its trigger
+| id | residual | trigger |
+|---|---|---|
+| R-1 / F-8 | a teardown `close()` fault masks the verb's outcome (§11's nested `try/finally`) | a teardown fault observed in the field, or the next lore-adm-touching contract |
+| F-9 | exit code 1 for every failure class (operator-deferred) | the first script consumer that branches on lore-adm's exit code |
+| F-11 | the gate's unsymboled-allowance COUNT leg assumes one path/one bound (fails closed) | packet 64 / the gate owner (D-1 filed there) |
+| F-12 | an untypeable per-statement ERR entry loses its typed meaning (§7 F-C8 policy) | a malformed/kindless entry observed on 3.2.4 |
+| F-16 | receipt/default notes | with §W row 4 |
+| GROUP ALL sweep (findings / tasks / messages / diff / store / manifest readers) | → 64b §DRY step, ONE `group_all_count` | 63c close-out decision point (§8.3, §10 erratum) |
+| §W row 4 | derived-domain ladder pin · garbage-text cells · `QueryDetailKind` adjudication pin · exact-set AST re-key (FK-B1) · fixture capture | the next `_txn`-touching contract (58-r4 / close-out) |
+F-13 is NOT a residual: folded via class A (neutral contexts + printed cause). D-1 → packet 64 (filed by the lead).
