@@ -2093,3 +2093,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **blindreader-63c-i-a-6** (40 min): diff bec29190 → b15c06b0.
   - CAP: below MAJOR → residual.
 - Close-out residual (fix6 FLAG-r7-1): the report verb's `--table` help lists all six accepted tables, but its ORDER is held by an older pin asserting the exact text "agent, memory, message, brief" (written for the one-list design). True but order-coupled; trigger: the next help-text edit. The fix6 scratch tree is kept until the commit.
+- **blindreader-63c-i-a-6 DONE (`c5eff42`): 0 BLOCKER / 0 MAJOR.** 4 MINOR + 4 NIT → RESIDUALS per the operator cap.
+  - The SET scanner still SUBSETs on comments / `⟨⟩` / backticks (latent; 0 live legs).
+  - **`_LANDED_SHAPE_FAULT`'s "a re-run is idempotent" is FALSE for create/mint** (served prose; flagged to the operator at close-out as a follow-up candidate).
+  - The DDL predicate drops a comment-prefixed `DEFINE FIELD`.
+  - `build_parser` dies if a generator gains a required param.
+  - blindreader-6 stopped.
