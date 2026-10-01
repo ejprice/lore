@@ -762,3 +762,43 @@ E = the §13.1 one-derivation mutation); a short contract-blind read; AND (a) th
 the pre-boot dump, both teachings' order), (b) item 2's mint-collision secret receipt with its control. STOP for the
 whole round: a finding below MAJOR after the delta audit is a residual by operator ruling — the audit records, the
 lead ledgers, nobody re-opens.
+
+### 13.4 Addendum 2026-10-01 (lead, over builder-63c-i-a-fix6 §RESUME 2 `b03423f`): §13.3 item 4 broke the restore read-back — erratum mine; the REPORT verb's domain is the GOVERNED set (derived from the slice deriver), the MIGRATE verb's is the leg set; ONE validator function, two derived domains
+
+**Erratum (mine, §13.3 item 4):** *"`scripts/restore_prod_dump.py` is covered by construction"* was written without
+reading what tables the restore passes. It passes every `governed_node=True` table of `SliceDeriver().governed_slice()`
+(`agent, brief, finding, memory, message, task`); `_MIGRATE_VALID_TABLES` holds four of them, so the validator I moved
+into the function raises on `finding` and `task` and the S2 restore's default read-back FAILS. A regression this round
+introduced; the operator's cap does not cover it. Quantifier law: a domain derived on one caller (the CLI verb),
+stated over every caller.
+
+**Ruling — (B), with the domain DERIVED, not listed.** Two verbs, two questions, two domains:
+- **REPORT** asks *"how many rows of a governed table are unscoped?"* — its domain is the GOVERNED SET: every table
+  whose schema carries the governed triple. Source of truth: the SAME one the restore uses —
+  `SliceDeriver().governed_slice()`'s `governed_node=True` tables (derived from the DDL generators; no second hand
+  list). `governed.py` exposes it ONCE as a derived accessor (`governed_tables()`), and `report_unmigrated_governed_rows`
+  validates against THAT.
+- **MIGRATE** asks *"which tables have a backfill leg?"* — `_MIGRATE_VALID_TABLES` (the leg set, a strict subset).
+- **ONE validator function, parametrised by domain** (`validate_governed_table(table, *, domain, verb)`), called by
+  both verbs and by the report function itself; the refusal text names the verb and its domain (derived `", ".join`).
+  `_dispatch_report_unmigrated`'s pre-I/O check uses the REPORT domain through the same function (zero I/O on a typo
+  is preserved; `finding`/`task` pass). §13.3 item 6's remedy derivation already handles the non-migratable members
+  (*"no migrate verb accepts `finding` yet — N row(s) remain unscoped"*), so the restore's read-back serves its two
+  counts AND an honest remedy. Option (C) is refused: it drops two served counts to dodge a validator that was simply
+  pointed at the wrong set.
+
+**Pins (test side first):**
+1. Generated: ∀ table ∈ `governed_tables()` (derived at test time from the slice deriver, never from a list),
+   `report_unmigrated_governed_rows(handle, table)` ACCEPTS it (a minted full-DDL DB; the count returns an int);
+   control: a table outside both domains (`principal`) → the validator's refusal with zero store calls.
+2. Containment: `set(_MIGRATE_VALID_TABLES) ⊆ governed_tables()` — a leg for a non-governed table is a defect.
+3. A restore read-back cell: `restore_prod_dump._read_back` over a minted DB with every governed table defined
+   completes without raising and renders one line per governed table (the "scope NONE" column the operator saw).
+4. The F-15 pin's "invalid table" sample for `report-unmigrated` must lie outside BOTH domains; if it used `finding`
+   or `task`, DUAL re-key in the same commit.
+
+**STOP conditions:** an import cycle `governed.py` → the slice deriver (then the accessor lives beside the deriver
+and `governed.py` imports lazily, the house PLC0415 idiom — never a copied list); any pin asserting the report verb
+REFUSES a governed-but-unmigratable table (re-key, it is the regression); the §13.3 item 6 remedy pin must stay
+green over the WIDER report domain (it is written over "every table the report validator accepts", so it widens by
+derivation — verify, do not assume).
