@@ -2099,3 +2099,14 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - The DDL predicate drops a comment-prefixed `DEFINE FIELD`.
   - `build_parser` dies if a generator gains a required param.
   - blindreader-6 stopped.
+- **coldaudit-63c-i-a-6: GO on FINAL b15c06b0 (`c16cd54`).**
+  - §13.3–§13.4.2 hold by construction; **9/9 mutations KILLED** (incl. the OWED A–E; E = the one-derivation); the live mint collision has 0 hex runs (control shows them); the verify path denies with 0 leaks.
+  - The real-dump restore completes with scope-NONE for all 6, then REAPED; targeted 75 files 327F/5404P, all owned, ORPHAN 0, 0 reds in 63c pin files; typecheck 83 = the identical set; RED_ORPHANED 0.
+- **MINOR residuals (operator cap):**
+  - #529: the SET scanner narrows on a `/* WHERE */` comment.
+  - #530: "member-invisible until migrated" is false for pending tables.
+  - #531: "re-run is idempotent" is false for create/mint.
+  - #532: a real restore never PRINTS the pending remedy (`main()` sets the logger to ERROR; the pin passes only via `caplog`, the test-fiction class).
+  - Plus NITs N-a..N-e and R-6..R-8.
+- **Lead ruling, decision (a):** the §13.4.2 rider is satisfied by `lore-adm report-unmigrated` (live-verified in §4c). #532 stays a residual; trigger: the next restore_prod_dump edit or a dress rehearsal.
+- coldaudit-6 stopped. Lead receipt re-run (`test_am37_13_4`/`13_3` on the final) is gated in background bsb5bkpj1. COMMIT follows on green.
