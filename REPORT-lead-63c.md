@@ -2064,3 +2064,6 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **Lead catch at 02:43Z:** the ruling derives `governed.py::governed_tables()` FROM `SliceDeriver`, which lives in `scripts/restore_prod_dump.py`. `scripts/` is not in the image, so a production import of it would be an image-only ImportError (the #131/#139 class).
   - An erratum was requested: production derives the governed set from its own DDL generators; `SliceDeriver` consumes it (or an equality pin); an AST pin forbids `loremaster/` importing `scripts/`.
   - Round 7 test side + fix6 resume 3 wait on the erratum.
+- **am-37 §13.4.1 ERRATUM (`175077a`):** the ONE source of truth is PRODUCTION (`governed.py::governed_tables()` derived from the DDL generators); `SliceDeriver` consumes it; an equality pin; an AST pin forbids any `loremaster/` import of `scripts/`.
+- ROUND 7 (the §13.4 + §13.4.1 test side) sent to fixup-tests-63c-i-a-2 at 02:44Z (45 min), base 30a13c8a. Its full7 file list must be ⊇ 30a13c8a's 24.
+- NEXT: fix6 resume 3 (the production: `governed_tables()`, the parametrised validator, `SliceDeriver` consuming it — `scripts/restore_prod_dump.py` is in the builder's writable set) → coldaudit-63c-i-a-6 + blindreader-63c-i-a-6 → commit.
