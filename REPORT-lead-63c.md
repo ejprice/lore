@@ -2041,3 +2041,5 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - F-7: `GovernedStatementError` outside the tuple (traceback).
   - NITs #19/#21/#31 folded; N-1/N-2/N-3 → residuals.
 - ROUND 6 sent to fixup-tests-63c-i-a-2 (~20:40Z, 60 min): `scratch_copy.sh` for EVERY tree; the `logging_setup` covering tests + `test_retry_seam.py` in every run.
+- **Correction (lead, 2026-10-01 00:42Z):** the entries stamped "~20:15Z" (the operator's capped-round ruling, the §13.3 request) and "~20:40Z" (round 6 sent) are LOCAL (EDT) wall times mislabelled as Z. True UTC: ~00:15Z and ~00:40Z on **2026-10-01** (the operator's answer came ~4h after audit-5 finished at 20:04Z). Lead lesson: read `date -u` before stamping, never a commit `%ad`.
+  - At 00:40Z MemAvailable is 37.2 GiB and round 6's pytest runs are live.
