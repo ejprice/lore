@@ -476,3 +476,68 @@ The r4 delta touches no production file, so it composes with the §13 / §13.1 p
 | `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r5.delta.patch` (tests only: `test_preboot_schema_precondition_63c_13d.py`, `test_fail_closed_shapes_63c_13b.py`) | HEAD `a7e0707` + fix6 `3132f699` | `5ef35641295e40cc8e143f647fe2784e` | OK |
 
 **Gates:** `uv run ruff check .` All checks passed. Currency (typecheck, ruff) is 83 / GREEN, RED_ORPHANED 0. Every run was serialized through `gate.sh::gated_run`.
+
+## ROUND 6: am-37 §13.3 test side (commit `07549f7`; the FINAL capped round)
+*Measured 2026-10-01 00:40–02:05Z in scratch `fixup6` = HEAD `e56a3d8` + fix6 final (patch md5 `bec29190…` verified). `loremaster.__file__` resolves inside `fixup6`. The throwaway reference `refR6` was made with `scratch_copy.sh` (never a `cp -a` of a synced tree; provenance resolves inside `refR6`).*
+
+**SUMMARY:**
+- **State:** done.
+- **RED at bec29190:** 131 declared before the run from `--collect-only` plus a static reading; all 131 red, 0 missed.
+  - The only undeclared reds are 28 `test_mcp_server.py` findings tests (`AppContext.findings() … 'capability'`, packet 64b-i, adjudicated to `packet-64b-i-contract`).
+- **Reference:** GREEN except those SAME 28 ids (`cmp`-identical id lists).
+- **Mutations:** all 9 held, at least 1 per new pin class; F-1 is exempt beyond mutation E (§13.3 item 1 (c)).
+- **Gates:** ruff clean; typecheck 83 → 83 (owned); RED_ORPHANED 0.
+- **Deviations:**
+  - (1) The admission gate's process check was narrowed to LORE pytest processes (`gate.sh` v2; v1 kept as `gate.v1.sh`). A foreign project's long-lived pytest (`mobile-pricepaper-smoke`) held the v1 "any pytest" check closed for 50 minutes, while MemAvailable was 42 GiB. CLAUDE.md's rule is ONE **lore** pytest session; the ≥ 20 GiB memory gate is unchanged. Every admission line is in its log.
+  - (2) STOP-DUAL re-keys in `test_secret_leak_vectors.py` and `_logging_fixtures.py` (below).
+  - (3) Two derivation reach gaps in my own first draft were caught by the first reference run and fixed (below).
+- **Decisions needed:** none. The two readings below are flagged for the builder or audit.
+
+### Per-item table (file: NEW `loremaster/tests/test_am37_13_3_63c_i_a.py`, 108 collected at base)
+| item | pin(s) | declared RED at bec29190 (= observed) | reference | mutation (on `refR6`, `scripts/mutation_proof.py`, all PROOF HELD) |
+|---|---|---|---|---|
+| 1 F-1 | `TestTheSetParserIsCompleteOrRaises`. The corpus: blind-5's cases + RETURN-in-a-call, SET-in-a-string, an unbalanced `)` in a string, `+=`, quoted and double-quoted commas/WHERE, and all four end keywords. Each must give the EXACT set OR raise; a subset fails. Must-raise cases: open paren, open quote, trailing item without `=`, no SET. The shipped three parse exactly. | 7: subquery-WHERE, RETURN-in-a-call, SET-in-a-string, unbalanced-paren, `+=`; open-paren and open-quote return a prefix instead of raising | GREEN | exempt (§13.3 item 1 (c): §13.1's one-derivation pin + mutation E) |
+| 2 F-2 | `TestTheCliSinkIsRedacted`: the CLI handler carries `RedactingFilter`; `scrub_text` is public and is the filter's own call; a 128-hex run is redacted; CONTROL ×4 (64-hex, 127-hex, 16-hex, a ULID) untouched; `_fault_line` scrubs the error and every cause; the end-to-end stderr record is scrubbed | 9 | GREEN | **F2-sink** (drop `addFilter`): 2 ids · **F2-hash** (drop the 128-hex sub): 3 ids |
+| 3 #527 | `TestTheCauseWalkTerminates`: the 2-cycle cell runs in a CHILD process with a 512 MiB address-space cap and a timeout (the unbounded base walk must not grow inside a pytest worker); CONTROL: plain chain unchanged; CONTROL: `__context__` never walked | 1 | GREEN | **527** (drop the `seen` guard): 1 id |
+| 4 #528 | `TestTheReportCountValidatesItsOwnTable`: a direct call with an invalid table raises and the `run_query` spy records zero calls | 1 | GREEN | **528** (validator → `if False`): 1 id |
+| 5 F-3 | `TestEveryPostWriteShapeReadSaysItLanded`, GENERATED. ∀ store reached by `_dispatch` ∀ derived write boundary (round 3's §12 derivation) whose shape read takes a write result (a bound name OR an inline write-sink call), + `principals::_rows_stamped`: `landed=True`. Plus non-vacuity, the ONE template byte-exact ×3, and a CONTROL (an unlanded read keeps its text). | 7 boundary ids + 3 template ids | GREEN | **F3** (drop `landed=True` on `set_status`): exactly `[principal::set_status]` |
+| 6 F-5 | `TestTheReportRemedyIsDerived` ∀ table the report validator accepts | 1: `[brief]` | GREEN | **F5** (remedy always names migrate): exactly `[brief]` |
+| 7 F-6 | `TestEveryShapeReadNamesItsRead`, GENERATED over call sites: `rows_of` / `map_of` / `group_all_count` everywhere, `_as_rows` inside an owning class, and `<OwnerClass>._as_rows(...)` anywhere (owner = a class whose `_as_rows` delegates to `rows_of`, derived). Plus: the wrappers require `noun` (keyword-only, no default). | 19: 12 principals/principal_keys sites + 6 `keeps.py` `PrincipalStore._as_rows` sites + the wrapper pin | GREEN | **F6** (restore `_as_rows`' default noun): exactly the wrapper pin |
+| 8 F-7 | `TestGovernedStatementErrorTracebacks`: the class exists (`RuntimeError`, not `ValueError`) and is NOT in the AST-derived §11 tuple; the REAL parser's raise on an unreadable literal reaches `main()` as a traceback; CONTROL: a `ValueError` still launders to exit 1 | 2 | GREEN | **F7** (add it to the tuple): exactly those 2 |
+| 9 #31 | `TestTheNotSupportedProseIsDerived`: the invalid-name refusal lists exactly `_MIGRATE_VALID_TABLES`; the brief refusal's "today:" list equals the derived migrate legs | 0 (GREEN at base, hand-correct today) | GREEN | **31** (drop `message` from the brief prose): exactly that pin, which proves it discriminates |
+
+### STOP-DUALs re-keyed (test side, this commit)
+- **`test_secret_leak_vectors.py`:** 41 bare `_scrub_text` → `scrub_text`. That covers the import, the monkeypatch-by-name routing pin, the kept-names list and A19's body pin.
+  - The public seam is resolved PER CALL through a module-level `scrub_text()` resolver (`vars(logging_setup).get("scrub_text")`), never a static import. On bec29190 the file therefore still collects, and each of its 28 `scrub_text`-touching test functions reds on its own for the right reason. The 131 declared include those reds; the AST-derived list is in `…/scratchpad/r6.declared2.txt`.
+  - This also keeps mypy free of an unadjudicated `attr-defined` red, the round-5 lesson's sibling.
+- **`_logging_fixtures.py`:** 2 prose mentions renamed.
+- **`test_secret_typing.py`:** needed no edit. Its two scanner pins red on the reference ONLY via the import, so the rename fixed them.
+
+### Reach gaps in my own draft, caught by the first reference run (v1) and fixed before the receipts of record
+- **F-6:** the first draft scanned only modules defining a delegating `_as_rows`. It MISSED `keeps.py`'s six `PrincipalStore._as_rows(...)` calls; the reference's required noun turned them into 40 runtime `TypeError`s. The derivation now includes `<OwnerClass>._as_rows` receivers.
+- **F-3:** the first draft followed only write results bound to a NAME. It now also takes a shape read whose argument contains a write-sink call inline.
+  - **Fact for the record:** §13.3 item 5 says *"KeepStore's six `_as_rows` post-write sites"*. The derivation shows those six (`_read_membership`, `get_by_key`, `get_keep`, `list_household`, `list_keeps_for_keeper`, `list_keeps_for_member`) are `SELECT` reads, not post-write reads. So they are in F-6's domain (noun) and NOT in F-3's (landed). "By derivation, not by list" decided it.
+
+### Readings (two-reading triggers, flagged)
+- **F-5:**
+  - §13.3 item 6 writes the rule as membership of `_MIGRATE_VALID_TABLES`. That set contains `brief`, which `migrate-governed` REFUSES ("does not yet migrate `brief`"), so the literal reading still sends a `brief` operator to a refusing verb.
+  - The pin follows the property sentence ("names a table the MIGRATE verb accepts"), with "accepts" = has a derived migrate LEG (`test_preboot…::_LEGS`). `[brief]` reds on base under that reading.
+  - My reference used a hand `_MIGRATED_TABLES` (a SAT host only). The builder should derive it.
+- **F-2:** the reference's 128-hex pattern is bounded by non-hex on both sides. The CONTROL cells (64- and 127-hex untouched) pin that it does not over-redact git or sha256 hashes. The builder owes the §13.3 item 2 `sha512` producer sweep.
+
+### Runs (every one through `gate.sh::gated_run`: one flock, ≥ 20 GiB, no other LORE pytest, a 16G cgroup, `-n 8`)
+- **Targeted set** (`…/scratchpad/r6.files`): the new file, `test_retry_seam.py` (the round-5 lesson), the `logging_setup` covering tests found by an awk scan (`test_caplog_isolation`, `test_logging_setup`, `test_mcp_server`, `test_secret_leak_vectors`, `test_secret_resolution_seam`, `test_secret_typing`), `test_principals_cli`, the D and B files, and `test_engine_rejection_seam`. 2273 collected.
+- **Base (v2):** 159 failed (131 declared + 28 owned 64b-i), 2112 passed; DECLARED_BUT_GREEN 0. Admitted 01:50:36Z at 39 GiB.
+- **Reference (v2):** 28 failed (the identical 64b-i ids), 2243 passed. Admitted 01:56:12Z at 42 GiB.
+- **Mutation logs:** `…/scratchpad/r6mut/*.log`, each "PROOF HELD — the declared RED set fired EXACTLY", tree restored byte-exact.
+
+### Gates and patches
+- `uv run ruff check .`: All checks passed.
+- `--currency --legs typecheck,ruff`: typecheck RED_ADJUDICATED **83** (unchanged), ruff GREEN, RED_ORPHANED 0.
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r6.delta.patch` (tests only: new `test_am37_13_3_63c_i_a.py`, `test_secret_leak_vectors.py`, `_logging_fixtures.py`) | HEAD `e56a3d8` + fix6 `bec29190` | `2aff7c3a46be9bd92ab3c42868cb47ee` | OK |
+| `…/scratchpad/fixup-tests-63c-i-a-2.full6.patch` (fix6 + r6) | HEAD `e56a3d8` (also main `64d308a`) | `ca4598259d2727b95c6dff877edc27ad` | OK at both |
+
+The throwaway reference, for the record only (never shipped; a SAT host, never a spec): `…/scratchpad/ref-R6.patch` (vs HEAD, md5 `5a5d7358…`); generators `r6_make_ref.py` + `r6_callsites.py`.
