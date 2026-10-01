@@ -2052,3 +2052,10 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - **Lead ruling on the F-5 two-reading trigger (fixup2 round 6):** the PINNED reading wins. The remedy names migrate only for tables with a migrate LEG (derived), so `brief` gets the "no migrate verb accepts it yet" form. This is the blind-5 class: the remedy must be executable. The literal "∈ `_MIGRATE_VALID_TABLES`" reading would still point at a refusing verb.
   - A one-item note was sent to fix6 (it may land at a turn boundary; the pin enforces it regardless).
   - Also noted: KeepStore's six `_as_rows` sites are reads, so they fall under F-6, not F-3.
+- **builder-63c-i-a-fix6 RESUME 2 DONE (`b03423f`), with ONE OPEN FORK.**
+  - §13.3 built: 131/131 declared RED→GREEN (equality), 0 GREEN→RED, 0 unowned; typecheck 83; ruff GREEN.
+  - The sha512 sweep took the PRIMARY rule (the 128-hex scrub everywhere; only credential hashes reach sinks). Live mint-collision receipt: 0 hex runs; control 2.
+  - FINAL candidate `builder-63c-i-a-fix6.r6.full.patch` md5 `30a13c8ab5b409460d1943256469fcd4` (24 files ⊇ r5.full's 20, incl. both round-4 test files); delta `868d7ab5…`. Lead-verified; apply-check OK at b03423f.
+- **FLAG-r6-1 (lead miss):** the test side's full6 (`ca459825`) OMITTED the two untracked round-4 test files; my verification checked apply-ability, not the file list. From now on, the lead diffs each full patch's file list against its predecessor.
+- **OPEN FORK (item 4 vs `restore_prod_dump.py`):** the in-function validator makes the restore read-back RAISE on finding/task (governed-slice nodes outside `_MIGRATE_VALID_TABLES`). It is a regression introduced this round, so the cap does not apply. Sent to sidecar-63c-2 as am-37 §13.4 at 02:42Z (20 min). The builder recommends (B): a derived, wider report-validator domain.
+- fix6 also disclosed: `keeps.py` was missed from its first `cp -a`; it was reconstructed byte-exact from HEAD + r5.full (md5 `6945cb55`), so no content was at risk.
