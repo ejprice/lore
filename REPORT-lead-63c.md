@@ -2078,3 +2078,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - A SELF-DESTRUCT pin by member, with a synthetic control; containment is tightened to the DDL-derived set.
   - RIDER: a pending table's remedy is derived from its entry (never a refusing verb); the restore read-back asserts the pending line.
 - ROUND 7b (the §13.4.2 pins) sent to fixup-tests-63c-i-a-2 at 03:01Z (30 min). Then fix6 resume 3 → audit-6 + blind-6 → commit.
+- **fixup2 ROUND 7b DONE (`75fec6d`).**
+  - §13.4.2 pinned: 13 declared RED = observed (+28 owned 64b, identical on ref); GREEN on the updated reference; mutations held.
+  - r7b delta `04d9c8d4d7708b69d662dc4b7e0d519d`, full7b `fdae25e8feed0e9513c722efc73a5bbb` (25 files, ⊇ full7, lead-checked); apply-check OK at 75fec6d.
+- **LEAD RULING R7b-1:** the literal `_MIGRATE_VALID_TABLES ⊆ ddl-derived` is unsatisfiable (`brief` is in the validator set for its teaching refusal "lands at 63c-ii" but is pending). The pinned property "the LEG set ⊆ ddl-derived" is §13.4's own stated rationale ("a leg for a non-governed table is a defect"). `brief` STAYS (dropping it would worsen the teaching).
+- fix6 RESUME 3 sent at 03:09Z (60 min): the §13.4/§13.4.1/§13.4.2 production incl. `scripts/restore_prod_dump.py` consuming the package set. FINAL patch → `builder-63c-i-a-fix6.r7.full.patch` (temp index; ⊇ 25 files).
