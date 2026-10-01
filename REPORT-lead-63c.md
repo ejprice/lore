@@ -2073,3 +2073,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - **R7-1 (ruling conflict, measured):** a pure DDL derivation yields only agent/memory/message; the restore needs brief/finding/task too (`scripts/restore_prod_dump.py::PENDING_GOVERNED_TABLES`, a declared table→reason dict).
   - The lead proposed to the sidecar at 03:00Z (§13.4.2): move the pending set into `governed.py` (with reason + owning packet); `governed_tables()` = derived ∪ pending; `SliceDeriver` consumes both; a SELF-DESTRUCT pin `derived ∩ pending == ∅`.
   - fix6 resume 3 waits on it.
+- **am-37 §13.4.2 CONFIRMED (`d0502c0`):**
+  - `governed.py` owns `PENDING_GOVERNED_TABLES` (reason + owning packet); `governed_tables()` = DDL-derived ∪ pending; SliceDeriver consumes both.
+  - A SELF-DESTRUCT pin by member, with a synthetic control; containment is tightened to the DDL-derived set.
+  - RIDER: a pending table's remedy is derived from its entry (never a refusing verb); the restore read-back asserts the pending line.
+- ROUND 7b (the §13.4.2 pins) sent to fixup-tests-63c-i-a-2 at 03:01Z (30 min). Then fix6 resume 3 → audit-6 + blind-6 → commit.
