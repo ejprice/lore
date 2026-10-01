@@ -2015,3 +2015,17 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
     - F-7: the `_dispatch` docstring says ValueError defects traceback, but ValueError is in the tuple.
   - **F-8, a LEAD BRIEF DEFECT:** my `cp -a old new` recipe (blind-4 and blind-5) poisons `$S/new` with the old tree's editable `.pth` (#140 mode 1). blind-5 caught it via its provenance print and re-ran pinned; blind-4 only diffed text (unaffected). From now on: `scratch_copy.sh` for EVERY scratch tree, never `cp -a` of a synced tree.
   - Final triage waits for coldaudit-63c-i-a-5.
+- **coldaudit-63c-i-a-5: GO (CONDITIONAL) on bec29190 (`4774cce`).**
+  - §13/§13.1/§13.2 hold; FORK-2's served auth still DENIES with no leak; the reference facts reproduce.
+  - Targeted: 70 files, 268F/5117P, ORPHAN 0, 63c pins 0 reds; typecheck 83 is the identical set.
+  - REAL DUMP: pre-boot D teaching refusal (3 spans, exit 1, 0 writes); `engine_error` + caused-by on stderr; post-boot receipts = audit-4 §7.4 (renamed key); counts = direct SELECT; REAPED.
+  - Receipt: §13.2's predicted order did not hold; the schema teaching arrives first on `--table message`.
+  - OWED: the §3 mutation proofs (the memory gate never opened 18:18–20:02Z; NOT bypassed).
+  - New findings: #527 (`_fault_line` cycle hang), #528 (false "ONLY caller" docstring).
+- **OPERATOR RULINGS (~20:15Z):**
+  - **ONE CAPPED ROUND, then commit.** It folds blind-5 F-1 (the `_set_columns` narrowing parser), F-2, #527, #528, F-3 + the audit's F-5-sibling, F-5, F-6, F-7 (+ NITs per §13.3).
+  - **F-2 = attach `RedactingFilter` to the CLI sink AND scrub the key-mint path** so a bound hash never prints.
+  - **CAP:** after this round's delta audit (which also runs the OWED mutations A–E), any finding below MAJOR is a residual, never another round.
+- am-37 §13.3 requested from sidecar-63c-2. #527/#528 acknowledged as FOLDED.
+- Sequence: §13.3 → fixup-tests-63c-i-a-2 round 6 → builder-63c-i-a-fix6 resume 2 → coldaudit-63c-i-a-6 (delta + owed mutations) + blindreader-63c-i-a-6 → commit.
+- coldaudit-63c-i-a-5 and blindreader-63c-i-a-5 stopped.
