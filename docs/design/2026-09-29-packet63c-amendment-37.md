@@ -828,3 +828,29 @@ function, the four pins, option C refused) stands.
 - **STOP, restated:** NO production import of `scripts/`, in any form. If `governed_tables()` cannot be derived from
   the generators without a cycle, the derivation moves to the lowest package module that already imports the
   generators — never to `scripts/`, never to a list.
+
+#### 13.4.2 Addendum 2026-10-01 (lead, over fixup-tests-63c-i-a-2 ROUND 7 R7-1 `f94ec2f`): the governed set = DDL-derived ∪ a DECLARED pending set that self-destructs — CONFIRMED, with one render rider
+
+**Measured conflict accepted:** the DDL carries the governed triple on `agent`, `memory`, `message` only; `brief`,
+`finding`, `task` are governed-by-intent (63c-ii / 64) with no triple yet. A pure derivation cannot name them, and
+the restore legitimately reports them. So the set has two parts, and the second is the honest kind of hand-list —
+a DECLARED allowlist with a reason per member and a completeness pin that empties it by construction (the §2
+declared-pending-delta form, applied to a table set):
+- `governed.py` owns **`PENDING_GOVERNED_TABLES: Mapping[str, PendingGoverned]`** (moved from `scripts/`; each entry
+  carries `reason` AND `owning_packet`) — in the package, so the image ships it and `scripts/` consumes it.
+- `governed_tables()` = `ddl_governed_tables()` (derived) ∪ `PENDING_GOVERNED_TABLES.keys()`; the REPORT validator's
+  domain is this union; the MIGRATE domain is unchanged (`_MIGRATE_VALID_TABLES ⊆ ddl_governed_tables()` — a
+  tightened containment pin: a leg for a PENDING table is a defect, its columns do not exist).
+- `SliceDeriver` consumes BOTH from `loremaster`; the equality pin (`governed_node` set `== governed_tables()`) stands.
+- **SELF-DESTRUCT pin:** `ddl_governed_tables() ∩ PENDING_GOVERNED_TABLES.keys() == ∅`, named by member — the day
+  63c-ii / 64 lands a table's triple, the pin reds until the entry is deleted; the declared set can only shrink.
+  Positive control: a synthetic generator that defines the triple on a pending name reds the pin.
+- The AST no-`scripts`-import pin (§13.4.1) is unchanged.
+
+**Render rider (consumer law):** on a PENDING table every row reads `scope IS NONE` (the field is undefined, so each
+read is NONE) — the served count is TRUE but would teach "N rows need migrating" when nothing can migrate them. The
+report's remedy for a pending member is DERIVED from its entry: *"`<table>` has no governed columns yet (<reason>;
+packet <owning_packet>) — N row(s) will be scoped by that packet's migration"*; for a DDL-derived table the §13.3
+item 6 derivation stands. Generated pin: ∀ member of the union, the remedy names either an accepting migrate verb
+or the pending entry's packet — never a verb that refuses, never silence. STOP: none new; the restore read-back cell
+(§13.4 pin 3) now also asserts the pending remedy line for `finding` / `task`.
