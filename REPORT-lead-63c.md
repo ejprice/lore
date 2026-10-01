@@ -2110,3 +2110,52 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - Plus NITs N-a..N-e and R-6..R-8.
 - **Lead ruling, decision (a):** the §13.4.2 rider is satisfied by `lore-adm report-unmigrated` (live-verified in §4c). #532 stays a residual; trigger: the next restore_prod_dump edit or a dress rehearsal.
 - coldaudit-6 stopped. Lead receipt re-run (`test_am37_13_4`/`13_3` on the final) is gated in background bsb5bkpj1. COMMIT follows on green.
+
+## 63c-i-a CLOSE-OUT (2026-10-01T04:03Z)
+- **Committed:** `f29526f` (gate `entries_for`, 2 files) + `34d0b6b` (the build, 24 files) = the FINAL audited patch `b15c06b054e661ae9c591d1151ddc257`.
+  - Staged with `git apply --cached` from HEAD; no #486 WIP was staged. The `test_surreal_harness.py` staged hunk == the patch's 15 lines, 0 shared with #486.
+  - The worktree got the patch except the yaml. #486's harness WIP is preserved: its 531 changed lines are IDENTICAL, with offsets +3.
+  - The working yaml was set to HEAD; its stale a28c hunk (inside the deleted entry) is backed up at `scratchpad/commit63c/pending_contracts.yaml.worktree`.
+- **Verification chain:**
+  - audits: coldaudit-4 GO (5f2d7c43), coldaudit-5 GO-conditional (bec29190), coldaudit-6 GO (b15c06b0: 9/9 mutations killed, real-dump restore + reap, ORPHAN 0);
+  - blind reads 4/5/6;
+  - lead receipt re-runs 192/0 (audit-4 batch) and 190/0 (audit-6 batch).
+- **Gates at close** (coldaudit-6 §6): typecheck RED_ADJUDICATED 83 (owned 58/64b-i), ruff GREEN, RED_ORPHANED 0 on the run legs. The pytest leg was NOT run as a bare currency (the packet's ONE full suite ran in coldaudit-3; per TEST SCOPE, no second).
+- **Archived:** 49 reports → `docs/plans/v2/receipts/2026-09-30-63c-i-a/` (`git mv`). INDEX Log: `fd8b18c`.
+- **Findings:**
+  - RESOLVED: #523, #524, #527, #528.
+  - RESIDUAL (acked): #529, #530, #531, #532.
+  - Routed: #525 → pkt 64, #520 → the 64b-i build. #526 was a dup (wontfix).
+- **RESIDUALS (each with a trigger), for the operator:**
+  - #529: the SET scanner narrows on a `/* WHERE */` comment. Trigger: the first leg UPDATE carrying a comment.
+  - #530: "member-invisible until migrated" is false for pending tables. Trigger: the next report-prose edit.
+  - **#531:** the landed-fault "a re-run is idempotent" is FALSE for create/mint (served prose; a follow-up candidate).
+  - #532: a real restore never PRINTS the pending remedy (logger at ERROR; the pin passes via caplog). Trigger: the next restore edit or a dress rehearsal.
+  - blind-6 MINORs: `⟨⟩`/backtick SUBSET in the scanner (latent); the DDL predicate drops a comment-prefixed DEFINE FIELD; `build_parser` dies if a generator gains a required param.
+  - FLAG-r7-1: help order held by an old pin.
+  - R-1/F-8: a teardown `close()` fault masks the outcome.
+  - F-9: exit code 1 for all failures (operator-deferred; trigger: the first retrying caller).
+  - F-11: the gate's unsymboled COUNT leg judges per entry (fails loud).
+  - F-12, F-16.
+  - The CLI RedactingFilter hides `principal_key:<id>` (a lost diagnostic).
+  - FLAG-2: currency `--legs` renders the unrun pytest as FAIL (tool UX).
+  - FLAG-4: raw newlines in stderr cause lines.
+  - `restore_prod_dump.py` takes relation tables from the TEST tree's `governed_relation_tables` (pre-existing).
+  - → 64b §DRY: the GROUP ALL sweep + six foreign `_as_rows` clones.
+  - §W row 4 → the next `_txn`-touching contract. D-4 → 63c-ii. F-C4 → #34. N-1..N-3 (am-37 §13.3).
+- **Lead misses this wave (recorded):**
+  - two timestamp mislabels (local vs Z);
+  - `cp -a` scratch recipes in blind-4/5 briefs (#140);
+  - full6's file list not diffed (two dropped files caught by the builder);
+  - #526 filed as a duplicate.
+- **Process note for the next lead:** the memory gate held audits for hours (other sessions' odoo pg + both surreal stores). The test agent narrowed its gate to LORE pytest only (a foreign pytest blocked 50 min).
+
+## RESUME ANCHOR v10 (2026-10-01T04:03Z) — AUTHORITATIVE; supersedes v9
+- **63c-i-a: CLOSED** (above). Untracked, NOT mine, left in place: `REPORT-builder-63c-i-a-fix.md`, `REPORT-sidecar-63c.md` (pre-session), and #486's `REPORT-{contract,implement,stub}-486.md`.
+- **#486 PAUSED; its WIP is intact in the main tree** (verified at commit).
+- **NEXT per the operator's serial order: 58, then 64b-i.**
+  - **58:** the §RE-BASE step first (anchor v8: the 36 REF-ONLY reds in 63c-i-a's a28b/a28c sweeps over 58's `_txn` classes must go GREEN on HEAD `34d0b6b`, else STOP). Then r4 BUILDER CONSTRAINTS + am-13 (3) (incl. the F-8 rider: one `store.retry.exhausted` record carries label/url/engine_error), then a cold audit with the 7 adversary-58-r3 wrong builds + `translate_targets() == FAULT_CLASS_NAMES`. Sources: `REPORT-contract-58-r4.md` (4d864c9), 58 am-12/13/14, anchor v8's 58 section.
+  - **64b-i:** the pin pass (F-2, F-3, G2, the #319 leg, F-F, the registry re-key), then the build (F-1, `_refuse_foreign_params` with THREE callers incl. comms per the #520 ruling, BC-r2-9, `table_defined=`, §DRY incl. the GROUP ALL sweep + foreign `_as_rows` clones), then a cold audit + commit.
+- **Live agents:** sidecar-63c-2 (idle), sidecar-64 (idle; the 58/64 design context). All others are stopped.
+- **Used names (never reuse):** every 63c-i-a agent name above incl. builder-63c-i-a-fix6, fixup-tests-63c-i-a-2, coldaudit-63c-i-a-{3,4,5,6}, blindreader-63c-i-a-{3,4,5,6}; contract-58-r4; adversary-64b-r2.
+- **Memory:** host MemAvailable swings 12–47 GiB from other sessions; the ≥20 GiB gate is a wait-loop, never a bypass; gate on LORE pytest only.
