@@ -2092,3 +2092,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **coldaudit-63c-i-a-6** (110 min, excluding gate waits): §13.3–§13.4.2 by construction; the OWED mutations A–E (audit-5's mutchain, re-declared) + F-1/F-2/§13.4 mutations; a live mint-collision secret receipt; the REAL-dump restore read-back with the NEW script (the operator runs it if denied); a targeted run; gates.
   - **blindreader-63c-i-a-6** (40 min): diff bec29190 → b15c06b0.
   - CAP: below MAJOR → residual.
+- Close-out residual (fix6 FLAG-r7-1): the report verb's `--table` help lists all six accepted tables, but its ORDER is held by an older pin asserting the exact text "agent, memory, message, brief" (written for the one-list design). True but order-coupled; trigger: the next help-text edit. The fix6 scratch tree is kept until the commit.
