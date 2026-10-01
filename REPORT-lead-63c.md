@@ -2067,3 +2067,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - **am-37 §13.4.1 ERRATUM (`175077a`):** the ONE source of truth is PRODUCTION (`governed.py::governed_tables()` derived from the DDL generators); `SliceDeriver` consumes it; an equality pin; an AST pin forbids any `loremaster/` import of `scripts/`.
 - ROUND 7 (the §13.4 + §13.4.1 test side) sent to fixup-tests-63c-i-a-2 at 02:44Z (45 min), base 30a13c8a. Its full7 file list must be ⊇ 30a13c8a's 24.
 - NEXT: fix6 resume 3 (the production: `governed_tables()`, the parametrised validator, `SliceDeriver` consuming it — `scripts/restore_prod_dump.py` is in the builder's writable set) → coldaudit-63c-i-a-6 + blindreader-63c-i-a-6 → commit.
+- **fixup2 ROUND 7 DONE (`f94ec2f`).**
+  - §13.4 + §13.4.1 pinned: 6 declared RED = observed on 30a13c8a (+28 owned 64b, identical on the reference); GREEN on the scratch_copy reference; mutations a/b/c held.
+  - r7 delta `c0be7a974c413fd8aa6eb6f5f05aff8c` (2 test files), full7 `5272a53344e36a980791ff8fde19ae72` (25 files ⊇ r6.full's 24, lead-checked by file-list diff); apply-check OK at f94ec2f.
+- **R7-1 (ruling conflict, measured):** a pure DDL derivation yields only agent/memory/message; the restore needs brief/finding/task too (`scripts/restore_prod_dump.py::PENDING_GOVERNED_TABLES`, a declared table→reason dict).
+  - The lead proposed to the sidecar at 03:00Z (§13.4.2): move the pending set into `governed.py` (with reason + owning packet); `governed_tables()` = derived ∪ pending; `SliceDeriver` consumes both; a SELF-DESTRUCT pin `derived ∩ pending == ∅`.
+  - fix6 resume 3 waits on it.
