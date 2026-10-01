@@ -698,3 +698,67 @@ message` on the same pre-boot dump too and record which teaching arrives first (
 the schema teaching arrives on the run after `--table agent`; both lines are receipts, neither is a defect.
 Bound, stated in the leg docstring: *"a verb-level refusal may precede this gate; each such refusal is true
 independently of the schema, and this gate runs before any leg read or write."*
+
+### 13.3 Addendum 2026-09-30 (operator: the FINAL capped round; lead, over blindreader-5 `585388f` + coldaudit-5 `4774cce`, build `bec29190`): nine items ruled; after this round's delta audit anything below MAJOR is a residual
+
+Read from `…/9744862d…/scratchpad/build-fix6` (patch md5 `bec29190` verified) and `logging_setup.py` at HEAD (untouched by the patch).
+
+1. **F-1 (MAJOR, latent) — `_set_columns` narrows silently.** PROPERTY: *∀ statement, the parse is COMPLETE or it
+   RAISES — never a subset.* DOMAIN: the three leg statements (function-local literals, §1.9) + the corpus. Parser
+   shape, ONE scanner (no regex end-split beside a char loop — two grammars for one clause is how the narrowing got
+   in): a single depth- AND quote-aware pass over the text after the top-level `SET`; `(`/`)` depth and `'`/`"`
+   string state tracked together; an end keyword (`WHERE`/`RETURN`/`TIMEOUT`/`PARALLEL`) ends the clause ONLY at depth
+   0 outside quotes; a comma splits ONLY at depth 0 outside quotes; at end-of-clause RAISE if depth ≠ 0, if a quote is
+   open, or if the trailing item is non-empty without `<col> =`. Pins: (a) the corpus pin — every blind-reader-5 case
+   (subquery-with-WHERE, `RETURN` inside a call, `SET` inside a string before the real SET, an unbalanced `)` in a
+   string, `+=`, a quoted comma) asserts *exact expected set OR a raise, never a subset* (the subset assertion IS the
+   property); (b) the shipped three parse to their exact sets; (c) the existing §13.1 one-derivation pin + mutation E
+   stand. **A corpus alone is a hand-list; it is enough HERE only because (c) exists** — no new mutation beyond E.
+2. **F-2 (MAJOR; operator-ruled).** (i) The CLI sink routes through THE seam: `_cli_logging` does
+   `handler.addFilter(RedactingFilter())` exactly as `configure_logging` does — `RedactingFilter` already scrubs
+   `msg`, `args` and EVERY extra (`engine_error` included) through `_scrub_text`/`_scrub_value`; no second redaction.
+   (ii) `_fault_line` renders each message (the error's and every cause's) through the SAME scrub function the filter
+   uses — promote `logging_setup._scrub_text` to a public `scrub_text` (one name, the filter calls it too), never a
+   private import, never a second regex. (iii) The key-mint hash: the only surface that can carry it is the seam's
+   `engine_error` extra on the mint rejection (the raised label never echoes; the typed cause is the label). Rule
+   **the scrub learns the credential-hash SHAPE**: a 128-hex-character run (sha512 hex, `sha512_hex(f"{name}:{secret}")`)
+   is redacted by `scrub_text` wherever it appears — ONE place, every sink, every cause line, no per-seam flag.
+   Verification the builder owes: awk for every `sha512` producer in the package; if a 128-hex run is ever a legitimate
+   content hash in a served line, the pattern narrows to the mint seam's record (the seam passes `secret_params=
+   {"hash"}` and the driver withholds `engine_error` when a secret param's VALUE appears verbatim in it) — say which.
+   Receipt for the delta audit: a live mint collision on `:18000` → stderr (log line + cause lines) contains no 128-hex
+   run; control: the same with the scrub disabled shows it.
+3. **#527:** a `seen` set of `id(exc)` on the `__cause__` walk (stdlib `traceback` shape); **`__cause__` ONLY** — the
+   seams chain explicitly with `from error`, and `__context__` is the implicit "during handling of" link that would
+   duplicate or mislead. Pin: the 2-cycle cell terminates with each message once + the control chain unchanged.
+4. **#528:** validation moves INTO `report_unmigrated_governed_rows` (the §13 C ONE validator, called there), so the
+   docstring makes NO caller claim; `_dispatch_report_unmigrated` keeps its pre-I/O call of the same validator (zero
+   I/O on a typo). `scripts/restore_prod_dump.py` is covered by construction.
+5. **F-3 + the audit's F-5 sibling — ONE chokepoint, no per-site text:** `rows_of(result, noun, *, landed: bool =
+   False)`; with `landed=True` the ONE template reads *"the {noun} LANDED (committed) but answered a {type} instead
+   of its rows — nothing was decided from the answer; a re-run is idempotent"*. DOMAIN (derived, §12's write-sink
+   derivation): every shape read whose input is the result of a write sink. Generated pin: ∀ write boundary ∈ the
+   three stores' derived write sets (+ the three legs' `_rows_stamped`), its post-write shape reader is called with
+   `landed=True`; a boundary whose post-read lacks it reds by name. KeepStore's six `_as_rows` post-write sites are in
+   the domain by derivation, not by list.
+6. **F-5:** the remedy is DERIVED from membership: `table ∈ _MIGRATE_VALID_TABLES` → *"run `lore-adm migrate-governed
+   --table <t>`"*; else → *"no migrate verb accepts `<t>` yet — N row(s) remain unscoped"*. Generated pin: ∀ table the
+   report validator accepts, the rendered remedy either names a table the MIGRATE validator accepts or names none.
+7. **F-6:** `_as_rows` loses its default `noun` (it is `rows_of` underneath; `noun` keyword-only, required) — every
+   caller names its read. Pin (AST, generated over call sites): no call to `rows_of`/`_as_rows`/`map_of`/
+   `group_all_count` without `noun=`.
+8. **F-7 — pick: the defect class moves OUTSIDE the tuple.** `_set_columns`' raises (and F-1's new ones) become
+   `GovernedStatementError(RuntimeError)` — a leg statement the gate cannot read is OUR bug and must TRACEBACK (the
+   honest-developer gate), exactly as `_dispatch`'s docstring already says. `ValueError` stays in the tuple for the
+   `--name` CLI-input check it was listed for. Pin: `GovernedStatementError` ∉ the handler tuple (AST), and an
+   unparsable literal reaches `main()` as a traceback (control: a `ValueError` still launders).
+9. **NITs #19 / #21 / #31 — FOLD** (prose and a hand-list in files this round already edits): #19 the agent-leg
+   "(below)" direction; #21 the message-leg comment ("sender-skipped only" → the F-4 fact); #31 `_not_supported`
+   derives its table list from `_MIGRATE_VALID_TABLES` (the derived-prose class). N-1/N-2/N-3 (duplicate engine text,
+   `propagate`, the "wrote nothing" docstring vs `ensure_ready` DDL) → residuals, listed with the close-out.
+
+**Delta-audit scope — CONFIRMED, plus two receipts:** the new changes above; the OWED mutation proofs (§A.12b A–E,
+E = the §13.1 one-derivation mutation); a short contract-blind read; AND (a) the §13.2 rider (`--table message` on
+the pre-boot dump, both teachings' order), (b) item 2's mint-collision secret receipt with its control. STOP for the
+whole round: a finding below MAJOR after the delta audit is a residual by operator ruling — the audit records, the
+lead ledgers, nobody re-opens.
