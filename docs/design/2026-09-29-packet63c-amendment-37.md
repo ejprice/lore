@@ -802,3 +802,29 @@ and `governed.py` imports lazily, the house PLC0415 idiom — never a copied lis
 REFUSES a governed-but-unmigratable table (re-key, it is the regression); the §13.3 item 6 remedy pin must stay
 green over the WIDER report domain (it is written over "every table the report validator accepts", so it widens by
 derivation — verify, do not assume).
+
+#### 13.4.1 Erratum 2026-10-01 (lead): §13.4 pointed the dependency the WRONG way — `SliceDeriver` lives in `scripts/restore_prod_dump.py`, which is not a workspace member and is ABSENT from the image
+
+**Erratum (mine, §13.4):** I had production `governed.py` derive `governed_tables()` FROM `SliceDeriver`, and the STOP
+clause told the builder to import it lazily. `scripts/` is not packaged; that import passes every host test and raises
+`ImportError` in the deployed image only — #131/#139 verbatim, "THE TEST ENVIRONMENT IS A FICTION", in a ruling
+written the day after I cited it. Superseded as follows; everything else in §13.4 (two derived domains, ONE validator
+function, the four pins, option C refused) stands.
+
+- **The ONE source of truth is PRODUCTION.** `governed.py::governed_tables()` derives the governed set DIRECTLY from the
+  DDL generators / schema — the SAME property `SliceDeriver` computes (*tables whose DDL defines the governed triple*),
+  computed once, in the package, from the generators the image ships. No import crosses from `loremaster/` into
+  `scripts/`, lazily or otherwise.
+- **`SliceDeriver` CONSUMES `governed_tables()`** (`scripts/` may import `loremaster`; never the reverse) — the
+  stronger of the two options, because it leaves ONE implementation of the property rather than two that a pin keeps
+  equal. The equality pin is still written as the transitional receipt: `SliceDeriver().governed_slice()`'s
+  `governed_node=True` set `== governed_tables()` — green the day the deriver consumes it, and it stays as the guard
+  that nobody re-derives the set in the script later.
+- **AST pin (generated over every module under `loremaster/loremaster/`):** no `Import` / `ImportFrom` names `scripts`
+  or `restore_prod_dump` (bare name match, any alias, any depth — including inside functions, which is where my STOP
+  clause would have put it). Positive control: a synthetic module with a function-local `from scripts.x import y` is
+  caught. This is the in-image conformance guard's static twin: the runtime guard (#139) proves the artifact, this
+  one catches the honest-developer import before it ships.
+- **STOP, restated:** NO production import of `scripts/`, in any form. If `governed_tables()` cannot be derived from
+  the generators without a cycle, the derivation moves to the lowest package module that already imports the
+  generators — never to `scripts/`, never to a list.
