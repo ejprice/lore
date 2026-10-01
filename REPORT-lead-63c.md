@@ -2049,3 +2049,6 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - Its gate is narrowed to LORE pytest (a foreign mobile-pricepaper-smoke pytest had blocked it ~50 min).
   - r6 delta `2aff7c3a46be9bd92ab3c42868cb47ee` (`_logging_fixtures.py`, `test_am37_13_3_63c_i_a.py`, `test_secret_leak_vectors.py`), full6 `ca4598259d2727b95c6dff877edc27ad`; lead-verified, apply-check OK at 58839d7.
 - builder-63c-i-a-fix6 RESUME 2 sent at 02:06Z (75 min): the §13.3 production + the sha512-producer sweep / fallback decision; the FINAL patch → `builder-63c-i-a-fix6.r6.full.patch`.
+- **Lead ruling on the F-5 two-reading trigger (fixup2 round 6):** the PINNED reading wins. The remedy names migrate only for tables with a migrate LEG (derived), so `brief` gets the "no migrate verb accepts it yet" form. This is the blind-5 class: the remedy must be executable. The literal "∈ `_MIGRATE_VALID_TABLES`" reading would still point at a refusing verb.
+  - A one-item note was sent to fix6 (it may land at a turn boundary; the pin enforces it regardless).
+  - Also noted: KeepStore's six `_as_rows` sites are reads, so they fall under F-6, not F-3.
