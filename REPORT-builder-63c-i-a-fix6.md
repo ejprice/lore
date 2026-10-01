@@ -619,3 +619,106 @@ CURRENCY   : FAIL — claimed but never run: pytest
 - The record-id redaction side effect on the CLI sink (above).
 - N-1/N-2/N-3: ruled residuals, untouched.
 - **ONE-IMPLEMENTATION observation:** six other stores carry their OWN private `_as_rows` (`agents`, `briefs`, `diff`, `findings`, `messages`, `tasks`) that do NOT route through `rows_of`. They are outside §13.3's ruled domain (the pin scopes to `rows_of`-delegating wrappers). Raised, not touched.
+
+## RESUME 3 (lead, 2026-10-01 — am-37 §13.4 `86d18ba` + §13.4.1 `175077a` + §13.4.2 `d0502c0`; item-4 fork RULED option B, derived; LEAD RULING R7b-1)
+Work happened in the same `fix6` scratch tree, starting at 30a13c8a.
+
+**Summary:**
+- **State:** done.
+- **Tests:** 0 GREEN→RED vs full7b.
+  - All 13 round 7 + 7b declared ids leave red.
+  - The 9 concrete ids PASSED (`-rA` receipt).
+  - The 4 collection-placeholder ids (`[<… does not exist>]`) re-keyed to 18 real-member cases, all PASSED.
+  - The remaining 268 reds are byte-identical to round 5's owned set, so **0 unowned**.
+- **Gates:** typecheck RED_ADJUDICATED 83 (unchanged); ruff GREEN; `ruff check .` clean.
+- **Dependency direction:** no `loremaster/` import of `scripts` or `restore_prod_dump` (awk: 0 lines; the round-7 AST pin is green per module).
+- **The restore's slice is IDENTICAL** to the pre-r7 script's (names, provenance, required, `governed_node`); only the reason prose is now derived from the entries.
+
+### Setup receipts
+- `cp -a` FIRST, to `scratchpad/pre-r7/`: governed, principals, principal_keys, keeps, logging_setup, `store/surreal_schema.py` AND `scripts/restore_prod_dump.py` (md5 `894543ac…`).
+  - Only governed, principals and `restore_prod_dump.py` were edited.
+  - The round-2 `keeps.py` slip did not recur.
+- r7b test delta: md5 `04d9c8d4d7708b69d662dc4b7e0d519d` verified; apply clean. It touches `test_am37_13_3_63c_i_a.py` and `test_am37_13_4_63c_i_a.py`.
+- **Tree == full7b, built in a TEMP INDEX** (`GIT_INDEX_FILE` → `git read-tree HEAD`, `git add -A`, `git diff --cached --binary HEAD`): md5 **`fdae25e8feed0e9513c722efc73a5bbb`** = full7b, 25 files.
+
+### Build
+
+| item | edit |
+|---|---|
+| THE property | `governed.governed_node_tables_of(ddl)`: a table is governed iff `ddl` defines EVERY triple column on it. The triple comes from `surreal_schema._governed_field_specs()`, the one emitter, so no names are restated. It is a pure function over DDL text, so the script's synthetic-DDL and per-dump shape questions call the SAME implementation. |
+| DDL-derived set | `ddl_governed_tables()` (`functools.cache`; `cache_clear` re-derives) = the property over EVERY `surreal_schema` function named `generate_*_ddl`. These are found by `inspect.getmembers` at call time; the naming contract is the membership rule, so the round-7b synthetic-generator control is seen. `dim` is passed when present (`_DERIVATION_DIM`; the triple is width-independent), and any other required parameter RAISES (fail closed). Today: `agent`, `memory`, `message`. |
+| pending set | `PENDING_GOVERNED_TABLES: Mapping[str, PendingGoverned]` (read-only `MappingProxyType`), MOVED from the script. Each entry carries `reason` + `owning_packet`: `brief` 63c-ii, `finding` 64b, `task` 64a. It is self-destructing: the round-7b pin reds by member. |
+| governed set | `governed_tables()` = DDL-derived ∪ pending keys = the REPORT domain (6 tables). |
+| ONE validator | `validate_governed_table(table, *, domain, verb)` raises `GovernedTableRefusedError(ValueError)`: *"`<verb>` does not support table '<t>' — its tables are `a`, `b`, …"* (domain sorted, derived). Three callers: `report_unmigrated_governed_rows` (governed domain, before any I/O); `_dispatch_report_unmigrated` (governed domain, before any store is built — the refusal goes to the ONE lore-adm handler, exit 1); and migrate through `principals._migrate_table_refusal` (domain `_MIGRATE_VALID_TABLES`, used by `migrate_governed` AND `_dispatch_migrate_governed`). `_is_governed_table` is RETIRED (awk: 0 hits). |
+| R7b-1 | `brief` STAYS in `_MIGRATE_VALID_TABLES` and its teaching refusal stands. The containment pin reads the LEG set ⊆ DDL-derived set. |
+| remedy (§13.4.2 rider) | PENDING → *"`<t>` has no governed columns yet (<reason>; packet <owning_packet>) — N row(s) will be scoped by that packet's migration"*. A leg table → `run lore-adm migrate-governed --table <t>`. Else → "no migrate verb accepts `<t>` yet". It never names a refusing verb. |
+| derived migrate prose | `_not_supported` takes its packet text from the pending entries (`_backfill_lands`): *"its backfill lands at packet 63c-ii"*. Its invalid-name text is the validator's own refusal plus the legless notes. The hand-written "63c-ii" / "task/finding land at 64" are gone. |
+| report `--table` help | `_report_table_help_domain()` is derived: the migrate set in its order, then the other governed tables → `one of: agent, memory, message, brief, finding, task`. ⚠ **FLAG-r7-1:** the F-15 pin `test_the_table_help_is_derived_from_the_valid_set` asserts the substring `", ".join(_MIGRATE_VALID_TABLES)` for BOTH verbs. That certifies the OLD single-domain world, so the help must list the migrate set first to stay green; a sorted list would red it. The help is complete and true, but its ORDER is pinned by an old-world test. |
+| scripts → loremaster | `SliceDeriver` CONSUMES `loremaster.governed` (lazy import, the script's existing idiom). Node tables come from `ddl_governed_tables()` (default) or `governed_node_tables_of(emitted_ddl)` (override). Pending comes from `PENDING_GOVERNED_TABLES` (its reason renders `<reason> (packet <p>)`). `is_governed_shape` uses `governed_node_tables_of`. Relations come from the test tree's `governed_relation_tables` over the emitted DDL, as before. The script's local `PENDING_GOVERNED_TABLES` is DELETED, and its module docstring is rewritten to the new direction. |
+
+**Removed-behaviour inventory (the script):**
+- **Slice derivation** — preserved-with-pin. The default slice was compared to the pre-r7 script in-process: **IDENTICAL** over `(name, provenance, required, governed_node)`. Derived: `agent, briefed, memory, message, to`. Pending: `brief, finding, task`. Relation: `blocks`. Plus the same 6 dependencies.
+- **Synthetic `zeta` growth leg** — still grows the slice (checked).
+- **Pending `reason` prose** — changed deliberately (derived from the entry; same facts).
+- **`_contract.governed_node_tables` / `governed_populations` for NODES** — replaced by the package property: ONE implementation.
+
+### Targeted run
+**Declared set:** 68 files, written BEFORE any run (`scratchpad/declared-r7.txt`, md5 `94b9a83881d244dafdd6ecef1fa85fd1`):
+- the 66-file r6 set (holds `test_retry_seam.py`);
+- `test_am37_13_4_63c_i_a.py` (the 13_3 file is already in);
+- `scripts/test_restore_prod_dump.py` (BY HAND — `lore_impact` cannot see scripts, #507).
+
+AST covering scan (`scratchpad/cover_r7.py`) over every new or changed symbol: it also hit `test_cli.py`, `test_indexer.py` and `test_scout.py`. Each matched ONLY the name `build_parser` of its OWN module's parser, not `principals.build_parser`, so all three are excluded as name collisions.
+
+**Gate and tree:** `gated_run.sh` (lore-only, ≥ 20 GiB, `MemoryMax=16G`, `-n 8`, `--timeout=300`). It now also accepts a `scripts/` path as given. ONE tree:
+- BASE = full7b (pre-r7 production restored; the temp-index diff = `fdae25e8` before launch);
+- BUILD = the `build-r7/` files restored.
+
+| run | admitted | result |
+|---|---|---|
+| BASE `r7-base.log` | `03:15:18 avail=35GiB others=0` | `281 failed, 5199 passed, 3 skipped` in 532.2s |
+| BUILD `r7-build.log` | `03:24:21 avail=29GiB others=0` | `268 failed, 5226 passed, 3 skipped` in 517.4s |
+| BUILD `-rA` over the two am-37 files `r7-build-ra.log` | `≈03:33` | `190 passed`, exit 0 (one `ERROR`-prefixed line is a captured `principal_key.query.rejected` LOG record from the §13.3 end-to-end scrub test, not a test error) |
+
+- **GREEN→RED: 0.**
+- Base: all 13 declared ids (`…39327f47…/r7.declared.txt` ∪ `r7b.declared.txt`) are red, and the other 268 = r5's owned set.
+- Build: 0 declared ids red; 9/9 concrete ids `PASSED`. The 4 placeholder ids re-key to:
+  - `test_the_report_count_accepts_every_governed_table[agent|brief|finding|memory|message|task]`
+  - `test_the_remedy_names_a_migrating_verb_or_none[…same 6]`
+  - `test_each_entry_carries_a_reason_and_an_owning_packet[brief|finding|task]`
+  - `test_a_pending_table_has_no_ddl_triple_yet[brief|finding|task]`
+  - all PASSED.
+- **The remaining 268 reds are byte-identical to round 5's owned set** (58: 33, 64b-i: 235). **ZERO unowned.**
+
+### Currency (`--currency --legs typecheck,ruff`, on the build; `scratchpad/currency-r7.log`)
+```
+  typecheck    RED_ADJUDICATED — 83 residual(s), owned by: packet-58-contract (…)
+  ruff         GREEN
+  pytest       NOT_RUN — claimed by the manifest, never executed
+CURRENCY   : FAIL — claimed but never run: pytest
+```
+- typecheck 83 is unchanged and RED_ORPHANED on the run legs is 0.
+- Exit 1 is the known FLAG-2 residual.
+- `uv run ruff check .` → `All checks passed!`
+
+### Patches (cut in a TEMP INDEX)
+
+| artifact | md5 |
+|---|---|
+| **FINAL 63c-i-a patch** `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r7.full.patch` (26 files) | `b15c06b054e661ae9c591d1151ddc257` |
+| delta over 30a13c8a `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r7.delta.patch` (5 files: governed, principals, `scripts/restore_prod_dump.py`, the 2 am-37 test files) | `5959fa0e670a09ca6a03fe3b8fa458a4` |
+| `loremaster/loremaster/governed.py` | `5d1f7e926f7ed714f258f7e21d78af1d` |
+| `loremaster/loremaster/principals.py` | `6b9ed20d6cec9a6c44c3f3c7b10c3b04` |
+| `scripts/restore_prod_dump.py` | `b887aca293b115ebb71cd03c8c39b226` |
+| principal_keys / keeps / logging_setup / the store reference (unchanged since r6) | `d2d80884…` / `6afced24…` / `e591361f…` / `73487207…` |
+
+- **File list vs full7b:** ⊇ holds — **0 of full7b's 25 missing**. The one addition is `scripts/restore_prod_dump.py`.
+- The delta, applied over a FRESH 30a13c8a reconstruction (`recon-r7-check`: HEAD archive + `r6.full.patch`), reproduces all 26 files byte-exact (`cmp`: 0 mismatches).
+- `git apply --check --cached <r7.full.patch>` at main HEAD **`2e8b0e0`: OK**. Main moved by docs only since `365f769`.
+- `cp -a` of the changed files: `scratchpad/changed-files-r7/`.
+
+### Residuals and observations
+- FLAG-r7-1: the F-15 help pin certifies the old one-domain world via a substring (above).
+- The `else` remedy branch ("no migrate verb accepts") is unreachable today, since every DDL-derived table has a leg. It is kept as the honest answer for a future derived table without a leg.
+- The relation-table derivation (`governed_relation_tables`) still lives in the test tree and is called by the script. Only the NODE property moved into the package, as ruled.
+- Earlier-round residuals stand as listed in §RESUME 2.
