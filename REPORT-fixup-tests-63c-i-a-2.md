@@ -541,3 +541,63 @@ The r4 delta touches no production file, so it composes with the §13 / §13.1 p
 | `…/scratchpad/fixup-tests-63c-i-a-2.full6.patch` (fix6 + r6) | HEAD `e56a3d8` (also main `64d308a`) | `ca4598259d2727b95c6dff877edc27ad` | OK at both |
 
 The throwaway reference, for the record only (never shipped; a SAT host, never a spec): `…/scratchpad/ref-R6.patch` (vs HEAD, md5 `5a5d7358…`); generators `r6_make_ref.py` + `r6_callsites.py`.
+
+## ROUND 7: am-37 §13.4 (`86d18ba`) + erratum §13.4.1 (`175077a`) test side
+*Measured 2026-10-01 02:45–03:00Z in scratch `fixup7` = HEAD `136ba7a` + fix6 final candidate (patch md5 `30a13c8a…` verified, 24 files). `loremaster.__file__` resolves inside `fixup7`. The throwaway reference `refR7` was made with `scratch_copy.sh`.*
+
+**SUMMARY:**
+- **State:** done. Every ruled pin is written.
+- **RED at 30a13c8a:** 6 declared from `--collect-only` before the run; 6 observed, 0 missed. The only undeclared reds are 28 `test_findings_migrate_64b.py` ids (the unbuilt packet-64b finding leg: *"UNBUILT / REFUSED: migrate_governed(table='finding')…"*), id-identical on base and reference.
+- **Reference:** GREEN except those same 28.
+- **Mutations:** (a), (b) and (c) all PROOF HELD.
+- **Gates:** ruff clean; typecheck 83 (owned); RED_ORPHANED 0.
+- **full7 file list ⊇ the 24 files of 30a13c8a:** 25 files (24 + my new one), 0 missing.
+- **Deviations:** none. One defect in my own pin (the positive control's expectation) was caught by the first receipts and fixed. The receipts of record are the second runs.
+- **Decision needed (ruling-level conflict, surfaced, not resolved):** see R7-1.
+
+### R7-1. A conflict inside §13.4.1, for the lead / sidecar
+- **The conflict:** §13.4.1 says `governed_tables()` derives *"directly from the DDL generators … tables whose DDL defines the governed triple"*.
+  - Measured at 30a13c8a: over EVERY `surreal_schema.generate_*_ddl` (the scaffold's own enumeration), that derivation yields **`agent`, `memory`, `message`**.
+  - `production generate_ddl` alone yields only `memory`.
+  - But the restore reads **six** (`SliceDeriver`'s `governed_node=True`: the derived three + `PENDING_GOVERNED_TABLES` `brief`, `finding`, `task`, which do not yet carry the trio in their DDL).
+- **Consequence:** a pure DDL derivation therefore CANNOT satisfy pin 5 (equality with `SliceDeriver`) or pin 3 (the read-back over finding/task).
+- **What production must carry instead:** the pending set must move into the package (a hand set until those packets land), OR the pending tables gain the trio in their DDL.
+- **What the pins bind:** the OUTCOME (equality + acceptance), not the mechanism.
+- **My reference** (a SAT host, never a spec) used *the DDL-trio derivation over all generators ∪ a package-local `_PENDING_GOVERNED_NODES = ("brief", "finding", "task")`*. That pending set is the hand list this flag is about.
+
+### Pins (new file `loremaster/tests/test_am37_13_4_63c_i_a.py`; 1 re-key in `test_am37_13_3_63c_i_a.py`)
+| § pin | test | RED at 30a13c8a (declared = observed) | reference |
+|---|---|---|---|
+| 1 | `TestTheReportDomainIsTheGovernedSet::test_the_report_count_accepts_every_governed_table[<table>]`, parametrized at COLLECTION from `governed_tables()` (a missing accessor reds BY NAME). Each case is a minted `:18000` DB with the EMITTED schema DDL (every governed table defined) and asserts the report count returns an `int`. | 1 (`[<governed.governed_tables() does not exist>]`) | GREEN ×6 |
+| 1 control | `…::test_CONTROL_a_table_outside_both_domains_is_refused_with_zero_io` (`principal`, `run_query` spy) | GREEN (the base validator already refuses it) | GREEN |
+| 1/4 | `…::test_the_control_sample_lies_outside_both_domains` | 1 | GREEN |
+| 2 | `…::test_the_migrate_leg_set_is_contained_in_the_report_domain` | 1 | GREEN |
+| 3 | `TestTheRestoreReadBackServesEveryGovernedTable::test_read_back_completes_with_one_scope_none_count_per_governed_table`: the REAL `restore_prod_dump._read_back` (imported by path, test side only) over a minted DB; `unmigrated` (the map feeding the receipt's `scope NONE` column) has exactly one int per `SliceDeriver` governed table | 1 (THE regression: raises on finding/task) | GREEN |
+| §13.4.1 eq | `TestTheSliceDeriverConsumesTheProductionAccessor::test_the_slice_deriver_governed_nodes_equal_governed_tables` | 1 | GREEN |
+| §13.4.1 AST | `TestNoProductionModuleImportsScripts::test_the_module_never_imports_scripts[<module>]`, generated over every module under `loremaster/loremaster/`; any `Import`/`ImportFrom` at ANY depth naming `scripts` or `restore_prod_dump` as any dotted segment, any alias. Plus the POSITIVE CONTROL (a synthetic function-local `from scripts.x import y`, `import scripts.x as z`, `from restore_prod_dump import y as z`, all three caught) and non-vacuity. | 0 (a guard; GREEN at base) | GREEN |
+| STOP re-key | `test_am37_13_3_63c_i_a.py::TestTheReportRemedyIsDerived` was parametrized over the MIGRATE set, so it could not see the wider domain it is written over. It is re-keyed to `governed_tables()` at collection; a missing accessor reds by name. **Verified over the wider domain:** on the reference all six pass, including `finding`/`task` via *"no migrate verb accepts …"*. | 1 (`[<…does not exist>]`) | GREEN ×6 |
+
+- **§13.4 pin 4 (F-15 sample):** verified, no edit. The samples are `not_a_governed_table` (test_principals_cli) and `memory; REMOVE TABLE memory` (round-6 #528). Both lie outside BOTH domains.
+- **STOP-DUAL "a pin asserting the report REFUSES finding/task":** a bare awk over `loremaster/tests/**` + `scripts/test_*.py` found none. The opposite exists: `test_findings_migrate_64b.py::…test_report_unmigrated_counts_the_legacy_findings_then_zero` EXPECTS acceptance. It is part of the 28 owned 64b reds and stays red on the reference because the finding LEG is unbuilt, not because of the report domain.
+
+### Mutations (on `refR7`, `scripts/mutation_proof.py`, gated; all PROOF HELD, tree restored byte-exact)
+- **(a)** report validator back on `_MIGRATE_VALID_TABLES` → exactly `accept[finding]`, `accept[task]`, the read-back, `remedy[finding]`, `remedy[task]`.
+- **(b)** a function-local `from scripts.restore_prod_dump import SliceDeriver` inside `governed_tables()` (under `if False:`, so runtime is unaffected) → exactly `test_the_module_never_imports_scripts[governed.py]`.
+- **(c)** `governed_tables()` returns a hand set missing `task` → exactly the equality pin + the read-back.
+
+### Runs (gated: one flock, ≥ 20 GiB, no other lore pytest, a 16G cgroup, `-n 8`)
+- **Targeted set:** the new file, `test_am37_13_3`, `test_retry_seam.py`, `scripts/test_restore_prod_dump.py`, `test_principals_cli.py`, `test_findings_migrate_64b.py`, the D file, `test_engine_rejection_seam.py` (1269 collected).
+- **Base:** 34 failed / 1234 passed. Admitted 02:56:45Z at 26 GiB.
+- **Reference:** 28 failed / 1250 passed. Admitted 02:57:29Z at 33 GiB.
+- **Receipt of record vs v1:** v1 (`r7.*.v1.log`) carried a red positive control on BOTH builds. My expectation `[2, 2, 3, 4]` miscounted, because a `from X import Y` yields two names. It now asserts every statement is caught (`{2, 3, 4}`). That red was also why the first mutation attempts reported "PROOF FAILED". The instrument was right to refuse.
+
+### full6's two dropped files: root cause, and the fix applied here
+- **Root cause:** round 6's `full6` omitted `test_fail_closed_shapes_63c_13b.py` and `test_preboot_schema_precondition_63c_13d.py`, exactly the two files bec29190 CREATES (`new file mode`). I cut full6 with `git diff HEAD` over the working tree, where a base-created file is UNTRACKED and so invisible; I had `add -N`'d only my own new file.
+- **The fix:** full7 is built entirely in a temp index (`read-tree HEAD` → `apply --cached` base → `apply --cached` r7 delta → `diff --cached HEAD`). It cannot drop a created file, and its list is diffed against the base's 24.
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r7.delta.patch` (tests only: new `test_am37_13_4_63c_i_a.py`, `test_am37_13_3_63c_i_a.py`) | HEAD `136ba7a` + `30a13c8a` | `c0be7a974c413fd8aa6eb6f5f05aff8c` | OK |
+| `…/scratchpad/fixup-tests-63c-i-a-2.full7.patch` (30a13c8a + r7; 25 files ⊇ the 24) | HEAD `136ba7a` (= main HEAD) | `5272a53344e36a980791ff8fde19ae72` | OK |
+
+The reference, for the record only: `…/scratchpad/ref-R7.patch` (md5 `23d12deb…`); generator `r7_make_ref.py`.
