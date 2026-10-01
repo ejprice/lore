@@ -2493,3 +2493,5 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   production data migration UNATTENDED under the runbook preconditions (standing law for every migration
   deploy); **pool 29 YES** — 11c is a HARD dependency of 65 and runs BEFORE the cutover (its recreate is the
   measurement). Recorded in the pool, row 65, row 11c, packet 65 F1/F2, and lore memory.
+- **2026-10-01 — 63c-i-a CLOSED** (`f29526f` gate `entries_for`, `34d0b6b` build). This adds: the governed migration for memory, agent and message (a pre-boot schema teaching refusal; typed receipts); ONE lore-adm fault handler that teaches the cause chain through `RedactingFilter`; fail-closed store reads (`group_all_count`/`rows_of`/`map_of`); `governed_tables()` = DDL ∪ pending, consumed by restore. It went through am-37 §5–§13.4.2, six fix rounds and audits 4/5/6 GO (the real prod dump migrated + restored; 9/9 mutations).
+  Residuals: #529–#532, F-9 (exit codes, deferred), R-1, FLAG-r7-1, the GROUP ALL + foreign `_as_rows` sweep → 64b §DRY, #525 → 64. Receipts: `receipts/2026-09-30-63c-i-a/`. NEXT: 58 (§RE-BASE first), then 64b-i.
