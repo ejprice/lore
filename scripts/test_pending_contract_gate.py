@@ -424,6 +424,103 @@ def test_unsymboled_code_does_not_leak_to_another_registered_file(
 
 
 # --------------------------------------------------------------------------
+# 3a. ONE path under TWO bounds — admission is PER SYMBOL, across every entry
+#     (58 am-14 §1, 2026-09-30)
+# --------------------------------------------------------------------------
+#
+# PROPERTY: ∀ mypy error e at path p — e is EXPECTED iff ∃ (bound, entry) with
+# entry.path == p ∧ entry.admits(e). Ownership is per SYMBOL; the file is only
+# where mypy prints. The pytest leg already has this shape (``registered_paths``
+# is a union over every entry); the typecheck leg must get the same one.
+#
+# ⚠ WHAT WRONG BUILD WOULD STILL PASS THIS? — FIRST-match (the pre-am-14
+# ``entry_for``) admits a symbol only when the FIRST entry for the path names it;
+# LAST-match admits it only when the last does. So the shared-path test is
+# parametrised over BOTH positions: each positional build reddens one param. The
+# control pins the other side — a union that degenerated to "any registered
+# path admits anything" (file-only matching, wrong build 1 above) reddens it.
+#
+# Measured receipt that motivated it (am-14 §0.1): 58's and 64b-i's bounds both
+# list ``loremaster/tests/test_reanchor_58_r3_cas_seam.py`` with DIFFERENT
+# symbols, and the typecheck leg reported the second owner's symbol as an ORPHAN.
+
+_SHARED_PATH_REGISTRY_YAML = textwrap.dedent(
+    f"""\
+    version: 1
+    bounds:
+      - id: first-owner
+        owner: "packet A"
+        reopen_trigger: "packet A's build lands"
+        ruling: "am-14 §1 fixture"
+        rationale: "owns one symbol in the shared file"
+        files:
+          - path: {_REGISTERED_FILE}
+            missing_symbols:
+              - lorerunes.FixturePlaceholder
+      - id: second-owner
+        owner: "packet B"
+        reopen_trigger: "packet B's build lands"
+        ruling: "am-14 §1 fixture"
+        rationale: "owns a DIFFERENT symbol in the SAME file"
+        files:
+          - path: {_REGISTERED_FILE}
+            missing_symbols:
+              - lorerunes.FixtureOtherPlaceholder
+    """
+)
+
+
+@pytest.fixture()
+def shared_path_gate(tmp_path: Path, repo_root: Path) -> PendingContractGate:
+    path = tmp_path / "shared_path_contracts.yaml"
+    path.write_text(_SHARED_PATH_REGISTRY_YAML)
+    registry = PendingContractRegistry.load(path)
+    # Precondition, asserted so the fixture cannot silently stop sharing a path.
+    assert [
+        entry.path for bound in registry.bounds for entry in bound.files
+    ] == [_REGISTERED_FILE, _REGISTERED_FILE]
+    return PendingContractGate(registry=registry, repo_root=repo_root)
+
+
+@pytest.mark.parametrize(
+    "owned_symbol",
+    ["FixturePlaceholder", "FixtureOtherPlaceholder"],
+    ids=["named-by-first-entry", "named-by-second-entry"],
+)
+def test_shared_path_error_is_expected_when_ANY_entry_admits_it(
+    shared_path_gate: PendingContractGate, owned_symbol: str
+) -> None:
+    """A path listed under TWO bounds: an error naming a symbol that EITHER
+    entry lists is expected — whichever entry happens to come first."""
+    run = MypyOutputReader.read(
+        _mypy_output([_attr_error(_REGISTERED_FILE, 93, "lorerunes", owned_symbol)])
+    )
+    partition = shared_path_gate.partition_mypy(run)
+    assert partition.unexpected == [], (
+        f"{owned_symbol!r} is registered by one of the two entries for "
+        f"{_REGISTERED_FILE}; admission must consult EVERY entry for the path, "
+        "not only the first (58 am-14 §1)"
+    )
+    assert len(partition.expected) == 1
+
+
+def test_shared_path_error_naming_neither_entrys_symbol_is_unexpected(
+    shared_path_gate: PendingContractGate,
+) -> None:
+    """CONTROL: the union is over entries' ADMISSIONS, never over paths — a
+    symbol neither entry lists is still an orphan in a doubly-registered file."""
+    run = MypyOutputReader.read(
+        _mypy_output(
+            [_attr_error(_REGISTERED_FILE, 93, "lorerunes", "something_brand_new")]
+        )
+    )
+    partition = shared_path_gate.partition_mypy(run)
+    assert partition.expected == []
+    assert len(partition.unexpected) == 1
+    assert "something_brand_new" in partition.unexpected[0].message
+
+
+# --------------------------------------------------------------------------
 # 3b. The ruff leg — the THIRD canonical gate, and the one this wrapper's first
 #     draft silently omitted
 # --------------------------------------------------------------------------

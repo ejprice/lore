@@ -722,12 +722,21 @@ class PendingContractRegistry(BaseModel):
             len(entry.missing_symbols) for bound in self.bounds for entry in bound.files
         )
 
-    def entry_for(self, path: str) -> tuple[PendingBound, PendingFile] | None:
-        for bound in self.bounds:
-            for entry in bound.files:
-                if entry.path == path:
-                    return bound, entry
-        return None
+    def entries_for(self, path: str) -> list[tuple[PendingBound, PendingFile]]:
+        """EVERY (bound, entry) registered for ``path`` — the ONE per-path lookup.
+
+        Ownership is PER SYMBOL, and a file is only where mypy prints (58 am-14 §1): two
+        bounds may register the same path for different symbols. So every per-path read
+        of the registry — admission AND the self-destruct legs — goes through THIS union,
+        never a first-match (the retired ``entry_for`` hid a "one path, one bound"
+        constant that failed closed the first time two packets shared a file).
+        """
+        return [
+            (bound, entry)
+            for bound in self.bounds
+            for entry in bound.files
+            if entry.path == path
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -1151,8 +1160,11 @@ class PendingContractGate:
     def partition_mypy(self, run: MypyRun) -> Partition:
         partition = Partition()
         for error in run.errors:
-            found = self.registry.entry_for(error.path)
-            if found is not None and found[1].admits(error):
+            # EXPECTED iff ANY entry registered for the path admits it (58 am-14 §1).
+            if any(
+                entry.admits(error)
+                for _bound, entry in self.registry.entries_for(error.path)
+            ):
                 partition.expected.append(error)
             else:
                 partition.unexpected.append(error)
@@ -1255,6 +1267,15 @@ class PendingContractGate:
                 observed_codes = Counter(
                     error.code for error in observed if error.code is not None
                 )
+                # "Unsymboled" is judged against EVERY entry's symbols for the path, not
+                # this entry's alone: an error naming a SIBLING bound's symbol on a shared
+                # path is that bound's, never this allowance's (lead ruling, D-1 — the
+                # same class as am-14 §1, fixed at the same ``entries_for`` chokepoint).
+                path_symbols = tuple(
+                    symbol
+                    for _bound, sibling in self.registry.entries_for(entry.path)
+                    for symbol in sibling.missing_symbols
+                )
                 for allowance in entry.unsymboled_codes:
                     unsymboled_seen = sum(
                         1
@@ -1262,7 +1283,7 @@ class PendingContractGate:
                         if error.code == allowance.code
                         and not any(
                             error_names_symbol(error.message, symbol)
-                            for symbol in entry.missing_symbols
+                            for symbol in path_symbols
                         )
                     )
                     if unsymboled_seen != allowance.count:
