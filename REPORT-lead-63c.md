@@ -2043,3 +2043,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - ROUND 6 sent to fixup-tests-63c-i-a-2 (~20:40Z, 60 min): `scratch_copy.sh` for EVERY tree; the `logging_setup` covering tests + `test_retry_seam.py` in every run.
 - **Correction (lead, 2026-10-01 00:42Z):** the entries stamped "~20:15Z" (the operator's capped-round ruling, the §13.3 request) and "~20:40Z" (round 6 sent) are LOCAL (EDT) wall times mislabelled as Z. True UTC: ~00:15Z and ~00:40Z on **2026-10-01** (the operator's answer came ~4h after audit-5 finished at 20:04Z). Lead lesson: read `date -u` before stamping, never a commit `%ad`.
   - At 00:40Z MemAvailable is 37.2 GiB and round 6's pytest runs are live.
+- **fixup2 ROUND 6 DONE (`58839d7`).**
+  - §13.3 items 1–9 pinned: 131 declared RED = observed on bec29190 (+28 owned 64b-i); GREEN on the scratch_copy reference (the same 28 only); 9/9 mutations held.
+  - STOP-DUAL `_scrub_text`→`scrub_text` re-keyed.
+  - Its gate is narrowed to LORE pytest (a foreign mobile-pricepaper-smoke pytest had blocked it ~50 min).
+  - r6 delta `2aff7c3a46be9bd92ab3c42868cb47ee` (`_logging_fixtures.py`, `test_am37_13_3_63c_i_a.py`, `test_secret_leak_vectors.py`), full6 `ca4598259d2727b95c6dff877edc27ad`; lead-verified, apply-check OK at 58839d7.
+- builder-63c-i-a-fix6 RESUME 2 sent at 02:06Z (75 min): the §13.3 production + the sha512-producer sweep / fallback decision; the FINAL patch → `builder-63c-i-a-fix6.r6.full.patch`.
