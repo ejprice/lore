@@ -2030,3 +2030,14 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - Sequence: §13.3 → fixup-tests-63c-i-a-2 round 6 → builder-63c-i-a-fix6 resume 2 → coldaudit-63c-i-a-6 (delta + owed mutations) + blindreader-63c-i-a-6 → commit.
 - coldaudit-63c-i-a-5 and blindreader-63c-i-a-5 stopped.
 - For coldaudit-63c-i-a-6: audit-5's OWED mutation chain is prepared at `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/15893c68-1df8-4acc-a519-e48021074e2c/scratchpad/inst/mutchain.sh` (mutations A–E incl. the §13.1 one-derivation E; declared ids collect-confirmed). Reuse it, re-pointed at the new final build. Also noted: on FORK-2 the served response for a wrong-shaped lookup is now a generic 500, where the prior 401 `invalid_token` wrongly told clients to clear their tokens.
+- **am-37 §13.3 RULED (`07549f7`, read in full).** Nine items:
+  - F-1: ONE depth+quote-aware SET scanner, complete-or-raise corpus pin.
+  - F-2: `RedactingFilter` on the CLI sink; `_fault_line` uses a public `scrub_text`; the ONE scrub redacts 128-hex runs. ⚠ This is a SHARED seam (every sink, incl. the MCP server's). The builder must awk every sha512 producer; fallback = per-seam `secret_params`. The audit owes a live mint-collision receipt + control.
+  - #527: seen-set on `__cause__`.
+  - #528: the validator moves inside the report function.
+  - F-3: `rows_of(..., landed=True)`, a generated post-write pin.
+  - F-5: the remedy is derived.
+  - F-6: `noun` required, AST pin.
+  - F-7: `GovernedStatementError` outside the tuple (traceback).
+  - NITs #19/#21/#31 folded; N-1/N-2/N-3 → residuals.
+- ROUND 6 sent to fixup-tests-63c-i-a-2 (~20:40Z, 60 min): `scratch_copy.sh` for EVERY tree; the `logging_setup` covering tests + `test_retry_seam.py` in every run.
