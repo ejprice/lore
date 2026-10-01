@@ -2029,3 +2029,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - am-37 §13.3 requested from sidecar-63c-2. #527/#528 acknowledged as FOLDED.
 - Sequence: §13.3 → fixup-tests-63c-i-a-2 round 6 → builder-63c-i-a-fix6 resume 2 → coldaudit-63c-i-a-6 (delta + owed mutations) + blindreader-63c-i-a-6 → commit.
 - coldaudit-63c-i-a-5 and blindreader-63c-i-a-5 stopped.
+- For coldaudit-63c-i-a-6: audit-5's OWED mutation chain is prepared at `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/15893c68-1df8-4acc-a519-e48021074e2c/scratchpad/inst/mutchain.sh` (mutations A–E incl. the §13.1 one-derivation E; declared ids collect-confirmed). Reuse it, re-pointed at the new final build. Also noted: on FORK-2 the served response for a wrong-shaped lookup is now a generic 500, where the prior 401 `invalid_token` wrongly told clients to clear their tokens.
