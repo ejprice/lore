@@ -80,9 +80,9 @@ from loremaster.principals import PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
-    SurrealStoreError,
     TxnContentionExhaustedError,
     TxnFragment,
+    TxnUniqueViolationError,
     _SurrealConnection,
     bootstrap_session,
     compose,
@@ -108,28 +108,6 @@ logger = logging.getLogger(__name__)
 # named-in-one-place regardless.
 _KEEP_READ_PROJECTION = "id, keeper, type, name, created_at"
 _MEMBER_OF_READ_PROJECTION = "in, out, rank, since"
-
-#: The non-field attribute :meth:`KeepStore.get_or_create_keyed` sets on the keep it returns when THAT
-#: call's own CREATE won (packet 63c-i-a, #485 / amendment 22 §1.2 + amendment 24 FK-b). Read ONLY through
-#: :func:`minted_by_this_call`.
-_MINTED_BY_THIS_CALL = "minted_by_this_call"
-
-
-def minted_by_this_call(keep: object) -> bool:
-    """Whether ``keep`` was CREATED by the :meth:`KeepStore.get_or_create_keyed` call that returned it.
-
-    ``True`` only when that call's own CREATE won the mint; a keep the call merely FOUND (read by key, or
-    re-read as a concurrent winner after a UNIQUE conflict) reads ``False``. Derived from the mint's OWN
-    return — never a pre-read, which a concurrent winner makes a TOCTOU (amendment 24 FK-b). The register
-    handler's created-only compensation reads this: it may delete a keep its call created, never one it
-    found (that keep belongs to another registration).
-
-    The flag rides the returned :class:`Keep` as a non-field ``__dict__`` attribute (``Keep`` is frozen).
-    Measured on the installed pydantic 2.13.4 (2026-09-26): ``==``, ``model_dump`` and ``model_dump_json``
-    ignore it, so no caller comparing or serialising keeps observes it; ``model_copy`` carries it.
-    """
-    return getattr(keep, _MINTED_BY_THIS_CALL, False) is True
-
 
 class Keep(BaseModel):
     """A single collaboration space in the durable ``keep`` store.
@@ -457,7 +435,8 @@ class KeepStore:
                     "member": RecordID(PRINCIPAL_TABLE, member_id),
                     "keep": RecordID(KEEP_TABLE, keep_id),
                 },
-            )
+            ),
+            noun="keep membership read",
         )
         return self._row_to_membership(rows[0]) if rows else None
 
@@ -560,15 +539,21 @@ class KeepStore:
             name: An optional human label.
 
         Returns:
-            The existing or freshly-minted :class:`Keep` bearing ``key``. :func:`minted_by_this_call`
-            reads ``True`` on it iff THIS call's CREATE won (never for a keep read by key or re-read as
-            a concurrent winner).
+            The existing or freshly-minted :class:`Keep` bearing ``key``.
 
         Raises:
-            KeepStoreError: No principal carries ``keeper_email``, OR the store rejected the create.
-                The WHOLE verb (including its internal reads) wraps a raw engine
-                ``SurrealStoreError`` as this domain error (consumer law); transport /
-                exhausted-contention faults pass through untouched (store reference §3/§5).
+            KeepStoreError: No principal carries ``keeper_email``; OR the store rejected a step of the
+                verb. The CAS door is NARROW (cold audit 63c-i-a-3 F-C7 / K1): ONLY a
+                :class:`~loremaster.store._txn.TxnUniqueViolationError` from the CREATE is caught, and
+                it triggers the key RE-READ — the concurrent winner is returned if the key now
+                resolves, else that same error propagates. Every other ``SurrealStoreError`` from the
+                CREATE (an ``ASSERT`` / type rejection, a governed conflict, …) is never re-read and
+                propagates at once. The WHOLE verb (its reads, the CREATE, the re-read) sits under ONE
+                :func:`~loremaster.store._txn.wrap_store_rejection`, so every such domain rejection
+                reaches the caller as this domain error (consumer law), chained from the engine error.
+            SurrealConnectionError: A transport fault, passed through untouched (store reference §3).
+            TxnContentionExhaustedError: Exhausted write-write contention, passed through untouched
+                (store reference §5).
         """
         # The WHOLE verb — the key read, the keeper resolution, the CAS create, the read-back — is
         # under ONE wrap (finding #400): a raw engine rejection at ANY step surfaces as
@@ -614,17 +599,13 @@ class KeepStore:
                     drop=self._drop_connection,
                     url=self._url,
                 )
-            except (SurrealConnectionError, TxnContentionExhaustedError):
-                # Transport / exhausted contention belongs to the retry/lifecycle layer — it is
-                # NOT a UNIQUE conflict, and must NEVER be swallowed by the CAS re-read (store-ref
-                # §5: re-read a genuine CONFLICT, never a dropped socket).
-                raise
-            except SurrealStoreError:
+            except TxnUniqueViolationError:
                 # The hot-row CAS (store-ref §5): a concurrent ``register`` may have minted this
                 # UNIQUE key between our read-miss and this CREATE. If the key now resolves, that
                 # IS the conflict → return the winner, never a second row. If it still does not,
-                # the rejection was genuine (an unruled type, a ghost keeper) → re-raise (the wrap
-                # translates it to KeepStoreError).
+                # the identity collision was not with a keyed winner → re-raise (the wrap
+                # translates it to KeepStoreError). Any OTHER rejection (an unruled type, a ghost
+                # keeper) is not a TxnUniqueViolationError and never reaches this re-read.
                 winner = await self.get_by_key(key)
                 if winner is not None:
                     return winner
@@ -632,9 +613,6 @@ class KeepStore:
             created = await self.get_keep(keep_id)
             if created is None:  # pragma: no cover - a just-committed row must read back
                 raise KeepStoreError(f"created keyed keep {keep_id!r} did not read back")
-            # THIS call's CREATE won the mint — reported on the returned object, read through
-            # :func:`minted_by_this_call` (the register handler's created-only compensation, #485).
-            object.__setattr__(created, _MINTED_BY_THIS_CALL, True)
             return created
 
     async def get_by_key(self, key: str) -> Keep | None:
@@ -650,7 +628,8 @@ class KeepStore:
             await self._query(
                 f"SELECT {_KEEP_READ_PROJECTION} FROM {KEEP_TABLE} WHERE key = $k",
                 {"k": key},
-            )
+            ),
+            noun="keep lookup by key",
         )
         return self._row_to_keep(rows[0]) if rows else None
 
@@ -666,7 +645,8 @@ class KeepStore:
             await self._query(
                 f"SELECT {_KEEP_READ_PROJECTION} FROM type::record('{KEEP_TABLE}', $id)",
                 {"id": self._record_id_part(keep_id)},
-            )
+            ),
+            noun="keep lookup by id",
         )
         return self._row_to_keep(rows[0]) if rows else None
 
@@ -958,7 +938,8 @@ class KeepStore:
             await self._query(
                 f"SELECT {_MEMBER_OF_READ_PROJECTION} FROM {MEMBER_OF_RELATION} WHERE out = $keep",
                 {"keep": RecordID(KEEP_TABLE, self._record_id_part(keep_id))},
-            )
+            ),
+            noun="keep household read",
         )
         return [self._row_to_membership(row) for row in rows]
 
@@ -980,7 +961,8 @@ class KeepStore:
                 f"SELECT {_KEEP_READ_PROJECTION} FROM {KEEP_TABLE} "
                 f"WHERE keeper = type::record('{PRINCIPAL_TABLE}', $pid)",
                 {"pid": keeper_id},
-            )
+            ),
+            noun="keeper's keep list",
         )
         return [self._row_to_keep(row) for row in rows]
 
@@ -1041,7 +1023,8 @@ class KeepStore:
                 await self._query(
                     f"SELECT out FROM {MEMBER_OF_RELATION} WHERE in = $principal",
                     {"principal": RecordID(PRINCIPAL_TABLE, member_id)},
-                )
+                ),
+                noun="member's keep list",
             )
         # Pure mapping (no store call): each member_of row's ``out`` is the keep RecordID;
         # reduce it to its BARE id (Fork F — the resolver adds the ``keep:`` prefix).

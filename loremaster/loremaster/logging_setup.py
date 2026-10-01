@@ -32,6 +32,11 @@ this module owns only the *sinks* and the *secret backstop*:
   text is no longer redacted, and the replacement control is that a typed secret
   is never in the text.
 
+  ONE fixed-shape exception, ruled (am-37 §13.3 item 2): a run of 128+ hex
+  characters — the stored credential-hash shape, ``sha512_hex(f"{name}:{secret}")``
+  — is redacted wherever it appears. It is a LENGTH, not a randomness guess; its
+  bound and re-open trigger live at :data:`_CREDENTIAL_HASH_RE`.
+
   ⚠ Until #211 (2026-07-25) the last two of those were FALSE in both
   directions: the filter never touched ``exc_info``/``exc_text``, and the two
   formatters above discarded the exception outright — so eight production
@@ -162,6 +167,21 @@ _COMPOUND_ASSIGNMENT_RE = re.compile(
     r"(['\"]?\s*[=:]\s*)['\"]?(\S+)"
 )
 
+#: The credential-hash SHAPE (am-37 §13.3 item 2): a run of 128 or more hex characters,
+#: bounded by non-hex. A lore credential is stored as ``sha512_hex(f"{name}:{secret}")``
+#: (128 hex), and the one surface that can carry it is a UNIQUE-hash index rejection the
+#: engine echoes into the store seam's ``engine_error`` extra on a key mint. This is a
+#: fixed LENGTH, not a randomness guess: a 40-hex git SHA, a 64-hex sha256 and a 127-hex
+#: run are copied through untouched.
+#:
+#: ⚠ KNOWN BOUND, met deliberately: a sha512 CONTENT digest in a log line would be redacted
+#: too. Swept for this ruling (``REPORT-builder-63c-i-a-fix6.md`` §RESUME 2): no logger
+#: call and no raise in the package carries a content digest VALUE, and the only UNIQUE
+#: indexes over a hash column hold credential hashes. Re-open trigger: the first log line
+#: that must carry a content sha512 — then narrow this to the mint seam's record instead
+#: (§13.3 item 2's fallback).
+_CREDENTIAL_HASH_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{128,}(?![0-9A-Fa-f])")
+
 # The auth schemes whose NAME is preserved in a redacted ``Authorization`` header.
 #
 # ⚠ AN ALLOWLIST OF THE SAFE, AND THE DIRECTION IS THE WHOLE POINT (ruling R8).
@@ -285,15 +305,23 @@ def _redact_auth_header(match: re.Match[str]) -> str:
     return f"{label}{REDACTED}"
 
 
-def _scrub_text(value: str) -> str:
-    """Redact secrets from a single string: auth header, bearer, labelled assignment.
+def scrub_text(value: str) -> str:
+    """Redact secrets from a single string: auth header, bearer, labelled assignment, hash.
+
+    THE one scrub every lore sink routes through: :class:`RedactingFilter` (every
+    ``configure_logging`` handler AND the lore-adm stderr sink), :func:`scrubbed_exception_text`,
+    and the lore-adm fault line (``principals._fault_line``). Public so no caller imports a
+    private name or writes a second regex (am-37 §13.3 item 2).
 
     Applied most-specific first. :data:`_AUTH_HEADER_RE` understands the whole
     ``Authorization`` header including its scheme word, so it runs before the
     two patterns that see only a label and a token — otherwise the assignment
     pass would eat ``Bearer`` as if it were the credential (ruling R8).
 
-    Every byte the three patterns do not match is COPIED THROUGH. That is the
+    The credential-hash shape (:data:`_CREDENTIAL_HASH_RE`, a 128+-hex run) runs LAST:
+    it is the one unlabelled shape, and it is a fixed length rather than a guess.
+
+    Every byte the patterns do not match is COPIED THROUGH. That is the
     contract packet 42 restored: paths, identifiers, git SHAs, UUIDs and rendered
     source lines reach the log exactly as they were written.
 
@@ -307,7 +335,8 @@ def _scrub_text(value: str) -> str:
     scrubbed = _AUTH_HEADER_RE.sub(_redact_auth_header, value)
     scrubbed = _BEARER_RE.sub(rf"\1{REDACTED}", scrubbed)
     scrubbed = _ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
-    return _COMPOUND_ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
+    scrubbed = _COMPOUND_ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", scrubbed)
+    return _CREDENTIAL_HASH_RE.sub(REDACTED, scrubbed)
 
 
 #: The sentinel :func:`_names_a_secret` labels. Any value that cannot itself match a
@@ -332,7 +361,7 @@ def _names_a_secret(key: str) -> bool:
     Returns:
         ``True`` when this key labels a credential.
     """
-    return _LABEL_PROBE not in _scrub_text(f"{key}={_LABEL_PROBE}")
+    return _LABEL_PROBE not in scrub_text(f"{key}={_LABEL_PROBE}")
 
 
 def _scrub_value(value: Any, key: str | None = None) -> Any:
@@ -344,7 +373,7 @@ def _scrub_value(value: Any, key: str | None = None) -> Any:
 
     ⚠ **THE MAPPING KEY IS PASSED DOWN AS THE VALUE'S LABEL, AND ITS ABSENCE WAS A LEAK
     (ruling R38).** A dict was walked by scrubbing each key and each value INDEPENDENTLY,
-    so for ``{"api_key": "sk-…"}`` the value was handed to :func:`_scrub_text` as a bare
+    so for ``{"api_key": "sk-…"}`` the value was handed to :func:`scrub_text` as a bare
     string with no label anywhere near it — and the label patterns, which are the entire
     mechanism, need a label. Every credential map in every ``extra=`` field leaked, for
     every label. The scenario was named in a pin's own prose and no fixture reached it:
@@ -363,7 +392,7 @@ def _scrub_value(value: Any, key: str | None = None) -> Any:
     if isinstance(value, str):
         if key is not None and _names_a_secret(key):
             return REDACTED
-        return _scrub_text(value)
+        return scrub_text(value)
     if isinstance(value, dict):
         # The KEY is scrubbed as text AND passed down as the value's label. Both halves
         # are needed and they are different defects: a credential can be the key itself
@@ -372,7 +401,7 @@ def _scrub_value(value: Any, key: str | None = None) -> Any:
         # ORIGINAL key is what labels the value; scrubbing it first would hide the label
         # from the value that needs it.
         return {
-            (_scrub_text(inner_key) if isinstance(inner_key, str) else inner_key): _scrub_value(
+            (scrub_text(inner_key) if isinstance(inner_key, str) else inner_key): _scrub_value(
                 inner, key=inner_key if isinstance(inner_key, str) else None
             )
             for inner_key, inner in value.items()
@@ -431,13 +460,13 @@ def scrubbed_exception_text(record: logging.LogRecord) -> str | None:
     """
     sections: list[str] = []
     if record.exc_text:
-        sections.append(_scrub_text(record.exc_text))
+        sections.append(scrub_text(record.exc_text))
     elif record.exc_info:
         rendered = _render_exception(record.exc_info)
         if rendered is not None:
-            sections.append(_scrub_text(rendered))
+            sections.append(scrub_text(rendered))
     if record.stack_info:
-        sections.append(_scrub_text(record.stack_info))
+        sections.append(scrub_text(record.stack_info))
     if not sections:
         return None
     return "\n".join(sections)
@@ -448,14 +477,14 @@ class RedactingFilter(logging.Filter):
 
     Mutates the record in place: the ``msg`` (and any positional ``args``), every
     caller-supplied ``extra`` attribute, and the rendered EXCEPTION + ``stack_info``
-    are passed through :func:`_scrub_text` / :func:`_scrub_value`. Always returns
+    are passed through :func:`scrub_text` / :func:`_scrub_value`. Always returns
     ``True`` — its job is sanitisation, not filtering — so it composes with any
     level-based filtering above it.
 
     It writes ``exc_text`` and ``stack_info`` as SEPARATE attributes (which is why
     it cannot simply call :func:`scrubbed_exception_text`, whose job is to hand a
     formatter one joined string) — but both paths render through
-    :func:`_render_exception` and scrub through :func:`_scrub_text`, so the
+    :func:`_render_exception` and scrub through :func:`scrub_text`, so the
     rendering and redaction policies still have exactly one implementation each.
 
     **Why the exception leg exists (#211).** A traceback is rendered by the
@@ -509,10 +538,10 @@ class RedactingFilter(logging.Filter):
             # Rendering first also scrubs the ARGUMENTS by construction: they are in the
             # text. ``args`` is then cleared, because it has been consumed — leaving it
             # would re-interpolate an already-rendered string.
-            record.msg = _scrub_text(record.getMessage())
+            record.msg = scrub_text(record.getMessage())
             record.args = ()
         elif isinstance(record.msg, str):
-            record.msg = _scrub_text(record.msg)
+            record.msg = scrub_text(record.msg)
         for key, value in list(record.__dict__.items()):
             if key in _LOGRECORD_RESERVED or key.startswith("_"):
                 continue
@@ -521,13 +550,13 @@ class RedactingFilter(logging.Filter):
         # honours ahead of ``exc_info``, so a handler that never heard of this
         # filter still emits scrubbed traceback text.
         if record.exc_text:
-            record.exc_text = _scrub_text(record.exc_text)
+            record.exc_text = scrub_text(record.exc_text)
         elif record.exc_info:
             rendered = _render_exception(record.exc_info)
             if rendered is not None:
-                record.exc_text = _scrub_text(rendered)
+                record.exc_text = scrub_text(rendered)
         if record.stack_info:
-            record.stack_info = _scrub_text(record.stack_info)
+            record.stack_info = scrub_text(record.stack_info)
         return True
 
 

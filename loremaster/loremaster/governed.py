@@ -1,30 +1,52 @@
-"""The shared GOVERNED SUBSTRATE — packet 63a (STUB / runnable-RED).
+"""The shared GOVERNED SUBSTRATE (packet 63a; extended through 63c) — built, not a stub.
 
-⚠ THIS IS A CONTRACT STUB, authored by ``contract-63a`` (Opus 4.8 contract author). Every
-public symbol here exists so the RED contract COLLECTS and fails BEHAVIORALLY; the bodies raise
-``NotImplementedError``. The builder (63a GREEN) replaces the bodies — it does NOT change the
-shapes, which ARE the contract (design ``docs/design/2026-08-28-packet63-retrofit-rulings.md``
-§1.2, items 1–3).
+This is the ONE-IMPLEMENTATION address the design mandates
+(``docs/design/2026-08-28-packet63-retrofit-rulings.md`` §1.1–§1.2):
 
-This is the ONE-IMPLEMENTATION address the design mandates: the Subject-resolution, the read
-splice, and the guarded write are FUNCTIONS the memory retrofit (63a) and comms (63b/63c) and
-tasks/findings (64) CALL — never patterns they clone (§1.1 countermand; CLAUDE.md
-"ONE IMPLEMENTATION"). It lives in ``loremaster`` (store-reading orchestration — the ESC-1 split:
-``lorerunes`` holds predicates, ``loremaster`` holds entry points).
+- the Subject resolution: :func:`resolve_principal`, :func:`resolve_subject`, :func:`resolve_write_scope`;
+- the read splice: :func:`read_filter`;
+- the guarded write: :func:`authorize_guarded` → :func:`guarded_write`, with :func:`write_guard` /
+  :class:`governed_exempt` attributing every governed write;
+- the migration result models: :class:`MigratePreconditionCounts`, :class:`MigrateGovernedResult`;
+- the forgotten-backfill count: :func:`report_unmigrated_governed_rows`;
+- the GOVERNED SET (am-37 §13.4 / §13.4.1 / §13.4.2): :func:`governed_node_tables_of` (the ONE property —
+  a table is governed iff its DDL defines the whole governed triple), :func:`ddl_governed_tables` (that
+  property over the package's own DDL generators), :data:`PENDING_GOVERNED_TABLES` (the declared,
+  self-destructing governed-by-intent set) and :func:`governed_tables` (their union — the REPORT domain);
+  ``scripts/restore_prod_dump.py`` CONSUMES these (``scripts`` → ``loremaster`` only, never the reverse);
+- the ONE ``--table`` validator: :func:`validate_governed_table`;
+- the THREE fail-closed store-answer shape readers: :func:`group_all_count`, :func:`rows_of`,
+  :func:`map_of` (packet 63c amendment 37 §13 B / §13.1 — no other function here or in
+  ``principals.py`` tests a store answer's shape).
+
+The memory retrofit (63a), comms (63b/63c) and tasks/findings (64) CALL these functions — never
+patterns they clone (CLAUDE.md "ONE IMPLEMENTATION"). Store access routes through an injected
+:class:`~loremaster.store._txn.StoreHandle` and ``run_query`` (R4: no raw connection, no direct SDK
+call). It lives in ``loremaster`` (store-reading orchestration — the ESC-1 split: ``lorerunes``
+holds predicates, ``loremaster`` holds entry points).
 """
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import functools
+import inspect
 import logging
+import re
 import sys
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from loremaster.sanitise import sanitise_line
+from loremaster.store import surreal_schema
 from loremaster.store._txn import (
+    SurrealStoreError,
     TxnFragment,
     TxnGovernedConflictError,
     compose,
@@ -75,11 +97,11 @@ class GovernedAuditUnavailable(Exception):
     (a per-caller authorization refusal) and :class:`GovernedConflict` (a vanished row). Any consumer
     whose path can reach an admin bypass MUST wire a real audit sink.
 
-    RES-2 (`docs/plans/v2/receipts/…/REPORT-cold-audit-63a.md` §RES). CONTRACT STUB authored by
-    ``contract-63a-iii``: the ``raise`` site is a builder deliverable (63a-iii GREEN) inside
-    :func:`guarded_write`, BEFORE composing the guarded mutation, when ``requires_audit and audit is
-    None``. At HEAD ``dd5c9b2`` ``guarded_write`` SILENTLY SKIPS the audit (`if requires_audit and
-    audit is not None`) and proceeds — the fail-open this type closes."""
+    RES-2 (`docs/plans/v2/receipts/…/REPORT-cold-audit-63a.md` §RES). Raised by
+    :func:`authorize_guarded` — the authorization leg of :func:`guarded_write` — BEFORE any durable
+    effect, whenever the PDP decision ``requires_audit`` and no ``audit`` sink was supplied; the guarded
+    mutation is never composed. (Before 63a-iii the write path silently skipped the audit and proceeded —
+    the fail-open this type closes.)"""
 
 
 @dataclass(frozen=True)
@@ -89,6 +111,54 @@ class GuardedWriteResult:
 
     row_count: int
     audited: bool
+
+
+#: The closed domain of :attr:`MigratePreconditionCounts.owner_classification` (amendments 30 / 34 §2): who
+#: owns the owned-but-unscoped agent rows — ``"empty"`` when the agent read ran and found none.
+OwnerClassification = Literal["operator", "foreign", "mixed", "unclassified", "empty"]
+
+
+class MigratePreconditionCounts(BaseModel):
+    """The governed-migration precondition counts a run MEASURED (packet 63c-i-a, amendments 30–36).
+
+    ``None`` = not measured on this run; a number = measured. Each field's ``json_schema_extra["read"]`` names
+    the store read that measures it (``agent`` / ``message`` / ``operator``). A refusal's ``reason`` restates
+    these counts, DERIVED from these fields. The owner triple (``owned_but_unscoped_agents``,
+    ``distinct_owner_principals``, ``owner_classification``) is consistent by construction (amendment 34 §2).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    unscoped_agents: int | None = Field(default=None, json_schema_extra={"read": "agent"})
+    owned_but_unscoped_agents: int | None = Field(default=None, json_schema_extra={"read": "agent"})
+    scoped_but_ownerless_agents: int | None = Field(default=None, json_schema_extra={"read": "agent"})
+    dangling_sender_messages: int | None = Field(default=None, json_schema_extra={"read": "message"})
+    owned_but_unscoped_messages: int | None = Field(default=None, json_schema_extra={"read": "message"})
+    scoped_but_ownerless_messages: int | None = Field(default=None, json_schema_extra={"read": "message"})
+    distinct_owner_principals: int | None = Field(default=None, json_schema_extra={"read": "agent"})
+    owner_classification: OwnerClassification | None = Field(
+        default=None, json_schema_extra={"read": "agent"}
+    )
+    total_principals: int | None = Field(default=None, json_schema_extra={"read": "operator"})
+    admin_principals: int | None = Field(default=None, json_schema_extra={"read": "operator"})
+
+    @model_validator(mode="after")
+    def _one_meaning_per_state(self) -> MigratePreconditionCounts:
+        """amendment 34 §2: the owner triple is consistent by construction — all three unmeasured together;
+        ``"empty"`` iff zero owned rows and zero owners; any other classification iff both are positive. A
+        contradiction raises (a pydantic ``ValidationError``)."""
+        owned, distinct, classification = (
+            self.owned_but_unscoped_agents, self.distinct_owner_principals, self.owner_classification
+        )
+        if classification is None or owned is None or distinct is None:
+            legal = classification is None and owned is None and distinct is None
+        elif classification == "empty":
+            legal = owned == 0 and distinct == 0
+        else:
+            legal = owned > 0 and distinct > 0
+        if not legal:
+            raise ValueError(f"contradictory owner triple: {owned=} {distinct=} {classification=}")
+        return self
 
 
 @dataclass(frozen=True)
@@ -101,10 +171,32 @@ class MigrateGovernedResult:
     the receipt. The read-only PREVIEW is the separate ``report-unmigrated`` verb.
 
     ``scanned`` / ``already_migrated`` are ``None`` on EVERY refusal (packet 63c-i-a, amendment 22
-    §4 / amendment 24 FK-a): a refusal returns before any scan of the target table, so those counts
-    were NOT MEASURED — a ``0`` there would be a served count describing no set. ``backfilled`` stays
-    an ``int``: a refusal stamped nothing, which IS measured (``0``). On a proceeding run
-    ``backfilled`` is the number of rows the backfill actually stamped."""
+    §4 / amendment 24 FK-a / amendment 28 A4): they are the LEG's own counts of the target table, and every
+    refusal returns before the leg counts it, so those two were NOT MEASURED — a ``0`` there would be a
+    served count describing no set. The precondition reads a refusal DID run (``INFO FOR DB``, the agent
+    facts, the message facts — which can read the target table itself) ride ``preconditions``, restated
+    DERIVED in ``reason``. ``backfilled``
+    stays an ``int``: a refusal stamped nothing, which IS measured (``0``). On a proceeding run
+    ``backfilled`` is the number of rows the backfill actually stamped (the UPDATE's own return).
+
+    ``table_defined`` (amendment 34 F-5 / amendment 36 FK-4 / amendment 37 §6 M-2): the MEASURED answer to
+    "is the ``--table`` target defined in this store?", DERIVED once, by :func:`migrate_governed`, from the
+    precondition read — ``table in defined_tables`` whenever ``INFO FOR DB`` ran (on EVERY result after that
+    read: a proceeding leg, a leg's own refusal, the verb-level refusal, the undefined-table answer, the
+    ``brief`` not-yet-supported refusal), and ``None`` iff it did not run (the zero-I/O invalid-table
+    refusal). It has NO default: every construction states it (CLAUDE.md — never default a value the code
+    branches on). ``False`` is the "nothing to migrate" answer (``scanned=0``, before any leg read).
+
+    ``messages_left_unmigrated`` (amendment 37 §6 F-10, renamed §13 C F-4 — the input-fate law: every input
+    is emitted, reported, or rejected-and-reported): the ``message`` rows still ``scope IS NONE AND
+    owner_principal IS NONE`` AFTER the message leg's backfill UPDATE, MEASURED by one separate count read
+    (``0`` when it ran and none remain). It is a SUPERSET of "unsound sender": commonly the row's sender has
+    no owner or no scope (re-run after ``--table agent`` for those), but a row inserted during the run is
+    counted here too. ``None`` iff that measurement did not run — every other leg, every
+    refusal, and the undefined-table answer. Every production construction states it explicitly; the
+    ``None`` default exists ONLY because a closed contract pin constructs this result without the field
+    (``test_fixwave_a28c_63c_i_a.py``'s am-34 §4 CLI-render forgery) — and ``None`` there is the honest
+    "not measured"."""
 
     table: str
     scanned: int | None
@@ -112,6 +204,9 @@ class MigrateGovernedResult:
     already_migrated: int | None
     refused: bool
     reason: str | None = None
+    preconditions: MigratePreconditionCounts | None = None
+    table_defined: bool | None = field(kw_only=True)
+    messages_left_unmigrated: int | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -484,11 +579,13 @@ async def authorize_guarded(
         params={"gw_id": row_id},
         logger=logger,
     )
-    rows = pre_read if isinstance(pre_read, list) else []
+    # am-37 §13.1 item 2 (B-D2): the ONE fail-closed row-list policy — a wrong-shaped pre-read raises
+    # the store class instead of DECIDING this governed write as "row absent" (the fail-open shape).
+    rows = rows_of(pre_read, noun="governed pre-read")
     requires_audit = False
     pre_read_row: dict[str, Any] | None = None
     if rows:
-        row = rows[0] if isinstance(rows[0], dict) else {}
+        row = rows[0]
         pre_read_row = row
         resource = pdp.Resource(
             table=table,
@@ -600,17 +697,293 @@ def _bare_or_none(value: Any) -> str | None:
     return None if value is None else _bare(value)
 
 
+#: The field a ``SELECT count() … GROUP ALL`` answer carries its total under (store-ref §5.1).
+_GROUP_ALL_COUNT_KEY = "count"
+
+
+def group_all_count(result: Any, *, noun: str) -> int:
+    """THE one reader of a ``SELECT count() … GROUP ALL`` answer, with ONE fail-closed policy (packet 63c
+    amendment 37 §8.3 — the §DRY ruling; §6 F-12 set the policy): an EMPTY list (a ``GROUP ALL`` over an
+    empty set yields no group row — the engine's documented shape) is ``0``; ``[{"count": <int>}]`` is
+    that int; ANY other shape — a non-list, a non-dict first row, a missing / non-int / bool ``count`` —
+    raises :class:`SurrealStoreError` naming the read. A ``0`` there would be a served count describing
+    no set, so a wrong-shaped dependency never reads as a count anything then decides from.
+
+    Scope, as measured (am-37 §13 C F-2 — not a universal): every ``GROUP ALL`` count read in
+    ``principals.py`` and ``governed.py`` calls THIS function rather than re-deciding the shape (ONE
+    IMPLEMENTATION: a policy two callers must agree on is a function they call) — ``principals._scope_count``,
+    the message migration's owner-leftover read, the SF-63-5 owned-row count and the cascaded-key count in
+    ``PrincipalStore.delete``, and :func:`report_unmigrated_governed_rows` (am-37 §10.1 / §13 B F-1). Other
+    ``GROUP ALL`` readers elsewhere in the package (findings, messages, tasks, diff, the store and manifest
+    readers) still carry their own tolerant copies; they are routed to 64b's §DRY step (am-37 §8.3 / §10.1),
+    decision point the 63c close-out.
+
+    It is one of exactly THREE fail-closed shape readers in this module (am-37 §13 B / §13.1 item 1),
+    beside :func:`rows_of` (a row list) and :func:`map_of` (an ``INFO FOR …`` map); no other function in
+    ``governed.py`` / ``principals.py`` tests a store answer's shape itself.
+
+    Args:
+        result: The driver's answer to the ``GROUP ALL`` count.
+        noun: What the read is, named in the raised message.
+
+    Returns:
+        The measured count.
+
+    Raises:
+        SurrealStoreError: The answer is not an empty list or a list whose first row carries an int
+            ``count``.
+    """
+    if isinstance(result, list) and not result:
+        return 0
+    if isinstance(result, list) and isinstance(result[0], dict):
+        count = result[0].get(_GROUP_ALL_COUNT_KEY)
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    raise SurrealStoreError(
+        f"the {noun} read answered a {type(result).__name__} without an integer `count` — "
+        "nothing was decided from it"
+    )
+
+
+#: THE one post-write shape-fault text (am-37 §13.3 item 5): a write sink's answer read with ``landed=True``
+#: that is not a row list. The write has already COMMITTED, so the text says so — a reader must never infer
+#: "nothing happened" from a fault raised after the write landed.
+_LANDED_SHAPE_FAULT = (
+    "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
+    "answer; a re-run is idempotent"
+)
+
+
+def rows_of(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, Any]]:
+    """THE one reader of a row-list answer (a ``SELECT`` / ``UPDATE … RETURN …`` result), with the ONE
+    fail-closed shape policy (packet 63c amendment 37 §13 B): a list whose every member is a dict is
+    returned WHOLE and in order; a non-list answer, or ANY non-dict member, raises
+    :class:`SurrealStoreError` naming the read — never ``[]`` (which a caller would read as "no such row")
+    and never a silent drop of the odd member (F-7: a filtered-out precondition row simply vanished).
+
+    ``landed=True`` marks a POST-WRITE read — the answer of a write sink (``CREATE`` / ``UPDATE`` / a
+    backfill) that has already committed. Its fault renders through the ONE template
+    :data:`_LANDED_SHAPE_FAULT` (am-37 §13.3 item 5), so no call site writes its own post-write text.
+
+    Args:
+        result: The driver's answer.
+        noun: What the read (or, with ``landed``, the write) is, named in the raised message.
+        landed: ``True`` when ``result`` is a committed write's own answer.
+
+    Returns:
+        The answer's rows, unchanged.
+
+    Raises:
+        SurrealStoreError: The answer is not a list, or a member is not a dict.
+    """
+    if not isinstance(result, list):
+        raise SurrealStoreError(_shape_fault(noun, result, landed=landed, position=None))
+    for position, row in enumerate(result):
+        if not isinstance(row, dict):
+            raise SurrealStoreError(_shape_fault(noun, row, landed=landed, position=position))
+    return result
+
+
+def _shape_fault(noun: str, answered: Any, *, landed: bool, position: int | None) -> str:
+    """:func:`rows_of`'s fault text: the ONE landed template for a post-write read, else the read's own
+    wording (a whole answer, or the member at ``position``)."""
+    kind = type(answered).__name__
+    if landed:
+        return _LANDED_SHAPE_FAULT.format(noun=noun, type=kind)
+    if position is None:
+        return f"the {noun} read answered a {kind}, not a row list — nothing was decided from it"
+    return (
+        f"the {noun} read answered a {kind} at row {position}, not a row object — nothing was decided from it"
+    )
+
+
+#: The ``INFO FOR …`` sub-maps :func:`map_of` checks when present (store-ref: ``INFO FOR DB`` carries
+#: ``tables``; ``INFO FOR TABLE`` carries ``fields``).
+_INFO_SUB_MAP_KEYS: tuple[str, ...] = ("tables", "fields")
+
+
+def map_of(result: Any, *, noun: str, required: tuple[str, ...] = ()) -> dict[str, Any]:
+    """THE one reader of an ``INFO FOR …`` answer, with the ONE fail-closed shape policy (packet 63c
+    amendment 37 §13.1 item 1): a dict is returned WHOLE; a non-dict answer, or a ``tables`` / ``fields``
+    sub-map that is present but not a dict, raises :class:`SurrealStoreError` naming the read — never an
+    empty map, which a table gate would read as "no tables" and SKIP the guard it exists for (the
+    fail-OPEN ``_table_exists`` shape B-D1 closed).
+
+    Args:
+        result: The driver's answer to an ``INFO FOR DB`` / ``INFO FOR TABLE`` statement.
+        noun: What the read is, named in the raised message.
+        required: Sub-map keys the caller DECIDES from, which must therefore be PRESENT (``("tables",)``
+            for a table gate, ``("fields",)`` for a field gate) — an absent one is the wrong shape too.
+
+    Returns:
+        The answer's map, unchanged.
+
+    Raises:
+        SurrealStoreError: The answer is not a dict, a ``required`` key is absent, or its ``tables`` /
+            ``fields`` sub-map is not one.
+    """
+    if not isinstance(result, dict):
+        raise SurrealStoreError(
+            f"the {noun} read answered a {type(result).__name__}, not an INFO map — nothing was "
+            "decided from it"
+        )
+    for key in required:
+        if key not in result:
+            raise SurrealStoreError(
+                f"the {noun} read answered a {type(result).__name__} without its `{key}` sub-map — nothing "
+                "was decided from it"
+            )
+    for key in (*_INFO_SUB_MAP_KEYS, *required):
+        if key in result and not isinstance(result[key], dict):
+            raise SurrealStoreError(
+                f"the {noun} read answered a {type(result[key]).__name__} `{key}` sub-map, not a "
+                "map — nothing was decided from it"
+            )
+    return result
+
+
+#: The DDL generators' naming contract (the membership rule — a new ``generate_<slice>_ddl`` joins the
+#: derivation the day it lands; the test tree's ``schema_ddl_generators`` applies the same rule).
+_DDL_GENERATOR_PREFIX = "generate_"
+_DDL_GENERATOR_SUFFIX = "_ddl"
+
+#: The width handed to a generator that takes ``dim``. Any positive width will do: the governed triple is
+#: emitted identically at every width; only the vector index text varies.
+_DERIVATION_DIM = 8
+
+#: One ``DEFINE FIELD [OVERWRITE | IF NOT EXISTS] <column> ON [TABLE] <table>`` statement.
+_DEFINE_FIELD_ON = re.compile(
+    r"^DEFINE\s+FIELD\s+(?:OVERWRITE\s+|IF\s+NOT\s+EXISTS\s+)?(?P<column>\S+)\s+ON\s+(?:TABLE\s+)?"
+    r"(?P<table>[^\s;]+)",
+    re.IGNORECASE,
+)
+
+
+def governed_node_tables_of(ddl: str) -> frozenset[str]:
+    """THE governed-table property over DDL TEXT (am-37 §13.4.1): a table is governed iff ``ddl`` defines
+    EVERY column of the governed triple on it (``surreal_schema._governed_field_specs()`` — the ONE emitter
+    of the triple, so the names are derived, never restated). A lone ``owner_principal`` is one of three
+    and does not qualify. ``scripts/restore_prod_dump.py`` calls this for its synthetic-DDL and per-dump
+    shape questions, so the property has one implementation."""
+    triple = frozenset(name for name, _type, _constraint in surreal_schema._governed_field_specs())  # noqa: SLF001
+    columns_by_table: dict[str, set[str]] = {}
+    for statement in (part.strip() for part in ddl.split(";")):
+        match = _DEFINE_FIELD_ON.match(statement)
+        if match is not None:
+            columns_by_table.setdefault(match.group("table"), set()).add(match.group("column"))
+    return frozenset(table for table, columns in columns_by_table.items() if triple <= columns)
+
+
+def _emitted_schema_ddl() -> str:
+    """Every ``surreal_schema.generate_*_ddl`` function's output, joined — the ARTIFACT the image ships.
+    ``dim`` is passed whenever a generator takes it; any OTHER required parameter RAISES naming it (fail
+    closed: a skipped generator would silently shrink the governed set)."""
+    outputs: list[str] = []
+    for name, generator in sorted(inspect.getmembers(surreal_schema, inspect.isfunction)):
+        if not (name.startswith(_DDL_GENERATOR_PREFIX) and name.endswith(_DDL_GENERATOR_SUFFIX)):
+            continue
+        kwargs: dict[str, Any] = {}
+        for parameter in inspect.signature(generator).parameters.values():
+            if parameter.name == "dim":
+                kwargs["dim"] = _DERIVATION_DIM
+            elif parameter.default is inspect.Parameter.empty:
+                raise TypeError(
+                    f"{name} requires {parameter.name!r}, which the governed-set derivation cannot supply"
+                )
+        outputs.append(generator(**kwargs))
+    return "\n".join(outputs)
+
+
+@functools.cache
+def ddl_governed_tables() -> frozenset[str]:
+    """The tables whose GENERATED DDL defines the governed triple (am-37 §13.4.2): today ``agent``,
+    ``memory``, ``message``. Derived from the package's own generators, so the deployed image computes
+    the same set the tests do. Cached: the generators are pure; ``cache_clear`` re-derives."""
+    return governed_node_tables_of(_emitted_schema_ddl())
+
+
+@dataclass(frozen=True)
+class PendingGoverned:
+    """Why a governed-by-intent table is governed before its DDL carries the triple, and which packet's
+    migration will land it (am-37 §13.4.2)."""
+
+    reason: str
+    owning_packet: str
+
+
+#: The DECLARED governed-by-intent tables (am-37 §13.4.2; moved here from ``scripts/restore_prod_dump.py``
+#: so the image ships it and ``scripts`` consumes it): governed, reportable and restored, but with NO
+#: governed columns in their DDL yet. SELF-DESTRUCTING: a pin reds BY MEMBER the day a table's DDL gains the
+#: triple (``ddl_governed_tables() ∩ keys == ∅``), so this set can only shrink.
+PENDING_GOVERNED_TABLES: Mapping[str, PendingGoverned] = MappingProxyType(
+    {
+        surreal_schema.BRIEF_TABLE: PendingGoverned(
+            reason="the brief ledger is governed by intent; its governed columns and backfill land together",
+            owning_packet="63c-ii",
+        ),
+        surreal_schema.FINDING_TABLE: PendingGoverned(
+            reason="the finding ledger is governed by intent; its S2 leg migrates these rows",
+            owning_packet="64b",
+        ),
+        surreal_schema.TASK_TABLE: PendingGoverned(
+            reason="the task ledger is governed by intent; its S2 leg migrates these rows",
+            owning_packet="64a",
+        ),
+    }
+)
+
+
+def governed_tables() -> frozenset[str]:
+    """THE governed set — the REPORT domain (am-37 §13.4 / §13.4.2): :func:`ddl_governed_tables` ∪
+    :data:`PENDING_GOVERNED_TABLES`."""
+    return ddl_governed_tables() | frozenset(PENDING_GOVERNED_TABLES)
+
+
+class GovernedTableRefusedError(ValueError):
+    """A ``--table`` outside the verb's domain (am-37 §13.4): operator INPUT, so a ``ValueError`` — the
+    lore-adm fault handler launders it to stderr + exit 1. Raised before any store I/O."""
+
+
+def validate_governed_table(table: str, *, domain: Iterable[str], verb: str) -> None:
+    """THE one ``--table`` validator (am-37 §13.4): ``table`` must be in ``domain``, else
+    :class:`GovernedTableRefusedError` naming the verb and its domain (derived, sorted). Two domains, one
+    function: ``report-unmigrated`` and :func:`report_unmigrated_governed_rows` pass :func:`governed_tables`;
+    ``migrate-governed`` passes its leg-bearing set. ``table`` is interpolated into statements, so every
+    caller validates BEFORE any I/O."""
+    names = sorted(domain)
+    if table not in names:
+        raise GovernedTableRefusedError(
+            f"{verb} does not support table {sanitise_line(table)!r} — its tables are "
+            f"{', '.join(f'`{name}`' for name in names)}"
+        )
+
+
 async def report_unmigrated_governed_rows(store: StoreHandle, table: str) -> int:
-    """The §2.3 forgotten-backfill alarm (design §1.2 item 5 / §2.3, §10.6 R4) — STUB / runnable-RED.
+    """Count ``table``'s rows that still carry a NONE ``scope`` — the forgotten-backfill measurement
+    (design §1.2 item 5 / §2.3, §10.6 R4).
+
+    ``table`` is interpolated into the statement, so it is validated HERE, before any I/O, through THE one
+    validator :func:`validate_governed_table` over the GOVERNED set :func:`governed_tables` (am-37 §13.3
+    item 4 / §13.4): every governed table — including a pending one — is accepted, whoever the caller is.
 
     Runs the bounded ``SELECT count() FROM <table> WHERE scope IS NONE GROUP ALL`` (IndexScan on
     3.2.4 — probe-63 P5) through the injected ``store`` :class:`~loremaster.store._txn.StoreHandle`
     (``run_query`` over ``store.acquire``/``store.drop``/``store.url`` — R4: no raw connection, no
-    direct SDK call in ``governed.py``), logs the non-zero count at WARNING naming the
-    ``migrate-governed`` remedy (the #131 silent-``(None, None)`` class: a count nobody renders is a
-    hope), and returns it. The builder fills the body; the SHAPE (a ``StoreHandle`` in, an int out)
-    is the contract.
+    direct SDK call in ``governed.py``), reads the answer through :func:`group_all_count` (fail-closed),
+    logs a non-zero count at WARNING with a DERIVED remedy, and returns it. The remedy (am-37 §13.3 item 6
+    + §13.4.2 rider): a PENDING table names its entry's reason and owning packet (its rows read ``scope
+    IS NONE`` because the column does not exist yet — nothing can migrate them today); a table a migrate
+    LEG backfills (``principals._MIGRATING_TABLES``) names ``lore-adm migrate-governed --table <t>``; any
+    other says no migrate verb accepts it yet. Never a verb that would refuse.
+
+    Raises:
+        GovernedTableRefusedError: ``table`` is not a governed table (a ``ValueError``; nothing was read).
+        SurrealStoreError: The engine rejected the count, or answered it in the wrong shape.
     """
+    # Function-local: ``principals`` imports this module (the house cycle-breaking idiom).
+    from loremaster.principals import _MIGRATING_TABLES
+
+    validate_governed_table(table, domain=governed_tables(), verb="report-unmigrated")
     result = await run_query(
         acquire=store.acquire,
         drop=store.drop,
@@ -621,17 +994,29 @@ async def report_unmigrated_governed_rows(store: StoreHandle, table: str) -> int
         params={},
         logger=logger,
     )
-    count = 0
-    if isinstance(result, list) and result and isinstance(result[0], dict):
-        count = int(result[0].get("count", 0) or 0)
+    # am-37 §10.1(b): the ONE reader, fail-closed. A malformed answer raises the SAME
+    # ``SurrealStoreError`` class ``run_query`` raises when the engine REJECTS this count, so it
+    # takes the fate a rejected count already has (the ``report-unmigrated`` verb: stderr + exit 1)
+    # — never a silent ``0``, which would be exactly the silent alarm #131 is about.
+    count = group_all_count(result, noun="governed unmigrated-scope count")
     if count > 0:
         # LOUD, in the MESSAGE (not just structured extra): a forgotten backfill hides the fleet's
         # own data from the fleet, and a count nobody renders is a hope (#131 silent-(None,None)).
+        pending = PENDING_GOVERNED_TABLES.get(table)
+        if pending is not None:
+            remedy = (
+                f"`{table}` has no governed columns yet ({pending.reason}; packet {pending.owning_packet}) "
+                f"— {count} row(s) will be scoped by that packet's migration"
+            )
+        elif table in _MIGRATING_TABLES:
+            remedy = f"run `lore-adm migrate-governed --table {table}` to backfill"
+        else:
+            remedy = f"no migrate verb accepts `{table}` yet — {count} row(s) remain unscoped"
         logger.warning(
             "governed.unmigrated_rows: %d %s row(s) carry a NONE scope (member-invisible until "
-            "migrated) — run `lore-adm migrate-governed --table %s` to backfill",
+            "migrated) — %s",
             count,
             table,
-            table,
+            remedy,
         )
     return count

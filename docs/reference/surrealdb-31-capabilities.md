@@ -325,6 +325,28 @@ Provenance (stored shape): `DEFINE INDEX <n> ON <t> FIELDS <col> UNIQUE` over
 
 ---
 
+### 1.9 A schema-BEHIND store (a dump restored with no server boot) — the governed-migration facts
+
+Both facts below were **[PROBED 2026-09-30 on the TEST store `ws://127.0.0.1:18000`, the quadlet's floating
+`v3.2` tag — 3.2.4 per MEMORY.md, not re-measured]** in a minted `unique_database()` (reaped), with controls;
+instrument + verbatim output in the packet-63c-i-a fix6 builder report (§STORE-FACT PROBE, archived with the
+63c receipts). They are why the migrate verb's pre-boot schema gate
+(`principals._schema_predates_refusal`, packet 63c amendment 37 §13 D) is shaped as it is.
+
+- **`INFO FOR TABLE <undefined table>` returns EMPTY maps, NOT an error** — measured
+  `{'events': {}, 'fields': {}, 'indexes': {}, 'lives': {}, 'tables': {}}`. So a table gate must read
+  `INFO FOR DB`'s `tables` (as `principals._agent_migration_preconditions` and `PrincipalStore._table_exists`
+  do), **never infer definedness from `INFO FOR TABLE`**: an undefined table and a defined table with no
+  fields answer identically.
+- **An `UPDATE` assigning a REMOVED field on a SCHEMAFULL table is SILENT over 0 rows and RAISES over ≥ 1
+  row** — after `REMOVE FIELD scope ON TABLE memory` (answers `None`; `INFO FOR TABLE memory` then omits
+  `scope`), `UPDATE memory SET scope = … WHERE scope IS NONE` answered `[]` over zero rows and raised
+  `InternalError: Found field 'scope', but no such field exists for table 'memory'` over one row (control:
+  the same UPDATE over one row on the healthy table stamped it). So **a schema precondition must be derived
+  from the SCHEMA (`INFO FOR TABLE`'s `fields`), never from the write's outcome**: on a pre-boot store with
+  zero legacy rows the write "succeeds" silently and the next legacy row fails later, out of context.
+  (Note the kind: `Internal` with no typed `details` — the untyped set in §3/§6.)
+
 ## 2. DML IDIOMS
 
 The house rules for reading and writing rows. Each one was found the hard way.
@@ -448,12 +470,20 @@ The house rules for reading and writing rows. Each one was found the hard way.
   **⚠ BUT `[0]` IS ALSO WRONG, AND A PRIOR VERSION OF THIS SECTION TAUGHT IT.** [PROBED 2026-07-19]
   The engine stamps CASCADE notices on statements *before* the offender, so `[0]` is typically
   *"The query was not executed due to a failed transaction"* — a notice, not the cause.
-  **The CODE was already right and this prose was stale**: `_txn.py:416` defines
-  `_CASCADE_NOT_EXECUTED_MARKER = "was not executed due to"` and `_domain_root_cause` (:714) picks
-  the first **non-cascade** entry, its docstring stating outright that *"selecting by POSITION is
-  refused at both ends … only a SEMANTIC (marker-seeking) selector is correct."* Fixed here
-  2026-07-19; the code never had the bug. *(This is the §8 stale-prose class: a doc teaching a
-  retired mechanism, which no gate will ever catch.)*
+  **The CODE was already right and this prose was stale** (fixed here 2026-07-19; the code never had
+  the bug): `_txn._domain_root_cause` picks the first **non-cascade** entry — *"selecting by POSITION
+  is refused at both ends … only a SEMANTIC selector is correct."* *(This is the §8 stale-prose class:
+  a doc teaching a retired mechanism, which no gate will ever catch.)*
+  **⚠ SUPERSEDED 2026-09-29 (packet 63c-i-a, amendment 37 §5–§7) — the selector is KIND-seeking, not
+  marker-seeking.** The 2026-07-19 text above named a text marker (`"was not executed due to"`); that
+  constant is gone. On 3.2.4 every cascade entry is TYPED: a rollback's root cause is the first entry
+  that `_txn._is_domain_cascade_notice` does not call cascade, and that predicate is the SDK's OWN
+  `QueryError.is_not_executed or QueryError.is_cancelled` over the one parse of the entry — no kind
+  string of ours, no text. Measured on 3.2.4 (builder-63c-i-a-a28c §REQ-3): statements BEFORE the
+  offender and the refused COMMIT carry `details.kind: NotExecuted`; statements AFTER it carry
+  `details.kind: Cancelled`. `TimedOut` is SUBSTANTIVE (a statement that ran and timed out is the
+  cause). The degenerate all-cascade list degrades to the LAST entry. The adjudication lives in ONE
+  place, `_is_domain_cascade_notice`'s docstring; the engine text is logged server-side as evidence.
   *The original #93 defect is why the C1 mint bug could hide: the collision's own rejection text
   was masked by the COMMIT's.*
 - **[VENDOR] The supported all-statements call is `query_raw()`** —
@@ -462,14 +492,23 @@ The house rules for reading and writing rows. Each one was found the hard way.
   `status`/`time`/`result`). It is what `execute_transaction` already rides. ⚠ The same page lies
   about `.query()` itself — see §6.5.
 - **Client-side conflict retry is MANDATORY.** [PROBED] The engine does **not** auto-retry user
-  transactions. The only signal is the literal marker string **`"can be retried"`**
-  ([CODE] `_txn.py:326`). 3.1 exposes OTel counters `surrealdb.transaction.retries` / `.conflicts`.
-  - **#111 ANSWERED — keep the substring, the trigger is NOT met.** [CODE, 2026-07-19] SDK 2.0.0
-    *does* ship a typed `kind`/`details` error hierarchy (`surrealdb/errors.py`), which is what #111
-    was waiting for — but **`ErrorKind` has no retryable member** (`Validation, Configuration,
-    Thrown, Query, Serialization, NotAllowed, NotFound, AlreadyExists, Connection, Internal`), and a
-    conflict arrives as a plain `QueryError`. A typed check is therefore not yet possible. Re-open
-    when `ErrorKind` gains a retryable/conflict member — not merely when the SDK version bumps.
+  transactions. **The retry signal is TYPED** [PROBED 3.2.4, both paths — contract-63c-i-a-a28c §A.2,
+  builder-63c-i-a-a28c §REQ-3, blindreader-63c-i-a-3 §7 P2]: `details.kind == "TransactionConflict"`
+  (under `kind: Query`) on the per-statement COMMIT entry (transactional path) and on the raised
+  `QueryError` (single-statement path). The code decides by the symbol `_txn._RETRYABLE_CONFLICT_KIND`.
+  The text *"can be retried"* (live: *"…Transaction conflict: Resource busy. This transaction can be
+  retried"*) is EVIDENCE, logged server-side, **never consulted for a decision** — a finding body
+  quoting that phrase must not buy engine retries. *(Superseded 2026-09-29: until then this bullet
+  called the literal marker the only signal; that was measured against SDK 2.0.0 / engine 3.1.5 and is
+  no longer true — the store is forward-only at 3.2.4.)* 3.1 exposes OTel counters
+  `surrealdb.transaction.retries` / `.conflicts`.
+  - **#111 ANSWERED — trigger MET (2026-09-27).** The typed alternative lives in `details.kind`, ONE
+    LEVEL BELOW `ErrorKind` — which still has no retryable member (`Validation, Configuration, Thrown,
+    Query, Serialization, NotAllowed, NotFound, AlreadyExists, Connection, Internal`), exactly as the
+    2026-07-19 read found; that read looked one level too high. The SDK ships
+    `QueryDetailKind.{NOT_EXECUTED, TIMED_OUT, CANCELLED}` (and the matching `QueryError.is_*`
+    predicates) but **NO constant or predicate for `TransactionConflict`** — a bare literal in `_txn`,
+    pinned by the live-shape cells.
 - **[PROBED]** A socket drop with queries **in flight** surfaces a raw `builtins.KeyError(uuid)`
   from SDK 2.0.0's response routing (6/6 futures) — *not* `CancelledError`. The next call heals via
   `ConnectionClosedError`. Classify `KeyError` tightly, at the SDK-await boundary only.
@@ -807,8 +846,15 @@ they are the ones an engine upgrade could silently invalidate, with nothing upst
 1. `RELATE` onto an **undeclared** table auto-creates it `TYPE ANY`, silently discarding the
    `IN`/`OUT` guard (§4). Vendor silent on undefined targets entirely.
 2. Concurrent first-write to an undeclared table **storms with retryable conflicts** (§5, #144).
-3. The retryable marker is the literal string **`"can be retried"`** — it appears in no vendor doc,
-   and there is still **no typed alternative** (§3, #111).
+3. The retry marker **`"can be retried"`** appears in no vendor doc — and neither do the per-statement
+   `details.kind` values `TransactionConflict` / `NotExecuted` / `Cancelled`, all three measured live
+   on 3.2.4; the SDK's `errors.py` names two of them (`QueryDetailKind.NOT_EXECUTED` / `.CANCELLED`).
+   **The typed alternative EXISTS (§3); the vendor prose is silent, not the engine.** *(Corrected
+   2026-09-29 — this item previously said there was "no typed alternative".)* And the UNTYPED set, a
+   fact of its own: the UNIQUE-index prefix, `ASSERT` and coercion rejections arrive as
+   `kind: Internal` with `details: None`; the recursion-depth rejection (#66) as `kind: Validation`
+   with `details: None` — for these, text may pick a teaching LABEL, never the class or the retry
+   (packet 63c-i-a amendment 37 §1).
 4. **Re-`DEFINE SEQUENCE` semantics** — bare `DEFINE` raises; no variant resets the counter;
    `BATCH`/`START` never migrate (#146).
 5. `TYPE RELATION IN/OUT` rejects a **wrong-table** endpoint by field coercion — mechanism and
@@ -1107,7 +1153,8 @@ added (two more vendor falsehoods, the second an independent source-level corrob
 retired mechanism · §2 gained the `UPDATE`-endpoint silent no-op · §1.5 gained the
 `DEFINE TABLE OVERWRITE` safety proof with its positive control · citations upgraded from
 `[PROBED]` to `[VENDOR]+[PROBED]` throughout §3/§4/§5 · **§6.6 added: the claims for which we are
-the ONLY source.** · #111 answered (keep the substring; the trigger is not met).
+the ONLY source.** · #111 answered (keep the substring; the trigger is not met) — *superseded
+2026-09-29: trigger MET (the typed `details.kind`, §3); the substring is evidence only.*
 
 **The method lesson, since it cost the most:** five live probes and a cold audit did not find
 `ENFORCED`, because probing can only find what you already thought to test — and nobody thinks to

@@ -7349,31 +7349,63 @@ class TestTheIndexIsKeyedPerHandler63cIAa28c:
 #: caught-class resolver.
 _THE_ONE_CATCH_WALKER = "loremaster/tests/_catch_sites.py::catch_sites_in"
 _THE_ONE_CATCH_RESOLVER = "loremaster/tests/_catch_sites.py::resolved_by_import"
-#: The names a function calls to resolve caught classes (the resolver's public faces).
-_RESOLVER_NAMES = frozenset({"caught_classes", "_caught_classes", "resolved_by_import"})
 _CATCH_NODE_NAMES = frozenset({"Try", "TryStar", "ExceptHandler"})
+
+
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """``local name -> bound name`` for every ``import … as …`` binding in ``tree`` (63c am-37 §9 rider).
+
+    ``from m import f as g`` binds ``g`` to ``f``; ``import a.b as c`` binds ``c`` to ``b``. A call through a
+    MODULE alias (``c.f(...)``) needs no entry — :func:`_called_name` keys an attribute call on the
+    attribute. Resolved BEFORE the call closure, because the closure keys on called NAMES and an alias on
+    import is routine honest-developer code, not the dynamic-dispatch bound."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.asname is not None:
+                    aliases[alias.asname] = alias.name.rsplit(".", 1)[-1]
+    return aliases
+
+
+def _called_name(call: ast.Call, aliases: dict[str, str]) -> str | None:
+    """The bare name ``call`` invokes, seen through ``aliases``; ``None`` for a computed callee."""
+    if isinstance(call.func, ast.Name):
+        return aliases.get(call.func.id, call.func.id)
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
 
 
 def _scanner_candidates(trees: dict[str, ast.Module]) -> tuple[set[str], set[str]]:
     """``(walkers, resolvers)`` over ``trees`` — DERIVED properties, never names (FK-a28c-7):
 
+    * a RESOLVER evaluates an ``except`` expression in a module namespace (``eval`` of an ``ast.Expression``);
+    * a function is RESOLVER-REACHING when it calls a resolver, or calls a function that does — the fixed
+      point over ``ast.Call`` names within ``trees``, import aliases resolved first (58 am-14 §2; 63c am-37
+      §9). DERIVED, not listed: the hand-list it replaces (``_RESOLVER_NAMES``) lost THE ONE walker the day
+      ``catch_sites_in`` began calling the ``resolve_caught`` front — the eighth instrument-lesson defeat;
     * a WALKER finds catch handlers ITSELF (an ``ast.Try`` / ``ast.TryStar`` / ``ast.ExceptHandler``
-    reference or a
-      ``.handlers`` read in its body) AND reasons about store errors — it names a class of ``_txn``'s
-      ``SurrealStoreError`` tree, or calls a caught-class resolver;
-    * a RESOLVER evaluates an ``except`` expression in a module namespace (``eval`` of an ``ast.Expression``).
+      reference or a ``.handlers`` read in its body) AND reasons about store errors — it names a class of
+      ``_txn``'s ``SurrealStoreError`` tree, or is resolver-reaching.
+
+    The closure keys on BARE names across every tree: a same-named function elsewhere over-approximates
+    toward a LOUD red, never toward a silent miss.
     """
     store_classes = {
         name
         for name, value in vars(txn_module).items()
         if inspect.isclass(value) and issubclass(value, SurrealStoreError)
     }
-    walkers: set[str] = set()
     resolvers: set[str] = set()
+    #: (key, bare name, finds handlers, names a store class, called names) per function.
+    functions: list[tuple[str, str, bool, bool, set[str]]] = []
     for relative, tree in trees.items():
+        aliases = _import_aliases(tree)
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            key = f"{relative}::{function.name}"
             body = [node for statement in function.body for node in ast.walk(statement)]
             finds = any(
                 isinstance(node, ast.Attribute)
@@ -7390,10 +7422,27 @@ def _scanner_candidates(trees: dict[str, ast.Module]) -> tuple[set[str], set[str
             names = {node.id for node in body if isinstance(node, ast.Name)} | {
                 node.attr for node in body if isinstance(node, ast.Attribute)
             }
-            if finds and (names & store_classes or names & _RESOLVER_NAMES):
-                walkers.add(f"{relative}::{function.name}")
+            called = {
+                name
+                for node in body
+                if isinstance(node, ast.Call) and (name := _called_name(node, aliases)) is not None
+            }
             if "eval" in names and "Expression" in names:
-                resolvers.add(f"{relative}::{function.name}")
+                resolvers.add(key)
+            functions.append((key, function.name, finds, bool(names & store_classes), called))
+    reaching = {key.rsplit("::", 1)[-1] for key in resolvers}
+    grew = True
+    while grew:
+        grew = False
+        for _key, name, _finds, _names_store, called in functions:
+            if name not in reaching and called & reaching:
+                reaching.add(name)
+                grew = True
+    walkers = {
+        key
+        for key, _name, finds, names_store, called in functions
+        if finds and (names_store or called & reaching)
+    }
     return walkers, resolvers
 
 
@@ -7417,13 +7466,65 @@ def a_logging_helper(logger):
     return list(logger.handlers)
 """
 
+#: 58 am-14 §2 control: a second walker that names NO store class and reaches a second resolver only
+#: THROUGH a front — derived by the call closure, invisible to any hand-list of resolver names.
+_SYNTHETIC_WALKER_THROUGH_A_FRONT = """
+import ast
+
+
+def hidden_resolver(expression, module):
+    return eval(compile(ast.Expression(expression), "<x>", "eval"), vars(module))
+
+
+def front(expression, module):
+    return hidden_resolver(expression, module)
+
+
+def walker_through_a_front(tree, module):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                yield handler, front(handler.type, module)
+"""
+
+#: 63c am-37 §9 rider control: the resolver lives in ANOTHER tree and is called through an IMPORT ALIAS —
+#: ``from … import … as …`` (needs alias resolution) and ``import … as …`` + an attribute call.
+_SYNTHETIC_RESOLVER_HOME = """
+import ast
+
+
+def home_resolver(expression, module):
+    return eval(compile(ast.Expression(expression), "<x>", "eval"), vars(module))
+"""
+_SYNTHETIC_WALKERS_THROUGH_AN_ALIAS = """
+import ast
+
+import resolver_home as home
+from resolver_home import home_resolver as hr
+
+
+def walker_via_from_alias(tree, module):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                yield handler, hr(handler.type, module)
+
+
+def walker_via_module_alias(tree, module):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            for handler in node.handlers:
+                yield handler, home.home_resolver(handler.type, module)
+"""
+
 
 class TestThereIsExactlyOneCatchScanner63cIAa28c:
     """63c amendment 34 §5 — the guard belongs with the scanner it guards (born in 63c-i-a).
     Allowlist-the-safe over EVERY tree THE ONE parser reaches (production, scripts, every member's tests,
-    every ``testpaths`` root). BOUND (stated): a scanner that spells the class tree without naming it or a
-    resolver, or resolves without ``eval``, is invisible here — the runtime cross-check (packet 58 amendment 8
-    §3) is the layer that does not care."""
+    every ``testpaths`` root). BOUND (stated): a scanner that reaches a resolver through dynamic dispatch, or
+    spells the class tree without naming it, or resolves without ``eval``, is invisible here — the runtime
+    cross-check (packet 58 amendment 8 §3) is the layer that does not care. Fronts and import aliases are NOT
+    in that bound: the resolver-reaching closure sees through both (58 am-14 §2; 63c am-37 §9)."""
 
     def test_am34_5_exactly_one_walker_and_one_resolver_in_the_tree(self) -> None:
         """GREEN on this commit (a28b's private resolver is folded into ``_catch_sites``). A second
@@ -7448,6 +7549,30 @@ class TestThereIsExactlyOneCatchScanner63cIAa28c:
         walkers, resolvers = _scanner_candidates({"synthetic.py": ast.parse(_SYNTHETIC_SECOND_SCANNER)})
         assert walkers == {"synthetic.py::second_walker"}, walkers
         assert resolvers == {"synthetic.py::second_resolver"}, resolvers
+
+    def test_am14_2_a_walker_reaching_a_resolver_THROUGH_A_FRONT_is_derived(self) -> None:
+        """58 am-14 §2 POSITIVE CONTROL for the call closure: the second walker names no store class and calls
+        no resolver directly — only ``front()``, which calls ``hidden_resolver``. The fixed point derives it;
+        ``front`` (no handler walk) is not a walker. A name-list derivation reports ``set()`` here."""
+        walkers, resolvers = _scanner_candidates(
+            {"synthetic.py": ast.parse(_SYNTHETIC_WALKER_THROUGH_A_FRONT)}
+        )
+        assert walkers == {"synthetic.py::walker_through_a_front"}, walkers
+        assert resolvers == {"synthetic.py::hidden_resolver"}, resolvers
+
+    def test_am37_9_a_walker_reaching_a_resolver_THROUGH_AN_IMPORT_ALIAS_is_derived(self) -> None:
+        """63c am-37 §9 rider CONTROL: the resolver lives in another scanned tree and is called through
+        ``from resolver_home import home_resolver as hr`` and through ``import resolver_home as home`` +
+        ``home.home_resolver(...)``. Both walkers are derived — an alias on import is routine honest code, not
+        the dynamic-dispatch bound."""
+        walkers, resolvers = _scanner_candidates(
+            {
+                "resolver_home.py": ast.parse(_SYNTHETIC_RESOLVER_HOME),
+                "user.py": ast.parse(_SYNTHETIC_WALKERS_THROUGH_AN_ALIAS),
+            }
+        )
+        assert walkers == {"user.py::walker_via_from_alias", "user.py::walker_via_module_alias"}, walkers
+        assert resolvers == {"resolver_home.py::home_resolver"}, resolvers
 
 
 # ---------------------------------------------------------------------------

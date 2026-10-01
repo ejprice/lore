@@ -422,11 +422,10 @@ class PrincipalKeyStore:
         # masquerade as a UNIQUE collision). Finding #400: routed through the ONE seam.
         with wrap_store_rejection(
             PrincipalKeyStoreError,
-            f"could not mint key {name!r} for principal {email!r}: a key with that "
-            f"name already exists for this principal (or the credential hash collides)",
+            f"could not mint key {name!r} for principal {email!r}",
         ):
             result = await self._query(statement, params)
-        rows = self._as_rows(result)
+        rows = self._as_rows(result, noun="principal-key mint", landed=True)
         if not rows:
             raise PrincipalKeyStoreError(
                 f"key {name!r} for principal {email!r} vanished immediately after it was created"
@@ -455,7 +454,8 @@ class PrincipalKeyStore:
                 f"WHERE {_COL_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
                 f"ORDER BY {_COL_CREATED_AT}",
                 {"pid": principal_id},
-            )
+            ),
+            noun="principal-key list",
         )
         return [self._row_to_key(row) for row in rows]
 
@@ -480,15 +480,24 @@ class PrincipalKeyStore:
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
             PrincipalKeyNotFoundError: The principal exists but owns no key ``name``.
+            PrincipalKeyStoreError: The store rejected the UPDATE (wrapped by
+                ``wrap_store_rejection``, am-37 §12; the engine's typed cause is chained as
+                ``__cause__``); a transport fault / exhausted contention passes through untouched.
         """
         principal_id = await self._require_principal_id(email)
-        result = await self._query(
-            f"UPDATE {PRINCIPAL_KEY_TABLE} SET {_COL_REVOKED_AT} = time::now() "
-            f"WHERE {_COL_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
-            f"AND {_COL_NAME} = $name RETURN AFTER",
-            {"pid": principal_id, "name": name},
-        )
-        rows = self._as_rows(result)
+        # A store rejection on the UPDATE wraps LOUD as PrincipalKeyStoreError (am-37 §12);
+        # a transport fault / exhausted contention passes through untouched.
+        with wrap_store_rejection(
+            PrincipalKeyStoreError,
+            f"could not revoke key {name!r} for principal {email!r}",
+        ):
+            result = await self._query(
+                f"UPDATE {PRINCIPAL_KEY_TABLE} SET {_COL_REVOKED_AT} = time::now() "
+                f"WHERE {_COL_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
+                f"AND {_COL_NAME} = $name RETURN AFTER",
+                {"pid": principal_id, "name": name},
+            )
+        rows = self._as_rows(result, noun="principal-key revoke", landed=True)
         if not rows:
             raise PrincipalKeyNotFoundError(
                 f"principal {email!r} has no key named {name!r}"
@@ -544,7 +553,8 @@ class PrincipalKeyStore:
                 f"{_COL_PRINCIPAL}.email AS {_OWNER_EMAIL_ALIAS} "
                 f"FROM {PRINCIPAL_KEY_TABLE} WHERE {_COL_HASH} = $h",
                 {"h": sha512_hex(presented)},
-            )
+            ),
+            noun="principal-key verify lookup",
         )
         if not rows:
             return self._deny("no-such-key")
@@ -631,11 +641,15 @@ class PrincipalKeyStore:
         return id_part if separator else record_id
 
     @staticmethod
-    def _as_rows(result: Any) -> list[dict[str, Any]]:
-        """Narrow a ``SELECT``/``CREATE``/``UPDATE`` result to its list of dict rows."""
-        if not isinstance(result, list):
-            return []
-        return [row for row in result if isinstance(row, dict)]
+    def _as_rows(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, Any]]:
+        """A ``SELECT``/``CREATE``/``UPDATE`` result's rows, through the ONE fail-closed row-list policy
+        :func:`loremaster.governed.rows_of` (am-37 §13 B): a non-list answer or a non-dict member RAISES
+        ``SurrealStoreError`` — never ``[]``, which ``revoke`` would serve as "no such key" and ``verify``
+        as a no-such-key deny for what is a store fault. ``noun`` is REQUIRED (am-37 §13.3 item 7: every
+        caller names its read); ``landed=True`` marks a committed write's own answer (item 5)."""
+        from loremaster.governed import rows_of
+
+        return rows_of(result, noun=noun, landed=landed)
 
 
 def build_principal_key_store(config: LoreConfig) -> PrincipalKeyStore:

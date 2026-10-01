@@ -25,7 +25,7 @@ So this module pins three things that must hold TOGETHER, and are worthless apar
 2. **What survived, survived — and one of them is FIXED (ruling R8).** The
    labelled patterns still redact, still preserve their labels, still run in
    order, are still idempotent, and are still reached from all three consumers of
-   ``_scrub_text``. **R8 additionally corrects a real defect on that surface:**
+   ``scrub_text``. **R8 additionally corrects a real defect on that surface:**
    ``_ASSIGNMENT_RE`` was consuming an auth SCHEME word (``Bearer``, ``Basic``,
    ``Token``) as though it were the credential. For Bearer that cost a diagnostic;
    for the others it is a **credential leak**, live today for a short token and
@@ -102,13 +102,26 @@ from loremaster.logging_setup import (
     JsonFormatter,
     KeyValueFormatter,
     RedactingFilter,
-    _scrub_text,
     _scrub_value,
     scrubbed_exception_text,
 )
 from pydantic import SecretStr
 
 import loremaster
+
+
+def scrub_text(value: str) -> str:
+    """THE public scrub seam (am-37 §13.3 item 2: ``_scrub_text`` promoted to ``logging_setup.scrub_text``,
+    ONE name the filter calls too). Resolved PER CALL (never a static import), so this file still collects
+    on a build without the public name and each pin reds on its own, for the right reason."""
+    from loremaster import logging_setup  # noqa: PLC0415
+
+    seam: Any = vars(logging_setup).get("scrub_text")
+    if seam is None:
+        raise AssertionError("logging_setup.scrub_text (public) does not exist — am-37 §13.3 item 2")
+    result: str = seam(value)
+    return result
+
 
 # --------------------------------------------------------------------------- #
 # Credential fixtures — PRODUCTION SHAPES, obviously-fake bodies
@@ -422,7 +435,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # The fixture is a bare ``Bearer <token>`` in running prose — the shape a
         # client echoes back — so ``_BEARER_RE`` is the only pattern in play and
         # the equality is a real statement about IT.
-        scrubbed = _scrub_text(f"embed.probe.failed sent Bearer {VOYAGE_STYLE_KEY} upstream")
+        scrubbed = scrub_text(f"embed.probe.failed sent Bearer {VOYAGE_STYLE_KEY} upstream")
         assert VOYAGE_STYLE_KEY not in scrubbed
         assert scrubbed == f"embed.probe.failed sent Bearer {REDACTED} upstream"
 
@@ -436,7 +449,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # THE DOCSTRING IS RIGHT: the scheme is non-secret and tells an operator
         # WHICH auth mechanism failed — the same diagnostic-data argument that
         # justifies this entire packet.
-        scrubbed = _scrub_text(f"Authorization: Bearer {VOYAGE_STYLE_KEY}")
+        scrubbed = scrub_text(f"Authorization: Bearer {VOYAGE_STYLE_KEY}")
         assert scrubbed == f"Authorization: Bearer {REDACTED}"
 
     def test_the_scheme_survives_case_insensitively_and_mid_line(self) -> None:
@@ -444,9 +457,9 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # and quoted inside a rendered ``curl`` command in an exception message. A
         # fix keyed on the exact literal ``"Authorization: Bearer "`` passes the pin
         # above and fails both of these.
-        lowered = _scrub_text(f"authorization: bearer {VOYAGE_STYLE_KEY}")
+        lowered = scrub_text(f"authorization: bearer {VOYAGE_STYLE_KEY}")
         assert lowered == f"authorization: bearer {REDACTED}"
-        rendered = _scrub_text(f"curl -H 'Authorization: Bearer {VOYAGE_STYLE_KEY}' https://api/x")
+        rendered = scrub_text(f"curl -H 'Authorization: Bearer {VOYAGE_STYLE_KEY}' https://api/x")
         assert VOYAGE_STYLE_KEY not in rendered
         assert f"Authorization: Bearer {REDACTED}" in rendered
         assert "https://api/x" in rendered, "the rest of the line must survive"
@@ -482,7 +495,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # scheme, and R8's scheme preservation on top. A fix that simply deletes
         # ``authorization`` from _ASSIGNMENT_RE's label list satisfies R8's Bearer
         # pin above and makes every line here leak outright.
-        scrubbed = _scrub_text(f"Authorization: {scheme} {credential}")
+        scrubbed = scrub_text(f"Authorization: {scheme} {credential}")
         assert credential not in scrubbed, (
             f"the {scheme} credential LEAKED. _ASSIGNMENT_RE consumes the scheme word as if it "
             f"were the value, leaving the real credential untouched: {scrubbed!r}"
@@ -494,7 +507,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # header pattern anchors on ``authorization\s*[=:]`` and a mapping repr puts
         # a quote between them. Same surface as #235/R8/R16; a form none of their
         # fixtures rendered.
-        quoted = _scrub_text(f"{{'Authorization': '{scheme} {credential}'}}")
+        quoted = scrub_text(f"{{'Authorization': '{scheme} {credential}'}}")
         assert credential not in quoted, (
             f"the {scheme} credential LEAKED from the QUOTED header form. A mapping repr is how "
             f"an httpx error actually renders headers: {quoted!r}"
@@ -530,7 +543,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # This pin does not care what the scheme is CALLED. It forces the fix to be
         # general — treat whatever leading word precedes the credential as a
         # scheme — rather than a list that is wrong the day someone adds SCRAM.
-        scrubbed = _scrub_text(f"Authorization: {scheme} {credential}")
+        scrubbed = scrub_text(f"Authorization: {scheme} {credential}")
         assert credential not in scrubbed, (
             f"the {scheme} credential LEAKED: {scrubbed!r}. A scheme ALLOWLIST cannot close "
             "this — the set of auth schemes is open. Redact whatever follows the leading "
@@ -552,7 +565,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
 
         multi_token = 'username="alice", realm="lore", response="deadbeefcafef00d1234"'
         for scheme in re.split(r"\|", logging_setup._KNOWN_SCHEMES):
-            scrubbed = _scrub_text(f"Authorization: {scheme} {multi_token}")
+            scrubbed = scrub_text(f"Authorization: {scheme} {multi_token}")
             assert "deadbeefcafef00d1234" not in scrubbed, (
                 f"scheme {scheme!r} is allowlisted for scheme-preservation, but its credential "
                 f"is not a single token — the tail survives redaction: {scrubbed!r}. Only "
@@ -562,7 +575,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
     def test_an_authorization_header_with_no_scheme_is_still_redacted(self) -> None:
         # The other direction, so the R8 fix cannot be "never redact after
         # ``Authorization:``". A bare credential with no scheme word must still go.
-        scrubbed = _scrub_text(f"Authorization: {VOYAGE_STYLE_KEY}")
+        scrubbed = scrub_text(f"Authorization: {VOYAGE_STYLE_KEY}")
         assert VOYAGE_STYLE_KEY not in scrubbed
         assert scrubbed == f"Authorization: {REDACTED}"
 
@@ -570,7 +583,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # And the third door: ``authorization=<token>`` carries no scheme and no
         # colon. Removing ``authorization`` from the label alternation — the naive
         # way to satisfy R8 — un-redacts this. Pinned so that fix reddens.
-        scrubbed = _scrub_text(f"authorization={ANTHROPIC_STYLE_KEY}")
+        scrubbed = scrub_text(f"authorization={ANTHROPIC_STYLE_KEY}")
         assert ANTHROPIC_STYLE_KEY not in scrubbed
         assert scrubbed == f"authorization={REDACTED}"
 
@@ -590,7 +603,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # design that satisfies every property here moves auth-header handling into
         # its own scheme-aware pattern. The outcome pin holds under every mechanism
         # and still fails every wrong one.
-        scrubbed = _scrub_text(f"Authorization: Bearer {VOYAGE_STYLE_KEY}")
+        scrubbed = scrub_text(f"Authorization: Bearer {VOYAGE_STYLE_KEY}")
         assert scrubbed.count(REDACTED) == 1, (
             "one credential went in and more than one sentinel came out — the scheme word was "
             f"redacted as if it were a second secret: {scrubbed!r}"
@@ -609,7 +622,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
             (f"Authorization: {VOYAGE_STYLE_KEY}", VOYAGE_STYLE_KEY),
             ("Authorization: Basic dXNlcjpzdXBlcnNlY3JldA==", "dXNlcjpzdXBlcnNlY3JldA=="),
         ):
-            scrubbed = _scrub_text(text)
+            scrubbed = scrub_text(text)
             assert must_go not in scrubbed, (
                 f"dropping the authorization label un-redacted {text!r} -> {scrubbed!r}. R8 asks "
                 "for the SCHEME to be preserved, not for the label to be abandoned."
@@ -620,7 +633,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # (``x-api-key: <key>``), which reaches ``httpx`` and can be echoed back in
         # an error. ``\bapi[_-]?key\b`` matches inside ``x-api-key`` because ``-``
         # is a non-word character — verified rather than assumed.
-        scrubbed = _scrub_text(f"x-api-key: {ANTHROPIC_STYLE_KEY}")
+        scrubbed = scrub_text(f"x-api-key: {ANTHROPIC_STYLE_KEY}")
         assert ANTHROPIC_STYLE_KEY not in scrubbed
         assert scrubbed == f"x-api-key: {REDACTED}"
 
@@ -634,7 +647,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # redacting ``password:`` — which is the shape a SurrealDB signin error
         # actually carries.
         text = f"store.connect.failed {literal}{separator}{SURREAL_ROOT_PASSWORD} endpoint=ws://x/rpc"
-        scrubbed = _scrub_text(text)
+        scrubbed = scrub_text(text)
         assert SURREAL_ROOT_PASSWORD not in scrubbed, f"{literal}{separator}… was not redacted"
         assert f"{literal}{separator}{REDACTED}" in scrubbed, (
             "the label AND separator must survive so the line stays diagnosable"
@@ -666,7 +679,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # ``re.IGNORECASE`` and a build that drops the flag looks identical in
         # every canonical-case fixture.
         assert _BEARER_RE.flags & re.IGNORECASE
-        assert VOYAGE_STYLE_KEY not in _scrub_text(f"authorization: bearer {VOYAGE_STYLE_KEY}")
+        assert VOYAGE_STYLE_KEY not in scrub_text(f"authorization: bearer {VOYAGE_STYLE_KEY}")
 
     def test_the_two_patterns_compose_in_one_line(self) -> None:
         # A12: ORDER. Both patterns fire on one string, each preserving its own
@@ -676,7 +689,7 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # overlap is the separate (and unruled) case pinned above — this case is
         # about the two patterns coexisting, not about that interaction.
         text = f"upstream sent Bearer {VOYAGE_STYLE_KEY} and rejected api_key={ANTHROPIC_STYLE_KEY}"
-        scrubbed = _scrub_text(text)
+        scrubbed = scrub_text(text)
         assert VOYAGE_STYLE_KEY not in scrubbed
         assert ANTHROPIC_STYLE_KEY not in scrubbed
         assert f"Bearer {REDACTED}" in scrubbed
@@ -687,13 +700,13 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         # text twice; the second pass must be a no-op or REDACTED itself becomes
         # a moving target for consumers.
         text = f"Authorization: Bearer {VOYAGE_STYLE_KEY} api_key={ANTHROPIC_STYLE_KEY}"
-        once = _scrub_text(text)
+        once = scrub_text(text)
         # Guard against the degenerate reading: idempotence is trivially true of
         # the identity function, so prove redaction happened before proving it is
         # stable (CLAUDE.md: interrogate the assertion against its own message).
         assert REDACTED in once
-        assert _scrub_text(once) == once
-        assert _scrub_text(REDACTED) == REDACTED
+        assert scrub_text(once) == once
+        assert scrub_text(REDACTED) == REDACTED
 
     def test_all_three_consumers_route_through_the_one_scrub_implementation(
         self, monkeypatch: pytest.MonkeyPatch
@@ -705,19 +718,19 @@ class TestTheLabelledPatternsSurviveTheDeletion:
         sentinel = "SCRUBBED-BY-THE-SHARED-SEAM"
         from loremaster import logging_setup
 
-        monkeypatch.setattr(logging_setup, "_scrub_text", lambda _value: sentinel)
+        monkeypatch.setattr(logging_setup, "scrub_text", lambda _value: sentinel)
 
         # 1. RedactingFilter.filter
         record = make_record(msg="store.connect.failed", extra={"detail": "anything"})
         logging_setup.RedactingFilter().filter(record)
-        assert record.msg == sentinel, "RedactingFilter.filter does not route through _scrub_text"
+        assert record.msg == sentinel, "RedactingFilter.filter does not route through scrub_text"
         # 2. _scrub_value (the extra/container path)
-        assert record.detail == sentinel, "_scrub_value does not route through _scrub_text"  # type: ignore[attr-defined]
+        assert record.detail == sentinel, "_scrub_value does not route through scrub_text"  # type: ignore[attr-defined]
         # 3. scrubbed_exception_text
         exc_record = make_record(msg="store.connect.failed")
         exc_record.exc_text = 'Traceback (most recent call last):\n  File "x.py", line 1\nRuntimeError: no'
         assert logging_setup.scrubbed_exception_text(exc_record) == sentinel, (
-            "scrubbed_exception_text does not route through _scrub_text"
+            "scrubbed_exception_text does not route through scrub_text"
         )
 
     def test_scrub_value_leaves_non_string_scalars_untouched(self) -> None:
@@ -823,7 +836,7 @@ class TestScrubbingNoLongerDestroysDiagnosticData:
         # distinct production function names were erased from every traceback
         # frame by the catch-all. Zero is the contract.
         corpus = _production_function_names()
-        mangled = [name for name in corpus if _scrub_text(name) != name]
+        mangled = [name for name in corpus if scrub_text(name) != name]
         assert not mangled, (
             f"{len(mangled)} of {len(corpus)} production function names are still being erased "
             f"from tracebacks. Packet 42 deleted the mechanism that did this; if something "
@@ -836,7 +849,7 @@ class TestScrubbingNoLongerDestroysDiagnosticData:
         # #227. This used to require a four-condition exemption (inventory
         # A4-A9); it now holds because nothing examines the run at all. The pin
         # stays because the PROPERTY is what mattered, never the mechanism.
-        assert _scrub_text(path) == path, f"the {label} path was mangled"
+        assert scrub_text(path) == path, f"the {label} path was mangled"
 
     def test_a_git_sha_in_prose_survives(self) -> None:
         # A16, INVERTED. ``TestBareHexRunsStayRedactedKnownBound`` pinned this
@@ -846,14 +859,14 @@ class TestScrubbingNoLongerDestroysDiagnosticData:
         # production for months — this is the sink-side half of that loss,
         # closed.
         sha = "8538303a1b2c3d4e5f60718293a4b5c6d7e8f9a0"
-        assert _scrub_text(f"commit {sha} landed") == f"commit {sha} landed"
+        assert scrub_text(f"commit {sha} landed") == f"commit {sha} landed"
 
     def test_a_correlation_uuid_in_prose_survives(self) -> None:
         # A9/A17. Previously exempted by ``_UUID_RE``; now no exemption is
         # needed because there is no sweep. A trace/run id must reach Mezmo.
         trace_id = "090685cb-2064-498d-8479-e141e4fd4ea5"
         text = f"trace.emit ok correlation {trace_id} span=search"
-        assert _scrub_text(text) == text
+        assert scrub_text(text) == text
 
     def test_a_harness_database_name_survives(self) -> None:
         # Built by the PRODUCTION builder rather than a hand-copied literal, so
@@ -862,7 +875,7 @@ class TestScrubbingNoLongerDestroysDiagnosticData:
         from _surreal_harness import unique_database
 
         database_name = unique_database()
-        assert _scrub_text(f"store.bootstrap database={database_name}") == (
+        assert scrub_text(f"store.bootstrap database={database_name}") == (
             f"store.bootstrap database={database_name}"
         )
 
@@ -1131,7 +1144,7 @@ class TestTheDeletionsResidualBoundsArePinned:
     ) -> None:
         # A18, the deliberate trade, stated at the unit seam.
         text = f"upstream rejected the request: {credential}"
-        assert _scrub_text(text) == text, f"{name}: {self._CLOSED_DELIBERATELY}"
+        assert scrub_text(text) == text, f"{name}: {self._CLOSED_DELIBERATELY}"
 
     @pytest.mark.parametrize("carrier_name,carrier", TEXT_CARRIERS, ids=_CARRIER_IDS)
     @pytest.mark.parametrize("fmt", FORMATS)
@@ -1166,7 +1179,7 @@ class TestTheDeletionsResidualBoundsArePinned:
         assert HARDCODED_UNLABELLED_LITERAL in rendered, (
             "the fixture no longer puts the literal on the rendered frame line"
         )
-        assert HARDCODED_UNLABELLED_LITERAL in _scrub_text(rendered), self._CLOSED_DELIBERATELY
+        assert HARDCODED_UNLABELLED_LITERAL in scrub_text(rendered), self._CLOSED_DELIBERATELY
 
     def test_a_hardcoded_LABELLED_credential_is_still_scrubbed_from_the_source_line(self) -> None:
         # THE OTHER HALF, and the reason the bound above is narrow rather than
@@ -1179,15 +1192,15 @@ class TestTheDeletionsResidualBoundsArePinned:
         except RuntimeError:
             rendered = traceback.format_exc()
         assert HARDCODED_LABELLED_LITERAL in rendered, "the fixture no longer delivers the literal"
-        assert HARDCODED_LABELLED_LITERAL not in _scrub_text(rendered)
-        assert REDACTED in _scrub_text(rendered)
+        assert HARDCODED_LABELLED_LITERAL not in scrub_text(rendered)
+        assert REDACTED in scrub_text(rendered)
 
     def test_a_credential_in_a_url_path_segment_is_not_redacted(self) -> None:
         # A17. Previously a bound BOUGHT by the path exemption; now simply a
         # consequence of having no detector. Recorded so the two are not confused
         # by a later reader: nothing was traded away here, the mechanism went.
         url = f"https://api.voyageai.com/{VOYAGE_STYLE_KEY}/v1/embeddings"
-        assert _scrub_text(url) == url, self._CLOSED_DELIBERATELY
+        assert scrub_text(url) == url, self._CLOSED_DELIBERATELY
 
     def test_the_replacement_control_is_what_covers_this_bound(self) -> None:
         # The bound above is only acceptable BECAUSE of this. Stated as a pin so
@@ -1262,7 +1275,7 @@ class TestTheEntropyMachineryIsGone:
         # a typo'd import name would make every pin above pass vacuously.
         from loremaster import logging_setup
 
-        for kept in ("_BEARER_RE", "_ASSIGNMENT_RE", "_scrub_text", "REDACTED", "RedactingFilter"):
+        for kept in ("_BEARER_RE", "_ASSIGNMENT_RE", "scrub_text", "REDACTED", "RedactingFilter"):
             assert hasattr(logging_setup, kept), f"{kept} is missing — packet 42 keeps it"
 
     # The phrases that name the DELETED mechanism. Kept as one list so both legs
@@ -1345,9 +1358,9 @@ class TestTheEntropyMachineryIsGone:
 
 
 class TestTheScrubbedSurfacesAreUnchanged:
-    """A19: only ``_scrub_text``'s BODY shrinks — its call sites are untouched.
+    """A19: only ``scrub_text``'s BODY shrinks — its call sites are untouched.
 
-    The inventory's per-field provenance note for ``_scrub_text`` is that the
+    The inventory's per-field provenance note for ``scrub_text`` is that the
     output is the input with three transforms applied and becomes the input with
     two; every byte not matched by a labelled pattern is COPIED THROUGH. These
     pins hold the SURFACES constant while that body changes, so a reshape that
@@ -1609,7 +1622,7 @@ class TestNoProductionObjectRetainsAnUnwrappedCredential:
         # **incidental today** — nothing states it — and *"it happens to match"* is
         # not a guarantee. Pinned so a future narrowing of the label alternation
         # goes RED instead of silently un-covering the one header that matters.
-        scrubbed = _scrub_text(f"x-api-key: {ANTHROPIC_STYLE_KEY}")
+        scrubbed = scrub_text(f"x-api-key: {ANTHROPIC_STYLE_KEY}")
         assert ANTHROPIC_STYLE_KEY not in scrubbed
         assert scrubbed == f"x-api-key: {REDACTED}"
 
@@ -2014,6 +2027,6 @@ class TestScrubValueRecursesIntoContainers:
         # error actually carries — separates label from value with a QUOTE and
         # spreads the object over several lines. Neither half was ever rendered.
         body = f'{{\n  "model": "voyage-4",\n  "api_key": "{VOYAGE_STYLE_KEY}"\n}}'
-        assert VOYAGE_STYLE_KEY not in _scrub_text(body), (
-            f"a credential in a pretty-printed JSON body survived: {_scrub_text(body)!r}"
+        assert VOYAGE_STYLE_KEY not in scrub_text(body), (
+            f"a credential in a pretty-printed JSON body survived: {scrub_text(body)!r}"
         )

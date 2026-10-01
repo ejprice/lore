@@ -143,12 +143,19 @@ REGISTERED_FATES: dict[str, tuple[Fate, ...]] = {
         Fate(_RECORDED, "indexer", ("logs>=warning", "logs-exc_info"), catches="Exception"),
     ),
     "index/watcher.py::read_events": (Fate(_LIFECYCLE, "watcher", (), catches="Exception"),),
-    "principals.py::_dispatch_report_unmigrated": (
+    # 63c am-37 §11 item 4 (R2-1, supersedes the §8.1 rows for ``_dispatch_migrate_governed`` and
+    # ``_dispatch_report_unmigrated`` before they landed): ONE lore-adm fault handler at the ENTRY — the three
+    # verb dispatchers lost their ``except`` blocks, so their rows are DELETED and this one row adjudicates
+    # the one site. The row's owner is the SITE's owner (63c). Rider (58 am-14 §3): ``catches`` is
+    # ``ast.unparse`` of the production except-tuple AS WRITTEN, member order included.
+    "principals.py::_dispatch": (
         Fate(
             "cli-exit",
             "principals",
             ("stderr", "returns-named-outcome"),
-            catches="(PrincipalStoreError, SurrealStoreError, ValueError)",
+            catches=(
+                "(PrincipalStoreError, PrincipalKeyStoreError, KeepStoreError, SurrealStoreError, ValueError)"
+            ),
         ),
     ),
     "scout.py::_dispatch": (

@@ -93,6 +93,7 @@ from loremaster.store._txn import (
     SurrealConnectionError,
     SurrealStoreError,
     TxnContentionExhaustedError,
+    TxnUniqueViolationError,
     _SurrealConnection,
     bootstrap_session,
     execute_transaction,
@@ -941,11 +942,22 @@ class AgentRegistry:
                 # so a never-changed agent still has an honest declaration instant.
                 _COL_STATUS_SET_AT: self._status_set_at_for(STATUS_ACTIVE, None, None, now),
             }
-            await self._query(
-                f"CREATE type::record('{AGENT_TABLE}', ${_ROW_ID_PARAM}) "
-                f"CONTENT ${_ROW_CONTENT_PARAM}",
-                {_ROW_ID_PARAM: agent_id, _ROW_CONTENT_PARAM: content},
-            )
+            try:
+                await self._query(
+                    f"CREATE type::record('{AGENT_TABLE}', ${_ROW_ID_PARAM}) "
+                    f"CONTENT ${_ROW_CONTENT_PARAM}",
+                    {_ROW_ID_PARAM: agent_id, _ROW_CONTENT_PARAM: content},
+                )
+            except TxnUniqueViolationError:
+                # amendment 29 RS-5: a concurrent identical first register won the CREATE — re-read and
+                # take THE re-register path (preflight decides a differing role/spawned_by).
+                if await self._select_row(agent_id) is None:
+                    raise
+                return await self.register(
+                    name, session=session, role=role, model=model, spawned_by=spawned_by,
+                    task_id=task_id, cadence=cadence, owner_principal_id=owner_principal_id,
+                    session_keep_id=session_keep_id,
+                )
             created = await self._select_row(agent_id)
             if created is None:
                 raise AgentRegistryError(

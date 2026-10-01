@@ -602,8 +602,8 @@ class TestAdversarySetRankErrorPath:
         member is a loud non-zero exit. The member is added FIRST so the store's UPDATE MATCHES
         a row and the closed ``rank`` ASSERT fires (a bogus rank on a NON-member would no-match,
         not reject — so the fixture must discriminate a real reject from a silent no-op); the
-        engine rejection is WRAPPED as ``KeepStoreError`` (FR-2 Q2b) and laundered by
-        ``_dispatch_keep`` to a ``lore-adm:`` stderr line + exit 1.
+        engine rejection is WRAPPED as ``KeepStoreError`` (FR-2 Q2b) and laundered by the one
+        lore-adm fault handler at ``_dispatch`` (63c am-37 §11) to a ``lore-adm:`` stderr line + exit 1.
 
         This is the pin a NO-OP ``_cmd_set_rank`` (``return 0``) cannot pass: a handler that
         never calls ``KeepStore.set_rank`` returns 0 here, reddening ``rc == 1``. It restores the
@@ -830,12 +830,14 @@ class TestKeepVerbErrorPaths:
     ) -> None:
         """A typo'd ``--keep`` (a ghost keep id) is refused by the ENFORCED ``member_of`` edge
         (the ghost OUT endpoint does not exist — store ref §4) → after FR-2 Q2b, ``KeepStore``
-        WRAPS that engine rejection as ``KeepStoreError``, which ``_dispatch_keep`` catches
-        (symmetric with ``_dispatch`` catching ``PrincipalStoreError``) → laundered to a
-        ``lore-adm:`` stderr line + exit 1, NOT an uncaught crash. Doubles as a CLI-level guard
-        that the Q2b wrap happened: ``_dispatch_keep`` no longer catches raw ``SurrealStoreError``
-        (FR-2 D1), so a ``KeepStore`` that leaked the raw engine error would escape and crash
-        instead of exiting 1."""
+        WRAPS that engine rejection as ``KeepStoreError``, which the one lore-adm fault handler at
+        ``_dispatch`` catches (63c am-37 §11) → laundered to a ``lore-adm:`` stderr line + exit 1,
+        NOT an uncaught crash. The missed-wrap property is NOT pinned here: since am-37 §11 that
+        handler also catches a raw ``SurrealStoreError``, so a leaked engine error exits 1 too. It is
+        pinned at KeepStore's write boundary, by
+        ``test_engine_rejection_seam.py::TestEngineRejectionWrappingBehaviourIsPreserved::
+        test_a_raw_store_error_surfaces_as_the_domain_error[keep-add_household_member]`` and its
+        derived-coverage twin ``TestTheRoutedSetIsDerivedAndComplete``."""
         await _add(cli_env, _KEEPER)
         await _add(cli_env, _MEMBER)
         capsys.readouterr()
@@ -956,7 +958,8 @@ class TestANonexistentKeepIsLoudForEveryKeepConsumingVerb:
         loudness is about the ghost KEEP, not an unresolvable ``--member`` (fixtures discriminate).
 
         RED at the CLI stub (``build_keep_store`` / the keep handlers raise ``NotImplementedError``,
-        which ``_dispatch_keep`` does NOT catch → it propagates, so the call errors rather than
+        which the one handler at ``_dispatch`` (63c am-37 §11) does NOT catch → it propagates, so
+        the call errors rather than
         returning 1 — no false green). For ``remove-household`` specifically it is ALSO RED against
         a ``keeps.py`` without the FR-3 amend (a silent rc 0). The steady-state positive control —
         these verbs SUCCEED on a REAL keep — is ``TestKeepVerbsExecuteDirectly`` /

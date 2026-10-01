@@ -76,16 +76,16 @@ WHAT IT GUARANTEES, BY CONSTRUCTION (§D-3 numbered requirements):
 
 THE SLICE (§D-3 step 4), DERIVED at run time, each table carrying its provenance in the receipt:
 
-* ``derived``   — :func:`_governed_contract.governed_populations` over the EMITTED schema DDL (the ONE
-  derivation of the governed set in this repo — ``{t : the emitted DDL defines every governed-trio
-  column on t}`` ∪ the relation tables whose IN/OUT endpoint is such a t). §D-3 names it
-  ``surreal_schema.governed_node_tables(generate_ddl())``; no such production function exists at
-  ``90ada74`` — the derivation lives in the test tree, so this script CALLS it there (ONE
-  IMPLEMENTATION) rather than cloning it. At ``90ada74`` it yields ``agent, briefed, memory, message, to``.
-* ``pending``   — :data:`PENDING_GOVERNED_TABLES`: node tables a named, not-yet-landed packet governs
-  (``finding`` 64b, ``task`` 64a, ``brief`` 63c-ii). The S2 legs of those packets need them restored
-  BEFORE their builds emit the trio. When the derivation grows to include one, the receipt says so
-  (``derived`` wins) and the entry is dead weight to delete — never a second source of truth.
+* ``derived``   — the governed NODE tables come from PRODUCTION (am-37 §13.4.1/§13.4.2):
+  :func:`loremaster.governed.ddl_governed_tables` (``{t : the package's generated DDL defines every
+  governed-trio column on t}``), or :func:`loremaster.governed.governed_node_tables_of` over a supplied
+  DDL text — ONE implementation, which this script CONSUMES (``scripts`` → ``loremaster`` only; nothing
+  in the package imports ``scripts``). The relation tables whose IN/OUT endpoint is such a node come from
+  the test tree's ``governed_relation_tables`` over the emitted DDL.
+* ``pending``   — :data:`loremaster.governed.PENDING_GOVERNED_TABLES`: node tables a named, not-yet-landed
+  packet governs, each entry carrying its reason and owning packet. The S2 legs of those packets need them
+  restored BEFORE their builds emit the trio. The package pins the declared set DISJOINT from the derived
+  one (it self-destructs by member), so this script holds no copy of either.
 * ``relation``  — relation tables whose emitted endpoints touch a ``pending`` table (``blocks``).
 * ``dependency``— :data:`SLICE_DEPENDENCIES`, each with its reason (the migration verb's reads).
 
@@ -205,13 +205,6 @@ EXIT_REFUSED = 2
 EXIT_IMPORT_REJECTED = 3
 EXIT_VERIFY_MISMATCH = 4
 EXIT_SELF_TEST_FAILED = 5
-
-#: Node tables a named, not-yet-landed packet will govern — restored so that packet's S2 leg has them.
-PENDING_GOVERNED_TABLES: dict[str, str] = {
-    "finding": "packet 64b governs the finding ledger (its S2 leg migrates these rows)",
-    "task": "packet 64a governs the task ledger (its S2 leg migrates these rows)",
-    "brief": "packet 63c-ii governs the brief ledger",
-}
 
 #: Tables the slice needs that are not themselves governed populations — each with its reason (§D-3).
 SLICE_DEPENDENCIES: dict[str, str] = {
@@ -352,18 +345,33 @@ class SliceRequest:
 
 
 class SliceDeriver:
-    """Derives the default governed slice from the EMITTED schema DDL (§D-3 step 4)."""
+    """Derives the default governed slice (§D-3 step 4), CONSUMING the package's governed set (am-37
+    §13.4.1/§13.4.2): the node tables from :func:`loremaster.governed.ddl_governed_tables` (or, for a
+    supplied ``emitted_ddl``, :func:`loremaster.governed.governed_node_tables_of` over it) and the pending
+    tables from :data:`loremaster.governed.PENDING_GOVERNED_TABLES` — so its ``governed_node`` set IS
+    :func:`loremaster.governed.governed_tables` on the default path."""
 
     def __init__(self, emitted_ddl: str | None = None) -> None:
+        from loremaster import governed as governed_module
+
         _, contract, scaffold = _test_helpers()
         self._contract = contract
+        self._governed = governed_module
+        self._synthetic = emitted_ddl is not None
         self._emitted_ddl: str = emitted_ddl if emitted_ddl is not None else scaffold.emitted_schema_ddl()
 
     def governed_slice(self) -> SliceRequest:
         """``derived`` ∪ ``pending`` ∪ relations over pending ∪ named dependencies, each with provenance."""
-        derived_nodes: set[str] = set(self._contract.governed_node_tables(self._emitted_ddl))
-        derived_all: set[str] = set(self._contract.governed_populations(emitted_ddl=self._emitted_ddl))
-        pending_nodes = set(PENDING_GOVERNED_TABLES) - derived_nodes
+        derived_nodes: set[str] = set(
+            self._governed.governed_node_tables_of(self._emitted_ddl)
+            if self._synthetic
+            else self._governed.ddl_governed_tables()
+        )
+        derived_all: set[str] = derived_nodes | set(
+            self._contract.governed_relation_tables(self._emitted_ddl, derived_nodes)
+        )
+        pending = self._governed.PENDING_GOVERNED_TABLES
+        pending_nodes = set(pending) - derived_nodes
         relations_over_pending: set[str] = (
             set(self._contract.governed_relation_tables(self._emitted_ddl, pending_nodes)) - derived_all
         )
@@ -385,7 +393,7 @@ class SliceDeriver:
                     name=name,
                     provenance="pending",
                     required=True,
-                    reason=PENDING_GOVERNED_TABLES[name],
+                    reason=f"{pending[name].reason} (packet {pending[name].owning_packet})",
                     governed_node=True,
                 )
             )
@@ -403,7 +411,7 @@ class SliceDeriver:
 
     def is_governed_shape(self, table: str, table_ddl: str) -> bool:
         """Whether the dump's OWN DDL for ``table`` defines the whole governed trio (i.e. is post-63)."""
-        return table in set(self._contract.governed_node_tables(table_ddl))
+        return table in self._governed.governed_node_tables_of(table_ddl)
 
 
 def explicit_slice(names: Iterable[str]) -> SliceRequest:

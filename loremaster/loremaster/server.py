@@ -6701,11 +6701,13 @@ class AppContext:
         (#97). A TOKENLESS register succeeds OWNERLESS and mints NO keep (reading α, ruling §3.2):
         nothing is fabricated, and the render names the bound.
 
-        ORDER (packet 63c-i-a, #485 / amendment 22 §1): the registry's ``preflight`` → the session-keep
-        mint → the SF-63-1 gate → ``register``. A register the registry refuses therefore mints no keep;
-        only a CONCURRENT conflicting register landing after the mint can refuse later, and then the
-        keep is deleted iff this call created it; if that delete fails, the refusal gains one line
-        naming the left-behind keep and its remedy (amendment 24 #4b).
+        ORDER (packet 63c-i-a, amendments 22 §1 + 28 §F-1/§F-2): the READ-ONLY SF-63-1 gate on an
+        EXISTING session keep → the registry's ``preflight`` → the idempotent session-keep mint → the
+        SF-63-1 gate on the keep the mint returned (a concurrent registrant may have minted it between the
+        read and the mint) → ``register``. A foreign principal is therefore denied before any registry
+        read, and a register the registry refuses mints no keep. There is NO compensation: a keep minted
+        before a concurrent conflicting register refuses is the session's legitimate keep, kept by the
+        principal who minted it (amendment 28 §F-1 — the created-only delete and its plumbing are gone).
         """
         from lorerunes.pdp import keep_scope  # noqa: PLC0415 - house lazy-import idiom
 
@@ -6725,12 +6727,34 @@ class AppContext:
         # register, never a conditional splat), so the registry stamps ``scope`` from the SAME
         # keep the SF-63-1 gate below checks.
         session_keep_bare: str | None = None
-        # 63c-i-a (#485 / amendment 22 §1): EVERY refusal the registry can raise without a write —
-        # identity, blank role, retired, role / spawned_by conflict — is decided HERE, BEFORE the
-        # session-keep mint below, by THE registry's own ``preflight`` (one decision, no handler copy).
-        # A refused register therefore never makes its caller keeper of a session it never joined
-        # (SF-63-1 would then deny the next principal). The pair check is deferred to ``register``
-        # (``session_keep_id`` omitted: the keep does not exist yet).
+        keep_store = self._keep_store
+        foreign_denial = (
+            f"session {session!r} is kept by another principal — you are not householded in "
+            "it; its keeper must run `lore-adm add-household` for you before you register "
+            "into this session"
+        )
+        from loremaster.visible_keeps import resolve_visible_keeps  # noqa: PLC0415
+
+        async def _sf_63_1_gate(gate_keep_store: KeepStore, keep_bare: str, member_email: str) -> None:
+            """THE SF-63-1 gate (both evaluations below): deny unless the principal can SEE the keep —
+            decided ONLY by the visibility seam, never a keeper-only read or a private copy."""
+            if keep_scope(keep_bare) not in await resolve_visible_keeps(
+                gate_keep_store, member_email=member_email
+            ):
+                raise governed.GovernedDenied(foreign_denial)
+
+        if principal is not None:
+            if keep_store is None:  # pragma: no cover - a governed AppContext always wires one
+                raise governed.GovernedDenied(
+                    "no keep store is wired — a governed register cannot mint its session keep"
+                )
+            # amendment 28 §F-2: the READ-ONLY SF-63-1 gate — BEFORE any registry read, so a foreign
+            # principal learns nothing about another principal's agents (63-rulings §6).
+            existing_keep = await keep_store.get_by_key(f"session:{session}")
+            if existing_keep is not None:
+                await _sf_63_1_gate(
+                    keep_store, str(existing_keep.id).split(":", 1)[-1], principal.email
+                )
         await self.agent_registry.preflight(
             agent,
             session=session,
@@ -6738,78 +6762,26 @@ class AppContext:
             spawned_by=spawned_by,
             owner_principal_id=principal_bare,
         )
-        minted_session_keep = False
-        keep_store = self._keep_store
-        if principal is not None:
-            if keep_store is None:  # pragma: no cover - a governed AppContext always wires one
-                raise governed.GovernedDenied(
-                    "no keep store is wired — a governed register cannot mint its session keep"
-                )
-            # SF-63-1 — get-or-create the session keep, kept by THIS registrant's principal (the
-            # first registrant with a principal keeps it; the keeper's own later agents join it — the
-            # idempotent CAS on the UNIQUE keep.key, store-ref §1.8).
+        if principal is not None and keep_store is not None:
+            # SF-63-1: get-or-create the session keep, kept by the first registrant with a principal (the
+            # idempotent CAS on the UNIQUE keep.key, store-ref §1.8), then gate on the keep it RETURNED.
             session_keep = await keep_store.get_or_create_keyed(
                 key=f"session:{session}", type="session", keeper_email=principal.email, name=session
             )
-            # SF-63-1 foreign gate — a principal NOT householded in the (existing) session keep is
-            # DENIED, naming the SESSION + the add-household remedy but NOT the keeper's identity
-            # (63-rulings §6 existence-leak stance). It runs BEFORE register, so a rejected register
-            # writes NO agent row (#97). The keeper's own agents pass (auto-householded on mint).
-            from loremaster.keeps import minted_by_this_call  # noqa: PLC0415
-            from loremaster.visible_keeps import resolve_visible_keeps  # noqa: PLC0415
-
-            # "created" comes from the mint's OWN return (amendment 24 FK-b) — never a pre-read,
-            # which a concurrent winner would turn into a TOCTOU.
-            minted_session_keep = minted_by_this_call(session_keep)
             session_keep_bare = str(session_keep.id).split(":", 1)[-1]
-            visible = await resolve_visible_keeps(keep_store, member_email=principal.email)
-            if keep_scope(session_keep_bare) not in visible:
-                raise governed.GovernedDenied(
-                    f"session {session!r} is kept by another principal — you are not householded in "
-                    "it; its keeper must run `lore-adm add-household` for you before you register "
-                    "into this session"
-                )
+            await _sf_63_1_gate(keep_store, session_keep_bare, principal.email)
             kept_by_me = session_keep.keeper_id == principal_bare
-        try:
-            result = await self.agent_registry.register(
-                agent,
-                session=session,
-                role=role,
-                model=model,
-                spawned_by=spawned_by,
-                task_id=task_id,
-                cadence=cadence,
-                owner_principal_id=principal_bare,
-                session_keep_id=session_keep_bare,
-            )
-        except _AgentRegistryError as refusal:
-            # The race residual (amendment 22 §1.2): a CONCURRENT conflicting register landed between
-            # ``preflight`` and ``register``, so the registry refused AFTER the mint. Compensate
-            # CREATED-ONLY — delete the session keep iff THIS call's own CREATE minted it, never a keep
-            # it merely found (that one is another registration's session). BOUND: if the delete
-            # itself fails the keep is left behind — served, not hidden (amendment 24 #4b); RE-OPEN
-            # TRIGGER: a keep observed left behind after a refused register.
-            if minted_session_keep and keep_store is not None and session_keep_bare is not None:
-                try:
-                    await keep_store.delete_keep(keep_id=session_keep_bare)
-                except Exception as delete_error:  # noqa: BLE001 - the registry's refusal stays the outcome
-                    # amendment 24 #4b: a FAILED delete leaves the keep behind, denying the next
-                    # principal — so the CALLER learns it, not only the server log. The refusal it asked
-                    # about SURVIVES verbatim (same object, same class, its text first — the delete error
-                    # never replaces it, adversary N8) with exactly ONE appended line naming the
-                    # left-behind keep by its store-minted bare id and its remedy verb (``lore-adm
-                    # delete-keep --keep`` accepts a bare id); the caller's own parameters stay out.
-                    logger.warning(
-                        "comms.register.compensation_failed",
-                        extra={"keep_id": session_keep_bare, "error_class": type(delete_error).__name__},
-                    )
-                    refusal.args = (
-                        f"{refusal}\nALSO: this refused register minted session keep {session_keep_bare} "
-                        "and could not delete it — it is LEFT BEHIND and would deny the next principal's "
-                        "register into this session; remedy: "
-                        f"`lore-adm delete-keep --keep {session_keep_bare}`",
-                    )
-            raise
+        result = await self.agent_registry.register(
+            agent,
+            session=session,
+            role=role,
+            model=model,
+            spawned_by=spawned_by,
+            task_id=task_id,
+            cadence=cadence,
+            owner_principal_id=principal_bare,
+            session_keep_id=session_keep_bare,
+        )
         now = datetime.now(UTC)
         registered_age_s = int((now - result.agent.registered_at).total_seconds())
         brief: Brief | None

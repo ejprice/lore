@@ -13,7 +13,7 @@ it is a function they call"). The policy is load-bearing twice over:
 * the snapshot/restore is what stops one test's handler leaking into the next
   (``configure_logging`` mutates process-global state), and
 * :func:`emit_through_configured_logger` is the only honest way to assert what
-  actually leaves the process — the pins that drive ``_scrub_text`` directly
+  actually leaves the process — the pins that drive ``scrub_text`` directly
   prove a string transform, not a served surface.
 
 Nothing here asserts anything. It is fixture plumbing; the contracts live in the
@@ -120,7 +120,7 @@ def emit_through_configured_logger(
     This is the production path end to end — ``configure_logging`` builds the
     handler, attaches the real formatter and the real
     :class:`~loremaster.logging_setup.RedactingFilter`, and the only substitution
-    is the handler's stream. A pin that calls ``_scrub_text`` directly proves a
+    is the handler's stream. A pin that calls ``scrub_text`` directly proves a
     string transform; this proves what leaves the process.
 
     Args:

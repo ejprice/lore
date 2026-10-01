@@ -81,7 +81,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import contextvars
+import dataclasses
 import logging
+import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -99,6 +103,7 @@ from loremaster.config import (
     resolve_secret,
 )
 from loremaster.index.records import sha512_hex
+from loremaster.logging_setup import RedactingFilter, scrub_text
 from loremaster.sanitise import safe_str, sanitise_line
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
@@ -135,9 +140,9 @@ from loremaster.store.surreal_schema import (
 _ROLE_ADMIN = "admin"
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
-    from loremaster.governed import MigrateGovernedResult
+    from loremaster.governed import MigrateGovernedResult, MigratePreconditionCounts, OwnerClassification
     from loremaster.keeps import KeepStore
     from loremaster.principal_keys import PrincipalKey, PrincipalKeyStore
 
@@ -449,12 +454,19 @@ class PrincipalStore:
         """Whether ``table`` is DEFINED on this database (via ``INFO FOR DB``).
 
         Fail-CLOSED for a safety gate (SF-63-5): a store / connection error during the probe
-        PROPAGATES (never silently read as 'absent'), so a caller that refuses a delete on this can
-        never fail OPEN on a transient fault — only a genuinely-undefined table reads ``False``.
+        PROPAGATES (never silently read as 'absent'), and so does a wrong-shaped answer
+        (:func:`loremaster.governed.map_of` raises ``SurrealStoreError``), so a caller that refuses a
+        delete on this can never fail OPEN — only a genuinely-undefined table reads ``False``.
         """
-        info = await self._query("INFO FOR DB")
-        tables = info.get("tables", {}) if isinstance(info, dict) else {}
-        return table in tables
+        from loremaster.governed import map_of
+
+        # am-37 §13.1 item 1 (B-D1): the ONE fail-closed INFO-map reader. A wrong-shaped answer RAISES
+        # the store class — it used to read as "no tables", so ``delete`` SKIPPED the SF-63-5
+        # owned-row guard on a garbage answer (fail-OPEN).
+        info = map_of(
+            await self._query("INFO FOR DB"), noun="INFO FOR DB (table-existence probe)", required=("tables",)
+        )
+        return table in info["tables"]
 
     # -- create / read ------------------------------------------------------
 
@@ -512,14 +524,13 @@ class PrincipalStore:
         # masquerade as a UNIQUE collision). Finding #400: routed through the ONE seam.
         with wrap_store_rejection(
             PrincipalStoreError,
-            f"could not create principal {email!r}: a principal with that email "
-            f"or subject already exists",
+            f"could not create principal {email!r}",
         ):
             result = await self._query(
                 f"CREATE {PRINCIPAL_TABLE} CONTENT $content RETURN AFTER",
                 {"content": content},
             )
-        rows = self._as_rows(result)
+        rows = self._as_rows(result, noun="principal create", landed=True)
         if not rows:
             raise PrincipalStoreError(
                 f"principal {email!r} vanished immediately after it was created"
@@ -537,7 +548,8 @@ class PrincipalStore:
             await self._query(
                 f"SELECT {_READ_PROJECTION} FROM {PRINCIPAL_TABLE} WHERE {_COL_SUBJECT} = $subject",
                 {"subject": subject},
-            )
+            ),
+            noun="principal lookup by subject",
         )
         return self._row_to_principal(rows[0]) if rows else None
 
@@ -551,7 +563,8 @@ class PrincipalStore:
             await self._query(
                 f"SELECT {_READ_PROJECTION} FROM {PRINCIPAL_TABLE} WHERE {_COL_EMAIL} = $email",
                 {"email": email},
-            )
+            ),
+            noun="principal lookup by email",
         )
         return self._row_to_principal(rows[0]) if rows else None
 
@@ -565,7 +578,8 @@ class PrincipalStore:
         rows = self._as_rows(
             await self._query(
                 f"SELECT {_READ_PROJECTION} FROM {PRINCIPAL_TABLE} ORDER BY {_COL_CREATED_AT}"
-            )
+            ),
+            noun="principal list",
         )
         return [self._row_to_principal(row) for row in rows]
 
@@ -591,17 +605,26 @@ class PrincipalStore:
         Raises:
             ValueError: ``status`` is not in the closed status domain.
             PrincipalNotFoundError: No principal carries ``email``.
+            PrincipalStoreError: The store rejected the UPDATE (wrapped by ``wrap_store_rejection``,
+                am-37 §12; the engine's typed cause is chained as ``__cause__``); a transport fault /
+                exhausted contention passes through untouched.
         """
         if status not in _PRINCIPAL_STATUSES:
             raise ValueError(
                 f"principal status must be one of {list(_PRINCIPAL_STATUSES)}, got {status!r}"
             )
-        result = await self._query(
-            f"UPDATE {PRINCIPAL_TABLE} SET {_COL_STATUS} = $status "
-            f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
-            {"status": status, "email": email},
-        )
-        rows = self._as_rows(result)
+        # A store rejection on the UPDATE wraps LOUD as PrincipalStoreError (am-37 §12);
+        # a transport fault / exhausted contention passes through untouched.
+        with wrap_store_rejection(
+            PrincipalStoreError,
+            f"could not set status of principal {email!r} to {status!r}",
+        ):
+            result = await self._query(
+                f"UPDATE {PRINCIPAL_TABLE} SET {_COL_STATUS} = $status "
+                f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
+                {"status": status, "email": email},
+            )
+        rows = self._as_rows(result, noun="principal status update", landed=True)
         if not rows:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
         return self._row_to_principal(rows[0])
@@ -628,22 +651,24 @@ class PrincipalStore:
 
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
-            PrincipalStoreError: ``subject`` is already bound to another principal.
+            PrincipalStoreError: The store rejected the UPDATE — e.g. ``subject`` is already bound to
+                another principal (the UNIQUE index); the engine's typed cause is chained as
+                ``__cause__`` and printed by lore-adm (am-37 §13 A / F-13).
         """
-        # The UNIQUE backstop on the UPDATE path — subject already bound elsewhere — wrapped
-        # LOUD; a transport fault / exhausted contention passes through untouched. Finding
-        # #400: routed through the ONE seam.
+        # The UNIQUE backstop on the UPDATE path (subject already bound elsewhere) or any other
+        # store rejection — wrapped LOUD under a NEUTRAL context (am-37 §13 A / F-13: the typed cause
+        # names the reason, the context never over-claims it); a transport fault / exhausted contention
+        # passes through untouched. Finding #400: routed through the ONE seam.
         with wrap_store_rejection(
             PrincipalStoreError,
-            f"could not bind subject to principal {email!r}: that subject is "
-            f"already bound to another principal",
+            f"could not bind subject to principal {email!r}",
         ):
             result = await self._query(
                 f"UPDATE {PRINCIPAL_TABLE} SET {_COL_SUBJECT} = $subject "
                 f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
                 {"subject": subject, "email": email},
             )
-        rows = self._as_rows(result)
+        rows = self._as_rows(result, noun="principal subject bind", landed=True)
         if not rows:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
         return self._row_to_principal(rows[0])
@@ -668,24 +693,33 @@ class PrincipalStore:
 
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
+            PrincipalStoreError: The store rejected the UPDATE (wrapped by ``wrap_store_rejection``,
+                am-37 §12; the engine's typed cause is chained as ``__cause__``); a transport fault /
+                exhausted contention passes through untouched.
         """
-        if expires_at is None:
-            # ⚠ CLEAR path (design §F1): ``SET expires_at = NONE`` — an UPDATE that
-            # OMITTED the column would leave the OLD value unchanged. The literal NONE
-            # explicitly clears it.
-            result = await self._query(
-                f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = NONE "
-                f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
-                {"email": email},
-            )
-        else:
-            # SET path: bind a Python datetime (store law §2 — never stringified).
-            result = await self._query(
-                f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = $expires_at "
-                f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
-                {"expires_at": expires_at, "email": email},
-            )
-        rows = self._as_rows(result)
+        # A store rejection on EITHER branch's UPDATE wraps LOUD as PrincipalStoreError
+        # (am-37 §12); a transport fault / exhausted contention passes through untouched.
+        with wrap_store_rejection(
+            PrincipalStoreError,
+            f"could not set expiry of principal {email!r}",
+        ):
+            if expires_at is None:
+                # ⚠ CLEAR path (design §F1): ``SET expires_at = NONE`` — an UPDATE that
+                # OMITTED the column would leave the OLD value unchanged. The literal NONE
+                # explicitly clears it.
+                result = await self._query(
+                    f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = NONE "
+                    f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
+                    {"email": email},
+                )
+            else:
+                # SET path: bind a Python datetime (store law §2 — never stringified).
+                result = await self._query(
+                    f"UPDATE {PRINCIPAL_TABLE} SET {_COL_EXPIRES_AT} = $expires_at "
+                    f"WHERE {_COL_EMAIL} = $email RETURN AFTER",
+                    {"expires_at": expires_at, "email": email},
+                )
+        rows = self._as_rows(result, noun="principal expiry update", landed=True)
         if not rows:
             raise PrincipalNotFoundError(f"no principal with email {email!r}")
         return self._row_to_principal(rows[0])
@@ -749,85 +783,108 @@ class PrincipalStore:
             PrincipalOwnsGovernedRowsError: The principal owns ≥1 governed row (SF-63-5) —
                 the delete is refused (INTERIM, until packet 64's ``set_owner`` orphaning
                 mechanism), no rows removed, the count + mechanism named.
+            PrincipalStoreError: A store rejection or a wrong-shaped answer anywhere from the opening
+                read through the cascade transaction (wrapped by ``wrap_store_rejection``, am-37 §12 /
+                §13 B; the cause is chained as ``__cause__``) — the delete does not proceed; a transport
+                fault / exhausted contention passes through untouched.
         """
-        principal = await self.get_by_email(email)
-        if principal is None:
-            raise PrincipalNotFoundError(f"no principal with email {email!r}")
-        principal_id_part = principal.id.partition(":")[2] or principal.id
-        # ⚠ §FR-4 REFUSE-WHILE-KEEPING (BEFORE any DELETE, so a refusal removes NOTHING).
-        # A keeper cannot be hard-deleted while they keep — a ``keep.keeper`` FIELD LINK
-        # does NOT auto-clean (store law §2), so the delete would dangle it. Read the
-        # kept keep ids via an IndexScan on the ``keep_keeper`` index (packet-60 Fork A),
-        # bound param, mirroring the ``principal_key`` count query below — NO KeepStore
-        # dependency (issued on this store's OWN connection). ≥1 kept keep ⇒ loud refusal
-        # naming ALL of them + the remediation.
-        kept_keep_rows = self._as_rows(
-            await self._query(
-                f"SELECT {_COL_ID} FROM {KEEP_TABLE} "
-                f"WHERE {_COL_KEEP_KEEPER} = type::record('{PRINCIPAL_TABLE}', $pid)",
-                {"pid": principal_id_part},
-            )
-        )
-        if kept_keep_rows:
-            kept_keep_ids = [str(row[_COL_ID]) for row in kept_keep_rows]
-            raise PrincipalHasKeepsError(
-                f"cannot delete principal {email!r}: they keep {len(kept_keep_ids)} "
-                f"keep(s) ({', '.join(kept_keep_ids)}) — reassign the keeper "
-                f"(lore-adm set-keeper) or delete the keep (lore-adm delete-keep) first"
-            )
-        # ⚠ SF-63-5 REFUSE-WHILE-OWNING-A-GOVERNED-ROW (BEFORE any DELETE — packet 63a-ii,
-        # design §10.7-Z). ``memory.owner_principal`` is a ``record<principal>`` link on a GOVERNED
-        # row — a LIVE dependency, NOT the retired-history dangle the agent/audit back-links
-        # tolerate. Hard-deleting the owner would silently dangle it. Packet 64's admin
-        # ``set_owner`` will orphan every owned governed row to NONE (audited) INSIDE the delete
-        # transaction; until that mechanism lands, REFUSE loud — naming the count + the mechanism —
-        # rather than dangle. The count is an IndexScan on the §4.1 ``memory_owner_principal`` index.
-        # ⚠ TOLERANT of a store WITHOUT the memory table (a pre-retrofit / principal-only store owns
-        # no governed rows): gated on table EXISTENCE, never on swallowing an error — a connection
-        # fault during the existence probe PROPAGATES (fail-CLOSED), never read as "0 owned rows".
-        if await self._table_exists(MEMORY_TABLE):
-            owned_rows = self._as_rows(
+        # am-37 §12: ONE wrap from the opening read THROUGH the cascade transaction — a store
+        # rejection anywhere in it (incl. §10.1(a)'s malformed owned-row count) surfaces as
+        # PrincipalStoreError. The typed refusals below (PrincipalNotFoundError /
+        # PrincipalHasKeepsError / PrincipalOwnsGovernedRowsError) are not SurrealStoreError,
+        # so the seam re-raises them untouched; a transport fault / exhausted contention too.
+        with wrap_store_rejection(
+            PrincipalStoreError,
+            f"could not delete principal {email!r}",
+        ):
+            principal = await self.get_by_email(email)
+            if principal is None:
+                raise PrincipalNotFoundError(f"no principal with email {email!r}")
+            principal_id_part = principal.id.partition(":")[2] or principal.id
+            # ⚠ §FR-4 REFUSE-WHILE-KEEPING (BEFORE any DELETE, so a refusal removes NOTHING).
+            # A keeper cannot be hard-deleted while they keep — a ``keep.keeper`` FIELD LINK
+            # does NOT auto-clean (store law §2), so the delete would dangle it. Read the
+            # kept keep ids via an IndexScan on the ``keep_keeper`` index (packet-60 Fork A),
+            # bound param, mirroring the ``principal_key`` count query below — NO KeepStore
+            # dependency (issued on this store's OWN connection). ≥1 kept keep ⇒ loud refusal
+            # naming ALL of them + the remediation.
+            kept_keep_rows = self._as_rows(
                 await self._query(
-                    f"SELECT count() FROM {MEMORY_TABLE} "
-                    f"WHERE {_COL_OWNER_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
+                    f"SELECT {_COL_ID} FROM {KEEP_TABLE} "
+                    f"WHERE {_COL_KEEP_KEEPER} = type::record('{PRINCIPAL_TABLE}', $pid)",
+                    {"pid": principal_id_part},
+                ),
+                noun="kept-keep lookup before a principal delete",
+            )
+            if kept_keep_rows:
+                kept_keep_ids = [str(row[_COL_ID]) for row in kept_keep_rows]
+                raise PrincipalHasKeepsError(
+                    f"cannot delete principal {email!r}: they keep {len(kept_keep_ids)} "
+                    f"keep(s) ({', '.join(kept_keep_ids)}) — reassign the keeper "
+                    f"(lore-adm set-keeper) or delete the keep (lore-adm delete-keep) first"
+                )
+            # ⚠ SF-63-5 REFUSE-WHILE-OWNING-A-GOVERNED-ROW (BEFORE any DELETE — packet 63a-ii,
+            # design §10.7-Z). ``memory.owner_principal`` is a ``record<principal>`` link on a GOVERNED
+            # row — a LIVE dependency, NOT the retired-history dangle the agent/audit back-links
+            # tolerate. Hard-deleting the owner would silently dangle it. Packet 64's admin
+            # ``set_owner`` will orphan every owned governed row to NONE (audited) INSIDE the delete
+            # transaction; until that mechanism lands, REFUSE loud — naming the count + the mechanism —
+            # rather than dangle. The count is an IndexScan on the §4.1 ``memory_owner_principal`` index.
+            # ⚠ TOLERANT of a store WITHOUT the memory table (a pre-retrofit / principal-only store owns
+            # no governed rows): gated on table EXISTENCE, never on swallowing an error — a connection
+            # fault during the existence probe PROPAGATES (fail-CLOSED), never read as "0 owned rows".
+            from loremaster.governed import group_all_count
+
+            if await self._table_exists(MEMORY_TABLE):
+                # am-37 §10.1(a): read through the ONE fail-CLOSED reader. A malformed answer raises
+                # ``SurrealStoreError`` (the class a REJECTED count read raises too), which this
+                # method's wrap (am-37 §12) surfaces as ``PrincipalStoreError("could not delete …")``;
+                # either way the delete does NOT proceed — never a ``0`` that bypasses this guard and
+                # dangles owned rows.
+                owned_count = group_all_count(
+                    await self._query(
+                        f"SELECT count() FROM {MEMORY_TABLE} "
+                        f"WHERE {_COL_OWNER_PRINCIPAL} = type::record('{PRINCIPAL_TABLE}', $pid) "
+                        f"GROUP ALL",
+                        {"pid": principal_id_part},
+                    ),
+                    noun="governed owned-row count",
+                )
+                if owned_count > 0:
+                    raise PrincipalOwnsGovernedRowsError(
+                        f"cannot delete principal {email!r}: they own {owned_count} governed "
+                        f"{MEMORY_TABLE} row(s) — a governed row's owner is a LIVE dependency (never a "
+                        f"silent dangle). Packet 64's admin `set_owner` orphans them to NONE (audited) "
+                        f"inside the delete; until then the delete is refused (SF-63-5)"
+                    )
+            # Count the keys about to be cascaded — the CLI's audit line reports it. A
+            # separate read (execute_transaction returns None), taken just before the
+            # atomic cascade; for an admin op the tiny window is acceptable.
+            # am-37 §13 B F-1: the ONE fail-closed GROUP ALL reader (a wrong-shaped answer raises —
+            # it used to serve ``0`` / coerce ``"3"`` / raise ``TypeError``) — before the cascade runs.
+            cascaded = group_all_count(
+                await self._query(
+                    f"SELECT count() FROM {PRINCIPAL_KEY_TABLE} "
+                    f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid) "
                     f"GROUP ALL",
                     {"pid": principal_id_part},
-                )
+                ),
+                noun="cascaded principal-key count",
             )
-            owned_count = int(owned_rows[0].get("count", 0)) if owned_rows else 0
-            if owned_count > 0:
-                raise PrincipalOwnsGovernedRowsError(
-                    f"cannot delete principal {email!r}: they own {owned_count} governed "
-                    f"{MEMORY_TABLE} row(s) — a governed row's owner is a LIVE dependency (never a "
-                    f"silent dangle). Packet 64's admin `set_owner` orphans them to NONE (audited) "
-                    f"inside the delete; until then the delete is refused (SF-63-5)"
-                )
-        # Count the keys about to be cascaded — the CLI's audit line reports it. A
-        # separate read (execute_transaction returns None), taken just before the
-        # atomic cascade; for an admin op the tiny window is acceptable.
-        count_rows = self._as_rows(
-            await self._query(
-                f"SELECT count() FROM {PRINCIPAL_KEY_TABLE} "
-                f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid) "
-                f"GROUP ALL",
-                {"pid": principal_id_part},
+            # ⚠ CHILDREN FIRST (store law §4 — ``record<t>`` links do NOT auto-clean), THEN
+            # the parent, inside ONE ``execute_transaction`` so a half-cascade can never
+            # leave orphaned keys. execute_transaction verifies EVERY statement's status.
+            await execute_transaction(
+                f"BEGIN;\n"
+                f"DELETE {PRINCIPAL_KEY_TABLE} "
+                f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid);\n"
+                f"DELETE {PRINCIPAL_TABLE} WHERE {_COL_EMAIL} = $email;\n"
+                f"COMMIT;\n",
+                {"pid": principal_id_part, "email": email},
+                acquire=self._ensure_connection,
+                drop=self._drop_connection,
+                url=self._url,
             )
-        )
-        cascaded = int(count_rows[0].get("count", 0)) if count_rows else 0
-        # ⚠ CHILDREN FIRST (store law §4 — ``record<t>`` links do NOT auto-clean), THEN
-        # the parent, inside ONE ``execute_transaction`` so a half-cascade can never
-        # leave orphaned keys. execute_transaction verifies EVERY statement's status.
-        await execute_transaction(
-            f"BEGIN;\n"
-            f"DELETE {PRINCIPAL_KEY_TABLE} "
-            f"WHERE {_COL_PRINCIPAL_KEY_OWNER} = type::record('{PRINCIPAL_TABLE}', $pid);\n"
-            f"DELETE {PRINCIPAL_TABLE} WHERE {_COL_EMAIL} = $email;\n"
-            f"COMMIT;\n",
-            {"pid": principal_id_part, "email": email},
-            acquire=self._ensure_connection,
-            drop=self._drop_connection,
-            url=self._url,
-        )
         return cascaded
 
     # -- reads / mapping ----------------------------------------------------
@@ -859,11 +916,17 @@ class PrincipalStore:
         return None if value is None else str(value)
 
     @staticmethod
-    def _as_rows(result: Any) -> _RowList:
-        """Narrow a ``SELECT``/``CREATE``/``UPDATE`` result to its list of dict rows."""
-        if not isinstance(result, list):
-            return []
-        return [row for row in result if isinstance(row, dict)]
+    def _as_rows(result: Any, *, noun: str, landed: bool = False) -> _RowList:
+        """A ``SELECT``/``CREATE``/``UPDATE`` result's rows, through the ONE fail-closed row-list policy
+        :func:`loremaster.governed.rows_of` (am-37 §13 B): a non-list answer or a non-dict member RAISES
+        ``SurrealStoreError`` — it is a store fault, never ``[]`` (which ``set_*`` / ``revoke`` / ``delete``
+        would serve as "no such principal") and never a silently dropped member. ``[]`` is only ever the
+        engine's own empty answer. :class:`~loremaster.keeps.KeepStore` reads through this too. ``noun`` is
+        REQUIRED (am-37 §13.3 item 7: every caller names its read); ``landed=True`` marks a committed write's
+        own answer (item 5)."""
+        from loremaster.governed import rows_of
+
+        return rows_of(result, noun=noun, landed=landed)
 
     def _require_aware_utc(self, value: Any) -> datetime:
         """Normalise the REQUIRED ``created_at`` to tz-aware UTC, refusing a bad value.
@@ -932,6 +995,8 @@ class PrincipalStore:
 # admin invocation (2026-08-20), NOT the internal module path. ``python -m
 # loremaster.principals`` still works as a harmless fallback via the ``__main__`` guard.
 _CLI_PROG = "lore-adm"
+#: The package logger the lore-adm stderr handler attaches to (am-37 §13 A i); every store seam logs under it.
+_CLI_LOGGER_NAME = "loremaster"
 
 # The minted key secret's entropy (design §F4): ``secrets.token_urlsafe(32)`` — 256
 # bits of URL-safe randomness, the high-entropy random token a fast unsalted content
@@ -1102,19 +1167,120 @@ async def migrate_governed(
         message leg's agent-first ORDER, dangling senders, message half-pairs) or an unresolvable
         operator — never a silent partial widening of visibility.
     """
-    if table not in _MIGRATE_VALID_TABLES:
-        return _not_supported(table, store_was_read=False)
+    if _migrate_table_refusal(table) is not None:
+        return _not_supported(table, table_defined=None)
+    token = _OPERATOR_RESOLUTION.set(_OperatorResolution())
+    try:
+        return await _migrate_governed_resolved(
+            table=table, store=store, keep_store=keep_store, principal_store=principal_store
+        )
+    finally:
+        _OPERATOR_RESOLUTION.reset(token)
+
+
+async def _migrate_governed_resolved(
+    *, table: str, store: StoreHandle, keep_store: KeepStore, principal_store: PrincipalStore
+) -> MigrateGovernedResult:
+    """:func:`migrate_governed`'s body, run with THIS call's :class:`_OperatorResolution` record installed.
+
+    Every operator resolution on the call — the precondition's classification read AND any leg's — fills
+    that ONE record (amendment 36 FK-8); after the leg, its ``(total, admins)`` land on the ONE counts
+    model whenever any resolution ran, and a leg's unresolved-operator refusal is rendered FROM that model.
+    """
     preconditions = await _agent_migration_preconditions(store, table=table)
-    refusal = await _verb_level_refusal(preconditions, principal_store)
+    # amendment 37 §6 M-2: THE one derivation of ``table_defined`` — ``INFO FOR DB`` has run by here (the
+    # precondition read raises rather than answer without it), so every result from this point on carries
+    # the MEASURED answer, handed to each constructor below; nothing carries a default.
+    table_defined = table in preconditions.defined_tables
+    counts = await _measured_counts(preconditions, principal_store)
+    refusal = await _verb_level_refusal(preconditions, counts, principal_store)
     if refusal is not None:
-        return _refused(table, refusal)
-    if table == MEMORY_TABLE:
-        return await _migrate_memory_scope(store, keep_store, principal_store)
-    if table == AGENT_TABLE:
-        return await _migrate_agent_owner(store, keep_store, principal_store)
-    if table == MESSAGE_TABLE:
-        return await _migrate_message_owner(store, keep_store, principal_store, preconditions)
-    return _not_supported(table, store_was_read=True)
+        result = _refused(table, refusal, table_defined=table_defined)
+    elif table not in _MIGRATE_LEGS:
+        result = _not_supported(table, table_defined=table_defined)
+    elif not table_defined:
+        from loremaster.governed import MigrateGovernedResult
+
+        result = MigrateGovernedResult(
+            table=table,
+            scanned=0,
+            backfilled=0,
+            already_migrated=0,
+            refused=False,
+            table_defined=table_defined,
+            messages_left_unmigrated=None,
+        )
+    else:
+        result = await _MIGRATE_LEGS[table](
+            _LegCall(
+                store=store,
+                keep_store=keep_store,
+                principal_store=principal_store,
+                preconditions=preconditions,
+                counts=counts,
+                table_defined=table_defined,
+            )
+        )
+    resolution = _OPERATOR_RESOLUTION.get()
+    if resolution is not None and resolution.ran and counts.total_principals is None:
+        from loremaster.governed import MigratePreconditionCounts
+
+        counts = MigratePreconditionCounts(
+            **{
+                **counts.model_dump(),
+                "total_principals": resolution.total_principals,
+                "admin_principals": resolution.admin_principals,
+            }
+        )
+    if isinstance(result.reason, _UnresolvedPurpose):
+        result = dataclasses.replace(
+            result,
+            reason=_operator_unresolved_sentence(
+                str(result.reason),
+                total_principals=counts.total_principals,
+                admin_principals=counts.admin_principals,
+            ),
+        )
+    return dataclasses.replace(result, preconditions=counts)
+
+
+async def _measured_counts(
+    preconditions: AgentMigrationPreconditions, principal_store: PrincipalStore
+) -> MigratePreconditionCounts:
+    """THE measured counts (amendments 30/31/32): a field is ``None`` iff its read was gated off."""
+    from loremaster.governed import MigratePreconditionCounts
+
+    agent = preconditions.agent_facts_read
+    message = preconditions.message_facts_read
+    owners = {str(owner) for _row_id, owner in preconditions.owned_unscoped}
+    classification: OwnerClassification | None = "empty" if agent else None
+    total_principals: int | None = None
+    admin_principals: int | None = None
+    if agent and owners:
+        operator = await resolve_operator_principal(principal_store)
+        resolution = _OPERATOR_RESOLUTION.get()
+        if resolution is not None:
+            total_principals, admin_principals = resolution.total_principals, resolution.admin_principals
+        if operator is None:
+            classification = "unclassified"
+        elif owners == {operator.id}:
+            classification = "operator"
+        elif operator.id in owners:
+            classification = "mixed"
+        else:
+            classification = "foreign"
+    return MigratePreconditionCounts(
+        unscoped_agents=preconditions.unscoped_count if agent else None,
+        owned_but_unscoped_agents=len(preconditions.owned_unscoped) if agent else None,
+        scoped_but_ownerless_agents=len(preconditions.ownerless_scoped) if agent else None,
+        dangling_sender_messages=len(preconditions.dangling_senders) if message else None,
+        owned_but_unscoped_messages=len(preconditions.messages_owned_unscoped) if message else None,
+        scoped_but_ownerless_messages=len(preconditions.messages_scoped_ownerless) if message else None,
+        distinct_owner_principals=len(owners) if agent else None,
+        owner_classification=classification,
+        total_principals=total_principals,
+        admin_principals=admin_principals,
+    )
 
 
 #: The ruled VALID ``--table`` set (amendment 22 F-1 / amendment 23 FK-3): the governed tables amendment
@@ -1122,11 +1288,63 @@ async def migrate_governed(
 #: other governed table — but its backfill leg lands at 63c-ii.
 _MIGRATE_VALID_TABLES = (AGENT_TABLE, MEMORY_TABLE, MESSAGE_TABLE, BRIEF_TABLE)
 
+#: The ``--table`` help's domain clause, DERIVED from :data:`_MIGRATE_VALID_TABLES` for BOTH table verbs
+#: (am-37 §13 C N-3 / F-15) — never a restated list that drifts from the validator.
+_TABLE_HELP_DOMAIN = f"one of: {', '.join(_MIGRATE_VALID_TABLES)}"
 
-def _refused(table: str, reason: str) -> MigrateGovernedResult:
-    """A refusal receipt. ``scanned`` / ``already_migrated`` are ``None`` — every refusal returns before
-    any scan of the target table, so those counts were NOT MEASURED (amendment 22 §4 / amendment 24
-    FK-a: a ``0`` would be a served count describing no set); ``backfilled`` is the measured ``0``.
+#: The two ``--table`` verbs' names, as the ONE validator renders them in a refusal.
+_MIGRATE_VERB = "migrate-governed"
+_REPORT_VERB = "report-unmigrated"
+
+
+def _report_table_help_domain() -> str:
+    """``report-unmigrated``'s ``--table`` help domain, DERIVED: the migrate set first (in its order), then
+    every OTHER governed table (:func:`~loremaster.governed.governed_tables`, sorted) — the report accepts the
+    whole governed set (am-37 §13.4), so its help must name all of it."""
+    from loremaster.governed import governed_tables
+
+    others = sorted(governed_tables() - set(_MIGRATE_VALID_TABLES))
+    return f"one of: {', '.join((*_MIGRATE_VALID_TABLES, *others))}"
+
+
+def _backticked(names: tuple[str, ...]) -> str:
+    """``names`` as prose — each in its own backtick span, ``, ``-joined with a final ``and`` — so a refusal's
+    table list is DERIVED from the constant it describes (the derived-prose class, am-37 §13.3 #31)."""
+    spans = [f"`{name}`" for name in names]
+    return spans[0] if len(spans) == 1 else f"{', '.join(spans[:-1])} and {spans[-1]}"
+
+
+def _migrate_table_refusal(table: str) -> ValueError | None:
+    """THE one validator (:func:`loremaster.governed.validate_governed_table`, am-37 §13.4) over the MIGRATE
+    domain :data:`_MIGRATE_VALID_TABLES`: ``None`` when ``table`` is valid, else the refusal it raised.
+    ``migrate-governed`` asks it inside :func:`migrate_governed` AND in :func:`_dispatch_migrate_governed`
+    before any store is built — ``table`` is interpolated into the verb's statements, so no unvalidated name
+    reaches one. (``report-unmigrated`` passes the wider GOVERNED domain to the same function.)"""
+    from loremaster.governed import GovernedTableRefusedError, validate_governed_table
+
+    try:
+        validate_governed_table(table, domain=_MIGRATE_VALID_TABLES, verb=_MIGRATE_VERB)
+    except GovernedTableRefusedError as refusal:
+        return refusal
+    return None
+
+
+def _backfill_lands(table: str) -> str:
+    """Where a valid-but-legless table's backfill lands, DERIVED from its
+    :data:`~loremaster.governed.PENDING_GOVERNED_TABLES` entry (am-37 §13.4.2) — never a restated packet."""
+    from loremaster.governed import PENDING_GOVERNED_TABLES
+
+    pending = PENDING_GOVERNED_TABLES.get(table)
+    return f"lands at packet {pending.owning_packet}" if pending is not None else "has no migrate leg yet"
+
+
+def _refused(table: str, reason: str, *, table_defined: bool | None) -> MigrateGovernedResult:
+    """A refusal receipt. ``scanned`` / ``already_migrated`` are ``None`` — a refusal serves ``None`` for any
+    count it did not measure, and states in ``reason`` the counts its precondition DID read (amendment 22 §4 /
+    amendment 24 FK-a: a ``0`` would be a served count describing no set); ``backfilled`` is the measured
+    ``0``; ``messages_left_unmigrated`` is ``None`` (no refusal measures it). ``table_defined`` is the
+    caller's derived answer (amendment 37 §6 M-2): the measured truth for a refusal AFTER
+    ``INFO FOR DB``, ``None`` iff that read never ran.
 
     A ``refused=True`` result writes NOTHING: every refusal returns before any keep mint or stamp. (A leg
     whose backfill UPDATE RAISES after its idempotent project-keep mint is not a refusal — that keep may
@@ -1134,26 +1352,87 @@ def _refused(table: str, reason: str) -> MigrateGovernedResult:
     from loremaster.governed import MigrateGovernedResult
 
     return MigrateGovernedResult(
-        table=table, scanned=None, backfilled=0, already_migrated=None, refused=True, reason=reason
+        table=table,
+        scanned=None,
+        backfilled=0,
+        already_migrated=None,
+        refused=True,
+        reason=reason,
+        table_defined=table_defined,
+        messages_left_unmigrated=None,
     )
 
 
-def _not_supported(table: str, *, store_was_read: bool) -> MigrateGovernedResult:
-    """The "not supported" refusal. ``store_was_read`` says what the verb actually DID before answering:
-    an invalid name is answered with zero store I/O; ``brief`` is answered only after the store facts
-    were read (and passed) at the verb."""
-    if store_was_read:
+def _not_supported(table: str, *, table_defined: bool | None) -> MigrateGovernedResult:
+    """The "not supported" refusal. ``table_defined`` is the verb's derived answer (amendment 37 §6 M-2) and
+    says what the verb actually DID before answering: ``None`` — an invalid name, answered with zero store
+    I/O; a ``bool`` — a valid table with no migrate leg yet (``brief``), answered only after the store facts
+    were read (and passed) at the verb, carrying whether that table is defined.
+
+    Both table lists are DERIVED (am-37 §13.3 item 9 / #31): the "today:" list from
+    :data:`_MIGRATING_TABLES`, the governed list from :data:`_MIGRATE_VALID_TABLES`."""
+    if table_defined is not None:
         return _refused(
             table,
-            f"migrate-governed does not yet migrate `{BRIEF_TABLE}` — its backfill lands at packet "
-            f"63c-ii (today: `{MEMORY_TABLE}`, `{AGENT_TABLE}` and `{MESSAGE_TABLE}`); the store's "
-            "governed-table preconditions were read and passed, and nothing was written",
+            f"{_MIGRATE_VERB} does not yet migrate `{table}` — its backfill {_backfill_lands(table)} "
+            f"(today: {_backticked(_MIGRATING_TABLES)}); the store's governed-table preconditions were read "
+            "and passed, and nothing was written",
+            table_defined=table_defined,
         )
+    refusal = _migrate_table_refusal(table)
+    if refusal is None:
+        raise AssertionError(f"`{table}` is a valid migrate table, answered not-supported with no store read")
+    legless = "; ".join(
+        f"`{name}`'s backfill {_backfill_lands(name)}"
+        for name in _MIGRATE_VALID_TABLES
+        if name not in _MIGRATING_TABLES
+    )
     return _refused(
         table,
-        f"migrate-governed does not support table {sanitise_line(table)!r} — the governed tables "
-        f"are `{MEMORY_TABLE}`, `{AGENT_TABLE}`, `{MESSAGE_TABLE}` and `{BRIEF_TABLE}` (`{BRIEF_TABLE}`"
-        "'s backfill lands at packet 63c-ii; task/finding land at 64); nothing was read or written",
+        f"{refusal}{f' ({legless})' if legless else ''}; nothing was read or written",
+        table_defined=None,
+    )
+
+
+@dataclass
+class _OperatorResolution:
+    """What :func:`resolve_operator_principal` measured on ONE ``migrate_governed`` call (amendment 36 FK-8).
+
+    Installed per call in :data:`_OPERATOR_RESOLUTION` (a ``ContextVar``, so concurrent calls never share
+    one); EVERY resolution on the call writes it, and the verb carries its two counts onto the ONE
+    :class:`~loremaster.governed.MigratePreconditionCounts`. Both ``None`` ⇔ no resolution ran.
+    """
+
+    total_principals: int | None = None
+    admin_principals: int | None = None
+
+    @property
+    def ran(self) -> bool:
+        """Whether any operator resolution ran on this call."""
+        return self.total_principals is not None
+
+
+_OPERATOR_RESOLUTION: contextvars.ContextVar[_OperatorResolution | None] = contextvars.ContextVar(
+    "_operator_resolution", default=None
+)
+
+
+class _UnresolvedPurpose(str):
+    """A leg's unresolved-operator refusal REASON before it is rendered: the leg knows only WHAT it needed
+    the operator for; :func:`_migrate_governed_resolved` renders the sentence FROM the counts model once the
+    call's resolution has landed on it (amendment 36 FK-8 — the counts are fields, never restated)."""
+
+
+def _operator_unresolved_sentence(
+    purpose: str, *, total_principals: int | None, admin_principals: int | None
+) -> str:
+    """THE teaching for an unresolvable operator — the ONE template every refusal renders (the verb-level
+    one, each leg's, and the out-of-verb fallback): what the operator is needed FOR, the principal and
+    admin counts it was resolved against (measured, never restated), and the remedy."""
+    return (
+        f"cannot resolve THE operator principal {purpose} ({total_principals} principals, "
+        f"{admin_principals} admins) — provision a single operator principal (or a single admin) before "
+        "migrating"
     )
 
 
@@ -1170,6 +1449,9 @@ async def resolve_operator_principal(principal_store: PrincipalStore) -> Princip
     """
     principals = await principal_store.list()
     admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
+    resolution = _OPERATOR_RESOLUTION.get()
+    if resolution is not None:
+        resolution.total_principals, resolution.admin_principals = len(principals), len(admins)
     if len(admins) == 1:
         return admins[0]
     if len(principals) == 1:
@@ -1178,16 +1460,19 @@ async def resolve_operator_principal(principal_store: PrincipalStore) -> Princip
 
 
 async def _operator_unresolved(principal_store: PrincipalStore, *, purpose: str) -> str:
-    """THE teaching for an unresolvable operator (packet 63c-i-a) — ONE home for the sentence the memory,
-    agent and message legs and the verb-level refusal each serve when :func:`resolve_operator_principal`
-    answers ``None``: the principal and admin counts it resolved against (measured, never restated) and
-    the remedy. ``purpose`` names what the operator is needed FOR at that call site."""
+    """A leg's refusal when :func:`resolve_operator_principal` answered ``None`` — ``purpose`` names what the
+    operator is needed FOR at that call site.
+
+    Inside a ``migrate_governed`` call (the only production caller) it answers the :class:`_UnresolvedPurpose`
+    the verb renders from the counts model. Outside one there is no model to render from, so it measures the
+    counts itself and renders THE same template (:func:`_operator_unresolved_sentence`) directly.
+    """
+    if _OPERATOR_RESOLUTION.get() is not None:
+        return _UnresolvedPurpose(purpose)
     principals = await principal_store.list()
     admins = [principal for principal in principals if principal.role == _ROLE_ADMIN]
-    return (
-        f"cannot resolve THE operator principal {purpose} ({len(principals)} principals, "
-        f"{len(admins)} admins) — provision a single operator principal (or a single admin) before "
-        "migrating"
+    return _operator_unresolved_sentence(
+        purpose, total_principals=len(principals), admin_principals=len(admins)
     )
 
 
@@ -1195,6 +1480,9 @@ async def _migrate_memory_scope(
     store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
+    *,
+    table_defined: bool,
+    defined_fields: frozenset[str],
 ) -> MigrateGovernedResult:
     """Backfill the ``memory`` legacy rows' NONE scope to the canonical PROJECT keep (§2.1/§2.2).
 
@@ -1203,10 +1491,23 @@ async def _migrate_memory_scope(
     keep, so a fleet member of the project household regains sight of its own memory. Idempotent:
     a re-run finds 0 NONE-scope rows and backfills nothing. All store access routes through the
     injected ``store`` handle's driver (R4).
+
+    ORDERING BOUND (am-37 §13.2): this leg's pre-boot schema gate (:func:`_schema_predates_refusal`) is its
+    FIRST action — it runs before any leg read or write (operator resolution, keep mint, counts, backfill).
+    A verb-level refusal (:func:`_verb_level_refusal`) may precede this gate; each such refusal is true
+    independently of the schema, and this gate runs before any leg read or write.
     """
     from lorerunes.pdp import keep_scope
 
     from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
+
+    # §1.9 item 1: the backfill statement is a FUNCTION-LOCAL literal passed to BOTH the statement-scoped
+    # exemption and the execution — built FIRST so the pre-boot schema gate (am-37 §13 D) derives the
+    # columns it needs from THIS text, before any read or write.
+    backfill_statement = f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE"
+    schema_refusal = _schema_predates_refusal(MEMORY_TABLE, backfill_statement, defined_fields)
+    if schema_refusal is not None:
+        return _refused(MEMORY_TABLE, schema_refusal, table_defined=table_defined)
 
     # Resolve THE operator principal (the project keep's keeper) through the ONE shared helper
     # (ruling §4.C / §6 ONE IMPLEMENTATION — memory AND agent AND message route through it, proven by
@@ -1216,6 +1517,7 @@ async def _migrate_memory_scope(
         return _refused(
             MEMORY_TABLE,
             await _operator_unresolved(principal_store, purpose="to keep the project keep"),
+            table_defined=table_defined,
         )
 
     # Mint / get the canonical project keep (idempotent CAS on the UNIQUE key, SF-63-4).
@@ -1233,6 +1535,8 @@ async def _migrate_memory_scope(
             backfilled=0,
             already_migrated=already,
             refused=False,
+            table_defined=table_defined,
+            messages_left_unmigrated=None,
         )
     # The backfill UPDATE, driver-routed (R4). ``scope IS NONE`` is index-served on the scope index
     # (probe-63 P5), so this is bounded even on a large dirty store. It is NOT member-reachable
@@ -1245,9 +1549,8 @@ async def _migrate_memory_scope(
     # orphan → RED), and R1 self-containment demands the literal, the seam call, and the exempt entry
     # live in the SAME symbol. ONE source in code, passed to BOTH the statement-scoped exemption (the
     # golden the F5 classifier's leg 2 matches) AND the executed statement.
-    backfill_statement = f"UPDATE {MEMORY_TABLE} SET scope = $scope WHERE scope IS NONE"
     with governed_exempt("migrate-governed", statement=backfill_statement):
-        await run_query(
+        stamped = await run_query(
             acquire=store.acquire,
             drop=store.drop,
             url=store.url,
@@ -1260,9 +1563,11 @@ async def _migrate_memory_scope(
     return MigrateGovernedResult(
         table=MEMORY_TABLE,
         scanned=unmigrated + already,
-        backfilled=unmigrated,
+        backfilled=_rows_stamped(stamped, noun="governed memory-scope backfill"),
         already_migrated=already,
         refused=False,
+        table_defined=table_defined,
+        messages_left_unmigrated=None,
     )
 
 
@@ -1270,7 +1575,10 @@ async def _scope_count(store: StoreHandle, table: str, *, none: bool) -> int:
     """Count the rows of ``table`` whose ``scope`` IS (``none=True``) / IS NOT NONE, driver-routed.
 
     Index-served on the scope index (``= NONE`` / a real scope both IndexScan on 3.2.4 — probe-63
-    P5). A ``count() … GROUP ALL`` over an empty set returns no row, so an absent count reads 0.
+    P5). A ``count() … GROUP ALL`` over an empty set returns no row, so an EMPTY list reads 0; any other
+    wrong-shaped answer raises (amendment 37 §6 F-12 — THE fail-closed policy :func:`_governed_select`
+    applies: a wrong-shaped dependency never decides a write, via
+    :func:`loremaster.governed.group_all_count`).
     """
     result = await run_query(
         acquire=store.acquire,
@@ -1284,9 +1592,9 @@ async def _scope_count(store: StoreHandle, table: str, *, none: bool) -> int:
         params={},
         logger=logger,
     )
-    if isinstance(result, list) and result and isinstance(result[0], dict):
-        return int(result[0].get("count", 0) or 0)
-    return 0
+    from loremaster.governed import group_all_count
+
+    return group_all_count(result, noun="governed scope count")
 
 
 #: THE one bound on every list a governed-migration refusal serves (packet 63c-i-a, amendment 20 §8.2 —
@@ -1320,19 +1628,32 @@ class AgentMigrationPreconditions:
             (i) (amendment 24 §2 door #2). Read only for ``table='message'``.
         messages_scoped_ownerless: Message ids with a scope but no owner — half-pair (ii) (amendment 25).
             Read only for ``table='message'``.
+        defined_fields: The field names ``INFO FOR TABLE <table>`` lists for the ``--table`` being
+            migrated (amendment 37 §13 D) — read ONCE, right after the ``INFO FOR DB`` gate and only when
+            that table is DEFINED (empty otherwise: ``INFO FOR TABLE`` on an undefined table answers EMPTY
+            maps, never an error — store-ref, so definedness is never inferred from it). Each leg's
+            pre-boot schema gate (:func:`_schema_predates_refusal`) decides from THIS answer.
     """
 
     unscoped_count: int
     owned_unscoped: tuple[tuple[Any, Any], ...]
     ownerless_scoped: tuple[Any, ...]
+    defined_tables: frozenset[str] = frozenset()
+    agent_facts_read: bool = False
+    message_facts_read: bool = False
     dangling_senders: tuple[tuple[Any, Any], ...] = ()
     messages_owned_unscoped: tuple[Any, ...] = ()
     messages_scoped_ownerless: tuple[Any, ...] = ()
+    defined_fields: frozenset[str] = frozenset()
 
 
 async def _governed_select(store: StoreHandle, *, noun: str, label: str, statement: str) -> list[Any]:
-    """One parameterless governed-precondition SELECT, driver-routed (R4); a non-list answer reads as no
-    rows (the same tolerance :func:`_scope_count` applies to its ``GROUP ALL`` read)."""
+    """One parameterless governed-precondition SELECT, driver-routed (R4), read through the ONE
+    fail-closed row-list policy :func:`loremaster.governed.rows_of` (amendment 37 §13 B F-7): a non-list
+    answer, or a non-dict member (which a filter would have silently dropped — a precondition row that
+    vanishes), RAISES :class:`SurrealStoreError`: a wrong-shaped dependency never decides a write."""
+    from loremaster.governed import rows_of
+
     rows = await run_query(
         acquire=store.acquire,
         drop=store.drop,
@@ -1343,7 +1664,7 @@ async def _governed_select(store: StoreHandle, *, noun: str, label: str, stateme
         params={},
         logger=logger,
     )
-    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    return rows_of(rows, noun=noun)
 
 
 def _by_id(values: list[Any]) -> tuple[Any, ...]:
@@ -1376,17 +1697,46 @@ async def _agent_migration_preconditions(
     Returns:
         The :class:`AgentMigrationPreconditions` store facts, every list sorted by id.
     """
-    info = await run_query(
-        acquire=store.acquire,
-        drop=store.drop,
-        url=store.url,
-        noun="governed table probe",
-        label="governed.table_probe.rejected",
-        statement="INFO FOR DB",
-        params={},
-        logger=logger,
+    from loremaster.governed import map_of
+
+    # am-37 §13.1 item 1: the ONE fail-closed INFO-map reader (the cloned third shape policy that stood
+    # here is deleted). ``tables`` is REQUIRED on this answer: a map without it is a wrong shape, never
+    # "no tables defined".
+    info = map_of(
+        await run_query(
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+            noun="governed table probe",
+            label="governed.table_probe.rejected",
+            statement="INFO FOR DB",
+            params={},
+            logger=logger,
+        ),
+        noun="INFO FOR DB (governed-migration table probe)",
+        required=("tables",),
     )
-    defined = info.get("tables", {}) if isinstance(info, dict) else {}
+    defined = info["tables"]
+    # am-37 §13 D: ONE ``INFO FOR TABLE`` read, immediately after the table gate and before ANY leg read or
+    # write — only for a DEFINED ``--table`` (an undefined one short-circuits above: one ``INFO FOR DB``, no
+    # field read). ``table`` reached here validated against ``_MIGRATE_VALID_TABLES`` by the verb.
+    defined_fields: frozenset[str] = frozenset()
+    if table is not None and table in defined:
+        table_info = map_of(
+            await run_query(
+                acquire=store.acquire,
+                drop=store.drop,
+                url=store.url,
+                noun="governed field probe",
+                label="governed.field_probe.rejected",
+                statement=f"INFO FOR TABLE {table}",
+                params={},
+                logger=logger,
+            ),
+            noun=f"INFO FOR TABLE {table} (governed-migration field probe)",
+            required=("fields",),
+        )
+        defined_fields = frozenset(table_info["fields"])
     unscoped_count = 0
     owned_unscoped: list[tuple[Any, Any]] = []
     ownerless_scoped: list[Any] = []
@@ -1436,12 +1786,16 @@ async def _agent_migration_preconditions(
             else:
                 messages_scoped_ownerless.append(row.get("id"))
     return AgentMigrationPreconditions(
+        defined_tables=frozenset(defined),
+        agent_facts_read=AGENT_TABLE in defined,
+        message_facts_read=table == MESSAGE_TABLE and MESSAGE_TABLE in defined,
         unscoped_count=unscoped_count,
         owned_unscoped=_by_id(owned_unscoped),
         ownerless_scoped=_by_id(ownerless_scoped),
         dangling_senders=_by_id(dangling),
         messages_owned_unscoped=_by_id(messages_owned_unscoped),
         messages_scoped_ownerless=_by_id(messages_scoped_ownerless),
+        defined_fields=defined_fields,
     )
 
 
@@ -1455,42 +1809,47 @@ def _id_sample(ids: tuple[Any, ...] | list[Any]) -> str:
     return f"First {len(shown)} of {len(ids)} ids shown: {', '.join(shown)}."
 
 
-def _owned_unscoped_part(owned_unscoped: tuple[tuple[Any, Any], ...], operator: Principal | None) -> str:
-    """The §2.1 owned-but-unscoped part, with the DERIVED diagnosis (amendment 19 D-3 F-1 / amendment 20
-    §8.4): who owns the rows — the operator (the E3 population), named other principals (bounded by the
-    same constant — amendment 20 §8.2), or, when the operator is unresolvable, NOBODY classified (any of
-    them may BE the operator)."""
-    count = len(owned_unscoped)
-    head = f"{count} agent row(s) carry an owner but no scope (§2.1)"
+def _owned_unscoped_part(
+    owned_unscoped: tuple[tuple[Any, Any], ...], operator: Principal | None, counts: MigratePreconditionCounts
+) -> str:
+    """The §2.1 owned-but-unscoped part — the owner sentence DERIVED from ``owner_classification`` and
+    ``distinct_owner_principals`` (amendment 31); principal ids are SAMPLES."""
+    head = f"{counts.owned_but_unscoped_agents} agent row(s) carry an owner but no scope (§2.1)"
     sample = _id_sample([row_id for row_id, _owner in owned_unscoped])
-    if operator is None:
+    classification = counts.owner_classification
+    if classification == "unclassified":
         return (
             f"ALSO: {head}; their owners are UNCLASSIFIED — with the operator unresolved, any of them may "
             f"BE the operator. {sample}"
         )
-    # Owners compare and render by the SDK's own ``str(RecordID)`` — ``Principal.id`` is that same
-    # rendering (``_row_to_principal``) — so no id is hand-parsed (finding #248).
-    owners = [str(owner) for _row_id, owner in owned_unscoped]
-    operator_owned = sum(1 for owner in owners if owner == operator.id)
-    others = sorted({owner for owner in owners if owner != operator.id})
-    parts = [f"{head}."]
-    if operator_owned:
-        parts.append(
-            f"{operator_owned} of them are owned by the operator — registered by a pkt-62–63b image; "
-            "see amendment-1 E3."
+    operator_id = operator.id if operator is not None else None
+    others = sorted({str(owner) for _row_id, owner in owned_unscoped if str(owner) != operator_id})
+    named = [sanitise_line(owner) for owner in others[:_REFUSAL_ID_SAMPLE_SIZE]]
+    if classification == "operator":
+        owner_sentence = (
+            "They are owned by the operator — registered by a pkt-62–63b image; see amendment-1 E3."
         )
-    if others:
-        named = [sanitise_line(owner) for owner in others[:_REFUSAL_ID_SAMPLE_SIZE]]
-        parts.append(
-            f"{count - operator_owned} are owned by {len(others)} other principal(s) "
+    elif classification == "foreign":
+        owner_sentence = (
+            f"They are owned by {counts.distinct_owner_principals} other principal(s) "
             f"(first {len(named)} named: {', '.join(named)})."
         )
-    parts.append(sample)
-    return " ".join(parts)
+    else:
+        # amendment 37 §6 F-9 (the am-34 §2 form): ONE integer, ``distinct_owner_principals``, rendered AS
+        # THE TOTAL it measures (the operator included) — never labelled "other", and no second integer
+        # (a shown-sample count) beside it. The ids after it are SAMPLES of the others.
+        owner_sentence = (
+            "They are owned by the operator — registered by a pkt-62–63b image; see amendment-1 E3 — and by "
+            f"others: {counts.distinct_owner_principals} distinct principal(s) in all, the operator among "
+            f"them (a sample of the others: {', '.join(named)})."
+        )
+    return " ".join([f"{head}.", owner_sentence, sample])
 
 
 async def _verb_level_refusal(
-    preconditions: AgentMigrationPreconditions, principal_store: PrincipalStore
+    preconditions: AgentMigrationPreconditions,
+    counts: MigratePreconditionCounts,
+    principal_store: PrincipalStore,
 ) -> str | None:
     """The verb-level store refusal (amendment 19 D-1 / 20 §8.4 / 22 F-2 / 24 door #1), or ``None``.
 
@@ -1503,72 +1862,273 @@ async def _verb_level_refusal(
     parts: list[str] = []
     if preconditions.owned_unscoped:
         operator = await resolve_operator_principal(principal_store)
-        if operator is None:
-            parts.append(
-                await _operator_unresolved(principal_store, purpose="to classify the rows below") + "."
+        if counts.owner_classification == "unclassified":
+            sentence = _operator_unresolved_sentence(
+                "to classify the rows below",
+                total_principals=counts.total_principals,
+                admin_principals=counts.admin_principals,
             )
-        parts.append(_owned_unscoped_part(preconditions.owned_unscoped, operator))
+            parts.append(f"{sentence}.")
+        parts.append(_owned_unscoped_part(preconditions.owned_unscoped, operator, counts))
     if preconditions.ownerless_scoped:
-        count = len(preconditions.ownerless_scoped)
+        count = counts.scoped_but_ownerless_agents
         parts.append(
             f"{count} agent row(s) carry a scope but no owner — a half-applied store (one column of the "
             f"governed pair was stamped without the other). {_id_sample(preconditions.ownerless_scoped)}"
         )
     if not parts:
         return None
-    parts.append("Adjudicate these rows by hand before migrating ANY governed table; no row was stamped")
+    parts.extend(_message_problem_parts(preconditions, counts))
+    parts.append(
+        f"(The store holds {counts.unscoped_agents} agent row(s) with no scope in total.) Adjudicate "
+        "these "
+        "rows by hand before migrating ANY governed table; no row was stamped"
+    )
     return " ".join(parts)
 
 
-def _message_leg_refusal(preconditions: AgentMigrationPreconditions) -> str | None:
-    """The message leg's row-fact refusal (amendments 23 FK-2, 24 §2 door #2, 25, 26), or ``None``: ONE
-    refusal naming EVERY problem present, in :func:`_agent_migration_preconditions`' check order —
-    dangling senders, then each message half-pair — each with its true count and a bounded sample (THE
-    one :data:`_REFUSAL_ID_SAMPLE_SIZE`, per list). Byte-inert: nothing is stamped, the sound rows
-    included (one statement, one verdict). ORDER-class, not store-class: it refuses ``message`` only."""
+def _message_problem_parts(
+    preconditions: AgentMigrationPreconditions, counts: MigratePreconditionCounts
+) -> list[str]:
+    """Every MEASURED, NON-ZERO message problem, in check order (amendment 32 §2.1)."""
     parts: list[str] = []
-    if preconditions.dangling_senders:
+    if counts.dangling_sender_messages:
         dangling = preconditions.dangling_senders
         shown = [
             f"{sanitise_line(str(message_id))} (sender {sanitise_line(str(sender))})"
             for message_id, sender in dangling[:_REFUSAL_ID_SAMPLE_SIZE]
         ]
         parts.append(
-            f"{len(dangling)} legacy message(s) name a dangling sender — their `sender` link resolves to "
+            f"{counts.dangling_sender_messages} legacy message(s) name a dangling sender — their `sender` "
+            "link resolves to "
             f"no agent row, so no owner can be derived from it. First {len(shown)} of {len(dangling)} "
             f"shown: {', '.join(shown)}."
         )
-    for ids, fact in (
-        (preconditions.messages_owned_unscoped, "carry an owner but no scope"),
-        (preconditions.messages_scoped_ownerless, "carry a scope but no owner"),
+    for ids, count, fact in (
+        (
+            preconditions.messages_owned_unscoped,
+            counts.owned_but_unscoped_messages,
+            "carry an owner but no scope",
+        ),
+        (
+            preconditions.messages_scoped_ownerless,
+            counts.scoped_but_ownerless_messages,
+            "carry a scope but no owner",
+        ),
     ):
-        if ids:
+        if count:
             parts.append(
-                f"{len(ids)} message row(s) {fact} — a half-applied store (one column of the governed "
+                f"{count} message row(s) {fact} — a half-applied store (one column of the governed "
                 f"pair was stamped without the other). {_id_sample(ids)}"
             )
-    if not parts:
+    return parts
+
+
+def _message_leg_refusal(
+    preconditions: AgentMigrationPreconditions, counts: MigratePreconditionCounts
+) -> str | None:
+    """The message leg's row-fact refusal (amendments 23 FK-2, 24 §2 door #2, 25, 26), or ``None``: ONE
+    refusal naming EVERY problem present, in :func:`_agent_migration_preconditions`' check order —
+    dangling senders, then each message half-pair — each with its true count and a bounded sample (THE
+    one :data:`_REFUSAL_ID_SAMPLE_SIZE`, per list). Byte-inert: nothing is stamped, the sound rows
+    included (one statement, one verdict). ORDER-class, not store-class: it refuses ``message`` only."""
+    parts: list[str] = []
+    if preconditions.unscoped_count > 0:
+        parts.append(
+            f"cannot migrate `message` rows before the `agent` table is migrated "
+            f"({counts.unscoped_agents} un-migrated (NONE-scope) agent(s) remain) — a message's "
+            "owner_principal is read from sender.owner_principal, NONE for every un-migrated agent (§2.6 "
+            "agent-first ORDER); run migrate-governed for `agent` first."
+        )
+    parts.extend(_message_problem_parts(preconditions, counts))
+    order_parts = parts[:1] if preconditions.unscoped_count > 0 else []
+    row_parts = parts[len(order_parts) :]
+    if not row_parts:
+        return order_parts[0].rstrip(".") if order_parts else None
+    row_parts.append("Adjudicate these messages by hand before migrating `message`; no row was stamped")
+    return " ".join(order_parts + row_parts)
+
+
+class GovernedStatementError(RuntimeError):
+    """A migrate leg's backfill statement that the schema gate cannot read COMPLETELY (am-37 §13.3 item 8).
+
+    The leg statements are function-local literals (§1.9 item 1), so an unreadable one is OUR defect, never
+    operator input: it is deliberately OUTSIDE the lore-adm fault handler's tuple and TRACEBACKS (the
+    honest-developer gate :func:`_dispatch`'s docstring names). ``ValueError`` stays in that tuple for the
+    CLI-input checks it was listed for."""
+
+
+#: The keywords that END an ``UPDATE`` statement's ``SET`` clause — recognised by :func:`_set_columns` only
+#: at bracket depth 0 outside a string (am-37 §13.3 item 1).
+_SET_CLAUSE_END_KEYWORDS: frozenset[str] = frozenset({"WHERE", "RETURN", "TIMEOUT", "PARALLEL"})
+
+#: The keyword that OPENS the clause, under the same depth-0 / outside-a-string rule.
+_SET_CLAUSE_KEYWORD = "SET"
+
+#: The opening → closing bracket pairs the scanner tracks as ONE depth (a call's arguments, an array, an
+#: object literal — a comma inside any of them never splits an item).
+_SET_CLAUSE_BRACKETS: dict[str, str] = {"(": ")", "[": "]", "{": "}"}
+
+#: The string delimiters (SurrealQL ``'…'`` / ``"…"``; a backslash escapes the next character inside one).
+_SET_CLAUSE_QUOTES: frozenset[str] = frozenset({"'", '"'})
+
+#: One ``SET`` item: ``<column> <op>= <value>`` — ``=``, ``+=``, ``-=`` or ``+?=``, the value non-empty. A
+#: column must be a bare identifier; any other target (a nested path, a quoted name) is not one this gate
+#: can check against ``INFO FOR TABLE``'s field names, so it RAISES rather than guess.
+_SET_ITEM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\?|\+|-)?=(?!=)\s*\S", re.DOTALL)
+
+
+def _keyword_at(statement: str, index: int) -> str | None:
+    """The clause keyword starting at ``index`` when it stands as a whole word — preceded by whitespace (or
+    the start of the text) and followed by whitespace (or the end) — compared case-insensitively; else
+    ``None``. :class:`_SetClauseScanner` asks only at depth 0 outside a string."""
+    if index > 0 and not statement[index - 1].isspace():
         return None
-    parts.append("Adjudicate these messages by hand before migrating `message`; no row was stamped")
-    return " ".join(parts)
+    for keyword in (_SET_CLAUSE_KEYWORD, *_SET_CLAUSE_END_KEYWORDS):
+        after = index + len(keyword)
+        if statement[index:after].upper() == keyword and (
+            after == len(statement) or statement[after].isspace()
+        ):
+            return keyword
+    return None
 
 
-def _rows_stamped(update_result: Any) -> int:
+class _SetClauseScanner:
+    """THE one scanner over an ``UPDATE`` statement (am-37 §13.3 item 1): a single depth- AND quote-aware
+    pass. Bracket depth (``()``/``[]``/``{}``, one stack, so a mismatched closer is caught) and string state
+    (``'…'``/``"…"``, a backslash escaping the next character) are tracked TOGETHER; the top-level ``SET``
+    opens the clause; ``WHERE`` / ``RETURN`` / ``TIMEOUT`` / ``PARALLEL`` end it, and a comma splits it,
+    ONLY at depth 0 outside a string. No regex split beside the character loop — two grammars for one
+    clause is how a narrowed parse got in."""
+
+    def __init__(self, statement: str) -> None:
+        self._statement = statement
+        self._closers: list[str] = []
+        self._quote: str | None = None
+        self._escaped = False
+
+    def _nested(self, index: int) -> bool:
+        """Advance the string/bracket state over ``statement[index]``; ``True`` when that character is not a
+        top-level one (inside a string or brackets, or itself a quote/bracket)."""
+        character = self._statement[index]
+        if self._quote is not None:
+            if self._escaped:
+                self._escaped = False
+            elif character == "\\":
+                self._escaped = True
+            elif character == self._quote:
+                self._quote = None
+            return True
+        if character in _SET_CLAUSE_QUOTES:
+            self._quote = character
+            return True
+        if character in _SET_CLAUSE_BRACKETS:
+            self._closers.append(_SET_CLAUSE_BRACKETS[character])
+            return True
+        if character in _SET_CLAUSE_BRACKETS.values():
+            if not self._closers or self._closers.pop() != character:
+                raise GovernedStatementError(
+                    f"an unbalanced {character!r} at offset {index} in {self._statement!r}"
+                )
+            return True
+        return bool(self._closers)
+
+    def items(self) -> list[str]:
+        """The ``SET`` clause's raw items, split at top-level commas. Raises
+        :class:`GovernedStatementError` when the statement cannot be read completely."""
+        statement = self._statement
+        in_clause = False
+        clause_end = len(statement)
+        item_start = 0
+        items: list[str] = []
+        index = 0
+        while index < len(statement):
+            if self._nested(index):
+                index += 1
+                continue
+            keyword = _keyword_at(statement, index)
+            if keyword == _SET_CLAUSE_KEYWORD and not in_clause:
+                in_clause = True
+                index += len(keyword)
+                item_start = index
+                continue
+            if in_clause and keyword in _SET_CLAUSE_END_KEYWORDS:
+                clause_end = index
+                break
+            if in_clause and statement[index] == ",":
+                items.append(statement[item_start:index])
+                item_start = index + 1
+            index += 1
+        if self._quote is not None:
+            raise GovernedStatementError(f"an unterminated {self._quote} string in {statement!r}")
+        if self._closers:
+            raise GovernedStatementError(f"{len(self._closers)} unclosed bracket(s) in {statement!r}")
+        if not in_clause:
+            raise GovernedStatementError(f"not an `UPDATE … SET` statement: {statement!r}")
+        return [*items, statement[item_start:clause_end]]
+
+
+def _set_columns(statement: str) -> tuple[str, ...]:
+    """The columns an ``UPDATE <table> SET <col> = <expr>, …`` statement assigns, in statement order —
+    DERIVED from the statement text a leg executes (am-37 §13 D / §13.1 item 5: never a parallel column map),
+    read by THE one :class:`_SetClauseScanner`.
+
+    COMPLETE OR RAISE, never a subset (am-37 §13.3 item 1).
+
+    Raises:
+        GovernedStatementError: no top-level ``SET``; an unbalanced or mismatched bracket; an unterminated
+            string; or an item that is not ``<column> <op>= <value>`` (an empty one included). A statement
+            this gate cannot read completely is a programming defect, never a silently narrower requirement.
+    """
+    columns: list[str] = []
+    for item in _SetClauseScanner(statement).items():
+        match = _SET_ITEM.match(item)
+        if match is None:
+            raise GovernedStatementError(
+                f"a SET item that is not `<column> = <value>`: {item!r} in {statement!r}"
+            )
+        columns.append(match.group(1))
+    return tuple(columns)
+
+
+def _schema_predates_refusal(table: str, statement: str, defined_fields: frozenset[str]) -> str | None:
+    """The pre-boot schema teaching precondition (am-37 §13 D): the refusal reason when the columns
+    ``statement``'s ``SET`` assigns are not all DEFINED on ``table`` (``defined_fields`` — the ONE
+    ``INFO FOR TABLE`` read in :func:`_agent_migration_preconditions`), else ``None``.
+
+    Derived from the SCHEMA, never from the write's outcome: on a SCHEMAFULL table an ``UPDATE`` assigning
+    an undefined field is SILENT over zero rows and raises only over ≥ 1 (store-ref), so a store with no
+    legacy rows would "succeed" and the next legacy row would fail later, out of context. Each missing
+    column is quoted in its OWN backtick span (§13.1 item 3 — each is an identifier)."""
+    missing = [column for column in _set_columns(statement) if column not in defined_fields]
+    if not missing:
+        return None
+    columns = ", ".join(f"`{column}`" for column in missing)
+    return (
+        f"the `{table}` table has no {columns} column(s) — this store's schema predates the governed "
+        "columns; boot the new image once (its DDL defines them), then re-run migrate-governed"
+    )
+
+
+def _rows_stamped(update_result: Any, *, noun: str) -> int:
     """The number of rows a backfill ``UPDATE`` actually stamped — its returned row list (amendment 24 §2
     D2: a served ``backfilled`` is MEASURED, never the pre-count). An ``UPDATE`` returns the list of rows it
-    changed; anything else is an SDK contract break, surfaced loudly rather than guessed."""
-    if not isinstance(update_result, list):
-        raise TypeError(
-            "a governed backfill UPDATE returned "
-            f"{type(update_result).__name__}, not the list of rows it stamped"
-        )
-    return len(update_result)
+    changed; anything else — a non-list, or a non-dict member that ``len()`` would have counted as a
+    stamped row — is a store fault, raised as :class:`SurrealStoreError` through the ONE fail-closed
+    row-list policy :func:`loremaster.governed.rows_of` (am-37 §13 B F-6: the class the CLI launders, never
+    a ``TypeError``)."""
+    from loremaster.governed import rows_of
+
+    return len(rows_of(update_result, noun=noun, landed=True))
 
 
 async def _migrate_agent_owner(
     store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
+    *,
+    table_defined: bool,
+    defined_fields: frozenset[str],
 ) -> MigrateGovernedResult:
     """Backfill every NONE-scope ``agent`` row's governed triple in ONE scope-keyed statement
     (packet 63c-i-a, ruling §6 / §2.2 grandfather; the leg is named for its pkt-63b origin).
@@ -1589,16 +2149,33 @@ async def _migrate_agent_owner(
     the NAMED ``governed_exempt("migrate-governed")`` frame whose golden IS the executed statement;
     all store access is driver-routed (R4). The owner link is set store-side via ``type::record``
     (a bare id string does not coerce to a ``record<principal>``, store-ref §2).
+
+    ORDERING BOUND (am-37 §13.2): this leg's pre-boot schema gate (:func:`_schema_predates_refusal`) is its
+    FIRST action — it runs before any leg read or write (operator resolution, keep mint, counts, backfill).
+    A verb-level refusal (:func:`_verb_level_refusal`) may precede this gate; each such refusal is true
+    independently of the schema, and this gate runs before any leg read or write.
     """
     from lorerunes.pdp import keep_scope
 
     from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
+
+    # §1.9 item 1: the backfill statement is a FUNCTION-LOCAL literal passed to BOTH the statement-scoped
+    # exemption and the execution — built FIRST so the pre-boot schema gate (am-37 §13 D) derives the
+    # columns it needs from THIS text, before any read or write.
+    backfill_statement = (
+        f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner), "
+        "owner_agent = id, scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
+    )
+    schema_refusal = _schema_predates_refusal(AGENT_TABLE, backfill_statement, defined_fields)
+    if schema_refusal is not None:
+        return _refused(AGENT_TABLE, schema_refusal, table_defined=table_defined)
 
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
         return _refused(
             AGENT_TABLE,
             await _operator_unresolved(principal_store, purpose="to own the fleet's agents"),
+            table_defined=table_defined,
         )
 
     unmigrated = await _scope_count(store, AGENT_TABLE, none=True)
@@ -1610,20 +2187,17 @@ async def _migrate_agent_owner(
             backfilled=0,
             already_migrated=already,
             refused=False,
+            table_defined=table_defined,
+            messages_left_unmigrated=None,
         )
     project_keep = await keep_store.get_or_create_keyed(
         key=PROJECT_KEEP_KEY, type="project", keeper_email=operator.email, name="lore"
     )
     project_scope = keep_scope(project_keep.id.partition(":")[2] or project_keep.id)
     operator_id = operator.id.partition(":")[2] or operator.id
-    # ONE statement, three columns, scope-keyed (ruling §6). §1.9 item 1: a FUNCTION-LOCAL literal
-    # (never a module constant) passed to BOTH the statement-scoped exemption and the execution.
-    backfill_statement = (
-        f"UPDATE {AGENT_TABLE} SET owner_principal = type::record('{PRINCIPAL_TABLE}', $owner), "
-        "owner_agent = id, scope = $scope WHERE scope IS NONE AND owner_principal IS NONE"
-    )
+    # ONE statement, three columns, scope-keyed (ruling §6) — built at the top of this leg (above).
     with governed_exempt("migrate-governed", statement=backfill_statement):
-        await run_query(
+        stamped = await run_query(
             acquire=store.acquire,
             drop=store.drop,
             url=store.url,
@@ -1636,17 +2210,22 @@ async def _migrate_agent_owner(
     return MigrateGovernedResult(
         table=AGENT_TABLE,
         scanned=unmigrated + already,
-        backfilled=unmigrated,
+        backfilled=_rows_stamped(stamped, noun="governed agent backfill"),
         already_migrated=already,
         refused=False,
+        table_defined=table_defined,
+        messages_left_unmigrated=None,
     )
 
 
-async def _migrate_message_owner(
+async def _migrate_message_owner(  # noqa: PLR0913 - the verb's ONE derived answer rides beside the facts
     store: StoreHandle,
     keep_store: KeepStore,
     principal_store: PrincipalStore,
     preconditions: AgentMigrationPreconditions,
+    counts: MigratePreconditionCounts,
+    *,
+    table_defined: bool,
 ) -> MigrateGovernedResult:
     """Backfill every legacy (NONE-scope, NONE-owner) ``message`` row's owner from its SENDER + scope to
     the project keep (§4.C / §2.6). OWNED-BY-LINK: ``owner_agent = sender``, ``owner_principal =
@@ -1664,32 +2243,47 @@ async def _migrate_message_owner(
 
     Every refusal is byte-inert and measured nothing of the target table (``None`` receipts). Otherwise
     it mints/gets the canonical project keep (idempotent CAS, SF-63-4) and runs ONE self-guarding UPDATE
-    — ``WHERE scope IS NONE AND owner_principal IS NONE`` (amendment 21 CD-1: scope-keyed, and never
-    re-stamps a row that is half of a governed pair even when the refusal in front of it cannot fire).
-    The counts are SCOPE-keyed; ``backfilled`` is the rows the UPDATE actually stamped (amendment 24 D2).
+    — ``WHERE scope IS NONE AND owner_principal IS NONE AND sender.owner_principal IS NOT NONE AND
+    sender.scope IS NOT NONE`` (amendment 21 CD-1: scope-keyed, and never re-stamps a row that is half of a
+    governed pair even when the refusal in front of it cannot fire; the SENDER-soundness clause never
+    stamps a message whose sender has no owner or no scope). The counts are SCOPE-keyed; ``backfilled`` is
+    the rows the UPDATE actually stamped (amendment 24 D2). The rows still un-migrated AFTER the UPDATE —
+    commonly those the sender-soundness clause SKIPPED, plus any row inserted during the run — are then
+    measured by ONE separate count read into ``messages_left_unmigrated`` (am-37 §6 F-10 / §13 C F-4),
+    which the CLI renders as a sentence iff it is > 0 — a skipped row is reported, never a silent fate.
     Idempotent. NOT member-reachable, so the write attributes at the F5 seam via the NAMED
     ``governed_exempt("migrate-governed")`` frame; store access is driver-routed (R4).
+
+    ORDERING BOUND (am-37 §13.2): this leg's pre-boot schema gate (:func:`_schema_predates_refusal`) is its
+    FIRST action — it runs before any leg read or write (operator resolution, keep mint, counts, backfill).
+    A verb-level refusal (:func:`_verb_level_refusal`) may precede this gate; each such refusal is true
+    independently of the schema, and this gate runs before any leg read or write.
     """
     from lorerunes.pdp import keep_scope
 
-    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt
+    from loremaster.governed import PROJECT_KEEP_KEY, MigrateGovernedResult, governed_exempt, group_all_count
 
-    if preconditions.unscoped_count > 0:
-        return _refused(
-            MESSAGE_TABLE,
-            f"cannot migrate `message` rows before the `agent` table is migrated "
-            f"({preconditions.unscoped_count} un-migrated (NONE-scope) agent(s) remain) — a message's "
-            "owner_principal is read from sender.owner_principal, NONE for every un-migrated agent (§2.6 "
-            "agent-first ORDER); run migrate-governed for `agent` first",
-        )
-    row_refusal = _message_leg_refusal(preconditions)
+    # §1.9 item 1: the backfill statement is a FUNCTION-LOCAL literal passed to BOTH the statement-scoped
+    # exemption and the execution — built FIRST so the pre-boot schema gate (am-37 §13 D) derives the
+    # columns it needs from THIS text, before any read or write.
+    backfill_statement = (
+        f"UPDATE {MESSAGE_TABLE} SET owner_agent = sender, "
+        "owner_principal = sender.owner_principal, scope = $scope "
+        "WHERE scope IS NONE AND owner_principal IS NONE "
+        "AND sender.owner_principal IS NOT NONE AND sender.scope IS NOT NONE"
+    )
+    schema_refusal = _schema_predates_refusal(MESSAGE_TABLE, backfill_statement, preconditions.defined_fields)
+    if schema_refusal is not None:
+        return _refused(MESSAGE_TABLE, schema_refusal, table_defined=table_defined)
+    row_refusal = _message_leg_refusal(preconditions, counts)
     if row_refusal is not None:
-        return _refused(MESSAGE_TABLE, row_refusal)
+        return _refused(MESSAGE_TABLE, row_refusal, table_defined=table_defined)
     operator = await resolve_operator_principal(principal_store)
     if operator is None:
         return _refused(
             MESSAGE_TABLE,
             await _operator_unresolved(principal_store, purpose="to keep the project keep"),
+            table_defined=table_defined,
         )
 
     project_keep = await keep_store.get_or_create_keyed(
@@ -1700,18 +2294,17 @@ async def _migrate_message_owner(
     unmigrated = await _scope_count(store, MESSAGE_TABLE, none=True)
     already = await _scope_count(store, MESSAGE_TABLE, none=False)
     if unmigrated == 0:
+        # No legacy row at all, so none can have been left behind: the unsound set is a subset of the
+        # ``scope IS NONE`` rows just MEASURED as 0 (derived from that read, never assumed).
         return MigrateGovernedResult(
             table=MESSAGE_TABLE,
             scanned=unmigrated + already,
             backfilled=0,
             already_migrated=already,
             refused=False,
+            table_defined=table_defined,
+            messages_left_unmigrated=0,
         )
-    backfill_statement = (
-        f"UPDATE {MESSAGE_TABLE} SET owner_agent = sender, "
-        "owner_principal = sender.owner_principal, scope = $scope "
-        "WHERE scope IS NONE AND owner_principal IS NONE"
-    )
     with governed_exempt("migrate-governed", statement=backfill_statement):
         stamped = await run_query(
             acquire=store.acquire,
@@ -1723,13 +2316,90 @@ async def _migrate_message_owner(
             params={"scope": project_scope},
             logger=logger,
         )
+    # amendment 37 §6 F-10 (the input-fate law) + §13 F-4: the rows the self-guarding UPDATE left un-migrated
+    # are neither stamped nor refused — so they are MEASURED here, by ONE read, and reported, never left as a
+    # silent fate a re-run would repeat forever. The read counts EVERY message row still unscoped and
+    # ownerless after the backfill: commonly a row whose SENDER is unsound (no owner or no scope), but a row
+    # inserted during the run is counted too — it is not a sender-skipped count.
+    backfilled = _rows_stamped(stamped, noun="governed message-owner backfill")
+    # am-37 §13 B F-5: the backfill above is COMMITTED; a failure of this read must name that landed write
+    # (a raw rejection would tell the operator only that a read failed). A transport fault / exhausted
+    # contention passes through untouched; lore-adm prints the typed cause (§13 A).
+    with wrap_store_rejection(
+        PrincipalStoreError,
+        f"the backfill landed ({backfilled} message row(s) stamped) but the leftover count read failed",
+    ):
+        leftover = await run_query(
+            acquire=store.acquire,
+            drop=store.drop,
+            url=store.url,
+            noun="governed message-owner leftover count",
+            label="governed.message_leftover.rejected",
+            statement=(
+                f"SELECT count() FROM {MESSAGE_TABLE} "
+                "WHERE scope IS NONE AND owner_principal IS NONE GROUP ALL"
+            ),
+            params={},
+            logger=logger,
+        )
+        messages_left_unmigrated = group_all_count(leftover, noun="governed message-owner leftover count")
     return MigrateGovernedResult(
         table=MESSAGE_TABLE,
         scanned=unmigrated + already,
-        backfilled=_rows_stamped(stamped),
+        backfilled=backfilled,
         already_migrated=already,
         refused=False,
+        table_defined=table_defined,
+        messages_left_unmigrated=messages_left_unmigrated,
     )
+
+
+@dataclass(frozen=True)
+class _LegCall:
+    """The verb's measured inputs, handed to whichever migrate leg :data:`_MIGRATE_LEGS` dispatches — one
+    shape for every leg, so the leg set is ONE mapping rather than a branch per table."""
+
+    store: StoreHandle
+    keep_store: KeepStore
+    principal_store: PrincipalStore
+    preconditions: AgentMigrationPreconditions
+    counts: MigratePreconditionCounts
+    table_defined: bool
+
+
+#: THE migrate-leg dispatch: ``table -> the leg that backfills it``. :func:`_migrate_governed_resolved` runs a
+#: table's leg through THIS mapping and answers any other valid table "not yet migrated", so its keys ARE the
+#: tables the verb actually migrates — not a list kept beside the dispatch.
+_MIGRATE_LEGS: dict[str, Callable[[_LegCall], Awaitable[MigrateGovernedResult]]] = {
+    MEMORY_TABLE: lambda call: _migrate_memory_scope(
+        call.store,
+        call.keep_store,
+        call.principal_store,
+        table_defined=call.table_defined,
+        defined_fields=call.preconditions.defined_fields,
+    ),
+    AGENT_TABLE: lambda call: _migrate_agent_owner(
+        call.store,
+        call.keep_store,
+        call.principal_store,
+        table_defined=call.table_defined,
+        defined_fields=call.preconditions.defined_fields,
+    ),
+    MESSAGE_TABLE: lambda call: _migrate_message_owner(
+        call.store,
+        call.keep_store,
+        call.principal_store,
+        call.preconditions,
+        call.counts,
+        table_defined=call.table_defined,
+    ),
+}
+
+#: The tables ``migrate-governed`` has a backfill LEG for — DERIVED from the dispatch's own keys (the lead's
+#: F-5 ruling: no hand list). The not-yet-migrated refusal's "today:" list (:func:`_not_supported`, am-37
+#: §13.3 item 9 / #31) and ``report-unmigrated``'s remedy (item 6: a remedy names ``migrate-governed`` only
+#: for a table the verb would actually run) read it.
+_MIGRATING_TABLES: tuple[str, ...] = tuple(_MIGRATE_LEGS)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1840,7 +2510,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- keep remediation verbs (packet 61a-w1, §FR-4) — admin set_owner + delete on a
     # keep, so a keeper-principal blocked by refuse-while-keeping can be cleared. Both
-    # route to KeepStore via :data:`_KEEP_VERB_HANDLERS` (their KeepStoreError launder).
+    # route to KeepStore via :data:`_KEEP_VERB_HANDLERS`; a KeepStoreError is laundered by
+    # :func:`_dispatch`'s ONE lore-adm handler (am-37 §11).
     set_keeper = subcommands.add_parser(
         "set-keeper", help="reassign a keep's keeper (owner) to a new principal"
     )
@@ -1862,7 +2533,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="backfill a governed table's owner/scope columns (run once at the 65 cutover)",
     )
     migrate_governed_parser.add_argument(
-        "--table", required=True, help="the governed table to migrate (63a supports: memory)"
+        "--table", required=True, help=f"the governed table to migrate ({_TABLE_HELP_DOMAIN})"
     )
     # packet 63a-ii (§10.7-W): the dry-run/--execute paradigm was STRUCK (2026-08-20 operator
     # ruling); migrate-governed always EXECUTES. The read-only PREVIEW role the design wanted is
@@ -1875,7 +2546,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="report a governed table's un-migrated (NONE-scope) row count (a read; never writes)",
     )
     report_unmigrated_parser.add_argument(
-        "--table", required=True, help="the governed table to inspect (63a supports: memory)"
+        "--table", required=True, help=f"the governed table to inspect ({_report_table_help_domain()})"
     )
 
     return parser
@@ -1982,7 +2653,7 @@ async def _cmd_create_keep(args: argparse.Namespace, keep_store: KeepStore) -> i
     nameless and FORBIDS ``--name`` (:data:`_KEEP_NAME_FORBIDDEN_TYPES`) — a stray one is
     a mistake caught LOUD, never silently stored as ``None``; ``session`` allows either. A
     violation raises :class:`ValueError` with a TEACHING message naming the offending
-    option AND the ``--type``, laundered by :func:`_dispatch_keep` to a ``lore-adm:``
+    option AND the ``--type``, laundered by :func:`_dispatch` to a ``lore-adm:``
     stderr line + exit 1. Otherwise :meth:`KeepStore.create_keep` mints the keep (auto-
     adding the keeper to the household, Fork D) and its id is PRINTED — the ONE line
     ``create-keep`` emits (the :func:`_cmd_mint_key` print-the-credential precedent, so the
@@ -2011,7 +2682,7 @@ async def _cmd_remove_household(args: argparse.Namespace, keep_store: KeepStore)
     """The ``remove-household`` verb — delegates to
     :meth:`KeepStore.remove_household_member`; a ``KeeperLockoutError`` (removing the
     keeper) or a ``KeepNotFoundError`` (a ghost ``--keep``, FR-3) is laundered by
-    :func:`_dispatch_keep` to a stderr line + exit 1. Silent on success."""
+    :func:`_dispatch` to a stderr line + exit 1. Silent on success."""
     await keep_store.remove_household_member(keep_id=args.keep, member_email=args.member)
     return 0
 
@@ -2019,7 +2690,7 @@ async def _cmd_remove_household(args: argparse.Namespace, keep_store: KeepStore)
 async def _cmd_set_rank(args: argparse.Namespace, keep_store: KeepStore) -> int:
     """The ``set-rank`` verb — delegates to :meth:`KeepStore.set_rank` (TRIVIAL today:
     the only legal rank is ``contributor``; a wrong rank is a loud store error laundered
-    by :func:`_dispatch_keep`). Silent on success."""
+    by :func:`_dispatch`). Silent on success."""
     await keep_store.set_rank(keep_id=args.keep, member_email=args.member, rank=args.rank)
     return 0
 
@@ -2029,7 +2700,7 @@ async def _cmd_set_keeper(args: argparse.Namespace, keep_store: KeepStore) -> in
     set_owner, §FR-4/D1: UPDATE the keep's ``keeper`` field to a new principal so a
     departing keeper's keep can be reassigned before deleting them). A ghost ``--keep``
     (:class:`~loremaster.keeps.KeepNotFoundError`) or a ghost ``--new-keeper`` email
-    (:class:`~loremaster.keeps.KeepStoreError`) is laundered by :func:`_dispatch_keep` to
+    (:class:`~loremaster.keeps.KeepStoreError`) is laundered by :func:`_dispatch` to
     a ``lore-adm:`` stderr line + exit 1. Silent on success."""
     await keep_store.set_keeper(keep_id=args.keep, new_keeper_email=args.new_keeper)
     return 0
@@ -2040,7 +2711,7 @@ async def _cmd_delete_keep(args: argparse.Namespace, keep_store: KeepStore) -> i
     delete, §FR-4/D2: remove the keep node so a sole-member/dm keep's keeper can then be
     deleted; its ``member_of`` edges auto-cascade on the node delete — store law §4,
     probed). A ghost ``--keep`` (:class:`~loremaster.keeps.KeepNotFoundError`) is
-    laundered by :func:`_dispatch_keep` to a stderr line + exit 1. Silent on success."""
+    laundered by :func:`_dispatch` to a stderr line + exit 1. Silent on success."""
     await keep_store.delete_keep(keep_id=args.keep)
     return 0
 
@@ -2071,50 +2742,143 @@ async def _dispatch(args: argparse.Namespace) -> int:
     """Load the (creds-free) config, build the stores, ready them, and run the selected
     verb. Keep verbs route to :func:`_dispatch_keep` (their own store); principal/key
     verbs run below. Domain failures are laundered to a stderr line + non-zero exit
-    (loud on failure); a transport fault surfaces the same way."""
-    # ``_require_config`` runs FIRST (before any branch), so a missing ``--config`` is a
-    # loud ``SystemExit`` for EVERY verb, keep verbs included.
-    config = load_surreal_only_config(_require_config(args))
-    if args.command == "migrate-governed":
-        return await _dispatch_migrate_governed(args, config)
-    if args.command == "report-unmigrated":
-        return await _dispatch_report_unmigrated(args, config)
-    if args.command in _KEEP_VERB_HANDLERS:
-        return await _dispatch_keep(args, config)
-    # Lazy import: ``loremaster.principal_keys`` imports THIS module (``Principal``), so
-    # a top-level import here is a cycle. PLC0415 is a house-ignored idiom.
+    (loud on failure); a transport fault surfaces the same way.
+
+    This is the ONE lore-adm fault handler (packet 63c amendment 37 §11): every verb —
+    the two named branches, every keep verb, every principal/key verb — routes through the
+    single ``try`` below, and any fault in its allowlist becomes ``f"{_CLI_PROG}: {error}"``
+    on stderr + exit ``1``. The verb dispatchers beneath it keep only their ``try/finally``
+    resource closes; none of them catches. The handler's only return is ``1`` — a fault can
+    never be swallowed into a success. Anything OUTSIDE the tuple (a ``TypeError``, an
+    ``OSError``) is a programming defect and is left to traceback.
+    """
+    # Lazy imports: ``loremaster.principal_keys`` and ``loremaster.keeps`` both import THIS
+    # module (``Principal`` / ``PrincipalStore``), so a top-level import here is a cycle.
+    # PLC0415 is a house-ignored idiom. They sit at the top so the handler's tuple can name
+    # every lore-adm fault class (am-37 §11 item 3).
+    from loremaster.keeps import KeepStoreError
     from loremaster.principal_keys import PrincipalKeyStoreError, build_principal_key_store
 
-    principal_store = build_principal_store(config)
-    key_store = build_principal_key_store(config)
-    # §FR-4 D3(a) / #131: the ``delete`` verb READS the ``keep`` table (refuse-while-
-    # keeping), so this branch readies the keep SLICE too (``generate_keep_ddl`` — keep +
-    # member_of), NOT the full ``generate_ddl`` (the creds-free CLI has no embedder dim
-    # and must not build HNSW/analyzers). Principal is readied FIRST below, satisfying
-    # ``member_of``'s ENFORCED ``IN principal`` endpoint. Without this a store predating
-    # packet 60 (no keep table) would crash the delete's keep-read — the dirty-store
-    # blind spot every virgin-DB (full-schema) fixture cannot see (§1.6).
-    keep_store = build_keep_store(config)
+    # ``_require_config`` runs FIRST (before any branch, and OUTSIDE the handler), so a
+    # missing ``--config`` is a loud ``SystemExit`` for EVERY verb, keep verbs included.
+    config = load_surreal_only_config(_require_config(args))
     try:
-        # Principal FIRST (the record link's target + member_of's ENFORCED IN endpoint),
-        # then the key table, then the keep slice.
-        await principal_store.ensure_ready()
-        await key_store.ensure_ready()
-        await keep_store.ensure_ready()
-        handler = _VERB_HANDLERS[args.command]
-        return await handler(args, principal_store, key_store)
+        if args.command == "migrate-governed":
+            return await _dispatch_migrate_governed(args, config)
+        if args.command == "report-unmigrated":
+            return await _dispatch_report_unmigrated(args, config)
+        if args.command in _KEEP_VERB_HANDLERS:
+            return await _dispatch_keep(args, config)
+        principal_store = build_principal_store(config)
+        key_store = build_principal_key_store(config)
+        # §FR-4 D3(a) / #131: the ``delete`` verb READS the ``keep`` table (refuse-while-
+        # keeping), so this branch readies the keep SLICE too (``generate_keep_ddl`` — keep +
+        # member_of), NOT the full ``generate_ddl`` (the creds-free CLI has no embedder dim
+        # and must not build HNSW/analyzers). Principal is readied FIRST below, satisfying
+        # ``member_of``'s ENFORCED ``IN principal`` endpoint. Without this a store predating
+        # packet 60 (no keep table) would crash the delete's keep-read — the dirty-store
+        # blind spot every virgin-DB (full-schema) fixture cannot see (§1.6).
+        keep_store = build_keep_store(config)
+        try:
+            # Principal FIRST (the record link's target + member_of's ENFORCED IN endpoint),
+            # then the key table, then the keep slice.
+            await principal_store.ensure_ready()
+            await key_store.ensure_ready()
+            await keep_store.ensure_ready()
+            handler = _VERB_HANDLERS[args.command]
+            return await handler(args, principal_store, key_store)
+        finally:
+            await keep_store.close()
+            await key_store.close()
+            await principal_store.close()
     except (
         PrincipalStoreError,
         PrincipalKeyStoreError,
-        SurrealConnectionError,
+        KeepStoreError,
+        SurrealStoreError,
         ValueError,
     ) as error:
-        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
+        print(_fault_line(error), file=sys.stderr)
         return 1
+
+
+#: The cause-line prefix the lore-adm fault handler renders per ``__cause__`` link (am-37 §13 A ii).
+_CAUSE_LINE_PREFIX = "  ← caused by: "
+
+#: The ``extra`` keys of the store seam's rejection record the CLI stderr handler renders (am-37 §13 A i) —
+#: the seam's ``url`` extra is deliberately NOT rendered (it is already in the error's own message).
+_CLI_LOG_EXTRA_KEYS: tuple[str, ...] = ("error_class", "engine_error")
+
+
+def _fault_line(error: BaseException) -> str:
+    """The lore-adm fault text: ``lore-adm: <error>`` then one cause line per ``__cause__`` link (am-37 §13
+    A ii) — MESSAGES only (never a traceback), consecutive duplicates collapsed, an empty message rendered
+    as its class name so a link never prints blank. The typed cause is what names the reason, so a wrap
+    context never has to over-claim it (F-13).
+
+    Every message — the error's and each cause's — renders through THE shared scrub
+    :func:`loremaster.logging_setup.scrub_text`, the same function :class:`RedactingFilter` calls (am-37 §13.3
+    item 2 ii): one redaction for every sink, never a second regex. The walk follows ``__cause__`` ONLY (the
+    seams chain explicitly with ``from error``; the implicit ``__context__`` link would duplicate or mislead)
+    and keeps a ``seen`` set of exception ids, so a cyclic chain terminates with each link rendered once
+    (am-37 §13.3 item 3, #527 — the stdlib ``traceback`` shape)."""
+    lines = [f"{_CLI_PROG}: {scrub_text(str(error))}"]
+    previous = lines[0].removeprefix(f"{_CLI_PROG}: ")
+    seen = {id(error)}
+    cause = error.__cause__
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        text = scrub_text(str(cause) or type(cause).__name__)
+        if text != previous:
+            lines.append(f"{_CAUSE_LINE_PREFIX}{text}")
+        previous = text
+        cause = cause.__cause__
+    return "\n".join(lines)
+
+
+class _CliLogFormatter(logging.Formatter):
+    """``%(message)s`` plus the store seam's ``error_class`` / ``engine_error`` extras when a record
+    carries them (am-37 §13 A i): in lore-adm, "the server log" the seam's hint points at IS stderr, so the
+    record must show the engine text the raised message deliberately withholds (#31 hygiene protects MCP
+    consumers; this is the operator's own terminal)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Render the message, then ``key=value`` for each present seam extra."""
+        rendered = super().format(record)
+        extras = [
+            f"{key}={getattr(record, key)}"
+            for key in _CLI_LOG_EXTRA_KEYS
+            if getattr(record, key, None) is not None
+        ]
+        return f"{rendered} [{'; '.join(extras)}]" if extras else rendered
+
+
+class _CliStderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
+    """The lore-adm stderr log handler (am-37 §13 A i), a marker subclass so :func:`_cli_logging` can find
+    and remove any instance a previous ``main()`` call left behind (idempotent across calls)."""
+
+
+@contextlib.contextmanager
+def _cli_logging() -> Iterator[None]:
+    """Install ONE WARNING-level, :class:`~loremaster.logging_setup.RedactingFilter`-filtered stderr handler
+    on the ``loremaster`` logger for the duration of a ``main()`` call, bound to the CURRENT ``sys.stderr``,
+    and remove it on exit. Any ``_CliStderrHandler``
+    already on the logger (a call that never reached its ``finally``) is removed first, so repeated
+    ``main()`` calls never duplicate a record or write to a dead stream (the lifecycle pin)."""
+    package_logger = logging.getLogger(_CLI_LOGGER_NAME)
+    for stale in [h for h in package_logger.handlers if isinstance(h, _CliStderrHandler)]:
+        package_logger.removeHandler(stale)
+    handler = _CliStderrHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(_CliLogFormatter("%(message)s"))
+    # am-37 §13.3 item 2 (i): THE redaction seam, exactly as ``configure_logging`` attaches it — the filter
+    # scrubs ``msg``, ``args`` and EVERY extra (``engine_error`` included) through ``scrub_text``.
+    handler.addFilter(RedactingFilter())
+    package_logger.addHandler(handler)
+    try:
+        yield
     finally:
-        await keep_store.close()
-        await key_store.close()
-        await principal_store.close()
+        package_logger.removeHandler(handler)
 
 
 async def _dispatch_migrate_governed(args: argparse.Namespace, config: LoreConfig) -> int:
@@ -2122,10 +2886,15 @@ async def _dispatch_migrate_governed(args: argparse.Namespace, config: LoreConfi
     :func:`migrate_governed` (packet 63a). The governed tables (``memory`` at 63a) live in the SAME
     database the principal/keep stores connect to, so a handle over the principal store's own
     driver reaches them — and every store access inside the verb routes through it (R4). Receipts to
-    stdout; a REFUSAL / domain failure is a stderr line + exit 1 (Unix philosophy: loud on failure).
+    stdout; a REFUSAL is a stderr line + exit 1 (Unix philosophy: loud on failure). A store/domain
+    fault propagates to :func:`_dispatch`'s ONE lore-adm handler (am-37 §11), which launders it to
+    the same stderr line + exit 1; this frame only closes its stores.
     """
-    from loremaster.keeps import KeepStoreError
-
+    # am-37 §13 C N-3 / F-15: an invalid ``--table`` is refused BEFORE any store I/O (no store is even
+    # built), through THE one validator ``report-unmigrated`` also calls; the refusal is the verb's own
+    # zero-I/O "not supported" receipt (``table_defined=None``), rendered like every other refusal.
+    if _migrate_table_refusal(args.table) is not None:
+        return _render_migrate_refusal(_not_supported(args.table, table_defined=None))
     principal_store = build_principal_store(config)
     keep_store = build_keep_store(config)
     try:
@@ -2144,27 +2913,46 @@ async def _dispatch_migrate_governed(args: argparse.Namespace, config: LoreConfi
             principal_store=principal_store,
         )
         if result.refused:
+            return _render_migrate_refusal(result)
+        if result.table_defined is False:
             print(
-                f"{_CLI_PROG}: migrate-governed --table {result.table} REFUSED: {result.reason}",
-                file=sys.stderr,
+                f"migrate-governed --table {result.table}: the `{result.table}` table is not defined in this "
+                "store — nothing to migrate"
             )
-            return 1
+            return 0
+        # amendment 37 §8.2 F-a rider + §10.2 (+ §13 C F-4 rename): the receipt line carries
+        # ``messages_left_unmigrated`` as a
+        # typed count beside its siblings, DERIVED from the result field — so a script that never reads
+        # stderr still sees the leftover. ONE convention for every field on the line: rendered ALWAYS,
+        # a ``None`` ("not measured for this table") served explicitly as ``None``, never by omission.
         print(
             f"migrate-governed --table {result.table}: scanned={result.scanned} "
-            f"backfilled={result.backfilled} already_migrated={result.already_migrated}"
+            f"backfilled={result.backfilled} already_migrated={result.already_migrated} "
+            f"messages_left_unmigrated={result.messages_left_unmigrated}"
         )
+        if result.messages_left_unmigrated:
+            # amendment 37 §6 F-10 / §13 C F-4: DERIVED from the measured field, iff > 0.
+            print(
+                f"migrate-governed --table {result.table}: {result.messages_left_unmigrated} message row(s) "
+                "remain un-migrated after the backfill — commonly their sender has no owner or scope "
+                f"(re-run after `--table {AGENT_TABLE}` for those); a row inserted during the run is "
+                "counted here too",
+                file=sys.stderr,
+            )
         return 0
-    except (
-        PrincipalStoreError,
-        KeepStoreError,
-        SurrealConnectionError,
-        ValueError,
-    ) as error:
-        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
-        return 1
     finally:
         await keep_store.close()
         await principal_store.close()
+
+
+def _render_migrate_refusal(result: MigrateGovernedResult) -> int:
+    """Render a ``migrate-governed`` refusal receipt: ONE stderr line, exit ``1`` (a refusal wrote nothing).
+    The table name is a raw operator argument on the zero-I/O path, so it passes the shared sanitiser."""
+    print(
+        f"{_CLI_PROG}: migrate-governed --table {sanitise_line(result.table)} REFUSED: {result.reason}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 async def _dispatch_report_unmigrated(args: argparse.Namespace, config: LoreConfig) -> int:
@@ -2172,10 +2960,16 @@ async def _dispatch_report_unmigrated(args: argparse.Namespace, config: LoreConf
     (packet 63a-ii, §10.7-W: the preview role the struck dry-run paradigm no longer fills). Builds
     a driver ``StoreHandle`` over the unified store (the ``_dispatch_migrate_governed`` idiom) and
     runs :func:`~loremaster.governed.report_unmigrated_governed_rows` (R4: no raw connection). A
-    READ — it never writes; the count goes to stdout, a domain/transport failure to stderr + exit 1.
+    READ — it never writes; the count goes to stdout. A domain/transport failure (incl. a rejected
+    SELECT on an absent table) propagates to :func:`_dispatch`'s ONE lore-adm handler (am-37 §11):
+    stderr + exit 1, never a traceback. This frame only closes its store.
     """
-    from loremaster.governed import report_unmigrated_governed_rows
+    from loremaster.governed import governed_tables, report_unmigrated_governed_rows, validate_governed_table
 
+    # am-37 §13 C N-3 / F-15 + §13.4: validated BEFORE any I/O (no store is even built) through THE one
+    # validator, over the REPORT domain — the governed set. A refusal is a ``ValueError``: the ONE lore-adm
+    # handler renders it to stderr + exit 1.
+    validate_governed_table(args.table, domain=governed_tables(), verb=_REPORT_VERB)
     principal_store = build_principal_store(config)
     try:
         await principal_store.ensure_ready()
@@ -2187,15 +2981,6 @@ async def _dispatch_report_unmigrated(args: argparse.Namespace, config: LoreConf
         count = await report_unmigrated_governed_rows(handle, args.table)
         print(f"report-unmigrated --table {args.table}: unmigrated={count}")
         return 0
-    except (
-        PrincipalStoreError,
-        # SurrealStoreError subsumes SurrealConnectionError AND a rejected SELECT (e.g. the
-        # governed table does not exist on this store) — loud on failure, never a traceback.
-        SurrealStoreError,
-        ValueError,
-    ) as error:
-        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
-        return 1
     finally:
         await principal_store.close()
 
@@ -2209,20 +2994,25 @@ async def _dispatch_keep(args: argparse.Namespace, config: LoreConfig) -> int:
     ``keep_env`` fixture / the :meth:`KeepStore.ensure_ready` docstring). ``KeepStore``
     composes its own ``PrincipalStore`` for email resolution but does NOT ready it.
 
-    Store/domain failures are laundered to ``f"{_CLI_PROG}: {error}"`` on stderr +
-    exit 1 (loud on failure), mirroring :func:`_dispatch`. Since FR-2 Q2b, ``KeepStore``
-    WRAPS engine rejections as ``KeepStoreError`` at every write boundary (consumer-law
-    parity with ``PrincipalStore.create``), so this catches ``KeepStoreError`` — which
-    subsumes ``KeeperLockoutError`` / ``KeepNotFoundError`` — symmetric with :func:`_dispatch`
-    catching ``PrincipalStoreError``, and NOT the raw ``SurrealStoreError`` (FR-2 D1). A
-    transient ``SurrealConnectionError`` still passes through ``KeepStore`` untouched (a dead
-    socket during a verb) and is caught here; ``ValueError`` is the per-``type`` ``--name``
-    CLI-input check (project/team require a name; a ``dm`` forbids one).
-    """
-    # Lazy import: ``loremaster.keeps`` imports THIS module (``PrincipalStore``), so a
-    # top-level import here is a cycle. PLC0415 is a house-ignored idiom.
-    from loremaster.keeps import KeepStoreError
+    This frame catches NOTHING: it only closes its stores. Every store/domain fault a keep
+    verb raises — ``KeepStoreError`` (which subsumes ``KeeperLockoutError`` /
+    ``KeepNotFoundError``), a raw ``SurrealStoreError`` (incl. a transient
+    ``SurrealConnectionError``), or the per-``type`` ``--name`` ``ValueError`` (project/team
+    require a name; a ``dm`` forbids one) — propagates to :func:`_dispatch`'s ONE lore-adm
+    handler, which launders it to ``f"{_CLI_PROG}: {error}"`` on stderr + exit 1.
 
+    FR-2 D1 is RE-RULED (packet 63c amendment 37 §11 item 1). D1 once kept the raw
+    ``SurrealStoreError`` OUT of this frame's catch so that an engine rejection escaping
+    ``KeepStore`` un-wrapped would crash loudly as a missed-wrap BUG signal. Its premise was
+    false for READS, and a traceback is never an honest operator surface for a store fault.
+    The policy the code HAS (am-37 §13 C F-14): the WRITE boundaries are the PINNED minimum —
+    every one sits inside ``wrap_store_rejection`` (the FR-2 / am-37 §12 wrap pins enforce
+    it); a verb path MAY wrap its reads too (``PrincipalStore.delete`` and
+    ``KeepStore.get_or_create_keyed`` do), and ``ensure_ready`` is un-wrapped by design. D1's
+    INTENT survives in the stderr line: an un-wrapped ``SurrealStoreError`` prints its driver
+    label + server-log hint (and, since am-37 §13 A, its typed cause and the seam's log record
+    on stderr), distinguishable from a ``KeepStoreError`` teaching.
+    """
     principal_store = build_principal_store(config)
     keep_store = build_keep_store(config)
     try:
@@ -2231,13 +3021,6 @@ async def _dispatch_keep(args: argparse.Namespace, config: LoreConfig) -> int:
         await keep_store.ensure_ready()
         handler = _KEEP_VERB_HANDLERS[args.command]
         return await handler(args, keep_store)
-    except (
-        KeepStoreError,
-        SurrealConnectionError,
-        ValueError,
-    ) as error:
-        print(f"{_CLI_PROG}: {error}", file=sys.stderr)
-        return 1
     finally:
         await keep_store.close()
         await principal_store.close()
@@ -2251,7 +3034,8 @@ def main(argv: list[str] | None = None) -> int:
     the house ``index/cli.py`` idiom.
     """
     args = build_parser().parse_args(argv)
-    return asyncio.run(_dispatch(args))
+    with _cli_logging():
+        return asyncio.run(_dispatch(args))
 
 
 if __name__ == "__main__":

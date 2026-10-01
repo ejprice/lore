@@ -13,10 +13,11 @@ refuse-while-keeping ruling + its two remediation verbs, flat subcommands on the
     set-keeper   --keep <id> --new-keeper <email>   # NEW: set a keep's keeper (KeepStore.set_keeper)
     delete-keep  --keep <id>                        # NEW: delete a keep + its member_of (delete_keep)
 
-The refusal launders through ``_dispatch``'s EXISTING ``except PrincipalStoreError`` (the new
-``PrincipalHasKeepsError`` subclasses it) to a ``lore-adm:`` stderr line + exit 1; the two new
-keep verbs route through ``_dispatch_keep`` (KeepStore verbs), whose ``except KeepStoreError``
-launders ``KeepNotFoundError`` / ghost refusals the same way. Every verb executes directly
+The refusal launders through the one lore-adm fault handler at ``_dispatch`` (63c am-37 §11;
+the new ``PrincipalHasKeepsError`` subclasses ``PrincipalStoreError``, a member of its tuple) to a
+``lore-adm:`` stderr line + exit 1; the two new keep verbs route through ``_dispatch_keep``
+(KeepStore verbs), and their ``KeepNotFoundError`` / ghost refusals are laundered by that same one
+handler at ``_dispatch``. Every verb executes directly
 (no ``--execute`` / dry-run, struck 2026-08-20); silent on success, loud on failure.
 
 ⚠ TEST-ENV-FICTION (#401 rider, standing): every stderr assertion uses ``"lore-adm:" in err``,
@@ -253,9 +254,10 @@ class TestNewVerbParserSurface:
 
     def test_the_new_verbs_are_registered_in_the_keep_handler_table(self) -> None:
         """⚠ RED at HEAD. Both verbs are KeepStore verbs — they must be in
-        ``_KEEP_VERB_HANDLERS`` so ``_dispatch`` routes them to ``_dispatch_keep`` (and its
-        ``KeepStoreError`` launder), NOT to the principal path. A build that wired them into
-        ``_VERB_HANDLERS`` (the principal table) would mis-launder their errors."""
+        ``_KEEP_VERB_HANDLERS`` so ``_dispatch`` routes them to ``_dispatch_keep`` (the KeepStore
+        route), NOT to the principal path. A build that wired them into ``_VERB_HANDLERS`` (the
+        principal table) would mis-route them. (Faults on every route are laundered by the one
+        handler at ``_dispatch``, 63c am-37 §11.)"""
         handlers = getattr(p_module, "_KEEP_VERB_HANDLERS", {})
         assert _SET_KEEPER in handlers and _DELETE_KEEP in handlers, (
             f"the new keep verbs must be registered in _KEEP_VERB_HANDLERS; got {sorted(handlers)!r}"
@@ -355,7 +357,8 @@ class TestSetKeeperVerb:
         self, cli_env: _CliEnv, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """⚠ RED at HEAD. An unknown new-keeper email is REFUSED (exit 1, ``lore-adm:``
-        stderr) — the ENFORCED-flavoured guard laundered by ``_dispatch_keep``. The keep's
+        stderr) — the ENFORCED-flavoured guard laundered by the one handler at ``_dispatch``
+        (63c am-37 §11). The keep's
         keeper is UNCHANGED (paired with the success pin — discriminates ghost-refusal from
         refuse-all)."""
         await _add(cli_env, _KEEPER)
@@ -376,7 +379,8 @@ class TestSetKeeperVerb:
     ) -> None:
         """⚠ RED at HEAD (#403 BLOCKER). ``lore-adm set-keeper`` on a GHOST ``--keep`` (with a
         REAL ``--new-keeper``) exits 1 with a loud ``lore-adm:`` stderr line NAMING the missing
-        keep — the ``KeepNotFoundError`` laundered by ``_dispatch_keep`` (D1/FR-3 ghost-keep is
+        keep — the ``KeepNotFoundError`` laundered by the one handler at ``_dispatch`` (63c am-37
+        §11; D1/FR-3 ghost-keep is
         LOUD). A build that silently returns rc 0 on a typo'd keep reddens here."""
         await _add(cli_env, _SUCCESSOR)
         ghost = ghost_id(KEEP_TABLE)
@@ -406,7 +410,8 @@ class TestDeleteKeepVerb:
         self, cli_env: _CliEnv
     ) -> None:
         """⚠ RED at HEAD. A typo'd ``--keep`` is LOUD (exit 1, ``lore-adm:`` stderr) — the
-        ``KeepNotFoundError`` laundered by ``_dispatch_keep`` (FR-3 parity: a destructive
+        ``KeepNotFoundError`` laundered by the one handler at ``_dispatch`` (63c am-37 §11; FR-3
+        parity: a destructive
         admin verb on a ghost id must not read as a silent success)."""
         await _add(cli_env, _KEEPER)
         # delete-keep's own _dispatch_keep readies the keep slice, so the table exists and the

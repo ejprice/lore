@@ -109,6 +109,7 @@ _KEEPER_EMAIL = "alice@example.com"
 _MEMBER_EMAIL = "bob@example.com"
 _FRESH_EMAIL = "new-principal@example.com"
 _SUBJECT = "google-oauth2|118427905123456789012"
+_SUSPENDED_STATUS = "suspended"
 
 
 # ===========================================================================
@@ -299,14 +300,20 @@ class _StoreCase:
         class_name: str,
         domain_error: type[Exception],
         invocations: dict[str, Callable[[Any], Awaitable[object]]],
-        expected_wrappers: frozenset[str],
     ) -> None:
         self.label = label
         self.module = module
         self.class_name = class_name
         self.domain_error = domain_error
         self.invocations = invocations
-        self.expected_wrappers = expected_wrappers
+
+    @property
+    def expected_wrappers(self) -> frozenset[str]:
+        """63c am-37 §12 item 2 — RE-KEYED from the old hand-list (``frozenset(<invocation map>)``) to
+        the DERIVED write set (:func:`derived_write_boundaries`) ∪ this store's DECLARED read-wrappers
+        (:data:`_DECLARED_READ_WRAPPERS`, each with its reason — the only hand-written part)."""
+        derived = frozenset(derived_write_boundaries(self))
+        return derived | frozenset(_DECLARED_READ_WRAPPERS.get(self.label, {}))
 
 
 _KEEP_GHOST = f"{KEEP_TABLE}:{ghost_id('engine_rejection_seam_keep')}"
@@ -345,12 +352,22 @@ _KEEP_INVOCATIONS: dict[str, Callable[[KeepStore], Awaitable[object]]] = {
 _PRINCIPAL_INVOCATIONS: dict[str, Callable[[PrincipalStore], Awaitable[object]]] = {
     "create": lambda s: s.create(email=_FRESH_EMAIL),
     "set_subject": lambda s: s.set_subject(email=_KEEPER_EMAIL, subject=_SUBJECT),
+    # 63c am-37 §12: the three DERIVED write boundaries the old hand-list never named. Each
+    # injection lands at the method's FIRST principals-module seam call (``set_status`` /
+    # ``set_expires``: the UPDATE; ``delete``: the ``get_by_email`` READ that opens the verb), so the
+    # wrap must enclose the method's store calls from the first one, as ``KeepStore``'s verbs do.
+    "set_status": lambda s: s.set_status(email=_KEEPER_EMAIL, status=_SUSPENDED_STATUS),
+    "set_expires": lambda s: s.set_expires(email=_KEEPER_EMAIL, expires_at=None),
+    "delete": lambda s: s.delete(email=_MEMBER_EMAIL),
 }
 
 _PRINCIPAL_KEY_INVOCATIONS: dict[str, Callable[[PrincipalKeyStore], Awaitable[object]]] = {
     # mint resolves the owner via the COMPOSED PrincipalStore (principals seam, NOT patched),
     # so under fault injection at the principal_keys seam the CREATE is what raises.
     "mint": lambda s: s.mint(email=_KEEPER_EMAIL, name="laptop", secret_hash="deadbeef" * 8),
+    # 63c am-37 §12: the DERIVED ``revoke`` boundary. The owner resolves via the COMPOSED
+    # PrincipalStore (un-patched), so under injection at the principal_keys seam the UPDATE raises.
+    "revoke": lambda s: s.revoke(email=_KEEPER_EMAIL, name="laptop"),
 }
 
 # ⚠ tasks.transitive_blockers is DELIBERATELY NOT a case here (addendum-4): it is NOT a full
@@ -365,7 +382,6 @@ _CASES: tuple[_StoreCase, ...] = (
         class_name="KeepStore",
         domain_error=KeepStoreError,
         invocations=_KEEP_INVOCATIONS,
-        expected_wrappers=frozenset(_KEEP_INVOCATIONS),
     ),
     _StoreCase(
         label="principal",
@@ -373,7 +389,6 @@ _CASES: tuple[_StoreCase, ...] = (
         class_name="PrincipalStore",
         domain_error=PrincipalStoreError,
         invocations=_PRINCIPAL_INVOCATIONS,
-        expected_wrappers=frozenset(_PRINCIPAL_INVOCATIONS),
     ),
     _StoreCase(
         label="principal_key",
@@ -381,7 +396,6 @@ _CASES: tuple[_StoreCase, ...] = (
         class_name="PrincipalKeyStore",
         domain_error=PrincipalKeyStoreError,
         invocations=_PRINCIPAL_KEY_INVOCATIONS,
-        expected_wrappers=frozenset(_PRINCIPAL_KEY_INVOCATIONS),
     ),
 )
 _CASES_BY_LABEL = {case.label: case for case in _CASES}
@@ -415,6 +429,206 @@ def _methods_routing_through_seam(module: Any, class_name: str) -> set[str]:
             if isinstance(node, ast.Name) and node.id in _SHARED_SEAM_NAMES:
                 out.add(method.name)
     return out
+
+
+# ===========================================================================
+# 63c am-37 §12 (commit ``4e3a96c``) — the WRITE-boundary domain, DERIVED at two levels, never listed.
+# PROPERTY: for every store a lore-adm verb reaches, every derived WRITE boundary sits lexically inside
+# ``wrap_store_rejection(<that store's domain error>, …)``.
+#   * the STORE set = the ``build_*_store`` calls in ``principals._dispatch``'s AST, each resolved to its
+#     class through the factory's own return annotation;
+#   * per store, the WRITE set = every method holding a statement sink — (a) ``self._query(<stmt>)`` /
+#     ``run_query(statement=<stmt>)`` whose statement is NOT provably a read, (b) any
+#     ``execute_transaction(...)``. ALLOWLIST THE SAFE: only a statement whose literal text opens with a
+#     READ verb is exempt; a dynamic / placeholder-led statement is a write until proven otherwise.
+# Instrument provenance: ``REPORT-fixup-tests-63c-i-a-2.md`` §ROUND 2 R2-5, promoted from a scratch script.
+# The governed-migration legs (``_migrate_*`` / ``governed.py``) are module functions, not store methods,
+# so they are outside this domain by construction (am-37 §12 item 1).
+# ===========================================================================
+
+_READ_VERBS = ("SELECT", "RETURN", "INFO")
+_STATEMENT_SINK = "_query"
+_RUN_QUERY_SINK = "run_query"
+_TRANSACTION_SINK = "execute_transaction"
+_WRAP_SEAM = "wrap_store_rejection"
+_DISPATCH_ENTRY = "_dispatch"
+_FACTORY_PREFIX = "build_"
+_FACTORY_SUFFIX = "_store"
+_PLACEHOLDER = "\x00"
+
+#: The ONLY methods exempt from the write-boundary property — each with its reason (the safe set).
+_EXEMPT_WRITE_METHODS: dict[str, str] = {
+    "ensure_ready": (
+        "DDL readiness, raw by design in every store (am-37 §12 item 1); its fault fate is pinned by the "
+        "generated lore-adm CLI pin (test_principals_cli.py::TestEveryLoreAdmVerbLaundersAStoreFault), "
+        "whose injection point IS ensure_ready"
+    ),
+    "_query": (
+        "the store's single-statement SEAM: its statement is its CALLER's, and every caller's "
+        "`self._query(<stmt>)` is itself a sink in this derivation, so the boundary is the caller"
+    ),
+}
+
+#: READS wrapped by choice — the only hand-written part of the routed-set expectation, each with its reason.
+_DECLARED_READ_WRAPPERS: dict[str, dict[str, str]] = {
+    "keep": {
+        "list_keeps_for_member": (
+            "a SELECT that feeds the PDP's visible_keep_ids; born-wrapped by 61b-w2 D1 so a raw engine "
+            "error mid-authorization is never a consumer-law leak"
+        ),
+    },
+}
+
+
+def _call_name(call: ast.Call) -> str:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _statement_text(node: ast.expr | None) -> str:
+    """The statement's literal text, every non-literal part replaced by a placeholder."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else _PLACEHOLDER
+            for part in node.values
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _statement_text(node.left) + _statement_text(node.right)
+    return _PLACEHOLDER
+
+
+def _sink_statement(call: ast.Call) -> tuple[bool, ast.expr | None]:
+    """``(is_statement_sink, statement_node)`` for sink (a)."""
+    name = _call_name(call)
+    if name == _STATEMENT_SINK:
+        return True, call.args[0] if call.args else None
+    if name == _RUN_QUERY_SINK:
+        keyword = next((kw.value for kw in call.keywords if kw.arg == "statement"), None)
+        return True, keyword if keyword is not None else (call.args[0] if call.args else None)
+    return False, None
+
+
+def _is_domain_wrap(item: ast.withitem, domain_error: str) -> bool:
+    call = item.context_expr
+    return (
+        isinstance(call, ast.Call)
+        and _call_name(call) == _WRAP_SEAM
+        and bool(call.args)
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == domain_error
+    )
+
+
+def _write_sinks(method: ast.AST, domain_error: str) -> list[tuple[int, bool]]:
+    """Every write sink in ``method`` as ``(lineno, lexically_inside_the_domain_wrap)``."""
+    sinks: list[tuple[int, bool]] = []
+
+    def walk(node: ast.AST, wrapped: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            inside = wrapped or (
+                isinstance(child, ast.With | ast.AsyncWith)
+                and any(_is_domain_wrap(item, domain_error) for item in child.items)
+            )
+            if isinstance(child, ast.Call):
+                is_sink, statement = _sink_statement(child)
+                if is_sink and not _statement_text(statement).lstrip().upper().startswith(_READ_VERBS):
+                    sinks.append((child.lineno, inside))
+                if _call_name(child) == _TRANSACTION_SINK:
+                    sinks.append((child.lineno, inside))
+            walk(child, inside)
+
+    walk(method, False)
+    return sinks
+
+
+def _store_class_node(case: _StoreCase) -> ast.ClassDef:
+    source = Path(case.module.__file__).read_text(encoding="utf-8")
+    return next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef) and node.name == case.class_name
+    )
+
+
+def _all_write_sinks(case: _StoreCase) -> dict[str, list[tuple[int, bool]]]:
+    """Every method of the store holding a write sink — exemptions INCLUDED (for the liveness control)."""
+    out: dict[str, list[tuple[int, bool]]] = {}
+    for method in _store_class_node(case).body:
+        if isinstance(method, ast.AsyncFunctionDef | ast.FunctionDef):
+            sinks = _write_sinks(method, case.domain_error.__name__)
+            if sinks:
+                out[method.name] = sinks
+    return out
+
+
+def derived_write_boundaries(case: _StoreCase) -> dict[str, list[tuple[int, bool]]]:
+    """The store's DERIVED write boundaries (method → its write sinks), exemptions removed."""
+    return {
+        name: sinks for name, sinks in _all_write_sinks(case).items() if name not in _EXEMPT_WRITE_METHODS
+    }
+
+
+def _dispatch_store_classes() -> set[str]:
+    """The STORE set: every ``build_*_store`` call in ``principals._dispatch``, resolved to its class
+    through the factory's own return annotation (the factory's module is taken from the
+    ``from … import`` that binds it in ``principals.py``, else ``principals`` itself)."""
+    tree = ast.parse(Path(principals_module.__file__).read_text(encoding="utf-8"))
+    dispatch = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == _DISPATCH_ENTRY
+    )
+    factories = {
+        _call_name(node)
+        for node in ast.walk(dispatch)
+        if isinstance(node, ast.Call)
+        and _call_name(node).startswith(_FACTORY_PREFIX)
+        and _call_name(node).endswith(_FACTORY_SUFFIX)
+    }
+    bound_in: dict[str, str] = {
+        alias.asname or alias.name: node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    classes: set[str] = set()
+    for factory in factories:
+        module = importlib.import_module(bound_in.get(factory, principals_module.__name__))
+        module_tree = ast.parse(Path(module.__file__ or "").read_text(encoding="utf-8"))
+        definition = next(
+            node
+            for node in module_tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == factory
+        )
+        assert definition.returns is not None, f"{factory} has no return annotation to resolve its store"
+        classes.add(ast.unparse(definition.returns).strip("'\""))
+    return classes
+
+
+def _boundary_population() -> list[str]:
+    """``<label>::<method>`` ∀ store reached by ``_dispatch`` ∀ derived write boundary — computed at
+    COLLECTION so a new boundary (or a store with no case) reds BY NAME."""
+    try:
+        stores = _dispatch_store_classes()
+        population = [
+            f"{case.label}::{method}"
+            for case in _CASES
+            if case.class_name in stores
+            for method in sorted(derived_write_boundaries(case))
+        ]
+        population += [
+            f"<store {name} is reached by _dispatch but has no _StoreCase>"
+            for name in sorted(stores - {case.class_name for case in _CASES})
+        ]
+    except Exception as error:  # noqa: BLE001 - a broken derivation must RED, never shrink the population
+        population = [f"<the write-boundary derivation failed: {error!r}>"]
+    return population
 
 
 # ===========================================================================
@@ -643,6 +857,59 @@ class TestTheRoutedSetIsDerivedAndComplete:
             f"{sorted(case.expected_wrappers)}"
         )
 
+    @pytest.mark.parametrize("label", _case_ids())
+    def test_the_invocation_map_equals_the_derived_expectation(self, label: str) -> None:
+        """63c am-37 §12 item 2: the fault-injection map covers EXACTLY the derived write set ∪ the declared
+        read-wrappers — a newly derived boundary with no injection invocation reds by store."""
+        case = _CASES_BY_LABEL[label]
+        assert set(case.invocations) == set(case.expected_wrappers), (
+            f"{case.class_name}: invocation map {sorted(case.invocations)} != derived expectation "
+            f"{sorted(case.expected_wrappers)} — add a fault-injection invocation for each new boundary"
+        )
+
+
+class TestEveryDerivedWriteBoundaryIsWrapped:
+    """63c am-37 §12 — ∀ store reached by ``_dispatch`` ∀ derived write boundary ∖ {exemptions}: the
+    boundary's every write sink sits lexically inside ``wrap_store_rejection(<that store's error>, …)``.
+    RED at fix3 r2 + full2 (``e915b90f``) on exactly ``principal::set_status``, ``principal::set_expires``,
+    ``principal::delete`` and ``principal_key::revoke``; GREEN once the four wraps land."""
+
+    @pytest.mark.parametrize("boundary", _boundary_population())
+    def test_the_write_boundary_sits_inside_its_stores_wrap(self, boundary: str) -> None:
+        label, separator, method = boundary.partition("::")
+        assert separator and label in _CASES_BY_LABEL, f"population defect: {boundary}"
+        case = _CASES_BY_LABEL[label]
+        unwrapped = [line for line, wrapped in derived_write_boundaries(case)[method] if not wrapped]
+        assert not unwrapped, (
+            f"{case.class_name}.{method}: write sink(s) at line(s) {unwrapped} sit OUTSIDE "
+            f"`{_WRAP_SEAM}({case.domain_error.__name__}, …)` — a store rejection would reach the operator "
+            f"as a raw driver label, not the store's own teaching (am-37 §12)"
+        )
+
+    def test_the_store_set_is_derived_from_dispatch_and_every_store_has_a_case(self) -> None:
+        stores = _dispatch_store_classes()
+        assert stores, "no build_*_store call found in principals._dispatch — the derivation went blind"
+        missing = stores - {case.class_name for case in _CASES}
+        assert not missing, f"stores reached by _dispatch with no _StoreCase: {sorted(missing)}"
+
+    @pytest.mark.parametrize("label", _case_ids())
+    def test_POSITIVE_CONTROL_the_walker_sees_wraps_and_the_exemptions_are_live(self, label: str) -> None:
+        """A GREEN must not be blindness: in every store the walker finds ≥ 1 WRAPPED write sink (it can see
+        a wrap), and every exemption names a method that really holds a write sink (no dead exemption)."""
+        case = _CASES_BY_LABEL[label]
+        all_sinks = _all_write_sinks(case)
+        assert any(wrapped for sinks in all_sinks.values() for _line, wrapped in sinks), (
+            f"{case.class_name}: the walker saw no wrapped write sink at all — it cannot see wraps"
+        )
+        dead = set(_EXEMPT_WRITE_METHODS) - set(all_sinks)
+        assert not dead, f"{case.class_name}: exemptions naming no write-sink method (dead): {sorted(dead)}"
+        unwrapped_exempt = {name for name in _EXEMPT_WRITE_METHODS if any(not w for _l, w in all_sinks[name])}
+        assert unwrapped_exempt == set(_EXEMPT_WRITE_METHODS), (
+            f"{case.class_name}: an exempt method is now wrapped "
+            f"({sorted(set(_EXEMPT_WRITE_METHODS) - unwrapped_exempt)}) — drop the exemption so the "
+            "method joins the domain"
+        )
+
 
 # ===========================================================================
 # 3. SHARING PROVEN BY MUTATION — the two-layer DRY discriminator
@@ -857,3 +1124,27 @@ class TestEngineRejectionWrappingBehaviourIsPreserved:
         monkeypatch.setattr(case.module, "execute_transaction", _raise_transport, raising=False)
         with pytest.raises(expected):
             await case.invocations[method_name](store)
+
+
+class TestEveryWrappedBoundaryDocumentsItsWrapError:
+    """63c am-37 §13 C (N-2 / F-10): ∀ store reached by ``_dispatch`` ∀ derived write boundary, the method's
+    ``Raises:`` section NAMES the store's wrap error — the prose describes the mechanism the pin above
+    enforces. RED at fix5 (``5f2d7c43``) on the four §12-wrapped methods whose ``Raises:`` never gained it."""
+
+    @pytest.mark.parametrize("boundary", _boundary_population())
+    def test_the_raises_section_names_the_wrap_error(self, boundary: str) -> None:
+        label, separator, method_name = boundary.partition("::")
+        assert separator and label in _CASES_BY_LABEL, f"population defect: {boundary}"
+        case = _CASES_BY_LABEL[label]
+        method = next(
+            node
+            for node in _store_class_node(case).body
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == method_name
+        )
+        docstring = ast.get_docstring(method) or ""
+        _before, marker, raises = docstring.partition("Raises:")
+        assert marker, f"{case.class_name}.{method_name}: no `Raises:` section"
+        assert case.domain_error.__name__ in raises, (
+            f"{case.class_name}.{method_name}: `Raises:` does not name its wrap error "
+            f"`{case.domain_error.__name__}`: {raises.strip()[:300]!r}"
+        )

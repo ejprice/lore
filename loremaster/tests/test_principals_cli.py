@@ -22,9 +22,11 @@ a per-test unique database on the spike store and read it back via an admin conn
 
 from __future__ import annotations
 
+import argparse
 import ast
 import asyncio
 import importlib
+import logging
 import re
 import tomllib
 from pathlib import Path
@@ -48,6 +50,7 @@ from _surreal_harness import (
 )
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.index.records import sha512_hex
+from loremaster.store._txn import SurrealConnectionError, TxnDomainRejectionError
 
 from loremaster import principal_keys as pk_module
 from loremaster import principals as p_module
@@ -923,3 +926,595 @@ class TestConsoleScriptEntryPoint:
         assert callable(entry_point), (
             f"the console-script target {target!r} must resolve to a callable; got {entry_point!r}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 63c amendment 37 §11 (R2-1, commit ``1708a4c``) — ONE lore-adm fault handler, at
+# ``_dispatch``. PROPERTY (§11 item 1): *every lore-adm verb translates every store or domain
+# fault into ``f"{_CLI_PROG}: {error}"`` on stderr + exit 1 — never a traceback, never a
+# success.* The DOMAIN is ``build_parser()``'s subparser choices, DERIVED at collection (never a
+# list), so a verb added to the parser joins the sweep BY NAME; each verb's minimal argv is
+# DERIVED from its own subparser (required options, required mutually-exclusive groups,
+# positionals), so there is no argv table that could fall behind the parser.
+#
+# ONE injection point every verb reaches (§11 item 4): every store factory lore-adm calls
+# (``build_principal_store`` / ``build_keep_store``, plus ``build_principal_key_store`` so the
+# sweep never reaches a real socket) returns a fake whose ``ensure_ready`` raises the fault.
+# ``ensure_ready`` precedes every verb handler on every route, so the fault is raised before any
+# verb-specific code runs, and the stderr line must carry the INJECTED text (proof the fate is the
+# injected fault's, not a config or argv failure).
+#
+# RED at fix3 r2 (patch md5 ``f5897681``, over HEAD ``0b0011b``): the principal/key branch of
+# ``_dispatch`` and ``_dispatch_keep`` catch ``SurrealConnectionError`` but not the rest of
+# ``SurrealStoreError``, so a ``TxnDomainRejectionError`` escapes ``main`` as a traceback. GREEN
+# only for ``migrate-governed`` / ``report-unmigrated`` (their own tuples already catch the base).
+# --------------------------------------------------------------------------- #
+
+_FAULT_TEXT = "(assert violation); see the server log"
+_SWEEP_DATABASE = "lore_adm_fault_sweep_never_connected"
+
+
+def _subparsers_action(
+    parser: argparse.ArgumentParser,
+) -> argparse._SubParsersAction[argparse.ArgumentParser]:  # noqa: SLF001 - argparse has no public accessor
+    """The parser's ONE subcommand action — the verb domain's source of truth."""
+    actions = [
+        action
+        for action in parser._actions  # noqa: SLF001 - argparse has no public accessor
+        if isinstance(action, argparse._SubParsersAction)  # noqa: SLF001
+    ]
+    assert len(actions) == 1, f"lore-adm must declare exactly one subcommand action: {actions!r}"
+    return actions[0]
+
+
+def _derived_verbs() -> list[str]:
+    """∀ verb ∈ ``build_parser()``'s subparser choices — DERIVED, never a list."""
+    return sorted(_subparsers_action(p_module.build_parser()).choices)
+
+
+#: Options whose VALID domain production validates before any I/O (am-37 §13 C: ``--table`` against
+#: ``_MIGRATE_VALID_TABLES``). The minimal VALID argv takes a member of that production domain — a placeholder
+#: would be refused by the validator before the injected fault is reached, and the sweep would prove nothing.
+_VALIDATED_OPTION_DOMAINS: dict[str, str] = {"table": "_MIGRATE_VALID_TABLES"}
+
+
+def _option_argv(action: argparse.Action) -> list[str]:
+    """The minimal VALID argv satisfying one option: the flag alone for a zero-arg flag; else the flag and
+    its first declared choice, or the first member of a production-validated domain, or a placeholder the
+    verb never reads (the injected fault fires first)."""
+    flag = action.option_strings[0]
+    if action.nargs == 0:
+        return [flag]
+    if action.choices:
+        value = str(next(iter(action.choices)))
+    elif action.dest in _VALIDATED_OPTION_DOMAINS:
+        value = str(getattr(p_module, _VALIDATED_OPTION_DOMAINS[action.dest])[0])
+    else:
+        value = "x@example.com"
+    return [flag, value]
+
+
+def _minimal_argv(verb: str) -> list[str]:
+    """The minimal VALID argv for ``verb``, DERIVED from its own subparser: every required option,
+    one member of every required mutually-exclusive group, every mandatory positional."""
+    subparser = _subparsers_action(p_module.build_parser()).choices[verb]
+    groups = subparser._mutually_exclusive_groups  # noqa: SLF001 - argparse has no public accessor
+    grouped = {id(action) for group in groups for action in group._group_actions}  # noqa: SLF001
+    argv = [verb]
+    for action in subparser._actions:  # noqa: SLF001 - argparse has no public accessor
+        if isinstance(action, argparse._HelpAction) or id(action) in grouped:  # noqa: SLF001
+            continue
+        if not action.option_strings:
+            if action.nargs not in ("?", "*"):
+                argv.append(str(next(iter(action.choices))) if action.choices else "x")
+        elif action.required:
+            argv += _option_argv(action)
+    for group in groups:
+        if group.required:
+            argv += _option_argv(group._group_actions[0])  # noqa: SLF001
+    return argv
+
+
+class _ScriptedStore:
+    """The one fake every lore-adm store factory returns: ``ensure_ready`` raises a fresh fault
+    from ``fault`` (or readies when ``fault`` is None); ``list`` serves an empty store; every call
+    is recorded so the pin can prove the injection was REACHED and every built store CLOSED."""
+
+    def __init__(self, name: str, fault: Any, calls: list[str]) -> None:
+        self._name = name
+        self._fault = fault
+        self._calls = calls
+        calls.append(f"{name}.built")
+
+    async def ensure_ready(self) -> None:
+        self._calls.append(f"{self._name}.ensure_ready")
+        if self._fault is not None:
+            raise self._fault(_FAULT_TEXT)
+
+    async def list(self) -> list[Any]:
+        return []
+
+    async def close(self) -> None:
+        self._calls.append(f"{self._name}.close")
+
+
+def _run_verb_against(
+    verb: str,
+    fault: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> tuple[str, str, str, list[str]]:
+    """Invoke ``main`` for ``verb`` with every store factory scripted. Returns
+    ``(outcome, stdout, stderr, calls)`` where ``outcome`` is ``"rc=<n>"``, or
+    ``"ESCAPED <Class>: <text>"`` when the fault left ``main`` as a traceback, or
+    ``"ARGV <code>"`` when the DERIVED argv failed to parse (a harness defect, named as such)."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        p_module, "build_principal_store", lambda _c: _ScriptedStore("principal", fault, calls)
+    )
+    monkeypatch.setattr(p_module, "build_keep_store", lambda _c: _ScriptedStore("keep", fault, calls))
+    monkeypatch.setattr(
+        pk_module, "build_principal_key_store", lambda _c: _ScriptedStore("key", fault, calls)
+    )
+    config_path = tmp_path / "lore.yaml"
+    payload = _config_payload(database=_SWEEP_DATABASE)
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    argv = ["--config", str(config_path), *_minimal_argv(verb)]
+    try:
+        outcome = f"rc={p_module.main(argv)}"
+    except SystemExit as error:
+        outcome = f"ARGV {error.code}"
+    except Exception as error:  # noqa: BLE001 - an escaping fault IS the traceback fate this pin catches
+        outcome = f"ESCAPED {type(error).__name__}: {error}"
+    captured = capsys.readouterr()
+    return outcome, captured.out, captured.err, calls
+
+
+def _assert_laundered(verb: str, outcome: str, out: str, err: str, calls: list[str]) -> None:
+    assert not outcome.startswith("ARGV"), (
+        f"{verb}: the DERIVED minimal argv failed to parse ({outcome}) — a harness defect, not a verdict; "
+        f"extend `_minimal_argv` for this verb's parser shape. stderr={err!r}"
+    )
+    assert any(call.endswith(".ensure_ready") for call in calls), (
+        f"{verb}: the injected fault was never REACHED (no ensure_ready call) — the pin proves nothing: "
+        f"{calls}"
+    )
+    assert outcome == "rc=1", (
+        f"{verb}: a store/domain fault must be `{p_module._CLI_PROG}: <error>` on stderr + exit 1 — never a "
+        f"traceback, never a success (63c am-37 §11 item 1); got {outcome!r}"
+    )
+    first_line = err.splitlines()[0] if err else ""
+    assert first_line.startswith(f"{p_module._CLI_PROG}: ") and _FAULT_TEXT in first_line, (
+        f"{verb}: stderr's first line must be the laundered INJECTED fault; stderr={err!r}"
+    )
+    assert out == "", f"{verb}: a failed verb must print nothing to stdout; stdout={out!r}"
+    assert "Traceback" not in out + err, f"{verb}: a traceback reached the operator: {out + err!r}"
+    built = sorted(call.removesuffix(".built") for call in calls if call.endswith(".built"))
+    closed = sorted(call.removesuffix(".close") for call in calls if call.endswith(".close"))
+    assert built == closed, (
+        f"{verb}: every store the verb built must be closed on the fault path "
+        f"(built {built}, closed {closed})"
+    )
+
+
+class TestEveryLoreAdmVerbLaundersAStoreFault:
+    """63c am-37 §11 item 4 — the GENERATED completeness pin over the DERIVED verb set."""
+
+    @pytest.mark.parametrize("verb", _derived_verbs())
+    def test_a_domain_rejection_in_ensure_ready_is_a_stderr_line_and_exit_1(
+        self, verb: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """RED at fix3 r2 for every principal/key verb and every keep verb (the fault escapes as a
+        traceback); GREEN once the one handler at ``_dispatch`` catches ``SurrealStoreError``."""
+        outcome, out, err, calls = _run_verb_against(
+            verb, TxnDomainRejectionError, tmp_path, monkeypatch, capsys
+        )
+        _assert_laundered(verb, outcome, out, err, calls)
+
+    @pytest.mark.parametrize("verb", _derived_verbs())
+    def test_CONTROL_a_transport_fault_takes_the_same_fate(
+        self, verb: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """POSITIVE CONTROL: the already-laundered class, through the SAME harness, the SAME argv,
+        the SAME injection point, takes the same fate — GREEN at fix3 r2 AND after. So the domain-
+        rejection pin's RED is about the fault CLASS, never about the fixture."""
+        outcome, out, err, calls = _run_verb_against(
+            verb, SurrealConnectionError, tmp_path, monkeypatch, capsys
+        )
+        _assert_laundered(verb, outcome, out, err, calls)
+
+    def test_CONTROL_a_succeeding_verb_exits_0_with_empty_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """NEGATIVE CONTROL: the same harness with NO fault does not manufacture a failure — ``list``
+        over an empty store readies, runs, exits 0, and prints nothing (Unix: silent on success)."""
+        outcome, out, err, calls = _run_verb_against("list", None, tmp_path, monkeypatch, capsys)
+        assert outcome == "rc=0", (
+            f"a faultless verb must succeed through the harness; got {outcome!r} {err!r}"
+        )
+        assert err == "" and out == "", f"a faultless empty `list` prints nothing: out={out!r} err={err!r}"
+        assert "principal.ensure_ready" in calls, f"the success path must have readied the store: {calls}"
+
+    def test_the_derived_verb_set_is_not_vacuous(self) -> None:
+        """The derivation must reach every verb the dispatcher routes (both handler tables and the
+        two named branches) — a derivation that shrank would silently shrink the sweep."""
+        routed = {
+            *p_module._VERB_HANDLERS,  # noqa: SLF001
+            *p_module._KEEP_VERB_HANDLERS,  # noqa: SLF001
+            "migrate-governed",
+            "report-unmigrated",
+        }
+        missing = routed - set(_derived_verbs())
+        assert not missing, f"the derived verb set misses routed verbs: {sorted(missing)}"
+
+
+# --------------------------------------------------------------------------- #
+# 63c amendment 37 §13 A (commit ``ce2b4bd``) — the lore-adm error line TEACHES THE CAUSE, and the
+# served pointer RESOLVES. PROPERTY: *every served pointer resolves to a surface the consumer can open,
+# and a fault line names its cause.*
+#   * the fault classes are the §11 tuple, DERIVED from ``_dispatch``'s one ``except`` (never a list);
+#   * the pointer: the seam's rejection message says "see the server log"; in lore-adm the server log IS
+#     stderr (``main()`` installs a stderr handler on the ``loremaster`` logger rendering the seam's
+#     ``extra`` values), so the ``engine_error`` text the seam logs must reach the operator's stderr.
+# RED at fix5 (``5f2d7c43``): the handler prints ``{error}`` alone (the cause is hidden in ``__cause__``)
+# and no handler renders the seam's log record into stderr.
+# --------------------------------------------------------------------------- #
+
+_CAUSE_TEXT = "unique violation — an index entry for this value already exists (cause-line probe)"
+_ENGINE_TEXT = "Database index `principal_email` already contains 'engine-text-probe@example.com'"
+_OUTER_TEXT = "could not ready the store (outer-line probe)"
+_REJECTION_LABEL = "principal.query.rejected"
+_SEAM_LOGGER = "loremaster.principals"
+_TXN_SOURCE = Path(p_module.__file__).resolve().parent / "store" / "_txn.py"
+_RAISE_LADDER = "_raise_attempt_failure"
+
+
+def _handler_fault_names() -> list[str]:
+    """The §11 tuple, DERIVED: the element names of ``_dispatch``'s ONE tuple-typed ``except``."""
+    tree = ast.parse(Path(p_module.__file__).read_text(encoding="utf-8"))
+    dispatch = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "_dispatch"
+    )
+    handlers = [
+        handler
+        for handler in ast.walk(dispatch)
+        if isinstance(handler, ast.ExceptHandler) and isinstance(handler.type, ast.Tuple)
+    ]
+    assert len(handlers) == 1, f"_dispatch must own exactly ONE tuple except (am-37 §11): {len(handlers)}"
+    handler_type = handlers[0].type
+    assert isinstance(handler_type, ast.Tuple)
+    return [ast.unparse(element) for element in handler_type.elts]
+
+
+def _resolve_fault_class(name: str) -> type[Exception]:
+    """Resolve a tuple member through the ``from … import`` that binds it in ``principals.py`` (else the
+    module's own namespace, else builtins)."""
+    tree = ast.parse(Path(p_module.__file__).read_text(encoding="utf-8"))
+    bound_in = {
+        alias.asname or alias.name: node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    import builtins  # noqa: PLC0415 - the one fallback namespace
+
+    module = importlib.import_module(bound_in[name]) if name in bound_in else p_module
+    resolved = getattr(module, name, None) or getattr(builtins, name)
+    assert isinstance(resolved, type) and issubclass(resolved, Exception), name
+    return resolved
+
+
+def _seam_extra_keys() -> list[str]:
+    """The ``extra`` keys the seam's rejection record carries — DERIVED from the ``logger.error(label,
+    extra={...})`` call in :func:`loremaster.store._txn._raise_attempt_failure`."""
+    tree = ast.parse(_TXN_SOURCE.read_text(encoding="utf-8"))
+    ladder = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == _RAISE_LADDER
+    )
+    for call in ast.walk(ladder):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "error":
+            for keyword in call.keywords:
+                if keyword.arg == "extra" and isinstance(keyword.value, ast.Dict):
+                    return [
+                        str(key.value) for key in keyword.value.keys if isinstance(key, ast.Constant)
+                    ]
+    raise AssertionError(f"no logger.error(extra=...) found in {_RAISE_LADDER}")
+
+
+def _chained_fault(fault_class: type[Exception]) -> Any:
+    """A fault factory: ``fault_class(_OUTER_TEXT)`` with ``__cause__`` = a typed store rejection."""
+
+    def factory(_text: str) -> Exception:
+        error = fault_class(_OUTER_TEXT)
+        error.__cause__ = TxnDomainRejectionError(_CAUSE_TEXT)
+        return error
+
+    return factory
+
+
+def _seam_rejection(_text: str) -> Exception:
+    """Emit the seam's own rejection record (label + the DERIVED extra keys) on a ``loremaster`` logger,
+    then return the seam's own raised error — what a real engine rejection produces at ``ensure_ready``."""
+    from loremaster.store import _txn  # noqa: PLC0415 - the seam's private constructor + hint
+
+    values = {"url": "ws://unit", "error_class": _txn._ERROR_CLASS_UNSPECIFIED, "engine_error": _ENGINE_TEXT}
+    extra = {key: values[key] for key in _seam_extra_keys()}
+    logging.getLogger(_SEAM_LOGGER).error(_REJECTION_LABEL, extra=extra)
+    error = _txn._domain_rejection_error(
+        extra["error_class"],
+        f"SurrealDB principal query rejected against 'ws://unit' ({extra['error_class']}); "
+        f"{_txn._SERVER_LOG_HINT}",
+    )
+    error.__cause__ = RuntimeError(_ENGINE_TEXT)
+    return error
+
+
+class TestTheLoreAdmFaultLineTeachesItsCause:
+    """63c am-37 §13 A — the GENERATED pin over the §11 tuple × the DERIVED verb set."""
+
+    @pytest.mark.parametrize("fault_name", _handler_fault_names())
+    @pytest.mark.parametrize("verb", _derived_verbs())
+    def test_the_cause_of_every_laundered_fault_is_printed(
+        self,
+        verb: str,
+        fault_name: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        fault = _chained_fault(_resolve_fault_class(fault_name))
+        outcome, out, err, calls = _run_verb_against(verb, fault, tmp_path, monkeypatch, capsys)
+        assert outcome == "rc=1", f"{verb}/{fault_name}: {outcome!r} err={err!r}"
+        assert "Traceback" not in out + err, f"{verb}/{fault_name}: a traceback reached the operator: {err!r}"
+        lines = err.splitlines()
+        outer = [index for index, line in enumerate(lines) if line.startswith(f"{p_module._CLI_PROG}: ")]
+        assert outer and _OUTER_TEXT in lines[outer[0]], (
+            f"{verb}/{fault_name}: the `lore-adm: <error>` line must be unchanged; stderr={err!r}"
+        )
+        caused = [line for line in lines[outer[0] + 1 :] if "caused by" in line and _CAUSE_TEXT in line]
+        assert caused, (
+            f"{verb}/{fault_name}: the cause (`__cause__`) must be printed on a `caused by` line after the "
+            f"lore-adm line (am-37 §13 A ii); stderr={err!r}"
+        )
+        assert any(call.endswith(".ensure_ready") for call in calls), f"injection never reached: {calls}"
+
+    @pytest.mark.parametrize("verb", _derived_verbs())
+    def test_the_server_log_pointer_resolves_to_stderr(
+        self, verb: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A raw domain rejection: the lore-adm line says "see the server log"; the seam's ``engine_error``
+        (and ``error_class``) must be ON stderr, so the pointer resolves (am-37 §13 A i)."""
+        from loremaster.store import _txn  # noqa: PLC0415
+
+        outcome, out, err, _calls = _run_verb_against(verb, _seam_rejection, tmp_path, monkeypatch, capsys)
+        assert outcome == "rc=1" and "Traceback" not in out + err, f"{verb}: {outcome!r} {err!r}"
+        assert _txn._SERVER_LOG_HINT in err, f"{verb}: the lore-adm line must still carry the hint: {err!r}"
+        # The RECORD itself must reach stderr — its label line carrying the ``engine_error`` / ``error_class``
+        # extras. Checking the engine text anywhere on stderr would be satisfied by the `caused by` line
+        # alone (A ii), so it could not see A (i) missing (mutation-proven 2026-09-30, M-A2 v2).
+        record_lines = [line for line in err.splitlines() if _REJECTION_LABEL in line]
+        assert record_lines, (
+            f"{verb}: `{_txn._SERVER_LOG_HINT}` points at nothing — the seam's log record never reached "
+            f"stderr; stderr={err!r}"
+        )
+        assert _ENGINE_TEXT in record_lines[0] and _txn._ERROR_CLASS_UNSPECIFIED in record_lines[0], (
+            f"{verb}: the log record must render its engine_error and error_class extras: {record_lines[0]!r}"
+        )
+
+    def test_repeated_invocations_do_not_duplicate_the_log_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """LIFECYCLE: ``main()`` installing a handler per call must not accumulate — each invocation's stderr
+        carries the seam's log RECORD (its label line) exactly ONCE (a leaked handler would print it twice, or
+        write to a previous call's dead stream). The label is counted, not the engine text: the engine text
+        legitimately appears twice — on the log record AND on the `caused by` line."""
+        for _attempt in range(2):
+            _outcome, _out, err, _calls = _run_verb_against(
+                "list", _seam_rejection, tmp_path, monkeypatch, capsys
+            )
+            assert err.count(_REJECTION_LABEL) == 1, f"the log record must appear once per call: {err!r}"
+            assert "Logging error" not in err, f"a leaked handler wrote to a dead stream: {err!r}"
+
+    def test_the_seam_extra_keys_the_cli_renders_are_derived_and_non_vacuous(self) -> None:
+        keys = _seam_extra_keys()
+        assert {"error_class", "engine_error"} <= set(keys), keys
+
+
+# F-13: no wrap context over-claims a cause the handler now prints itself.
+_WRAP_SEAM = "wrap_store_rejection"
+_OVER_CLAIM = "already"
+
+
+def _wrap_contexts() -> list[str]:
+    """``<file>::<function>`` ∀ ``wrap_store_rejection(<error>, <context>)`` call in the package, DERIVED."""
+    package = Path(p_module.__file__).resolve().parent
+    sites: list[str] = []
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for call in ast.walk(function):
+                is_wrap = isinstance(call, ast.Call) and getattr(call.func, "id", None) == _WRAP_SEAM
+                if is_wrap and isinstance(call, ast.Call) and len(call.args) > 1:
+                    sites.append(f"{path.relative_to(package)}::{function.name}::{call.lineno}")
+    return sites
+
+
+def _context_text(site: str) -> str:
+    package = Path(p_module.__file__).resolve().parent
+    file_name, _function, line = site.split("::")
+    tree = ast.parse((package / file_name).read_text(encoding="utf-8"))
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == _WRAP_SEAM
+        and node.lineno == int(line)
+    )
+    context = call.args[1]
+    if isinstance(context, ast.JoinedStr):
+        return "".join(str(part.value) for part in context.values if isinstance(part, ast.Constant))
+    return ast.unparse(context)
+
+
+class TestNoWrapContextOverClaimsItsCause:
+    """63c am-37 §13 A (F-13): the wrap contexts are NEUTRAL ("could not create principal …") — the typed
+    cause prints itself on the `caused by` line, so no context may assert a cause ("already exists" /
+    "already bound"). RED at fix5 on exactly PrincipalStore.create, PrincipalStore.set_subject and
+    PrincipalKeyStore.mint."""
+
+    @pytest.mark.parametrize("site", _wrap_contexts())
+    def test_the_wrap_context_names_the_operation_not_a_guessed_cause(self, site: str) -> None:
+        text = _context_text(site)
+        assert _OVER_CLAIM not in text, f"{site}: the wrap context over-claims its cause: {text!r}"
+
+    def test_the_context_sweep_is_not_vacuous(self) -> None:
+        assert len(_wrap_contexts()) >= 10, _wrap_contexts()
+
+
+# --------------------------------------------------------------------------- #
+# 63c amendment 37 §13 C (commit ``ce2b4bd``) — honest labels.
+#   * F-4: the result field, the receipt KEY and the stderr sentence are RENAMED to what the count measures:
+#     ``messages_left_unmigrated`` (rows still un-migrated AFTER the backfill — a superset of
+#     "unsound sender");
+#     the retired name survives in NO served source (bare-pattern scan of the package).
+#   * N-3 / F-15: ``--table`` help for EVERY verb that takes ``--table`` (DERIVED from the parser) is derived
+#     from ``_MIGRATE_VALID_TABLES``; an invalid ``--table`` is refused BEFORE any I/O (zero store calls).
+# RED at fix5 (``5f2d7c43``): the old name everywhere; help says "63a supports: memory"; report-unmigrated
+# never validates and migrate-governed validates only after readying its stores.
+# --------------------------------------------------------------------------- #
+
+_RENAMED_FIELD = "messages_left_unmigrated"
+_RETIRED_FIELD = "unsound_sender_messages"
+_LEFTOVER_SENTENCE = "remain un-migrated after the backfill"
+_INVALID_TABLE = "not_a_governed_table"
+
+
+class _HandleStore(_ScriptedStore):
+    """A scripted store that can also back a driver ``StoreHandle`` (the migrate verb builds one)."""
+
+    _url = "ws://unit"
+
+    async def _ensure_connection(self) -> None:
+        self._calls.append(f"{self._name}._ensure_connection")
+
+    async def _drop_connection(self, _connection: Any) -> None:
+        self._calls.append(f"{self._name}._drop_connection")
+
+
+def _table_verbs() -> list[str]:
+    """∀ verb whose subparser takes ``--table`` — DERIVED from ``build_parser()``."""
+    choices = _subparsers_action(p_module.build_parser()).choices
+    return sorted(
+        verb
+        for verb, subparser in choices.items()
+        if any("--table" in action.option_strings for action in subparser._actions)  # noqa: SLF001
+    )
+
+
+class TestHonestLabels:
+    """63c am-37 §13 C."""
+
+    def test_the_result_field_is_named_for_what_it_measures(self) -> None:
+        from dataclasses import fields  # noqa: PLC0415
+
+        from loremaster.governed import MigrateGovernedResult  # noqa: PLC0415
+
+        names = {item.name for item in fields(MigrateGovernedResult)}
+        assert _RENAMED_FIELD in names and _RETIRED_FIELD not in names, sorted(names)
+
+    def test_the_retired_name_survives_in_no_served_source(self) -> None:
+        package = Path(p_module.__file__).resolve().parent
+        hits = [
+            f"{path.relative_to(package)}:{number}"
+            for path in sorted(package.rglob("*.py"))
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+            if _RETIRED_FIELD in line
+        ]
+        assert not hits, f"the retired label `{_RETIRED_FIELD}` is still served/taught at: {hits}"
+
+    @pytest.mark.parametrize("leftover", [0, 3])
+    def test_the_receipt_key_and_the_stderr_sentence_carry_the_new_name(
+        self,
+        leftover: int,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from loremaster.governed import MigrateGovernedResult  # noqa: PLC0415
+
+        result_class: Any = MigrateGovernedResult
+        forged = result_class(
+            table="message",
+            scanned=5,
+            backfilled=5 - leftover,
+            already_migrated=0,
+            refused=False,
+            table_defined=True,
+            **{_RENAMED_FIELD: leftover},
+        )
+
+        async def _forged_migrate(**_kwargs: Any) -> Any:
+            return forged
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            p_module, "build_principal_store", lambda _c: _HandleStore("principal", None, calls)
+        )
+        monkeypatch.setattr(p_module, "build_keep_store", lambda _c: _HandleStore("keep", None, calls))
+        monkeypatch.setattr(p_module, "migrate_governed", _forged_migrate)
+        config_path = tmp_path / "lore.yaml"
+        config_path.write_text(yaml.safe_dump(_config_payload(database=_SWEEP_DATABASE)), encoding="utf-8")
+        rc = p_module.main(["--config", str(config_path), "migrate-governed", "--table", "message"])
+        captured = capsys.readouterr()
+        assert rc == 0, (rc, captured.err)
+        assert f"{_RENAMED_FIELD}={leftover}" in captured.out, captured.out
+        assert _RETIRED_FIELD not in captured.out + captured.err, captured
+        assert (_LEFTOVER_SENTENCE in captured.err) is (leftover > 0), (
+            f"the stderr sentence is DERIVED from the field, iff > 0: {captured.err!r}"
+        )
+
+    @pytest.mark.parametrize("verb", _table_verbs())
+    def test_the_table_help_is_derived_from_the_valid_set(self, verb: str) -> None:
+        subparser = _subparsers_action(p_module.build_parser()).choices[verb]
+        (table_action,) = [a for a in subparser._actions if "--table" in a.option_strings]  # noqa: SLF001
+        expected = ", ".join(p_module._MIGRATE_VALID_TABLES)  # noqa: SLF001
+        assert expected in (table_action.help or ""), (
+            f"{verb}: --table help must name the valid set {expected!r}: {table_action.help!r}"
+        )
+
+    @pytest.mark.parametrize("verb", _table_verbs())
+    def test_an_invalid_table_is_refused_before_any_store_call(
+        self, verb: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        calls: list[str] = []
+        monkeypatch.setattr(
+            p_module, "build_principal_store", lambda _c: _HandleStore("principal", None, calls)
+        )
+        monkeypatch.setattr(p_module, "build_keep_store", lambda _c: _HandleStore("keep", None, calls))
+        monkeypatch.setattr(
+            pk_module, "build_principal_key_store", lambda _c: _HandleStore("key", None, calls)
+        )
+        config_path = tmp_path / "lore.yaml"
+        config_path.write_text(yaml.safe_dump(_config_payload(database=_SWEEP_DATABASE)), encoding="utf-8")
+        try:
+            outcome = f"rc={p_module.main(['--config', str(config_path), verb, '--table', _INVALID_TABLE])}"
+        except SystemExit as error:
+            outcome = f"SystemExit {error.code}"
+        except Exception as error:  # noqa: BLE001 - an escaping fault is a finding, named
+            outcome = f"ESCAPED {type(error).__name__}: {error}"
+        err = capsys.readouterr().err
+        io_calls = [call for call in calls if not call.endswith((".built", ".close"))]
+        assert not io_calls, (
+            f"{verb}: an invalid --table reached the store ({io_calls}) — "
+            "validate BEFORE any I/O"
+        )
+        assert outcome in ("rc=1", "SystemExit 2"), f"{verb}: an invalid --table must be refused: {outcome!r}"
+        assert _INVALID_TABLE in err, f"{verb}: the refusal must name the rejected table: {err!r}"
+
+    def test_the_table_verb_population_is_derived_and_not_vacuous(self) -> None:
+        assert {"migrate-governed", "report-unmigrated"} <= set(_table_verbs()), _table_verbs()

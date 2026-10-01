@@ -87,6 +87,7 @@ from typing import Any
 
 import _surreal_harness
 import pytest
+from _engine_shapes import typed_conflict_error
 from _surreal_harness import SurrealEnv
 from loremaster.store import _txn as txn_module
 from pydantic import SecretStr
@@ -104,8 +105,10 @@ _FAKE_ENV = SurrealEnv(
 )
 
 # The exact live message reported in the bug (surrealdb.errors.QueryError, kind "Query").
-# Its retryable-conflict marker is the seam's ``_txn._RETRYABLE_CONFLICT_MARKER``
-# ("can be retried") — the ONE authority; the harness no longer declares a copy.
+# ⚠ DUAL (63c-i-a contract a28c, amendment 36): detection reads the engine's TYPED kind now — the seam's
+# ``_txn._RETRYABLE_CONFLICT_KIND`` (``details.kind == "TransactionConflict"``, measured 3.2.4) is the ONE
+# authority (was the text marker ``_RETRYABLE_CONFLICT_MARKER``, deleted); the conflict is built in ONE place,
+# ``_engine_shapes.typed_conflict_error``.
 _CONFLICT_MESSAGE = "Transaction conflict: Resource busy. This transaction can be retried"
 
 # A same-shaped ``QueryError`` that is emphatically NOT the retryable conflict —
@@ -183,7 +186,7 @@ _BUDGET_BURN_CONFLICTS = 4
 
 
 def _conflict_error() -> QueryError:
-    return QueryError("Query", _CONFLICT_MESSAGE)
+    return typed_conflict_error(_CONFLICT_MESSAGE)
 
 
 def _non_retryable_error() -> QueryError:
@@ -1397,8 +1400,8 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         await _surreal_harness.drop_database(_FAKE_ENV)
         assert control.query_calls == 2, "the control leg did not retry; the pin is blind"
 
-        # MUTATION: the seam no longer recognises the engine's prose as a conflict.
-        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_MARKER", "a marker no engine emits")
+        # MUTATION: the seam no longer recognises the engine's conflict KIND (a28c DUAL: was its prose).
+        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
 
         mutated = _FakeConnection(query_outcomes=[_conflict_error(), None])
         _patch_connection(monkeypatch, mutated)
@@ -1431,7 +1434,7 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
             "the control leg did not retry; the pin is blind"
         )
 
-        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_MARKER", "a marker no engine emits")
+        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
 
         mutated = _FakeConnection(
             statement_outcomes={
