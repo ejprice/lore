@@ -601,3 +601,53 @@ The throwaway reference, for the record only (never shipped; a SAT host, never a
 | `…/scratchpad/fixup-tests-63c-i-a-2.full7.patch` (30a13c8a + r7; 25 files ⊇ the 24) | HEAD `136ba7a` (= main HEAD) | `5272a53344e36a980791ff8fde19ae72` | OK |
 
 The reference, for the record only: `…/scratchpad/ref-R7.patch` (md5 `23d12deb…`); generator `r7_make_ref.py`.
+
+## ROUND 7b: am-37 §13.4.2 (`d0502c0`) test side (the pending set)
+*Measured 2026-10-01 03:01–03:08Z in scratch `fixup7` = HEAD `136ba7a` + 30a13c8a + round-7 tests (full7 `5272a533`). The throwaway reference `refR7` is a `scratch_copy.sh` tree, updated in place.*
+
+**SUMMARY:**
+- **State:** done.
+- **RED at 30a13c8a + full7 tests:** 13 declared before the run (round 7's 6 + every §13.4.2 node); 13 observed, 0 missed. The only undeclared reds are the 28 owned `test_findings_migrate_64b.py` ids, id-identical on base and reference.
+- **Reference:** GREEN except those 28.
+- **Mutations:** (a) and (b) both PROOF HELD.
+- **Gates:** ruff clean; typecheck 83 (owned); RED_ORPHANED 0.
+- **full7b ⊇ full7's 25 files:** 25, 0 missing; also ⊇ the base's 24.
+- **Decision needed (R7b-1, below):** the literal tightened-containment pin is unsatisfiable on any correct build. I pinned the ruled rationale and flag the literal form.
+
+### R7b-1. §13.4.2's tightened containment, as written, reds on every correct build
+- **The problem:** §13.4.2 pins `_MIGRATE_VALID_TABLES ⊆ ddl_governed_tables()`. At 30a13c8a, `_MIGRATE_VALID_TABLES` = `(agent, memory, message, brief)`. `brief` is PENDING (no DDL triple) and has NO migrate leg; `migrate-governed --table brief` answers a teaching "not yet migrated" refusal.
+- **Measured on the reference:** the literal pin reds on `['brief']`.
+- **The premise was already false:** §13.4 called `_MIGRATE_VALID_TABLES` "the leg set". It holds 4 tables; the derived legs are 3.
+- **The two readings:**
+  - (i) the ruled rationale, "a LEG for a PENDING table is a defect": the DERIVED leg set (`test_preboot…::_LEGS`) ⊆ `ddl_governed_tables()`.
+  - (ii) literal: forces `brief` OUT of `_MIGRATE_VALID_TABLES`, turning `migrate-governed --table brief` from a teaching refusal into an invalid-name refusal (a behaviour change).
+- **What I did:** pinned (i). The docstring names (ii) as flagged. If the lead rules (ii), the builder removes `brief` from the validator set and this pin is re-keyed to the literal form.
+
+### Pins (in `test_am37_13_4_63c_i_a.py`; 1 extension in `test_am37_13_3_63c_i_a.py`)
+| ruling | pin | RED at base (= observed) | reference | mutation |
+|---|---|---|---|---|
+| SELF-DESTRUCT | `TestThePendingSetSelfDestructs::test_a_pending_table_has_no_ddl_triple_yet[<member>]`, BY MEMBER over `PENDING_GOVERNED_TABLES` at collection | 1 (`[<…does not exist>]`) | GREEN ×3 | **(a)** `finding` added to the DDL-derived set → exactly `[finding]` |
+| SELF-DESTRUCT control | `…::test_CONTROL_a_synthetic_generator_defining_the_triple_on_a_pending_name_is_seen`: a monkeypatched `surreal_schema.generate_r7b_selfdestruct_probe_ddl` defining the triple on a pending name joins `ddl_governed_tables()` (so the derivation reads the GENERATORS; `cache_clear` honoured if cached) | 1 | GREEN | — |
+| union | `…::test_the_report_domain_is_exactly_ddl_plus_pending` | 1 | GREEN | — |
+| containment (tightened) | `…::test_the_migrate_legs_are_ddl_derived_tables` (reading (i), R7b-1) | 1 | GREEN | — |
+| entries | `TestThePendingEntriesAreDeclaredHonestly::test_each_entry_carries_a_reason_and_an_owning_packet[<member>]` (non-blank `reason` AND `owning_packet`) | 1 (`[<…>]`) | GREEN ×3 | — |
+| scripts consumes | `…::test_the_restore_script_consumes_the_package_set`: AST says no module-level `PENDING_GOVERNED_TABLES` assignment in `scripts/restore_prod_dump.py`, AND any exposed name `is` the package object | 1 | GREEN | — |
+| rider (read-back) | `TestTheReadBackServesThePendingRemedy::test_the_pending_tables_report_their_packet_never_a_migrate_verb`. One legacy row each is seeded in `finding` (`seed_finding_legacy`) and `task` (a raw minimal `CREATE`), so the remedy is actually rendered. Through the REAL `_read_back`, each logs "no governed columns yet" + `packet <owning_packet>`, never `migrate-governed --table <t>`. | 1 | GREEN | **(b)** (pending remedy → `migrate-governed`) |
+| rider (generated) | `test_am37_13_3…::TestTheReportRemedyIsDerived` (∀ table ∈ `governed_tables()`), extended: a PENDING member names its owning packet + "no governed columns yet" and names no migrate verb; a DDL member keeps the §13.3 item 6 rule | 1 (`[<…>]`) | GREEN ×6 | **(b)** → exactly `[brief]`, `[finding]`, `[task]` + the read-back pin (4 ids) |
+
+- **Reference (SAT host, `…/scratchpad/ref-R7b.patch`, md5 `3be50f99…`):**
+  - in `governed.py`: `PendingGoverned(reason, owning_packet)`, `PENDING_GOVERNED_TABLES` (`brief` 63c-ii, `finding` 64b, `task` 64a), `ddl_governed_tables()` (every `generate_*_ddl` by inspection), and `governed_tables() = ddl ∪ pending`; the remedy is derived from the entry;
+  - `scripts/restore_prod_dump.py` imports the set from `loremaster.governed` (identity holds).
+  - The derived sets measure: DDL = {agent, memory, message}; union = six; `SliceDeriver` = six.
+- **Base / reference / mutation receipts:**
+  - Base: 41 failed / 1234 passed (13 declared + 28 owned). Admitted 03:06:21Z at 40 GiB.
+  - Reference: 28 failed / 1261 passed (the 28 owned, `cmp`-identical). Admitted 03:06:55Z.
+  - Mutation logs: `…/scratchpad/r7bmut/{a,b}.log`.
+- **My own corrections this round:**
+  - Mutation (b)'s first replacement re-routed pending tables into the `else` branch, which no longer names `migrate-governed`. It was re-anchored on the pending remedy's text before any proof ran.
+  - v1 of the reference run reddened the literal containment pin (R7b-1). The v1 mutations "PROOF FAILED" on that extra red; the instrument was right to refuse. The receipts of record are v2.
+
+| patch | base | md5 | `git apply --check` |
+|---|---|---|---|
+| `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/39327f47-9890-466d-ba82-57c754558a73/scratchpad/fixup-tests-63c-i-a-2.r7b.delta.patch` (tests only, over 30a13c8a, INCLUDING r7: `test_am37_13_4_63c_i_a.py` new, `test_am37_13_3_63c_i_a.py`) | HEAD `136ba7a` + `30a13c8a` | `04d9c8d4d7708b69d662dc4b7e0d519d` | OK |
+| `…/scratchpad/fixup-tests-63c-i-a-2.full7b.patch` (built in a temp index; 25 files ⊇ full7's 25 ⊇ the base's 24) | HEAD `136ba7a` (also main `572ff05`) | `fdae25e8feed0e9513c722efc73a5bbb` | OK at both |
