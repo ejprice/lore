@@ -467,3 +467,155 @@ CURRENCY   : FAIL — claimed but never run: pytest
 - Scratch base HEAD `365f769`. Main HEAD at re-cut is `4ed61f8`, which moved by docs only (no `loremaster/`, `scripts/` or `docs/reference/` change since `365f769`).
 - `git apply --check --cached <r5.full.patch>` at main HEAD `4ed61f8`: **OK**.
 - The delta, applied over the `3132f699` state (the `pre-r5/` copies), reproduces all 4 files byte-exact (`patch -p1` + `cmp`, `scratchpad/deltacheck3`).
+
+## RESUME 2 (lead, ~02:06Z 2026-10-01 — am-37 §13.3 production, the FINAL capped round; + lead note on F-5: derived leg set)
+brief project v7 read (re-register). Work happened in the same `fix6` scratch tree, which provenance-asserts itself (`loremaster.__file__` = `…/scratchpad/fix6/loremaster/loremaster/__init__.py`, printed by the probe below).
+
+**Summary:**
+- **State:** done, with ONE OPEN FORK (item 4 vs `restore_prod_dump.py`, below).
+- **Tests:**
+  - 0 GREEN→RED vs full6.
+  - RED→GREEN is **exactly** round 6's 131 declared ids: ⊇ holds, with equality.
+  - The 268 remaining reds are byte-identical to round 5's owned set (58: 33, 64b-i: 235), so **0 unowned**.
+- **Gates:** typecheck RED_ADJUDICATED 83 (unchanged); ruff GREEN; `ruff check .` clean.
+- **sha512 sweep → NO fallback.** `scrub_text` learns the 128-hex shape for every sink.
+- **Live mint-collision receipt:** 0 hex runs on stderr; the control (scrub disabled) shows 2.
+
+### Setup receipts
+- `cp -a` first, to `scratchpad/pre-r6/`: governed, principals, principal_keys, logging_setup.
+  - ⚠ **Disclosed slip:** `keeps.py` was NOT in that first copy. I learned it was in scope only when the F-6 site list reached it.
+  - Its pre-edit content is bec29190's own, so no content was at risk. It was reconstructed from HEAD + `r5.full.patch` as `pre-r6/keeps.py.bec29190` (md5 `6945cb55…`) and proven to differ from the edited file by exactly the 6 noun insertions.
+  - The fresh reconstruction in `recon-r6` independently yields the same `6945cb55`.
+- r6 test delta `fixup-tests-63c-i-a-2.r6.delta.patch`: md5 `2aff7c3a46be9bd92ab3c42868cb47ee` verified; `git apply --check` + apply clean.
+- ⚠ **FLAG-r6-1 (test side's full6 patch is NOT a complete full patch).**
+  - My tree after the delta, diffed against HEAD and path-sorted, reproduces full6 md5 `ca4598259d2727b95c6dff877edc27ad` **only after removing** the two untracked round-4 test files: `test_fail_closed_shapes_63c_13b.py` and `test_preboot_schema_precondition_63c_13d.py`.
+  - full6 OMITS both of them, although bec29190 carried them. Applying full6 alone at main would silently drop the round-4 test files.
+  - My `r6.full.patch` (below) carries them.
+
+### Build per §13.3
+
+| item | edit | pin / receipt |
+|---|---|---|
+| 1 F-1 | `_set_columns` now reads through ONE `_SetClauseScanner`, a single depth+quote pass over the whole statement. Brackets `()[]{}` are one stack (a mismatched closer raises). Strings `'`/`"` honour a backslash escape. The top-level `SET` opens the clause. `WHERE`/`RETURN`/`TIMEOUT`/`PARALLEL` end it, and `,` splits it, only at depth 0 outside a string, case-insensitively, as whole words. Each item must match `<ident> (=\|+=\|-=\|+?=) <non-empty>`. It raises on an open quote, an open bracket, no top-level SET, a non-identifier target (`a.b`) and an empty item. The regex end-split (`_SET_CLAUSE_START/_END`) is DELETED (awk: 0 hits). | corpus 15/15 exact, 4/4 must-raise; extra probes `'it\'s, x'`, `[1, 2]`, `{k: 1, j: 2}` exact; `, ,` / `(1]` / `a.b` / `a =` raise |
+| 2 F-2 | (i) `_cli_logging`: `handler.addFilter(RedactingFilter())`. (ii) `logging_setup._scrub_text` is promoted to PUBLIC `scrub_text`: one name, all callers renamed, `_scrub_text` has 0 hits in the package. `_fault_line` renders the error and every cause through it. (iii) `_CREDENTIAL_HASH_RE = (?<![0-9A-Fa-f])[0-9A-Fa-f]{128,}(?![0-9A-Fa-f])`, applied LAST in `scrub_text`. A 64/127-hex run, a git SHA and a UUID are untouched. The module docstring's "only LABELLED shapes" claim now names this one fixed-LENGTH exception, its bound and its re-open trigger (no entropy prose; the corpse-prose pin is green). | live receipt below |
+| 3 #527 | `_fault_line` walks `__cause__` ONLY, with `seen = {id(exc)}`. | 2-cycle → `lore-adm: alpha-cause / ← caused by: beta-cause`, each once |
+| 4 #528 | `report_unmigrated_governed_rows` calls the ONE validator `principals._is_governed_table` (function-local import, the house cycle idiom) BEFORE any I/O and raises `ValueError` (in the lore-adm tuple: an input fault). The docstring makes no caller claim. `_dispatch_report_unmigrated` keeps its pre-I/O check. | ⚠ **OPEN FORK**, below |
+| 5 F-3 | `rows_of(result, *, noun, landed=False)`. `landed=True` renders the ONE template `_LANDED_SHAPE_FAULT` (byte-exact per the pin). The un-landed texts are byte-unchanged. Both `_as_rows` wrappers thread `landed`. `landed=True` is set at every CREATE/UPDATE `RETURN AFTER` read: principals create/set_status/set_subject/set_expires, principal_keys mint/revoke, and `_rows_stamped` (the 3 legs). The test's own derivation selects them. KeepStore's 6 sites are SELECT reads: noun only (lead note). | population pin green |
+| 6 F-5 | Remedy is DERIVED. `t ∈ _MIGRATING_TABLES` → "run `lore-adm migrate-governed --table t` to backfill"; else → "no migrate verb accepts `t` yet — N row(s) remain unscoped". **Per the lead's note (no hand list)**, the three legs are dispatched through ONE mapping `_MIGRATE_LEGS: {table: leg}` (a frozen `_LegCall` carries the verb's measured inputs), and `_MIGRATING_TABLES = tuple(_MIGRATE_LEGS)`. The verb runs a leg ONLY through that mapping and answers any other valid table `_not_supported`, so the set the remedy reads IS the set the verb executes. | `brief` → no-verb form |
+| 7 F-6 | `PrincipalStore._as_rows` / `PrincipalKeyStore._as_rows`: `noun` keyword-only and REQUIRED. The 18 in-domain calls each name their read: principals 8, principal_keys 4, keeps 6 (`PrincipalStore._as_rows`). The edit was AST-positioned and reflowed. | site pin green; `test_the_row_reader_wrappers_require_noun` green |
+| 8 F-7 | `GovernedStatementError(RuntimeError)` holds every `_set_columns` raise. It is NOT in `_dispatch`'s tuple, so it tracebacks; `ValueError` stays in the tuple. | pins green |
+| 9 NITs | #19 "(below)" → "(above)". #21: the message-leg comment now states the F-4 fact (counts EVERY row still unscoped+ownerless after the backfill; commonly sender-unsound; a row inserted mid-run counts too). #31: `_not_supported` derives both lists via `_backticked(...)`: "today:" from `_MIGRATING_TABLES`, the governed list from `_MIGRATE_VALID_TABLES`. | #31 pins green |
+
+### ⚠ OPEN FORK — item 4 vs `scripts/restore_prod_dump.py` (ledger #17142, thread `q:63c-r6-item4-restore`, NO reply at commit)
+- **The ruling's claim is false, measured.** Item 4 says restore is "covered by construction". In the fix6 tree, `SliceDeriver().governed_slice()` marks `governed_node=True` for `[agent, brief, finding, memory, message, task]`. `_read_back` calls `report_unmigrated_governed_rows(handle, t)` for each.
+- `finding` and `task` are OUTSIDE `_MIGRATE_VALID_TABLES`. With item 4 as ruled (built, pinned), the default restore read-back now RAISES `ValueError` on them. No test covers this path.
+- **Options:**
+  - (A) as ruled — built, provisional;
+  - (B) RECOMMENDED — the report's validator domain is the governed set ∪ the pending-packet tables. It is still ONE validator function, but a second membership is a design call;
+  - (C) restore skips non-reportable tables and records "not reportable".
+- The lead rules. I did NOT edit `restore_prod_dump.py`.
+
+### sha512 / 128-hex producer sweep (item 2 iii) — the fallback decision
+Method:
+- awk over all of `loremaster/`, `lorescribe`, `loresigil`, `lorerunes` and `scripts/` for `sha512|sha3_512|blake2b|hexdigest|.hex()`;
+- then an **AST sink sweep** (`scratchpad/sha_sink_sweep.py`): every logger call and every `raise` whose arguments name `sha|hash|digest`;
+- then the UNIQUE indexes in `surreal_schema.py` that cover a hash column, since the engine echoes a duplicate VALUE into `engine_error`.
+
+| producer (file) | value | reaches a scrubbed sink? | verdict |
+|---|---|---|---|
+| `principal_keys.mint` / `principals` mint verb (`sha512_hex(f"{name}:{secret}")`) | credential hash | YES: `principal_key_hash` UNIQUE echo in `engine_error` + cause line (live receipt) | MUST redact |
+| `agents.py` `capability_hash` (`sha512_hex`, :926/:1102) | credential hash | same class: UNIQUE capability-hash index echo | MUST redact |
+| `token_verifier.py:363` `sha512_hex(token)` | cache key | no log or raise argument (AST sweep: 0) | n/a |
+| `index/indexer.py` content_hash (:525/:1215/:1594) → manifest / `file` / `file_text` / snapshot `sha512` | content digest | no logger/raise carries it (AST sweep: 0 hits; `store_read` integrity error names tier+path only; `surreal.py:1385` names the KEY `_FILE_TEXT_SHA_KEY`, not a value); no UNIQUE index on a content-sha column | not in a served line |
+| `diff.py` snapshot sha512 compare | content digest | no log/raise | not in a served line |
+| `floor_calibration/domain.py` (:139/:241) | content digest | no log/raise | not in a served line |
+| sha256 (`server.py:10815`, `index/schema.py:136`, `calibration/baseline.py:58`), blake2b/2s (`scripts/gated_ground.py`, `lorerunes/pdp.py`), md5 (`scripts/mutation_proof*`) | 64/32/16 hex | n/a | below 128 — untouched (control pin) |
+
+- **Decision: the PRIMARY rule.** `scrub_text` redacts the shape everywhere; the §13.3 fallback (`secret_params` + driver withholding) is NOT taken.
+- **Named bound + re-open trigger** (in the `_CREDENTIAL_HASH_RE` comment): the first log line that must carry a content sha512 → narrow to the mint seam's record.
+
+**Live receipt, item 2** (`scratchpad/probe_r6_mint_collision.py`, log `probe_r6_mint_collision.log`).
+- Setup:
+  - the REAL `lore-adm main()` on `:18000`, fresh `unique_database()`, reaped;
+  - two principals mint `laptop-<leg>` with `secrets.token_urlsafe` pinned, so the hashes are identical and `(principal, name)` stays distinct.
+- **SCRUBBED: rc=1, 128-hex runs on stderr = 0.**
+  - `engine_error=Database index \`principal_key_hash\` already contains '***REDACTED***'`
+  - `← caused by: …already contains '***REDACTED***'`
+- **CONTROL** (`scrub_text` = identity at `logging_setup` + the `principals` binding): rc=1, **runs = 2** (`ca0cc4c6…a1bbe` in the log line AND the cause line).
+- ⚠ **Observed side effect (residual, < MAJOR):** in the scrubbed leg the record id `principal_key:<id>` also redacts. This is the PRE-EXISTING `_COMPOUND_ASSIGNMENT_RE` trade (`_key:` is a label, "cache_key=abc redacts"), newly visible because the CLI sink is now filtered. It costs a diagnostic, not a secret.
+
+### Removed-behaviour inventory (this round's delete/replace)
+- **Regex end-split parser** — replaced, preserved-with-pin. §13.3 item 1: the shipped 3 statements parse identically; the narrowing cases now parse exactly or raise.
+- **Raise class** — `ValueError` → `GovernedStatementError`. Dropped deliberately (item 8).
+- **`_scrub_text`** — renamed `scrub_text`, no alias kept ("one name", item 2 ii).
+- **Hand-listed `_not_supported` tables** — replaced by derivation (#31).
+- **The `if/elif` leg branches** — replaced by `_MIGRATE_LEGS`. preserved-with-pin: same three legs, same args, same order of checks (refusal → not-a-leg → undefined table → leg).
+- **Default `noun` on `_as_rows`** — dropped deliberately (item 7).
+
+### Targeted run
+**Declared set:** 66 files, written BEFORE any run (`scratchpad/declared-r6.txt`, md5 `e69cbbaac514182545e23513720a20a8`):
+- the 62-file set (md5 `2a6a8c93…`, which already holds `test_retry_seam.py`, both round-4 files and the 13d/13b files);
+- ∪ AST covering scan `scratchpad/cover_r6.py` over every changed symbol (`logging_setup` names incl. the import, `_fault_line`, `_cli_logging`, `_set_columns`, `_not_supported`, `_MIGRATING_TABLES`, `GovernedStatementError`, `rows_of`, `_as_rows`, the 6 KeepStore read methods, both old default-noun strings);
+- that adds `test_am37_13_3_63c_i_a.py`, `test_caplog_isolation.py`, `test_logging_setup.py` and `test_secret_leak_vectors.py`;
+- no test pins either old default-noun text.
+
+**Gate and tree:** `gated_run.sh`, now narrowed to LORE pytest per the brief (`/[p]ytest/ && /lore/`), MemAvailable ≥ 20 GiB, `MemoryMax=16G`, `-n 8`, `--timeout=300`. Base and build ran in ONE tree:
+- BASE = full6 (bec29190 production restored from `pre-r6/`; the tree diff hashed to `ca459825` before launch);
+- BUILD = this build (`build-r6/` restored; md5s below).
+
+| run | admitted | result |
+|---|---|---|
+| BASE `r6-base.log` | `02:18:23 avail=25GiB others=0` | `399 failed, 4978 passed, 3 skipped` in 586.5s |
+| BUILD `r6-build.log` | `02:28:23 avail=37GiB others=0` | `268 failed, 5109 passed, 3 skipped` in 654.0s |
+
+- **GREEN→RED: 0.**
+- **RED→GREEN: 131, = round 6's declared 131 exactly** (`…39327f47…/r6.declared2.txt`; all 131 red at base, 0 red at build).
+- **Remaining 268 reds byte-identical to round 5's** (`diff` of sorted id lists vs `r5-declared.log`: identical). The files and counts are the owned set: `packet-58-contract` 33, `packet-64b-i-contract` 235. **ZERO unowned.**
+- Parsing note: 2 lines in the base log start with `ERROR ` but are captured LOG records, not node ids; they are excluded by the path filter.
+
+### Currency (`--currency --legs typecheck,ruff`, ~02:31Z, on the build; `scratchpad/currency-r6.log`)
+```
+  typecheck    RED_ADJUDICATED — 83 residual(s), owned by: packet-58-contract (owner: packet 58 (…)
+  ruff         GREEN
+  pytest       NOT_RUN — claimed by the manifest, never executed
+CURRENCY   : FAIL — claimed but never run: pytest
+```
+- typecheck 83 is unchanged and RED_ORPHANED on the run legs is 0.
+- Exit 1 is the known FLAG-2 residual.
+- `uv run ruff check .` → `All checks passed!`
+
+### Patches
+
+| artifact | md5 |
+|---|---|
+| **FINAL 63c-i-a patch** `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r6.full.patch` (24 files: `git diff --binary HEAD` + `--no-index` for the 3 untracked test files) | `30a13c8ab5b409460d1943256469fcd4` |
+| delta over bec29190 `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/9744862d-d833-4a43-b77a-bdbeb70a77d0/scratchpad/builder-63c-i-a-fix6.r6.delta.patch` (8 files: 5 production + the 3 r6 test files) | `868d7ab5adcffbc6d62c48a00d671387` |
+| `loremaster/loremaster/principals.py` | `ce5dbc3e94975df280333b925a0f670e` |
+| `loremaster/loremaster/governed.py` | `e1286994f7e16be91c05ff6f3e09efc9` |
+| `loremaster/loremaster/principal_keys.py` | `d2d80884877ea7b043be2ede2be5af41` |
+| `loremaster/loremaster/keeps.py` | `6afced24f8da2f58b9943ea13d6b3d73` |
+| `loremaster/loremaster/logging_setup.py` | `e591361fd2c838430cf4e784f9e87603` |
+| `docs/reference/surrealdb-31-capabilities.md` (unchanged) | `73487207fdf0aefe0a070c24f5160754` |
+
+- `git apply --check --cached <r6.full.patch>` at main HEAD **`3d29e7c`: OK**. Main moved by docs only since the scratch base `365f769` (`git diff --stat 365f769 HEAD -- loremaster scripts docs/reference`: empty).
+- The delta, applied over a FRESH bec29190 reconstruction (`recon-r6-check`: HEAD archive + `r5.full.patch`), reproduces all 24 files byte-exact (`cmp`: 0 mismatches).
+- `cp -a` of the changed files: `scratchpad/changed-files-r6/`.
+
+### Retired-name sweep (bare patterns)
+- `_scrub_text`: production 0, tests 0 (test_secret_leak_vectors' own wrapper is `scrub_text`).
+- 16 hits in archived receipts:
+  - `docs/plans/v2/receipts/2026-07-31-packet39/REPORT-adversary-39-auth-1.md:269,599`
+  - `…/2026-07-26-packet42/REPORT-refactor-pkt42-1.md:113,199`
+  - `REPORT-contract-pkt42-1.md:1061,1114,1163,1263`
+  - `REPORT-builder-pkt42-1-pass4.md:67,135,185,201,206`
+  - `REPORT-builder-pkt42-1.md:145,175,655,657`
+  - Each hit is **historical**: an archived receipt, not a served surface, and not edited.
+- `_SET_CLAUSE_START` / `_SET_CLAUSE_END`: 0 hits.
+- `_MIGRATING_TABLES` is new.
+
+### Residuals and observations (for the operator; none re-opened)
+- OPEN FORK item 4 vs restore (above).
+- FLAG-r6-1: full6 omits the 2 round-4 test files.
+- The record-id redaction side effect on the CLI sink (above).
+- N-1/N-2/N-3: ruled residuals, untouched.
+- **ONE-IMPLEMENTATION observation:** six other stores carry their OWN private `_as_rows` (`agents`, `briefs`, `diff`, `findings`, `messages`, `tasks`) that do NOT route through `rows_of`. They are outside §13.3's ruled domain (the pin scopes to `rows_of`-delegating wrappers). Raised, not touched.
