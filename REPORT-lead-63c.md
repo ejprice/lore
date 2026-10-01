@@ -2083,3 +2083,12 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - r7b delta `04d9c8d4d7708b69d662dc4b7e0d519d`, full7b `fdae25e8feed0e9513c722efc73a5bbb` (25 files, ⊇ full7, lead-checked); apply-check OK at 75fec6d.
 - **LEAD RULING R7b-1:** the literal `_MIGRATE_VALID_TABLES ⊆ ddl-derived` is unsatisfiable (`brief` is in the validator set for its teaching refusal "lands at 63c-ii" but is pending). The pinned property "the LEG set ⊆ ddl-derived" is §13.4's own stated rationale ("a leg for a non-governed table is a defect"). `brief` STAYS (dropping it would worsen the teaching).
 - fix6 RESUME 3 sent at 03:09Z (60 min): the §13.4/§13.4.1/§13.4.2 production incl. `scripts/restore_prod_dump.py` consuming the package set. FINAL patch → `builder-63c-i-a-fix6.r7.full.patch` (temp index; ⊇ 25 files).
+- **builder-63c-i-a-fix6 RESUME 3 DONE (`221456a`).**
+  - §13.4/.1/.2 built: `governed_tables()` = DDL-derived ∪ `PENDING_GOVERNED_TABLES` (in `governed.py`); ONE validator; `SliceDeriver` consumes the package set (the local copy deleted); no `loremaster/` → `scripts/` import.
+  - 0 GREEN→RED; 13/13 declared green; 268 owned reds, 0 unowned; typecheck 83.
+  - **FINAL CANDIDATE `builder-63c-i-a-fix6.r7.full.patch` md5 `b15c06b054e661ae9c591d1151ddc257`** (26 files = full7b's 25 + `scripts/restore_prod_dump.py`; lead file-list diff clean; apply-check OK at 221456a). Delta over 30a13c8a `5959fa0e…`.
+  - Residual (pre-existing, kept): `restore_prod_dump.py` takes its relation tables from the TEST tree's `governed_relation_tables`.
+- Spawned at 03:36Z:
+  - **coldaudit-63c-i-a-6** (110 min, excluding gate waits): §13.3–§13.4.2 by construction; the OWED mutations A–E (audit-5's mutchain, re-declared) + F-1/F-2/§13.4 mutations; a live mint-collision secret receipt; the REAL-dump restore read-back with the NEW script (the operator runs it if denied); a targeted run; gates.
+  - **blindreader-63c-i-a-6** (40 min): diff bec29190 → b15c06b0.
+  - CAP: below MAJOR → residual.
