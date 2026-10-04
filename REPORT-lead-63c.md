@@ -2178,3 +2178,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - fix531b stopped.
 - Lead re-run on clean HEAD 08cb222 (`test_am37_13_3` + `fail_closed_shapes` + `principal_keys_store`): **220 passed, 0 failed** (admitted at 24.5 GiB). 28395e0 + 0f81bd7 are fully verified.
 - fix531b §5.2 (mint's `if not rows:` branch, "vanished immediately after it was created", gives no revoke repair although the key may have landed) is a sibling in the operator's "fix the mint guidance" scope. Delegated to **fix531c** (ONE shared revoke-argv helper; TDD). Other fix531b residuals are recorded only: §5.1 (`remedy` threaded only where used), §5.3 (a pre-existing stale line citation in `test_comms_schema.py`).
+- **2026-10-04T16:21Z:** fix531c → `b90bd4b` (no-row mint names the same revoke repair; ONE helper `_revoke_command`), `REPORT-fix531c.md` (`5bb95be`).
+  - **Lead-verified:** diff read; no trailers; clean-HEAD re-run of `test_am37_13_3` + `principal_keys_store` **139 passed / 0 failed**.
+  - fix531c §5.1 found MORE siblings: `_row_to_key` missing fields (incl. a bare `KeyError`), and a transport fault after commit. This is the receding-reach pattern (fixing the PATH, not the STATE), so the lead escalated.
+  - **OPERATOR RULED: "one handler, then stop"** — one handler around mint's post-write window. Boundaries (UNIQUE = no remedy; transport = unknown; F-7 tension; the fates-registry catch site) were sent to sidecar-63c-2 as am-37 §13.5 (15 min). Then one TDD agent (`fix531d`). After that: STOP, any remainder is a residual.
+  - fix531c stopped.
