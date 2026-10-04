@@ -2274,3 +2274,12 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **#537:** declare `pytest-timeout` a dev dependency (pre-approved package).
   - R5–R8 LOW/accepted.
 - Working tree: ONLY the two pre-session untracked 63c reports (`REPORT-builder-63c-i-a-fix.md`, `REPORT-sidecar-63c.md`), not mine.
+
+## #486 FOLLOW-UP ROUND (operator 2026-10-04T22:56Z: "go ahead with the follow-up round")
+- Scope: R1 (pin the reap budget with the realistic alive-but-silent store), R2 (bespoke daemon-thread bound → `anyio.fail_after`), #538 (STATE-level: a worker without shipped report keys fails the session), #537 (`pytest-timeout` as a dev dependency, pre-approved), R5 (a non-transport failure-line cell).
+- Sequence:
+  1. `contract-486-r4` (R1/#538/R5 pins, RED) →
+  2. `implement-486-r4` (R2 + #538 + #537) →
+  3. a short audit (`coldaudit-486-3`) →
+  4. commit + resolve #537/#538.
+- contract-486-r4 spawned.
