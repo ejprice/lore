@@ -2229,3 +2229,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **Lead ruling D-r2b-1:** NO new harness module-level name (the exact-set allowlist pin stands). Record reaped leaks in an existing structure (`_MINTED_DATABASES` state) or `conftest.py`; if impossible, STOP and ask.
   - F3 must REUSE `governed.map_of` (ONE IMPLEMENTATION).
 - `implement-486-r2` (tdd-implementer, model opus) spawned at 2026-10-04T17:29Z. Then coldaudit-486 → commit.
+- **implement-486-r2 DONE** (report committed above): the 8 round-2/2b reds GREEN (8F/824P → 832P), 0 GREEN→RED, 0 outer LEAKED.
+  - F2: reaped state kept in `_MINTED_DATABASES` VALUES (`(minted_by, reaped)`); no new name, per D-r2b-1.
+  - F3: via `governed.map_of(required=…)`. No test edited.
+  - Snapshot `486-after-impl-r2.patch` md5 `e19d3092…` (27 tracked + the new test file).
+- Its flag (stale prose: docstring + failure message still say "name -> node id") → `prose-486` at 2026-10-04T17:36Z (prose only, AST-equal). Then coldaudit-486 → commit.
