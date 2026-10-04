@@ -2225,3 +2225,7 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **Lead ruling D-r2-1 (2026-10-04T17:23Z):** the F2 property stays ABSOLUTE, with no exemption mechanism. The round-1 reaper test's deliberate leak moves INSIDE an inner session (`_run_inner_session`), so the outer session never leaks on purpose.
   - D-r2-2: the sibling pins are renamed marker→kind.
   - Round 2b sent: D-r2-1 + D-r2-2 + an F3 outcome pin (a wrong-shaped `INFO FOR NS` → the reaper raises) + the F4 comment.
+- **contract-486-r2 ROUND 2b DONE (`fa68f1e`):** the reaper test is re-keyed into an inner session (GREEN now and under a throwaway F2-fix reference; the outer session printed 0 LEAKED); D-r2-2 renames done; the F3 shape pin RED on 6/7 (`databases-none` already raises); F4 comment made true (no harness prefix constant exists).
+  - **Lead ruling D-r2b-1:** NO new harness module-level name (the exact-set allowlist pin stands). Record reaped leaks in an existing structure (`_MINTED_DATABASES` state) or `conftest.py`; if impossible, STOP and ask.
+  - F3 must REUSE `governed.map_of` (ONE IMPLEMENTATION).
+- `implement-486-r2` (tdd-implementer, model opus) spawned at 2026-10-04T17:29Z. Then coldaudit-486 → commit.
