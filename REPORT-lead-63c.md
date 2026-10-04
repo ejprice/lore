@@ -2215,3 +2215,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **F1 BLOCKER:** contract pin `test_run_detection_follows_the_seams_one_conflict_marker` patches `_RETRYABLE_CONFLICT_MARKER`, which 63c-i-a (`34d0b6b`) DELETED, so it is RED and the run-sharing proof is dead. KIND re-key proven satisfiable (transient, restored).
   - **F2 (live false clear):** a mid-session `reap_minted_databases()` swallows an earlier same-worker leak, so no session-end report fires; the contract's own reaper test is such a caller. Constructed probe pasted.
 - At 2026-10-04T17:16Z → `contract-486-r2` (tdd-light-contract; the F1 re-key + the F2 outcome pin, RED) → then `implement-486-r2` (the F2 fix in the harness) → `coldaudit-486` → commit.
+- refactor-486 extras:
+  - **F3** (the reaper reads an unexpected `INFO FOR NS` shape as "no leaks": FAIL-OPEN, the same class as F2/63c-i-a B) → this round, sent to contract-486-r2 when it reports.
+  - **F4** (a lifecycle-test comment claims the prefix is read from the harness; it is hardcoded) → this round.
+  - **F5** (the naming lint keys files by bare filename) → RESIDUAL; trigger: two same-named test files.
+  - Coverage note: ~30 test files landed after the GREEN; the new "opened a database it didn't mint" check only fires when they run, and the cold audit's full suite is the first place it will.
+  - refactor-486 stopped.
