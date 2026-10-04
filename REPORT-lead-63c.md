@@ -2189,3 +2189,10 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - No fates row (a passthrough); `_fault_line` renders `__notes__`.
   - The per-error remedies fold into the note. The lead's reading: the `28395e0` `remedy=` machinery is deleted end to end, and the template text stays byte-identical.
 - **fix531d spawned at 2026-10-04T16:24Z** (60 min): the §13.5 TDD build + a mutation. After its lead verification: STOP (operator). Any remainder → residual.
+- **2026-10-04T16:34Z — fix531d DONE: `9c88779`** (am-37 §13.5): one class-preserving `add_note` passthrough handler in `PrincipalKeyStore.mint` (window from the CREATE call to the return; CONDITIONAL note on a `SurrealConnectionError` during the CREATE, CERTAIN after return, none for proven-no-key faults); `_fault_line` renders `__notes__`. Report `REPORT-fix531d.md` (`b422dbc`).
+  - Its receipts: targeted 588→618 passed, 1 pre-existing owned `lease.py` red, 0 newly failing; mutation 19/19 held; 58's `derived_fate` = passthrough (no fates row).
+  - Disclosed slip: its final run started at 16 GiB (<20).
+  - **Lead checks done:** 4 files (`governed.py` is BYTE-IDENTICAL to pre-`28395e0`, so the remedy machinery is fully removed; `principal_keys.py`; `principals.py` +4; the test file); handler present; no trailers; no uncommitted files outside #486's WIP.
+  - **OWED (first action for the next session):** the lead's clean-HEAD re-run of `test_am37_13_3_63c_i_a.py` + `test_principal_keys_store.py` + `test_principals_cli.py` for 9c88779. It was not run because MemAvailable was 16.4 GiB < the 20 GiB gate (never bypassed). The commit is in; this is verification only.
+  - The #531 mint thread is CLOSED per the operator ("one handler, then stop"); any remainder → residual. fix531d stopped.
+- **SESSION END (operator reboot):** all work committed. Working tree = #486's paused WIP only. No agents doing work; sidecar-63c-2 and sidecar-64 idle (they end with the session; nothing depends on them). No worktrees. NEXT agent: the owed re-run above, then **58** per RESUME ANCHOR v10.
