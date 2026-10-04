@@ -2283,3 +2283,58 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   3. a short audit (`coldaudit-486-3`) →
   4. commit + resolve #537/#538.
 - contract-486-r4 spawned.
+
+## RESUME ANCHOR v11 (2026-10-04T23:03Z) — AUTHORITATIVE; supersedes v10
+**DONE this session (all committed + verified):**
+- 63c-i-a CLOSED (`f29526f`, `34d0b6b`).
+- #531 thread CLOSED: `f47724a`, `28395e0`, `0f81bd7`, `b90bd4b`, `9c88779` (the mint add_note handler; verified by coldaudit-486's suite).
+- #536 (my 63c-i-a clone regression) fixed `6e37dd5`.
+- **#486 CLOSED `cabe2cd`** (28 test files) + #534; reports in `receipts/2026-10-04-486/`; INDEX `7752fc5`; #486/#534 resolved.
+- Working tree = ONLY two pre-session untracked reports (`REPORT-builder-63c-i-a-fix.md`, `REPORT-sidecar-63c.md`), not mine. No #486 WIP remains.
+
+**IN FLIGHT: the #486 FOLLOW-UP ROUND (operator-approved):**
+- **`contract-486-r4`** (tdd-light-contract), RUNNING since ~19:50Z; it writes `REPORT-contract-486-r4.md` (uncommitted). Watcher bx042k9u4. Tests only, in `test_harness_database_lifecycle_486.py`:
+  - R1: pin the reap budget with an alive-transport, replies-withheld store; it must red when the budget is deleted;
+  - #538: under xdist a worker that never shipped its report keys → the session FAILS (named line, rc≠0);
+  - R5: a non-transport failure-line cell.
+- **NEXT `implement-486-r4`** (tdd-implementer, model opus; ONLY `_surreal_harness.py`/`conftest.py` + `pyproject.toml`/`uv.lock`):
+  - R2: replace the bespoke daemon-thread bound with `anyio.fail_after` (a direct dependency; coldaudit-486-2 §4 measured it);
+  - #538: the controller fails a session when a finished worker shipped no report keys;
+  - #537: `uv add --dev pytest-timeout` (pre-approved), so F1 stops failing under the runner.
+  - D-r2b-1 still binds: no new harness module-level name.
+  - Then the pins GREEN, 0 GREEN→RED.
+- **THEN `coldaudit-486-3`** (short; NO full suite: the packet's full suite ran in coldaudit-486):
+  - construction;
+  - mutations: delete the budget → R1 reds; swallow the missing report → #538 reds;
+  - F1 passes under plain `uv run pytest` with the new dependency;
+  - census; gates.
+- **THEN the lead commits:** cut the patch via a TEMP INDEX (never `git diff HEAD`: it drops new files); verify the worktree md5 == the audited patch before staging; stage only the named files; no trailers.
+- Then resolve #537/#538, archive the round's reports to `receipts/2026-10-04-486/`, and add an INDEX line.
+
+**Open operator items:**
+- Whether `asyncio.CancelledError` during mint's CREATE gets the conditional note (fix531d residual).
+- **58 is for the NEXT agent** (operator), per anchor v10's 58 section (§RE-BASE first).
+
+**Residuals** (recorded above):
+- #529, #530, #532; R-1/F-8; F-9; F-11; F-12; F-16; FLAG-r7-1; FLAG-4; #533; #525 → 64;
+- the GROUP ALL sweep + foreign `_as_rows` → 64b §DRY;
+- 486: R5 (if unpinned), R6, R7 (prose: forwarder "~45 lines" is 108; extract `is_transport_fault`), R8 (a higher-scoped fixture mint not observed), D1 (opened-and-dropped + store lost), F5 (the lint's bare-filename keys);
+- the mint newline/docstring nits.
+
+**Live agents:** contract-486-r4 (running); sidecar-63c-2 and sidecar-64 (idle). All others are stopped.
+
+**Used names (never reuse), beyond v10's:**
+- fix531, fix531b, fix531c, fix531d;
+- refactor-486, contract-486-r2, contract-486-r3, contract-486-r4;
+- implement-486-r2, implement-486-r3;
+- prose-486, fix536;
+- coldaudit-486, coldaudit-486-2.
+
+Reserved: implement-486-r4, coldaudit-486-3.
+
+**Process lessons this session:**
+- Read `date -u`, never a commit's `%ad`.
+- `scratch_copy.sh` for EVERY tree.
+- Diff each full patch's file list against its predecessor; cut patches via a temp index.
+- Gate on LORE pytest only, with a check that cannot match its own shell.
+- A tree-wide pin (e.g. test_ast_reach_helpers) can red outside a targeted set: include the tree-scanning pins in every targeted run.
