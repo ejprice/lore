@@ -174,3 +174,143 @@ E       assert 0 != 0
 ## Noticed outside this change
 - Sibling prose-stale "marker" names: D-r2-2 above.
 - refactor-486 F3–F5 are still open, as routed there. I did not re-grade them.
+
+## ROUND 2b (lead brief: D-r2-1 ruling, D-r2-2, F3, F4). Measured 2026-10-04 on the #486 working tree over HEAD `bf33631`.
+
+### Round 2b summary
+- **State:** done-with-deviations.
+  - **D-r2-1:** the reaper test is re-keyed into an inner session. It passes on the current implementation AND under the throwaway F2-fix reference.
+  - **D-r2-2:** done.
+  - **F3:** the new pin fails on 6 of its 7 shapes for the right reason, and its control passes.
+  - **F4:** the comment now tells the truth.
+- **Deviation 1:** F3's `databases-none` shape PASSES on the current implementation. `set(None)` raises `TypeError`, which already satisfies "raise, never report clean". I kept the case because it is part of the property's domain.
+- **Deviation 2:** `_InnerSession` gains a `record_path` field, which is additive. The re-keyed reaper test needs it to read what the inner reaper RETURNED.
+- **Deviation 3:** F4 took the "make the comment true" branch. **There is no existing harness name to import:** `_surreal_harness.unique_database` inlines `f"test_{os.getpid()}_{uuid.uuid4().hex}"`. An awk over `_surreal_harness.py` for `"test_` finds only that one f-string, and the module has no prefix constant.
+- **Decision needed (D-r2b-1, satisfiability, MEDIUM):** the reference build kept its leak ledger as a new harness module-level name. That made `TestTheHarnessDeclaresNoRetryPolicyOfItsOwn::test_the_harnesss_module_level_names_are_exactly_the_allowed_set` fail; this is an ALLOWLIST pin, and the implementer may not edit it. Any fix that adds module state to `_surreal_harness` hits the same pin. Options:
+  - (a) the fix keeps the removal ledger outside the harness module (for example in `conftest.py`), and the allowlist is untouched;
+  - (b) the contract owner pre-authorises one name in `_ALLOWED_MODULE_LEVEL_NAMES` once the implementer names it.
+  - I recommend (a) as the default, because the contract then stays mechanism-free, and (b) if the implementer argues the chokepoint must sit inside the reaper.
+- **Packages considered:** none — no mechanism specified (tests only).
+- **Odoo-20 portability:** n/a — no Odoo seam touched.
+- **Reuse ledger:** 0 new reusable symbols. The additions are test-local constants and inner sources (`_INNER_REAPER_DIRECT_TEST`, `_WELL_FORMED_EMPTY_NAMESPACE_ANSWER`, `_answer_info_for_ns_with`), plus one field on the existing `_InnerSession`.
+- **Hashes:** pre-round sha256 copies are kept as `…r2a` in the session scratchpad. Post-round sha256:
+  - `test_surreal_harness.py` `f884dc9c…70b7`;
+  - `test_harness_database_lifecycle_486.py` `d277c099…19ff`.
+
+### Counts (same targeted set and command as round 2)
+| run | result | red set |
+|---|---|---|
+| BEFORE (round-2 AFTER) | `2 failed, 774 passed` | the F2 pins `[n0]`, `[xdist-n1]` |
+| AFTER on the current implementation | `8 failed, 776 passed, 1 warning in 33.50s`, rc=1 | the F2 pins `[n0]`, `[xdist-n1]` + F3 `[not-a-dict-none]`, `[not-a-dict-list]`, `[not-a-dict-string]`, `[databases-key-missing]`, `[databases-a-list]`, `[databases-a-string]` |
+| UNDER the throwaway F2-fix reference | `7 failed, 777 passed`, rc=1 | the 6 F3 reds (the reference does not touch the shape read) + the allowlist pin (D-r2b-1). **The F2 pins and the re-keyed reaper test PASS. The outer session printed 0 `LEAKED` lines**, so no outer test leaks on purpose any more. |
+
+- **Arithmetic, current implementation:** collected tests went 776 → 784, which is +7 F3 params and +1 F3 control. Passes went 774 → 776: +1 for `databases-none` and +1 for the F3 control. The re-keyed reaper test stayed a pass.
+- **Post-restore confirmation:** an explicit `-rA` run on the restored tree gave `31 passed in 3.69s`. It covers:
+  - `TestTheReaperRemovesExactlyWhatThisProcessLeaked` (both tests);
+  - the F3 control and F3 `[databases-none]`;
+  - `TestTheHarnessDeclaresNoRetryPolicyOfItsOwn`, where the allowlist pin passes again after the restore;
+  - `TestTheHarnessRetryPolicyIsTheSeamsPolicy`, including all three renamed `…_kind` pins.
+
+### D-r2-1 — the reaper test, re-keyed (`TestTheReaperRemovesExactlyWhatThisProcessLeaked::test_the_reaper_removes_a_leaked_database_and_spares_a_dropped_one`)
+- **Inner session** (`_INNER_REAPER_DIRECT_TEST`, inner test `test_the_reaper_removes_the_leaked_one_and_spares_the_dropped_one`):
+  - it mints and dials two databases, then drops one;
+  - it calls `reap_minted_databases()`;
+  - it writes the RETURN to `<record>.reaped.json`.
+- **Outer assertions, all kept from round 1 plus the outcome:**
+  - the leaked name is in the reaper's return, and the dropped name is not;
+  - neither database is in the store census afterwards;
+  - the inner test PASSED;
+  - **no output line names the DROPPED database**, so a fix's report may not name a clean test.
+- **Not asserted here:** the inner session's rc. Under the ruling, the session must fail and report its leak, but that is the F2 leg's property, and asserting it here would turn this pin RED on the current implementation. The docstring says so.
+- **The outer session no longer leaks on purpose.** Verified under the reference build: 0 `LEAKED` lines in the outer run's terminal summary.
+
+### Throwaway F2-fix reference (pasted verbatim per brief-base §1; applied, run, restored)
+- Backups: `cp -a` content copies of `_surreal_harness.py` and `conftest.py` (sha256 `e3561445…2fbe` and `e9941c5e…89ba`).
+- Restore: `cp -a` back, then `cmp` (silent) and `sha256sum -c` → `_surreal_harness.py: OK`, `conftest.py: OK`. awk for `_REAPER_REMOVALS` over both files → 0 lines.
+- It was never shipped. It is a satisfiability receipt (a correct build), not a wrong build.
+```python
+"""THROWAWAY reference edit (contract-486-r2 round 2b) — the obvious F2 fix: the reaper records
+every removal into a process-wide list, and session end reports from that list. Never shipped."""
+from pathlib import Path
+
+harness = Path("_surreal_harness.py"); h = harness.read_text()
+for old, new in [
+    ("_MINTED_DATABASES: dict[str, str] = {}\n",
+     "_MINTED_DATABASES: dict[str, str] = {}\n_REAPER_REMOVALS: list[str] = []\n"),
+    ("            await _remove_database_with_retry(connection, database, url=reader_env.url)\n",
+     "            await _remove_database_with_retry(connection, database, url=reader_env.url)\n            _REAPER_REMOVALS.append(database)\n"),
+]:
+    assert h.count(old) == 1, old; h = h.replace(old, new)
+harness.write_text(h)
+
+conftest = Path("conftest.py"); c = conftest.read_text()
+old = "    leaked = tuple(asyncio.run(reap_minted_databases())) if minted_by else ()\n"
+new = ("    from _surreal_harness import _REAPER_REMOVALS\n\n"
+       "    if minted_by:\n        asyncio.run(reap_minted_databases())\n"
+       "    leaked = tuple(dict.fromkeys(_REAPER_REMOVALS))\n")
+assert c.count(old) == 1; conftest.write_text(c.replace(old, new))
+```
+(run from `loremaster/tests/`)
+
+### D-r2-2 — sibling renames (`test_surreal_harness.py`, assertions unchanged)
+- `test_detection_follows_the_seams_one_conflict_marker` → **`test_detection_follows_the_seams_one_conflict_kind`**. Its docstring, control comment and failure message now say "kind" / "conflict signal".
+- `test_the_bootstrap_paths_detection_follows_the_seams_marker` → **`test_the_bootstrap_paths_detection_follows_the_seams_kind`**. Its failure message now says "SHARED kind" / "conflict signal".
+- **Remaining "marker" mentions in that class:** one, the docstring's reference to the RETIRED class `TestTheTestHarnessCannotDriftFromTheSeamsMarker`. That is a historical name; I kept it.
+- **References to the old names:** a round-2 sweep over `*.py`, `*.yaml` and `*.md` (excluding the receipts archive) found them only in this file and in the uncommitted `REPORT-*` files. No `pending_contracts.yaml` row names them.
+
+### F3 — `TestTheReaperFailsLoudOnANamespaceAnswerItCannotRead`
+- **PROPERTY:** for any `INFO FOR NS` answer from which the present set cannot be read, the reaper RAISES. It never returns "nothing leaked".
+- **The domain is grounded in a live probe** (below): the well-formed answer is a `dict` with keys `accesses`, `databases` and `users`, where `databases` is a `dict`. So a missing `databases` key is also a wrong shape, and I pinned it. The brief named two classes; the missing key is the third member of the same "cannot read the present set" property.
+- **Injection:** I monkeypatch `_surreal_harness.run` for the statement `INFO FOR NS` only; every other statement passes through to the real TEST store.
+- **A real leaked database is minted and dialled**, so each wrong-shaped answer hides an actual leak. It is dropped in `finally`.
+- **The outer test removes nothing.** No answer lists the leak, so this outer test cannot trigger the F2 swallow door.
+- **Exception type:** the pin accepts ANY exception, because the property is "loud". It does not name a class, which keeps the mechanism free.
+- **Control:** `test_CONTROL_a_well_formed_answer_is_read_without_raising`. A well-formed EMPTY `databases` map returns `()`, and the real leaked database is still present afterwards (read from the real census once the patch is undone). This proves the injection reaches the reaper's read and that the RED is about the SHAPE.
+- **RED tails** (verbatim, the first 230 characters of each `Failed:` line):
+```
+E           Failed: `INFO FOR NS` answered None — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_588f479f614940c0a57e4f7238b9c2cf` actually leaked, that is a false '
+E           Failed: `INFO FOR NS` answered [] — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_38503711f9464dbf88a1c34f2600ec1b` actually leaked, that is a false 'no
+E           Failed: `INFO FOR NS` answered 'INFO FOR NS' — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_c6f07e7171e74b91978c5d50db073041` actually leaked, that is 
+E           Failed: `INFO FOR NS` answered {'accesses': {}, 'users': {}} — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_1dc107b4a9734372b7bb6b81cdff3b72` actually 
+E           Failed: `INFO FOR NS` answered {'accesses': {}, 'databases': [], 'users': {}} — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_0ee91b289122471f9ccc2d17c3
+E           Failed: `INFO FOR NS` answered {'accesses': {}, 'databases': 'test_x', 'users': {}} — a shape the present set cannot be read from — and the reaper RETURNED () instead of raising. With `test_1805343_6d3855c13e1c49f39e59
+```
+- **Sibling, not pinned, flagged:** the contract's own census helper `_databases_in_the_test_namespace` has the same fail-open coercion (`… if isinstance(info, dict) else {}`).
+  - It is an ORACLE, so a wrong shape there would make the leak legs' "absent from the store" assertions pass vacuously.
+  - I did not change it. Hardening it, by raising on a wrong shape, is a one-line contract edit; I can do it if the lead wants (no ruling needed).
+
+**Probe for the live shape** (pasted verbatim). Run from `loremaster/tests` with `PYTHONPATH=.` → `dict ['accesses', 'databases', 'users']` / `databases type: dict n= 76`:
+```python
+"""Probe (contract-486-r2 round 2b): the live shape of INFO FOR NS on the TEST store."""
+import asyncio
+from _surreal_harness import PRODUCTION_DIM, connect_admin, drop_database, make_env, run, surreal_url, unique_database
+
+async def main() -> None:
+    assert ":18500" not in surreal_url()
+    env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    connection = await connect_admin(env)
+    try:
+        info = await run(connection, "INFO FOR NS")
+        print(type(info).__name__, sorted(info) if isinstance(info, dict) else info)
+        print("databases type:", type(info.get("databases")).__name__, "n=", len(info.get("databases", {})))
+    finally:
+        await connection.close()
+        await drop_database(env)
+
+asyncio.run(main())
+```
+
+### F4 — the `_RECIPE_PREFIX` comment
+The old comment said "the lint reads it rather than restating a different one", which was false. It now reads:
+> RESTATED here, not read: the harness keeps no prefix constant (`unique_database` inlines `f"test_{os.getpid()}_…"`). The restatement cannot drift silently: if the mint stops starting with it, the lint stops finding the mint and `test_the_lint_sees_the_one_mint` goes RED.
+
+The drift claim matches what the lint does: `_naming_recipe_sites` keeps only sites whose leading literal starts with `_RECIPE_PREFIX`, and the non-vacuity pin asserts that the mint is among them.
+
+### Gates (round 2b)
+- `uv run ruff check .` → `All checks passed!`.
+- I ran `ruff format` on `test_harness_database_lifecycle_486.py` only. It was format-clean before this round, and I diffed it to confirm the formatter removed only my own lines. I did not format `test_surreal_harness.py`, whose drift predates this work (round 2 §Gates).
+- `pending_contract_gate.py --currency --legs typecheck,ruff`:
+  - `typecheck RED_ADJUDICATED`, 83 residuals, unchanged;
+  - `ruff GREEN`;
+  - `scripts/typecheck.sh` printed 0 lines naming either edited file;
+  - **RED_ORPHANED 0** for typecheck and ruff.
