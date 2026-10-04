@@ -2202,3 +2202,12 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - (3) `mint`'s docstring doesn't mention the note.
   - Reading kept: `wrap_store_rejection` wraps the CREATE call only, inside the window (moving it out would mislabel post-commit faults as "could not mint").
   - Its final run started at 16.0 GiB (<20); the gate printed but didn't block.
+
+## #486 — FINISH (operator, 2026-10-04T17:06Z: "Finish 486")
+- State found: the GREEN implementation is complete and uncommitted (27 test files + `test_harness_database_lifecycle_486.py`, test-side only, +834/−84). It was "waiting for the final full suite" (`REPORT-implement-486.md`). The tdd-light Phase 5 refactor+audit and the commit remain.
+- WIP backed up: `scratchpad/486-backup/486-wip-tracked.patch` md5 `398ad67a003efa450b50181c8c33b401` (27 files) + `486-untracked.tar` `8fa76d01…`, on HEAD a489e8e.
+- tdd-light wrong-skill flag (retries): it reuses the production `_txn` seam, with no production change. Proceeding under tdd-light + a cold audit (full suite + mutation) and telling the operator.
+- Sequence:
+  1. `refactor-486` (tdd-refactorer, model opus; Phase 5 review-then-refactor, targeted runs) →
+  2. `coldaudit-486` (the packet's ONE full suite via the currency gate; also covers the owed 9c88779 re-run; mutation: bypass the seam / disable the reap; a lore_test DB-count leak check) →
+  3. lead deletion reconciliation + commit + archive the 486 reports + resolve #486.
