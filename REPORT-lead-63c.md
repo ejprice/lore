@@ -2221,3 +2221,7 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **F5** (the naming lint keys files by bare filename) → RESIDUAL; trigger: two same-named test files.
   - Coverage note: ~30 test files landed after the GREEN; the new "opened a database it didn't mint" check only fires when they run, and the cold audit's full suite is the first place it will.
   - refactor-486 stopped.
+- **contract-486-r2 DONE** (report committed above): F1 re-keyed GREEN (control + mutated legs hold); the F2 outcome pin RED for the right reason (rc 0, no report line) on `-n 0` and `-n 1`, control GREEN; targeted 2F (F2) / 774P.
+  - **Lead ruling D-r2-1 (2026-10-04T17:23Z):** the F2 property stays ABSOLUTE, with no exemption mechanism. The round-1 reaper test's deliberate leak moves INSIDE an inner session (`_run_inner_session`), so the outer session never leaks on purpose.
+  - D-r2-2: the sibling pins are renamed marker→kind.
+  - Round 2b sent: D-r2-1 + D-r2-2 + an F3 outcome pin (a wrong-shaped `INFO FOR NS` → the reaper raises) + the F4 comment.
