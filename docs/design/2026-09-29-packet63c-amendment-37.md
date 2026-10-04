@@ -854,3 +854,51 @@ packet <owning_packet>) — N row(s) will be scoped by that packet's migration"*
 item 6 derivation stands. Generated pin: ∀ member of the union, the remedy names either an accepting migrate verb
 or the pending entry's packet — never a verb that refuses, never silence. STOP: none new; the restore read-back cell
 (§13.4 pin 3) now also asserts the pending remedy line for `finding` / `task`.
+
+### 13.5 Addendum 2026-10-04 (operator: ONE handler around `mint`'s post-write path, then stop; lead): the handler is a class-preserving `add_note` passthrough over a window that starts at the CREATE CALL; the remedy has exactly one home and two wordings
+
+**PROPERTY (as the lead states it, sharpened):** *every `mint` fault raised once the CREATE MAY have committed carries
+the revoke repair — CERTAIN wording when the engine answered, CONDITIONAL when the outcome is unknown; a fault that
+PROVES no key landed carries none.* DOMAIN: every raise point from the `_query(statement)` call through
+`_row_to_key(rows[0])` (derived: every statement of `mint` after the statement is built).
+
+1. **The window and the transport case.** The window opens at the CREATE **call**, not its return: a
+   `SurrealConnectionError` raised DURING the await is the one pre-commit fault whose outcome is unknown (the engine
+   may have committed and the answer been lost) → CONDITIONAL wording. Every OTHER pre-commit fault proves no key:
+   `TxnDomainRejectionError` and subclasses (the engine evaluated and refused — UNIQUE included),
+   `TxnContentionExhaustedError` (rolled back), `TxnParamCollisionError` / `TxnEnvelopeViolationError` (raised before
+   sending) → NO remedy. After `_query` returns, EVERY fault (wrong shape, no row, each missing column, a programming
+   defect) → CERTAIN wording. Allowlist the safe: pre-commit, exactly ONE class gets the (conditional) note.
+   **HOW, without masquerade or class loss — PEP 678 `add_note`:** the handler is
+   `except BaseException as error: error.add_note(<remedy>); raise` — a bare re-raise of the SAME object. A transport
+   fault stays `SurrealConnectionError`, a store fault stays its class, `wrap_store_rejection` (outside the window)
+   still translates domain rejections exactly as today. `_fault_line` gains one render: after the error's message
+   and before the cause lines, one ` ↳ ` line per `__notes__` entry; Python's own traceback renderer already prints
+   notes, which is what makes item 3 work.
+2. **UNIQUE rejection = no key landed → NO revoke advice.** CONFIRMED by construction: it is a pre-commit
+   `TxnDomainRejectionError`, excluded from the note; the existing wrap serves *"could not mint key …"* with the typed
+   cause.
+3. **F-7 tension — resolved by the note, not by laundering.** A `KeyError`/`TypeError` inside the window keeps its
+   class and TRACEBACKS (§13.3 F-7 stands: our bug is visible as a bug), and the traceback prints the attached note,
+   so the operator still reads the certain revoke remedy. No `PrincipalKeyStoreError from` the defect.
+4. **58's exhaustion-fates registry — NO row: the handler is a PASSTHROUGH by construction** (bare `raise` of the
+   same object; `add_note` mutates, it does not translate, chain or swallow). Exhaustion never even receives a note
+   (pre-commit, excluded). Expected classification by 58's `derived_fate`: passthrough. STOP: if the classifier
+   reads the `add_note` call as a non-passthrough exit, the lead routes the CLASSIFICATION question to 58 — no row
+   is invented here.
+5. **The two per-error messages fold into the ONE handler.** `_as_rows(..., remedy=)` (from `28395e0`) is DELETED —
+   the landed template is the generic one; the no-row raise (`b90bd4b`) becomes
+   `PrincipalKeyStoreError("key {name!r} for principal {email!r}: the mint answered no row")` with no remedy text.
+   The remedy lives in exactly one place — the window's note — built from `_revoke_command` (kept, ONE helper):
+   CERTAIN: *"the CREATE committed but the secret was never shown — key {name!r} is LIVE with no holder; revoke it
+   (`{cmd}`) and mint a new key"*; CONDITIONAL: *"the mint's outcome is unknown (the connection failed during the
+   CREATE) — if `lore-adm list-keys --email {email}` shows {name!r}, revoke it (`{cmd}`) and mint a new key"*.
+6. **Pins.** (a) Generated ∀ raise point × zone: inject at `_query` a transport fault → conditional note, class
+   unchanged; a domain rejection / exhaustion / param collision → NO note; inject after return: wrong shape, no row,
+   row missing `created_at`, row missing each of `id` / `principal` / `name` (`KeyError` → the note appears in
+   `traceback.format_exception` output and the class is `KeyError`) → certain note. (b) UNIQUE collision live on
+   `:18000` → `PrincipalKeyStoreError`, no note, no `revoke-key` substring anywhere on stderr. (c) AST "one handler":
+   exactly ONE `except` in `mint` calls `add_note`; its `try` body spans from the `_query` call to the `return`
+   (no statement of `mint` lies after the `try`) — the window-covers-the-whole-path completeness leg. (d)
+   `_fault_line` renders `__notes__` (one cell, with a no-notes control). STOP: a pin asserting the OLD remedy text in
+   `_as_rows`' message or the no-row message → DUAL re-key to the note (same commit, test side first).
