@@ -750,7 +750,7 @@ def group_all_count(result: Any, *, noun: str) -> int:
 #: "nothing happened" from a fault raised after the write landed.
 _LANDED_SHAPE_FAULT = (
     "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
-    "answer; a re-run is idempotent"
+    "answer; verify the stored state before re-running"
 )
 
 
