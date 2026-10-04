@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import inspect
 import logging
 import re
@@ -907,6 +908,36 @@ class TestTheReportRemedyIsDerived:
 # =========================================================================== #
 
 
+@functools.cache
+def _package_trees() -> dict[str, ast.Module]:
+    """``{path relative to the loremaster package: ast.Module}`` for every ``*.py`` under
+    ``_PACKAGE`` — the F-6 scan domain, parsed through the ONE shared tree parser
+    (``_logging_fixtures.parse_production_trees``; lore #536, CLAUDE.md ONE IMPLEMENTATION)
+    rather than a private ``rglob`` + ``ast.parse`` clone.
+
+    The domain is unchanged from the hand-rolled scan it replaces: the shared parser's keys are
+    repo-relative, so they are narrowed to the ``_PACKAGE`` prefix and re-keyed relative to it.
+    REACH IS CHECKED, not assumed: the narrowed key set must equal the ``*.py`` files actually
+    on disk under ``_PACKAGE`` (a path listing, no parse), so a shared parser that stopped
+    reaching this package reds here instead of shrinking every F-6 pin to a vacuous pass.
+    Cached: the trees are read-only to every consumer, and ``_SITES`` is built at import."""
+    from _logging_fixtures import parse_production_trees  # noqa: PLC0415 - house lazy-import idiom
+
+    repo_root = _PACKAGE.parent.parent
+    prefix = f"{_PACKAGE.relative_to(repo_root).as_posix()}/"
+    trees = {
+        key.removeprefix(prefix): tree
+        for key, tree in sorted(parse_production_trees(include_scripts=False).items())
+        if key.startswith(prefix)
+    }
+    on_disk = {path.relative_to(_PACKAGE).as_posix() for path in _PACKAGE.rglob("*.py")}
+    assert on_disk and set(trees) == on_disk, (
+        "the shared parser's reach diverged from the loremaster package on disk "
+        f"(missing: {sorted(on_disk - set(trees))}, extra: {sorted(set(trees) - on_disk)})"
+    )
+    return trees
+
+
 def _row_reader_wrappers(tree: ast.Module) -> set[str]:
     """``_as_rows`` defs that delegate to ``rows_of`` — the wrappers in the ruled domain (derived)."""
     return {
@@ -922,8 +953,8 @@ def _row_reader_owner_classes() -> set[str]:
     ``<Owner>._as_rows(...)`` in ANY module is in the ruled domain (``keeps.py`` calls
     ``PrincipalStore._as_rows``)."""
     owners: set[str] = set()
-    for path in sorted(_PACKAGE.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+    for tree in _package_trees().values():
+        for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef) and any(
                 isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef)
                 and item.name == "_as_rows"
@@ -940,8 +971,7 @@ def _shape_reader_call_sites() -> list[tuple[str, bool]]:
     package, + ∀ call to a ``_as_rows`` in a module whose ``_as_rows`` delegates to ``rows_of``."""
     sites: list[tuple[str, bool]] = []
     owners = _row_reader_owner_classes()
-    for path in sorted(_PACKAGE.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for relative, tree in _package_trees().items():
         readers = {"rows_of", "map_of", "group_all_count"} | _row_reader_wrappers(tree)
         for function in _function_nodes(tree):
             for call in ast.walk(function):
@@ -955,7 +985,7 @@ def _shape_reader_call_sites() -> list[tuple[str, bool]]:
                 )
                 if _call_name(call) in readers or owner_call:
                     has_noun = any(kw.arg == "noun" for kw in call.keywords)
-                    sites.append((f"{path.relative_to(_PACKAGE)}::{function.name}::{call.lineno}", has_noun))
+                    sites.append((f"{relative}::{function.name}::{call.lineno}", has_noun))
     return sites
 
 
@@ -972,8 +1002,7 @@ class TestEveryShapeReadNamesItsRead:
         """RED at bec29190: ``PrincipalStore._as_rows`` defaults ``noun``; "
         "``PrincipalKeyStore._as_rows`` has none."""
         problems: list[str] = []
-        for path in sorted(_PACKAGE.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+        for relative, tree in _package_trees().items():
             for node in _function_nodes(tree):
                 if node.name in _row_reader_wrappers(tree):
                     kwonly = {
@@ -981,7 +1010,7 @@ class TestEveryShapeReadNamesItsRead:
                         for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True)
                     }
                     if "noun" not in kwonly or kwonly["noun"] is not None:
-                        problems.append(f"{path.relative_to(_PACKAGE)}::{node.name}")
+                        problems.append(f"{relative}::{node.name}")
         assert not problems, f"`noun` must be keyword-only and REQUIRED on: {problems}"
 
     def test_the_site_population_is_not_vacuous(self) -> None:
