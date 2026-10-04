@@ -428,18 +428,22 @@ class PrincipalKeyStore:
             result = await self._query(statement, params)
         # The CREATE committed, but a wrong-shaped answer aborts BEFORE the CLI prints the one-time
         # secret: the key is LIVE and nobody holds its secret, so the only repair is to revoke it (#531).
-        revoke_argv = shlex.join([_CLI_PROG, "revoke-key", "--email", email, "--name", name])
+        revoke_command = self._revoke_command(email=email, name=name)
         rows = self._as_rows(
             result,
             noun="principal-key mint",
             landed=True,
             remedy=(
-                f"key {name!r}'s secret was never shown, so revoke it (`{revoke_argv}`) and mint a new key"
+                f"key {name!r}'s secret was never shown, so revoke it (`{revoke_command}`) and mint a new key"
             ),
         )
         if not rows:
+            # No row back: whether the key was stored is UNKNOWN, and its secret was never shown either
+            # way — the same revoke repair, conditioned on the key being there (#531, fix531c).
             raise PrincipalKeyStoreError(
-                f"key {name!r} for principal {email!r} vanished immediately after it was created"
+                f"key {name!r} for principal {email!r}: the mint answered no row, so the key may have been "
+                f"stored but its secret was never shown — revoke it (`{revoke_command}`) if `list-keys` "
+                "shows it, then mint a new key"
             )
         return self._row_to_key(rows[0])
 
@@ -650,6 +654,12 @@ class PrincipalKeyStore:
         id (no ``:``) passes through unchanged."""
         _, separator, id_part = record_id.partition(":")
         return id_part if separator else record_id
+
+    @staticmethod
+    def _revoke_command(*, email: str, name: str) -> str:
+        """The ONE shell-quoted ``lore-adm revoke-key`` command for key ``name`` of principal ``email`` —
+        every mint fault that may leave a live key with an unshown secret serves THIS text (#531)."""
+        return shlex.join([_CLI_PROG, "revoke-key", "--email", email, "--name", name])
 
     @staticmethod
     def _as_rows(

@@ -512,13 +512,87 @@ class TestALandedThenFaultedMintNamesTheRevokeRemedy:
         assert revoke_argv in message, f"the revoke remedy for {name!r} is missing: {message}"
         assert "never shown" in message and "mint a new" in message, message
         assert "verify the stored state before re-running" not in message, message
-        # The served command must be one the REAL lore-adm parser runs as THIS key's revoke — a renamed verb
-        # or flag reddens here instead of shipping a remedy that no longer works.
+        self._assert_served_revoke_parses(message, email=email, name=name)
+
+    @staticmethod
+    def _assert_served_revoke_parses(message: str, *, email: str, name: str) -> None:
+        """The FIRST backticked command must be one the REAL lore-adm parser runs as THIS key's revoke — a
+        renamed verb or flag reddens here instead of shipping a remedy that no longer works."""
         parser = p_module.build_parser()
         served = shlex.split(message.split("`")[1])
         assert served[0] == parser.prog, served
         parsed = vars(parser.parse_args(served[1:]))
         assert (parsed["command"], parsed["email"], parsed["name"]) == ("revoke-key", email, name), parsed
+
+    @staticmethod
+    def _store_whose_create_answers(
+        monkeypatch: pytest.MonkeyPatch, answer: Any
+    ) -> tuple[PrincipalKeyStore, dict[str, int]]:
+        """A store whose mint CREATE lands (counted, #194) and answers ``answer``."""
+        store = PrincipalKeyStore(
+            url="ws://127.0.0.1:1", namespace="ns531c", database="db531c", user="u", password=SecretStr("p")
+        )
+        landed = {"count": 0}
+
+        async def require_principal_id(_email: str) -> str:
+            return "abc531c"
+
+        async def query(statement: str, _params: dict[str, Any] | None = None) -> Any:
+            assert statement.startswith("CREATE "), statement
+            landed["count"] += 1
+            return answer
+
+        monkeypatch.setattr(store, "_require_principal_id", require_principal_id)
+        monkeypatch.setattr(store, "_query", query)
+        return store, landed
+
+    @pytest.mark.parametrize(
+        ("email", "name"),
+        [("ops531@example.com", "laptop"), ("dev.531+keys@example.org", "work laptop")],
+        ids=["plain", "needs-quoting"],
+    )
+    async def test_a_create_answering_no_row_names_the_same_revoke_repair(
+        self, monkeypatch: pytest.MonkeyPatch, email: str, name: str
+    ) -> None:
+        """fix531c, #531 (REPORT-fix531b §5.2): a CREATE ``RETURN AFTER`` answering ``[]`` may or may not have
+        stored the key, and its secret was never shown. The fault must name the SAME revoke repair as the
+        wrong-shape mint, conditioned on ``list-keys`` showing the key — never a bare "vanished"."""
+        store, landed = self._store_whose_create_answers(monkeypatch, [])
+        with pytest.raises(PrincipalKeyStoreError) as caught:
+            await store.mint(email=email, name=name, secret_hash="0" * 128)
+        assert landed["count"] == 1, "the forged CREATE answer never landed (#194)"
+        message = str(caught.value)
+        revoke_argv = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
+        assert repr(name) in message, message
+        assert revoke_argv in message, f"the revoke remedy for {name!r} is missing: {message}"
+        assert "never shown" in message and "list-keys" in message and "mint a new" in message, message
+        self._assert_served_revoke_parses(message, email=email, name=name)
+
+    @pytest.mark.parametrize(
+        ("answer", "raised"),
+        [("garbage", SurrealStoreError), ([], PrincipalKeyStoreError)],
+        ids=["wrong-shape", "no-row"],
+    )
+    async def test_both_mint_faults_take_the_revoke_command_from_the_one_helper(
+        self, monkeypatch: pytest.MonkeyPatch, answer: Any, raised: type[Exception]
+    ) -> None:
+        """ONE IMPLEMENTATION, proven by MUTATION: replace ``PrincipalKeyStore._revoke_command`` and BOTH
+        fault sites must serve the replacement — a site that still serves the real argv built its own copy."""
+        sentinel = "SENTINEL-531c revoke command"
+        calls: list[tuple[str, str]] = []
+
+        def fake_revoke_command(*, email: str, name: str) -> str:
+            calls.append((email, name))
+            return sentinel
+
+        monkeypatch.setattr(PrincipalKeyStore, "_revoke_command", staticmethod(fake_revoke_command))
+        store, _landed = self._store_whose_create_answers(monkeypatch, answer)
+        with pytest.raises(raised) as caught:
+            await store.mint(email="ops531@example.com", name="laptop", secret_hash="0" * 128)
+        message = str(caught.value)
+        assert f"`{sentinel}`" in message, message
+        assert "revoke-key" not in message, f"a private copy of the revoke command: {message}"
+        assert calls == [("ops531@example.com", "laptop")], calls
 
 
 # =========================================================================== #
