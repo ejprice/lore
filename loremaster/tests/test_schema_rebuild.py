@@ -57,7 +57,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -73,6 +72,7 @@ from _surreal_harness import (
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
 )
 from _surreal_harness import (
     drop_database as drop_surreal_database,
@@ -212,7 +212,7 @@ def _slug() -> str:
     :attr:`~loremaster.config.LoreConfig.effective_surreal_database` derives it
     from THIS slug — the per-project identity the unified SurrealDB stack keys on.
     """
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(

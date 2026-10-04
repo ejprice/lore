@@ -39,11 +39,17 @@ the production crash climbed.
 from __future__ import annotations
 
 import os
-import uuid
 from pathlib import Path
 from typing import Any
 
-from _surreal_harness import drop_database, make_env, surreal_password, surreal_url, surreal_user
+from _surreal_harness import (
+    drop_database,
+    make_env,
+    surreal_password,
+    surreal_url,
+    surreal_user,
+    unique_database,
+)
 from loremaster.config import LoreConfig
 from loremaster.server import LoreServer
 from loresigil.testing import FakeEmbedder
@@ -93,7 +99,7 @@ def _build_poisoned_corpus(root: Path) -> None:
 
 def _slug() -> str:
     """A per-test slug -> throwaway SurrealDB database."""
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(*, slug: str, live_path: Path) -> LoreConfig:

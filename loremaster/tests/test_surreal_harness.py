@@ -75,6 +75,32 @@ is DELETED rather than weakened — weakening it to keep it green would re-hide 
 was built to force a conversation about. What replaces it is
 :class:`TestTheBootstrapPathsExhaustionIsAttributable`, which asserts the attribution that
 is now present, on all three statements.
+
+------------------------------------------------------------------------------
+FINDING #486 — THE THIRD HARNESS OPERATION THE #150 FIX NEVER COVERED.
+
+#150 routed the harness operations it ANALYSED (the bootstrap and teardown) through the seam,
+and the harness docstring then called ``_run_under_store_retry_seam`` "this module's SINGLE
+classify-and-signal site". ``run()`` — the raw statement funnel behind every test call site
+(812 measured 2026-09-26 at ``e039c64``; 873 re-derived 2026-10-04) —
+kept calling ``connection.query`` bare, so an engine-flagged retryable conflict (most likely
+background FULLTEXT/HNSW index compaction racing a test's own ``DELETE`` on ``memory``) escaped
+a test as a raw ``QueryError`` (finding #486 (investigate-486's report, archived with the #486
+close-out), §1–§5). A safety
+property derived over the members someone analysed, read as holding for the whole set — THE
+QUANTIFIER LAW. The pins for it live below, and they quantify over the WHOLE module rather
+than over ``run``:
+
+* :class:`TestRunRidesTheStoreRetrySeam` — the behaviour (retry the conflict, return the
+  success, never retry a domain rejection, exhaust with the seam's type and an attributable
+  record).
+* ``run`` joins :data:`_OPERATION_PROBES`, so the existing ceiling/deadline MUTATION pins cover
+  it by generation, and :meth:`TestTheHarnessRetryPolicyIsTheSeamsPolicy.
+  test_run_detection_follows_the_seams_one_conflict_kind` moves the seam's conflict KIND under it.
+* :class:`TestTheHarnessMakesNoEngineCallOutsideTheSeam` — the REACH, as a checked variable:
+  every SDK-door use anywhere in ``_surreal_harness`` must sit in an attempt body handed to
+  ``_run_under_store_retry_seam``. The door set is DERIVED from the SDK classes (deny by
+  default), so a harness operation nobody has analysed yet is covered the day it is written.
 """
 
 from __future__ import annotations
@@ -184,6 +210,27 @@ _COMPOSITION_DEADLINE_SECONDS = 0.20
 _BUDGET_BURN_DELAY_SECONDS = 0.06
 _BUDGET_BURN_CONFLICTS = 4
 
+# --- #486: the `run()` fixture values ---------------------------------------------
+# The statement that escaped raw in #486 (`_orphan_the_successor_in_the_store`'s DELETE of
+# the successor memory row), with its REAL bound parameter. A bound parameter is part of the
+# pin, not decoration: a retry that re-issues the statement WITHOUT its params would delete
+# `type::record('memory', NONE)` against the real engine — so every retry leg below asserts
+# the params were forwarded on EVERY attempt.
+_RUN_PROBE_STATEMENT = "DELETE type::record('memory', $successor_id)"
+# A memory id in production's own shape (`LocalMemoryBackend` mints uuid5 ids).
+_RUN_PROBE_PARAMS: dict[str, Any] = {"successor_id": "0b6f3c1e-8d2a-5f47-9a3e-2c7b1d4e5f60"}
+
+
+def _run_result() -> list[dict[str, Any]]:
+    """A FRESH result object per call, so an identity (``is``) assertion proves ``run`` handed
+    back THE object the connection returned — not an equal copy, not a re-wrapped value."""
+    return [{"id": f"memory:{_RUN_PROBE_PARAMS['successor_id']}"}]
+
+
+def _as_connection(fake: _FakeConnection) -> Any:
+    """Hand a fake to ``run`` (typed for the real SDK union) without a mypy cascade."""
+    return fake
+
 
 def _conflict_error() -> QueryError:
     return typed_conflict_error(_CONFLICT_MESSAGE)
@@ -248,7 +295,8 @@ class _FakeConnection:
     overspend, and leave the operation it is MEASURING running at full speed.
     """
 
-    query_outcomes: list[BaseException | None] = field(default_factory=list)
+    # A success entry may be the RESULT object the call returns (#486's `run` pins hand one back).
+    query_outcomes: list[Any] = field(default_factory=list)
     statement_outcomes: dict[str, list[BaseException | None]] = field(default_factory=dict)
     use_outcomes: list[BaseException | None] = field(default_factory=list)
     statement_delays: dict[str, float] = field(default_factory=dict)
@@ -257,6 +305,9 @@ class _FakeConnection:
     use_calls: int = field(default=0, init=False)
     statement_calls: dict[str, int] = field(default_factory=dict, init=False)
     operations: list[str] = field(default_factory=list, init=False)
+    # The ``params`` handed to EACH ``query()`` call, in order (#486: a retry must re-issue
+    # the statement WITH its bound parameters, every attempt).
+    query_params: list[dict[str, Any] | None] = field(default_factory=list, init=False)
     closed: bool = field(default=False, init=False)
 
     async def signin(self, credentials: dict[str, Any]) -> None:
@@ -277,6 +328,7 @@ class _FakeConnection:
 
     async def query(self, statement: str, params: dict[str, Any] | None = None) -> Any:
         self.operations.append(f"query:{statement}")
+        self.query_params.append(None if params is None else dict(params))
         self.query_calls += 1
         for delayed_key, delay in self.statement_delays.items():
             if delayed_key in statement:
@@ -1230,6 +1282,20 @@ async def _probe_teardown_remove_database(monkeypatch: pytest.MonkeyPatch) -> in
     return fake.query_calls
 
 
+async def _probe_run_statement(monkeypatch: pytest.MonkeyPatch) -> int:
+    """#486: ``run`` under a sustained conflict must exhaust THE SEAM's budget.
+
+    At HEAD ``run`` makes one bare ``connection.query`` and the engine's ``QueryError`` escapes
+    raw — so this probe fails on the ``pytest.raises`` below (a raw ``QueryError`` is not the
+    seam's ``TxnContentionExhaustedError``), which is the behavioural RED.
+    """
+    del monkeypatch  # the connection is handed to `run` directly; no factory to patch
+    fake = _FakeConnection(query_outcomes=_sustained_conflicts())
+    with pytest.raises(txn_module.TxnContentionExhaustedError):
+        await _surreal_harness.run(_as_connection(fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS))
+    return fake.query_calls
+
+
 # EVERY operation the harness puts under the seam, mapped to a probe that reports how
 # many times it was ATTEMPTED under a sustained conflict. This is the reach of the
 # mutation proof, written down so it can be CHECKED (see
@@ -1260,6 +1326,14 @@ def _operation_key(function_name: str, recorded: str) -> str:
         return f"{function_name}:use"
     statement = recorded.removeprefix("query:")
     return f"{function_name}:{' '.join(statement.split()[:2])}"
+
+
+# #486: `run` is a harness operation on a live connection exactly like the five above, so it
+# joins the SAME probe table — which makes every generated mutation pin below cover it with no
+# new pin written. The key is DERIVED through `_operation_key` (never hand-typed) so the
+# discovery pin's normalisation and this entry cannot drift apart.
+_RUN_OPERATION_KEY = _operation_key("run", f"query:{_RUN_PROBE_STATEMENT}")
+_OPERATION_PROBES[_RUN_OPERATION_KEY] = _probe_run_statement
 
 
 class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
@@ -1305,12 +1379,17 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         _patch_connection(monkeypatch, teardown_fake)
         await _surreal_harness.drop_database(_FAKE_ENV)
 
-        discovered = {
-            _operation_key("connect_admin", recorded)
-            for recorded in bootstrap_fake.operations
-        } | {
-            _operation_key("drop_database", recorded) for recorded in teardown_fake.operations
-        }
+        # #486: the statement funnel is a harness operation too.
+        run_fake = _FakeConnection(query_outcomes=[_run_result()])
+        await _surreal_harness.run(
+            _as_connection(run_fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+        )
+
+        discovered = (
+            {_operation_key("connect_admin", recorded) for recorded in bootstrap_fake.operations}
+            | {_operation_key("drop_database", recorded) for recorded in teardown_fake.operations}
+            | {_operation_key("run", recorded) for recorded in run_fake.operations}
+        )
 
         assert discovered == set(_OPERATION_PROBES), (
             f"the set of engine operations the harness issues has changed.\n"
@@ -1382,11 +1461,11 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
             f"wall-clock budget."
         )
 
-    async def test_detection_follows_the_seams_one_conflict_marker(
+    async def test_detection_follows_the_seams_one_conflict_kind(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Moving the seam's MARKER stops the harness retrying — proving it never
-        kept a literal copy of the engine's prose.
+        """Moving the seam's conflict KIND stops the harness retrying — proving it never
+        kept a private copy of the engine's conflict signal (a28c DUAL: it was the prose marker).
 
         This is the pin the retired ``TestTheTestHarnessCannotDriftFromTheSeamsMarker``
         could not be: that one asserted two literals were EQUAL, which a private copy
@@ -1394,7 +1473,7 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
         """
         _silence_backoff(monkeypatch)
 
-        # POSITIVE CONTROL: at the seam's real marker, teardown retries the conflict.
+        # POSITIVE CONTROL: at the seam's real conflict kind, teardown retries the conflict.
         control = _FakeConnection(query_outcomes=[_conflict_error(), None])
         _patch_connection(monkeypatch, control)
         await _surreal_harness.drop_database(_FAKE_ENV)
@@ -1410,12 +1489,12 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
 
         assert mutated.query_calls == 1, (
             f"teardown retried {mutated.query_calls - 1} time(s) on a message the "
-            f"SHARED marker no longer recognises as a conflict — it is branching on "
-            f"engine prose it keeps privately. Reword the engine and this retry dies "
+            f"SHARED kind no longer recognises as a conflict — it is branching on "
+            f"an engine conflict signal it keeps privately. Change it in the engine and this retry dies "
             f"silently, which is exactly how finding #150's copy would have failed."
         )
 
-    async def test_the_bootstrap_paths_detection_follows_the_seams_marker(
+    async def test_the_bootstrap_paths_detection_follows_the_seams_kind(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The same mutation, at the bootstrap path — the site with no retry at all
@@ -1448,8 +1527,172 @@ class TestTheHarnessRetryPolicyIsTheSeamsPolicy:
 
         assert mutated.statement_calls[_DEFINE_NAMESPACE] == 1, (
             f"the bootstrap retried {mutated.statement_calls[_DEFINE_NAMESPACE] - 1} "
-            f"time(s) on a message the SHARED marker no longer recognises as a conflict "
-            f"— it is keeping a private copy of the engine's prose."
+            f"time(s) on a message the SHARED kind no longer recognises as a conflict "
+            f"— it is keeping a private copy of the engine's conflict signal."
+        )
+
+    async def test_run_detection_follows_the_seams_one_conflict_kind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#486 — the same conflict-KIND mutation, at ``run``: CLASSIFY-AND-SIGNAL must be the seam's.
+
+        ROUTING IS NOT SHARING. A ``run`` that calls ``retry_on_conflict`` but decides "is this a
+        conflict?" privately — its own ``details["kind"] == "TransactionConflict"``, or the
+        engine's prose — passes the ceiling and deadline legs (the seam still owns the budget)
+        and survives only until the engine changes what it emits. lore #102/#120 measured
+        exactly that: eleven seams routed through the driver, each classifying locally, 839/0
+        green, all silently dead under a reworded message. Only moving the SHARED classifier
+        input can tell the two apart: ``_txn._RETRYABLE_CONFLICT_KIND`` since ``34d0b6b``
+        (63c-i-a amendment 36), which deleted the text ``_RETRYABLE_CONFLICT_MARKER`` this pin
+        first mutated (re-keyed by contract-486-r2, the a28c DUAL form of its two siblings).
+
+        RED at HEAD: the control leg — ``run`` does not retry at all, so the conflict escapes.
+        """
+        _silence_backoff(monkeypatch)
+
+        # POSITIVE CONTROL: at the seam's real conflict kind, `run` retries the conflict and hands
+        # back the success.
+        control = _FakeConnection(query_outcomes=[_conflict_error(), _run_result()])
+        await _surreal_harness.run(
+            _as_connection(control), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+        )
+        assert control.query_calls == 2, (
+            f"the control leg made {control.query_calls} call(s): `run` did not retry a retryable "
+            f"conflict, so this pin cannot see whose classifier it reads (and #486 is still open)"
+        )
+
+        # MUTATION: the seam no longer recognises the engine's conflict KIND.
+        monkeypatch.setattr(txn_module, "_RETRYABLE_CONFLICT_KIND", "AKindNoEngineEmits")
+        mutated = _FakeConnection(query_outcomes=[_conflict_error(), _run_result()])
+        with pytest.raises(QueryError):
+            await _surreal_harness.run(
+                _as_connection(mutated), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+            )
+        assert mutated.query_calls == 1, (
+            f"`run` retried {mutated.query_calls - 1} time(s) on an error whose kind the SHARED "
+            f"seam no longer recognises as a conflict — it classifies with a private copy of the "
+            f"engine's conflict signal (ROUTING IS NOT SHARING, lore #102/#120)."
+        )
+
+
+class TestRunRidesTheStoreRetrySeam:
+    """#486 — ``run`` is ONE attempt body under the store seam, and nothing else changes.
+
+    The behavioural contract, from the caller's side (every call site — 812 at ``e039c64`` on
+    2026-09-26, 873 re-derived 2026-10-04):
+
+    * a retryable engine conflict is RETRIED (re-issuing the SAME statement with the SAME
+      params) and the caller receives the success as if nothing happened;
+    * anything that is NOT the retryable conflict — a domain rejection — propagates UNTOUCHED
+      (the same exception object) on the FIRST attempt: call sites sit inside
+      ``pytest.raises(...)``
+      expecting exactly that (38 at ``e039c64`` on 2026-09-26, 42 re-derived 2026-10-04;
+      contract report §Raw-door table);
+    * a conflict that outlives the budget raises the SEAM's ``TxnContentionExhaustedError``
+      (never the raw ``QueryError``), with ONE ``store.retry.exhausted`` record naming ``run``'s
+      own label and quoting what the engine said — the attribution #151 bought for the other
+      five harness operations;
+    * the result is the connection's own object, unlaundered (preserved behaviour).
+
+    Pinned against a scripted fake (the file's idiom): the live conflict is a rare race against
+    background engine work, and a pin that passes only when that race fires is not a pin.
+    """
+
+    async def test_a_once_conflicting_statement_is_retried_and_returns_the_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RED at HEAD: the conflict escapes as a raw ``QueryError`` (the #486 failure itself)."""
+        _silence_backoff(monkeypatch)
+        success = _run_result()
+        fake = _FakeConnection(query_outcomes=[_conflict_error(), success])
+
+        result = await _surreal_harness.run(
+            _as_connection(fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+        )
+
+        assert result is success, (
+            f"`run` must hand back the object the successful attempt returned; got {result!r}"
+        )
+        # The retry re-issues THE SAME statement WITH ITS PARAMS — a build that retried a
+        # rebuilt/param-less statement would delete `type::record('memory', NONE)` for real.
+        assert fake.operations == [f"query:{_RUN_PROBE_STATEMENT}"] * 2
+        assert fake.query_params == [_RUN_PROBE_PARAMS, _RUN_PROBE_PARAMS]
+
+    async def test_a_domain_rejection_propagates_untouched_on_the_first_attempt(self) -> None:
+        """PRESERVATION pin (GREEN at HEAD by design — the removed-behaviour inventory's
+        "a domain error surfaces raw" row, demanded by the ``pytest.raises`` call sites)."""
+        rejection = _non_retryable_error()
+        fake = _FakeConnection(query_outcomes=[rejection])
+
+        with pytest.raises(QueryError) as exc_info:
+            await _surreal_harness.run(
+                _as_connection(fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+            )
+
+        # The SAME object: a build that wraps (`raise SurrealStoreError(...) from error`) changes
+        # the type the `pytest.raises` call sites assert; a build that re-raises a copy loses the
+        # engine's text.
+        assert exc_info.value is rejection
+        assert fake.query_calls == 1, (
+            f"a non-retryable rejection was attempted {fake.query_calls} times — a domain "
+            f"rejection can never succeed, and retrying one is the seam's own forbidden move"
+        )
+
+    async def test_the_happy_path_returns_the_connections_result_in_one_call(self) -> None:
+        """PRESERVATION pin (GREEN at HEAD by design): one statement, one wire call, the raw
+        result handed back unlaundered — the ``Any``-typed funnel every call site indexes into."""
+        success = _run_result()
+        fake = _FakeConnection(query_outcomes=[success])
+
+        result = await _surreal_harness.run(_as_connection(fake), _RUN_PROBE_STATEMENT)
+
+        assert result is success
+        assert fake.query_calls == 1
+        # `params` defaults to None and is forwarded as None — never replaced by `{}`.
+        assert fake.query_params == [None]
+
+    async def test_sustained_conflict_exhausts_with_the_seams_type_and_an_attributable_record(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """RED at HEAD: the first conflict escapes raw instead of being retried to exhaustion.
+
+        ATTRIBUTION is the second half and it is not optional: the seam gates ``engine_error``
+        and ``url`` on ``label is not None`` (``_txn.retry_on_conflict``), so an unlabelled
+        ``run`` would exhaust with a record that says nothing about WHICH harness operation gave
+        up or WHAT the engine said — #151's defect, re-opened on the busiest harness path.
+        """
+        _silence_backoff(monkeypatch)
+        caplog.set_level(logging.WARNING, logger=txn_module.logger.name)
+        fake = _FakeConnection(query_outcomes=_sustained_conflicts())
+
+        with pytest.raises(txn_module.TxnContentionExhaustedError) as exc_info:
+            await _surreal_harness.run(
+                _as_connection(fake), _RUN_PROBE_STATEMENT, dict(_RUN_PROBE_PARAMS)
+            )
+
+        ceiling = _seam_attempt_ceiling()
+        assert exc_info.value.attempts == ceiling
+        assert fake.query_calls == ceiling
+
+        run_label = getattr(_surreal_harness, "_RUN_STATEMENT_LABEL", None)
+        assert isinstance(run_label, str) and run_label, (
+            "`_surreal_harness._RUN_STATEMENT_LABEL` is missing — `run`'s seam call site needs its "
+            "own canonical event name, exactly as the teardown operations carry "
+            "`_TEARDOWN_*_LABEL` (see §Stub expectations in the #486 contract report)"
+        )
+        other_labels = {
+            _surreal_harness._TEARDOWN_SELECT_DATABASE_LABEL,
+            _surreal_harness._TEARDOWN_REMOVE_DATABASE_LABEL,
+        }
+        assert run_label not in other_labels, (
+            f"`run` reuses a teardown label ({run_label!r}) — its exhaustion would be attributed "
+            f"to the wrong harness operation"
+        )
+        record = _the_one_exhaustion_record(caplog)
+        assert getattr(record, "label", None) == run_label
+        assert _CONFLICT_MESSAGE in str(getattr(record, "engine_error", "")), (
+            "the exhaustion record does not quote what the engine said — an operator reading it "
+            "cannot tell a compaction conflict from anything else"
         )
 
 
@@ -1486,8 +1729,15 @@ _ALLOWED_MODULE_LEVEL_NAMES = frozenset(
         "_ENV_USER",
         "_SOURCE_TEXT",
         # seam call-site IDENTITY (labels for the seam's exhaustion record) — not policy
+        "_RUN_STATEMENT_LABEL",  # #486: `run`'s own seam call site
         "_TEARDOWN_REMOVE_DATABASE_LABEL",
         "_TEARDOWN_SELECT_DATABASE_LABEL",
+        # #486 item 2 (the test-DB leak): the per-process record of every database name
+        # `unique_database()` minted, and the reaper that removes every such database still
+        # present. LIFECYCLE bookkeeping, not retry policy — it owns no budget, no backoff and no
+        # conflict marker (its REMOVEs ride `_run_under_store_retry_seam` like teardown's).
+        "_MINTED_DATABASES",
+        "reap_minted_databases",
         # helpers, protocols and fixtures
         "_RemovableDatabaseConnection",
         "_remove_database_with_retry",
@@ -1755,3 +2005,279 @@ class TestTheHarnessDeclaresNoRetryPolicyOfItsOwn:
             for name in _module_level_imported_modules(source)
             if name.startswith("loremaster")
         ], "the scan flagged an import that does NOT execute at module import time"
+
+
+# --- #486: the REACH of the seam over the whole harness, as a checked variable ------------
+# The one function the reach pin exempts, with its reason stated where the exemption is:
+# `measure_store_traffic` WRAPS the doors of a connection ANOTHER caller drives (a ledger's own
+# `_ensure_connection`) and forwards each call it intercepts. It originates no statement of its
+# own, and retrying a forwarded call would retry on behalf of a caller that already owns its
+# retry — two budgets, the #150 shape. Threat model (CLAUDE.md "a gate needs a threat model"):
+# this pin catches the HONEST developer who adds a harness helper that talks to the engine
+# outside the seam, which is #486 verbatim. It is not a boundary against someone deliberately
+# hiding a statement inside the exempt instrument.
+_REACH_EXEMPT_FUNCTIONS = frozenset({"measure_store_traffic"})
+
+# The harness's ONE classify-and-signal seam: a door use is covered iff it sits in an attempt
+# body handed to THIS function. `retry_on_conflict` itself does NOT count — a body handed
+# straight to the driver has no classification, and routing without classify-and-signal
+# retries zero times (lore #102/#120).
+_HARNESS_SEAM_NAME = "_run_under_store_retry_seam"
+
+
+def _sdk_engine_doors() -> frozenset[str]:
+    """Every SDK connection method that reaches the engine — COMPOSED from the harness's EXISTING
+    deny-by-default derivation, never re-derived (ONE IMPLEMENTATION, brief-base §6).
+
+    ``StoreTraffic`` already owns "which SDK methods reach the engine": ``COUNTABLE_DOORS`` (those
+    that pass ``query_raw``) plus ``uncountable_doors()`` (every other public awaitable minus
+    ``_sdk_guard``'s evidence-backed safe set). Their union is the whole door set. Measured equal,
+    2026-09-26, to a from-scratch derivation with ``_sdk_guard``'s predicate (symmetric difference
+    empty) — which is exactly why a second copy of that predicate here would be the #102 shape.
+    """
+    from _sdk_guard import SAFE_CONNECTION_METHODS
+
+    traffic = _surreal_harness.StoreTraffic
+    return (traffic.uncountable_doors() | traffic.COUNTABLE_DOORS) - SAFE_CONNECTION_METHODS
+
+
+@dataclass(frozen=True)
+class _DoorUse:
+    """One use of an engine door in a scanned source, and whether the seam covers it."""
+
+    function: str
+    line: int
+    door: str
+    covered: bool
+
+    def __str__(self) -> str:
+        return f"{self.function}:{self.line} -> .{self.door}"
+
+
+def _engine_door_uses(
+    source: str,
+    doors: frozenset[str],
+    *,
+    exempt_functions: frozenset[str] = frozenset(),
+) -> list[_DoorUse]:
+    """Classify EVERY use of an engine door in ``source`` as covered by the seam, or not.
+
+    A door USE is any ``<expr>.<door>`` attribute LOAD (a call, OR an alias capture such as
+    ``query = connection.query`` — capturing the bound method is how a call escapes an
+    attribute-CALL scan), plus ``getattr(<expr>, "<door>")`` with a literal door name.
+    Receiver-BLIND on purpose: a receiver-name list is the instrument this repo has been
+    defeated through twice.
+
+    COVERED iff the use sits (a) inside the FIRST-argument expression of a call to
+    :data:`_HARNESS_SEAM_NAME` (a lambda, a ``functools.partial``), or (b) inside any
+    function — at any nesting depth — whose NAME is passed as that first argument, or (c) inside
+    an exempt function. Everything else is reported uncovered, so a new harness operation nobody
+    has analysed yet is caught the day it is written: THE QUANTIFIER LAW's "every harness call on
+    a live connection", not "the operations someone looked at".
+    """
+    import ast
+
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    handed_names: set[str] = set()
+    handed_subtrees: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        callee = node.func
+        callee_name = (
+            callee.id if isinstance(callee, ast.Name)
+            else callee.attr if isinstance(callee, ast.Attribute)
+            else None
+        )
+        if callee_name != _HARNESS_SEAM_NAME:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Name):
+            handed_names.add(first.id)
+        handed_subtrees.update(id(inner) for inner in ast.walk(first))
+
+    def _enclosing_functions(node: ast.AST) -> list[str]:
+        names: list[str] = []
+        cursor = parents.get(node)
+        while cursor is not None:
+            if isinstance(cursor, ast.FunctionDef | ast.AsyncFunctionDef):
+                names.append(cursor.name)
+            cursor = parents.get(cursor)
+        return names
+
+    uses: list[_DoorUse] = []
+    for node in ast.walk(tree):
+        door: str | None = None
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr in doors:
+            door = node.attr
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in doors
+        ):
+            door = str(node.args[1].value)
+        if door is None:
+            continue
+        enclosing = _enclosing_functions(node)
+        covered = (
+            id(node) in handed_subtrees
+            or any(name in handed_names for name in enclosing)
+            or any(name in exempt_functions for name in enclosing)
+        )
+        uses.append(
+            _DoorUse(
+                function=enclosing[0] if enclosing else "<module>",
+                line=getattr(node, "lineno", 0),
+                door=door,
+                covered=covered,
+            )
+        )
+    return uses
+
+
+class TestTheHarnessMakesNoEngineCallOutsideTheSeam:
+    """#486 pin (iii) — the seam's REACH over ``_surreal_harness`` is a CHECKED VARIABLE.
+
+    #150 covered the operations it analysed and the docstring then claimed the whole module.
+    ``run`` was the unanalysed member. This pin quantifies over EVERY engine-door use in the
+    module source (doors derived from the SDK, deny by default), so the next harness helper that
+    talks to the engine outside the seam goes RED here — without anyone having listed it.
+
+    It is an AST pin and therefore sees code that never runs, which is its point; its own
+    positive/negative controls below prove it fires on the shapes that escape and stays quiet on
+    the shapes that are covered.
+    """
+
+    def test_every_engine_door_use_in_the_harness_is_an_attempt_body_of_the_seam(self) -> None:
+        """RED at HEAD: ``run`` calls ``connection.query`` bare (the #486 escape)."""
+        uses = _engine_door_uses(
+            _harness_source(), _sdk_engine_doors(), exempt_functions=_REACH_EXEMPT_FUNCTIONS
+        )
+        uncovered = [str(use) for use in uses if not use.covered]
+        assert not uncovered, (
+            f"`_surreal_harness` uses an engine door OUTSIDE an attempt body handed to "
+            f"`{_HARNESS_SEAM_NAME}`: {uncovered}. Every harness operation on a live connection can "
+            f"hit the engine's retryable conflict (background index compaction races ANY write, "
+            f"#486; teardown's REMOVE, #150), so each one is an attempt the seam runs — hand it to "
+            f"`{_HARNESS_SEAM_NAME}`; never classify locally, never call `retry_on_conflict` bare."
+        )
+
+    def test_the_scan_is_not_vacuous_over_the_real_harness(self) -> None:
+        """NON-VACUITY: the scan must SEE the harness's covered attempt bodies, and the door
+        derivation must contain the three doors the harness actually uses.
+
+        A scan that recognised no attempt body would report every use uncovered (loud, fine) —
+        but a scan whose door set came back EMPTY (an SDK rename, a guard-predicate change) would
+        report NOTHING and pass. This leg makes that state RED.
+        """
+        doors = _sdk_engine_doors()
+        assert {"query", "query_raw", "use"} <= doors, (
+            f"the derived engine-door set lost a door the harness uses: {sorted(doors)}"
+        )
+        covered = [
+            use
+            for use in _engine_door_uses(
+                _harness_source(), doors, exempt_functions=_REACH_EXEMPT_FUNCTIONS
+            )
+            if use.covered
+        ]
+        assert {use.door for use in covered} >= {"query", "use"}, (
+            f"the scan recognised no covered `query`/`use` in the harness (teardown's REMOVE and "
+            f"select ride the seam today) — it is not seeing attempt bodies: {covered}"
+        )
+
+    @pytest.mark.parametrize(
+        ("shape", "source"),
+        [
+            pytest.param(
+                "bare call in a helper",
+                "async def run(connection, statement, params=None):\n"
+                "    return await connection.query(statement, params)\n",
+                id="bare-call",
+            ),
+            pytest.param(
+                "alias capture of the bound method",
+                "async def run(connection, statement, params=None):\n"
+                "    query = connection.query\n"
+                "    return await query(statement, params)\n",
+                id="alias",
+            ),
+            pytest.param(
+                "getattr with a literal door",
+                "async def run(connection, statement, params=None):\n"
+                "    return await getattr(connection, 'query_raw')(statement, params)\n",
+                id="getattr",
+            ),
+            pytest.param(
+                "an attempt body handed to the DRIVER, not the seam (no classify-and-signal)",
+                "async def run(connection, statement, params=None):\n"
+                "    async def _attempt():\n"
+                "        return await connection.query(statement, params)\n"
+                "    return await retry_on_conflict(_attempt)\n",
+                id="driver-not-seam",
+            ),
+            pytest.param(
+                "a body NAMED like an attempt but never handed to the seam",
+                "async def _attempt(connection):\n"
+                "    return await connection.use('ns', 'db')\n"
+                "async def other(connection):\n"
+                "    await _run_under_store_retry_seam(lambda: None, label='x', url='u')\n",
+                id="name-only",
+            ),
+        ],
+    )
+    def test_the_scan_FIRES_on_every_escaping_shape(self, shape: str, source: str) -> None:
+        """POSITIVE CONTROL — each shape reaches the engine outside the seam."""
+        uses = _engine_door_uses(source, _sdk_engine_doors())
+        assert any(not use.covered for use in uses), (
+            f"the reach scan did not flag {shape!r}; it would pass a harness that escapes the "
+            f"seam that way. uses={uses}"
+        )
+
+    @pytest.mark.parametrize(
+        ("shape", "source"),
+        [
+            pytest.param(
+                "a named attempt body handed to the seam",
+                "async def run(connection, statement, params=None):\n"
+                "    async def _statement():\n"
+                "        return await connection.query(statement, params)\n"
+                "    return await _run_under_store_retry_seam(_statement, label='l', url='u')\n",
+                id="named-body",
+            ),
+            pytest.param(
+                "a lambda handed to the seam",
+                "async def run(connection, statement, params=None):\n"
+                "    return await _run_under_store_retry_seam(\n"
+                "        lambda: connection.query(statement, params), label='l', url='u'\n"
+                "    )\n",
+                id="lambda",
+            ),
+            pytest.param(
+                "a partial handed to the seam",
+                "import functools\n"
+                "async def run(connection, statement, params=None):\n"
+                "    return await _run_under_store_retry_seam(\n"
+                "        functools.partial(connection.query, statement, params), label='l', url='u'\n"
+                "    )\n",
+                id="partial",
+            ),
+        ],
+    )
+    def test_the_scan_stays_QUIET_on_every_covered_shape(self, shape: str, source: str) -> None:
+        """NEGATIVE CONTROL — a scan that flagged every door use would pass every leg above and
+        be permanently red-or-vacuous on the real harness; these shapes ARE covered."""
+        uses = _engine_door_uses(source, _sdk_engine_doors())
+        assert uses, f"the control source for {shape!r} contains no door use; the control is blind"
+        assert all(use.covered for use in uses), (
+            f"the reach scan flagged a COVERED shape ({shape!r}) — it would force a correct "
+            f"build red. uses={uses}"
+        )

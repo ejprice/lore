@@ -71,6 +71,7 @@ from _surreal_harness import (
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
 )
 from loremaster.config import LoreConfig
 from loremaster.extension import (
@@ -1129,7 +1130,7 @@ async def _build_probe_app_context(
     live = tmp_path / "live"
     (live / "books").mkdir(parents=True)
     (live / "books" / "a.fake").write_text(_FILE_A, encoding="utf-8")
-    slug = f"probe_{tmp_path.name.replace('-', '_')}"
+    slug = unique_database()
     _pending_probe_slugs.append(slug)
     config = _entity_config(
         slug=slug, live_path=live,
@@ -1161,7 +1162,7 @@ async def _build_entity_probe_app_context(tmp_path: Path, monkeypatch: pytest.Mo
     live = tmp_path / "live"
     (live / "books").mkdir(parents=True)
     (live / "books" / "a.fake").write_text(_FILE_A, encoding="utf-8")
-    slug = f"entprobe_{tmp_path.name.replace('-', '_')}"
+    slug = unique_database()
     _pending_probe_slugs.append(slug)
     config = _entity_config(
         slug=slug, live_path=live, extensions={"entity_table_probe": {"flavour": "vanilla"}}

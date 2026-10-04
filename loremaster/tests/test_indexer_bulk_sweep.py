@@ -126,7 +126,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -134,6 +133,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer
 from loremaster.index.surreal_manifest import STATE_FAILED, STATE_INDEXED
@@ -244,7 +244,7 @@ def _build_corpus(root: Path, count: int, *, prefix: str = "module") -> list[str
 
 
 def _slug() -> str:
-    return f"test_bulk_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(

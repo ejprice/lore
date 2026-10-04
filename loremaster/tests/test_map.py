@@ -61,7 +61,6 @@ never as a file-level collection collapse.
 from __future__ import annotations
 
 import importlib
-import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +68,7 @@ from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.graph import KIND_MODULE, CodeGraph
 from loremaster.server import LoreServer
@@ -201,7 +201,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(*, slug: str, live_path: Path) -> LoreConfig:

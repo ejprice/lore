@@ -36,7 +36,6 @@ seam by seam, against a do-nothing subclass — and separately assert that a
 from __future__ import annotations
 
 import inspect
-import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -55,6 +54,7 @@ from _extension_helpers import (
     minimal_config,
 )
 from _surreal_fakes import fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.extension import (
     Extension,
     ExtensionContext,
@@ -656,7 +656,7 @@ class TestSeam3ExtensionToolsAreWiredIntoTheLiveServer:
 
     @staticmethod
     def _slug() -> str:
-        return f"test_{uuid.uuid4().hex}"
+        return unique_database()
 
     async def _live_context(self, *, server: Any, tmp_path: Path) -> Any:
         """Build a live :class:`AppContext` over the server (real SurrealDB, fake embedder).
@@ -966,7 +966,7 @@ class TestRuntimeExtensionContextStoreIsUnifiedSurreal:
 
     @staticmethod
     def _slug() -> str:
-        return f"test_{uuid.uuid4().hex}"
+        return unique_database()
 
     async def _live_context(self, *, server: Any, tmp_path: Path) -> Any:
         """Build a live :class:`AppContext` over the server (real SurrealDB, fake embedder)."""

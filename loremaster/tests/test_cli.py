@@ -21,7 +21,6 @@ network-free).
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -93,7 +92,7 @@ def fake_embedder_cli(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _write_lore_yaml(

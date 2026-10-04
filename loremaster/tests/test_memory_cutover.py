@@ -40,7 +40,6 @@ How to run:
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -55,6 +54,7 @@ from _surreal_harness import (
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
 )
 from loremaster.config import LoreConfig
 from loremaster.memory.backend import MemoryBackend, derive_memory_id, derive_refs_stamp
@@ -96,7 +96,7 @@ _pending_surreal_slugs: list[str] = []
 
 def _slug() -> str:
     """A unique per-test slug — ALSO the throwaway SurrealDB database name."""
-    slug = f"test_{uuid.uuid4().hex}"
+    slug = unique_database()
     _pending_surreal_slugs.append(slug)
     return slug
 

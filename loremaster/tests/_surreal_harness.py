@@ -17,7 +17,20 @@ Isolation: every test/fixture gets a UNIQUE throwaway database under the
 ``lore_test`` namespace (``test_<pid>_<uuid4>``), and teardown issues
 ``REMOVE DATABASE IF EXISTS`` on it via a FRESH admin connection (independent of
 whatever connection the test used, which a resilience test may have deliberately
-broken). Nothing leaks; a reused PID later harmlessly reaps any prior orphan.
+broken).
+
+Lifetime (#486): every name :func:`unique_database` mints is recorded in
+:data:`_MINTED_DATABASES` with the test that minted it, and — when a test of the session
+OPENED one of those mints (#534) — the conftest's session-end hook calls
+:func:`reap_minted_databases` under a hard time budget, which removes whichever of THIS
+process's mints are still present — loudly: the session fails and names each database and
+its test. A session that ends normally against a reachable store therefore leaves none of
+its own databases behind; one whose store is unreachable at its end fails and names the
+databases it could not verify removed. BOUND,
+stated rather than hidden: a session that is KILLED (SIGKILL, OOM, a watchdog) never
+reaches its end, so its databases stay on the shared store; nothing in this harness
+reaps another process's databases, and those strays are removed by periodic operator
+wipes of the test namespace (operator ruling D2, 2026-09-26).
 
 Import isolation: at MODULE level this imports ONLY the ``surrealdb`` SDK and the
 pre-existing ``loremaster.index.records`` helpers, so it always imports cleanly.
@@ -34,10 +47,10 @@ budget, no backoff, no copy of the engine's conflict marker. (:func:`call_until_
 does own an attempt bound, and correctly so — it is a lifecycle RECOVERY probe for
 degradation/recovery tests, a different concern from conflict retry, and it must NOT
 route through ``_txn``.) ``connect_admin`` bootstraps its session through
-``_txn.bootstrap_session``; teardown's ``use()`` and its ``REMOVE DATABASE`` both go
-through :func:`_run_under_store_retry_seam`, this module's single classify-and-signal
-site over ``_txn.retry_on_conflict``. Moving a constant in the seam moves this harness
-with it — pinned by mutation in ``test_surreal_harness.py`` (finding #150).
+``_txn.bootstrap_session``; :func:`run`'s statement, teardown's ``use()`` and its
+``REMOVE DATABASE`` all go through :func:`_run_under_store_retry_seam`, this module's
+single classify-and-signal site over ``_txn.retry_on_conflict``. Moving a constant in
+the seam moves this harness with it — pinned by mutation in ``test_surreal_harness.py`` (finding #150).
 
 ------------------------------------------------------------------------------
 HOW TO RESOLVE THE ``blindreader-150 F*`` / ``audit-150 R*`` CITATIONS IN THIS FILE.
@@ -61,7 +74,7 @@ import inspect
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Protocol
@@ -126,6 +139,9 @@ TIER_B = "community"
 # Shape follows the store seams' own ``_SEAM_REJECTION_EVENTS`` convention.
 _TEARDOWN_SELECT_DATABASE_LABEL = "harness.teardown.select_database"
 _TEARDOWN_REMOVE_DATABASE_LABEL = "harness.teardown.remove_database"
+# #486: the canonical event name ``run``'s own seam call site is attributed under — distinct
+# from both teardown labels, so an exhausted ``run`` is never blamed on teardown.
+_RUN_STATEMENT_LABEL = "harness.run.statement"
 
 
 def surreal_url() -> str:
@@ -150,14 +166,33 @@ def surreal_password() -> SecretStr:
     return SecretStr(os.environ.get(_ENV_PASS, DEFAULT_PASS))
 
 
+# #486: every database name :func:`unique_database` minted in THIS process, mapped to
+# ``(minting test node id, reaped)``: the node id is ``PYTEST_CURRENT_TEST`` at mint time, and
+# ``reaped`` turns True once :func:`reap_minted_databases` removes the database as a leak. A
+# reaped entry is KEPT, never dropped, so the session-end report names every leak — including
+# one a mid-session reaper call removed (contract-486-r2 F2; lead ruling D-r2b-1 keeps that
+# state here rather than in a new module-level name). Mutated IN PLACE, never rebound — a
+# holder of this dict must see every later mint.
+_MINTED_DATABASES: dict[str, tuple[str, bool]] = {}
+
+
 def unique_database() -> str:
     """A per-test database name unique to this process (``test_<pid>_<uuid4>``).
 
     The ``<pid>`` prefix means a concurrent pytest process on the SAME server
     never collides on, or reaps, this database — the same concurrency-safety the
     Qdrant conftest gets from its per-process collection prefix.
+
+    Every name is recorded in :data:`_MINTED_DATABASES` against the test minting it, so
+    the session-end reap (:func:`reap_minted_databases`) can remove — and name — exactly
+    this process's leaks, and the conftest's per-test provenance check can refuse a
+    database this process never minted (#486).
     """
-    return f"test_{os.getpid()}_{uuid.uuid4().hex}"
+    name = f"test_{os.getpid()}_{uuid.uuid4().hex}"
+    # ``PYTEST_CURRENT_TEST`` is pytest's own "<nodeid> (<phase>)" marker; absent outside a
+    # test (a session hook, a plain import), where the empty string attributes to nobody.
+    _MINTED_DATABASES[name] = (os.environ.get("PYTEST_CURRENT_TEST", ""), False)
+    return name
 
 
 @dataclass(frozen=True)
@@ -203,8 +238,22 @@ async def run(
     Launders the SDK's wide ``Value`` return union into ``Any`` so the schema
     tests can index/``.get`` results without a cascade of union-narrowing noise —
     the same pattern ``conftest.kz_query``/``kz_row`` use for the Kùzu union.
+
+    The statement is ONE attempt body under :func:`_run_under_store_retry_seam`
+    (#486): an engine-flagged retryable conflict (background index compaction racing
+    a test's own write) is retried by the store seam's policy, re-issuing the same
+    statement with the same ``params``; any other error propagates untouched on the
+    first attempt; a conflict outliving the seam's budget raises the seam's
+    ``TxnContentionExhaustedError`` attributed to :data:`_RUN_STATEMENT_LABEL`.
     """
-    return await connection.query(statement, params)
+
+    async def _statement() -> Any:
+        return await connection.query(statement, params)
+
+    # A real SDK connection carries its RPC URL as ``raw_url``; a scripted fake may not,
+    # and then the harness's own configured URL is the honest attribution.
+    url = str(getattr(connection, "raw_url", surreal_url()))
+    return await _run_under_store_retry_seam(_statement, label=_RUN_STATEMENT_LABEL, url=url)
 
 
 def assert_domain_rejection(error: BaseException) -> None:
@@ -603,11 +652,16 @@ async def _run_under_store_retry_seam[T](
 ) -> T:
     """Run ``operation`` under the store package's ONE retry driver (finding #150).
 
-    This module's SINGLE classify-and-signal site. Both teardown operations that can
-    hit the engine's retryable write-write conflict — selecting the database
-    (``use()``) and removing it — call THIS; neither clones the shape, because two
-    call sites needing the same policy is a function they call, never a pattern they
-    copy. ``connect_admin`` needs no helper at all:
+    This module's SINGLE classify-and-signal site. Every harness operation on a live
+    connection that can hit the engine's retryable write-write conflict — :func:`run`'s
+    statement (#486), and teardown's selecting of the database (``use()``) and its
+    removal — calls THIS; none clones the shape, because two call sites needing the
+    same policy is a function they call, never a pattern they copy. That "every" is a
+    checked variable, not a claim: ``test_surreal_harness.py``'s reach pin fails on any
+    engine-door use in this module outside an attempt body handed here — except the one
+    exempt forwarding instrument it names in ``_REACH_EXEMPT_FUNCTIONS``
+    (:func:`measure_store_traffic`).
+    ``connect_admin`` needs no helper at all:
     :func:`~loremaster.store._txn.bootstrap_session` already IS the shared,
     budget-composing form of exactly this over its three statements.
 
@@ -623,8 +677,11 @@ async def _run_under_store_retry_seam[T](
 
     Args:
         operation: The zero-argument async operation to run. Must be safe to re-run
-            from scratch: true for both callers here, since a conflicted
-            single-statement DDL commits nothing.
+            from scratch: true for teardown's single-statement DDL and for a
+            single-statement :func:`run`, since a conflicted statement commits nothing.
+            (A multi-statement string handed to :func:`run` is the caller's to make
+            re-runnable; the SDK's ``query()`` it rides is itself unfit for one — store
+            reference §3.)
         label: This call site's canonical event name, carried into the seam's
             exhaustion log record. REQUIRED, not optional: the seam gates
             ``engine_error``/``url`` on ``label is not None``
@@ -816,6 +873,63 @@ async def drop_database(env: SurrealEnv) -> None:
         # seam's full budget once these two operations started retrying (audit-150 R5
         # / blindreader-150 F10).
         await connection.close()
+
+
+async def reap_minted_databases() -> Iterable[str]:
+    """Remove every database this process minted that is still present, and name each one.
+
+    The session-end leg of #486's leak guard. It reads :data:`_MINTED_DATABASES` and removes
+    every recorded database that still exists in :data:`TEST_NAMESPACE`. It touches no other
+    database: another live session's mints, and databases this process never minted, are
+    left alone. Every engine call rides :func:`_run_under_store_retry_seam`, exactly as
+    :func:`drop_database`'s teardown does.
+
+    Every database it removes is also marked ``reaped`` in :data:`_MINTED_DATABASES`, so the
+    session-end report names it and its minting test whoever called this, and whenever: a
+    mid-session call can never swallow a leak (contract-486-r2 F2).
+
+    Returns:
+        The names of the databases THIS call removed. Each one is a leak: its test minted it
+        and never dropped it. A database its test already dropped is never returned.
+
+    Raises:
+        SurrealStoreError: If the ``INFO FOR NS`` answer is not a map with a ``databases``
+            map — the present set cannot be read, so the reaper fails closed rather than
+            answering "nothing leaked" (contract-486-r2 F3).
+        TxnContentionExhaustedError: If the engine keeps reporting a retryable conflict on
+            one of the removals past the seam's budget.
+    """
+    # In-function, per RULING 1 (operator, 2026-07-20): no module-level loremaster import
+    # beyond ``loremaster.index.records`` — see test_surreal_harness.py's import pin.
+    from loremaster.governed import map_of
+
+    # A snapshot: minting the reader below records into the live registry mid-iteration.
+    candidates = set(_MINTED_DATABASES)
+    if not candidates:
+        return ()
+    # Reading the namespace needs a selected database, and on this engine a bare ``use()``
+    # CREATES one (measured 2026-09-26, 3.2.4) — so the reader is itself a mint, dropped in
+    # ``finally``, and removals name their target instead of ``use()``-ing it.
+    reader_env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+    connection = await connect_admin(reader_env)
+    try:
+        info = await run(connection, "INFO FOR NS")
+        # Production's ONE fail-closed INFO reader: a wrong-shaped answer raises instead of
+        # reading as an empty namespace, which would be a false "nothing leaked".
+        databases_key = "databases"
+        namespace = map_of(info, noun="test-namespace reaper", required=(databases_key,))
+        present = set(namespace[databases_key])
+        leaked = tuple(sorted(candidates & present))
+        for database in leaked:
+            await _remove_database_with_retry(connection, database, url=reader_env.url)
+            # Marked only once removed: a removal that raised leaves the database present,
+            # for the session-end reap to find again.
+            minted_by, _already_reaped = _MINTED_DATABASES[database]
+            _MINTED_DATABASES[database] = (minted_by, True)
+    finally:
+        await connection.close()
+        await drop_database(reader_env)
+    return leaked
 
 
 def unit_vector(axis: int, dim: int, magnitude: float = 1.0) -> list[float]:

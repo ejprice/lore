@@ -34,12 +34,12 @@ indexer/reconcile/watcher rewiring this task covers.
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import (
     _FAILED_EMBED_REASON,
@@ -209,7 +209,7 @@ def _config(*, slug: str, live_path: Path) -> LoreConfig:
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _make_indexer(

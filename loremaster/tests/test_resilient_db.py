@@ -74,6 +74,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _surreal_harness import unique_database
 
 # The surviving production constructor under test — it EXISTS and imports cleanly
 # today, so referencing it keeps the suite RED on *behaviour*, never on a missing
@@ -250,13 +251,11 @@ def _build_realistic_config(tmp_path: Path) -> Any:
     server seam test drives the SAME construction path the server runs (clause 5).
     A unique slug per call avoids cross-test SurrealDB-database collisions.
     """
-    import uuid
-
     from loremaster.config import LoreConfig
 
     live_root = tmp_path / "live"
     live_root.mkdir(parents=True, exist_ok=True)
-    slug = f"test_{uuid.uuid4().hex}"
+    slug = unique_database()
     payload: dict[str, Any] = {
         "schema_version": 1,
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},

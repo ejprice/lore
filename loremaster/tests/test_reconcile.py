@@ -30,13 +30,13 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig, TelemetryConfig
 from loremaster.index.indexer import Indexer, graph_roots
 from loremaster.index.reconcile import ReconcileEngine
@@ -197,7 +197,7 @@ def _config(
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 # --------------------------------------------------------------------------- #

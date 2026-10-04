@@ -80,11 +80,11 @@ import argparse
 import ast
 import inspect
 import textwrap
-import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.store.surreal import SurrealStore
 from loresigil.testing import FakeEmbedder
@@ -130,7 +130,7 @@ def _surreal_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 def _slug() -> str:
     """A unique per-test project slug — also the derived ``effective_surreal_database``
     (``surreal.database`` is left unset), so ``database`` cannot be hardcoded green."""
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config_payload(slug: str) -> dict[str, Any]:

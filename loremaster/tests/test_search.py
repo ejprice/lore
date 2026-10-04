@@ -69,6 +69,7 @@ from _surreal_fakes import (
     FakeSurrealStore,
     fake_surreal_trio,
 )
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.extension import DEFAULT_KEY_VERSION, Extension, ExtensionContext
 from loremaster.graph_surreal import SurrealCodeGraph
@@ -258,7 +259,7 @@ def _write(path: Path, text: str) -> None:
 
 def _slug() -> str:
     """A per-test slug (point ids fold it in, so keep it unique)."""
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(

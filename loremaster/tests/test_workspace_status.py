@@ -67,7 +67,6 @@ import asyncio
 import os
 import subprocess
 import time
-import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -83,6 +82,7 @@ from _surreal_harness import (
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
 )
 from _surreal_harness import (
     drop_database as drop_surreal_database,
@@ -219,7 +219,7 @@ _pending_surreal_slugs: list[str] = []
 
 def _slug() -> str:
     """A unique per-test slug — also the throwaway SurrealDB database name."""
-    slug = f"test_{uuid.uuid4().hex}"
+    slug = unique_database()
     _pending_surreal_slugs.append(slug)
     return slug
 

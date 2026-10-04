@@ -37,7 +37,6 @@ import error, since every name this file imports already exists on disk
 from __future__ import annotations
 
 import re
-import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,7 +45,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from _surreal_harness import drop_database as drop_surreal_database
-from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user
+from _surreal_harness import make_env, surreal_password, surreal_url, surreal_user, unique_database
 from loremaster.agents import AgentRegistry
 from loremaster.briefs import BriefLedger
 from loremaster.config import LoreConfig
@@ -87,7 +86,7 @@ _pending_surreal_slugs: list[str] = []
 
 def _slug() -> str:
     """A unique per-test project slug, also the throwaway SurrealDB database name."""
-    slug = f"test_{uuid.uuid4().hex}"
+    slug = unique_database()
     _pending_surreal_slugs.append(slug)
     return slug
 
@@ -162,16 +161,40 @@ async def _open_context(
 
     ``start_tasks=False`` skips the watcher/initial sweep (irrelevant to comms)
     — the same test seam ``test_mcp_server.py``'s ``cutover_ctx`` uses.
+
+    The context OWNS its throwaway database (#486): closing it (``aclose``) drops the
+    database, and a failed build drops it before re-raising. The cleanup therefore
+    travels with the helper into every module that borrows it, rather than depending on
+    THIS module's autouse reaper, which is not active in a borrowing module. That gap
+    leaked one database per borrowed call in ``test_mcp_server.py``.
     """
     slug = _slug()
     config = _config(slug, comms=comms)
-    return await build_app_context(
-        server=LoreServer(config),
-        embedder=embedder or FakeEmbedder(dim=_DIM),
-        manifest_path=tmp_path / f"{slug}-m.db",
-        snapshot_root=tmp_path / f"{slug}-snap",
-        start_tasks=False,
-    )
+    database_env = make_env(database=slug, dim=_DIM)
+    try:
+        context = await build_app_context(
+            server=LoreServer(config),
+            embedder=embedder or FakeEmbedder(dim=_DIM),
+            manifest_path=tmp_path / f"{slug}-m.db",
+            snapshot_root=tmp_path / f"{slug}-snap",
+            start_tasks=False,
+        )
+    except BaseException:
+        await drop_surreal_database(database_env)
+        raise
+    close_context = context.aclose
+
+    async def _aclose_and_drop_database() -> None:
+        """Close the context, then drop its database, even if closing raised."""
+        try:
+            await close_context()
+        finally:
+            await drop_surreal_database(database_env)
+
+    # An INSTANCE attribute shadowing the bound method: every caller's existing
+    # ``await context.aclose()`` now also reaps the database, with no call site changed.
+    context.aclose = _aclose_and_drop_database  # type: ignore[method-assign]
+    return context
 
 
 @pytest_asyncio.fixture()

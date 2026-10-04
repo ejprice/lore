@@ -70,13 +70,13 @@ import inspect as _inspect_for_overflow_guard
 import logging
 import os
 import struct as _struct_for_overflow_guard
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from _surreal_fakes import FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.extension import ExtensionContext
 from loremaster.graph_surreal import SurrealCodeGraph
@@ -233,7 +233,7 @@ def _config(
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 _NESTED_INCLUDED_SUBDIRS: tuple[str, ...] = (

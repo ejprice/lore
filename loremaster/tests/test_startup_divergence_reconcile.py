@@ -89,7 +89,6 @@ no Qdrant server is required.
 from __future__ import annotations
 
 import json
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -106,6 +105,7 @@ from _surreal_harness import (
     surreal_password,
     surreal_url,
     surreal_user,
+    unique_database,
     unit_vector,
 )
 from _surreal_harness import (
@@ -293,13 +293,13 @@ def _slug() -> str:
 
     ``config.surreal.database`` is left unset in :func:`_config` below, so
     :attr:`~loremaster.config.LoreConfig.effective_surreal_database` derives it
-    from THIS slug — the project's ``lore_<slug>`` identity. A uuid4-based slug is
-    unique enough that it also serves directly as a
-    collision-free per-test Surreal database name (matching
+    from THIS slug — the project's ``lore_<slug>`` identity. So the slug IS a test
+    database name and is minted by ``unique_database()`` (matching
     ``test_indexer_surreal_integration.py``'s ``_config(slug=surreal_env.database, ...)``
-    convention), so no separate ``unique_database()`` call is needed.
+    convention): the harness records it, so the session-end reap removes it if the test
+    leaks it, and the per-test provenance check accepts it (#486).
     """
-    return f"test_{uuid.getnode() % 100000}_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(

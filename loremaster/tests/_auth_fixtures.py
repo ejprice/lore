@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from _surreal_harness import unique_database
 from asgi_lifespan import LifespanManager
 
 # --------------------------------------------------------------------------- #
@@ -460,7 +461,7 @@ def lan_bearer_auth_block() -> dict[str, Any]:
 
 def slug() -> str:
     """A unique throwaway project slug per test (namespaces the per-test store)."""
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 # --------------------------------------------------------------------------- #

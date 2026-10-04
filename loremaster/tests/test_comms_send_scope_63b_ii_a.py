@@ -36,7 +36,6 @@ pytest runs ``-n auto``.
 from __future__ import annotations
 
 import inspect
-import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -51,7 +50,7 @@ from _governed_contract import (
     register_owned,
 )
 from _surreal_harness import drop_database as drop_surreal_database
-from _surreal_harness import make_env, surreal_password, surreal_user
+from _surreal_harness import make_env, surreal_password, surreal_user, unique_database
 from loremaster.memory import local as local_mod
 from loremaster.server import _COMMS_ACTIONS, AppContext
 
@@ -179,7 +178,7 @@ class TestBothCallersRouteThroughTheLiftedSeam:
 @pytest_asyncio.fixture()
 async def memory_backend() -> AsyncIterator[Any]:
     """A ready ``LocalMemoryBackend`` on a fresh DB (the ``build_memory_backend`` idiom). Reaped."""
-    env = make_env(database=f"test_{uuid.uuid4().hex}", dim=_DIM)
+    env = make_env(database=unique_database(), dim=_DIM)
     backend = await build_memory_backend(env)
     try:
         yield backend

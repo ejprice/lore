@@ -17,11 +17,11 @@ own inspection surface.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from pathlib import Path
 from typing import Any
 
 from _surreal_fakes import FakeSurrealCodeGraph, FakeSurrealTrio, fake_surreal_trio
+from _surreal_harness import unique_database
 from loremaster.config import LoreConfig
 from loremaster.index.indexer import Indexer, graph_roots
 from loremaster.index.reconcile import ReconcileEngine
@@ -67,7 +67,7 @@ _WIDGET_IMPORT_FQN = "src.base.Base"
 
 
 def _slug() -> str:
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(slug: str, live_path: Path) -> LoreConfig:

@@ -43,12 +43,12 @@ How to run:
 from __future__ import annotations
 
 import shutil
-import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 from _surreal_fakes import fake_surreal_trio
+from _surreal_harness import unique_database
 
 # Production symbols — imported freely to ground fixtures in the real config /
 # indexer / snapshot-layout conventions (clause 5). None of these is the
@@ -117,7 +117,7 @@ def _build_static_source(root: Path) -> None:
 
 def _slug() -> str:
     """A per-test slug (namespaces the fake trio's project identity)."""
-    return f"test_{uuid.uuid4().hex}"
+    return unique_database()
 
 
 def _config(*, slug: str, static_source: Path, static_version: str = _STATIC_VERSION) -> LoreConfig:
