@@ -11,14 +11,28 @@ every embedder width.
 
 Every statement is idempotent, so a second application against an already-migrated
 database is a safe no-op — which is exactly what lets :meth:`SurrealStore.ensure_ready`
-run it unconditionally at startup. Tables, indexes, and the analyzer are ``IF NOT
-EXISTS`` (a definition, once created, is never re-applied to an existing one — see
-:func:`_hnsw_index` / :func:`_analyzer_statement` for why re-applying THOSE would be
-unsafe). Fields are ``DEFINE FIELD OVERWRITE`` (finding #107 — ``IF NOT EXISTS`` on a
-field is a no-op against an EXISTING field, so a definition change never migrates a
-live store): applying the *same* field definition twice stays a safe no-op, and
-applying a *changed* one now actually migrates the store instead of silently
-skipping it. See :func:`_define_field`.
+run it unconditionally at startup. Re-applying is NOT migrating, and the clause decides
+which one a changed definition gets (store reference
+``docs/reference/surrealdb-31-capabilities.md`` §1.1 "The decision rule"):
+
+- Fields are ``DEFINE FIELD OVERWRITE`` (finding #107 — ``IF NOT EXISTS`` on a field is
+  a no-op against an EXISTING field, so a definition change never migrates a live
+  store): applying the *same* field definition twice stays a safe no-op, and applying a
+  *changed* one now actually migrates the store instead of silently skipping it. See
+  :func:`_define_field`. It converges the SCHEMA, never the DATA: an existing row that
+  violates a narrowed or retyped field is left intact but write-poisoned (store
+  reference §1.4).
+- ``TYPE RELATION`` tables are ``OVERWRITE`` too (:func:`_define_relation_table`), so a
+  changed ``IN``/``OUT``/``ENFORCED`` clause lands on an existing store.
+- **The ``IF NOT EXISTS`` bound.** Plain tables, indexes, the analyzer and sequences are
+  ``IF NOT EXISTS``. Against a store that already has the object, a CHANGED definition
+  returns OK and keeps the OLD one (store reference §6.1 "The ``IF NOT EXISTS`` lie": the
+  vendor docs say it errors, and it does not). So changing one of THESE needs an
+  explicit migration; no number of ``ensure_ready`` re-runs applies it. They are not
+  ``OVERWRITE`` because re-defining an index REBUILDS it over every row and crashes boot
+  on a dim change, and an analyzer ``OVERWRITE`` leaves built indexes tokenised the old
+  way (store reference §1.5 "Indexes & analyzers — why they must NOT get
+  ``OVERWRITE``"; :func:`_hnsw_index` / :func:`_analyzer_statement`).
 
 Dialect note (verified against the 3.0.5 engine the store targets, and re-verified
 on 3.1.5 with no deltas — 3.1.x is the documented floor going forward): the
@@ -1009,7 +1023,8 @@ _NAME_FIELD_SPECS: tuple[tuple[str, str], ...] = (("value", _CHUNK_STRING_TYPE),
 
 
 def _define_table(name: str) -> str:
-    """A SCHEMAFULL ``DEFINE TABLE`` statement (idempotent)."""
+    """A SCHEMAFULL ``DEFINE TABLE`` statement (idempotent; a CHANGED definition is not applied to a
+    store that already has the table — the module docstring's ``IF NOT EXISTS`` bound)."""
     return f"DEFINE TABLE IF NOT EXISTS {name} SCHEMAFULL"
 
 
@@ -1063,7 +1078,8 @@ def _define_sequence(name: str) -> str:
 
 
 def _define_schemaless_table(name: str) -> str:
-    """A SCHEMALESS ``DEFINE TABLE`` statement (idempotent).
+    """A SCHEMALESS ``DEFINE TABLE`` statement (idempotent; a CHANGED definition is not applied to a
+    store that already has the table — the module docstring's ``IF NOT EXISTS`` bound).
 
     The ``name`` table (its sole SCHEMALESS user) is always constructible from
     the name a referencing file wrote (``name:<dst-string>``), UPSERTed
@@ -1133,7 +1149,8 @@ def _plain_index(table: str, name: str, fields: tuple[str, ...]) -> str:
 
 
 def _unique_index(table: str, name: str, fields: tuple[str, ...]) -> str:
-    """A UNIQUE index over ``fields`` on ``table`` (idempotent).
+    """A UNIQUE index over ``fields`` on ``table`` (idempotent; a CHANGED definition is not applied to
+    a store that already has the index — the module docstring's ``IF NOT EXISTS`` bound).
 
     Backs a key-uniqueness constraint the application layer relies on for an
     upsert-by-key pattern (e.g. ``meta.k``) rather than a composite record id.
@@ -1881,9 +1898,12 @@ def generate_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME) -> str
 
     The DDL threads the configured ``dim`` into every HNSW index (``chunk`` and
     ``memory``) so the schema always matches the embedder width — never a
-    hardcoded default. Every statement is idempotent (``IF NOT EXISTS`` for tables/
-    indexes/the analyzer, ``OVERWRITE`` for fields — see :func:`_define_field`), so
-    applying the result twice is a safe no-op.
+    hardcoded default. Every statement is idempotent (``IF NOT EXISTS`` for plain
+    tables/indexes/the analyzer/sequences, ``OVERWRITE`` for ``TYPE RELATION`` tables and
+    fields — see :func:`_define_field`), so applying the result twice is a safe no-op.
+    That re-run migrates changed FIELD and relation-table definitions only: a changed
+    plain-table, index, analyzer or sequence definition needs an explicit migration (the
+    module docstring's ``IF NOT EXISTS`` bound).
 
     Args:
         dim: The embedding width, wired into every HNSW ``DIMENSION`` clause.
@@ -1938,7 +1958,9 @@ def generate_manifest_ddl() -> str:
     schema slice independently. Every statement is idempotent (``IF NOT EXISTS``
     for the table, ``OVERWRITE`` for its fields — see :func:`_define_field`), so
     applying the result twice (or applying :func:`generate_ddl` first, in
-    either order) is a safe no-op.
+    either order) is a safe no-op. That re-run migrates changed FIELD definitions
+    only: a changed table or index definition needs an explicit migration (the module
+    docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to
@@ -1962,6 +1984,9 @@ def generate_memory_ddl(*, dim: int, analyzer_name: str = DEFAULT_ANALYZER_NAME)
     EXISTS`` for the table, ``OVERWRITE`` for retained/new fields, ``REMOVE FIELD
     IF EXISTS`` for the obsolete ones — see :func:`_define_field`), so applying it
     twice — or alongside :func:`generate_ddl`, in either order — is a safe no-op.
+    That re-run migrates changed FIELD definitions only: a changed table, index or
+    analyzer definition needs an explicit migration (the module docstring's ``IF NOT
+    EXISTS`` bound).
 
     Args:
         dim: The embedding width, wired into the ``memory`` HNSW ``DIMENSION`` clause.
@@ -1987,9 +2012,12 @@ def generate_task_ddl() -> str:
     embedding ``dim`` NOR the analyzer, because the ``task`` table carries no
     HNSW vector or BM25 FULLTEXT index (tasks are coordinated by exact state,
     never retrieved semantically). Every statement is idempotent (``IF NOT
-    EXISTS`` for the table, ``OVERWRITE`` for its fields — see
-    :func:`_define_field`), so applying it twice — or alongside
-    :func:`generate_ddl`, in either order — is a safe no-op.
+    EXISTS`` for the ``task`` table and its indexes, ``OVERWRITE`` for the ``blocks``
+    relation table and for fields — see :func:`_define_field`), so applying it twice —
+    or alongside :func:`generate_ddl`, in either order — is a safe no-op. That re-run
+    migrates changed FIELD and relation-table definitions only: a changed ``task``
+    table or index definition needs an explicit migration (the module docstring's
+    ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2012,7 +2040,9 @@ def generate_finding_ddl() -> str:
     Includes the ``finding_counter`` sibling table that backs the race-safe number
     mint. Every statement is idempotent (``IF NOT EXISTS`` for the tables,
     ``OVERWRITE`` for fields — see :func:`_define_field`), so applying it twice —
-    or alongside :func:`generate_ddl`, in either order — is a safe no-op.
+    or alongside :func:`generate_ddl`, in either order — is a safe no-op. That re-run
+    migrates changed FIELD definitions only: a changed table or index definition needs
+    an explicit migration (the module docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2035,7 +2065,9 @@ def generate_principal_ddl() -> str:
     and ``subject``, never retrieved semantically. Every statement is idempotent
     (``IF NOT EXISTS`` for the table/indexes, ``OVERWRITE`` for its fields — see
     :func:`_define_field`), so applying it twice — or alongside :func:`generate_ddl`,
-    in either order — is a safe no-op.
+    in either order — is a safe no-op. That re-run migrates changed FIELD definitions
+    only: a changed table or index definition needs an explicit migration (the module
+    docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2103,7 +2135,12 @@ def _principal_key_statements() -> list[str]:
     (the ``briefed`` → ``agent`` precedent — the link's target table defined first).
     Every statement is idempotent (``IF NOT EXISTS`` for the table/indexes,
     ``OVERWRITE`` for its fields — see :func:`_define_field`), so applying it twice —
-    on the boot re-run :meth:`ensure_ready` performs — is a safe no-op.
+    on the boot re-run :meth:`ensure_ready` performs — is a safe no-op. That re-run
+    converges the FIELD definitions only. A CHANGED table or index definition here (a
+    third column in either UNIQUE index, a dropped ``UNIQUE``) is NOT applied to a store
+    that already has it: ``IF NOT EXISTS`` returns OK and keeps the old definition (store
+    reference §1.1 "The decision rule"; §6.1 "The ``IF NOT EXISTS`` lie"). Changing one
+    needs an explicit migration (the module docstring's ``IF NOT EXISTS`` bound).
     """
     statements: list[str] = [_define_table(PRINCIPAL_KEY_TABLE)]
     statements += [
@@ -2133,7 +2170,9 @@ def generate_principal_key_ddl() -> str:
     key is addressed by its ``hash``, never retrieved semantically. Every statement
     is idempotent (``IF NOT EXISTS`` for the table/indexes, ``OVERWRITE`` for its
     fields — see :func:`_define_field`), so applying it twice — or alongside
-    :func:`generate_ddl`, in either order — is a safe no-op.
+    :func:`generate_ddl`, in either order — is a safe no-op. That re-run migrates
+    changed FIELD definitions only: a changed table or index definition needs an
+    explicit migration (the module docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2431,7 +2470,9 @@ def generate_agent_ddl() -> str:
     exact identity, never retrieved semantically. Every statement is idempotent
     (``IF NOT EXISTS`` for the table, ``OVERWRITE`` for its fields — see
     :func:`_define_field`), so applying it twice — or alongside
-    :func:`generate_ddl`, in either order — is a safe no-op.
+    :func:`generate_ddl`, in either order — is a safe no-op. That re-run migrates
+    changed FIELD definitions only: a changed table or index definition needs an
+    explicit migration (the module docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2453,10 +2494,13 @@ def generate_brief_ddl() -> str:
     combined slice on its OWN connection at :meth:`ensure_ready`, independent
     of the full :func:`generate_ddl`. Needs NEITHER the embedding ``dim`` NOR
     the analyzer — a brief is addressed by (name, version), never retrieved
-    semantically. Every statement is idempotent (``IF NOT EXISTS`` for the
-    tables, ``OVERWRITE`` for fields — see :func:`_define_field`), so applying
-    it twice — or alongside :func:`generate_ddl`, in either order — is a safe
-    no-op.
+    semantically. Every statement is idempotent (``IF NOT EXISTS`` for the plain
+    tables and indexes, ``OVERWRITE`` for the ``briefed`` relation table and for fields
+    — see :func:`_define_field`), so applying it twice — or alongside
+    :func:`generate_ddl`, in either order — is a safe no-op. That re-run migrates
+    changed FIELD and relation-table definitions only: a changed plain-table or index
+    definition needs an explicit migration (the module docstring's ``IF NOT EXISTS``
+    bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2484,7 +2528,10 @@ def generate_message_ddl() -> str:
     same definition on every :meth:`ensure_ready`, which is exactly what makes a
     changed IN/OUT/ENFORCED clause converge on an existing store rather than
     silently no-op (store reference §1.1). Re-applying the UNCHANGED slice is still
-    a safe no-op that neither raises nor resets the sequence (verified 3.2.1).
+    a safe no-op that neither raises nor resets the sequence (verified 3.2.1). The
+    other direction holds too: a changed ``message`` table, index or sequence
+    definition is NOT applied by that re-run and needs an explicit migration (the
+    module docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
@@ -2505,9 +2552,12 @@ def generate_graph_ddl() -> str:
     are native ``TYPE RELATION`` edge tables (so reverse traversal walks them
     directly); ``name`` is SCHEMALESS but carries a queryable ``value`` column
     (plus a prefix-capable index) backing the module-prefix reach. Every
-    statement is idempotent (``IF NOT EXISTS`` for the tables/indexes,
-    ``OVERWRITE`` for fields — see :func:`_define_field`), so applying it twice
-    (or alongside :func:`generate_ddl`) is a safe no-op.
+    statement is idempotent (``IF NOT EXISTS`` for the plain tables/indexes,
+    ``OVERWRITE`` for the two ``TYPE RELATION`` tables and for fields — see
+    :func:`_define_field`), so applying it twice (or alongside :func:`generate_ddl`) is
+    a safe no-op. That re-run migrates changed FIELD and relation-table definitions
+    only: a changed plain-table or index definition needs an explicit migration (the
+    module docstring's ``IF NOT EXISTS`` bound).
 
     Returns:
         A newline-separated, semicolon-terminated DDL string ready to hand to a
