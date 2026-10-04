@@ -2183,3 +2183,9 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - fix531c §5.1 found MORE siblings: `_row_to_key` missing fields (incl. a bare `KeyError`), and a transport fault after commit. This is the receding-reach pattern (fixing the PATH, not the STATE), so the lead escalated.
   - **OPERATOR RULED: "one handler, then stop"** — one handler around mint's post-write window. Boundaries (UNIQUE = no remedy; transport = unknown; F-7 tension; the fates-registry catch site) were sent to sidecar-63c-2 as am-37 §13.5 (15 min). Then one TDD agent (`fix531d`). After that: STOP, any remainder is a residual.
   - fix531c stopped.
+- **am-37 §13.5 RULED (`8a96582`):** ONE class-preserving `add_note` passthrough handler over mint's window, which opens at the CREATE CALL.
+  - Pre-commit: only `SurrealConnectionError` gets the CONDITIONAL note. UNIQUE/domain rejection, exhaustion and param errors get none.
+  - After return: CERTAIN note for everything, incl. programming defects (they still traceback, with the note printed).
+  - No fates row (a passthrough); `_fault_line` renders `__notes__`.
+  - The per-error remedies fold into the note. The lead's reading: the `28395e0` `remedy=` machinery is deleted end to end, and the template text stays byte-identical.
+- **fix531d spawned at 2026-10-04T16:24Z** (60 min): the §13.5 TDD build + a mutation. After its lead verification: STOP (operator). Any remainder → residual.
