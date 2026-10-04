@@ -2260,3 +2260,8 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **Lead brief defect (recorded):** I called "LoopbackPort held, not listening" the SILENT state; that is REFUSED. The agent added the true hang state (listening, never accepting).
   - Agent slip: one run started without the lore-pytest gate confirmed (memory was fine at 24 GiB; capped).
 - implement-486-r3 next (2026-10-04T18:38Z).
+- **implement-486-r3 DONE** (`d094012`): #534 fixed. The reap dials the store only if a minted DB was opened; a bounded budget; ONE loud could-not-verify line + a non-zero rc + the summary intact; xdist worker failures propagate (the false clear closed); non-transport failures named too. Reuses `_txn._SDK_AWAIT_BOUNDARY_ERRORS`/`is_connection_error`. 12/12 cells GREEN; 9F/870P → 1F/878P.
+  - The remaining F1 (`test_no_raw_listener_in_test_trees` plugin-fixture leg) is claimed runner-caused (`uv run --with pytest-timeout`) and was red before r3. NOT yet proven pre-existing on plain HEAD → the re-audit checks.
+  - **D-r3-1:** reading (A) taken. Residual: a DB opened by a session/module-scoped fixture is not observed (pre-existing bound; none mint today); trigger: the first higher-scoped fixture that mints.
+- **FINAL2 patch** `486-FINAL2.patch` md5 `eb6a5dd81df0b4b9d0518cc96639f653` (28 files, the same set as FINAL; all test-side).
+- **coldaudit-486-2** spawned at 2026-10-04T19:13Z: construction; mutations a–d; the F1 attribution on plain HEAD with/without `--with`; hand-roll vs package judgement (the TCP forwarder; the bounded reap); targeted + census; gates. NO second full suite. implement-486-r3 stopped.
