@@ -314,3 +314,69 @@ The drift claim matches what the lint does: `_naming_recipe_sites` keeps only si
   - `ruff GREEN`;
   - `scripts/typecheck.sh` printed 0 lines naming either edited file;
   - **RED_ORPHANED 0** for typecheck and ruff.
+
+## ROUND 2c (lead brief: harden the census oracle so it fails closed). Measured 2026-10-04 on the #486 working tree over HEAD `bf33631`.
+
+### Round 2c summary
+- **State:** done.
+  - The census oracle `_databases_in_the_test_namespace` now reads `INFO FOR NS` through production's `loremaster.governed.map_of(info, noun=_CENSUS_NOUN, required=("databases",))` (ONE IMPLEMENTATION).
+  - A wrong-shaped answer raises `SurrealStoreError`. It no longer reads as an empty namespace.
+- **No deviations.** I edited only `test_harness_database_lifecycle_486.py`, and did not touch `_surreal_harness.py` or `conftest.py`.
+- **Packages considered:** none — no mechanism specified. The mechanism is an existing in-repo reader, REUSED.
+- **Odoo-20 portability:** n/a — no Odoo seam touched.
+- **Reuse ledger:** `map_of` is **REUSED** (`loremaster/governed.py::map_of`, "THE one reader of an `INFO FOR …` answer, with the ONE fail-closed shape policy"). It was found by the lead's brief and read in full before use.
+  - Its `required` parameter covers the missing-key case, and its sub-map check covers `databases` being a non-map.
+  - New test-local names: `_CENSUS_NOUN`, plus `_UNREADABLE_NAMESPACE_ANSWERS` (the round-2b F3 shape list, hoisted so the reaper leg and the census leg share ONE domain).
+- **Decisions needed:** none.
+- **Post-round sha256 of the lifecycle file:** `b1a6b92b982fd99b…`. The pre-round copy is kept as `…r2b` in the session scratchpad.
+
+### What changed
+- `_databases_in_the_test_namespace`: `info.get("databases", {}) if isinstance(info, dict) else {}` → `map_of(info, noun=_CENSUS_NOUN, required=("databases",))["databases"]`. The docstring states the fail-closed reason.
+- `TestTheReaperFailsLoudOnANamespaceAnswerItCannotRead`: its inline `parametrize` list is now `_UNREADABLE_NAMESPACE_ANSWERS`. The values and ids are identical, so the test ids are unchanged.
+- **New class `TestTheCensusOracleFailsClosed`:**
+  - `test_the_census_raises_on_an_unreadable_answer[<7 shapes>]` replaces this module's `run`, the one the census calls, for `INFO FOR NS` only. Each shape must give `pytest.raises(SurrealStoreError, match=_CENSUS_NOUN)`.
+  - `test_CONTROL_the_census_returns_the_real_set_on_a_well_formed_answer` is unpatched and live. A database the test mints and dials is IN the returned set, and it is dropped in `finally`.
+- **Dropped while writing:** a second control assertion that every census name starts with `test_`. It asserted store content I had not verified (the namespace may hold other names) and that the brief did not ask for.
+
+### Targeted run (same set and command as rounds 2/2b)
+- MemAvailable was 21.8 GiB.
+- The `pgrep -f '[p]ytest'` count of 1 was my own shell: the wrapper command line contains the word, which is the self-match bound brief-base §5 item 5 warns about. No other pytest was alive.
+- **Tree under test, hashed before and after the run** (the implementer was building concurrently): `_surreal_harness.py` `e3561445ab11f52f` and `conftest.py` `e9941c5eafc65157`, unchanged during the run. These are the same files as round 2b.
+
+| run | result | red set |
+|---|---|---|
+| BEFORE (round-2b AFTER) | `8 failed, 776 passed` | — |
+| AFTER | `8 failed, 784 passed, 1 warning in 32.60s`, rc=1 | **identical** to round 2b (`diff after2b.red after2c.red` → empty): the 2 F2 pins and the 6 F3 shapes |
+
+- **Arithmetic:** +8 passes, which are the 7 census shapes and the census control. No other node moved.
+
+### Mutation proof of sharing (in-process; no file mutated)
+- **Method:** a `-p` plugin replaced the shared function's BODY (`loremaster.governed.map_of.__code__`) with a fail-OPEN reader.
+- **Result:** `TestTheCensusOracleFailsClosed` gave `7 failed, 1 passed in 0.84s`. Every shape went RED and the control stayed GREEN.
+- **What it shows:** the census routes through the shared reader and keeps no private copy. The unmutated baseline is the AFTER run above, where all 8 pass.
+- **Instrument** (pasted verbatim):
+```python
+"""Mutation plugin (contract-486-r2 round 2c): replace the BODY of the shared
+loremaster.governed.map_of with a fail-OPEN reader. If the census routes through the shared
+function, its fail-closed cells must go RED; a private copy would stay GREEN."""
+import loremaster.governed
+
+
+def _fail_open(result, *, noun, required=()):
+    if isinstance(result, dict) and isinstance(result.get("databases"), dict):
+        return result
+    return {"databases": {}}
+
+
+def pytest_configure(config):
+    loremaster.governed.map_of.__code__ = _fail_open.__code__
+```
+- **Command:**
+  - with `PYTHONPATH=<dir holding the plugin>`, run `uv run --with pytest-timeout pytest --timeout=300 -q -p no:cacheprovider -p mutate_map_of_486r2 "loremaster/tests/test_harness_database_lifecycle_486.py::TestTheCensusOracleFailsClosed"`;
+  - run it under the same `systemd-run` cap.
+
+### Gates
+- `uv run ruff check .` → `All checks passed!`.
+  - One I001 (import order, from the two new imports) was fixed with `ruff check --fix` on this file only.
+  - `ruff format` was applied to this file only.
+- **Noticed for the implementer:** the reaper should reuse the same `map_of` call for its own F3 fail-loud read. That would make the reaper and the census one implementation. The contract does not prescribe it; F3 accepts any raise.
