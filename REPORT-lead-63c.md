@@ -2237,3 +2237,14 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - **prose-486 DONE** (`6e8ffb4`): 2 stale prose sites fixed (AST-equal modulo prose, with a control). prose-486 and implement-486-r2 stopped.
 - **#486 FINAL patch** `scratchpad/486-backup/486-FINAL.patch` md5 `50cf81ba5a1df975bdf0264f06be068d` (28 files, all `loremaster/tests/`, built via a temp index), on HEAD 6e8ffb4.
 - **coldaudit-486 spawned at 2026-10-04T17:38Z:** construction checks; mutations a–d; THE ONE FULL SUITE via `pending_contract_gate.py --currency -- --maxprocesses=12` (cgroup-capped; it also discharges the owed 9c88779 re-run); a lore_test DB census before/after; NL sweep. On GO: the lead commits the 28 files, resolves #486, archives the 486 reports.
+- **coldaudit-486: NO-GO** (`REPORT-coldaudit-486.md`, `beecc68`).
+  - The fix is sound: construction 9/9, mutations 5/5, census 75→75, 0 new reds vs HEAD; the replay test PASSED.
+  - **The owed 9c88779 verification is DISCHARGED:** test_am37_13_3 139/0, principal_keys_store 30/0, principals_cli 216/0.
+  - Blockers:
+    - **#534** (patch-caused, MEDIUM): a name-only session crashes at session end when the TEST store is unreachable (raw traceback, no summary).
+    - **#536**: the clone-pin `RED_ORPHANED`, red on pristine HEAD since **MY 63c-i-a commit 34d0b6b** (`test_am37_13_3_63c_i_a.py` hand-rolls 3 whole-tree parsers). The 63c-i-a audits' targeted runs missed this tree-wide pin. A lead-owned regression.
+  - Residuals: #535 (the gate discards the full-suite tail); R4 prose; R5 strays (accepted bound D2); R6; R7 (= F5); R8.
+- At 2026-10-04T18:16Z, in parallel:
+  - `fix536`: migrate to the shared reach helpers, NOT an allowlist; its own commit.
+  - `contract-486-r3`: the #534 outcome pin + R4 prose in its file.
+  - Then implement-486-r3 → a short re-audit (the reap path + the store-down construction; NO second full suite, per TEST SCOPE) → commit.
