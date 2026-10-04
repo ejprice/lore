@@ -2176,3 +2176,5 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - #533 filed by fix531b (currency `--legs` renders the excluded pytest as ORPHAN/FAIL = residual FLAG-2, now numbered).
   - Disclosed slip: one of its runs started at 18.7 GiB (<20), cgroup-capped, no kill.
   - fix531b stopped.
+- Lead re-run on clean HEAD 08cb222 (`test_am37_13_3` + `fail_closed_shapes` + `principal_keys_store`): **220 passed, 0 failed** (admitted at 24.5 GiB). 28395e0 + 0f81bd7 are fully verified.
+- fix531b §5.2 (mint's `if not rows:` branch, "vanished immediately after it was created", gives no revoke repair although the key may have landed) is a sibling in the operator's "fix the mint guidance" scope. Delegated to **fix531c** (ONE shared revoke-argv helper; TDD). Other fix531b residuals are recorded only: §5.1 (`remedy` threaded only where used), §5.3 (a pre-existing stale line citation in `test_comms_schema.py`).
