@@ -2249,3 +2249,10 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - `contract-486-r3`: the #534 outcome pin + R4 prose in its file.
   - Then implement-486-r3 → a short re-audit (the reap path + the store-down construction; NO second full suite, per TEST SCOPE) → commit.
 - **#536 FIXED** by fix536: `6e37dd5` (only `test_am37_13_3_63c_i_a.py`; its 3 scans moved onto the shared `parse_production_trees` via a cached `_package_trees()`; no allowlist entry); report `2117fd3`; #536 resolved. **Lead-verified:** 1 file, no trailers, the 4 skips pre-existing (not new), and the clean-HEAD re-run below. fix536 stopped.
+- **contract-486-r3 DONE** (report committed above): the #534 pin, 8 cells, 4 RED for the right reason.
+  - NEW: under `-n 2`, an OPENED db + a lost store → rc 0, unreaped, SILENT (a false clear).
+  - Lead rulings at 2026-10-04T18:27Z:
+    - D1 (opened-and-dropped + store lost) → RESIDUAL; trigger: a leak traced to that path.
+    - D2 (the store hangs at session end) → PIN NOW: a bounded reap + a loud line, never a hang.
+  - Items 4/5 (`test_surreal_harness.py` prose) → contract round 3b.
+  - Items 1–3 (`_surreal_harness`/`conftest` prose) → implement-486-r3.
