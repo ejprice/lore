@@ -2256,3 +2256,7 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
     - D2 (the store hangs at session end) → PIN NOW: a bounded reap + a loud line, never a hang.
   - Items 4/5 (`test_surreal_harness.py` prose) → contract round 3b.
   - Items 1–3 (`_surreal_harness`/`conftest` prose) → implement-486-r3.
+- **contract-486-r3 ROUND 3b DONE** (report committed above): D2 pinned ∀ {refused, silent, muted} × {n0, xdist}, 6/6 RED (n0: traceback; xdist: rc 0 false clear; no true hang today, bounded only by accident by SDK/websockets defaults); 8F/118P, 114 pre-existing unmoved; items 4/5 prose (AST-equal).
+  - **Lead brief defect (recorded):** I called "LoopbackPort held, not listening" the SILENT state; that is REFUSED. The agent added the true hang state (listening, never accepting).
+  - Agent slip: one run started without the lore-pytest gate confirmed (memory was fine at 24 GiB; capped).
+- implement-486-r3 next (2026-10-04T18:38Z).
