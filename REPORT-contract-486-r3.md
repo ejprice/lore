@@ -151,3 +151,137 @@ Realism / independence:
 - **The xdist false clear (§3, c-xdist)** is the most important thing in this report. The current `conftest.pytest_sessionfinish` worker path cannot report a reap failure at all: the exception dies in the worker. Any fix must prove the worker→controller crossing for the *failure* report, not just the leak report. Cell (c)[xdist-n2] pins exactly that.
 - Name-only sessions under xdist are GREEN today only because the worker's crash is swallowed. That passes for the wrong reason. A fix that makes worker crashes propagate without fixing the name-only reap would turn (a)-xdist RED, so the pin catches that too.
 - `test_surreal_store._DEAD_URL` uses a fixed port (19555). That is the #466 "a specific port number" shape for a dead URL: benign while nothing listens there, but it is not the race-free form. LOW. For the lead to triage.
+
+## ROUND 3b (lead rulings 2026-10-04; tests only; measured 18:35–18:37Z at HEAD `b8c3f7b` + the uncommitted #486 patch)
+
+### Summary
+- **State:** done-with-deviations.
+- **D2 is pinned.** Cell (c) is now ∀ lost-store state ∈ {`refused`, `silent`, `muted`} × {`-n 0`, xdist `-n 2`}: 6 cells, **all 6 RED**.
+- **D1 is a RESIDUAL, as ruled.** Not pinned: an opened-AND-dropped database with the store lost at session end. No leak exists on that path, and a pin would demand drop-tracking machinery. **Re-open trigger:** a leaked database is ever traced to this path.
+- **Items 4 and 5 are done.** Prose only in `test_surreal_harness.py`, proved AST-equal modulo docstrings and string constants, with a positive control.
+- **Deviations:**
+  1. **The lead's brief contradicts itself on "silent":** it says *"silent store state (`LoopbackPort` held, not listening)"*. Held-but-not-listening is my **refused** state: a connect is refused instantly, so nothing can hang. The state that hangs is held **and listening**, with nobody accepting; that is the one I already called `silent`, and I used it. I also added a third state, **`muted`**: the websocket handshake completes, then every byte is swallowed. That is the hang past any connect-time timeout.
+  2. **`_run_inner_session` now runs the inner pytest in its own process group** (`Popen(start_new_session=True)`). On timeout it kills the WHOLE group (`os.killpg`) and raises `_InnerSessionHung`, which carries what the session recorded. Why: `subprocess.run`'s timeout kills only the direct child. A hung xdist worker would outlive the outer test holding a TEST-store connection, and its databases would never be removed. Default behaviour is otherwise unchanged; the 114 pre-existing tests are green.
+  3. **⚠ The run was started without the gate confirmed.** My wait loop (150 × 2 s) ran out without printing `clear`, and the command went on to run the capped pytest anyway. MemAvailable read 24 GiB right after. I did not capture which lore pytest process held the gate. The run stayed inside its own `MemoryMax=16G` scope. Flagged because the brief's gate is "wait until", and I did not.
+
+### D2 — what the pin demands
+- **Test:** `TestTheSessionEndReapNeverCostsPytestItsVerdict::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[{refused,silent,muted}-{n0,xdist-n2}]`.
+- **Required outcome, for every state:**
+  - the session ENDS within `_LOST_STORE_SESSION_TIMEOUT_SECONDS = 180` (the outer bound — a hang is RED, via `_InnerSessionHung` → a named `pytest.fail`);
+  - no raw traceback;
+  - rc ≠ 0;
+  - a line naming the database AND `unreachable`;
+  - `1 passed` intact.
+- **Not prescribed:** the bound's value and its mechanism. The 180 s is set far above plausible bounds; the SDK's websocket open timeout alone is 10 s.
+- **Cleanup:** whatever the session recorded is removed via `created_sink` on both the normal path and the hung path.
+- **The forwarder's `lost_state`:**
+  - **`refused`:** the listener is closed.
+  - **`silent`:** the listener is kept but nothing accepts.
+  - **`muted`:** connections are accepted and forwarded until the upstream's `\r\n\r\n` upgrade-response end, then every upstream byte is swallowed.
+
+### RED receipts (targeted, capped)
+Command:
+`systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 uv run --with pytest-timeout pytest -n 8 --timeout=300 -q -p no:cacheprovider -rfE loremaster/tests/test_harness_database_lifecycle_486.py loremaster/tests/test_surreal_harness.py`
+
+Tail:
+```
+FAILED …::test_a_name_only_session_keeps_pytests_verdict_with_the_store_unreachable[refused-n0]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[refused-n0]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[refused-xdist-n2]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[silent-n0]
+FAILED …::test_a_name_only_session_keeps_pytests_verdict_with_the_store_unreachable[silent-n0]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[silent-xdist-n2]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[muted-xdist-n2]
+FAILED …::test_an_opened_database_with_the_store_lost_at_session_end_is_reported_loudly[muted-n0]
+8 failed, 118 passed in 68.18s (0:01:08)
+```
+(Prefix `loremaster/tests/test_harness_database_lifecycle_486.py::TestTheSessionEndReapNeverCostsPytestItsVerdict` elided.)
+
+**Counts:** 126 = 114 pre-existing + 12 new.
+- The new cells are (a) 4, (b) 2, (c) 6.
+- Passed = 114 pre-existing + (b) ×2 + (a)-xdist ×2.
+- **Nothing pre-existing moved.**
+
+**Per-cell reason** (each verified from the log):
+
+| (c) cell | rc | RED because | right reason per the ruling? |
+|---|---|---|---|
+| refused-n0 | 1 | raw `ConnectionRefusedError` traceback | ✔ (#534) |
+| silent-n0 | 1 | raw `TimeoutError: timed out during opening handshake` | ✔ traceback. It does NOT hang: websockets' 10 s open timeout bounds it, incidentally. |
+| muted-n0 | 1 | raw `KeyError: '<query uuid>'` from `surrealdb/connections/async_ws.py::_send` (`del self.qry[query_id]`) under `connect_admin` → `signin` | ✔ traceback. Not a hang either; see the note below. |
+| refused/silent/muted-xdist-n2 | **0** | `the session PASSED although <db> … could not be reaped` | ✔ **rc 0, as the ruling names**: the xdist false clear, in all three states |
+
+**Honest note on "a hang hitting the outer timeout":** the current tree does **not** hang in any state.
+- **What I read:** the SDK's `_send` has no per-request timeout; it is a bare `await fut`.
+- **What I infer:** the muted session ended at ~41.5 s (`1 passed in 41.55s` in that session's tail). That fits websockets' keepalive (ping_interval + ping_timeout, 20 s + 20 s by default) closing the socket, after which the receive loop's `self.qry.clear()` makes the `del` in `_send`'s `finally` raise `KeyError`. **MEDIUM** confidence: the mechanism is inferred from the timing and the source lines, not instrumented.
+- **The consequence:** today's "bound" is an accident of dependency defaults, ~10 s for silent and ~40 s for muted. The pin turns it into a guarantee: any build, or any SDK or websockets upgrade, that removes those defaults and lets the reap wait forever goes RED at 180 s instead of hanging the outer suite.
+
+### Items 4 and 5 — `loremaster/tests/test_surreal_harness.py` (prose only)
+- **Item 4**, in `TestRunRidesTheStoreRetrySeam`'s docstring and the module docstring:
+  - "812 call sites" → "every call site — 812 at `e039c64` on 2026-09-26, 873 re-derived 2026-10-04";
+  - "38 call sites … `pytest.raises`" → dated, with "42 re-derived 2026-10-04" added;
+  - the three repeat mentions (two docstrings and a comment) now read "the `pytest.raises` call sites" / "every call site", with the number dropped.
+- **Item 5:** `REPORT-investigate-486.md` at `081782e` → "finding #486 (investigate-486's report, archived with the #486 close-out)".
+- **Proof:** an instrument run against the pre-edit backup. Each part:
+  - **Result:** `AST-EQUAL modulo docstrings/str constants`, rc 0.
+  - **Positive control:** flipping `assert exc_info.value is rejection` → `is not rejection` gives rc 1, so the probe does see code changes.
+  - **What it cannot see:** comments are not in the AST. The one comment edit (`# the type the pytest.raises call sites assert…`) is covered only by its being a comment.
+  - **The instrument**, pasted verbatim per brief-base §1 (not committed):
+```python
+"""AST-equal modulo docstrings and string-literal messages (contract-486-r3 round 3b).
+
+Usage: python ast_equal_modulo_prose.py BEFORE.py AFTER.py — exit 0 iff the two modules' ASTs
+are identical once every docstring is removed and every str constant is blanked (comments are
+not in the AST). Prints the first differing node dump otherwise."""
+import ast
+import sys
+
+
+class _StripProse(ast.NodeTransformer):
+    def _strip_docstring(self, node):
+        body = getattr(node, "body", None)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            node.body = body[1:] or [ast.Pass()]
+        return node
+
+    def visit_Module(self, node):
+        return self.generic_visit(self._strip_docstring(node))
+
+    visit_ClassDef = visit_FunctionDef = visit_AsyncFunctionDef = visit_Module
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, str):
+            return ast.copy_location(ast.Constant(value="<str>"), node)
+        return node
+
+    def visit_JoinedStr(self, node):
+        node = self.generic_visit(node)
+        return node
+
+
+def _canon(path):
+    tree = _StripProse().visit(ast.parse(open(path, encoding="utf-8").read()))
+    return ast.dump(tree, include_attributes=False)
+
+
+before, after = (_canon(path) for path in sys.argv[1:3])
+if before != after:
+    index = next(i for i, (x, y) in enumerate(zip(before, after)) if x != y)
+    print(f"DIFFER at char {index}:\n  before: {before[index-200:index+200]}\n  after:  {after[index-200:index+200]}")
+    sys.exit(1)
+print("AST-EQUAL modulo docstrings/str constants")
+```
+- **Formatting:** `test_surreal_harness.py` was NOT ruff-format-clean before my edits (the backup fails `ruff format --check` too). I did not reformat it, because that would be an unrelated diff; I only rewrapped my own lines to ≤110 columns. This is a pre-existing format drift, for the lead to triage.
+
+### Gates
+- `uv run ruff check .` → `All checks passed!`.
+- `pending_contract_gate.py --currency --legs typecheck,ruff`:
+  - typecheck `RED_ADJUDICATED — 83` (unchanged; no line names either file);
+  - ruff `GREEN`;
+  - `pytest NOT_RUN`, which is what `--legs` does by design.
+
+### DRY ledger delta
+- **`_InnerSessionHung`:** HAND-ROLLED. The test-local exception carries what a killed session recorded; nothing like it exists in the tests per my earlier queries.
+- **`_KillableStoreForwarder`:** EXTENDED in place (`lost_state`).
+- **`_run_bounded`:** EXTENDED (`timeout_seconds`, `created_sink`).
+- **`_run_inner_session`:** EXTENDED (process group + `_InnerSessionHung`).
