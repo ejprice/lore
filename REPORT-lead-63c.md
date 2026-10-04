@@ -2159,3 +2159,13 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
 - **Live agents:** sidecar-63c-2 (idle), sidecar-64 (idle; the 58/64 design context). All others are stopped.
 - **Used names (never reuse):** every 63c-i-a agent name above incl. builder-63c-i-a-fix6, fixup-tests-63c-i-a-2, coldaudit-63c-i-a-{3,4,5,6}, blindreader-63c-i-a-{3,4,5,6}; contract-58-r4; adversary-64b-r2.
 - **Memory:** host MemAvailable swings 12–47 GiB from other sessions; the ≥20 GiB gate is a wait-loop, never a bypass; gate on LORE pytest only.
+
+## POST-CLOSE (2026-10-04T15:51Z)
+- **#531 FIXED (operator: "if it is a simple wording fix, do it")**: `f47724a` by fix531 (TDD: pin RED 3 → GREEN 3). Receipts in `REPORT-fix531.md` (`dab8f20`).
+  - `_LANDED_SHAPE_FAULT` now ends "verify the stored state before re-running", which is true for every landed sink.
+  - **Lead full verification** (an un-audited commit): the diff is exactly 2 lines in 2 files; no attribution trailer; a clean-HEAD scratch_copy re-run of `test_am37_13_3_63c_i_a.py` + `test_fail_closed_shapes_63c_13b.py` → **176 passed, 0 failed**; #531 resolved. Sweep: 346 hits, each with a verdict; no other served false claim (classifier bound stated).
+  - Residuals from fix531 for the operator:
+    - (1) a landed-then-faulted `mint` leaves a key whose secret was never printed; the text says "verify", not "revoke". Near-unreachable; a follow-up only if wanted.
+    - (2) `store/surreal_schema.py` "every statement is idempotent" docstring: true, but in the #107 neighbourhood (an idempotent no-op never migrates). Observation.
+- **OPERATOR: 58 is NOT started this session; it is for the NEXT agent.** RESUME ANCHOR v10 stands, with #531 removed from its residual list. `REPORT-fix531.md` is at the root (archive it with the next close-out or now; it is tracked).
+- fix531 stopped. Live: sidecar-63c-2 and sidecar-64 (idle; they end with the session; nothing uncommitted depends on them).
