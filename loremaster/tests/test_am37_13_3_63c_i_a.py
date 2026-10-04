@@ -25,6 +25,7 @@ AST helpers read nodes, never ``eval``.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import logging
 import re
@@ -33,6 +34,8 @@ import string
 import subprocess
 import sys
 import textwrap
+import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +45,16 @@ import test_engine_rejection_seam as seam  # module-qualified: its Test* classes
 import test_preboot_schema_precondition_63c_13d as preboot
 import test_principals_cli as cli
 import yaml
+from _surreal_harness import PRODUCTION_DIM, connect_admin, drop_database, make_env, unique_database
 from loremaster.principal_keys import PrincipalKeyStore, PrincipalKeyStoreError
-from loremaster.store._txn import SurrealStoreError
+from loremaster.store import _txn as _txn_module
+from loremaster.store._txn import (
+    SurrealConnectionError,
+    SurrealStoreError,
+    TxnContentionExhaustedError,
+    TxnDomainRejectionError,
+    wrap_store_rejection,
+)
 from loremaster.store.surreal_schema import BRIEF_TABLE
 from pydantic import SecretStr
 
@@ -292,6 +303,33 @@ class TestTheCauseWalkTerminates:
         assert "implicit-context-link" not in p_module._fault_line(error)  # noqa: SLF001
 
 
+class TestTheFaultLineRendersNotes:
+    """am-37 §13.5 item 1 / item 6 (d): after the error's message and BEFORE the cause lines, one `` ↳ `` line
+    per ``__notes__`` entry, through the same ``scrub_text`` as every message."""
+
+    def test_each_note_renders_between_the_message_and_the_causes(self) -> None:
+        error = p_module.PrincipalStoreError("top")
+        error.__cause__ = RuntimeError("bottom")
+        error.add_note("first note")
+        error.add_note(f"second note {_A_HASH}")
+        lines = p_module._fault_line(error).splitlines()  # noqa: SLF001
+        assert lines[:3] == [
+            f"{p_module._CLI_PROG}: top",  # noqa: SLF001
+            " ↳ first note",
+            f" ↳ {_public_scrub_text()(f'second note {_A_HASH}')}",
+        ], lines
+        assert lines[3:] == [f"{p_module._CAUSE_LINE_PREFIX}bottom"], lines  # noqa: SLF001
+        assert not _HEX128.search("\n".join(lines)), "a note bypassed the shared scrub"
+
+    def test_CONTROL_an_error_without_notes_renders_no_note_line(self) -> None:
+        error = p_module.PrincipalStoreError("top")
+        error.__cause__ = RuntimeError("bottom")
+        assert p_module._fault_line(error).splitlines() == [  # noqa: SLF001
+            f"{p_module._CLI_PROG}: top",  # noqa: SLF001
+            f"{p_module._CAUSE_LINE_PREFIX}bottom",  # noqa: SLF001
+        ]
+
+
 # =========================================================================== #
 # #528 — the report count validates its own table (§13.3 item 4)
 # =========================================================================== #
@@ -329,18 +367,13 @@ class TestTheReportCountValidatesItsOwnTable:
 # F-3 — every post-write shape read passes landed=True; the ONE template (§13.3 item 5)
 # =========================================================================== #
 
+#: THE landed text, written OUT (not derived from the template): am-37 §13.5 item 5 deleted the ``{remedy}``
+#: slot (fix531d), so the served text must be byte-identical to the pre-#531 default — the remedy moved to
+#: ``mint``'s ONE ``add_note`` handler.
 _LANDED_TEMPLATE = (
-    "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
-    "answer; {remedy}"
-)
-
-#: The rendered default for a site that passes no remedy — written OUT, not derived from the template, so a
-#: changed template or default remedy that alters the served text goes RED here (#531 follow-up, fix531b).
-_LANDED_DEFAULT_TEXT = (
     "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
     "answer; verify the stored state before re-running"
 )
-
 
 def _post_write_reads(case: Any, method_name: str) -> list[tuple[int, bool]]:
     """``(lineno, passes_landed_True)`` for every shape-reader call in the boundary whose first argument is
@@ -428,45 +461,42 @@ class TestEveryPostWriteShapeReadSaysItLanded:
         population = _landed_population()
         assert len(population) >= 4 and all(not item.startswith("<") for item in population), population
 
-    @pytest.mark.parametrize("answer", ["garbage", None, {"id": "x"}], ids=["str", "None", "dict"])
+    @pytest.mark.parametrize(
+        "answer", ["garbage", None, {"id": "x"}, ["row"]], ids=["str", "None", "dict", "non-dict-member"]
+    )
     def test_the_one_landed_template(self, answer: Any) -> None:
-        """RED at bec29190 (``rows_of`` has no ``landed``). The template is ONE text, byte-exact."""
-        with pytest.raises(Exception) as caught:  # noqa: PT011 - SurrealStoreError, the class rows_of raises
-            governed_module.rows_of(answer, noun="probe write", landed=True)  # type: ignore[call-arg,unused-ignore]
-        assert str(caught.value) == _LANDED_TEMPLATE.format(
-            noun="probe write",
-            type=type(answer).__name__,
-            remedy="verify the stored state before re-running",
-        )
-
-    @pytest.mark.parametrize("answer", ["garbage", None, ["row"]], ids=["str", "None", "non-dict-member"])
-    def test_a_site_passing_no_remedy_serves_the_default_text_byte_identical(self, answer: Any) -> None:
-        """fix531b (a): slotting the remedy must not change one byte for the sites that pass none."""
+        """RED at bec29190 (``rows_of`` has no ``landed``). The template is ONE text, byte-exact — and, since
+        am-37 §13.5 item 5 (fix531d), byte-identical to the pre-#531 default for EVERY site."""
         kind = type(answer[0] if isinstance(answer, list) else answer).__name__
         with pytest.raises(SurrealStoreError) as caught:
             governed_module.rows_of(answer, noun="probe write", landed=True)
-        assert str(caught.value) == _LANDED_DEFAULT_TEXT.format(noun="probe write", type=kind)
+        assert str(caught.value) == _LANDED_TEMPLATE.format(noun="probe write", type=kind)
 
-    def test_the_template_has_exactly_one_remedy_slot(self) -> None:
-        """fix531b (c): the ONE template carries the remedy as exactly one slot, beside noun and type."""
+    def test_the_template_has_no_remedy_slot(self) -> None:
+        """am-37 §13.5 item 5 (fix531d; DUAL of fix531b (c)): the remedy lives ONLY in ``mint``'s note, so the
+        ONE template carries exactly ``noun`` and ``type`` and its fixed last clause."""
         template = governed_module._LANDED_SHAPE_FAULT  # noqa: SLF001
         fields = [
             field for _literal, field, _spec, _conv in string.Formatter().parse(template) if field is not None
         ]
-        assert sorted(fields) == ["noun", "remedy", "type"], fields
+        assert sorted(fields) == ["noun", "type"], fields
         assert template == _LANDED_TEMPLATE
 
-    def test_a_passed_remedy_replaces_the_default_clause(self) -> None:
-        with pytest.raises(SurrealStoreError) as caught:
-            governed_module.rows_of("garbage", noun="probe write", landed=True, remedy="do the special thing")
-        assert str(caught.value) == _LANDED_TEMPLATE.format(
-            noun="probe write", type="str", remedy="do the special thing"
-        )
-
-    def test_a_remedy_without_landed_is_refused(self) -> None:
-        """A remedy belongs to a landed write only; on a plain read it would be silently dropped."""
-        with pytest.raises(ValueError, match="remedy"):
-            governed_module.rows_of([], noun="probe read", remedy="do the special thing")
+    @pytest.mark.parametrize(
+        ("owner", "attribute"),
+        [
+            (governed_module, "rows_of"),
+            (governed_module, "_shape_fault"),
+            (PrincipalKeyStore, "_as_rows"),
+        ],
+        ids=["rows_of", "_shape_fault", "_as_rows"],
+    )
+    def test_no_reader_takes_a_remedy_any_more(self, owner: Any, attribute: str) -> None:
+        """am-37 §13.5 item 5 (fix531d; DUAL of fix531b's passed-remedy and remedy-without-landed pins): the
+        ``remedy=`` machinery is deleted end to end — its only non-default user (``mint``) moved to the note,
+        so a surviving parameter would be dead."""
+        assert "remedy" not in inspect.signature(getattr(owner, attribute)).parameters
+        assert not hasattr(governed_module, "_LANDED_DEFAULT_REMEDY")
 
     def test_CONTROL_the_unlanded_read_keeps_its_own_text(self) -> None:
         with pytest.raises(Exception) as caught:  # noqa: PT011
@@ -474,125 +504,334 @@ class TestEveryPostWriteShapeReadSaysItLanded:
         assert "LANDED" not in str(caught.value), str(caught.value)
 
 
-class TestALandedThenFaultedMintNamesTheRevokeRemedy:
-    """fix531b (b), #531 follow-up: a ``mint`` whose CREATE committed but answered a wrong shape aborts BEFORE
-    the CLI prints the one-time secret, leaving a LIVE key whose secret nobody has. The generic "verify the
-    stored state" advice leaves that key standing; the fault must name the revoke verb for THAT key."""
+# --------------------------------------------------------------------------- #
+# am-37 §13.5 (fix531d, #531) — ONE add_note handler over mint's post-CREATE window
+# --------------------------------------------------------------------------- #
 
-    @pytest.mark.parametrize("answer", ["garbage", None, {"id": "principal_key:x"}, ["row"]])
-    @pytest.mark.parametrize(
-        ("email", "name"),
-        [("ops531@example.com", "laptop"), ("dev.531+keys@example.org", "work laptop")],
-        ids=["plain", "needs-quoting"],
+_PLAIN = ("ops531@example.com", "laptop")
+_NEEDS_QUOTING = ("dev.531+keys@example.org", "work laptop")
+
+
+def _certain_note(email: str, name: str) -> str:
+    """§13.5 item 5's CERTAIN wording, written OUT (the revoke command shell-quoted as the CLI parses it)."""
+    command = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
+    return (
+        f"the CREATE committed but the secret was never shown — key {name!r} is LIVE with no holder; "
+        f"revoke it (`{command}`) and mint a new key"
     )
-    async def test_the_fault_names_lore_adm_revoke_key_for_the_landed_key(
-        self, monkeypatch: pytest.MonkeyPatch, answer: Any, email: str, name: str
-    ) -> None:
-        store = PrincipalKeyStore(
-            url="ws://127.0.0.1:1", namespace="ns531b", database="db531b", user="u", password=SecretStr("p")
-        )
-        landed = {"count": 0}
 
-        async def require_principal_id(_email: str) -> str:
-            return "abc531b"
 
-        async def query(statement: str, _params: dict[str, Any] | None = None) -> Any:
-            assert statement.startswith("CREATE "), statement
-            landed["count"] += 1
-            return answer
+def _conditional_note(email: str, name: str) -> str:
+    """§13.5 item 5's CONDITIONAL wording, written OUT."""
+    command = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
+    listing = shlex.join(["lore-adm", "list-keys", "--email", email])
+    return (
+        "the mint's outcome is unknown (the connection failed during the CREATE) — if "
+        f"`{listing}` shows {name!r}, revoke it (`{command}`) and mint a new key"
+    )
 
-        monkeypatch.setattr(store, "_require_principal_id", require_principal_id)
-        monkeypatch.setattr(store, "_query", query)
-        with pytest.raises(SurrealStoreError) as caught:
-            await store.mint(email=email, name=name, secret_hash="0" * 128)
-        assert landed["count"] == 1, "the forged CREATE answer never landed (#194)"
-        message = str(caught.value)
-        revoke_argv = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
-        assert "principal-key mint LANDED" in message, message
-        assert revoke_argv in message, f"the revoke remedy for {name!r} is missing: {message}"
-        assert "never shown" in message and "mint a new" in message, message
-        assert "verify the stored state before re-running" not in message, message
-        self._assert_served_revoke_parses(message, email=email, name=name)
+
+def _rendered(error: BaseException) -> str:
+    """Everything lore-adm can print for ``error``: its ``_fault_line`` AND the full traceback (notes and
+    every chained link included)."""
+    return p_module._fault_line(error) + "\n" + "".join(traceback.format_exception(error))  # noqa: SLF001
+
+
+def _store_taxonomy() -> list[type[BaseException]]:
+    """GENERATED: ``SurrealStoreError`` and every subclass the store taxonomy (``loremaster.store._txn``)
+    defines — the domain of what the CREATE ``_query`` can raise from the store."""
+    found: list[type[BaseException]] = [SurrealStoreError]
+    pending = list(SurrealStoreError.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        if cls.__module__ == _txn_module.__name__:
+            found.append(cls)
+    return sorted(set(found), key=lambda cls: cls.__qualname__)
+
+
+def _instance(cls: type[BaseException]) -> BaseException:
+    if issubclass(cls, TxnContentionExhaustedError):
+        return cls("injected 531d", attempts=3, elapsed_seconds=0.1)
+    return cls("injected 531d")
+
+
+def _through_the_wrap(error: BaseException) -> BaseException:
+    """The ORACLE for "class unchanged": what ``wrap_store_rejection`` alone serves for ``error`` today."""
+    try:
+        with wrap_store_rejection(PrincipalKeyStoreError, "oracle"):
+            raise error
+    except BaseException as served:  # noqa: BLE001 - the oracle observes whatever the wrap serves
+        return served
+    raise AssertionError("unreachable: the wrap swallowed")  # pragma: no cover
+
+
+#: The pre-commit domain: the generated store taxonomy plus two NON-store classes (an allowlist is proved by
+#: what it EXCLUDES — a cancellation and a plain bug get no note either).
+_PRE_COMMIT_CLASSES: list[type[BaseException]] = [*_store_taxonomy(), RuntimeError, asyncio.CancelledError]
+
+
+def _full_row(name: str) -> dict[str, Any]:
+    return {
+        "id": "principal_key:k531d",
+        "principal": "principal:abc531d",
+        "name": name,
+        "created_at": datetime.now(UTC),
+    }
+
+
+class TestTheMintWindowNotesTheRevokeRepair:
+    """am-37 §13.5 items 1-5, pinned by item 6 (a): ∀ raise point × zone. A fault raised once the CREATE
+    MAY have committed carries the revoke repair as a PEP 678 note on the SAME object — CERTAIN after the
+    engine answered, CONDITIONAL for a transport fault during the CREATE; every other pre-commit fault
+    carries none."""
 
     @staticmethod
-    def _assert_served_revoke_parses(message: str, *, email: str, name: str) -> None:
-        """The FIRST backticked command must be one the REAL lore-adm parser runs as THIS key's revoke — a
-        renamed verb or flag reddens here instead of shipping a remedy that no longer works."""
-        parser = p_module.build_parser()
-        served = shlex.split(message.split("`")[1])
-        assert served[0] == parser.prog, served
-        parsed = vars(parser.parse_args(served[1:]))
-        assert (parsed["command"], parsed["email"], parsed["name"]) == ("revoke-key", email, name), parsed
-
-    @staticmethod
-    def _store_whose_create_answers(
-        monkeypatch: pytest.MonkeyPatch, answer: Any
+    def _store(
+        monkeypatch: pytest.MonkeyPatch, *, answer: Any = None, raises: BaseException | None = None
     ) -> tuple[PrincipalKeyStore, dict[str, int]]:
-        """A store whose mint CREATE lands (counted, #194) and answers ``answer``."""
+        """A store whose mint CREATE is reached (counted, #194) and answers ``answer`` / raises ``raises``."""
         store = PrincipalKeyStore(
-            url="ws://127.0.0.1:1", namespace="ns531c", database="db531c", user="u", password=SecretStr("p")
+            url="ws://127.0.0.1:1", namespace="ns531d", database="db531d", user="u", password=SecretStr("p")
         )
-        landed = {"count": 0}
+        reached = {"count": 0}
 
         async def require_principal_id(_email: str) -> str:
-            return "abc531c"
+            return "abc531d"
 
         async def query(statement: str, _params: dict[str, Any] | None = None) -> Any:
             assert statement.startswith("CREATE "), statement
-            landed["count"] += 1
+            reached["count"] += 1
+            if raises is not None:
+                raise raises
             return answer
 
         monkeypatch.setattr(store, "_require_principal_id", require_principal_id)
         monkeypatch.setattr(store, "_query", query)
-        return store, landed
+        return store, reached
 
-    @pytest.mark.parametrize(
-        ("email", "name"),
-        [("ops531@example.com", "laptop"), ("dev.531+keys@example.org", "work laptop")],
-        ids=["plain", "needs-quoting"],
-    )
-    async def test_a_create_answering_no_row_names_the_same_revoke_repair(
-        self, monkeypatch: pytest.MonkeyPatch, email: str, name: str
+    def test_the_generated_pre_commit_domain_is_not_vacuous(self) -> None:
+        names = {cls.__name__ for cls in _PRE_COMMIT_CLASSES}
+        assert {
+            "SurrealConnectionError",
+            "TxnDomainRejectionError",
+            "TxnUniqueViolationError",
+            "TxnContentionExhaustedError",
+            "TxnParamCollisionError",
+            "TxnEnvelopeViolationError",
+        } <= names, names
+
+    @pytest.mark.parametrize("cls", _PRE_COMMIT_CLASSES, ids=lambda cls: cls.__name__)
+    @pytest.mark.parametrize(("email", "name"), [_PLAIN, _NEEDS_QUOTING], ids=["plain", "needs-quoting"])
+    async def test_a_fault_during_the_CREATE_call(
+        self, monkeypatch: pytest.MonkeyPatch, cls: type[BaseException], email: str, name: str
     ) -> None:
-        """fix531c, #531 (REPORT-fix531b §5.2): a CREATE ``RETURN AFTER`` answering ``[]`` may or may not have
-        stored the key, and its secret was never shown. The fault must name the SAME revoke repair as the
-        wrong-shape mint, conditioned on ``list-keys`` showing the key — never a bare "vanished"."""
-        store, landed = self._store_whose_create_answers(monkeypatch, [])
-        with pytest.raises(PrincipalKeyStoreError) as caught:
+        """Pre-commit: ONLY ``SurrealConnectionError`` (outcome unknown) gets the CONDITIONAL note; every
+        other class proves no key landed and gets NONE. The served class is exactly what the wrap serves
+        today."""
+        injected = _instance(cls)
+        expected_type = type(_through_the_wrap(_instance(cls)))
+        store, reached = self._store(monkeypatch, raises=injected)
+        with pytest.raises(BaseException) as caught:  # noqa: PT011 - the class IS the assertion below
             await store.mint(email=email, name=name, secret_hash="0" * 128)
-        assert landed["count"] == 1, "the forged CREATE answer never landed (#194)"
-        message = str(caught.value)
-        revoke_argv = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
-        assert repr(name) in message, message
-        assert revoke_argv in message, f"the revoke remedy for {name!r} is missing: {message}"
-        assert "never shown" in message and "list-keys" in message and "mint a new" in message, message
-        self._assert_served_revoke_parses(message, email=email, name=name)
+        assert reached["count"] == 1, "the CREATE was never reached (#194)"
+        served = caught.value
+        assert type(served) is expected_type, (type(served), expected_type)
+        if issubclass(cls, SurrealConnectionError):
+            assert served is injected, "a transport fault must re-raise as the SAME object"
+            assert served.__notes__ == [_conditional_note(email, name)]
+            self._assert_commands_parse(served.__notes__[0], email=email, name=name)
+        else:
+            assert not getattr(served, "__notes__", None), served.__notes__
+            assert "revoke-key" not in _rendered(served), _rendered(served)
 
     @pytest.mark.parametrize(
         ("answer", "raised"),
-        [("garbage", SurrealStoreError), ([], PrincipalKeyStoreError)],
-        ids=["wrong-shape", "no-row"],
+        [
+            ("garbage", SurrealStoreError),
+            (None, SurrealStoreError),
+            ({"id": "principal_key:x"}, SurrealStoreError),
+            (["row"], SurrealStoreError),
+            ([], PrincipalKeyStoreError),
+        ],
+        ids=["str", "None", "dict", "non-dict-member", "no-row"],
     )
-    async def test_both_mint_faults_take_the_revoke_command_from_the_one_helper(
-        self, monkeypatch: pytest.MonkeyPatch, answer: Any, raised: type[Exception]
+    @pytest.mark.parametrize(("email", "name"), [_PLAIN, _NEEDS_QUOTING], ids=["plain", "needs-quoting"])
+    async def test_a_fault_after_the_engine_answered_shape(
+        self, monkeypatch: pytest.MonkeyPatch, answer: Any, raised: type[Exception], email: str, name: str
     ) -> None:
-        """ONE IMPLEMENTATION, proven by MUTATION: replace ``PrincipalKeyStore._revoke_command`` and BOTH
-        fault sites must serve the replacement — a site that still serves the real argv built its own copy."""
-        sentinel = "SENTINEL-531c revoke command"
-        calls: list[tuple[str, str]] = []
-
-        def fake_revoke_command(*, email: str, name: str) -> str:
-            calls.append((email, name))
-            return sentinel
-
-        monkeypatch.setattr(PrincipalKeyStore, "_revoke_command", staticmethod(fake_revoke_command))
-        store, _landed = self._store_whose_create_answers(monkeypatch, answer)
+        """Post-commit: every shape fault keeps its class and message and carries the CERTAIN note."""
+        store, reached = self._store(monkeypatch, answer=answer)
         with pytest.raises(raised) as caught:
-            await store.mint(email="ops531@example.com", name="laptop", secret_hash="0" * 128)
-        message = str(caught.value)
-        assert f"`{sentinel}`" in message, message
-        assert "revoke-key" not in message, f"a private copy of the revoke command: {message}"
-        assert calls == [("ops531@example.com", "laptop")], calls
+            await store.mint(email=email, name=name, secret_hash="0" * 128)
+        assert reached["count"] == 1, "the forged CREATE answer never landed (#194)"
+        served = caught.value
+        assert type(served) is raised
+        assert served.__notes__ == [_certain_note(email, name)]
+        if answer == []:
+            assert str(served) == f"key {name!r} for principal {email!r}: the mint answered no row"
+        else:
+            assert "principal-key mint LANDED" in str(served)
+            assert "revoke-key" not in str(served), "the remedy lives in the note, never the message"
+        self._assert_commands_parse(served.__notes__[0], email=email, name=name)
+
+    @pytest.mark.parametrize("column", sorted(_full_row("x")), ids=str)
+    async def test_a_row_missing_a_required_column(
+        self, monkeypatch: pytest.MonkeyPatch, column: str
+    ) -> None:
+        """GENERATED over the row ``_row_to_key`` reads: each missing column keeps its class (``KeyError``
+        for a subscripted one — §13.3 F-7: our bug stays a bug) and carries the CERTAIN note, which the
+        traceback renderer prints."""
+        email, name = _PLAIN
+        row = _full_row(name)
+        del row[column]
+        store, _reached = self._store(monkeypatch, answer=[row])
+        with pytest.raises(Exception) as caught:  # noqa: PT011 - the class IS the assertion below
+            await store.mint(email=email, name=name, secret_hash="0" * 128)
+        served = caught.value
+        expected = PrincipalKeyStoreError if column == "created_at" else KeyError
+        assert type(served) is expected, type(served)
+        assert served.__notes__ == [_certain_note(email, name)]
+        assert _certain_note(email, name) in "".join(traceback.format_exception(served))
+
+    async def test_a_programming_defect_after_the_answer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        email, name = _PLAIN
+        store, _reached = self._store(monkeypatch, answer=[_full_row(name)])
+
+        def broken(_row: dict[str, Any]) -> Any:
+            raise TypeError("injected 531d defect")
+
+        monkeypatch.setattr(store, "_row_to_key", broken)
+        with pytest.raises(TypeError) as caught:
+            await store.mint(email=email, name=name, secret_hash="0" * 128)
+        assert caught.value.__notes__ == [_certain_note(email, name)]
+
+    async def test_CONTROL_a_clean_mint_carries_no_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        email, name = _PLAIN
+        store, _reached = self._store(monkeypatch, answer=[_full_row(name)])
+        key = await store.mint(email=email, name=name, secret_hash="0" * 128)
+        assert key.name == name
+
+    async def test_the_note_takes_its_revoke_command_from_the_one_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ONE IMPLEMENTATION, proven by MUTATION: replace ``_revoke_command`` and BOTH wordings serve it."""
+        sentinel = "SENTINEL-531d revoke command"
+        monkeypatch.setattr(PrincipalKeyStore, "_revoke_command", staticmethod(lambda **_kw: sentinel))
+        for kwargs in ({"answer": "garbage"}, {"raises": SurrealConnectionError("injected 531d")}):
+            store, _reached = self._store(monkeypatch, **kwargs)
+            with pytest.raises(SurrealStoreError) as caught:
+                await store.mint(email="ops531@example.com", name="laptop", secret_hash="0" * 128)
+            (note,) = caught.value.__notes__
+            assert f"`{sentinel}`" in note and "revoke-key" not in note, note
+
+    @staticmethod
+    def _assert_commands_parse(note: str, *, email: str, name: str) -> None:
+        """Every backticked command in the note is one the REAL lore-adm parser runs for THIS key."""
+        parser = p_module.build_parser()
+        commands = [shlex.split(text) for text in note.split("`")[1::2]]
+        assert commands, note
+        for argv in commands:
+            assert argv[0] == parser.prog, argv
+            parsed = vars(parser.parse_args(argv[1:]))
+            assert parsed["email"] == email, parsed
+            assert parsed["command"] in {"revoke-key", "list-keys"}, parsed
+            if parsed["command"] == "revoke-key":
+                assert parsed["name"] == name, parsed
+
+
+class TestALiveUniqueCollisionCarriesNoRevokeAdvice:
+    """am-37 §13.5 item 2 / item 6 (b): a UNIQUE rejection proves no key landed, so — live, on a minted
+    ``:18000`` database — the served fault is ``PrincipalKeyStoreError`` with NO note and no ``revoke-key``
+    anywhere lore-adm could print it (its ``_fault_line`` and the full traceback)."""
+
+    async def test_a_duplicate_name_mint(self) -> None:
+        env = make_env(database=unique_database(), dim=PRODUCTION_DIM)
+        setup = await connect_admin(env)
+        await setup.close()
+        principal_store = p_module.PrincipalStore(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+        )
+        key_store = PrincipalKeyStore(
+            url=env.url, namespace=env.namespace, database=env.database, user=env.user, password=env.password
+        )
+        try:
+            await principal_store.ensure_ready()
+            await key_store.ensure_ready()
+            await principal_store.create(email="live531d@example.com")
+            first = await key_store.mint(email="live531d@example.com", name="laptop", secret_hash="1" * 128)
+            assert first.name == "laptop"  # the positive control: the first mint landed
+            with pytest.raises(PrincipalKeyStoreError) as caught:
+                await key_store.mint(email="live531d@example.com", name="laptop", secret_hash="2" * 128)
+        finally:
+            await key_store.close()
+            await principal_store.close()
+            await drop_database(env)
+        served = caught.value
+        assert type(served) is PrincipalKeyStoreError
+        assert isinstance(served.__cause__, TxnDomainRejectionError), repr(served.__cause__)
+        link: BaseException | None = served
+        while link is not None:
+            assert not getattr(link, "__notes__", None), (link, link.__notes__)
+            link = link.__cause__
+        assert "revoke-key" not in _rendered(served), _rendered(served)
+
+
+class TestTheMintHasOneNoteHandlerOverTheWholeWindow:
+    """am-37 §13.5 item 6 (c): exactly ONE handler in ``mint`` calls ``add_note``; it is a bare passthrough
+    of ``BaseException``; its ``try`` opens AT the CREATE ``_query`` call and ends at the ``return`` — no
+    statement of ``mint`` lies after the ``try`` (the window-completeness leg)."""
+
+    @staticmethod
+    def _mint_node() -> ast.AsyncFunctionDef:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(PrincipalKeyStore.mint)))
+        node = tree.body[0]
+        assert isinstance(node, ast.AsyncFunctionDef), node
+        return node
+
+    @staticmethod
+    def _queries(node: ast.AST) -> list[ast.Call]:
+        return [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "_query"
+        ]
+
+    def test_one_add_note_handler(self) -> None:
+        mint = self._mint_node()
+        noting = [
+            handler
+            for handler in ast.walk(mint)
+            if isinstance(handler, ast.ExceptHandler)
+            and any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "add_note"
+                for call in ast.walk(handler)
+            )
+        ]
+        assert len(noting) == 1, [ast.unparse(handler)[:80] for handler in noting]
+        (handler,) = noting
+        assert isinstance(handler.type, ast.Name) and handler.type.id == "BaseException", ast.unparse(handler)
+        last = handler.body[-1]
+        assert isinstance(last, ast.Raise) and last.exc is None and last.cause is None, ast.unparse(last)
+        exits = [node for node in ast.walk(handler) if isinstance(node, ast.Raise | ast.Return)]
+        assert exits == [last], "the handler's ONLY exit is the bare re-raise (a passthrough)"
+
+    def test_the_window_spans_the_CREATE_call_to_the_return(self) -> None:
+        mint = self._mint_node()
+        assert isinstance(mint.body[-1], ast.Try), "no statement of mint may lie after the window's try"
+        window = mint.body[-1]
+        assert len(window.handlers) == 1, ast.unparse(window)[:200]
+        assert not window.orelse and not window.finalbody, ast.unparse(window)[:200]
+        before = ast.Module(body=mint.body[:-1], type_ignores=[])
+        assert not self._queries(before), "the CREATE _query call lies OUTSIDE (before) the window"
+        assert len(self._queries(ast.Module(body=window.body[:1], type_ignores=[]))) == 1, (
+            "the window must OPEN at the CREATE _query call"
+        )
+        assert isinstance(window.body[-1], ast.Return), "the window must END at the return"
 
 
 # =========================================================================== #

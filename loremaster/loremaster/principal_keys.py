@@ -418,34 +418,31 @@ class PrincipalKeyStore:
         statement = (
             f"CREATE {PRINCIPAL_KEY_TABLE} CONTENT {{ {', '.join(fragments)} }} RETURN AFTER"
         )
-        # The UNIQUE backstop (credential hash or (principal, name)) — wrapped LOUD; a
-        # transport fault / exhausted contention passes through untouched (it must not
-        # masquerade as a UNIQUE collision). Finding #400: routed through the ONE seam.
-        with wrap_store_rejection(
-            PrincipalKeyStoreError,
-            f"could not mint key {name!r} for principal {email!r}",
-        ):
-            result = await self._query(statement, params)
-        # The CREATE committed, but a wrong-shaped answer aborts BEFORE the CLI prints the one-time
-        # secret: the key is LIVE and nobody holds its secret, so the only repair is to revoke it (#531).
-        revoke_command = self._revoke_command(email=email, name=name)
-        rows = self._as_rows(
-            result,
-            noun="principal-key mint",
-            landed=True,
-            remedy=(
-                f"key {name!r}'s secret was never shown, so revoke it (`{revoke_command}`) and mint a new key"
-            ),
-        )
-        if not rows:
-            # No row back: whether the key was stored is UNKNOWN, and its secret was never shown either
-            # way — the same revoke repair, conditioned on the key being there (#531, fix531c).
-            raise PrincipalKeyStoreError(
-                f"key {name!r} for principal {email!r}: the mint answered no row, so the key may have been "
-                f"stored but its secret was never shown — revoke it (`{revoke_command}`) if `list-keys` "
-                "shows it, then mint a new key"
-            )
-        return self._row_to_key(rows[0])
+        # THE mint window (am-37 §13.5, #531): ONE ``try`` from the CREATE call to the ``return``, ONE
+        # handler. A fault raised once the CREATE MAY have committed leaves a key whose one-time secret the
+        # CLI never printed, so the handler attaches the revoke repair as a PEP 678 note and re-raises the
+        # SAME object (a passthrough: class, message and traceback unchanged). The UNIQUE backstop
+        # (credential hash or (principal, name)) is still wrapped LOUD by the ONE seam (finding #400) around
+        # the CREATE alone; a transport fault / exhausted contention passes through it untouched.
+        answered = False
+        try:
+            with wrap_store_rejection(
+                PrincipalKeyStoreError,
+                f"could not mint key {name!r} for principal {email!r}",
+            ):
+                result = await self._query(statement, params)
+            answered = True
+            rows = self._as_rows(result, noun="principal-key mint", landed=True)
+            if not rows:
+                raise PrincipalKeyStoreError(
+                    f"key {name!r} for principal {email!r}: the mint answered no row"
+                )
+            return self._row_to_key(rows[0])
+        except BaseException as error:
+            note = self._mint_fault_note(error, answered=answered, email=email, name=name)
+            if note is not None:
+                error.add_note(note)
+            raise
 
     async def list_for(self, *, email: str) -> list[PrincipalKey]:
         """Return every key the principal ``email`` owns, oldest first — revoked keys
@@ -655,6 +652,31 @@ class PrincipalKeyStore:
         _, separator, id_part = record_id.partition(":")
         return id_part if separator else record_id
 
+    @classmethod
+    def _mint_fault_note(cls, error: BaseException, *, answered: bool, email: str, name: str) -> str | None:
+        """The revoke repair a :meth:`mint` fault carries as its note (am-37 §13.5 items 1, 5), or ``None``.
+
+        ``answered`` (the CREATE returned) ⇒ the key is LIVE and its secret was never shown: the CERTAIN
+        wording, whatever the fault. Before that, exactly ONE class is unsafe — a
+        :class:`SurrealConnectionError` raised during the CREATE, whose outcome is unknown: the CONDITIONAL
+        wording. Every other pre-commit fault (a domain rejection incl. UNIQUE, exhausted contention, a
+        param collision, an envelope violation — or anything else) proves no key landed: no note. The
+        safe-set is allowlisted, never a list of the forbidden.
+        """
+        command = cls._revoke_command(email=email, name=name)
+        if answered:
+            return (
+                f"the CREATE committed but the secret was never shown — key {name!r} is LIVE with no holder; "
+                f"revoke it (`{command}`) and mint a new key"
+            )
+        if isinstance(error, SurrealConnectionError):
+            listing = shlex.join([_CLI_PROG, "list-keys", "--email", email])
+            return (
+                "the mint's outcome is unknown (the connection failed during the CREATE) — if "
+                f"`{listing}` shows {name!r}, revoke it (`{command}`) and mint a new key"
+            )
+        return None
+
     @staticmethod
     def _revoke_command(*, email: str, name: str) -> str:
         """The ONE shell-quoted ``lore-adm revoke-key`` command for key ``name`` of principal ``email`` —
@@ -662,18 +684,15 @@ class PrincipalKeyStore:
         return shlex.join([_CLI_PROG, "revoke-key", "--email", email, "--name", name])
 
     @staticmethod
-    def _as_rows(
-        result: Any, *, noun: str, landed: bool = False, remedy: str | None = None
-    ) -> list[dict[str, Any]]:
+    def _as_rows(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, Any]]:
         """A ``SELECT``/``CREATE``/``UPDATE`` result's rows, through the ONE fail-closed row-list policy
         :func:`loremaster.governed.rows_of` (am-37 §13 B): a non-list answer or a non-dict member RAISES
         ``SurrealStoreError`` — never ``[]``, which ``revoke`` would serve as "no such key" and ``verify``
         as a no-such-key deny for what is a store fault. ``noun`` is REQUIRED (am-37 §13.3 item 7: every
-        caller names its read); ``landed=True`` marks a committed write's own answer (item 5), and
-        ``remedy`` overrides that landed fault's last clause (``mint``, #531)."""
+        caller names its read); ``landed=True`` marks a committed write's own answer (item 5)."""
         from loremaster.governed import rows_of
 
-        return rows_of(result, noun=noun, landed=landed, remedy=remedy)
+        return rows_of(result, noun=noun, landed=landed)
 
 
 def build_principal_key_store(config: LoreConfig) -> PrincipalKeyStore:

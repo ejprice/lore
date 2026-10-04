@@ -2804,6 +2804,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
 
 #: The cause-line prefix the lore-adm fault handler renders per ``__cause__`` link (am-37 §13 A ii).
 _CAUSE_LINE_PREFIX = "  ← caused by: "
+#: The prefix of each ``__notes__`` line :func:`_fault_line` renders (am-37 §13.5 item 1).
+_NOTE_LINE_PREFIX = " ↳ "
 
 #: The ``extra`` keys of the store seam's rejection record the CLI stderr handler renders (am-37 §13 A i) —
 #: the seam's ``url`` extra is deliberately NOT rendered (it is already in the error's own message).
@@ -2824,6 +2826,8 @@ def _fault_line(error: BaseException) -> str:
     (am-37 §13.3 item 3, #527 — the stdlib ``traceback`` shape)."""
     lines = [f"{_CLI_PROG}: {scrub_text(str(error))}"]
     previous = lines[0].removeprefix(f"{_CLI_PROG}: ")
+    # PEP 678 notes (am-37 §13.5 item 1, e.g. ``mint``'s revoke repair): after the message, before causes.
+    lines.extend(f"{_NOTE_LINE_PREFIX}{scrub_text(note)}" for note in getattr(error, "__notes__", ()))
     seen = {id(error)}
     cause = error.__cause__
     while cause is not None and id(cause) not in seen:
