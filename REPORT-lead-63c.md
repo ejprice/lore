@@ -2248,3 +2248,4 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - `fix536`: migrate to the shared reach helpers, NOT an allowlist; its own commit.
   - `contract-486-r3`: the #534 outcome pin + R4 prose in its file.
   - Then implement-486-r3 → a short re-audit (the reap path + the store-down construction; NO second full suite, per TEST SCOPE) → commit.
+- **#536 FIXED** by fix536: `6e37dd5` (only `test_am37_13_3_63c_i_a.py`; its 3 scans moved onto the shared `parse_production_trees` via a cached `_package_trees()`; no allowlist entry); report `2117fd3`; #536 resolved. **Lead-verified:** 1 file, no trailers, the 4 skips pre-existing (not new), and the clean-HEAD re-run below. fix536 stopped.
