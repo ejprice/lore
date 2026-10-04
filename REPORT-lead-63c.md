@@ -2265,3 +2265,12 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - **D-r3-1:** reading (A) taken. Residual: a DB opened by a session/module-scoped fixture is not observed (pre-existing bound; none mint today); trigger: the first higher-scoped fixture that mints.
 - **FINAL2 patch** `486-FINAL2.patch` md5 `eb6a5dd81df0b4b9d0518cc96639f653` (28 files, the same set as FINAL; all test-side).
 - **coldaudit-486-2** spawned at 2026-10-04T19:13Z: construction; mutations a–d; the F1 attribution on plain HEAD with/without `--with`; hand-roll vs package judgement (the TCP forwarder; the bounded reap); targeted + census; gates. NO second full suite. implement-486-r3 stopped.
+- **coldaudit-486-2: GO** (`f38dd99`): mutations a/c/d/b′ held; targeted 928P/1F/4S, the one red F1 = **#537** (runner-caused by `uv run --with pytest-timeout`; red on plain HEAD; not #486's); census 75→75; RED_ORPHANED 0.
+- **#486 COMMITTED `cabe2cd`** at 2026-10-04T19:40Z: the worktree matched the audited FINAL2 (eb6a5dd8) byte-exact before staging; 28 files, all `loremaster/tests/`; no trailers. Reports archived `1c50af6` (`receipts/2026-10-04-486/`, 12 files); INDEX `7752fc5`; #486 + #534 RESOLVED. coldaudit-486-2 stopped.
+- **#486 follow-up candidates (operator call):**
+  - R1: the reap budget is unpinned. Mutation (b) survived because dependency defaults bound every constructed state; the realistic state (transport alive, replies withheld) is unpinned.
+  - R2: the bespoke daemon-thread bound → `anyio.fail_after` (a direct dependency; packages law).
+  - **#538** (MEDIUM): under xdist a worker-side session-end hook failure OUTSIDE the reap is swallowed (rc 0). The r3 fix is at the PATH; the STATE form is "every finished worker shipped its report keys".
+  - **#537:** declare `pytest-timeout` a dev dependency (pre-approved package).
+  - R5–R8 LOW/accepted.
+- Working tree: ONLY the two pre-session untracked 63c reports (`REPORT-builder-63c-i-a-fix.md`, `REPORT-sidecar-63c.md`), not mine.
