@@ -2234,3 +2234,6 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   - F3: via `governed.map_of(required=…)`. No test edited.
   - Snapshot `486-after-impl-r2.patch` md5 `e19d3092…` (27 tracked + the new test file).
 - Its flag (stale prose: docstring + failure message still say "name -> node id") → `prose-486` at 2026-10-04T17:36Z (prose only, AST-equal). Then coldaudit-486 → commit.
+- **prose-486 DONE** (`6e8ffb4`): 2 stale prose sites fixed (AST-equal modulo prose, with a control). prose-486 and implement-486-r2 stopped.
+- **#486 FINAL patch** `scratchpad/486-backup/486-FINAL.patch` md5 `50cf81ba5a1df975bdf0264f06be068d` (28 files, all `loremaster/tests/`, built via a temp index), on HEAD 6e8ffb4.
+- **coldaudit-486 spawned at 2026-10-04T17:38Z:** construction checks; mutations a–d; THE ONE FULL SUITE via `pending_contract_gate.py --currency -- --maxprocesses=12` (cgroup-capped; it also discharges the owed 9c88779 re-run); a lore_test DB census before/after; NL sweep. On GO: the lead commits the 28 files, resolves #486, archives the 486 reports.
