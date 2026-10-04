@@ -747,14 +747,22 @@ def group_all_count(result: Any, *, noun: str) -> int:
 
 #: THE one post-write shape-fault text (am-37 §13.3 item 5): a write sink's answer read with ``landed=True``
 #: that is not a row list. The write has already COMMITTED, so the text says so — a reader must never infer
-#: "nothing happened" from a fault raised after the write landed.
+#: "nothing happened" from a fault raised after the write landed. Its last clause is the ``{remedy}`` slot: a
+#: site whose landed write leaves a state the generic advice does not undo (a minted key whose secret was
+#: never shown, #531) passes its own; every other site renders :data:`_LANDED_DEFAULT_REMEDY`.
 _LANDED_SHAPE_FAULT = (
     "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
-    "answer; verify the stored state before re-running"
+    "answer; {remedy}"
 )
 
+#: The remedy a landed shape fault renders when its site passes none (finding #531: true for every landed
+#: sink — an UPDATE re-runs harmlessly, a CREATE would collide, so the operator looks before re-running).
+_LANDED_DEFAULT_REMEDY = "verify the stored state before re-running"
 
-def rows_of(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, Any]]:
+
+def rows_of(
+    result: Any, *, noun: str, landed: bool = False, remedy: str | None = None
+) -> list[dict[str, Any]]:
     """THE one reader of a row-list answer (a ``SELECT`` / ``UPDATE … RETURN …`` result), with the ONE
     fail-closed shape policy (packet 63c amendment 37 §13 B): a list whose every member is a dict is
     returned WHOLE and in order; a non-list answer, or ANY non-dict member, raises
@@ -763,33 +771,42 @@ def rows_of(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, A
 
     ``landed=True`` marks a POST-WRITE read — the answer of a write sink (``CREATE`` / ``UPDATE`` / a
     backfill) that has already committed. Its fault renders through the ONE template
-    :data:`_LANDED_SHAPE_FAULT` (am-37 §13.3 item 5), so no call site writes its own post-write text.
+    :data:`_LANDED_SHAPE_FAULT` (am-37 §13.3 item 5), so no call site writes its own post-write text — only
+    its ``remedy`` clause may differ.
 
     Args:
         result: The driver's answer.
         noun: What the read (or, with ``landed``, the write) is, named in the raised message.
         landed: ``True`` when ``result`` is a committed write's own answer.
+        remedy: The landed fault's last clause, for a site whose committed write the default
+            (:data:`_LANDED_DEFAULT_REMEDY`) would leave unrepaired. ``None`` renders the default.
 
     Returns:
         The answer's rows, unchanged.
 
     Raises:
         SurrealStoreError: The answer is not a list, or a member is not a dict.
+        ValueError: ``remedy`` was passed without ``landed=True`` (a plain read's fault has no remedy
+            clause, so it would be silently dropped).
     """
+    if remedy is not None and not landed:
+        raise ValueError(f"rows_of({noun!r}): a remedy applies only to a landed write (landed=True)")
     if not isinstance(result, list):
-        raise SurrealStoreError(_shape_fault(noun, result, landed=landed, position=None))
+        raise SurrealStoreError(_shape_fault(noun, result, landed=landed, position=None, remedy=remedy))
     for position, row in enumerate(result):
         if not isinstance(row, dict):
-            raise SurrealStoreError(_shape_fault(noun, row, landed=landed, position=position))
+            raise SurrealStoreError(_shape_fault(noun, row, landed=landed, position=position, remedy=remedy))
     return result
 
 
-def _shape_fault(noun: str, answered: Any, *, landed: bool, position: int | None) -> str:
-    """:func:`rows_of`'s fault text: the ONE landed template for a post-write read, else the read's own
-    wording (a whole answer, or the member at ``position``)."""
+def _shape_fault(noun: str, answered: Any, *, landed: bool, position: int | None, remedy: str | None) -> str:
+    """:func:`rows_of`'s fault text: the ONE landed template for a post-write read (with ``remedy``, else the
+    default remedy), else the read's own wording (a whole answer, or the member at ``position``)."""
     kind = type(answered).__name__
     if landed:
-        return _LANDED_SHAPE_FAULT.format(noun=noun, type=kind)
+        return _LANDED_SHAPE_FAULT.format(
+            noun=noun, type=kind, remedy=_LANDED_DEFAULT_REMEDY if remedy is None else remedy
+        )
     if position is None:
         return f"the {noun} read answered a {kind}, not a row list — nothing was decided from it"
     return (

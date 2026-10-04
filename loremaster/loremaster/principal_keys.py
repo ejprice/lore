@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from datetime import UTC, datetime
 from typing import Any
 
@@ -99,7 +100,7 @@ from surrealdb import AsyncSurreal
 # ONE-IMPLEMENTATION violation the DRY ledger forbids).
 from loremaster.config import LoreConfig, resolve_config_value, resolve_secret
 from loremaster.index.records import sha512_hex
-from loremaster.principals import Principal, PrincipalNotFoundError, PrincipalStore
+from loremaster.principals import _CLI_PROG, Principal, PrincipalNotFoundError, PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
     SurrealConnectionError,
@@ -425,7 +426,17 @@ class PrincipalKeyStore:
             f"could not mint key {name!r} for principal {email!r}",
         ):
             result = await self._query(statement, params)
-        rows = self._as_rows(result, noun="principal-key mint", landed=True)
+        # The CREATE committed, but a wrong-shaped answer aborts BEFORE the CLI prints the one-time
+        # secret: the key is LIVE and nobody holds its secret, so the only repair is to revoke it (#531).
+        revoke_argv = shlex.join([_CLI_PROG, "revoke-key", "--email", email, "--name", name])
+        rows = self._as_rows(
+            result,
+            noun="principal-key mint",
+            landed=True,
+            remedy=(
+                f"key {name!r}'s secret was never shown, so revoke it (`{revoke_argv}`) and mint a new key"
+            ),
+        )
         if not rows:
             raise PrincipalKeyStoreError(
                 f"key {name!r} for principal {email!r} vanished immediately after it was created"
@@ -641,15 +652,18 @@ class PrincipalKeyStore:
         return id_part if separator else record_id
 
     @staticmethod
-    def _as_rows(result: Any, *, noun: str, landed: bool = False) -> list[dict[str, Any]]:
+    def _as_rows(
+        result: Any, *, noun: str, landed: bool = False, remedy: str | None = None
+    ) -> list[dict[str, Any]]:
         """A ``SELECT``/``CREATE``/``UPDATE`` result's rows, through the ONE fail-closed row-list policy
         :func:`loremaster.governed.rows_of` (am-37 §13 B): a non-list answer or a non-dict member RAISES
         ``SurrealStoreError`` — never ``[]``, which ``revoke`` would serve as "no such key" and ``verify``
         as a no-such-key deny for what is a store fault. ``noun`` is REQUIRED (am-37 §13.3 item 7: every
-        caller names its read); ``landed=True`` marks a committed write's own answer (item 5)."""
+        caller names its read); ``landed=True`` marks a committed write's own answer (item 5), and
+        ``remedy`` overrides that landed fault's last clause (``mint``, #531)."""
         from loremaster.governed import rows_of
 
-        return rows_of(result, noun=noun, landed=landed)
+        return rows_of(result, noun=noun, landed=landed, remedy=remedy)
 
 
 def build_principal_key_store(config: LoreConfig) -> PrincipalKeyStore:

@@ -28,6 +28,8 @@ import ast
 import inspect
 import logging
 import re
+import shlex
+import string
 import subprocess
 import sys
 import textwrap
@@ -40,8 +42,10 @@ import test_engine_rejection_seam as seam  # module-qualified: its Test* classes
 import test_preboot_schema_precondition_63c_13d as preboot
 import test_principals_cli as cli
 import yaml
-from loremaster.principal_keys import PrincipalKeyStoreError
+from loremaster.principal_keys import PrincipalKeyStore, PrincipalKeyStoreError
+from loremaster.store._txn import SurrealStoreError
 from loremaster.store.surreal_schema import BRIEF_TABLE
+from pydantic import SecretStr
 
 from loremaster import logging_setup
 from loremaster import principals as p_module
@@ -327,6 +331,13 @@ class TestTheReportCountValidatesItsOwnTable:
 
 _LANDED_TEMPLATE = (
     "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
+    "answer; {remedy}"
+)
+
+#: The rendered default for a site that passes no remedy — written OUT, not derived from the template, so a
+#: changed template or default remedy that alters the served text goes RED here (#531 follow-up, fix531b).
+_LANDED_DEFAULT_TEXT = (
+    "the {noun} LANDED (committed) but answered a {type} instead of its rows — nothing was decided from the "
     "answer; verify the stored state before re-running"
 )
 
@@ -422,12 +433,92 @@ class TestEveryPostWriteShapeReadSaysItLanded:
         """RED at bec29190 (``rows_of`` has no ``landed``). The template is ONE text, byte-exact."""
         with pytest.raises(Exception) as caught:  # noqa: PT011 - SurrealStoreError, the class rows_of raises
             governed_module.rows_of(answer, noun="probe write", landed=True)  # type: ignore[call-arg,unused-ignore]
-        assert str(caught.value) == _LANDED_TEMPLATE.format(noun="probe write", type=type(answer).__name__)
+        assert str(caught.value) == _LANDED_TEMPLATE.format(
+            noun="probe write",
+            type=type(answer).__name__,
+            remedy="verify the stored state before re-running",
+        )
+
+    @pytest.mark.parametrize("answer", ["garbage", None, ["row"]], ids=["str", "None", "non-dict-member"])
+    def test_a_site_passing_no_remedy_serves_the_default_text_byte_identical(self, answer: Any) -> None:
+        """fix531b (a): slotting the remedy must not change one byte for the sites that pass none."""
+        kind = type(answer[0] if isinstance(answer, list) else answer).__name__
+        with pytest.raises(SurrealStoreError) as caught:
+            governed_module.rows_of(answer, noun="probe write", landed=True)
+        assert str(caught.value) == _LANDED_DEFAULT_TEXT.format(noun="probe write", type=kind)
+
+    def test_the_template_has_exactly_one_remedy_slot(self) -> None:
+        """fix531b (c): the ONE template carries the remedy as exactly one slot, beside noun and type."""
+        template = governed_module._LANDED_SHAPE_FAULT  # noqa: SLF001
+        fields = [
+            field for _literal, field, _spec, _conv in string.Formatter().parse(template) if field is not None
+        ]
+        assert sorted(fields) == ["noun", "remedy", "type"], fields
+        assert template == _LANDED_TEMPLATE
+
+    def test_a_passed_remedy_replaces_the_default_clause(self) -> None:
+        with pytest.raises(SurrealStoreError) as caught:
+            governed_module.rows_of("garbage", noun="probe write", landed=True, remedy="do the special thing")
+        assert str(caught.value) == _LANDED_TEMPLATE.format(
+            noun="probe write", type="str", remedy="do the special thing"
+        )
+
+    def test_a_remedy_without_landed_is_refused(self) -> None:
+        """A remedy belongs to a landed write only; on a plain read it would be silently dropped."""
+        with pytest.raises(ValueError, match="remedy"):
+            governed_module.rows_of([], noun="probe read", remedy="do the special thing")
 
     def test_CONTROL_the_unlanded_read_keeps_its_own_text(self) -> None:
         with pytest.raises(Exception) as caught:  # noqa: PT011
             governed_module.rows_of("garbage", noun="probe read")
         assert "LANDED" not in str(caught.value), str(caught.value)
+
+
+class TestALandedThenFaultedMintNamesTheRevokeRemedy:
+    """fix531b (b), #531 follow-up: a ``mint`` whose CREATE committed but answered a wrong shape aborts BEFORE
+    the CLI prints the one-time secret, leaving a LIVE key whose secret nobody has. The generic "verify the
+    stored state" advice leaves that key standing; the fault must name the revoke verb for THAT key."""
+
+    @pytest.mark.parametrize("answer", ["garbage", None, {"id": "principal_key:x"}, ["row"]])
+    @pytest.mark.parametrize(
+        ("email", "name"),
+        [("ops531@example.com", "laptop"), ("dev.531+keys@example.org", "work laptop")],
+        ids=["plain", "needs-quoting"],
+    )
+    async def test_the_fault_names_lore_adm_revoke_key_for_the_landed_key(
+        self, monkeypatch: pytest.MonkeyPatch, answer: Any, email: str, name: str
+    ) -> None:
+        store = PrincipalKeyStore(
+            url="ws://127.0.0.1:1", namespace="ns531b", database="db531b", user="u", password=SecretStr("p")
+        )
+        landed = {"count": 0}
+
+        async def require_principal_id(_email: str) -> str:
+            return "abc531b"
+
+        async def query(statement: str, _params: dict[str, Any] | None = None) -> Any:
+            assert statement.startswith("CREATE "), statement
+            landed["count"] += 1
+            return answer
+
+        monkeypatch.setattr(store, "_require_principal_id", require_principal_id)
+        monkeypatch.setattr(store, "_query", query)
+        with pytest.raises(SurrealStoreError) as caught:
+            await store.mint(email=email, name=name, secret_hash="0" * 128)
+        assert landed["count"] == 1, "the forged CREATE answer never landed (#194)"
+        message = str(caught.value)
+        revoke_argv = shlex.join(["lore-adm", "revoke-key", "--email", email, "--name", name])
+        assert "principal-key mint LANDED" in message, message
+        assert revoke_argv in message, f"the revoke remedy for {name!r} is missing: {message}"
+        assert "never shown" in message and "mint a new" in message, message
+        assert "verify the stored state before re-running" not in message, message
+        # The served command must be one the REAL lore-adm parser runs as THIS key's revoke — a renamed verb
+        # or flag reddens here instead of shipping a remedy that no longer works.
+        parser = p_module.build_parser()
+        served = shlex.split(message.split("`")[1])
+        assert served[0] == parser.prog, served
+        parsed = vars(parser.parse_args(served[1:]))
+        assert (parsed["command"], parsed["email"], parsed["name"]) == ("revoke-key", email, name), parsed
 
 
 # =========================================================================== #
