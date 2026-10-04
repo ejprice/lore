@@ -2211,3 +2211,7 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
   1. `refactor-486` (tdd-refactorer, model opus; Phase 5 review-then-refactor, targeted runs) →
   2. `coldaudit-486` (the packet's ONE full suite via the currency gate; also covers the owed 9c88779 re-run; mutation: bypass the seam / disable the reap; a lore_test DB-count leak check) →
   3. lead deletion reconciliation + commit + archive the 486 reports + resolve #486.
+- **refactor-486 (Phase 5) DONE (`REPORT-refactor-486.md`, `cdef4bb`).** Reuse PASS (`run` routes through `_run_under_store_retry_seam`, no local classifier). It edited 7 patch lines (annotations + one import); the new WIP baseline is `486-after-refactor.patch` md5 `7c0dba4c…`. Targeted 1F/1414P before = after.
+  - **F1 BLOCKER:** contract pin `test_run_detection_follows_the_seams_one_conflict_marker` patches `_RETRYABLE_CONFLICT_MARKER`, which 63c-i-a (`34d0b6b`) DELETED, so it is RED and the run-sharing proof is dead. KIND re-key proven satisfiable (transient, restored).
+  - **F2 (live false clear):** a mid-session `reap_minted_databases()` swallows an earlier same-worker leak, so no session-end report fires; the contract's own reaper test is such a caller. Constructed probe pasted.
+- At 2026-10-04T17:16Z → `contract-486-r2` (tdd-light-contract; the F1 re-key + the F2 outcome pin, RED) → then `implement-486-r2` (the F2 fix in the harness) → `coldaudit-486` → commit.
