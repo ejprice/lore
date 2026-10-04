@@ -2169,3 +2169,10 @@ Reserved next: builder-63c-i-a-fix6, coldaudit-63c-i-a-5, blindreader-63c-i-a-5.
     - (2) `store/surreal_schema.py` "every statement is idempotent" docstring: true, but in the #107 neighbourhood (an idempotent no-op never migrates). Observation.
 - **OPERATOR: 58 is NOT started this session; it is for the NEXT agent.** RESUME ANCHOR v10 stands, with #531 removed from its residual list. `REPORT-fix531.md` is at the root (archive it with the next close-out or now; it is tracked).
 - fix531 stopped. Live: sidecar-63c-2 and sidecar-64 (idle; they end with the session; nothing uncommitted depends on them).
+- **2026-10-04T16:14Z — #531 follow-ups (operator: "fix the mint guidance and the docstring in surreal_schema.py"):** fix531b, `REPORT-fix531b.md` (`08cb222`).
+  - `28395e0`: `_LANDED_SHAPE_FAULT` gains ONE `{remedy}` slot (the default renders byte-identical). A remedy without `landed=True` raises. `mint` passes "key '<name>''s secret was never shown, so revoke it (`lore-adm revoke-key --email … --name …`, shlex-quoted) and mint a new key". A pin parses that argv through the real parser.
+  - `0f81bd7`: docstrings only (**lead-verified: AST-equal modulo docstrings**). They state the IF NOT EXISTS bound (a changed plain-table/index/analyzer/sequence definition never migrates; fields and TYPE RELATION tables are OVERWRITE), citing store-ref §1.1/§1.4/§1.5/§6.1. Two false "all tables IF NOT EXISTS" claims corrected (the relation-table OVERWRITE claim was lead-checked against `_define_relation_table`).
+  - **Lead verification:** no trailers on either commit; diffs read; ruff clean on the 4 files; a clean-HEAD (08cb222) re-run of `test_am37_13_3` + `fail_closed_shapes` + `principal_keys_store` is gated in background bsp4jozeh.
+  - #533 filed by fix531b (currency `--legs` renders the excluded pytest as ORPHAN/FAIL = residual FLAG-2, now numbered).
+  - Disclosed slip: one of its runs started at 18.7 GiB (<20), cgroup-capped, no kill.
+  - fix531b stopped.
