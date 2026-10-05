@@ -902,3 +902,75 @@ PROVES no key landed carries none.* DOMAIN: every raise point from the `_query(s
    (no statement of `mint` lies after the `try`) — the window-covers-the-whole-path completeness leg. (d)
    `_fault_line` renders `__notes__` (one cell, with a no-notes control). STOP: a pin asserting the OLD remedy text in
    `_as_rows`' message or the no-row message → DUAL re-key to the note (same commit, test side first).
+
+## 14. Appended 2026-10-04 (lead-63c-2, operator-directed: three design questions). Recommendations only — the operator rules
+
+### Q1 — the mint CREATE cancelled in flight: YES, the conditional note; the domain is the PROVEN-no-key set, not a list of unknowns (erratum mine, §13.5 item 1)
+**Recommendation:** cancellation (`asyncio.CancelledError`, an anyio cancel, `TimeoutError`, `KeyboardInterrupt`)
+arriving while the CREATE is in flight gets the CONDITIONAL note. The request may have reached the engine exactly as
+with a dropped socket; the outcome is unknown; the operator needs the same `list-keys`-then-revoke teaching.
+**Reasoning / the lifted CLASS:** §13.5 item 1 wrote *"allowlist the safe: exactly ONE class gets the conditional
+note"* — I allowlisted the wrong side. The SAFE set here is the set of faults that PROVE no key landed, and that set is
+FINITE and DERIVABLE: the driver's own refusals and pre-send faults — `TxnDomainRejectionError` (+ subclasses, UNIQUE
+included), `TxnContentionExhaustedError` (rolled back), `TxnParamCollisionError`, `TxnEnvelopeViolationError` — i.e.
+`_txn`'s `SurrealStoreError` taxonomy MINUS the connection class. The "unknown outcome" set is UNBOUNDED (transport,
+cancellation, interrupts, timeouts, a future SDK routing error) and must never be enumerated. So the rule inverts:
+**pre-answer, the note is WITHHELD iff the fault is a member of the proven-no-key set; every other fault gets the
+conditional note.** `_mint_fault_note`'s `isinstance(error, SurrealConnectionError)` becomes
+`not isinstance(error, _PROVEN_NO_KEY_FAULTS)` — one tuple, derived in `_txn` (the taxonomy minus
+`SurrealConnectionError`) and exported, so a new `_txn` subclass is adjudicated at birth. `except BaseException` already
+catches cancellation; `BaseException.add_note` exists on it; the bare `raise` preserves cancellation semantics.
+**Pin / rider:** fix531d's pin (a) is RE-KEYED by DUAL: its `CancelledError → no note` control flips to `→ conditional
+note, class unchanged`; the generated taxonomy leg asserts ∀ `_txn` subclass: proven → no note, connection → note; plus
+cells for `CancelledError`, `KeyboardInterrupt`, `TimeoutError`, an `anyio.CancelScope` cancel → conditional note.
+Completeness: `_PROVEN_NO_KEY_FAULTS ∪ {SurrealConnectionError}` == the `_txn` taxonomy (derived) — a new subclass
+nobody adjudicated reds by name. STOP: none (the handler shape, the fates passthrough and the UNIQUE no-advice pin are
+untouched).
+
+### Q2 — #486 R2's bound: (c)+(d) — keep anyio as the GRACEFUL inner bound and add a HARD outer bound from the stdlib, pinned by a subprocess cell; (a) and a bare (b) are refused
+**Recommendation:** keep `anyio.fail_after` (it preserves pytest's verdict and the loud line for every cooperative
+hang, measured 4/4), and wrap the session-end reap in **`faulthandler.dump_traceback_later(2 × budget, exit=True)`**
+(stdlib; cancelled with `cancel_dump_traceback_later()` on the way out). It is a watchdog THREAD that needs no
+cooperation from the hung code: on expiry it dumps EVERY thread's traceback to stderr and `_exit(1)`s. That is a
+hard bound WITH forensics — strictly better than the old daemon thread, which abandoned the hang and told nobody
+where it was.
+**Reasoning / the lifted CLASS:** *a bound is a bound only over the behaviours it can interrupt; a cooperative bound's
+reach is the cooperativeness of the path it guards — a hidden constant unless a non-cooperative outer bound exists.*
+Option (a) leaves `pytest_sessionfinish` able to hang the whole fleet's gate on one `to_thread`. Option (b) alone — a
+pin that the reap path has no sync call / shield / `to_thread` — is a name-list of the FORBIDDEN (the instrument
+lesson's eighth defeat: the next blocking primitive has a name the pin does not know). Option (d) as "restore the
+daemon thread" re-abandons. (c)+(d) enforces at the STATE (the process cannot hang past 2×budget) and keeps the
+graceful path primary.
+**Pin (exact):** a SUBPROCESS cell (the bound kills the process, so it cannot run in-process): `pytest_sessionfinish`'s
+reap monkeypatched to a SYNC `time.sleep(10 × budget)` with a small budget → the child exits non-zero within
+`2 × budget + ε` and its stderr carries `faulthandler`'s dump naming `_reap_within_budget`; CONTROL: the reap replaced
+by a cooperative never-answering await → the child exits 0 within `budget + ε` with the existing loud
+"no answer within the …s session-end reap budget" line and the verdict intact (anyio got there first). Both legs
+declared before the run. The F-a re-open trigger is thereby retired: a non-cancellable block is no longer a bound,
+it is a dumped stack. Secret/hygiene: the dump is stack frames only; the test store's URL already prints.
+Lead note: coldaudit-486-3 judges the build; this is the design answer, and the pin is a test-tree change for #486's
+implementer.
+
+### Q3 — the un-awaited `_empty_subscription`: NOT a false clear of the pin's own claim; a FIXTURE-SHAPE defect that kills the success leg and a `suppress(Exception)` that hides it. Fix in the next test-side fix-up (test file only); ledger the production branch
+**What I read (no pytest run; `:18000` not touched):** the fake's `subscribe_live` is `async def … return
+_empty_subscription()`, and `_empty_subscription` is ITSELF `async def` returning the generator — so after production's
+one `await`, `subscription` is a coroutine OBJECT, `async for` over it raises `TypeError`, `contextlib.suppress(
+Exception)` swallows it, and the never-awaited coroutine is what the `RuntimeWarning` reports. The installed SDK's
+`subscribe_live` is `async def … -> AsyncGenerator` (a coroutine returning the generator — MEDIUM: taken from
+production's own comment, not re-derived from the SDK body); the fake is one level deeper than the thing it fakes.
+**Verdict:** the pin asserts `subscribe_live` was attempted exactly 4 times (3 conflicts + 1 success) and that count IS
+reached — the retry property it claims is genuinely exercised, so it is not a false clear OF THAT CLAIM. But (i) the
+success leg (`async for` + `_drain_pending`) is dead in this test — a build that retries and then cannot iterate the
+subscription passes; (ii) `suppress(Exception)` is a probe without a control: it also swallows the fake's own
+`AssertionError("unbounded retry")`, leaving the `== 4` equality as the only guard; (iii) production's comment
+("an async-generator FUNCTION under the test fake") describes a fake that does not exist — the `inspect.isawaitable`
+branch is shaped by a test, and that test is wrong about itself.
+**Fix (test file only, `test_retry_seam.py`, the next 63c test-side fix-up; ~6 lines):** `_empty_subscription` becomes
+a plain function returning `_iterator()` (the SDK's success SHAPE: coroutine → async generator, one level); delete
+`suppress(Exception)` — the consume returns cleanly on an exhausted iterator (`_drain_pending` then meets the fake's
+`query`, which conflicts 3× and answers `[]`) — any exception is a real red; add the warning as an error for this test
+(`pytest.warns`-free: `filterwarnings("error::RuntimeWarning")` on the test) so the fixture shape is pinned. **Ledger
+(not 63c's file):** `scout._consume_live`'s "await it if awaitable" branch and its comment — re-derive from the SDK
+body whether the branch is live in production; if the SDK returns the generator directly, the branch is dead code
+shaped by a wrong fake and goes with the next scout-touching contract. CLASS: *a fake's success shape equals the
+dependency's, and a pin never suppresses the exception class it exists to notice.*
