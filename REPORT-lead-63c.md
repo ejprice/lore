@@ -2455,3 +2455,37 @@ Then commit.
     - q1b `_proven_no_key` docstring is stale (F-2).
     - R-3: a raising catch predicate replaces the fault (latent).
     - #544/#545/#546 filed by the audits.
+
+## RESUME ANCHOR v14 (2026-10-05T16:10Z) — AUTHORITATIVE; supersedes v13. SESSION END STATE.
+**DONE and committed this session (since v13):**
+- **am-37 §14 Q1 CLOSED.** Builds: Q1 `0bbbd50` + `f46cdd2`, Q1b `def1afd`, Q1c `9aac1f9`. Audits coldaudit-mint-q1 / -q1b / -q1c, all GO-with-residuals.
+  - Reports are archived in `receipts/2026-10-05-am37-14/` (`28887b2`). INDEX `fcdc815`.
+  - Sidecar rulings: am-37 §15 `a555cf9`, §15.1 `4ac88fb`, §15.2 `9813259`, §15.3 `dde69a6`, §15.4 `db9e969`.
+- Q3 `7f06b59`.
+- Earlier in the session: #486 follow-up `89549fb` + `16bfa0f`.
+
+**OPERATOR DIRECTIVES (2026-10-05):**
+- (1) The design SIDECAR RULES FORKS; only scope changes and standing-law exceptions go to the operator. In native memory: `raise-questions-via-interviewer.md`.
+- (2) The memory-floor exception (17 GiB) was granted for coldaudit-mint-q1 ONLY; standing law stays 20 GiB.
+
+**OPEN (nothing in flight):**
+- Residuals:
+  - #539 scout awaitable branch;
+  - #540/#545 currency render;
+  - #541 #486 pin gaps;
+  - #543 the "could not <verb>" class at 16 other wrap callers (needs an operator scope ruling);
+  - #544 the pgrep-f gate;
+  - #546/#547 the search hook;
+  - coldaudit-mint-q1c R-1/R-2 (namespaced kind keys, optional sidecar question);
+  - q1b test docstring staleness;
+  - R-3 latent (a raising predicate replaces the fault);
+  - two skip reasons in `test_mint_unknown_outcome_note_q1.py` say "today".
+- Process notes:
+  - Builders correctly refused lead-authorized test edits (brief-base §2 needs an OPERATOR grant). Route test-side repairs to a contract author from the start.
+  - Gates must match the process NAME, not command text (#544).
+- **58 → the NEXT agent** (operator), per anchor v10's 58 section (§RE-BASE first).
+- The failing-test count at session end: 530 failing, all owned by the packet-58 (217) / 64b-i (313) contracts (contract-ahead).
+- Untracked, not mine: `REPORT-builder-63c-i-a-fix.md`, `REPORT-sidecar-63c.md`. `REPORT-sidecar-63c-2.md` (the sidecar's own tracked log) stays at root.
+
+**Agents:** all stopped at session end (implement-mint-q1, sidecar-63c-2, sidecar-64).
+**Used names, added:** contract-mint-q1b, contract-mint-q1b-fix, coldaudit-mint-q1b, contract-mint-q1c, contract-mint-q1c-rider, coldaudit-mint-q1c, implement-mint-q1, coldaudit-mint-q1, contract-mint-q1.
