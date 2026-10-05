@@ -287,3 +287,20 @@ bounds:
       count: 1
       reason: _act_as returns arm_finding_identity(...), which mypy types Any while the import is unresolved (the arm lands
         with §HELD part B) — the same missing symbol, surfacing as a return-type line
+# am-37 §14 Q1 (contract-mint-q1 r2, 2026-10-05; lead-authorized §OWN edit). ONE file, split out of fix531d's
+# test_am37_13_3_63c_i_a.py on purpose: pytest reds are owned per FILE (partition_pytest), so owning them inside
+# fix531d's file would blind its other pins until the build (am-37 §2 F-15). The file names the tuple STATICALLY
+# in a runtime-inert TYPE_CHECKING block, so its typecheck line and its pytest legs share ONE self-destructing owner.
+- id: am37-14-q1-mint-contract
+  owner: the am-37 §14 Q1 builder (mint unknown-outcome note — the proven-no-key tuple and its one chokepoint)
+  reopen_trigger: the Q1 build lands loremaster.store._txn._PROVEN_NO_KEY_FAULTS and test_mint_unknown_outcome_note_q1.py
+    goes GREEN — then this entry self-destructs and is deleted with the build, together with that file's TYPE_CHECKING
+    anchor
+  ruling: 'docs/design/2026-09-29-packet63c-amendment-37.md §14 Q1 (fb83c4a); operator rulings F-3 + N-3 (2026-10-05)
+    and lead rulings F-1/F-2/F-4 via lead-63c-2; receipts REPORT-contract-mint-q1.md (48890b8) §R2'
+  rationale: contract-ahead — the pins name the ruled tuple before it exists, so the builder meets it rather than
+    inventing it; every RED@HEAD cell of the contract lives in this ONE file
+  files:
+  - path: loremaster/tests/test_mint_unknown_outcome_note_q1.py
+    missing_symbols:
+    - loremaster.store._txn._PROVEN_NO_KEY_FAULTS

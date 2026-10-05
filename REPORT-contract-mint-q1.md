@@ -195,3 +195,304 @@ Contract file against it: **`163 passed`** (after the mutation-cell fix below). 
 - **N-2** Foreign `SurrealStoreError` subclasses (`store.lease.LeaseError`, `store.surreal.VectorDimensionError`, `CalibrationPool*`, `floor_calibration.store.FloorCalibrationError`/`FenceLostError`) are not `_txn`'s. Fix531d's walk already filtered by module. If one ever reaches `mint`'s wrap, it is translated to "could not mint key …" plus a conditional note. That pairs a not-landed claim with an unknown-outcome note, the same inconsistency the bare base has. The inconsistency is in the wrap's message, not in Q1.
 - **N-3** The wrap's message "could not mint key …" asserts non-landing for EVERY translated `SurrealStoreError`, including the bare base. For the base, that is a claim the conditional note contradicts. Spec-silent; candidate operator question.
 - **N-4** `test_exhaustion_fates.py` red on `store/lease.py` `logs-error-class` (58-owned, per fix531d) — see the targeted tail.
+
+## §R2 — round 2 (lead rulings F-1/F-2/F-4, operator rulings F-3 + N-3, 2026-10-05; base `d27a0ce`, production identical to `c633fbf`)
+- **State:** done-with-deviations (r2 + the N-3 landing, measured 2026-10-05 at HEAD `8cf6edd`, production == `c633fbf`).
+  - **F-3:** pinned as a CAUSE-NEUTRAL property.
+  - **N-3:** LANDED under mechanism **(d)**, in the owned file (§R2.N3-LANDED).
+  - **§OWN:** landed; typecheck RED_ADJUDICATED to `am37-14-q1-mint-contract`, **RED_ORPHANED 0**.
+  - **HEAD:** **43 RED, all in the owned file, all for the right reason.**
+  - **Reference ref-D:** **202 passed, 2 skipped** on both files; on the targeted set its only red is the pre-existing 58 row, and the #400 pin is GREEN.
+  - **Ruling-channel conflict, resolved toward the DURABLE record:**
+    - the native message (lead, received ≈02:45Z) said N-3 = option (a) plus a caller rider;
+    - the newer committed lead record `8cf6edd` (REPORT-lead-63c.md v13 addendum 2, ≈03:00Z) re-rules to **(d)**, marks the rider MOOT, and adds "the outer message must be CAUSE-NEUTRAL".
+    - I implemented (d). Reading (a) would redden #400's `…[principal_key-mint]` pin, which is outside my writable set. If (a) was really meant, say so; its pins differ in one assertion (untranslated `served is injected` for unproven store faults) plus a DUAL re-key of that #400 cell.
+  - **Decision applied (two readings written):** the lead's cause-neutral correction names the OUTER MESSAGE. I applied the same reason to the NOTE's parenthetical: the operator's example "interrupted before the store answered" is false for a malformed-response bare base, which gets the conditional note under F-4. So `interrupt` and `answered` joined `_FAMILY_CAUSE_WORDS`. The alternative reading (note keeps the operator's example) is a one-line revert of the tuple.
+  - **Earlier deviation:** a transient lint-probe file in `loremaster/tests/`, deleted in the same command.
+  - **Decisions needed:** none blocking. The (a)-vs-(d) confirmation above is the only open one.
+### §R2.STOP — N-3: the wrap's other callers (brief: "STOP and report its other callers before pinning")
+`lore_impact(loremaster.store._txn.wrap_store_rejection)`, measured 2026-10-05 at `d27a0ce`: **21 production references**. The direct consumers, verbatim:
+- `audit.AuditStore.append`
+- `keeps.KeepStore.{add_household_member, create_keep, delete_keep, get_or_create_keyed, list_keeps_for_member, remove_household_member, set_keeper, set_rank}`
+- `principal_keys.PrincipalKeyStore.{mint, revoke}`
+- `principals.PrincipalStore.{create, delete, set_expires, set_status, set_subject}`
+- `principals._migrate_message_owner`
+
+(lore's caveat: the profile rode the bare-name channel; it is a heuristic, so it may undercount and never overcounts consumers of this name.)
+
+**What this means for N-3:** the not-landed message ("could not mint key …") is built by the shared wrap translating EVERY non-passthrough `SurrealStoreError`, the bare base and the foreign subclasses included. Fixing N-3 at the wrap changes the translation fate for all 21 sites, and that is outside Q1's ruling.
+
+**A mint-scoped design exists**, which is why I am surfacing it rather than declaring N-3 blocked. It is the operator's call:
+- (a) **widen the ONE seam:** give `wrap_store_rejection` an optional `catch=` (default `(SurrealStoreError,)`, so the 20 other sites are byte-unchanged). `mint` passes `_PROVEN_NO_KEY_FAULTS`. A non-proven store fault then passes through UNTRANSLATED: no "could not mint" claim, and the conditional note decides from the same tuple. One taxonomy binding, one tuple deciding both note and message.
+- (b) `mint` calls `lorerunes.reclassify` directly with the tuple. REFUSED by me: it is a second binding of the surreal taxonomy, beside the wrap whose docstring says it is "the single place the surreal taxonomy is named" (ROUTING-IS-NOT-SHARING).
+- (c) change the shared wrap for everyone. Outside the ruling.
+
+**Recommendation SUPERSEDED by §R2.STOP-2, which recommends (d).** (a) reddens a #400 pin. The N-3 pins are DRAFTED in scratch (not in the repo, per the STOP) and ready to land the moment (a) or another reading is ruled. Their property and wrong-build list are in §R2.N3-DRAFT.
+
+### §R2.F3 — operator F-3 (GENERALISE), pinned as a property, in the OWNED file
+- `_FAMILY_CAUSE_WORDS = ("connection", "cancel", "timed out", "timeout", "keyboard")`. `interrupt` is deliberately absent, because the operator's own example uses it generically.
+- `_assert_conditional_shape` is used by EVERY non-connection conditional cell: the 6 injected faults, the 3 real-cancel cells and the 6 mutation cells. It now also asserts:
+  - `note != fix531d._conditional_note(email, name)`;
+  - no family word appears (case-insensitive);
+  - plus, unchanged: "outcome is unknown", not LIVE, both commands parsed by the real parser.
+- NEW `test_every_non_connection_fault_gets_ONE_parenthetical[plain|needs-quoting]`: all six non-connection faults give an IDENTICAL note for a given key. This is the ruling's "ONE parenthetical TRUE for all".
+- The connection class keeps its EXACT text, in fix531d's file (`test_a_fault_during_the_CREATE_call[…-SurrealConnectionError]`, unchanged, green on HEAD).
+- **Wrong builds it kills (by inspection, not by building them, per the role boundary):**
+  - connection text kept for all → the `!=` and the `connection` ban fail on every non-connection cell;
+  - per-family texts, e.g. "(the CREATE was cancelled)" → the sameness cell fails, and so does the `cancel` ban;
+  - a build that drops the commands → the parse check fails.
+- **Bound, stated:** the property bans the five family words and nothing else. A generic parenthetical that is false some other way (e.g. "(the engine refused)") passes. Semantic truth beyond those named causes is not mechanically checkable, and the operator's example text is not pinned as a string, per the ruling's "a property, not one string".
+
+### §R2.F1/F2/F4 — lead rulings, implementer guidance (the pins already admit them)
+- **F-1 (b):**
+  - classify a pre-answer `PrincipalKeyStoreError` by its `__cause__`;
+  - pre-answer, that class can only originate from the wrap;
+  - `TxnContentionExhaustedError` and `SurrealConnectionError` pass through raw and are classified as themselves.
+- **F-2 (b):** a hand-adjudicated tuple literal in `_txn`, beside the classes. The contract checks it against BOTH the derived taxonomy and the ruled set, so a computed tuple would still pass mechanically: say so to the builder; the literal is the ruling, the pins are its guard.
+- **F-4:** bare base → conditional (pinned since r1).
+
+### §R2.OWN — done (lead-authorized)
+1. `test_mint_unknown_outcome_note_q1.py`: a runtime-inert `if TYPE_CHECKING: from loremaster.store._txn import _PROVEN_NO_KEY_FAULTS  # noqa: F401` with an owner-anchor comment.
+2. `scripts/pending_contracts.yaml`: bound **`am37-14-q1-mint-contract`**, one file, `missing_symbols: [loremaster.store._txn._PROVEN_NO_KEY_FAULTS]`. The spelling was verified by `--derive`, which printed exactly that entry for the file.
+
+Receipts:
+- `--verify-registry` exit 0.
+- `--currency --legs typecheck,ruff`:
+  - **`typecheck RED_ADJUDICATED — 84 residual(s)`** (83 → 84; the new line is listed under owner **`am37-14-q1-mint-contract`** beside packet-58 / 64b-i);
+  - **`ruff GREEN`**;
+  - **RED_ORPHANED 0** for both legs; `pytest NOT_RUN` by law.
+- **Every NEW red cell lives in the owned file:** HEAD run, 28/28 failures in `test_mint_unknown_outcome_note_q1.py`, 0 in fix531d's file.
+
+### §R2.RED — on HEAD `d27a0ce` (production == `c633fbf`), both repo files, `GATE PASS`
+**`28 failed, 137 passed`**; all 28 in the owned file. `E`-line tally:
+- 12 × `exactly ONE conditional note expected, got None`: the 6 unknown faults × 2 keys;
+- 3 × `AssertionError: None`: the real-cancel cells, past their propagation asserts;
+- 11 × `AttributeError … '_PROVEN_NO_KEY_FAULTS'`: the STUB;
+- **2 NEW** × `AssertionError: ('CancelledError', [])`: the F-3 sameness cells (no note at all on HEAD; the right reason, the first fault in the loop has none).
+
+### §R2.SAT — reference builds (scratch `…/scratchpad/refq1`, `loremaster.__file__` = `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/3c627105-1f2b-4e6a-9678-e4109ccfb396/scratchpad/refq1/loremaster/loremaster/__init__.py`, `scratch_copy.sh --verify-only` exit 0)
+- **ref-A** = r1's reference plus F-3: `cause = "the connection failed during the CREATE" if isinstance(fault, SurrealConnectionError) else "the CREATE was interrupted before the store answered"`. Both repo files: **`165 passed`** — every cell, satisfiable.
+- **ref-B** = ref-A plus N-3 option (a):
+  - `wrap_store_rejection(…, *, catch=(SurrealStoreError,))`, with the default unchanged;
+  - `mint` passes `catch=_txn._PROVEN_NO_KEY_FAULTS`.
+
+  Run over both repo files plus the N-3 draft: **`2 failed, 192 passed, 2 skipped`**. The 2 failures are EXACTLY the predicted `test_an_unproven_fault_raised_by_the_CREATE[{plain,needs-quoting}-SurrealStoreError]`. Their `type(served) is type(_through_the_wrap(...))` pins today's translation of the bare base, which N-3 deliberately changes. That is the DUAL re-key that rides N-3 (§R2.N3-DRAFT item 4), and it is not satisfiable together with N-3 by construction.
+
+### §R2.STOP-2 — (a) breaks a finding-#400 pin; (d) satisfies BOTH (measured)
+- ref-B's targeted run (option (a)): **`4 failed, 1652 passed`**.
+  - The 58-owned exhaustion-fates red.
+  - The 2 predicted bare-base cells.
+  - **AND `test_engine_rejection_seam.py::TestEngineRejectionWrappingBehaviourIsPreserved::test_a_raw_store_error_surfaces_as_the_domain_error[principal_key-mint]`.** `_inject_store_error` raises a **bare `SurrealStoreError`** as its "engine rejection" representative and requires mint to serve `PrincipalKeyStoreError` (#400's consumer law: no raw engine error reaches the caller). Under (a) the bare base passes through raw.
+- So F-4 + N-3 + (a) contradict a pre-existing pin outside my writable set. That is a STOP-DUAL I may not re-key.
+- **(d), the nested ONE-seam form**, satisfies both. `PrincipalKeyStoreError` does NOT subclass `SurrealStoreError` (measured MRO), so in `mint`:
+  ```python
+  with (
+      wrap_store_rejection(PrincipalKeyStoreError, f"the mint of key {name!r} for principal {email!r} was interrupted before the store answered; its outcome is unknown"),
+      wrap_store_rejection(PrincipalKeyStoreError, f"could not mint key {name!r} for principal {email!r}", catch=_txn._PROVEN_NO_KEY_FAULTS),
+  ):
+      result = await self._query(statement, params)
+  ```
+  - The inner wrap catches ONLY the proven tuple and gives the true not-landed message.
+  - The outer wrap, with its default catch, translates every OTHER store fault (bare base, foreign subclasses) into the domain class with an outcome-unknown message. #400 holds: class preserved, no raw engine error.
+  - The handler classifies by `__cause__` (F-1). The SAME tuple decides the inner catch AND the note, which is the one chokepoint the mutation drafts flip.
+  - `wrap_store_rejection` gains only an optional `catch=` (default `(SurrealStoreError,)`), so the other 20 callers are byte-unchanged (the draft's CONTROL class).
+- **ref-C (= ref-A + (d)), targeted set + the owned file + the N-3 draft: `1 failed, 1685 passed, 2 skipped`.**
+  - The only failure is the 58-owned `store/lease.py` fates row.
+  - The #400 pin is GREEN.
+  - All 165 repo cells are GREEN (the bare-base type oracle holds: the class is still `PrincipalKeyStoreError`), so **§R2.N3-DRAFT item 4 (the DUAL re-key) is NOT needed under (d)**.
+  - Every N-3 draft cell is GREEN; 58's fates classifier still reads the handler as a passthrough; a28c's `_txn` tester exact-set pin is green.
+- Operator question: rule (d) (recommended), (a) (requires a DUAL re-key of a #400 pin in `test_engine_rejection_seam.py`, not mine), or narrow N-3.
+
+### §R2.TARGETED
+Set: r1's eight files (`$(cat targeted.txt)`, derivation in r1 §RUNS) + `test_mint_unknown_outcome_note_q1.py`.
+- **HEAD `d27a0ce`: `29 failed, 1627 passed`.** 28 in the owned file + 1 `test_exhaustion_fates.py::…test_every_row_names_a_ruled_classification_an_owner_and_evidence_that_HOLDS` (`store/lease.py` `logs-error-class`, packet-58-owned, pre-existing since fix531d). **0 attributable reds outside the owned file.**
+- ref-A covers both repo files (165/165). ref-B and ref-C are as above.
+
+### §R2.N3-DRAFT — the N-3 pins, drafted, NOT landed (STOP)
+Property (operator, 2026-10-05): ∀ fault that gets the CONDITIONAL note, no rendered message (`str(error)` + `traceback.format_exception`) claims non-landing; proven faults keep the not-landed message; ONE tuple decides both, proven by mutation.
+1. GENERATED unproven population = the 6 r1 unknown faults + every FOREIGN `SurrealStoreError` subclass, derived after importing every non-test `loremaster` module (measured: `LeaseError`, `FenceLostError`, `FloorCalibrationError`, `VectorDimensionError`, `CalibrationPoolError` + 2 subclasses; floor `{LeaseError, FenceLostError}`). Each is constructed without knowing its constructor and injected at `_query`, inside the window. Each must give exactly one conditional-shaped note, and its render must NOT contain the not-landed message, which is DERIVED from mint's own proven serve, never hard-coded, nor `could not mint`.
+2. Proven faults wrapped today keep `str(served) == "could not mint key 'laptop' for principal 'ops531@example.com'"` and a note-free chain. Connection and exhausted contention are skipped: they pass through today.
+3. Sharing by mutation, both directions: `TxnDomainRejectionError` OUT of every identity-found binding → its note AND its message flip; `LeaseError` IN → no note AND the not-landed message.
+4. **DUAL re-key on landing:** the owned file's bare-base unknown cell drops `type(served) is type(_through_the_wrap(...))` for non-proven STORE faults. The property in item 1 replaces it.
+5. CONTROL for option (a): the shared wrap's DEFAULT still translates the bare base and every foreign class to the domain error, `from` the original. The other 20 callers are byte-unchanged.
+
+Receipts:
+- Against HEAD production (scratch tree reverted to HEAD with `git checkout` inside the SCRATCH copy, then restored): **`15 failed, 14 passed, 2 skipped`**. 13 fail as `assert 0 == 1` (no note) and 2 fail on the stub; this is the right reason.
+- Against ref-B: all draft cells pass (inside the 192 above).
+
+The instrument is pasted verbatim because it lives in scratch (brief-base §1). md5 is `4015d39e…` (after lint; `ruff check` clean in the scratch tree).
+```python
+"""DRAFT, NOT in the repo: am-37 §14 Q1 N-3 is STOPPED pending a ruling on the shared wrap.
+
+contract-mint-q1 r2, 2026-10-05. On a ruling these classes move INTO
+``loremaster/tests/test_mint_unknown_outcome_note_q1.py`` (the owned file), and ONE cell there is DUAL
+re-keyed (REPORT-contract-mint-q1.md §R2.N3-DRAFT item 4).
+
+N-3 (operator, 2026-10-05): whenever the CONDITIONAL note applies, NO rendered message claims the key was
+not minted. Proven faults keep their not-landed message, which is TRUE for them. ONE tuple decides the note
+AND the message; sharing is proven by mutation, since moving a class across the tuple flips BOTH.
+"""
+
+from __future__ import annotations
+
+import importlib
+import pkgutil
+import traceback
+
+import pytest
+import test_am37_13_3_63c_i_a as fix531d  # module-qualified: its Test* classes are not re-collected here
+import test_mint_unknown_outcome_note_q1 as q1
+from loremaster.principal_keys import PrincipalKeyStoreError
+from loremaster.store import _txn as _txn_module
+from loremaster.store._txn import SurrealStoreError, TxnDomainRejectionError, wrap_store_rejection
+
+import loremaster
+
+_MINT_EMAIL, _MINT_NAME = fix531d._PLAIN  # noqa: SLF001
+
+
+def _foreign_store_classes() -> list[type[BaseException]]:
+    """GENERATED: every ``SurrealStoreError`` subclass defined OUTSIDE ``_txn``, after importing EVERY
+    non-test ``loremaster`` module (so the walk does not depend on what this worker happened to import)."""
+    for module in pkgutil.walk_packages(loremaster.__path__, "loremaster."):
+        if ".tests" not in module.name:
+            importlib.import_module(module.name)
+    found: set[type[BaseException]] = set()
+    pending = list(SurrealStoreError.__subclasses__())
+    while pending:
+        cls = pending.pop()
+        pending.extend(cls.__subclasses__())
+        if cls.__module__ != _txn_module.__name__:
+            found.add(cls)
+    return sorted(found, key=lambda cls: f"{cls.__module__}.{cls.__qualname__}")
+
+
+def _construct(cls: type[BaseException]) -> BaseException:
+    """An instance without knowing the class's constructor (foreign classes take bespoke kwargs)."""
+    instance = cls.__new__(cls)
+    BaseException.__init__(instance, f"injected n3: {cls.__name__}")
+    return instance
+
+
+_FOREIGN = _foreign_store_classes()
+_UNPROVEN: list[BaseException] = [*q1._unknown_outcome_faults(), *(_construct(cls) for cls in _FOREIGN)]  # noqa: SLF001
+
+
+async def _served(monkeypatch: pytest.MonkeyPatch, injected: BaseException) -> BaseException:
+    window = fix531d.TestTheMintWindowNotesTheRevokeRepair
+    store, reached = window._store(monkeypatch, raises=injected)  # noqa: SLF001
+    with pytest.raises(BaseException) as caught:  # noqa: PT011 - the fate IS the assertion
+        await store.mint(email=_MINT_EMAIL, name=_MINT_NAME, secret_hash="0" * 128)
+    assert reached["count"] == 1, "the CREATE was never reached (#194)"
+    return caught.value
+
+
+async def _not_landed_message(monkeypatch: pytest.MonkeyPatch) -> str:
+    """DERIVED, not hard-coded: what mint serves for a PROVEN rejection (the true not-landed claim)."""
+    served = await _served(monkeypatch, TxnDomainRejectionError("injected n3 proven"))
+    assert isinstance(served, PrincipalKeyStoreError), type(served)
+    return str(served)
+
+
+def _rendered(error: BaseException) -> str:
+    return str(error) + "\n" + "".join(traceback.format_exception(error))
+
+
+class TestAnUnprovenFaultNeverClaimsNonLanding:
+    def test_the_foreign_population_is_not_vacuous(self) -> None:
+        names = {cls.__name__ for cls in _FOREIGN}
+        assert {"LeaseError", "FenceLostError"} <= names, names
+
+    @pytest.mark.parametrize("injected", _UNPROVEN, ids=lambda error: type(error).__name__)
+    async def test_the_message_does_not_claim_the_key_was_not_minted(
+        self, monkeypatch: pytest.MonkeyPatch, injected: BaseException
+    ) -> None:
+        not_landed = await _not_landed_message(monkeypatch)
+        served = await _served(monkeypatch, injected)
+        notes = getattr(served, "__notes__", None) or []
+        assert len(notes) == 1, (type(injected).__name__, notes)
+        q1._assert_conditional_shape(notes[0], email=_MINT_EMAIL, name=_MINT_NAME)  # noqa: SLF001
+        assert not_landed not in _rendered(served), _rendered(served)
+        assert "could not mint" not in _rendered(served).lower(), _rendered(served)
+
+    @pytest.mark.parametrize("cls", fix531d._PRE_COMMIT_CLASSES, ids=lambda cls: cls.__name__)  # noqa: SLF001
+    async def test_a_proven_fault_keeps_the_not_landed_message(
+        self, monkeypatch: pytest.MonkeyPatch, cls: type[BaseException]
+    ) -> None:
+        passes_through = cls.__name__ == "TxnContentionExhaustedError"
+        if cls.__name__ not in fix531d._RULED_PROVEN_NO_KEY or passes_through:  # noqa: SLF001
+            pytest.skip("not translated by the wrap today (connection / exhausted contention pass through)")
+        served = await _served(monkeypatch, fix531d._instance(cls))  # noqa: SLF001
+        assert str(served) == f"could not mint key {_MINT_NAME!r} for principal {_MINT_EMAIL!r}"
+        fix531d._note_free_chain(served)  # noqa: SLF001
+
+
+class TestOneTupleDecidesNoteAndMessage:
+    async def test_moving_a_proven_class_OUT_flips_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        proven = q1.TestTheProvenNoKeySetIsOneExportedTuple._proven()  # noqa: SLF001
+        not_landed = await _not_landed_message(monkeypatch)
+        mutated = tuple(member for member in proven if not issubclass(TxnDomainRejectionError, member))
+        for namespace, attribute in q1._loremaster_bindings_of(proven):  # noqa: SLF001
+            monkeypatch.setattr(namespace, attribute, mutated)
+        served = await _served(monkeypatch, TxnDomainRejectionError("injected n3 moved out"))
+        assert len(getattr(served, "__notes__", None) or []) == 1, "the NOTE did not flip"
+        assert not_landed not in _rendered(served), "the MESSAGE did not flip"
+
+    async def test_moving_a_foreign_class_IN_flips_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        foreign = next(cls for cls in _FOREIGN if cls.__name__ == "LeaseError")
+        proven = q1.TestTheProvenNoKeySetIsOneExportedTuple._proven()  # noqa: SLF001
+        not_landed = await _not_landed_message(monkeypatch)
+        for namespace, attribute in q1._loremaster_bindings_of(proven):  # noqa: SLF001
+            monkeypatch.setattr(namespace, attribute, (*proven, foreign))
+        served = await _served(monkeypatch, _construct(foreign))
+        assert not getattr(served, "__notes__", None), "the NOTE did not flip"
+        assert str(served) == not_landed, "the MESSAGE did not flip"
+
+
+class TestTheOtherWrapCallersAreUnchanged:
+    """CONTROL for option (a): the shared wrap's DEFAULT still translates every non-passthrough fault, so
+    the 20 non-mint callers (audit / keeps / principals / revoke) are byte-unchanged."""
+
+    @pytest.mark.parametrize(
+        "injected",
+        [SurrealStoreError("bare"), *(_construct(c) for c in _FOREIGN)],
+        ids=lambda error: type(error).__name__,
+    )
+    def test_the_default_wrap_translates(self, injected: BaseException) -> None:
+        with pytest.raises(PrincipalKeyStoreError) as caught:
+            with wrap_store_rejection(PrincipalKeyStoreError, "control"):
+                raise injected
+        assert str(caught.value) == "control"
+        assert caught.value.__cause__ is injected
+```
+
+### §R2.N3-LANDED — mechanism (d), in `test_mint_unknown_outcome_note_q1.py` (owned)
+The drafted pins (§R2.N3-DRAFT, pasted above) were landed with these adaptations to (d). The class stays `PrincipalKeyStoreError`; only the message and the note move.
+- `_FAMILY_CAUSE_WORDS` gained `interrupt` and `answered` (cause-neutral). It now governs BOTH the note (`_assert_conditional_shape`) and the outcome-unknown MESSAGE (`_assert_cause_neutral_message`).
+- `TestAnUnprovenFaultNeverClaimsNonLanding` covers the GENERATED population: the 6 r1 unknown faults plus 7 foreign store classes. Floor: `{LeaseError, FenceLostError}`. For each:
+  - one conditional note;
+  - no derived not-landed message and no `could not mint` anywhere in the render;
+  - store faults: `type is PrincipalKeyStoreError`, `__cause__ is injected`, and a cause-neutral message;
+  - non-store faults: the same object.
+- Proven faults keep `could not mint key …` with a note-free chain.
+- `TestOneTupleDecidesNoteAndMessage` covers mutation both ways over identity-found bindings. Moving `TxnDomainRejectionError` OUT flips the note and the message (the class stays the domain class, cause chained). Moving `LeaseError` IN gives no note and the not-landed message.
+- `TestTheOtherWrapCallersAreUnchanged` (lead item 1):
+  - the DEFAULT `wrap_store_rejection` still translates the bare base and every foreign class;
+  - a REAL non-mint caller, `revoke`, still serves `could not revoke key …` with the cause chained and no note.
+  - Under a wrong default (the proven tuple), the bare base and the foreign classes would pass `revoke` untranslated and these cells red. That is by inspection: I did not build that wrong build (role boundary).
+  - The generated cross-store counterpart is `test_engine_rejection_seam.py`'s #400 pins, in the targeted set and GREEN on ref-D.
+- **§R2.N3-DRAFT item 4 (the DUAL re-key) is NOT needed:** under (d) the r1 bare-base oracle (`type(_through_the_wrap)` = `PrincipalKeyStoreError`) still holds.
+- **Lead item 2 (caller rider):** MOOT under (d), per addendum 2. `mint` still raises only `PrincipalKeyStoreError` / pass-through classes to `_cmd_mint_key`, and `_dispatch`'s handler already catches both (§11). No pin added.
+- **Lead item 3 (three effects):** under (d) the "translation" effect is WHICH wrap translated, observed as the message. The class does not flip by design.
+
+**Receipts:**
+- **RED on HEAD `8cf6edd`** (both files, `GATE PASS`): **`43 failed, 159 passed, 2 skipped`**, 43/43 in the owned file. Tally:
+  - 30 "no note": 12 `exactly ONE … got None` + 3 real-cancel + 2 sameness + 13 N-3 population cells (`assert 0 == 1`);
+  - 13 STUB `AttributeError … _PROVEN_NO_KEY_FAULTS`: r1's 11 + the 2 N-3 mutation cells.
+  - GREEN on HEAD, correctly: proven-keeps-message (5), the CONTROL wrap and `revoke` cells (16; they pin TODAY's default), the foreign floor.
+  - The 2 skips are connection and exhausted contention in the proven-keeps-message cell (not translated today).
+- **ref-D** = r1 reference + F-3 cause-neutral note (`"the store did not confirm the CREATE"` for non-connection) + (d) nested wraps with outer message `"the store did not confirm the mint of key … ; its outcome is unknown"` + `catch=` on the seam. Both files: **`202 passed, 2 skipped`**. `loremaster.__file__` is the scratch tree's (printed above).
+- **Targeted** (r1's eight files + the owned file):
+  - HEAD **`44 failed, 1649 passed, 2 skipped`** = 43 owned + the pre-existing 58 `test_exhaustion_fates` row. **0 attributable reds outside the owned file.**
+  - ref-D **`1 failed, 1693 passed, 2 skipped`**: only the 58 row. #400's `test_engine_rejection_seam.py` is all GREEN.
+- **Currency** `--currency --legs typecheck,ruff`: `typecheck RED_ADJUDICATED — 84 residual(s)` (owners include `am37-14-q1-mint-contract`), `ruff GREEN`, **RED_ORPHANED 0**; `pytest NOT_RUN` by law.

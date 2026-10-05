@@ -25,7 +25,6 @@ AST helpers read nodes, never ``eval``.
 from __future__ import annotations
 
 import ast
-import asyncio
 import functools
 import inspect
 import logging
@@ -539,16 +538,43 @@ def _rendered(error: BaseException) -> str:
 
 
 def _store_taxonomy() -> list[type[BaseException]]:
-    """GENERATED: ``SurrealStoreError`` and every subclass the store taxonomy (``loremaster.store._txn``)
-    defines — the domain of what the CREATE ``_query`` can raise from the store."""
-    found: list[type[BaseException]] = [SurrealStoreError]
+    """GENERATED: every PROPER subclass of ``SurrealStoreError`` that the store taxonomy
+    (``loremaster.store._txn``) defines, walked transitively from the base — never a hand-list.
+
+    am-37 §14 Q1 re-key (DUAL, operator-ruled 2026-10-04): the bare BASE is no longer in this domain. A bare
+    ``SurrealStoreError`` proves nothing about the CREATE's outcome, and it cannot sit in an ``isinstance``
+    proven-set: ``SurrealConnectionError`` subclasses it. It moved to the unknown-outcome cells
+    (``test_mint_unknown_outcome_note_q1.py``). The filter is the DEFINING module, so the walk does not
+    depend on which other ``loremaster`` modules this worker happened to import. Foreign subclasses
+    (``store.lease``, ``store.surreal``, ``floor_calibration``) appear only when their module is loaded."""
+    found: set[type[BaseException]] = set()
     pending = list(SurrealStoreError.__subclasses__())
     while pending:
         cls = pending.pop()
         pending.extend(cls.__subclasses__())
         if cls.__module__ == _txn_module.__name__:
-            found.append(cls)
-    return sorted(set(found), key=lambda cls: cls.__qualname__)
+            found.add(cls)
+    return sorted(found, key=lambda cls: cls.__qualname__)
+
+
+#: am-37 §14 Q1 (operator-ruled "Yes, separate cycle", 2026-10-04): the store faults that PROVE no key landed.
+#: They are the driver's own refusals and pre-send faults, WRITTEN OUT from the ruling. This is the contract's
+#: independent adjudication: production's ``_PROVEN_NO_KEY_FAULTS`` is checked AGAINST it, never used AS
+#: the expected value. §14: "TxnDomainRejectionError (+ subclasses, UNIQUE included),
+#: TxnContentionExhaustedError (rolled back), TxnParamCollisionError, TxnEnvelopeViolationError".
+_RULED_PROVEN_NO_KEY: frozenset[str] = frozenset(
+    {
+        "TxnDomainRejectionError",
+        "TxnGovernedConflictError",
+        "TxnUniqueViolationError",
+        "TxnContentionExhaustedError",
+        "TxnParamCollisionError",
+        "TxnEnvelopeViolationError",
+    }
+)
+#: §14 Q1: the store layer's ONE unknown-outcome class (the engine may have committed and the answer been
+#: lost).
+_RULED_UNKNOWN_OUTCOME_STORE: frozenset[str] = frozenset({"SurrealConnectionError"})
 
 
 def _instance(cls: type[BaseException]) -> BaseException:
@@ -567,9 +593,22 @@ def _through_the_wrap(error: BaseException) -> BaseException:
     raise AssertionError("unreachable: the wrap swallowed")  # pragma: no cover
 
 
-#: The pre-commit domain: the generated store taxonomy plus two NON-store classes (an allowlist is proved by
-#: what it EXCLUDES — a cancellation and a plain bug get no note either).
-_PRE_COMMIT_CLASSES: list[type[BaseException]] = [*_store_taxonomy(), RuntimeError, asyncio.CancelledError]
+#: The pre-commit STORE domain: the generated ``_txn`` taxonomy. am-37 §14 Q1 DUAL re-key: fix531d listed
+#: ``RuntimeError`` and ``asyncio.CancelledError`` here as "no note" controls, and the bare base too. Under
+#: §14 all three are UNKNOWN-outcome faults, so they get the CONDITIONAL note. They moved to
+#: ``test_mint_unknown_outcome_note_q1.py`` (its own file so its pending-build reds are owned narrowly).
+_PRE_COMMIT_CLASSES: list[type[BaseException]] = _store_taxonomy()
+
+
+def _note_free_chain(error: BaseException) -> None:
+    """No link of ``error``'s ``__cause__`` chain carries a note — a proven fault must carry no revoke
+    advice anywhere lore-adm renders it (``_fault_line`` walks causes; the traceback prints every link)."""
+    link: BaseException | None = error
+    seen: set[int] = set()
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        assert not getattr(link, "__notes__", None), (type(link).__name__, link.__notes__)
+        link = link.__cause__
 
 
 def _full_row(name: str) -> dict[str, Any]:
@@ -621,15 +660,33 @@ class TestTheMintWindowNotesTheRevokeRepair:
             "TxnParamCollisionError",
             "TxnEnvelopeViolationError",
         } <= names, names
+        assert "SurrealStoreError" not in names, "the bare base proves nothing; it is an unknown-outcome cell"
+
+    def test_every_generated_store_class_is_adjudicated_by_the_ruling(self) -> None:
+        """am-37 §14 Q1 completeness, CONTRACT side: every class the derived walk finds is ruled exactly once,
+        proven-no-key or unknown-outcome. A new ``_txn`` subclass nobody ruled reds HERE, BY NAME. The fix is
+        a ruling plus one line in ``_RULED_PROVEN_NO_KEY`` / ``_RULED_UNKNOWN_OUTCOME_STORE``, never a
+        default."""
+        derived = {cls.__name__ for cls in _PRE_COMMIT_CLASSES}
+        assert not (_RULED_PROVEN_NO_KEY & _RULED_UNKNOWN_OUTCOME_STORE)
+        unruled = derived - _RULED_PROVEN_NO_KEY - _RULED_UNKNOWN_OUTCOME_STORE
+        assert not unruled, f"store fault class(es) nobody adjudicated (am-37 §14 Q1): {sorted(unruled)}"
+        retired = (_RULED_PROVEN_NO_KEY | _RULED_UNKNOWN_OUTCOME_STORE) - derived
+        assert not retired, f"ruled class(es) the taxonomy no longer defines: {sorted(retired)}"
 
     @pytest.mark.parametrize("cls", _PRE_COMMIT_CLASSES, ids=lambda cls: cls.__name__)
     @pytest.mark.parametrize(("email", "name"), [_PLAIN, _NEEDS_QUOTING], ids=["plain", "needs-quoting"])
     async def test_a_fault_during_the_CREATE_call(
         self, monkeypatch: pytest.MonkeyPatch, cls: type[BaseException], email: str, name: str
     ) -> None:
-        """Pre-commit: ONLY ``SurrealConnectionError`` (outcome unknown) gets the CONDITIONAL note; every
-        other class proves no key landed and gets NONE. The served class is exactly what the wrap serves
-        today."""
+        """GENERATED ∀ ``_txn`` store class (am-37 §14 Q1, which inverts §13.5 item 1's domain).
+
+        A class the ruling marks PROVEN-no-key carries NO note anywhere on its chain. That holds even though
+        the wrap TRANSLATES most of them into ``PrincipalKeyStoreError`` before the handler sees them: the
+        UNIQUE rejection is exactly that shape. The unknown-outcome store class carries the CONDITIONAL note,
+        on the SAME object. Either way the served class is exactly what the wrap alone serves today."""
+        if cls.__name__ not in _RULED_PROVEN_NO_KEY | _RULED_UNKNOWN_OUTCOME_STORE:
+            pytest.fail(f"{cls.__name__} is not adjudicated (am-37 §14 Q1) — rule it before pinning its fate")
         injected = _instance(cls)
         expected_type = type(_through_the_wrap(_instance(cls)))
         store, reached = self._store(monkeypatch, raises=injected)
@@ -638,13 +695,14 @@ class TestTheMintWindowNotesTheRevokeRepair:
         assert reached["count"] == 1, "the CREATE was never reached (#194)"
         served = caught.value
         assert type(served) is expected_type, (type(served), expected_type)
-        if issubclass(cls, SurrealConnectionError):
+        if cls.__name__ in _RULED_UNKNOWN_OUTCOME_STORE:
             assert served is injected, "a transport fault must re-raise as the SAME object"
             assert served.__notes__ == [_conditional_note(email, name)]
             self._assert_commands_parse(served.__notes__[0], email=email, name=name)
         else:
-            assert not getattr(served, "__notes__", None), served.__notes__
+            _note_free_chain(served)
             assert "revoke-key" not in _rendered(served), _rendered(served)
+            assert "list-keys" not in _rendered(served), _rendered(served)
 
     @pytest.mark.parametrize(
         ("answer", "raised"),
