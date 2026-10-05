@@ -103,6 +103,7 @@ from loremaster.index.records import sha512_hex
 from loremaster.principals import _CLI_PROG, Principal, PrincipalNotFoundError, PrincipalStore
 from loremaster.store._txn import (
     _CONNECTION_ERRORS,
+    _PROVEN_NO_KEY_FAULTS,
     SurrealConnectionError,
     TxnContentionExhaustedError,
     _SurrealConnection,
@@ -139,6 +140,14 @@ _COL_REVOKED_AT = "revoked_at"
 # ``get_by_email``). Store law §2: an EXPLICIT projection reads a NONE ``option<>``
 # column back as ``None`` (``SELECT *`` OMITS it — a KeyError trap).
 _OWNER_EMAIL_ALIAS = "owner_email"
+
+# The parenthetical of the mint's CONDITIONAL (outcome-unknown) revoke note (am-37 §13.5 item 5, §14 Q1 F-3).
+# The connection class keeps its exact §13.5 text; every other unknown-outcome fault (cancellation, an
+# interrupt, a timeout, the bare store base, a foreign store class, any future unknown) gets ONE cause that is
+# true for ALL of them — it names no family, and does not claim the store never answered (a malformed answer
+# is still an answer).
+_MINT_CAUSE_CONNECTION = "the connection failed during the CREATE"
+_MINT_CAUSE_UNCONFIRMED = "the store did not confirm the CREATE"
 
 
 class PrincipalKey(BaseModel):
@@ -403,7 +412,9 @@ class PrincipalKeyStore:
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
             PrincipalKeyStoreError: The hash or (principal, name) collides with a
-                UNIQUE index.
+                UNIQUE index, or another fault that proves no key landed ("could not mint key …");
+                or any OTHER store fault, whose outcome is unknown (an outcome-unknown message plus
+                the conditional revoke note — am-37 §14 Q1 N-3).
         """
         principal_id = await self._require_principal_id(email)
         fragments = [
@@ -421,14 +432,25 @@ class PrincipalKeyStore:
         # THE mint window (am-37 §13.5, #531): ONE ``try`` from the CREATE call to the ``return``, ONE
         # handler. A fault raised once the CREATE MAY have committed leaves a key whose one-time secret the
         # CLI never printed, so the handler attaches the revoke repair as a PEP 678 note and re-raises the
-        # SAME object (a passthrough: class, message and traceback unchanged). The UNIQUE backstop
-        # (credential hash or (principal, name)) is still wrapped LOUD by the ONE seam (finding #400) around
-        # the CREATE alone; a transport fault / exhausted contention passes through it untouched.
+        # SAME object (a passthrough: class, message and traceback unchanged). The store's rejections are
+        # still wrapped LOUD by the ONE seam (finding #400) around the CREATE alone, NESTED (am-37 §14 Q1 N-3,
+        # mechanism (d)): the INNER wrap translates only ``_PROVEN_NO_KEY_FAULTS`` (UNIQUE included), whose
+        # "could not mint" message is TRUE; the OUTER, default-catch wrap translates every OTHER store fault
+        # into the same class with an outcome-unknown message, because claiming non-landing there would be
+        # false. A transport fault / exhausted contention passes through both untouched.
         answered = False
         try:
-            with wrap_store_rejection(
-                PrincipalKeyStoreError,
-                f"could not mint key {name!r} for principal {email!r}",
+            with (
+                wrap_store_rejection(
+                    PrincipalKeyStoreError,
+                    f"the store did not confirm the mint of key {name!r} for principal {email!r}; "
+                    "its outcome is unknown",
+                ),
+                wrap_store_rejection(
+                    PrincipalKeyStoreError,
+                    f"could not mint key {name!r} for principal {email!r}",
+                    catch=_PROVEN_NO_KEY_FAULTS,
+                ),
             ):
                 result = await self._query(statement, params)
             answered = True
@@ -657,11 +679,18 @@ class PrincipalKeyStore:
         """The revoke repair a :meth:`mint` fault carries as its note (am-37 §13.5 items 1, 5), or ``None``.
 
         ``answered`` (the CREATE returned) ⇒ the key is LIVE and its secret was never shown: the CERTAIN
-        wording, whatever the fault. Before that, exactly ONE class is unsafe — a
-        :class:`SurrealConnectionError` raised during the CREATE, whose outcome is unknown: the CONDITIONAL
-        wording. Every other pre-commit fault (a domain rejection incl. UNIQUE, exhausted contention, a
-        param collision, an envelope violation — or anything else) proves no key landed: no note. The
-        safe-set is allowlisted, never a list of the forbidden.
+        wording, whatever the fault, interrupts and cancellation included. Before that (am-37 §14 Q1, which
+        corrects §13.5 item 1's "exactly ONE class gets the conditional note"), the note is WITHHELD iff the
+        fault is a member of :data:`~loremaster.store._txn._PROVEN_NO_KEY_FAULTS` — the store's own refusals
+        and pre-send faults, which prove no key landed (UNIQUE included: no note). EVERY other fault gets the
+        CONDITIONAL wording: a connection fault, cancellation, an interrupt, a timeout, the bare store base,
+        a foreign store class, any future unknown. The safe (proven) set is allowlisted; the unknown set is
+        never enumerated. A proven fault the inner wrap translated arrives as :class:`PrincipalKeyStoreError`
+        chained ``from`` it, so it is classified by that ``__cause__`` (F-1 (b)) — the SAME tuple that chose
+        the wrap's catch, never a local re-classification.
+
+        The conditional wording keeps its exact connection text for :class:`SurrealConnectionError`; every
+        other unknown-outcome fault gets ONE cause-neutral parenthetical, true for all of them (F-3).
         """
         command = cls._revoke_command(email=email, name=name)
         if answered:
@@ -669,13 +698,30 @@ class PrincipalKeyStore:
                 f"the CREATE committed but the secret was never shown — key {name!r} is LIVE with no holder; "
                 f"revoke it (`{command}`) and mint a new key"
             )
-        if isinstance(error, SurrealConnectionError):
-            listing = shlex.join([_CLI_PROG, "list-keys", "--email", email])
-            return (
-                "the mint's outcome is unknown (the connection failed during the CREATE) — if "
-                f"`{listing}` shows {name!r}, revoke it (`{command}`) and mint a new key"
-            )
-        return None
+        fault = cls._classified_fault(error)
+        if isinstance(fault, _PROVEN_NO_KEY_FAULTS):
+            return None
+        cause = (
+            _MINT_CAUSE_CONNECTION if isinstance(fault, SurrealConnectionError) else _MINT_CAUSE_UNCONFIRMED
+        )
+        listing = shlex.join([_CLI_PROG, "list-keys", "--email", email])
+        return (
+            f"the mint's outcome is unknown ({cause}) — if "
+            f"`{listing}` shows {name!r}, revoke it (`{command}`) and mint a new key"
+        )
+
+    @staticmethod
+    def _classified_fault(error: BaseException) -> BaseException:
+        """The fault :meth:`_mint_fault_note` classifies: the store fault a :meth:`mint` wrap translated
+        (``__cause__`` of a :class:`PrincipalKeyStoreError`, F-1 (b)), else ``error`` itself.
+
+        Before the CREATE answers, a :class:`PrincipalKeyStoreError` can only come from the wraps, which
+        always chain ``from`` the store fault. One with no cause is classified as itself — not proven, so it
+        gets the conditional note: the fail-safe direction.
+        """
+        if isinstance(error, PrincipalKeyStoreError) and error.__cause__ is not None:
+            return error.__cause__
+        return error
 
     @staticmethod
     def _revoke_command(*, email: str, name: str) -> str:

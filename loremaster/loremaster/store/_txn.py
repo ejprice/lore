@@ -252,8 +252,36 @@ class RetryableConflictSignal(Exception):
     """
 
 
+#: am-37 §14 Q1 (operator-ruled 2026-10-04; F-2 (b), lead 2026-10-05): the faults that PROVE a write never
+#: landed — the store layer's own refusals (a domain rejection, UNIQUE and governed conflicts included, and
+#: exhausted contention, which rolled back) and its pre-send faults (a parameter collision, an envelope
+#: violation). It is a HAND-ADJUDICATED literal, kept beside the classes it names so a new ``_txn`` subclass
+#: is adjudicated where it is born; it is never computed from the live subclass tree, because that would
+#: file every new class as "proven" silently (the false-clear direction). The complement is UNBOUNDED by
+#: design — transport (:class:`SurrealConnectionError`), cancellation, interrupts, timeouts, the bare
+#: :class:`SurrealStoreError` base (which, as a member, would also cover the connection class) and any
+#: future unknown — so it is never enumerated: "not a member" means "outcome unknown".
+#: ``PrincipalKeyStore.mint`` reads THIS tuple both to choose its inner wrap's ``catch=`` (and therefore its
+#: not-landed message) and to decide its revoke note — ONE tuple, one decision.
+_PROVEN_NO_KEY_FAULTS: tuple[type[SurrealStoreError], ...] = (
+    TxnDomainRejectionError,
+    TxnGovernedConflictError,
+    TxnUniqueViolationError,
+    TxnContentionExhaustedError,
+    TxnParamCollisionError,
+    TxnEnvelopeViolationError,
+)
+
+#: The catch set :func:`wrap_store_rejection` translates when its caller names none: every
+#: :class:`SurrealStoreError` that is not a pass-through (finding #400's consumer law).
+_DEFAULT_REJECTION_CATCH: tuple[type[SurrealStoreError], ...] = (SurrealStoreError,)
+
+
 def wrap_store_rejection(
-    domain_error: type[Exception], context: str
+    domain_error: type[Exception],
+    context: str,
+    *,
+    catch: tuple[type[SurrealStoreError], ...] = _DEFAULT_REJECTION_CATCH,
 ) -> AbstractContextManager[None]:
     """The ONE surreal-taxonomy binding for the engine-rejection wrap (finding #400, Layer 2).
 
@@ -261,13 +289,14 @@ def wrap_store_rejection(
     error routes through THIS context manager instead of hand-rolling the ``try/except
     (SurrealConnectionError, TxnContentionExhaustedError): raise; except SurrealStoreError as
     e: raise <Domain>(...) from e`` idiom. It is the single place the surreal taxonomy is
-    named — ``passthrough=(SurrealConnectionError, TxnContentionExhaustedError)``,
-    ``catch=(SurrealStoreError,)`` — and it delegates the control flow (re-raise the
-    pass-throughs FIRST, then translate the catch ``from`` the original) to the stdlib-only
-    :func:`lorerunes.reclassify` (Layer 1). Splitting it this way keeps BOTH the taxonomy and
-    the control-flow policy each exactly ONE thing: a taxonomy change (a new pass-through
-    class) lands here and reaches every caller; a control-flow change lands in ``reclassify``
-    and reaches every caller — routing without either would be ROUTING-IS-NOT-SHARING.
+    named — ``passthrough=(SurrealConnectionError, TxnContentionExhaustedError)``, the default
+    ``catch=(SurrealStoreError,)``, and the narrowed :data:`_PROVEN_NO_KEY_FAULTS` — and it
+    delegates the control flow (re-raise the pass-throughs FIRST, then translate the catch
+    ``from`` the original) to the stdlib-only :func:`lorerunes.reclassify` (Layer 1).
+    Splitting it this way keeps BOTH the taxonomy and the control-flow policy each exactly ONE
+    thing: a taxonomy change (a new pass-through class) lands here and reaches every caller; a
+    control-flow change lands in ``reclassify`` and reaches every caller — routing without
+    either would be ROUTING-IS-NOT-SHARING.
 
     The wrapped body is the store's awaited call(s); a transport fault / exhausted contention
     (:class:`SurrealConnectionError` / :class:`TxnContentionExhaustedError`, both of which
@@ -282,6 +311,12 @@ def wrap_store_rejection(
             one raised error, only on a ``SurrealStoreError`` — never on the happy path or a
             pass-through.
         context: The domain error's message — WHAT was rejected, in the store's own words.
+        catch: The :class:`SurrealStoreError` classes to translate (am-37 §14 Q1 N-3, mechanism (d)).
+            Defaults to :data:`_DEFAULT_REJECTION_CATCH` — every non-pass-through store error — which
+            every caller but one uses. ``PrincipalKeyStore.mint`` narrows an INNER wrap to
+            :data:`_PROVEN_NO_KEY_FAULTS`, so only a fault that proves no key landed gets its not-landed
+            message, and nests it inside a default-catch OUTER wrap whose message says the outcome is
+            unknown. The pass-throughs are unchanged whatever ``catch`` is: they are re-raised first.
 
     Returns:
         A context manager wrapping the store's awaited write; enter it with
@@ -289,7 +324,7 @@ def wrap_store_rejection(
     """
     return reclassify(
         passthrough=(SurrealConnectionError, TxnContentionExhaustedError),
-        catch=(SurrealStoreError,),
+        catch=catch,
         make_error=lambda: domain_error(context),
     )
 

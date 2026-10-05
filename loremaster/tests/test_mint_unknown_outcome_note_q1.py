@@ -23,7 +23,7 @@ import pkgutil
 import shlex
 import sys
 import traceback
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import anyio
 import pytest
@@ -39,13 +39,6 @@ from loremaster.store._txn import (
 from pydantic import SecretStr
 
 import loremaster
-
-if TYPE_CHECKING:
-    # The PENDING-BUILD OWNER ANCHOR (scripts/pending_contracts.yaml, bound ``am37-14-q1-mint-contract``). It
-    # names the ruled tuple STATICALLY, so mypy reports ONE attr-defined line that the bound owns, together
-    # with this file's RED@HEAD pytest cells. It is runtime-inert; the cells reach the tuple via getattr. When
-    # the build lands it, the line resolves, the bound self-destructs; both edits are deleted with the build.
-    from loremaster.store._txn import _PROVEN_NO_KEY_FAULTS  # noqa: F401
 
 
 def _unknown_outcome_faults() -> list[BaseException]:
@@ -524,7 +517,7 @@ class TestOneTupleDecidesNoteAndMessage:
         assert len(getattr(served, "__notes__", None) or []) == 1, "the NOTE did not flip"
         assert not_landed not in _rendered(served), "the MESSAGE did not flip"
         assert type(served) is PrincipalKeyStoreError and served.__cause__ is injected
-        _assert_cause_neutral_message(str(served))  # the OUTER wrap translated it: ∀ such faults, cause-neutral
+        _assert_cause_neutral_message(str(served))  # the OUTER wrap translated it: cause-neutral
 
     async def test_moving_a_foreign_class_IN_flips_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
         foreign = next(cls for cls in _FOREIGN if cls.__name__ == "LeaseError")
