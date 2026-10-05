@@ -96,6 +96,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
+from lorerunes.engine_rejection import CatchSpec
 from pydantic import SecretStr
 from surrealdb import (
     AsyncEmbeddedSurrealConnection,
@@ -105,6 +106,7 @@ from surrealdb import (
 from surrealdb.errors import (
     AlreadyExistsError,
     ErrorKind,
+    QueryDetailKind,
     QueryError,
     ServerError,
     SurrealError,
@@ -215,7 +217,29 @@ class TxnDomainRejectionError(SurrealStoreError):
     "the store rejected this write, for good" — a KNOWN-illegal outcome, the ONLY class safe to
     compensate for (close-out rulings §2.4-1; ``LocalMemoryBackend.remember``'s supersede
     compensation keeps the authoritative ledger row on every other cause and lets replay converge).
+
+    It carries TWO TYPED attributes (am-37 §15.2), set by :func:`_domain_rejection_error` from what
+    the raise site already holds — never parsed from the message or the engine text:
+
+    Attributes:
+        error_class: The classifier's ``_ERROR_CLASS_*`` label — a RECOGNISED refusal (UNIQUE,
+            ``ASSERT``, coercion, the governed THROW, …) or ``unspecified rejection`` (the
+            residue the classifier could not name). A construction that names none takes the
+            class's own label (:meth:`_constructed_error_class`).
+        kind: The engine's typed kind — the SDK ``ErrorKind`` value, or the ``QueryDetailKind``
+            value for a ``Query`` error that carries one — or ``None`` for a kind-less
+            (bare-text) input. :func:`proven_no_key` reads both.
     """
+
+    def __init__(self, message: str = "", *, error_class: str | None = None, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.error_class = error_class if error_class is not None else self._constructed_error_class()
+        self.kind = kind
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """The label a construction that names no ``error_class`` carries: the unrecognised residue."""
+        return _ERROR_CLASS_UNSPECIFIED
 
 
 class TxnGovernedConflictError(TxnDomainRejectionError):
@@ -227,6 +251,11 @@ class TxnGovernedConflictError(TxnDomainRejectionError):
     A governed conflict is a DOMAIN rejection (never retried).
     """
 
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_GOVERNED_CONFLICT
+
 
 class TxnUniqueViolationError(TxnDomainRejectionError):
     """The write's IDENTITY is already taken (amendment 32 §1): a record-id collision, or a UNIQUE-index
@@ -235,6 +264,11 @@ class TxnUniqueViolationError(TxnDomainRejectionError):
     A SUBCLASS of :class:`TxnDomainRejectionError` (every existing ``except`` keeps catching it); a generic
     message; NO attribute parsed from the raw text (ledger #31).
     """
+
+    @classmethod
+    def _constructed_error_class(cls) -> str:
+        """Classified by construction (am-37 §15.2): its own class IS the recognition."""
+        return _ERROR_CLASS_UNIQUE_VIOLATION
 
 
 class RetryableConflictSignal(Exception):
@@ -252,29 +286,67 @@ class RetryableConflictSignal(Exception):
     """
 
 
-#: am-37 §14 Q1 (operator-ruled 2026-10-04; F-2 (b), lead 2026-10-05): the faults that PROVE a write never
-#: landed — the store layer's own refusals (a domain rejection, UNIQUE and governed conflicts included, and
-#: exhausted contention, which rolled back) and its pre-send faults (a parameter collision, an envelope
-#: violation). It is a HAND-ADJUDICATED literal, kept beside the classes it names so a new ``_txn`` subclass
-#: is adjudicated where it is born; it is never computed from the live subclass tree, because that would
-#: file every new class as "proven" silently (the false-clear direction). The complement is UNBOUNDED by
-#: design — transport (:class:`SurrealConnectionError`), cancellation, interrupts, timeouts, the bare
-#: :class:`SurrealStoreError` base (which, as a member, would also cover the connection class) and any
-#: future unknown — so it is never enumerated: "not a member" means "outcome unknown".
-#: ``PrincipalKeyStore.mint`` reads THIS tuple at ONE decision point, but what membership decides depends on
-#: whether the wrap translates the member. For a TRANSLATED member (every one but
-#: :class:`TxnContentionExhaustedError`) it decides three things: the inner wrap's ``catch=``, therefore the
-#: not-landed message ("could not mint key …") and the translation, AND the revoke note (none). For a
-#: PASS-THROUGH member (:class:`TxnContentionExhaustedError`, re-raised raw before any ``catch=`` is
-#: consulted) it decides the note ONLY; its membership in the inner ``catch=`` is inert.
-_PROVEN_NO_KEY_FAULTS: tuple[type[SurrealStoreError], ...] = (
-    TxnDomainRejectionError,
-    TxnGovernedConflictError,
-    TxnUniqueViolationError,
+#: am-37 §15.1 (RULED): the CLASS half of :func:`proven_no_key` — store faults that prove no write landed
+#: whatever their kind: exhausted contention (rolled back) and the two pre-send faults (a parameter collision,
+#: an envelope violation; never sent). A hand-adjudicated literal beside the classes it names (F-2 (b)): never
+#: computed from the live subclass tree, which would file every new class as "proven" silently.
+_PROVEN_NO_KEY_CLASSES: tuple[type[SurrealStoreError], ...] = (
     TxnContentionExhaustedError,
     TxnParamCollisionError,
     TxnEnvelopeViolationError,
 )
+
+#: am-37 §15 + §15.2 FORK-2 (RULED): the typed kinds of an UNRECOGNISED rejection whose timing the kind does
+#: not prove — the fault may have followed the implicit commit (result encoding is post-execution; an internal
+#: error or a timeout can fire during commit; a bare ``Query`` error names no detail at all). SDK constants,
+#: never re-spelled. The safe side of an unmeasured fact; re-open trigger: a vendor/spec statement or a
+#: reproduced observation of per-kind commit timing for single statements (§15).
+_OUTCOME_UNKNOWN_KINDS: frozenset[str] = frozenset(
+    {
+        ErrorKind.INTERNAL,
+        ErrorKind.SERIALIZATION,
+        ErrorKind.QUERY,
+        QueryDetailKind.TIMED_OUT,
+        QueryDetailKind.CANCELLED,
+    }
+)
+
+
+def proven_no_key(error: BaseException) -> bool:
+    """Whether ``error`` PROVES the write it interrupted never landed: THE ONE predicate (am-37 §15-15.2).
+
+    TRUE for:
+
+    * a member of :data:`_PROVEN_NO_KEY_CLASSES` (rolled back / never sent), whatever its kind;
+    * a :class:`TxnDomainRejectionError` the classifier RECOGNISED as a refusal (``error_class`` is
+      not ``unspecified rejection`` — UNIQUE, ``ASSERT``, coercion, the governed THROW, …), whatever
+      its raw kind: recognition means the engine evaluated the statement and refused it (§15.2);
+    * an UNRECOGNISED :class:`TxnDomainRejectionError` whose typed ``kind`` proves the timing — any
+      kind outside :data:`_OUTCOME_UNKNOWN_KINDS`.
+
+    FALSE for everything else, which is never enumerated: an unrecognised rejection of an
+    outcome-unknown kind or with NO kind (a bare-text input — the safe side), transport
+    (:class:`SurrealConnectionError`), the bare :class:`SurrealStoreError` base, any foreign store
+    class, cancellation, interrupts, timeouts, any future unknown.
+
+    ``PrincipalKeyStore.mint`` asks THIS predicate both as its inner wrap's ``catch=`` (so a proven
+    fault is translated to the not-landed message, an unproven one passes through to the outer,
+    outcome-unknown wrap) and to decide its revoke note — one decider, three consequences. A
+    pass-through member (:class:`TxnContentionExhaustedError`) is re-raised before any ``catch=`` is
+    consulted, so for it the predicate decides the note only.
+
+    The kind test compares typed values with ``==`` (amendment 36 §1.2 pin 3: only the classifier
+    reads engine text; every other decision reads the typed kind).
+    """
+    if isinstance(error, _PROVEN_NO_KEY_CLASSES):
+        return True
+    if not isinstance(error, TxnDomainRejectionError):
+        return False
+    if error.error_class != _ERROR_CLASS_UNSPECIFIED:
+        return True
+    kind = error.kind
+    return kind is not None and not any(kind == unknown for unknown in _OUTCOME_UNKNOWN_KINDS)
+
 
 #: The catch set :func:`wrap_store_rejection` translates when its caller names none: every
 #: :class:`SurrealStoreError` that is not a pass-through (finding #400's consumer law).
@@ -285,7 +357,7 @@ def wrap_store_rejection(
     domain_error: type[Exception],
     context: str,
     *,
-    catch: tuple[type[SurrealStoreError], ...] = _DEFAULT_REJECTION_CATCH,
+    catch: CatchSpec = _DEFAULT_REJECTION_CATCH,
 ) -> AbstractContextManager[None]:
     """The ONE surreal-taxonomy binding for the engine-rejection wrap (finding #400, Layer 2).
 
@@ -294,7 +366,7 @@ def wrap_store_rejection(
     (SurrealConnectionError, TxnContentionExhaustedError): raise; except SurrealStoreError as
     e: raise <Domain>(...) from e`` idiom. It is the single place the surreal taxonomy is
     named — ``passthrough=(SurrealConnectionError, TxnContentionExhaustedError)``, the default
-    ``catch=(SurrealStoreError,)``, and the narrowed :data:`_PROVEN_NO_KEY_FAULTS` — and it
+    ``catch=(SurrealStoreError,)``, and the predicate catch :func:`proven_no_key` — and it
     delegates the control flow (re-raise the pass-throughs FIRST, then translate the catch
     ``from`` the original) to the stdlib-only :func:`lorerunes.reclassify` (Layer 1).
     Splitting it this way keeps BOTH the taxonomy and the control-flow policy each exactly ONE
@@ -315,12 +387,15 @@ def wrap_store_rejection(
             one raised error, only on a ``SurrealStoreError`` — never on the happy path or a
             pass-through.
         context: The domain error's message — WHAT was rejected, in the store's own words.
-        catch: The :class:`SurrealStoreError` classes to translate (am-37 §14 Q1 N-3, mechanism (d)).
-            Defaults to :data:`_DEFAULT_REJECTION_CATCH` — every non-pass-through store error — which
-            every caller but one uses. ``PrincipalKeyStore.mint`` narrows an INNER wrap to
-            :data:`_PROVEN_NO_KEY_FAULTS`, so only a fault that proves no key landed gets its not-landed
-            message, and nests it inside a default-catch OUTER wrap whose message says the outcome is
-            unknown. The pass-throughs are unchanged whatever ``catch`` is: they are re-raised first.
+        catch: What to translate (am-37 §14 Q1 N-3 mechanism (d); §15.1): a tuple of
+            :class:`SurrealStoreError` classes, or a predicate over the raised exception
+            (:data:`lorerunes.engine_rejection.CatchSpec`). Defaults to
+            :data:`_DEFAULT_REJECTION_CATCH` — every non-pass-through store error — which every caller
+            but one uses. ``PrincipalKeyStore.mint`` narrows an INNER wrap to the predicate
+            :func:`proven_no_key`, so only a fault that proves no key landed gets its not-landed
+            message (anything else passes it UNTOUCHED), and nests it inside a default-catch OUTER wrap
+            whose message says the outcome is unknown. The pass-throughs are unchanged whatever
+            ``catch`` is: they are re-raised first, before any predicate is consulted.
 
     Returns:
         A context manager wrapping the store's awaited write; enter it with
@@ -759,7 +834,7 @@ def _classify_engine_error(raw_result: object) -> str:  # noqa: PLR0911 - one la
     return _ERROR_CLASS_UNSPECIFIED
 
 
-def _domain_rejection_error(error_class: str, message: str) -> SurrealStoreError:
+def _domain_rejection_error(error_class: str, message: str, *, kind: str | None = None) -> SurrealStoreError:
     """Build the domain-rejection error for a raise site — §2.5 (#456), the ONE mapping helper.
 
     Returns :class:`TxnGovernedConflictError` iff ``error_class`` is the governed-conflict label,
@@ -768,12 +843,34 @@ def _domain_rejection_error(error_class: str, message: str) -> SurrealStoreError
     ``isinstance(error, TxnDomainRejectionError)`` instead of exact-typing the base. BOTH raise
     sites (``run_query`` and ``_run_verified_transaction``) build their rejection through THIS,
     never a cloned ``if label ==`` at each site (ROUTING-IS-NOT-SHARING).
+
+    am-37 §15.2: the built error carries BOTH typed attributes — ``error_class`` (the label this
+    receives) and ``kind`` (the engine's typed kind, which each raise site derives from the typed
+    error it holds via :func:`_typed_kind`; ``None`` for a bare-text input). ``kind`` is keyword-only
+    and defaults to ``None`` — a kind-less rejection, which :func:`proven_no_key` treats as UNKNOWN
+    (the safe side), so a raise site that dropped it would err toward the conditional note, never
+    toward a false "no key"; each raise site's kind is pinned separately. Nothing is parsed from text.
     """
     if error_class == _ERROR_CLASS_GOVERNED_CONFLICT:
-        return TxnGovernedConflictError(message)
+        return TxnGovernedConflictError(message, error_class=error_class, kind=kind)
     if error_class == _ERROR_CLASS_UNIQUE_VIOLATION:
-        return TxnUniqueViolationError(message)
-    return TxnDomainRejectionError(message)
+        return TxnUniqueViolationError(message, error_class=error_class, kind=kind)
+    return TxnDomainRejectionError(message, error_class=error_class, kind=kind)
+
+
+def _typed_kind(error: object) -> str | None:
+    """The engine's typed kind of ``error`` (am-37 §15.2), as :class:`TxnDomainRejectionError` carries it.
+
+    A ``Query`` error that carries a detail kind (``TimedOut`` / ``Cancelled`` / ``NotExecuted``) is
+    keyed by that DETAIL kind — the fact §15 adjudicates; any other typed SDK error by its top-level
+    ``kind`` (a ``Query`` error with no detail stays ``Query``). Anything untyped — a bare-text
+    per-statement result, a non-SDK exception — is ``None``.
+    """
+    if not isinstance(error, ServerError):
+        return None
+    if isinstance(error, QueryError):
+        return _detail_kind(error) or error.kind
+    return error.kind
 
 
 @dataclass(frozen=True)
@@ -1439,6 +1536,7 @@ async def _raise_attempt_failure(
     raise _domain_rejection_error(
         error_class,
         f"SurrealDB {noun} rejected against {url!r} ({error_class}); {_SERVER_LOG_HINT}",
+        kind=_typed_kind(error),
     ) from error
 
 
@@ -1729,13 +1827,15 @@ async def _run_verified_transaction(
             return
         is_conflict, root_cause = _rollback_verdict(failed_statements)
         if not is_conflict:
-            error_class = _classify_engine_error(_typed_root_cause(root_cause))
+            typed_root = _typed_root_cause(root_cause)
+            error_class = _classify_engine_error(typed_root)
             _log_rollback(root_cause, statement_count, failed_statements)
             raise _domain_rejection_error(
                 error_class,
                 f"SurrealDB transaction failed and was rolled back: statement "
                 f"{root_cause.index + 1} of {statement_count} was rejected "
                 f"({error_class}); {_SERVER_LOG_HINT}",
+                kind=_typed_kind(typed_root),
             )
         last_conflict = (root_cause, statement_count, failed_statements)
         raise RetryableConflictSignal()

@@ -28,7 +28,7 @@ import re
 import traceback
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 import surrealdb.errors as sdk_errors
@@ -45,12 +45,6 @@ from loremaster.store._txn import (
 
 import loremaster
 from lorerunes import reclassify
-
-if TYPE_CHECKING:
-    # The owner anchor: the ruled symbol this contract names before the build lands it (am-37 §15). The pins
-    # reach it dynamically (``_proven_no_key()``) so the file COLLECTS on HEAD and each cell reds by name.
-    from loremaster.store._txn import proven_no_key  # noqa: F401
-
 
 # --------------------------------------------------------------------------- #
 # The independent adjudication — §15's table, written out (never computed from production).
@@ -178,7 +172,7 @@ def _typed_rejection(kind: str, *, message: str | None = None) -> BaseException:
 def _proven_no_key() -> Callable[[BaseException], bool]:
     """STUB EXPECTATION: ``_txn.proven_no_key`` does not exist before the build, so every cell reading it is
     RED by AttributeError, by name, until then."""
-    predicate = getattr(_txn_module, "proven_no_key")  # noqa: B009 - a stub expectation: red by name
+    predicate = _txn_module.proven_no_key
     assert callable(predicate), type(predicate)
     return predicate
 

@@ -564,7 +564,7 @@ class TestTheOneMappingHelperBuildsTheClassEverywhere63cIAa28c:
         assert _class_name(control) == a28b._CONFLICT_CLASS_NAME, f"CONTROL {situation}/{path}: {control!r}"
         calls: list[str] = []
 
-        def _base_only(error_class: str, message: str) -> Any:
+        def _base_only(error_class: str, message: str, *, kind: str | None = None) -> Any:
             calls.append(error_class)
             return TxnDomainRejectionError(message)
 
