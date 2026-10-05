@@ -1010,3 +1010,35 @@ CONDITIONAL note, class unchanged; of kind `Validation` / UNIQUE → NO note (th
 vendor/spec statement (or a reproduced observation) of per-kind commit timing for single statements — then a kind
 moves between rows by evidence, and the reference gets the fact. A conditional note on a fault that was in truth
 pre-commit costs the operator one `list-keys`; the reverse costs a live credential. That asymmetry is the ruling.
+
+### 15.1 RULED 2026-10-05 (lead; N-3 gap): ONE predicate decides catch, message AND note — option (i): the seam's `catch=` accepts the predicate
+
+**The contradiction:** with `catch=_PROVEN_NO_KEY_FAULTS` (a class tuple) a `TxnDomainRejectionError(kind="TimedOut")`
+is still translated to *"could not mint key …"* while §15's predicate attaches the conditional note — a message that
+claims a refusal beside a note that says the key may be live. N-3 (the message must agree) is violated by having TWO
+deciders: classes for the catch, the predicate for the note.
+
+**Ruling — (i).** `wrap_store_rejection(..., catch=)` (and the `lorerunes.reclassify` primitive beneath it) accepts a
+`Callable[[BaseException], bool]` as well as the class tuple; the mint's inner wrap passes `catch=proven_no_key`. Then
+by construction: a fault the predicate PROVES no-key is translated to `PrincipalKeyStoreError("could not mint key …")`
+and gets NO note (the outer handler asks the same predicate); a fault it does not prove passes the wrap UNTOUCHED —
+its own class (`TxnDomainRejectionError` of kind `TimedOut`, `SurrealConnectionError`, a cancellation) — reaches the
+outer handler, gets the CONDITIONAL note, and is laundered by §11's base-class catch with the DRIVER's own message
+(the typed label + hint), which claims nothing about minting. One predicate, three consequences, no second site.
+(ii) is refused: it keeps the catch keyed on classes and the message on the predicate — the same two deciders, moved.
+Adding predicate support to `lorerunes` is a capability decision, taken deliberately: *catch-by-property* is a
+general need (every door that catches "the faults I can explain" rather than "these classes"), and a predicate catch
+is the allowlist-the-safe form of a catch tuple.
+
+**`_PROVEN_NO_KEY_FAULTS` is REPLACED by the predicate as the public target.** The class half survives only INSIDE
+`proven_no_key` as the private `_PROVEN_NO_KEY_CLASSES` (exhaustion, param collision, envelope violation), beside the
+kind half (`TxnDomainRejectionError` with `kind ∉ _OUTCOME_UNKNOWN_KINDS`). The Q1 completeness pins re-target
+`proven_no_key`: the taxonomy leg asserts ∀ `_txn` subclass × ∀ adjudicated kind → the predicate's answer equals the
+§15 table; the mutation leg flips one member of either half by name and watches the mint cell move.
+
+**Pins:** (a) lorerunes: `reclassify` honours a predicate catch (translates iff true; passes through untouched iff
+false), with the tuple form unchanged (DUAL control); (b) mint, ∀ kind cell: `proven_no_key` TRUE ⇒ the raised class
+is `PrincipalKeyStoreError`, its message starts *"could not mint"*, no note; FALSE ⇒ the class is the fault's own,
+the note is present, and the substring *"could not mint"* appears NOWHERE in `_fault_line` output or
+`traceback.format_exception` (N-3's assertion, byte-level); (c) the AST one-handler pin is unchanged. STOP: a pin
+asserting the inner wrap's `catch=` is a tuple by AST → re-key to "a name bound to `proven_no_key`".
