@@ -2438,3 +2438,6 @@ Then commit.
   - Then: verify the md5 == the patch → commit the 4 files → archive the Q1 reports to `receipts/2026-10-05-am37-14/` → INDEX line → close Q1.
   - implement-mint-q1 is idle (kept for any audit routing).
   - Surfaced for the operator: N-a (lore-adm `_dispatch` lets a cancel/interrupt/raw fault reach the operator as a traceback; the note prints in it; behaviour unchanged).
+- **v13 addendum 4 (12:05Z): OPERATOR RULING, memory floor.** coldaudit-mint-q1 was blocked: MemAvailable sat at 19.4–20.6 GiB from 11:36Z (prod lore-surreal ~11 GiB + Odoo `ppt-apps15-test-pg115b` postgres containers, not ours).
+  - Operator: lower the admission floor to **17 GiB for coldaudit-mint-q1 ONLY**. It is still a waiting loop, with no other lore pytest live and the 16G cgroup cap kept. Standing law stays 20 GiB.
+  - Audit deadline extended to 15:30Z. Asked the audit to explain "M-a KILLED".
