@@ -204,8 +204,20 @@ class TestEveryEngineKindIsAdjudicated:
     def test_every_kind_is_ruled(self) -> None:
         unruled = set(_DOMAIN) - set(_RULED_KIND_FATE)
         retired = set(_RULED_KIND_FATE) - set(_DOMAIN)
-        assert not unruled, f"SDK kind(s) nobody adjudicated (am-37 §15): {sorted(unruled)}"
-        assert not retired, f"ruled kind(s) the SDK no longer enumerates: {sorted(retired)}"
+        # am-37 §15.4 rider: the failure text names the table and BOTH dispositions, so an SDK-bump author
+        # adjudicates the new kind in place instead of deleting this pin.
+        assert not unruled, (
+            f"SDK kind(s) nobody adjudicated: {sorted(unruled)}. Rule each against the am-37 §15 table "
+            f"(§15.3: docs/design/2026-09-29-packet63c-amendment-37.md) — EITHER (a) it is proven no-key: "
+            f"add it to _txn._PROVEN_KINDS WITH evidence, a §15 proven row, and a 'proven' entry in "
+            f"_RULED_KIND_FATE here; OR (b) leave it off _PROVEN_KINDS (it is then unknown by rule) and add "
+            f"it to _RULED_KIND_FATE here as 'unknown'. Do not delete this pin."
+        )
+        assert not retired, (
+            f"ruled kind(s) the SDK no longer enumerates: {sorted(retired)}. Retire each from the am-37 §15 "
+            f"table (§15.3) and from _RULED_KIND_FATE here (and from _txn._PROVEN_KINDS if it is a proven "
+            f"row) — do not delete this pin."
+        )
 
     @pytest.mark.parametrize("kind", _DOMAIN)
     async def test_the_seam_and_the_predicate_agree_with_the_ruling(self, kind: str) -> None:

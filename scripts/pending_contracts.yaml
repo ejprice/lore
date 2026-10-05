@@ -64,22 +64,6 @@ version: 1
 # self-destruct rule. `bounds:` is EMPTY again. Re-derive (`--derive`) before any NEW bound.
 #
 bounds:
-# am-37 §15.3 contract (contract-mint-q1c, 2026-10-05, at dde69a6). The owned file names the ruled allowlist
-# ``_txn._PROVEN_KINDS`` before the build lands it (the deny-list ``_OUTCOME_UNKNOWN_KINDS`` deleted). SELF-DESTRUCTS
-# with the build.
-- id: am37-15-3-q1c-mint-contract
-  owner: am-37 §15.3 mint kind allowlist — the 63c mint builder (lead-63c-2's routing)
-  reopen_trigger: the build lands loremaster.store._txn._PROVEN_KINDS (proven_no_key's kind half inverted to it,
-    _OUTCOME_UNKNOWN_KINDS deleted) — then test_mint_kind_allowlist_q1c.py stops erroring, this entry self-destructs
-    and must be deleted with the build
-  ruling: docs/design/2026-09-29-packet63c-amendment-37.md §15.3 (dde69a6); receipts REPORT-contract-mint-q1c.md
-    §RED@HEAD + §SATISFIABILITY (archived with the wave)
-  rationale: contract-ahead — the pins name the ruled allowlist now; every pytest RED of the owned file is this bound's
-    (a runtime-inert ``if TYPE_CHECKING:`` anchor names the symbol statically)
-  files:
-  - path: loremaster/tests/test_mint_kind_allowlist_q1c.py
-    missing_symbols:
-    - loremaster.store._txn._PROVEN_KINDS
 # Packet 58 contract (contract-58, 2026-09-26, at 5d549a1). The contract pins three symbols packet 58's BUILD
 # introduces (kickoff rulings docs/design/2026-09-26-packet58-kickoff-rulings.md §1/§4/§7.7): until the
 # build lands they are attr-defined at typecheck (and RED at pytest for the same reason — REPORT-contract-58.md

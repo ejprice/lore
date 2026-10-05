@@ -28,7 +28,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 import surrealdb.errors as sdk_errors
@@ -37,11 +37,6 @@ from loremaster.store import _txn as _txn_module
 from loremaster.store._txn import SurrealConnectionError, TxnDomainRejectionError
 
 import loremaster
-
-if TYPE_CHECKING:
-    # Owner anchor (am37-15-3-q1c-mint-contract): names the ruled allowlist STATICALLY so the typecheck line
-    # and this file's pytest reds share ONE self-destructing owner. Runtime-inert.
-    from loremaster.store._txn import _PROVEN_KINDS  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 # The independent adjudication — §15.3's allowlist, written out.

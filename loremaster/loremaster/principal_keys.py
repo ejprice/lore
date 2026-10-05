@@ -415,10 +415,13 @@ class PrincipalKeyStore:
                 (am-37 §14 Q1 N-3, §15.1): a fault :func:`~loremaster.store._txn.proven_no_key`
                 PROVES (a recognised refusal — the hash or (principal, name) UNIQUE collision,
                 an ``ASSERT`` / coercion refusal, a governed conflict — an unrecognised rejection
-                of a timing-proving kind, a param collision, an envelope violation) as "could not
-                mint key …" with NO note; any other store fault (an unrecognised rejection of an
-                outcome-unknown kind or with no kind, the bare ``SurrealStoreError`` base, a
-                foreign subclass) as an outcome-unknown message plus the CONDITIONAL revoke note.
+                of a kind on :data:`~loremaster.store._txn._PROVEN_KINDS`, a param collision, an
+                envelope violation) as "could not mint key …" with NO note; any other store fault
+                (an unrecognised rejection of a kind OFF that allowlist (``Internal``,
+                ``Serialization``, ``TimedOut``, ``Cancelled``, a bare ``Query``, or one nobody
+                adjudicated, e.g. ``Transaction``) or with no kind, the bare ``SurrealStoreError``
+                base, a foreign subclass) as an outcome-unknown message plus the CONDITIONAL
+                revoke note.
                 After the CREATE answered with no row: "the mint answered no row" plus the
                 CERTAIN note.
             SurrealConnectionError: A pass-through, re-raised RAW (never translated) with the
@@ -697,10 +700,11 @@ class PrincipalKeyStore:
         wording, whatever the fault, interrupts and cancellation included. Before that (am-37 §14 Q1, which
         corrects §13.5 item 1's "exactly ONE class gets the conditional note"; §15 + §15.1 + §15.2), the note
         is WITHHELD iff :func:`~loremaster.store._txn.proven_no_key` PROVES the fault left no key — the
-        store's own recognised refusals (UNIQUE included: no note), an unrecognised rejection of a
-        timing-proving kind, and the rolled-back / pre-send faults. EVERY other fault gets the CONDITIONAL
-        wording: a connection fault, an unrecognised rejection of an outcome-unknown kind (``Internal``,
-        ``Serialization``, ``TimedOut``, ``Cancelled``, a bare ``Query``) or with no kind, cancellation, an
+        store's own recognised refusals (UNIQUE included: no note), an unrecognised rejection of a kind on
+        :data:`~loremaster.store._txn._PROVEN_KINDS`, and the rolled-back / pre-send faults. EVERY other
+        fault gets the CONDITIONAL wording: a connection fault, an unrecognised rejection of a kind OFF that
+        allowlist (``Internal``, ``Serialization``, ``TimedOut``, ``Cancelled``, a bare ``Query``, or one
+        nobody adjudicated, e.g. ``Transaction``) or with no kind, cancellation, an
         interrupt, a timeout, the bare store base, a foreign store class, any future unknown. The safe
         (proven) set is allowlisted; the unknown set is never enumerated. A proven fault the inner wrap
         translated arrives as :class:`PrincipalKeyStoreError` chained ``from`` it, so it is classified by

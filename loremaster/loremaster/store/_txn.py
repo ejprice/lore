@@ -296,18 +296,23 @@ _PROVEN_NO_KEY_CLASSES: tuple[type[SurrealStoreError], ...] = (
     TxnEnvelopeViolationError,
 )
 
-#: am-37 §15 + §15.2 FORK-2 (RULED): the typed kinds of an UNRECOGNISED rejection whose timing the kind does
-#: not prove — the fault may have followed the implicit commit (result encoding is post-execution; an internal
-#: error or a timeout can fire during commit; a bare ``Query`` error names no detail at all). SDK constants,
-#: never re-spelled. The safe side of an unmeasured fact; re-open trigger: a vendor/spec statement or a
-#: reproduced observation of per-kind commit timing for single statements (§15).
-_OUTCOME_UNKNOWN_KINDS: frozenset[str] = frozenset(
+#: am-37 §15.3 (RULED, an ALLOWLIST): the typed kinds of an UNRECOGNISED rejection that PROVE it preceded the
+#: write — raised at or before the statement's evaluation, or as its refusal (§15's proven rows: top-level
+#: ``Validation``, ``Thrown``, ``AlreadyExists``, ``NotFound``, ``Configuration``; Query detail
+#: ``NotExecuted``). SDK constants, never re-spelled. EVERY other kind is outcome-unknown, never enumerated:
+#: ``Internal`` / ``Serialization`` / ``TimedOut`` / ``Cancelled`` / a bare ``Query``, AND any kind the
+#: engine serves that nobody adjudicated (``Transaction``, ``Query:Aborted`` on the floating ``v3.2`` tag,
+#: #336, or one a future SDK adds) — the safe side of §15's asymmetry. The set grows ONLY by adjudication;
+#: re-open trigger: a vendor/spec statement or a reproduced observation of per-kind commit timing for single
+#: statements (§15).
+_PROVEN_KINDS: frozenset[str] = frozenset(
     {
-        ErrorKind.INTERNAL,
-        ErrorKind.SERIALIZATION,
-        ErrorKind.QUERY,
-        QueryDetailKind.TIMED_OUT,
-        QueryDetailKind.CANCELLED,
+        ErrorKind.VALIDATION,
+        ErrorKind.THROWN,
+        ErrorKind.ALREADY_EXISTS,
+        ErrorKind.NOT_FOUND,
+        ErrorKind.CONFIGURATION,
+        QueryDetailKind.NOT_EXECUTED,
     }
 )
 
@@ -321,11 +326,12 @@ def proven_no_key(error: BaseException) -> bool:
     * a :class:`TxnDomainRejectionError` the classifier RECOGNISED as a refusal (``error_class`` is
       not ``unspecified rejection`` — UNIQUE, ``ASSERT``, coercion, the governed THROW, …), whatever
       its raw kind: recognition means the engine evaluated the statement and refused it (§15.2);
-    * an UNRECOGNISED :class:`TxnDomainRejectionError` whose typed ``kind`` proves the timing — any
-      kind outside :data:`_OUTCOME_UNKNOWN_KINDS`.
+    * an UNRECOGNISED :class:`TxnDomainRejectionError` whose typed ``kind`` proves the timing — a
+      kind ON the allowlist :data:`_PROVEN_KINDS` (§15.3).
 
-    FALSE for everything else, which is never enumerated: an unrecognised rejection of an
-    outcome-unknown kind or with NO kind (a bare-text input — the safe side), transport
+    FALSE for everything else, which is never enumerated: an unrecognised rejection of any kind OFF
+    the allowlist (adjudicated outcome-unknown, or served by the engine and never adjudicated) or
+    with NO kind (a bare-text input — the safe side), transport
     (:class:`SurrealConnectionError`), the bare :class:`SurrealStoreError` base, any foreign store
     class, cancellation, interrupts, timeouts, any future unknown.
 
@@ -345,7 +351,7 @@ def proven_no_key(error: BaseException) -> bool:
     if error.error_class != _ERROR_CLASS_UNSPECIFIED:
         return True
     kind = error.kind
-    return kind is not None and not any(kind == unknown for unknown in _OUTCOME_UNKNOWN_KINDS)
+    return kind is not None and any(kind == proven for proven in _PROVEN_KINDS)
 
 
 #: The catch set :func:`wrap_store_rejection` translates when its caller names none: every
