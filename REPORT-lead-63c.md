@@ -2421,3 +2421,8 @@ Then commit.
   - Rider: mint's callers (the lore-adm CLI) must still render an untranslated non-proven store fault cleanly.
   - The sharing proof covers note + message + translation.
   - The same class at the other 20 callers is ledgered as **#543** (needs an operator scope ruling).
+- **v13 addendum 2 (≈03:00Z): N-3 mechanism re-ruled to (d)** (lead, within the operator's ruling). The contract author MEASURED that (a) reddens the #400 consumer-law pin `test_engine_rejection_seam.py::…test_a_raw_store_error_surfaces_as_the_domain_error[principal_key-mint]`.
+  - (d) = nested wraps on the ONE seam: the inner `wrap_store_rejection(..., catch=_PROVEN_NO_KEY_FAULTS)` gives the true "could not mint" message; the outer, default catch translates every other store fault to `PrincipalKeyStoreError` with an outcome-unknown message.
+  - #400 holds, the other 20 callers are unchanged, and the caller rider is moot.
+  - Lead correction: the outer message must be CAUSE-NEUTRAL (no "interrupted before the store answered": a malformed-response bare base DID answer), pinned as the F-3 property.
+  - The r2 contract had §OWN landed (RED_ADJUDICATED to `am37-14-q1-mint-contract`, RED_ORPHANED 0) and 28 RED@HEAD in the owned file.
