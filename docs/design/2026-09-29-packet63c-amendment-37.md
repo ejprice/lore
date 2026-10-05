@@ -974,3 +974,39 @@ a plain function returning `_iterator()` (the SDK's success SHAPE: coroutine →
 body whether the branch is live in production; if the SDK returns the generator directly, the branch is dead code
 shaped by a wrong fake and goes with the next scout-touching contract. CLASS: *a fake's success shape equals the
 dependency's, and a pin never suppresses the exception class it exists to notice.*
+
+## 15. RULED 2026-10-05 (operator directive: the sidecar rules forks; lead-routed) — coldaudit-mint-q1 R-1: `TxnDomainRejectionError` is NOT uniformly "proven no key"; the OUTCOME-UNKNOWN kinds are carved out by TYPE, safe side, with a re-open trigger
+
+**Evidence, in the ruled order.** Lore MCP: still `ECONNREFUSED` this session — the on-disk reference was used. The
+store reference carries NO per-kind commit-timing fact for a single statement (it states `TimedOut` is substantive
+and `Cancelled` is a cascade notice — nothing about whether either can follow an implicit commit). The engine specs
+and vendor docs were not reachable in the budget, and **no client-side probe can construct the state in question**: a
+post-commit `Serialization` / `Internal` / `TimedOut` is raised by the engine after it has already persisted the row,
+so a probe can only observe it by luck, never force it. **Undecidable quickly → option (c), the safe side.**
+
+**Ruling (b)/(c): carve the kinds whose TIMING the kind itself does not prove out of the proven set.** Adjudication
+over the SDK's own enumerations (`KIND_TO_CLASS` top-level kinds; `QueryDetailKind` for `Query`):
+| kind | adjudication | why |
+|---|---|---|
+| `Validation` (parse), `Thrown` (our governed guard aborts the txn), `AlreadyExists` / UNIQUE, `NotFound` (table/record), `Configuration`, `Query:NotExecuted` | **proven no key** | raised at or before the write's evaluation, or as its refusal / rollback |
+| `TransactionConflict` (→ exhaustion), `TxnParamCollisionError`, `TxnEnvelopeViolationError` | **proven no key** | rolled back / never sent (unchanged) |
+| `NotAllowed`, `Connection` | transport (already conditional) | unchanged |
+| **`Internal`, `Serialization`, `Query:TimedOut`, `Query:Cancelled`** | **OUTCOME UNKNOWN → conditional note** | the kind does not prove the fault preceded the implicit commit: result encoding is post-execution; an internal error or a timeout can fire during commit |
+
+**Mechanics (ONE place, typed):** the ONE mapping helper `_domain_rejection_error` already receives the typed error;
+`TxnDomainRejectionError` gains a typed `kind: str | None` attribute set there (never parsed from text). `_txn`
+exports **`proven_no_key(error) -> bool`** — a PREDICATE, not a tuple: `isinstance(error, (TxnContentionExhaustedError,
+TxnParamCollisionError, TxnEnvelopeViolationError))` or `isinstance(error, TxnDomainRejectionError) and error.kind
+not in _OUTCOME_UNKNOWN_KINDS`, where `_OUTCOME_UNKNOWN_KINDS = frozenset({"Internal", "Serialization",
+QueryDetailKind.TIMED_OUT, QueryDetailKind.CANCELLED})` (SDK constants where they exist). `_mint_fault_note` calls
+the predicate; the class tree is untouched (no new class, every `except TxnDomainRejectionError` door unchanged;
+no new catch site, no fates row). A kind-less rejection (`kind is None` — a bare-text input) is UNKNOWN (safe side).
+**Pins:** (i) generated over `KIND_TO_CLASS ∪ QueryDetailKind`: every kind is adjudicated proven / unknown /
+transport by the table above — an unadjudicated kind reds by name (completeness); (ii) mint cells: a
+`TxnDomainRejectionError` of kind `Internal` / `Serialization` / `TimedOut` / `Cancelled` during the CREATE →
+CONDITIONAL note, class unchanged; of kind `Validation` / UNIQUE → NO note (the live UNIQUE pin stands); (iii)
+`proven_no_key` is the ONE predicate (mutation: flip one member of `_OUTCOME_UNKNOWN_KINDS` → the mint cell moves).
+**Bound and re-open trigger:** the carve-out is the SAFE side of an unmeasured fact, not a measurement. Trigger: a
+vendor/spec statement (or a reproduced observation) of per-kind commit timing for single statements — then a kind
+moves between rows by evidence, and the reference gets the fact. A conditional note on a fault that was in truth
+pre-commit costs the operator one `list-keys`; the reverse costs a live credential. That asymmetry is the ruling.
