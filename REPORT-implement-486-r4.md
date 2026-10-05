@@ -302,3 +302,11 @@ for worker, gap in sorted(conftest._workers_without_session_end_report().items()
     print(gap.line(worker))
 ```
 - **Flags this round:** none new. ⚠ In the round-1 §SUMMARY, F-a (the non-cancellable-block bound) is now CLOSED by P1 (R2-6).
+
+## §10 Docstring-only close-out of coldaudit-486-4 F-3 + F-5 (base HEAD `89549fb`, 2026-10-05; nothing committed)
+- One hunk, in `_reap_within_budget`'s docstring only (`git diff --stat`: 12 insertions, 2 deletions). That docstring was the ONLY place conftest stated the old reason (awk for `capture|fd 2|stderr`).
+- **F-3:** dropped the false "(pytest's capture may still own fd 2)". The docstring now states the measured mechanism: pytest's global capture is suspended at session finish, so fd 2 is the terminal (the `-n 0` cells see the dump; coldaudit-486-4 §A.4). It also says `sys.__stderr__` IS fd 2, so it would not escape a dup2'd capture.
+- **F-5:** added a KNOWN BOUND paragraph: at `-n 0` the hard bound prints faulthandler's dump only, with no pytest summary and no line naming the unverified databases. Under xdist the #538 gap line covers it, and the operator's periodic wipe removes strays. Re-open trigger: a package-provided hook that can print a custom line before the forced exit.
+- AST identical modulo docstrings: `True` (a scratch check that `ast.dump`s both trees after replacing every leading docstring with `pass`, run against the pre-edit `cp`).
+- `uv run ruff check loremaster/tests/conftest.py` → `All checks passed!`; `ruff format --check` → `1 file already formatted`. No tests run, per the brief.
+- conftest md5: `2de2b7ee0de9a69a5a91aa7244b371e4` → **`55395d4d22e395d114b3236636efc864`**.

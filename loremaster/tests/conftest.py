@@ -406,8 +406,18 @@ def _reap_within_budget(budget_seconds: float) -> Exception | None:
     anyio can cancel only what yields to the loop. A block with no await point (a sync call, a
     shielded scope) would hold the process past the budget forever, so a HARD outer bound sits
     around it (am-37 §14 Q2): ``faulthandler`` dumps every thread's stack — naming this frame — to
-    the REAL stderr (pytest's capture may still own fd 2) and exits the process at
-    :data:`_SESSION_END_HARD_BOUND_IN_BUDGETS` × the budget. It is cancelled on every way out.
+    stderr and exits the process at :data:`_SESSION_END_HARD_BOUND_IN_BUDGETS` × the budget. It is
+    cancelled on every way out. The dump reaches the terminal because pytest's global capture is
+    already suspended at session finish, so fd 2 is the real stderr (measured: the ``-n 0`` cells see
+    the dump; coldaudit-486-4 §A.4). ``sys.__stderr__`` IS fd 2, so it would NOT escape a capture
+    that had dup2'd fd 2; it is chosen for being the interpreter's original stream, nothing more.
+
+    KNOWN BOUND (coldaudit-486-4 F-5, operator-accepted): when the hard bound fires at ``-n 0``, the
+    output is faulthandler's dump ONLY — no pytest summary, and no line naming the opened databases
+    this session could not verify removed, because faulthandler cannot print a custom line at expiry.
+    Under xdist the controller's #538 gap line names the worker instead. Strays are removed by the
+    operator's periodic test-namespace wipe. Re-open trigger: a package-provided hook that can print a
+    custom line before the forced exit.
 
     Returns:
         ``None`` when the reap completed; the exception it raised; or a :class:`TimeoutError` naming
