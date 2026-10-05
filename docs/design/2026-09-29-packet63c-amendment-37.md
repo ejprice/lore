@@ -1042,3 +1042,38 @@ is `PrincipalKeyStoreError`, its message starts *"could not mint"*, no note; FAL
 the note is present, and the substring *"could not mint"* appears NOWHERE in `_fault_line` output or
 `traceback.format_exception` (N-3's assertion, byte-level); (c) the AST one-handler pin is unchanged. STOP: a pin
 asserting the inner wrap's `catch=` is a tuple by AST → re-key to "a name bound to `proven_no_key`".
+
+### 15.2 RULED 2026-10-05 (lead; contract-mint-q1b §FORKS): FORK-1 → Reading A, GENERALISED to every classified refusal; FORK-2 → a bare `Query` with no detail kind is UNKNOWN; the mechanics sentence corrected
+
+**FORK-1 — Reading A, lifted.** The contract author's probe is right and §15's literal predicate contradicted its own
+table: on 3.2.4 a UNIQUE collision, an ASSERT violation and a field-coercion failure all arrive as `kind: Internal`,
+and `_classify_engine_error` recognises each by its text ladder. The quantifier error was mine: I adjudicated by RAW
+KIND where the driver already holds a stronger fact. **PROPERTY:** *a rejection the classifier has RECOGNISED as a
+refusal of the write — unique violation, assert violation, field coercion, the governed THROW, recursion depth
+(parse-time) — is PROVEN no-key whatever its raw kind, because recognition means the engine evaluated the statement
+and refused it; the raw-kind table of §15 applies ONLY to the residue the classifier could not name (`unspecified
+rejection`).* So `proven_no_key` for a `TxnDomainRejectionError` is: `error.error_class != _ERROR_CLASS_UNSPECIFIED`
+(a classified refusal → proven) **or** `error.kind ∉ _OUTCOME_UNKNOWN_KINDS` (an unclassified rejection of a kind
+that proves timing); `TxnUniqueViolationError` / `TxnGovernedConflictError` are classified by construction. The
+sibling is thereby ruled: ASSERT and coercion ARE proven, like UNIQUE. The reference's narrower
+`isinstance(error, TxnUniqueViolationError) and error.kind is not None` is superseded by the general form (the
+`kind is not None` guard is unnecessary once the class decides). Reading B is refused — it would re-key a live pin
+to serve a false "may be live" on a refusal the driver already proved. The live UNIQUE pin stands unchanged.
+
+**FORK-2 — a bare `Query` error with no detail kind is UNKNOWN.** CONFIRMED as the contract pins it (the §15
+asymmetry): the §15 table gains the row *`Query` with `details.kind` `None` → outcome unknown*; a kind-less
+rejection of any top-level kind stays unknown (§15 already said so for `kind is None`).
+
+**Mechanics sentence corrected (§15):** `_domain_rejection_error(error_class, message)` does NOT receive the typed
+error today; its two callers do (`_raise_attempt_failure` on the single-statement path, `_run_verified_transaction`
+via `failed.typed` on the transactional path). The ONE helper's signature grows by `kind: str | None` and the
+constructed `TxnDomainRejectionError` carries BOTH typed attributes — `error_class` (the label it already receives)
+and `kind` (passed by each caller from the typed error it holds; `None` for a bare-text input). Both raise sites
+pass it; nothing is parsed from text. Pin: the two raise sites pass a kind derived from the typed error (mutation:
+drop the kind at one site → the mint cell for that path moves to UNKNOWN by name).
+
+**Pins (q1b):** the §15 completeness pin's table gains the classification axis: ∀ (error_class, kind) ∈
+`_ERROR_CLASS_*` × (`KIND_TO_CLASS` ∪ `QueryDetailKind` ∪ {None}), the predicate's answer equals this ruling —
+classified refusals TRUE ∀ kind; `unspecified` × {Internal, Serialization, TimedOut, Cancelled, None} FALSE; other
+kinds TRUE. Live cells: UNIQUE (`Internal`) → "could not mint", no note; ASSERT / coercion (`Internal`) → the same;
+a synthetic `unspecified` × `Internal` → conditional note, own class.
