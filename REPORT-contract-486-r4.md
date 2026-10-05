@@ -3,7 +3,7 @@ brief-base v18 read · brief project v7 read
 # REPORT — contract-486-r4 (tdd-light CONTRACT, #486 follow-up: R1 · #538 · R5; TESTS ONLY, 2026-10-04)
 
 ## SUMMARY BLOCK
-- **State:** done-with-deviations (D1 applied 23:24–23:34Z, inside its 45-min deadline; §9). Files edited: `loremaster/tests/test_harness_database_lifecycle_486.py` and (after the D1 ruling) `loremaster/tests/test_no_raw_listener_in_test_trees.py` (not committed). Base HEAD `3256201`.
+- **State:** done-with-deviations (round 2 finished 00:33Z inside its 75-min deadline; §10: P1 4 RED/4 GREEN as declared + satisfiability reference 8/8; P2 17 GREEN + c1/c2/c3 PROOF HELD; P3 RED for never-went-down; one self-reported gate breach; one fork on the control's rc). Files edited: `loremaster/tests/test_harness_database_lifecycle_486.py` and (after the D1 ruling) `loremaster/tests/test_no_raw_listener_in_test_trees.py` (not committed). Base HEAD `3256201`.
 - **R1:** a new lost-store state `wedged` (handshake completes, pings answered, requests never) added to `_LOST_STORE_STATES`, plus an end-bound leg (`_LOST_STORE_SESSION_END_BOUND_SECONDS = 120`) over ALL lost states. GREEN on `3256201`; **budget-deletion reference edit reddens exactly `[wedged-n0]` + `[wedged-xdist-n2]`** (`scripts/mutation_proof.py`: PROOF HELD, conftest restored byte-exact). §2.
 - **#538:** `TestEveryXdistWorkerReportsItsSessionEnd` — **RED for the right reason on `3256201`** (construction held in both workers; rc 0, `1 passed`, nothing named), plus a GREEN control. §3.
 - **R5:** `TestASessionEndReapTheStoreAnsweredWronglyIsNamedFailed[n0, xdist-n2]` — **GREEN on `3256201`: pins existing behaviour.** §4.
@@ -150,3 +150,115 @@ brief-base v18 read · brief project v7 read
   - 170 collected = 161 (HEAD, §5) + 6 (486 cells) + 3 (guard: the two `TestTheDetectorSeesWebsocketsListeners` pins and `…is_flagged[websockets]`). Everything else is green.
 - **Final md5s:** 486 file `6440b108c12a7fc37dc72f9f8fed5c46`, guard file `f6f6f73f529a05bc940a0499239e2380`. Nothing committed.
 - **Bound, stated:** the `websockets` leaf names were derived from the installed 16.0 source by reading it, and the derivation is not executed. A future `websockets` release that adds a new listener entry point would be derived as server-capable, because the reach oracle keys on the verbs, but it would NOT be flagged until it is named here. That is the aiohttp entry's existing bound, unchanged.
+
+## §10 Round 2 (lead brief 2026-10-05 ~00:18Z: P1 Q2 hard outer bound · P2 #538 door domain · P3 F-3) — measured 00:18–00:32Z
+**Base:** HEAD `6f35e0a` + the uncommitted r4 build (conftest `94f821754d8e37d0e613ef2f16f77dcc`, 486 file at start `6440b108…`). **Only file edited:** `loremaster/tests/test_harness_database_lifecycle_486.py` → final md5 `3c981b3ea9936c46ec08cd47df25109b`. Pre-edit `cp -a` backups of both the 486 file and conftest in scratch `r2/`. Nothing committed. Conftest ended byte-identical to `94f82175…` after every throwaway edit (`cmp` and the proof tool's own check).
+
+### Summary
+| pin | class (new) | cells | on the r4 build | right reason |
+|---|---|---|---|---|
+| P1 Q2 hard bound | `TestTheSessionEndReapHasAHardOuterBound` | 8 = {blocking, cooperative} × {n0, xdist-n2} × pytest `faulthandler_timeout` {unset, 600} | **4 BLOCKING RED, 4 COOPERATIVE GREEN** (as declared 00:24:26Z, before the run) | each RED: `a SYNC block in the session-end reap held the process 20.4s/20.4s/20.8s/20.8s past the session-end step's start — over the 9s hard bound (2 × 2s budget + 5s)` |
+| P2 #538 door domain | `TestEveryWorkerDoorIsAccounted` | 17 = completeness + id-currency + 13 generated doors + all-doors-at-once + CONTROL | **17 GREEN** | — |
+| P3 F-3 wording | `TestTheGapLineNeverContradictsItsCause` | 13 generated doors (2 skip: accounted doors name no one) | **`[never went down]` RED**, 10 GREEN | `the worker's node NEVER went down, but the line claims it ended ('finished') … xdist worker gw1 finished WITHOUT its session-end report (it never went down)` |
+
+### P1 — construction and the seam the implementer must keep
+- **Injection.** A `PYTEST_PLUGINS` plugin (`_HARD_BOUND_INJECTION_PLUGIN`) adds a `tryfirst` `pytest_sessionfinish` in every process. It:
+  - sets the suite conftest's `_SESSION_END_REAP_BUDGET_SECONDS` to 2.0, on every loaded module whose `__file__` is `loremaster/tests/conftest.py`;
+  - replaces `_surreal_harness.reap_minted_databases` with either a sync `time.sleep(10 × budget)` (blocking) or `await asyncio.sleep(10 × budget)` (cooperative);
+  - stamps the time plus whether the budget seam exists, read by the construction guard.
+- **Inner session.** `_INNER_OPENS_AND_DROPS` opens and drops one database, so the reap runs.
+- **Hold.** `held` = child exit minus the earliest REAPING process's stamp. The ceilings were declared before the run:
+  - blocking: `2 × budget + ε` = 9 s;
+  - cooperative: `budget + ε` = 7 s;
+  - `ε` = 5 s.
+- **Blocking legs.**
+  - `-n 0`: rc ≠ 0, plus a faulthandler frame `File "…conftest.py", line N in _reap_within_budget`. The regex has no comma before `in`, so a Python traceback (`, in`) cannot satisfy it; only faulthandler's format can.
+  - xdist: rc ≠ 0, plus the #538 gap line naming a `gw<n>` (coldaudit-486-3 §5 addendum note 2).
+- **Cooperative control.** Pins the existing line `no answer within the 2s session-end reap budget`, `1 passed`, NO faulthandler frame, and rc ≠ 0.
+- **Note 1** (timer armed after pytest's last per-test cancel) is covered by the `pytest-faulthandler-timeout` variant: `PYTEST_ADDOPTS=-o faulthandler_timeout=600` arms and cancels the same process-global timer for each test.
+- **SEAMS THE IMPLEMENTER MUST KEEP OR EXPOSE (named, not prescribed):**
+  1. **The budget is read at session end from the conftest module attribute `_SESSION_END_REAP_BUDGET_SECONDS`, and the hard bound derives from that same value** (2 × it). This is the narrowest test-side injection the r4 build offers. The construction guard reports a missing attribute as CONSTRUCTION failed, never as a verdict. If the implementer prefers a different seam (e.g. an env var), the cell's injection changes in one place.
+  2. The reap is still reached as `_surreal_harness.reap_minted_databases`, looked up at call time.
+  3. The bounding step stays a frame named `_reap_within_budget`, because the dump must name it.
+  4. **The dump must reach the child's REAL stderr.** pytest's fd capture can still own fd 2 at session finish. The reference below passes `file=sys.__stderr__`, which worked.
+- **Satisfiability receipt: a throwaway reference, never shipped.** It added six lines to `_reap_within_budget` (verbatim below), and the result was **`8 passed in 9.47s`** (00:26:30Z). The reference conftest md5 was `5036e8f2…`; it was restored to `94f82175…`, `cmp` identical.
+  ```python
+      import faulthandler
+
+      try:
+          faulthandler.dump_traceback_later(2 * budget_seconds, exit=True, file=sys.__stderr__)
+          try:
+              anyio.run(_bounded_reap)
+          finally:
+              faulthandler.cancel_dump_traceback_later()
+      except TimeoutError as error:
+  ```
+- **FORK (written down, my pick stated): the cooperative control's exit code.** Two readings:
+  - am-37 §14 Q2 says the control "exits **0** … with the existing loud line";
+  - your brief says only "the verdict is intact".
+
+  Today the loud line FAILS the session (rc 1; pinned by `TestTheSessionEndReapNeverCostsPytestItsVerdict`), so "exits 0 with the loud line" contradicts an existing pin. I pinned **rc ≠ 0 + `1 passed` + no dump**. The "graceful vs hard" distinction is carried by the dump's ABSENCE, not by the rc, because `_exit(1)` and TESTS_FAILED are both 1. If the operator meant rc 0, that is a change to the #534 loud-line contract and needs a ruling.
+- **Deviation from your expectation:** you expected the main leg to "hang to your outer kill". It does not. A `10 × budget` sync sleep RETURNS at about 20 s, so the RED is the 9 s ceiling, not the 90 s outer kill. The pin is the same; only the reason text differs.
+
+### P2 — the generated door domain
+- **Source of truth.** The keys are every conftest constant whose name ends in `_REPORT_WORKEROUTPUT_KEY`, found with `vars()`, never listed by hand. The "complete report" is whatever the conftest's OWN worker-side `pytest_sessionfinish` writes into a fake `workeroutput`. Nothing is hand-written.
+- **Doors** (13): each key × {absent, corrupt `{not json`, wrong shape `{"not": …}`, `None`}, plus:
+  - every key absent;
+  - crashed and shipped nothing;
+  - never went down;
+  - crashed after a complete report (ACCOUNTED);
+  - a complete report (ACCOUNTED).
+- **Each door cell** runs a fleet {gw0 accounted, gw1 door}, so every case carries an accounted worker beside the gap (c3).
+- **Assertions.** Through the hooks only (`pytest_testnodeready`/`pytest_testnodedown`/`pytest_sessionfinish`/`pytest_terminal_summary`), on a private `importlib` copy of conftest:
+  - unaccounted door: exitstatus ≠ OK, plus a line naming gw1 with `session-end`;
+  - gw0 is never named;
+  - accounted doors: OK and not named.
+- **All-doors-at-once** puts all 13 workers in one fleet and requires the named set to equal exactly the unaccounted set.
+- **Completeness.** `test_the_generator_covers_every_key_a_worker_ships` requires the shipped keys to equal the named constants. `test_the_collected_door_ids_are_the_run_time_domain` catches stale parametrisation.
+- **Isolation.** `_sdk_guard._CALL_HOOKS` is swapped for a copy (the private conftest copy appends its hook at import), and `_surreal_harness._MINTED_DATABASES` is set to `{}` (so the controller's session-finish has nothing of the outer process's to reap). Both are monkeypatched, so nothing leaks into the running session.
+- **Mutation proofs** (`scripts/mutation_proof.py`). Ids were taken from `--collect-only` (30 ids in `r2/p2ids.txt`). The declared sets were derived and written (`r2/declared_c{1,2,3}.txt`) and the predictions recorded at 00:25Z, before any run. Scope: the P2+P3 classes, with P3 `[never went down]` deselected because it is the current-build red. Anchors are coldaudit-486-3 §A.5 verbatim.
+
+  | mutant | declared | observed | verdict |
+  |---|---|---|---|
+  | c1 (half report: `.get(UNREAPED_KEY, "[]")`) | 3 (door `[…unreaped…=absent]`, all-at-once, P3 `[…unreaped…=absent]`) | `3 failed, 24 passed, 2 skipped in 1.56s` | **PROOF HELD**, restored `94f82175…` |
+  | c2 (ValidationError gap → `None`) | 13 (6 corrupt/wrong-shape/none doors × {P2, P3} + all-at-once) | `13 failed, 14 passed, 2 skipped in 1.60s` | **PROOF HELD**, restored |
+  | c3 (gaps only when every worker is a gap) | 12 (11 gap doors + all-at-once) | `12 failed, 15 passed, 2 skipped in 1.61s` | **PROOF HELD**, restored |
+
+### P3 — the wording property
+- **Property.** For every unaccounted door, the line naming the worker makes no lifecycle claim its cause contradicts:
+  - a door whose node never went down → no `finished|ended|exited|terminated|completed|went down` once `never …` phrases are removed;
+  - a door that went down → no `never went down|finished|ended|exited`.
+- It is generated over the same 13 doors; the 2 accounted doors skip (no line names them, pinned by P2).
+- **BOUND, stated in the class docstring:** the verb vocabulary is a list. A new lifecycle verb is not covered until it is added to `_ENDED_CLAIM`.
+- On the r4 build only `[never went down]` reddens. That matches F-3: "finished WITHOUT … (it never went down)". The crash doors pass; the audit judged "finished" acceptable for a worker that did go down.
+
+### Targeted before/after (486 file + `test_surreal_harness.py` + guard file; `-n 8 --timeout=300`, 16G cgroup, wait-loop gate)
+| run | tree | result |
+|---|---|---|
+| before (00:26:51Z) | 486 file swapped back to `6440b108…` (`cp -a`, then restored, `cmp` identical) | **`170 passed in 133.00s`** |
+| after (00:29Z) | final 486 file `3c981b3e…` | **`5 failed, 201 passed, 2 skipped in 154.64s`**. The 5 failures are exactly the declared REDs: 4 × P1 blocking, plus P3 `[never went down]` |
+- 208 collected = 170 + 38 new (P1 8 + P2 17 + P3 13). Nothing else moved.
+- `ruff check .` → `All checks passed!`; my file has 0 typecheck errors.
+- **`--currency --legs typecheck,ruff`** (00:31Z): typecheck `RED_ADJUDICATED` (the same 83, owned by packet-58/64b-i, none in my file); ruff `GREEN`; **RED_ORPHANED 0**. The pytest leg is `NOT_RUN` by design (#540).
+
+### ⚠ Gate breach (self-reported)
+- At 00:22:36Z my gate check printed `procs=2` (other pytest processes live) and I started the run anyway. That run was the 1.57 s store-free P2/P3 run.
+- At 00:23Z the two processes were gone. Their identity is unrecoverable; I did not capture their command lines before they exited.
+- After that I wrote scratch `r2/gate.sh`, which WAITS (it does not refuse) until MemAvailable ≥ 20 GiB AND no other pytest is live. Every later run went through it; each `GATE CLEAR` line is in its log.
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+  while true; do
+    avail_kib=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+    others=$(pgrep -fa '[p]ython.*-m pytest|[b]in/pytest' || true)
+    if [ "$avail_kib" -ge $((20*1024*1024)) ] && [ -z "$others" ]; then break; fi
+    echo "waiting $(date -u +%T): MemAvailable ${avail_kib} KiB; others: ${others:-none}" >&2; sleep 10
+  done
+  echo "GATE CLEAR $(date -u +%T): MemAvailable $(awk '/MemAvailable/ {print $2}' /proc/meminfo) KiB, no other pytest" >&2
+  exec "$@"
+  ```
+
+### For the implementer (named, not prescribed)
+- **P1:** add the hard outer bound; keep the four seams listed above.
+- **P3:** derive the gap line's verb from the gap. Coldaudit-486-3's suggestion was "did not report its session-end before the session ended". The never-went-down door must not say "finished".
+- **P2:** no change needed. It is a regression pin for a correct build.
