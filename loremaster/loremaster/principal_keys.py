@@ -411,10 +411,21 @@ class PrincipalKeyStore:
 
         Raises:
             PrincipalNotFoundError: No principal carries ``email``.
-            PrincipalKeyStoreError: The hash or (principal, name) collides with a
-                UNIQUE index, or another fault that proves no key landed ("could not mint key …");
-                or any OTHER store fault, whose outcome is unknown (an outcome-unknown message plus
-                the conditional revoke note — am-37 §14 Q1 N-3).
+            PrincipalKeyStoreError: Before the CREATE answers, from the two nested wraps
+                (am-37 §14 Q1 N-3): a TRANSLATED proven fault (a domain rejection — the hash or
+                (principal, name) UNIQUE collision included — a governed conflict, a param
+                collision, an envelope violation) as "could not mint key …" with NO note; any
+                other translated store fault (the bare ``SurrealStoreError`` base, a foreign
+                subclass) as an outcome-unknown message plus the CONDITIONAL revoke note. After
+                the CREATE answered with no row: "the mint answered no row" plus the CERTAIN note.
+            SurrealConnectionError: A pass-through, re-raised RAW (never translated) with the
+                CONDITIONAL revoke note in its connection wording.
+            TxnContentionExhaustedError: A pass-through, re-raised RAW (never translated) with NO
+                note — it is proven (rolled back, no key landed).
+            BaseException: Any other fault during the CREATE (cancellation, an interrupt, a
+                timeout, a raw transport error, a future unknown) is re-raised as the SAME object
+                with the cause-neutral CONDITIONAL revoke note; ANY fault after the CREATE
+                answered carries the CERTAIN note instead.
         """
         principal_id = await self._require_principal_id(email)
         fragments = [

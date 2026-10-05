@@ -184,3 +184,14 @@ No other production behaviour changed.
 - **N-c:** the pre-existing `ruff format` drift in `principal_keys.py` and `_txn.py` (§CURRENCY). It is not a manifest gate.
 - **N-d:** the 4 `test_reanchor_58_r4_lease_fates.py` reds are pre-existing and 58-owned, but the brief did not name them (§RUNS).
 - **NOT TRIED (optional):** a second mutation proof on the F-1 path (`_classified_fault` → `return error`). Declaring its exact RED set needs a full enumeration of the translated proven cells, which I did not do. The tuple mutation above already proves the note reads the shared tuple.
+
+## §CLOSEOUT — audit F-1 / F-2 (`REPORT-coldaudit-mint-q1.md` d2d0544 §6), docstring/comment ONLY, over `0bbbd50`, 2026-10-05
+- **F-1, `PrincipalKeyStore.mint` `Raises:`.** `PrincipalKeyStoreError` is now split by source: a translated proven fault → "could not mint …" with no note; other translated store faults (bare base, foreign classes) → outcome-unknown message + conditional note; the post-answer no-row case → certain note. New entries: `SurrealConnectionError` (raw pass-through, conditional note in connection wording), `TxnContentionExhaustedError` (raw pass-through, NO note, proven), and `BaseException` (any other CREATE fault re-raised as the same object with the cause-neutral conditional note; any post-answer fault carries the certain note).
+- **F-2, `_txn._PROVEN_NO_KEY_FAULTS` comment.** A TRANSLATED member decides the inner `catch=`, and through it the not-landed message and the translation, plus the note (none). A PASS-THROUGH member (`TxnContentionExhaustedError`, re-raised before `catch=` is consulted) decides the note ONLY; its `catch=` membership is inert.
+- **Checks:**
+  - AST vs HEAD with docstrings blanked (`ast.dump` equality, both files): **True / True**.
+  - `ruff check` (both files): All checks passed.
+  - `ruff format --check`: "would reformat" both files, the known pre-existing drift. The drift-line count is unchanged (principal_keys 8→8, `_txn` 30→30).
+  - No tests run, by instruction.
+- **`git diff --stat`:** `principal_keys.py | 19 +++++++++++++++----` · `_txn.py | 8 ++++++--`.
+- **md5:** `principal_keys.py a7b169914e6eaa7d2fc16bee87f4699e` · `_txn.py 2ddd395c36ef633493a55da83ea172ab` (pre-edit `c67cc356…` / `4ebe3712…`; backups in my scratchpad).

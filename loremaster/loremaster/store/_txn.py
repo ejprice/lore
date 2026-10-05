@@ -261,8 +261,12 @@ class RetryableConflictSignal(Exception):
 #: design — transport (:class:`SurrealConnectionError`), cancellation, interrupts, timeouts, the bare
 #: :class:`SurrealStoreError` base (which, as a member, would also cover the connection class) and any
 #: future unknown — so it is never enumerated: "not a member" means "outcome unknown".
-#: ``PrincipalKeyStore.mint`` reads THIS tuple both to choose its inner wrap's ``catch=`` (and therefore its
-#: not-landed message) and to decide its revoke note — ONE tuple, one decision.
+#: ``PrincipalKeyStore.mint`` reads THIS tuple at ONE decision point, but what membership decides depends on
+#: whether the wrap translates the member. For a TRANSLATED member (every one but
+#: :class:`TxnContentionExhaustedError`) it decides three things: the inner wrap's ``catch=``, therefore the
+#: not-landed message ("could not mint key …") and the translation, AND the revoke note (none). For a
+#: PASS-THROUGH member (:class:`TxnContentionExhaustedError`, re-raised raw before any ``catch=`` is
+#: consulted) it decides the note ONLY; its membership in the inner ``catch=`` is inert.
 _PROVEN_NO_KEY_FAULTS: tuple[type[SurrealStoreError], ...] = (
     TxnDomainRejectionError,
     TxnGovernedConflictError,
