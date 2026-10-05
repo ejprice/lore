@@ -2417,3 +2417,7 @@ Then commit.
 **Used names, added:** fix-q3-retry-seam, contract-mint-q1. Reserved: implement-mint-q1, coldaudit-mint-q1.
 **Findings this stretch:** #539 (annotated), #540, #541, #542 (lore_index reconcile timed out at 300 s, filed by contract-mint-q1).
 **Lesson:** a suggested negative mutation must leave the pin's OTHER legs satisfied, or it proves the wrong leg. fix-q3 caught that my suggested raise-on-entry tripped the reach leg; the CONTROL leg exposed it.
+- **v13 addendum (02:45Z): N-3 STOP resolved by a lead ruling, option (a).** `wrap_store_rejection` has 21 production callers. Ruling: it gains an optional `catch=` (default `(SurrealStoreError,)`, so the other 20 are byte-unchanged), and `mint` passes `_PROVEN_NO_KEY_FAULTS`.
+  - Rider: mint's callers (the lore-adm CLI) must still render an untranslated non-proven store fault cleanly.
+  - The sharing proof covers note + message + translation.
+  - The same class at the other 20 callers is ledgered as **#543** (needs an operator scope ruling).
