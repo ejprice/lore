@@ -155,7 +155,7 @@ import logging
 import re
 import sys
 import tokenize
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -2608,7 +2608,11 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
             # OBSERVED is production's own `connection.subscribe_live(...)` inside
             # `_consume_live`, which is a call site all of its own.
             live_uuid = await connection.query(subscriber.live_select_statement())
-            with contextlib.suppress(Exception):
+            # ONLY the timeout. The real subscription never ends, so the 1 s bound is the
+            # one expected exit. Any OTHER exception out of `_consume_live` is a regression
+            # this pin must surface, not swallow (am-37 §14 Q3's class: a pin never
+            # suppresses the exception class it exists to notice).
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(subscriber._consume_live(connection, live_uuid), 1.0)
             await subscriber._safe_kill(connection, live_uuid)
         finally:
@@ -2632,7 +2636,7 @@ class TestNoSdkCallEscapesTheDriverAtRuntime:
             awaiter_live_uuid = await awaiter._live_query(
                 awaiter_connection, awaiter.live_select_statement(agent_id)
             )
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(TimeoutError):  # ONLY the timeout, as for the subscriber
                 await asyncio.wait_for(
                     awaiter._consume_live(awaiter_connection, awaiter_live_uuid, asyncio.Event()),
                     1.0,
@@ -3154,23 +3158,32 @@ class _AllMethodsConflictConnection:
     async def subscribe_live(self, live_uuid: Any) -> Any:
         if self._tick("subscribe_live"):
             raise _conflict_error()
-        return _empty_subscription()
+        return _one_notification_subscription()
 
     async def close(self) -> None:
         return None
 
 
-async def _empty_subscription() -> Any:
-    """An exhausted async iterator — ``subscribe_live``'s success shape.
+def _one_notification_subscription() -> AsyncIterator[dict[str, Any]]:
+    """``subscribe_live``'s SUCCESS SHAPE, exactly as deep as the installed SDK's (am-37 §14 Q3).
 
-    Built from an empty list rather than the ``return``-then-``yield`` marker: that idiom
-    needs a ``warn_unreachable`` ignore, and an ignore in a CONTRACT is a place a builder
-    learns to put ignores.
+    The SDK's ``AsyncWsSurrealConnection.subscribe_live`` (surrealdb 2.0.0) is an ``async
+    def`` that RETURNS an async generator, so ONE ``await`` yields the iterator. The fake's
+    ``async def subscribe_live`` returns this function's result, and that supplies the one
+    level. So this is a PLAIN function. Its ``async def`` predecessor put the iterator one
+    level DEEPER, so production's single ``await`` handed ``async for`` a coroutine, and the
+    resulting ``TypeError`` was swallowed by the pin.
+
+    It yields ONE notification and then ends, so the success leg (the ``async for`` body
+    and its ``_drain_pending``) really runs and the consume returns. An exhausted iterator
+    would leave that body unexecuted, and a build that never drains would pass. The SDK's
+    generator never ends (``while True``); ending here is a fixture bound so the test
+    terminates, not a shape difference. The notification's content is ``{}`` because
+    production never reads it.
     """
 
-    async def _iterator() -> Any:
-        for notification in []:  # type: ignore[var-annotated]
-            yield notification
+    async def _iterator() -> AsyncIterator[dict[str, Any]]:
+        yield {}
 
     return _iterator()
 
@@ -3253,19 +3266,40 @@ class TestEverySdkCallSiteActuallyRetries:
             f"routing is decoration."
         )
 
+    # BOTH filters, and neither alone is enough (probed 2026-10-04, pytest 9.0.3, CPython
+    # 3.14): "coroutine ... was never awaited" is raised from a coroutine FINALIZER. With
+    # only ``error::RuntimeWarning`` it becomes an unraisable exception, which pytest
+    # re-issues as a ``PytestUnraisableExceptionWarning``, and the test PASSES. With only the
+    # second filter, the RuntimeWarning stays a plain warning, and it passes too.
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    @pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
     async def test_scouts_live_subscription_is_retried(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Under 3 conflicts the subscription is attempted 4 times, AND it is then CONSUMED.
+
+        No ``suppress``: any exception out of ``_consume_live`` is a real red. That includes
+        a ``TypeError`` from iterating a mis-shaped subscription and the fake's own
+        ``AssertionError("unbounded retry")``. A suppress here is a probe without a
+        control, and it hid a dead success leg (am-37 §14 Q3).
+        """
         _silence_sleep(monkeypatch)
         connection = _AllMethodsConflictConnection(conflicts=3)
         subscriber = _subscriber()
 
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(subscriber._consume_live(connection, "live-uuid"), 5.0)
+        await asyncio.wait_for(subscriber._consume_live(connection, "live-uuid"), 5.0)
 
         assert connection.calls.get("subscribe_live", 0) == 4, (
             f"connection.subscribe_live() was attempted "
             f"{connection.calls.get('subscribe_live', 0)} time(s) — routed and not retried."
+        )
+        # The SUCCESS leg. The one notification must reach `_drain_pending`, whose SELECT
+        # meets the same fake: 3 conflicts, then `[]`, so 4 attempts. 0 means the `async for`
+        # body never ran, i.e. the subscription was obtained and then never consumed.
+        assert connection.calls.get("query", 0) == 4, (
+            f"the drain SELECT was attempted {connection.calls.get('query', 0)} time(s) "
+            f"after the subscription was obtained. A notification arrived and scout did not "
+            f"drain on it, so the live route is dead and only the poll backstop serves."
         )
 
     async def test_an_EMPTY_claim_is_a_lost_race_and_is_never_retried(
