@@ -2384,3 +2384,36 @@ Then commit.
 **Lessons:**
 - Agents write the SUMMARY first and the body later, so a watcher keyed on the summary State line fires early. Key watchers on a late section (e.g. `## Residuals`/`## §A`) plus "no pytest running".
 - A report's top State line can be stale from an earlier round, so key on the section's own State.
+
+## RESUME ANCHOR v13 (2026-10-05T02:35Z) — AUTHORITATIVE; supersedes v12
+**DONE since v12 (committed):**
+- **Q3 (am-37 §14) CLOSED:** `7f06b59`, test-only, `test_retry_seam.py`.
+  - The scout subscription fake now has the SDK's shape (read from the surrealdb 2.0.0 body).
+  - The suppress is deleted; the drain is asserted; RuntimeWarning + PytestUnraisableExceptionWarning are errors.
+  - Both reach-pin suppresses are narrowed to TimeoutError.
+  - Lead-verified in full: 766 passed / 4 skipped / 0 failed with `-W error::RuntimeWarning`.
+  - Report: `receipts/2026-10-05-am37-14/` (`c633fbf`). #539 annotated (the scout non-awaitable branch is reached by no test in that file).
+
+**IN FLIGHT: the Q1 mint cycle (tdd-light), round 2 of the contract.**
+- `contract-mint-q1` (tdd-light-contract). r1 report committed `48890b8`. Uncommitted test files are backed up in `scratchpad/q1-backup/`:
+  - `test_am37_13_3_63c_i_a.py` md5 `40fb3054…` (fix531d's file; the re-keyed pins, all GREEN);
+  - NEW `test_mint_unknown_outcome_note_q1.py` md5 `cbdfd336…` (every RED cell; owned file-granular).
+- r1 result: 26 RED@HEAD for the right reason; reference build 163/163.
+- **Rulings sent for r2:**
+  - lead: F-1 (b), classify via the wrap's `__cause__`; F-2 (b), a hand-adjudicated `_PROVEN_NO_KEY_FAULTS` literal in `_txn`, checked against the derived taxonomy; F-4 as derived.
+  - **operator, F-3 GENERALISE:** the connection class keeps today's exact conditional text; other unknown-outcome faults get a true generic parenthetical. Pinned as a property: no "connection" for cancel/interrupt/timeout/unknown.
+  - **operator, N-3 FIX IN Q1:** when the conditional note applies, no rendered message claims "could not mint" / non-landing. The SAME tuple decides the note and the message at one chokepoint, proven by mutation. Construct the bare base + a foreign `SurrealStoreError` subclass (LeaseError). STOP if `wrap_store_rejection` has callers beyond mint.
+  - §OWN: the contract author adds the TYPE_CHECKING owner anchor + the `pending_contracts.yaml` bound `am37-14-q1-mint-contract`, so the new reds are RED_ADJUDICATED.
+- It writes §R2 in `REPORT-contract-mint-q1.md` (`- **State:**` line at the top of §R2).
+
+**NEXT:**
+1. Verify §R2: reds right-reason, reference passes all, currency RED_ORPHANED 0. Commit the r2 report; keep the tests uncommitted until the build. Exception: if currency is RED_ADJUDICATED with the bound in place, the contract + registry MAY be committed together; prefer committing with the build.
+2. `implement-mint-q1` (tdd-implementer, model opus). Writable: `_txn` (the tuple) + the mint / `_mint_fault_note` / the wrap message. Deletes the registry bound + owner anchor when green (the liveness leg).
+3. `coldaudit-mint-q1`: runs the ONE full suite for this packet via `pending_contract_gate.py --currency -- --maxprocesses=12`, plus mutations (the move-a-class-across-the-tuple flips note AND message) and a contract-blind read of the message/note wording.
+4. Commit, archive to `receipts/2026-10-05-am37-14/`, INDEX line.
+5. 58 → the NEXT agent (operator).
+
+**Live agents:** contract-mint-q1 (r2 running). sidecar-63c-2 (idle; lore ECONNREFUSED in its session, so respawn as sidecar-63c-3 if needed). sidecar-64 (idle). All others stopped.
+**Used names, added:** fix-q3-retry-seam, contract-mint-q1. Reserved: implement-mint-q1, coldaudit-mint-q1.
+**Findings this stretch:** #539 (annotated), #540, #541, #542 (lore_index reconcile timed out at 300 s, filed by contract-mint-q1).
+**Lesson:** a suggested negative mutation must leave the pin's OTHER legs satisfied, or it proves the wrong leg. fix-q3 caught that my suggested raise-on-entry tripped the reach leg; the CONTROL leg exposed it.
