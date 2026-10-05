@@ -1077,3 +1077,24 @@ drop the kind at one site → the mint cell for that path moves to UNKNOWN by na
 classified refusals TRUE ∀ kind; `unspecified` × {Internal, Serialization, TimedOut, Cancelled, None} FALSE; other
 kinds TRUE. Live cells: UNIQUE (`Internal`) → "could not mint", no note; ASSERT / coercion (`Internal`) → the same;
 a synthetic `unspecified` × `Internal` → conditional note, own class.
+
+### 15.3 RULED 2026-10-05 (lead; coldaudit-mint-q1b §6 R-1): (a) — INVERT NOW to an allowlist `_PROVEN_KINDS`; an unlisted kind is UNKNOWN
+
+**Why (a):** §15.2's row *"other kinds TRUE"* is a deny-list — the forbidden-enumeration antipattern, on an engine that
+floats on `v3.2` (#336) and already serves two kinds the SDK does not enumerate (`Transaction`, `Query:Aborted`),
+both of which today earn *"could not mint"* with no revoke note. §15's own asymmetry (one `list-keys` vs a live
+credential) says the DEFAULT for a kind nobody adjudicated must be UNKNOWN; the code had the default inverted. Option
+(b) would pin a bound that the next engine tag silently widens — a trigger nobody measures.
+
+**The allowlist (§15's proven rows, nothing else):** top-level `Validation`, `Thrown`, `AlreadyExists`, `NotFound`,
+`Configuration`; Query detail `NotExecuted`. (`TransactionConflict` is never a domain rejection — it retries;
+`NotAllowed` / `Connection` are transport.) `proven_no_key` for an UNCLASSIFIED `TxnDomainRejectionError` becomes
+`error.kind in _PROVEN_KINDS` (kind-less → `False`); the classified-refusal half (§15.2) is unchanged.
+`_OUTCOME_UNKNOWN_KINDS` is DELETED (it was the deny-list) — a retired-name sweep, bare pattern.
+
+**Pin change:** the completeness pin over `KIND_TO_CLASS ∪ QueryDetailKind ∪ {None}` keeps its table, now with every
+member NOT in `_PROVEN_KINDS` expected FALSE (Internal, Serialization, TimedOut, Cancelled, None — AND, by the same
+rule, any member the installed SDK adds later); plus a cell for a kind the SDK does NOT enumerate (`Transaction`,
+`Query:Aborted`, a synthetic `Future`) → FALSE, own class, conditional note. A kind added to `_PROVEN_KINDS` without
+a row in the pin's table reds by name (the allowlist can only grow by adjudication). Small follow-up cycle; no other
+§15 clause moves.
