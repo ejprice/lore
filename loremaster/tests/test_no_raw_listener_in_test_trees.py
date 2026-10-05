@@ -120,6 +120,12 @@ _LISTENER_METHODS = frozenset(
 # ``unused_port`` is #466's own bind→read→close race, shipped inside aiohttp.
 _LISTENER_NAMES_BY_LIBRARY: dict[str, frozenset[str]] = {
     "aiohttp": frozenset({"run_app", "TCPSite", "UnixSite", "TestServer", "unused_port"}),
+    # websockets (contract-486-r4, D1): derived from the installed 16.0 source — its listeners are opened
+    # ONLY by ``serve`` / ``unix_serve`` (``asyncio.server`` → ``loop.create_server``/``create_unix_server``;
+    # ``sync.server`` → ``socket.create_server``) and the legacy ``Serve`` class they alias. Its
+    # ``ServerConnection`` / ``ServerProtocol`` wrap an ALREADY-ACCEPTED socket and bind nothing, so they
+    # are honest (the #486 contract's wedged store serves a held ``LoopbackPort``'s accepts through them).
+    "websockets": frozenset({"serve", "unix_serve", "Serve"}),
 }
 # The helper's public names — an adoption is a CALL to one of these.
 _HELPER_ENTRY_POINTS = frozenset({"LoopbackPort", "serve_asgi", "serve_http"})
@@ -151,13 +157,20 @@ _DEPENDENCY_LISTENER_VERBS = frozenset(
 # d1/C3 reach — every server-capable distribution a test tree imports → an honest listener spelling of
 # it that the detector MUST flag. Keys are canonical distribution names (PEP 503). The derived set must
 # EQUAL these keys: a missing key is a server library the guard has never been shown; an extra key is a
-# dead entry. Derived at 43b8d16: {anyio, uvicorn} (d1 report §C3, measured).
+# dead entry. Derived at 43b8d16: {anyio, uvicorn} (d1 report §C3, measured); + websockets once the #486
+# contract's wedged store imported its server connection (contract-486-r4 D1, 2026-10-04; RED without it).
 _PLANTED_BY_SERVER_DISTRIBUTION: dict[str, str] = {
     "uvicorn": "import uvicorn\ndef serve(app, port):\n    uvicorn.run(app, host='127.0.0.1', port=port)\n",
     "anyio": (
         "import anyio\n"
         "async def serve(port):\n"
         "    await anyio.create_tcp_listener(local_host='127.0.0.1', local_port=port)\n"
+    ),
+    "websockets": (
+        "from websockets.sync.server import serve\n"
+        "def run(handler, port):\n"
+        "    with serve(handler, '127.0.0.1', port) as server:\n"
+        "        server.serve_forever()\n"
     ),
 }
 
@@ -646,6 +659,53 @@ class TestTheContractFileExclusionIsLive:
 
 
 # ============================================================================================= #
+# contract-486-r4 D1: websockets' listeners are seen; its clients and accepted-socket connections are not.
+# ============================================================================================= #
+class TestTheDetectorSeesWebsocketsListeners:
+    """contract-486-r4 D1: websockets is imported by a test tree (the #486 wedged store), so its listeners
+    must be seen and its non-listening pieces must not. Every spelling below that opens a port is flagged on
+    its line; the client and the accepted-socket server connection are not."""
+
+    _PLANTED = (
+        "import websockets\n"  # 1
+        "from websockets.asyncio.server import serve, unix_serve\n"  # 2
+        "import websockets.sync.server\n"  # 3
+        "async def servers(handler, port, path):\n"  # 4
+        "    await websockets.serve(handler, '127.0.0.1', port)\n"  # 5 ← the re-exported top-level spelling
+        "    await serve(handler, '127.0.0.1', port)\n"  # 6 ← the asyncio server, imported bare
+        "    await unix_serve(handler, path)\n"  # 7 ← the unix-socket server
+        "    websockets.sync.server.serve(handler, '127.0.0.1', port)\n"  # 8 ← the sync server, qualified
+        "    websockets.legacy.server.Serve(handler, '127.0.0.1', port)\n"  # 9 ← the legacy class
+    )
+    _FLAGGED_LINES = [5, 6, 7, 8, 9]
+
+    _HONEST = (
+        "import websockets\n"
+        "from websockets.server import ServerProtocol\n"
+        "from websockets.sync.client import connect\n"
+        "from websockets.sync.server import ServerConnection\n"
+        "async def clients_and_accepted_sockets(url, accepted):\n"
+        "    await websockets.connect(url)\n"
+        "    connect(url)\n"
+        "    ServerConnection(accepted, ServerProtocol()).handshake()\n"
+    )
+
+    def test_every_planted_websockets_listener_is_flagged_on_its_line(self) -> None:
+        flagged = sorted({site.lineno for site in listener_sites(ast.parse(self._PLANTED), "PLANTED.py")})
+        assert flagged == self._FLAGGED_LINES, (
+            f"flagged lines {flagged} != expected {self._FLAGGED_LINES} — websockets listeners get back into "
+            "the test trees through the unflagged lines"
+        )
+
+    def test_honest_websockets_clients_and_accepted_socket_connections_are_not_flagged(self) -> None:
+        sites = listener_sites(ast.parse(self._HONEST), "HONEST.py")
+        assert sites == [], (
+            "the detector flagged a websockets CLIENT, or a server connection on an already-accepted socket "
+            f"(it binds nothing) — over-broad: {[site.render() for site in sites]}"
+        )
+
+
+# ============================================================================================= #
 # DELTA d1 — C3: aiohttp's listeners are seen; its clients and handlers are not.
 # ============================================================================================= #
 class TestTheDetectorSeesAiohttpListeners:
@@ -782,8 +842,10 @@ class TestTheServerCapableDependenciesAreDerived:
     oracle keys on the asyncio/anyio verbs, and a ``.bind`` oracle is drowned in ``Signature.bind`` noise
     (measured: sklearn, scipy, mypy …). Re-open trigger: the first such library imported by a test. (2) a
     library a test does not import yet is not derived until it is — aiohttp is covered proactively by
-    :class:`TestTheDetectorSeesAiohttpListeners` because the audit named it; websockets (installed,
-    verb-capable, not imported at 43b8d16) is left to this pin. (3) a PYTEST FIXTURE that picks a port
+    :class:`TestTheDetectorSeesAiohttpListeners` because the audit named it. websockets was installed,
+    verb-capable and not imported at 43b8d16; the #486 contract's wedged store imported its server
+    connection (contract-486-r4 D1, 2026-10-04), this pin went RED, and websockets is now derived, planted
+    and flagged (:class:`TestTheDetectorSeesWebsocketsListeners`). (3) a PYTEST FIXTURE that picks a port
     (pytest-asyncio's ``unused_tcp_port``) is a parameter name, not a call — no call-keyed scan sees it
     (d1 report, surfaced for a ruling)."""
 

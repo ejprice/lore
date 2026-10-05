@@ -69,6 +69,11 @@ dev = [
     # from the image"). It ships `py.typed`, so no mypy override is needed.
     "coverage>=7",
     "hypothesis>=6.168.1",
+    # The per-test `--timeout=<N>` CLAUDE.md mandates on every agent mutation/reference run
+    # (packet 58 am-9 F-r3-3). DECLARED so that run resolves from the project venv: under
+    # `uv run --with pytest-timeout` it lived in uv's overlay env instead, whose sysconfig
+    # roots hid every project plugin from the live plugin-fixture leg (#537).
+    "pytest-timeout>=2.4.0",
 ]
 
 # ---------------------------------------------------------------------------

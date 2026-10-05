@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import importlib.util
 import json
 import os
 import re
@@ -79,13 +80,17 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 import tomllib
 import urllib.parse
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import _sdk_guard
 import _surreal_harness
 import pytest
 from _surreal_harness import (
@@ -100,6 +105,9 @@ from _surreal_harness import (
 from loremaster.governed import map_of
 from loremaster.store._txn import SurrealStoreError
 from loremaster.testing.loopback import LoopbackPort
+from websockets.server import ServerProtocol
+from websockets.sync.server import ServerConnection
+from websockets.typing import Subprotocol
 
 # --------------------------------------------------------------------------------------------
 # Shared constants
@@ -1115,9 +1123,17 @@ _UNREACHABLE_STORE_STATES = (_REFUSED_STORE, _SILENT_STORE)
 # a single request — the hang that sits past any connect-time timeout. Only constructible through
 # the forwarder (it needs a real handshake), so it is a session-end state of cell (c) only.
 _MUTED_STORE = "muted"
-# Every state the store may be LOST into after a real open (cell c): refused, plus the two HANGS
-# the lead's D2 ruling (2026-10-04) pins — "a never-ending session is worse than a failing one".
-_LOST_STORE_STATES = (_REFUSED_STORE, _SILENT_STORE, _MUTED_STORE)
+# "wedged" (contract-486-r4, coldaudit-486-2 R1): the store's TRANSPORT stays alive — the websocket
+# handshake completes and every keepalive ping is ANSWERED — while every REQUEST goes unanswered, the
+# shape of a wedged engine behind a healthy socket. It is the one lost state no dependency default
+# ends: refused ends at once, "silent" at the SDK's 10s websocket open timeout, "muted" at the
+# websockets ~40s keepalive (unanswered pings). Only the build's OWN session-end bound ends this one,
+# so it is the state that makes that bound load-bearing (coldaudit-486-2 §2 mutation (b): deleting
+# the bound passed 126/126 against the three states above).
+_WEDGED_STORE = "wedged"
+# Every state the store may be LOST into after a real open (cell c): refused, plus the HANGS the
+# lead's D2 ruling (2026-10-04) pins — "a never-ending session is worse than a failing one".
+_LOST_STORE_STATES = (_REFUSED_STORE, _SILENT_STORE, _MUTED_STORE, _WEDGED_STORE)
 
 # A name-only session takes ~3-8s on this host (-n 0 / xdist start-up). A session that HANGS on a
 # silent store is the failure; 90s bounds it well above any healthy run on a loaded box.
@@ -1126,6 +1142,11 @@ _UNREACHABLE_STORE_SESSION_TIMEOUT_SECONDS = 90
 # any plausible one (the SDK's websocket open timeout alone is 10s) — a session still running at
 # 180s is HUNG, and that is RED.
 _LOST_STORE_SESSION_TIMEOUT_SECONDS = 180
+# ∀ lost state, the inner session must have ENDED within this bound — well below the outer kill at
+# :data:`_LOST_STORE_SESSION_TIMEOUT_SECONDS`, so a session the build bounds only loosely (or not at
+# all, ended by luck of a dependency's default) is a named RED, not a pass on the kill's slack. The
+# build's own bound is not prescribed (D2); this is the outcome ceiling the operator can live with.
+_LOST_STORE_SESSION_END_BOUND_SECONDS = 120
 
 # The name-only inner session: one test mints a NAME and opens nothing — the shape of every
 # fake-store test whose project slug the #486 patch converted to ``unique_database()``
@@ -1212,6 +1233,12 @@ class _KillableStoreForwarder:
     * ``muted`` — connections are accepted and forwarded until the upstream's HTTP upgrade
       response has passed (the websocket handshake SUCCEEDS); every byte after it is swallowed,
       so the first request (sign-in) waits forever.
+    * ``wedged`` — connections are accepted and served HERE, with no upstream, by the ``websockets``
+      package's own server connection (the protocol the SDK speaks): the handshake completes on the
+      SDK's ``cbor`` subprotocol, the protocol layer answers every ping, and every request is read and
+      swallowed, unanswered. It wraps the already-accepted socket and binds nothing — the listener is
+      the held :class:`LoopbackPort` (the #466 guard's ``websockets`` entry flags only ``serve`` /
+      ``unix_serve``).
 
     Bound (stated): ``refused`` releases the ephemeral port; another process binding that exact
     port in the session's last seconds would turn "refused" into a foreign answer.
@@ -1255,7 +1282,7 @@ class _KillableStoreForwarder:
         while not self._closed.is_set():
             if not self._lost and self._kill_switch.exists():
                 self._lose_the_store()
-            if self._lost and self._lost_state != _MUTED_STORE:
+            if self._lost and self._lost_state not in (_MUTED_STORE, _WEDGED_STORE):
                 if self._closed.wait(self._POLL_SECONDS):
                     return
                 continue
@@ -1265,12 +1292,30 @@ class _KillableStoreForwarder:
                 continue
             except OSError:
                 return
+            if self._lost and self._lost_state == _WEDGED_STORE:
+                client.settimeout(None)
+                with self._lock:
+                    self._connections.append(client)
+                threading.Thread(target=self._serve_wedged, args=(client,), daemon=True).start()
+                continue
             upstream = socket.create_connection(self._upstream)
             with self._lock:
                 self._connections += [client, upstream]
             muted = self._lost
             threading.Thread(target=self._pump, args=(client, upstream, False), daemon=True).start()
             threading.Thread(target=self._pump, args=(upstream, client, muted), daemon=True).start()
+
+    @staticmethod
+    def _serve_wedged(client: socket.socket) -> None:
+        """Complete the websocket handshake, answer every ping, never answer a request."""
+        protocol = ServerProtocol(subprotocols=[Subprotocol("cbor")], max_size=None)
+        # The SERVER never pings, so the store's liveness is exactly the client's keepalive, which the
+        # protocol layer answers; nothing but the build's own bound can end a request here.
+        connection = ServerConnection(client, protocol, ping_interval=None)
+        with contextlib.suppress(Exception):  # a client hanging up mid-handshake ends the state
+            connection.handshake()
+            for _request in connection:  # every request is read and swallowed, unanswered
+                pass
 
     def _lose_the_store(self) -> None:
         with self._lock:
@@ -1399,16 +1444,22 @@ class TestTheSessionEndReapNeverCostsPytestItsVerdict:
         opens a database through it, never drops it, then kills the forwarder and waits for the
         ack — so the session ENDS with the store unreachable after a real open.
 
-        D2 (lead ruling, 2026-10-04): ∀ lost state — refused, AND the two hangs (``silent``: no
-        accept; ``muted``: handshake completes, then nothing) — the reap COMPLETES in bounded time
-        and the same loud line follows. The bound's value and mechanism are the build's; a session
-        still running at :data:`_LOST_STORE_SESSION_TIMEOUT_SECONDS` is RED."""
+        D2 (lead ruling, 2026-10-04): ∀ lost state — refused, AND the hangs (``silent``: no
+        accept; ``muted``: handshake completes, then nothing; ``wedged``: handshake completes, pings
+        answered, requests never) — the reap COMPLETES in bounded time and the same loud line
+        follows. The bound's value and mechanism are the build's; a session that has not ENDED
+        within :data:`_LOST_STORE_SESSION_END_BOUND_SECONDS` is RED, and one still running at
+        :data:`_LOST_STORE_SESSION_TIMEOUT_SECONDS` is killed and RED.
+
+        ``wedged`` (contract-486-r4, coldaudit-486-2 R1) is the state only the BUILD's own bound can
+        end: RED with that bound deleted (a hang to the outer kill), measured in the r4 report."""
         _refuse_the_production_store()
         kill_switch = tmp_path / "store.kill"
         killed_ack = tmp_path / "store.killed"
         created: list[str] = []
         try:
             with _KillableStoreForwarder(kill_switch, killed_ack, lost_state=lost_state) as forwarder:
+                started = time.monotonic()
                 session = _run_bounded(
                     tmp_path,
                     _INNER_OPENS_THEN_LOSES_THE_STORE,
@@ -1418,11 +1469,17 @@ class TestTheSessionEndReapNeverCostsPytestItsVerdict:
                     created_sink=created,
                     **{_KILL_SWITCH_ENV: str(kill_switch), _KILLED_ACK_ENV: str(killed_ack)},
                 )
+                elapsed = time.monotonic() - started
             assert len(session.created) == 1 and killed_ack.exists(), (
                 f"CONSTRUCTION failed (not a verdict on the build): the inner test never opened a "
                 f"database or never lost the store.\n{session.describe()}"
             )
             (opened,) = session.created
+            assert elapsed <= _LOST_STORE_SESSION_END_BOUND_SECONDS, (
+                f"the session ENDED, but only after {elapsed:.0f}s with the TEST store {lost_state} — "
+                f"over the {_LOST_STORE_SESSION_END_BOUND_SECONDS}s ceiling. Whatever ended it was not "
+                f"a bound the build owns tightly enough.\n{session.describe()}"
+            )
             assert _RAW_TRACEBACK_MARKER not in session.output, (
                 f"the session-end reap crashed with a RAW traceback when the TEST store became "
                 f"unreachable. Report it as a named line instead (#534).\n{session.describe()}"
@@ -1467,6 +1524,788 @@ def _assert_pytest_kept_its_verdict(session: _InnerSession, *, passed: int, stor
         f"pytest's own summary (`{passed} passed`) is missing (TEST store: {store}) — a tail with no "
         f"passed-count is the one CLAUDE.md teaches agents to distrust.\n{session.describe()}"
     )
+
+
+# --------------------------------------------------------------------------------------------
+# LEG 4c — every xdist worker's session-end report reaches the controller (contract-486-r4, #538),
+#          and a reap the store ANSWERED wrongly is named as failed, not unreachable (R5)
+# --------------------------------------------------------------------------------------------
+
+# Session-end plugins are injected through pytest's own ``PYTEST_PLUGINS`` env var, which every
+# xdist worker inherits and loads — so the injection reaches workers without touching the inner
+# command line. The plugin module lives in its own directory, prepended to ``PYTHONPATH``.
+_INJECTED_PLUGIN_MODULE = "session_end_injection_486"
+_INJECTION_MARKER_ENV = "LORE_486_INJECTION_MARKER"
+_INJECTION_RAISES_ENV = "LORE_486_INJECTION_RAISES"
+_INJECTION_ANSWER_ENV = "LORE_486_INJECTED_INFO_FOR_NS_ANSWER"
+
+# The injected raise's text. It deliberately carries NEITHER a worker id NOR the word the named
+# line must carry, so a build that merely lets the raise's text through cannot satisfy the pin.
+_INJECTED_RAISE_TEXT = "contract-486-r4 injected hook bug"
+
+# The #538 plugin: in every xdist WORKER, a ``tryfirst`` ``pytest_sessionfinish`` records that it
+# ran and then — when told to — raises, so every later session-finish hook in that worker (the
+# harness's reap and its report hand-off included) never runs. The controller is left alone: the
+# property is about what the controller concludes from a worker that never reported.
+_RAISING_SESSION_END_PLUGIN = f"""
+import os
+
+import pytest
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session):
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker is None:
+        return
+    with open(os.environ["{_INJECTION_MARKER_ENV}"], "a", encoding="utf-8") as handle:
+        handle.write(worker + "\\n")
+    if os.environ.get("{_INJECTION_RAISES_ENV}") == "1":
+        raise RuntimeError("{_INJECTED_RAISE_TEXT}")
+"""
+
+# The R5 plugin: at session end ONLY (a ``tryfirst`` ``pytest_sessionfinish``, so it is armed before
+# the harness's reap runs), ``INFO FOR NS`` answers with a shape the present set cannot be read
+# from; every other statement reaches the real TEST store. Records each wrong answer it served, so
+# the construction guard can prove the injection reached the reap.
+_WRONG_NAMESPACE_ANSWER_PLUGIN = f"""
+import json
+import os
+
+import _surreal_harness
+import pytest
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session):
+    real_run = _surreal_harness.run
+    answer = json.loads(os.environ["{_INJECTION_ANSWER_ENV}"])
+
+    async def run_answering_info_for_ns(connection, statement, params=None):
+        if statement.strip().upper() == "INFO FOR NS":
+            with open(os.environ["{_INJECTION_MARKER_ENV}"], "a", encoding="utf-8") as handle:
+                handle.write(os.environ.get("PYTEST_XDIST_WORKER", "controller") + "\\n")
+            return answer
+        return await real_run(connection, statement, params)
+
+    _surreal_harness.run = run_answering_info_for_ns
+"""
+
+# R5's wrong answer: a ``databases`` LIST where a map is required — a store that ANSWERED, wrongly.
+# The full shape domain is pinned on the reaper itself
+# (:class:`TestTheReaperFailsLoudOnANamespaceAnswerItCannotRead`); this leg pins what the SESSION
+# says when such an answer arrives at session end.
+_WRONG_NAMESPACE_ANSWER: dict[str, object] = {"accesses": {}, "databases": [], "users": {}}
+
+# The word a reap that the store ANSWERED but that still did not complete must carry — distinct from
+# :data:`_UNREACHABLE_WORD`, because "the store was down" and "the store answered and the reap broke"
+# send an operator to different places.
+_REAP_FAILED_WORD = "failed"
+
+# The word the controller's named line for a worker that never reported must carry, beside the
+# worker's id (``gw0``…) — the id is what lets an operator find which worker's databases are unverified.
+_SESSION_END_WORD = "session-end"
+_WORKER_ID = re.compile(r"\bgw\d+\b")
+
+# A test that opens a database and drops it: a CLEAN session, so the only thing that can fail it is
+# what happens at session end.
+_OPENS_AND_DROPS_TEST_NAME = "test_opens_a_database_and_drops_it"
+_INNER_OPENS_AND_DROPS = (
+    _INNER_PREAMBLE
+    + f"""
+
+async def {_OPENS_AND_DROPS_TEST_NAME}():
+    database = unique_database()
+    _record(database)
+    environment = make_env(database=database, dim=PRODUCTION_DIM)
+    connection = await connect_admin(environment)
+    await connection.close()
+    await drop_database(environment)
+"""
+)
+_ONE_TEST_PASSED = 1
+
+
+def _injected_plugin_environment(
+    tmp_path: Path, plugin_source: str, marker: Path, **extra: str
+) -> dict[str, str]:
+    """The env that loads ``plugin_source`` into the inner session AND every xdist worker of it."""
+    plugin_dir = tmp_path / "injected_plugin"
+    plugin_dir.mkdir()
+    plugin_file = plugin_dir / f"{_INJECTED_PLUGIN_MODULE}.py"
+    plugin_file.write_text(textwrap.dedent(plugin_source), encoding="utf-8")
+    marker.write_text("", encoding="utf-8")
+    return {
+        "PYTHONPATH": os.pathsep.join(
+            filter(None, [str(_TESTS_DIR), str(plugin_dir), os.environ.get("PYTHONPATH", "")])
+        ),
+        "PYTEST_PLUGINS": _INJECTED_PLUGIN_MODULE,
+        _INJECTION_MARKER_ENV: str(marker),
+        **extra,
+    }
+
+
+def _marked(marker: Path) -> list[str]:
+    return [line for line in marker.read_text(encoding="utf-8").splitlines() if line]
+
+
+class TestEveryXdistWorkerReportsItsSessionEnd:
+    """#538, lifted (coldaudit-486-2 R3): under xdist, ∀ worker that finished, the controller either
+    RECEIVED that worker's session-end report, or it FAILS the session with a named line — whatever
+    stopped the report (a reap crash, a bug in any session-finish hook, a dead hand-off). A worker
+    that never reported had its databases neither reaped-and-named nor reported unverified, so a
+    passing verdict there is a false clear.
+
+    Construction: a ``tryfirst`` session-finish hook raises in every worker BEFORE the harness's
+    session-end work runs (the worker's own tests passed, and its one database was dropped cleanly).
+
+    Pins OUTCOMES: rc, the named line (a worker id + :data:`_SESSION_END_WORD`), pytest's summary.
+    Not the mechanism (which key is checked, where the line is printed). ``-n 0`` has no worker and
+    so no hand-off; the property is xdist's.
+    """
+
+    async def test_a_worker_that_never_shipped_its_session_end_report_fails_the_session(
+        self, tmp_path: Path
+    ) -> None:
+        """RED on the #486 build as of ``3256201`` (2026-10-04): rc 0, ``1 passed``, nothing named —
+        the controller merges whatever report keys arrive and treats an absent one as "nothing to
+        report" (coldaudit-486-2 §2 probe (e))."""
+        _refuse_the_production_store()
+        marker = tmp_path / "injection.marker"
+        created: list[str] = []
+        try:
+            session = _run_bounded(
+                tmp_path,
+                _INNER_OPENS_AND_DROPS,
+                workers=_XDIST_WORKERS,
+                store_url=surreal_url(),
+                timeout_seconds=_LOST_STORE_SESSION_TIMEOUT_SECONDS,
+                created_sink=created,
+                **_injected_plugin_environment(
+                    tmp_path, _RAISING_SESSION_END_PLUGIN, marker, **{_INJECTION_RAISES_ENV: "1"}
+                ),
+            )
+            raised_in = _marked(marker)
+            assert len(session.created) == 1 and len(raised_in) == _XDIST_WORKERS, (
+                f"CONSTRUCTION failed (not a verdict on the build): expected one opened database and the "
+                f"injected hook to run in all {_XDIST_WORKERS} workers; it ran in {raised_in}."
+                f"\n{session.describe()}"
+            )
+            assert session.returncode != 0, (
+                f"{_XDIST_WORKERS} xdist workers ({', '.join(raised_in)}) finished WITHOUT shipping their "
+                f"session-end report, and the session PASSED: whatever those workers opened was never "
+                f"verified removed, and nobody was told (#538).\n{session.describe()}"
+            )
+            named = [
+                line
+                for line in session.output.splitlines()
+                if _WORKER_ID.search(line)
+                and _SESSION_END_WORD in line.lower()
+                and _INJECTED_RAISE_TEXT not in line
+            ]
+            assert named, (
+                f"no line names a worker (`gw<n>`) and its missing {_SESSION_END_WORD!r} report. An "
+                f"operator must be able to tell WHICH worker's databases are unverified."
+                f"\n{session.describe()}"
+            )
+            assert _passed_summary(_ONE_TEST_PASSED).search(session.output), (
+                f"pytest's own summary (`{_ONE_TEST_PASSED} passed`) is missing: the named line must sit "
+                f"BESIDE pytest's verdict.\n{session.describe()}"
+            )
+        finally:
+            await _remove_if_present(*created)
+
+    async def test_CONTROL_the_same_injection_without_the_raise_passes(self, tmp_path: Path) -> None:
+        """CONTROL (GREEN on the #486 build): the identical plugin, loaded the same way, NOT raising —
+        rc 0, ``1 passed``, no named line. So the leg above fails on the missing report, never on the
+        injection's wiring or the session's shape."""
+        _refuse_the_production_store()
+        marker = tmp_path / "injection.marker"
+        created: list[str] = []
+        try:
+            session = _run_bounded(
+                tmp_path,
+                _INNER_OPENS_AND_DROPS,
+                workers=_XDIST_WORKERS,
+                store_url=surreal_url(),
+                timeout_seconds=_LOST_STORE_SESSION_TIMEOUT_SECONDS,
+                created_sink=created,
+                **_injected_plugin_environment(tmp_path, _RAISING_SESSION_END_PLUGIN, marker),
+            )
+            assert len(_marked(marker)) == _XDIST_WORKERS, (
+                f"the injected plugin did not load in every worker: {_marked(marker)}\n{session.describe()}"
+            )
+            assert session.returncode == 0, f"a clean session failed:\n{session.describe()}"
+            assert _passed_summary(_ONE_TEST_PASSED).search(session.output), session.describe()
+            assert not [
+                line
+                for line in session.output.splitlines()
+                if _WORKER_ID.search(line) and _SESSION_END_WORD in line.lower()
+            ], f"a worker that DID report was named as missing its report:\n{session.describe()}"
+        finally:
+            await _remove_if_present(*created)
+
+
+class TestASessionEndReapTheStoreAnsweredWronglyIsNamedFailed:
+    """coldaudit-486-2 R5: a session-end reap that fails although the TEST store ANSWERED (here: an
+    ``INFO FOR NS`` shape the present set cannot be read from, injected at session end only) fails
+    the session with its OWN named line — the opened database and :data:`_REAP_FAILED_WORD` — and
+    NEVER calls the store unreachable (it was not: saying so sends the operator to restart a healthy
+    store, a false statement about the cause). No raw traceback; pytest's summary intact. ``-n 0``
+    AND xdist (the worker's report must cross to the controller).
+    """
+
+    @pytest.mark.parametrize("workers", _WORKER_MODES)
+    async def test_a_reap_the_store_answered_wrongly_is_named_failed_not_unreachable(
+        self, tmp_path: Path, workers: int | None
+    ) -> None:
+        """Pins EXISTING behaviour (expected GREEN on ``3256201``; the r4 report records the run)."""
+        _refuse_the_production_store()
+        marker = tmp_path / "injection.marker"
+        created: list[str] = []
+        try:
+            session = _run_bounded(
+                tmp_path,
+                _INNER_LEAKING_TEST,
+                workers=workers,
+                store_url=surreal_url(),
+                timeout_seconds=_LOST_STORE_SESSION_TIMEOUT_SECONDS,
+                created_sink=created,
+                **_injected_plugin_environment(
+                    tmp_path,
+                    _WRONG_NAMESPACE_ANSWER_PLUGIN,
+                    marker,
+                    **{_INJECTION_ANSWER_ENV: json.dumps(_WRONG_NAMESPACE_ANSWER)},
+                ),
+            )
+            assert len(session.created) == 1 and _marked(marker), (
+                f"CONSTRUCTION failed (not a verdict on the build): the inner test opened no database, or "
+                f"the session-end reap never read the namespace through the injection.\n{session.describe()}"
+            )
+            (opened,) = session.created
+            assert _RAW_TRACEBACK_MARKER not in session.output, (
+                f"a session-end reap the store answered wrongly crashed with a RAW traceback."
+                f"\n{session.describe()}"
+            )
+            assert session.returncode != 0, (
+                f"the session PASSED although its session-end reap could not read the namespace — "
+                f"`{opened}`, opened and never dropped, is unverified.\n{session.describe()}"
+            )
+            lines_naming_it = [line for line in session.output.splitlines() if opened in line]
+            assert any(_REAP_FAILED_WORD in line.lower() for line in lines_naming_it), (
+                f"no line names `{opened}` together with {_REAP_FAILED_WORD!r}.\n{session.describe()}"
+            )
+            assert not any(_UNREACHABLE_WORD in line.lower() for line in lines_naming_it), (
+                f"the store ANSWERED, yet a line calls it {_UNREACHABLE_WORD!r} — a false cause."
+                f"\n{session.describe()}"
+            )
+            assert _passed_summary(_ONE_TEST_PASSED).search(session.output), (
+                f"pytest's own summary (`{_ONE_TEST_PASSED} passed`) is missing.\n{session.describe()}"
+            )
+        finally:
+            await _remove_if_present(*created)
+
+
+# --------------------------------------------------------------------------------------------
+# LEG 4d — the #538 door DOMAIN (contract-486-r4 round 2, coldaudit-486-3 F-1) and the gap line's
+#          wording (F-3) — store-free, at the xdist controller's own hooks
+# --------------------------------------------------------------------------------------------
+
+# The suite's conftest — the module whose xdist hooks are the controller's chokepoint.
+_SUITE_CONFTEST = _TESTS_DIR / "conftest.py"
+# The DOMAIN's source of truth: every report value a worker ships is named by a conftest constant with
+# this suffix. Discovered, never listed; the completeness pin
+# (``test_the_generator_covers_every_key_a_worker_ships``) fails the day a worker ships a value no such
+# constant names.
+_REPORT_KEY_SUFFIX = "_REPORT_WORKEROUTPUT_KEY"
+# The accounted worker every door shares its fleet with (coldaudit-486-3 mutant c3: gaps reported only
+# when EVERY worker is a gap), and the door's own worker.
+_ACCOUNTED_WORKER = "gw0"
+_DOOR_WORKER = "gw1"
+# The ways ONE report value can arrive that are not a readable report, each a separate door.
+_MISSING = object()  # sentinel: the key is absent from ``workeroutput``
+_BROKEN_VALUES: dict[str, object] = {
+    "absent": _MISSING,
+    "corrupt": "{not json",
+    "wrong-shape": json.dumps({"not": "a list of report rows"}),
+    "none": None,
+}
+_WORKER_CRASH = "worker died: [gw1] node down: Not properly terminated"
+_ACCOUNTED_DOOR_NAME = "a complete report"
+
+
+def _fresh_suite_conftest(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """A PRIVATE copy of the suite's conftest, so the controller state these pins drive is fresh and
+    never touches the running session's own verdict. Its import-time ``_sdk_guard`` hook lands on a
+    list ``monkeypatch`` restores, and the harness's minted registry is emptied, so the controller's
+    session-finish has nothing of THIS process's to reap or report."""
+    monkeypatch.setattr(_sdk_guard, "_CALL_HOOKS", list(_sdk_guard._CALL_HOOKS))
+    monkeypatch.setattr(_surreal_harness, "_MINTED_DATABASES", {})
+    spec = importlib.util.spec_from_file_location(f"suite_conftest_538_{uuid.uuid4().hex}", _SUITE_CONFTEST)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _report_keys(conftest: ModuleType) -> list[str]:
+    """Every report key the conftest NAMES: the generator's domain, read off the module."""
+    return sorted(value for name, value in vars(conftest).items() if name.endswith(_REPORT_KEY_SUFFIX))
+
+
+def _a_complete_report(conftest: ModuleType) -> dict[str, Any]:
+    """What a WORKER whose session went cleanly actually ships, produced by the conftest's own
+    session-finish against a fake worker config and never written by hand."""
+    worker_session = SimpleNamespace(config=SimpleNamespace(workeroutput={}), exitstatus=pytest.ExitCode.OK)
+    conftest.pytest_sessionfinish(worker_session, pytest.ExitCode.OK)
+    shipped: dict[str, Any] = worker_session.config.workeroutput
+    return shipped
+
+
+def _xdist_node(worker: str, workeroutput: dict[str, Any] | None) -> SimpleNamespace:
+    """A controller-side xdist node: ``gateway.id``, and ``workeroutput`` if it shipped one."""
+    node = SimpleNamespace(gateway=SimpleNamespace(id=worker))
+    if workeroutput is not None:
+        node.workeroutput = workeroutput
+    return node
+
+
+@dataclass(frozen=True)
+class _Door:
+    """One way a worker's session-end report reaches (or fails to reach) the controller."""
+
+    name: str
+    # Builds this worker's ``workeroutput`` from a complete report (``None``: it shipped nothing).
+    workeroutput: Callable[[dict[str, Any]], dict[str, Any] | None]
+    error: str | None
+    went_down: bool
+    accounted: bool
+
+
+def _with(key: str, value: object) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A complete report with ONE key broken to ``value`` (or removed, for :data:`_MISSING`)."""
+
+    def build(complete: dict[str, Any]) -> dict[str, Any]:
+        broken = dict(complete)
+        if value is _MISSING:
+            broken.pop(key)
+        else:
+            broken[key] = value
+        return broken
+
+    return build
+
+
+def _nothing_shipped(_complete: dict[str, Any]) -> None:
+    return None
+
+
+def _empty_report(_complete: dict[str, Any]) -> dict[str, Any]:
+    return {}
+
+
+def _every_door(conftest: ModuleType) -> list[_Door]:
+    """The door domain, GENERATED: every report key × every broken value, plus the whole-report doors."""
+    doors = [
+        _Door(f"{key}={kind}", _with(key, value), error=None, went_down=True, accounted=False)
+        for key in _report_keys(conftest)
+        for kind, value in _BROKEN_VALUES.items()
+    ]
+    doors += [
+        _Door("every key absent", _empty_report, error=None, went_down=True, accounted=False),
+        _Door(
+            "crashed, shipped nothing", _nothing_shipped, error=_WORKER_CRASH, went_down=True, accounted=False
+        ),
+        _Door("never went down", _nothing_shipped, error=None, went_down=False, accounted=False),
+        # Keyed on the REPORT, never on ``error``: a worker that shipped a readable report and then died
+        # is accounted for (its databases were reaped-and-named or reported unverified).
+        _Door("crashed after a complete report", dict, error=_WORKER_CRASH, went_down=True, accounted=True),
+        _Door(_ACCOUNTED_DOOR_NAME, dict, error=None, went_down=True, accounted=True),
+    ]
+    return doors
+
+
+@dataclass(frozen=True)
+class _ControllerVerdict:
+    """What the controller concluded: the session's exit status and every summary line it wrote."""
+
+    exitstatus: int
+    lines: list[str]
+
+    def lines_naming(self, worker: str) -> list[str]:
+        return [line for line in self.lines if re.search(rf"\b{worker}\b", line)]
+
+
+def _drive_the_controller(conftest: ModuleType, fleet: dict[str, _Door]) -> _ControllerVerdict:
+    """Run the controller's real hooks over ``fleet`` (worker -> door) and return what it concludes."""
+    complete = _a_complete_report(conftest)
+    for worker, door in fleet.items():
+        node = _xdist_node(worker, door.workeroutput(complete))
+        conftest.pytest_testnodeready(node)
+        if door.went_down:
+            conftest.pytest_testnodedown(node, door.error)
+    controller = SimpleNamespace(config=SimpleNamespace(), exitstatus=pytest.ExitCode.OK)
+    conftest.pytest_sessionfinish(controller, pytest.ExitCode.OK)
+    written: list[str] = []
+    conftest.pytest_terminal_summary(SimpleNamespace(write_line=written.append))
+    return _ControllerVerdict(exitstatus=controller.exitstatus, lines=written)
+
+
+def _door_named(conftest: ModuleType, door_name: str) -> _Door:
+    (door,) = [door for door in _every_door(conftest) if door.name == door_name]
+    return door
+
+
+def _door_names_at_collection() -> list[str]:
+    """Collection-time ids for the generated domain (the conftest is loaded, not run, to name each door)."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return [door.name for door in _every_door(_fresh_suite_conftest(monkeypatch))]
+
+
+_DOOR_NAMES = _door_names_at_collection()
+
+
+class TestEveryWorkerDoorIsAccounted:
+    """#538, the FULL door domain (coldaudit-486-3 F-1, lifted).
+
+    ∀ xdist worker, ∀ way its session-end report can fail to arrive complete-and-readable at the
+    controller — each report key × {absent, corrupt, wrong shape, ``None``}, every key absent, a crash
+    that shipped nothing, a node that never went down — and ∀ fleet in which that worker sits BESIDE an
+    accounted one: the controller FAILS the session and names exactly the unaccounted worker. A worker
+    whose complete report arrived (crashed afterwards or not) is accounted and is never named.
+
+    Store-free, at the controller's own pytest/xdist hooks (``pytest_testnodeready`` /
+    ``pytest_testnodedown`` / ``pytest_sessionfinish`` / ``pytest_terminal_summary``), on a private copy
+    of the conftest. The complete report is what the conftest's own worker-side session-finish ships; the
+    keys are its ``*_REPORT_WORKEROUTPUT_KEY`` constants. Only the four broken-value kinds and the
+    whole-report doors are written down.
+
+    GREEN on the r4 build (conftest ``94f82175…``); RED under coldaudit-486-3's c1 (half report
+    accounted), c2 (corrupt accounted) and c3 (partial fleet) mutants, mutation-proven in the
+    contract-486-r4 report §10.
+    """
+
+    def test_the_generator_covers_every_key_a_worker_ships(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """COMPLETENESS: the keys a real worker session-finish ships == the keys the generator iterates.
+        A report value named by no ``*_REPORT_WORKEROUTPUT_KEY`` constant goes RED here."""
+        conftest = _fresh_suite_conftest(monkeypatch)
+        shipped, named = sorted(_a_complete_report(conftest)), _report_keys(conftest)
+        assert named, f"no `*{_REPORT_KEY_SUFFIX}` constant in {_SUITE_CONFTEST}: the door generator is empty"
+        assert shipped == named, (
+            f"a worker ships {shipped} but the door generator iterates {named}: every shipped key must be a "
+            f"`*{_REPORT_KEY_SUFFIX}` constant, or its doors are never constructed"
+        )
+
+    def test_the_collected_door_ids_are_the_run_time_domain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The collection-time ids and the run-time domain agree (no stale parametrisation)."""
+        assert [door.name for door in _every_door(_fresh_suite_conftest(monkeypatch))] == _DOOR_NAMES
+
+    @pytest.mark.parametrize("door_name", _DOOR_NAMES)
+    def test_a_worker_beside_an_accounted_one_is_failed_and_named_iff_its_report_did_not_arrive(
+        self, monkeypatch: pytest.MonkeyPatch, door_name: str
+    ) -> None:
+        conftest = _fresh_suite_conftest(monkeypatch)
+        door = _door_named(conftest, door_name)
+        accounted = _door_named(conftest, _ACCOUNTED_DOOR_NAME)
+        verdict = _drive_the_controller(conftest, {_ACCOUNTED_WORKER: accounted, _DOOR_WORKER: door})
+        assert not verdict.lines_naming(_ACCOUNTED_WORKER), (
+            f"the ACCOUNTED worker {_ACCOUNTED_WORKER} was named as missing its report: {verdict.lines}"
+        )
+        if door.accounted:
+            assert verdict.exitstatus == pytest.ExitCode.OK and not verdict.lines_naming(_DOOR_WORKER), (
+                f"door {door.name!r} delivered a complete report, yet the controller failed the session "
+                f"({verdict.exitstatus!r}) or named {_DOOR_WORKER}: {verdict.lines}"
+            )
+            return
+        assert verdict.exitstatus != pytest.ExitCode.OK, (
+            f"door {door.name!r}: {_DOOR_WORKER}'s session-end report never arrived complete-and-readable, "
+            f"yet the controller left the session {verdict.exitstatus!r}: a false clear (#538)"
+        )
+        assert [line for line in verdict.lines_naming(_DOOR_WORKER) if _SESSION_END_WORD in line.lower()], (
+            f"door {door.name!r}: no line names {_DOOR_WORKER} and its missing {_SESSION_END_WORD!r} "
+            f"report: {verdict.lines}"
+        )
+
+    def test_every_door_at_once_names_exactly_the_unaccounted_workers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole domain in ONE fleet (gw0…gwN), so a build that names only the first gap, or names
+        gaps only when no worker is accounted, cannot pass."""
+        conftest = _fresh_suite_conftest(monkeypatch)
+        fleet = {f"gw{index}": door for index, door in enumerate(_every_door(conftest))}
+        verdict = _drive_the_controller(conftest, fleet)
+        named = {worker for worker in fleet if verdict.lines_naming(worker)}
+        expected = {worker for worker, door in fleet.items() if not door.accounted}
+        assert named == expected, (
+            f"named {sorted(named)} but the unaccounted workers are {sorted(expected)} "
+            f"(missed: {sorted(expected - named)}, wrongly named: {sorted(named - expected)})"
+        )
+        assert verdict.exitstatus != pytest.ExitCode.OK
+
+    def test_CONTROL_a_fleet_of_complete_reports_passes_and_names_no_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CONTROL: the same drive with every worker accounted leaves the session OK and names nobody,
+        so the legs above fail on the door and never on the drive itself."""
+        conftest = _fresh_suite_conftest(monkeypatch)
+        accounted = _door_named(conftest, _ACCOUNTED_DOOR_NAME)
+        verdict = _drive_the_controller(conftest, {"gw0": accounted, "gw1": accounted, "gw2": accounted})
+        assert verdict.exitstatus == pytest.ExitCode.OK and verdict.lines == [], verdict
+
+
+class TestTheGapLineNeverContradictsItsCause:
+    """coldaudit-486-3 F-3, lifted: ∀ unaccounted door, the line naming the worker does not make a
+    lifecycle claim its own cause contradicts. A worker whose node never went down is not said to have
+    finished (ended, exited, terminated, completed, gone down); a worker that went down is not said to
+    have never gone down. Fixed prose wrapped around a variable cause is a false statement for the
+    cause that falsifies it, and a served line is read and acted on without checking (TRUST).
+
+    BOUND, stated: the claim vocabulary is the lifecycle verbs a line about a worker's END plausibly
+    uses; a new verb is not covered until it is named in ``_ENDED_CLAIM``.
+
+    RED on the r4 build for ``never went down``: ``xdist worker gwN finished WITHOUT its session-end
+    report (it never went down)``.
+    """
+
+    _ENDED_CLAIM = re.compile(r"\b(finished|ended|exited|terminated|completed|went down)\b", re.IGNORECASE)
+    _NEVER_ENDED_CLAIM = re.compile(r"\bnever (went down|finished|ended|exited)\b", re.IGNORECASE)
+
+    @pytest.mark.parametrize("door_name", _DOOR_NAMES)
+    def test_the_line_naming_a_worker_does_not_contradict_its_lifecycle(
+        self, monkeypatch: pytest.MonkeyPatch, door_name: str
+    ) -> None:
+        conftest = _fresh_suite_conftest(monkeypatch)
+        door = _door_named(conftest, door_name)
+        if door.accounted:
+            pytest.skip(
+                f"door {door.name!r} is accounted: no line names it (the door-domain class pins that)"
+            )
+        verdict = _drive_the_controller(conftest, {_DOOR_WORKER: door})
+        lines = verdict.lines_naming(_DOOR_WORKER)
+        assert lines, f"no line names {_DOOR_WORKER} for door {door.name!r}: {verdict.lines}"
+        for line in lines:
+            if door.went_down:
+                assert not self._NEVER_ENDED_CLAIM.search(line), (
+                    f"door {door.name!r}: the worker WENT DOWN, but the line says it never did:\n{line}"
+                )
+                continue
+            claim = self._ENDED_CLAIM.search(self._NEVER_ENDED_CLAIM.sub("", line))
+            assert claim is None, (
+                f"door {door.name!r}: the worker's node NEVER went down, but the line claims it ended "
+                f"({claim.group(0) if claim else ''!r}); the prose contradicts its own cause "
+                f"(coldaudit-486-3 F-3):\n{line}"
+            )
+
+
+# --------------------------------------------------------------------------------------------
+# LEG 4e — the session-end reap's HARD outer bound (am-37 §14 Q2, operator ruling 2026-10-04:
+#          "fold in before commit"; contract-486-r4 round 2)
+# --------------------------------------------------------------------------------------------
+
+# The budget the cells inject. Small, so a 10× block is long enough to discriminate and short enough to
+# run: 10 × 2s = 20s of block against a 2 × 2s hard bound.
+_HARD_BOUND_BUDGET_SECONDS = 2.0
+# How long the injected reap holds the session-end step, in budgets (am-37 §14 Q2: "10 × budget").
+_BLOCK_IN_BUDGETS = 10
+# The hard bound's multiple of the budget (am-37 §14 Q2: ``dump_traceback_later(2 × budget, exit=True)``).
+_HARD_BOUND_IN_BUDGETS = 2
+# Slack for process teardown, xdist's node-down handling and the summary, between the session-end
+# step's start (stamped by the injection) and the child's exit. Declared BEFORE the first run.
+_HARD_BOUND_EPSILON_SECONDS = 5.0
+# pytest's own per-test ``faulthandler_timeout`` arms and CANCELS the same process-global faulthandler
+# timer the hard bound uses (coldaudit-486-3 §5 addendum note 1); a value far above any cell's runtime.
+_PYTEST_FAULTHANDLER_TIMEOUT_SECONDS = 600
+_SESSION_END_INJECTION_MODE_ENV = "LORE_486_SESSION_END_REAP_MODE"
+_SESSION_END_INJECTION_BUDGET_ENV = "LORE_486_SESSION_END_REAP_BUDGET"
+_SUITE_CONFTEST_ENV = "LORE_486_SUITE_CONFTEST"
+# A SYNC block: no await point, so no cancel scope can interrupt it — only a non-cooperative bound can.
+_BLOCKING_REAP = "blocking"
+# A cooperative never-answering await: the graceful (anyio) bound ends it at the budget.
+_COOPERATIVE_REAP = "cooperative"
+_SESSION_END_REAP_MODES = (_BLOCKING_REAP, _COOPERATIVE_REAP)
+# A faulthandler traceback frame in the hard bound's dump, naming the session-end reap's bounding step.
+_DUMP_FRAME_NAMING_THE_REAP = re.compile(r'File ".*conftest\.py", line \d+ in _reap_within_budget')
+
+# The injection: in every process (the controller and each worker), a ``tryfirst`` session-finish sets
+# the suite conftest's session-end budget and replaces the harness's reap with one that never returns
+# within it — then records that it ran, when, and whether the budget seam exists. The budget seam is
+# the conftest module attribute ``_SESSION_END_REAP_BUDGET_SECONDS``, read at session end (the narrowest
+# test-side injection the r4 build offers; the r4 report §10 names it as the seam the build must keep).
+_HARD_BOUND_INJECTION_PLUGIN = f"""
+import asyncio
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import _surreal_harness
+import pytest
+
+
+def _suite_conftests():
+    target = Path(os.environ["{_SUITE_CONFTEST_ENV}"]).resolve()
+    found = {{}}
+    for module in list(sys.modules.values()):
+        path = getattr(module, "__file__", None)
+        if path and Path(path).resolve() == target:
+            found[id(module)] = module
+    return list(found.values())
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionfinish(session):
+    budget = float(os.environ["{_SESSION_END_INJECTION_BUDGET_ENV}"])
+    conftests = _suite_conftests()
+    seam = bool(conftests) and all(hasattr(m, "_SESSION_END_REAP_BUDGET_SECONDS") for m in conftests)
+    for module in conftests:
+        module._SESSION_END_REAP_BUDGET_SECONDS = budget
+    if os.environ["{_SESSION_END_INJECTION_MODE_ENV}"] == "{_BLOCKING_REAP}":
+
+        async def reap():
+            time.sleep({_BLOCK_IN_BUDGETS} * budget)
+    else:
+
+        async def reap():
+            await asyncio.sleep({_BLOCK_IN_BUDGETS} * budget)
+
+    _surreal_harness.reap_minted_databases = reap
+    process = os.environ.get("PYTEST_XDIST_WORKER", "controller")
+    record = {{"process": process, "seam": seam, "at": time.time()}}
+    with open(os.environ["{_INJECTION_MARKER_ENV}"], "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\\n")
+"""
+
+_PYTEST_FAULTHANDLER_VARIANTS = [
+    pytest.param(None, id="no-pytest-faulthandler-timeout"),
+    pytest.param(_PYTEST_FAULTHANDLER_TIMEOUT_SECONDS, id="pytest-faulthandler-timeout"),
+]
+
+
+class TestTheSessionEndReapHasAHardOuterBound:
+    """am-37 §14 Q2 (operator ruling 2026-10-04): the session-end reap's graceful bound (anyio) reaches
+    only COOPERATIVE hangs; a HARD outer bound — a watchdog that needs no cooperation from the hung code —
+    must end any hang at ``2 × budget``, dumping every thread's stack, so a non-cancellable block becomes
+    a dumped stack instead of a hung gate. Lifted: ∀ way the session-end step can stop yielding, the
+    process ENDS within ``2 × budget + ε``.
+
+    Subprocess cells (the bound kills the process, so it cannot run in-process): an inner session opens
+    and drops one database (so the reap runs), and a ``tryfirst`` session-finish injection sets a small
+    budget and replaces the reap. ∀ runner ∈ {``-n 0``, xdist} × ∀ pytest ``faulthandler_timeout`` ∈
+    {unset, set} (pytest's per-test timer arms and cancels the SAME process-global faulthandler timer; the
+    bound must be armed after pytest's last cancel, coldaudit-486-3 §5 addendum note 1):
+
+    * BLOCKING — a SYNC ``time.sleep(10 × budget)``: the child exits non-zero within ``2 × budget + ε``.
+      At ``-n 0`` its output carries faulthandler's dump with a frame IN ``_reap_within_budget``. Under
+      xdist the killed worker never ships its report, so the controller names it in the #538 gap line
+      (note 2).
+    * CONTROL, COOPERATIVE — ``await asyncio.sleep(10 × budget)``: the graceful bound gets there first.
+      The child ends within ``budget + ε`` with the existing "no answer within the …s session-end reap
+      budget" line, pytest's ``1 passed`` summary, and NO dump. It exits non-zero, because the loud line
+      fails the session (pinned in ``TestTheSessionEndReapNeverCostsPytestItsVerdict``).
+
+    Expected on the r4 build (declared before the run, r4 report §10): every BLOCKING cell RED — the
+    session ends only when the 20s block returns (no hard bound exists), over the ``2 × 2s + 5s``
+    ceiling, with no dump. Every COOPERATIVE cell GREEN.
+    """
+
+    @pytest.mark.parametrize("pytest_faulthandler_timeout", _PYTEST_FAULTHANDLER_VARIANTS)
+    @pytest.mark.parametrize("workers", _WORKER_MODES)
+    @pytest.mark.parametrize("reap_mode", _SESSION_END_REAP_MODES)
+    async def test_a_session_end_reap_that_stops_yielding_ends_the_process_within_the_hard_bound(
+        self, tmp_path: Path, reap_mode: str, workers: int | None, pytest_faulthandler_timeout: int | None
+    ) -> None:
+        _refuse_the_production_store()
+        marker = tmp_path / "injection.marker"
+        budget = _HARD_BOUND_BUDGET_SECONDS
+        environment = _injected_plugin_environment(
+            tmp_path,
+            _HARD_BOUND_INJECTION_PLUGIN,
+            marker,
+            **{
+                _SESSION_END_INJECTION_MODE_ENV: reap_mode,
+                _SESSION_END_INJECTION_BUDGET_ENV: str(budget),
+                _SUITE_CONFTEST_ENV: str(_SUITE_CONFTEST),
+            },
+        )
+        if pytest_faulthandler_timeout is not None:
+            environment["PYTEST_ADDOPTS"] = f"-o faulthandler_timeout={pytest_faulthandler_timeout}"
+        created: list[str] = []
+        try:
+            session = _run_bounded(
+                tmp_path,
+                _INNER_OPENS_AND_DROPS,
+                workers=workers,
+                store_url=surreal_url(),
+                timeout_seconds=_UNREACHABLE_STORE_SESSION_TIMEOUT_SECONDS,
+                created_sink=created,
+                **environment,
+            )
+            ended_at = time.time()
+            records = [json.loads(line) for line in _marked(marker)]
+            reaping = [record for record in records if record["process"] != "controller" or workers is None]
+            assert len(session.created) == 1 and reaping and all(record["seam"] for record in records), (
+                f"CONSTRUCTION failed (not a verdict on the build): expected one opened database and the "
+                f"injection to run, with the budget seam (`conftest._SESSION_END_REAP_BUDGET_SECONDS`, read "
+                f"at session end) present in the reaping process; records: {records}\n{session.describe()}"
+            )
+            held = ended_at - min(record["at"] for record in reaping)
+            dump_frames = _DUMP_FRAME_NAMING_THE_REAP.findall(session.output)
+            if reap_mode == _BLOCKING_REAP:
+                ceiling = _HARD_BOUND_IN_BUDGETS * budget + _HARD_BOUND_EPSILON_SECONDS
+                assert held <= ceiling, (
+                    f"a SYNC block in the session-end reap held the process {held:.1f}s past the session-end "
+                    f"step's start — over the {ceiling:g}s hard bound (2 × {budget:g}s budget + "
+                    f"{_HARD_BOUND_EPSILON_SECONDS:g}s). A non-cooperative hang must be ENDED by a watchdog "
+                    f"that needs no cooperation (am-37 §14 Q2), never left to finish on its own."
+                    f"\n{session.describe()}"
+                )
+                assert session.returncode != 0, (
+                    f"the hard bound ended the session, but it exited 0: a killed reap verified nothing.\n"
+                    f"{session.describe()}"
+                )
+                if workers is None:
+                    assert dump_frames, (
+                        f"no faulthandler dump framing `_reap_within_budget`; the hard bound must say "
+                        f"WHERE the session-end step hung (am-37 §14 Q2: 'a dumped stack')."
+                        f"\n{session.describe()}"
+                    )
+                else:
+                    named = [
+                        line
+                        for line in session.output.splitlines()
+                        if _WORKER_ID.search(line) and _SESSION_END_WORD in line.lower()
+                    ]
+                    assert named, (
+                        f"the hard bound killed an xdist worker mid-reap, and the controller did not name it "
+                        f"in a {_SESSION_END_WORD!r} gap line (#538; coldaudit-486-3 §5 addendum note 2).\n"
+                        f"{session.describe()}"
+                    )
+                return
+            ceiling = budget + _HARD_BOUND_EPSILON_SECONDS
+            assert held <= ceiling, (
+                f"a COOPERATIVE never-answering reap held the process {held:.1f}s, over {ceiling:g}s: the "
+                f"graceful bound must end it at the budget.\n{session.describe()}"
+            )
+            budget_line = f"no answer within the {budget:g}s session-end reap budget"
+            assert budget_line in session.output, (
+                f"the graceful bound's line ({budget_line!r}) is missing.\n{session.describe()}"
+            )
+            assert _passed_summary(_ONE_TEST_PASSED).search(session.output), (
+                f"pytest's own summary (`{_ONE_TEST_PASSED} passed`) is missing: the graceful bound must "
+                f"keep pytest's verdict.\n{session.describe()}"
+            )
+            assert not dump_frames, (
+                f"a cooperative hang was ended by the HARD bound (a faulthandler dump) instead of the "
+                f"graceful one: the hard bound fired early, or the graceful bound did not fire.\n"
+                f"{session.describe()}"
+            )
+            assert session.returncode != 0, (
+                f"the reap timed out with `{created}` unverified, and the session PASSED."
+                f"\n{session.describe()}"
+            )
+        finally:
+            await _remove_if_present(*created)
 
 
 # --------------------------------------------------------------------------------------------

@@ -8,20 +8,21 @@ at P8a (the store tests now run against the real local SurrealDB dev server via
 
 from __future__ import annotations
 
-import asyncio
+import faulthandler
 import json
 import logging
 import os
 import sys
 import tempfile
-import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
+import anyio
 import pytest
 from hypothesis.configuration import set_hypothesis_home_dir
 from loremaster.logging_setup import LORE_NAMESPACES
+from pydantic import TypeAdapter, ValidationError
 
 # Make sibling test helper modules (e.g. ``_extension_helpers``) importable as
 # plain top-level modules under ``--import-mode=importlib``: that mode does NOT
@@ -296,6 +297,52 @@ _REAPED_LEAKS: list[tuple[str, str]] = []
 # the reap could not verify were removed.
 _UNREAPED_AT_SESSION_END: list[tuple[str, str, list[str]]] = []
 
+# What becomes of databases a session end could not verify removed (operator ruling D2: strays are
+# removed by the OPERATOR's periodic wipes — no scheduled wipe exists, so the line must not imply one).
+_UNVERIFIED_DATABASES_REMEDY = "the operator's periodic test-namespace wipe removes them"
+
+# The session-end reap's HARD outer bound, in reap budgets (am-37 §14 Q2, operator ruling): anyio's
+# graceful bound cannot interrupt a block with no await point, so faulthandler ends the process at
+# this multiple of the budget, dumping the stuck frames first.
+_SESSION_END_HARD_BOUND_IN_BUDGETS = 2
+
+# The gap line's lifecycle clause, keyed on whether the controller saw the worker's node go down — so
+# a worker that never went down is never said to have ended (coldaudit-486-3 F-3).
+_GAP_LIFECYCLE_BY_WENT_DOWN = {
+    True: "went down WITHOUT its session-end report",
+    False: "never went down and sent no session-end report",
+}
+
+
+class _SessionEndReportGap(NamedTuple):
+    """Why one xdist worker's session-end report is not accounted for (#538), and its node's lifecycle."""
+
+    went_down: bool
+    cause: str
+
+    def line(self, worker: str) -> str:
+        """The ONE line naming this worker; its lifecycle clause is derived from ``went_down``."""
+        return (
+            f"xdist worker {worker} {_GAP_LIFECYCLE_BY_WENT_DOWN[self.went_down]} ({self.cause}) — whatever "
+            f"test databases it opened were neither reaped-and-named nor reported unverified. They may still "
+            f"be on the TEST store; {_UNVERIFIED_DATABASES_REMEDY}"
+        )
+
+
+# xdist controller (#538): worker id -> why its session-end report is NOT accounted for, or ``None``
+# once a complete, readable report arrived. DEFAULT-DENY: a worker enters with a gap the moment it
+# comes up (or goes down, if it never came up) and only a validated report clears it, so a worker
+# that never reported fails the session whatever stopped it — a raising hook, a crash, a corrupt or
+# missing ``workeroutput`` value, or a node-down that never fired.
+_SESSION_END_REPORT_GAP_BY_WORKER: dict[str, _SessionEndReportGap | None] = {}
+
+# The shapes a worker's two session-end report values must parse to (pydantic, the repo's validator
+# at every boundary): a corrupt value is a missing report, never a crash of the controller's hook.
+_LEAK_REPORT_SHAPE: TypeAdapter[list[tuple[str, str]]] = TypeAdapter(list[tuple[str, str]])
+_UNREAPED_REPORT_SHAPE: TypeAdapter[list[tuple[str, str, list[str]]]] = TypeAdapter(
+    list[tuple[str, str, list[str]]]
+)
+
 
 def _record_database_selection(event: _sdk_guard.CallEvent, coro: Any) -> Any:
     """``_sdk_guard`` call hook: record the database each ``use()`` selects in the test namespace.
@@ -346,35 +393,54 @@ def _every_database_a_test_opens_was_minted_by_the_harness() -> Iterator[None]:
         )
 
 
-def _reap_within_budget(budget_seconds: float) -> BaseException | None:
-    """Run the harness's session-end reap with a hard wall-clock bound; return its failure, if any.
+def _reap_within_budget(budget_seconds: float) -> Exception | None:
+    """Run the harness's session-end reap under ``anyio.fail_after``; return its failure, if any.
 
-    The reap runs on its own event loop in a DAEMON thread that is abandoned when the budget runs
-    out. A timeout inside the loop (``asyncio.timeout``) is not a bound: cancelling the reap runs its
-    ``finally`` — closing the connection and dropping the reader database — and those awaits wait on
-    the same silent store, uncancelled. A ``concurrent.futures`` worker is no better: the interpreter
-    joins those at exit, so a hung reap would hang the process after pytest's verdict.
+    anyio's cancel scope is LEVEL-triggered: once the deadline passes, EVERY await inside the scope
+    is cancelled, including those in the reap's ``finally`` (closing the connection, dropping the
+    reader database), which wait on the same silent store. ``asyncio.timeout`` is not a bound for
+    exactly that reason: it cancels once, and a ``finally`` awaiting a silent store runs on
+    (coldaudit-486-2 §4, probe §A.1: 0.52s vs still running at 3s). The reap runs on THIS thread's
+    loop, so nothing is left running to outlive pytest's verdict.
+
+    anyio can cancel only what yields to the loop. A block with no await point (a sync call, a
+    shielded scope) would hold the process past the budget forever, so a HARD outer bound sits
+    around it (am-37 §14 Q2): ``faulthandler`` dumps every thread's stack — naming this frame — to
+    the REAL stderr (pytest's capture may still own fd 2) and exits the process at
+    :data:`_SESSION_END_HARD_BOUND_IN_BUDGETS` × the budget. It is cancelled on every way out.
 
     Returns:
         ``None`` when the reap completed; the exception it raised; or a :class:`TimeoutError` naming
-        the budget when it was still running at the deadline.
+        the budget when the deadline cancelled it.
     """
     from _surreal_harness import reap_minted_databases
 
-    failures: list[BaseException] = []
+    deadline: anyio.CancelScope | None = None
 
-    def _reap() -> None:
+    async def _bounded_reap() -> None:
+        """The reap inside the budget's cancel scope, kept so its expiry can be told apart."""
+        nonlocal deadline
+        with anyio.fail_after(budget_seconds) as deadline:
+            await reap_minted_databases()
+
+    real_stderr = sys.__stderr__ if sys.__stderr__ is not None else sys.stderr
+    try:
+        faulthandler.dump_traceback_later(
+            _SESSION_END_HARD_BOUND_IN_BUDGETS * budget_seconds, exit=True, file=real_stderr
+        )
         try:
-            asyncio.run(reap_minted_databases())
-        except BaseException as error:  # handed to the caller, which classifies and reports it
-            failures.append(error)
-
-    reaper = threading.Thread(target=_reap, name="lore-session-end-reap", daemon=True)
-    reaper.start()
-    reaper.join(budget_seconds)
-    if reaper.is_alive():
-        return TimeoutError(f"no answer within the {budget_seconds:g}s session-end reap budget")
-    return failures[0] if failures else None
+            anyio.run(_bounded_reap)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+    except TimeoutError as error:
+        # ``fail_after`` raises a bare TimeoutError; the reap may also raise one of its own (a
+        # transport timeout). Only the scope knows whether ITS deadline did the cancelling.
+        if deadline is not None and deadline.cancelled_caught:
+            return TimeoutError(f"no answer within the {budget_seconds:g}s session-end reap budget")
+        return error
+    except Exception as error:  # handed to the caller, which classifies and reports it
+        return error
+    return None
 
 
 def _reap_failure_outcome(error: BaseException) -> str:
@@ -412,7 +478,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     failure = None
     if _DATABASES_OPENED_THIS_SESSION & _MINTED_DATABASES.keys():
         failure = _reap_within_budget(_SESSION_END_REAP_BUDGET_SECONDS)
-    # One snapshot: an abandoned (timed-out) reap thread may still be marking entries.
+    # One snapshot of the registry the reap marked, read once for both reports below.
     registry = dict(_MINTED_DATABASES)
     # Report from the registry, not from this last reap's return: a leak a mid-session reaper
     # call already removed is marked reaped there and must still be named (contract-486-r2 F2).
@@ -432,22 +498,70 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     _REAPED_LEAKS.extend(report)
     _UNREAPED_AT_SESSION_END.extend(unreaped)
-    if (_REAPED_LEAKS or _UNREAPED_AT_SESSION_END) and session.exitstatus == pytest.ExitCode.OK:
+    if (
+        _REAPED_LEAKS or _UNREAPED_AT_SESSION_END or _workers_without_session_end_report()
+    ) and session.exitstatus == pytest.ExitCode.OK:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def _worker_id(node: Any) -> str:
+    """The xdist worker id (``gw<n>``) of a controller-side node, as xdist itself names it."""
+    return str(node.gateway.id)
+
+
+def _workers_without_session_end_report() -> dict[str, _SessionEndReportGap]:
+    """xdist controller: every worker whose session-end report is not accounted for, with why (#538)."""
+    return {worker: gap for worker, gap in _SESSION_END_REPORT_GAP_BY_WORKER.items() if gap is not None}
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodeready(node: Any) -> None:
+    """xdist controller: a worker that came up owes a session-end report until one arrives (#538)."""
+    _SESSION_END_REPORT_GAP_BY_WORKER.setdefault(
+        _worker_id(node),
+        _SessionEndReportGap(
+            went_down=False, cause="no node-down arrived before the controller's session-finish"
+        ),
+    )
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node: Any, error: Any) -> None:
-    """xdist controller: merge a finished worker's leak and failed-reap reports into this session's."""
-    workeroutput = getattr(node, "workeroutput", {})
-    serialized = workeroutput.get(_LEAK_REPORT_WORKEROUTPUT_KEY)
-    if serialized:
-        _REAPED_LEAKS.extend((database, test) for database, test in json.loads(serialized))
-    serialized_unreaped = workeroutput.get(_UNREAPED_REPORT_WORKEROUTPUT_KEY)
-    if serialized_unreaped:
-        _UNREAPED_AT_SESSION_END.extend(
-            (outcome, cause, list(databases)) for outcome, cause, databases in json.loads(serialized_unreaped)
+    """xdist controller: merge a finished worker's leak and failed-reap reports into this session's.
+
+    The ONE place a worker's report is read, so the ONE place its absence is recorded (#538): both
+    values must be present and parse to their shapes, or the worker's gap names what was wrong and
+    the session fails. Keyed on the report, never on ``error``: a worker that went down with an
+    error but had shipped a readable report is accounted for, and one that went down cleanly
+    without it is not.
+    """
+    workeroutput = getattr(node, "workeroutput", None) or {}
+    try:
+        leaks = _LEAK_REPORT_SHAPE.validate_json(workeroutput[_LEAK_REPORT_WORKEROUTPUT_KEY])
+        unreaped = _UNREAPED_REPORT_SHAPE.validate_json(workeroutput[_UNREAPED_REPORT_WORKEROUTPUT_KEY])
+    except KeyError as missing:
+        # xdist passes no error when the worker ended its session normally — then nothing else names a
+        # cause, and a session-finish hook that raised before the harness's is the likely one (F-2).
+        why = (
+            "the worker went down with an error"
+            if error is not None
+            else (
+                "the worker reported no error, so a session-finish hook in it may have raised "
+                "before the harness's"
+            )
         )
+        _SESSION_END_REPORT_GAP_BY_WORKER[_worker_id(node)] = _SessionEndReportGap(
+            went_down=True, cause=f"no {missing} value arrived; {why}"
+        )
+        return
+    except ValidationError as corrupt:
+        _SESSION_END_REPORT_GAP_BY_WORKER[_worker_id(node)] = _SessionEndReportGap(
+            went_down=True, cause=f"its report could not be read ({corrupt.error_count()} shape error(s))"
+        )
+        return
+    _SESSION_END_REPORT_GAP_BY_WORKER[_worker_id(node)] = None
+    _REAPED_LEAKS.extend(leaks)
+    _UNREAPED_AT_SESSION_END.extend((outcome, cause, databases) for outcome, cause, databases in unreaped)
 
 
 def _unreaped_line(outcome: str, records: list[tuple[str, str, list[str]]]) -> str:
@@ -464,7 +578,7 @@ def _unreaped_line(outcome: str, records: list[tuple[str, str, list[str]]]) -> s
     return (
         f"{state} ({causes}) — could not verify that {len(databases)} test database(s) this session "
         f"opened were removed: {', '.join(databases) or 'none recorded'}. They may still be on the store; "
-        f"the periodic test-namespace wipe removes them"
+        f"{_UNVERIFIED_DATABASES_REMEDY}"
     )
 
 
@@ -479,3 +593,5 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
         records = [record for record in _UNREAPED_AT_SESSION_END if record[0] == outcome]
         if records:
             terminalreporter.write_line(_unreaped_line(outcome, records))
+    for worker, gap in sorted(_workers_without_session_end_report().items()):
+        terminalreporter.write_line(gap.line(worker))
