@@ -96,10 +96,8 @@ _RULED_CLASSIFIED_LABEL_NAMES: frozenset[str] = frozenset(
         "_ERROR_CLASS_UNIQUE_VIOLATION",
     }
 )
-#: §15 + §15.2 + FORK-2: the unspecified × kind cells that are FALSE (``None`` = kind-less).
-_RULED_UNKNOWN_UNSPECIFIED_KINDS: frozenset[str | None] = frozenset(
-    {"Internal", "Serialization", "TimedOut", "Cancelled", "Query", None}
-)
+#: §15.3 (RULED, dde69a6): the unspecified × kind axis is ALLOWLIST-driven — moved, re-keyed, to
+#: ``test_mint_kind_allowlist_q1c.py`` (``_RULED_PROVEN_KINDS``).
 
 #: §15 row 2 + §15.1: the classes proven by CLASS, whatever their kind (rolled back / never sent).
 _RULED_PROVEN_BY_CLASS: frozenset[str] = frozenset(
@@ -289,40 +287,9 @@ def _error_class_labels() -> dict[str, str]:
     }
 
 
-#: §15.2's kind axis: ``KIND_TO_CLASS`` ∪ ``QueryDetailKind`` ∪ {None}.
-_AXIS_KINDS: list[str | None] = [*sorted(set(sdk_errors.KIND_TO_CLASS) | set(_QUERY_DETAIL_KINDS)), None]
-
-
-class TestTheClassificationAxis:
-    """am-37 §15.2 (RULED, 9813259): ∀ (error_class, kind) ∈ ``_ERROR_CLASS_*`` × (``KIND_TO_CLASS`` ∪
-    ``QueryDetailKind`` ∪ {None}): a RECOGNISED refusal is PROVEN whatever its kind; the unspecified residue
-    is UNKNOWN for {Internal, Serialization, TimedOut, Cancelled, bare Query (FORK-2), None}, else PROVEN.
-    The rejection is built by the ONE helper, whose signature grows by ``kind``, and carries BOTH typed
-    attributes. Supersedes the one-off FORK-1 UNIQUE cell (Reading A, generalised)."""
-
-    def test_every_classifier_label_is_ruled(self) -> None:
-        labels = _error_class_labels()
-        assert labels.get("_ERROR_CLASS_UNSPECIFIED") == _RULED_UNSPECIFIED_LABEL, labels
-        unruled = set(labels) - _RULED_CLASSIFIED_LABEL_NAMES - {"_ERROR_CLASS_UNSPECIFIED"}
-        retired = _RULED_CLASSIFIED_LABEL_NAMES - set(labels)
-        assert not unruled, f"classifier label(s) nobody adjudicated (am-37 §15.2): {sorted(unruled)}"
-        assert not retired, f"ruled label(s) the classifier no longer defines: {sorted(retired)}"
-
-    @pytest.mark.parametrize("kind", _AXIS_KINDS, ids=str)
-    @pytest.mark.parametrize("label_name", sorted(_error_class_labels()))
-    def test_the_predicate_over_label_and_kind(self, label_name: str, kind: str | None) -> None:
-        error_class = _error_class_labels()[label_name]
-        rejection = _txn_module._domain_rejection_error(  # noqa: SLF001
-            error_class, f"injected q1b: ({error_class})", kind=kind
-        )
-        assert isinstance(rejection, TxnDomainRejectionError), type(rejection)
-        assert getattr(rejection, "error_class") == error_class  # noqa: B009 - §15.2: a typed attribute
-        assert getattr(rejection, "kind") == kind  # noqa: B009 - §15.2: a typed attribute
-        if label_name in _RULED_CLASSIFIED_LABEL_NAMES:
-            expected = True
-        else:
-            expected = kind not in _RULED_UNKNOWN_UNSPECIFIED_KINDS
-        assert _proven_no_key()(rejection) is expected, (label_name, kind)
+#: §15.2's classification-axis pin (``TestTheClassificationAxis``) MOVED to
+#: ``test_mint_kind_allowlist_q1c.py::TestTheClassificationAxisIsAllowlistDriven`` (am-37 §15.3 re-keys its
+#: ``unspecified`` × ``NotAllowed`` cell TRUE → FALSE and adds the unenumerated kinds).
 
 
 def _classified_internal_messages() -> dict[str, str]:
@@ -599,39 +566,8 @@ def _rebind_all(monkeypatch: pytest.MonkeyPatch, value: object, replacement: obj
 class TestOnePredicateDecidesCatchMessageAndNote:
     """§15 pin (iii) + §15.1: flipping one member of EITHER half moves BOTH the message and the note of its
     mint cell. A second decider (a class tuple for the catch, a private kind list, an ``isinstance`` ladder in
-    the note) keeps one of the two and reds here."""
-
-    @staticmethod
-    def _unknown_kinds() -> frozenset[str]:
-        unknown = getattr(_txn_module, "_OUTCOME_UNKNOWN_KINDS")  # noqa: B009 - §15 names it: red by name
-        assert isinstance(unknown, frozenset), type(unknown)
-        return unknown
-
-    def test_the_unknown_kinds_are_the_rulings(self) -> None:
-        """Independent expected value: §15's four kinds are members and no PROVEN kind is (bare ``Query``,
-        FORK-2, is left to the builder's keying: the generated seam cell pins its OUTCOME)."""
-        assert {"Internal", "Serialization", "TimedOut", "Cancelled"} <= self._unknown_kinds()
-        assert not (
-            {kind for kind, fate in _RULED_KIND_FATE.items() if fate == _PROVEN} & self._unknown_kinds()
-        )
-
-    async def test_moving_Internal_OUT_of_the_unknown_kinds_flips_message_and_note(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        unknown = self._unknown_kinds()
-        injected = await _through_the_seam(_sdk_error("Internal"))
-        _assert_unknown_fate(await _mint_with(monkeypatch, injected), injected)  # the CONTROL, unmutated
-        assert _rebind_all(monkeypatch, unknown, frozenset(unknown - {"Internal"})) >= 1
-        injected = await _through_the_seam(_sdk_error("Internal"))
-        _assert_proven_fate(await _mint_with(monkeypatch, injected), injected)
-
-    async def test_moving_Validation_IN_flips_message_and_note(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        unknown = self._unknown_kinds()
-        injected = await _through_the_seam(_sdk_error("Validation"))
-        _assert_proven_fate(await _mint_with(monkeypatch, injected), injected)  # the CONTROL, unmutated
-        assert _rebind_all(monkeypatch, unknown, frozenset(unknown | {"Validation"})) >= 1
-        injected = await _through_the_seam(_sdk_error("Validation"))
-        _assert_unknown_fate(await _mint_with(monkeypatch, injected), injected)
+    the note) keeps one of the two and reds here. The KIND-half legs (§15.3: the allowlist ``_PROVEN_KINDS``
+    replaces the deny-list) live in ``test_mint_kind_allowlist_q1c.py::TestTheAllowlistIsTheOneDecider``."""
 
     async def test_moving_a_class_OUT_of_the_class_half_flips_the_note(
         self, monkeypatch: pytest.MonkeyPatch
