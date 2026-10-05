@@ -2338,3 +2338,17 @@ Reserved: implement-486-r4, coldaudit-486-3.
 - Diff each full patch's file list against its predecessor; cut patches via a temp index.
 - Gate on LORE pytest only, with a check that cannot match its own shell.
 - A tree-wide pin (e.g. test_ast_reach_helpers) can red outside a targeted set: include the tree-scanning pins in every targeted run.
+
+## #486 follow-up round — progress + operator rulings on am-37 §14 (2026-10-05T00:1xZ)
+- contract-486-r4 DONE (report `3714837`). D1 ruled by lead (packages-first): the wedged store uses `websockets` `ServerConnection`, and the #466 guard gained a `websockets` detector entry + planted spelling (mutation-proven). Final contract md5s: 486 file `6440b108…`, guard `f6f6f73f…`.
+- implement-486-r4 DONE (report `edf0d79`): R2 `anyio.fail_after`; #538 default-deny per-worker gap map at the controller; #537 `pytest-timeout` 2.4.0 as a dev dep. Targeted run 873 passed, 0 failed. Build patch `scratchpad/486-r4-backup/486-r4-BUILD.patch` md5 `7fd7e2ec78ddf38e52032ec9059b6e1b` (temp index, 5 files).
+- coldaudit-486-3 RUNNING on that patch (spawned ~23:53Z, deadline ~01:25Z).
+- Operator asked: "Ask the Fable designer your questions" → sidecar-63c-2 answered in am-37 §14 (`fb83c4a`). **Operator rulings (AskUserQuestion):**
+  - **Q2 FOLD IN, then commit:** a hard outer bound `faulthandler.dump_traceback_later(2×budget, exit=True)` beside anyio, pinned by a subprocess cell (sync sleep → non-zero exit within 2×budget+ε with a dump naming `_reap_within_budget`; CONTROL: a cooperative hang → anyio line, verdict intact). Sequence:
+    1. AFTER coldaudit-486-3 finishes (it must not see the tree move): contract-486-r4 adds the cell (writable: 486 file);
+    2. implement-486-r4 adds the bound (conftest);
+    3. a delta audit of the addition only (coldaudit-486-4);
+    4. commit.
+  - **Q1 YES, a separate tdd-light cycle after #486 closes:** the mint conditional note is withheld iff the fault ∈ `_PROVEN_NO_KEY_FAULTS` (the `_txn` taxonomy minus `SurrealConnectionError`, derived and exported); otherwise the note applies. fix531d's pin (a) is re-keyed; a completeness pin is added.
+  - **Q3 fix the test now + ledger:** a test-only fix in `test_retry_seam.py` (the fake shape is one level deeper than the SDK; drop `suppress(Exception)`; `filterwarnings error::RuntimeWarning`), AFTER coldaudit-486-3 (the file is in its census). The production half is filed as **#539** (scout `_consume_live` awaitable branch possibly dead).
+- Reserved names: coldaudit-486-4, contract-mint-q1, implement-mint-q1, coldaudit-mint-q1, fix-q3-retry-seam.
