@@ -2441,3 +2441,17 @@ Then commit.
 - **v13 addendum 4 (12:05Z): OPERATOR RULING, memory floor.** coldaudit-mint-q1 was blocked: MemAvailable sat at 19.4–20.6 GiB from 11:36Z (prod lore-surreal ~11 GiB + Odoo `ppt-apps15-test-pg115b` postgres containers, not ours).
   - Operator: lower the admission floor to **17 GiB for coldaudit-mint-q1 ONLY**. It is still a waiting loop, with no other lore pytest live and the 16G cgroup cap kept. Standing law stays 20 GiB.
   - Audit deadline extended to 15:30Z. Asked the audit to explain "M-a KILLED".
+- **v13 addendum 5 (≈15:10Z): Q1/Q1b COMMITTED; Q1c in flight.**
+  - **Operator: the sidecar rules forks from now on** (memory updated).
+  - Q1 build `0bbbd50`; docs `f46cdd2`.
+  - Sidecar rulings: §15 (`a555cf9`), §15.1 (`4ac88fb`), §15.2 (`9813259`), §15.3 (`dde69a6`).
+  - Q1b: contract `f7ecbce`, build `def1afd` (the `proven_no_key` predicate; `reclassify`/`wrap_store_rejection` predicate catch), audit coldaudit-mint-q1b GO-with-residuals (`45aa618`). Full suite: 13,355 passed / 530 failed (all owned by 58/64b-i, identical ids on HEAD vs the build) / 70 skipped.
+  - Process note: implement-mint-q1 correctly REFUSED a lead-authorized test edit (brief-base §2 requires an operator grant); contract-mint-q1b-fix made the two repairs. Its earlier anchor deletions stand, disclosed.
+  - **Q1c (§15.3):** invert `proven_no_key`'s kind half to the allowlist `_PROVEN_KINDS` = {Validation, Thrown, AlreadyExists, NotFound, Configuration, Query:NotExecuted}; delete `_OUTCOME_UNKNOWN_KINDS`.
+    - In flight: `contract-mint-q1c` (owned file `test_mint_kind_allowlist_q1c.py`, bound `am37-15-3-q1c-mint-contract`).
+    - NEXT: implement-mint-q1 (idle, reuse) → coldaudit-mint-q1c (full suite once) → commit → archive all Q1 reports to `receipts/2026-10-05-am37-14/` → INDEX line → stop all agents.
+  - Residuals:
+    - #543 says "20 other callers"; it is 16 (coldaudit-mint-q1b R-4), so annotate it.
+    - q1b `_proven_no_key` docstring is stale (F-2).
+    - R-3: a raising catch predicate replaces the fault (latent).
+    - #544/#545/#546 filed by the audits.
