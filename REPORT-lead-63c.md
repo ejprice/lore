@@ -2426,3 +2426,15 @@ Then commit.
   - #400 holds, the other 20 callers are unchanged, and the caller rider is moot.
   - Lead correction: the outer message must be CAUSE-NEUTRAL (no "interrupted before the store answered": a malformed-response bare base DID answer), pinned as the F-3 property.
   - The r2 contract had §OWN landed (RED_ADJUDICATED to `am37-14-q1-mint-contract`, RED_ORPHANED 0) and 28 RED@HEAD in the owned file.
+- **v13 addendum 3 (≈11:30Z):**
+  - Q1 contract COMMITTED `7908571` (43 RED, owned by `am37-14-q1-mint-contract`; reference 202/202). contract-mint-q1 is stopped.
+  - Q1 build by implement-mint-q1 (report `52d10ae`):
+    - `_txn._PROVEN_NO_KEY_FAULTS` (6-class literal) + `wrap_store_rejection(catch=)`;
+    - mint uses nested wraps; the note is classified via `__cause__`;
+    - the am37 bound + anchor are self-destructed;
+    - targeted run: 5 failed / 1985 passed. All 5 are pre-existing and 58-owned: the fates `store/lease.py` row + 4 `test_reanchor_58_r4_lease_fates.py` cells. My earlier "1 failing" line undercounted, now corrected.
+  - Patch `scratchpad/q1-backup/q1-BUILD.patch` md5 `a755a8a4…` (4 files).
+  - `coldaudit-mint-q1` RUNNING (the packet's ONE full suite; mutations (a)-(e), including the default-catch mutation contract-mint-q1 never ran). Watcher bpbhc80gb.
+  - Then: verify the md5 == the patch → commit the 4 files → archive the Q1 reports to `receipts/2026-10-05-am37-14/` → INDEX line → close Q1.
+  - implement-mint-q1 is idle (kept for any audit routing).
+  - Surfaced for the operator: N-a (lore-adm `_dispatch` lets a cancel/interrupt/raw fault reach the operator as a traceback; the note prints in it; behaviour unchanged).
