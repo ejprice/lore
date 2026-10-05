@@ -451,3 +451,81 @@ assert principal_keys_module is not None
 
 **State of the tree (unchanged since §Q1B):** every md5 is as listed in §Q1B "Final bytes". I made no edits in this round.
 - **State:** blocked: the two STOP test edits need a contract-side author or a dated operator grant (brief-base §2); the production build is complete.
+
+## §Q1C — am-37 §15.3 GREEN build (over contract `8ff4dd5`; measured 2026-10-05 15:15–15:25Z; nothing committed)
+
+**Summary.**
+- All **24/24** owned q1c cells are GREEN, with **0 GREEN→RED**. The mutation PROOF HELD. RED_ORPHANED is 0 and the bound is gone. Production changed in `_txn.py` only.
+- **Grant judgment (brief-base §2).** The quoted operator words ("Let me know when Q1 is done … Finish this up — quickly", 2026-10-05) approve FINISHING Q1 and the tdd-light cycle. They do not grant THIS implementer edits to the tests it must pass, which is the transfer §2 names. So:
+  - **the owned file's `TYPE_CHECKING` anchor is LEFT IN PLACE**, routed to a contract author per the lead's fallback. It now resolves, so it is an inert, typecheck-clean import; deleting it is hygiene only.
+  - **the registry bound IS deleted.** `scripts/pending_contracts.yaml` is the currency registry, not a test, so §2 does not apply to it, and the lead's brief wants it gone.
+- **Stale prose OUTSIDE my writable set (flag, not edited).** Two docstrings in `principal_keys.py` still describe the retired deny-list:
+  - `PrincipalKeyStore.mint` `Raises:` ("a timing-proving kind" / "an outcome-unknown kind or with no kind");
+  - `_mint_fault_note` ("an unrecognised rejection of an outcome-unknown kind (``Internal``, ``Serialization``, ``TimedOut``, ``Cancelled``, a bare ``Query``) or with no kind"). It lists the unknown kinds as if the list were complete, and after §15.3 it is not.
+  - **Exact edit:** replace "of a timing-proving kind" → "of a kind on :data:`~loremaster.store._txn._PROVEN_KINDS`". Replace each "outcome-unknown kind (…) or with no kind" / "outcome-unknown kind or with no kind" → "kind OFF that allowlist (``Internal``, ``Serialization``, ``TimedOut``, ``Cancelled``, a bare ``Query``, or one nobody adjudicated, e.g. ``Transaction``) or with no kind".
+  - The `_OUTCOME_UNKNOWN_KINDS` name itself appears nowhere in production (sweep below).
+- Packages considered: none new. SDK constants (`ErrorKind`, `QueryDetailKind`) are REUSED. Odoo-20: n/a. Graded: n/a.
+
+### §Q1C.CHANGE (`loremaster/loremaster/store/_txn.py`, symbols)
+- `_OUTCOME_UNKNOWN_KINDS` (the deny-list) is **deleted**.
+- `_PROVEN_KINDS = frozenset({ErrorKind.VALIDATION, ErrorKind.THROWN, ErrorKind.ALREADY_EXISTS, ErrorKind.NOT_FOUND, ErrorKind.CONFIGURATION, QueryDetailKind.NOT_EXECUTED})` is **added**. Its comment states the §15.3 allowlist, names the unknown kinds (adjudicated, plus never-adjudicated ones such as `Transaction` and `Query:Aborted`), and gives the re-open trigger.
+- `proven_no_key`, last line: `return kind is not None and any(kind == proven for proven in _PROVEN_KINDS)`. The `==` form is kept for the a28c `in` ban. The classified-refusal half and the class half are unchanged.
+- The docstring bullets are rewritten for the allowlist (on-list proves timing; off-list or kind-less is unknown).
+- **Bare sweep** for `_OUTCOME_UNKNOWN_KINDS` over the production `*.py` in `loremaster/loremaster`, `lorerunes/lorerunes`, `loresigil`, `lorescribe`, `scripts` and `docs/reference`: **0 hits**. I used awk; that is the grep-hook fallback, said aloud. The q1c contract's own scan, `TestTheDenyListIsGone`, is GREEN.
+
+### §Q1C.RUNS (argv0 waiting gate per #544; 16G cgroup; `-n 8 --timeout=300`)
+**Set:** q1c, q1b, `test_mint_unknown_outcome_note_q1.py`, `test_am37_13_3_63c_i_a.py`, `test_engine_rejection_seam.py`, `test_fixwave_a28c_63c_i_a.py`, `test_retry_seam.py`, and `lorerunes/tests`.
+- **BEFORE** (`8ff4dd5`): `24 failed, 1697 passed, 2 skipped`. All 24 are in `test_mint_kind_allowlist_q1c.py`.
+- **AFTER** (final `_txn` md5 `9dfd8f7e…`): **`1721 passed, 2 skipped`, 0 failed.** RED→GREEN 24, GREEN→RED 0 (ID-diffed).
+  - No 58 / 64b-i reds appear in this set, so there are none to name.
+  - The 2 skips are the pre-existing `test_mint_unknown_outcome_note_q1.py` pass-through skips.
+
+### §Q1C.MUTATION — `scripts/mutation_proof.py` (ids declared from `--collect-only` before the run)
+**Mutation:** add `"Transaction"` to `_PROVEN_KINDS`.
+
+**Declared RED (6):**
+- `TestTheAllowlistIsExactlyTheRuling::test_the_allowlist_is_the_ruled_set`;
+- `TestEveryKindOffTheAllowlistIsUnknown::test_the_single_statement_seam[Transaction]` and `::test_the_transactional_seam[Transaction]`;
+- `TestTheClassificationAxisIsAllowlistDriven::test_the_predicate_over_label_and_kind[_ERROR_CLASS_UNSPECIFIED-Transaction]`. Only the unspecified row moves; the 6 classified rows stay proven.
+- `TestAnUnenumeratedKindAtTheMint::test_an_unenumerated_kind_during_the_CREATE[Transaction]`;
+- `TestTheAllowlistIsTheOneDecider::test_adding_Transaction_flips_message_and_note` (its unmutated CONTROL expects unknown).
+
+**Result:** exit 0, `6 failed, 224 passed`, **"PROOF HELD — the declared RED set fired EXACTLY"**, "tree restored byte-exact" (md5 `9dfd8f7e…`). This ran on the real tree.
+
+**Note AND message, observed directly.** I ran `probe_q1c_note_and_message.py`, which is `probe_q1b_note_and_message.py` (pasted verbatim in §Q1B.MUTATION) with exactly these substitutions: `_OUTCOME_UNKNOWN_KINDS`→`_PROVEN_KINDS`, `"Serialization"`→`"Transaction"`, and `original - {…}`→`original | {"Transaction"}`.
+```
+UNMUTATED: class=PrincipalKeyStoreError message="the store did not confirm the mint of key 'laptop' for principal 'dev@example.org'; its outcome is unknown" cause=TxnDomainRejectionError notes=["the mint's outcome is unknown (the store did not confirm the CREATE) — if `lore-adm list-keys --email dev@example.org` shows 'laptop', revoke it (`lore-adm revoke-key --email dev@example.org --name laptop`) and mint a new key"]
+MUTATED  : class=PrincipalKeyStoreError message="could not mint key 'laptop' for principal 'dev@example.org'" cause=TxnDomainRejectionError notes=None
+```
+One allowlist edit flips the note AND the message.
+
+### §Q1C.CURRENCY
+- First run, with the bound still present: `typecheck RED_ORPHANED — 2`. Both were the gate's own SELF-DESTRUCT orphans: "registered file … produced NO mypy errors — the bound is discharged", and "`_PROVEN_KINDS` now RESOLVES".
+- I deleted the `am37-15-3-q1c-mint-contract` entry and its comment (16 lines). `--verify-registry` exits 0.
+- Final: **`typecheck RED_ADJUDICATED — 83 residual(s)`** (owners packet-58 / packet-64b-i only), **`ruff GREEN`**, **RED_ORPHANED 0**; `pytest NOT_RUN` by construction.
+
+### §Q1C.INVENTORY
+| before (`8ff4dd5`) | after | verdict |
+|---|---|---|
+| an unrecognised rejection of an UNENUMERATED kind (`Transaction`, `Query:Aborted`, any future one) → proven: "could not mint", no note | unknown: the outer outcome-unknown message plus the conditional note | **changed by ruling** §15.3; pinned by the q1c seam, axis and mint cells |
+| `unspecified` × `NotAllowed` (a direct helper call only; the seam makes it `SurrealConnectionError`) → proven | unknown | **changed by ruling** (the "every member NOT in `_PROVEN_KINDS`" rule); axis cell |
+| every SDK-enumerated kind's fate | identical (the allowlist equals §15's proven rows) | **preserved-with-pin** (q1b's ∀-kind cells GREEN) |
+| a classified refusal of any kind; the class half; kind-less → unknown | identical | **preserved-with-pin** |
+
+### §Q1C.DRY
+| new symbol | lore query | result | disposition |
+|---|---|---|---|
+| `_PROVEN_KINDS` | the read of `proven_no_key` / `_OUTCOME_UNKNOWN_KINDS` | the deny-list it replaces | REPLACED in place, as ruled (§15.3); not a second list |
+
+### Final bytes
+- **md5:**
+  - `_txn.py` `9dfd8f7efa6deb942471c48916285bd4`
+  - `scripts/pending_contracts.yaml` `b0158ed1189ea905faf9c8d8b9f87f76`
+  - `test_mint_kind_allowlist_q1c.py` `e95295cc41e4fd06d9b3fd9482392f08` (UNCHANGED from `8ff4dd5`; the anchor is left in place)
+- **Pre-edit backups:** `…/scratchpad/q1c_backup/`.
+- **`git diff --stat`:** `_txn.py | 38 +++++++++++++-----------` · `pending_contracts.yaml | 16 ---` (2 files, 22+ / 32−).
+- **State:** done
+- **§Q1C docstring follow-up (2026-10-05):** `principal_keys.py` `mint` `Raises:` and the `_mint_fault_note` docstring no longer use "timing-proving kind" or "outcome-unknown kind". They now name `_PROVEN_KINDS` and "a kind OFF that allowlist (…, or one nobody adjudicated, e.g. ``Transaction``) or with no kind". This is the edit flagged in §Q1C.
+- Checks: AST-identical to HEAD modulo docstrings (`ast.dump` equality) **True**; `ruff check` All checks passed; no tests run, by instruction; `git diff --stat` 12+ / 8−.
+- md5 `principal_keys.py` `422f4591c03514db3fdf2791d09a9925` (pre-edit backup in `…/scratchpad/q1c_backup/`).
+- **State:** done
