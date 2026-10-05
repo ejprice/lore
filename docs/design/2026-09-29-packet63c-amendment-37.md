@@ -1098,3 +1098,12 @@ rule, any member the installed SDK adds later); plus a cell for a kind the SDK d
 `Query:Aborted`, a synthetic `Future`) → FALSE, own class, conditional note. A kind added to `_PROVEN_KINDS` without
 a row in the pin's table reds by name (the allowlist can only grow by adjudication). Small follow-up cycle; no other
 §15 clause moves.
+
+### 15.4 RULED 2026-10-05 (lead; contract-mint-q1c FORK-Q1C-1): **A** — keep `test_every_kind_is_ruled` red-by-name on an SDK kind `_RULED_KIND_FATE` does not list
+§15.3 made the DEFAULT safe (an unlisted kind is UNKNOWN) and said the allowlist *"grows only by an adjudicated row"* —
+this pin IS the adjudication gate: a new kind may belong in the proven set, may be transport, or may signal an engine
+behaviour change, and none of those is decided by a safe default. A red-by-name at an SDK bump costs one table row and
+one human look; retiring it (B) turns every future kind into a permanent conditional note that nobody ever examined —
+a bound that grows silently. Noise is a pin that reds for nothing; this one reds exactly when a decision is owed.
+Rider: the pin's failure text names the §15 table and the two allowed dispositions (proven row / stays unknown), so
+the SDK-bump author adjudicates in place rather than deleting the pin.
