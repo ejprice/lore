@@ -52,7 +52,7 @@ brief-base v18 read · brief project v7 read
     crash the controller's hook (the old `json.loads` would have raised).
   - The failing is done in the existing controller branch of `pytest_sessionfinish`: `_workers_without_session_end_report()` joins
     `_REAPED_LEAKS` / `_UNREAPED_AT_SESSION_END` in the one `exitstatus` check. `pytest_terminal_summary` writes one line per worker:
-    `xdist worker gw<n> finished WITHOUT its session-end report (<gap>) — …`. The line never carries the worker's error text. xdist
+    `xdist worker gw<n> finished WITHOUT its session-end report (<gap>) — …`. The line never carries the worker's error text. ⚠ CORRECTED in §9 (coldaudit-486-3 F-2): the next claim, "xdist already prints that", is FALSE for the raised-hook case (error is None, xdist prints nothing). xdist
     already prints that, and in the contract's construction the error text IS the injected raise, which the pin filters out.
   - Shapes are `pydantic.TypeAdapter` (`_LEAK_REPORT_SHAPE`, `_UNREAPED_REPORT_SHAPE`), not hand-written isinstance checks.
   - Worker id is `node.gateway.id`, as xdist names it in its own lines (`_worker_id`).
@@ -194,3 +194,111 @@ gw6: GAP — it never went down
 gw7: ACCOUNTED
 PROBE OK: every non-reporting door is a gap; both reporting workers are accounted for
 ```
+
+## §9 Round 2 (lead brief 2026-10-05 ~00:33Z: P1 hard outer bound · P3 gap wording · R-2 · R-6)
+**State: done (00:45Z).** Writable set: `loremaster/tests/conftest.py` only. Pre-edit backup: scratch `r2/conftest.before-r2.py` (md5 `94f821754d8e37d0e613ef2f16f77dcc`).
+- Pre-flight: no test pins the old wording of items 3–4. I ran an awk over every `*.py` outside `.venv` for `test-namespace wipe|WITHOUT its session-end|could not verify that`, and the only hit is a docstring in the 486 file (`TestTheGapLineNeverContradictsItsCause`), which is not a pin.
+
+### §9.1 What changed (`loremaster/tests/conftest.py` only; `94f82175…` → `2de2b7ee0de9a69a5a91aa7244b371e4`)
+- **P1 — the hard outer bound (am-37 §14 Q2).** In `_reap_within_budget`, `anyio.run(_bounded_reap)` now sits inside
+  `faulthandler.dump_traceback_later(_SESSION_END_HARD_BOUND_IN_BUDGETS * budget_seconds, exit=True, file=real_stderr)`, and
+  `faulthandler.cancel_dump_traceback_later()` runs in a `finally`. The four §10 seams are KEPT:
+  - the budget is the argument `pytest_sessionfinish` reads from the module attribute `_SESSION_END_REAP_BUDGET_SECONDS` at call time, and the hard bound is derived from it;
+  - `reap_minted_databases` is imported from `_surreal_harness` inside the function, at call time;
+  - the frame is named `_reap_within_budget`;
+  - `real_stderr = sys.__stderr__`, falling back to `sys.stderr` only if `__stderr__` is `None`, which keeps the types honest.
+
+  New module constant `_SESSION_END_HARD_BOUND_IN_BUDGETS = 2`. Lead ruling on §10's fork applied: the cooperative control stays rc ≠ 0 with the existing loud line (unchanged code path).
+- **P3 — the gap's wording is derived from the gap.** A gap is now `_SessionEndReportGap(went_down: bool, cause: str)` (a `NamedTuple` with a `line(worker)` method). `went_down` is set by WHICH hook recorded it: `pytest_testnodeready` → `False`, `pytest_testnodedown` → `True`. The lifecycle clause comes from `_GAP_LIFECYCLE_BY_WENT_DOWN[went_down]`:
+  - `"went down WITHOUT its session-end report"`;
+  - `"never went down and sent no session-end report"`.
+
+  No string is special-cased. ⚠ **The audit's example wording would fail the contract's own pin.** "did not report its session-end before the session **ended**" contains `ended`, which `TestTheGapLineNeverContradictsItsCause._ENDED_CLAIM` forbids for the never-went-down door. So I did not use it. The never-went-down cause text also avoids every `_ENDED_CLAIM` verb: `no node-down arrived before the controller's session-finish`.
+- **R-2.** When a key is missing, the cause now reads `no '<key>' value arrived; <why>`, where `<why>` is one of:
+  - `error is not None` → `the worker went down with an error`;
+  - `error is None` → `the worker reported no error, so a session-finish hook in it may have raised before the harness's`.
+
+  The round-1 §1 claim "xdist already prints that" is corrected in place (it is false for `error is None`).
+- **R-6.** One constant, `_UNVERIFIED_DATABASES_REMEDY = "the operator's periodic test-namespace wipe removes them"`, is served by BOTH `_unreaped_line` and `_SessionEndReportGap.line`. ONE implementation, not two copies of the phrase.
+
+Served lines, captured through the conftest's own hooks (instrument `r2/probe_gap_lines.py`, pasted in §9.6):
+```
+xdist worker gw0 never went down and sent no session-end report (no node-down arrived before the controller's session-finish) — whatever test databases it opened were neither reaped-and-named nor reported unverified. They may still be on the TEST store; the operator's periodic test-namespace wipe removes them
+xdist worker gw1 went down WITHOUT its session-end report (no 'lore_486_leaked_test_databases' value arrived; the worker reported no error, so a session-finish hook in it may have raised before the harness's) — …same tail…
+xdist worker gw2 went down WITHOUT its session-end report (no 'lore_486_leaked_test_databases' value arrived; the worker went down with an error) — …same tail…
+xdist worker gw3 went down WITHOUT its session-end report (its report could not be read (1 shape error(s))) — …same tail…
+```
+
+### §9.2 Targeted runs (6 files, the §Scope set; every run through scratch `r2/gate.sh`, which WAITS for MemAvailable ≥ 20 GiB AND no other lore pytest; 16G cgroup; `-n 8 --timeout=300`; :18000)
+| run | gate | tail |
+|---|---|---|
+| BEFORE | `GATE CLEAR 00:34:11: MemAvailable 32293588 KiB, no other pytest` | `5 failed, 904 passed, 4 skipped, 1 warning in 179.99s`: exactly the 4 P1 blocking cells + P3 `[never went down]` (the contract's declared REDs) |
+| AFTER | `GATE CLEAR 00:37:31: MemAvailable 33331004 KiB, no other pytest` | **`909 passed, 4 skipped, 1 warning in 179.63s`**, rc=0. The same 913 were collected, 0 GREEN→RED. The warning is the pre-existing `test_retry_seam.py:3263` one (§6 F-d) |
+
+### §9.3 Mutation proof — the hard bound is load-bearing
+- The anchor is the whole 3-line `faulthandler.dump_traceback_later(…)` call (`--anchor-file r2/mutP1.anchor`), replaced by a comment.
+- The 4 declared ids came from `--collect-only`, filtered to `TestTheSessionEndReapHasAHardOuterBound` × `blocking` (`r2/mutP1.declared`). The prediction was written before the run (`r2/mutP1.prediction`).
+- Scope: the whole 486 file. Gate: `GATE CLEAR 00:40:49`.
+- **Result:** `4 failed, 91 passed, 2 skipped in 56.33s`, `tree restored byte-exact (loremaster/tests/conftest.py: md5 2de2b7ee0de9a69a5a91aa7244b371e4)`, **`PROOF HELD`**, rc 0.
+- The RED reason: `AssertionError: a SYNC block in the session-end reap held the process 20.3s past the session-end step's start — over the 9s hard bound (2 × 2s budget + 5s)…`. That is the right reason: without faulthandler, nothing ends a sync block. Every COOPERATIVE cell stayed GREEN, so the anyio bound still carries those on its own.
+
+### §9.4 Gates, md5s, diff (00:44Z)
+- `ruff format` + `ruff check loremaster/tests/conftest.py` → clean. Single-file `mypy` → `Success`.
+- `pending_contract_gate.py --currency --legs typecheck,ruff`: typecheck `RED_ADJUDICATED — 83 residual(s)` (unchanged count, all owned by packet-58 / packet-64b-i); ruff `GREEN`; **RED_ORPHANED 0** over the legs run. pytest `NOT_RUN` by design.
+- md5s: 486 file `3c981b3ea9936c46ec08cd47df25109b` (= brief) · guard file `f6f6f73f529a05bc940a0499239e2380` (= brief) · `_surreal_harness.py` `fd443e2a2a998b2511d1ba6866ed6747` (untouched; D-r2b-1 holds) · conftest `2de2b7ee0de9a69a5a91aa7244b371e4`.
+- `git diff --stat` (it includes the uncommitted contract files and the round-1 pyproject/uv.lock, none edited this round):
+  ```
+   REPORT-implement-486-r4.md                         |   4 +
+   loremaster/tests/conftest.py                       | 186 ++++-
+   .../tests/test_harness_database_lifecycle_486.py   | 857 ++++++++++++++++++++-
+   .../tests/test_no_raw_listener_in_test_trees.py    |  68 +-
+   pyproject.toml                                     |   5 +
+   uv.lock                                            |  14 +
+  ```
+
+### §9.5 Removed-behavior rows (changed line text and changed mechanics)
+| # | old | new | fate |
+|---|---|---|---|
+| R2-1 | gap line prefix `xdist worker gwN finished WITHOUT its session-end report (…)` for EVERY gap | the lifecycle clause comes from `went_down`: `went down WITHOUT …` / `never went down and sent no …` | **changed deliberately** (F-3); pinned by `TestTheGapLineNeverContradictsItsCause` (13 doors) |
+| R2-2 | gap cause `it never went down` | `no node-down arrived before the controller's session-finish` (the lifecycle clause now carries "never went down") | changed; same pin |
+| R2-3 | missing-key cause `no '<key>' value arrived` (+ ` (the worker went down with an error)` when `error` was set) | `no '<key>' value arrived; the worker went down with an error` / `…; the worker reported no error, so a session-finish hook in it may have raised before the harness's` | **changed per R-2 ruling**. The error-set wording is preserved in substance. No pin on the text (none existed; spec-silent beyond the ruling) |
+| R2-4 | `_unreaped_line` tail `the periodic test-namespace wipe removes them` | `the operator's periodic test-namespace wipe removes them` | **changed per R-6 ruling** (D2 = operator wipes; no scheduled wipe exists). No existing pin on the phrase (pre-flight scan above) |
+| R2-5 | the gap line's tail repeated the same phrase as a second literal | both lines serve `_UNVERIFIED_DATABASES_REMEDY` | ONE implementation; a future rewording reaches both |
+| R2-6 | the reap could hang the process forever on a non-cooperative block (round-1 KNOWN BOUND F-a) | `faulthandler` exits the process at 2 × budget, dumping stacks to the real stderr | **F-a CLOSED** by the operator's Q2 ruling; pinned by the 4 blocking cells + §9.3 |
+| R2-7 | `_reap_within_budget` left the process-global faulthandler timer untouched | it arms that timer and always cancels it on the way out | it is cancelled in `finally`, on every path. The `pytest-faulthandler-timeout` cell variants pin coexistence with pytest's own per-test timer |
+| R2-8 | gaps were plain `str` values in `_SESSION_END_REPORT_GAP_BY_WORKER` | `_SessionEndReportGap` values; `_workers_without_session_end_report()` returns them | internal type change; the contract drives the hooks only, so no pin reads the type |
+
+### §9.6 Instrument (verbatim; run from the repo root with `uv run python <file>`)
+```python
+"""Print the served #538 gap line for each lifecycle door, driven through the conftest's own hooks."""
+import importlib.util
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+TESTS = Path("/home/ejprice/PycharmProjects/lore/loremaster/tests")
+sys.path.insert(0, str(TESTS))
+spec = importlib.util.spec_from_file_location("lore_conftest_probe", TESTS / "conftest.py")
+conftest = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(conftest)
+GOOD = {conftest._LEAK_REPORT_WORKEROUTPUT_KEY: "[]", conftest._UNREAPED_REPORT_WORKEROUTPUT_KEY: "[]"}
+
+
+def node(worker, workeroutput=None):
+    fake = SimpleNamespace(gateway=SimpleNamespace(id=worker))
+    if workeroutput is not None:
+        fake.workeroutput = workeroutput
+    return fake
+
+
+conftest.pytest_testnodeready(node("gw0"))  # never went down
+conftest.pytest_testnodeready(node("gw1"))
+conftest.pytest_testnodedown(node("gw1", {}), None)  # went down, no error, no report (the F-2 case)
+conftest.pytest_testnodeready(node("gw2"))
+conftest.pytest_testnodedown(node("gw2"), "worker crashed")  # went down with an error
+conftest.pytest_testnodeready(node("gw3"))
+conftest.pytest_testnodedown(node("gw3", {**GOOD, conftest._LEAK_REPORT_WORKEROUTPUT_KEY: "{oops"}), None)
+for worker, gap in sorted(conftest._workers_without_session_end_report().items()):
+    print(gap.line(worker))
+```
+- **Flags this round:** none new. ⚠ In the round-1 §SUMMARY, F-a (the non-cancellable-block bound) is now CLOSED by P1 (R2-6).
