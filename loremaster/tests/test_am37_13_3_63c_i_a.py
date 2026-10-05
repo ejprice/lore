@@ -57,6 +57,7 @@ from loremaster.store._txn import (
 )
 from loremaster.store.surreal_schema import BRIEF_TABLE
 from pydantic import SecretStr
+from surrealdb.errors import parse_query_error
 
 from loremaster import logging_setup
 from loremaster import principals as p_module
@@ -559,9 +560,12 @@ def _store_taxonomy() -> list[type[BaseException]]:
 
 #: am-37 §14 Q1 (operator-ruled "Yes, separate cycle", 2026-10-04): the store faults that PROVE no key landed.
 #: They are the driver's own refusals and pre-send faults, WRITTEN OUT from the ruling. This is the contract's
-#: independent adjudication: production's ``_PROVEN_NO_KEY_FAULTS`` is checked AGAINST it, never used AS
-#: the expected value. §14: "TxnDomainRejectionError (+ subclasses, UNIQUE included),
-#: TxnContentionExhaustedError (rolled back), TxnParamCollisionError, TxnEnvelopeViolationError".
+#: independent adjudication, never production's set used AS the expected value. §14:
+#: "TxnDomainRejectionError (+ subclasses, UNIQUE included), TxnContentionExhaustedError (rolled back),
+#: TxnParamCollisionError, TxnEnvelopeViolationError". am-37 §15 re-key (contract-mint-q1b, 2026-10-05): the
+#: ``TxnDomainRejectionError`` family is proven only when TYPED with a proven engine kind (kind-less, or an
+#: outcome-unknown kind, is UNKNOWN), so its cells inject ``_typed_proven_instance``; the per-kind and
+#: kind-less fates are pinned in ``test_mint_kind_carveout_q1b.py``.
 _RULED_PROVEN_NO_KEY: frozenset[str] = frozenset(
     {
         "TxnDomainRejectionError",
@@ -581,6 +585,54 @@ def _instance(cls: type[BaseException]) -> BaseException:
     if issubclass(cls, TxnContentionExhaustedError):
         return cls("injected 531d", attempts=3, elapsed_seconds=0.1)
     return cls("injected 531d")
+
+
+async def _through_the_seam(sdk_error: BaseException) -> BaseException:
+    """What the driver's ONE failure ladder (``_txn._raise_attempt_failure``, the single-statement path
+    ``PrincipalKeyStore._query`` rides) raises for a REAL SDK error (am-37 §15, contract-mint-q1b)."""
+    dropped: list[object] = []
+
+    async def drop(connection: object) -> None:
+        dropped.append(connection)
+
+    try:
+        await _txn_module._raise_attempt_failure(  # noqa: SLF001
+            sdk_error,
+            object(),
+            drop=drop,
+            url="ws://127.0.0.1:1/rpc",
+            noun="principal key query",
+            label="principal.key.query.rejected",
+            logger=logging.getLogger("test.531d.seam"),
+        )
+    except BaseException as raised:  # noqa: BLE001 - the ladder's raise IS the observation
+        return raised
+    raise AssertionError("unreachable: the failure ladder returned")  # pragma: no cover
+
+
+#: am-37 §15: per kind-decided class, the REAL SDK error the seam classifies into that class with a PROVEN
+#: kind: ``Validation`` (refused at evaluation), ``Thrown`` carrying OUR governed prefix (the guard aborts
+#: the txn), ``AlreadyExists`` naming the record (UNIQUE, typed). Parsed by the SDK's own parser.
+_GOVERNED_THROW = f"An error occurred: {_txn_module._GOVERNED_CONFLICT_MARKER} principal_key:k531d"  # noqa: SLF001
+_TYPED_PROVEN_SDK_ERROR: dict[str, dict[str, Any]] = {
+    "TxnDomainRejectionError": {"kind": "Validation", "result": "Parse error: injected 531d"},
+    "TxnGovernedConflictError": {"kind": "Thrown", "result": _GOVERNED_THROW},
+    "TxnUniqueViolationError": {
+        "kind": "AlreadyExists",
+        "result": "Database record `principal_key:k531d` already exists",
+        "details": {"kind": "Record", "details": {"id": "principal_key:k531d"}},
+    },
+}
+
+
+async def _typed_proven_instance(cls: type[BaseException]) -> BaseException:
+    """A PROVEN instance of ``cls``: through the real seam for the kind-decided ``TxnDomainRejectionError``
+    family (asserted to land on ``cls`` exactly), the plain constructor for every other class."""
+    if not issubclass(cls, TxnDomainRejectionError):
+        return _instance(cls)
+    raised = await _through_the_seam(parse_query_error(_TYPED_PROVEN_SDK_ERROR[cls.__name__]))
+    assert type(raised) is cls, (cls, type(raised))
+    return raised
 
 
 def _through_the_wrap(error: BaseException) -> BaseException:
@@ -687,8 +739,8 @@ class TestTheMintWindowNotesTheRevokeRepair:
         on the SAME object. Either way the served class is exactly what the wrap alone serves today."""
         if cls.__name__ not in _RULED_PROVEN_NO_KEY | _RULED_UNKNOWN_OUTCOME_STORE:
             pytest.fail(f"{cls.__name__} is not adjudicated (am-37 §14 Q1) — rule it before pinning its fate")
-        injected = _instance(cls)
-        expected_type = type(_through_the_wrap(_instance(cls)))
+        injected = await _typed_proven_instance(cls)  # am-37 §15: the family is proven only when TYPED
+        expected_type = type(_through_the_wrap(await _typed_proven_instance(cls)))
         store, reached = self._store(monkeypatch, raises=injected)
         with pytest.raises(BaseException) as caught:  # noqa: PT011 - the class IS the assertion below
             await store.mint(email=email, name=name, secret_hash="0" * 128)

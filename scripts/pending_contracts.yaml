@@ -64,6 +64,35 @@ version: 1
 # self-destruct rule. `bounds:` is EMPTY again. Re-derive (`--derive`) before any NEW bound.
 #
 bounds:
+# am-37 §15 + §15.1 contract (contract-mint-q1b, 2026-10-05, at 4ac88fb). The owned file names the ruled
+# ``_txn.proven_no_key`` predicate (and ``_OUTCOME_UNKNOWN_KINDS`` / ``_PROVEN_NO_KEY_CLASSES`` / the typed
+# ``TxnDomainRejectionError.kind``) before the build lands them. SELF-DESTRUCTS with the build.
+- id: am37-15-q1b-mint-contract
+  owner: am-37 §15/§15.1 mint kind carve-out — the 63c mint builder (lead-63c-2's routing)
+  reopen_trigger: the build lands loremaster.store._txn.proven_no_key (with the typed kind, the predicate catch in
+    lorerunes.reclassify and the mint's catch=proven_no_key) — then test_mint_kind_carveout_q1b.py stops erroring,
+    this entry self-destructs and must be deleted with the build
+  ruling: docs/design/2026-09-29-packet63c-amendment-37.md §15 (a555cf9) + §15.1 (4ac88fb) + §15.2 (9813259); receipts
+    REPORT-contract-mint-q1b.md §RED@HEAD + §SATISFIABILITY (archived with the wave)
+  rationale: contract-ahead — the pins name the ruled symbols now; every pytest RED of the owned file is this bound's
+    (a runtime-inert ``if TYPE_CHECKING:`` anchor names the symbol statically)
+  files:
+  - path: loremaster/tests/test_mint_kind_carveout_q1b.py
+    missing_symbols:
+    - loremaster.store._txn.proven_no_key
+    unsymboled_codes:
+    - code: arg-type
+      count: 2
+      reason: '§15.1 (i): reclassify / wrap_store_rejection accept a predicate catch only after the build widens
+        their ``catch`` annotation; at HEAD both are typed as a class tuple'
+    - code: no-any-return
+      count: 1
+      reason: the stub-expectation accessor reads ``proven_no_key`` via getattr (Any) until the build lands it — the
+        same missing symbol, surfacing as a return-type line
+    - code: call-arg
+      count: 1
+      reason: '§15.2 mechanics: the ONE helper ``_domain_rejection_error`` grows a ``kind`` keyword with the build; at
+        HEAD it takes (error_class, message) only'
 # Packet 58 contract (contract-58, 2026-09-26, at 5d549a1). The contract pins three symbols packet 58's BUILD
 # introduces (kickoff rulings docs/design/2026-09-26-packet58-kickoff-rulings.md §1/§4/§7.7): until the
 # build lands they are attr-defined at typecheck (and RED at pytest for the same reason — REPORT-contract-58.md

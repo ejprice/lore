@@ -1,6 +1,7 @@
 """am-37 §14 Q1 (contract-mint-q1, operator-ruled "Yes, separate cycle", 2026-10-04): the mint note's
 domain is INVERTED. Before the engine answers, the revoke note is withheld IFF the fault PROVES no key landed,
-meaning the store layer's own refusal / pre-send taxonomy, ONE exported tuple ``_txn._PROVEN_NO_KEY_FAULTS``.
+meaning the store layer's own refusal / pre-send taxonomy. am-37 §15.1 (contract-mint-q1b, 2026-10-05): that
+set is now ONE predicate, ``_txn.proven_no_key``; its pins live in ``test_mint_kind_carveout_q1b.py``.
 EVERY other fault gets the CONDITIONAL note: cancellation (asyncio, anyio), an interrupt, a timeout, a raw
 transport fault, a future unknown, and the bare store base.
 
@@ -31,7 +32,6 @@ import test_am37_13_3_63c_i_a as fix531d  # module-qualified: its Test* classes 
 from loremaster.principal_keys import PrincipalKeyStore, PrincipalKeyStoreError
 from loremaster.store import _txn as _txn_module
 from loremaster.store._txn import (
-    SurrealConnectionError,
     SurrealStoreError,
     TxnDomainRejectionError,
     wrap_store_rejection,
@@ -315,83 +315,10 @@ def _loremaster_bindings_of(value: object) -> list[tuple[object, str]]:
     return bindings
 
 
-class TestTheProvenNoKeySetIsOneExportedTuple:
-    """am-37 §14 Q1: the proven-no-key set is ONE tuple, ``_txn._PROVEN_NO_KEY_FAULTS``, exported by the
-    store layer that owns the taxonomy, so a new ``_txn`` subclass is adjudicated at birth. STUB EXPECTATION:
-    the name does not exist before the build, so every cell here is RED by AttributeError until then."""
-
-    @staticmethod
-    def _proven() -> tuple[type[BaseException], ...]:
-        proven = getattr(_txn_module, "_PROVEN_NO_KEY_FAULTS")  # noqa: B009 - a stub expectation: red by name
-        assert isinstance(proven, tuple), type(proven)
-        return proven
-
-    def test_the_tuple_is_exported_by_the_store_layer(self) -> None:
-        proven = self._proven()
-        assert proven, "an EMPTY proven set would note every UNIQUE rejection"
-        for cls in proven:
-            assert isinstance(cls, type) and issubclass(cls, SurrealStoreError), cls
-            assert cls is not SurrealStoreError, "the bare base would make SurrealConnectionError 'proven'"
-            assert cls.__module__ == _txn_module.__name__, (cls, cls.__module__)
-        assert len(set(proven)) == len(proven), "a duplicated member hides a missing one"
-
-    def test_the_tuple_never_covers_the_connection_class(self) -> None:
-        """Membership is tested by ``isinstance``, so it must be disjoint in BOTH directions: no member
-        subclasses the connection class, and the connection class subclasses no member."""
-        proven = self._proven()
-        assert not isinstance(SurrealConnectionError("probe"), proven)
-        assert not any(issubclass(cls, SurrealConnectionError) for cls in proven)
-
-    def test_the_tuple_plus_the_connection_class_is_the_derived_taxonomy(self) -> None:
-        """Completeness, PRODUCTION side: (the proven tuple) ∪ {SurrealConnectionError} == the GENERATED
-        ``_txn`` taxonomy. A new, unadjudicated subclass reds BY NAME."""
-        derived = {cls.__name__ for cls in fix531d._store_taxonomy()}
-        produced = {cls.__name__ for cls in self._proven()} | {SurrealConnectionError.__name__}
-        assert produced == derived, (
-            f"unadjudicated: {sorted(derived - produced)} · not in the taxonomy: {sorted(produced - derived)}"
-        )
-
-    def test_the_tuple_is_the_rulings_adjudication(self) -> None:
-        """Independent expected value: the tuple equals the set the OPERATOR ruled (§14 Q1), written out in
-        this file. If it were computed from the live subclass tree, a new ``_txn`` class would be adjudicated
-        'proven' silently, which is the false-clear direction. This cell turns that into a red by name."""
-        assert {cls.__name__ for cls in self._proven()} == fix531d._RULED_PROVEN_NO_KEY
-
-    @pytest.mark.parametrize("removed", sorted(fix531d._RULED_PROVEN_NO_KEY))
-    async def test_the_mint_reads_the_one_tuple(self, monkeypatch: pytest.MonkeyPatch, removed: str) -> None:
-        """ONE IMPLEMENTATION, proven by MUTATION. Every binding of the tuple is rebound WITHOUT ``removed``,
-        and a ``removed`` fault during the CREATE must then carry the conditional note. A private copy of the
-        set, or a hard-coded ``isinstance`` ladder, keeps the old verdict and reds here."""
-        proven = self._proven()
-        bindings = _loremaster_bindings_of(proven)
-        assert (_txn_module, "_PROVEN_NO_KEY_FAULTS") in bindings, bindings
-        cls = next(cls for cls in fix531d._store_taxonomy() if cls.__name__ == removed)
-        # Membership is ``isinstance``: drop ``removed`` AND every member that COVERS it (its ancestors in the
-        # tuple). Otherwise a subclass (UNIQUE, under TxnDomainRejectionError) stays covered.
-        mutated = tuple(member for member in proven if not issubclass(cls, member))
-        assert len(mutated) < len(proven), (removed, proven)
-        for namespace, attribute in bindings:
-            monkeypatch.setattr(namespace, attribute, mutated)
-        email, name = fix531d._PLAIN
-        store, _reached = fix531d.TestTheMintWindowNotesTheRevokeRepair._store(  # noqa: SLF001
-            monkeypatch, raises=fix531d._instance(cls)
-        )
-        with pytest.raises(BaseException) as caught:  # noqa: PT011 - the note IS the assertion below
-            await store.mint(email=email, name=name, secret_hash="0" * 128)
-        notes = getattr(caught.value, "__notes__", None)
-        assert notes is not None and len(notes) == 1, f"{removed} left the tuple but the mint still withholds"
-        _assert_conditional_shape(notes[0], email=email, name=name)
-
-    async def test_CONTROL_the_unmutated_tuple_withholds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The positive control for the mutation cells: the same injection, tuple untouched → no note."""
-        self._proven()
-        email, name = fix531d._PLAIN
-        store, _reached = fix531d.TestTheMintWindowNotesTheRevokeRepair._store(  # noqa: SLF001
-            monkeypatch, raises=TxnDomainRejectionError("injected q1 control")
-        )
-        with pytest.raises(PrincipalKeyStoreError) as caught:
-            await store.mint(email=email, name=name, secret_hash="0" * 128)
-        fix531d._note_free_chain(caught.value)
+# am-37 §15.1 re-key (contract-mint-q1b): ``TestTheProvenNoKeySetIsOneExportedTuple`` MOVED, re-targeted
+# from the retired tuple to ``proven_no_key``, into test_mint_kind_carveout_q1b.py:
+# ``TestThePredicateOverTheTaxonomy`` (taxonomy + completeness), ``TestEveryEngineKindIsAdjudicated`` (the
+# ruling), ``TestOnePredicateDecidesCatchMessageAndNote`` (by mutation), ``TestTheRetiredTupleIsGone``.
 
 
 # --------------------------------------------------------------------------- #
@@ -446,7 +373,9 @@ async def _served(monkeypatch: pytest.MonkeyPatch, injected: BaseException) -> B
 
 async def _not_landed_message(monkeypatch: pytest.MonkeyPatch) -> str:
     """DERIVED, never hard-coded: what mint serves for a PROVEN rejection (the true not-landed claim)."""
-    served = await _served(monkeypatch, TxnDomainRejectionError("injected n3 proven"))
+    # am-37 §15 re-key: a PROVEN rejection is a TYPED one (a kind-less rejection is now UNKNOWN).
+    proven = await fix531d._typed_proven_instance(TxnDomainRejectionError)  # noqa: SLF001
+    served = await _served(monkeypatch, proven)
     assert isinstance(served, PrincipalKeyStoreError), type(served)
     return str(served)
 
@@ -496,38 +425,14 @@ class TestAnUnprovenFaultNeverClaimsNonLanding:
         passes_through = cls.__name__ == "TxnContentionExhaustedError"
         if cls.__name__ not in fix531d._RULED_PROVEN_NO_KEY or passes_through:  # noqa: SLF001
             pytest.skip("not translated by the wrap today (connection / exhausted contention pass through)")
-        served = await _served(monkeypatch, fix531d._instance(cls))  # noqa: SLF001
+        proven = await fix531d._typed_proven_instance(cls)  # noqa: SLF001 - am-37 §15 re-key: TYPED
+        served = await _served(monkeypatch, proven)
         assert str(served) == f"could not mint key {_N3_NAME!r} for principal {_N3_EMAIL!r}"
         fix531d._note_free_chain(served)  # noqa: SLF001
 
 
-class TestOneTupleDecidesNoteAndMessage:
-    """ONE IMPLEMENTATION, by MUTATION: moving a class across ``_PROVEN_NO_KEY_FAULTS`` (every identity-found
-    binding) flips BOTH its note and its message. Under (d) the class stays ``PrincipalKeyStoreError`` either
-    way, so WHICH wrap translated it shows as the message."""
-
-    async def test_moving_a_proven_class_OUT_flips_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        proven = TestTheProvenNoKeySetIsOneExportedTuple._proven()  # noqa: SLF001
-        not_landed = await _not_landed_message(monkeypatch)
-        mutated = tuple(member for member in proven if not issubclass(TxnDomainRejectionError, member))
-        for namespace, attribute in _loremaster_bindings_of(proven):
-            monkeypatch.setattr(namespace, attribute, mutated)
-        injected = TxnDomainRejectionError("injected n3 moved out")
-        served = await _served(monkeypatch, injected)
-        assert len(getattr(served, "__notes__", None) or []) == 1, "the NOTE did not flip"
-        assert not_landed not in _rendered(served), "the MESSAGE did not flip"
-        assert type(served) is PrincipalKeyStoreError and served.__cause__ is injected
-        _assert_cause_neutral_message(str(served))  # the OUTER wrap translated it: cause-neutral
-
-    async def test_moving_a_foreign_class_IN_flips_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        foreign = next(cls for cls in _FOREIGN if cls.__name__ == "LeaseError")
-        proven = TestTheProvenNoKeySetIsOneExportedTuple._proven()  # noqa: SLF001
-        not_landed = await _not_landed_message(monkeypatch)
-        for namespace, attribute in _loremaster_bindings_of(proven):
-            monkeypatch.setattr(namespace, attribute, (*proven, foreign))
-        served = await _served(monkeypatch, _construct(foreign))
-        assert not getattr(served, "__notes__", None), "the NOTE did not flip"
-        assert str(served) == not_landed, "the MESSAGE did not flip"
+# am-37 §15.1 re-key (contract-mint-q1b): ``TestOneTupleDecidesNoteAndMessage`` MOVED, re-targeted to the
+# predicate's two halves: test_mint_kind_carveout_q1b.py::TestOnePredicateDecidesCatchMessageAndNote.
 
 
 class TestTheOtherWrapCallersAreUnchanged:

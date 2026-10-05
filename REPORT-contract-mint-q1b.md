@@ -1,4 +1,3 @@
-- **State:** done-with-deviations
 
 brief-base v18 read · brief project v7 read
 - Deviations: (1) the FIRST HEAD RED run started at MemAvailable 16 GiB (gate demands ≥ 20 GiB) — I ran without waiting; the run was capped (MemoryMax=16G), took 19 s, and every later run waited for ≥ 20 GiB. (2) `lore_impact` covering tests of `reclassify` / `wrap_store_rejection` / `_domain_rejection_error` beyond the 5 files below: NOT TRIED (deadline). (3) `test_engine_rejection_seam.py` + `lorerunes/tests/test_engine_rejection.py` were run against the REFERENCE build only, not HEAD.
@@ -91,3 +90,54 @@ They live under `/var/tmp/claude-1000/-home-ejprice-PycharmProjects-lore/0b53a0d
 ## Noticed outside this change
 - §15's mechanics sentence "`_domain_rejection_error` already receives the typed error" is factually false at 4ac88fb (see FORK-1).
 - The `pending_contract_gate` currency leg prints `pytest NOT_RUN` as an ORPHAN line even under an explicit `--legs` filter. A reader skimming for "ORPHAN" will mis-read that.
+
+## §DELTA — am-37 §15.2 (RULED 9813259), applied 2026-10-05
+
+This section is scoped to HEAD `9813259`. The tests-only writable set is unchanged.
+
+**Owned-file changes (`test_mint_kind_carveout_q1b.py`)**
+- `TestAUniqueIndexCollisionUnderInternalIsProven` is gone. `TestTheClassificationAxis` replaces it: a generated sweep over every `_ERROR_CLASS_*` label × (`KIND_TO_CLASS` ∪ `QueryDetailKind` ∪ {None}) = 7 × 13 = 91 cells. Each cell goes through the ONE helper as `_domain_rejection_error(error_class, msg, kind=kind)` and asserts:
+  - the rejection carries `.error_class` and `.kind`;
+  - classified label ⇒ proven, for every kind;
+  - `unspecified` × {Internal, Serialization, TimedOut, Cancelled, Query, None} ⇒ not proven;
+  - `unspecified` × any other kind ⇒ proven.
+
+  Label completeness is pinned: a new or retired label reds by name.
+- **FORK-2 is in that FALSE set:** bare `Query` is the 6th member. The lead's message listed five; §15.2 FORK-2 adds `Query`.
+- `TestAClassifiedInternalRefusalIsProvenAtTheMint` is new. UNIQUE / ASSERT / coercion texts are built from the classifier's own markers as kind `Internal` and passed through the real seam. The mint then serves "could not mint" with no note. The live UNIQUE pin is untouched.
+- `TestTheTransactionalRaiseSitePassesTheKind` is new and generated over the non-transport kinds. It drives `_run_verified_transaction` over a fake connection: `query_raw` returns one ERR entry and `check_response_for_error` returns `None`. It asserts `.kind` and the predicate's fate. This pins §15.2's "both raise sites pass the kind"; the single-statement site was already pinned. Bare `Query` is excluded here: a kind-less top-level `Query` entry is covered by the axis cell.
+- **Kind-less rule split by class (§15.2: "classified by construction"):**
+  - a bare `TxnUniqueViolationError` or `TxnGovernedConflictError` ⇒ proven, at both the predicate and the mint;
+  - a bare base `TxnDomainRejectionError` ⇒ unknown.
+- New constants: `_RULED_CLASSIFIED_BY_CONSTRUCTION`, `_RULED_CLASSIFIED_LABEL_NAMES`, `_RULED_UNKNOWN_UNSPECIFIED_KINDS`.
+
+**Registry bound `am37-15-q1b-mint-contract`:** it now cites §15.2 and adds `call-arg ×1` (the helper's new `kind=` keyword). I fixed one arg-type line at its source instead of adjudicating it: the fake `acquire` is now annotated `-> Any`.
+
+**RED@HEAD (9813259)**
+- Run over the owned file + both Q1 files + `test_engine_rejection_seam.py` + `lorerunes/tests/test_engine_rejection.py`.
+- Result: **154 failed, 345 passed, 2 skipped**. **All 154 failures are in the owned file**; everything else is green.
+- Reasons (`--tb=line`, deduplicated; each appears twice in that output), all right-reason:
+  - `_domain_rejection_error() got an unexpected keyword argument 'kind'`;
+  - missing `proven_no_key` / `_OUTCOME_UNKNOWN_KINDS` / `_PROVEN_NO_KEY_CLASSES`;
+  - no `.kind` / `.error_class` attribute;
+  - `AssertionError: []` (HEAD withholds the note on unknown kinds);
+  - `reclassify` raises `TypeError` on a predicate;
+  - the retired-name scan.
+
+**SATISFIABILITY**
+- The reference build adds `scratchpad/refbuild_delta_15_2.py` on top of `refbuild_apply.py`:
+  - `TxnDomainRejectionError(kind=, error_class=)`, where the class default is UNSPECIFIED for the base and its own label for UNIQUE/governed;
+  - `proven_no_key` = class half, or `error_class != UNSPECIFIED`, or (`kind` not None and not in `_OUTCOME_UNKNOWN_KINDS`);
+  - the transactional raise site passes `kind=_typed_kind(_typed_root_cause(root_cause))`.
+- Provenance: `loremaster.__file__` = `…/scratchpad/refbuild/loremaster/loremaster/__init__.py`.
+- Same 5 files: **499 passed, 2 skipped, 0 failed**, including the live UNIQUE pin and `[principal_key-mint]`.
+- ⚠ The owned file then changed by ONE annotation (`acquire() -> Any`). I did not re-run that change against the reference build because the memory gate held at 17 GiB past a 200 s wait. ruff and mypy are clean on it.
+
+**CURRENCY** (`--legs typecheck,ruff`): typecheck RED_ADJUDICATED (88 residuals, all owned), ruff GREEN, so **RED_ORPHANED 0** on those legs. `pytest NOT_RUN` is inherent to `--legs`.
+
+**Delta deviations**
+- **Memory gate:** the HEAD RED run started at 16 GiB, below the 20 GiB gate. I checked the number in the same command and did not wait. That is the second such lapse, and it is disclosed. The run was capped and took 19 s.
+- **Not added:** a mutation cell for "drop the kind at one raise site → that path's mint cell moves". Building wrong implementations is the grader's job (brief-base §2). The per-site `.kind` pins are the cells such a mutation reddens.
+- **Unchanged pins:** `TestEveryEngineKindIsAdjudicated` and `TestTheMintFollowsTheKind` already used generic, unrecognised texts, so they are the `unspecified` row of §15.2 and need no change.
+
+- **State:** done-with-deviations (the §DELTA memory-gate lapse + the annotation-only post-satisfiability edit; contract work complete)
