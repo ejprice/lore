@@ -2352,3 +2352,35 @@ Reserved: implement-486-r4, coldaudit-486-3.
   - **Q1 YES, a separate tdd-light cycle after #486 closes:** the mint conditional note is withheld iff the fault ∈ `_PROVEN_NO_KEY_FAULTS` (the `_txn` taxonomy minus `SurrealConnectionError`, derived and exported); otherwise the note applies. fix531d's pin (a) is re-keyed; a completeness pin is added.
   - **Q3 fix the test now + ledger:** a test-only fix in `test_retry_seam.py` (the fake shape is one level deeper than the SDK; drop `suppress(Exception)`; `filterwarnings error::RuntimeWarning`), AFTER coldaudit-486-3 (the file is in its census). The production half is filed as **#539** (scout `_consume_live` awaitable branch possibly dead).
 - Reserved names: coldaudit-486-4, contract-mint-q1, implement-mint-q1, coldaudit-mint-q1, fix-q3-retry-seam.
+
+## RESUME ANCHOR v12 (2026-10-05T01:55Z) — AUTHORITATIVE; supersedes v11
+**DONE since v11 (all committed):**
+- **#486 follow-up round CLOSED:**
+  - build `89549fb` (audited patch md5 `abd59483…` verified == the worktree before staging; 5 files; no trailers) + docstring `16bfa0f` (lead-verified: AST-equal modulo docstrings, targeted 959 passed / 8 skipped / 0 failed);
+  - audits: coldaudit-486-3 (r1) and coldaudit-486-4 (r2 delta), both GO-with-residuals;
+  - reports archived `40e4c39`; INDEX `7fc90a9`; #537 and #538 resolved.
+- Operator rulings this stretch:
+  - am-37 §14 (`fb83c4a`, sidecar-63c-2): Q2 fold in (done), Q1 a separate cycle, Q3 fix + ledger.
+  - #486 close-out: commit + a docstring fix, ledger the rest (#541). F-5: accept as a KNOWN BOUND (done).
+- Lead rulings:
+  - D1: `websockets` package + the #466 guard entry.
+  - The cooperative control stays rc ≠ 0 (§14's "exits 0" was an erratum vs the #534 contract).
+  - R-2/R-6 wording folded in.
+- #531/#536 fix reports archived `7fd04cf` → `receipts/2026-10-04-531-536/`.
+- New findings: #539 (scout awaitable branch, production half of Q3), #540 (currency FAIL render; filed by coldaudit-486-3), #541 (four LOW #486 pin gaps).
+
+**IN FLIGHT:** `fix-q3-retry-seam` (opus55-worker, test-only, `test_retry_seam.py`). Watcher bw20bbf37. Lead verifies in full on landing (no audit):
+- read the diff;
+- run the test file through the waiting gate;
+- confirm the mutation proof (fixed test RED, old test GREEN under a broken success leg).
+Then commit.
+
+**NEXT:**
+1. Q1 mint cycle (tdd-light), names `contract-mint-q1` → `implement-mint-q1` → `coldaudit-mint-q1`. Spec: am-37 §14 Q1. Withhold the conditional note iff the fault ∈ `_PROVEN_NO_KEY_FAULTS` (the `_txn` taxonomy minus `SurrealConnectionError`, derived and exported); otherwise apply it. Re-key fix531d's pin (a) DUAL; add a taxonomy completeness leg. This is a production change: full suite once in the cold audit via `pending_contract_gate.py --currency -- --maxprocesses=12`.
+2. 58 → the NEXT agent (operator).
+
+**Live agents:** fix-q3-retry-seam (running); sidecar-63c-2 (idle; its lore connection reports ECONNREFUSED, so respawn it as sidecar-63c-3 if lore is needed); sidecar-64 (idle). Stopped: contract-486-r4, implement-486-r4, coldaudit-486-3, coldaudit-486-4.
+**Used names (never reuse), added:** coldaudit-486-3, coldaudit-486-4, fix-q3-retry-seam. Reserved: contract-mint-q1, implement-mint-q1, coldaudit-mint-q1.
+**Lessons:**
+- Agents write the SUMMARY first and the body later, so a watcher keyed on the summary State line fires early. Key watchers on a late section (e.g. `## Residuals`/`## §A`) plus "no pytest running".
+- A report's top State line can be stale from an earlier round, so key on the section's own State.
