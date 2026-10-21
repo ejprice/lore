@@ -902,8 +902,9 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   test runners get brief-base §3's runner template pasted whole. Filling it for this repo
   (§Quality gates, TEST SCOPE): `Command:` carries the pytest cgroup cap, `-n 8` or fewer
   (`-n 12` for the once-per-packet full suite; never `-n` on the gate scripts), and
-  `--timeout=<N>` on mutation / reference / wrong-build runs; `Before:` carries the
-  one-full-suite check before a full suite.
+  `--timeout=<N>` on mutation / reference / wrong-build runs; a full suite's `Command:` is
+  also wrapped `flock /tmp/lore-full-suite.lock …` (waits its turn — the one-full-suite
+  rule, enforced; measured 2026-10-21: a second flock waited for the first to release).
 - **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
   Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
   that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
