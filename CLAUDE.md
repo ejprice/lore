@@ -899,9 +899,11 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   **Exception — Haiku agents (test runners, fan-out workers; operator, 2026-10-21):** their
   brief does NOT cite brief-base, expects no receipt, and carries the lore load line only if
   the task uses lore. It is self-contained per `~/.claude/CLAUDE.md` (Multi-agent comms);
-  test runners get brief-base §3's runner template pasted whole, whose `Command:` line
-  carries this repo's pytest cgroup cap and whose `Before:` line carries the one-full-suite
-  check (§Quality gates, TEST SCOPE).
+  test runners get brief-base §3's runner template pasted whole. Filling it for this repo
+  (§Quality gates, TEST SCOPE): `Command:` carries the pytest cgroup cap, `-n 8` or fewer
+  (`-n 12` for the once-per-packet full suite; never `-n` on the gate scripts), and
+  `--timeout=<N>` on mutation / reference / wrong-build runs; `Before:` carries the
+  one-full-suite check before a full suite.
 - **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
   Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
   that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
