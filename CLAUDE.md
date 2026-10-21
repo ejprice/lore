@@ -877,7 +877,8 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   the process table). An idle agent with a live gate-pytest + self-watcher is the
   benign waiting-on-own-wake mode — do not double-drive it.
 - **AGENTS ROUTE CONTENT THROUGH THE DURABLE LEDGER; NATIVE IS A THIN WAKE ONLY (2026-08-10).**
-  Every spawn brief instructs the agent to register on `lore_comms` and route status /
+  Every spawn brief (Haiku agents excepted — they report only to their spawner) instructs
+  the agent to register on `lore_comms` and route status /
   coordination / forks there (and to `lore_findings` / `lore_tasks` as apt); native SendMessage
   carries ONLY a wake to an AT-REST agent, never content. The one message an agent sends the lead
   is the brief-base §1 terse disambiguated micro-format (`STATE · REPORT-path · headline`) —
@@ -895,6 +896,12 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   steps/receipts, the lore ToolSearch load line, and any override of the base. This
   repo's specifics (gates, dogfood protocol) ride THIS file — never re-transcribed
   into briefs.
+  **Exception — Haiku agents (test runners, fan-out workers; operator, 2026-10-21):** their
+  brief does NOT cite brief-base, expects no receipt, and carries the lore load line only if
+  the task uses lore. It is self-contained per `~/.claude/CLAUDE.md` (Multi-agent comms);
+  test runners get brief-base §3's runner template pasted whole, whose `Command:` line
+  carries this repo's pytest cgroup cap and whose `Before:` line carries the one-full-suite
+  check (§Quality gates, TEST SCOPE).
 - **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
   Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
   that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
