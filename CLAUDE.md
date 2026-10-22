@@ -139,8 +139,9 @@ than read and the store reference is cited rather than re-transcribed.
   - **The FULL suite runs ONCE per packet: on the BUILD, before its commit.** The cold audit runs
     it; it re-runs the gates anyway. The builder, the lead and the contract loop do NOT also run
     it. A contract round never runs it.
-  - **Fleet-wide, ONE full suite at a time.** Before starting one, check the process table for
-    another lore pytest session. If one is live, WAIT; do not cap-and-race.
+  - **Fleet-wide, ONE full suite at a time.** Run it under `flock /tmp/lore-full-suite.lock …`,
+    which waits while another FULL SUITE holds the lock — targeted runs do not take it
+    (operator, 2026-10-22). Do not cap-and-race.
   - **The currency gate's PYTEST leg is a full-suite run; its other legs are not (operator,
     2026-09-30).** A bare `pending_contract_gate.py --currency` runs every manifested leg, pytest
     included, so it runs at packet close-out only, never per contract round.
@@ -899,13 +900,12 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   **Exception — Haiku agents (test runners, fan-out workers; operator, 2026-10-21):** their
   brief does NOT cite brief-base, expects no receipt, and carries the lore load line only if
   the task uses lore. It is self-contained per `~/.claude/CLAUDE.md` (Multi-agent comms);
-  test runners get brief-base §3's runner template pasted whole. Filling it for this repo
-  (§Quality gates, TEST SCOPE): `Command:` carries the pytest cgroup cap, `-n 8` or fewer
-  (`-n 12` for the once-per-packet full suite; never `-n` on the gate scripts), and
-  `--timeout=<N>` on mutation / reference / wrong-build runs; a full suite's `Command:` is
-  also wrapped `flock -E 75 -w <Slot wait> /tmp/lore-full-suite.lock …` OUTSIDE the
-  template's `sem` wrapper (waits its turn — the one-full-suite rule, enforced; measured
-  2026-10-21: a second flock waited for the first to release; `-w` expiry → BLOCKED).
+  their `haiku-runner` / `haiku-worker` definitions carry their rules. A `haiku-runner`
+  brief's `Command:` for this repo (§Quality gates, TEST SCOPE) carries the pytest cgroup cap,
+  `-n 8` or fewer (`-n 12` for the once-per-packet full suite; never `-n` on the gate scripts),
+  `--timeout=<N>` on mutation / reference / wrong-build runs, and for a full suite the
+  `flock /tmp/lore-full-suite.lock …` prefix (the one-full-suite rule, enforced; measured
+  2026-10-21: a second flock waited for the first to release).
 - **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
   Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
   that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
