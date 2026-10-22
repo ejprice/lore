@@ -903,8 +903,9 @@ assert it: `assert Path(loremaster.__file__).resolve().is_relative_to(SCRATCH_RO
   (§Quality gates, TEST SCOPE): `Command:` carries the pytest cgroup cap, `-n 8` or fewer
   (`-n 12` for the once-per-packet full suite; never `-n` on the gate scripts), and
   `--timeout=<N>` on mutation / reference / wrong-build runs; a full suite's `Command:` is
-  also wrapped `flock /tmp/lore-full-suite.lock …` (waits its turn — the one-full-suite
-  rule, enforced; measured 2026-10-21: a second flock waited for the first to release).
+  also wrapped `flock -E 75 -w <Slot wait> /tmp/lore-full-suite.lock …` OUTSIDE the
+  template's `sem` wrapper (waits its turn — the one-full-suite rule, enforced; measured
+  2026-10-21: a second flock waited for the first to release; `-w` expiry → BLOCKED).
 - **THE STORE REFERENCE IS A REQUIRED FIRST READ — `docs/reference/surrealdb-31-capabilities.md`.**
   Before ANY change to the store, the schema, or the DDL — by the lead or by an agent —
   that file is read FIRST, exactly like `brief-base.md`. Every store/schema/DDL spawn
