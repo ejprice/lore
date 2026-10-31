@@ -78,8 +78,9 @@ indistinguishable from an unknown one.
 * ``collector-memoisation``:
   The memo key covers a DERIVED address set plus PYTEST_ADDOPTS; every other collector input is outside it.
   The address set is the one :func:`_collector_input_paths` derives — the gate configuration
-  files, every tracked ``.py``, every ``.py`` under a collection root, and the ``conftest.py``
-  chain from the root down to each collection root — plus the inherited ``PYTEST_ADDOPTS``
+  files, every tracked ``.py``, every non-conftest ``.py`` under a collection root, and every
+  ``conftest.py`` pytest loads (:func:`_pytest_loads_conftest`, the predicate the execution
+  verdict shares) — plus the inherited ``PYTEST_ADDOPTS``
   (closed 2026-07-30 under the narrow allowlist grant). **The residual is the COMPLEMENT of that
   set, stated as a property because the ROSTER form of this bound was false:** it named three
   environment variables as the whole residual while an untracked ancestor ``conftest.py`` — a
@@ -139,6 +140,25 @@ ARCHIVED_RECEIPTS_ROOT = "docs/plans/v2/receipts"
 #: on every gate run, since a constant nobody re-derives is an inherited number wearing an
 #: assertion.
 PYTEST_DEFAULT_TEST_FILE_PATTERNS: tuple[str, ...] = ("test_*.py", "*_test.py")
+
+#: pytest's OWN declared default for ``norecursedirs``, copied from the ``default=[...]`` literal in
+#: ``_pytest.main.pytest_addoption`` (read 2026-10-31, pytest 9.0.3). pytest exposes it only as
+#: that inline literal, reachable at runtime through the private parser (``_inidict``) and never
+#: as a public constant; this instrument imports the standard library and nothing else, so it is
+#: carried here. ⚠ Unlike :data:`PYTEST_DEFAULT_TEST_FILE_PATTERNS`, no contract pin re-derives
+#: it against the installed pytest yet (#569 builder report) — until one does, a pytest release
+#: that changes the default makes this copy an inherited number.
+PYTEST_DEFAULT_NORECURSEDIRS: tuple[str, ...] = (
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+)
 
 #: pytest loads a conftest regardless of ``python_files``, so LEG B's scope includes it.
 CONFTEST_FILENAME = "conftest.py"
@@ -761,17 +781,49 @@ def pytest_test_file_patterns(repo_root: Path) -> list[str]:
     file using the other default shape walks straight through it, and a configured override makes
     the hardcoded answer wrong in the opposite direction.
     """
-    section = _section(_manifest(repo_root), "tool", "pytest", "ini_options")
-    if section is None or "python_files" not in section:
+    patterns = _pytest_ini_list(repo_root, "python_files")
+    if patterns is None:
         return list(PYTEST_DEFAULT_TEST_FILE_PATTERNS)
-    described_as = f"[tool.pytest.ini_options] python_files in {MANIFEST_RELATIVE_PATH}"
-    patterns = _string_list(section["python_files"], described_as=described_as)
     if not patterns:
         raise _blind(
             "python-files-empty",
-            f"{described_as} is empty, so nothing is test-shaped and LEG B is vacuous",
+            f"{_pytest_ini_described_as('python_files')} is empty, so nothing is test-shaped and "
+            f"LEG B is vacuous",
         )
     return patterns
+
+
+def pytest_norecursedirs(repo_root: Path) -> list[str]:
+    """The ``norecursedirs`` patterns in force, from the same manifest pytest reads.
+
+    A configured value REPLACES pytest's default list; it never extends it — measured
+    (``REPORT-contract-566-gg-r2b`` §7: with ``norecursedirs = ["store"]`` pytest loaded the
+    ``build/`` and ``.hidden/`` conftests again). So this returns the ini value or the default,
+    never their union. An empty configured list is an honest answer (pytest prunes nothing),
+    not a vacuous one, so it is returned rather than refused.
+    """
+    patterns = _pytest_ini_list(repo_root, "norecursedirs")
+    if patterns is None:
+        return list(PYTEST_DEFAULT_NORECURSEDIRS)
+    return patterns
+
+
+def _pytest_ini_described_as(key: str) -> str:
+    """How a ``[tool.pytest.ini_options]`` key is named in a refusal, in one spelling."""
+    return f"[tool.pytest.ini_options] {key} in {MANIFEST_RELATIVE_PATH}"
+
+
+def _pytest_ini_list(repo_root: Path, key: str) -> list[str] | None:
+    """One list-valued ``[tool.pytest.ini_options]`` setting, or ``None`` when it is not set.
+
+    ``None`` and ``[]`` are different answers on purpose: absent means pytest's default is in
+    force, while an empty list is a configured value — and each caller decides whether that
+    value is vacuous for the rule it reads.
+    """
+    section = _section(_manifest(repo_root), "tool", "pytest", "ini_options")
+    if section is None or key not in section:
+        return None
+    return _string_list(section[key], described_as=_pytest_ini_described_as(key))
 
 
 def tracked_python_files(repo_root: Path) -> list[str]:
@@ -835,11 +887,15 @@ def _collector_input_paths(repo_root: Path, testpaths: Sequence[str], tracked: S
       set that can redirect collection;
     * **every tracked ``.py``** — a test module's content decides whether it contributes items at
       all, and a module it imports decides whether collection even succeeds;
-    * **every ``.py`` under a collection root, tracked or not** — pytest collects UNTRACKED files,
-      which is exactly why ``scripts/tree_fingerprint.sh`` cannot be reused here: it fingerprints
-      the TRACKED tree (index blobs plus the unstaged diff) and by its own stated bound a
-      brand-new untracked file does not move it;
-    * **the ``conftest.py`` CHAIN from ``repo_root`` down to each collection root** — CONFTEST
+    * **every non-conftest ``.py`` under a collection root, tracked or not** — pytest collects
+      UNTRACKED files, which is exactly why ``scripts/tree_fingerprint.sh`` cannot be reused
+      here: it fingerprints the TRACKED tree (index blobs plus the unstaged diff) and by its own
+      stated bound a brand-new untracked file does not move it;
+    * **every ``conftest.py`` pytest LOADS: the CHAIN from ``repo_root`` down to each collection
+      root, and each one inside a collection root that pytest's recursion reaches** — decided by
+      :func:`_pytest_loads_conftest`, the ONE predicate the execution verdict also calls, so an
+      untracked conftest in a ``norecursedirs`` directory (#569) moves neither the key nor the
+      verdict. CONFTEST
       LOADING IS A SECOND MECHANISM, and reasoning about ``locate_config`` alone does not reach
       it. pytest walks rootdir → the collection target loading every ``conftest.py`` on the way,
       so an UNTRACKED conftest in a directory that is an ANCESTOR of a testpath but is neither
@@ -858,26 +914,37 @@ def _collector_input_paths(repo_root: Path, testpaths: Sequence[str], tracked: S
     """
     paths = {
         repo_root / filename
-        for filename in (
-            MANIFEST_RELATIVE_PATH,
-            CONFTEST_FILENAME,
-            *SHADOWING_CONFIGURATION_FILENAMES,
-        )
+        for filename in (MANIFEST_RELATIVE_PATH, *SHADOWING_CONFIGURATION_FILENAMES)
     }
     paths.update(repo_root / relative for relative in tracked)
+    # Conftest ADDRESSES are enumerated here; whether pytest LOADS each one is decided by the
+    # ONE predicate the execution verdict also calls, so the key and the verdict cannot drift.
+    candidate_conftests: set[str] = set()
     for testpath in testpaths:
-        ancestor = repo_root
+        chain = PurePosixPath()
+        candidate_conftests.add(str(chain / CONFTEST_FILENAME))
         for component in PurePosixPath(testpath).parts:
-            ancestor = ancestor / component
-            paths.add(ancestor / CONFTEST_FILENAME)
+            chain = chain / component
+            candidate_conftests.add(str(chain / CONFTEST_FILENAME))
     for testpath in testpaths:
         for directory, subdirectories, filenames in os.walk(repo_root / testpath):
             subdirectories.sort()
-            paths.update(
-                Path(directory) / filename
-                for filename in filenames
-                if filename.endswith(".py")
-            )
+            relative_directory = PurePosixPath(Path(directory).relative_to(repo_root))
+            for filename in filenames:
+                if filename == CONFTEST_FILENAME:
+                    candidate_conftests.add(str(relative_directory / filename))
+                elif filename.endswith(".py"):
+                    # Kept even inside a pruned directory: pytest collects no item there, but a
+                    # collected test may still import the module, so its content can move the answer.
+                    paths.add(Path(directory) / filename)
+    norecursedirs = pytest_norecursedirs(repo_root)
+    paths.update(
+        repo_root / conftest
+        for conftest in candidate_conftests
+        if _pytest_loads_conftest(
+            conftest, testpaths=testpaths, norecursedirs=norecursedirs, repo_root=repo_root
+        )
+    )
     return sorted(path for path in paths if path.is_file())
 
 
@@ -1263,6 +1330,7 @@ class _Scopes:
     typecheck_roots: tuple[str, ...]
     testpaths: tuple[str, ...]
     test_file_patterns: tuple[str, ...]
+    norecursedirs: tuple[str, ...]
     collected: frozenset[str]
 
 
@@ -1302,6 +1370,7 @@ def _derive(repo_root: Path) -> _Scopes:
     member_mypypath(repo_root)
     testpaths = pytest_testpaths(repo_root)
     patterns = pytest_test_file_patterns(repo_root)
+    norecursedirs = pytest_norecursedirs(repo_root)
 
     unmodelled = unmodelled_mypy_configuration(repo_root)
     if unmodelled:
@@ -1332,6 +1401,7 @@ def _derive(repo_root: Path) -> _Scopes:
         typecheck_roots=tuple(roots),
         testpaths=tuple(testpaths),
         test_file_patterns=tuple(patterns),
+        norecursedirs=tuple(norecursedirs),
         collected=collected_test_files(repo_root),
     )
 
@@ -1409,20 +1479,65 @@ def _is_test_shaped(path: str, patterns: Sequence[str], *, repo_root: Path) -> b
     return any(_matches_collection_pattern(pattern, absolute) for pattern in patterns)
 
 
-def _pytest_loads_conftest(path: str, testpaths: Sequence[str]) -> bool:
-    """Is this ``conftest.py`` one pytest loads when it collects some testpath?
+def _pytest_loads_conftest(
+    path: str,
+    *,
+    testpaths: Sequence[str],
+    norecursedirs: Sequence[str],
+    repo_root: Path,
+) -> bool:
+    """Is this repo-relative ``conftest.py`` one pytest loads when it collects some testpath?
+
+    THE ONE ENCODING of that pytest rule. Both the execution verdict
+    (:func:`_execution_fate`, for a TRACKED conftest) and the collector's memo key
+    (:func:`_collector_input_paths`, for an UNTRACKED one) call it, so the two cannot answer
+    differently (#566 C3: they were two encodings, and #569 changed the rule under both).
 
     pytest loads every conftest on the rootdir → collection-target chain and every conftest
-    inside the target (#566). So a conftest is loaded when it lies UNDER a testpath, or when its
-    directory is an ANCESTOR of one — the repository root included, whose parent ``.`` is an
-    ancestor of every relative path. Both legs go through :func:`is_under`, because a string
-    prefix would hand ``lore/conftest.py`` the ``loremaster/tests`` chain. Ancestry is taken
-    against the TESTPATHS only: a typecheck root is not a collection target.
+    inside the target that its recursion reaches (#566). So a conftest is loaded when its
+    directory is an ANCESTOR of a testpath (the repository root included, whose parent ``.`` is
+    an ancestor of every relative path), or when it lies UNDER a testpath and no directory
+    between the testpath and it matches ``norecursedirs`` (#569, :func:`_recursion_is_pruned`).
+    Both legs go through :func:`is_under`, because a string prefix would hand
+    ``lore/conftest.py`` the ``loremaster/tests`` chain. Ancestry is taken against the
+    TESTPATHS only: a typecheck root is not a collection target.
     """
-    directory = str(PurePosixPath(path).parent)
+    directory = PurePosixPath(path).parent
     return any(
-        is_under(path, testpath) or is_under(testpath, directory) for testpath in testpaths
+        is_under(testpath, str(directory))
+        or (
+            is_under(path, testpath)
+            and not _recursion_is_pruned(
+                directory, testpath=testpath, norecursedirs=norecursedirs, repo_root=repo_root
+            )
+        )
+        for testpath in testpaths
     )
+
+
+def _recursion_is_pruned(
+    directory: PurePosixPath,
+    *,
+    testpath: str,
+    norecursedirs: Sequence[str],
+    repo_root: Path,
+) -> bool:
+    """Does pytest refuse to recurse into some directory between ``testpath`` and ``directory``?
+
+    ``_pytest.main.pytest_ignore_collect`` tests each directory it is about to enter against
+    ``norecursedirs`` with ``fnmatch_ex`` on its ABSOLUTE path, and a refused directory takes its
+    whole subtree with it — measured: ``store/lease/conftest.py`` was not loaded under
+    ``norecursedirs = ["store"]``. So every component from just below the testpath down to
+    ``directory`` inclusive is tested. The testpath itself is not: an explicitly named collection
+    target is not pruned (measured, ``norecursedirs = ["tests"]`` left ``loremaster/tests``
+    collected). The match reuses :func:`_matches_collection_pattern`, the port of ``fnmatch_ex``.
+    """
+    candidate = PurePosixPath(str(repo_root.resolve())) / testpath
+    for component in directory.relative_to(testpath).parts:
+        candidate = candidate / component
+        if any(_matches_collection_pattern(pattern, candidate) for pattern in norecursedirs):
+            return True
+    return False
 
 
 def _execution_fate(path: str, *, scopes: _Scopes, exemptions: Sequence[Exemption]) -> Fate:
@@ -1437,7 +1552,12 @@ def _execution_fate(path: str, *, scopes: _Scopes, exemptions: Sequence[Exemptio
     if not _is_test_shaped(path, scopes.test_file_patterns, repo_root=scopes.repo_root):
         return Fate.NOT_APPLICABLE
     if PurePosixPath(path).name == CONFTEST_FILENAME:
-        if _pytest_loads_conftest(path, scopes.testpaths):
+        if _pytest_loads_conftest(
+            path,
+            testpaths=scopes.testpaths,
+            norecursedirs=scopes.norecursedirs,
+            repo_root=scopes.repo_root,
+        ):
             return Fate.COVERED
     elif path in scopes.collected:
         return Fate.COVERED
