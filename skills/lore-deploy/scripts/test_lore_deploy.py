@@ -215,23 +215,39 @@ _LORE_MOUNT_PATH = "/mcp"
 
 
 def _make_project(tmp_path: Path, slug: str) -> Path:
-    """Create a minimal project directory with a stub lore.yaml."""
+    """Create a project directory named ``slug`` with a production-shaped lore.yaml declaring it.
+
+    The lore.yaml's ``project.slug`` equals the directory name, as a scaffolded project's
+    does: every verb reads its slug from that config (#568 ruling F3), so a stub config, or a
+    config naming a different slug, would test a project no setup ever produces.
+    """
     project = tmp_path / slug
     project.mkdir()
-    (project / "lore.yaml").write_text("# stub lore config\n", encoding="utf-8")
+    write_config_document(
+        realistic_config_document(
+            slug=slug, server_port=_LORE_SERVER_PORT, server_path=_LORE_MOUNT_PATH
+        ),
+        project / "lore.yaml",
+    )
     return project
 
 
-def _install_config_reader(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ConfigReaderFake:
+def _install_config_reader(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, project: Path
+) -> ConfigReaderFake:
     """Patch _read_config_field with the shared meaning-based fake over a live-only config.
 
     The config holds the server port + mount these tests assert on and NO static roots,
     so no launch binds the snapshot. The fake answers whatever expression production
-    asks (a port, a mount, the static-root count) from that config, never by keyword.
+    asks (a port, a mount, the static-root count, the slug) from that config, never by
+    keyword. Its ``project.slug`` is ``project``'s directory name (#568 ruling F3: every
+    verb reads the slug from the config), and ``project`` is REQUIRED: a defaulted slug
+    would silently test a project whose config disagrees with its directory.
     """
     return ConfigReaderFake.install(
         monkeypatch,
         tmp_path / "config-reader",
+        slug=project.name,
         server_port=_LORE_SERVER_PORT,
         server_path=_LORE_MOUNT_PATH,
     )
@@ -344,7 +360,7 @@ class TestVerbStartStaleImageRecreateBehavior:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
-        _install_config_reader(monkeypatch, tmp_path)
+        _install_config_reader(monkeypatch, tmp_path, project)
 
         # Record _launch_container calls (the real one would shell out to podman run).
         launch_calls: list[tuple[Path, Path, Path]] = []
@@ -463,7 +479,7 @@ class TestVerbStartStaleImageRecreateBehavior:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
-        _install_config_reader(monkeypatch, tmp_path)
+        _install_config_reader(monkeypatch, tmp_path, project)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
 
@@ -562,7 +578,7 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
         monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
 
-        _install_config_reader(monkeypatch, tmp_path)
+        _install_config_reader(monkeypatch, tmp_path, project)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
 
@@ -846,7 +862,7 @@ class _RecreatePathFixture:
         self.monkeypatch.setattr(
             lore_deploy, "_image_id", lambda image: _CURRENT_IMAGE_ID
         )
-        _install_config_reader(self.monkeypatch, self.tmp_path)
+        _install_config_reader(self.monkeypatch, self.tmp_path, self.project)
 
     def install_run_recorder(self) -> None:
         """Record (and succeed) every podman command issued via _run."""
@@ -1482,7 +1498,7 @@ class TestVerbStartGatesOnSurreal:
             return lore_deploy._EXIT_OK
 
         monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
-        _install_config_reader(monkeypatch, tmp_path)
+        _install_config_reader(monkeypatch, tmp_path, project)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
@@ -1523,7 +1539,7 @@ class TestVerbStartGatesOnSurreal:
         monkeypatch.setattr(
             lore_deploy, "_probe_surreal", lambda config_path: lore_deploy._EXIT_ERROR
         )
-        _install_config_reader(monkeypatch, tmp_path)
+        _install_config_reader(monkeypatch, tmp_path, project)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
@@ -2244,7 +2260,7 @@ class _FreshPathArrangement:
         # thing a static tier fails against in the snapshot case.
         self.snapshot_root = tmp_path / "lore-snapshot"
         monkeypatch.setattr(lore_deploy, "SNAPSHOT_ROOT", self.snapshot_root)
-        self.reader = _install_config_reader(monkeypatch, tmp_path)
+        self.reader = _install_config_reader(monkeypatch, tmp_path, self.project)
         monkeypatch.setattr(lore_deploy, "_container_state", lambda name: state)
 
         def _recording_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -2285,13 +2301,16 @@ class _FreshPathArrangement:
             self.reader = ConfigReaderFake.install(
                 self.monkeypatch,
                 self.tmp_path / "config-reader-static",
+                slug=self.project.name,
                 server_port=_LORE_SERVER_PORT,
                 server_path=_LORE_MOUNT_PATH,
                 static_tiers=RECORDED_STATIC_TIERS[:1],
             )
         elif precondition == "config_unreadable":
             # A lore.yaml that fails schema validation, so the config read raises (R2).
-            document = realistic_config_document(server_port=_LORE_SERVER_PORT)
+            document = realistic_config_document(
+                slug=self.project.name, server_port=_LORE_SERVER_PORT
+            )
             document["server"]["port"] = "nine-thousand"
             self.reader = ConfigReaderFake.install(
                 self.monkeypatch, self.tmp_path / "config-reader-invalid", document=document
