@@ -690,7 +690,9 @@ def workspace_shaped_repository(tmp_path: Path) -> FixtureRepository:
         "docs/plans/v2/receipts_live/test_promoted_tool.py", body=_TEST_BODY
     )
     # REPOSITORY-ROOT-LEVEL committed Python. No fixture had any, and a stray root-level
-    # probe or conftest is the single most likely way real ungated ground appears.
+    # probe is the single most likely way real ungated ground appears. A root conftest is
+    # NOT that: pytest loads it for every testpath, because the root is an ancestor of all
+    # of them (#566), so it is execution-COVERED and types-UNGATED here.
     repository.add_python_file("release_probe.py")
     repository.add_python_file("conftest.py", body=_TEST_BODY)
     # NOT Python, despite containing ".py"
@@ -1453,7 +1455,15 @@ class TestMembershipDiscriminatesAtEveryCallSite:
             workspace_shaped_repository.root, exemptions=()
         )
         assert fates_of(verdicts, "release_probe.py")[gg.GateAxis.TYPES] is gg.Fate.UNGATED
-        assert fates_of(verdicts, "conftest.py")[gg.GateAxis.EXECUTION] is gg.Fate.UNGATED
+        # ⚠ #566: THIS LINE USED TO ASSERT THE ROOT conftest.py WAS EXECUTION-UNGATED, and that
+        # was false of pytest. The repository root is an ANCESTOR of every testpath, and pytest
+        # loads every conftest on the rootdir → testpath chain (measured, pytest 9.0.3,
+        # 2026-10-31, the oracle pasted in the #566 contract report). The pin certified the
+        # under-only rule's false positive, which is what reddened the real-tree pins the day
+        # the #165 guard landed a tracked root conftest. The root conftest is still
+        # TYPES-ungated here (no MEMBERS root covers the repository root), and that half is
+        # pinned in TestAConftestIsCoveredWherePytestLoadsIt.
+        assert fates_of(verdicts, "conftest.py")[gg.GateAxis.EXECUTION] is gg.Fate.COVERED
 
 
 # ---------------------------------------------------------------------------
@@ -2342,6 +2352,162 @@ class TestTheExecutionAxisScope:
             workspace_shaped_repository.root, exemptions=()
         )
         assert fates_of(verdicts, "lorerunes/blankness.py")[gg.GateAxis.EXECUTION] is gg.Fate.NOT_APPLICABLE
+
+
+# ---------------------------------------------------------------------------
+# 11b. A conftest is covered where pytest LOADS it (#566)
+# ---------------------------------------------------------------------------
+
+#: The testpaths of :func:`conftest_chain_repository`. The DEEP entry is listed SECOND on
+#: purpose: a build that walks only the first testpath, or only one level up from each, leaves
+#: ``skills/conftest.py`` (a grandparent of the second entry) uncovered.
+_CONFTEST_CHAIN_TESTPATHS: tuple[str, ...] = ("loremaster/tests", "skills/lore-deploy/tests")
+
+#: Typecheck roots for the same fixture. ``tools/probes`` is a MEMBERS root under no testpath,
+#: so a build that takes ancestry against the TYPE gate's roots instead of the testpaths covers
+#: ``tools/conftest.py``.
+_CONFTEST_CHAIN_MEMBERS: tuple[str, ...] = ("loremaster", "skills", "tools/probes")
+
+#: Conftests pytest LOADS for :data:`_CONFTEST_CHAIN_TESTPATHS`, with the shape each one forces.
+#: Measured, not reasoned: pytest 9.0.3 (2026-10-31), with every conftest below recording its
+#: own import, loaded exactly these and none of the negatives below (oracle in the #566
+#: contract report).
+_CONFTESTS_PYTEST_LOADS: tuple[tuple[str, str], ...] = (
+    ("conftest.py", "the repository root: an ancestor of every testpath"),
+    ("loremaster/conftest.py", "the immediate parent of the FIRST testpath"),
+    ("skills/conftest.py", "a GRANDPARENT of the SECOND testpath"),
+    ("skills/lore-deploy/conftest.py", "the immediate parent of the second testpath"),
+    ("loremaster/tests/conftest.py", "inside a testpath (the pre-#566 rule, kept)"),
+)
+
+#: Conftests pytest does NOT load for the same testpaths. Each defeats one plausible wrong
+#: build of the ancestor rule.
+_CONFTESTS_PYTEST_DOES_NOT_LOAD: tuple[tuple[str, str], ...] = (
+    # "loremaster/tests".startswith("lore") is True: string-prefix ancestry covers this.
+    ("lore/conftest.py", "a STRING prefix of a testpath at the top level, not a path ancestor"),
+    # "skills/lore-deploy/tests".startswith("skills/lore") is True, one level down.
+    ("skills/lore/conftest.py", "a STRING prefix of a nested testpath, not a path ancestor"),
+    # Shares the first component with a testpath but is not on its chain: a build comparing
+    # only the top-level component, or "under some ancestor of a testpath", covers it.
+    ("skills/otherskill/conftest.py", "a cousin: under an ancestor, on no testpath's chain"),
+    ("skills-old/conftest.py", "a sibling-prefix of the `skills` ancestor"),
+    ("docs/consult/conftest.py", "a plain sibling directory"),
+    # tools/ is an ancestor of the `tools/probes` MEMBERS root and of no testpath.
+    ("tools/conftest.py", "an ancestor of a TYPECHECK root, not of a testpath"),
+)
+
+
+@pytest.fixture()
+def conftest_chain_repository(tmp_path: Path) -> FixtureRepository:
+    """Every conftest placement that the ancestor rule must decide, in one repository.
+
+    One test file per testpath, so both entries are live collection targets; the remaining
+    tracked files are the conftests in :data:`_CONFTESTS_PYTEST_LOADS` and
+    :data:`_CONFTESTS_PYTEST_DOES_NOT_LOAD`, each a DIFFERENT path forcing a different wrong
+    build. ``git init`` from empty, like every fixture in this file.
+    """
+    repository = FixtureRepository(tmp_path)
+    repository.write_typecheck_runner(members=_CONFTEST_CHAIN_MEMBERS, include_decoy_comment=False)
+    repository.write_pyproject(
+        testpaths=_CONFTEST_CHAIN_TESTPATHS,
+        workspace_members=["loremaster"],
+        ruff_extend_exclude=["scratchpad", "docs/plans/v2/receipts"],
+        python_files=None,
+        pytest_ini_extra=None,
+        mypy_exclude=None,
+        mypy_table_extra=None,
+        mypy_overrides=[],
+        omit_pytest_table=False,
+    )
+    repository.add_python_file("loremaster/tests/test_store_lease.py", body=_TEST_BODY)
+    repository.add_python_file("skills/lore-deploy/tests/test_port_probe.py", body=_TEST_BODY)
+    repository.add_python_file("tools/probes/budget_probe.py")
+    # The guard refuses a tree whose archived-receipts class matches nothing (anti-vacuity),
+    # so the healthy shape carries one archived file, as every other fixture here does.
+    repository.add_python_file("docs/plans/v2/receipts/2026-07-20-probes/probe_budget.py")
+    for path, _shape in (*_CONFTESTS_PYTEST_LOADS, *_CONFTESTS_PYTEST_DOES_NOT_LOAD):
+        repository.add_python_file(path, body=_TEST_BODY)
+    repository.stage()
+    return repository
+
+
+class TestAConftestIsCoveredWherePytestLoadsIt:
+    """#566 (REPORT-audit-165-guard §9 D-2, ruled option (a)): a tracked ``conftest.py`` is
+    execution-covered iff pytest LOADS it for some testpath. That is when it lies under a
+    testpath, OR its directory is a path-component ANCESTOR of a testpath, within the
+    repository root.
+
+    The under-only rule reported the #165 guard's tracked root ``conftest.py`` as
+    execution-UNGATED. That was a false positive: pytest loads it in every session. A false
+    positive on honest code is how a gate gets switched off, so this is a product defect,
+    not hygiene.
+
+    The negative leg matters as much as the positive one. "Every conftest is covered" is
+    the cheapest way to turn these pins green, and it would hide every stray conftest in the
+    tree. A test-shaped file that is NOT a conftest in an ancestor directory stays ungated.
+    pytest does not collect it, and
+    :meth:`TestMembershipDiscriminatesAtEveryCallSite.test_an_ancestor_of_a_testpath_is_not_covered_by_it`
+    already pins that, so a build that applies the ancestor rule to every test-shaped file
+    dies there.
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "shape"),
+        _CONFTESTS_PYTEST_LOADS,
+        ids=[path for path, _shape in _CONFTESTS_PYTEST_LOADS],
+    )
+    def test_a_conftest_pytest_loads_is_execution_covered(
+        self, conftest_chain_repository: FixtureRepository, path: str, shape: str
+    ) -> None:
+        verdicts = assert_every_tracked_file_is_accounted_for(
+            conftest_chain_repository.root, exemptions=()
+        )
+        fate = fates_of(verdicts, path)[gg.GateAxis.EXECUTION]
+        assert fate is gg.Fate.COVERED, (
+            f"{path} ({shape}) is loaded by pytest for testpaths {list(_CONFTEST_CHAIN_TESTPATHS)}, "
+            f"so it is execution-covered; the guard said {fate.name}. A conftest on the rootdir → "
+            f"testpath chain is reached in every session, and reporting it is a false positive."
+        )
+
+    @pytest.mark.parametrize(
+        ("path", "shape"),
+        _CONFTESTS_PYTEST_DOES_NOT_LOAD,
+        ids=[path for path, _shape in _CONFTESTS_PYTEST_DOES_NOT_LOAD],
+    )
+    def test_a_conftest_pytest_never_loads_stays_execution_ungated(
+        self, conftest_chain_repository: FixtureRepository, path: str, shape: str
+    ) -> None:
+        verdicts = assert_every_tracked_file_is_accounted_for(
+            conftest_chain_repository.root, exemptions=()
+        )
+        fate = fates_of(verdicts, path)[gg.GateAxis.EXECUTION]
+        assert fate is gg.Fate.UNGATED, (
+            f"{path} ({shape}) is on no testpath's rootdir → testpath chain, so pytest never "
+            f"loads it; the guard said {fate.name}. Ancestry is path-COMPONENT-wise against the "
+            f"TESTPATHS, never a string prefix, never a shared top-level component, never the "
+            f"type gate's roots."
+        )
+        assert path in {
+            finding.path
+            for finding in findings_of(conftest_chain_repository.root, exemptions=())
+            if finding.axis is gg.GateAxis.EXECUTION
+        }, f"{path} has an UNGATED execution fate but is absent from the served findings"
+
+    def test_the_ancestor_rule_does_not_leak_onto_the_types_axis(
+        self, conftest_chain_repository: FixtureRepository
+    ) -> None:
+        # Per-axis, as everywhere in this file: being loaded by pytest says nothing about
+        # mypy. No MEMBERS root covers the repository root, so the root conftest stays
+        # TYPES-ungated. A build that marks an ancestor conftest covered on BOTH axes passes
+        # the execution pins and fails this one.
+        verdicts = assert_every_tracked_file_is_accounted_for(
+            conftest_chain_repository.root, exemptions=()
+        )
+        fates = fates_of(verdicts, "conftest.py")
+        assert fates[gg.GateAxis.TYPES] is gg.Fate.UNGATED, (
+            f"the root conftest is under no typecheck root {list(_CONFTEST_CHAIN_MEMBERS)}, so "
+            f"it is TYPES-ungated whatever pytest does; got {fates[gg.GateAxis.TYPES].name}"
+        )
 
 
 # ---------------------------------------------------------------------------
