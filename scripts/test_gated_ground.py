@@ -98,7 +98,7 @@ import shlex
 import subprocess
 import sys
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -2499,6 +2499,14 @@ _CONFTESTS_PYTEST_DOES_NOT_LOAD: tuple[tuple[str, str], ...] = (
     # is never imported. A build whose "under a testpath" leg is a bare path check covers both.
     ("loremaster/tests/build/conftest.py", "under a testpath, in a default `norecursedirs` dir"),
     ("loremaster/tests/.hidden/conftest.py", "under a testpath, in a hidden (`.*`) directory"),
+    # #571: pruning covers the SUBTREE, so the pruned component need not be the conftest's own
+    # directory. Every #569 row above prunes the LEAF, so a build that tests only the conftest's
+    # own directory (#571 W2) passed them all. Here the leaf `sub` matches nothing; its parent
+    # `build` does, and pytest never recurses that far.
+    ("loremaster/tests/build/sub/conftest.py", "BELOW a default `norecursedirs` dir, leaf matches nothing"),
+    # The converse shape: the pruned component is NOT the first one below the testpath. A build
+    # that tests only the first component (`store`, which loads) covers this one.
+    ("loremaster/tests/store/dist/conftest.py", "a default `norecursedirs` dir NESTED below a loaded one"),
 )
 
 
@@ -2519,13 +2527,85 @@ _RECORDING_CONFTEST_BODY = (
 )
 
 
+#: The test modules the chain repository and the oracle both carry: one per testpath, plus one
+#: per nested conftest directory.
+_CONFTEST_CHAIN_TEST_MODULES: tuple[str, ...] = (
+    "loremaster/tests/test_store_lease.py",
+    "skills/lore-deploy/tests/test_port_probe.py",
+    *_CONFTEST_CHAIN_NESTED_TEST_MODULES,
+)
+
+
+def _pytest_loaded_conftests(
+    work_dir: Path,
+    *,
+    norecursedirs: Sequence[str] | None,
+    conftests: Sequence[str],
+    conftest_appendix: Mapping[str, str] | None = None,
+    plain_files: Sequence[str] = (),
+) -> tuple[set[str], set[str]]:
+    """Which of ``conftests`` the INSTALLED pytest loads, and which modules it collects.
+
+    The live oracle, shared by every load table in this file, so an expectation is MEASURED
+    on every gate run, never inherited from a past probe. It builds a throwaway rootdir under
+    ``work_dir`` with the chain testpaths (and ``norecursedirs`` when given; ``None`` leaves
+    pytest's own default in force), plants a self-recording conftest at every path in
+    ``conftests``, and runs ``pytest --collect-only`` with every ``PYTEST_*`` variable removed.
+
+    ``conftest_appendix`` adds source to named conftests (e.g. a ``collect_ignore``), and
+    ``plain_files`` creates non-Python marker files (e.g. a ``pyvenv.cfg``).
+    """
+    root = work_dir / "oracle"
+    root.mkdir()
+    ini_lines = [
+        "[tool.pytest.ini_options]",
+        f"testpaths = {json.dumps(list(_CONFTEST_CHAIN_TESTPATHS))}",
+    ]
+    if norecursedirs is not None:
+        ini_lines.append(f"norecursedirs = {json.dumps(list(norecursedirs))}")
+    (root / "pyproject.toml").write_text("\n".join(ini_lines) + "\n", encoding="utf-8")
+    for relative in _CONFTEST_CHAIN_TEST_MODULES:
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text("def test_placeholder():\n    assert True\n", encoding="utf-8")
+    appendix = dict(conftest_appendix or {})
+    for path in conftests:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(_RECORDING_CONFTEST_BODY + appendix.pop(path, ""), encoding="utf-8")
+    assert not appendix, f"oracle misuse: appendix for conftests it does not plant: {sorted(appendix)}"
+    for relative in plain_files:
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text("home = /usr/bin\n", encoding="utf-8")
+    loaded_record = work_dir / "loaded.txt"
+    loaded_record.write_text("", encoding="utf-8")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    environment |= {"LORE_566_ORACLE_ROOT": str(root), "LORE_566_ORACLE_LOADED": str(loaded_record)}
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        f"the oracle's pytest run failed, so it measured nothing:\n{completed.stdout}\n{completed.stderr}"
+    )
+    collected = {line.split("::", 1)[0] for line in completed.stdout.splitlines() if "::" in line}
+    return set(loaded_record.read_text(encoding="utf-8").split()), collected
+
+
 def _conftest_chain_repository(
-    tmp_path: Path, *, tracked_conftests: Sequence[str]
+    tmp_path: Path,
+    *,
+    tracked_conftests: Sequence[str],
+    pytest_ini_extra: dict[str, object] | None,
 ) -> FixtureRepository:
     """The #566 chain repository, tracking exactly ``tracked_conftests`` among the conftests.
 
     One test file per testpath and one per nested conftest directory, so every directory on
     a chain is a live collection target. ``git init`` from empty, like every fixture here.
+    ``pytest_ini_extra`` adds pytest ini keys (#571: a configured ``norecursedirs``). It has no
+    default: the guard branches on it, so every call site states it.
     """
     repository = FixtureRepository(tmp_path)
     repository.write_typecheck_runner(members=_CONFTEST_CHAIN_MEMBERS, include_decoy_comment=False)
@@ -2534,7 +2614,7 @@ def _conftest_chain_repository(
         workspace_members=["loremaster"],
         ruff_extend_exclude=["scratchpad", "docs/plans/v2/receipts"],
         python_files=None,
-        pytest_ini_extra=None,
+        pytest_ini_extra=pytest_ini_extra,
         mypy_exclude=None,
         mypy_table_extra=None,
         mypy_overrides=[],
@@ -2563,7 +2643,9 @@ def conftest_chain_repository(tmp_path: Path) -> FixtureRepository:
     build.
     """
     return _conftest_chain_repository(
-        tmp_path, tracked_conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT]
+        tmp_path,
+        tracked_conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT],
+        pytest_ini_extra=None,
     )
 
 
@@ -2652,51 +2734,15 @@ class TestAConftestIsCoveredWherePytestLoadsIt:
         # never been placed in the oracle). So the oracle runs here, against the installed
         # pytest, on every gate run: every placement gets a conftest that records its own
         # import, and the loaded set must equal the LOADS table exactly.
-        root = tmp_path / "oracle"
-        root.mkdir()
-        (root / "pyproject.toml").write_text(
-            "[tool.pytest.ini_options]\n"
-            f"testpaths = {json.dumps(list(_CONFTEST_CHAIN_TESTPATHS))}\n",
-            encoding="utf-8",
+        loaded, collected = _pytest_loaded_conftests(
+            tmp_path,
+            norecursedirs=None,
+            conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT],
         )
-        test_modules = (
-            "loremaster/tests/test_store_lease.py",
-            "skills/lore-deploy/tests/test_port_probe.py",
-            *_CONFTEST_CHAIN_NESTED_TEST_MODULES,
-        )
-        for relative in test_modules:
-            (root / relative).parent.mkdir(parents=True, exist_ok=True)
-            (root / relative).write_text("def test_placeholder():\n    assert True\n", encoding="utf-8")
-        for path, _shape in _EVERY_CONFTEST_PLACEMENT:
-            (root / path).parent.mkdir(parents=True, exist_ok=True)
-            (root / path).write_text(_RECORDING_CONFTEST_BODY, encoding="utf-8")
-        loaded_record = tmp_path / "loaded.txt"
-        loaded_record.write_text("", encoding="utf-8")
-        environment = {
-            key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")
-        }
-        environment |= {
-            "LORE_566_ORACLE_ROOT": str(root),
-            "LORE_566_ORACLE_LOADED": str(loaded_record),
-        }
-        completed = subprocess.run(
-            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert completed.returncode == 0, (
-            f"the oracle's pytest run failed, so it measured nothing:\n{completed.stdout}\n"
-            f"{completed.stderr}"
-        )
-        collected = {line.split("::", 1)[0] for line in completed.stdout.splitlines() if "::" in line}
-        assert collected == set(test_modules), (
+        assert collected == set(_CONFTEST_CHAIN_TEST_MODULES), (
             f"positive control: every chain directory must be a live collection target, else a "
             f"conftest could be unloaded for a fixture reason; collected {sorted(collected)}"
         )
-        loaded = set(loaded_record.read_text(encoding="utf-8").split())
         expected = {path for path, _shape in _CONFTESTS_PYTEST_LOADS}
         assert loaded == expected, (
             f"pytest {pytest.__version__} loaded {sorted(loaded)} for testpaths "
@@ -2729,7 +2775,7 @@ class TestTheCollectorKeyAgreesWithTheExecutionVerdict:
     def test_the_memo_key_and_the_verdict_give_one_answer_per_placement(
         self, tmp_path: Path, path: str, shape: str
     ) -> None:
-        repository = _conftest_chain_repository(tmp_path, tracked_conftests=())
+        repository = _conftest_chain_repository(tmp_path, tracked_conftests=(), pytest_ini_extra=None)
         testpaths = gg.pytest_testpaths(repository.root)
         tracked = gg.tracked_python_files(repository.root)
         assert path not in tracked, f"precondition: {path} starts absent"
@@ -2760,6 +2806,222 @@ class TestTheCollectorKeyAgreesWithTheExecutionVerdict:
             f"verdict {'covered' if verdict_covers_it else 'did NOT cover'} it. One rule, two "
             f"answers: a key that misses a loaded conftest serves a stale healthy verdict; a "
             f"verdict that misses it reports honest ground as ungated."
+        )
+
+
+#: #571: a configured ``norecursedirs`` REPLACES pytest's default list; it is never a union with
+#: it. Each case is (the configured value, the placements pytest then does NOT load among those
+#: UNDER a testpath). Every other placement of :data:`_EVERY_CONFTEST_PLACEMENT` under a
+#: testpath IS loaded, the `build`/`.hidden`/`dist` rows included, because the defaults that
+#: pruned them are no longer in force. Placements outside the testpaths keep their default
+#: verdict: the ancestor chain is never pruned, and a non-ancestor is never loaded.
+#: The expectations are MEASURED by
+#: :meth:`TestAConfiguredNorecursedirsReplacesTheDefaults.test_pytest_loads_what_the_case_table_says`.
+_CONFIGURED_NORECURSEDIRS_CASES: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = (
+    # Kills "union with the defaults" (build/.hidden stay pruned), "ignore the ini" (store
+    # stays loaded), and leaf-only pruning (store/lease and store/dist: the leaf is not `store`).
+    (
+        ("store",),
+        frozenset(
+            {
+                "loremaster/tests/store/conftest.py",
+                "loremaster/tests/store/lease/conftest.py",
+                "loremaster/tests/store/dist/conftest.py",
+            }
+        ),
+    ),
+    # The pattern matches each testpath's OWN last component. pytest prunes recursion BELOW a
+    # testpath, never the testpath or its parents (measured, r2b and the memo pin above), so
+    # nothing under either testpath is pruned. Kills a build that also tests the testpath's
+    # own components against the patterns (#571 W5).
+    (("tests",), frozenset()),
+)
+
+#: The placements of :data:`_EVERY_CONFTEST_PLACEMENT` that lie strictly under a testpath:
+#: the only ones a configured ``norecursedirs`` can move.
+_PLACEMENTS_UNDER_A_TESTPATH: frozenset[str] = frozenset(
+    path
+    for path, _shape in _EVERY_CONFTEST_PLACEMENT
+    if any(PurePosixPath(path).parent.is_relative_to(testpath) for testpath in _CONFTEST_CHAIN_TESTPATHS)
+)
+
+
+def _expected_loads_under_configured_norecursedirs(not_loaded_under_testpaths: frozenset[str]) -> set[str]:
+    """The conftests pytest loads when ``norecursedirs`` is configured: every ancestor-chain
+    row of the default LOADS table, plus every placement under a testpath except the pruned."""
+    default_loads = {path for path, _shape in _CONFTESTS_PYTEST_LOADS}
+    return (default_loads - _PLACEMENTS_UNDER_A_TESTPATH) | (
+        _PLACEMENTS_UNDER_A_TESTPATH - not_loaded_under_testpaths
+    )
+
+
+class TestAConfiguredNorecursedirsReplacesTheDefaults:
+    """#571 (REPORT-audit-566-gg-c3 F4): the #569 rule reads ``norecursedirs`` from the same ini
+    pytest reads, falls back to pytest's default only when it is unset, and prunes every
+    directory between the testpath and the conftest.
+
+    Every #569 row ran under the DEFAULT list, so a build that ignores the ini, or takes the
+    union of the ini and the defaults, passed them all. Here each case configures the list,
+    the oracle measures what the installed pytest loads, and both of the guard's answers (the
+    EXECUTION verdict for a tracked conftest, the memo key for an untracked one) must match it
+    for every placement.
+    """
+
+    @pytest.mark.parametrize(
+        ("norecursedirs", "not_loaded"),
+        _CONFIGURED_NORECURSEDIRS_CASES,
+        ids=[",".join(value) for value, _not_loaded in _CONFIGURED_NORECURSEDIRS_CASES],
+    )
+    def test_pytest_loads_what_the_case_table_says(
+        self, tmp_path: Path, norecursedirs: tuple[str, ...], not_loaded: frozenset[str]
+    ) -> None:
+        assert not_loaded <= _PLACEMENTS_UNDER_A_TESTPATH, "the case names a placement it does not plant"
+        loaded, _collected = _pytest_loaded_conftests(
+            tmp_path,
+            norecursedirs=norecursedirs,
+            conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT],
+        )
+        expected = _expected_loads_under_configured_norecursedirs(not_loaded)
+        assert loaded == expected, (
+            f"with norecursedirs = {list(norecursedirs)!r}, pytest {pytest.__version__} loaded "
+            f"{sorted(loaded)}; the case table says {sorted(expected)}. Loaded but not expected: "
+            f"{sorted(loaded - expected)}. Expected but not loaded: {sorted(expected - loaded)}. "
+            f"Fix the case table to match pytest, then the guard."
+        )
+
+    @pytest.mark.parametrize(
+        ("norecursedirs", "not_loaded"),
+        _CONFIGURED_NORECURSEDIRS_CASES,
+        ids=[",".join(value) for value, _not_loaded in _CONFIGURED_NORECURSEDIRS_CASES],
+    )
+    def test_the_execution_verdict_follows_the_configured_list(
+        self, tmp_path: Path, norecursedirs: tuple[str, ...], not_loaded: frozenset[str]
+    ) -> None:
+        repository = _conftest_chain_repository(
+            tmp_path,
+            tracked_conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT],
+            pytest_ini_extra={"norecursedirs": list(norecursedirs)},
+        )
+        verdicts = assert_every_tracked_file_is_accounted_for(repository.root, exemptions=())
+        expected = _expected_loads_under_configured_norecursedirs(not_loaded)
+        wrong = {
+            path: fates_of(verdicts, path)[gg.GateAxis.EXECUTION].name
+            for path, _shape in _EVERY_CONFTEST_PLACEMENT
+            if (fates_of(verdicts, path)[gg.GateAxis.EXECUTION] is gg.Fate.COVERED) != (path in expected)
+        }
+        assert not wrong, (
+            f"with norecursedirs = {list(norecursedirs)!r} configured, these conftests got the wrong "
+            f"EXECUTION fate (path: fate given): {wrong}. pytest loads exactly {sorted(expected)}. "
+            f"A configured list REPLACES the defaults (never a union, never ignored), and every "
+            f"directory between the testpath and the conftest is tested, not only the leaf."
+        )
+
+    @pytest.mark.parametrize(
+        ("norecursedirs", "not_loaded"),
+        _CONFIGURED_NORECURSEDIRS_CASES,
+        ids=[",".join(value) for value, _not_loaded in _CONFIGURED_NORECURSEDIRS_CASES],
+    )
+    def test_the_memo_key_follows_the_configured_list(
+        self, tmp_path: Path, norecursedirs: tuple[str, ...], not_loaded: frozenset[str]
+    ) -> None:
+        repository = _conftest_chain_repository(
+            tmp_path, tracked_conftests=(), pytest_ini_extra={"norecursedirs": list(norecursedirs)}
+        )
+        testpaths = gg.pytest_testpaths(repository.root)
+        tracked = gg.tracked_python_files(repository.root)
+        expected = _expected_loads_under_configured_norecursedirs(not_loaded)
+        disagreements: dict[str, str] = {}
+        for path, _shape in _EVERY_CONFTEST_PLACEMENT:
+            assert path not in tracked, f"precondition: {path} starts absent"
+            before = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+            conftest = repository.root / path
+            conftest.parent.mkdir(parents=True, exist_ok=True)
+            conftest.write_text(
+                "def pytest_ignore_collect(collection_path, config):\n    return True\n", encoding="utf-8"
+            )
+            key_sees_it = gg._collector_input_fingerprint(repository.root, testpaths, tracked) != before
+            conftest.unlink()
+            if key_sees_it != (path in expected):
+                disagreements[path] = "key moved" if key_sees_it else "key did NOT move"
+        assert not disagreements, (
+            f"with norecursedirs = {list(norecursedirs)!r} configured, the memo key disagrees with "
+            f"pytest for these untracked conftests: {disagreements}. pytest loads exactly "
+            f"{sorted(expected)}; a key blind to a loaded silencer serves a stale healthy verdict."
+        )
+
+
+#: #570: tracked conftests under a testpath in a directory pytest skips by a mechanism OTHER
+#: than ``norecursedirs``, each with the planting that makes pytest skip it.
+_KNOWN_BOUND_570_COLLECT_IGNORED = "loremaster/tests/vendored/conftest.py"
+_KNOWN_BOUND_570_VIRTUALENV = "loremaster/tests/fixture_env/conftest.py"
+#: ``collect_ignore`` is declared by the PARENT conftest, as pytest requires.
+_KNOWN_BOUND_570_PARENT = "loremaster/tests/conftest.py"
+_KNOWN_BOUND_570_COLLECT_IGNORE_SOURCE = '\ncollect_ignore = ["vendored"]\n'
+#: pytest's ``_in_venv`` treats a directory holding ``pyvenv.cfg`` as a virtualenv.
+_KNOWN_BOUND_570_PYVENV_CFG = "loremaster/tests/fixture_env/pyvenv.cfg"
+_KNOWN_BOUND_570_MESSAGE = (
+    "this is a KNOWN BOUND (#570) — if you closed it deliberately, delete this pin and say so."
+)
+
+
+class TestAConftestPytestSkipsByIgnoreOrVirtualenvIsAKnownBound:
+    """#570 (REPORT-audit-566-gg-c3 F2), PINNED, NOT CLOSED: a tracked ``conftest.py`` under a
+    testpath, in a directory pytest skips through ``collect_ignore`` (declared in a parent
+    conftest) or because it holds ``pyvenv.cfg`` (a virtualenv), reads execution-COVERED,
+    although pytest never loads it. The guard's conftest rule models ``norecursedirs`` only.
+    ``collect_ignore`` is arbitrary conftest code, so no predicate can close that leg; the
+    virtualenv leg is a stdlib file check and is closable, which is an open operator fork.
+
+    The pin asserts the miss EXISTS, so the bound is met deliberately: it goes RED the day
+    someone closes it. A second leg proves the bound is real, measuring with the installed
+    pytest that it does NOT load either conftest, so the pin also goes red if pytest's skip
+    rules change and the "miss" stops being one.
+
+    Re-open trigger: a tracked conftest appears under an ignored or virtualenv directory in
+    this repository (or the operator rules to close the virtualenv leg).
+    """
+
+    def test_pytest_does_not_load_either_conftest(self, tmp_path: Path) -> None:
+        loaded, _collected = _pytest_loaded_conftests(
+            tmp_path,
+            norecursedirs=None,
+            conftests=[
+                _KNOWN_BOUND_570_PARENT,
+                _KNOWN_BOUND_570_COLLECT_IGNORED,
+                _KNOWN_BOUND_570_VIRTUALENV,
+            ],
+            conftest_appendix={_KNOWN_BOUND_570_PARENT: _KNOWN_BOUND_570_COLLECT_IGNORE_SOURCE},
+            plain_files=[_KNOWN_BOUND_570_PYVENV_CFG],
+        )
+        # Positive control: the parent conftest carrying `collect_ignore` really ran.
+        assert _KNOWN_BOUND_570_PARENT in loaded, f"the parent conftest never loaded: {sorted(loaded)}"
+        loaded_bound = loaded & {_KNOWN_BOUND_570_COLLECT_IGNORED, _KNOWN_BOUND_570_VIRTUALENV}
+        assert not loaded_bound, (
+            f"pytest {pytest.__version__} now LOADS {sorted(loaded_bound)}, so the guard's COVERED "
+            f"verdict on it is no longer a miss and #570 no longer describes pytest. Re-measure, "
+            f"then update or delete this pin and the bound."
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [_KNOWN_BOUND_570_COLLECT_IGNORED, _KNOWN_BOUND_570_VIRTUALENV],
+        ids=["collect_ignore", "virtualenv"],
+    )
+    def test_the_guard_still_reads_it_covered(self, tmp_path: Path, path: str) -> None:
+        repository = _conftest_chain_repository(
+            tmp_path,
+            tracked_conftests=[_KNOWN_BOUND_570_COLLECT_IGNORED, _KNOWN_BOUND_570_VIRTUALENV],
+            pytest_ini_extra=None,
+        )
+        repository.add_python_file(
+            _KNOWN_BOUND_570_PARENT, body=_TEST_BODY + _KNOWN_BOUND_570_COLLECT_IGNORE_SOURCE
+        )
+        (repository.root / _KNOWN_BOUND_570_PYVENV_CFG).write_text("home = /usr/bin\n", encoding="utf-8")
+        repository.stage()
+        verdicts = assert_every_tracked_file_is_accounted_for(repository.root, exemptions=())
+        fate = fates_of(verdicts, path)[gg.GateAxis.EXECUTION]
+        assert fate is gg.Fate.COVERED, (
+            f"{path} now reads {fate.name}, though pytest never loads it: {_KNOWN_BOUND_570_MESSAGE}"
         )
 
 
