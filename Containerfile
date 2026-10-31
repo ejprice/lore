@@ -201,8 +201,8 @@ CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 #                     under the host snapshot root is absent, empty, or not a
 #                     directory (SnapshotLayout.is_materialized, the predicate
 #                     the server's boot guard uses), or the config fails to
-#                     read. It checks before any teardown, so a refused recreate
-#                     leaves the running container untouched. The refusal names
+#                     read. It checks before any teardown on either path, so a
+#                     refused start leaves any existing container untouched. The refusal names
 #                     each failing tier + dir and a paste-ready cold-index
 #                     command run with lore-deploy's own loremaster interpreter
 #                     (`<interpreter> -m loremaster.index --config <abs lore.yaml>`;

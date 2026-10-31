@@ -24,8 +24,8 @@ step needs manual intervention.
   declared static tier with `SnapshotLayout.is_materialized` (the same predicate the
   server's boot guard uses) over the HOST snapshot root, and **refuses to launch** if
   any tier's dir is absent, empty, or not a directory, or if the config fails to
-  read. The check runs before any teardown on the recreate path (step 1a), so a
-  refused recreate leaves the running container untouched. The refusal names each
+  read. The check runs before any teardown on both paths (steps 1a and 2), so a
+  refused start leaves any existing container (running or exited) untouched. The refusal names each
   failing tier and its dir, plus a paste-ready remedy:
   `<interpreter> -m loremaster.index --config <abs lore.yaml>`, where
   `<interpreter>` is the one lore-deploy itself runs loremaster with
@@ -129,7 +129,9 @@ step needs manual intervention.
    step 5). `start` gates only on the store being **reachable** — it never
    inspects collection/dim state (the server owns schema + dim, including the
    rebuild-on-fingerprint-change).
-3. **Launch the container** (see the run invocation below). On startup the
+3. **Launch the container** (see the run invocation below). An existing EXITED
+   `lore-<slug>` is removed only now, after every pre-flight has passed; a launch
+   failure exits `_EXIT_ERROR` with the error's own text. On startup the
    server runs the **delta-reconcile**: walk included roots → mtime+size
    fast-path → re-index only the changed delta, purge deletions. No cold
    rebuild. This delta-reconcile runs BEFORE uvicorn binds the port, which is

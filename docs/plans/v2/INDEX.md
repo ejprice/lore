@@ -588,8 +588,8 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   2026-07-22 hand-rolled container also had a redundant `/source` bind, and its
   recreate no longer needs a hand mount. `start` REFUSES to launch when ANY declared static tier's
   dir under the host snapshot root is absent, empty, or not a directory (`SnapshotLayout.is_materialized`,
-  the boot guard's own predicate), or the config fails to read. It checks before any teardown, so a
-  refused recreate leaves the running container untouched. The refusal names each failing tier and dir
+  the boot guard's own predicate), or the config fails to read. It checks before any teardown on either path, so a
+  refused start leaves any existing container (running or exited) untouched. The refusal names each failing tier and dir
   and a paste-ready remedy run with lore-deploy's own loremaster interpreter
   (`<interpreter> -m loremaster.index --config <abs lore.yaml>`, never bare `python`). A relaunch that
   fails after teardown exits with the error's text, never a traceback. Before #165 `start` skipped
