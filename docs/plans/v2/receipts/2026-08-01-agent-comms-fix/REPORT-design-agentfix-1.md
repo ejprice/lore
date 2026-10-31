@@ -1,3 +1,5 @@
+> **PARTLY SUPERSEDED (operator, 2026-10-30).** §A1's acceptance of the `Agent` grant leaned on *"the subagent system prompt forbids re-delegating the assignment"*. That premise is gone: the operator replaced the no-spawn line in all seven definitions (`contract-adversary`, `tdd-contract`, `tdd-light-contract`, `tdd-stub`, `tdd-implementer`, `tdd-refactorer`, `package-scout`) with *"You may spawn subagents of any type"*, so brief-base §3's Haiku fan-out reaches them. Nested spawning is now operator-granted policy, not an accepted side effect, so §A1's re-open trigger (*first harmful nested spawn*) no longer governs it. The `tools:` deletion and every other ruling here stand. Pre-change copies: `~/.claude/agents/*.md.bak-2026-10-30`.
+
 # REPORT-design-agentfix-1 — ruling on the agent-comms fix (A1–A5)
 
 brief-base v9 read

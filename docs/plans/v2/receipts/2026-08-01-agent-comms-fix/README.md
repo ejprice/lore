@@ -1,3 +1,5 @@
+> **NOTE (operator, 2026-10-30).** The copies in `agent-definitions-after-fix/` carry the 2026-08-01 line *"You do not spawn subagents"*. The live definitions no longer do: they now allow spawning subagents of any type. See the header of `REPORT-design-agentfix-1.md`.
+
 # 2026-08-01 — agent comms fix: the four measurement probes (findings #292 / #294)
 
 Receipts for the session that measured **why agents cannot reach the lore MCP tools**, and
