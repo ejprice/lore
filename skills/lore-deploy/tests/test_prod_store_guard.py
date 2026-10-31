@@ -15,7 +15,13 @@ does (operator-approved run-wide guard, 2026-10-31, packet #165):
 * connections to any other port — the TEST store's :18000 included — behave exactly as
   they would with no guard;
 * the guard is live for tests collected from BOTH ``scripts/`` and ``tests/``, and in
-  every xdist worker (lore's runs use ``-n 8``).
+  every xdist worker (lore's runs use ``-n 8``);
+* EVERY attempt fails the report of the node in whose PHASE it happened — fixture setup and
+  teardown at every scope (function, class, module, session) and module import (collection)
+  — and it does so regardless of a later ``pytest.skip`` or an ``xfail`` mark (lead ruling,
+  ``docs/plans/v2/receipts/2026-10-31-165/RULING-guard-forks.md`` §Addendum). A guard that
+  only watches the test function's own window drops, or mis-charges, an attempt made by a
+  shared fixture — exactly the T8 shape (a shared fixture defaulting to the production URL).
 
 HOW THIS IS EXERCISED WITHOUT EVER DIALLING PRODUCTION (load-bearing, read before editing)
 ------------------------------------------------------------------------------------
@@ -248,6 +254,227 @@ BENIGN_TESTS = (
     "test_benign_test_store_raw_socket_connects",
 )
 ALL_INNER_TESTS = frozenset((*PROD_DOOR_TESTS, NEIGHBOUR_TEST, *BENIGN_TESTS))
+INNER_DOOR_MODULES = ("test_inner_prod_doors.py", "test_inner_benign.py")
+
+# --- phase doors: attempts made OUTSIDE the test function's own call ---------------------
+# Every attempt here is SWALLOWED, so only a recorder that charges the right report can fail
+# the right node. Each module is run in the order of PHASE_MODULES, in ONE session, so the
+# "next node" after each attempt is a known innocent test.
+_INNER_PHASE_PRELUDE = _INNER_PRELUDE + textwrap.dedent(
+    """
+
+    def _swallowed_attempt():
+        try:
+            socket.create_connection(("127.0.0.1", TARGET_PORT), timeout=2).close()
+        except BaseException:
+            pass
+    """
+)
+
+# Collection: the attempt happens while the module is IMPORTED, before any test runs.
+_INNER_PHASE_IMPORT = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    f"""
+
+    # The bootstrap already refuses to exec pytest un-isolated; re-check BEFORE the import-time
+    # attempt, because the prelude's isolation fixture only runs after collection.
+    if os.readlink("/proc/self/ns/net") == os.environ["{ENV_HOST_NETNS}"]:
+        pytest.exit("inner session is NOT network-isolated", returncode={NOT_ISOLATED_EXIT})
+    _swallowed_attempt()
+
+
+    def test_import_door_module_test():
+        assert TARGET_PORT > 0
+    """
+)
+
+# Collection, then a module-level SKIP: the common "probe the store at import, skip the module
+# when it is unreachable" idiom. Under a guard the refusal is what makes it unreachable. A
+# transient stub serves the probe so the module does NOT skip with no guard (the control).
+_INNER_PHASE_IMPORT_SKIP = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    f"""
+
+    if os.readlink("/proc/self/ns/net") == os.environ["{ENV_HOST_NETNS}"]:
+        pytest.exit("inner session is NOT network-isolated", returncode={NOT_ISOLATED_EXIT})
+    _import_stub = _StubServer(("127.0.0.1", TARGET_PORT), _StubHandler)
+    threading.Thread(target=_import_stub.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(("127.0.0.1", TARGET_PORT), timeout=2):
+            pass
+    except OSError:
+        pytest.skip("store unreachable", allow_module_level=True)
+    finally:
+        _import_stub.shutdown()
+        _import_stub.server_close()
+
+
+    def test_import_skip_door_module_test():
+        assert TARGET_PORT > 0
+    """
+)
+
+# Module-scoped fixture SETUP: runs inside the setup phase of its FIRST user, which is not
+# the module's first test (so "charge the module's first test" is a wrong answer).
+_INNER_PHASE_MODULE_SETUP = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    """
+
+    @pytest.fixture(scope="module")
+    def module_fixture_that_dials():
+        _swallowed_attempt()
+        return TARGET_PORT
+
+
+    def test_phase_innocent_first():
+        # The first test the session RUNS: an import-time attempt deferred to "the next
+        # setup" would land here.
+        assert TARGET_PORT > 0
+
+
+    def test_module_fixture_first_user(module_fixture_that_dials):
+        assert module_fixture_that_dials > 0
+
+
+    def test_module_fixture_second_user(module_fixture_that_dials):
+        # Same fixture, cached: no attempt in this test's phases.
+        assert module_fixture_that_dials > 0
+    """
+)
+
+# Class-scoped fixture SETUP.
+_INNER_PHASE_CLASS_SETUP = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    """
+
+    @pytest.fixture(scope="class")
+    def class_fixture_that_dials():
+        _swallowed_attempt()
+        return TARGET_PORT
+
+
+    class TestClassScopedFixture:
+        def test_class_fixture_first_user(self, class_fixture_that_dials):
+            assert class_fixture_that_dials > 0
+
+        def test_class_fixture_second_user(self, class_fixture_that_dials):
+            assert class_fixture_that_dials > 0
+    """
+)
+
+# Module-scoped fixture TEARDOWN: runs inside the teardown phase of the module's LAST test.
+_INNER_PHASE_MODULE_TEARDOWN = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    """
+
+    @pytest.fixture(scope="module")
+    def module_fixture_that_dials_on_teardown():
+        yield TARGET_PORT
+        _swallowed_attempt()
+
+
+    def test_module_teardown_fixture_user(module_fixture_that_dials_on_teardown):
+        assert module_fixture_that_dials_on_teardown > 0
+    """
+)
+
+# Skip and xfail. The skip door is the realistic one: a shared fixture probes the store and
+# SKIPS when it is unreachable — and the guard's own refusal is what makes it unreachable.
+_INNER_PHASE_SKIP_XFAIL = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    """
+
+    @pytest.fixture(scope="module")
+    def store_or_skip():
+        try:
+            with socket.create_connection(("127.0.0.1", TARGET_PORT), timeout=2):
+                pass
+        except OSError:
+            pytest.skip("store unreachable")
+        return TARGET_PORT
+
+
+    def test_innocent_after_module_teardown():
+        # The first test after the previous module's teardown attempt.
+        assert TARGET_PORT > 0
+
+
+    def test_skip_fixture_first_user(store_or_skip):
+        assert store_or_skip > 0
+
+
+    def test_skip_fixture_second_user(store_or_skip):
+        # Re-raises the CACHED skip under a guard: no attempt in this test's phases.
+        assert store_or_skip > 0
+
+
+    @pytest.mark.xfail(reason="an xfail mark must not absorb a production-store attempt")
+    def test_xfail_marked_attempt():
+        # Not swallowed: under a guard the refusal raises, and the xfail mark would absorb it.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            sock.connect(("127.0.0.1", TARGET_PORT))
+    """
+)
+
+# Session-scoped fixture TEARDOWN: runs inside the teardown phase of the session's LAST test.
+_INNER_PHASE_SESSION_TEARDOWN = _INNER_PHASE_PRELUDE + textwrap.dedent(
+    """
+
+    @pytest.fixture(scope="session")
+    def session_fixture_that_dials_on_teardown():
+        yield TARGET_PORT
+        _swallowed_attempt()
+
+
+    def test_session_teardown_fixture_user(session_fixture_that_dials_on_teardown):
+        assert session_fixture_that_dials_on_teardown > 0
+    """
+)
+
+# Run order (command-line order) — load-bearing: each module's first test is the innocent
+# "next node" after the previous module's last attempt, and the session-teardown user is last.
+PHASE_MODULES: dict[str, str] = {
+    "test_inner_phase_import.py": _INNER_PHASE_IMPORT,
+    "test_inner_phase_import_skip.py": _INNER_PHASE_IMPORT_SKIP,
+    "test_inner_phase_module_setup.py": _INNER_PHASE_MODULE_SETUP,
+    "test_inner_phase_class_setup.py": _INNER_PHASE_CLASS_SETUP,
+    "test_inner_phase_module_teardown.py": _INNER_PHASE_MODULE_TEARDOWN,
+    "test_inner_phase_skip_xfail.py": _INNER_PHASE_SKIP_XFAIL,
+    "test_inner_phase_session_teardown.py": _INNER_PHASE_SESSION_TEARDOWN,
+}
+PHASE_TREE = "tests"
+# junit names a COLLECTION failure after the module's dotted path (``mangle_test_address``
+# in ``_pytest.junitxml``, pytest 9.0.3, read 2026-10-31): nodeid ``skills/lore-deploy/tests/
+# test_inner_phase_import.py`` -> testcase name ``skills.lore-deploy.tests.test_inner_phase_import``.
+IMPORT_COLLECT_CASE = f"skills.lore-deploy.{PHASE_TREE}.test_inner_phase_import"
+IMPORT_MODULE_TEST = "test_import_door_module_test"
+IMPORT_SKIP_COLLECT_CASE = f"skills.lore-deploy.{PHASE_TREE}.test_inner_phase_import_skip"
+IMPORT_SKIP_MODULE_TEST = "test_import_skip_door_module_test"
+
+# Each charged node -> the door whose attempt it must carry.
+PHASE_CHARGED: dict[str, str] = {
+    "test_module_fixture_first_user": "module-scoped fixture setup",
+    "test_class_fixture_first_user": "class-scoped fixture setup",
+    "test_module_teardown_fixture_user": "module-scoped fixture teardown",
+    "test_session_teardown_fixture_user": "session-scoped fixture teardown",
+    IMPORT_COLLECT_CASE: "module import (collection)",
+    IMPORT_SKIP_COLLECT_CASE: "module import followed by a module-level skip",
+    "test_skip_fixture_first_user": "attempt followed by pytest.skip",
+    "test_xfail_marked_attempt": "attempt in an xfail-marked test",
+}
+# Every node NOT charged, with the outcome it has under a correct guard.
+PHASE_UNCHARGED_OUTCOME: dict[str, str] = {
+    IMPORT_MODULE_TEST: "passed",  # absent when its module's collection failed
+    IMPORT_SKIP_MODULE_TEST: "passed",  # absent when its module's collection failed or skipped
+    "test_phase_innocent_first": "passed",
+    "test_module_fixture_second_user": "passed",
+    "test_class_fixture_second_user": "passed",
+    "test_innocent_after_module_teardown": "passed",
+    "test_skip_fixture_second_user": "skipped",  # the cached skip, re-raised without an attempt
+}
+PHASE_COLLECT_CASES = frozenset({IMPORT_COLLECT_CASE, IMPORT_SKIP_COLLECT_CASE})
+PHASE_TESTS = frozenset(
+    {*(name for name in PHASE_CHARGED if name not in PHASE_COLLECT_CASES), *PHASE_UNCHARGED_OUTCOME}
+)
+# What a guarded run must report whatever the guard does; the import modules' own tests and
+# their collection cases appear depending on whether collection failed (or skipped).
+PHASE_ALWAYS_REPORTED = PHASE_TESTS - {IMPORT_MODULE_TEST, IMPORT_SKIP_MODULE_TEST}
+PHASE_MAY_REPORT = PHASE_TESTS | PHASE_COLLECT_CASES
 
 
 @dataclass(frozen=True)
@@ -301,6 +528,8 @@ def _mirror_repo(destination: Path) -> Path:
         tree_dir = mirror / "skills/lore-deploy" / tree
         (tree_dir / "test_inner_prod_doors.py").write_text(_INNER_PROD_DOORS, encoding="utf-8")
         (tree_dir / "test_inner_benign.py").write_text(_INNER_BENIGN, encoding="utf-8")
+        for module_name, source in PHASE_MODULES.items():
+            (tree_dir / module_name).write_text(source, encoding="utf-8")
     return mirror
 
 
@@ -337,9 +566,20 @@ def _parse_junit(path: Path) -> dict[str, InnerCase]:
 
 
 def _run_inner(
-    mirror: Path, tree: str, label: str, extra_args: tuple[str, ...] = (), *, control: bool = False
+    mirror: Path,
+    tree: str,
+    label: str,
+    extra_args: tuple[str, ...] = (),
+    *,
+    control: bool = False,
+    modules: tuple[str, ...] = INNER_DOOR_MODULES,
+    must_report: frozenset[str] = ALL_INNER_TESTS,
+    may_report: frozenset[str] = ALL_INNER_TESTS,
 ) -> InnerRun:
-    """Run the inner modules of ``tree`` in an isolated namespace and read their verdicts."""
+    """Run ``modules`` of ``tree`` in an isolated namespace and read their verdicts.
+
+    The run must report every name in ``must_report`` and nothing outside ``may_report``.
+    """
     tree_dir = mirror / "skills/lore-deploy" / tree
     junit = mirror.parent / f"junit-{label}.xml"
     bootstrap = mirror.parent / "netns_bootstrap.py"
@@ -358,7 +598,7 @@ def _run_inner(
         # No conftest, no ini addopts, no auto-loaded plugins: the run "without the guard".
         args += ["--noconftest", "-o", "addopts=--import-mode=importlib"]
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    args += [str(tree_dir / "test_inner_prod_doors.py"), str(tree_dir / "test_inner_benign.py")]
+    args += [str(tree_dir / module_name) for module_name in modules]
     env.update(
         {
             ENV_PROD_PORT: str(PROD_STORE_PORT),
@@ -389,10 +629,11 @@ def _run_inner(
     assert host_part.removeprefix("host=") != inner_part.removeprefix("inner="), netns_lines[0]
     assert junit.exists(), f"inner session wrote no junit report:\n{output}"
     cases = _parse_junit(junit)
-    assert set(cases) == ALL_INNER_TESTS, (
-        f"inner session did not report exactly the inner tests: "
-        f"missing={sorted(ALL_INNER_TESTS - set(cases))} "
-        f"extra={sorted(set(cases) - ALL_INNER_TESTS)}\n{output}"
+    missing = must_report - set(cases)
+    extra = set(cases) - may_report
+    assert not missing and not extra, (
+        f"inner session did not report the expected inner tests: "
+        f"missing={sorted(missing)} extra={sorted(extra)}\n{output}"
     )
     return InnerRun(cases=cases, returncode=completed.returncode, output=output)
 
@@ -518,3 +759,91 @@ class TestGuardIsLiveInEveryXdistWorker:
     def test_benign_tests_still_pass_under_xdist(self, xdist_run: InnerRun, benign: str) -> None:
         case = xdist_run.case(benign)
         assert case.outcome == "passed", f"[xdist] {benign} outcome={case.outcome}\n{case.text}"
+
+
+# --- phase attribution (lead ruling, RULING-guard-forks.md §Addendum) ----------------------
+# Extra inner args for the phase session: an import-time attempt must fail its module's
+# COLLECTION, and pytest otherwise interrupts the whole session on a collection error, so
+# the later phase modules would never run. The flag changes session continuation only.
+PHASE_RUN_ARGS = ("--continue-on-collection-errors",)
+
+
+@pytest.fixture(scope="module")
+def phase_run(mirror: Path) -> InnerRun:
+    """The phase modules, in PHASE_MODULES order, as ONE serial session under the real conftests."""
+    return _run_inner(
+        mirror,
+        PHASE_TREE,
+        "phase-guarded",
+        PHASE_RUN_ARGS,
+        modules=tuple(PHASE_MODULES),
+        must_report=PHASE_ALWAYS_REPORTED,
+        may_report=PHASE_MAY_REPORT,
+    )
+
+
+@pytest.fixture(scope="module")
+def phase_control_run(mirror: Path) -> InnerRun:
+    """The phase modules with every conftest/plugin disabled: the no-guard baseline."""
+    return _run_inner(
+        mirror,
+        PHASE_TREE,
+        "phase-control",
+        PHASE_RUN_ARGS,
+        control=True,
+        modules=tuple(PHASE_MODULES),
+        must_report=PHASE_TESTS,
+        may_report=PHASE_TESTS,
+    )
+
+
+class TestPhaseControlWithoutAnyGuard:
+    """Positive control for the phase doors: with no guard, every phase inner test PASSES.
+
+    So each phase pin below that goes RED is the guard's charging, never a broken door: the
+    stub answers, the import-time attempt is harmless, the probe fixture does not skip, and the
+    xfail-marked test XPASSes (non-strict, which junit files as a pass).
+    """
+
+    def test_every_phase_inner_test_passes_without_a_guard(self, phase_control_run: InnerRun) -> None:
+        not_passed = {
+            name: case.outcome
+            for name, case in phase_control_run.cases.items()
+            if case.outcome != "passed"
+        }
+        assert not not_passed, (
+            f"phase control (no guard) has non-passing inner tests {not_passed}:\n"
+            f"{phase_control_run.output}"
+        )
+
+
+class TestEveryAttemptFailsTheNodeWhosePhaseMadeIt:
+    """∀ attempts: the report of the node whose phase made the attempt fails and names the port.
+
+    Wrong guards each pin catches (none of them is hypothetical — the first is the reference
+    guard this contract was satisfied against before the ruling):
+    * "clear the record when the TEST's own fixture sets up, check when it tears down":
+      discards attempts made by module/class/session fixtures and at import, and checks before
+      a module/session fixture's teardown has run;
+    * "check pending attempts at the next test's setup": charges module-teardown and
+      import-time attempts to an INNOCENT next test, and drops the session-teardown attempt;
+    * "flip a passed report to failed": misses the skipped report (skip after an attempt) and
+      the xfailed report (the xfail mark absorbs the guard's own refusal).
+    """
+
+    @pytest.mark.parametrize("charged", tuple(PHASE_CHARGED), ids=tuple(PHASE_CHARGED.values()))
+    def test_attempt_fails_the_node_whose_phase_made_it(self, phase_run: InnerRun, charged: str) -> None:
+        _assert_blocked_and_named(phase_run, charged, f"phase: {PHASE_CHARGED[charged]}")
+
+    def test_no_node_whose_phases_made_no_attempt_is_charged(self, phase_run: InnerRun) -> None:
+        # Quantified over every REPORTED node that is not charged: a guard that defers an
+        # attempt to "whoever runs next", or never drains, fails an innocent node here.
+        wrong = {
+            name: case.outcome
+            for name, case in phase_run.cases.items()
+            if name not in PHASE_CHARGED and case.outcome != PHASE_UNCHARGED_OUTCOME[name]
+        }
+        assert not wrong, (
+            f"nodes that made no attempt have the wrong outcome {wrong} "
+            f"(expected {PHASE_UNCHARGED_OUTCOME}):\n{phase_run.output}"
+        )
