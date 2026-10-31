@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -735,11 +736,19 @@ def _require_launchable_snapshot(config_path: Path) -> bool:
         tier_lines = "; ".join(f"{tier} at {tier_dir}" for tier, tier_dir in failing.items())
         # Launching anyway is a boot crash: the server's guard reads the tier as
         # unmaterialised, re-acquires it, and fails boot (#165).
+        # The remedy names the interpreter lore-deploy itself runs loremaster with:
+        # bare `python` need not import loremaster on the operator's shell (A8).
+        # Quoting keeps the pasted command valid for paths with spaces; a plain
+        # path quotes to itself.
+        cold_index_command = (
+            f"{shlex.quote(_loremaster_python())} -m {_COLD_INDEX_MODULE} "
+            f"--config {shlex.quote(str(config_path))}"
+        )
         raise RuntimeError(
             f"refusing to launch: {len(failing)} static tier(s) declared in {config_path} "
             f"are not materialised (absent or empty) under the host snapshot root "
             f"{SNAPSHOT_ROOT}: {tier_lines}. Materialise them with the cold index, then "
-            f"retry: `python -m {_COLD_INDEX_MODULE} --config {config_path}`"
+            f"retry: `{cold_index_command}`"
         )
     return True
 
@@ -994,18 +1003,21 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
             print(f"start: {container_name} is running a stale image — recreating.")
             _run(["podman", "stop", container_name], check=False)
             _run(["podman", "rm", container_name], check=False)
-            # A podman run failure must degrade gracefully (loud on stderr, _EXIT_ERROR)
-            # rather than propagate a raw CalledProcessError up to the dispatcher —
-            # the old container is already gone, so an uncaught raise is the worst case.
+            # EVERY failure _launch_container documents must degrade gracefully (loud on
+            # stderr, _EXIT_ERROR) rather than propagate a raw raise up to the
+            # dispatcher — the old container is already gone, so an uncaught raise is
+            # the worst case (A1). The config or the snapshot can change between the
+            # pre-teardown gate and the launch's own re-check, so the RuntimeError
+            # refusal is reachable here, not only podman's CalledProcessError.
             try:
                 _launch_container(project, config_path, env_file)
-            except subprocess.CalledProcessError as error:
-                # The error's own text carries the failed command (R3), which the
-                # operator needs to reproduce the failure.
+            except (RuntimeError, subprocess.CalledProcessError) as error:
+                # The error's own text is the diagnosis: a CalledProcessError's names the
+                # failed command and its exit status (R3); a refusal's names the failing
+                # tiers and the paste-ready remedy.
                 print(
-                    f"start: relaunch of {container_name} failed "
-                    f"(podman exit {error.returncode}: {error}); the stale container was "
-                    f"already removed — inspect podman logs and retry `start`.",
+                    f"start: relaunch of {container_name} failed ({error}); the stale "
+                    f"container was already removed — fix that cause and retry `start`.",
                     file=sys.stderr,
                 )
                 return _EXIT_ERROR

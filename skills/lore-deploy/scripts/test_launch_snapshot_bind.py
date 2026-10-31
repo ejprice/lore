@@ -28,11 +28,25 @@ Pins (PLAN-165-fix.md §Contract, receipts dir ``docs/plans/v2/receipts/2026-10-
 Config fixtures are DERIVED from the real repo ``lore.yaml`` (roots filtered), and
 ``_read_config_field`` runs for real over them, so the static-root count crosses the
 real host->loremaster seam instead of a stubbed expression string.
+
+Follow-up round (RULING-A1-A8-T1.md, same receipts dir):
+
+- A1: after the recreate's teardown, EVERY failure type ``_launch_container`` documents
+  (``RuntimeError`` from the re-check or the config read, ``CalledProcessError`` from
+  ``podman run``) degrades to ``_EXIT_ERROR`` with the error's own text on stderr.
+- A8: the remedy names the interpreter lore-deploy itself uses for loremaster
+  (``_loremaster_python()``), never bare ``python``; every test here runs under a
+  DISTINCT interpreter spelling so a build that types any other interpreter fails.
+- T1: tiers and dirs are matched as whole tokens / path components, so a tier that is a
+  prefix of another (``surrealdb`` vs ``surrealdb-docs``) can neither false-fail the
+  healthy check nor vacuously satisfy the failing check.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -77,8 +91,51 @@ _REAL_RUN = lore_deploy._run
 
 
 def _cold_index_command(config_path: Path) -> str:
-    """The paste-ready cold-index remedy for THIS config (PLAN §The change 2; amendment r2 item 3)."""
-    return f"python -m loremaster.index --config {config_path}"
+    """The paste-ready cold-index remedy for THIS config (amendment r2 item 3, amended by A8).
+
+    The interpreter is the one lore-deploy itself runs loremaster with, read from
+    production ``_loremaster_python()`` and never retyped: bare ``python`` is not
+    guaranteed to import loremaster on the operator's shell (RULING-A1-A8-T1 A8).
+    """
+    return f"{lore_deploy._loremaster_python()} -m loremaster.index --config {config_path}"
+
+
+@pytest.fixture(autouse=True)
+def _distinct_loremaster_interpreter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Run every test under a loremaster interpreter spelled unlike any default (A8).
+
+    ``LORE_PYTHON`` is production's documented override. It points at a wrapper that
+    execs the interpreter ``_loremaster_python()`` resolved BEFORE this fixture (so a
+    scratch copy's own ``LORE_PYTHON`` still wins), which keeps the real config reader
+    working while making the path differ from ``sys.executable``, from the workspace
+    ``.venv`` default and from bare ``python``. A remedy built from any of those, rather
+    than from ``_loremaster_python()``, then fails the remedy assertions.
+    """
+    resolved_interpreter = lore_deploy._loremaster_python()
+    wrapper = tmp_path / "loremaster-interpreter" / "lore-python"
+    wrapper.parent.mkdir()
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(resolved_interpreter)} "$@"\n', encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("LORE_PYTHON", str(wrapper))
+    return wrapper
+
+
+# Where a named path or tier ENDS in served prose: end of text, whitespace, a list or
+# quote delimiter, or a sentence-final period. ``-``, ``/``, ``.`` + word char and word
+# characters continue the name, so ``<root>/surrealdb`` is not named by
+# ``<root>/surrealdb-docs`` (T1).
+_NAME_END = r"(?=$|[\s;,:'\"`)\]]|\.(?:\s|$))"
+_NAME_START = r"(?<![\w./-])"
+
+
+def _names_path(text: str, path: str) -> bool:
+    """True iff ``text`` names ``path`` as a whole path, never as a prefix of a longer one."""
+    return re.search(f"{_NAME_START}{re.escape(path)}{_NAME_END}", text) is not None
+
+
+def _names_tier(text: str, tier: str) -> bool:
+    """True iff ``text`` names ``tier`` as a standalone token (not inside a path or a longer tier)."""
+    return re.search(f"{_NAME_START}{re.escape(tier)}{_NAME_END}", text) is not None
 
 
 # --- Helpers ----------------------------------------------------------------------
@@ -441,14 +498,18 @@ def _assert_teaches_every_failing_tier(
     tiers = _static_tiers(yaml.safe_load(config_path.read_text(encoding="utf-8")))
     failing_tiers = tiers if failing is None else failing
     layout = SnapshotLayout(host_snapshot)
+    # Whole-token / whole-path matching (T1): a substring test false-fails the healthy
+    # check, and vacuously passes the failing check, whenever one tier prefixes another.
     for tier in failing_tiers:
         tier_dir = str(layout.materialization_dir(tier))
-        assert tier in text and tier_dir in text, (
+        assert _names_tier(text, tier) and _names_path(text, tier_dir), (
             f"refusal must name failing tier {tier} at {tier_dir}; got {text!r}"
         )
     for tier in set(tiers) - set(failing_tiers):
         healthy_dir = str(layout.materialization_dir(tier))
-        assert healthy_dir not in text, f"refusal must not name healthy tier dir {healthy_dir}; got {text!r}"
+        assert not _names_path(text, healthy_dir), (
+            f"refusal must not name healthy tier dir {healthy_dir}; got {text!r}"
+        )
     assert _cold_index_command(config_path) in text, (
         f"refusal must carry the paste-ready remedy `{_cold_index_command(config_path)}`; got {text!r}"
     )
@@ -749,6 +810,201 @@ class TestRecreateLaunchFailureCarriesTheErrorText:
         assert str(launch_error.returncode) in stderr, f"stderr must carry the exit code; got {stderr!r}"
         # The generic hint names the container and "podman exit"; only the failed command names the image.
         assert lore_deploy.IMAGE in stderr, f"stderr must carry the failed command; got {stderr!r}"
+
+
+# --- A1: after teardown, every documented launch failure degrades to _EXIT_ERROR ---------
+
+# The doors through which the REAL ``_launch_container`` fails AFTER the recreate has
+# already stopped and removed the serving container, each with the type
+# ``_launch_container``'s docstring documents for it (RULING-A1-A8-T1 A1, ∀ over types):
+# - the host snapshot is wiped in the window (a concurrent cold-index re-materialise, or
+#   an operator ``rm``): the launch's own precondition re-check raises RuntimeError;
+# - the config turns unreadable in the window (an operator edit): the config read raises
+#   RuntimeError;
+# - ``podman run`` exits non-zero: ``_run(check=True)`` raises CalledProcessError.
+_POST_TEARDOWN_DOORS: dict[str, type[Exception]] = {
+    "snapshot_vanishes": RuntimeError,
+    "config_unreadable": RuntimeError,
+    "podman_run_fails": subprocess.CalledProcessError,
+}
+# podman's "container setup failed" exit, with the stderr shape podman prints.
+PODMAN_SETUP_FAILED_EXIT = 125
+PODMAN_SETUP_FAILED_STDERR = (
+    "Error: crun: cannot open `/home/lore`: Permission denied: OCI permission denied\n"
+)
+
+
+class TestRecreateFailureAfterTeardownDegradesToExitError:
+    """A1: once the stale container is gone, no launch failure may escape verb_start raw.
+
+    The property is pinned over the failure TYPES ``_launch_container`` documents, each
+    forced through the REAL ``_launch_container`` (only podman is recorded), never over
+    the one door that was found first. Each cell first proves the teardown happened and
+    the forced error was really raised, so a green cell cannot come from the failure
+    never firing.
+    """
+
+    @pytest.mark.parametrize("door", sorted(_POST_TEARDOWN_DOORS))
+    def test_post_teardown_launch_failure_returns_exit_error_with_its_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], door: str
+    ) -> None:
+        """Recreate, healthy preconditions, failure forced after ``podman rm``: _EXIT_ERROR + error text."""
+        arrangement = _VerbStartArrangement(
+            monkeypatch, tmp_path, path="recreate", static_root_count=3, snapshot_state="present"
+        )
+        tiers = _static_tiers(yaml.safe_load(arrangement.config_path.read_text(encoding="utf-8")))
+        first_tier_dir = SnapshotLayout(arrangement.host_snapshot).materialization_dir(tiers[0])
+        raised: list[Exception] = []
+
+        def _observed_real_launch(project: Path, config_path: Path, env_file: Path) -> None:
+            # The REAL launch; only observed, so the test can name the error it raised.
+            try:
+                _REAL_LAUNCH_CONTAINER(project, config_path, env_file)
+            except Exception as error:
+                raised.append(error)
+                raise
+
+        monkeypatch.setattr(lore_deploy, "_launch_container", _observed_real_launch)
+        recorded_run = lore_deploy._run
+
+        def _run_opening_the_door(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            result = recorded_run(cmd, **kwargs)
+            if cmd[:2] == ["podman", "rm"] and door == "snapshot_vanishes":
+                shutil.rmtree(first_tier_dir)
+            elif cmd[:2] == ["podman", "rm"] and door == "config_unreadable":
+                document = yaml.safe_load(arrangement.config_path.read_text(encoding="utf-8"))
+                next(root for root in document["roots"] if root.get("watch") == "static")["watch"] = "statc"
+                arrangement.config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+            elif cmd[:2] == ["podman", "run"] and door == "podman_run_fails":
+                raise subprocess.CalledProcessError(
+                    PODMAN_SETUP_FAILED_EXIT, cmd, output="", stderr=PODMAN_SETUP_FAILED_STDERR
+                )
+            return result
+
+        monkeypatch.setattr(lore_deploy, "_run", _run_opening_the_door)
+
+        try:
+            return_code = lore_deploy.verb_start(
+                arrangement.fixture.project, arrangement.fixture.env_file, no_wait=True
+            )
+        except Exception as escaped:
+            pytest.fail(
+                f"{door}: a launch failure after teardown must return _EXIT_ERROR, not raise; "
+                f"raised {escaped!r} after podman calls {arrangement.fixture.run_calls}"
+            )
+
+        # The cell really is post-teardown, and the forced failure really fired.
+        assert arrangement.fixture.stop_calls() and arrangement.fixture.rm_calls(), (
+            f"{door}: the failure must be forced AFTER stop+rm; got {arrangement.fixture.run_calls}"
+        )
+        assert len(raised) == 1 and isinstance(raised[0], _POST_TEARDOWN_DOORS[door]), (
+            f"{door}: the real _launch_container must raise {_POST_TEARDOWN_DOORS[door].__name__}; "
+            f"got {raised}"
+        )
+        assert return_code == lore_deploy._EXIT_ERROR, f"{door}: must return _EXIT_ERROR; got {return_code}"
+        stderr = capsys.readouterr().err
+        assert str(raised[0]) in stderr, (
+            f"{door}: stderr must carry the launch error's own text {str(raised[0])!r}; got {stderr!r}"
+        )
+
+
+# --- A8: the remedy runs as pasted -------------------------------------------------------
+
+# The remedy is the one backticked command in the refusal.
+_BACKTICKED_COMMAND = re.compile(r"`([^`]*\s-m\s[^`]*)`")
+
+
+class TestRefusalRemedyRunsAsPasted:
+    """A8: the refusal's remedy names an interpreter that resolves the cold-index module."""
+
+    def test_remedy_interpreter_is_the_deploy_interpreter_and_resolves_the_cold_index_module(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _distinct_loremaster_interpreter: Path
+    ) -> None:
+        """Parse the pasted command; run ITS interpreter; the cold-index module must resolve there."""
+        act, _, _, config_path = _launch(monkeypatch, tmp_path, static_root_count=3, snapshot_present=False)
+
+        with pytest.raises(RuntimeError) as refusal:
+            act()
+
+        commands = _BACKTICKED_COMMAND.findall(str(refusal.value))
+        assert len(commands) == 1, f"the refusal must carry one paste-ready command; got {commands}"
+        argv = shlex.split(commands[0])
+        # Derived from production, never retyped: the interpreter lore-deploy itself uses.
+        assert argv[0] == lore_deploy._loremaster_python() == str(_distinct_loremaster_interpreter), (
+            f"the remedy must name lore-deploy's loremaster interpreter "
+            f"{lore_deploy._loremaster_python()}; got {argv[0]!r}"
+        )
+        assert argv[1:] == ["-m", "loremaster.index", "--config", str(config_path)], (
+            f"the remedy must cold-index THIS config; got {argv}"
+        )
+        # Runs as pasted: the named interpreter really resolves the module the remedy runs.
+        find_spec_probe = (
+            "import importlib.util, sys; sys.exit(importlib.util.find_spec(sys.argv[1]) is None)"
+        )
+        resolves = subprocess.run(
+            [argv[0], "-c", find_spec_probe, argv[2]],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert resolves.returncode == 0, (
+            f"{argv[0]} cannot resolve {argv[2]}; the pasted remedy would fail: {resolves.stderr[-1000:]}"
+        )
+
+
+# --- T1: a tier that prefixes another cannot misfire the naming checks -------------------
+
+# A realistic prefix pair: the shipped SurrealDB docs tier, and a sibling corpus whose name
+# is its prefix. Both fall back to ``<root>/<tier>`` in production ``SnapshotLayout``.
+PREFIX_TIER = "surrealdb"
+PREFIXED_TIER = "surrealdb-docs"
+
+
+class TestRefusalNamesTiersByWholePathComponent:
+    """T1: with ``surrealdb`` and ``surrealdb-docs`` both static, the refusal names only the failing one."""
+
+    @pytest.mark.parametrize("failing_tier", [PREFIX_TIER, PREFIXED_TIER])
+    def test_prefix_pair_refusal_names_only_the_failing_tier(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failing_tier: str
+    ) -> None:
+        """Either orientation: the healthy tier's dir is not named, the failing one is."""
+        document = _repo_config_document()
+        live = [root for root in document["roots"] if root.get("watch") != "static"]
+        static = [root for root in document["roots"] if root.get("watch") == "static"]
+        assert len(static) >= 2, f"{REPO_CONFIG} must declare two static roots to derive the pair"
+        document["roots"] = [
+            *live,
+            {**static[0], "tier": PREFIXED_TIER},
+            {**static[1], "tier": PREFIX_TIER},
+        ]
+        project = tmp_path / "lore"
+        project.mkdir()
+        config_path = project / "lore.yaml"
+        config_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+        host_snapshot = _make_host_snapshot(tmp_path, [PREFIXED_TIER, PREFIX_TIER])
+        shutil.rmtree(SnapshotLayout(host_snapshot).materialization_dir(failing_tier))
+        layout = SnapshotLayout(host_snapshot)
+        # The pair really is a prefix pair on disk, so the fixture exercises T1.
+        assert str(layout.materialization_dir(PREFIXED_TIER)).startswith(
+            str(layout.materialization_dir(PREFIX_TIER))
+        ), "fixture must place one tier dir as a string prefix of the other"
+        assert [
+            tier
+            for tier in (PREFIXED_TIER, PREFIX_TIER)
+            if not _server_guard_reads_materialised(config_path, host_snapshot, tier)
+        ] == [failing_tier], f"fixture must leave only {failing_tier} unmaterialised for the server guard"
+        monkeypatch.setattr(lore_deploy, "SNAPSHOT_ROOT", host_snapshot)
+        podman_calls = _install_podman_recorder(monkeypatch)
+        env_file = tmp_path / "lore.env"
+        env_file.write_text("", encoding="utf-8")
+
+        with pytest.raises(RuntimeError) as refusal:
+            lore_deploy._launch_container(project, config_path, env_file)
+
+        assert podman_calls == [], f"a refused launch issues no podman command; got {podman_calls}"
+        _assert_teaches_every_failing_tier(
+            str(refusal.value), config_path, host_snapshot, failing=[failing_tier]
+        )
 
 
 # --- Pin 2: the artifact pin ----------------------------------------------------------
