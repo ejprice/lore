@@ -30,9 +30,12 @@ enablement itself** (this packet's one code deliverable beyond cleanup). Authz m
 6. INDEX Log **2026-08-03 · 04b-2 DEPLOY — ROLLBACK RECEIPTS** + **04b-2 DEPLOYED** — the template
    for a production data-migration deploy; and **2026-08-17 packet 07a DEPLOYED** — the
    candidate + production-CONTROL conformance precedent.
-7. Repo `CLAUDE.md` §Deploy + the MEMORY landmines: `lore-lore` runs a HAND-ROLLED `/source` mount
-   (#165/#166) — recreate from the captured `CreateCommand`, **NEVER `lore-deploy start`**; full
-   suites ALONE at `-n 12` (#466).
+7. Repo `CLAUDE.md` §Deploy + the MEMORY landmines + INDEX Watch list (#165 stopgap, 2026-10-31):
+   `lore-deploy start` now emits the correct single snapshot bind (no `/source`) and, before any
+   teardown, refuses when any declared static tier is unmaterialised on the host (absent, empty or
+   not a directory), so it is the recreate path. Still capture the `CreateCommand` first. The
+   #166 bound still holds (an in-container static-tier re-acquire crashes boot), so see the
+   runbook step 2 below. Full suites ALONE at `-n 12` (#466).
 
 ## ENTRY CHECK (relative facts — STOP and surface on any miss)
 - E1. Every dependency's close commit (39, 60, 61a, 61b, 62, 63a, 63b-*, 63c-*, 64-*) is an
@@ -126,8 +129,17 @@ enablement itself** (this packet's one code deliverable beyond cleanup). Authz m
 1. **Fresh backup** of `:18500` → `/backups/lore/lore-prod-<UTC>.surql`; record size, table count,
    EXIT=0 (the 04b-2 receipt shape). 3.2.4 is forward-only — the restore engine must be ≥ it.
 2. **Capture** `podman inspect lore-lore --format '{{.Config.CreateCommand}}'` NOW (never a stale
-   capture); diff it against #165's known-good shape (`--network=host --userns=keep-id --user`,
-   `/workspace:ro`, `/source:ro` ×2, state dir, `--env-file`, `LORE_CONFIG`).
+   capture); diff it against the known-good shape `lore-deploy start` emits since the #165
+   stopgap (2026-10-31): `--network=host --userns=keep-id --user`, `/workspace:ro`, state dir,
+   **ONE** snapshot bind `~/docker/mcp/lore-snapshot:/home/lore/docker/mcp/lore-snapshot:ro`,
+   `--env-file`, `LORE_CONFIG`. **No `/source` bind**: nothing reads it. A capture that still shows
+   a `/source` bind next to the home-path bind is the pre-stopgap hand-rolled container. It boots,
+   but it is stale, so recreate it with `lore-deploy start`. A capture with a `/source` bind and NO
+   home-path bind is the #165 crash shape: STOP.
+   ⚠ KNOWN BOUND (#166, packet 19): a re-acquire of a static tier inside the container cannot
+   succeed (the corpora `source:` paths are unmounted, and the snapshot bind is `:ro`). If this
+   cutover bumps a static tier's version or forces `rebuild_all`, boot still crashes. Re-index
+   on the host first.
 3. **Build** from the clean HEAD (E6): `podman build … --build-arg LORE_VERSION=$(git describe
    --tags --always --dirty)`; the Containerfile runs `uv sync --locked --all-packages`.
 4. **In-image conformance** (#139/#140/#131; provenance gate first) against the CANDIDATE **and**

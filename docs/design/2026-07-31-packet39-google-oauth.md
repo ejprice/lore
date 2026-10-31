@@ -329,6 +329,10 @@ user roster is **operational data, not deploy config**: it changes on operationa
 and revocation must never require a redeploy — especially while **#165 is open**
 (verified `acknowledged`, routed to packet 19) and a recreate re-mounts `/source` and
 re-breaks boot, making "recreate to revoke" actively dangerous.
+(2026-10-31: the #165 stopgap removed the `/source` re-break, so a plain recreate is safe.
+A recreate that coincides with a static-tier version bump or `rebuild_all` still crashes boot
+(#166), so the roster-outside-the-image ruling stands on its other ground: operational data,
+not deploy config.)
 
 Required shape (rider in the same bullet, throughout):
 - **The roster lives outside the repo and outside the image**, bind-mounted READ-ONLY into

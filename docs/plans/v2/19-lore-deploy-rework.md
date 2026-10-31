@@ -14,6 +14,10 @@ the image imports `loremaster.index.cli` + `loremaster.config` today). The clean
 run every loremaster operation IN the container, host needs only podman + the stdlib
 script + the image — also **DISSOLVES #165** (the /source-vs-snapshot three-paths-must-
 agree mount bug: indexer and server sharing one filesystem view removes the class).
+(2026-10-31: superseded by the #165 stopgap. `lore-deploy start` now binds the snapshot at the
+server's own root, `/home/lore/docker/mcp/lore-snapshot:ro`, with no `/source` bind, and refuses
+to launch when any declared static tier is unmaterialised on the host. The class is NOT dissolved: an in-container
+re-acquire still cannot succeed (unmounted corpora, `:ro` snapshot), and that is still 19's to remove.)
 That is an ARCHITECTURE decision plus a build well past this packet's old 0.30 → so 19
 becomes the DESIGN pass and **mints 19b+ build packets, each ≤0.25 with its own
 entry/exit** (the packet-25→26a+ pattern).
@@ -22,6 +26,10 @@ entry/exit** (the packet-25→26a+ pattern).
 /source snapshot-mount mismatch AGAIN, now with THREE static tiers affected. Every new
 static tier widens the blast radius until this design lands; the recurrence is the urgency
 receipt, and #186 resolves with #165's dissolution (cite both in the build destination).
+(2026-10-31: superseded by the #165 stopgap for the mount-mismatch crash. The bind now targets
+the server's own snapshot root, so a plain recreate no longer crash-loops. A static-tier version
+bump or a `rebuild_all` still forces an in-container re-acquire that cannot succeed; that bound
+is #166 and still this packet's.)
 
 ## Scope IN (the design doc answers each; operator rules)
 - **The one-toolchain ruling (#166):** in-container execution for all four shell-outs

@@ -86,8 +86,15 @@ demand_intelligence secrets live at `~/docker/mcp/lore-secrets/demand_intelligen
 
 ## 5. Cold-index vs. start-time reconcile
 
-`setup` cold-indexes via `python -m loremaster.index --config <lore.yaml>` (the
-batch-indexer CLI). `start` relies on the **server's** startup reconcile to bring
-the index current — it does NOT re-run the batch indexer. The server owns the
-startup delta-reconcile (verified: a restart re-indexes only what changed), so
-`start` just launches the container.
+`setup` cold-indexes on the host via
+`<interpreter> -m loremaster.index --config <abs lore.yaml>` (the batch-indexer
+CLI), where `<interpreter>` is `_loremaster_python()`: `$LORE_PYTHON`, else
+`~/PycharmProjects/lore/.venv/bin/python`, else the dispatcher's own interpreter.
+By hand, `uv run python -m loremaster.index --config <abs lore.yaml>` from the
+lore repo root uses the same `.venv`. `start` relies on the **server's** startup
+reconcile to bring the index current — it does NOT re-run the batch indexer. The
+server owns the startup delta-reconcile (verified: a restart re-indexes only what
+changed). Before launching, `start` only checks that every declared static tier
+is materialised on the host (`SnapshotLayout.is_materialized`). If one is not,
+it refuses and prints the cold-index command above as the remedy (see
+lifecycle.md, "Snapshot dir").

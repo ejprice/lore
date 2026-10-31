@@ -9572,7 +9572,12 @@ async def build_app_context(  # noqa: PLR0912, PLR0915 - P8d rewrites this rende
             memory-ledger SQLite path (``<slug>.memory.db``) — NOT a manifest
             path; the manifest itself lives in SurrealDB (``config.surreal.*``).
             Retired at P7 when memory moves onto the unified store too.
-        snapshot_root: Static-tier snapshot root (also the read-file static base).
+        snapshot_root: Static-tier snapshot root, handed to the
+            :class:`~loremaster.index.indexer.Indexer` (static-tier
+            materialisation + its skip guard) and to
+            :func:`~loremaster.index.indexer.graph_roots` (astroid resolution).
+            Not a read base: ``lore_read`` serves from the store
+            (:class:`~loremaster.store_read.StoreReadTool`).
         start_tasks: When ``True``, run the initial sweep and — if
             ``config.watcher.enabled`` — start the watcher + periodic reconcile
             task.

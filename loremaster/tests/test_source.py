@@ -2,11 +2,12 @@
 
 This is the substrate that lets the always-on server serve files for *static*
 tiers (community/enterprise/pip/stdlib) it never carried on its own disk: a
-batch indexer materialises each tier into a host snapshot dir, the server
-bind-mounts that dir ``:ro`` at ``/source``, and a tier→location resolver finds
-files within it (plan AMENDMENT 1 — D7 ``SourceProvider`` seam, D8 snapshot
-serving contract, C4 read-containment algorithm, C5 tier↔location as an ORDERED
-LIST, many-to-one).
+batch indexer materialises each tier into a host snapshot dir, the deployed
+container bind-mounts that dir ``:ro`` at the server's snapshot root
+(``loremaster.server._DEFAULT_SNAPSHOT_ROOT``; not ``/source``, which nothing
+read, #165), and a tier→location resolver finds files within it (plan
+AMENDMENT 1 — D7 ``SourceProvider`` seam, D8 snapshot serving contract, C4
+read-containment algorithm, C5 tier↔location as an ORDERED LIST, many-to-one).
 
 Two units under test:
 

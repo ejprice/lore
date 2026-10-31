@@ -77,7 +77,8 @@ did not happen.
 ## Scope OUT (surface to operator if encountered)
 - The #171 embedding-schema reconciler (11a/11b). The floor calibration (11-i/11-ii). TEI capacity
   (the investigate-472 §5.1 429 storm, ledger if not already filed). #339 (lore-lore not restart-managed),
-  #165/#166 (the hand-rolled `/source` mount), and the quadlet digest pin (#336/#341 → packet 16).
+  #165 (stopgap 2026-10-31) / #166 (in-container static-tier re-acquire bound), and the quadlet
+  digest pin (#336/#341 → packet 16).
 
 ## FINDINGS / TASKS OWNED (IN / bound / fork)
 - **#355**: IN. The log line is deliverable #1. The fix waits on the measured trigger (F-1/F-2).

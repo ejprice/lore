@@ -5,8 +5,11 @@
 # The image bundles every uv-workspace member (lorerunes, lorescribe, loresigil,
 # loremaster) and runs the loremaster MCP server. A project supplies its
 # identity entirely at RUN time: a read-only bind of the project tree at
-# /workspace, an optional read-only snapshot of static tiers at /source,
-# an env-file of secrets, and LORE_CONFIG pointing at the mounted lore.yaml.
+# /workspace, an optional read-only snapshot of static tiers at
+# /home/lore/docker/mcp/lore-snapshot (loremaster.server._DEFAULT_SNAPSHOT_ROOT
+# under HOME=/home/lore, the server's only snapshot root; there has been no
+# /source mount since the #165 stopgap, 2026-10-31), an env-file of secrets,
+# and LORE_CONFIG pointing at the mounted lore.yaml.
 # Never per-project images — see the run invocation at the bottom of this file.
 #
 # Base: python:3.14-slim. The whole dependency stack installs binary-only on
@@ -99,8 +102,9 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 # Run as a non-root, no-login service account. With `podman --userns=keep-id`
 # this UID is remapped to the invoking host user so the :ro bind mounts at
-# /workspace and /source remain readable. The SQLite manifest persists OUTSIDE
-# the container on a host bind (see run invocation) so it survives stop/start.
+# /workspace and /home/lore/docker/mcp/lore-snapshot remain readable. The
+# SQLite manifest persists OUTSIDE the container on a host bind (see run
+# invocation) so it survives stop/start.
 RUN useradd -r -s /bin/false lore
 USER lore
 
@@ -138,9 +142,12 @@ ENV LORE_VERSION=${LORE_VERSION}
 # runs the embedder probe-gate, and serves the FastMCP streamable-http app via
 # uvicorn on config.server host/port/path (the heavy startup — probe-gate /
 # reconcile / watcher — runs once per process, shared across MCP sessions).
-# The batch indexer is a SEPARATE entrypoint — `python -m loremaster.index
-# --config <lore.yaml>` — invoked by the skill's `setup` (cold index) and each
-# `start` (delta-reconcile), independent of this CMD.
+# The batch indexer is a SEPARATE entrypoint — `<interpreter> -m
+# loremaster.index --config <abs lore.yaml>` — run on the HOST by the skill's
+# `setup` (cold index), with the interpreter lore-deploy uses for loremaster.
+# It is also the remedy `start` prints when it refuses an unmaterialised static
+# tier. `start` itself never runs it: the delta-reconcile happens inside this
+# server at boot. Independent of this CMD.
 # ---------------------------------------------------------------------------
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
@@ -164,7 +171,7 @@ CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 #     --network=host \
 #     --userns=keep-id --user $(id -u):$(id -g) -e HOME=/home/lore \
 #     -v <project>:/workspace:ro \
-#     [ -v <snapshot>:/source:ro ]   # only if lore.yaml declares a static root
+#     [ -v <snapshot>:/home/lore/docker/mcp/lore-snapshot:ro ]   # only if lore.yaml declares a static root
 #     -v ~/.local/state/lore:/home/lore/.local/state/lore \
 #     --env-file <secrets.env> \
 #     -e LORE_CONFIG=/workspace/lore.yaml \
@@ -183,11 +190,28 @@ CMD ["/app/.venv/bin/python", "-m", "loremaster.server"]
 #                     the demand_intelligence + lore deploys.
 #   -v <project>:/workspace:ro
 #                     the live project tree, read-only. lore.yaml lives here.
-#   -v <snapshot>:/source:ro
-#                     static-tier snapshot dir (~/docker/mcp/lore-snapshot),
-#                     read-only — only needed when lore.yaml declares static
-#                     roots; omit for a bare single-live-tree project like
-#                     demand_intelligence.
+#   -v <snapshot>:/home/lore/docker/mcp/lore-snapshot:ro
+#                     static-tier snapshot dir (host ~/docker/mcp/lore-snapshot),
+#                     read-only, mounted EXACTLY at $HOME/docker/mcp/lore-snapshot
+#                     (HOME=/home/lore): loremaster.server._DEFAULT_SNAPSHOT_ROOT,
+#                     the server's only snapshot root. Only needed when lore.yaml
+#                     declares static roots; omit for a bare single-live-tree
+#                     project like demand_intelligence. `lore-deploy start`
+#                     REFUSES to launch when ANY declared static tier's dir
+#                     under the host snapshot root is absent, empty, or not a
+#                     directory (SnapshotLayout.is_materialized, the predicate
+#                     the server's boot guard uses), or the config fails to
+#                     read. It checks before any teardown, so a refused recreate
+#                     leaves the running container untouched. The refusal names
+#                     each failing tier + dir and a paste-ready cold-index
+#                     command run with lore-deploy's own loremaster interpreter
+#                     (`<interpreter> -m loremaster.index --config <abs lore.yaml>`;
+#                     never bare `python`). Until 2026-10-31 this bind targeted
+#                     /source, a path nothing read (#165).
+#                     ⚠ KNOWN BOUND (#166, packet 19): an in-container re-acquire
+#                     of a static tier cannot succeed (the corpora `source:`
+#                     paths are not mounted, and this bind is :ro), so a version
+#                     bump or rebuild_all that forces one still crashes boot.
 #   -v ~/.local/state/lore:/home/lore/.local/state/lore
 #                     the SQLite manifest + <slug>.graph.db persist on the HOST so
 #                     they survive stop/start (A1.11). Mounted EXACTLY at

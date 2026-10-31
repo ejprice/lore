@@ -266,7 +266,9 @@ FINISHED, then the four goals in any order):**
 2. **Worktrees (goal 4):** **17** design → **23** overlay build (delta-only, ruled) + #134 (deploy
    against a worktree) + #185/#284 (scratch-copy git isolation). 17 is docs-only and starts NOW.
 3. **DI migration + SQLite retirement (goals 1+2, wave M):** **19** deploy-architecture DESIGN
-   (docs-only, starts NOW; the cutover's hand-rolled `/source` mount is its subject) → **18**
+   (docs-only, starts NOW; the cutover's hand-rolled `/source` mount is its subject — 2026-10-31:
+   superseded by the #165 stopgap; `lore-deploy start` now binds the snapshot at the server's own
+   root and there is no `/source` mount, but 19 still owns #166, the in-container re-acquire bound) → **18**
    ledger-retirement (the SQLite deprecation; independent, code) → **20** migration machinery
    (§8 Q1–Q4 ruled at kickoff, pool 2) → **21** single-node drills → **22** DI migration = v1.0.
 4. **Odoo (goal 3, wave O):** **24** scale certification (read-only measurement over the 53k-chunk
@@ -578,10 +580,24 @@ authorization models stabilize** — hence packet 35 closing wave F and wave S p
   metadata while the Python provenance assertion passes). Worktrees are banned for lore
   work anyway (above), which bounds the exposure; packet 17 dispositions the fix. Until
   then: NEVER scratch-copy from a worktree.
-- ⚠ **lore-lore runs on a HAND-ROLLED /source mount — NOT restart-durable until the
-  packet-19 deploy architecture (#165/#166) lands** (migration lead, 2026-07-22). A
-  recreate before then needs the hand mount reapplied; treat any lore-lore restart as
-  an operator-visible step, not routine.
+- ⚠ **lore-lore snapshot mount — #165 STOPGAP shipped 2026-10-31; #166 still OPEN (packet 19).**
+  `lore-deploy start` now binds the host `~/docker/mcp/lore-snapshot` at
+  `/home/lore/docker/mcp/lore-snapshot:ro`, which is exactly `loremaster.server._DEFAULT_SNAPSHOT_ROOT`
+  under `HOME=/home/lore` and the server's only snapshot root. The old `/source` bind is gone
+  (0 readers since root commit `407d7f7`). A correct container has ONE snapshot bind. The
+  2026-07-22 hand-rolled container also had a redundant `/source` bind, and its
+  recreate no longer needs a hand mount. `start` REFUSES to launch when ANY declared static tier's
+  dir under the host snapshot root is absent, empty, or not a directory (`SnapshotLayout.is_materialized`,
+  the boot guard's own predicate), or the config fails to read. It checks before any teardown, so a
+  refused recreate leaves the running container untouched. The refusal names each failing tier and dir
+  and a paste-ready remedy run with lore-deploy's own loremaster interpreter
+  (`<interpreter> -m loremaster.index --config <abs lore.yaml>`, never bare `python`). A relaunch that
+  fails after teardown exits with the error's text, never a traceback. Before #165 `start` skipped
+  the bind silently, which became a boot crash.
+  **KNOWN BOUND (still open, #166 / packet 19):** an in-container re-acquire of a static tier
+  can never succeed. The corpora `source:` paths are not mounted and the snapshot is `:ro`. So a
+  tier version bump or a `rebuild_all` that forces a re-acquire still crashes boot. Before one,
+  re-index on the host, and treat that lore-lore restart as an operator-visible step.
 - Open research note (no evidence either way in literature/vendor practice): whether
   displaying scores to tool-using LLM consumers helps — our three-model consult remains
   the only direct data (weak-match external validation, element d).

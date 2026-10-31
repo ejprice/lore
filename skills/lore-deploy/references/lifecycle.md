@@ -15,8 +15,27 @@ step needs manual intervention.
   per-file/per-tier index state. **Persists across stop/start** — it lives on
   the host and is bind-mounted into the container.
 - **Snapshot dir (static tiers only):** `~/docker/mcp/lore-snapshot/<tier>/…`,
-  bind-mounted `:ro` at `/source`. A bare single-live-tree project (like
-  demand_intelligence) declares no static roots and needs no `/source` mount.
+  bind-mounted `:ro` at `/home/lore/docker/mcp/lore-snapshot`. With
+  `HOME=/home/lore` that is exactly `loremaster.server._DEFAULT_SNAPSHOT_ROOT`, the
+  server's only snapshot root. There is no `/source` mount: until the #165 stopgap
+  (2026-10-31) `start` bound the snapshot at `/source`, which nothing read. A bare
+  single-live-tree project (like demand_intelligence) declares no static roots and
+  gets no snapshot bind. When static roots ARE declared, `start` checks every
+  declared static tier with `SnapshotLayout.is_materialized` (the same predicate the
+  server's boot guard uses) over the HOST snapshot root, and **refuses to launch** if
+  any tier's dir is absent, empty, or not a directory, or if the config fails to
+  read. The check runs before any teardown on the recreate path (step 1a), so a
+  refused recreate leaves the running container untouched. The refusal names each
+  failing tier and its dir, plus a paste-ready remedy:
+  `<interpreter> -m loremaster.index --config <abs lore.yaml>`, where
+  `<interpreter>` is the one lore-deploy itself runs loremaster with
+  (`_loremaster_python()`: `$LORE_PYTHON`, else `~/PycharmProjects/lore/.venv/bin/python`,
+  else the dispatcher's own interpreter), never bare `python`. Before #165, `start`
+  skipped the bind silently, and the server then crashed at boot.
+  ⚠ **KNOWN BOUND (#166, owned by packet 19):** an in-container re-acquire of a
+  static tier can never succeed. The corpora `source:` paths are not mounted and the
+  snapshot bind is `:ro`. So a tier version bump or a `rebuild_all` that forces a
+  re-acquire still crashes boot.
 - **Secrets:** delivered via `--env-file`. The default is **per-slug**:
   `~/docker/mcp/lore-secrets/<slug>.env` (one file per project, resolved from the
   project dir name when `--env-file` is omitted). An explicit `--env-file` is
@@ -65,9 +84,14 @@ step needs manual intervention.
    → if absent, `podman build --build-arg LORE_VERSION="$(git describe --tags --always --dirty)" -t localhost/lore:latest -f Containerfile .`
    from the lore workspace root — the `--build-arg` bakes the git-derived version
    the server advertises as `serverInfo.version`.
-7. **Cold-index.** Run the batch indexer ONCE:
-   `python -m loremaster.index --config <lore.yaml>` (in-container or against
-   the workspace venv). This is the expensive step paid once.
+7. **Cold-index.** Run the batch indexer ONCE, on the HOST:
+   `<interpreter> -m loremaster.index --config <abs lore.yaml>`, where
+   `<interpreter>` is `_loremaster_python()` (`$LORE_PYTHON`, else
+   `~/PycharmProjects/lore/.venv/bin/python`, else the dispatcher's own
+   interpreter). By hand, `uv run python -m loremaster.index --config <abs lore.yaml>`
+   from the lore repo root uses the same `.venv`. Not in-container: that run
+   cannot write the `:ro` snapshot (#166). This is the expensive step paid once,
+   and it materialises the static tiers that `start`'s snapshot refusal checks.
 8. **Merge `.mcp.json`** (`scripts/merge_mcp_json.py`).
 9. Report status.
 
@@ -85,15 +109,21 @@ step needs manual intervention.
    image ID differs from the current tag (the image was rebuilt) → **recreate**.
    `podman restart` reuses the same baked image, so only stop + rm + run picks up
    the new code. **Validate-before-teardown (outage guard):** verify EVERY launch
-   precondition FIRST — the image is present (`podman image exists`) AND the
-   resolved env-file exists. If any fails, STOP with `_EXIT_ERROR` and leave the
+   precondition FIRST — the image is present (`podman image exists`), the
+   resolved env-file exists, every declared static tier is materialised on the host
+   (the snapshot refusal above), and the embedder and the SurrealDB store answer.
+   If any fails, STOP with `_EXIT_ERROR` and leave the
    running (stale) container **untouched** — a stale-but-serving container beats a
    dead one. Only once the preconditions are known good: `podman stop` → `podman rm`
-   → relaunch. A relaunch (`podman run`) failure after teardown degrades gracefully
-   (loud on stderr, `_EXIT_ERROR`), never an uncaught exception. On success,
+   → relaunch. A relaunch failure after teardown (a `podman run` error, or the
+   launch's own snapshot re-check refusing because the snapshot or config changed
+   since the gate) degrades gracefully: loud on stderr with the error's own text,
+   `_EXIT_ERROR`, never an uncaught exception or traceback. On success,
    **wait for bind** (below), then re-merge `.mcp.json` and print the
    MCP-reconnect reminder.
-2. **Pre-flight (not-running path):** hard-probe `/embed` (STOP if down/wrong dim);
+2. **Pre-flight (not-running path):** after the image and env-file checks, the
+   static-snapshot refusal above (STOP with `_EXIT_ERROR` before any launch); then
+   hard-probe `/embed` (STOP if down/wrong dim);
    pre-flight the SurrealDB store's `/health` (`_probe_surreal` — STOP if
    unreachable, with the bounded start-if-stopped reboot recovery from `setup`
    step 5). `start` gates only on the store being **reachable** — it never
@@ -143,7 +173,7 @@ podman run -d --name lore-<slug> \
   -e HOME=/home/lore \
   -v <project>:/workspace:ro \
   -v ~/.local/state/lore:/home/lore/.local/state/lore \
-  [ -v <snapshot>:/source:ro ]            # only if lore.yaml declares a static root
+  [ -v <snapshot>:/home/lore/docker/mcp/lore-snapshot:ro ]   # only if lore.yaml declares a static root
   --env-file ~/docker/mcp/lore-secrets/<slug>.env \   # per-slug; explicit --env-file overrides
   -e LORE_CONFIG=/workspace/lore.yaml \
   localhost/lore:latest

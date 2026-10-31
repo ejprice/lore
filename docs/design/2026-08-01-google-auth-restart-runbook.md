@@ -84,8 +84,14 @@ The hades route, then the connector + secret. Only after these is auth *working*
 - **`lore.yaml` is gitignored** — "config rollback is a git operation" is FALSE for it. `cp -a`
   before editing. Baseline to restore: no `auth:` key at all; `server: {host: 127.0.0.1, path: /mcp,
   port: 9202}`; `.mcp.json` headerless.
-- **#165 is open** — a container recreate re-mounts `/source` and re-breaks boot. The running
-  `lore-lore` carries a hand-rolled fix. Capture
+- **#165 has a stopgap (2026-10-31); #166 is open.** `lore-deploy start` now binds the snapshot at
+  `/home/lore/docker/mcp/lore-snapshot:ro` (the server's only snapshot root) with no `/source`
+  bind. Before any teardown it refuses to launch, loudly, if ANY declared static tier's dir under
+  the host snapshot root is absent, empty, or not a directory, and leaves the running container
+  untouched. The refusal names each failing tier and the paste-ready cold-index command. So a plain
+  recreate no longer re-breaks boot. **Still true:** an in-container re-acquire
+  of a static tier cannot succeed (unmounted corpora `source:` paths, `:ro` snapshot). A recreate
+  that coincides with a static tier version bump or a `rebuild_all` still crashes boot. Capture
   `podman inspect lore-lore --format '{{.Config.CreateCommand}}'` **before** any recreate.
 - **The posture flip 401s every local session** unless the `.mcp.json` key wiring ships in the same
   wave. One process, one posture — there is no hosted-only split until packet 36.
