@@ -6,8 +6,17 @@ own scaffold writes ``url: ws://127.0.0.1:18500/rpc`` into every new ``lore.yaml
 network; nothing stops the next one from not doing so. This file pins the guard that
 does (operator-approved run-wide guard, 2026-10-31, packet #165):
 
-* a test that attempts a connection to loopback port 18500 FAILS, and its own failure
-  names the attempt (``18500``);
+* a test that attempts a connection to port 18500 at ANY destination that reaches
+  loopback FAILS, and its own failure names the attempt (``18500``). "Reaches loopback"
+  is the kernel's routing, not a spelling: a loopback IP (``127.0.0.1``, ``::1``),
+  ``localhost`` in any letter case, the unspecified address (``0.0.0.0`` / ``::``,
+  which Linux routes to loopback), a name the resolver maps to loopback (an
+  ``/etc/hosts`` alias), and a ``bytes`` host;
+* the refusal happens BEFORE the connection leaves the process: the production-port stub
+  accepts zero connections in any guarded session;
+* the port the guard protects is the port production uses: the contract takes it from the
+  skill's own scaffold (``lore_deploy._scaffold_lore_yaml``), so a guard whose port has
+  drifted from production fails every door pin;
 * it fails even when the code under test SWALLOWS the guard's exception — production's
   ``lore_deploy._probe_surreal_health`` catches every ``OSError``, so a raise-only guard
   would pass silently;
@@ -26,9 +35,17 @@ does (operator-approved run-wide guard, 2026-10-31, packet #165):
 HOW THIS IS EXERCISED WITHOUT EVER DIALLING PRODUCTION (load-bearing, read before editing)
 ------------------------------------------------------------------------------------
 Each pin runs an INNER pytest session in a subprocess. That subprocess first enters a
-private user + network namespace (``os.unshare``), brings up its own loopback, and only
-then execs pytest. Inside that namespace, 127.0.0.1:18500 is a STUB store this file
-starts itself; the host's production store is unreachable by construction. The inner
+private user + network + mount namespace (``os.unshare``), brings up its own loopback,
+bind-mounts a private ``/etc/hosts`` and ``/etc/nsswitch.conf`` (``hosts: files``) so name
+resolution is the contract's own and never the host's, starts ONE set of stub stores
+(production port and test-store port, IPv4 ``127.0.0.1`` and IPv6 ``::1``) that lives for
+the whole inner session, and only then runs pytest in the same process. Inside that
+namespace, 127.0.0.1:18500 is a STUB store; the host's production store is unreachable by
+construction. The stubs belong to the bootstrap, not to a per-module fixture, because under
+xdist every worker shares the namespace: per-worker listeners on one port load-balance new
+connections between them, and one worker's teardown resets connections queued on its
+listener (the measured C6 flake). The bootstrap counts every connection the
+production-port stub accepts, draining its backlog at the end, and prints the count. The inner
 modules additionally refuse to run (``pytest.exit``) if their network namespace equals the
 host's. So a RED run — no guard at all — connects to the stub and nothing else.
 If the namespace cannot be built (e.g. a container whose seccomp forbids user
@@ -52,9 +69,11 @@ attempt — never from pytest echoing the inner test's source line.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import textwrap
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
@@ -62,20 +81,33 @@ from xml.etree import ElementTree
 import pytest
 
 # --- conventions -----------------------------------------------------------------------
-# The PRODUCTION lore-surreal store's port. Source of truth: repo CLAUDE.md §Deploy
-# (":18500 is production lore-surreal — never point tests at it") and the skill's own
-# scaffold, ``lore_deploy._scaffold_lore_yaml`` (``url: ws://127.0.0.1:18500/rpc``).
-PROD_STORE_PORT = 18500
+# The PRODUCTION lore-surreal store's port is NOT written here: ``production_store_port``
+# below takes it from the URL the skill's own scaffold writes into every new lore.yaml
+# (``lore_deploy._scaffold_lore_yaml``), the in-repo source of truth for "where production
+# lives" (repo CLAUDE.md §Deploy: ":18500 is production lore-surreal"). A guard whose port
+# drifts from that URL fails every door pin. This is the value the scaffold wrote on
+# 2026-10-31, kept ONLY to sanity-check the derivation (a parse that returned some other
+# port would otherwise silently re-aim every pin).
+SCAFFOLD_PORT_AT_WRITING = 18500
 # The TEST store's port (CLAUDE.md §Deploy: "spike-surreal ws://127.0.0.1:18000 is the
 # test store"). A guard must leave it alone.
 TEST_STORE_PORT = 18000
 # A loopback port nothing listens on (discard). Inside the private namespace nothing can.
 DEAD_PORT = 9
-# The literal the guard's failure must carry to "name the attempt".
-PROD_PORT_TEXT = str(PROD_STORE_PORT)
+# A name that resolves to loopback ONLY through the inner session's private hosts file.
+# ``.test`` is reserved (RFC 6761 §6.2): no real resolver answers it, so if the control
+# session connects through it, the private hosts file is what resolved it.
+LOOPBACK_ALIAS = "guard-contract-store-alias.test"
+# The inner session's private resolver files (bind-mounted over /etc inside its namespace).
+PRIVATE_HOSTS = f"127.0.0.1 localhost {LOOPBACK_ALIAS}\n::1 localhost\n"
+REAL_NSSWITCH = Path("/etc/nsswitch.conf")
+NSSWITCH_HOSTS_LINE = "hosts: files"
+# The bootstrap's report of how many connections the production-port stub accepted.
+STUB_ACCEPTS_PATTERN = re.compile(r"^STUB-ACCEPTS production=(\d+)$", re.MULTILINE)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]  # skills/lore-deploy
 REPO_ROOT = SKILL_DIR.parents[1]
+SCRIPTS_DIR = SKILL_DIR / "scripts"
 SKILL_TREES = ("scripts", "tests")
 # Exit code the bootstrap uses when it cannot build the isolated namespace.
 ISOLATION_UNAVAILABLE_EXIT = 77
@@ -89,15 +121,23 @@ ENV_TEST_STORE_PORT = "GUARD_CONTRACT_TEST_STORE_PORT"
 ENV_DEAD_PORT = "GUARD_CONTRACT_DEAD_PORT"
 ENV_HOST_NETNS = "GUARD_CONTRACT_HOST_NETNS"
 ENV_SCRIPTS_DIR = "GUARD_CONTRACT_SCRIPTS_DIR"
+ENV_LOOPBACK_ALIAS = "GUARD_CONTRACT_LOOPBACK_ALIAS"
+ENV_PRIVATE_HOSTS = "GUARD_CONTRACT_PRIVATE_HOSTS"
+ENV_PRIVATE_NSSWITCH = "GUARD_CONTRACT_PRIVATE_NSSWITCH"  # empty: the host has no nsswitch.conf
 
 # --- the isolation bootstrap (runs in the inner subprocess, BEFORE pytest is imported) ---
+# It enters the namespaces, makes name resolution private, starts the session's ONE set of
+# stub stores, then runs pytest IN THIS PROCESS (as ``python -m pytest`` would) so the stubs
+# outlive every module and every xdist worker. After pytest returns it stops the stubs,
+# accepts whatever is still queued on the production-port listeners, and prints the count.
 _BOOTSTRAP = textwrap.dedent(
     f"""
-    import fcntl, os, socket, struct, sys
+    import ctypes, fcntl, http.server, os, runpy, socket, struct, sys, threading
     host_netns = os.readlink("/proc/self/ns/net")
     uid, gid = os.getuid(), os.getgid()
+    MS_BIND = 4096
     try:
-        os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNET)
+        os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNET | os.CLONE_NEWNS)
         with open("/proc/self/setgroups", "w") as handle:
             handle.write("deny")
         with open("/proc/self/uid_map", "w") as handle:
@@ -108,6 +148,13 @@ _BOOTSTRAP = textwrap.dedent(
         # SIOCSIFFLAGS on "lo": IFF_UP | IFF_LOOPBACK | IFF_RUNNING
         fcntl.ioctl(probe, 0x8914, struct.pack("16sH14x", b"lo", 0x1 | 0x8 | 0x40))
         probe.close()
+        libc = ctypes.CDLL(None, use_errno=True)
+        mounts = [(os.environ["{ENV_PRIVATE_HOSTS}"], "/etc/hosts")]
+        if os.environ["{ENV_PRIVATE_NSSWITCH}"]:
+            mounts.append((os.environ["{ENV_PRIVATE_NSSWITCH}"], "/etc/nsswitch.conf"))
+        for source, target in mounts:
+            if libc.mount(source.encode(), target.encode(), None, MS_BIND, None) != 0:
+                raise OSError(ctypes.get_errno(), f"bind-mount {{source}} over {{target}}")
     except (AttributeError, OSError) as exc:
         print(f"ISOLATION-UNAVAILABLE: {{exc!r}}", flush=True)
         sys.exit({ISOLATION_UNAVAILABLE_EXIT})
@@ -116,31 +163,13 @@ _BOOTSTRAP = textwrap.dedent(
         print("ISOLATION-UNAVAILABLE: namespace did not change", flush=True)
         sys.exit({ISOLATION_UNAVAILABLE_EXIT})
     print(f"NETNS host={{host_netns}} inner={{inner_netns}}", flush=True)
-    env = dict(os.environ, {ENV_HOST_NETNS}=host_netns)
-    os.execve(sys.executable, [sys.executable, "-m", "pytest", *sys.argv[1:]], env)
-    """
-)
+    os.environ["{ENV_HOST_NETNS}"] = host_netns
 
-# --- inner test modules ------------------------------------------------------------------
-# Shared prelude: refuse to run un-isolated, then serve a stub store on the production
-# port and on the test-store port inside the private namespace.
-_INNER_PRELUDE = textwrap.dedent(
-    f"""
-    import http.server
-    import os
-    import socket
-    import sys
-    import threading
-    import urllib.request
-
-    import pytest
-
-    TARGET_PORT = int(os.environ["{ENV_PROD_PORT}"])
-    TEST_STORE_PORT = int(os.environ["{ENV_TEST_STORE_PORT}"])
-    DEAD_PORT = int(os.environ["{ENV_DEAD_PORT}"])
+    production_port = int(os.environ["{ENV_PROD_PORT}"])
+    test_store_port = int(os.environ["{ENV_TEST_STORE_PORT}"])
 
 
-    class _StubHandler(http.server.BaseHTTPRequestHandler):
+    class StubHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
@@ -150,30 +179,130 @@ _INNER_PRELUDE = textwrap.dedent(
             pass
 
 
-    class _StubServer(http.server.ThreadingHTTPServer):
+    class StubServer(http.server.ThreadingHTTPServer):
         allow_reuse_address = True
-        allow_reuse_port = True
         daemon_threads = True
+        accepted = 0
+
+        def get_request(self):
+            request = super().get_request()
+            self.accepted += 1
+            return request
+
+
+    class StubServer6(StubServer):
+        address_family = socket.AF_INET6
+
+
+    stubs = {{}}
+    for port in (production_port, test_store_port):
+        for server_class, host in ((StubServer, "127.0.0.1"), (StubServer6, "::1")):
+            server = server_class((host, port), StubHandler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            stubs[(port, host)] = server
+
+    sys.path[0] = os.getcwd()  # what ``python -m`` puts first
+    try:
+        runpy.run_module("pytest", run_name="__main__", alter_sys=True)
+        exit_code = 0
+    except SystemExit as exc:
+        exit_code = 0 if exc.code is None else exc.code if isinstance(exc.code, int) else 1
+    production_accepted = 0
+    for (port, _host), server in stubs.items():
+        server.shutdown()
+        server.socket.setblocking(False)
+        while True:  # connections the kernel completed but serve_forever never accepted
+            try:
+                queued, _peer = server.socket.accept()
+            except BlockingIOError:
+                break
+            queued.close()
+            server.accepted += 1
+        server.server_close()
+        if port == production_port:
+            production_accepted += server.accepted
+    print(f"STUB-ACCEPTS production={{production_accepted}}", flush=True)
+    sys.exit(exit_code)
+    """
+)
+
+# --- inner test modules ------------------------------------------------------------------
+# Shared prelude: refuse to run un-isolated. The stub stores belong to the bootstrap.
+_INNER_PRELUDE = textwrap.dedent(
+    f"""
+    import os
+    import socket
+    import sys
+    import urllib.request
+
+    import pytest
+
+    TARGET_PORT = int(os.environ["{ENV_PROD_PORT}"])
+    TEST_STORE_PORT = int(os.environ["{ENV_TEST_STORE_PORT}"])
+    DEAD_PORT = int(os.environ["{ENV_DEAD_PORT}"])
+    LOOPBACK_ALIAS = os.environ["{ENV_LOOPBACK_ALIAS}"]
 
 
     @pytest.fixture(autouse=True, scope="module")
-    def _isolated_stub_stores():
+    def _refuse_to_run_unisolated():
         if os.readlink("/proc/self/ns/net") == os.environ["{ENV_HOST_NETNS}"]:
             pytest.exit("inner session is NOT network-isolated", returncode={NOT_ISOLATED_EXIT})
-        servers = [_StubServer(("127.0.0.1", port), _StubHandler) for port in (TARGET_PORT, TEST_STORE_PORT)]
-        for server in servers:
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-        yield
-        for server in servers:
-            server.shutdown()
-            server.server_close()
     """
+)
+
+# Every destination spelling that reaches loopback, as (id, address family, host). The
+# production doors dial each one on the production port; the benign test dials each one on
+# the test-store port. Each entry is a realistic way to reach loopback that a guard deciding
+# by spelling misses: a raw-socket hostname (only ``urlopen``/``create_connection`` resolve
+# before ``connect``), a case variant (resolvers are case-insensitive), a hosts alias, the
+# unspecified address in both families (a BIND address reused as a client URL), IPv6
+# loopback, and a ``bytes`` host.
+_INNER_DESTINATIONS = textwrap.dedent(
+    """
+
+    DESTINATIONS = {
+        "localhost": (socket.AF_INET, "localhost"),
+        "LOCALHOST": (socket.AF_INET, "LOCALHOST"),
+        "hosts-alias": (socket.AF_INET, LOOPBACK_ALIAS),
+        "unspecified-ipv4": (socket.AF_INET, "0.0.0.0"),
+        "unspecified-ipv6": (socket.AF_INET6, "::"),
+        "loopback-ipv6": (socket.AF_INET6, "::1"),
+        "bytes-host": (socket.AF_INET, b"127.0.0.1"),
+    }
+
+
+    def _raw_connect(destination, port):
+        family, host = DESTINATIONS[destination]
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            sock.connect((host, port))
+    """
+)
+DESTINATION_IDS = (
+    "localhost",
+    "LOCALHOST",
+    "hosts-alias",
+    "unspecified-ipv4",
+    "unspecified-ipv6",
+    "loopback-ipv6",
+    "bytes-host",
 )
 
 # Doors to the production port. Each one PASSES when no guard exists (the stub answers),
 # so each must FAIL once the guard is in place.
-_INNER_PROD_DOORS = _INNER_PRELUDE + textwrap.dedent(
+_INNER_PROD_DOORS = _INNER_PRELUDE + _INNER_DESTINATIONS + textwrap.dedent(
     """
+
+    @pytest.mark.parametrize("destination", list(DESTINATIONS))
+    def test_door_raw_connect_reaching_loopback(destination):
+        _raw_connect(destination, TARGET_PORT)
+
+
+    def test_door_urlopen_health_on_unspecified_address():
+        # A BIND address reused as a client URL: Linux routes 0.0.0.0 to loopback.
+        with urllib.request.urlopen(f"http://0.0.0.0:{TARGET_PORT}/health", timeout=2) as response:
+            assert response.status == 200
+
 
     def test_door_raw_socket_connect():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -220,8 +349,14 @@ _INNER_PROD_DOORS = _INNER_PRELUDE + textwrap.dedent(
 )
 
 # Benign traffic: must behave exactly as with no guard.
-_INNER_BENIGN = _INNER_PRELUDE + textwrap.dedent(
+_INNER_BENIGN = _INNER_PRELUDE + _INNER_DESTINATIONS + textwrap.dedent(
     """
+
+    @pytest.mark.parametrize("destination", list(DESTINATIONS))
+    def test_benign_raw_connect_to_test_store_at_same_destination(destination):
+        # The production doors' destinations, on another port: the port decides, not the host.
+        _raw_connect(destination, TEST_STORE_PORT)
+
 
     def test_benign_dead_port_is_refused_as_usual():
         with pytest.raises(ConnectionRefusedError):
@@ -239,7 +374,17 @@ _INNER_BENIGN = _INNER_PRELUDE + textwrap.dedent(
     """
 )
 
+# junit names a parametrized inner test ``name[id]``.
+DESTINATION_DOOR_TESTS = (
+    *(f"test_door_raw_connect_reaching_loopback[{destination}]" for destination in DESTINATION_IDS),
+    "test_door_urlopen_health_on_unspecified_address",
+)
+SAME_DESTINATION_BENIGN_TESTS = tuple(
+    f"test_benign_raw_connect_to_test_store_at_same_destination[{destination}]"
+    for destination in DESTINATION_IDS
+)
 PROD_DOOR_TESTS = (
+    *DESTINATION_DOOR_TESTS,
     "test_door_raw_socket_connect",
     "test_door_urlopen_health_on_loopback_ip",
     "test_door_urlopen_health_on_localhost",
@@ -249,6 +394,7 @@ PROD_DOOR_TESTS = (
 )
 NEIGHBOUR_TEST = "test_zz_innocent_neighbour_after_swallowed_attempts"
 BENIGN_TESTS = (
+    *SAME_DESTINATION_BENIGN_TESTS,
     "test_benign_dead_port_is_refused_as_usual",
     "test_benign_test_store_health_answers",
     "test_benign_test_store_raw_socket_connects",
@@ -288,23 +434,19 @@ _INNER_PHASE_IMPORT = _INNER_PHASE_PRELUDE + textwrap.dedent(
 )
 
 # Collection, then a module-level SKIP: the common "probe the store at import, skip the module
-# when it is unreachable" idiom. Under a guard the refusal is what makes it unreachable. A
-# transient stub serves the probe so the module does NOT skip with no guard (the control).
+# when it is unreachable" idiom. Under a guard the refusal is what makes it unreachable. The
+# bootstrap's session stub serves the probe, so the module does NOT skip with no guard (the
+# control).
 _INNER_PHASE_IMPORT_SKIP = _INNER_PHASE_PRELUDE + textwrap.dedent(
     f"""
 
     if os.readlink("/proc/self/ns/net") == os.environ["{ENV_HOST_NETNS}"]:
         pytest.exit("inner session is NOT network-isolated", returncode={NOT_ISOLATED_EXIT})
-    _import_stub = _StubServer(("127.0.0.1", TARGET_PORT), _StubHandler)
-    threading.Thread(target=_import_stub.serve_forever, daemon=True).start()
     try:
         with socket.create_connection(("127.0.0.1", TARGET_PORT), timeout=2):
             pass
     except OSError:
         pytest.skip("store unreachable", allow_module_level=True)
-    finally:
-        _import_stub.shutdown()
-        _import_stub.server_close()
 
 
     def test_import_skip_door_module_test():
@@ -493,10 +635,43 @@ class InnerRun:
     cases: dict[str, InnerCase]
     returncode: int
     output: str
+    production_port: int  # the port this session's doors dialled (from the scaffold)
+    production_accepts: int  # connections the production-port stub ACCEPTED, backlog included
 
     def case(self, name: str) -> InnerCase:
         assert name in self.cases, f"inner test {name} never reported; inner output:\n{self.output}"
         return self.cases[name]
+
+
+@dataclass(frozen=True)
+class Mirror:
+    """The mirrored repo the inner sessions run in, and the production port they dial."""
+
+    path: Path
+    production_port: int
+
+
+def _production_store_port_from_scaffold(workdir: Path) -> int:
+    """The port of the production store URL the skill's scaffold writes into a new lore.yaml.
+
+    Built by the PRODUCTION builder (``lore_deploy._scaffold_lore_yaml``), never re-typed, so
+    a guard whose port drifts from where production lives fails every door pin.
+    """
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        import lore_deploy  # noqa: PLC0415 - the scripts dir must be on sys.path first
+    finally:
+        sys.path.remove(str(SCRIPTS_DIR))
+    # The slug comes from the directory name and must match ``^[a-z0-9][a-z0-9_]*$``.
+    project = workdir / "guardcontract"
+    project.mkdir()
+    config_path = project / "lore.yaml"
+    lore_deploy._scaffold_lore_yaml(project, config_path)
+    # Read back through production's own config reader (schema-validated LoreConfig).
+    url = lore_deploy._read_config_field(config_path, "c.surreal.url")
+    port = urllib.parse.urlsplit(url).port
+    assert port is not None, f"the scaffold's surreal.url names no port: {url!r}"
+    return port
 
 
 def _mirror_repo(destination: Path) -> Path:
@@ -566,7 +741,7 @@ def _parse_junit(path: Path) -> dict[str, InnerCase]:
 
 
 def _run_inner(
-    mirror: Path,
+    mirror: Mirror,
     tree: str,
     label: str,
     extra_args: tuple[str, ...] = (),
@@ -580,16 +755,30 @@ def _run_inner(
 
     The run must report every name in ``must_report`` and nothing outside ``may_report``.
     """
-    tree_dir = mirror / "skills/lore-deploy" / tree
-    junit = mirror.parent / f"junit-{label}.xml"
-    bootstrap = mirror.parent / "netns_bootstrap.py"
+    tree_dir = mirror.path / "skills/lore-deploy" / tree
+    junit = mirror.path.parent / f"junit-{label}.xml"
+    bootstrap = mirror.path.parent / "netns_bootstrap.py"
     bootstrap.write_text(_BOOTSTRAP, encoding="utf-8")
+    private_hosts = mirror.path.parent / "hosts"
+    private_hosts.write_text(PRIVATE_HOSTS, encoding="utf-8")
+    private_nsswitch = ""
+    if REAL_NSSWITCH.exists():
+        # The host's own file with ONLY its hosts line replaced: resolution never consults
+        # the host's resolver daemons (systemd-resolved reads the HOST's /etc/hosts).
+        lines = [
+            line
+            for line in REAL_NSSWITCH.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("hosts:")
+        ]
+        nsswitch = mirror.path.parent / "nsswitch.conf"
+        nsswitch.write_text("\n".join([*lines, NSSWITCH_HOSTS_LINE, ""]), encoding="utf-8")
+        private_nsswitch = str(nsswitch)
     args = [
         "-q",
         "-p",
         "no:cacheprovider",
         "--tb=short",
-        f"--rootdir={mirror}",
+        f"--rootdir={mirror.path}",
         f"--junitxml={junit}",
         *extra_args,
     ]
@@ -601,15 +790,18 @@ def _run_inner(
     args += [str(tree_dir / module_name) for module_name in modules]
     env.update(
         {
-            ENV_PROD_PORT: str(PROD_STORE_PORT),
+            ENV_PROD_PORT: str(mirror.production_port),
             ENV_TEST_STORE_PORT: str(TEST_STORE_PORT),
             ENV_DEAD_PORT: str(DEAD_PORT),
-            ENV_SCRIPTS_DIR: str(mirror / "skills/lore-deploy/scripts"),
+            ENV_SCRIPTS_DIR: str(mirror.path / "skills/lore-deploy/scripts"),
+            ENV_LOOPBACK_ALIAS: LOOPBACK_ALIAS,
+            ENV_PRIVATE_HOSTS: str(private_hosts),
+            ENV_PRIVATE_NSSWITCH: private_nsswitch,
         }
     )
     completed = subprocess.run(
         [sys.executable, str(bootstrap), *args],
-        cwd=mirror,
+        cwd=mirror.path,
         env=env,
         capture_output=True,
         text=True,
@@ -635,40 +827,63 @@ def _run_inner(
         f"inner session did not report the expected inner tests: "
         f"missing={sorted(missing)} extra={sorted(extra)}\n{output}"
     )
-    return InnerRun(cases=cases, returncode=completed.returncode, output=output)
+    accepts = STUB_ACCEPTS_PATTERN.findall(completed.stdout)
+    assert len(accepts) == 1, f"the bootstrap did not report the stub's accept count:\n{output}"
+    return InnerRun(
+        cases=cases,
+        returncode=completed.returncode,
+        output=output,
+        production_port=mirror.production_port,
+        production_accepts=int(accepts[0]),
+    )
 
 
 @pytest.fixture(scope="module")
-def mirror(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    return _mirror_repo(tmp_path_factory.mktemp("prod-store-guard"))
+def production_store_port(tmp_path_factory: pytest.TempPathFactory) -> int:
+    port = _production_store_port_from_scaffold(tmp_path_factory.mktemp("scaffold"))
+    assert port == SCAFFOLD_PORT_AT_WRITING, (
+        f"the scaffold now writes production on port {port}, not {SCAFFOLD_PORT_AT_WRITING}. "
+        "If production really moved, update SCAFFOLD_PORT_AT_WRITING; the door pins below "
+        "already dial the new port, so the guard must follow it."
+    )
+    return port
 
 
 @pytest.fixture(scope="module")
-def guarded_runs(mirror: Path) -> dict[str, InnerRun]:
+def mirror(tmp_path_factory: pytest.TempPathFactory, production_store_port: int) -> Mirror:
+    return Mirror(
+        path=_mirror_repo(tmp_path_factory.mktemp("prod-store-guard")),
+        production_port=production_store_port,
+    )
+
+
+@pytest.fixture(scope="module")
+def guarded_runs(mirror: Mirror) -> dict[str, InnerRun]:
     """One serial inner session per skill tree, under the real conftest chain."""
     return {tree: _run_inner(mirror, tree, f"guarded-{tree}") for tree in SKILL_TREES}
 
 
 @pytest.fixture(scope="module")
-def xdist_run(mirror: Path) -> InnerRun:
+def xdist_run(mirror: Mirror) -> InnerRun:
     """The ``tests`` tree's inner modules under two xdist workers (lore runs ``-n 8``)."""
     return _run_inner(mirror, "tests", "xdist-tests", ("-n", "2"))
 
 
 @pytest.fixture(scope="module")
-def control_run(mirror: Path) -> InnerRun:
+def control_run(mirror: Mirror) -> InnerRun:
     """The same inner modules with every conftest/plugin disabled: the no-guard baseline."""
     return _run_inner(mirror, "scripts", "control", control=True)
 
 
 def _assert_blocked_and_named(run: InnerRun, name: str, where: str) -> None:
+    port_text = str(run.production_port)
     case = run.case(name)
     assert case.outcome in ("failed", "error"), (
         f"[{where}] {name} reached the production port and the guard did not fail it "
         f"(outcome={case.outcome}).\ninner output:\n{run.output}"
     )
-    assert PROD_PORT_TEXT in case.text, (
-        f"[{where}] {name} failed, but its failure does not name the attempt (no {PROD_PORT_TEXT!r} "
+    assert port_text in case.text, (
+        f"[{where}] {name} failed, but its failure does not name the attempt (no {port_text!r} "
         f"in its failure text):\n{case.text}"
     )
 
@@ -689,10 +904,27 @@ class TestControlWithoutAnyGuard:
             f"control (no guard) has non-passing inner tests {not_passed}:\n{control_run.output}"
         )
 
+    def test_the_production_stub_counts_every_door_connection_without_a_guard(
+        self, control_run: InnerRun
+    ) -> None:
+        # The accept counter's positive control: each production door connects exactly once
+        # with no guard, so "0 accepted" under a guard is the refusal, not a blind counter.
+        assert control_run.production_accepts == len(PROD_DOOR_TESTS), (
+            f"no-guard production-port stub accepted {control_run.production_accepts} "
+            f"connections; the {len(PROD_DOOR_TESTS)} doors make one each.\n{control_run.output}"
+        )
+
 
 @pytest.mark.parametrize("tree", SKILL_TREES)
 class TestProductionPortAttemptsFailTheAttemptingTest:
     """Pins 1, 2, 4, 5: every door to :18500 fails the test that used it, in both trees."""
+
+    @pytest.mark.parametrize("door", DESTINATION_DOOR_TESTS)
+    def test_every_destination_reaching_loopback_fails_and_names_the_port(
+        self, guarded_runs: dict[str, InnerRun], tree: str, door: str
+    ) -> None:
+        # The guard decides by where the kernel ROUTES the connection, not by its spelling.
+        _assert_blocked_and_named(guarded_runs[tree], door, tree)
 
     def test_raw_socket_connect_fails_and_names_the_port(
         self, guarded_runs: dict[str, InnerRun], tree: str
@@ -748,6 +980,32 @@ class TestOtherPortsAreUntouched:
         )
 
 
+GUARDED_SESSION_FIXTURES = ("guarded_runs", "xdist_run", "phase_run")
+
+
+class TestTheRefusalHappensBeforeTheConnectionLeavesTheProcess:
+    """C3: in a guarded session the production-port stub accepts NO connection at all.
+
+    Quantified over every door and every phase at once: a guard that records an attempt but
+    lets the connection through (on ``connect``, ``connect_ex`` or any other path) still
+    fails the attempting node, yet the stub accepts it, and this pin goes red. The positive
+    controls (``TestControlWithoutAnyGuard``, ``TestPhaseControlWithoutAnyGuard``) prove the
+    counter sees each connection when nothing refuses it.
+    """
+
+    @pytest.mark.parametrize("session_fixture", GUARDED_SESSION_FIXTURES)
+    def test_production_stub_accepts_no_connection_in_a_guarded_session(
+        self, request: pytest.FixtureRequest, session_fixture: str
+    ) -> None:
+        sessions = request.getfixturevalue(session_fixture)
+        runs = sessions if isinstance(sessions, dict) else {session_fixture: sessions}
+        accepted = {label: run.production_accepts for label, run in runs.items()}
+        assert all(count == 0 for count in accepted.values()), (
+            f"the production-port stub ACCEPTED connections in a guarded session {accepted}: "
+            "the guard let an attempt leave the process"
+        )
+
+
 class TestGuardIsLiveInEveryXdistWorker:
     """Lore's targeted runs use ``-n 8``: a guard that records only in the controller is blind."""
 
@@ -769,7 +1027,7 @@ PHASE_RUN_ARGS = ("--continue-on-collection-errors",)
 
 
 @pytest.fixture(scope="module")
-def phase_run(mirror: Path) -> InnerRun:
+def phase_run(mirror: Mirror) -> InnerRun:
     """The phase modules, in PHASE_MODULES order, as ONE serial session under the real conftests."""
     return _run_inner(
         mirror,
@@ -783,7 +1041,7 @@ def phase_run(mirror: Path) -> InnerRun:
 
 
 @pytest.fixture(scope="module")
-def phase_control_run(mirror: Path) -> InnerRun:
+def phase_control_run(mirror: Mirror) -> InnerRun:
     """The phase modules with every conftest/plugin disabled: the no-guard baseline."""
     return _run_inner(
         mirror,
@@ -813,6 +1071,16 @@ class TestPhaseControlWithoutAnyGuard:
         }
         assert not not_passed, (
             f"phase control (no guard) has non-passing inner tests {not_passed}:\n"
+            f"{phase_control_run.output}"
+        )
+
+    def test_the_production_stub_counts_every_phase_attempt_without_a_guard(
+        self, phase_control_run: InnerRun
+    ) -> None:
+        # Each charged phase makes exactly one connection; with no guard every one is accepted.
+        assert phase_control_run.production_accepts == len(PHASE_CHARGED), (
+            f"no-guard production-port stub accepted {phase_control_run.production_accepts} "
+            f"connections; the {len(PHASE_CHARGED)} phase doors make one each.\n"
             f"{phase_control_run.output}"
         )
 
