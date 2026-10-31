@@ -53,6 +53,8 @@ indistinguishable from an unknown one.
   The project index is a third gate direction this instrument does not model at all.
 * ``conftest-collection-hooks``:
   A conftest contributes no collected item by design, so its reach stays bounded by registration.
+  A conftest counts as registered when pytest loads it for some testpath: it lies under a
+  testpath, or its directory is a path-component ancestor of one (#566).
   Every OTHER silencing mechanism is caught by construction, because LEG B measures collection.
 * ``untracked-ground``:
   Untracked ground is outside the threat model: the derivation walks only the paths git tracks.
@@ -1407,17 +1409,35 @@ def _is_test_shaped(path: str, patterns: Sequence[str], *, repo_root: Path) -> b
     return any(_matches_collection_pattern(pattern, absolute) for pattern in patterns)
 
 
+def _pytest_loads_conftest(path: str, testpaths: Sequence[str]) -> bool:
+    """Is this ``conftest.py`` one pytest loads when it collects some testpath?
+
+    pytest loads every conftest on the rootdir → collection-target chain and every conftest
+    inside the target (#566). So a conftest is loaded when it lies UNDER a testpath, or when its
+    directory is an ANCESTOR of one — the repository root included, whose parent ``.`` is an
+    ancestor of every relative path. Both legs go through :func:`is_under`, because a string
+    prefix would hand ``lore/conftest.py`` the ``loremaster/tests`` chain. Ancestry is taken
+    against the TESTPATHS only: a typecheck root is not a collection target.
+    """
+    directory = str(PurePosixPath(path).parent)
+    return any(
+        is_under(path, testpath) or is_under(testpath, directory) for testpath in testpaths
+    )
+
+
 def _execution_fate(path: str, *, scopes: _Scopes, exemptions: Sequence[Exemption]) -> Fate:
     """LEG B, where coverage is MEASURED rather than declared.
 
     A registered file the collector never reaches is ungated ground whatever silenced it. The one
     exception is a conftest, which contributes no collected item by design and is therefore
-    bounded by registration — a stated bound, not an oversight.
+    bounded by registration — a stated bound, not an oversight. For a conftest, registered means
+    pytest loads it for some testpath: under one, or in an ancestor directory of one
+    (:func:`_pytest_loads_conftest`).
     """
     if not _is_test_shaped(path, scopes.test_file_patterns, repo_root=scopes.repo_root):
         return Fate.NOT_APPLICABLE
     if PurePosixPath(path).name == CONFTEST_FILENAME:
-        if any(is_under(path, testpath) for testpath in scopes.testpaths):
+        if _pytest_loads_conftest(path, scopes.testpaths):
             return Fate.COVERED
     elif path in scopes.collected:
         return Fate.COVERED
