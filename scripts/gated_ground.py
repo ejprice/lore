@@ -53,9 +53,15 @@ indistinguishable from an unknown one.
   The project index is a third gate direction this instrument does not model at all.
 * ``conftest-collection-hooks``:
   A conftest contributes no collected item by design, so its reach stays bounded by registration.
-  A conftest counts as registered when pytest loads it for some testpath: it lies under a
-  testpath, or its directory is a path-component ancestor of one (#566).
-  Every OTHER silencing mechanism is caught by construction, because LEG B measures collection.
+  A conftest counts as registered when pytest loads it for some testpath: its directory is a
+  path-component ancestor of one (#566), or it lies under one with no ``norecursedirs``
+  directory in between (#569). That registration rule models ``norecursedirs`` and no other
+  pruning: a conftest under a testpath in a directory pytest skips through ``collect_ignore`` /
+  ``collect_ignore_glob``, ``--ignore`` / ``--ignore-glob``, or virtualenv detection
+  (``pyvenv.cfg``) still reads registered, although pytest never loads it (measured 2026-10-31,
+  pytest 9.0.3, ``REPORT-audit-566-gg-c3`` F2).
+  For test FILES, every other silencing mechanism is caught by construction, because LEG B
+  measures collection; a conftest's verdict is this registration rule, not a measurement.
 * ``untracked-ground``:
   Untracked ground is outside the threat model: the derivation walks only the paths git tracks.
 * ``file-types-modelled``:
@@ -145,9 +151,10 @@ PYTEST_DEFAULT_TEST_FILE_PATTERNS: tuple[str, ...] = ("test_*.py", "*_test.py")
 #: ``_pytest.main.pytest_addoption`` (read 2026-10-31, pytest 9.0.3). pytest exposes it only as
 #: that inline literal, reachable at runtime through the private parser (``_inidict``) and never
 #: as a public constant; this instrument imports the standard library and nothing else, so it is
-#: carried here. ⚠ Unlike :data:`PYTEST_DEFAULT_TEST_FILE_PATTERNS`, no contract pin re-derives
-#: it against the installed pytest yet (#569 builder report) — until one does, a pytest release
-#: that changes the default makes this copy an inherited number.
+#: carried here. Like :data:`PYTEST_DEFAULT_TEST_FILE_PATTERNS`, it is re-derived against the
+#: installed pytest by a drift pin
+#: (``test_the_declared_norecursedirs_default_matches_what_pytest_puts_in_force``), so a pytest
+#: release that changes the default turns that pin RED instead of leaving this an inherited number.
 PYTEST_DEFAULT_NORECURSEDIRS: tuple[str, ...] = (
     "*.egg",
     ".*",
@@ -1500,7 +1507,8 @@ def _pytest_loads_conftest(
     between the testpath and it matches ``norecursedirs`` (#569, :func:`_recursion_is_pruned`).
     Both legs go through :func:`is_under`, because a string prefix would hand
     ``lore/conftest.py`` the ``loremaster/tests`` chain. Ancestry is taken against the
-    TESTPATHS only: a typecheck root is not a collection target.
+    TESTPATHS only: a typecheck root is not a collection target. Of pytest's directory skips,
+    only ``norecursedirs`` is modelled; the others are the ``conftest-collection-hooks`` bound.
     """
     directory = PurePosixPath(path).parent
     return any(
