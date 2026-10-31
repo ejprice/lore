@@ -90,12 +90,14 @@ CONTAINER_STATE_DIR = f"{CONTAINER_HOME}/.local/state/lore"
 # root under ``HOME=CONTAINER_HOME``. The retired ``/source`` target had no reader (#165).
 CONTAINER_SNAPSHOT_ROOT = str(PurePosixPath(CONTAINER_HOME) / _SNAPSHOT_SUBPATH)
 
+# ``_read_config_field`` evaluates ONE expression in the loremaster venv, so a loremaster
+# name rides ``__import__`` inside it. The static watch mode is loremaster's own
+# ``WATCH_STATIC``, never a retyped ``'static'``, so a renamed mode cannot silently
+# count zero static roots here and skip the snapshot precondition.
+_WATCH_STATIC_EXPR = "__import__('loremaster.config', fromlist=['WATCH_STATIC']).WATCH_STATIC"
 # ``_read_config_field`` expression counting the config's static roots: the roots
-# whose snapshot the launch must bind. ``'static'`` is spelled out rather than
-# imported as ``loremaster.config.WATCH_STATIC``: the value is fixed by the
-# ``RootConfig.watch`` Literal, and importing it inside the expression would need
-# ``__import__``, which the expr-substring config-reader stubs misread as a port read.
-_STATIC_ROOT_COUNT_EXPR = "sum(1 for r in c.roots if r.watch == 'static')"
+# whose snapshot the launch must bind.
+_STATIC_ROOT_COUNT_EXPR = f"sum(1 for r in c.roots if r.watch == {_WATCH_STATIC_EXPR})"
 # The host cold index that materialises the static tiers (the refusal's remedy).
 _COLD_INDEX_MODULE = "loremaster.index"
 
@@ -672,27 +674,29 @@ server:
 # ---------------------------------------------------------------------------
 # Run invocation.
 # ---------------------------------------------------------------------------
-def _unmaterialised_static_tiers(config_path: Path) -> dict[str, str]:
-    """Map each static tier NOT materialised under the host ``SNAPSHOT_ROOT`` to its dir.
+def _static_snapshot_status(config_path: Path) -> tuple[int, dict[str, str]]:
+    """Count the config's static roots and map each one NOT materialised on the host to its dir.
 
-    Evaluates ``loremaster.source.snapshot.SnapshotLayout.is_materialized`` (the
-    predicate the server's boot guard uses) over the HOST root, through the
-    loremaster venv via :func:`_read_config_field`, so the tier→dir layout and the
-    "present and non-empty" rule are never re-implemented here (RULING-S1-S2).
+    ONE :func:`_read_config_field` read answers both, so the count and the per-tier
+    verdict come from the same parse of the config. The per-tier verdict is
+    ``loremaster.source.snapshot.SnapshotLayout.is_materialized`` (the predicate the
+    server's boot guard uses) evaluated over the HOST ``SNAPSHOT_ROOT`` in the loremaster
+    venv, so the tier→dir layout and the "present and non-empty" rule are never
+    re-implemented here (RULING-S1-S2).
 
     Args:
         config_path: The project's ``lore.yaml``.
 
     Returns:
-        ``{tier: host materialisation dir}`` for every failing static tier, in
-        config order; empty when every static tier is materialised.
+        ``(static root count, {tier: host materialisation dir})``. The map holds every
+        failing static tier in config order and is empty when all are materialised.
+        A live-only config gives ``(0, {})`` without any tier being checked on disk.
 
     Raises:
         RuntimeError: The config fails to parse or validate.
     """
-    # ``_read_config_field`` evaluates exactly ONE expression after binding ``c``, so
-    # the imports ride ``__import__`` and ``for layout in [...]`` binds the host-root
-    # layout once for the whole comprehension.
+    # One expression after ``c`` is bound: the imports ride ``__import__``, and
+    # ``for layout in [...]`` binds the host-root layout once for the whole comprehension.
     host_layout = (
         "__import__('loremaster.source.snapshot', fromlist=['SnapshotLayout'])"
         f".SnapshotLayout(Path({str(SNAPSHOT_ROOT)!r}))"
@@ -700,21 +704,27 @@ def _unmaterialised_static_tiers(config_path: Path) -> dict[str, str]:
     failing_tier_dirs = (
         "{r.tier: str(layout.materialization_dir(r.tier)) "
         f"for layout in [{host_layout}] for r in c.roots "
-        "if r.watch == 'static' and not layout.is_materialized(r.tier)}"
+        f"if r.watch == {_WATCH_STATIC_EXPR} and not layout.is_materialized(r.tier)}}"
     )
-    failing: dict[str, str] = json.loads(
-        _read_config_field(config_path, f"__import__('json').dumps({failing_tier_dirs})")
+    status = json.loads(
+        _read_config_field(
+            config_path,
+            f"__import__('json').dumps([{_STATIC_ROOT_COUNT_EXPR}, {failing_tier_dirs}])",
+        )
     )
-    return failing
+    static_root_count: int = status[0]
+    failing: dict[str, str] = status[1]
+    return static_root_count, failing
 
 
 def _require_launchable_snapshot(config_path: Path) -> bool:
     """The ONE launch precondition for the static snapshot (RULING-F1-pin4 R1).
 
     Called by :func:`_launch_container` and, before any teardown, by both
-    :func:`verb_start` paths (through :func:`_gate_snapshot_precondition`). The
-    static roots are counted FIRST and the per-tier check runs only when there is
-    at least one, so a live-only project never consults the snapshot at all.
+    :func:`verb_start` paths (through :func:`_gate_snapshot_precondition`). One
+    config read (:func:`_static_snapshot_status`) returns the static root count and the
+    failing tiers together; a live-only project has no static root, so no tier is
+    checked on disk and the launch gets no snapshot bind.
 
     Args:
         config_path: The project's ``lore.yaml``.
@@ -728,10 +738,9 @@ def _require_launchable_snapshot(config_path: Path) -> bool:
             materialised on the host. The message names each failing tier and its
             dir, the host root, and the paste-ready cold-index command.
     """
-    static_root_count = _read_config_field(config_path, _STATIC_ROOT_COUNT_EXPR)
-    if static_root_count in ("", "0"):
+    static_root_count, failing = _static_snapshot_status(config_path)
+    if static_root_count == 0:
         return False
-    failing = _unmaterialised_static_tiers(config_path)
     if failing:
         tier_lines = "; ".join(f"{tier} at {tier_dir}" for tier, tier_dir in failing.items())
         # Launching anyway is a boot crash: the server's guard reads the tier as
@@ -818,6 +827,53 @@ def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
     _run(cmd)
 
 
+# Every failure _launch_container documents (its ``Raises:`` section). ONE tuple so the
+# fresh and recreate start paths cannot disagree on what "a launch failed" means.
+_LAUNCH_FAILURES: tuple[type[Exception], ...] = (RuntimeError, subprocess.CalledProcessError)
+# The remedy every failed launch ends with; the error text before it carries the cause.
+_LAUNCH_RETRY_REMEDY = "fix that cause and retry `start`."
+
+
+def _launch_or_exit_loudly(
+    project: Path,
+    config_path: Path,
+    env_file: Path,
+    *,
+    launch_label: str,
+    aftermath: str,
+) -> int:
+    """Run :func:`_launch_container`, turning every documented failure into ``_EXIT_ERROR``.
+
+    The ONE launch-failure policy both ``verb_start`` paths call (A1 on the recreate path,
+    RULING-fresh-path item 2 on the fresh path): a failure is reported on stderr with the
+    error's own text and returns ``_EXIT_ERROR``; it never propagates as a raw raise to the
+    dispatcher. The error's text is the diagnosis: a ``CalledProcessError``'s names the
+    failed command and its exit status (R3); a refusal's names the failing tiers and the
+    paste-ready remedy.
+
+    Args:
+        project: The project root being launched.
+        config_path: Its ``lore.yaml``.
+        env_file: The secrets env-file passed to ``podman run``.
+        launch_label: What was attempted, as the message's subject (``launch`` /
+            ``relaunch``).
+        aftermath: The state the failure leaves behind plus the remedy, appended verbatim.
+
+    Returns:
+        ``_EXIT_OK`` when the launch succeeded, ``_EXIT_ERROR`` otherwise.
+    """
+    container_name = f"lore-{project.name}"
+    try:
+        _launch_container(project, config_path, env_file)
+    except _LAUNCH_FAILURES as error:
+        print(
+            f"start: {launch_label} of {container_name} failed ({error}); {aftermath}",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    return _EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # Verbs.
 # ---------------------------------------------------------------------------
@@ -893,6 +949,8 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     - RUNNING + current image  → no-op, re-merge .mcp.json (no reminder, nothing changed).
     - RUNNING + stale image    → stop + rm + relaunch, re-merge .mcp.json, print reminder.
     - NOT running              → standard launch path, re-merge .mcp.json, print reminder.
+      Every precondition runs before an EXITED container is removed, so a refusal leaves
+      it in place; a launch failure exits ``_EXIT_ERROR`` (RULING-fresh-path items 1-2).
 
     Every path that ends with a running container additionally waits for the
     MCP port to actually ACCEPT connections before declaring success (see
@@ -1009,18 +1067,12 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
             # the worst case (A1). The config or the snapshot can change between the
             # pre-teardown gate and the launch's own re-check, so the RuntimeError
             # refusal is reachable here, not only podman's CalledProcessError.
-            try:
-                _launch_container(project, config_path, env_file)
-            except (RuntimeError, subprocess.CalledProcessError) as error:
-                # The error's own text is the diagnosis: a CalledProcessError's names the
-                # failed command and its exit status (R3); a refusal's names the failing
-                # tiers and the paste-ready remedy.
-                print(
-                    f"start: relaunch of {container_name} failed ({error}); the stale "
-                    f"container was already removed — fix that cause and retry `start`.",
-                    file=sys.stderr,
-                )
-                return _EXIT_ERROR
+            if (rc := _launch_or_exit_loudly(
+                project, config_path, env_file,
+                launch_label="relaunch",
+                aftermath=f"the stale container was already removed — {_LAUNCH_RETRY_REMEDY}",
+            )) != _EXIT_OK:
+                return rc
             host, port, mount = _read_server_block(config_path)
             if (rc := _await_bind(
                 container_name, host, port, mount,
@@ -1035,9 +1087,9 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
             print(_MCP_RECONNECT_REMINDER)
             return _EXIT_OK
 
-    if state is not None:  # exists but not running (e.g. exited) — remove the stale one.
-        _run(["podman", "rm", "-f", container_name], check=False)
-
+    # Fresh path (not running). A refusal must leave an existing EXITED container in place,
+    # so every precondition below runs BEFORE that container is removed (RULING-fresh-path
+    # item 1 — the recreate path's validate-before-teardown order, applied here too).
     if not _image_exists(IMAGE):
         print(f"start: image {IMAGE} missing; run `setup` (which builds it).", file=sys.stderr)
         return _EXIT_ERROR
@@ -1055,7 +1107,16 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     if (rc := _probe_surreal(config_path)) != _EXIT_OK:
         return rc
 
-    _launch_container(project, config_path, env_file)
+    # Every precondition passed: only now remove the exited container, immediately before
+    # the launch (`podman run --name` would collide with it otherwise).
+    if state is not None:
+        _run(["podman", "rm", "-f", container_name], check=False)
+    if (rc := _launch_or_exit_loudly(
+        project, config_path, env_file,
+        launch_label="launch",
+        aftermath=_LAUNCH_RETRY_REMEDY,
+    )) != _EXIT_OK:
+        return rc
     host, port, mount = _read_server_block(config_path)
     if (rc := _await_bind(
         container_name, host, port, mount,

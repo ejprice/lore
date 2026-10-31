@@ -2190,3 +2190,244 @@ class TestConfigReaderFakeOracle:
         for reader in (_REAL_READ_CONFIG_FIELD, fake):
             with pytest.raises(RuntimeError, match="failed to read"):
                 reader(config_path, "c.server.no_such_field")
+
+
+# ---------------------------------------------------------------------------
+# Fresh-path start parity (RULING-fresh-path.md items 1 and 2, receipts dir
+# docs/plans/v2/receipts/2026-10-31-165/): ONE rule for both start paths. A start that
+# refuses or fails touches nothing it did not have to, and always exits loudly.
+# ---------------------------------------------------------------------------
+# podman verbs that only READ a container. A podman call naming the container with any
+# other verb (rm, stop, kill, start, restart, rename, ...) MUTATES it. Allowlisting the
+# safe set means a new mutating verb can never slip past the pin.
+_PODMAN_READ_ONLY_VERBS = frozenset({"inspect", "ps", "exists", "logs", "port", "top"})
+
+
+def _podman_verb(argv: list[str]) -> str:
+    """The podman sub-command, looking through the ``podman container <verb>`` form."""
+    if len(argv) > 2 and argv[1] == "container":
+        return argv[2]
+    return argv[1] if len(argv) > 1 else ""
+
+
+class _FreshPathArrangement:
+    """verb_start on the FRESH path (no running container) with every precondition passing.
+
+    ``fail(<precondition>)`` breaks exactly one. Every podman command, every precondition
+    probe and every launch attempt lands in ONE ordered ``events`` transcript, so a pin can
+    assert both WHETHER the exited container was touched and WHEN, relative to the
+    preconditions and the launch. Config values come from the shared meaning-based
+    ConfigReaderFake, and the snapshot precondition runs for REAL over it.
+    """
+
+    SLUG = "freshpath"
+    PRECONDITIONS = (
+        "image_missing",
+        "env_file_missing",
+        "snapshot_unmaterialised",
+        "config_unreadable",
+        "embed_unreachable",
+        "store_unreachable",
+    )
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, state: str | None
+    ) -> None:
+        self.monkeypatch = monkeypatch
+        self.tmp_path = tmp_path
+        self.project = _make_project(tmp_path, self.SLUG)
+        self.container_name = f"lore-{self.SLUG}"
+        self.env_file = tmp_path / f"{self.SLUG}.env"
+        self.env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+        self.events: list[tuple[str, list[str]]] = []
+        # An empty host snapshot root: harmless while the config is live-only, and the
+        # thing a static tier fails against in the snapshot case.
+        self.snapshot_root = tmp_path / "lore-snapshot"
+        monkeypatch.setattr(lore_deploy, "SNAPSHOT_ROOT", self.snapshot_root)
+        self.reader = _install_config_reader(monkeypatch, tmp_path)
+        monkeypatch.setattr(lore_deploy, "_container_state", lambda name: state)
+
+        def _recording_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if cmd and cmd[0] == "podman":
+                self.events.append(("podman", list(cmd)))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(lore_deploy, "_run", _recording_run)
+        self._probe("_image_exists", "precondition:image", True)
+        self._probe("_probe_embed", "precondition:embed", lore_deploy._EXIT_OK)
+        self._probe("_probe_surreal", "precondition:store", lore_deploy._EXIT_OK)
+
+        def _recording_launch(project: Path, config_path: Path, env_file: Path) -> None:
+            self.events.append(("launch", []))
+
+        monkeypatch.setattr(lore_deploy, "_launch_container", _recording_launch)
+        for later_step in ("_await_bind", "_gate_artifact"):
+            monkeypatch.setattr(lore_deploy, later_step, lambda *a, **k: lore_deploy._EXIT_OK)
+        monkeypatch.setattr(
+            lore_deploy, "_merge_mcp_from_config", lambda *a, **k: _LORE_SERVER_PORT
+        )
+
+    def _probe(self, attribute: str, label: str, answer: object) -> None:
+        def _recording_probe(*_args: object, **_kwargs: object) -> object:
+            self.events.append((label, []))
+            return answer
+
+        self.monkeypatch.setattr(lore_deploy, attribute, _recording_probe)
+
+    def fail(self, precondition: str) -> None:
+        """Break exactly ONE launch precondition the way it really fails."""
+        if precondition == "image_missing":
+            self._probe("_image_exists", "precondition:image", False)
+        elif precondition == "env_file_missing":
+            self.env_file.unlink()
+        elif precondition == "snapshot_unmaterialised":
+            # A real static root whose tier is absent under the (empty) host snapshot root.
+            self.reader = ConfigReaderFake.install(
+                self.monkeypatch,
+                self.tmp_path / "config-reader-static",
+                server_port=_LORE_SERVER_PORT,
+                server_path=_LORE_MOUNT_PATH,
+                static_tiers=RECORDED_STATIC_TIERS[:1],
+            )
+        elif precondition == "config_unreadable":
+            # A lore.yaml that fails schema validation, so the config read raises (R2).
+            document = realistic_config_document(server_port=_LORE_SERVER_PORT)
+            document["server"]["port"] = "nine-thousand"
+            self.reader = ConfigReaderFake.install(
+                self.monkeypatch, self.tmp_path / "config-reader-invalid", document=document
+            )
+        elif precondition == "embed_unreachable":
+            self._probe("_probe_embed", "precondition:embed", lore_deploy._EXIT_ERROR)
+        elif precondition == "store_unreachable":
+            self._probe("_probe_surreal", "precondition:store", lore_deploy._EXIT_ERROR)
+        else:
+            raise ValueError(f"unknown precondition {precondition!r}")
+
+    def run_verb_start(self) -> int:
+        """Act; a raw raise out of verb_start is itself a contract failure (exit loudly)."""
+        try:
+            return lore_deploy.verb_start(self.project, self.env_file, no_wait=True)
+        except (RuntimeError, subprocess.CalledProcessError) as error:
+            pytest.fail(
+                f"the fresh-path verb_start must return _EXIT_ERROR, never raise; raised "
+                f"{error!r} after events {self.events}"
+            )
+
+    def container_mutations(self) -> list[list[str]]:
+        """podman commands that name THIS container with a non-read-only verb."""
+        return [
+            argv
+            for kind, argv in self.events
+            if kind == "podman"
+            and self.container_name in argv
+            and _podman_verb(argv) not in _PODMAN_READ_ONLY_VERBS
+        ]
+
+    def index_of(self, label: str) -> int:
+        return next(i for i, (kind, _) in enumerate(self.events) if kind == label)
+
+
+class TestVerbStartFreshPathParity:
+    """Contract (RULING-fresh-path.md): the fresh start path obeys the recreate path's rule.
+
+    Item 1: a refused fresh start leaves an existing EXITED ``lore-<slug>`` container in
+    place, for EVERY launch precondition (∀, each driven to fail). Removing it is allowed
+    only once every precondition has passed, immediately before the launch.
+    Item 2: every failure ``_launch_container`` documents (``RuntimeError``,
+    ``subprocess.CalledProcessError``) becomes ``_EXIT_ERROR`` with the error's own text on
+    stderr, never a raw raise (the A1 rule, now on the fresh path too).
+    """
+
+    @pytest.mark.parametrize("precondition", _FreshPathArrangement.PRECONDITIONS)
+    def test_a_refused_fresh_start_leaves_the_exited_container_in_place(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, precondition: str
+    ) -> None:
+        arrangement = _FreshPathArrangement(monkeypatch, tmp_path, state="exited")
+        arrangement.fail(precondition)
+
+        return_code = arrangement.run_verb_start()
+
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"a fresh start with {precondition} must refuse with _EXIT_ERROR; got {return_code}"
+        )
+        assert arrangement.container_mutations() == [], (
+            f"a refused fresh start ({precondition}) must leave the exited "
+            f"{arrangement.container_name} untouched; it issued "
+            f"{arrangement.container_mutations()}"
+        )
+        assert ("launch", []) not in arrangement.events, (
+            f"a refused fresh start ({precondition}) must not launch; events {arrangement.events}"
+        )
+
+    def test_the_exited_container_is_removed_after_every_precondition_and_before_launch(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Positive control for item 1: with every precondition passing, the stale exited
+        container IS removed (``podman run --name`` would collide with it otherwise), and
+        that removal comes after the last precondition and before the launch."""
+        arrangement = _FreshPathArrangement(monkeypatch, tmp_path, state="exited")
+
+        return_code = arrangement.run_verb_start()
+
+        assert return_code == lore_deploy._EXIT_OK
+        mutations = arrangement.container_mutations()
+        assert [_podman_verb(argv) for argv in mutations] == ["rm"], (
+            f"a passing fresh start must remove the exited container exactly once; "
+            f"mutations {mutations}"
+        )
+        removal = next(
+            i for i, (kind, argv) in enumerate(arrangement.events)
+            if kind == "podman" and argv in mutations
+        )
+        last_precondition = max(
+            i for i, (kind, _) in enumerate(arrangement.events) if kind.startswith("precondition:")
+        )
+        assert last_precondition < removal < arrangement.index_of("launch"), (
+            f"the exited container may be removed only after EVERY precondition and right "
+            f"before the launch; events {arrangement.events}"
+        )
+
+    @pytest.mark.parametrize(
+        "launch_error",
+        [
+            pytest.param(
+                RuntimeError(
+                    "refusing to launch: 1 static tier(s) declared in lore.yaml are not "
+                    "materialised (absent or empty) under the host snapshot root: "
+                    "surrealdb-docs at /home/lore/docker/mcp/lore-snapshot/surrealdb-docs"
+                ),
+                id="runtime_error_refusal",
+            ),
+            pytest.param(
+                subprocess.CalledProcessError(
+                    returncode=125,  # podman's "container/run setup failed" exit code
+                    cmd=["podman", "run", "-d", "--name", "lore-freshpath", lore_deploy.IMAGE],
+                ),
+                id="called_process_error_podman_run",
+            ),
+        ],
+    )
+    def test_a_failed_fresh_launch_exits_loudly_with_the_errors_text(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        launch_error: Exception,
+    ) -> None:
+        arrangement = _FreshPathArrangement(monkeypatch, tmp_path, state=None)
+
+        def _failing_launch(project: Path, config_path: Path, env_file: Path) -> None:
+            arrangement.events.append(("launch", []))
+            raise launch_error
+
+        monkeypatch.setattr(lore_deploy, "_launch_container", _failing_launch)
+
+        return_code = arrangement.run_verb_start()
+
+        assert return_code == lore_deploy._EXIT_ERROR, (
+            f"a failed fresh launch must return _EXIT_ERROR; got {return_code}"
+        )
+        stderr = capsys.readouterr().err
+        assert str(launch_error) in stderr, (
+            f"stderr must carry the launch error's own text {str(launch_error)!r}; got {stderr!r}"
+        )
