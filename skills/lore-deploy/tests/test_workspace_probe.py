@@ -74,6 +74,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import lore_deploy  # noqa: E402  (path must be extended before this import)
+from config_reader_fake import ConfigReaderFake  # noqa: E402  (same sys.path extension)
 
 # The real repo root: skills/lore-deploy/tests/<this file>.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -756,7 +757,11 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         monkeypatch.setattr(
             lore_deploy, "_read_server_block", lambda config_path: (_HOST, 9201, _MOUNT_PATH)
         )
-        monkeypatch.setattr(lore_deploy, "_read_config_field", lambda c, e: "0")
+        # A live-only config agreeing with the server block above (no static roots, so
+        # no launch consults the snapshot); answers by meaning, never by expr keyword.
+        ConfigReaderFake.install(
+            monkeypatch, tmp_path / "config-reader", server_port=9201, server_path=_MOUNT_PATH
+        )
 
         ran: list[str] = []
 
@@ -884,7 +889,11 @@ class TestTheProbesAreWiredIntoTheDeployVerb:
         monkeypatch.setattr(
             lore_deploy, "_read_server_block", lambda config_path: (_HOST, port, _MOUNT_PATH)
         )
-        monkeypatch.setattr(lore_deploy, "_read_config_field", lambda c, e: "0")
+        # A live-only config agreeing with the server block above (no static roots, so
+        # no launch consults the snapshot); answers by meaning, never by expr keyword.
+        ConfigReaderFake.install(
+            monkeypatch, tmp_path / "config-reader", server_port=port, server_path=_MOUNT_PATH
+        )
         if bound is not None:
             monkeypatch.setattr(lore_deploy, "_probe_mcp_port", lambda *a, **k: bound)
         _install_fake_container(monkeypatch, container_tree)

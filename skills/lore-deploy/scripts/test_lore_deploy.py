@@ -16,9 +16,17 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import lore_deploy
 import pytest
+from config_reader_fake import (
+    RECORDED_STATIC_TIERS,
+    ConfigReaderFake,
+    realistic_config_document,
+    write_config_document,
+)
+from loremaster.source.snapshot import SnapshotLayout
 
 
 def test_launch_container_uses_host_user_home_and_shared_manifest_mount(
@@ -36,8 +44,9 @@ def test_launch_container_uses_host_user_home_and_shared_manifest_mount(
     """
     captured: dict[str, list[str]] = {}
     monkeypatch.setattr(lore_deploy, "_run", lambda cmd, **kw: captured.setdefault("cmd", cmd))
-    # No static roots → no /source mount; keeps this test about the user/home/manifest wiring.
-    monkeypatch.setattr(lore_deploy, "_read_config_field", lambda *a, **k: "0")
+    # A live-only config (no static roots → no snapshot bind); keeps this test about the
+    # user/home/manifest wiring.
+    ConfigReaderFake.install(monkeypatch, tmp_path / "config-reader")
 
     project = tmp_path / "demo_project"
     project.mkdir()
@@ -91,20 +100,22 @@ def test_start_when_already_running_still_rewires_mcp_json(
     project = tmp_path / PROJECT_SLUG
     project.mkdir()
     # verb_start pre-flight: returns _EXIT_ERROR if lore.yaml is absent.
-    # Contents are irrelevant — _read_config_field is stubbed below.
+    # A presence marker only: config VALUES come from the ConfigReaderFake below.
     (project / "lore.yaml").write_text("# stub lore config\n", encoding="utf-8")
 
     # Simulate the already-running container state (the bug's trigger condition).
     monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "running")
 
-    # Stub the config field reader so no subprocess into the loremaster venv runs.
-    # Dispatches on the ``expr`` string as the real _read_config_field would.
-    def _stub_read_config_field(config_path: Path, expr: str) -> str:
-        if "port" in expr:
-            return str(LORE_SERVER_PORT)  # must be int-parseable; same unit as server.port
-        return LORE_MOUNT_PATH  # mount path must start with "/"
-
-    monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+    # The config field reader answers by MEANING over a real config holding this port
+    # and mount (no subprocess into the loremaster venv), however production spells
+    # its expressions.
+    ConfigReaderFake.install(
+        monkeypatch,
+        tmp_path / "config-reader",
+        slug=PROJECT_SLUG,
+        server_port=LORE_SERVER_PORT,
+        server_path=LORE_MOUNT_PATH,
+    )
 
     # Record (do NOT call) _launch_container so we can assert it was NOT invoked.
     # The already-running path must never re-launch/recreate the container.
@@ -211,13 +222,19 @@ def _make_project(tmp_path: Path, slug: str) -> Path:
     return project
 
 
-def _stub_read_config_field(config_path: Path, expr: str) -> str:
-    """Stub for _read_config_field: returns port or mount path based on expr keyword."""
-    if "port" in expr:
-        return str(_LORE_SERVER_PORT)
-    if "static" in expr:
-        return "0"  # no static roots → no /source mount
-    return _LORE_MOUNT_PATH
+def _install_config_reader(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ConfigReaderFake:
+    """Patch _read_config_field with the shared meaning-based fake over a live-only config.
+
+    The config holds the server port + mount these tests assert on and NO static roots,
+    so no launch binds the snapshot. The fake answers whatever expression production
+    asks (a port, a mount, the static-root count) from that config, never by keyword.
+    """
+    return ConfigReaderFake.install(
+        monkeypatch,
+        tmp_path / "config-reader",
+        server_port=_LORE_SERVER_PORT,
+        server_path=_LORE_MOUNT_PATH,
+    )
 
 
 def _stub_artifact_gates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,7 +344,7 @@ class TestVerbStartStaleImageRecreateBehavior:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
-        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(monkeypatch, tmp_path)
 
         # Record _launch_container calls (the real one would shell out to podman run).
         launch_calls: list[tuple[Path, Path, Path]] = []
@@ -389,10 +406,9 @@ class TestVerbStartStaleImageRecreateBehavior:
             f"container; got {len(launch_calls)} call(s)"
         )
 
-        # 4. .mcp.json was re-merged (the _read_config_field stub returns our port).
+        # 4. .mcp.json was re-merged (the config reader fake holds our port + mount).
         #    Because _run is stubbed, the real subprocess for merge_mcp_json does not
-        #    run here — we verify _read_config_field was called with port/mount exprs
-        #    by asserting the returned port matches our constant via the stub.
+        #    run here, so this test does not assert on the merged file.
         #    The full .mcp.json write is covered by test_start_when_already_running_still_rewires_mcp_json.
 
         # 5. MCP-reconnect reminder was printed (operator must reconnect after new image).
@@ -447,7 +463,7 @@ class TestVerbStartStaleImageRecreateBehavior:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(lore_deploy, "_run", _recording_run)
-        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(monkeypatch, tmp_path)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
 
@@ -546,7 +562,7 @@ class TestVerbStartStaleImageRecreateBehavior:
         monkeypatch.setattr(lore_deploy, "_probe_embed", lambda *a, **k: lore_deploy._EXIT_OK)
         monkeypatch.setattr(lore_deploy, "_probe_surreal", lambda *a, **k: lore_deploy._EXIT_OK)
 
-        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(monkeypatch, tmp_path)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
 
@@ -830,7 +846,7 @@ class _RecreatePathFixture:
         self.monkeypatch.setattr(
             lore_deploy, "_image_id", lambda image: _CURRENT_IMAGE_ID
         )
-        self.monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(self.monkeypatch, self.tmp_path)
 
     def install_run_recorder(self) -> None:
         """Record (and succeed) every podman command issued via _run."""
@@ -1310,10 +1326,10 @@ class TestProbeSurreal:
 
     _RPC_URL = "ws://127.0.0.1:18500/rpc"
 
-    def _stub_url_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Stub the config read so the probe reads our fixed surreal.url."""
-        monkeypatch.setattr(
-            lore_deploy, "_read_config_field", lambda config_path, expr: self._RPC_URL
+    def _stub_url_read(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Install the meaning-based config reader over a config whose surreal.url is ours."""
+        ConfigReaderFake.install(
+            monkeypatch, tmp_path / "config-reader", surreal_url=self._RPC_URL
         )
 
     def _record_run(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
@@ -1341,7 +1357,7 @@ class TestProbeSurreal:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A clean /health 200 returns _EXIT_OK and never shells out to podman."""
-        self._stub_url_read(monkeypatch)
+        self._stub_url_read(monkeypatch, tmp_path)
         monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: True)
         run_calls = self._record_run(monkeypatch)
         state_calls: list[str] = []
@@ -1367,7 +1383,7 @@ class TestProbeSurreal:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """/health down + container Exited -> ``podman start lore-surreal`` -> re-probe OK."""
-        self._stub_url_read(monkeypatch)
+        self._stub_url_read(monkeypatch, tmp_path)
         # First probe False (down), second probe True (came up after start).
         health_results = iter([False, True])
         monkeypatch.setattr(
@@ -1404,7 +1420,7 @@ class TestProbeSurreal:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """/health down + no container -> _EXIT_ERROR, no podman call, loud stderr."""
-        self._stub_url_read(monkeypatch)
+        self._stub_url_read(monkeypatch, tmp_path)
         monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: False)
         monkeypatch.setattr(lore_deploy, "_container_state", lambda name: None)
         run_calls = self._record_run(monkeypatch)
@@ -1431,7 +1447,7 @@ class TestProbeSurreal:
         start-if-stopped is the ONLY mutation; a running-but-unhealthy node is not
         something this gate may stop/recreate — it fails loud instead.
         """
-        self._stub_url_read(monkeypatch)
+        self._stub_url_read(monkeypatch, tmp_path)
         monkeypatch.setattr(lore_deploy, "_probe_surreal_health", lambda url, **kw: False)
         monkeypatch.setattr(lore_deploy, "_container_state", lambda name: "running")
         run_calls = self._record_run(monkeypatch)
@@ -1466,7 +1482,7 @@ class TestVerbStartGatesOnSurreal:
             return lore_deploy._EXIT_OK
 
         monkeypatch.setattr(lore_deploy, "_probe_surreal", _recording_probe_surreal)
-        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(monkeypatch, tmp_path)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
@@ -1507,7 +1523,7 @@ class TestVerbStartGatesOnSurreal:
         monkeypatch.setattr(
             lore_deploy, "_probe_surreal", lambda config_path: lore_deploy._EXIT_ERROR
         )
-        monkeypatch.setattr(lore_deploy, "_read_config_field", _stub_read_config_field)
+        _install_config_reader(monkeypatch, tmp_path)
 
         launch_calls: list[tuple[Path, Path, Path]] = []
         monkeypatch.setattr(
@@ -1982,3 +1998,195 @@ class TestConformVerbDispatch:
             f"main(['conform']) must forward the default image {_DEFAULT_CONFORM_IMAGE!r} to "
             f"_run_conformance; got {received!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The shared config-reader fake is gated by ORACLE equality with the real reader.
+# ---------------------------------------------------------------------------
+# Captured at import, before any test patches the module attribute.
+_REAL_READ_CONFIG_FIELD = lore_deploy._read_config_field
+_REAL_RUN = lore_deploy._run
+
+# Non-default values everywhere a deploy test branches, so an answer that ignored the
+# held config (a default, a constant, a keyword guess) cannot agree by coincidence.
+_ORACLE_SLUG = "acme_widgets"
+_ORACLE_SERVER_PORT = lore_deploy.DEFAULT_PORT_BASE + 7
+_ORACLE_SERVER_PATH = "/lore/mcp"
+_ORACLE_SURREAL_URL = "wss://surreal.example:8000/rpc"
+# Two prefix-sharing recorded static tiers: one materialised on the host, one not.
+_ORACLE_MATERIALISED_TIER, _ORACLE_MISSING_TIER = RECORDED_STATIC_TIERS[:2]
+
+
+class _OracleTee:
+    """A ``_read_config_field`` that asks BOTH readers and records ``(expr, real, fake)``.
+
+    Production keeps running on the REAL answer, so every driver below follows its real
+    path and reaches every read it would make in production.
+    """
+
+    def __init__(self, fake: ConfigReaderFake) -> None:
+        self.fake = fake
+        self.rows: list[tuple[str, str, str]] = []
+
+    def __call__(self, config_path: Path, expr: str) -> str:
+        real = _REAL_READ_CONFIG_FIELD(config_path, expr)
+        self.rows.append((expr, real, self.fake(config_path, expr)))
+        return real
+
+
+class TestConfigReaderFakeOracle:
+    """Contract: ``config_reader_fake.ConfigReaderFake`` answers EXACTLY what the real
+    subprocess reader answers, for every read production makes, over one realistic config.
+
+    The production read set is reached by DRIVING the production functions that own the
+    reads (``_read_server_block``, ``_merge_mcp_from_config``, ``_probe_surreal``,
+    ``_probe_embed``, ``_require_launchable_snapshot`` → ``_unmaterialised_static_tiers``),
+    never by retyping their expression strings: a new or respelled read inside one of
+    them is compared automatically. Uses the real loremaster subprocess (about one
+    interpreter start per read), so this class is the slow part of the skill suite.
+    """
+
+    @pytest.fixture
+    def oracle(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[_OracleTee, Path]:
+        """A realistic config on disk for the real reader, the same document in the fake."""
+        document = realistic_config_document(
+            slug=_ORACLE_SLUG,
+            server_port=_ORACLE_SERVER_PORT,
+            server_path=_ORACLE_SERVER_PATH,
+            surreal_url=_ORACLE_SURREAL_URL,
+            static_tiers=(_ORACLE_MATERIALISED_TIER, _ORACLE_MISSING_TIER),
+        )
+        project = tmp_path / _ORACLE_SLUG
+        project.mkdir()
+        config_path = write_config_document(document, project / "lore.yaml")
+        snapshot_root = tmp_path / "lore-snapshot"
+        # Placed where the PRODUCTION layout puts the tier, never a retyped root/tier.
+        tier_dir = SnapshotLayout(snapshot_root).materialization_dir(_ORACLE_MATERIALISED_TIER)
+        tier_dir.mkdir(parents=True)
+        (tier_dir / "index.mdx").write_text("# materialised\n", encoding="utf-8")
+        monkeypatch.setattr(lore_deploy, "SNAPSHOT_ROOT", snapshot_root)
+        tee = _OracleTee(ConfigReaderFake(document, tmp_path / "config-reader"))
+        monkeypatch.setattr(lore_deploy, "_read_config_field", tee)
+        return tee, config_path
+
+    @staticmethod
+    def _assert_agrees(tee: _OracleTee, driver: str) -> None:
+        assert tee.rows, f"{driver} made no config read; the oracle compared nothing"
+        disagreements = [row for row in tee.rows if row[1] != row[2]]
+        assert not disagreements, (
+            f"{driver}: the fake disagrees with the real reader on (expr, real, fake) "
+            f"{disagreements}"
+        )
+
+    def test_server_block_reads_agree(self, oracle: tuple[_OracleTee, Path]) -> None:
+        tee, config_path = oracle
+        host, port, path = lore_deploy._read_server_block(config_path)
+        self._assert_agrees(tee, "_read_server_block")
+        # The compared values are the declared ones, so agreement is not agreement on "".
+        assert (port, path) == (_ORACLE_SERVER_PORT, _ORACLE_SERVER_PATH)
+
+    def test_mcp_merge_reads_agree(
+        self, oracle: tuple[_OracleTee, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tee, config_path = oracle
+        merged: list[tuple[int, str]] = []
+        monkeypatch.setattr(
+            lore_deploy, "_merge_mcp", lambda project, slug, port, mount: merged.append((port, mount))
+        )
+        lore_deploy._merge_mcp_from_config(config_path.parent, _ORACLE_SLUG, config_path)
+        self._assert_agrees(tee, "_merge_mcp_from_config")
+        assert merged == [(_ORACLE_SERVER_PORT, _ORACLE_SERVER_PATH)]
+
+    def test_surreal_probe_read_agrees(
+        self, oracle: tuple[_OracleTee, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tee, config_path = oracle
+        probed: list[str] = []
+
+        def _healthy(url: str) -> bool:
+            probed.append(url)
+            return True
+
+        monkeypatch.setattr(lore_deploy, "_probe_surreal_health", _healthy)
+        assert lore_deploy._probe_surreal(config_path) == lore_deploy._EXIT_OK
+        self._assert_agrees(tee, "_probe_surreal")
+        assert probed == [lore_deploy._surreal_health_url(_ORACLE_SURREAL_URL)]
+
+    def test_embed_probe_reads_agree(
+        self, oracle: tuple[_OracleTee, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        tee, config_path = oracle
+        probe_argvs: list[list[str]] = []
+
+        def _run_without_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            # The probe script would hit the network; the reader's own subprocess runs for real.
+            if str(lore_deploy.PROBE_SCRIPT) in cmd:
+                probe_argvs.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "2048\n", "")
+            return _REAL_RUN(cmd, **kwargs)
+
+        monkeypatch.setattr(lore_deploy, "_run", _run_without_probe)
+        env_file = tmp_path / "secrets.env"
+        env_file.write_text("LORE_TEI_KEY=test\n", encoding="utf-8")
+        assert lore_deploy._probe_embed(config_path, env_file) == lore_deploy._EXIT_OK
+        self._assert_agrees(tee, "_probe_embed")
+        assert len(probe_argvs) == 1 and "--expect-dim" in probe_argvs[0]
+
+    def test_snapshot_precondition_reads_agree_with_a_failing_tier(
+        self, oracle: tuple[_OracleTee, Path]
+    ) -> None:
+        tee, config_path = oracle
+        with pytest.raises(RuntimeError, match=_ORACLE_MISSING_TIER):
+            lore_deploy._require_launchable_snapshot(config_path)
+        self._assert_agrees(tee, "_require_launchable_snapshot (one tier unmaterialised)")
+        # The agreement covers a NON-EMPTY per-tier answer naming the missing tier (not
+        # "{}"). Deliberately no pin on HOW MANY reads production makes: one merged read
+        # or two separate ones is production's choice (T8 — the coupling this removes).
+        assert any(_ORACLE_MISSING_TIER in real for _, real, _ in tee.rows), tee.rows
+
+    def test_snapshot_precondition_reads_agree_when_every_tier_is_materialised(
+        self, oracle: tuple[_OracleTee, Path]
+    ) -> None:
+        tee, config_path = oracle
+        tier_dir = SnapshotLayout(lore_deploy.SNAPSHOT_ROOT).materialization_dir(_ORACLE_MISSING_TIER)
+        tier_dir.mkdir(parents=True)
+        (tier_dir / "index.mdx").write_text("# materialised\n", encoding="utf-8")
+        assert lore_deploy._require_launchable_snapshot(config_path) is True
+        self._assert_agrees(tee, "_require_launchable_snapshot (all materialised)")
+
+    def test_multi_argument_print_semantics_agree(self, oracle: tuple[_OracleTee, Path]) -> None:
+        """The reader is ``print(<expr>)``: a comma expression prints space-separated."""
+        tee, config_path = oracle
+        answer = lore_deploy._read_config_field(config_path, "c.server.host, c.server.port")
+        self._assert_agrees(tee, "a comma expression")
+        assert answer == f"{tee.fake.document['server']['host']} {_ORACLE_SERVER_PORT}"
+
+    @pytest.mark.parametrize(
+        "break_document",
+        [
+            pytest.param(lambda d: d["server"].update(port="nine-thousand"), id="bad_port_type"),
+            pytest.param(lambda d: d.update(serverr={"port": 1}), id="unknown_top_level_key"),
+        ],
+    )
+    def test_both_readers_raise_runtime_error_on_an_invalid_config(
+        self, tmp_path: Path, break_document: Any
+    ) -> None:
+        document = realistic_config_document(static_tiers=RECORDED_STATIC_TIERS[:1])
+        break_document(document)
+        config_path = write_config_document(document, tmp_path / "lore.yaml")
+        fake = ConfigReaderFake(document, tmp_path / "config-reader")
+        for expr in ("c.server.port", lore_deploy._STATIC_ROOT_COUNT_EXPR):
+            with pytest.raises(RuntimeError, match="failed to read"):
+                _REAL_READ_CONFIG_FIELD(config_path, expr)
+            with pytest.raises(RuntimeError, match="failed to read"):
+                fake(config_path, expr)
+
+    def test_both_readers_raise_runtime_error_on_a_failing_expression(self, tmp_path: Path) -> None:
+        document = realistic_config_document()
+        config_path = write_config_document(document, tmp_path / "lore.yaml")
+        fake = ConfigReaderFake(document, tmp_path / "config-reader")
+        # Control: the document itself is valid — both readers answer a real field.
+        assert _REAL_READ_CONFIG_FIELD(config_path, "c.project.slug") == fake(config_path, "c.project.slug")
+        for reader in (_REAL_READ_CONFIG_FIELD, fake):
+            with pytest.raises(RuntimeError, match="failed to read"):
+                reader(config_path, "c.server.no_such_field")
