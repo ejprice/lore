@@ -561,6 +561,59 @@ def _pytest_declared_default_patterns() -> list[str]:
     return [str(pattern) for pattern in inidict["python_files"][2]]
 
 
+#: The probe's conftest: records the ``norecursedirs`` value pytest put in force, through the
+#: PUBLIC ``Config.getini`` / ``Config.rootpath`` API, into a file beside itself.
+_NORECURSEDIRS_PROBE_CONFTEST = '''\
+import json
+
+
+def pytest_configure(config):
+    (config.rootpath / "norecursedirs.json").write_text(json.dumps(config.getini("norecursedirs")))
+'''
+
+#: Environment variables that would let the SURROUNDING session's configuration leak into the
+#: probe (an ``-o norecursedirs=…`` in ``PYTEST_ADDOPTS``, a plugin in ``PYTEST_PLUGINS``).
+_PROBE_SCRUBBED_ENVIRONMENT_VARIABLES = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")
+
+
+def _pytest_norecursedirs_in_force(rootdir: Path, *, ini_options: str = "") -> list[str]:
+    """The ``norecursedirs`` value the installed pytest puts in force in a throwaway rootdir.
+
+    Runs ``sys.executable -m pytest`` — the interpreter, hence the pytest, running this
+    suite — in ``rootdir`` with its own ``pytest.ini`` (``-c``), so no ancestor configuration of
+    wherever the suite runs from can be picked up, and reads the value back through the public
+    ``Config.getini``. With ``ini_options`` empty, the ini sets nothing and the answer is pytest's
+    own DEFAULT. This is the public route the private ``_inidict`` read above avoids for
+    ``python_files``: the subprocess gives ``getini`` a parsed configuration whose only input is
+    the rootdir this helper built.
+    """
+    (rootdir / "pytest.ini").write_text(f"[pytest]\n{ini_options}")
+    (rootdir / "conftest.py").write_text(_NORECURSEDIRS_PROBE_CONFTEST)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in _PROBE_SCRUBBED_ENVIRONMENT_VARIABLES
+    }
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-c", str(rootdir / "pytest.ini"), "--rootdir", str(rootdir),
+         "-p", "no:cacheprovider", "-q", str(rootdir)],
+        cwd=rootdir,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # An empty rootdir collects nothing; any OTHER exit means the probe itself broke, and its
+    # answer (or the absence of one) would say nothing about pytest's default.
+    assert completed.returncode == pytest.ExitCode.NO_TESTS_COLLECTED, (
+        f"the norecursedirs probe exited {completed.returncode}, not NO_TESTS_COLLECTED:\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+    recorded: list[str] = json.loads((rootdir / "norecursedirs.json").read_text())
+    return recorded
+
+
 def findings_of(repo_root: Path, *, exemptions: Sequence[gg.Exemption] = ()) -> list[gg.UngatedFile]:
     """The findings of a verdict, for the pins that only care about those.
 
@@ -2286,6 +2339,33 @@ class TestTheExecutionAxisScope:
             f"the instrument's pinned default {list(gg.PYTEST_DEFAULT_TEST_FILE_PATTERNS)!r} no "
             f"longer matches what the installed pytest declares "
             f"({_pytest_declared_default_patterns()!r}). Update the constant and its citation."
+        )
+
+    def test_the_declared_norecursedirs_default_matches_what_pytest_puts_in_force(
+        self, tmp_path: Path
+    ) -> None:
+        # THE #569 DRIFT GUARD — the same hazard as the python_files guard above. The instrument
+        # carries pytest's `norecursedirs` default as a hand-copied constant (stdlib-only), and
+        # it decides which conftests LEG B calls execution-covered; a pytest release that
+        # changes the default would make the copy silently wrong.
+        #
+        # CONTROL leg first: a probe that answered from anything but the in-force configuration
+        # (a crash read as empty, a constant) would make the equality below meaningless, so it
+        # must report a configured value back verbatim before its default answer is trusted.
+        control_root = tmp_path / "configured"
+        control_root.mkdir()
+        sentinel = "nrd569_sentinel_dir"
+        assert _pytest_norecursedirs_in_force(
+            control_root, ini_options=f"norecursedirs = {sentinel}\n"
+        ) == [sentinel], "the probe does not report the configured norecursedirs; it cannot be trusted"
+
+        default_root = tmp_path / "unconfigured"
+        default_root.mkdir()
+        in_force = _pytest_norecursedirs_in_force(default_root)
+        assert list(gg.PYTEST_DEFAULT_NORECURSEDIRS) == in_force, (
+            f"the instrument's pinned norecursedirs default {list(gg.PYTEST_DEFAULT_NORECURSEDIRS)!r} "
+            f"no longer matches what the installed pytest puts in force with nothing configured "
+            f"({in_force!r}). Update the constant and its citation."
         )
 
     def test_a_configured_python_files_override_replaces_the_defaults(self, tmp_path: Path) -> None:
