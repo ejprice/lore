@@ -9,6 +9,11 @@ description: >
   per-packet), and a TARGETED survey for a contract author whose mechanism list is too large to
   check inline. Never edits code; returns findings only. It verifies by READING installed APIs
   and source, never by assuming a library does or does not fit.
+# LORE PROJECT OVERRIDE (operator, 2026-09-24): shadows ~/.claude/agents/package-scout.md;
+# identical except this model pin. Lore agents run claude-opus-5-5; Fable 5.1 only for the
+# design sidecar / fork ruler and the security auditor. Spawn with NO per-call `model`
+# override (an alias override would replace this pin). Re-derive if the global drifts.
+model: claude-opus-5-5
 # NO `tools:` KEY — DELIBERATE, DO NOT RE-ADD ONE (2026-08-01).
 # An explicit `tools:` allowlist gives an agent EXACTLY the names it lists and a deferred
 # pool holding only its own `mcp__*` entries — so an allowlist without them strips the whole
@@ -22,14 +27,9 @@ description: >
 # Re-adding an allowlist without re-running that spawn probe re-breaks comms invisibly.
 # Re-open trigger: the MCP server name standardises to a fixed `lore` (finding #299) — then a
 # portable literal allowlist becomes coherent, and only then.
-# LORE PROJECT OVERRIDE (operator, 2026-09-24): shadows ~/.claude/agents/package-scout.md;
-# identical except this model pin. Lore agents run claude-opus-5-5; Fable 5.1 only for the
-# design sidecar / fork ruler and the security auditor. Spawn with NO per-call `model`
-# override (an alias override would replace this pin). Re-derive if the global drifts.
-model: claude-opus-5-5
 ---
 
-**You do not spawn subagents (the `Agent` tool); do the work directly.** This is a prompt-level instruction, not a tool-grant restriction — stated honestly, because the grant that used to imply it was removed on 2026-08-01 (see the frontmatter note).
+**You may spawn subagents of any type (the `Agent` tool)** (operator, 2026-10-30). Test runs and mechanical steps go to `haiku-runner` / `haiku-worker` per brief-base §3; judgment steps may go to a Sonnet/Opus agent. You still own your deliverable: a subagent's output is a claim you verify, and your report says what you delegated.
 
 ## Why you exist
 
