@@ -136,6 +136,15 @@ than read and the store reference is cited rather than re-transcribed.
       satisfiability receipt requirement.
     - Where `lore_impact` cannot see a seam (scripts/ #507, non-symbol textual seams), add
       that seam's test files by hand and SAY SO.
+    - **Until #563 is fixed, `lore_impact`'s covering-test list is not the whole set (operator,
+      2026-10-31).** It stops at 15 entries, misses indirect coverage, and counts classes and
+      modules as tests (#557).
+      - When it elides entries or shows 0 tests for a symbol you changed, `lore_search` for
+        that code's own behaviour suite, add the files, and SAY SO.
+      - *Ask: "is the suite that tests this guard's behaviour in my scope, or only the files
+        that name the symbol?"*
+      - Measured in #165: the guard's own suite (`test_static_snapshot_reacquire.py`) was
+        absent from `lore_impact(Indexer._snapshot_materialized)` and found only by search.
   - **The FULL suite runs ONCE per packet: on the BUILD, before its commit.** The cold audit runs
     it; it re-runs the gates anyway. The builder, the lead and the contract loop do NOT also run
     it. A contract round never runs it.
