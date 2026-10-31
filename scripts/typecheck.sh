@@ -76,6 +76,11 @@ cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." || exit 1
 #   was the tree nothing verified. ``search_score_survey.py::_make_embedder`` still carries
 #   the ⚠ marking it a composition root; the half of that warning reading "the one no type
 #   gate can see" is what this entry retires.
+# * ``conftest.py`` is the repo-root production-store guard (#165): it loads into EVERY
+#   pytest session of every member, so a type defect in it reaches every suite, yet it sits
+#   under none of the directory roots above. It is a FILE root, the finest grain a root has,
+#   so it covers itself and nothing beside it (``gated_ground.typecheck_roots`` accepts a
+#   file entry; ``scripts/gated_ground.py`` LEG A reported it as ungated before this entry).
 #
 # ⚠ THE MEASUREMENT, so the next reader does not re-derive it (2026-07-29, at ``f033a87``,
 # over ``git ls-files 'scripts/*.py'`` so an in-flight untracked file cannot inflate it):
@@ -86,7 +91,7 @@ cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." || exit 1
 # debt and are now zero. Re-derive before citing; do not inherit any of the three.
 #
 # Every entry is its own iteration, never merged into one ``mypy`` call (see the header).
-MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval scripts)
+MEMBERS=(lorerunes lorescribe loresigil loremaster skills docs/eval scripts conftest.py)
 
 # Per-root MYPYPATH additions. A root absent from this map runs with the ``mypy_path``
 # declared in ``pyproject.toml`` and nothing more.

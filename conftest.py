@@ -11,11 +11,15 @@ lorerunes, ``scripts``, ``docs/eval`` and both ``skills/lore-deploy`` trees alik
 HOW
 ---
 1. At import, :class:`ProductionStoreGuard` wraps ``socket.socket.connect`` and
-   ``socket.socket.connect_ex``. A connection to a loopback address on :data:`PRODUCTION_STORE_PORT`
-   never leaves the process: ``connect`` raises :class:`ConnectionRefusedError` and ``connect_ex``
-   returns ``ECONNREFUSED``, exactly as if nothing listened there. Every other address passes through
-   untouched. ``urllib``, ``socket.create_connection``, asyncio and websockets all reach the socket
-   through ``connect``, so one layer covers them.
+   ``socket.socket.connect_ex``. A connection on :data:`PRODUCTION_STORE_PORT` whose destination reaches
+   loopback never leaves the process: ``connect`` raises :class:`ConnectionRefusedError` and
+   ``connect_ex`` returns ``ECONNREFUSED``, exactly as if nothing listened there. A destination reaches
+   loopback when it is a loopback address or ``localhost`` (the shared predicate
+   ``lorerunes.posture.host_is_loopback``), the unspecified address (``0.0.0.0`` / ``::``, which Linux
+   reroutes to loopback on connect), or a name that resolves to either (``localhost.localdomain`` via
+   ``/etc/hosts``). Every other address passes through untouched. ``urllib``,
+   ``socket.create_connection``, ``ssl``, asyncio and websockets all reach the socket through
+   ``connect``, so one layer covers them.
 2. Every refused attempt is RECORDED. Each report pytest makes (a collector's collect report; a
    test's setup, call and teardown reports) drains the record, and a non-empty drain turns that report
    into a failure naming the node and every attempt. So the test fails even when the code under test
@@ -36,15 +40,21 @@ KNOWN BOUNDS (each with its re-open trigger)
 * Subprocess and C-extension clients (``curl``, ``podman exec … surreal``, a C library opening its own
   socket) never call Python's ``socket.socket`` and are invisible to this guard. Re-open trigger: a
   test that shells out to a store client, or a C-extension store driver.
-* Loopback only (``127.0.0.0/8``, ``::1``, the hostname ``localhost``). Production listens on
-  ``127.0.0.1:18500`` only (measured: lore-surreal runs ``Network=host``). Re-open trigger: production
-  binds a non-loopback address.
-* A hostname other than ``localhost`` that resolves to loopback (e.g. this box's own name) is
-  recognised only when the client resolves it before connecting, as ``create_connection``, ``urllib``,
-  asyncio and websockets do; a raw ``sock.connect(("<hostname>", port))`` resolves inside the C call
-  and passes. Re-open trigger: a test that connects to the store by machine hostname.
-* An attempt made after the last test's teardown report (a plugin's ``pytest_sessionfinish``) is
-  still refused, so production is never reached, but no report remains to fail.
+* Loopback destinations only (above). Production listens on ``127.0.0.1:18500`` only (measured:
+  lore-surreal runs ``Network=host``), so a LAN address of this host on :18500 reaches nothing and
+  passes. Re-open trigger: production binds a non-loopback address.
+* An attempt is charged to the report pytest makes NEXT, so it names the WINDOW it happened in, not
+  its author: a background thread a test started, or another plugin's hook between reports, is charged
+  to whichever node reports after it. The failure text says "made while", never "attempted by".
+* An attempt made after the last report is still REFUSED, so production is never reached, but it is
+  charged to nothing and the run does not fail. That covers a plugin's ``pytest_sessionfinish`` or
+  ``pytest_unconfigure``, an ``atexit`` handler, and a thread that outlives the session. It is not
+  closed: there is no report to fail, and a session-level exit code does not cover xdist, because
+  ``xdist.dsession.DSession.worker_workerfinished`` reads a worker's exit status only to detect a
+  keyboard interrupt (``== 2``), so a worker's late attempt could not reach the controller's verdict.
+  Every in-test shape the threat model names (a test, a fixture of any scope, a module import) reports
+  before the session ends. Re-open trigger: a lore plugin, ``atexit`` hook or session-outliving thread
+  that talks to a SurrealDB store.
 """
 
 from __future__ import annotations
@@ -57,15 +67,13 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
+from lorerunes.posture import host_is_loopback
 
 # The PRODUCTION lore-surreal store's port. Source of truth: the URL the skill scaffolds into every new
 # ``lore.yaml``, ``_scaffold_lore_yaml`` in ``skills/lore-deploy/scripts/lore_deploy.py``
 # (``url: ws://127.0.0.1:18500/rpc``). Production code must not import a conftest, so this constant
 # cites the scaffold rather than being read by it (ruling: RULING-guard-forks.md, "Port literal").
 PRODUCTION_STORE_PORT = 18500
-
-# The one loopback NAME the guard recognises; numeric loopback addresses are decided by ``ipaddress``.
-LOOPBACK_HOSTNAME = "localhost"
 
 # Index of the port in an AF_INET ``(host, port)`` / AF_INET6 ``(host, port, flowinfo, scope_id)`` tuple.
 _ADDRESS_HOST_INDEX = 0
@@ -80,6 +88,74 @@ _CONNECT_EX_DOOR = "socket.connect_ex"
 
 # How a report with no node id (the session's own collect report) is named in the failure text.
 _SESSION_NODE_LABEL = "the pytest session (outside any test)"
+
+
+def _reaches_loopback(host: str) -> bool:
+    """Say whether connecting to the literal ``host`` lands on this machine's loopback interface.
+
+    Args:
+        host: A destination host: an IP literal or a hostname, as handed to ``connect``.
+
+    Returns:
+        ``True`` for ``localhost`` (any case) or a loopback IP, decided by the shared
+        ``lorerunes.posture.host_is_loopback``, and for the unspecified address (``0.0.0.0`` / ``::``).
+        ``False`` for any other literal and for every other hostname (resolution is the caller's job).
+    """
+    # The resolver ignores case (``LOCALHOST`` resolves like ``localhost``), and a guard must fail toward
+    # refusing, so the shared predicate, which compares case-sensitively for bind hosts, sees it lowered.
+    if host_is_loopback(host.lower()):
+        return True
+    try:
+        # Linux reroutes a connect to the unspecified address to loopback (probed: ``0.0.0.0`` reaches a
+        # listener on ``127.0.0.1``, ``::`` one on ``::1``). As a BIND host it is not loopback, which is
+        # why this case lives here and not in the shared bind-host predicate.
+        return ipaddress.ip_address(host).is_unspecified
+    except ValueError:
+        return False
+
+
+def _host_text(host: object) -> str | None:
+    """Return the host of an inet address as text, or ``None`` when it cannot name one.
+
+    Args:
+        host: The first element of the address tuple handed to ``connect``.
+
+    Returns:
+        The host as ``str``. ``connect`` also accepts an ASCII ``bytes``/``bytearray`` host
+        (``(b"127.0.0.1", port)`` connects), so that is decoded. ``None`` for anything else.
+    """
+    if isinstance(host, str):
+        return host
+    if isinstance(host, bytes | bytearray):
+        try:
+            return host.decode("ascii")
+        except UnicodeDecodeError:
+            # Not ASCII: the real connect rejects it too, so it reaches nothing.
+            return None
+    return None
+
+
+def _resolves_to_loopback(host: str, port: int) -> bool:
+    """Say whether a hostname resolves to an address that reaches loopback.
+
+    A raw ``connect(("<name>", port))`` resolves the name inside the C call, after the guard has
+    looked at it. So an alias such as ``localhost.localdomain`` (``/etc/hosts``) is resolved here. Only
+    production-port connections get this far, so nothing else pays for the lookup.
+
+    Args:
+        host: A host that is not itself a loopback or unspecified literal.
+        port: The port being connected to, passed to the resolver as ``connect`` would.
+
+    Returns:
+        ``True`` when any resolved address reaches loopback; ``False`` when none does, or the name does
+        not resolve.
+    """
+    try:
+        resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, ValueError):
+        # Unresolvable (or unencodable): the real connect fails the same way and reaches nothing.
+        return False
+    return any(_reaches_loopback(str(sockaddr[_ADDRESS_HOST_INDEX])) for *_, sockaddr in resolved)
 
 
 class ProductionStoreGuard:
@@ -112,22 +188,15 @@ class ProductionStoreGuard:
                 than an inet tuple is never the production store.
 
         Returns:
-            ``True`` when the address is ``localhost`` or a loopback IP on the production port.
+            ``True`` when the address is on the production port and its host reaches loopback.
         """
         if not isinstance(address, tuple) or len(address) <= _ADDRESS_PORT_INDEX:
             return False
-        if address[_ADDRESS_PORT_INDEX] != self._production_port:
+        port = address[_ADDRESS_PORT_INDEX]
+        host = _host_text(address[_ADDRESS_HOST_INDEX])
+        if port != self._production_port or host is None:
             return False
-        host = address[_ADDRESS_HOST_INDEX]
-        if not isinstance(host, str):
-            return False
-        if host.lower() == LOOPBACK_HOSTNAME:
-            return True
-        try:
-            return ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            # A hostname other than localhost: not resolved here (KNOWN BOUND, module docstring).
-            return False
+        return _reaches_loopback(host) or _resolves_to_loopback(host, port)
 
     def _record(self, door: str, address: object) -> str:
         """Record one refused attempt and return the refusal's text.
@@ -192,10 +261,12 @@ class ProductionStoreGuard:
         if not attempts:
             return
         node = report.nodeid or _SESSION_NODE_LABEL
+        # "made while", not "attempted by": the guard knows the report window, not which code dialled.
         verdict = (
-            f"{node} attempted the PRODUCTION SurrealDB store (loopback port {self._production_port}) "
-            f"{len(attempts)} time(s); each was refused before it left the process, but tests must "
-            f"never point at :{self._production_port} (CLAUDE.md §Deploy). Attempts: {'; '.join(attempts)}"
+            f"{len(attempts)} attempt(s) on the PRODUCTION SurrealDB store (loopback port "
+            f"{self._production_port}) were made while {node} ran its {report.when} phase; each was "
+            f"refused before it left the process, but tests must never point at "
+            f":{self._production_port} (CLAUDE.md §Deploy). Attempts: {'; '.join(attempts)}"
         )
         if report.failed:
             report.longrepr = f"{report.longrepr}\n\n{verdict}"
