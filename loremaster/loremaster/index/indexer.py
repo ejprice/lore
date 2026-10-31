@@ -392,7 +392,12 @@ class Indexer:
             (matched to a tier by the provider's ``tier`` attribute).
         config: The validated :class:`~loremaster.config.LoreConfig`.
         snapshot_root: The on-disk root static tiers are materialised under and
-            served from (bind-mounted ``:ro`` at ``/source`` in the live server).
+            walked from; :meth:`_snapshot_materialized` checks it before a
+            version-stamp skip. In the deployed container it is the ``:ro`` bind
+            at ``loremaster.server._DEFAULT_SNAPSHOT_ROOT``. KNOWN BOUND #166:
+            an in-container re-acquire of a static tier cannot succeed, because
+            the corpora ``source:`` paths are not mounted AND this snapshot bind
+            is ``:ro``.
         snapshot_stamper: Optional :class:`~loremaster.index.snapshots.
             SnapshotStamper` (the capability layer, mirrors ``code_graph``).
             When wired, :meth:`index_all` and :meth:`rebuild_all` stamp a new
@@ -1060,12 +1065,9 @@ class Indexer:
             ``True`` when the materialisation dir exists and contains at least one
             entry; ``False`` when it is absent or empty.
         """
-        materialization_dir = self._snapshot_layout.materialization_dir(tier)
-        if not materialization_dir.is_dir():
-            return False
-        # ``any(iterdir())`` is True for a dir with at least one entry; an empty dir
-        # is as broken as an absent one for serving, so it fails the guard too.
-        return any(materialization_dir.iterdir())
+        # Delegates to the layout's one predicate, which lore-deploy's launch
+        # precondition also evaluates over the host root (RULING-S1-S2).
+        return self._snapshot_layout.is_materialized(tier)
 
     @staticmethod
     def _all_vectors_usable(vectors: list[list[float] | None]) -> bool:

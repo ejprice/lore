@@ -3,8 +3,11 @@
 The always-on loremaster server never carries the static tiers
 (community/enterprise/pip/stdlib) on its own disk. A batch indexer materialises
 each tier into a host snapshot dir (``~/docker/mcp/lore-snapshot/<tier>/…``,
-plan AMENDMENT 1 / D8); the server bind-mounts that dir ``:ro`` at ``/source``
-and locates files within it through this module — the ONE place that knows
+plan AMENDMENT 1 / D8); the deployed container bind-mounts that dir ``:ro`` at
+the server's snapshot root (``loremaster.server._DEFAULT_SNAPSHOT_ROOT``, i.e.
+``/home/lore/docker/mcp/lore-snapshot`` under ``HOME=/home/lore``; there is no
+``/source`` mount since the #165 stopgap, 2026-10-31), and the indexer and code
+graph locate files within it through this module — the ONE place that knows
 where a tier's files live.
 
 ``SnapshotLayout`` is that single source of truth, in BOTH directions:
@@ -67,8 +70,8 @@ class SnapshotLayout:
 
     Args:
         snapshot_root: The on-disk root every tier's files are materialised
-            under and served from (bind-mounted ``:ro`` at ``/source`` in the
-            live server).
+            under (in the deployed container, the ``:ro`` bind at
+            ``loremaster.server._DEFAULT_SNAPSHOT_ROOT``).
     """
 
     def __init__(self, snapshot_root: Path) -> None:
@@ -105,6 +108,30 @@ class SnapshotLayout:
             The directory a :class:`SourceProvider` materialises ``tier`` into.
         """
         return self.tier_locations(tier)[0]
+
+    def is_materialized(self, tier: str) -> bool:
+        """True iff ``tier``'s materialisation dir is a directory holding at least one entry.
+
+        The ONE answer to "is this tier materialised under this root" (RULING-S1-S2,
+        receipts ``docs/plans/v2/receipts/2026-10-31-165/``). Two callers share it:
+        the server's boot guard (``Indexer._snapshot_materialized``) evaluates it over
+        the container's snapshot root, and lore-deploy's launch precondition evaluates
+        it over the HOST snapshot root before a launch. A dir that is absent, a regular
+        file, or an empty dir serves no file, so each reads ``False``.
+
+        Args:
+            tier: The tier name.
+
+        Returns:
+            ``True`` when :meth:`materialization_dir` is a directory with at least
+            one entry; ``False`` otherwise.
+        """
+        materialization_dir = self.materialization_dir(tier)
+        if not materialization_dir.is_dir():
+            return False
+        # ``any(iterdir())`` is True for a dir with at least one entry; an empty dir
+        # is as broken as an absent one for serving.
+        return any(materialization_dir.iterdir())
 
     def resolve(self, tier: str, rel_path: str) -> Path | None:
         """Resolve ``(tier, rel_path)`` to a SAFE, existing absolute path (C5 + C4).

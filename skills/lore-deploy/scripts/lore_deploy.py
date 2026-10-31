@@ -39,7 +39,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,13 @@ REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 SURREAL_CONTAINER_NAME = "lore-surreal"
 
 MANIFEST_DIR = Path.home() / ".local" / "state" / "lore"
-SNAPSHOT_ROOT = Path.home() / "docker" / "mcp" / "lore-snapshot"
+# The static-tier snapshot's place under a HOME. The host cold index writes it under
+# the host HOME; the server reads it at ``loremaster.server._DEFAULT_SNAPSHOT_ROOT``
+# (``Path.home()/docker/mcp/lore-snapshot``), i.e. under the CONTAINER's HOME. One
+# subpath feeds both ends, because this stdlib-only dispatcher cannot import the
+# server's constant (test_launch_snapshot_bind.py pins the agreement, #165).
+_SNAPSHOT_SUBPATH = PurePosixPath("docker", "mcp", "lore-snapshot")
+SNAPSHOT_ROOT = Path.home() / _SNAPSHOT_SUBPATH
 
 # The image's non-root ``lore`` user HOME. loremaster writes the manifest +
 # ``<slug>.graph.db`` under ``$HOME/.local/state/lore`` (Path.home()), so the host
@@ -79,6 +85,18 @@ SNAPSHOT_ROOT = Path.home() / "docker" / "mcp" / "lore-snapshot"
 # the same manifest + code-graph the host cold-index wrote.
 CONTAINER_HOME = "/home/lore"
 CONTAINER_STATE_DIR = f"{CONTAINER_HOME}/.local/state/lore"
+# Where the host snapshot is bound in the container: the server's default snapshot
+# root under ``HOME=CONTAINER_HOME``. The retired ``/source`` target had no reader (#165).
+CONTAINER_SNAPSHOT_ROOT = str(PurePosixPath(CONTAINER_HOME) / _SNAPSHOT_SUBPATH)
+
+# ``_read_config_field`` expression counting the config's static roots: the roots
+# whose snapshot the launch must bind. ``'static'`` is spelled out rather than
+# imported as ``loremaster.config.WATCH_STATIC``: the value is fixed by the
+# ``RootConfig.watch`` Literal, and importing it inside the expression would need
+# ``__import__``, which the expr-substring config-reader stubs misread as a port read.
+_STATIC_ROOT_COUNT_EXPR = "sum(1 for r in c.roots if r.watch == 'static')"
+# The host cold index that materialises the static tiers (the refusal's remedy).
+_COLD_INDEX_MODULE = "loremaster.index"
 
 # Free-port search for a fresh scaffold starts here (the plan's example port).
 DEFAULT_PORT_BASE = 9201
@@ -653,15 +671,124 @@ server:
 # ---------------------------------------------------------------------------
 # Run invocation.
 # ---------------------------------------------------------------------------
+def _unmaterialised_static_tiers(config_path: Path) -> dict[str, str]:
+    """Map each static tier NOT materialised under the host ``SNAPSHOT_ROOT`` to its dir.
+
+    Evaluates ``loremaster.source.snapshot.SnapshotLayout.is_materialized`` (the
+    predicate the server's boot guard uses) over the HOST root, through the
+    loremaster venv via :func:`_read_config_field`, so the tier→dir layout and the
+    "present and non-empty" rule are never re-implemented here (RULING-S1-S2).
+
+    Args:
+        config_path: The project's ``lore.yaml``.
+
+    Returns:
+        ``{tier: host materialisation dir}`` for every failing static tier, in
+        config order; empty when every static tier is materialised.
+
+    Raises:
+        RuntimeError: The config fails to parse or validate.
+    """
+    # ``_read_config_field`` evaluates exactly ONE expression after binding ``c``, so
+    # the imports ride ``__import__`` and ``for layout in [...]`` binds the host-root
+    # layout once for the whole comprehension.
+    host_layout = (
+        "__import__('loremaster.source.snapshot', fromlist=['SnapshotLayout'])"
+        f".SnapshotLayout(Path({str(SNAPSHOT_ROOT)!r}))"
+    )
+    failing_tier_dirs = (
+        "{r.tier: str(layout.materialization_dir(r.tier)) "
+        f"for layout in [{host_layout}] for r in c.roots "
+        "if r.watch == 'static' and not layout.is_materialized(r.tier)}"
+    )
+    failing: dict[str, str] = json.loads(
+        _read_config_field(config_path, f"__import__('json').dumps({failing_tier_dirs})")
+    )
+    return failing
+
+
+def _require_launchable_snapshot(config_path: Path) -> bool:
+    """The ONE launch precondition for the static snapshot (RULING-F1-pin4 R1).
+
+    Called by :func:`_launch_container` and, before any teardown, by both
+    :func:`verb_start` paths (through :func:`_gate_snapshot_precondition`). The
+    static roots are counted FIRST and the per-tier check runs only when there is
+    at least one, so a live-only project never consults the snapshot at all.
+
+    Args:
+        config_path: The project's ``lore.yaml``.
+
+    Returns:
+        ``True`` when the config declares static roots (the launch must bind the
+        snapshot); ``False`` for a live-only project.
+
+    Raises:
+        RuntimeError: The config fails to read (R2), or a static tier is not
+            materialised on the host. The message names each failing tier and its
+            dir, the host root, and the paste-ready cold-index command.
+    """
+    static_root_count = _read_config_field(config_path, _STATIC_ROOT_COUNT_EXPR)
+    if static_root_count in ("", "0"):
+        return False
+    failing = _unmaterialised_static_tiers(config_path)
+    if failing:
+        tier_lines = "; ".join(f"{tier} at {tier_dir}" for tier, tier_dir in failing.items())
+        # Launching anyway is a boot crash: the server's guard reads the tier as
+        # unmaterialised, re-acquires it, and fails boot (#165).
+        raise RuntimeError(
+            f"refusing to launch: {len(failing)} static tier(s) declared in {config_path} "
+            f"are not materialised (absent or empty) under the host snapshot root "
+            f"{SNAPSHOT_ROOT}: {tier_lines}. Materialise them with the cold index, then "
+            f"retry: `python -m {_COLD_INDEX_MODULE} --config {config_path}`"
+        )
+    return True
+
+
+def _gate_snapshot_precondition(config_path: Path, container_name: str) -> int:
+    """``verb_start``'s pre-teardown form of :func:`_require_launchable_snapshot`.
+
+    Args:
+        config_path: The project's ``lore.yaml``.
+        container_name: The ``lore-<slug>`` container, named in the refusal.
+
+    Returns:
+        ``_EXIT_OK`` when the launch may proceed; ``_EXIT_ERROR`` (with the
+        refusal on stderr) when the config fails to read or a static tier is
+        unmaterialised. Nothing has been stopped, removed or launched either way.
+    """
+    try:
+        _require_launchable_snapshot(config_path)
+    except RuntimeError as error:
+        print(
+            f"start: {error} (not launching {container_name}; any running container "
+            f"is left untouched).",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    return _EXIT_OK
+
+
 def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
     """Launch the lore container for ``project`` (the proven host pattern).
 
     Runs as the host ``uid:gid`` (with ``--userns=keep-id`` that maps 1:1, so the
     bind-mounted manifest dir is writable) and sets ``HOME`` to the image's lore
     home, so loremaster's manifest + code-graph land in the mounted state dir and
-    survive stop/start. Adds the ``/source`` snapshot bind only when the config
-    declares a ``static`` root (a bare single-live-tree project does not need it).
+    survive stop/start.
+
+    When the config declares a ``static`` root, the host ``SNAPSHOT_ROOT`` is bound
+    read-only at ``CONTAINER_SNAPSHOT_ROOT``, the server's default snapshot root
+    (``loremaster.server._DEFAULT_SNAPSHOT_ROOT`` under ``HOME=CONTAINER_HOME``);
+    nothing is bound at the retired ``/source`` (#165). A live-only project gets no
+    snapshot bind. Before any podman call, :func:`_require_launchable_snapshot`
+    refuses with ``RuntimeError`` when any static tier is unmaterialised on the
+    host, since that container would crash at boot.
+
+    Raises:
+        RuntimeError: The config fails to read, or a static tier is unmaterialised.
+        subprocess.CalledProcessError: ``podman run`` fails.
     """
+    binds_snapshot = _require_launchable_snapshot(config_path)
     slug = project.name
     cmd = [
         "podman", "run", "-d", "--name", f"lore-{slug}",
@@ -675,13 +802,9 @@ def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
         "-e", "LORE_CONFIG=/workspace/lore.yaml",
     ]
     # Only a STATIC root needs the read-only snapshot mount (live roots are served
-    # straight from /workspace). Count static roots specifically — a live-only
-    # project has roots but no snapshot to mount.
-    static_root_count = _read_config_field(
-        config_path, "sum(1 for r in c.roots if r.watch == 'static')"
-    )
-    if static_root_count not in ("", "0") and SNAPSHOT_ROOT.exists():
-        cmd += ["-v", f"{SNAPSHOT_ROOT}:/source:ro"]
+    # straight from /workspace).
+    if binds_snapshot:
+        cmd += ["-v", f"{SNAPSHOT_ROOT}:{CONTAINER_SNAPSHOT_ROOT}:ro"]
     cmd.append(IMAGE)
     _run(cmd)
 
@@ -853,6 +976,10 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
                     file=sys.stderr,
                 )
                 return _EXIT_ERROR
+            # The static snapshot (and the config read it needs, R2) is a launch
+            # precondition too: a relaunch over an unmaterialised tier crashes boot.
+            if (rc := _gate_snapshot_precondition(config_path, container_name)) != _EXIT_OK:
+                return rc
             # The embedder + the SurrealDB store are launch preconditions too: a
             # relaunched server refuses to come up if `/embed` or the store is
             # unreachable (its startup probe gate). Validating them BEFORE teardown
@@ -873,9 +1000,11 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
             try:
                 _launch_container(project, config_path, env_file)
             except subprocess.CalledProcessError as error:
+                # The error's own text carries the failed command (R3), which the
+                # operator needs to reproduce the failure.
                 print(
                     f"start: relaunch of {container_name} failed "
-                    f"(podman exit {error.returncode}); the stale container was "
+                    f"(podman exit {error.returncode}: {error}); the stale container was "
                     f"already removed — inspect podman logs and retry `start`.",
                     file=sys.stderr,
                 )
@@ -903,6 +1032,8 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     if not env_file.exists():
         print(f"start: secrets env-file {env_file} not found.", file=sys.stderr)
         return _EXIT_ERROR
+    if (rc := _gate_snapshot_precondition(config_path, container_name)) != _EXIT_OK:
+        return rc
 
     # Pre-flight: embedder reachable + the unified SurrealDB store reachable.
     # Schema + dim ownership (including rebuild-on-fingerprint-change) lives in
