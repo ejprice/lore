@@ -2369,15 +2369,35 @@ _CONFTEST_CHAIN_TESTPATHS: tuple[str, ...] = ("loremaster/tests", "skills/lore-d
 _CONFTEST_CHAIN_MEMBERS: tuple[str, ...] = ("loremaster", "skills", "tools/probes")
 
 #: Conftests pytest LOADS for :data:`_CONFTEST_CHAIN_TESTPATHS`, with the shape each one forces.
-#: Measured, not reasoned: pytest 9.0.3 (2026-10-31), with every conftest below recording its
-#: own import, loaded exactly these and none of the negatives below (oracle in the #566
-#: contract report).
+#: Both this table and the next are MEASURED ON EVERY RUN, not recorded once:
+#: :meth:`TestAConftestIsCoveredWherePytestLoadsIt.test_the_load_tables_are_what_pytest_itself_loads`
+#: builds every placement below with a conftest that records its own import, runs the installed
+#: pytest, and compares. (First measured with pytest 9.0.3 on 2026-10-31.)
 _CONFTESTS_PYTEST_LOADS: tuple[tuple[str, str], ...] = (
     ("conftest.py", "the repository root: an ancestor of every testpath"),
     ("loremaster/conftest.py", "the immediate parent of the FIRST testpath"),
     ("skills/conftest.py", "a GRANDPARENT of the SECOND testpath"),
     ("skills/lore-deploy/conftest.py", "the immediate parent of the second testpath"),
-    ("loremaster/tests/conftest.py", "inside a testpath (the pre-#566 rule, kept)"),
+    # A conftest AT a testpath's root is covered by BOTH legs (its directory equals the
+    # testpath, and `is_under` is reflexive), so it cannot tell a build that dropped the
+    # "under" leg from a correct one. The three NESTED rows below can: only the under leg
+    # reaches them (#566 Phase 5 audit, C2: "drop the under leg" passed all 329 pins).
+    ("loremaster/tests/conftest.py", "AT the root of a testpath (the pre-#566 rule, kept)"),
+    ("loremaster/tests/store/conftest.py", "NESTED one level inside the first testpath"),
+    # Two levels down: a build that covers only a testpath's immediate subdirectories, or
+    # that tests `parent.parent == testpath`, leaves this one out.
+    ("loremaster/tests/store/lease/conftest.py", "NESTED two levels inside the first testpath"),
+    # Inside the SECOND testpath: a build that applies the under leg to the first entry only.
+    ("skills/lore-deploy/tests/unit/conftest.py", "NESTED inside the SECOND testpath"),
+)
+
+#: The test module each nested conftest directory carries, so every directory on the chain is
+#: a live collection target, as in the real tree. (pytest also loads a conftest in a nested
+#: directory with no test module — measured — but that shape is not what the tree holds.)
+_CONFTEST_CHAIN_NESTED_TEST_MODULES: tuple[str, ...] = (
+    "loremaster/tests/store/test_lease_renewal.py",
+    "loremaster/tests/store/lease/test_lease_expiry.py",
+    "skills/lore-deploy/tests/unit/test_port_parse.py",
 )
 
 #: Conftests pytest does NOT load for the same testpaths. Each defeats one plausible wrong
@@ -2394,17 +2414,38 @@ _CONFTESTS_PYTEST_DOES_NOT_LOAD: tuple[tuple[str, str], ...] = (
     ("docs/consult/conftest.py", "a plain sibling directory"),
     # tools/ is an ancestor of the `tools/probes` MEMBERS root and of no testpath.
     ("tools/conftest.py", "an ancestor of a TYPECHECK root, not of a testpath"),
+    # #569: UNDER a testpath, yet never loaded. pytest does not recurse into a directory that
+    # matches `norecursedirs` (its default list holds `build` and `.*`), so a conftest there
+    # is never imported. A build whose "under a testpath" leg is a bare path check covers both.
+    ("loremaster/tests/build/conftest.py", "under a testpath, in a default `norecursedirs` dir"),
+    ("loremaster/tests/.hidden/conftest.py", "under a testpath, in a hidden (`.*`) directory"),
 )
 
 
-@pytest.fixture()
-def conftest_chain_repository(tmp_path: Path) -> FixtureRepository:
-    """Every conftest placement that the ancestor rule must decide, in one repository.
+#: Every placement both tables decide, for the pins that quantify over all of them.
+_EVERY_CONFTEST_PLACEMENT: tuple[tuple[str, str], ...] = (
+    *_CONFTESTS_PYTEST_LOADS,
+    *_CONFTESTS_PYTEST_DOES_NOT_LOAD,
+)
 
-    One test file per testpath, so both entries are live collection targets; the remaining
-    tracked files are the conftests in :data:`_CONFTESTS_PYTEST_LOADS` and
-    :data:`_CONFTESTS_PYTEST_DOES_NOT_LOAD`, each a DIFFERENT path forcing a different wrong
-    build. ``git init`` from empty, like every fixture in this file.
+#: The conftest body the live oracle plants: it records its own repo-relative path on import.
+_RECORDING_CONFTEST_BODY = (
+    "import os\n"
+    "import pathlib\n"
+    "\n"
+    "_ROOT = pathlib.Path(os.environ['LORE_566_ORACLE_ROOT']).resolve()\n"
+    "with open(os.environ['LORE_566_ORACLE_LOADED'], 'a', encoding='utf-8') as _record:\n"
+    "    _record.write(f'{pathlib.Path(__file__).resolve().relative_to(_ROOT).as_posix()}\\n')\n"
+)
+
+
+def _conftest_chain_repository(
+    tmp_path: Path, *, tracked_conftests: Sequence[str]
+) -> FixtureRepository:
+    """The #566 chain repository, tracking exactly ``tracked_conftests`` among the conftests.
+
+    One test file per testpath and one per nested conftest directory, so every directory on
+    a chain is a live collection target. ``git init`` from empty, like every fixture here.
     """
     repository = FixtureRepository(tmp_path)
     repository.write_typecheck_runner(members=_CONFTEST_CHAIN_MEMBERS, include_decoy_comment=False)
@@ -2425,10 +2466,25 @@ def conftest_chain_repository(tmp_path: Path) -> FixtureRepository:
     # The guard refuses a tree whose archived-receipts class matches nothing (anti-vacuity),
     # so the healthy shape carries one archived file, as every other fixture here does.
     repository.add_python_file("docs/plans/v2/receipts/2026-07-20-probes/probe_budget.py")
-    for path, _shape in (*_CONFTESTS_PYTEST_LOADS, *_CONFTESTS_PYTEST_DOES_NOT_LOAD):
+    for test_module in _CONFTEST_CHAIN_NESTED_TEST_MODULES:
+        repository.add_python_file(test_module, body=_TEST_BODY)
+    for path in tracked_conftests:
         repository.add_python_file(path, body=_TEST_BODY)
     repository.stage()
     return repository
+
+
+@pytest.fixture()
+def conftest_chain_repository(tmp_path: Path) -> FixtureRepository:
+    """Every conftest placement that the ancestor rule must decide, in one repository.
+
+    The tracked conftests are every row of :data:`_CONFTESTS_PYTEST_LOADS` and
+    :data:`_CONFTESTS_PYTEST_DOES_NOT_LOAD`, each a DIFFERENT path forcing a different wrong
+    build.
+    """
+    return _conftest_chain_repository(
+        tmp_path, tracked_conftests=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT]
+    )
 
 
 class TestAConftestIsCoveredWherePytestLoadsIt:
@@ -2482,10 +2538,11 @@ class TestAConftestIsCoveredWherePytestLoadsIt:
         )
         fate = fates_of(verdicts, path)[gg.GateAxis.EXECUTION]
         assert fate is gg.Fate.UNGATED, (
-            f"{path} ({shape}) is on no testpath's rootdir → testpath chain, so pytest never "
-            f"loads it; the guard said {fate.name}. Ancestry is path-COMPONENT-wise against the "
-            f"TESTPATHS, never a string prefix, never a shared top-level component, never the "
-            f"type gate's roots."
+            f"{path} ({shape}): pytest never loads it (measured by "
+            f"test_the_load_tables_are_what_pytest_itself_loads); the guard said {fate.name}. "
+            f"Ancestry is path-COMPONENT-wise against the TESTPATHS, never a string prefix, never "
+            f"a shared top-level component, never the type gate's roots; and pytest does not "
+            f"recurse into a `norecursedirs` directory, so being UNDER a testpath is not enough."
         )
         assert path in {
             finding.path
@@ -2507,6 +2564,122 @@ class TestAConftestIsCoveredWherePytestLoadsIt:
         assert fates[gg.GateAxis.TYPES] is gg.Fate.UNGATED, (
             f"the root conftest is under no typecheck root {list(_CONFTEST_CHAIN_MEMBERS)}, so "
             f"it is TYPES-ungated whatever pytest does; got {fates[gg.GateAxis.TYPES].name}"
+        )
+
+    def test_the_load_tables_are_what_pytest_itself_loads(self, tmp_path: Path) -> None:
+        # The expected fates above are only as good as the two tables, and a table recorded
+        # once is an inherited claim (#566 Phase 5 audit, S1: three "measured" negatives had
+        # never been placed in the oracle). So the oracle runs here, against the installed
+        # pytest, on every gate run: every placement gets a conftest that records its own
+        # import, and the loaded set must equal the LOADS table exactly.
+        root = tmp_path / "oracle"
+        root.mkdir()
+        (root / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\n"
+            f"testpaths = {json.dumps(list(_CONFTEST_CHAIN_TESTPATHS))}\n",
+            encoding="utf-8",
+        )
+        test_modules = (
+            "loremaster/tests/test_store_lease.py",
+            "skills/lore-deploy/tests/test_port_probe.py",
+            *_CONFTEST_CHAIN_NESTED_TEST_MODULES,
+        )
+        for relative in test_modules:
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text("def test_placeholder():\n    assert True\n", encoding="utf-8")
+        for path, _shape in _EVERY_CONFTEST_PLACEMENT:
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(_RECORDING_CONFTEST_BODY, encoding="utf-8")
+        loaded_record = tmp_path / "loaded.txt"
+        loaded_record.write_text("", encoding="utf-8")
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")
+        }
+        environment |= {
+            "LORE_566_ORACLE_ROOT": str(root),
+            "LORE_566_ORACLE_LOADED": str(loaded_record),
+        }
+        completed = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, (
+            f"the oracle's pytest run failed, so it measured nothing:\n{completed.stdout}\n"
+            f"{completed.stderr}"
+        )
+        collected = {line.split("::", 1)[0] for line in completed.stdout.splitlines() if "::" in line}
+        assert collected == set(test_modules), (
+            f"positive control: every chain directory must be a live collection target, else a "
+            f"conftest could be unloaded for a fixture reason; collected {sorted(collected)}"
+        )
+        loaded = set(loaded_record.read_text(encoding="utf-8").split())
+        expected = {path for path, _shape in _CONFTESTS_PYTEST_LOADS}
+        assert loaded == expected, (
+            f"pytest {pytest.__version__} loaded {sorted(loaded)} for testpaths "
+            f"{list(_CONFTEST_CHAIN_TESTPATHS)}; the LOADS table says {sorted(expected)}. "
+            f"Loaded but not in the table: {sorted(loaded - expected)}. In the table but not "
+            f"loaded: {sorted(expected - loaded)}. Fix the tables to match pytest, then the guard."
+        )
+
+
+class TestTheCollectorKeyAgreesWithTheExecutionVerdict:
+    """#566 (Phase 5 audit, C3): the guard answers "does pytest load this conftest?" in two
+    places, and the two answers must be the same answer.
+
+    * The EXECUTION verdict asks it of a TRACKED conftest: covered iff pytest loads it.
+    * The collector's memo key asks it of an UNTRACKED one: its content must move the key iff
+      pytest loads it, because a loaded conftest can silence the whole tree
+      (``pytest_ignore_collect``) and a key blind to it serves the old healthy answer.
+
+    Both are pinned per placement, over every row of both tables, and asserted EQUAL. A build
+    that changes the rule in one place and not the other (the hazard of two copies of one
+    policy) disagrees on some row. The key leg is observed through the fingerprint, which is
+    what the memo actually keys on, not through how the address set is assembled.
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "shape"),
+        _EVERY_CONFTEST_PLACEMENT,
+        ids=[path for path, _shape in _EVERY_CONFTEST_PLACEMENT],
+    )
+    def test_the_memo_key_and_the_verdict_give_one_answer_per_placement(
+        self, tmp_path: Path, path: str, shape: str
+    ) -> None:
+        repository = _conftest_chain_repository(tmp_path, tracked_conftests=())
+        testpaths = gg.pytest_testpaths(repository.root)
+        tracked = gg.tracked_python_files(repository.root)
+        assert path not in tracked, f"precondition: {path} starts absent"
+        before = gg._collector_input_fingerprint(repository.root, testpaths, tracked)
+
+        # The untracked shape is the one only the key can see: a silencer.
+        conftest = repository.root / path
+        conftest.parent.mkdir(parents=True, exist_ok=True)
+        conftest.write_text(
+            "def pytest_ignore_collect(collection_path, config):\n    return True\n",
+            encoding="utf-8",
+        )
+        key_sees_it = gg._collector_input_fingerprint(repository.root, testpaths, tracked) != before
+
+        # The tracked shape is the one the verdict decides. A body that silences collection
+        # would make the collector refuse, which is a different question, so it gets the
+        # ordinary body before it is staged.
+        conftest.write_text(_TEST_BODY, encoding="utf-8")
+        repository.stage()
+        verdicts = assert_every_tracked_file_is_accounted_for(repository.root, exemptions=())
+        verdict_covers_it = fates_of(verdicts, path)[gg.GateAxis.EXECUTION] is gg.Fate.COVERED
+
+        pytest_loads_it = path in {loaded for loaded, _shape in _CONFTESTS_PYTEST_LOADS}
+        assert (key_sees_it, verdict_covers_it) == (pytest_loads_it, pytest_loads_it), (
+            f"{path} ({shape}): pytest {'LOADS' if pytest_loads_it else 'does NOT load'} it for "
+            f"testpaths {list(_CONFTEST_CHAIN_TESTPATHS)}, but the memo key "
+            f"{'moved' if key_sees_it else 'did NOT move'} for its content and the execution "
+            f"verdict {'covered' if verdict_covers_it else 'did NOT cover'} it. One rule, two "
+            f"answers: a key that misses a loaded conftest serves a stale healthy verdict; a "
+            f"verdict that misses it reports honest ground as ungated."
         )
 
 
