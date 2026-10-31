@@ -36,6 +36,7 @@ fails at startup rather than as an opaque 401 later.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -54,6 +55,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from slugify import slugify
 
 from lorerunes import is_blank
 
@@ -102,6 +104,43 @@ SLUG_PATTERN: str = r"^[a-z0-9][a-z0-9_]*$"
 # every other strict field on the model (both on direct ``ProjectConfig(...)``
 # construction and via ``LoreConfig.model_validate(...)``).
 SlugStr = Annotated[str, StringConstraints(pattern=SLUG_PATTERN)]
+
+# The separator python-slugify joins word runs with. SLUG_PATTERN admits ``_`` and
+# nothing else between alphanumerics, so the normaliser's separator must be ``_``
+# (ruling F1, RULING-568-slug.md) — python-slugify's own default ``-`` is the very
+# character SLUG_PATTERN rejects.
+SLUG_SEPARATOR: str = "_"
+
+
+def derive_project_slug(directory_name: str) -> str:
+    """Derive a ``project.slug`` from a project directory name — the ONE slug normaliser (#568).
+
+    python-slugify with :data:`SLUG_SEPARATOR` (ruling F1): case-folded, every run of
+    separators collapsed to one ``_``, leading/trailing separators stripped, non-ASCII
+    transliterated (``odoo-custom`` → ``odoo_custom``, ``café`` → ``cafe``). An already
+    valid slug derives itself, so no existing deployment is renamed. The result is
+    checked against :data:`SLUG_PATTERN` here, beside the pattern, so the normaliser and
+    the schema cannot disagree about what a valid slug is.
+
+    Args:
+        directory_name: The project directory's base name (not a path).
+
+    Returns:
+        A slug that matches :data:`SLUG_PATTERN`.
+
+    Raises:
+        ValueError: The name yields no valid slug (e.g. ``---``: nothing but
+            punctuation). The message names the directory, the field and the file the
+            operator can set by hand instead.
+    """
+    slug = slugify(directory_name, separator=SLUG_SEPARATOR)
+    if re.fullmatch(SLUG_PATTERN, slug) is None:
+        raise ValueError(
+            f"project directory {directory_name!r} has no valid lore slug (derived "
+            f"{slug!r}, which does not match {SLUG_PATTERN}); set project.slug by hand "
+            f"in the project's lore.yaml, or rename the directory"
+        )
+    return slug
 
 
 def _reject_url_userinfo(value: str) -> str:

@@ -33,8 +33,10 @@ import os
 import shlex
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -413,7 +415,8 @@ def _resolve_env_file(project: Path, explicit: str | None) -> Path:
     operator may point at a one-off secrets file and it must pass through
     untouched. When unsupplied (``explicit is None``), the file resolves
     per-slug to ``~/docker/mcp/lore-secrets/<slug>.env`` where the slug is the
-    project directory name. This is the single seam that turns
+    one :func:`_project_slug` resolves (the lore.yaml's ``project.slug``, else the
+    directory name's derived slug — #568). This is the single seam that turns
     (project, maybe-explicit) into the concrete env-file Path, called from
     :func:`main` once the project is known — never at argparse time, so an
     unsupplied flag (default ``None``) stays distinguishable from an explicit one.
@@ -421,8 +424,7 @@ def _resolve_env_file(project: Path, explicit: str | None) -> Path:
     if explicit is not None:
         # Honor an operator-supplied path verbatim — no per-slug rewriting.
         return Path(explicit)
-    slug = project.name
-    return LORE_SECRETS_DIR / f"{slug}.env"
+    return LORE_SECRETS_DIR / f"{_project_slug(project)}.env"
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +504,187 @@ def _read_server_block(config_path: Path) -> tuple[str, int, str]:
     return host, port, path
 
 
+# ---------------------------------------------------------------------------
+# Project slug (#568): ONE resolver, ONE normaliser, ONE ownership rule.
+# ---------------------------------------------------------------------------
+#: The file that declares a project's slug (and everything else lore reads).
+CONFIG_FILENAME = "lore.yaml"
+#: The container path ``_launch_container`` bind-mounts the project at.
+CONTAINER_WORKSPACE = "/workspace"
+#: The manifest ``meta`` key ``setup`` records the owning project path under (F4b).
+PROJECT_PATH_META_KEY = "project_path"
+#: The ``meta`` DDL of the historical SQLite manifest (``loremaster.index.manifest._SCHEMA``,
+#: the documented origin; the loremaster side no longer executes it). ``CREATE TABLE IF NOT
+#: EXISTS`` so a manifest that already has the table keeps it untouched.
+_MANIFEST_META_DDL = "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+#: Runs ``loremaster.config.derive_project_slug`` (the ONE normaliser) on ``argv[1]`` in the
+#: loremaster interpreter; a refusal exits non-zero with the normaliser's message on stderr
+#: (``sys.exit(str)``), never a traceback. The name travels as an argument, never as code.
+_DERIVE_SLUG_SNIPPET = (
+    "import sys\n"
+    "from loremaster.config import derive_project_slug\n"
+    "try:\n"
+    "    print(derive_project_slug(sys.argv[1]))\n"
+    "except ValueError as error:\n"
+    "    sys.exit(str(error))\n"
+)
+#: The podman format that prints the host path mounted at ``CONTAINER_WORKSPACE``.
+_WORKSPACE_SOURCE_FORMAT = (
+    f'{{{{range .Mounts}}}}{{{{if eq .Destination "{CONTAINER_WORKSPACE}"}}}}'
+    f"{{{{.Source}}}}{{{{end}}}}{{{{end}}}}"
+)
+#: The remedy every slug refusal ends with.
+_SLUG_REMEDY = f"set a different project.slug by hand in {CONFIG_FILENAME}, or rename the directory."
+
+
+class SlugRefusal(RuntimeError):
+    """A project whose slug cannot be resolved, or may not be used (ruling F5).
+
+    A ``RuntimeError`` so every verb's existing config-failure handling (``_read_config_field``
+    raises ``RuntimeError``) also turns it into ``_EXIT_ERROR`` plus a stderr line.
+    """
+
+
+def _derive_slug(project: Path) -> str:
+    """Derive ``project``'s slug from its directory name via loremaster's ONE normaliser.
+
+    Reached through :func:`_loremaster_python` (ruling F2), the same door the scaffold's
+    schema check uses, so this script stays runnable as bare ``python3``.
+
+    Raises:
+        SlugRefusal: The name has no valid slug; the message is the normaliser's (it names
+            the directory, the field and the file), plus the project path.
+    """
+    result = _run(
+        [_loremaster_python(), "-c", _DERIVE_SLUG_SNIPPET, project.name],
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"the normaliser exited {result.returncode}"
+        raise SlugRefusal(f"{detail} (project {project})")
+    return result.stdout.strip()
+
+
+def _configured_slug(config_path: Path) -> str:
+    """The ``project.slug`` a lore.yaml declares (ruling F3: the config wins)."""
+    return _read_config_field(config_path, "c.project.slug")
+
+
+def _project_slug(project: Path) -> str:
+    """THE slug resolver every verb uses: the lore.yaml's ``project.slug``, else derived.
+
+    One source of truth (ruling F3): once a lore.yaml exists its slug is honoured, an
+    operator's hand edit included; the directory name is consulted only when there is no
+    config yet (the scaffold's case).
+
+    Raises:
+        RuntimeError: The lore.yaml exists but cannot be read.
+        SlugRefusal: There is no lore.yaml and the directory name has no valid slug.
+    """
+    config_path = project / CONFIG_FILENAME
+    if config_path.exists():
+        return _configured_slug(config_path)
+    return _derive_slug(project)
+
+
+def _manifest_path(slug: str) -> Path:
+    """The host manifest file for ``slug``."""
+    return MANIFEST_DIR / f"{slug}.db"
+
+
+class ManifestOwner:
+    """The ``project_path`` ``meta`` row of one slug's manifest: who owns the slug (F4b).
+
+    Plain stdlib ``sqlite3`` because this script is the manifest file's only remaining
+    reader and writer: loremaster's SQLite ``Manifest`` was deleted post-P5 (its manifest is
+    ``SurrealManifest`` now), and :func:`_manifest_counts` already reads this file here.
+    """
+
+    def __init__(self, slug: str) -> None:
+        """Bind to ``<MANIFEST_DIR>/<slug>.db``."""
+        self.manifest = _manifest_path(slug)
+
+    def exists(self) -> bool:
+        """Whether the manifest file exists."""
+        return self.manifest.exists()
+
+    def recorded_path(self) -> str | None:
+        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
+        if not self.manifest.exists():
+            return None
+        try:
+            connection = sqlite3.connect(f"file:{self.manifest}?mode=ro", uri=True)
+            try:
+                row = connection.execute(
+                    "SELECT v FROM meta WHERE k = ?", (PROJECT_PATH_META_KEY,)
+                ).fetchone()
+            finally:
+                connection.close()
+        except sqlite3.OperationalError:
+            # No ``meta`` table: a manifest that predates every meta row is ownerless.
+            return None
+        return None if row is None else str(row[0])
+
+    def record(self, project: Path) -> None:
+        """Record ``project`` as the slug's owner (creating the file/table when absent)."""
+        MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.manifest)
+        try:
+            with connection:  # one transaction: the table and the row land together
+                connection.execute(_MANIFEST_META_DDL)
+                connection.execute(
+                    "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
+                    (PROJECT_PATH_META_KEY, str(project.resolve())),
+                )
+        finally:
+            connection.close()
+
+
+def _container_workspace_source(container_name: str) -> str | None:
+    """The host path ``container_name`` mounts at ``CONTAINER_WORKSPACE``; ``None`` if absent."""
+    result = _run(
+        ["podman", "container", "inspect", "--format", _WORKSPACE_SOURCE_FORMAT, container_name],
+        check=False,
+        capture=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _slug_collision(project: Path, slug: str) -> str | None:
+    """Why ``project`` may not use ``slug``, or ``None`` when it may (F4 + addendum).
+
+    A slug is ONE store database, manifest, container and secrets file, so a slug held by a
+    DIFFERENT project path is refused, however this project arrived at it (derived or
+    hand-set: the class lift). The holder is read from the ``lore-<slug>`` container's
+    workspace mount and from the manifest's recorded ``project_path``; either naming another
+    path refuses. A legacy manifest (no recorded path) belongs to this project when its
+    lore.yaml exists (setup backfills the row); on a FRESH setup it is an unknown owner.
+    """
+    here = project.resolve()
+    prefix = f"slug {slug!r} for {project}"
+    container_name = f"lore-{slug}"
+    mounted = _container_workspace_source(container_name)
+    if mounted is not None and Path(mounted).resolve() != here:
+        return f"{prefix} is held by {mounted} (container {container_name}); {_SLUG_REMEDY}"
+    owner = ManifestOwner(slug)
+    if not owner.exists():
+        return None
+    recorded = owner.recorded_path()
+    if recorded is None:
+        if (project / CONFIG_FILENAME).exists():
+            return None
+        return (
+            f"{prefix} is held by an unknown owner (manifest {owner.manifest} records no "
+            f"{PROJECT_PATH_META_KEY}); {_SLUG_REMEDY}"
+        )
+    if Path(recorded).resolve() != here:
+        return f"{prefix} is held by {recorded} (manifest {owner.manifest}); {_SLUG_REMEDY}"
+    return None
+
+
 def _await_bind(
     container_name: str,
     host: str,
@@ -577,13 +760,19 @@ def _gitignore_dir_names(project: Path) -> list[str]:
 def _scaffold_lore_yaml(project: Path, config_path: Path) -> None:
     """Write a fresh lore.yaml for ``project`` (called only when absent).
 
-    Seeds the slug from the directory name, a free server port, and
+    Seeds the slug from the directory name through the ONE normaliser (#568), a free
+    server port, and
     ``exclude_dirs`` from the project .gitignore (plus the always-prune set).
     The include globs default to the common code/docs surface; the operator
     should review them for the project's real layout. Validated by parsing the
-    written file through the real LoreConfig before returning.
+    written file through the real LoreConfig BEFORE it becomes ``config_path``, so a
+    scaffold either leaves a loadable lore.yaml or none.
+
+    Raises:
+        SlugRefusal: The directory name has no valid slug (nothing is written).
+        RuntimeError: The rendered template fails schema validation (nothing is written).
     """
-    slug = project.name
+    slug = _derive_slug(project)
     port = _free_port(DEFAULT_PORT_BASE)
     always_prune = [".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"]
     excludes = always_prune + [n for n in _gitignore_dir_names(project) if n not in always_prune]
@@ -594,7 +783,7 @@ def _scaffold_lore_yaml(project: Path, config_path: Path) -> None:
 schema_version: 1
 
 project:
-  slug: {slug}
+  slug: {json.dumps(slug)}
   root: .
 
 embedding:
@@ -662,13 +851,25 @@ server:
   path: /mcp
   port: {port}
 """
-    config_path.write_text(content, encoding="utf-8")
-    # Fail loud if the scaffold does not parse against the real model. Schema-only
-    # (LoreConfig.model_validate, NOT load_config): the scaffold emits env-var
-    # *names*, never secrets, so validation must not require ANTHROPIC_API_KEY to
-    # be exported — that eager key resolution is a boot concern (see setup's
-    # env-file check + load_config's fail-fast at server start).
-    _validate_config_schema(config_path)
+    # Stage beside the target and validate the STAGED file, then rename it into place:
+    # a failed validation (or a crash) never leaves an invalid lore.yaml, which the next
+    # setup would otherwise take as configured and skip the scaffold for.
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=config_path.parent, prefix=f".{config_path.name}.",
+        suffix=".scaffold", delete=False,
+    ) as staged:
+        staged.write(content)
+    staged_path = Path(staged.name)
+    try:
+        # Fail loud if the scaffold does not parse against the real model. Schema-only
+        # (LoreConfig.model_validate, NOT load_config): the scaffold emits env-var
+        # *names*, never secrets, so validation must not require ANTHROPIC_API_KEY to
+        # be exported — that eager key resolution is a boot concern (see setup's
+        # env-file check + load_config's fail-fast at server start).
+        _validate_config_schema(staged_path)
+        os.replace(staged_path, config_path)
+    finally:
+        staged_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -807,14 +1008,14 @@ def _launch_container(project: Path, config_path: Path, env_file: Path) -> None:
         subprocess.CalledProcessError: ``podman run`` fails.
     """
     binds_snapshot = _require_launchable_snapshot(config_path)
-    slug = project.name
+    slug = _configured_slug(config_path)
     cmd = [
         "podman", "run", "-d", "--name", f"lore-{slug}",
         "--network=host",
         "--userns=keep-id",
         "--user", f"{os.getuid()}:{os.getgid()}",
         "-e", f"HOME={CONTAINER_HOME}",
-        "-v", f"{project}:/workspace:ro",
+        "-v", f"{project}:{CONTAINER_WORKSPACE}:ro",
         "-v", f"{MANIFEST_DIR}:{CONTAINER_STATE_DIR}",
         "--env-file", str(env_file),
         "-e", "LORE_CONFIG=/workspace/lore.yaml",
@@ -862,7 +1063,12 @@ def _launch_or_exit_loudly(
     Returns:
         ``_EXIT_OK`` when the launch succeeded, ``_EXIT_ERROR`` otherwise.
     """
-    container_name = f"lore-{project.name}"
+    try:
+        container_name = f"lore-{_configured_slug(config_path)}"
+    except _LAUNCH_FAILURES:
+        # The config read is _launch_container's first failure too; name the project
+        # instead so the launch below still reports that failure in its own words.
+        container_name = f"the lore container for {project}"
     try:
         _launch_container(project, config_path, env_file)
     except _LAUNCH_FAILURES as error:
@@ -878,13 +1084,31 @@ def _launch_or_exit_loudly(
 # Verbs.
 # ---------------------------------------------------------------------------
 def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e reworks this skill
-    """``setup`` — idempotent one-time provisioning (expensive parts no-op on re-run)."""
-    config_path = project / "lore.yaml"
-    slug = project.name
+    """``setup`` — idempotent one-time provisioning (expensive parts no-op on re-run).
+
+    Before anything is created, the slug is resolved (:func:`_project_slug`) and checked
+    for a holder at another project path (:func:`_slug_collision`); either refusal is
+    ``_EXIT_ERROR`` plus a stderr line and leaves everything as it was. A provisioned
+    project's legacy manifest is backfilled with its ``project_path`` (F4b), and a fresh
+    provision records it after the cold index.
+    """
+    config_path = project / CONFIG_FILENAME
+    try:
+        slug = _project_slug(project)
+    except RuntimeError as error:
+        print(f"setup: {error}", file=sys.stderr)
+        return _EXIT_ERROR
+    if (refusal := _slug_collision(project, slug)) is not None:
+        print(f"setup: refused: {refusal}", file=sys.stderr)
+        return _EXIT_ERROR
+    owner = ManifestOwner(slug)
 
     # 1. Detect an existing deployment → no-op the expensive parts.
-    already = config_path.exists() and (MANIFEST_DIR / f"{slug}.db").exists()
+    already = config_path.exists() and owner.exists()
     if already:
+        if owner.recorded_path() is None:
+            # A legacy manifest this project's own lore.yaml declares: claim it (F4b).
+            owner.record(project)
         print(f"setup: {slug} already provisioned (config + manifest present) — no-op.")
         # Still re-merge the .mcp.json (cheap, idempotent) so wiring is current.
         _merge_mcp_from_config(project, slug, config_path)
@@ -892,7 +1116,11 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
 
     # 2. Scaffold lore.yaml (only if absent).
     if not config_path.exists():
-        _scaffold_lore_yaml(project, config_path)
+        try:
+            _scaffold_lore_yaml(project, config_path)
+        except RuntimeError as error:
+            print(f"setup: {error}", file=sys.stderr)
+            return _EXIT_ERROR
         print(f"setup: scaffolded {config_path} — REVIEW its include globs.")
 
     # 3. Verify env-file present.
@@ -929,6 +1157,7 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
     if cold.returncode != 0:
         print(f"setup: cold index reported failures:\n{cold.stderr.strip()}", file=sys.stderr)
         return _EXIT_ERROR
+    owner.record(project)
 
     # 8. Merge .mcp.json.
     _merge_mcp_from_config(project, slug, config_path)
@@ -973,12 +1202,16 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     path), ``--no-wait`` had no effect and both gates still run: "do not wait" is not "do
     not check".
     """
-    config_path = project / "lore.yaml"
-    slug = project.name
-    container_name = f"lore-{slug}"
+    config_path = project / CONFIG_FILENAME
     if not config_path.exists():
         print(f"start: no {config_path}; run `setup` first.", file=sys.stderr)
         return _EXIT_ERROR
+    try:
+        slug = _project_slug(project)
+    except RuntimeError as error:
+        print(f"start: {error}", file=sys.stderr)
+        return _EXIT_ERROR
+    container_name = f"lore-{slug}"
 
     state = _container_state(container_name)
     if state == "running":
@@ -1137,7 +1370,11 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
 
 def verb_stop(project: Path) -> int:
     """``stop`` — stop + remove the container (store data + manifest persist; idempotent)."""
-    slug = project.name
+    try:
+        slug = _project_slug(project)
+    except RuntimeError as error:
+        print(f"stop: {error}", file=sys.stderr)
+        return _EXIT_ERROR
     state = _container_state(f"lore-{slug}")
     if state is None:
         print(f"stop: lore-{slug} not running — no-op.")
@@ -1158,11 +1395,15 @@ def verb_status(project: Path) -> int:
     hold the port unbound for minutes after the container starts). A stopped
     container skips the probe (nothing to probe).
     """
-    slug = project.name
+    try:
+        slug = _project_slug(project)
+    except RuntimeError as error:
+        print(f"status: {error}", file=sys.stderr)
+        return _EXIT_ERROR
     container_name = f"lore-{slug}"
-    config_path = project / "lore.yaml"
+    config_path = project / CONFIG_FILENAME
     state = _container_state(container_name)
-    manifest = MANIFEST_DIR / f"{slug}.db"
+    manifest = _manifest_path(slug)
     running = state == "running"
     print(f"status: {container_name} container = {state or 'absent'}")
     if running:
@@ -1769,12 +2010,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - conform + pro
         )
         return _EXIT_ERROR
     project = Path(args.project).resolve()
-    # Resolve the env-file AFTER the project is known so an unsupplied --env-file
-    # (default None) resolves per-slug; an explicit value passes through verbatim.
-    env_file = _resolve_env_file(project, args.env_file)
-
     if not project.is_dir():
         print(f"lore_deploy: --project {project} is not a directory.", file=sys.stderr)
+        return _EXIT_ERROR
+    # Resolve the env-file AFTER the project is known to be a directory, so an unsupplied
+    # --env-file (default None) resolves per-slug and a slug refusal is never pre-empted
+    # by the not-a-directory check; an explicit value passes through verbatim.
+    try:
+        env_file = _resolve_env_file(project, args.env_file)
+    except RuntimeError as error:
+        print(f"lore_deploy: {error}", file=sys.stderr)
         return _EXIT_ERROR
 
     if args.verb == "setup":
