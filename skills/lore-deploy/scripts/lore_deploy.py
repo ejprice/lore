@@ -28,6 +28,7 @@ config parse) is run with ``--python <interp>`` pointing at the loremaster venv
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shlex
@@ -451,6 +452,15 @@ def _schema_load_snippet(config_path: Path) -> str:
     )
 
 
+class ConfigUnreadable(RuntimeError):
+    """A lore.yaml that cannot be parsed, validated or evaluated (C6).
+
+    A ``RuntimeError`` so every caller's existing config-failure handling still applies; the
+    distinct type lets ``stop`` / ``status`` tell "the slug is unknowable" apart from a slug
+    refusal and end with the by-hand remedy.
+    """
+
+
 def _read_config_field(config_path: Path, expr: str) -> str:
     """Read a single field VALUE from a lore.yaml via the loremaster config model.
 
@@ -458,13 +468,26 @@ def _read_config_field(config_path: Path, expr: str) -> str:
     ``c.project.slug``). Returns the stringified value. Validation is SCHEMA-ONLY
     (see :func:`_schema_load_snippet`): the helper reads field values, never a
     resolved secret, so it must not — and does not — require any secret env-var to
-    be set. Raises ``RuntimeError`` on a parse/validation error so a malformed
-    config fails loud.
+    be set.
+
+    Raises:
+        ConfigUnreadable: The config does not parse or validate, or ``expr`` fails. The
+            message names the file and the loader's own error (``TypeName: message``), never
+            the child interpreter's traceback (C6).
     """
-    code = f"{_schema_load_snippet(config_path)};print({expr})"
+    # The child reports its failure as ``TypeName: message`` via ``sys.exit(str)`` (the same
+    # idiom as ``_DERIVE_SLUG_SNIPPET``), so the error the loader raised reaches the operator
+    # without a traceback burying it.
+    code = (
+        "import sys\n"
+        "try:\n"
+        f"    {_schema_load_snippet(config_path)};print({expr})\n"
+        "except Exception as error:\n"
+        "    sys.exit(f'{type(error).__name__}: {error}')\n"
+    )
     result = _run([_loremaster_python(), "-c", code], check=False, capture=True)
     if result.returncode != 0:
-        raise RuntimeError(
+        raise ConfigUnreadable(
             f"failed to read {expr!r} from {config_path}: {result.stderr.strip()}"
         )
     return result.stdout.strip()
@@ -513,6 +536,12 @@ CONFIG_FILENAME = "lore.yaml"
 CONTAINER_WORKSPACE = "/workspace"
 #: The manifest ``meta`` key ``setup`` records the owning project path under (F4b).
 PROJECT_PATH_META_KEY = "project_path"
+#: The ledger ``meta`` key ``setup`` writes only after a SUCCESSFUL cold index (#572); its value
+#: is that moment in UTC. "Already provisioned" means this row exists, nothing else.
+PROVISIONED_META_KEY = "provisioned_at"
+#: Whether the ledger has a ``meta`` table at all (a pre-P5 ledger may not: it is ownerless and
+#: unprovisioned, which is an answer, not an error).
+_LEDGER_HAS_META_SQL = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'"
 #: The ``meta`` DDL of the historical SQLite manifest (``loremaster.index.manifest._SCHEMA``,
 #: the documented origin; the loremaster side no longer executes it). ``CREATE TABLE IF NOT
 #: EXISTS`` so a manifest that already has the table keeps it untouched.
@@ -595,12 +624,22 @@ def _manifest_path(slug: str) -> Path:
     return MANIFEST_DIR / f"{slug}.db"
 
 
-class ManifestOwner:
-    """The ``project_path`` ``meta`` row of one slug's manifest: who owns the slug (F4b).
+class LedgerError(RuntimeError):
+    """The ledger file cannot be read or written (C1).
 
-    Plain stdlib ``sqlite3`` because this script is the manifest file's only remaining
-    reader and writer: loremaster's SQLite ``Manifest`` was deleted post-P5 (its manifest is
-    ``SurrealManifest`` now), and :func:`_manifest_counts` already reads this file here.
+    The message is ONE line naming the file and sqlite's own error, so every verb can refuse
+    with ``_EXIT_ERROR`` plus that line instead of a traceback.
+    """
+
+
+class ManifestOwner:
+    """One slug's host ledger ``<slug>.db``: who owns the slug, and whether setup provisioned it.
+
+    The ledger is lore-deploy's own file (RULING-572-ledger.md): ``setup`` writes the owning
+    ``project_path`` (F4b) and, only after a successful cold index, the provisioned marker. It
+    holds no index state; since P5 the index lives in the store (``SurrealManifest``). Plain
+    stdlib ``sqlite3`` because this script is the file's only reader and writer, and every
+    sqlite failure surfaces as :class:`LedgerError`.
     """
 
     def __init__(self, slug: str) -> None:
@@ -608,39 +647,74 @@ class ManifestOwner:
         self.manifest = _manifest_path(slug)
 
     def exists(self) -> bool:
-        """Whether the manifest file exists."""
+        """Whether the ledger file exists."""
         return self.manifest.exists()
 
-    def recorded_path(self) -> str | None:
-        """The recorded owning project path, or ``None`` (no manifest, or a legacy one)."""
+    def meta(self) -> dict[str, str]:
+        """Every ``meta`` row of the ledger; empty when the file or its ``meta`` table is absent.
+
+        Raises:
+            LedgerError: The file exists but sqlite cannot read it (not a database, malformed,
+                unreadable). Any ``sqlite3.Error`` counts: a corrupt file raises the
+                ``DatabaseError`` base, not ``OperationalError``.
+        """
         if not self.manifest.exists():
-            return None
+            return {}
         try:
             connection = sqlite3.connect(f"file:{self.manifest}?mode=ro", uri=True)
             try:
-                row = connection.execute(
-                    "SELECT v FROM meta WHERE k = ?", (PROJECT_PATH_META_KEY,)
-                ).fetchone()
+                if connection.execute(_LEDGER_HAS_META_SQL).fetchone() is None:
+                    return {}
+                rows = connection.execute("SELECT k, v FROM meta").fetchall()
             finally:
                 connection.close()
-        except sqlite3.OperationalError:
-            # No ``meta`` table: a manifest that predates every meta row is ownerless.
-            return None
-        return None if row is None else str(row[0])
+        except sqlite3.Error as error:
+            raise LedgerError(f"ledger {self.manifest} is unreadable: {error}") from error
+        return {str(key): str(value) for key, value in rows}
+
+    def recorded_path(self) -> str | None:
+        """The recorded owning project path, or ``None`` (no ledger, or a pre-#568 one)."""
+        return self.meta().get(PROJECT_PATH_META_KEY)
+
+    def provisioned_at(self) -> str | None:
+        """When setup's cold index succeeded (UTC ISO-8601), or ``None`` (never provisioned)."""
+        return self.meta().get(PROVISIONED_META_KEY)
 
     def record(self, project: Path) -> None:
-        """Record ``project`` as the slug's owner (creating the file/table when absent)."""
-        MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.manifest)
+        """Record ``project`` as the slug's owner, without the provisioned marker."""
+        self._write_meta({PROJECT_PATH_META_KEY: str(project.resolve())})
+
+    def mark_provisioned(self, project: Path) -> None:
+        """Record ``project`` as the owner AND the provisioned marker, in one transaction.
+
+        Call only after a successful cold index: the marker is what the next ``setup`` reads
+        as "already provisioned".
+        """
+        provisioned_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        self._write_meta(
+            {PROJECT_PATH_META_KEY: str(project.resolve()), PROVISIONED_META_KEY: provisioned_at}
+        )
+
+    def _write_meta(self, rows: dict[str, str]) -> None:
+        """Upsert ``rows`` into ``meta`` (creating the directory, file and table when absent).
+
+        Raises:
+            LedgerError: The directory or file cannot be created or written (e.g. a read-only
+                state dir after a uid mismatch).
+        """
         try:
-            with connection:  # one transaction: the table and the row land together
-                connection.execute(_MANIFEST_META_DDL)
-                connection.execute(
-                    "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)",
-                    (PROJECT_PATH_META_KEY, str(project.resolve())),
-                )
-        finally:
-            connection.close()
+            self.manifest.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.manifest)
+            try:
+                with connection:  # one transaction: the table and every row land together
+                    connection.execute(_MANIFEST_META_DDL)
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", rows.items()
+                    )
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error) as error:
+            raise LedgerError(f"cannot write ledger {self.manifest}: {error}") from error
 
 
 def _container_workspace_source(container_name: str) -> str | None:
@@ -663,7 +737,8 @@ def _slug_collision(project: Path, slug: str) -> str | None:
     hand-set: the class lift). The holder is read from the ``lore-<slug>`` container's
     workspace mount and from the manifest's recorded ``project_path``; either naming another
     path refuses. A legacy manifest (no recorded path) belongs to this project when its
-    lore.yaml exists (setup backfills the row); on a FRESH setup it is an unknown owner.
+    lore.yaml exists (setup records the row after its cold index); on a FRESH setup it is an
+    unknown owner. Raises :class:`LedgerError` when the ledger cannot be read (C1).
     """
     here = project.resolve()
     prefix = f"slug {slug!r} for {project}"
@@ -1094,10 +1169,11 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
     """``setup`` — idempotent one-time provisioning (expensive parts no-op on re-run).
 
     Before anything is created, the slug is resolved (:func:`_project_slug`) and checked
-    for a holder at another project path (:func:`_slug_collision`); either refusal is
-    ``_EXIT_ERROR`` plus a stderr line and leaves everything as it was. A provisioned
-    project's legacy manifest is backfilled with its ``project_path`` (F4b), and a fresh
-    provision records it after the cold index.
+    for a holder at another project path (:func:`_slug_collision`); either refusal, and a
+    ledger sqlite cannot read (C1), is ``_EXIT_ERROR`` plus one stderr line and leaves
+    everything as it was. "Already provisioned" is the ledger's provisioned marker (#572),
+    never the file's existence, an owner row or legacy index rows; an unprovisioned project
+    cold-indexes, and only a successful cold index writes the owner and the marker.
     """
     config_path = project / CONFIG_FILENAME
     try:
@@ -1105,18 +1181,23 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
     except RuntimeError as error:
         print(f"setup: {error}", file=sys.stderr)
         return _EXIT_ERROR
-    if (refusal := _slug_collision(project, slug)) is not None:
+    ledger = ManifestOwner(slug)
+    try:
+        refusal = _slug_collision(project, slug)
+        provisioned_at = ledger.provisioned_at() if config_path.exists() else None
+    except LedgerError as error:
+        print(f"setup: refused: {error}", file=sys.stderr)
+        return _EXIT_ERROR
+    if refusal is not None:
         print(f"setup: refused: {refusal}", file=sys.stderr)
         return _EXIT_ERROR
-    owner = ManifestOwner(slug)
 
     # 1. Detect an existing deployment → no-op the expensive parts.
-    already = config_path.exists() and owner.exists()
-    if already:
-        if owner.recorded_path() is None:
-            # A legacy manifest this project's own lore.yaml declares: claim it (F4b).
-            owner.record(project)
-        print(f"setup: {slug} already provisioned (config + manifest present) — no-op.")
+    if provisioned_at is not None:
+        print(
+            f"setup: {slug} already provisioned (ledger {ledger.manifest} marks the cold index "
+            f"done at {provisioned_at!r}) — no-op."
+        )
         # Still re-merge the .mcp.json (cheap, idempotent) so wiring is current.
         _merge_mcp_from_config(project, slug, config_path)
         return _EXIT_OK
@@ -1164,7 +1245,11 @@ def verb_setup(project: Path, env_file: Path) -> int:  # noqa: PLR0911 - P8e rew
     if cold.returncode != 0:
         print(f"setup: cold index reported failures:\n{cold.stderr.strip()}", file=sys.stderr)
         return _EXIT_ERROR
-    owner.record(project)
+    try:
+        ledger.mark_provisioned(project)
+    except LedgerError as error:
+        print(f"setup: {error}", file=sys.stderr)
+        return _EXIT_ERROR
 
     # 8. Merge .mcp.json.
     _merge_mcp_from_config(project, slug, config_path)
@@ -1375,13 +1460,29 @@ def verb_start(  # noqa: PLR0911, PLR0912, PLR0915 - P8e reworks this skill
     return _EXIT_OK
 
 
+def _refuse_unresolved_slug(verb: str, project: Path, error: RuntimeError) -> int:
+    """Refuse ``verb`` whose slug could not be resolved: the error, then (C6) the remedy.
+
+    An unreadable lore.yaml makes the slug unknowable, and a slug guessed from the directory
+    name addresses the wrong container for any hand-set slug, so nothing is guessed: stderr
+    ends with the by-hand remedy instead. A :class:`SlugRefusal` already ends with its own.
+    """
+    print(f"{verb}: {error}", file=sys.stderr)
+    if isinstance(error, ConfigUnreadable):
+        print(
+            f"{verb}: fix {project / CONFIG_FILENAME}, or stop the container by hand: "
+            f"podman stop lore-<slug> (the project.slug you meant)",
+            file=sys.stderr,
+        )
+    return _EXIT_ERROR
+
+
 def verb_stop(project: Path) -> int:
-    """``stop`` — stop + remove the container (store data + manifest persist; idempotent)."""
+    """``stop`` — stop + remove the container (store data + ledger persist; idempotent)."""
     try:
         slug = _project_slug(project)
     except RuntimeError as error:
-        print(f"stop: {error}", file=sys.stderr)
-        return _EXIT_ERROR
+        return _refuse_unresolved_slug("stop", project, error)
     state = _container_state(f"lore-{slug}")
     if state is None:
         print(f"stop: lore-{slug} not running — no-op.")
@@ -1392,25 +1493,48 @@ def verb_stop(project: Path) -> int:
     return _EXIT_OK
 
 
-def verb_status(project: Path) -> int:
-    """``status`` — running/stopped + index freshness from the manifest.
+def _ledger_status_line(ledger: ManifestOwner) -> str:
+    """The ``status`` line for ``ledger``: its owner and provisioned marker, never an index fact.
 
-    For a running container, also reports whether it is on the current
-    ``localhost/lore:latest`` image or is running stale code, AND probes the
-    live MCP port — "running" is container state, not proof the server is
-    actually accepting connections (loremaster's boot-time delta-reconcile can
-    hold the port unbound for minutes after the container starts). A stopped
-    container skips the probe (nothing to probe).
+    Both values are stored text rendered to an agent (the ledger is hand-editable), so each is
+    ``repr``-quoted: a newline in a directory name stays inside the value and cannot print a
+    line of its own.
+
+    Raises:
+        LedgerError: The ledger cannot be read.
+    """
+    if not ledger.exists():
+        return f"status: no ledger at {ledger.manifest} (not yet set up)."
+    meta = ledger.meta()
+    owner = meta.get(PROJECT_PATH_META_KEY)
+    provisioned_at = meta.get(PROVISIONED_META_KEY)
+    owner_text = "none recorded (a pre-#568 ledger)" if owner is None else repr(owner)
+    provisioned_text = (
+        "no (the next setup cold-indexes)"
+        if provisioned_at is None
+        else f"yes (setup's cold index succeeded at {provisioned_at!r})"
+    )
+    return f"status: ledger {ledger.manifest}: owner {owner_text}; provisioned {provisioned_text}"
+
+
+def verb_status(project: Path) -> int:
+    """``status`` — running/stopped, the deploy ledger, and where the index counts live.
+
+    The ledger line shows what the ledger holds (owner, provisioned marker) and no index fact:
+    the index lives in the store, and the line after it names ``lore_index()`` as where to read
+    its counts (RULING-572-ledger.md). For a running container, also reports whether it is on
+    the current ``localhost/lore:latest`` image or is running stale code, AND probes the live
+    MCP port — "running" is container state, not proof the server is actually accepting
+    connections (loremaster's boot-time delta-reconcile can hold the port unbound for minutes
+    after the container starts). A stopped container skips the probe (nothing to probe).
     """
     try:
         slug = _project_slug(project)
     except RuntimeError as error:
-        print(f"status: {error}", file=sys.stderr)
-        return _EXIT_ERROR
+        return _refuse_unresolved_slug("status", project, error)
     container_name = f"lore-{slug}"
     config_path = project / CONFIG_FILENAME
     state = _container_state(container_name)
-    manifest = _manifest_path(slug)
     running = state == "running"
     print(f"status: {container_name} container = {state or 'absent'}")
     if running:
@@ -1423,11 +1547,14 @@ def verb_status(project: Path) -> int:
                 f"status: {container_name} image: STALE — newer {IMAGE} exists; "
                 f"run `start` to recreate"
             )
-    if manifest.exists():
-        counts = _manifest_counts(manifest)
-        print(f"status: manifest {manifest} → {counts}")
-    else:
-        print(f"status: no manifest at {manifest} (not yet set up).")
+    try:
+        print(_ledger_status_line(ManifestOwner(slug)))
+    except LedgerError as error:
+        print(f"status: {error}", file=sys.stderr)
+    print(
+        "status: the index counts live in the store, not in this ledger: read them with the "
+        "lore_index() MCP tool (the server must be running)."
+    )
     if running:
         if config_path.exists():
             try:
@@ -1448,8 +1575,6 @@ def verb_status(project: Path) -> int:
                         f"running — likely boot delta-reconcile still holding the "
                         f"port unbound; re-check shortly)"
                     )
-        print("status: query the MCP index_status() tool for live freshness "
-              "(see server-interface.md — the live path lands with the server build).")
     return _EXIT_OK
 
 
@@ -1927,23 +2052,6 @@ def _env_file_kv(env_file: Path) -> list[str]:
             continue
         pairs.append(line)
     return pairs
-
-
-def _manifest_counts(manifest: Path) -> str:
-    """Summarise the manifest's per-state file counts (read-only, safe when stopped)."""
-    try:
-        connection = sqlite3.connect(f"file:{manifest}?mode=ro", uri=True)
-        try:
-            rows = connection.execute(
-                "SELECT state, COUNT(*) FROM files GROUP BY state"
-            ).fetchall()
-        finally:
-            connection.close()
-    except sqlite3.Error as error:
-        return f"(unreadable: {error})"
-    if not rows:
-        return "no files indexed yet"
-    return ", ".join(f"{state}={count}" for state, count in sorted(rows))
 
 
 # ---------------------------------------------------------------------------
